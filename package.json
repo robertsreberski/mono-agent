@@ -23,6 +23,7 @@
     "check:architecture": "node scripts/check-package-architecture.mjs",
     "verify:consumers": "node scripts/verify-consumers.mjs",
     "verify:all": "node scripts/verify-all.mjs",
+    "generate:public-api-docs": "node scripts/generate-public-api-docs.mjs",
     "generate:config-reference": "pnpm --filter @mono-agent/agent-app run build && node scripts/generate-config-reference.mjs",
     "build:demo": "tsc -p demos/final-agent/tsconfig.build.json",
     "typecheck": "pnpm -r --sort run typecheck && pnpm run typecheck:demo",
