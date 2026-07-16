@@ -271,10 +271,12 @@ async function writeHostileSessionBoundaryFixture(runId: string): Promise<void> 
   recorder.onEvent({
     type: "session_boundary",
     timestamp: "2026-07-16T00:00:00.000Z",
+    summary: "row-only\u009b\u202e",
     kind: "roll\u001b[2J-over",
     previousConversationId: "previous\u001b]52;c;payload\u0007",
     conversationId: "current\u001b_payload\u001b\\",
-    reason: "daily\u009brollover\u202e",
+    reason: "daily_rollover",
+    rawOnly: "raw-only\u0085\u2066",
   });
   await recorder.finish({ text: "ready" });
 }
@@ -825,18 +827,20 @@ describe("ReplayView detail mode", () => {
     await openRun(view, "run-hostile-boundary");
 
     const collapsed = view.render(100).join("\n");
-    expect(collapsed).toContain("\\u009b");
-    expect(collapsed).toContain("\\u202e");
+    expect(collapsed).toContain("row-only\\u009b\\u202e");
+    expect(collapsed).not.toContain("raw-only");
     expect(collapsed).not.toContain("\u009b");
     expect(collapsed).not.toContain("\u202e");
     expect(collapsed).not.toContain("\u001b]52;c;payload\u0007");
 
     view.handleInput("\r");
     const expanded = view.render(100).join("\n");
-    expect(expanded).toContain("\\u009b");
-    expect(expanded).toContain("\\u202e");
+    expect(expanded).toContain("row-only\\u009b\\u202e");
+    expect(expanded).toContain("raw-only\\u0085\\u2066");
     expect(expanded).not.toContain("\u009b");
+    expect(expanded).not.toContain("\u0085");
     expect(expanded).not.toContain("\u202e");
+    expect(expanded).not.toContain("\u2066");
     expect(expanded).not.toContain("\u001b]52;c;payload\u0007");
 
     const directRaw = buildRawPayloadBody({
