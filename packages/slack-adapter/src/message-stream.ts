@@ -39,6 +39,13 @@ export interface SlackMessageStreamOptions {
   threadTs?: SlackMessageTs;
   /** Stable UUID forwarded to chat.postMessage for duplicate suppression. */
   clientMsgId?: string;
+  /**
+   * Compatibility request for notification-suppressed delivery. Slack's
+   * `chat.postMessage` API has no bot-controlled suppression field, so this
+   * stream posts normally and, when a logger is configured, emits one explicit
+   * warning before its first post.
+   */
+  silent?: boolean;
   /** Message ts to react to (👀 "seen") in final-only mode. */
   reactToTs?: SlackMessageTs;
   /**
@@ -140,6 +147,7 @@ class SlackChannelTransport implements ChannelTransport {
   private readonly channelId: SlackChannelId;
   private readonly threadTs: SlackMessageTs | undefined;
   private readonly clientMsgId: string | undefined;
+  private readonly silentRequested: boolean;
   private readonly reactToTs: SlackMessageTs | undefined;
   private readonly assistantStatusText: string;
   private readonly onPosted: SlackPostedMessageListener | undefined;
@@ -153,12 +161,14 @@ class SlackChannelTransport implements ChannelTransport {
   private postIndex = 0;
   private reacted = false;
   private assistantStatusUnavailable = false;
+  private silentWarningEmitted = false;
 
   constructor(options: {
     api: SlackWebApi;
     channelId: SlackChannelId;
     threadTs?: SlackMessageTs;
     clientMsgId?: string;
+    silent: boolean;
     reactToTs?: SlackMessageTs;
     assistantStatusText: string;
     maxMessageChars: number;
@@ -170,6 +180,7 @@ class SlackChannelTransport implements ChannelTransport {
     this.channelId = options.channelId;
     this.threadTs = options.threadTs;
     this.clientMsgId = options.clientMsgId;
+    this.silentRequested = options.silent;
     this.reactToTs = options.reactToTs;
     this.assistantStatusText = options.assistantStatusText;
     this.maxMessageChars = options.maxMessageChars;
@@ -214,6 +225,7 @@ class SlackChannelTransport implements ChannelTransport {
     text: string,
     options: { markdown: boolean; contentKind?: ChannelMessageContentKind },
   ): Promise<MessageRef> {
+    this.warnIfSilentDeliveryIsUnsupported();
     const clientMsgId = this.clientMsgId === undefined
       ? undefined
       : slackPostClientMessageId(this.clientMsgId, this.postIndex);
@@ -244,6 +256,17 @@ class SlackChannelTransport implements ChannelTransport {
       operation: "post",
     });
     return slackMessageRef(sent);
+  }
+
+  private warnIfSilentDeliveryIsUnsupported(): void {
+    if (!this.silentRequested || this.silentWarningEmitted) {
+      return;
+    }
+    this.silentWarningEmitted = true;
+    this.logger?.warn?.(
+      "Slack chat.postMessage has no bot-controlled silent-delivery option; posting with normal Slack notification behavior.",
+      { silentRequested: true, silentApplied: false },
+    );
   }
 
   async edit(
@@ -328,6 +351,7 @@ export class SlackMessageStream implements AgentMessageStream {
       channelId: options.channelId,
       ...(options.threadTs === undefined ? {} : { threadTs: options.threadTs }),
       ...(options.clientMsgId === undefined ? {} : { clientMsgId: options.clientMsgId }),
+      silent: options.silent ?? false,
       ...(options.reactToTs === undefined ? {} : { reactToTs: options.reactToTs }),
       assistantStatusText: options.assistantStatusText ?? DEFAULT_ASSISTANT_STATUS_TEXT,
       maxMessageChars,

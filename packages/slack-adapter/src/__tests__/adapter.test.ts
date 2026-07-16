@@ -175,6 +175,63 @@ describe("SlackAdapter", () => {
     expect(verbatim).toEqual([["slack:C1:171.5", "All clear today."]]);
   });
 
+  it("notify(..., { silent: true }) documents Slack's limitation without inventing a Web API field", async () => {
+    const api = new FakeSlackApi();
+    const warn = vi.fn();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      logger: { warn },
+      responder: {
+        respond: async () => ({ text: "unused" }),
+        deliverVerbatim: async () => undefined,
+      },
+    });
+
+    const result = await adapter.notify("C1", "171.5", "Overnight digest.", {
+      verbatim: true,
+      silent: true,
+    });
+
+    expect(result).toMatchObject({ delivered: true, code: "delivered", channelId: "slack" });
+    expect(api.postMessageCalls).toEqual([
+      {
+        channel: "C1",
+        text: "Overnight digest.",
+        thread_ts: "171.5",
+        mrkdwn: true,
+      },
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      "Slack chat.postMessage has no bot-controlled silent-delivery option; posting with normal Slack notification behavior.",
+      { silentRequested: true, silentApplied: false },
+    );
+  });
+
+  it("threads the silent limitation through model-backed proactive notify", async () => {
+    const api = new FakeSlackApi();
+    const warn = vi.fn();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      logger: { warn },
+      responder: responderFrom(async () => ({ text: "Prepared digest." })),
+    });
+
+    const result = await adapter.notify("C1", undefined, "Prepare the digest", { silent: true });
+
+    expect(result).toMatchObject({ delivered: true, code: "delivered", channelId: "slack" });
+    expect(api.postMessageCalls).toEqual([
+      { channel: "C1", text: "Prepared digest.", mrkdwn: true },
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      "Slack chat.postMessage has no bot-controlled silent-delivery option; posting with normal Slack notification behavior.",
+      { silentRequested: true, silentApplied: false },
+    );
+  });
+
   it("reports confirmed Slack delivery with explicit degraded history instead of reposting", async () => {
     const api = new FakeSlackApi();
     const adapter = new SlackAdapter({

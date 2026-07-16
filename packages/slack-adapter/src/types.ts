@@ -26,6 +26,8 @@ export interface SlackChatPostMessageParams {
   channel: SlackChannelId;
   text: string;
   thread_ts?: SlackMessageTs;
+  // Slack exposes no bot-controlled notification-suppression parameter here.
+  // SlackMessageStreamOptions.silent warns rather than inventing one.
   /** Stable UUID used by Slack to suppress duplicate chat.postMessage retries. */
   client_msg_id?: string;
   mrkdwn?: boolean;
