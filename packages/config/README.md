@@ -61,9 +61,12 @@ for isolated provider-native contracts in a mixed chain. Effort values are
 to the selected model's supported subset.
 
 `ultra` is route-specific. Reasoning-capable `pi:*` maps `ultra` to LOW; Pi
-without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged; Claude
-SDK rejects `ultra`; Claude CLI forwards `ultra` unchanged; direct OpenCode
-rejects explicit effort. `effortRank`
+without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged.
+Mono-agent rejects `ultra` on its Claude SDK route because the pinned SDK public
+contract ends at `max` (the SDK JavaScript itself forwards the value). The
+Claude CLI route passes `--effort ultra`, but both tested Claude Code binaries
+(SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and
+use default effort. Direct OpenCode rejects explicit effort. `effortRank`
 places `ultra` above `max` only so keyword escalation cannot downgrade an
 explicitly configured value.
 

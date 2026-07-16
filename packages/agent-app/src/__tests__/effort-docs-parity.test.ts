@@ -25,7 +25,11 @@ function readRepoFile(path: string): string {
 }
 
 function normalizeProse(value: string): string {
-  return value.replaceAll("`", "").replace(/\s+/gu, " ").toLowerCase();
+  return value
+    .replaceAll("`", "")
+    .replace(/^\s*\/\/\s?/gmu, "")
+    .replace(/\s+/gu, " ")
+    .toLowerCase();
 }
 
 function normalizeClause(value: string): string {
@@ -40,74 +44,123 @@ function guardSentences(value: string): readonly string[] {
   const source = value.replaceAll("`", "").toLowerCase();
   const lineSentences = source
     .split(/\r?\n/gu)
-    .flatMap((line) => line.split(/[.!?;]+/u));
+    .flatMap((line) => line.split(/[.!?]+/u));
   const wrappedProseSentences = source
-    .split(/[.!?;]+/u)
+    .split(/[.!?]+/u)
     .filter((sentence) => !isCodeLikeMultilineClause(sentence));
   return [...new Set([...lineSentences, ...wrappedProseSentences].map(normalizeClause))];
 }
 
-const PI_LOW_RELATION =
-  /\b(?:map(?:s|ped|ping)?|use(?:s|d|ing)?|mak(?:e|es|ing)|made|get(?:s|ting)?|got|select(?:s|ed|ing)?|mean(?:s|t|ing)?|set(?:s|ting)?|yield(?:s|ed|ing)?|result(?:s|ed|ing)?|treat(?:s|ed|ing)?|translate(?:s|d|ing)?|convert(?:s|ed|ing)?|become(?:s|ing)?|became|apply|applies|applied|applying|run(?:s|ning)?|ran|turn(?:s|ed|ing)?|produce(?:s|d|ing)?|give(?:s|n|ing)?|gave|assign(?:s|ed|ing)?|choose(?:s|n|ing)?|chose|force(?:s|d|ing)?|default(?:s|ed|ing)?|fall(?:s|ing)?|fell|render(?:s|ed|ing)?)\b/gu;
-const PI_LOW_COPULA = /\b(?:is|are|was|were)\b/gu;
+type PiLowRelationKind = "copula" | "targeted" | "outcome";
 
-function relationMatches(atom: string): readonly RegExpMatchArray[] {
-  const matches = [...atom.matchAll(PI_LOW_RELATION)];
-  matches.push(...atom.matchAll(PI_LOW_COPULA));
-  return matches.sort((left, right) => (left.index ?? 0) - (right.index ?? 0));
+interface PiLowRelation {
+  readonly index: number;
+  readonly kind: PiLowRelationKind;
+  readonly text: string;
+}
+
+const PI_LOW_RELATIONS: readonly [PiLowRelationKind, RegExp][] = [
+  ["copula", /\b(?:is|are|was|were)\b/gu],
+  [
+    "targeted",
+    /\b(?:map(?:s|ped|ping)?|interpret(?:s|ed|ing)?|equat(?:e|es|ed|ing)|set(?:s|ting)?|treat(?:s|ed|ing)?|translate(?:s|d|ing)?|convert(?:s|ed|ing)?|turn(?:s|ed|ing)?|render(?:s|ed|ing)?|assign(?:s|ed|ing)?)\b/gu,
+  ],
+  [
+    "outcome",
+    /\b(?:use(?:s|d|ing)?|mak(?:e|es|ing)|made|get(?:s|ting)?|got|select(?:s|ed|ing)?|mean(?:s|t|ing)?|yield(?:s|ed|ing)?|result(?:s|ed|ing)?|become(?:s|ing)?|became|apply|applies|applied|applying|run(?:s|ning)?|ran|produce(?:s|d|ing)?|give(?:s|n|ing)?|gave|choose(?:s|n|ing)?|chose|force(?:s|d|ing)?|default(?:s|ed|ing)?|fall(?:s|ing)?|fell)\b/gu,
+  ],
+];
+
+// This is intentionally a small documentation grammar, not general-purpose NLP:
+// relation kind decides where its target lives, clause sequencing carries only
+// an explicit Pi/ultra subject, and qualification/negation are evaluated at the
+// deciding relation. That keeps unrelated LOW clauses out of the mapping check.
+
+function relationMatches(atom: string): readonly PiLowRelation[] {
+  const matches = PI_LOW_RELATIONS.flatMap(([kind, pattern]) =>
+    [...atom.matchAll(pattern)].map((match) => ({
+      index: match.index ?? 0,
+      kind,
+      text: match[0] ?? "",
+    })),
+  );
+  return matches.sort((left, right) => left.index - right.index);
 }
 
 function relationIsNegated(atom: string, relationIndex: number): boolean {
-  const prefix = atom.slice(Math.max(0, relationIndex - 64), relationIndex);
-  return /(?:\b(?:does|do|did|will|would|can|could|should|is|are|was|were)\s+(?:not|never)|\b(?:doesn't|don't|didn't|won't|wouldn't|can't|couldn't|shouldn't|isn't|aren't|wasn't|weren't)|\b(?:not|never))(?:\s+\w+ly){0,2}\s*$/u.test(
-    prefix,
-  );
+  const prefix = atom.slice(Math.max(0, relationIndex - 96), relationIndex);
+  return /(?:\b(?:does|do|did|will|would|can|could|should|is|are|was|were)\s+(?:not|never)|\b(?:cannot|doesn't|don't|didn't|won't|wouldn't|can't|couldn't|shouldn't|isn't|aren't|wasn't|weren't)|\b(?:not|never))(?:\s+\w+ly){0,2}\s*$/u.test(prefix) ||
+    /\bno(?:\s+[\w*:'-]+){0,5}\s*$/u.test(prefix);
 }
 
-function lowIsAffirmative(atom: string): boolean {
-  return [...atom.matchAll(/\blow\b/gu)].some((match) => {
-    const lowIndex = match.index ?? 0;
-    const prefix = atom.slice(Math.max(0, lowIndex - 64), lowIndex);
-    return !/\b(?:no|not|never)(?:\s+\w+){0,3}\s*$/u.test(prefix) &&
-      !/\b(?:rather\s+than|instead\s+of)\s*$/u.test(prefix);
-  });
+function lowIsAffirmativeAt(atom: string, lowIndex: number): boolean {
+  const prefix = atom.slice(Math.max(0, lowIndex - 72), lowIndex);
+  return !/\b(?:no|not|never)(?:\s+\w+){0,4}\s*$/u.test(prefix) &&
+    !/\b(?:rather\s+than|instead\s+of|different\s+from|distinct\s+from|unrelated\s+to|separate\s+from)\s*$/u.test(prefix);
 }
 
-function relationHasAffirmativeLow(atom: string, relation: RegExpMatchArray): boolean {
-  if (!lowIsAffirmative(atom)) return false;
-  if (!/^(?:is|are|was|were)$/u.test(relation[0] ?? "")) return true;
-  const relationEnd = (relation.index ?? 0) + (relation[0]?.length ?? 0);
-  return /^\s+(?:(?:currently|directly|effectively|always|now|still|simply|just)\s+){0,3}(?:the\s+)?low\b/u.test(
-    atom.slice(relationEnd),
-  );
+function relationHasAffirmativeLow(atom: string, relation: PiLowRelation): boolean {
+  const relationEnd = relation.index + relation.text.length;
+  if (relation.kind === "copula") {
+    const lows = [...atom.matchAll(/\blow\b/gu)];
+    return lows.some((low) => {
+      const lowIndex = low.index ?? 0;
+      if (!lowIsAffirmativeAt(atom, lowIndex)) return false;
+      if (lowIndex > relation.index) {
+        const predicatePrefix = atom.slice(relationEnd, lowIndex);
+        return /^\s+(?:(?:currently|directly|effectively|always|now|still|simply|just)\s+){0,3}(?:the\s+)?$/u.test(
+          predicatePrefix,
+        ) && /\bultra\b/u.test(atom);
+      }
+      const inversePredicate = atom.slice(relationEnd);
+      return /^\s+(?:(?:currently|directly|effectively|always|now|still|simply|just)\s+){0,3}(?:(?:the\s+)?result\s+of\s+(?:direct(?:ly\s+configured)?\s+)?|(?:the\s+)?same(?:\s+effort)?\s+as\s+)?ultra\b/u.test(
+        inversePredicate,
+      );
+    });
+  }
+
+  const tail = atom.slice(relationEnd);
+  if (relation.kind === "targeted") {
+    const target = /\b(?:to|as|with|into)\s+(?:(?:the|a|an|its|directly|configured)\s+){0,3}(low|off|none|minimal|medium|high|xhigh|max|ultra)\b/gu.exec(tail);
+    if (target === null || target[1] !== "low") return false;
+    const lowOffset = target[0].lastIndexOf("low");
+    return lowIsAffirmativeAt(atom, relationEnd + target.index + lowOffset);
+  }
+
+  const effort = /\b(low|off|none|minimal|medium|high|xhigh|max|ultra)\b/gu.exec(tail);
+  if (effort === null || effort[1] !== "low") return false;
+  return lowIsAffirmativeAt(atom, relationEnd + effort.index);
 }
 
 function relationIsReasoningQualified(atom: string, relationIndex: number): boolean {
-  const prefix = atom.slice(0, relationIndex);
-  const qualifiers = [
-    ...prefix.matchAll(
-      /(?<!non-)\breasoning-capable\s+pi(?::\*)?(?=\s|$|[,])/gu,
-    ),
-  ];
-  const qualifier = qualifiers.at(-1);
-  if (qualifier === undefined) return false;
-  const qualifierIndex = qualifier.index ?? 0;
-  const lead = prefix.slice(Math.max(0, qualifierIndex - 48), qualifierIndex);
-  return !/\b(?:no|not|never)\b[^.!?;]{0,40}$/u.test(lead);
+  const qualifiers = [...atom.matchAll(/(?<!non-)\breasoning-capable\b/gu)];
+  return qualifiers.some((qualifier) => {
+    const qualifierIndex = qualifier.index ?? 0;
+    const qualifierEnd = qualifierIndex + (qualifier[0]?.length ?? 0);
+    const lead = atom.slice(Math.max(0, qualifierIndex - 56), qualifierIndex);
+    if (/\b(?:no|not|never|without)\b[^.!?;]{0,48}$/u.test(lead)) return false;
+    if (qualifierIndex < relationIndex) {
+      return /^\s+pi(?::\*)?(?=\s|[,]|$)/u.test(
+        atom.slice(qualifierEnd, relationIndex),
+      );
+    }
+    if (!/\b(?:(?:only\s+)?(?:when|if)|for)\s+(?:a\s+)?$/u.test(lead)) return false;
+    return /^\s*(?:pi(?::\*)?)?\s*$/u.test(atom.slice(qualifierEnd));
+  });
 }
 
 function atomHasAffirmativeReasoningPi(atom: string): boolean {
   const match = /(?<!non-)\breasoning-capable\s+pi(?::\*)?(?=\s|$|[,])/u.exec(atom);
   if (match === null) return false;
   const lead = atom.slice(Math.max(0, match.index - 48), match.index);
-  return !/\b(?:no|not|never)\b[^.!?;]{0,40}$/u.test(lead);
+  return !/\b(?:no|not|never|without)\b[^.!?;]{0,40}$/u.test(lead);
 }
 
 function unqualifiedPiLowClaims(value: string): readonly string[] {
   const claims: string[] = [];
   for (const sentence of guardSentences(value)) {
     const atoms = sentence.split(
-      /(?:,\s*)?\b(?:and|but|while|whereas|although|though)\b/u,
+      /\s*;\s*|(?:,\s*)?\b(?:and|but|while|whereas|although|though)\b/u,
     );
     let inheritedContext = false;
     let inheritedReasoningQualifier = false;
@@ -117,15 +170,16 @@ function unqualifiedPiLowClaims(value: string): readonly string[] {
       const explicitContext = hasPi && hasUltra;
       const relations = relationMatches(atom);
       const elidedSubjectContinuation = !hasPi && inheritedContext && relations.some((relation) => {
-        const lead = atom.slice(0, relation.index ?? 0).trim();
+        const lead = atom.slice(0, relation.index).trim();
         return /^(?:(?:instead|then|also|still|directly|currently|simply)\s+)*$/u.test(lead);
       });
       const pronounContinuation = !hasPi && inheritedContext && /\bit\b/u.test(atom);
-      const inheritedContextApplies = elidedSubjectContinuation || pronounContinuation;
+      const repeatedPiContinuation = hasPi && !hasUltra && inheritedContext && relations.length > 0;
+      const inheritedContextApplies = elidedSubjectContinuation || pronounContinuation || repeatedPiContinuation;
       const hasRouteContext = explicitContext || inheritedContextApplies;
-      const inheritedQualifierApplies = inheritedContextApplies && inheritedReasoningQualifier;
+      const inheritedQualifierApplies = inheritedContextApplies && !hasPi && inheritedReasoningQualifier;
       const hasUnqualifiedRelation = relations.some((relation) => {
-        const relationIndex = relation.index ?? 0;
+        const relationIndex = relation.index;
         return hasRouteContext &&
           relationHasAffirmativeLow(atom, relation) &&
           !relationIsNegated(atom, relationIndex) &&
@@ -136,7 +190,7 @@ function unqualifiedPiLowClaims(value: string): readonly string[] {
       if (explicitContext) {
         inheritedContext = true;
         inheritedReasoningQualifier = atomHasAffirmativeReasoningPi(atom);
-      } else if (hasPi) {
+      } else if (hasPi && !repeatedPiContinuation) {
         inheritedContext = false;
         inheritedReasoningQualifier = false;
       }
@@ -206,8 +260,11 @@ function expectUltraRouteContract(value: string, label: string): void {
     "reasoning-capable pi:* maps ultra to low",
     "pi without reasoning uses off",
     "direct codex:* forwards ultra unchanged",
-    "claude sdk rejects ultra",
-    "claude cli forwards ultra unchanged",
+    "mono-agent rejects ultra on its claude sdk route because the pinned sdk public contract ends at max",
+    "the sdk javascript itself forwards the value",
+    "the claude cli route passes --effort ultra",
+    "sdk-bundled 2.1.206 and local 2.1.210",
+    "warn that it is unknown, ignore it, and use default effort",
     "direct opencode rejects explicit effort",
   ]) {
     expect(prose, `${label} is missing: ${fact}`).toContain(fact);
@@ -217,7 +274,7 @@ function expectUltraRouteContract(value: string, label: string): void {
   );
   expect(
     unqualifiedPiLowClaims(value),
-    `${label} must qualify every Pi/ultra/LOW claim as reasoning-capable`,
+    `${label} contains a recognized unqualified Pi ultra-to-LOW mapping`,
   ).toEqual([]);
 }
 
@@ -233,8 +290,13 @@ describe("ultra effort documentation parity", () => {
     "Pi gets LOW thinking with direct ultra.",
     "For direct ultra, Pi thinking is LOW.",
     "On Pi, ultra is LOW.",
+    "On Pi, LOW is ultra.",
     "Pi accepts ultra and maps to LOW.",
     "On Pi, ultra becomes LOW.",
+    "Pi interprets directly configured ultra as LOW thinking.",
+    "Pi equates ultra with LOW thinking.",
+    "Pi does not use OFF for ultra; instead, it maps it to LOW.",
+    "Compared with reasoning-capable Codex, Pi maps ultra to LOW.",
     "Even when Pi is not reasoning-capable, ultra maps to LOW.",
   ])("detects an unqualified Pi mapping regardless of word order: %s", (claim) => {
     const findings = unqualifiedPiLowClaims(claim);
@@ -258,6 +320,7 @@ describe("ultra effort documentation parity", () => {
 
   it.each([
     "Reasoning-capable pi:* maps ultra to LOW.",
+    "For reasoning-capable Pi, ultra maps to LOW.",
     "Without reasoning, Pi maps ultra to OFF, not LOW.",
     "Pi does not map ultra to LOW.",
     "Pi thinking is not LOW for direct ultra.",
@@ -268,8 +331,23 @@ describe("ultra effort documentation parity", () => {
     "Pi maps ultra to OFF, and LOW maps to medium in the ranking.",
     "On Pi, ultra is different from LOW.",
     "Pi maps ultra to OFF, although LOW remains available.",
+    "Pi maps ultra to LOW only when reasoning-capable.",
+    "Pi cannot map ultra to LOW.",
+    "No Pi route maps ultra to LOW.",
+    "Pi maps ultra to OFF, with LOW available as a separate effort level.",
+    "On Pi, ultra is unsupported, with LOW available as a separate effort level.",
+    "On Pi, LOW is not ultra.",
+    "On Pi, LOW isn't ultra.",
   ])("allows an explicitly qualified or negated Pi mapping: %s", (claim) => {
     expect(unqualifiedPiLowClaims(claim)).toEqual([]);
+  });
+
+  it("accepts the exact documented Pi route split without leaking qualification across clauses", () => {
+    expect(
+      unqualifiedPiLowClaims(
+        "Reasoning-capable pi:* maps ultra to LOW; Pi without reasoning uses OFF.",
+      ),
+    ).toEqual([]);
   });
 
   it("does not mistake separate model and effort config lines for a mapping claim", () => {

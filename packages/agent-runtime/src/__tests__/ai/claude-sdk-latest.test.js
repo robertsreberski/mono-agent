@@ -88,9 +88,9 @@ describe("Claude Agent SDK 0.3 effort and query contract", () => {
     expect(queryMock).not.toHaveBeenCalled();
   });
 
-  it("rejects ultra before query creation with an actionable typed result", async () => {
+  it("keeps the mono-agent SDK route inside the pinned public effort contract", async () => {
     expect(() => claudeEffortOptions("ultra")).toThrowError(
-      'Claude Agent SDK does not support effort "ultra"',
+      'Mono-agent\'s Claude SDK route does not support effort "ultra": the pinned Claude Agent SDK public effort contract ends at "max"',
     );
     const result = await generateClaudeResponse("system", options({ effort: "ultra" }));
     expect(result).toMatchObject({
@@ -101,7 +101,7 @@ describe("Claude Agent SDK 0.3 effort and query contract", () => {
         retryable: false,
       },
     });
-    expect(result.error).toContain('does not support effort "ultra"');
+    expect(result.error).toContain('pinned Claude Agent SDK public effort contract ends at "max"');
     expect(queryMock).not.toHaveBeenCalled();
   });
 
