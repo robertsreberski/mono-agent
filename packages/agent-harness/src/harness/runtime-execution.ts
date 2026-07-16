@@ -2,6 +2,7 @@ import type { RunRecorder, RuntimeEventLike } from "@mono-agent/observability";
 import {
   modelReferenceKey,
   sandboxPolicyToRuntimeOptions,
+  type RuntimeMessage,
   type RuntimeResult,
   type RuntimeRunOptions,
 } from "@mono-agent/runtime-adapter";
@@ -43,6 +44,7 @@ export async function runHarnessRuntime(
   skillDisclosureNames: readonly string[],
   history: readonly HistoryMessage[],
   historyOmitted: boolean,
+  historyAsMessages: boolean,
   attachmentContext: AttachmentRequestContext,
   continuationCapabilities: AgentHarnessContinuationClaimCapability[],
   onProviderStart?: () => void,
@@ -244,13 +246,20 @@ export async function runHarnessRuntime(
         !sameRuntimeModel(overrideModel, options.model)
           ? options.runtimeForModel(effectiveModel, effectiveExecutionMode)
           : options.runtime;
+      const currentUserMessage: RuntimeMessage = {
+        role: "user",
+        content: composeUserMessageWithMemory(request.userMessage, memory),
+      };
       const runtimeOptions: RuntimeRunOptions = {
         ...merged,
         model: effectiveModel,
         // Recalled memory is appended to the user message (NOT the system prompt) so
         // it reaches the model on every turn, including resumed turns. See
         // prepareContext for why.
-        messages: [{ role: "user", content: composeUserMessageWithMemory(request.userMessage, memory) }],
+        messages: [
+          ...(historyAsMessages ? structuredHistoryMessages(history) : []),
+          currentUserMessage,
+        ],
         abortSignal: request.abortSignal,
         ...(effectiveExecutionMode === undefined ? {} : { executionMode: effectiveExecutionMode }),
         ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
@@ -361,4 +370,12 @@ export async function runHarnessRuntime(
         }
       }
     }
+}
+
+function structuredHistoryMessages(history: readonly HistoryMessage[]): RuntimeMessage[] {
+  return history.map((message) => ({
+    role: message.role,
+    content: message.content,
+    ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),
+  }));
 }

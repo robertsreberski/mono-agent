@@ -6,7 +6,7 @@ sidebar:
 
 # Context assembly
 
-Every turn, mono-agent builds one prompt from several ordered sections — core guardrails, identity, a session block, conversation history, the skill index, selected skill instructions, and finally the current user message. Recalled long-term memory is **not** one of these system-prompt sections; it is appended to the user message instead (see [Memory recall](#memory-recall) below). This page documents that order, how history is sized, and the truncation/bloat guards that keep prompts bounded. Assembly is mostly `auto`: you configure the inputs (identity, soul, skills, memory) and the framework assembles them.
+For a fresh/stateless turn, mono-agent builds one prompt from several ordered sections — core guardrails, identity, a session block, conversation history, the skill index, selected skill instructions, and finally the current user message. Warm or durable provider resumes use the history placement described below. Recalled long-term memory is **not** one of these system-prompt sections; it is appended to the current user message instead (see [Memory recall](#memory-recall) below). This page documents that order, how history is sized, and the truncation/bloat guards that keep prompts bounded. Assembly is mostly `auto`: you configure the inputs (identity, soul, skills, memory) and the framework assembles them.
 
 ## Section order
 
@@ -23,6 +23,8 @@ The context builder in `@mono-agent/agent-harness` concatenates sections in a fi
 | 7 | Current User Message | the inbound request text, with any recalled memory appended | Yes |
 
 The user message is always last, so the model reads its guardrails, identity, and history before the task it must act on — and any recalled memory travels **with** that user message. See [Identity and soul](/context/identity-and-soul/) for sections 1–2, [Session](#session) for section 3, and [Skills](/context/skills/) for sections 5–6.
+
+Conversation History is a system-prompt section on fresh/stateless runs and on the one session-resume retry. A confirmed warm provider session already carries its transcript, so the section is omitted and only the current user message is sent. A cold history-coordinated Pi reopen loads the same canonical history but supplies it as structured leading runtime messages outside the system prompt: Pi seeds those messages when the epoch's JSONL is missing (create-on-miss), or skips the leading messages when an existing JSONL is truly resumed. In both cases the provider sees each prior turn exactly once and the current user message remains last.
 
 :::note
 `context.identityPath` is one of only two required config fields (the other is `runtime.model`); omit `context.soulPath` to fall back to the built-in core guardrails.
@@ -80,7 +82,7 @@ Every configured memory tier also exposes the read-only `MemoryRecall` tool by d
 
 ## Conversation history
 
-Coverage: `auto`. History is kept in an **owner-only, disk-backed store**. The default retains the latest 64 messages for each exact conversation id, with aggregate retention bounded to 256 MiB, 10,000 conversations, and 365 days of inactivity. Live unpublished stages have a separate 256 MiB aggregate cap, so many prepared or crash-abandoned turns cannot grow the store without bound. A completed turn is staged before commit and atomically published; cancelled preparations do not evict committed history. Oldest inactive conversation files are pruned only after a successful publication. These bounds are independent of the provider's turn limit: changing `runtime.maxTurns` does not change the history window. The history section renders prior `system`/`user`/`assistant`/`tool` messages for the conversation in order.
+Coverage: `auto`. History is kept in an **owner-only, disk-backed store**. The default retains the latest 64 messages for each exact conversation id, with aggregate retention bounded to 256 MiB, 10,000 conversations, and 365 days of inactivity. Live unpublished stages have a separate 256 MiB aggregate cap, so many prepared or crash-abandoned turns cannot grow the store without bound. A completed turn is staged before commit and atomically published; cancelled preparations do not evict committed history. Oldest inactive conversation files are pruned only after a successful publication. These bounds are independent of the provider's turn limit: changing `runtime.maxTurns` does not change the history window. When history uses the prompt path, the history section renders prior `system`/`user`/`assistant`/`tool` messages for the conversation in order; cold durable Pi reopens use the structured-message path described above.
 
 - `runtime.maxTurns` (`MONO_AGENT_MAX_TURNS`) is `0` or omitted for an **unlimited provider run**; set `1`–`100` to cap turns per run. It neither disables nor resizes the bounded 64-message history.
 - History is keyed per conversation. Channels reuse a stable conversation id; for cron, share one with `cron.jobs[].conversationId` so ticks accumulate the same history (see [Cron](/channels/cron/)).

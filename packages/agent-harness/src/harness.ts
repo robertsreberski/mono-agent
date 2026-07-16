@@ -360,9 +360,17 @@ export class MonoAgentHarness implements AgentHarness {
       }
 
       // Omit history only for a confirmed live mapping to the exact epoch-owned
-      // provider id. A cold cross-restart reopen still receives canonical history
-      // so create-on-miss can seed a complete transcript.
-      let prepared = await prepareHarnessContext(this.options, this.skillsCache, activeRequest, { omitHistory: confirmedWarmSession, turnId: runId }, emit);
+      // provider id. A cold durable reopen sends canonical history as structured
+      // leading runtime messages: Pi seeds it when the JSONL is missing and skips
+      // it on a true resume, avoiding both loss and duplicate prompt replay.
+      let prepared = await prepareHarnessContext(this.options, this.skillsCache, activeRequest, {
+        historyMode: confirmedWarmSession
+          ? "omitted"
+          : providerHistoryTurn === undefined
+            ? "prompt"
+            : "messages",
+        turnId: runId,
+      }, emit);
       context = prepared.context;
 
       let resumeError: unknown;
@@ -384,6 +392,7 @@ export class MonoAgentHarness implements AgentHarness {
           prepared.skillDisclosureNames,
           prepared.history,
           prepared.historyOmitted,
+          prepared.historyAsMessages,
           attachmentContext,
           continuationCapabilities,
           () => noteProviderStart(resumeSessionId),
@@ -420,7 +429,10 @@ export class MonoAgentHarness implements AgentHarness {
         );
         resumeSessionId = undefined;
         coordinatedProviderAttemptEligibleForSync = false;
-        prepared = await prepareHarnessContext(this.options, this.skillsCache, activeRequest, { omitHistory: false, turnId: runId }, emit);
+        prepared = await prepareHarnessContext(this.options, this.skillsCache, activeRequest, {
+          historyMode: "prompt",
+          turnId: runId,
+        }, emit);
         context = prepared.context;
         runtimeResult = await runHarnessRuntime(
           this.options,
@@ -437,6 +449,7 @@ export class MonoAgentHarness implements AgentHarness {
           prepared.skillDisclosureNames,
           prepared.history,
           prepared.historyOmitted,
+          prepared.historyAsMessages,
           attachmentContext,
           continuationCapabilities,
           () => noteProviderStart(undefined),

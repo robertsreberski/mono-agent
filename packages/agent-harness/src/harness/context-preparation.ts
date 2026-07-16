@@ -18,7 +18,10 @@ export async function prepareHarnessContext(
   options: AgentHarnessOptions,
   skillsCache: SkillsCache,
   request: AgentHarnessRequest,
-  contextOptions: { readonly omitHistory: boolean; readonly turnId: string },
+  contextOptions: {
+    readonly historyMode: "prompt" | "messages" | "omitted";
+    readonly turnId: string;
+  },
   emit?: (event: RuntimeEventLike) => void,
 ): Promise<{
   readonly context: BuiltAgentContext;
@@ -26,8 +29,9 @@ export async function prepareHarnessContext(
   readonly skillDisclosureNames: readonly string[];
   readonly history: readonly HistoryMessage[];
   readonly historyOmitted: boolean;
+  readonly historyAsMessages: boolean;
 }> {
-    const history = contextOptions.omitHistory
+    const history = contextOptions.historyMode === "omitted"
       ? []
       : await loadHarnessHistory(options, request.conversationId, request.continuation);
     // Recalled memory deliberately does NOT go into the system prompt. It rides on
@@ -46,7 +50,7 @@ export async function prepareHarnessContext(
       userMessage: request.userMessage,
       session: sessionContextBlock(request, options.memory !== undefined),
       ...(options.soulPath === undefined ? {} : { soulPath: options.soulPath }),
-      ...(history.length === 0 ? {} : { history }),
+      ...(history.length === 0 || contextOptions.historyMode !== "prompt" ? {} : { history }),
       ...(options.skillsRoot !== undefined
         ? { skillsRoot: options.skillsRoot }
         : selectedSkills.index.length > 0
@@ -61,7 +65,14 @@ export async function prepareHarnessContext(
     // inlined up front) and does NOT add ReadSkill. Names load only when a
     // skillsRoot is set.
     const skillDisclosureNames = await loadSkillDisclosureNames(options);
-    return { context, memory, skillDisclosureNames, history, historyOmitted: contextOptions.omitHistory };
+    return {
+      context,
+      memory,
+      skillDisclosureNames,
+      history,
+      historyOmitted: contextOptions.historyMode === "omitted",
+      historyAsMessages: contextOptions.historyMode === "messages",
+    };
 }
 
 /**
