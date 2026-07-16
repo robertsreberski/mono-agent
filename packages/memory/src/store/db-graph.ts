@@ -20,6 +20,10 @@ import {
   sameCanonicalGraphReplacement,
   validateCanonicalGraphReplacement,
 } from "./db-canonical-graph.js";
+import {
+  REPLAY_EDGE_STATE_INDEX,
+  REPLAY_LIFECYCLE_STATE_INDEX,
+} from "./schema.js";
 import type {
   CanonicalGraphReplacement,
   ReplayProjectionDbReplacement,
@@ -33,6 +37,18 @@ import type {
   MemoryEntityAssociation,
   MemoryRecord,
 } from "./types.js";
+
+export const REPLAY_PROJECTION_STATE_PROBE_SQL = `SELECT
+  EXISTS (
+    SELECT 1 FROM memories INDEXED BY ${REPLAY_LIFECYCLE_STATE_INDEX}
+    WHERE valid_to IS NOT NULL OR superseded_by IS NOT NULL OR superseded_at IS NOT NULL
+    LIMIT 1
+  ) AS lifecycle_present,
+  EXISTS (
+    SELECT 1 FROM edges INDEXED BY ${REPLAY_EDGE_STATE_INDEX}
+    WHERE kind IN ('thread','supersedes')
+    LIMIT 1
+  ) AS edge_present`;
 
 export class MemoryDbGraph extends MemoryDbMaintenance {
   async supersede(oldId: string, replacement: MemoryRecord): Promise<void> {
@@ -126,6 +142,15 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
       }));
       return { memories, edges };
     })();
+  }
+
+  /** Constant-work presence guard for tiers that reject every replay-owned row. */
+  hasReplayProjectionState(): boolean {
+    const row = this.db.prepare(REPLAY_PROJECTION_STATE_PROBE_SQL).get() as {
+      lifecycle_present: number;
+      edge_present: number;
+    };
+    return row.lifecycle_present === 1 || row.edge_present === 1;
   }
 
   /**
