@@ -28,6 +28,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import {
   DEFAULT_BASE_PATH,
   DEFAULT_HOST,
+  DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
   DEFAULT_MODEL_ID,
   DEFAULT_PORT,
 } from "./constants.js";
@@ -104,6 +105,11 @@ export interface OpenAIApiAdapterOptions {
   readonly allowNonLoopback?: boolean;
   readonly apiKey?: string;
   readonly modelId?: string;
+  /**
+   * Per-field UTF-8 preview cap for tool arguments/results rendered into SSE.
+   * Callers may lower, but never raise, the hard default safety boundary.
+   */
+  readonly maxToolPayloadBytes?: number;
   readonly responder: AgentResponder<OpenAIApiChatRequest, AgentMessageStream, AgentResponse>;
   readonly logger?: OpenAIApiAdapterLogger;
 }
@@ -164,6 +170,7 @@ export async function startOpenAIApiAdapter(
   const basePath = normalizeBasePath(options.basePath ?? DEFAULT_BASE_PATH);
   const modelId = normalizeOptionalString(options.modelId) ?? DEFAULT_MODEL_ID;
   const apiKey = normalizeOptionalString(options.apiKey);
+  const maxToolPayloadBytes = normalizeMaxToolPayloadBytes(options.maxToolPayloadBytes);
   assertSafeBind(host, options.allowNonLoopback === true, (boundHost) =>
     new OpenAIApiAdapterError(
       "unsafe_host",
@@ -285,7 +292,14 @@ export async function startOpenAIApiAdapter(
         controller.abort(new Error("OpenAI API adapter is stopping."));
       }
       if (body.stream) {
-        await runStreamingResponder({ request, response: res, requestId, model: body.model, options });
+        await runStreamingResponder({
+          request,
+          response: res,
+          requestId,
+          model: body.model,
+          maxToolPayloadBytes,
+          options,
+        });
         return;
       }
 
@@ -472,6 +486,7 @@ async function runStreamingResponder(input: {
   readonly response: Response;
   readonly requestId: string;
   readonly model: string;
+  readonly maxToolPayloadBytes: number;
   readonly options: OpenAIApiAdapterOptions;
 }): Promise<void> {
   input.response.writeHead(200, {
@@ -499,7 +514,11 @@ async function runStreamingResponder(input: {
     created: Math.floor(Date.now() / 1000),
     model: input.model,
   };
-  const stream = new SseChatMessageStream(input.response, chunkInput);
+  const stream = new SseChatMessageStream(
+    input.response,
+    chunkInput,
+    input.maxToolPayloadBytes,
+  );
   stream.start();
 
   try {
@@ -529,6 +548,7 @@ class SseChatMessageStream implements AgentMessageStream {
   constructor(
     private readonly response: Response,
     private readonly chunkInput: ChatCompletionChunkInput,
+    private readonly maxToolPayloadBytes: number,
   ) {}
 
   start(): void {
@@ -577,7 +597,7 @@ class SseChatMessageStream implements AgentMessageStream {
           arguments: args,
           result: event.content,
           isError: event.isError === true,
-        }),
+        }, this.maxToolPayloadBytes),
       }, null);
       return;
     }
@@ -1072,9 +1092,9 @@ function openWebUIToolDetails(input: {
   readonly arguments: unknown;
   readonly result: unknown;
   readonly isError: boolean;
-}): string {
-  const argumentsJson = stableJson(input.arguments);
-  const resultJson = stableJson(input.result ?? null);
+}, maxPayloadBytes: number): string {
+  const argumentsJson = boundedToolPayload(input.arguments, maxPayloadBytes);
+  const resultJson = boundedToolPayload(input.result ?? null, maxPayloadBytes);
   const summary = input.isError ? "Tool Error" : "Tool Executed";
   return [
     `<details type="tool_calls" done="true" id="${escapeHtmlAttribute(input.id)}" name="${escapeHtmlAttribute(input.name)}" arguments="${escapeHtmlAttribute(argumentsJson)}">`,
@@ -1085,15 +1105,78 @@ function openWebUIToolDetails(input: {
   ].join("\n");
 }
 
+interface ToolPayloadTruncation {
+  readonly truncated: true;
+  readonly maxBytes: number;
+  readonly originalBytes: number;
+  readonly retainedBytes: number;
+  readonly omittedBytes: number;
+}
+
+const TOOL_PAYLOAD_ENCODER = new TextEncoder();
+const TOOL_PAYLOAD_DECODER = new TextDecoder();
+
+/**
+ * Produce a bounded, valid-JSON replacement when a rendered tool field exceeds
+ * its UTF-8 budget. The original value is never mutated. Truncating the field
+ * before HTML escaping and writeChunk keeps the surrounding HTML, JSON chunk,
+ * and SSE frame structurally valid.
+ */
+function boundedToolPayload(value: unknown, maxBytes: number): string {
+  const rendered = stableJson(value);
+  const encoded = TOOL_PAYLOAD_ENCODER.encode(rendered);
+  if (encoded.length <= maxBytes) {
+    return rendered;
+  }
+  const preview = utf8Prefix(encoded, maxBytes);
+  const retainedBytes = TOOL_PAYLOAD_ENCODER.encode(preview).length;
+  const truncation: ToolPayloadTruncation = {
+    truncated: true,
+    maxBytes,
+    originalBytes: encoded.length,
+    retainedBytes,
+    omittedBytes: encoded.length - retainedBytes,
+  };
+  return JSON.stringify({
+    __monoAgentTruncation: truncation,
+    preview,
+  });
+}
+
+function utf8Prefix(encoded: Uint8Array, maxBytes: number): string {
+  let end = Math.min(encoded.length, maxBytes);
+  while (end > 0 && (encoded[end]! & 0b1100_0000) === 0b1000_0000) {
+    end -= 1;
+  }
+  return TOOL_PAYLOAD_DECODER.decode(encoded.subarray(0, end));
+}
+
 function stableJson(value: unknown): string {
   if (typeof value === "string") {
     return value;
   }
   try {
-    return JSON.stringify(value);
+    return JSON.stringify(value) ?? String(value);
   } catch {
     return String(value);
   }
+}
+
+function normalizeMaxToolPayloadBytes(value: number | undefined): number {
+  if (value === undefined) {
+    return DEFAULT_MAX_TOOL_PAYLOAD_BYTES;
+  }
+  if (
+    !Number.isSafeInteger(value)
+    || value < 0
+    || value > DEFAULT_MAX_TOOL_PAYLOAD_BYTES
+  ) {
+    throw new OpenAIApiAdapterError(
+      "invalid_config",
+      `OpenAI API maxToolPayloadBytes must be an integer from 0 to ${String(DEFAULT_MAX_TOOL_PAYLOAD_BYTES)}.`,
+    );
+  }
+  return value;
 }
 
 function escapeHtmlAttribute(value: string): string {

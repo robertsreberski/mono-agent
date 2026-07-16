@@ -1,4 +1,5 @@
 export { OpenAIApiAdapterError } from "./errors.js";
+export { DEFAULT_MAX_TOOL_PAYLOAD_BYTES } from "./constants.js";
 export type {
   OpenAIApiAdapterErrorCode,
   OpenAIApiAdapterErrorDetails,

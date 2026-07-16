@@ -4,7 +4,11 @@ import { describe, expect, it } from "vitest";
 
 import { isWildcardHost, type AgentResponder } from "@mono-agent/agent-contracts";
 
-import { startOpenAIApiAdapter, type OpenAIApiChatRequest } from "../index.js";
+import {
+  DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
+  startOpenAIApiAdapter,
+  type OpenAIApiChatRequest,
+} from "../index.js";
 
 describe("OpenAI API adapter", () => {
   it("serves OpenAI-compatible model discovery for OpenWebUI", async () => {
@@ -686,6 +690,244 @@ describe("OpenAI API adapter", () => {
     }
   });
 
+  it("bounds oversized tool arguments and results before writing valid SSE chunks", async () => {
+    const argumentTail = "ARGUMENT-TAIL-MUST-NOT-LEAK";
+    const resultTail = "RESULT-TAIL-MUST-NOT-LEAK";
+    const argumentsValue = Object.freeze({
+      query: `${"a".repeat(256 * 1024 + 512)}${argumentTail}`,
+    });
+    const resultValue = Object.freeze({
+      output: `${"r".repeat(256 * 1024 + 512)}${resultTail}`,
+    });
+    const argumentsSnapshot = structuredClone(argumentsValue);
+    const resultSnapshot = structuredClone(resultValue);
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.event?.({
+          type: "tool_call_started",
+          id: "call-oversized",
+          name: "read_large_payload",
+          arguments: argumentsValue,
+        });
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "call-oversized",
+          content: resultValue,
+          isError: false,
+        });
+        return { text: "bounded" };
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      responder,
+    });
+
+    try {
+      const response = await postChat(server.baseUrl, {
+        stream: true,
+        messages: [{ role: "user", content: "Bound the tool payloads" }],
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      const payloads = sseDataPayloads(body);
+      expect(payloads.at(-1)).toBe("[DONE]");
+      const chunks = payloads.slice(0, -1).map((payload) => JSON.parse(payload) as Record<string, unknown>);
+      const details = toolDetailsContent(chunks);
+      const projected = parseToolDetails(details);
+      const argumentsJson = JSON.stringify(argumentsValue);
+      const resultJson = JSON.stringify(resultValue);
+
+      expect(projected.arguments.__monoAgentTruncation).toEqual({
+        truncated: true,
+        maxBytes: DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
+        originalBytes: Buffer.byteLength(argumentsJson, "utf8"),
+        retainedBytes: DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
+        omittedBytes: Buffer.byteLength(argumentsJson, "utf8") - DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
+      });
+      expect(projected.result.__monoAgentTruncation).toEqual({
+        truncated: true,
+        maxBytes: DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
+        originalBytes: Buffer.byteLength(resultJson, "utf8"),
+        retainedBytes: DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
+        omittedBytes: Buffer.byteLength(resultJson, "utf8") - DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
+      });
+      expect(Buffer.byteLength(projected.arguments.preview, "utf8"))
+        .toBe(DEFAULT_MAX_TOOL_PAYLOAD_BYTES);
+      expect(Buffer.byteLength(projected.result.preview, "utf8"))
+        .toBe(DEFAULT_MAX_TOOL_PAYLOAD_BYTES);
+      expect(body).not.toContain(argumentTail);
+      expect(body).not.toContain(resultTail);
+      expect(body.trim().endsWith("data: [DONE]")).toBe(true);
+      expect(argumentsValue).toEqual(argumentsSnapshot);
+      expect(resultValue).toEqual(resultSnapshot);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("truncates tool payloads on UTF-8 code-point boundaries with a small cap", async () => {
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.event?.({
+          type: "tool_call_started",
+          id: "call-unicode",
+          name: "unicode_tool",
+          arguments: "A🧠Z",
+        });
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "call-unicode",
+          content: "é€Z",
+        });
+        return { text: "done" };
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      maxToolPayloadBytes: 4,
+      responder,
+    });
+
+    try {
+      const response = await postChat(server.baseUrl, {
+        stream: true,
+        messages: [{ role: "user", content: "Unicode boundary" }],
+      });
+      const projected = parseToolDetails(toolDetailsContent(
+        sseDataPayloads(await response.text())
+          .filter((payload) => payload !== "[DONE]")
+          .map((payload) => JSON.parse(payload) as Record<string, unknown>),
+      ));
+
+      expect(projected.arguments.preview).toBe("A");
+      expect(projected.arguments.__monoAgentTruncation).toMatchObject({
+        truncated: true,
+        maxBytes: 4,
+        originalBytes: 6,
+        retainedBytes: 1,
+        omittedBytes: 5,
+      });
+      expect(projected.result.preview).toBe("é");
+      expect(projected.result.__monoAgentTruncation).toMatchObject({
+        truncated: true,
+        maxBytes: 4,
+        originalBytes: 6,
+        retainedBytes: 2,
+        omittedBytes: 4,
+      });
+      expect(projected.arguments.preview).not.toContain("�");
+      expect(projected.result.preview).not.toContain("�");
+      expect(projected.arguments.preview).not.toMatch(/\p{Cs}/u);
+      expect(projected.result.preview).not.toMatch(/\p{Cs}/u);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("preserves exact small tool payloads without truncation metadata", async () => {
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.event?.({
+          type: "tool_call_started",
+          id: "call-small",
+          name: "small_tool",
+          arguments: "🧠",
+        });
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "call-small",
+          content: "éé",
+        });
+        return { text: "done" };
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      maxToolPayloadBytes: 4,
+      responder,
+    });
+
+    try {
+      const response = await postChat(server.baseUrl, {
+        stream: true,
+        messages: [{ role: "user", content: "Small payload" }],
+      });
+      const details = parseToolDetailsText(toolDetailsContent(
+        sseDataPayloads(await response.text())
+          .filter((payload) => payload !== "[DONE]")
+          .map((payload) => JSON.parse(payload) as Record<string, unknown>),
+      ));
+
+      expect(details).toEqual({ arguments: "🧠", result: "éé" });
+      expect(JSON.stringify(details)).not.toContain("__monoAgentTruncation");
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it.each([
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    DEFAULT_MAX_TOOL_PAYLOAD_BYTES + 1,
+  ])("rejects invalid maxToolPayloadBytes configuration (%s)", async (maxToolPayloadBytes) => {
+    await expect(startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      maxToolPayloadBytes,
+      responder: echoResponder(),
+    })).rejects.toMatchObject({ code: "invalid_config" });
+  });
+
+  it("does not apply the SSE tool cap to non-streaming responses", async () => {
+    const finalText = `non-streaming ${"🧠".repeat(32)}`;
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "call-json",
+          arguments: "x".repeat(256 * 1024 + 1),
+          content: "y".repeat(256 * 1024 + 1),
+        });
+        await stream.append(finalText);
+        return { text: finalText };
+      },
+    };
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      modelId: "agent",
+      maxToolPayloadBytes: 0,
+      responder,
+    });
+
+    try {
+      const response = await postChat(server.baseUrl, {
+        stream: false,
+        messages: [{ role: "user", content: "JSON response" }],
+      });
+
+      expect(response.status).toBe(200);
+      const json = await response.json() as {
+        choices: Array<{ message: { content: string } }>;
+      };
+      expect(json.choices[0]?.message.content).toBe(finalText);
+      expect(JSON.stringify(json)).not.toContain("__monoAgentTruncation");
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("streams internally executed tool progress before the tool completes", async () => {
     const releaseTool = deferred<void>();
     const responder: AgentResponder = {
@@ -1327,6 +1569,81 @@ function wildcardLocalhostLookup(
   queueMicrotask(() => {
     (done as (error: null, address: string, family: number) => void)(null, "0.0.0.0", 4);
   });
+}
+
+interface ParsedToolPayloadProjection {
+  readonly __monoAgentTruncation: {
+    readonly truncated: true;
+    readonly maxBytes: number;
+    readonly originalBytes: number;
+    readonly retainedBytes: number;
+    readonly omittedBytes: number;
+  };
+  readonly preview: string;
+}
+
+function sseDataPayloads(body: string): readonly string[] {
+  return body
+    .split("\n")
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => line.slice("data: ".length));
+}
+
+function toolDetailsContent(chunks: readonly Record<string, unknown>[]): string {
+  for (const chunk of chunks) {
+    const choices = chunk.choices;
+    if (!Array.isArray(choices)) {
+      continue;
+    }
+    const choice = choices[0];
+    if (typeof choice !== "object" || choice === null) {
+      continue;
+    }
+    const delta = (choice as { readonly delta?: unknown }).delta;
+    if (typeof delta !== "object" || delta === null) {
+      continue;
+    }
+    const content = (delta as { readonly content?: unknown }).content;
+    if (typeof content === "string" && content.startsWith("<details type=\"tool_calls\"")) {
+      return content;
+    }
+  }
+  throw new Error("Expected one OpenWebUI tool details chunk.");
+}
+
+function parseToolDetails(content: string): {
+  readonly arguments: ParsedToolPayloadProjection;
+  readonly result: ParsedToolPayloadProjection;
+} {
+  const parsed = parseToolDetailsText(content);
+  return {
+    arguments: JSON.parse(parsed.arguments) as ParsedToolPayloadProjection,
+    result: JSON.parse(parsed.result) as ParsedToolPayloadProjection,
+  };
+}
+
+function parseToolDetailsText(content: string): {
+  readonly arguments: string;
+  readonly result: string;
+} {
+  const argumentsMatch = / arguments="([^"]*)">/u.exec(content);
+  const summaryEnd = content.indexOf("</summary>\n");
+  const detailsEnd = content.lastIndexOf("\n</details>");
+  if (argumentsMatch?.[1] === undefined || summaryEnd < 0 || detailsEnd < 0) {
+    throw new Error("OpenWebUI tool details chunk has an unexpected shape.");
+  }
+  return {
+    arguments: decodeHtml(argumentsMatch[1]),
+    result: decodeHtml(content.slice(summaryEnd + "</summary>\n".length, detailsEnd)),
+  };
+}
+
+function decodeHtml(value: string): string {
+  return value
+    .replace(/&quot;/gu, "\"")
+    .replace(/&lt;/gu, "<")
+    .replace(/&gt;/gu, ">")
+    .replace(/&amp;/gu, "&");
 }
 
 function echoResponder(): AgentResponder {

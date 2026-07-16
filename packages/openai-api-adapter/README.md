@@ -41,6 +41,13 @@ Open WebUI caveat: title and tag generation requests go to the same backend and 
 
 Streaming responders may send structured stream events through `AgentMessageStream.event()`. Assistant thoughts are emitted as `delta.reasoning_content` so OpenWebUI can render them separately from the final answer. Internally executed tools are rendered as OpenWebUI `<details type="tool_calls">` content blocks after completion. The adapter intentionally does not emit `delta.tool_calls` or `finish_reason: "tool_calls"` for host-owned tools because those fields ask the client to execute tools.
 
+Tool-call argument and result previews are each capped at 128 KiB of UTF-8 by
+default before the OpenWebUI details block is written. Oversized values become a
+valid JSON projection with `__monoAgentTruncation` byte counts plus a
+code-point-safe `preview`; the run artifact retains the full event. Programmatic
+hosts can lower this boundary with `maxToolPayloadBytes` (including `0` to retain
+metadata only), but cannot raise it above the default safety cap.
+
 ## OpenWebUI Upload Support
 
 OpenWebUI photo uploads arrive at OpenAI-compatible backends as standard Chat Completions content parts:
@@ -94,6 +101,7 @@ small summary, excluding full image URLs and data payloads.
 - `loadOpenAIApiAdapterConfig`
 - `redactOpenAIApiAdapterConfig`
 - `openAIApiFieldGroup`
+- `DEFAULT_MAX_TOOL_PAYLOAD_BYTES`
 - OpenAI API adapter config, request metadata, start result, and logger types
 
 ## Dependency Boundary
