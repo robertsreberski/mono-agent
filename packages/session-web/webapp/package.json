@@ -18,12 +18,15 @@
     "@fontsource/ibm-plex-mono": "^5.1.1",
     "@fontsource/newsreader": "^5.1.1",
     "@fontsource/space-grotesk": "^5.1.1",
+    "@testing-library/react": "^16.3.2",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "3.2.6",
+    "jsdom": "^29.1.1",
     "typescript": "^5.7.3",
     "vite": "^6.3.5",
-    "vitest": "^3.2.4",
-    "vite-plugin-pwa": "^0.21.2"
+    "vite-plugin-pwa": "^0.21.2",
+    "vitest": "^3.2.4"
   }
 }
