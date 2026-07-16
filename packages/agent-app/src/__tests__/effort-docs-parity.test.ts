@@ -116,7 +116,7 @@ const PI_LOW_RELATIONS: readonly {
 
 const RELATION_FORMS = PI_LOW_RELATIONS.flatMap(({ forms }) => forms).join("|");
 const PREDICATE_CONTINUATION = new RegExp(
-  String.raw`\s+\b(?:and|but)\b\s+(?=(?:(?:instead|then|also|still|directly|currently|simply)\s+)*(?:it\s+)?(?:${RELATION_FORMS})\b)`,
+  String.raw`\s+\b(?:and|but)\b\s+(?=(?:(?:instead|then|also|still|directly|currently|simply)\s+)*(?:(?:it|(?:all\s+)?pi(?:\s+routes?)?)\s+)?(?:${RELATION_FORMS})\b)`,
   "u",
 );
 const OTHER_EFFORT = /\b(?:off|none|minimal|low|medium|high|xhigh|max)\b/u;
@@ -162,6 +162,7 @@ function typedLowMentions(clause: string): readonly LowMention[] {
     const index = match.index ?? 0;
     const end = index + text.length;
     if (match[1] === undefined) {
+      if (/^[-\p{L}\p{N}_]/u.test(clause.slice(end))) continue;
       const nextWord = /^\s+([a-z][a-z-]*)\b/u.exec(clause.slice(end))?.[1];
       if (nextWord !== undefined && !LOW_BOUNDARY_WORDS.has(nextWord)) continue;
     }
@@ -207,7 +208,7 @@ function reasoningStateInClause(
   if (
     /(?<!non-)\breasoning-capable\s+pi\b/u.test(clause) ||
     /\bpi\b\s+(?:is|remains)\s+reasoning-capable\b/u.test(clause) ||
-    /\bfor\s+(?:a\s+)?reasoning-capable\s+(?:pi\b|(?:pi\s+)?(?:routes?|models?)\b)/u.test(clause) ||
+    /\b(?:for|on)\s+(?:a\s+)?reasoning-capable\s+(?:pi\b|(?:pi\s+)?(?:routes?|models?)\b)/u.test(clause) ||
     /\b(?:only\s+)?(?:when|if)\s+reasoning-capable\b/u.test(clause)
   ) {
     return "yes";
@@ -283,7 +284,7 @@ function outcomeRelationHasFrame(
       hasUltraSource(beforeLow) ||
       sourceAfterTarget ||
       hasUltraSource(prefix) ||
-      (context.sourceUltra && !OTHER_EFFORT.test(beforeLow))
+      (context.sourceUltra && !OTHER_EFFORT.test(beforeLow) && !OTHER_EFFORT.test(afterLow))
     ) {
       return true;
     }
@@ -291,7 +292,11 @@ function outcomeRelationHasFrame(
   return false;
 }
 
-function copulaRelationHasFrame(clause: string, relation: PiLowRelation): boolean {
+function copulaRelationHasFrame(
+  clause: string,
+  relation: PiLowRelation,
+  context: GuardContext,
+): boolean {
   const prefix = clause.slice(0, relation.index);
   const suffix = clause.slice(relation.end);
   for (const low of typedLowMentions(clause)) {
@@ -304,7 +309,8 @@ function copulaRelationHasFrame(clause: string, relation: PiLowRelation): boolea
       const sourceAfterTarget = /\b(?:for|with)\s+(?:direct(?:ly\s+configured)?\s+)?ultra\b/u.test(
         clause.slice(low.end),
       );
-      if (hasUltraSource(prefix) || sourceAfterTarget) return true;
+      const inheritedPronoun = context.sourceUltra && /^\s*it\s*$/u.test(prefix);
+      if (hasUltraSource(prefix) || sourceAfterTarget || inheritedPronoun) return true;
       continue;
     }
 
@@ -332,7 +338,7 @@ function relationHasPiUltraLowFrame(
   }
   if (relation.kind === "targeted") return targetedRelationHasFrame(clause, relation, context);
   if (relation.kind === "outcome") return outcomeRelationHasFrame(clause, relation, context);
-  return copulaRelationHasFrame(clause, relation);
+  return copulaRelationHasFrame(clause, relation, context);
 }
 
 function unqualifiedPiLowClaims(value: string): readonly string[] {
@@ -471,11 +477,13 @@ describe("ultra effort documentation parity", () => {
     "Pi and reasoning-capable Codex map ultra to LOW.",
     "Reasoning-capable Pi differs: Pi without reasoning maps ultra to LOW.",
     "Reasoning-capable Pi maps ultra to LOW; non-reasoning routes map it to LOW.",
+    "Reasoning-capable Pi maps ultra to LOW and all Pi routes map ultra to LOW.",
     "On Pi, the LOW setting is used for ultra.",
     "Pi maps both ultra and max to LOW.",
     "Pi is using LOW thinking for ultra.",
     "LOW is mapped from ultra by Pi.",
     "On Pi, LOW mode is selected for ultra.",
+    "Pi accepts ultra; it is LOW.",
   ])("detects an unqualified Pi mapping regardless of word order: %s", (claim) => {
     const findings = unqualifiedPiLowClaims(claim);
     expect(findings).toHaveLength(1);
@@ -519,8 +527,11 @@ describe("ultra effort documentation parity", () => {
     "On Pi, ultra cannot be mapped to LOW.",
     "Pi uses a LOW timeout when ultra is configured.",
     "Pi maps ultra to LOW for reasoning-capable routes.",
+    "Pi maps ultra to LOW on reasoning-capable routes.",
     "Ultra is mapped to LOW by reasoning-capable Pi.",
     "Pi with ultra support maps max to LOW.",
+    "Pi supports ultra; it uses LOW for max.",
+    "Pi uses a LOW-latency path for ultra.",
   ])("allows an explicitly qualified or negated Pi mapping: %s", (claim) => {
     expect(unqualifiedPiLowClaims(claim)).toEqual([]);
   });
