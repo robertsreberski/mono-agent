@@ -41,8 +41,8 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 
 ## Version pins (do not "unify" them)
 
-- `packages/agent-runtime`: `@earendil-works/pi-ai` + `pi-agent-core` at `^0.80.3`
-- `packages/tui`: `@earendil-works/pi-tui` at `^0.79.1` — **intentionally behind**;
+- `packages/agent-runtime`: `@earendil-works/pi-ai` + `pi-agent-core` at `0.80.5`
+- `packages/tui`: `@earendil-works/pi-tui` at `0.79.10` — **intentionally behind**;
   the 0.80 pi-tui API breaks the TUI. Bumping it is its own project.
 
 ## Bump procedure

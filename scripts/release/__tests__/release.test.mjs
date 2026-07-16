@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, test } from "vitest";
 
 import { packageCatalog } from "../../package-catalog.mjs";
+import { PINNED_RUNTIME_DEPENDENCIES } from "../dependency-policy.mjs";
 import {
   discoverPackages,
   sortForPublish,
@@ -388,6 +389,37 @@ describe("current launch manifest", () => {
     expect(result.publishablePackages).toHaveLength(expectedPublishablePackageCount);
     expect(result.publishablePackages.map((pkg) => pkg.name).sort()).toEqual(expectedPublishablePackageNames);
     expect(result.publishablePackages.every((pkg) => pkg.version === version)).toBe(true);
+  });
+
+  test("keeps canonical Pi guidance aligned with the enforced exact pins", () => {
+    const guidance = fs.readFileSync(
+      new URL("../../../skills/pi-upstream-recon/SKILL.md", import.meta.url),
+      "utf8",
+    ).replace(/\s+/gu, " ");
+    const migration = fs.readFileSync(
+      new URL("../../../packages/agent-runtime/MIGRATION.md", import.meta.url),
+      "utf8",
+    ).replace(/\s+/gu, " ");
+    const piAi = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-ai"];
+    const piCore = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-agent-core"];
+    const piTui = PINNED_RUNTIME_DEPENDENCIES["@earendil-works/pi-tui"];
+
+    expect(piCore).toBe(piAi);
+    expect(guidance).toContain(
+      `packages/agent-runtime\`: \`@earendil-works/pi-ai\` + \`pi-agent-core\` at \`${piAi}\``,
+    );
+    expect(guidance).toContain(
+      `packages/tui\`: \`@earendil-works/pi-tui\` at \`${piTui}\` — **intentionally behind**`,
+    );
+    expect(guidance).toContain("the 0.80 pi-tui API breaks the TUI");
+    expect(migration).toContain(
+      `@earendil-works/pi-ai\` and \`@earendil-works/pi-agent-core\` are now \`${piAi}\``,
+    );
+    expect(migration).toContain(
+      `@earendil-works/pi-agent-core\` (\`${piAi}\`)`,
+    );
+    expect(migration).toContain(`Pi bump \`^0.74.0\` → \`${piAi}\` in lockstep`);
+    expect(migration).not.toContain("`^0.80.x`");
   });
 });
 
