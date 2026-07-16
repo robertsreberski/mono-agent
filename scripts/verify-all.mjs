@@ -1,25 +1,76 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { MINIMUM_NODE_VERSION } from "./node-version.mjs";
 import { runVerifyConsumers } from "./verify-consumers.mjs";
 
-const repoGate = [
-  { label: "check:node", command: "pnpm", args: ["run", "check:node"] },
-  { label: "check:pnpm-policy", command: "pnpm", args: ["run", "check:pnpm-policy"] },
-  { label: "check:secrets", command: "pnpm", args: ["run", "check:secrets"] },
-  { label: "check:oss-hygiene", command: "pnpm", args: ["run", "check:oss-hygiene"] },
-  { label: "check:licenses", command: "pnpm", args: ["run", "check:licenses"] },
-  { label: "check:dependency-vulnerabilities", command: "pnpm", args: ["run", "check:dependency-vulnerabilities"] },
-  { label: "check:codex-discoverability", command: "pnpm", args: ["run", "check:codex-discoverability"] },
-  { label: "check:architecture", command: "pnpm", args: ["run", "check:architecture"] },
-  { label: "build", command: "pnpm", args: ["run", "build"] },
-  { label: "typecheck", command: "pnpm", args: ["run", "typecheck"] },
-  { label: "test", command: "pnpm", args: ["run", "test"] },
-  { label: "test:demo", command: "pnpm", args: ["run", "test:demo"] },
-  { label: "git diff --check", command: "git", args: ["diff", "--check"] },
-];
+/**
+ * Raw command-list differences from the CI verify job.
+ *
+ * The shared order and these exact labels are checked against ci.yml by
+ * scripts/__tests__/verify-all.test.mjs. Setup, the Node matrix, the pinned
+ * gitleaks container, and the separate website job are execution-environment
+ * differences rather than repo-gate commands.
+ */
+export const VERIFY_GATE_DELTA = Object.freeze({
+  ciOnly: Object.freeze([
+    Object.freeze({
+      label: "build:demo",
+      reason: "CI repeats the demo build already included by the root build command; removal is tracked by #284.",
+    }),
+    Object.freeze({
+      label: "typecheck:demo",
+      reason: "CI repeats the demo typecheck already included by the root typecheck command; removal is tracked by #284.",
+    }),
+  ]),
+  verifyAllOnly: Object.freeze([
+    Object.freeze({
+      label: "verify:consumers",
+      reason: "The local aggregate gate checks golden consumer contracts; adding the same CI step is tracked by #270.",
+    }),
+  ]),
+});
+
+export function createRepoGate({ releaseTag, nodeVersion = process.versions.node }) {
+  const packedConsumerArgs = ["run", "release:consumer", "--", "--tag", releaseTag];
+  if (nodeVersion === MINIMUM_NODE_VERSION) {
+    packedConsumerArgs.push("--require-minimum");
+  }
+
+  return [
+    { label: "check:node", command: "pnpm", args: ["run", "check:node"] },
+    { label: "check:pnpm-policy", command: "pnpm", args: ["run", "check:pnpm-policy"] },
+    { label: "check:secrets", command: "pnpm", args: ["run", "check:secrets"] },
+    { label: "check:oss-hygiene", command: "pnpm", args: ["run", "check:oss-hygiene"] },
+    { label: "check:licenses", command: "pnpm", args: ["run", "check:licenses"] },
+    {
+      label: "check:dependency-vulnerabilities",
+      command: "pnpm",
+      args: ["run", "check:dependency-vulnerabilities"],
+    },
+    { label: "check:codex-discoverability", command: "pnpm", args: ["run", "check:codex-discoverability"] },
+    { label: "release:validate", command: "pnpm", args: ["run", "release:validate", "--", "--tag", releaseTag] },
+    { label: "check:architecture", command: "pnpm", args: ["run", "check:architecture"] },
+    { label: "build", command: "pnpm", args: ["run", "build"] },
+    { label: "release:pack", command: "pnpm", args: ["run", "release:pack", "--", "--tag", releaseTag] },
+    { label: "release:consumer", command: "pnpm", args: packedConsumerArgs },
+    { label: "typecheck", command: "pnpm", args: ["run", "typecheck"] },
+    { label: "test", command: "pnpm", args: ["run", "test"] },
+    { label: "test:demo", command: "pnpm", args: ["run", "test:demo"] },
+    { label: "git diff --check", command: "git", args: ["diff", "--check"] },
+  ];
+}
+
+export function readReleaseSmokeTag(cwd, readFile = readFileSync) {
+  const manifest = JSON.parse(readFile(resolve(cwd, "packages/agent-app/package.json"), "utf8"));
+  if (typeof manifest.version !== "string" || manifest.version.length === 0) {
+    throw new Error("packages/agent-app/package.json must contain a version for release smoke checks.");
+  }
+  return `v${manifest.version}`;
+}
 
 export function parseVerifyAllArgs(argv) {
   for (const arg of argv) {
@@ -53,8 +104,10 @@ export async function runVerifyAll(options = {}) {
     return { exitCode: 0 };
   }
 
+  const releaseTag = options.releaseTag ?? readReleaseSmokeTag(cwd);
+  const nodeVersion = options.nodeVersion ?? process.versions.node;
   let repoOk = true;
-  for (const command of repoGate) {
+  for (const command of createRepoGate({ releaseTag, nodeVersion })) {
     const result = await runCommand(command.command, command.args, { cwd, label: command.label });
     if (result !== 0) {
       repoOk = false;
@@ -114,7 +167,7 @@ function usage() {
     "Usage:",
     "  pnpm run verify:all",
     "",
-    "Runs check:node, check:pnpm-policy, check:secrets, check:oss-hygiene, check:licenses, check:dependency-vulnerabilities, check:codex-discoverability, check:architecture, build, typecheck, test, test:demo, git diff --check, then verify:consumers.",
+    "Runs the CI-aligned repo gate, including pnpm and dependency-vulnerability policy checks, release validation, package packing, and a packed-consumer smoke test, then verify:consumers.",
   ].join("\n");
 }
 

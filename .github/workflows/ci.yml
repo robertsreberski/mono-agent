@@ -16,6 +16,9 @@ concurrency:
 jobs:
   verify:
     name: Verify (Node ${{ matrix.node-version }})
+    # scripts/__tests__/verify-all.test.mjs enforces command-level parity with
+    # scripts/verify-all.mjs. The only intentional raw-list deltas are the two
+    # transitive demo reruns tracked by #284 and verify:consumers tracked by #270.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:

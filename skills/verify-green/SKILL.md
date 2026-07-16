@@ -9,7 +9,7 @@ description: Run the mono-agent verification gate — full repo green or fast si
 be unavailable, but their exact commands still define the gate; run them
 locally rather than treating an unavailable check as evidence.
 
-## Full gate (CI order)
+## Full local gate (CI order plus documented delta)
 
 Run this verify sequence once under Node 22.19.0 and once under Node 24. On the
 Node 24 pass, skip the two commands annotated as Node 22.19-only.
@@ -31,12 +31,12 @@ VERSION="$(node -e "process.stdout.write(require('./packages/agent-app/package.j
 pnpm run release:validate -- --tag "v${VERSION}"
 pnpm run check:architecture     # catalog + README sections + dependency categories
 pnpm run build                  # packages + demos, then strict deploy-output marker on POSIX/macOS
-pnpm run verify:consumers --skip-build
 pnpm run release:pack -- --tag "v${VERSION}"
-pnpm run release:consumer -- --tag "v${VERSION}" --require-minimum  # Node 22.19 lane only
+pnpm run release:consumer -- --tag "v${VERSION}" --require-minimum  # omit the flag above Node 22.19.0
 pnpm run typecheck
 pnpm test                       # includes release:test + scripts:test + all packages + demos
 git diff --check                # whitespace — CI runs this too
+pnpm run verify:consumers -- --skip-build
 ```
 
 The Node 24 website job runs independently:
@@ -45,21 +45,21 @@ The Node 24 website job runs independently:
 (cd website && corepack enable && pnpm install --frozen-lockfile && pnpm run build)
 ```
 
-`pnpm run verify:all` is the closest local aggregate command:
+`pnpm run verify:all` runs the local command-level gate, including the
+dependency-vulnerability policy, release package graph, tarballs, packed
+consumer, and alpha/beta consumer contracts:
 
 ```bash
 pnpm run verify:all
 ```
 
-It is **not** a one-shot equivalent of CI. It neither installs dependencies nor
-runs the release validation/pack/minimum-consumer or website jobs, and it uses
-the repository's local secret checker instead of CI's pinned gitleaks image.
-Both surfaces run `verify:consumers --skip-build`. Both also include
+It is **not** a one-shot equivalent of the whole CI workflow: it neither
+installs dependencies nor runs the separate website job, and it uses the
+repository's local secret checker instead of CI's pinned gitleaks image. Both
+surfaces run `verify:consumers --skip-build`. Both also include
 `check:dependency-vulnerabilities`: CI runs it once on Node 22.19 immediately
 after the frozen install and before secrets, while `verify:all` runs it after
-`check:licenses` in its local repo-gate order. The current `verify:all` also
-invokes `test:demo` after root `pnpm test`; CI relies on the demo tests already
-chained into root `pnpm test` and does not repeat them.
+`check:licenses` in its local repo-gate order.
 
 Temporary dependency-vulnerability dispositions are strict, accountable
 exceptions rather than a loose allowlist. Every advisory entry pins its exact
@@ -87,7 +87,12 @@ Release-relevant tarball sanity (CI runs both in every verify job; `<version>` =
 ```bash
 pnpm run release:validate -- --tag v<version>
 pnpm run release:pack -- --tag v<version>
+pnpm run release:consumer -- --tag v<version>
 ```
+
+CI runs the packed consumer only on its Node 22.19.0 leg with
+`--require-minimum`; `verify:all` adds that assertion when the local runtime is
+exactly 22.19.0 and otherwise still performs the packed-consumer smoke test.
 
 ## Fast iteration loop (while developing)
 
