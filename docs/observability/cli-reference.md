@@ -27,7 +27,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `stop` | Stop the background instance and remove its LaunchAgent. | `--config <path>`, `--env-file <path>` |
 | `status` | Show this config's instance plus any other running instances. | `--config <path>`, `--env-file <path>` |
 | `logs` | Print (and optionally follow) the background instance's log files. | `--config <path>`, `--env-file <path>`, `--follow` / `-f`, `--lines <n>` |
-| `web` | Serve the read-only Session Recorder web PWA for every discovered running agent. | `--host <addr>`, `--port <n>`, `--no-open`, `--allow-non-loopback`, `--show-auth-url`, `--include-memory`, `--max-runs <n>`, `--config <path>` |
+| `web` | Serve the read-only Session Recorder web PWA for every discovered running agent. | `--host <addr>`, `--port <n>`, `--no-open`, `--allow-non-loopback`, `--show-auth-url`, `--include-memory`, `--max-runs <n>`, `--config <path>`, `--env-file <path>` |
 | `tui` | Open remote discovery/chat, attach to a managed macOS background agent for temporary configuration, or use ordinary in-process local chat. | `--agent`, `--conversation`, `--configure`, `--local` |
 | `install-skill` | Copy the authoring composer to coding harnesses, or check/update managed project-local skills. | `--target claude\|codex\|both`, `--force`, `--project`, `--check`, `--update` |
 | `backfill` | Export already-recorded run artifacts to the Phoenix exporter with their historical timestamps. | `--run <id>`, `--all`, `--since <iso>`, `--until <iso>`, `--dry-run`, `--config <path>`, `--env-file <path>` |
