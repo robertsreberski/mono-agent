@@ -123,9 +123,11 @@ Folder jobs and inline `jobs[]` are **merged** into one job set. A job id that a
 
 This mirrors how the webhook channel authors per-endpoint prompts; see [Webhook](/channels/webhook/).
 
-## Overlap: ticks are skipped, never queued
+## Configured overlap: ticks are skipped, never queued
 
-If a tick fires while the previous run of the **same job** is still in flight, the new tick is **skipped** — it is not queued and does not run later. The in-flight run continues uninterrupted. Different jobs run independently and never block one another.
+The `@mono-agent/agent-app` cron driver pins the scheduler to `overlap: "skip"`. If a tick fires while the previous run of the **same configured job** is still in flight, the new tick is **skipped** — it is not queued and does not run later. The in-flight run continues uninterrupted. Different jobs run independently and never block one another.
+
+The config schema intentionally has no `overlap`, `maxQueueDepth`, or `overflow` key. Direct embedders of `@mono-agent/cron-adapter` can select queue or replace behavior through the programmatic `startCronAdapter` API; those adapter options are outside this config-focused channel surface.
 
 :::note
 Pick an `expression` whose interval comfortably exceeds the job's typical runtime; otherwise the agent will quietly drop overlapping firings.

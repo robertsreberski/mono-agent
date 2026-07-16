@@ -31,7 +31,9 @@ const cron = startCronAdapter({
 });
 ```
 
-Only future ticks after startup are scheduled. Overlapping runs for the same job are skipped, not queued or run concurrently.
+Only future ticks after startup are scheduled. Direct programmatic `startCronAdapter` callers can choose `overlap: "skip" | "queue" | "replace"` (default `"skip"`). Queue mode can be bounded with `maxQueueDepth` and `overflow: "preserve" | "coalesce" | "drop-oldest"`.
+
+`overlap`, `maxQueueDepth`, and `overflow` are programmatic-only adapter options. The config-first `@mono-agent/agent-app` product does not expose them as cron config keys and pins `overlap: "skip"`, so jobs loaded from `mono-agent.config.json`, `MONO_AGENT_CRON_*`, or the cron folder skip overlapping ticks.
 
 Cron expressions use the standard five positional fields `minute hour day-of-month month day-of-week`. The timezone defaults to `UTC`. Six-field expressions with seconds and macro aliases such as `@daily` are not supported. Hosts can validate user input with the same parser used by the scheduler:
 
@@ -84,7 +86,7 @@ This adapter depends on `cron-parser` plus shared `@mono-agent/agent-contracts` 
 
 ## What This Package Does Not Own
 
-It does not build prompts, run models, persist missed runs, catch up after restart, queue overlapping jobs, expose UI, or define core core agent settings. Durable scheduling state can be added later by a host-level persistence package.
+It does not build prompts, run models, persist missed runs or pending firings, catch up after restart, expose UI, or define core agent settings. Its programmatic overlap queue is in-memory only; durable scheduling state can be added later by a host-level persistence package.
 
 ## Verification
 
