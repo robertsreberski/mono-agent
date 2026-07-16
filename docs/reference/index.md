@@ -6,7 +6,7 @@ sidebar:
 
 # Reference
 
-Canonical lookup material for mono-agent: the capability ladder for deciding where new capability work belongs, a scannable capability matrix, a glossary of terms used throughout the docs, and the long-form feature registry that is the single source of truth for what the framework can do and how each capability is reached.
+Canonical lookup material for mono-agent: the capability ladder for deciding where new capability work belongs, a scannable capability matrix, a glossary of terms used throughout the docs, the long-form feature registry, and the setup-security contracts intentionally kept out of the runnable Quickstart.
 
 Use this section when you need to confirm an exact config key, env var, or coverage type rather than learn a workflow — for end-to-end recipes see the [playbooks](/playbooks/).
 
@@ -18,6 +18,7 @@ Use this section when you need to confirm an exact config key, env var, or cover
 | [Feature matrix](/reference/feature-matrix/) | Compact, scannable table of capabilities mapped to their primary config key, env var, and coverage type. |
 | [Glossary](/reference/glossary/) | Definitions of terms (channel, soul, consolidation, recall, A2A, fallback chain, sandbox, etc.) used across the docs. |
 | [Feature registry](/reference/feature-registry/) | Authoritative, long-form checklist — the source of truth a new capability row is added to when a package ships a feature. |
+| [Setup security and managed runtime](/reference/setup-security/) | Low-level guided-secret, managed-runtime, single-instance, and snapshot-integrity guarantees kept out of the runnable Quickstart. |
 | [Worklab shared kernel decision](/reference/worklab-shared-kernel/) | ADR-style ecosystem decision: mono-agent and Worklab share `@mono-agent/agent-runtime` without merging product repositories. |
 
 ## Coverage types
