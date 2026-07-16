@@ -95,7 +95,9 @@ Then inspect the recorded run via the local JSONL artifacts under `.mono-agent/d
 
 ## Minimal `mono-agent.config.json`
 
-Use fake placeholders here only as shape examples. Do not commit real bot tokens or provider credentials.
+Put `MONO_AGENT_TELEGRAM_BOT_TOKEN` in `.env` when Telegram is enabled. Do
+not commit bot tokens or provider credentials; the source-config example omits
+them.
 
 This demo is a programmatic host that passes the A2A driver directly so it can inject test and deployment seams; its A2A settings therefore live in the driver-local top-level `a2a` section. The CLI-equivalent `@mono-agent/agent-app` host loads A2A through `channels.plugins[]` instead; see the main [A2A channel docs](../../docs/channels/a2a.md).
 
@@ -103,7 +105,6 @@ This demo is a programmatic host that passes the A2A driver directly so it can i
 {
   "telegram": {
     "enabled": true,
-    "botToken": "123456:telegram-bot-token",
     "allowedChatIds": ["123456789"]
   },
   "a2a": {

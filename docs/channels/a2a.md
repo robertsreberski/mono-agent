@@ -38,6 +38,10 @@ If you need richer transport semantics, treat the provider as a stable text gate
 
 ## Configuration
 
+Set `MONO_AGENT_A2A_BEARER_TOKEN` in the agent's `.env` when
+`requireBearer` is enabled. The source-config example intentionally omits the
+credential.
+
 ```json
 {
   "channels": {
@@ -53,7 +57,6 @@ If you need richer transport semantics, treat the provider as a stable text gate
             "publicBaseUrl": "https://agent.example.com",
             "allowNonLoopback": false,
             "requireBearer": true,
-            "bearerToken": "...",
             "idempotency": {
               "namespace": "my-agent-production",
               "retentionMs": 2592000000,

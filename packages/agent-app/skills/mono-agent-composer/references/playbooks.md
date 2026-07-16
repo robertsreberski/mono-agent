@@ -134,16 +134,17 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
       "id": "a2a",
       "config": {
         "enabled": true,
-        "provider": { "host": "127.0.0.1", "port": 4201, "requireBearer": true, "bearerToken": "...", "idempotency": { "namespace": "research-production", "retentionMs": 2592000000, "maxRecords": 10000 } },
+        "provider": { "host": "127.0.0.1", "port": 4201, "requireBearer": true, "idempotency": { "namespace": "research-production", "retentionMs": 2592000000, "maxRecords": 10000 } },
         "agent": { "name": "Research Agent", "description": "Does research.", "version": "0.1.0" },
         "skill": { "id": "research", "name": "Research", "description": "Web research", "tags": ["research"] },
-        "consumer": { "remoteAgentUrls": ["http://127.0.0.1:4201"], "defaultRemoteAgentUrl": "http://127.0.0.1:4201", "bearerToken": "...", "timeoutMs": 30000 }
+        "consumer": { "remoteAgentUrls": ["http://127.0.0.1:4201"], "defaultRemoteAgentUrl": "http://127.0.0.1:4201", "timeoutMs": 30000 }
       }
     }]
   }
 }
 ```
-**Steps:** provider — `init`, add the `@mono-agent/a2a-adapter` plugin entry with `provider`/`agent`/`skill` + bearer; for paid/non-repeatable calls choose a reviewed stable `provider.idempotency.namespace`; `validate`, `start`, confirm the Agent Card is reachable. Consumer — set plugin `config.consumer` (or compose `createA2AConsumerResponder`), then pass the existing logical dispatch id through `idempotencyKey` / `idempotencyKeyForRequest` rather than generating one per attempt.
+**Credentials:** put `MONO_AGENT_A2A_BEARER_TOKEN` in the provider's `.env` and `MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN` in the consumer's `.env`; source config omits both tokens.
+**Steps:** provider — `init`, add the `@mono-agent/a2a-adapter` plugin entry with `provider`/`agent`/`skill` + env-backed bearer; for paid/non-repeatable calls choose a reviewed stable `provider.idempotency.namespace`; `validate`, `start`, confirm the Agent Card is reachable. Consumer — set plugin `config.consumer` (or compose `createA2AConsumerResponder`), then pass the existing logical dispatch id through `idempotencyKey` / `idempotencyKeyForRequest` rather than generating one per attempt.
 **Smoke:** repeat one keyed message to the provider's Agent Card URL with the bearer; confirm the same task/result is returned and the responder runs once.
 
 ## 8. Multi-agent orchestration (`AskCollaborator`) — code

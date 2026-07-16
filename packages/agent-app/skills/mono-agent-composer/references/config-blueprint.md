@@ -312,7 +312,7 @@ my-agent/
             "publicBaseUrl": "https://agent.example.com",
             "allowNonLoopback": false,
             "requireBearer": false,
-            "bearerToken": "...",
+            // Put MONO_AGENT_A2A_BEARER_TOKEN in .env when bearer auth is required.
             "idempotency": {              // optional; namespace explicitly enables the v1 extension
               "namespace": "my-agent-production", // stable authenticated-principal boundary
               "stateDir": ".mono-agent/a2a-my-agent", // optional derived owner-only path when omitted
@@ -325,7 +325,7 @@ my-agent/
           "consumer": {                    // settings for calling remote A2A agents
             "remoteAgentUrls": ["http://127.0.0.1:4202"],
             "defaultRemoteAgentUrl": "http://127.0.0.1:4202",
-            "bearerToken": "...",
+            // Put MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN in .env when the remote requires auth.
             "timeoutMs": 30000
           }
         }
