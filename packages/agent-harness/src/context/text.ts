@@ -12,6 +12,9 @@ export function normalizeInlineText(value: string): string {
 
 /** Clamp text to a UTF-8 byte budget without splitting a code point. */
 export function clampUtf8Bytes(value: string, maxBytes: number): string {
+  if (!Number.isInteger(maxBytes) || maxBytes < 0) {
+    throw new RangeError('maxBytes must be a non-negative integer.');
+  }
   const bytes = UTF8_ENCODER.encode(value);
   if (bytes.length <= maxBytes) {
     return value;

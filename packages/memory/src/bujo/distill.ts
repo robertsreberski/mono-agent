@@ -12,9 +12,14 @@ export interface CandidateMemory {
   readonly entityIds?: readonly string[];
 }
 
+export const MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS = 160;
+export const MAX_RECONCILIATION_TEXT_CODE_POINTS = 280;
+
+type CandidateTextPath = "capture" | "reconcile";
+
 const PROMPT = (text: string) => `Extract durable memories from the text below as a JSON array.
 Each item: {"type":"task|event|note","text":"<one atomic sentence>","salience":0..1,"isInsight":true|false}.
-Rules: one fact per item; <=160 chars; omit chit-chat; salience reflects long-term importance; isInsight=true only for synthesized higher-level conclusions. Return ONLY the JSON array.
+Rules: one fact per item; <=${MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS} Unicode code points; omit chit-chat; salience reflects long-term importance; isInsight=true only for synthesized higher-level conclusions. Return ONLY the JSON array.
 
 TEXT:
 ${text}`;
@@ -35,7 +40,6 @@ export async function distill(text: string, llm: LlmComplete): Promise<Candidate
 }
 
 const VALID_TYPES = new Set<string>(["task", "event", "note"]);
-const MAX_CANDIDATE_TEXT_CODE_POINTS = 280;
 
 export function normalizeCandidate(it: unknown): CandidateMemory[] {
   if (it === null || typeof it !== "object") return [];
@@ -43,7 +47,8 @@ export function normalizeCandidate(it: unknown): CandidateMemory[] {
 
   // Require non-empty text, then normalize to a bullet-safe single line so it round-trips through
   // serializeBullet (which rejects newlines and the `<!--mem` delimiter) instead of being silently
-  // dropped by reconcile's per-candidate isolation. Collapse whitespace, strip the delimiter, cap ~280.
+  // dropped by reconcile's per-candidate isolation. Collapse whitespace, strip the delimiter, and
+  // apply the capture path's 160-code-point contract.
   const text = normalizeCandidateText(obj["text"]);
   if (text === undefined) return [];
 
@@ -63,10 +68,21 @@ export function normalizeCandidate(it: unknown): CandidateMemory[] {
   return [{ type, text, salience, isInsight }];
 }
 
-/** Normalize any model-authored memory sentence to the canonical bullet-safe form. */
-export function normalizeCandidateText(value: unknown): string | undefined {
+/** Normalize model-authored memory text with the path-specific capture or reconciliation cap. */
+export function normalizeCandidateText(
+  value: unknown,
+  path: CandidateTextPath = "capture",
+): string | undefined {
   if (typeof value !== "string") return undefined;
-  const normalized = value.normalize("NFKC").replace(/\s+/gu, " ").replace(/<!--mem/gu, "").trim();
-  const text = Array.from(normalized).slice(0, MAX_CANDIDATE_TEXT_CODE_POINTS).join("");
+  const normalized = value
+    .replace(/\p{Cs}/gu, "")
+    .normalize("NFKC")
+    .replace(/\s+/gu, " ")
+    .replace(/<!--mem/gu, "")
+    .trim();
+  const maxCodePoints = path === "capture"
+    ? MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS
+    : MAX_RECONCILIATION_TEXT_CODE_POINTS;
+  const text = Array.from(normalized).slice(0, maxCodePoints).join("");
   return text.length === 0 ? undefined : text;
 }

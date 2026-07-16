@@ -903,6 +903,43 @@ describe("reconcileBatch", () => {
     expect(db.get("OLD")?.status).toBe("invalidated");
   });
 
+  it("keeps the lenient reconciliation path at 280 complete Unicode code points", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    await seed(db, root, "EXACT", "Existing exact-boundary memory");
+    await seed(db, root, "OVER", "Existing over-boundary memory");
+    const candidates: CandidateMemory[] = [
+      { type: "note", text: "Exact-boundary candidate", salience: 0.7, isInsight: false },
+      { type: "note", text: "Over-boundary candidate", salience: 0.8, isInsight: false },
+    ];
+    db.findSimilarMany = async () => [
+      [{ record: db.get("EXACT")!, distance: 0.1 }],
+      [{ record: db.get("OVER")!, distance: 0.1 }],
+    ];
+    const exactBoundary = `${"a".repeat(279)}🧠`;
+    const escapedOverBoundary = `${"a".repeat(139)}\ud83d${"a".repeat(140)}🧠tail`;
+    const reply = JSON.stringify([
+      { index: 0, action: "update", targetId: "EXACT", text: exactBoundary },
+      { index: 1, action: "update", targetId: "OVER", text: escapedOverBoundary },
+    ]);
+    expect(reply).toContain("\\ud83d");
+
+    const actions = await reconcileBatch(
+      candidates,
+      makeDeps(db, root, fakeLlm([["Classify each candidate", reply]])),
+    );
+
+    expect(actions).toEqual([
+      { kind: "update", id: "EXACT" },
+      { kind: "update", id: "OVER" },
+    ]);
+    expect(db.get("EXACT")?.text).toBe(exactBoundary);
+    expect(db.get("OVER")?.text).toBe(exactBoundary);
+    expect(Array.from(db.get("OVER")?.text ?? "")).toHaveLength(280);
+    expect(db.get("OVER")?.text).not.toContain("�");
+    expect(db.get("OVER")?.text).not.toMatch(/\p{Cs}/u);
+  });
+
   it("allows an explicit valid add decision for a close candidate", async () => {
     const root = newRoot();
     const db = openDb(root);
