@@ -43,7 +43,7 @@ work inside its bounded background curation queue rather than delaying the chann
 | --- | --- | --- | --- |
 | `provider` | `"ollama"` \| `"lmstudio"` \| `"openai"` | yes | Selects exactly one embedding backend; requests never fall through to another provider. |
 | `model` | string | yes | Exact model tag (see below). |
-| `endpoint` | string | no | Service root. Defaults to `http://localhost:11434` (Ollama), `http://localhost:1234` (LM Studio), or `https://api.openai.com/v1` (OpenAI). |
+| `endpoint` | string | no | Absolute HTTP(S) service root. It may include a path, but not credentials, a query, or a fragment. Defaults to `http://localhost:11434` (Ollama), `http://localhost:1234` (LM Studio), or `https://api.openai.com/v1` (OpenAI). |
 | `apiKeyEnv` | string | OpenAI; optional LM Studio | Name of the env var holding the API key (preferred). LM Studio is keyless when omitted. |
 | `apiKey` | string | OpenAI; optional LM Studio | Inline key (prefer `apiKeyEnv`; keep secret values out of config). |
 | `dim` | number | yes | Output dimension; must match the model (768 for `nomic-embed-text:v1.5`, 1536 for `text-embedding-3-small`). |
