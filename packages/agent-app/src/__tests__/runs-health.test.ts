@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  describeRunFailureKind,
   RUNS_HEALTH_STALE_RUNNING_MS,
   type RecordedRunListItem,
   type RunSummaryStatus,
@@ -81,9 +82,23 @@ describe("buildRunsHealthDisplay", () => {
       "[WARN] Run artifact reader: events file disappeared",
       "No runs recorded yet.",
     ]));
+
+    const partiallyReadable = buildRunsHealthDisplay({
+      artifactDir: "/agent/.mono-agent/artifacts",
+      runs: [recordedRun("healthy-run", "succeeded")],
+      warnings: ["one summary was unreadable"],
+      nowMs: NOW_MS,
+    });
+    expect(partiallyReadable.status).toBe("waiting");
+    expect(partiallyReadable.details).toContain(
+      "[WARN] Run artifact reader: one summary was unreadable",
+    );
   });
 
   it("flags only running summaries strictly past the stale boundary and all running summaries when the owner is gone", () => {
+    const completed = recordedRun("run-completed", "succeeded", {
+      startedAt: new Date(NOW_MS - RUNS_HEALTH_STALE_RUNNING_MS - 1).toISOString(),
+    });
     const stale = recordedRun("run-stale", "running", {
       startedAt: new Date(NOW_MS - RUNS_HEALTH_STALE_RUNNING_MS - 1).toISOString(),
     });
@@ -97,7 +112,7 @@ describe("buildRunsHealthDisplay", () => {
     const missingTimestamp = recordedRun("run-missing-time", "running");
     const display = buildRunsHealthDisplay({
       artifactDir: "/agent/.mono-agent/artifacts",
-      runs: [stale, atBoundary, fresh, invalidTimestamp, missingTimestamp],
+      runs: [completed, stale, atBoundary, fresh, invalidTimestamp, missingTimestamp],
       warnings: [],
       runOwnerAlive: false,
       nowMs: NOW_MS,
@@ -106,6 +121,7 @@ describe("buildRunsHealthDisplay", () => {
     expect(display.status).toBe("waiting");
     const staleLine = lineStarting(display.details, "[WARN] Stale running runs");
     expect(staleLine).toContain("run-stale");
+    expect(staleLine).not.toContain("run-completed");
     expect(staleLine).not.toContain("run-at-boundary");
     expect(staleLine).not.toContain("run-fresh");
     expect(staleLine).not.toContain("run-invalid-time");
@@ -114,6 +130,7 @@ describe("buildRunsHealthDisplay", () => {
     for (const run of [stale, atBoundary, fresh, invalidTimestamp, missingTimestamp]) {
       expect(ownerGoneLine).toContain(run.runId);
     }
+    expect(ownerGoneLine).not.toContain("run-completed");
   });
 
   it("keeps old completed and fresh running summaries healthy while the owner is alive or unspecified", () => {
@@ -146,6 +163,9 @@ describe("buildRunsHealthDisplay", () => {
   });
 
   it("sorts and explains failure kinds while separating expected and unhealthy cancellation", () => {
+    const providerUnavailable = describeRunFailureKind({
+      failureKind: "provider_unavailable",
+    });
     const display = buildRunsHealthDisplay({
       artifactDir: "/agent/.mono-agent/artifacts",
       runs: [
@@ -172,11 +192,37 @@ describe("buildRunsHealthDisplay", () => {
       "[WARN] Failure kinds: provider_unavailable=2, cancelled_shutdown=1, custom_failure=1, exception=1, interrupted=1.",
     );
     expect(display.details).toEqual(expect.arrayContaining([
-      expect.stringContaining("Provider unavailable [provider_unavailable, 2 recent]"),
+      `[WARN] ${providerUnavailable.label} [provider_unavailable, 2 recent]: ${providerUnavailable.explanation} Next: ${providerUnavailable.nextStep}`,
       expect.stringContaining("Unclassified failure (custom_failure) [custom_failure (unclassified), 1 recent]"),
       expect.stringContaining("Unclassified exception [exception, 1 recent]"),
     ]));
     expect(display.details.join("\n")).not.toContain("Failure kinds: cancelled_user=");
+  });
+
+  it("treats only cancelled runs with a normalized cancelled_user kind as expected lifecycle", () => {
+    const display = buildRunsHealthDisplay({
+      artifactDir: "/agent/.mono-agent/artifacts",
+      runs: [
+        recordedRun("expected-cancellation", "cancelled", {
+          failureKind: "  cancelled_user  ",
+        }),
+        recordedRun("failed-with-cancellation-kind", "failed", {
+          failureKind: "cancelled_user",
+        }),
+      ],
+      warnings: [],
+      nowMs: NOW_MS,
+    });
+
+    expect(display.status).toBe("waiting");
+    expect(display.details).toContain(
+      "User-cancelled runs: 1 (expected lifecycle outcome; health unchanged).",
+    );
+    const unsuccessful = lineStarting(display.details, "[WARN] Recent non-successful runs:");
+    expect(unsuccessful).toContain("failed-with-cancellation-kind");
+    expect(unsuccessful).not.toContain("expected-cancellation");
+    expect(display.details).not.toContain("[WARN] Cancelled recent runs: 1.");
+    expect(display.details).toContain("[WARN] Failure kinds: cancelled_user=1.");
   });
 
   it("formats second, minute, hour, day, future, and unknown ages while capping examples", () => {
@@ -211,6 +257,19 @@ describe("buildRunsHealthDisplay", () => {
     });
     expect(lineStarting(clockSkew.details, "Last runs:")).toContain(
       "future succeeded 0s ago, missing succeeded age unknown",
+    );
+
+    const startedAtOnly = buildRunsHealthDisplay({
+      artifactDir: "/agent/.mono-agent/artifacts",
+      runs: [{
+        ...timestampLessRun("started-only", "succeeded"),
+        startedAt: new Date(NOW_MS - 60_000).toISOString(),
+      }],
+      warnings: [],
+      nowMs: NOW_MS,
+    });
+    expect(lineStarting(startedAtOnly.details, "Last runs:")).toBe(
+      "Last runs: started-only succeeded 1m ago.",
     );
   });
 });
