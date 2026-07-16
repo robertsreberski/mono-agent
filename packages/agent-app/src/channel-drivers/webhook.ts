@@ -85,7 +85,10 @@ export function createWebhookChannelDriver(
       const listNotifyDestinations = input.listNotifyDestinations;
       const resolveNotifyFallbackConversationId = listNotifyDestinations === undefined
         ? undefined
-        : async () => await inferUniqueNotifyDestination({ listNotifyDestinations });
+        : async (abortSignal?: AbortSignal) => await inferUniqueNotifyDestination({
+            listNotifyDestinations,
+            ...(abortSignal === undefined ? {} : { abortSignal }),
+          });
       const adapterModule = await loadWebhookModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startWebhookAdapter;
       const adapter = await adapterFactory({

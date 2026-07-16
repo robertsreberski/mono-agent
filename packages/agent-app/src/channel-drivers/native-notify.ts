@@ -66,12 +66,21 @@ export async function deliverNativeCronNotification(input: {
 
 export async function inferUniqueNotifyDestination(input: {
   readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
+  readonly abortSignal?: AbortSignal;
 }): Promise<string | undefined> {
   if (input.listNotifyDestinations === undefined) {
     return undefined;
   }
+  throwIfAborted(input.abortSignal);
   const destinations = await input.listNotifyDestinations();
+  throwIfAborted(input.abortSignal);
   return destinations.length === 1 ? destinations[0]?.conversationId : undefined;
+}
+
+function throwIfAborted(abortSignal: AbortSignal | undefined): void {
+  if (abortSignal?.aborted === true) {
+    throw abortSignal.reason ?? new Error("Native notification destination resolution was aborted.");
+  }
 }
 
 export async function deliverNativeWebhookNotification(input: {

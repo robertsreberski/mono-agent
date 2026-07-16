@@ -100,6 +100,8 @@ A hung run (a destination resolver, responder, or provider call that never settl
 
 Set `webhook.maxRunMs` to override the default (min 0, max 86_400_000); `0` disables the watchdog. Run work that settles **after** the abort cannot produce a successful result — see [Run artifacts & traces](/observability/artifacts-and-traces/).
 
+Programmatic destination resolvers receive the request's `AbortSignal`, and their promise is raced against it independently of the watchdog. A sync client disconnect or adapter stop therefore reclaims a slot that is still resolving even when `maxRunMs` is disabled and resolver code ignores the signal; later settlement cannot start a responder or emit another result.
+
 ## Proactive delivery
 
 For a webhook endpoint that produces a user-facing result, set `notify: true` and optionally `notifyConversationId`. The agent's successful, non-empty **final answer is delivered verbatim** to the resolved Telegram/Slack conversation — no second LLM turn — and recorded into that conversation's history, so a user's reply resumes with it in context. This works for both **sync** and **async** endpoints: sync mode still returns the answer in the HTTP response, and `notify: true` *additionally* delivers it to the channel destination (async, via the post-run hook). Delivery is best-effort and does not change the sync HTTP response or the async stored status if it is skipped or fails.

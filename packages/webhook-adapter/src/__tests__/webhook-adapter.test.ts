@@ -259,6 +259,67 @@ describe("Webhook adapter", () => {
     }
   });
 
+  it.each([
+    ["rewrites a selected route", "rewrite", "slack:C1"],
+    ["deletes a selected route", "delete", "slack:C1"],
+    ["injects a route when none was selected", "inject", undefined],
+  ] as const)(
+    "keeps the completion route private when the responder %s",
+    async (_label, tamper, selectedRoute) => {
+      let responderRequest: object | undefined;
+      let completionRequest: object | undefined;
+      let routeBeforeTampering: string | undefined;
+      const deliveredRoutes: string[] = [];
+      const responder: AgentResponder = {
+        async respond(request) {
+          responderRequest = request;
+          routeBeforeTampering = request.replyTo?.conversationId;
+          const mutableRequest = request as { replyTo?: { conversationId: string } };
+          if (tamper === "rewrite" && mutableRequest.replyTo !== undefined) {
+            mutableRequest.replyTo.conversationId = "slack:C2";
+          } else if (tamper === "delete") {
+            delete mutableRequest.replyTo;
+          } else if (tamper === "inject") {
+            mutableRequest.replyTo = { conversationId: "slack:C-INJECTED" };
+          }
+          return { text: "digest" };
+        },
+      };
+      const server = await startWebhookAdapter({
+        host: "127.0.0.1",
+        port: 0,
+        endpoints: [{ name: "digest", path: "/digest", mode: "sync", notify: true }],
+        responder,
+        resolveNotifyFallbackConversationId: async () => selectedRoute,
+        onResult: (status, request) => {
+          completionRequest = request;
+          if (status.status === "succeeded" && request.replyTo !== undefined) {
+            deliveredRoutes.push(request.replyTo.conversationId);
+          }
+        },
+      });
+
+      try {
+        const response = await fetch(
+          `${server.url}/digest`,
+          postJson({ text: "payload", conversationId: "logical:digest", mode: "sync" }),
+        );
+        expect(response.status).toBe(200);
+        expect(routeBeforeTampering).toBe(selectedRoute);
+        expect(completionRequest).not.toBe(responderRequest);
+        if (selectedRoute === undefined) {
+          expect(completionRequest).not.toHaveProperty("replyTo");
+          expect(deliveredRoutes).toEqual([]);
+        } else {
+          expect(completionRequest).toHaveProperty("replyTo.conversationId", "slack:C1");
+          expect(deliveredRoutes).toEqual(["slack:C1"]);
+        }
+      } finally {
+        await server.stop();
+      }
+    },
+  );
+
   it("preserves route precedence and contains live resolver rejection", async () => {
     const seen = new Map<string, unknown>();
     const warn = vi.fn();
@@ -745,6 +806,88 @@ describe("Webhook adapter", () => {
       await abortSeen;
       await settled;
       await expect.poll(async () => server.activeRequestCount).toBe(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("aborts hung destination resolution on client disconnect without maxRunMs and reclaims the slot", async () => {
+    let settleFirstResolver!: (value: string | undefined) => void;
+    const firstResolver = new Promise<string | undefined>((resolve) => {
+      settleFirstResolver = resolve;
+    });
+    const resolverSignals: AbortSignal[] = [];
+    let resolverCallCount = 0;
+    const resolveNotifyFallbackConversationId = vi.fn((abortSignal?: AbortSignal) => {
+      if (abortSignal !== undefined) {
+        resolverSignals.push(abortSignal);
+      }
+      resolverCallCount += 1;
+      return resolverCallCount === 1 ? firstResolver : Promise.resolve("slack:C-SECOND");
+    });
+    const responder = {
+      respond: vi.fn(async (request) => ({
+        text: request.replyTo?.conversationId ?? "no route",
+      })),
+    } satisfies AgentResponder;
+    const completed: Array<{ status: string; conversationId: string }> = [];
+    const onResult = vi.fn((status: { status: string; conversationId: string }) => {
+      completed.push(status);
+    });
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      endpoints: [{ name: "notify", path: "/notify", mode: "sync", notify: true }],
+      responder,
+      resolveNotifyFallbackConversationId,
+      onResult: (status) => onResult(status),
+    });
+
+    try {
+      const controller = new AbortController();
+      const first = fetch(`${server.url}/notify`, {
+        ...postJson({ text: "first", conversationId: "logical:same", mode: "sync" }),
+        signal: controller.signal,
+      });
+      const firstSettled = first.catch(() => undefined);
+
+      await expect.poll(() => server.activeRequestCount).toBe(1);
+      await expect.poll(() => resolveNotifyFallbackConversationId.mock.calls.length).toBe(1);
+      controller.abort();
+      await firstSettled;
+
+      await expect.poll(() => server.activeRequestCount).toBe(0);
+      await expect
+        .poll(() => completed)
+        .toContainEqual(expect.objectContaining({
+          status: "cancelled",
+          conversationId: "logical:same",
+        }));
+      expect(resolverSignals[0]?.aborted).toBe(true);
+
+      // The same endpoint/conversation can start again immediately; its fresh
+      // resolution and responder are not blocked by the discarded resolver.
+      const second = await fetch(
+        `${server.url}/notify`,
+        postJson({ text: "second", conversationId: "logical:same", mode: "sync" }),
+      );
+      expect(second.status).toBe(200);
+      expect(responder.respond).toHaveBeenCalledOnce();
+      expect(responder.respond.mock.calls[0]?.[0]).toHaveProperty(
+        "replyTo.conversationId",
+        "slack:C-SECOND",
+      );
+
+      // Late settlement of the first resolver cannot start another responder
+      // or emit a second terminal result for the disconnected request.
+      settleFirstResolver("slack:C-STALE");
+      for (let turn = 0; turn < 4; turn += 1) {
+        await Promise.resolve();
+      }
+      expect(responder.respond).toHaveBeenCalledOnce();
+      expect(onResult).toHaveBeenCalledTimes(2);
+      expect(completed.filter((status) => status.status === "cancelled")).toHaveLength(1);
+      expect(completed.filter((status) => status.status === "succeeded")).toHaveLength(1);
     } finally {
       await server.stop();
     }

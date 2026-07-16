@@ -114,9 +114,11 @@ export interface CronAdapterOptions {
   /**
    * Host-owned fallback resolver for native-notify jobs without an explicit or
    * pre-resolved destination. It runs once per firing so the request's replyTo
-   * and the resulting delivery route share the same lifecycle snapshot.
+   * and the resulting delivery route share the same lifecycle snapshot. The
+   * optional signal allows cooperative cancellation; the adapter also races
+   * resolver settlement against it.
    */
-  readonly resolveNotifyFallbackConversationId?: () => Promise<string | undefined>;
+  readonly resolveNotifyFallbackConversationId?: (abortSignal?: AbortSignal) => Promise<string | undefined>;
   readonly now?: () => Date;
   readonly onResult?: (result: CronJobResult) => void | Promise<void>;
   readonly logger?: CronAdapterLogger;
@@ -436,7 +438,7 @@ function startRun(
     (watchdog as { unref?: () => void }).unref?.();
   }
 
-  void resolveNotifyConversationId(job, options)
+  void resolveNotifyConversationId(job, options, controller.signal)
     .then(async (notifyConversationId) => {
       if (controller.signal.aborted) {
         throw controller.signal.reason ?? new Error("Cron job was cancelled before responder start.");
@@ -532,6 +534,7 @@ function startRun(
 async function resolveNotifyConversationId(
   job: CronJob,
   options: CronAdapterOptions,
+  abortSignal: AbortSignal,
 ): Promise<string | undefined> {
   if (job.notify !== true) {
     return undefined;
@@ -544,14 +547,46 @@ async function resolveNotifyConversationId(
     return undefined;
   }
   try {
-    return normalizeOptionalString(await options.resolveNotifyFallbackConversationId());
+    const resolution = Promise.resolve(options.resolveNotifyFallbackConversationId(abortSignal));
+    return normalizeOptionalString(await raceAgainstAbort(resolution, abortSignal));
   } catch (error) {
+    if (abortSignal.aborted) {
+      throw abortSignal.reason ?? error;
+    }
     options.logger?.warn?.("Cron native-notify destination resolution failed; running without a reply target.", {
       jobId: job.id,
       error: errorToMessage(error),
     });
     return undefined;
   }
+}
+
+/**
+ * Reject when the run is aborted even if host-owned resolver work ignores the
+ * signal. Attaching both settlement handlers also consumes a late resolver
+ * rejection after the abort path has already won.
+ */
+function raceAgainstAbort<T>(operation: Promise<T>, abortSignal: AbortSignal): Promise<T> {
+  if (abortSignal.aborted) {
+    return Promise.reject(abortSignal.reason ?? new Error("Cron run was aborted."));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      abortSignal.removeEventListener("abort", onAbort);
+      reject(abortSignal.reason ?? new Error("Cron run was aborted."));
+    };
+    abortSignal.addEventListener("abort", onAbort, { once: true });
+    void operation.then(
+      (value) => {
+        abortSignal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        abortSignal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function toReplyTarget(conversationId: string | undefined): Pick<AgentRequestBase, "replyTo"> {

@@ -80,7 +80,10 @@ export function createCronChannelDriver(
       const listNotifyDestinations = input.listNotifyDestinations;
       const resolveNotifyFallbackConversationId = listNotifyDestinations === undefined
         ? undefined
-        : async () => await inferUniqueNotifyDestination({ listNotifyDestinations });
+        : async (abortSignal?: AbortSignal) => await inferUniqueNotifyDestination({
+            listNotifyDestinations,
+            ...(abortSignal === undefined ? {} : { abortSignal }),
+          });
       const adapterModule = await loadCronModule();
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startCronAdapter;
       const adapter = adapterFactory({

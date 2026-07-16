@@ -38,7 +38,7 @@ A single legacy endpoint still works (`path`/`defaultMode` are folded into a one
 await startWebhookAdapter({ host: "127.0.0.1", port: 4310, path: "/webhook/invoke", responder });
 ```
 
-For programmatic native-notify composition, an endpoint can set an explicit `notifyConversationId`, a pre-resolved `notifyFallbackConversationId`, or the adapter options can provide `resolveNotifyFallbackConversationId`. The resolver runs once per invocation after explicit and deliverable request destinations are considered. Its selected route is attached to the request's host-only `replyTo`, and that same request reaches `onResult`, allowing final delivery to reuse the exact route snapshot.
+For programmatic native-notify composition, an endpoint can set an explicit `notifyConversationId`, a pre-resolved `notifyFallbackConversationId`, or the adapter options can provide `resolveNotifyFallbackConversationId`. The resolver runs once per invocation after explicit and deliverable request destinations are considered. Its selected route is attached to the responder-facing request's host-only `replyTo`, retained privately by the run, and reconstructed on a separate completion request for `onResult`; responder mutation therefore cannot redirect, suppress, or inject final delivery. The resolver receives the request's optional `AbortSignal`, and the adapter also races its promise against that signal so disconnect/stop can reclaim the slot even when resolver code does not cooperate.
 
 Send a sync invocation:
 

@@ -317,6 +317,54 @@ describe("Cron adapter", () => {
     }
   });
 
+  it("aborts hung destination resolution on stop without maxRunMs and ignores late settlement", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    let resolverSignal: AbortSignal | undefined;
+    let settleResolver!: (value: string | undefined) => void;
+    const resolverPromise = new Promise<string | undefined>((resolve) => {
+      settleResolver = resolve;
+    });
+    const resolveNotifyFallbackConversationId = vi.fn((abortSignal?: AbortSignal) => {
+      resolverSignal = abortSignal;
+      return resolverPromise;
+    });
+    const responder = { respond: vi.fn(async () => ({ text: "unexpected" })) } satisfies AgentResponder;
+    const results: Array<{ kind: string }> = [];
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "resolver-stop", expression: "* * * * *", prompt: "p", notify: true }],
+      now: () => new Date(Date.now()),
+      resolveNotifyFallbackConversationId,
+      onResult: (result) => {
+        results.push(result);
+      },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(resolveNotifyFallbackConversationId).toHaveBeenCalledOnce();
+      expect(responder.respond).not.toHaveBeenCalled();
+
+      scheduler.stop();
+      await expect.poll(() => results).toContainEqual(expect.objectContaining({
+        kind: "cancelled",
+        jobId: "resolver-stop",
+      }));
+      expect(resolverSignal?.aborted).toBe(true);
+
+      settleResolver("slack:C-STALE");
+      for (let turn = 0; turn < 4; turn += 1) {
+        await Promise.resolve();
+      }
+      expect(responder.respond).not.toHaveBeenCalled();
+      expect(results).toHaveLength(1);
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("preserves a harness-like failure kind on failed results", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -607,6 +655,80 @@ describe("Cron adapter", () => {
       .toContainEqual(
         expect.objectContaining({ kind: "succeeded", scheduledAt: "1970-01-01T00:01:00.000Z" }),
       );
+  });
+
+  it("overlap:'replace' aborts hung destination resolution without maxRunMs and ignores late settlement", async () => {
+    const resolverSignals: AbortSignal[] = [];
+    const settleResolvers: Array<(value: string | undefined) => void> = [];
+    const resolveNotifyFallbackConversationId = vi.fn((abortSignal?: AbortSignal) => {
+      if (abortSignal !== undefined) {
+        resolverSignals.push(abortSignal);
+      }
+      return new Promise<string | undefined>((resolve) => {
+        settleResolvers.push(resolve);
+      });
+    });
+    const seenReplyTargets: unknown[] = [];
+    const responder: AgentResponder = {
+      async respond(request) {
+        seenReplyTargets.push(request.replyTo);
+        return { text: "done" };
+      },
+    };
+    const results: Array<{ kind: string; scheduledAt?: string; notifyConversationId?: string }> = [];
+    const options = {
+      responder,
+      overlap: "replace" as const,
+      jobs: [{ id: "resolve", expression: "* * * * *", prompt: "p", notify: true }],
+      now: () => new Date(Date.now()),
+      resolveNotifyFallbackConversationId,
+      onResult: (result: { kind: string; scheduledAt?: string; notifyConversationId?: string }) => {
+        results.push(result);
+      },
+    };
+    const jobStates = new Map();
+
+    handleTick(options.jobs[0]!, new Date(0), options, jobStates);
+    await expect.poll(() => resolveNotifyFallbackConversationId.mock.calls.length).toBe(1);
+    expect(resolverSignals[0]?.aborted).toBe(false);
+    expect(seenReplyTargets).toEqual([]);
+
+    // Replacing the first firing must abort its resolver race and drain the
+    // newest firing even though no watchdog is configured.
+    handleTick(options.jobs[0]!, new Date(60_000), options, jobStates);
+    await expect
+      .poll(() => results)
+      .toContainEqual(expect.objectContaining({
+        kind: "cancelled",
+        scheduledAt: "1970-01-01T00:00:00.000Z",
+    }));
+    expect(resolverSignals[0]?.aborted).toBe(true);
+    await expect.poll(() => resolveNotifyFallbackConversationId.mock.calls.length).toBe(2);
+
+    // Settling the discarded resolver later must neither start its responder
+    // nor emit a second terminal result for that firing.
+    settleResolvers[0]?.("slack:C-STALE");
+    for (let turn = 0; turn < 4; turn += 1) {
+      await Promise.resolve();
+    }
+    expect(seenReplyTargets).toEqual([]);
+    expect(
+      results.filter(
+        (result) =>
+          result.scheduledAt === "1970-01-01T00:00:00.000Z"
+          && ["cancelled", "failed", "succeeded"].includes(result.kind),
+      ),
+    ).toEqual([expect.objectContaining({ kind: "cancelled" })]);
+
+    settleResolvers[1]?.("slack:C-NEW");
+    await expect.poll(() => seenReplyTargets).toEqual([{ conversationId: "slack:C-NEW" }]);
+    await expect
+      .poll(() => results)
+      .toContainEqual(expect.objectContaining({
+        kind: "succeeded",
+        scheduledAt: "1970-01-01T00:01:00.000Z",
+        notifyConversationId: "slack:C-NEW",
+      }));
   });
 
   it("overlap:'replace' emits a terminal 'dropped' for a queued firing it discards on a second replace", async () => {
