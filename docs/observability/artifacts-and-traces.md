@@ -6,7 +6,7 @@ sidebar:
 
 # Artifacts, latency & trace registry
 
-mono-agent is local-first about observability: every run gets a JSONL event artifact and a summary in a folder on disk, and the host publishes a small heartbeat manifest so the CLI can discover running agents. At `start()`, the recorder performs separate atomic replacements for an empty events file and a `running` summary. It buffers redacted events in memory during the run and caps each event string at 4,096 bytes by default. Terminal `finish()`/`fail()` uses separate atomic replacements for that bounded events snapshot first and the summary second. These temp-file-and-rename writes provide no append, checkpoint, fsync, or cross-file transaction guarantee. The artifacts are the local on-disk record after a successful recorder boundary; the [Phoenix exporter](/observability/phoenix-and-backfill/) is an optional, additive layer on top.
+mono-agent is local-first about observability: every run gets a JSONL event artifact and a summary in a folder on disk, and the host publishes a small heartbeat manifest so the CLI can discover running agents. At `start()`, the recorder performs separate atomic replacements for an empty events file and a `running` summary. It buffers key-redacted events in memory during the run and caps each event string at 4,096 bytes by default. Terminal `finish()`/`fail()` uses separate atomic replacements for that bounded events snapshot first and the summary second. These temp-file-and-rename writes provide no append, checkpoint, fsync, or cross-file transaction guarantee. The artifacts are the local on-disk record after a successful recorder boundary; the [Phoenix exporter](/observability/phoenix-and-backfill/) is an optional, additive layer on top.
 
 This page covers where artifacts land, the latency-attribution events inside them, and the trace-source registry that `mono-agent status` reads.
 
@@ -14,7 +14,7 @@ This page covers where artifacts land, the latency-attribution events inside the
 
 Each agent run writes two files into `artifacts.dir`:
 
-- `run-<id>.events.jsonl` — the terminal snapshot of redacted, bounded events that reached the recorder's in-memory buffer, one event per line (assistant deltas, tool calls/results, timing, usage/cost).
+- `run-<id>.events.jsonl` — the terminal snapshot of key-redacted, bounded events that reached the recorder's in-memory buffer, one event per line (assistant deltas, tool calls/results, timing, usage/cost).
 - `run-<id>.summary.json` — a private local roll-up of the run (final `status`, aggregate usage/cost, model, and the compiled `systemPrompt` when captured). See [Run status](#run-status-and-stale-run-reconciliation) for the status values. Routed runs preserve normalized `failoverHistory` (model, failure, subkind, and request id when available). The companion events JSONL records bounded `provider_route_safety` events with each uniform or provider-native contract/status. Credentials and private resolver options are never copied into either artifact.
 
 Memory-maintenance runs (`mem-*`, used by BuJo capture and rituals) write the same two-file shape under `artifacts.dir/memory/`. Keeping them in a separate namespace lets operator surfaces default to human-facing agent runs while still allowing explicit memory export, audit, and metrics flows.

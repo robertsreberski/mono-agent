@@ -74,7 +74,7 @@ best-effort, and isolated from the JSONL recorder.
 
 ## Timeline Display
 
-`.events.jsonl` artifacts contain one redacted, bounded event per line after a
+`.events.jsonl` artifacts contain one key-redacted, bounded event per line after a
 terminal recorder boundary. Event strings use a 4,096-byte default cap. The
 recorder replaces that terminal snapshot at the boundary; it does not append
 events while a run is in progress. UI surfaces that need readable
@@ -107,7 +107,7 @@ Running sources become `stale` when their heartbeat is older than the configured
 
 Stale-run reconciliation repairs summary status from persisted data only. At
 `start()`, the JSONL recorder performs separate atomic replacements for an empty
-events file and a `running` summary. It then buffers redacted events in memory.
+events file and a `running` summary. It then buffers key-redacted events in memory.
 Terminal `finish()`/`fail()` uses separate atomic replacements for the bounded
 events snapshot first and the summary second. These writes provide no append,
 checkpoint, fsync, or cross-file transaction guarantee: a process death can lose

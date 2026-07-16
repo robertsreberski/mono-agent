@@ -96,7 +96,7 @@ function interfaceFieldDoc(relativePath: string, interfaceName: string, fieldNam
 describe("observability redaction docs parity", () => {
   it("keeps canonical and composer summary surfaces explicit about numeric retention", () => {
     const surfaces = [
-      ["docs/runtime/tools-and-guards.md", "Each run records per-turn usage"],
+      ["docs/runtime/tools-and-guards.md", "Each run collects per-turn usage"],
       ["docs/observability/index.md", "| JSONL run artifacts |"],
       ["docs/observability/phoenix-and-backfill.md", "| `includeSensitiveData` |"],
       ["docs/playbooks/phoenix-observed-agent.md", "- [`observability.jsonl-artifacts`]"],
@@ -140,6 +140,35 @@ describe("observability redaction docs parity", () => {
       for (const term of ["space", "dot", "slash", "colon", "credentialtype", "bearerstatus", "privatekeyboard"]) {
         expect(page, `${relativePath} is missing ${term}`).toContain(term);
       }
+    }
+  });
+
+  it("keeps recorder-boundary summaries explicit that redaction is key-based", () => {
+    const surfaces = [
+      ["README.md", "Local JSONL artifacts are the completed-run fallback"],
+      ["docs/observability/artifacts-and-traces.md", "mono-agent is local-first about observability"],
+      ["docs/observability/artifacts-and-traces.md", "- `run-<id>.events.jsonl`"],
+      ["docs/observability/phoenix-and-backfill.md", "Phoenix export never changes a run's outcome"],
+      ["docs/playbooks/phoenix-observed-agent.md", "This playbook configures best-effort"],
+      ["docs/playbooks/phoenix-observed-agent.md", "The exporters array can also be supplied"],
+      ["docs/channels/tui.md", "Frames are defined in `@mono-agent/agent-contracts`"],
+      ["docs/config/blueprint.md", "buffers key-redacted/capped events"],
+      ["docs/observability/tui.md", "Remote event frames are capped"],
+      ["docs/observability/tui.md", "| replay | `f3` |"],
+      ["docs/reference/feature-registry.md", "| `tui.chat` |"],
+      ["packages/agent-app/skills/mono-agent-composer/references/config-blueprint.md", "buffers key-redacted/capped events"],
+      ["packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md", "Fills: `artifacts.dir`"],
+      ["packages/agent-app/skills/mono-agent-composer/references/package-map.md", "- `@mono-agent/tui`"],
+      ["packages/agent-app/skills/mono-agent-composer/references/package-map.md", "Traceability is local-first"],
+      ["packages/agent-app/skills/mono-agent-composer/references/playbooks.md", "**Goal:** run locally with the TUI"],
+      ["packages/observability/README.md", "`.events.jsonl` artifacts contain"],
+      ["packages/observability/README.md", "events file and a `running` summary"],
+    ] as const;
+
+    for (const [relativePath, anchor] of surfaces) {
+      expect(lineContaining(relativePath, anchor), `${relativePath}: ${anchor}`).toMatch(
+        /\bkey-(?:based|redacted)\b/u,
+      );
     }
   });
 
