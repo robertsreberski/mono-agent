@@ -278,6 +278,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
 
   const app = express();
   const server = createServer(app);
+  let stopping = false;
   // Active runs are keyed by `${endpoint.name}:${conversationId}` so the same
   // conversation can be in-flight on two different endpoints without a false 409.
   const activeByRun = new Map<string, ActiveRun>();
@@ -340,10 +341,17 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
   const boundPort = address.port;
 
   async function closeRejectedServer(): Promise<void> {
+    stopping = true;
     for (const active of activeByRun.values()) {
       active.controller.abort(new Error("Webhook adapter rejected its actual bound address."));
     }
-    await closeServerBounded(server);
+    const closed = await closeServerBounded(server);
+    if (!closed) {
+      options.logger?.warn?.("Webhook adapter could not confirm rejected-server cleanup before reporting the rejected bind.", {
+        boundAddress: address.address,
+        boundPort: address.port,
+      });
+    }
     activeByRun.clear();
     statuses.clear();
   }
@@ -369,6 +377,13 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
   const url = `http://${hostForUrl(host)}:${boundPort}`;
 
   async function handleInvoke(req: Request, res: Response, endpoint: ResolvedEndpoint): Promise<void> {
+    if (stopping) {
+      res.status(503).json({
+        status: "failed",
+        error: "Webhook adapter is stopping before request admission.",
+      });
+      return;
+    }
     pruneStatuses(statuses, retentionMs, maxStoredRequests);
     const requestId = randomUUID();
     const receivedAt = new Date().toISOString();
@@ -524,6 +539,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       return status === undefined ? undefined : sanitizeWebhookInvocationStatus(status);
     },
     async stop() {
+      stopping = true;
       for (const active of activeByRun.values()) {
         active.controller.abort(new Error("Webhook adapter stopped."));
       }
@@ -533,10 +549,10 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
   };
 }
 
-async function closeServerBounded(server: ReturnType<typeof createServer>): Promise<void> {
-  const closePromise = close(server);
-  void closePromise.catch(() => undefined);
-  server.closeIdleConnections();
+async function closeServerBounded(server: ReturnType<typeof createServer>): Promise<boolean> {
+  let closeResult = settleServerClose(server);
+  // On supported Node versions close() already reaps idle connections. A second
+  // eager idle sweep can race a fully queued request before the 503 latch runs.
   let forceTimer: ReturnType<typeof setTimeout> | undefined;
   const force = new Promise<"forced">((resolvePromise) => {
     forceTimer = setTimeout(() => {
@@ -545,20 +561,41 @@ async function closeServerBounded(server: ReturnType<typeof createServer>): Prom
     }, FORCE_CLOSE_AFTER_MS);
     forceTimer.unref?.();
   });
-  const outcome = await Promise.race([closePromise.then(() => "closed" as const), force]);
-  if (outcome === "closed") {
-    if (forceTimer !== undefined) {
-      clearTimeout(forceTimer);
-    }
-    return;
+  const outcome = await Promise.race([closeResult, force]);
+  if (forceTimer !== undefined) {
+    clearTimeout(forceTimer);
   }
-  await Promise.race([
-    closePromise.catch(() => undefined),
+  if (outcome === "closed") {
+    return true;
+  }
+
+  server.closeAllConnections();
+  if (outcome === "failed") {
+    closeResult = settleServerClose(server);
+  }
+
+  let finalTimer: ReturnType<typeof setTimeout> | undefined;
+  const finalOutcome = await Promise.race([
+    closeResult,
     new Promise<void>((resolvePromise) => {
-      const timer = setTimeout(resolvePromise, FORCE_CLOSE_AFTER_MS);
-      timer.unref?.();
+      finalTimer = setTimeout(() => {
+        server.closeAllConnections();
+        resolvePromise();
+      }, FORCE_CLOSE_AFTER_MS);
+      finalTimer.unref?.();
     }),
   ]);
+  if (finalTimer !== undefined) {
+    clearTimeout(finalTimer);
+  }
+  return finalOutcome === "closed";
+}
+
+function settleServerClose(server: ReturnType<typeof createServer>): Promise<"closed" | "failed"> {
+  return close(server).then(
+    () => "closed" as const,
+    () => "failed" as const,
+  );
 }
 
 function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {
