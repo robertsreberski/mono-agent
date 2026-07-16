@@ -217,21 +217,45 @@ export function parsePnpmWhyDependencyPaths(source, options) {
     throw new Error("pnpm why path parsing requires a package name and versions.");
   }
   const targetVersions = new Set(versions);
-  const rootPackageNames = new Set(normalizeRootPackageNames(
+  for (const version of targetVersions) {
+    packageVersionKey(packageName, version);
+  }
+  const normalizedRootPackageNames = normalizeRootPackageNames(
     options.rootPackageNames ?? DEFAULT_ROOT_PACKAGE_NAMES,
-  ));
+  );
+  const rootPackageNames = new Set(normalizedRootPackageNames);
   if (document.some((entry) => isRecord(entry) && Object.hasOwn(entry, "dependents"))) {
     return parseDependentsShape();
   }
-  const dependencyPaths = {};
+  const rootsByName = new Map();
+  const rootsByPath = new Map();
   for (const root of document) {
-    if (!isRecord(root) || typeof root.name !== "string" || root.name.length === 0) {
+    if (!isRecord(root) || typeof root.name !== "string" || root.name.length === 0
+      || typeof root.path !== "string" || root.path.length === 0) {
       throw new Error("pnpm why output contains a malformed workspace root.");
     }
     if (!rootPackageNames.has(root.name)) {
       continue;
     }
-    traverseWhyChildren(root, [root.name], new Set(), false);
+    if (rootsByName.has(root.name)) {
+      throw new Error(`pnpm why output contains duplicate workspace root ${root.name}.`);
+    }
+    if (rootsByPath.has(root.path)) {
+      throw new Error(
+        `pnpm why output maps multiple publishable workspace roots to ${root.path}: `
+        + `${rootsByPath.get(root.path).name}, ${root.name}.`,
+      );
+    }
+    rootsByName.set(root.name, root);
+    rootsByPath.set(root.path, root);
+  }
+  const missingRoots = normalizedRootPackageNames.filter((name) => !rootsByName.has(name));
+  if (missingRoots.length > 0) {
+    throw new Error(`pnpm why output is missing publishable workspace roots: ${missingRoots.join(", ")}.`);
+  }
+  const dependencyPaths = {};
+  for (const rootName of normalizedRootPackageNames) {
+    traverseWhyChildren(rootsByName.get(rootName), [rootName], new Set(), false);
   }
   for (const version of targetVersions) {
     const key = packageVersionKey(packageName, version);
@@ -472,13 +496,24 @@ export function parsePnpmWhyDependencyPaths(source, options) {
       }
       for (const [childName, child] of Object.entries(children).sort(([left], [right]) => left.localeCompare(right))) {
         validatePnpmDependencyNode(childName, child, `pnpm why ${section}`);
+        const localWorkspaceLink = isLocalDependencyVersion(child.version);
+        if (localWorkspaceLink) {
+          if (child.from !== childName) {
+            throw new Error(`pnpm why workspace link ${childName} has inconsistent alias metadata.`);
+          }
+          const linkedRoot = rootsByPath.get(child.path);
+          if (linkedRoot === undefined || linkedRoot.name !== childName) {
+            throw new Error(
+              `pnpm why workspace link ${childName} is not bound to its publishable workspace root.`,
+            );
+          }
+        }
         const actualName = dependencyRegistryName(childName, child);
-        const nodeKey = packageVersionKey(actualName, child.version);
+        const nodeKey = localWorkspaceLink ? undefined : packageVersionKey(actualName, child.version);
         const nodeIdentity = productionNodeIdentity(childName, child);
         if (ancestors.has(nodeIdentity)) {
           continue;
         }
-        const localWorkspaceLink = isLocalDependencyVersion(child.version);
         const label = localWorkspaceLink ? childName : nodeKey;
         const childPath = [...parentPath, label];
         const crossedWorkspaceBoundary = traversedWorkspaceLink || localWorkspaceLink;
@@ -513,6 +548,7 @@ export function normalizeInventory(input) {
         if (typeof version !== "string" || version.length === 0) {
           throw new Error(`production dependency inventory contains an invalid version for ${name}.`);
         }
+        packageVersionKey(name, version);
         return version;
       }))].sort();
       return [name, normalizedVersions];
@@ -1302,7 +1338,7 @@ function normalizeRootPackageNames(input) {
     throw new Error("production graph rootPackageNames must be a non-empty array.");
   }
   const names = input.map((name) => {
-    if (typeof name !== "string" || name.length === 0) {
+    if (!isUnambiguousPackageName(name)) {
       throw new Error("production graph rootPackageNames contains an invalid package name.");
     }
     return name;
@@ -1719,7 +1755,26 @@ function isLocalDependencyVersion(version) {
 }
 
 function packageVersionKey(packageName, version) {
+  if (!isUnambiguousPackageName(packageName)
+    || typeof version !== "string" || version.length === 0 || version.includes("@")) {
+    throw new Error("package/version identity cannot be represented unambiguously.");
+  }
   return `${packageName}@${version}`;
+}
+
+function isUnambiguousPackageName(value) {
+  if (typeof value !== "string" || value.length === 0) {
+    return false;
+  }
+  const firstAt = value.indexOf("@");
+  if (firstAt < 0) {
+    return true;
+  }
+  const slash = value.indexOf("/");
+  return firstAt === 0
+    && value.indexOf("@", 1) < 0
+    && slash > 1
+    && slash < value.length - 1;
 }
 
 function parseDateOnly(value, description) {

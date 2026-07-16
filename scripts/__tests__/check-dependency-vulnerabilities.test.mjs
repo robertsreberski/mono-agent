@@ -32,7 +32,7 @@ describe("dependency vulnerability gate", () => {
   it("escapes hostile unknown arguments before rendering usage", async () => {
     const stderr = sink();
     const result = await runDependencyVulnerabilityCheck({
-      argv: ["bad\n::error file=ci.yml::forged\u001b[31m\u202ertl\u202c"],
+      argv: [`bad\n::error file=ci.yml::forged\u001b[31m\u202ertl\u202c${"x".repeat(10_000)}`],
       stdout: sink(),
       stderr,
     });
@@ -45,6 +45,10 @@ describe("dependency vulnerability gate", () => {
     expect(stderr.text).not.toContain("\n::error file=ci.yml::forged");
     expect(stderr.text).not.toContain("\u001b");
     expect(stderr.text).not.toContain("\u202e");
+    const [diagnostic] = stderr.text.split("\n\nUsage:");
+    expect(diagnostic).toHaveLength(2_000);
+    expect(diagnostic).toMatch(/…$/u);
+    expect(stderr.text.length).toBeLessThan(2_500);
   });
 
   it("parses pnpm 10's compact cross-platform production inventory", () => {
@@ -94,6 +98,76 @@ describe("dependency vulnerability gate", () => {
         options: { cwd: "/repo" },
       },
     ]);
+  });
+
+  it("hydrates pnpm 10 advisory paths between the bulk report and evaluation", async () => {
+    const advisory = wsAdvisory();
+    const dependencyPath = "portable-fixture -> provider@2.0.0 -> ws@8.20.1";
+    const calls = [];
+    const events = [];
+    const stdout = sink();
+    const result = await runDependencyVulnerabilityCheck({
+      argv: [],
+      cwd: "/repo",
+      pnpmCommand: "pnpm-fixture",
+      rootPackageNames: ["portable-fixture"],
+      runCommand: async (command, args, options) => {
+        calls.push({ command, args, options });
+        events.push(args[0]);
+        if (args[0] === "--version") {
+          return commandResult("10.28.2\n");
+        }
+        if (args[0] === "list") {
+          return commandResult("/repo/node_modules/.pnpm/ws@8.20.1/node_modules/ws\n");
+        }
+        if (args[0] === "why") {
+          return commandResult(JSON.stringify([{
+            name: "portable-fixture",
+            path: "/repo/packages/portable-fixture",
+            dependencies: {
+              provider: {
+                from: "provider",
+                version: "2.0.0",
+                dependencies: {
+                  ws: { from: "ws", version: "8.20.1" },
+                },
+              },
+            },
+          }]));
+        }
+        throw new Error(`unexpected pnpm fixture arguments: ${args.join(" ")}`);
+      },
+      dispositions: dispositionFor("ws", "8.20.1", advisory, [dependencyPath]),
+      fetchImpl: async (_url, request) => {
+        events.push("bulk");
+        expect(JSON.parse(request.body)).toEqual({ ws: ["8.20.1"] });
+        return httpResponse({ ws: [advisory] });
+      },
+      now: NOW,
+      stdout,
+      stderr: sink(),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(events).toEqual(["--version", "list", "bulk", "why"]);
+    expect(calls).toEqual([
+      { command: "pnpm-fixture", args: ["--version"], options: { cwd: "/repo" } },
+      {
+        command: "pnpm-fixture",
+        args: ["list", "--prod", "--recursive", "--depth", "Infinity", "--parseable"],
+        options: { cwd: "/repo" },
+      },
+      {
+        command: "pnpm-fixture",
+        args: ["why", "ws", "--prod", "--recursive", "--json"],
+        options: { cwd: "/repo" },
+      },
+    ]);
+    expect(result.evaluation.productionGraph.dependencyPaths).toEqual({
+      "ws@8.20.1": [dependencyPath],
+    });
+    expect(result.evaluation.active[0].dependencyPaths).toEqual([dependencyPath]);
+    expect(stdout.text).toContain("all exactly dispositioned");
   });
 
   it("rejects unaudited pnpm majors and bounds malformed version output", async () => {
@@ -217,6 +291,45 @@ describe("dependency vulnerability gate", () => {
     expect(() => parsePnpmProductionGraph(JSON.stringify(distinctPeerPath), {
       rootPackageNames: ["portable-fixture", "workspace-only"],
     })).toThrow("has no expanded subtree");
+
+    const inconsistentExpandedSubtrees = [{
+      name: "root-a",
+      path: "/repo/packages/root-a",
+      dependencies: {
+        shared: {
+          from: "shared",
+          version: "1.0.0",
+          path: "/repo/node_modules/shared",
+          dependencies: {
+            left: {
+              from: "left",
+              version: "1.0.0",
+              path: "/repo/node_modules/left",
+            },
+          },
+        },
+      },
+    }, {
+      name: "root-b",
+      path: "/repo/packages/root-b",
+      dependencies: {
+        "shared-alias": {
+          from: "shared",
+          version: "1.0.0",
+          path: "/repo/node_modules/shared",
+          dependencies: {
+            right: {
+              from: "right",
+              version: "1.0.0",
+              path: "/repo/node_modules/right",
+            },
+          },
+        },
+      },
+    }];
+    expect(() => parsePnpmProductionGraph(JSON.stringify(inconsistentExpandedSubtrees), {
+      rootPackageNames: ["root-a", "root-b"],
+    })).toThrow("contains inconsistent expanded subtrees for path:/repo/node_modules/shared");
 
     const missingPath = JSON.parse(pnpm11ListFixture());
     delete missingPath[1].optionalDependencies["optional-win32"].path;
@@ -416,7 +529,7 @@ describe("dependency vulnerability gate", () => {
       }];
     }));
 
-    const graph = parsePnpmProductionGraph(JSON.stringify([
+    const manyLinkDocument = [
       {
         name: "consumer",
         path: "/repo/packages/consumer",
@@ -427,13 +540,24 @@ describe("dependency vulnerability gate", () => {
         path: "/repo/packages/workspace",
         dependencies: workspaceDependencies,
       },
-    ]), {
+    ];
+    const graph = parsePnpmProductionGraph(JSON.stringify(manyLinkDocument), {
       rootPackageNames: ["consumer", "workspace"],
     });
     expect(Object.keys(graph.inventory)).toHaveLength(600);
     expect(graph.dependencyPaths["workspace-leaf-0@1.0.0"]).toEqual([
       "workspace -> workspace-leaf-0@1.0.0",
     ]);
+
+    const lastLinkContradiction = structuredClone(manyLinkDocument);
+    lastLinkContradiction[0].dependencies["workspace-alias-199"].dependencies.rogue = {
+      from: "rogue",
+      version: "1.0.0",
+      path: "/repo/node_modules/rogue",
+    };
+    expect(() => parsePnpmProductionGraph(JSON.stringify(lastLinkContradiction), {
+      rootPackageNames: ["consumer", "workspace"],
+    })).toThrow("contains a production dependency that contradicts its publishable workspace root");
   });
 
   it("bounds forward-path hydration before a compact deduped diamond expands exponentially", () => {
@@ -619,6 +743,7 @@ describe("dependency vulnerability gate", () => {
     expect(parsePnpmWhyDependencyPaths(JSON.stringify([
       {
         name: "@mono-agent/agent-app",
+        path: "/repo/packages/agent-app",
         dependencies: {
           provider: {
             version: "2.0.0",
@@ -628,6 +753,7 @@ describe("dependency vulnerability gate", () => {
       },
       {
         name: "@mono-agent/slack-adapter",
+        path: "/repo/packages/slack-adapter",
         dependencies: { "socket-alias": { from: "ws", version: "8.20.1" } },
       },
     ]), options)).toEqual(expected);
@@ -656,6 +782,73 @@ describe("dependency vulnerability gate", () => {
         ],
       },
     ]), options)).toEqual(expected);
+  });
+
+  it("requires every pnpm 10 workspace root and binds local links before suppressing paths", () => {
+    const options = {
+      packageName: "ws",
+      versions: ["8.20.1"],
+      rootPackageNames: ["root-a", "root-b", "workspace"],
+    };
+    const document = [
+      {
+        name: "root-a",
+        path: "/repo/packages/root-a",
+        dependencies: { ws: { from: "ws", version: "8.20.1" } },
+      },
+      {
+        name: "root-b",
+        path: "/repo/packages/root-b",
+        dependencies: {
+          workspace: {
+            from: "workspace",
+            version: "link:../workspace",
+            path: "/repo/packages/workspace",
+            dependencies: { ws: { from: "ws", version: "8.20.1" } },
+          },
+        },
+      },
+      {
+        name: "workspace",
+        path: "/repo/packages/workspace",
+        dependencies: { ws: { from: "ws", version: "8.20.1" } },
+      },
+    ];
+    const expected = {
+      "ws@8.20.1": [
+        "root-a -> ws@8.20.1",
+        "workspace -> ws@8.20.1",
+      ],
+    };
+
+    for (const version of ["link:../workspace", "file:../workspace", "workspace:*"]) {
+      const protocolVariant = structuredClone(document);
+      protocolVariant[1].dependencies.workspace.version = version;
+      expect(parsePnpmWhyDependencyPaths(JSON.stringify(protocolVariant), options)).toEqual(expected);
+    }
+
+    const missingRoot = document.filter((root) => root.name !== "root-b");
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(missingRoot), options))
+      .toThrow("missing publishable workspace roots: root-b");
+
+    const duplicateRoot = [...structuredClone(document), structuredClone(document[0])];
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(duplicateRoot), options))
+      .toThrow("duplicate workspace root root-a");
+
+    const duplicateRootPath = structuredClone(document);
+    duplicateRootPath[1].path = duplicateRootPath[0].path;
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(duplicateRootPath), options))
+      .toThrow("maps multiple publishable workspace roots to /repo/packages/root-a");
+
+    const unboundLink = structuredClone(document);
+    unboundLink[1].dependencies.workspace.path = "/repo/packages/not-requested";
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(unboundLink), options))
+      .toThrow("workspace link workspace is not bound to its publishable workspace root");
+
+    const mismatchedLinkOwner = structuredClone(document);
+    mismatchedLinkOwner[1].dependencies.workspace.from = "workspace-alias";
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(mismatchedLinkOwner), options))
+      .toThrow("workspace link workspace has inconsistent alias metadata");
   });
 
   it("hydrates realistic pnpm 11 reverse deduped branches by peer-aware identity", () => {
@@ -1641,6 +1834,36 @@ describe("dependency vulnerability gate", () => {
     expect(evaluation.ok).toBe(false);
     expect(evaluation.unreviewed.map((entry) => entry.package)).toEqual(["a"]);
     expect(evaluation.stale.map((entry) => entry.package)).toEqual(["a:b"]);
+  });
+
+  it("rejects package-version tuples that collapse to the same display identity", () => {
+    expect(() => evaluateDependencyVulnerabilities({
+      productionGraph: {
+        inventory: { a: ["b@c"], "a@b": ["c"] },
+        dependencyPaths: { "a@b@c": ["fixture -> a@b@c"] },
+      },
+      report: {},
+      dispositions: emptyDispositions(),
+      now: NOW,
+    })).toThrow("package/version identity cannot be represented unambiguously");
+
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify([{
+      name: "ws",
+      version: "8.20.1",
+      dependents: [{
+        name: "a@b",
+        version: "c",
+        dependents: [{
+          name: "root",
+          version: "1.0.0",
+          depField: "dependencies",
+        }],
+      }],
+    }]), {
+      packageName: "ws",
+      versions: ["8.20.1"],
+      rootPackageNames: ["root"],
+    })).toThrow("package/version identity cannot be represented unambiguously");
   });
 
   it("escapes and bounds remote advisory fields before CI rendering", async () => {
