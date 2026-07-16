@@ -7,12 +7,18 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 
 import {
+  NATIVE_NOTIFY_CALLBACK_CHANNEL_IDS,
   startWebhookAdapter,
   WebhookAdapterError,
   type WebhookAdapterStartResult,
 } from "../index.js";
 
 describe("Webhook adapter", () => {
+  it("keeps the native callback policy exact and immutable", () => {
+    expect(NATIVE_NOTIFY_CALLBACK_CHANNEL_IDS).toEqual(["telegram", "slack"]);
+    expect(Object.isFrozen(NATIVE_NOTIFY_CALLBACK_CHANNEL_IDS)).toBe(true);
+  });
+
   it("runs sync HTTP invocations through a structural responder", async () => {
     const seen: unknown[] = [];
     const responder: AgentResponder = {
@@ -606,7 +612,7 @@ describe("Webhook adapter", () => {
     }
   });
 
-  it("prefers a deliverable request conversation over the host-inferred fallback", async () => {
+  it("prefers a native callback request conversation and excludes WhatsApp", async () => {
     const seen: unknown[] = [];
     const responder: AgentResponder = {
       async respond(request, stream) {
@@ -634,7 +640,15 @@ describe("Webhook adapter", () => {
         postJson({ text: "payload", conversationId: "slack:C-REQUEST", mode: "sync" }),
       );
       expect(response.status).toBe(200);
-      expect(seen).toEqual([{ conversationId: "slack:C-REQUEST" }]);
+      const whatsappResponse = await fetch(
+        `${server.url}/callback`,
+        postJson({ text: "payload", conversationId: "whatsapp:123@s.whatsapp.net", mode: "sync" }),
+      );
+      expect(whatsappResponse.status).toBe(200);
+      expect(seen).toEqual([
+        { conversationId: "slack:C-REQUEST" },
+        { conversationId: "slack:C-FALLBACK" },
+      ]);
     } finally {
       await server.stop();
     }
