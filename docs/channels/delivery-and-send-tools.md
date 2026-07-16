@@ -167,6 +167,8 @@ Cron has one failure-side notification path as well: if a `notify: true` cron jo
 - With **0 or 2+** candidates the app skips delivery with a warning rather than guessing.
 - Cron model-exhaustion failure notices are stricter: they require explicit `notifyConversationId` and never use inference.
 
+Inference is evaluated for each cron firing or webhook invocation, immediately before the agent run. That one route snapshot binds both host-only continuation `replyTo` and the run's final native delivery; if the candidate set becomes ambiguous before a later run, that later run has no reply target and its delivery is skipped rather than retaining a destination chosen at process start.
+
 The owning channel's allowlist is the destination boundary: a delivery to a Telegram/Slack id outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAllChats` / `allowAllChannels`) is refused. WhatsApp is not notify-capable. Delivery is best-effort — a skipped or failed notification does not change the cron job result or the webhook's HTTP response / async stored status.
 
 ### Staying silent ("nothing to report")

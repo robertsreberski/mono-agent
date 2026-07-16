@@ -95,6 +95,134 @@ describe("Cron adapter", () => {
     }
   });
 
+  it("keeps a mid-lifecycle destination snapshot in both replyTo and the completion result", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const requests: unknown[] = [];
+    const results: unknown[] = [];
+    let candidates = ["slack:C1"];
+    let resolutionCount = 0;
+    const resolveNotifyFallbackConversationId = vi.fn(async () => {
+      const resolved = candidates.length === 1 ? candidates[0] : undefined;
+      if (resolutionCount === 0) {
+        // The allowlist changes after this firing selects C1 but before the
+        // responder starts. Neither replyTo nor the completion route may
+        // re-resolve against the now-ambiguous candidate set.
+        candidates = ["slack:C1", "slack:C2"];
+      }
+      resolutionCount += 1;
+      return resolved;
+    });
+    const responder: AgentResponder = {
+      async respond(request) {
+        requests.push(request);
+        return { text: "digest" };
+      },
+    };
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "digest", expression: "* * * * *", prompt: "p", notify: true }],
+      now: () => new Date(Date.now()),
+      resolveNotifyFallbackConversationId,
+      onResult: (result) => {
+        results.push(result);
+      },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(requests[0]).toEqual(expect.objectContaining({
+        replyTo: { conversationId: "slack:C1" },
+      }));
+      expect(results[0]).toEqual(expect.objectContaining({
+        kind: "succeeded",
+        notifyConversationId: "slack:C1",
+      }));
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(requests).toHaveLength(2);
+      expect(results).toHaveLength(2);
+      expect(requests[1]).not.toHaveProperty("replyTo");
+      expect(results[1]).not.toHaveProperty("notifyConversationId");
+      expect(resolveNotifyFallbackConversationId).toHaveBeenCalledTimes(2);
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves configured route precedence and contains live resolver rejection", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const seen = new Map<string, unknown>();
+    const results: unknown[] = [];
+    const warn = vi.fn();
+    const resolveNotifyFallbackConversationId = vi.fn(async () => {
+      throw new Error("destination lookup failed");
+    });
+    const responder: AgentResponder = {
+      async respond(request) {
+        const jobId = (request.metadata as { cron: { jobId: string } }).cron.jobId;
+        seen.set(jobId, request.replyTo);
+        return { text: jobId };
+      },
+    };
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [
+        {
+          id: "explicit",
+          expression: "* * * * *",
+          prompt: "p",
+          notify: true,
+          notifyConversationId: "slack:C-EXPLICIT",
+          notifyFallbackConversationId: "slack:C-FALLBACK",
+        },
+        {
+          id: "fallback",
+          expression: "* * * * *",
+          prompt: "p",
+          notify: true,
+          notifyFallbackConversationId: "slack:C-FALLBACK",
+        },
+        { id: "dynamic", expression: "* * * * *", prompt: "p", notify: true },
+      ],
+      now: () => new Date(Date.now()),
+      resolveNotifyFallbackConversationId,
+      onResult: (result) => {
+        results.push(result);
+      },
+      logger: { warn },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(seen.get("explicit")).toEqual({ conversationId: "slack:C-EXPLICIT" });
+      expect(seen.get("fallback")).toEqual({ conversationId: "slack:C-FALLBACK" });
+      expect(seen.has("dynamic")).toBe(true);
+      expect(seen.get("dynamic")).toBeUndefined();
+      expect(resolveNotifyFallbackConversationId).toHaveBeenCalledOnce();
+      expect(results).toHaveLength(3);
+      expect(results).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "succeeded", jobId: "explicit", notifyConversationId: "slack:C-EXPLICIT" }),
+        expect.objectContaining({ kind: "succeeded", jobId: "fallback", notifyConversationId: "slack:C-FALLBACK" }),
+        expect.objectContaining({ kind: "succeeded", jobId: "dynamic" }),
+      ]));
+      const dynamicResult = results.find(
+        (result) => (result as { jobId?: string }).jobId === "dynamic",
+      );
+      expect(dynamicResult).not.toHaveProperty("notifyConversationId");
+      expect(warn).toHaveBeenCalledWith(
+        "Cron native-notify destination resolution failed; running without a reply target.",
+        { jobId: "dynamic", error: "destination lookup failed" },
+      );
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("reclaims the slot when a responder hangs past maxRunMs (watchdog), so future firings still run", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -133,6 +261,56 @@ describe("Cron adapter", () => {
 
       await vi.advanceTimersByTimeAsync(55_000); // next minute boundary -> a NEW run starts
       expect(respondCount).toBe(2); // proves the slot was reclaimed, not skipped as "prior run active"
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("includes destination resolution in maxRunMs and reclaims a slot when the resolver hangs", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const responder = { respond: vi.fn(async () => ({ text: "unexpected" })) } satisfies AgentResponder;
+    const settleResolvers: Array<(value: string | undefined) => void> = [];
+    const resolveNotifyFallbackConversationId = vi.fn(() => {
+      return new Promise<string | undefined>((resolve) => {
+        settleResolvers.push(resolve);
+      });
+    });
+    const results: unknown[] = [];
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "resolver-hang", expression: "* * * * *", prompt: "p", notify: true }],
+      now: () => new Date(Date.now()),
+      resolveNotifyFallbackConversationId,
+      onResult: (result) => {
+        results.push(result);
+      },
+      maxRunMs: 5_000,
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(resolveNotifyFallbackConversationId).toHaveBeenCalledTimes(1);
+      expect(responder.respond).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(results).toContainEqual(expect.objectContaining({
+        kind: "failed",
+        jobId: "resolver-hang",
+        error: expect.stringMatching(/timed out after 5000ms/u),
+      }));
+
+      settleResolvers[0]?.("slack:C1");
+      for (let turn = 0; turn < 4; turn += 1) {
+        await Promise.resolve();
+      }
+      expect(responder.respond).not.toHaveBeenCalled();
+      expect(results).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(55_000);
+      expect(resolveNotifyFallbackConversationId).toHaveBeenCalledTimes(2);
+      expect(responder.respond).not.toHaveBeenCalled();
     } finally {
       scheduler.stop();
       vi.useRealTimers();

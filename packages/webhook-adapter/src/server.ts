@@ -115,7 +115,11 @@ export interface WebhookEndpointOption {
   readonly notify?: boolean;
   /** Optional destination conversationId for native notification delivery. */
   readonly notifyConversationId?: string;
-  /** Host-resolved fallback used after an explicit endpoint or deliverable request conversation. */
+  /**
+   * Pre-resolved fallback used after an explicit endpoint or deliverable request
+   * conversation. Hosts with a live destination set should prefer the
+   * adapter-level per-invocation resolver.
+   */
   readonly notifyFallbackConversationId?: string;
   /** Per-endpoint runtime model override (raw string; a request body `model` wins). */
   readonly model?: string;
@@ -138,6 +142,12 @@ export interface WebhookAdapterOptions {
   readonly maxRunMs?: number;
   readonly responder: AgentResponder<WebhookInvocationRequest, AgentMessageStream, AgentResponse>;
   readonly logger?: WebhookAdapterLogger;
+  /**
+   * Host-owned fallback resolver for notify-enabled invocations without an
+   * explicit endpoint or deliverable request destination. It runs once per
+   * invocation so request.replyTo and completion delivery share one snapshot.
+   */
+  readonly resolveNotifyFallbackConversationId?: () => Promise<string | undefined>;
   /** Endpoints to serve. When omitted, a single legacy endpoint is built from `path`/`defaultMode`. */
   readonly endpoints?: readonly WebhookEndpointOption[];
   /** Legacy single-endpoint path. Folded into a one-element `endpoints` list when `endpoints` is omitted. */
@@ -342,13 +352,6 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       conversationId: body.conversationId,
       text: composePromptText(endpoint.prompt, body.text),
       abortSignal: controller.signal,
-      ...(endpoint.notify !== true
-        ? {}
-        : toReplyTarget(
-            endpoint.notifyConversationId
-              ?? (isDeliverableConversation(body.conversationId) ? body.conversationId : undefined)
-              ?? endpoint.notifyFallbackConversationId,
-          )),
       metadata: {
         webhook: {
           requestId,
@@ -374,6 +377,9 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
         },
       },
     };
+    const resolveRunNotifyConversationId = endpoint.notify === true
+      ? async () => await resolveNotifyConversationId(endpoint, body.conversationId, options)
+      : undefined;
 
     if (body.mode === "async") {
       res.status(202).json({
@@ -383,7 +389,20 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
         statusUrl,
         receivedAt,
       });
-      void runResponder({ request, statusUrl, receivedAt, startedAt, statuses, activeByRun, runKey, active, options, retentionMs, maxStoredRequests });
+      void runResponder({
+        request,
+        ...(resolveRunNotifyConversationId === undefined ? {} : { resolveNotifyConversationId: resolveRunNotifyConversationId }),
+        statusUrl,
+        receivedAt,
+        startedAt,
+        statuses,
+        activeByRun,
+        runKey,
+        active,
+        options,
+        retentionMs,
+        maxStoredRequests,
+      });
       return;
     }
 
@@ -393,7 +412,20 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       }
     });
 
-    const status = await runResponder({ request, statusUrl, receivedAt, startedAt, statuses, activeByRun, runKey, active, options, retentionMs, maxStoredRequests });
+    const status = await runResponder({
+      request,
+      ...(resolveRunNotifyConversationId === undefined ? {} : { resolveNotifyConversationId: resolveRunNotifyConversationId }),
+      statusUrl,
+      receivedAt,
+      startedAt,
+      statuses,
+      activeByRun,
+      runKey,
+      active,
+      options,
+      retentionMs,
+      maxStoredRequests,
+    });
     if (status.status === "succeeded") {
       res.status(200).json(status);
       return;
@@ -439,6 +471,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
 
 async function runResponder(input: {
   readonly request: WebhookInvocationRequest;
+  readonly resolveNotifyConversationId?: () => Promise<string | undefined>;
   readonly statusUrl: string;
   readonly receivedAt: string;
   readonly startedAt: string;
@@ -463,9 +496,17 @@ async function runResponder(input: {
   const maxRunMs = input.options.maxRunMs;
   let timedOut = false;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
+  let request = input.request;
   try {
     const respondPromise = (async () => {
-      const result = await input.options.responder.respond(input.request, stream);
+      const notifyConversationId = await input.resolveNotifyConversationId?.();
+      if (input.request.abortSignal.aborted) {
+        throw input.request.abortSignal.reason ?? new Error("Webhook run was cancelled before responder start.");
+      }
+      request = notifyConversationId === undefined
+        ? input.request
+        : { ...input.request, replyTo: { conversationId: notifyConversationId } };
+      const result = await input.options.responder.respond(request, stream);
       await stream.finish(result.text);
       return result;
     })();
@@ -488,14 +529,14 @@ async function runResponder(input: {
     } else {
       response = await respondPromise;
     }
-    if (input.request.abortSignal.aborted) {
+    if (request.abortSignal.aborted) {
       // The responder resolved but the run was aborted in flight (client
       // disconnect or a maxRunMs the responder ignored): report it as cancelled,
       // not succeeded. Mirrors the cron adapter's post-run abort guard.
       status = {
         status: "cancelled",
         requestId: input.active.requestId,
-        conversationId: input.request.conversationId,
+        conversationId: request.conversationId,
         statusUrl: input.statusUrl,
         receivedAt: input.receivedAt,
         startedAt: input.startedAt,
@@ -504,13 +545,13 @@ async function runResponder(input: {
       };
       input.options.logger?.warn?.("Webhook responder resolved after an abort; reporting cancelled.", {
         requestId: input.active.requestId,
-        conversationId: input.request.conversationId,
+        conversationId: request.conversationId,
       });
     } else {
       status = {
         status: "succeeded",
         requestId: input.active.requestId,
-        conversationId: input.request.conversationId,
+        conversationId: request.conversationId,
         statusUrl: input.statusUrl,
         receivedAt: input.receivedAt,
         startedAt: input.startedAt,
@@ -521,22 +562,22 @@ async function runResponder(input: {
     }
   } catch (error) {
     // A watchdog timeout is a server-imposed failure, not a user cancel.
-    const cancelled = !timedOut && (input.request.abortSignal.aborted || isAgentResponseCancelledError(error));
+    const cancelled = !timedOut && (request.abortSignal.aborted || isAgentResponseCancelledError(error));
     status = {
       status: cancelled ? "cancelled" : "failed",
       requestId: input.active.requestId,
-      conversationId: input.request.conversationId,
+      conversationId: request.conversationId,
       statusUrl: input.statusUrl,
       receivedAt: input.receivedAt,
       startedAt: input.startedAt,
       completedAt: new Date().toISOString(),
       error: timedOut
-        ? `Webhook run timed out after ${String(maxRunMs)}ms (responder did not settle); reclaiming the slot.`
+        ? `Webhook run timed out after ${String(maxRunMs)}ms (run did not settle); reclaiming the slot.`
         : errorToMessage(error),
     };
-    input.options.logger?.[cancelled ? "warn" : "error"]?.("Webhook responder failed.", {
+    input.options.logger?.[cancelled ? "warn" : "error"]?.("Webhook run failed.", {
       requestId: input.active.requestId,
-      conversationId: input.request.conversationId,
+      conversationId: request.conversationId,
       error: status.error,
     });
   } finally {
@@ -551,7 +592,7 @@ async function runResponder(input: {
   // store, callback, and HTTP result separate also prevents an onResult hook
   // from mutating the status later returned by the status endpoint.
   setStatus(input.statuses, status, input.retentionMs, input.maxStoredRequests);
-  emitResult(input, sanitizeWebhookInvocationStatus(status));
+  emitResult({ ...input, request }, sanitizeWebhookInvocationStatus(status));
   return sanitizeWebhookInvocationStatus(status);
 }
 
@@ -836,8 +877,32 @@ function isDeliverableConversation(conversationId: string): boolean {
   return conversationId.startsWith("telegram:") || conversationId.startsWith("slack:");
 }
 
-function toReplyTarget(conversationId: string | undefined): Pick<AgentRequestBase, "replyTo"> {
-  return conversationId === undefined ? {} : { replyTo: { conversationId } };
+async function resolveNotifyConversationId(
+  endpoint: ResolvedEndpoint,
+  requestConversationId: string,
+  options: WebhookAdapterOptions,
+): Promise<string | undefined> {
+  if (endpoint.notify !== true) {
+    return undefined;
+  }
+  const configured = endpoint.notifyConversationId
+    ?? (isDeliverableConversation(requestConversationId) ? requestConversationId : undefined)
+    ?? endpoint.notifyFallbackConversationId;
+  if (configured !== undefined) {
+    return configured;
+  }
+  if (options.resolveNotifyFallbackConversationId === undefined) {
+    return undefined;
+  }
+  try {
+    return normalizeOptionalString(await options.resolveNotifyFallbackConversationId());
+  } catch (error) {
+    options.logger?.warn?.("Webhook native-notify destination resolution failed; running without a reply target.", {
+      endpointName: endpoint.name,
+      error: errorToMessage(error),
+    });
+    return undefined;
+  }
 }
 
 function validatePositiveInteger(value: number | undefined, name: string): void {

@@ -205,6 +205,140 @@ describe("Webhook adapter", () => {
     }
   });
 
+  it("snapshots each inferred route before a mid-invocation candidate change", async () => {
+    const seen: unknown[] = [];
+    const completed: unknown[] = [];
+    let candidates = ["slack:C1"];
+    let resolutionCount = 0;
+    const resolveNotifyFallbackConversationId = vi.fn(async () => {
+      const resolved = candidates.length === 1 ? candidates[0] : undefined;
+      if (resolutionCount === 0) {
+        // The allowlist changes after this invocation selects C1 but before the
+        // responder starts. The request must keep the selected route.
+        candidates = ["slack:C1", "slack:C2"];
+      }
+      resolutionCount += 1;
+      return resolved;
+    });
+    const responder: AgentResponder = {
+      async respond(request) {
+        seen.push(request.replyTo);
+        return { text: "digest" };
+      },
+    };
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      endpoints: [{ name: "digest", path: "/digest", mode: "sync", notify: true }],
+      responder,
+      resolveNotifyFallbackConversationId,
+      onResult: (_status, request) => {
+        completed.push(request.replyTo);
+      },
+    });
+
+    try {
+      const first = await fetch(
+        `${server.url}/digest`,
+        postJson({ text: "first", conversationId: "logical:first", mode: "sync" }),
+      );
+      expect(first.status).toBe(200);
+      expect(seen[0]).toEqual({ conversationId: "slack:C1" });
+      expect(completed[0]).toEqual({ conversationId: "slack:C1" });
+
+      const second = await fetch(
+        `${server.url}/digest`,
+        postJson({ text: "second", conversationId: "logical:second", mode: "sync" }),
+      );
+      expect(second.status).toBe(200);
+      expect(seen[1]).toBeUndefined();
+      expect(completed[1]).toBeUndefined();
+      expect(resolveNotifyFallbackConversationId).toHaveBeenCalledTimes(2);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("preserves route precedence and contains live resolver rejection", async () => {
+    const seen = new Map<string, unknown>();
+    const warn = vi.fn();
+    const resolveNotifyFallbackConversationId = vi.fn(async () => {
+      throw new Error("destination lookup failed");
+    });
+    const responder: AgentResponder = {
+      async respond(request) {
+        const endpointName = (request.metadata as { webhook: { endpointName: string } }).webhook.endpointName;
+        seen.set(endpointName, request.replyTo);
+        return { text: endpointName };
+      },
+    };
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      endpoints: [
+        {
+          name: "explicit",
+          path: "/explicit",
+          mode: "sync",
+          notify: true,
+          notifyConversationId: "slack:C-EXPLICIT",
+          notifyFallbackConversationId: "slack:C-FALLBACK",
+        },
+        {
+          name: "request",
+          path: "/request",
+          mode: "sync",
+          notify: true,
+          notifyFallbackConversationId: "slack:C-FALLBACK",
+        },
+        {
+          name: "fallback",
+          path: "/fallback",
+          mode: "sync",
+          notify: true,
+          notifyFallbackConversationId: "slack:C-FALLBACK",
+        },
+        { name: "dynamic", path: "/dynamic", mode: "sync", notify: true },
+      ],
+      responder,
+      resolveNotifyFallbackConversationId,
+      logger: { warn },
+    });
+
+    try {
+      const explicit = await fetch(
+        `${server.url}/explicit`,
+        postJson({ text: "p", conversationId: "slack:C-REQUEST", mode: "sync" }),
+      );
+      const request = await fetch(
+        `${server.url}/request`,
+        postJson({ text: "p", conversationId: "slack:C-REQUEST", mode: "sync" }),
+      );
+      const fallback = await fetch(
+        `${server.url}/fallback`,
+        postJson({ text: "p", conversationId: "logical:fallback", mode: "sync" }),
+      );
+      const dynamic = await fetch(
+        `${server.url}/dynamic`,
+        postJson({ text: "p", conversationId: "logical:dynamic", mode: "sync" }),
+      );
+
+      expect([explicit.status, request.status, fallback.status, dynamic.status]).toEqual([200, 200, 200, 200]);
+      expect(seen.get("explicit")).toEqual({ conversationId: "slack:C-EXPLICIT" });
+      expect(seen.get("request")).toEqual({ conversationId: "slack:C-REQUEST" });
+      expect(seen.get("fallback")).toEqual({ conversationId: "slack:C-FALLBACK" });
+      expect(seen.has("dynamic")).toBe(true);
+      expect(seen.get("dynamic")).toBeUndefined();
+      expect(resolveNotifyFallbackConversationId).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(
+        "Webhook native-notify destination resolution failed; running without a reply target.",
+        { endpointName: "dynamic", error: "destination lookup failed" },
+      );
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("prefers a deliverable request conversation over the host-inferred fallback", async () => {
     const seen: unknown[] = [];
     const responder: AgentResponder = {
@@ -754,6 +888,56 @@ describe("Webhook adapter", () => {
       const result = await resultPromise;
       expect(result.status).toBe("cancelled");
       await expect.poll(async () => server.activeRequestCount).toBe(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("includes destination resolution in maxRunMs without starting a stale responder", async () => {
+    let resolveResult: ((status: { status: string; error?: string }) => void) | undefined;
+    const resultPromise = new Promise<{ status: string; error?: string }>((resolve) => {
+      resolveResult = resolve;
+    });
+    let settleResolver!: (value: string | undefined) => void;
+    const resolverPromise = new Promise<string | undefined>((resolve) => {
+      settleResolver = resolve;
+    });
+    const resolveNotifyFallbackConversationId = vi.fn(() => resolverPromise);
+    const responder = { respond: vi.fn(async () => ({ text: "unexpected" })) } satisfies AgentResponder;
+    const onResult = vi.fn((status: { status: string; error?: string }) => {
+      resolveResult?.(status);
+    });
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      endpoints: [{ name: "notify", path: "/notify", mode: "async", notify: true }],
+      maxRunMs: 100,
+      responder,
+      resolveNotifyFallbackConversationId,
+      onResult: (status) => onResult(status as { status: string; error?: string }),
+    });
+
+    try {
+      const accepted = await fetch(`${server.url}/notify`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "hang", conversationId: "logical:timeout", mode: "async" }),
+      });
+      expect(accepted.status).toBe(202);
+
+      const result = await resultPromise;
+      expect(result.status).toBe("failed");
+      expect(result.error).toMatch(/timed out/i);
+      expect(resolveNotifyFallbackConversationId).toHaveBeenCalledOnce();
+      expect(responder.respond).not.toHaveBeenCalled();
+      await expect.poll(async () => server.activeRequestCount).toBe(0);
+
+      settleResolver("slack:C1");
+      for (let turn = 0; turn < 4; turn += 1) {
+        await Promise.resolve();
+      }
+      expect(responder.respond).not.toHaveBeenCalled();
+      expect(onResult).toHaveBeenCalledOnce();
     } finally {
       await server.stop();
     }

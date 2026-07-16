@@ -96,9 +96,9 @@ Harness response metadata is an external boundary. `metadata.summary` may includ
 
 ## Run watchdog: a wedged run is aborted, not left to starve
 
-A hung run (a responder that never settles, a stuck provider call) would otherwise hold its conversation slot forever. This matters most in **async** mode: with no client connection to disconnect, nothing else bounds the run. To prevent that, each webhook run is raced against a **20-minute watchdog** (`maxRunMs`, default `1200000`): a run that does not finish in time has its request signal aborted and its conversation slot reclaimed even if the responder never settles. This brings webhook to parity with [cron's](/channels/cron/#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve) `maxRunMs`.
+A hung run (a destination resolver, responder, or provider call that never settles) would otherwise hold its conversation slot forever. This matters most in **async** mode: with no client connection to disconnect, nothing else bounds the run. To prevent that, each webhook run is raced against a **20-minute watchdog** (`maxRunMs`, default `1200000`): a run that does not finish in time has its request signal aborted and its conversation slot reclaimed even if its in-flight work never settles. This brings webhook to parity with [cron's](/channels/cron/#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve) `maxRunMs`.
 
-Set `webhook.maxRunMs` to override the default (min 0, max 86_400_000); `0` disables the watchdog. A run whose responder resolves **after** the abort is classified `cancelled` rather than `succeeded` — see [Run artifacts & traces](/observability/artifacts-and-traces/).
+Set `webhook.maxRunMs` to override the default (min 0, max 86_400_000); `0` disables the watchdog. Run work that settles **after** the abort cannot produce a successful result — see [Run artifacts & traces](/observability/artifacts-and-traces/).
 
 ## Proactive delivery
 
