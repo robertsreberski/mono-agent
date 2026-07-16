@@ -31,12 +31,13 @@ VERSION="$(node -e "process.stdout.write(require('./packages/agent-app/package.j
 pnpm run release:validate -- --tag "v${VERSION}"
 pnpm run check:architecture     # catalog + README sections + dependency categories
 pnpm run build                  # packages + demos, then strict deploy-output marker on POSIX/macOS
+pnpm run verify:consumers --skip-build
 pnpm run release:pack -- --tag "v${VERSION}"
 pnpm run release:consumer -- --tag "v${VERSION}" --require-minimum  # omit the flag above Node 22.19.0
 pnpm run typecheck
-pnpm test                       # includes release:test + scripts:test + all packages + demos
+pnpm run test                   # includes release:test + scripts:test + all packages + demos
+pnpm run test:demo
 git diff --check                # whitespace — CI runs this too
-pnpm run verify:consumers -- --skip-build
 ```
 
 The Node 24 website job runs independently:
@@ -53,13 +54,21 @@ consumer, and alpha/beta consumer contracts:
 pnpm run verify:all
 ```
 
-It is **not** a one-shot equivalent of the whole CI workflow: it neither
-installs dependencies nor runs the separate website job, and it uses the
-repository's local secret checker instead of CI's pinned gitleaks image. Both
-surfaces run `verify:consumers --skip-build`. Both also include
-`check:dependency-vulnerabilities`: CI runs it once on Node 22.19 immediately
-after the frozen install and before secrets, while `verify:all` runs it after
-`check:licenses` in its local repo-gate order.
+The semantic guard in `scripts/__tests__/verify-all.test.mjs` compares ordered
+labels, command argv, and `if:` behavior on every CI Node-matrix leg. Its exact
+intentional differences live in `VERIFY_GATE_DELTA`: CI runs the pinned
+gitleaks container instead of the host-aware `check:secrets` wrapper and spells
+the test alias `pnpm test`; local `verify:all` repeats `test:demo` after the root
+test command. CI restricts `check:dependency-vulnerabilities` and the packed
+consumer to Node 22.19.0; local `verify:all` runs both on newer supported Node
+versions, without the minimum-version assertion for the packed consumer. CI
+runs the vulnerability check after the frozen install, while the local gate
+runs it after `check:licenses`.
+
+After applying those declared substitutions, `verify:all` is a strict
+command-coverage superset of the CI verify job. It is still not a one-shot
+equivalent of the whole CI workflow: CI supplies the Node 22.19.0/24 matrix,
+performs a frozen dependency install, and runs the separate website job.
 
 Temporary dependency-vulnerability dispositions are strict, accountable
 exceptions rather than a loose allowlist. Every advisory entry pins its exact

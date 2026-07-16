@@ -8,28 +8,86 @@ import { MINIMUM_NODE_VERSION } from "./node-version.mjs";
 import { runVerifyConsumers } from "./verify-consumers.mjs";
 
 /**
- * Raw command-list differences from the CI verify job.
+ * Intentional semantic differences from the CI verify job.
  *
- * The shared order and these exact labels are checked against ci.yml by
- * scripts/__tests__/verify-all.test.mjs. Setup, the Node matrix, the pinned
- * gitleaks container, and the separate website job are execution-environment
- * differences rather than repo-gate commands.
+ * scripts/__tests__/verify-all.test.mjs checks the complete ordered command
+ * descriptors for every CI Node-matrix leg. Setup and the separate website job
+ * are execution-environment differences rather than repo-gate commands.
  */
 export const VERIFY_GATE_DELTA = Object.freeze({
   ciOnly: Object.freeze([
     Object.freeze({
-      label: "build:demo",
+      gate: Object.freeze({
+        label: "build:demo",
+        command: "pnpm",
+        args: Object.freeze(["run", "build:demo"]),
+      }),
+      after: "test",
       reason: "CI repeats the demo build already included by the root build command; removal is tracked by #284.",
     }),
     Object.freeze({
-      label: "typecheck:demo",
+      gate: Object.freeze({
+        label: "typecheck:demo",
+        command: "pnpm",
+        args: Object.freeze(["run", "typecheck:demo"]),
+      }),
+      after: "build:demo",
       reason: "CI repeats the demo typecheck already included by the root typecheck command; removal is tracked by #284.",
     }),
   ]),
-  verifyAllOnly: Object.freeze([
+  commandDifferences: Object.freeze([
     Object.freeze({
-      label: "verify:consumers",
-      reason: "The local aggregate gate checks golden consumer contracts; adding the same CI step is tracked by #270.",
+      label: "check:secrets",
+      ci: Object.freeze({
+        label: "check:secrets",
+        command: "docker",
+        args: Object.freeze([
+          "run",
+          "--rm",
+          "-v",
+          "$PWD:/repo",
+          "ghcr.io/gitleaks/gitleaks:v8.30.1",
+          "dir",
+          "--redact",
+          "--no-banner",
+          "--config",
+          "/repo/.gitleaks.toml",
+          "/repo",
+        ]),
+      }),
+      verifyAll: Object.freeze({
+        label: "check:secrets",
+        command: "pnpm",
+        args: Object.freeze(["run", "check:secrets"]),
+      }),
+      reason: "CI runs the pinned gitleaks container; the local gate uses the host-aware check:secrets wrapper.",
+    }),
+    Object.freeze({
+      label: "test",
+      ci: Object.freeze({
+        label: "test",
+        command: "pnpm",
+        args: Object.freeze(["test"]),
+      }),
+      verifyAll: Object.freeze({
+        label: "test",
+        command: "pnpm",
+        args: Object.freeze(["run", "test"]),
+      }),
+      reason: "pnpm test and pnpm run test invoke the same package script.",
+    }),
+  ]),
+  matrixDifferences: Object.freeze([
+    Object.freeze({
+      label: "release:consumer",
+      ciCondition: `\${{ matrix.node-version == '${MINIMUM_NODE_VERSION}' }}`,
+      ciNodeVersion: MINIMUM_NODE_VERSION,
+      verifyAllOnlyGate: Object.freeze({
+        label: "release:consumer",
+        command: "pnpm",
+        args: Object.freeze(["run", "release:consumer", "--", "--tag", "<release-tag>"]),
+      }),
+      reason: "CI runs the packed consumer only on the minimum-Node leg; verify:all also smoke-tests it on newer supported Node versions without --require-minimum.",
     }),
   ]),
 });
@@ -55,6 +113,12 @@ export function createRepoGate({ releaseTag, nodeVersion = process.versions.node
     { label: "release:validate", command: "pnpm", args: ["run", "release:validate", "--", "--tag", releaseTag] },
     { label: "check:architecture", command: "pnpm", args: ["run", "check:architecture"] },
     { label: "build", command: "pnpm", args: ["run", "build"] },
+    {
+      label: "verify:consumers",
+      command: "pnpm",
+      args: ["run", "verify:consumers", "--skip-build"],
+      runner: "verifyConsumers",
+    },
     { label: "release:pack", command: "pnpm", args: ["run", "release:pack", "--", "--tag", releaseTag] },
     { label: "release:consumer", command: "pnpm", args: packedConsumerArgs },
     { label: "typecheck", command: "pnpm", args: ["run", "typecheck"] },
@@ -107,7 +171,31 @@ export async function runVerifyAll(options = {}) {
   const releaseTag = options.releaseTag ?? readReleaseSmokeTag(cwd);
   const nodeVersion = options.nodeVersion ?? process.versions.node;
   let repoOk = true;
+  let consumersAttempted = false;
+  let consumersOk = false;
+  let alphaOk = false;
+  let betaOk = false;
   for (const command of createRepoGate({ releaseTag, nodeVersion })) {
+    if (command.runner === "verifyConsumers") {
+      consumersAttempted = true;
+      const consumerResult = await verifyConsumers({
+        argv: command.args.slice(2),
+        cwd,
+        stdout,
+        stderr,
+        runCommand,
+        writeOutput: true,
+      });
+      alphaOk = consumerResult.statusByLabel.get("local-agent-alpha contract") === true;
+      betaOk = consumerResult.statusByLabel.get("local-agent-beta contract") === true;
+      consumersOk = consumerResult.exitCode === 0 && alphaOk && betaOk;
+      if (!consumersOk) {
+        stderr.write("Consumer gate failed at verify:consumers; later repo gates skipped.\n");
+        break;
+      }
+      continue;
+    }
+
     const result = await runCommand(command.command, command.args, { cwd, label: command.label });
     if (result !== 0) {
       repoOk = false;
@@ -116,26 +204,13 @@ export async function runVerifyAll(options = {}) {
     }
   }
 
-  let alphaOk = false;
-  let betaOk = false;
-  if (repoOk) {
-    const consumerResult = await verifyConsumers({
-      argv: ["--skip-build"],
-      cwd,
-      stdout,
-      stderr,
-      runCommand,
-      writeOutput: true,
-    });
-    alphaOk = consumerResult.statusByLabel.get("local-agent-alpha contract") === true;
-    betaOk = consumerResult.statusByLabel.get("local-agent-beta contract") === true;
-  } else {
+  if (!consumersAttempted) {
     stderr.write("Consumer verification skipped because the repo gate is not green.\n");
   }
 
   stdout.write(renderFinalSummary({ repoOk, alphaOk, betaOk }));
   return {
-    exitCode: repoOk && alphaOk && betaOk ? 0 : 1,
+    exitCode: repoOk && consumersOk ? 0 : 1,
   };
 }
 
@@ -167,7 +242,7 @@ function usage() {
     "Usage:",
     "  pnpm run verify:all",
     "",
-    "Runs the CI-aligned repo gate, including pnpm and dependency-vulnerability policy checks, release validation, package packing, and a packed-consumer smoke test, then verify:consumers.",
+    "Runs the CI-aligned repo gate, including pnpm and dependency-vulnerability policy checks, consumer contracts immediately after build, release validation, package packing, and a packed-consumer smoke test.",
   ].join("\n");
 }
 
