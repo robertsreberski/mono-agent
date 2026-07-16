@@ -145,6 +145,7 @@ describe("mono-agent-composer reference parity", () => {
   const interactivePlaybook = readRepoFile(
     "docs/playbooks/interactive-transcription-large-media.md",
   );
+  const generatedConfigReference = readRepoFile("docs/config/reference.md");
   const coverage = readRepoFile(
     "packages/agent-app/skills/mono-agent-composer/references/feature-coverage.md",
   );
@@ -164,6 +165,18 @@ describe("mono-agent-composer reference parity", () => {
       unexpected: [],
       duplicates: [],
     });
+  });
+
+  it("distinguishes JSON config coverage from optional environment mappings", () => {
+    const legend = between(coverage, "# Feature Coverage", "## Runtime");
+    const pluginConfigRow = markdownTableRows(generatedConfigReference).find(
+      (cells) => cells[0] === "`channels.plugins`",
+    );
+
+    expect(legend).toContain("environment-variable overrides are optional");
+    expect(legend).toContain("`--` means none, as for `channels.plugins`");
+    expect(legend).not.toContain("env var override always exists");
+    expect(pluginConfigRow?.[2]).toBe("`--`");
   });
 
   it("fails the reviewer synthetic config-row mutation when the composer is unchanged", () => {
