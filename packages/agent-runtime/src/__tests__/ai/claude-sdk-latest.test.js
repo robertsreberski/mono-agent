@@ -88,6 +88,20 @@ describe("Claude Agent SDK 0.3 effort and query contract", () => {
     expect(queryMock).not.toHaveBeenCalled();
   });
 
+  it("rejects ultra before query creation with an actionable typed result", async () => {
+    const result = await generateClaudeResponse("system", options({ effort: "ultra" }));
+    expect(result).toMatchObject({
+      failureKind: "skipped_capability_mismatch",
+      errorDetails: {
+        claude_error_code: "claude_effort_unsupported",
+        claude_error_category: "nonretryable",
+        retryable: false,
+      },
+    });
+    expect(result.error).toContain('does not support effort "ultra"');
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
   it("uses tools for an explicit empty allowlist and leaves canUseTool authoritative", async () => {
     installStream([resultEvent()]);
     const approval = vi.fn(async () => ({ decision: "approve" }));

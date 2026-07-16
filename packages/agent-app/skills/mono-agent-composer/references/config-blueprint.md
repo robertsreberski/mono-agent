@@ -42,6 +42,9 @@ new agent.
     "routeSafety": "uniform",              // uniform | per-route-native
     "executionMode": "sdk",                // sdk | cli (default inferred from model)
     "effort": "medium",                    // none|minimal|low|medium|high|xhigh|max|ultra; omit for direct opencode:*
+                                           // Reasoning-capable pi:* maps ultra to LOW; Pi without reasoning uses OFF.
+                                           // Direct codex:* forwards ultra unchanged; direct Claude rejects ultra;
+                                           // direct OpenCode rejects explicit effort. Ranking above max only prevents keyword downgrade.
     "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "workspace": ".",

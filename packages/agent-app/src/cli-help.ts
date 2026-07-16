@@ -25,6 +25,8 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "--preset seeds a blueprint; --with adds channels.",
       `Effort levels: ${EFFORT_LEVELS.join(", ")}; an omitted fallback effort uses that provider's default.`,
       "--fallback-models is deprecated and will be removed in v2.0.0; repeat --fallback for new scripts.",
+      "Reasoning-capable pi:* maps ultra to LOW; Pi without reasoning uses OFF; direct codex:* forwards ultra unchanged.",
+      "Direct Claude rejects ultra; direct OpenCode rejects explicit effort. Ranking above max only prevents keyword downgrade.",
       "--auth runs supported provider auth/preflight before writing; --codex-auth device supports headless hosts.",
       "--dry-run previews only. Existing scaffold/config files are not overwritten;",
       "guided secret setup may securely update .env and .gitignore after explicit review.",

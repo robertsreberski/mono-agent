@@ -1097,6 +1097,9 @@ function descriptionFor(id: string): string {
   if (id === "runtime.routeSafety") {
     return "Uniform preserves one shared safety contract; per-route-native uses and reports each provider's explicit contract.";
   }
+  if (id === "runtime.effort") {
+    return "Route-specific effort. Reasoning-capable pi:* maps ultra to LOW; Pi without reasoning uses OFF. Direct codex:* forwards ultra unchanged; direct Claude rejects ultra; direct OpenCode rejects explicit effort. Ranking above max only prevents keyword downgrade.";
+  }
   if (id === "tools.mcpRequestContextServers") {
     return "Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context.";
   }

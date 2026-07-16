@@ -74,7 +74,7 @@ When you select **Scheduled jobs (cron)** in the guided `mono-agent init` wizard
 | `jobs[].notifyConversationId` | string | no | inferred if exactly one destination | Destination conversation id for native notification. |
 | `jobs[].notifyFailureCooldownHours` | number | no | `6` | Per-job cooldown, in hours, for all-models-failed error notices on `notify: true` jobs. |
 | `jobs[].model` | string | no | `runtime.model` | Per-job model override. Becomes this turn's primary, keeping canonical `runtime.fallbacks` (or legacy backups). See [Per-trigger model & effort](#per-trigger-model--effort). |
-| `jobs[].effort` | string | no | `runtime.effort` | Per-job reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. |
+| `jobs[].effort` | string | no | `runtime.effort` | Per-job reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. Reasoning-capable `pi:*` maps `ultra` to LOW; Pi without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged; direct Claude rejects `ultra`; direct OpenCode rejects explicit effort. Ranking above `max` only prevents keyword downgrade. |
 
 ## Per-trigger model & effort
 

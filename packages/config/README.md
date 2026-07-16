@@ -60,6 +60,12 @@ for isolated provider-native contracts in a mixed chain. Effort values are
 `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`, subject
 to the selected model's supported subset.
 
+`ultra` is route-specific. Reasoning-capable `pi:*` maps `ultra` to LOW; Pi
+without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged; direct
+Claude rejects `ultra`; direct OpenCode rejects explicit effort. `effortRank`
+places `ultra` above `max` only so keyword escalation cannot downgrade an
+explicitly configured value.
+
 ## Pi Credentials
 
 Built-in Pi OAuth and API-key providers read credentials through the configured
