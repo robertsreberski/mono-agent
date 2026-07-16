@@ -154,16 +154,17 @@ describe("verify-all", () => {
       "build",
       "verify:consumers",
     ]);
-    expect(stderr.text).toContain("Consumer gate failed at verify:consumers; later repo gates skipped.");
-    expect(stdout.text).toContain("repo ok");
-    expect(stdout.text).toContain("local-agent-alpha contract ok");
-    expect(stdout.text).toContain("local-agent-beta contract fail");
-    expect(stdout.text.endsWith([
-      "repo green",
+    expect(stderr.text).toBe("Consumer gate failed at verify:consumers; later repo gates skipped.\n");
+    expect(stdout.text).toBe([
+      "final summary",
+      "repo fail",
+      "local-agent-alpha contract ok",
+      "local-agent-beta contract fail",
+      "repo failed",
       "local-agent-alpha contract green",
       "local-agent-beta contract failed",
       "",
-    ].join("\n"))).toBe(true);
+    ].join("\n"));
   });
 
   it("runs packed-consumer smoke coverage on newer Node without claiming the minimum-version proof", () => {
@@ -239,6 +240,82 @@ describe("verify-all", () => {
 
     expect(() => expectCiParity(mutatedSource)).toThrow();
   });
+
+  it("rejects executable gate steps that omit a display name", () => {
+    const source = readCiWorkflow();
+    const architecture = [
+      "      - name: Check package architecture",
+      "        run: pnpm run check:architecture",
+    ].join("\n");
+    const unnamedDuplicate = "      - run: pnpm run check:architecture";
+    const mutatedSource = replaceExactly(
+      source,
+      architecture,
+      `${architecture}\n\n${unnamedDuplicate}`,
+    );
+
+    expect(() => expectCiParity(mutatedSource)).toThrow();
+  });
+
+  it("treats display names as non-semantic metadata", () => {
+    const source = readCiWorkflow();
+    const mutatedSource = replaceExactly(
+      source,
+      "      - name: Check package architecture",
+      "      - name: Renamed architecture display",
+    );
+
+    expectCiParity(mutatedSource);
+  });
+
+  it("rejects folded run blocks that change release-tag shell semantics", () => {
+    const source = readCiWorkflow();
+    const original = [
+      "      - name: Derive release smoke tag",
+      "        id: release-smoke",
+      "        run: |",
+    ].join("\n");
+    const folded = original.replace("run: |", "run: >");
+    const mutatedSource = replaceExactly(source, original, folded);
+
+    expect(() => expectCiParity(mutatedSource)).toThrow(/Folded CI run blocks are not supported/u);
+  });
+
+  it("rejects continue-on-error on a deciding gate", () => {
+    const source = readCiWorkflow();
+    const original = [
+      "      - name: Check package architecture",
+      "        run: pnpm run check:architecture",
+    ].join("\n");
+    const continued = [
+      "      - name: Check package architecture",
+      "        continue-on-error: true",
+      "        run: pnpm run check:architecture",
+    ].join("\n");
+    const mutatedSource = replaceExactly(source, original, continued);
+
+    expect(() => expectCiParity(mutatedSource)).toThrow(/must fail fast/u);
+  });
+
+  it("rejects unknown named and unnamed executable steps", () => {
+    const source = readCiWorkflow();
+    const architecture = [
+      "      - name: Check package architecture",
+      "        run: pnpm run check:architecture",
+    ].join("\n");
+    const unknownSteps = [
+      [
+        "      - name: Undeclared executable",
+        "        run: echo unexpected",
+      ].join("\n"),
+      "      - run: echo unexpected",
+    ];
+
+    for (const unknownStep of unknownSteps) {
+      const mutatedSource = replaceExactly(source, architecture, `${architecture}\n\n${unknownStep}`);
+      expect(() => parseCiVerifyJob(mutatedSource)).toThrow(/Unclassified CI run step/u);
+    }
+  });
 });
 
 function expectCiParity(source) {
@@ -308,63 +385,137 @@ function parseCiVerifyJob(source) {
   }
 
   const gates = [];
-  const steps = verifyJob.split(/^      - name: /mu).slice(1);
+  const environmentCounts = new Map(ENVIRONMENT_RUN_STEPS.map((step) => [step.key, 0]));
+  const stepsStart = verifyJob.indexOf("    steps:\n");
+  if (stepsStart < 0) {
+    throw new Error("The CI verify job must contain a steps list.");
+  }
+  const steps = verifyJob
+    .slice(stepsStart + "    steps:\n".length)
+    .split(/^      - /mu)
+    .slice(1)
+    .map((step) => `        ${step}`);
+  if (steps.length === 0) {
+    throw new Error("The CI verify job must contain at least one step.");
+  }
+
   for (const step of steps) {
-    const name = step.slice(0, step.indexOf("\n")).trim();
-    const commandSource = readRunCommand(step);
-    if (commandSource === undefined) {
-      continue;
+    const fields = parseStepFields(step);
+    const name = fields.get("name")?.value ?? "<unnamed>";
+    const continueOnError = fields.get("continue-on-error")?.value;
+    if (continueOnError !== undefined && continueOnError !== "false") {
+      throw new Error(`CI step must fail fast: ${name}`);
     }
-    const condition = /^        if: (.+)$/mu.exec(step)?.[1].trim() ?? ALWAYS;
-    const normalizedCommand = normalizeRunCommand(commandSource);
-    const gate = classifyGate(normalizedCommand);
-    if (gate !== undefined) {
-      gates.push({ ...gate, condition });
+
+    const run = readRunCommand(step, fields);
+    if (run === undefined) {
+      assertOnlyStepFields(fields, USES_STEP_FIELDS, name);
+      if (!fields.has("uses")) {
+        throw new Error(`Unclassified non-executable CI step: ${name}`);
+      }
       continue;
     }
 
-    const environmentStep = ENVIRONMENT_RUN_STEPS.get(name);
-    if (environmentStep === undefined) {
+    assertOnlyStepFields(fields, RUN_STEP_FIELDS, name);
+    const condition = fields.get("if")?.value ?? ALWAYS;
+    const normalizedCommand = normalizeRunCommand(run.command);
+    const environmentStep = ENVIRONMENT_RUN_STEPS.find((candidate) => (
+      candidate.command === normalizedCommand && candidate.style === run.style
+    ));
+    if (environmentStep !== undefined) {
+      if (condition !== ALWAYS) {
+        throw new Error(`Environment step condition drifted: ${name}`);
+      }
+      const id = fields.get("id")?.value;
+      if (id !== environmentStep.id) {
+        throw new Error(`Environment step id drifted: ${name}`);
+      }
+      environmentCounts.set(environmentStep.key, environmentCounts.get(environmentStep.key) + 1);
+      continue;
+    }
+
+    const gate = classifyGate(normalizedCommand);
+    if (gate === undefined) {
       throw new Error(`Unclassified CI run step: ${name}`);
     }
-    if (condition !== ALWAYS || normalizedCommand !== environmentStep.command) {
-      throw new Error(`Environment step semantics drifted: ${name}`);
-    }
-    if (environmentStep.id !== undefined && !step.includes(`        id: ${environmentStep.id}\n`)) {
-      throw new Error(`Environment step id drifted: ${name}`);
+    gates.push({ ...gate, condition });
+  }
+
+  for (const environmentStep of ENVIRONMENT_RUN_STEPS) {
+    const count = environmentCounts.get(environmentStep.key);
+    if (count !== 1) {
+      throw new Error(`Expected exactly one ${environmentStep.key} environment step; found ${count}.`);
     }
   }
 
   return { gates, matrixVersions };
 }
 
-const ENVIRONMENT_RUN_STEPS = new Map([
-  ["Enable Corepack", { command: "corepack enable" }],
-  ["Install dependencies", { command: "pnpm install --frozen-lockfile" }],
-  ["Derive release smoke tag", {
+const RUN_STEP_FIELDS = new Set(["name", "id", "if", "continue-on-error", "run"]);
+const USES_STEP_FIELDS = new Set(["name", "id", "if", "continue-on-error", "uses", "with"]);
+
+const ENVIRONMENT_RUN_STEPS = Object.freeze([
+  Object.freeze({ key: "corepack setup", command: "corepack enable", style: "scalar" }),
+  Object.freeze({ key: "dependency install", command: "pnpm install --frozen-lockfile", style: "scalar" }),
+  Object.freeze({
+    key: "release-tag derivation",
     id: "release-smoke",
+    style: "literal",
     command: [
       "set -euo pipefail",
       "VERSION=\"$(node -e \"process.stdout.write(require('./packages/agent-app/package.json').version)\")\"",
       "echo \"tag=v${VERSION}\" >> \"$GITHUB_OUTPUT\"",
     ].join("\n"),
-  }],
+  }),
 ]);
 
-function readRunCommand(step) {
+function parseStepFields(step) {
   const lines = step.split("\n");
-  const runIndex = lines.findIndex((line) => line.startsWith("        run: "));
-  if (runIndex < 0) {
+  const fields = new Map();
+  for (const [lineIndex, line] of lines.entries()) {
+    const match = /^        ([a-z0-9-]+):(.*)$/u.exec(line);
+    if (match === null) {
+      continue;
+    }
+    const [, key, source] = match;
+    if (fields.has(key)) {
+      throw new Error(`Duplicate CI step field: ${key}`);
+    }
+    fields.set(key, { lineIndex, value: source.trim() });
+  }
+  return fields;
+}
+
+function assertOnlyStepFields(fields, allowedFields, name) {
+  for (const field of fields.keys()) {
+    if (!allowedFields.has(field)) {
+      throw new Error(`Unsupported execution field ${field} on CI step: ${name}`);
+    }
+  }
+}
+
+function readRunCommand(step, fields) {
+  const run = fields.get("run");
+  if (run === undefined) {
     return undefined;
   }
 
-  const scalar = lines[runIndex].slice("        run: ".length).trim();
-  if (scalar !== "|" && scalar !== ">") {
-    return scalar;
+  if (run.value.startsWith(">")) {
+    throw new Error("Folded CI run blocks are not supported because they change shell command boundaries.");
+  }
+  if (run.value !== "|") {
+    if (run.value.startsWith("|")) {
+      throw new Error(`Unsupported literal CI run-block modifier: ${run.value}`);
+    }
+    if (run.value.length === 0) {
+      throw new Error("CI run steps must contain a command.");
+    }
+    return { command: run.value, style: "scalar" };
   }
 
+  const lines = step.split("\n");
   const body = [];
-  for (const line of lines.slice(runIndex + 1)) {
+  for (const line of lines.slice(run.lineIndex + 1)) {
     if (line.startsWith("          ")) {
       body.push(line.slice(10));
       continue;
@@ -378,7 +529,10 @@ function readRunCommand(step) {
   while (body.at(-1) === "") {
     body.pop();
   }
-  return body.join("\n");
+  if (body.length === 0) {
+    throw new Error("Literal CI run blocks must contain a command.");
+  }
+  return { command: body.join("\n"), style: "literal" };
 }
 
 function normalizeRunCommand(command) {

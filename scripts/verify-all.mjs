@@ -190,6 +190,7 @@ export async function runVerifyAll(options = {}) {
       betaOk = consumerResult.statusByLabel.get("local-agent-beta contract") === true;
       consumersOk = consumerResult.exitCode === 0 && alphaOk && betaOk;
       if (!consumersOk) {
+        repoOk = false;
         stderr.write("Consumer gate failed at verify:consumers; later repo gates skipped.\n");
         break;
       }
