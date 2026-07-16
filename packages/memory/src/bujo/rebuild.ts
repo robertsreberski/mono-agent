@@ -86,9 +86,14 @@ import {
 /**
  * Rebuild the SQLite index from canonical markdown. No LLM — re-embeds via the db's provider.
  *
+ * This low-level utility mutates a caller-owned `MemoryDb` in place; it does not create, validate,
+ * activate, or retain managed generations. Product callers should use {@link safeRebuildMemoryIndex}.
+ *
  * After indexing memory bullets, reads `graph.jsonl` and mirrors entities/relations into the db.
  * Legacy memory↔entity `about` edges are retired. They are not canonical source
  * data, no built-in production path emits them in v1, and rebuild does not recreate them.
+ *
+ * @see safeRebuildMemoryIndex for the supported managed-generation rebuild path.
  */
 export async function rebuildFromMarkdown(root: string, db: MemoryDb): Promise<{ indexed: number }> {
   const files = listCanonicalFileNames(root, "daily", {
