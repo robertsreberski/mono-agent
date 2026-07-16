@@ -1,8 +1,15 @@
+import dns from "node:dns";
+import { createServer } from "node:http";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 
-import { startWebhookAdapter } from "../index.js";
+import {
+  startWebhookAdapter,
+  WebhookAdapterError,
+  type WebhookAdapterStartResult,
+} from "../index.js";
 
 describe("Webhook adapter", () => {
   it("runs sync HTTP invocations through a structural responder", async () => {
@@ -1224,6 +1231,142 @@ describe("Webhook adapter", () => {
     ).rejects.toMatchObject({ code: "missing_required_config" });
   });
 
+  it("closes a non-loopback actual bind when localhost resolution has no exposure consent", async () => {
+    const originalLookup = dns.lookup;
+    let unexpectedServer: WebhookAdapterStartResult | undefined;
+    let rejection: unknown;
+    dns.lookup = wildcardLocalhostLookup as typeof dns.lookup;
+    try {
+      try {
+        unexpectedServer = await startWebhookAdapter({
+          host: "localhost",
+          port: 0,
+          apiKey: "fixture-key-without-exposure-consent",
+          responder: echoResponder(),
+        });
+      } catch (error) {
+        rejection = error;
+      }
+    } finally {
+      await unexpectedServer?.stop();
+      dns.lookup = originalLookup;
+    }
+    expect(rejection).toMatchObject({
+      code: "unsafe_host",
+      details: {
+        host: "localhost",
+        boundAddress: expect.stringMatching(/^(?:0\.0\.0\.0|::)$/u),
+        boundPort: expect.any(Number),
+      },
+    });
+    if (!(rejection instanceof WebhookAdapterError)
+      || typeof rejection.details.boundPort !== "number") {
+      throw new Error("Expected rejected webhook bind details to include the kernel-selected port.");
+    }
+    await expectPortReusable(rejection.details.boundPort);
+  });
+
+  it("closes a consented non-loopback actual bind when no API key is configured", async () => {
+    const originalLookup = dns.lookup;
+    let unexpectedServer: WebhookAdapterStartResult | undefined;
+    let rejection: unknown;
+    dns.lookup = wildcardLocalhostLookup as typeof dns.lookup;
+    try {
+      try {
+        unexpectedServer = await startWebhookAdapter({
+          host: "localhost",
+          port: 0,
+          allowNonLoopback: true,
+          responder: echoResponder(),
+        });
+      } catch (error) {
+        rejection = error;
+      }
+    } finally {
+      await unexpectedServer?.stop();
+      dns.lookup = originalLookup;
+    }
+    expect(rejection).toMatchObject({
+      code: "missing_required_config",
+      details: {
+        host: "localhost",
+        boundAddress: expect.stringMatching(/^(?:0\.0\.0\.0|::)$/u),
+        boundPort: expect.any(Number),
+      },
+    });
+    if (!(rejection instanceof WebhookAdapterError)
+      || typeof rejection.details.boundPort !== "number") {
+      throw new Error("Expected rejected webhook bind details to include the kernel-selected port.");
+    }
+    await expectPortReusable(rejection.details.boundPort);
+  });
+
+  it("accepts a keyed non-loopback actual bind without weakening auth or header redaction", async () => {
+    const apiKey = "fixture-resolved-bind-key";
+    const seenHeaders: unknown[] = [];
+    const responder: AgentResponder = {
+      async respond(request, stream) {
+        seenHeaders.push(request.metadata?.webhook);
+        await stream.append("resolved bind ok");
+        return {};
+      },
+    };
+    const originalLookup = dns.lookup;
+    let server: WebhookAdapterStartResult | undefined;
+    dns.lookup = wildcardLocalhostLookup as typeof dns.lookup;
+    try {
+      server = await startWebhookAdapter({
+        host: "localhost",
+        port: 0,
+        allowNonLoopback: true,
+        apiKey,
+        responder,
+      });
+      const invokeUrl = `http://127.0.0.1:${server.port}/webhook/invoke`;
+      const unauthorizedResponses = [
+        await fetch(invokeUrl, postJson({ text: "missing auth" })),
+        await fetch(invokeUrl, {
+          ...postJson({ text: "wrong auth" }),
+          headers: { "content-type": "application/json", authorization: "Bearer wrong" },
+        }),
+      ];
+      for (const response of unauthorizedResponses) {
+        expect(response.status).toBe(401);
+        await expect(response.json()).resolves.toEqual({
+          status: "unauthorized",
+          error: "Invalid API key.",
+        });
+      }
+
+      const accepted = await fetch(invokeUrl, {
+        ...postJson({ text: "authorized" }),
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+          cookie: "session=fixture-cookie-secret",
+          "set-cookie": "session=fixture-response-cookie-secret",
+          "proxy-authorization": "Bearer fixture-proxy-secret",
+          "x-api-key": "fixture-secondary-secret",
+          "x-request-id": "safe-resolved-bind-request",
+        },
+      });
+      expect(accepted.status).toBe(200);
+      expect(seenHeaders).toEqual([
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-request-id": "safe-resolved-bind-request" }),
+        }),
+      ]);
+      expect(seenHeaders[0]).not.toHaveProperty("headers.authorization");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.cookie");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.set-cookie");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.proxy-authorization");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.x-api-key");
+    } finally {
+      await server?.stop();
+      dns.lookup = originalLookup;
+    }
+  });
+
   it("enforces bearer auth on an explicitly allowed non-loopback bind", async () => {
     const server = await startWebhookAdapter({
       host: "0.0.0.0",
@@ -1517,5 +1660,41 @@ async function invokeSync(url: string, text: string, conversationId: string): Pr
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ text, conversationId, mode: "sync" }),
+  });
+}
+
+async function expectPortReusable(port: number): Promise<void> {
+  const probe = createServer();
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.once("error", rejectPromise);
+    probe.listen(port, "127.0.0.1", () => resolvePromise());
+  });
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.close((error) => error === undefined ? resolvePromise() : rejectPromise(error));
+  });
+}
+
+function wildcardLocalhostLookup(
+  _hostname: string,
+  options: unknown,
+  callback?: unknown,
+): void {
+  const done = typeof options === "function" ? options : callback;
+  if (typeof done !== "function") {
+    throw new TypeError("dns.lookup callback is required");
+  }
+  const all = typeof options === "object"
+    && options !== null
+    && "all" in options
+    && options.all === true;
+  queueMicrotask(() => {
+    if (all) {
+      (done as (
+        error: null,
+        addresses: Array<{ address: string; family: number }>,
+      ) => void)(null, [{ address: "0.0.0.0", family: 4 }]);
+      return;
+    }
+    (done as (error: null, address: string, family: number) => void)(null, "0.0.0.0", 4);
   });
 }

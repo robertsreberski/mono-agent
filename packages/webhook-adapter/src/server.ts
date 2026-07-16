@@ -253,6 +253,7 @@ const DEFAULT_PATH = "/webhook/invoke";
 const DEFAULT_MODE: WebhookInvocationMode = "sync";
 const DEFAULT_RETENTION_MS = 300_000;
 const DEFAULT_MAX_STORED_REQUESTS = 100;
+const FORCE_CLOSE_AFTER_MS = 250;
 export async function startWebhookAdapter(options: WebhookAdapterOptions): Promise<WebhookAdapterStartResult> {
   validateOptions(options);
   const host = options.host ?? DEFAULT_HOST;
@@ -337,6 +338,34 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       new WebhookAdapterError("start_failed", "Webhook adapter did not receive a TCP address."),
   });
   const boundPort = address.port;
+
+  async function closeRejectedServer(): Promise<void> {
+    for (const active of activeByRun.values()) {
+      active.controller.abort(new Error("Webhook adapter rejected its actual bound address."));
+    }
+    await closeServerBounded(server);
+    activeByRun.clear();
+    statuses.clear();
+  }
+
+  const boundNonLoopback = !isLoopbackHost(address.address);
+  if (boundNonLoopback && options.allowNonLoopback !== true) {
+    await closeRejectedServer();
+    throw new WebhookAdapterError(
+      "unsafe_host",
+      "Webhook adapter resolved a loopback host to a non-loopback bind address.",
+      { host, boundAddress: address.address, boundPort },
+    );
+  }
+  if (boundNonLoopback && apiKey === undefined) {
+    await closeRejectedServer();
+    throw new WebhookAdapterError(
+      "missing_required_config",
+      "Webhook adapter requires an API key when the actual bound address is non-loopback.",
+      { host, boundAddress: address.address, boundPort },
+    );
+  }
+
   const url = `http://${hostForUrl(host)}:${boundPort}`;
 
   async function handleInvoke(req: Request, res: Response, endpoint: ResolvedEndpoint): Promise<void> {
@@ -502,6 +531,34 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       await close(server);
     },
   };
+}
+
+async function closeServerBounded(server: ReturnType<typeof createServer>): Promise<void> {
+  const closePromise = close(server);
+  void closePromise.catch(() => undefined);
+  server.closeIdleConnections();
+  let forceTimer: ReturnType<typeof setTimeout> | undefined;
+  const force = new Promise<"forced">((resolvePromise) => {
+    forceTimer = setTimeout(() => {
+      server.closeAllConnections();
+      resolvePromise("forced");
+    }, FORCE_CLOSE_AFTER_MS);
+    forceTimer.unref?.();
+  });
+  const outcome = await Promise.race([closePromise.then(() => "closed" as const), force]);
+  if (outcome === "closed") {
+    if (forceTimer !== undefined) {
+      clearTimeout(forceTimer);
+    }
+    return;
+  }
+  await Promise.race([
+    closePromise.catch(() => undefined),
+    new Promise<void>((resolvePromise) => {
+      const timer = setTimeout(resolvePromise, FORCE_CLOSE_AFTER_MS);
+      timer.unref?.();
+    }),
+  ]);
 }
 
 function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {
