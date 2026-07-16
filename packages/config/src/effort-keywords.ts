@@ -14,7 +14,7 @@ import type { EffortLevel } from "./types.js";
  * effort order — every stronger phrase also contains a standalone "think".
  */
 export interface EffortKeywordTrigger {
-  /** Effort the phrase escalates to. Triggers never emit `ultra` — the pi path maps it to LOW thinking. */
+  /** Effort the phrase escalates to. Triggers never emit `ultra`; Pi uses LOW only with reasoning, otherwise OFF. */
   readonly effort: Extract<EffortLevel, "high" | "xhigh" | "max">;
   readonly pattern: RegExp;
   /** Canonical phrase for docs and log lines. */
@@ -49,7 +49,8 @@ export function detectEffortKeyword(text: string): EffortKeywordMatch | undefine
  * unknown or missing values rank -1, below every real level. NOTE the `ultra`
  * trap: the enum ranks it ABOVE `max` so escalation never touches an
  * explicitly configured `ultra`, but nothing should ever EMIT it — the pi
- * runtime maps `ultra` to low thinking (`thinkingLevelForEffort`).
+ * runtime maps `ultra` to low only for reasoning-capable models and returns
+ * off before effort mapping for models without reasoning (`thinkingLevelForEffort`).
  */
 export function effortRank(level: string | undefined): number {
   if (typeof level !== "string") return -1;

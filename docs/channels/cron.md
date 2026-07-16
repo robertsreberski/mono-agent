@@ -74,7 +74,7 @@ When you select **Scheduled jobs (cron)** in the guided `mono-agent init` wizard
 | `jobs[].notifyConversationId` | string | no | inferred if exactly one destination | Destination conversation id for native notification. |
 | `jobs[].notifyFailureCooldownHours` | number | no | `6` | Per-job cooldown, in hours, for all-models-failed error notices on `notify: true` jobs. |
 | `jobs[].model` | string | no | `runtime.model` | Per-job model override. Becomes this turn's primary, keeping canonical `runtime.fallbacks` (or legacy backups). See [Per-trigger model & effort](#per-trigger-model--effort). |
-| `jobs[].effort` | string | no | `runtime.effort` | Per-job reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. |
+| `jobs[].effort` | string | no | `runtime.effort` | Per-job reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. Reasoning-capable `pi:*` maps `ultra` to LOW; Pi without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged. Mono-agent rejects `ultra` on its Claude SDK route because the pinned SDK public contract ends at `max` (the SDK JavaScript itself forwards the value). The Claude CLI route passes `--effort ultra`, but both tested Claude Code binaries (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort. Direct OpenCode rejects explicit effort. Ranking above `max` only prevents keyword downgrade. |
 
 ## Per-trigger model & effort
 

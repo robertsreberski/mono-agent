@@ -219,6 +219,20 @@ describe("claude-cli — buildCliCommand flags", () => {
     expect(spec.args).toContain("model_reasoning_effort=xhigh");
   });
 
+  it("forwards effort ultra unchanged to the codex CLI config sink", () => {
+    const spec = buildCliCommand({
+      sdk: "codex",
+      model: "gpt-5-codex",
+      effort: "ultra",
+      systemPrompt: "sys",
+      prompt: "hi",
+      cwd: "/tmp",
+    });
+    expect(spec.args.filter((arg) => arg.startsWith("model_reasoning_effort="))).toEqual([
+      "model_reasoning_effort=ultra",
+    ]);
+  });
+
   it("keeps native --effort max for the claude-code CLI", () => {
     const spec = buildCliCommand({
       sdk: "claude-code",
@@ -231,6 +245,21 @@ describe("claude-cli — buildCliCommand flags", () => {
     const effortIndex = spec.args.indexOf("--effort");
     expect(effortIndex).toBeGreaterThanOrEqual(0);
     expect(spec.args[effortIndex + 1]).toBe("max");
+  });
+
+  it("forwards effort ultra unchanged to the Claude CLI native effort sink", () => {
+    const spec = buildCliCommand({
+      sdk: "claude-code",
+      model: "claude-opus-4-8",
+      effort: "ultra",
+      systemPrompt: "sys",
+      prompt: "hi",
+      cwd: "/tmp",
+    });
+    const effortIndex = spec.args.indexOf("--effort");
+    expect(effortIndex).toBeGreaterThanOrEqual(0);
+    expect(spec.args.filter((arg) => arg === "--effort")).toHaveLength(1);
+    expect(spec.args[effortIndex + 1]).toBe("ultra");
   });
 
   it("passes the 1M context suffix for Opus 4.8 when contextWindow requests it", () => {

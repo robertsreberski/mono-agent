@@ -460,11 +460,11 @@ describe("opencode-app bridge", () => {
     expect(agentNames[0]).not.toBe(agentNames[1]);
   });
 
-  it("fails closed before creating OpenCode when effort is explicitly configured", async () => {
+  it.each(["high", "ultra"])("fails closed before creating OpenCode when effort %s is explicitly configured", async (effort) => {
     const result = await opencodeAppRuntimeBridge.execute("SYSTEM", {
       model: { sdk: "opencode", provider: "p", model: "m", reference: "opencode:p:m" },
       messages: [{ role: "user", content: "hi" }],
-      effort: "high",
+      effort,
     });
 
     expect(result).toMatchObject({

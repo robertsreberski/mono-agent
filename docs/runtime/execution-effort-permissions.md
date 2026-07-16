@@ -41,6 +41,16 @@ Several other features key off the backend implied by execution mode — most no
 |-----|--------|---------|---------|
 | `runtime.effort` | `none` \| `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `max` \| `ultra` | provider/model default when omitted | `MONO_AGENT_EFFORT` |
 
+`ultra` is route-specific. Reasoning-capable `pi:*` maps `ultra` to LOW; Pi
+without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged.
+Mono-agent rejects `ultra` on its Claude SDK route because the pinned SDK public
+contract ends at `max` (the SDK JavaScript itself forwards the value). The
+Claude CLI route passes `--effort ultra`, but both tested Claude Code binaries
+(SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and
+use default effort. Direct OpenCode rejects explicit effort. `effortRank`
+places `ultra` above `max` only so keyword escalation cannot downgrade an
+explicitly configured value.
+
 ```json
 { "runtime": { "model": "pi:openai-codex:gpt-5.6-terra", "effort": "high" } }
 ```

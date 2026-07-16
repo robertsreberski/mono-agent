@@ -88,6 +88,23 @@ describe("Claude Agent SDK 0.3 effort and query contract", () => {
     expect(queryMock).not.toHaveBeenCalled();
   });
 
+  it("keeps the mono-agent SDK route inside the pinned public effort contract", async () => {
+    expect(() => claudeEffortOptions("ultra")).toThrowError(
+      'Mono-agent\'s Claude SDK route does not support effort "ultra": the pinned Claude Agent SDK public effort contract ends at "max"',
+    );
+    const result = await generateClaudeResponse("system", options({ effort: "ultra" }));
+    expect(result).toMatchObject({
+      failureKind: "skipped_capability_mismatch",
+      errorDetails: {
+        claude_error_code: "claude_effort_unsupported",
+        claude_error_category: "nonretryable",
+        retryable: false,
+      },
+    });
+    expect(result.error).toContain('pinned Claude Agent SDK public effort contract ends at "max"');
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
   it("uses tools for an explicit empty allowlist and leaves canUseTool authoritative", async () => {
     installStream([resultEvent()]);
     const approval = vi.fn(async () => ({ decision: "approve" }));

@@ -24,8 +24,11 @@ const MAX_CLAUDE_ERROR_CHARS = 2_000;
 
 /**
  * Preserve the provider default when effort is omitted. The current Agent SDK
- * accepts the five values below verbatim; mono-agent must not infer thinking
- * enablement/disablement from a requested effort level.
+ * public effort contract accepts the five values below. Its shipped JavaScript
+ * currently forwards out-of-contract values to Claude Code, so mono-agent keeps
+ * this route inside the pinned public contract rather than relying on that
+ * untyped pass-through. Mono-agent must not infer thinking enablement/disablement
+ * from a requested effort level.
  * @param {unknown} effort
  * @returns {{effort?: "low" | "medium" | "high" | "xhigh" | "max"}}
  */
@@ -34,12 +37,12 @@ export function claudeEffortOptions(effort) {
   const normalized = String(effort).trim();
   if (normalized === "none") {
     throw new Error(
-      'Claude Agent SDK does not support effort "none". Omit effort to use the provider default, or choose low, medium, high, xhigh, or max.',
+      'Mono-agent\'s Claude SDK route does not support effort "none": the pinned Claude Agent SDK public effort contract starts at "low". Omit effort to use the provider default, or choose low, medium, high, xhigh, or max.',
     );
   }
   if (!CLAUDE_EFFORT_LEVELS.has(normalized)) {
     throw new Error(
-      `Claude Agent SDK does not support effort "${boundedText(normalized, 64)}". Choose low, medium, high, xhigh, or max, or omit effort.`,
+      `Mono-agent's Claude SDK route does not support effort "${boundedText(normalized, 64)}": the pinned Claude Agent SDK public effort contract ends at "max". Choose low, medium, high, xhigh, or max, or omit effort.`,
     );
   }
   return { effort: /** @type {"low" | "medium" | "high" | "xhigh" | "max"} */ (normalized) };
