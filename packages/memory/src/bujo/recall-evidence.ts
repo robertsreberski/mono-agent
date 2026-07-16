@@ -1,10 +1,29 @@
 /**
  * Precision-first evidence gate for automatic prompt injection.
  *
- * This is intentionally not a general natural-language parser. Automatic
- * context accepts only the finite, canonical direct-fact shapes below. A
- * semantically relevant record that does not match one of those shapes remains
- * available through the default-on MemoryRecall tool.
+ * Recognized `DirectFactQuery` shapes (query -> one acceptable record):
+ *
+ * 1. named-property: `What is Morgan's phone number?`
+ *    -> `Morgan's phone number is 555-0100.`
+ * 2. choice: `What deployment color did Morgan select?`
+ *    -> `Morgan selected cobalt as the deployment color.`
+ * 3. event-time: `When does the release train depart now?`
+ *    -> `The release train now leaves on Thursday.`
+ * 4. copular-time: `What day is the API launch?`
+ *    -> `The API launch date is 2026-08-14.`
+ * 5. location: `Where does Morgan work?`
+ *    -> `Morgan works in Amsterdam.`
+ *
+ * `parseDirectFactQuery` accepts only those finite query grammars;
+ * `matchesDirectFact` then requires one record to satisfy the corresponding
+ * fact grammar, subject, property/predicate, and answer kind. Shared
+ * canonicalization permits documented aliases without loosening that pairing.
+ * Ambiguous relations, unsafe clauses, reported speech, negation, and unknown
+ * values therefore fail closed instead of being automatically injected.
+ *
+ * This is intentionally not a general natural-language parser. A semantically
+ * relevant record outside these shapes remains available through the default-on
+ * MemoryRecall tool.
  */
 
 export interface RecallEvidenceHit {
@@ -72,6 +91,15 @@ const ALIASES: Readonly<Record<string, string>> = {
   phone: "phone", telephone: "phone",
   time: "time_of_day",
 };
+
+/**
+ * Singular tokens whose trailing `s` must survive the narrow suffix heuristic.
+ * Both concept and proper-name canonicalization consult this one list; add a
+ * documented entry here instead of embedding another literal carve-out.
+ */
+const TRAILING_S_SINGULARS = new Set([
+  "atlas", // Proper noun; stripping the suffix would corrupt the anchor to "atla".
+]);
 
 type AnswerKind = "generic" | "location" | "temporal" | "time";
 
@@ -333,11 +361,11 @@ function canonicalConcept(token: string): string {
   const alias = ALIASES[token];
   if (alias !== undefined) return alias;
   if (token.endsWith("ies") && token.length > 4) return `${token.slice(0, -3)}y`;
-  if (token.endsWith("s") && token.length > 4 && token !== "atlas") return token.slice(0, -1);
+  if (token.endsWith("s") && token.length > 4 && !TRAILING_S_SINGULARS.has(token)) return token.slice(0, -1);
   return token;
 }
 
 function canonicalName(token: string): string {
-  if (token.endsWith("s") && token.length > 5 && token !== "atlas") return token.slice(0, -1);
+  if (token.endsWith("s") && token.length > 5 && !TRAILING_S_SINGULARS.has(token)) return token.slice(0, -1);
   return token;
 }
