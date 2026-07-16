@@ -8,79 +8,57 @@ Full documentation and end-to-end playbooks: **<https://mono-agent-docs.vercel.a
 
 ## Quickstart: An Agent Folder From One Config File
 
-Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — becomes a validated agent folder with the `mono-agent` CLI. Use Node.js 22.19.0 or newer. Scaffold with no install:
+Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — can become a running agent from one `mono-agent.config.json`. You need Node.js 22.19.0 or newer and credentials for the model you choose.
+
+### 1. Install the CLI
+
+Install the convenience package to put `mono-agent` on your `PATH`:
 
 ```bash
-npm create mono-agent@latest init      # npm-init convention → resolves create-mono-agent
-# equivalently:
-npx create-mono-agent init
+npm i -g create-mono-agent
 ```
 
-Or install the CLI globally — the installer (which puts the natural `mono-agent` command on your `PATH`) or the scoped host directly:
+The scoped `@mono-agent/agent-app` package provides the same CLI. For one-shot scaffolding with no global install, use `npm create mono-agent@latest init`. See [Install & Prerequisites](./docs/getting-started/install.md) for those alternatives and the unreleased-source workflow.
 
-```bash
-npm i -g create-mono-agent          # gives you the `mono-agent` command
-# or, equivalently:
-npm i -g @mono-agent/agent-app      # the scoped host that owns the CLI
-```
-
-`create-mono-agent` is a thin installer whose `create-mono-agent` and `mono-agent` bins forward every command to `@mono-agent/agent-app`; behaviour is identical either way. (The bare `mono-agent` npm name isn't ours — npm blocks it as too similar to an unrelated `monoagent` package — so the installer follows the `create-*` convention instead.)
-
-The production first-run path is the interactive wizard: bare `mono-agent init` on a TTY asks for the agent's public display name and the exact Role text destined for `IDENTITY.md` → `## Role`, then walks through a preset (or custom) build using the same model, reasoning effort, channel, memory, tool, and sandbox decisions either way. If `IDENTITY.md` already exists, the review says that it will be preserved and the entered Role will not be written. The primary and fallback pickers are searchable and combine every model for the guided Pi providers (Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go), Codex's live account catalog when available, the Claude SDK catalog, and discovered OpenCode-Go/Ollama/LM Studio models. Other hand-authored Pi refs and `providers.local[]` remain runtime-compatible but are not advertised as guided cloud-provider integrations. A live Codex provider default leads the list; the offline curated fallback is `codex:gpt-5.6-terra`. Offline metadata never guesses supported effort levels, so that entry offers **Provider default** until live `model/list` data is available. GPT-5.6 Sol remains explicitly selectable as `codex:gpt-5.6-sol` or `pi:openai-codex:gpt-5.6-sol`. If Codex is missing, install it only from the [official Codex CLI instructions](https://developers.openai.com/codex/cli/); mono-agent never auto-installs Codex.
-
-Selecting Journal or BuJo starts a separate embeddings chooser: Ollama or LM Studio,
-service root, exact embedding model, actual vector dimension, and optional `apiKeyEnv`.
-Ollama models must advertise the `embedding` capability through `/api/show`; LM Studio
-models must have exact type `embedding` in `/api/v1/models`. Guided setup proves the
-selection with one fixed non-user embedding request before readiness. Manual model/dimension
-entry is available when discovery is inconclusive, but it cannot bypass that live gate, and
-failure never falls through to the other provider. LM Studio defaults to keyless
-`http://localhost:1234`; a declared auth environment variable must be populated in the
-owner-only agent environment. BuJo's capture LLM remains separately explicit (`agent-host`
-in generated configs, or an authored Ollama `memory.llm`).
-
-The wizard distinguishes credential detection from verified readiness. It makes one disposable no-tool call for **every selected runtime route**, in order, using a 90-second cloud or 240-second local deadline per route. A detected Codex/Claude login or Pi auth-store entry skips redundant authentication, but only that exact successful model call becomes verified. Escape or Ctrl-C interrupts the current preflight safely; the recovery menu can resume the still-matching plan, restart every route check, edit choices, or cancel without writing. Authentication repair invalidates every prior route proof because credential bytes may have changed. Provider failure, timeout, empty output, or any tool action fails that route. The wizard atomically creates the config only after the explicit `Create “<name>”?` review and validates that exact snapshot. On macOS it materializes the exact current CLI into a private, versioned runtime under `~/.mono-agent/runtimes/` (so an `npm create` cache path is never daemonized), fully loads or reloads the per-config launchd service, and opens the remote TUI only after the live launchd PID, trace source, committed config/`.env`/Identity fingerprints, and TUI endpoint agree. Any flag or non-TTY invocation is intentionally scaffold-only: it does not start a process or make a readiness claim. On unsupported platforms the interactive wizard preserves the files and explains that conversational configuration requires the managed macOS lifecycle. Edit `mono-agent.config.json` and `IDENTITY.md` manually, run `validate`, then use two terminals for `start --foreground` and ordinary `tui`; the wizard does not claim the agent is running.
-
-That proof uses the environment a later worker can reproduce: `.env` values, securely entered selected secrets, the resolved Pi store, and only operational host values such as `PATH` and `HOME`. Shell-only provider credentials and `MONO_AGENT_*` config overrides cannot make setup pass and then disappear under launchd; persisted non-secret config overrides are named and rejected so the generated JSON is the configuration that is actually validated and started.
-
-Selected secrets are entered masked and never shown in config, examples, review output, or logs. Durable provider credentials already present in `.env` receive the same protection. On POSIX the wizard preserves existing dotenv values/comments and uses an external owner-only lock plus `0600` no-clobber promotion, with exact Git ignore rules for `.env` and transaction artifacts. Pi OAuth/API-key promotion applies the same fail-closed ownership and identity checks; a secure Pi lock is removed automatically only when its recorded process is proven gone, while active, malformed, permission-denied, or racing locks stay untouched. Credential availability is not readiness: `credential_detected` remains visible until the live route succeeds. Direct Codex setup offers browser callback (`codex login`) and headless device-code (`codex login --device-auth`) modes. Tools default to **Allow all**. Pi/Claude flows disclose shell, file, web, and channel-send effects and reconfirm an unsandboxed choice; direct Codex fixes policy to allow-all and instead reports its native sandbox and denied unattended escalations.
-
-Fallback choice is not capped. Canonical `runtime.fallbacks` entries carry their own optional effort; omission means that route's provider default. The compatibility default `runtime.routeSafety: "uniform"` requires one common monotonic tool/sandbox contract and fails closed when a route cannot represent it. Explicit `"per-route-native"` allows mixed Pi, Claude, Codex, and OpenCode routes only after the operator reviews the route matrix: Pi keeps mono-agent tool policy and optional SRT, Claude uses its provider-native sandbox plus representable tool restrictions, and direct Codex/OpenCode use provider-native safety with exact allow-all. Unsupported capabilities skip a route rather than being silently dropped. Any configured fallback chain is stateless across providers and replays bounded transcript context instead of reusing a foreign provider session.
+### 2. Create the agent folder
 
 ```bash
 mkdir my-agent
 cd my-agent
-mono-agent init                   # step-by-step wizard on a TTY (`mono-agent setup` is an alias)
+mono-agent init
 ```
 
-Or drive it with flags when you only want a non-interactive scaffold. This path never runs the readiness proof or calls the result ready. Repeated `--fallback` flags write canonical per-route entries; place `--fallback-effort` immediately after the route it configures. The legacy CSV `--fallback-models` flag remains supported. `--auth` opts into provider setup, `--codex-auth device` selects headless Codex login, and `--dry-run` never launches commands:
+Bare `init` on a TTY opens the guided wizard: name the agent, write its Role, choose a model and capabilities, review the result, and complete any provider setup. On macOS, a successful guided run proves the selected routes, starts the background agent, and opens temporary configuration mode before ordinary chat. Any flag or non-TTY invocation is scaffold-only; on other platforms, continue with the foreground start below.
+
+The complete wizard, non-interactive flags, generated files, and provider-specific setup are documented in [Your First Agent](./docs/getting-started/quickstart.md).
+
+### 3. Validate and start
+
+Check the generated config:
 
 ```bash
-mono-agent init --name "Research Companion" \
-  --model pi:openai-codex:gpt-5.6-terra --effort high \
-  --fallback codex:gpt-5.6-sol --fallback-effort xhigh \
-  --fallback pi:ollama:gemma4:31b --fallback-effort provider-default \
-  --route-safety per-route-native --auth --codex-auth device
-mono-agent validate               # per-section report; `mono-agent doctor` is an alias
+mono-agent validate
 ```
 
-For unreleased source testing, use the built CLI entry directly instead of the published package:
+If guided macOS init already started the agent, confirm it is live:
 
 ```bash
-repo=/absolute/path/to/mono-agent
-mkdir my-agent
-cd my-agent
-node "$repo/packages/agent-app/dist/cli.js" init --model pi:openai-codex:gpt-5.6-terra
-node "$repo/packages/agent-app/dist/cli.js" validate
+mono-agent status
 ```
 
-`validate` reports structural errors and `waiting` dependencies; by itself it does not make a model call or an **Agent ready** claim. Bare interactive `init` is the path that proves every selected runtime route and, on macOS, gates a remote configuration TUI on a ready background instance. For a direct Codex route, install and sign in to the Codex CLI first:
+Otherwise start the scaffold now. On macOS this backgrounds the process; elsewhere keep the foreground command running in Terminal 1:
 
 ```bash
-codex login                       # or run `codex` and follow its sign-in prompt
-codex login status
-mono-agent start                  # scaffold/manual continuation; guided macOS init already starts it
+mono-agent start                  # macOS
+# or:
+mono-agent start --foreground     # Linux and other platforms
 ```
+
+`start` prints one status line per channel. Copy the loopback webhook invoke URL it prints; the default scaffold enables that credential-free smoke channel.
+
+### 4. Send the first request
+
+In Terminal 2, replace `<PORT>` with the port from the printed invoke URL:
 
 ```bash
 curl -s http://127.0.0.1:<PORT>/webhook/invoke \
@@ -88,21 +66,11 @@ curl -s http://127.0.0.1:<PORT>/webhook/invoke \
   -d '{"text": "Say hello and tell me what you are."}'
 ```
 
-`<PORT>` comes from the `start` output. A reply means runtime, model, identity, and channel wiring all work. On a local build with packages already installed and built, `init` plus `validate` should take well under a minute; first reply time depends on provider authentication, network latency, and model availability.
+A reply proves the runtime, model, identity, and webhook channel are wired together. Provider authentication or local-model availability still determines whether the model can answer; failures are reported honestly rather than replaced with a fake reply.
 
-`init` scaffolds `mono-agent.config.json` (webhook enabled as the credential-free smoke channel), an `IDENTITY.md` whose `## Role` body is the reviewed Role text and whose Knowledge section references the folder's existing knowledge, two versioned project-local configuration skills, and `.mono-agent/` working dirs without overwriting existing scaffold/config files. If `IDENTITY.md` exists, init leaves it byte-for-byte unchanged and reports that the entered Role was not written; add or edit that file's `## Role` section yourself. Guided secret setup is the explicit exception: after review it may securely update `.env` and `.gitignore`. A successful interactive macOS run starts or refreshes one launchd-owned background agent, proves the exact committed snapshot and reachable TUI endpoint, and opens `mono-agent tui --configure` against that same instance. The managed launcher copies and integrity-manifests the exact dependency closure already executing—including configured channel and Supermemory plugin packages—without running npm or lifecycle scripts; the complete source digest prevents stale closure reuse. Launchd enters Node with only the explicit non-secret operational allowlist, and the worker holds one canonical per-config lifetime lease so HOME, path aliases, PID reuse, or a manual foreground start cannot duplicate it. Before any app/channel loader runs, the worker copies the attested config, Identity, optional Soul, and external MCP authority file into owner-only read-only runtime inputs; trace/status still identify the canonical config path. The config declares the public `agent.name`, primary model, canonical ordered `runtime.fallbacks`, per-route effort and safety mode, channels, skills, MCP servers, memory, sandbox, and observability. `agent.name` is display metadata (including default trace/A2A labels), never an input to filesystem paths, service ids, sessions, or provider identity. Legacy `runtime.fallbackModels` configs continue to load and retain their historical global-effort inheritance.
+For the low-level trust model behind guided secret persistence and managed macOS startup, see [Setup security and managed runtime](./docs/reference/setup-security.md). For command details and recovery paths, see the [CLI reference](./docs/observability/cli-reference.md).
 
-The first TUI exchange is **Temporary post-wizard configuration mode**, not ordinary chat. Its separate configuration conversation says to discuss the agent's Role, behavior, memory, skills, tools, or channels; never enter secrets; and expect a separate host approval before anything changes. Reply `done` or `no changes` to finish without edits. After the reply and any approval or rejection, a fresh ordinary conversation starts. Approval applies the files, restarts the background agent, and waits for its new ready source first; a failed new config restores the files and restarts the previous agent. If neither restart nor recovery can prove an endpoint, queued ordinary messages are cancelled instead of sent to stale localhost state. `/quit` closes only the console and never requests a background stop. The agent normally remains running; if restart or recovery fails, follow the printed status/log recovery guidance instead of assuming it is running.
-
-Exact background file bytes are committed with a per-config 256-bit HMAC key kept under owner-only `~/.mono-agent/background-snapshot-keys/`, so argv and trace proofs contain neither plaintext nor an offline-testable credential hash.
-
-The managed Journal/BuJo index identity includes the embeddings provider, model, and
-dimension. After changing any of them on an existing store, stop the agent and run
-`mono-agent memory rebuild --json` before validating and restarting; never reuse old vectors
-under a new identity. The advanced standalone `memory-bujo migrate` command remains an
-Ollama-only maintenance surface outside guided init.
-
-### Presets & the setup wizard
+## Presets & the setup wizard
 
 `mono-agent init` composes an agent from **capability modules** (channels, built-in memory tiers, sandbox, observability) and walks you through the tool allowlist so the agent can actually do something. **Presets** are saved answer-sets for five built-in shapes — `starter` (webhook smoke agent), `telegram-assistant` (BuJo memory), `slack-bot`, `local-private` (Ollama), and `code-sandbox`. Optional packages such as Supermemory ship their own setup skill instead of making an unavailable service look built in. Each core preset prints its generated config with secrets externalized to `.env.example`, and mirrors a copy-paste playbook in [`docs/playbooks/`](./docs/playbooks/):
 
