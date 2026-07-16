@@ -40,6 +40,7 @@ import {
   MANAGED_BACKGROUND_ENV_NAMES,
 } from "../fleet-green-check.mjs";
 import { BACKGROUND_OPERATIONAL_ENV_NAMES } from "../../packages/agent-app/src/background-environment.ts";
+import { managedPlistTopologyFingerprint } from "../fleet-green-check/probes.mjs";
 
 const DATE = "2026-07-07";
 const SHA = "0e35c86d1122334455667788990011223344abcd";
@@ -189,6 +190,15 @@ describe("inspectCanonicalLaunchdPath", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("managed plist topology", () => {
+  it("ignores scheduled mono-agent maintenance helpers as non-instance plists", () => {
+    const instance = "com.mono-agent.demo-0a1b2c3d.plist";
+    const helper = "com.mono-agent-maintenance.demo-0a1b2c3d.plist";
+    expect(managedPlistTopologyFingerprint([instance, helper]))
+      .toBe(managedPlistTopologyFingerprint([instance]));
   });
 });
 

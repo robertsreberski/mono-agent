@@ -20,8 +20,7 @@ each plist, never assume:
 
 - The `com.mono-agent.*` launchd instances write to
   `~/.mono-agent/logs/<label>.{out,err}.log` (`StandardOutPath` /
-  `StandardErrorPath`). The four fleet instances give four label-named out/err
-  pairs, plus any operator-rolled `.log.1` sidecar.
+  `StandardErrorPath`). Managed instances retain `.log.1` through `.log.3`.
 - The separately-managed `~/a8c-agents` fleet writes to
   `~/Library/Logs/a8c-agents/<service>.log` (9 services) — a different namespace.
 
@@ -29,29 +28,51 @@ each plist, never assume:
 plutil -p ~/Library/LaunchAgents/<label>.plist | grep -E 'Standard(Out|Error)Path'
 ```
 
-## 1. Log-size caps every deploy
+## 1. Verify automatic caps every deploy
 
-Nothing in `mono-agent`/`agent-app` caps or rotates the launchd
-`StandardOutPath`/`StandardErrorPath`. personal-agent's unrotated err log silently
-grew to **1.23 GB** (`~/.mono-agent/logs/com.mono-agent.personal-agent-059657c8.err.log.1`
-= 1,233,420,489 bytes, three weeks `2026-06-15`→`2026-07-06`) before anyone
-noticed. On every deploy, size each instance's log paths against a cap and fail
-the deploy above it:
+Current managed instances install a one-shot maintenance LaunchAgent with no
+`KeepAlive` and `/dev/null` output. Every five minutes it checks the active
+stdout/stderr and three retained generations against a fixed 5 MiB-per-file
+cap. When needed, it takes the normal lifecycle lock, stops and proves the main
+writer dead, installs bounded owner-only tails, revalidates the exact main
+plist, and restores only a service that was loaded at entry. The per-agent intent
+is atomically published as `stopping` before bootout and becomes `stopped` only
+after unload plus observed-PID death proof. It changes to `restoring` before
+bootstrap so the old proof cannot cover a new writer; an interrupted unproven stop fails
+closed. That intent plus deterministic journaled stages makes safe interrupted passes
+recoverable without cross-agent cleanup or unbounded orphan files. Start/restart run
+the same maintenance inside their stopped-writer window; stop unloads the helper
+first. `mono-agent validate` / `doctor` reports exact current active, retained,
+and total bytes for safely inspected files without mutation; unsafe or
+unreadable byte inventory is unavailable.
+
+The predecessor incident remains the reason to keep an independent deploy-time
+check: personal-agent's historical `.err.log.1` reached **1.23 GB**
+(1,233,420,489 bytes over `2026-06-15`→`2026-07-06`) before automatic maintenance
+existed. On every deploy, verify all four managed generations; this catches a
+missing/stale helper, a failed safety check, or an interval that has not run yet:
 
 ```bash
-# Per instance: size out+err logs AND any operator-rolled .1 sidecar against a cap.
-for f in ~/.mono-agent/logs/*.log ~/.mono-agent/logs/*.log.1; do
-  [ -f "$f" ] || continue
-  bytes=$(stat -f%z "$f")
-  (( bytes > 100*1024*1024 )) && echo "OVER CAP: $f ($bytes bytes)"
-done
+# Per instance: active out+err logs and every managed retained generation.
+# Missing directories and empty matches are clean no-ops.
+if [ -d ~/.mono-agent/logs ]; then
+  find ~/.mono-agent/logs -maxdepth 1 -type f \
+    \( -name '*.log' -o -name '*.log.[123]' \) \
+    -exec sh -c '
+      for f do
+        bytes=$(stat -f%z "$f")
+        [ "$bytes" -gt 5242880 ] && echo "OVER CAP: $f ($bytes bytes)"
+      done
+    ' sh {} +
+fi
 ```
 
-Over the cap (~50–100 MB) ⇒ truncate/archive and wire real rotation
-(newsyslog/logrotate, or a size probe in the watchdog that fails the deploy
-check). The `.log.1` is the operator's hand-rolled rotation — it is **not**
-auto-managed and is exactly the file that grew to 1.23 GB, so count it, don't
-skip it.
+An active file can temporarily cross 5 MiB between five-minute checks. If it
+stays over cap, inspect the read-only `launchd-logs` doctor section and the
+`com.mono-agent-maintenance.*` job state; do not truncate a live writer by hand.
+An oversized retained generation, missing helper, unsafe path warning, or
+repeated maintenance failure is an ops failure even when the main worker is
+loaded.
 
 **Same pass — pinned-snapshot wrapper verification.** Every CLI wrapper an
 instance ships (`bin/mono-agent`, `bin/agent-watchdog`, `bin/session-web`, or

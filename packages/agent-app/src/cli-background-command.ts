@@ -20,6 +20,7 @@ import {
   canonicalBackgroundConfigPath,
   defaultBackgroundDeps,
   forceRestartBackground,
+  maintainLaunchdLogs,
   managedBackgroundEnvironment,
   resolveInstanceTarget,
   restartBackground,
@@ -48,6 +49,8 @@ import type {
 import { readCliConfigSnapshot } from "./first-run-readiness.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { purgeSessions } from "./sessions.js";
+import { launchdLogPathsForConfig } from "./launchd-logs.js";
+import { deriveLaunchdLabel } from "./launchd.js";
 import * as ui from "./ui.js";
 
 const DEFAULT_LOG_LINES = 200;
@@ -343,6 +346,25 @@ export async function runBackgroundCommand(
     case "logs":
       return await tailLogs(target, deps, { follow: args.follow, lines: args.lines ?? DEFAULT_LOG_LINES });
   }
+}
+
+/** Private launchd-only entry point; `runCli` recognizes its launchd-only env marker. */
+export async function runLaunchdLogMaintenanceCommand(
+  args: ParsedCliArgs,
+  deps: BackgroundDeps = defaultBackgroundDeps(),
+): Promise<number> {
+  const guard = requireDarwin("scheduled log maintenance");
+  if (guard !== undefined) return guard;
+  if (args.configPath === undefined) {
+    process.stderr.write(ui.errorLine("Managed launchd log maintenance requires its pinned config path."));
+    return 2;
+  }
+  const configPath = await canonicalBackgroundConfigPath(process.cwd(), args.configPath);
+  const paths = await launchdLogPathsForConfig(configPath);
+  return await maintainLaunchdLogs({
+    label: deriveLaunchdLabel(configPath),
+    paths,
+  }, deps);
 }
 
 /**
