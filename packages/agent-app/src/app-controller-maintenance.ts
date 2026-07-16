@@ -87,7 +87,14 @@ export function stopMemoryRituals(controller: MonoAgentAppController): void {
     return;
   }
   controller.memoryRituals = undefined;
-  rituals.stop();
+  try {
+    rituals.stop();
+  } catch (error) {
+    controller.logger?.warn?.("Memory consolidation scheduler did not stop cleanly.", {
+      reason: reasonOf(error),
+    });
+    return;
+  }
   controller.logger?.info?.("Memory consolidation scheduler stopped.");
 }
 
@@ -139,7 +146,14 @@ export function stopArtifactRetentionScheduler(controller: MonoAgentAppControlle
     return;
   }
   controller.artifactRetentionScheduler = undefined;
-  scheduler.stop();
+  try {
+    scheduler.stop();
+  } catch (error) {
+    controller.logger?.warn?.("Artifact retention scheduler did not stop cleanly.", {
+      reason: reasonOf(error),
+    });
+    return;
+  }
   controller.logger?.info?.("Artifact retention scheduler stopped.");
 }
 
