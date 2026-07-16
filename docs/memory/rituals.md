@@ -111,9 +111,17 @@ Consolidation (and the `index` CLI command) maintain markdown files at the root 
 `memory.path`:
 
 - **`index.md`** — a living table of contents: entry counts, the top/most-relevant
-  memories, and the entity graph summary. Regenerated from canonical state without
-  rewriting that state. The consolidation result reports the duplicate-group count
-  separately.
+  memories, and a bounded entity graph preview. The preview filters ephemeral
+  calendar/time rows (`date`, `datetime`, `day`, `duration`, `month`, `quarter`,
+  `temporal`, `time`, `timestamp`, `week`, `weekday`, and `year`) and collapses
+  NFKC-, case-, whitespace-, dash-, and underscore-equivalent names to one lexical
+  referent. It scans deterministic source pages until the inventory ends or the explicit
+  10,000-row safety ceiling is reached, retaining only bounded reconciliation state before
+  rendering at most 50 rows. When canonical rows disagree on type, including a duplicate
+  on a later source page after 50 output rows are already available, the preview omits the
+  type instead of choosing one. This is projection-only: canonical entity ids,
+  relations, and associations are not rewritten. The consolidation result reports the
+  duplicate-group count separately.
 - **`future-log.md`** — a retired compatibility stub. Consolidation writes it as exactly
   `# Future Log` and does not project future items there.
 

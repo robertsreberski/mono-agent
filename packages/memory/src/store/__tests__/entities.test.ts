@@ -118,16 +118,26 @@ describe("entity repository", () => {
     db.upsertEntity({ id: "project:mono-agent", name: "mono-agent", type: "project", createdAt: "2026-06-15T09:00:00.000Z" });
     db.upsertEntity({ id: "person:morgan", name: "Morgan", type: "person", createdAt: "2026-06-15T09:00:00.000Z" });
     db.upsertEntity({ id: "concept:bujo", name: "BuJo", type: "concept", createdAt: "2026-06-15T09:00:00.000Z" });
+    db.upsertEntity({ id: "tool:shared-z", name: "Shared", type: "tool", createdAt: "2026-06-15T09:00:00.000Z" });
+    db.upsertEntity({ id: "concept:shared-a", name: "Shared", type: "concept", createdAt: "2026-06-15T09:00:00.000Z" });
 
     const all = db.listEntities(50);
-    expect(all).toHaveLength(3);
-    // Ordered by name (case-sensitive SQLite default: uppercase < lowercase)
+    expect(all).toHaveLength(5);
+    // Ordered by name, then id (case-sensitive SQLite default: uppercase < lowercase).
     const names = all.map((e) => e.name);
     expect(names).toEqual([...names].sort());
+    expect(all.filter((entity) => entity.name === "Shared").map((entity) => entity.id)).toEqual([
+      "concept:shared-a",
+      "tool:shared-z",
+    ]);
 
     // Respects limit.
     const one = db.listEntities(1);
     expect(one).toHaveLength(1);
+    expect(db.listEntities(2, 2).map((entity) => entity.id)).toEqual([
+      "concept:shared-a",
+      "tool:shared-z",
+    ]);
 
     // Returns empty when no entities.
     const db2 = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(8), dim: 8 });

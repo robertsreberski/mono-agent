@@ -272,11 +272,11 @@ export class MemoryDbGraph extends MemoryDbMaintenance {
     return (this.db.prepare(`SELECT COUNT(*) AS n FROM entities`).get() as { n: number }).n;
   }
 
-  /** All entities ordered by name, for index projections. */
-  listEntities(limit = 50): EntityRecord[] {
+  /** A bounded entity page ordered deterministically by name and id, for index projections. */
+  listEntities(limit = 50, offset = 0): EntityRecord[] {
     const rows = this.db.prepare(
-      `SELECT * FROM entities ORDER BY name LIMIT ?`,
-    ).all(limit) as Record<string, unknown>[];
+      `SELECT * FROM entities ORDER BY name, id LIMIT ? OFFSET ?`,
+    ).all(limit, offset) as Record<string, unknown>[];
     return rows.map((r) => this.entityFromRow(r));
   }
 
