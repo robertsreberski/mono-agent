@@ -486,13 +486,16 @@ describe("CLI deprecation deadlines", () => {
     const recipes = await captureCli(() => runCli(["recipes", "list"]));
     const recipeFlag = await captureCli(() => withCwd(
       dir,
-      () => runCli(["validate", "--recipe", "minimal-webhook"]),
+      () => runCli(["init", "--recipe", "minimal-webhook", "--dry-run"]),
     ));
     const fallbackModelsFlag = await captureCli(() => withCwd(
       dir,
       () => runCli(["init", "--fallback-models", "codex:gpt-5.6-sol", "--dry-run"]),
     ));
 
+    expect(recipes.code).toBe(0);
+    expect(recipeFlag.code).toBe(0);
+    expect(fallbackModelsFlag.code).toBe(0);
     expect(recipes.stderr).toContain(
       "`mono-agent recipes` is deprecated and will be removed in v2.0.0",
     );
@@ -512,6 +515,8 @@ describe("CLI deprecation deadlines", () => {
       () => runCli(["init", "--fallback", "codex:gpt-5.6-sol", "--dry-run"]),
     ));
 
+    expect(presets.code).toBe(0);
+    expect(fallbacks.code).toBe(0);
     expect(presets.stderr).not.toContain("will be removed in v2.0.0");
     expect(fallbacks.stderr).not.toContain("will be removed in v2.0.0");
   });

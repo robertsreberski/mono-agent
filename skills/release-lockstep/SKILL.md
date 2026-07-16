@@ -128,7 +128,7 @@ failure (the CI smoke step retries for ~150s).
 - Update memory/docs notes recording the release (version, date, anything
   retired or newly published).
 
-## Deprecation aliases carry a removal version
+## Deprecation aliases carry an explicit lifecycle decision
 
 Every deprecation alias/flag must ship with either a target removal version/date
 or an explicit permanent-retention decision in the same commit that introduces
