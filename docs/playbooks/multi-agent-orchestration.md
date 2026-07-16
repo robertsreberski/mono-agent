@@ -30,15 +30,17 @@ This capability is **code-only** — there is no `mono-agent.config.json` key fo
 // The extension is request-scoped: create it inside runtimeOptionsForRequest
 // (one ephemeral MCP server per turn) and return its cleanup so the host
 // tears the server down when the turn ends. Do not reuse one across requests.
-const orchestrator = createConfiguredAgentResponder({
+const orchestrator = await createConfiguredAgentResponder({
   config,
   runtimeOptionsForRequest: async (input) => {
-    const extension = createCollaboratorToolRuntimeExtension({
+    const extension = await createCollaboratorToolRuntimeExtension({
       collaborators: [
         { id: "researcher", label: "Researcher", responder: researcherResponder },
         { id: "writer", label: "Writer", responder: writerResponder },
       ],
-      conversationId: input.conversationId,
+      conversationId: input.request.conversationId,
+      originalUserMessage: input.request.userMessage,
+      abortSignal: input.request.abortSignal,
       maxCalls: 10,
     });
     return { runtimeOptions: extension.runtimeOptions, cleanup: extension.cleanup };
