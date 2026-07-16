@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, type BigIntStats } from "node:fs";
 import {
+  access,
   chmod,
   copyFile,
   lstat,
@@ -697,14 +698,31 @@ async function assertTrustedNodeExecutable(nodePath: string): Promise<void> {
   if (nodeStat.isSymbolicLink() || !nodeStat.isFile()) {
     throw new Error(`Node executable is not a regular non-symbolic file: ${nodePath}`);
   }
+  // Managed SRT checks the selected path against writable roots, but another
+  // hardlink could expose the same owner-writable inode through an allowed
+  // root. Alias enumeration is not portable, so a trusted launcher is single-link.
   if (nodeStat.nlink !== 1) {
-    throw new Error(`Node executable has ${nodeStat.nlink} hard links instead of one: ${nodePath}`);
+    throw new Error(
+      `Node executable has ${nodeStat.nlink} hard links instead of one; select a single-link Node installation so no writable-root alias can modify it: ${nodePath}`,
+    );
+  }
+  const getuid = process.getuid;
+  if (getuid === undefined) {
+    throw new Error(`Node executable ownership cannot be verified on this platform: ${nodePath}`);
   }
   if ((nodeStat.mode & 0o022) !== 0) {
     throw new Error(`Node executable is writable by group or other users: ${nodePath}`);
   }
-  if (process.getuid !== undefined && nodeStat.uid !== process.getuid() && nodeStat.uid !== 0) {
+  if ((nodeStat.mode & 0o6000) !== 0) {
+    throw new Error(`Node executable has setuid or setgid privilege bits: ${nodePath}`);
+  }
+  if (nodeStat.uid !== getuid() && nodeStat.uid !== 0) {
     throw new Error(`Node executable is not owned by the current user or root: ${nodePath}`);
+  }
+  try {
+    await access(nodePath, fsConstants.X_OK);
+  } catch (error) {
+    throw new Error(`Node executable is not executable by the current user: ${nodePath} (${errorMessage(error)})`);
   }
 }
 

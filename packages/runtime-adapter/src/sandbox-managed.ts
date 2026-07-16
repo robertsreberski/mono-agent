@@ -73,13 +73,15 @@ export function managedSrtInstallRoot(input: {
 }
 
 export async function resolveSrtLaunch(options: ResolveSrtLaunchOptions = {}): Promise<SrtLaunch> {
+  const platform = options.platform ?? process.platform;
   if (options.nodePath !== undefined || options.cliPath !== undefined) {
     if (options.nodePath === undefined || options.cliPath === undefined) {
       throw new Error("SRT nodePath and cliPath must be provided together.");
     }
     assertAbsolutePath(options.nodePath, "nodePath");
     assertAbsolutePath(options.cliPath, "cliPath");
-    const node = await resolveTrustedFile(options.nodePath, false, "Node executable");
+    assertVerifiableNodeOwnership(platform);
+    const node = await resolveTrustedFile(options.nodePath, false, "Node executable", undefined, true);
     const cli = await resolveTrustedFile(options.cliPath, true, "SRT CLI");
     return {
       command: node.path,
@@ -94,7 +96,6 @@ export async function resolveSrtLaunch(options: ResolveSrtLaunchOptions = {}): P
     return { command: command.path, prefixArgs: [], source: "explicit", files: [command] };
   }
 
-  const platform = options.platform ?? process.platform;
   if (platform === "darwin") {
     const installRoot = managedSrtInstallRoot(options);
     const present = await pathExists(installRoot);
@@ -102,8 +103,9 @@ export async function resolveSrtLaunch(options: ResolveSrtLaunchOptions = {}): P
       const cliPath = await verifyManagedSrtInstall(installRoot);
       const managedNodePath = options.managedNodePath ?? process.execPath;
       assertAbsolutePath(managedNodePath, "managedNodePath");
+      assertVerifiableNodeOwnership(platform);
       assertSupportedNodeVersion(process.versions.node);
-      const node = await resolveTrustedFile(managedNodePath, false, "Node executable", installRoot);
+      const node = await resolveTrustedFile(managedNodePath, false, "Node executable", installRoot, true);
       const cli = await resolveTrustedFile(cliPath, true, "SRT CLI", installRoot);
       return {
         command: node.path,
@@ -235,6 +237,7 @@ async function assertSecureRegularFile(
   requirePrivate: boolean,
   label: string,
   installRoot = path,
+  requireExecutable = false,
 ): Promise<void> {
   let stat;
   try {
@@ -242,10 +245,21 @@ async function assertSecureRegularFile(
   } catch (error) {
     throw corrupt(installRoot, `${label} is unavailable (${errorMessage(error)})`);
   }
-  // Hard-linked files, including external executables, are deliberately rejected;
-  // a launcher-only relaxation remains an open compatibility decision in #191.
-  if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
-    throw corrupt(installRoot, `${label} is not a single-link regular file`);
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw corrupt(installRoot, `${label} is not a regular non-symbolic file`);
+  }
+  // The launcher path is checked against sandbox writable roots later, but a
+  // second hardlink could name the same owner-writable inode from inside one of
+  // those roots. There is no portable way to enumerate every alias, so retain
+  // the single-link invariant for launchers as well as private managed files.
+  if (stat.nlink !== 1) {
+    throw corrupt(
+      installRoot,
+      `${label} has ${stat.nlink} hard links; expected exactly one so no writable-root alias can modify it`,
+    );
+  }
+  if (requireExecutable && process.getuid === undefined) {
+    throw corrupt(installRoot, `${label} ownership cannot be verified on this platform`);
   }
   if (process.getuid !== undefined && stat.uid !== process.getuid() && stat.uid !== 0) {
     throw corrupt(installRoot, `${label} has an unexpected owner`);
@@ -255,6 +269,24 @@ async function assertSecureRegularFile(
   }
   if (!requirePrivate && (stat.mode & 0o022) !== 0) {
     throw corrupt(installRoot, `${label} is writable by group or other users`);
+  }
+  if (requireExecutable && (stat.mode & 0o6000) !== 0) {
+    throw corrupt(installRoot, `${label} has setuid or setgid privilege bits`);
+  }
+  if (requireExecutable) {
+    try {
+      await access(path, fsConstants.X_OK);
+    } catch (error) {
+      throw corrupt(installRoot, `${label} is not executable by the current user (${errorMessage(error)})`);
+    }
+  }
+}
+
+function assertVerifiableNodeOwnership(platform: NodeJS.Platform): void {
+  if (platform === "win32" || process.getuid === undefined) {
+    throw new Error(
+      `Node executable ownership cannot be verified on ${platform}; managed or explicit SRT Node launch requires POSIX uid ownership checks.`,
+    );
   }
 }
 
@@ -295,6 +327,7 @@ async function resolveTrustedFile(
   requirePrivate: boolean,
   label: string,
   installRoot = inputPath,
+  requireExecutable = false,
 ): Promise<SrtFileIdentity> {
   let canonicalPath: string;
   try {
@@ -303,7 +336,7 @@ async function resolveTrustedFile(
     throw corrupt(installRoot, `${label} cannot be resolved canonically (${errorMessage(error)})`);
   }
   assertAbsolutePath(canonicalPath, label);
-  await assertSecureRegularFile(canonicalPath, requirePrivate, label, installRoot);
+  await assertSecureRegularFile(canonicalPath, requirePrivate, label, installRoot, requireExecutable);
   const fileStat = await lstat(canonicalPath);
   return {
     path: canonicalPath,

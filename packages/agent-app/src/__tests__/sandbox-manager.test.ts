@@ -53,6 +53,12 @@ const TEST_PROCESS_INCARNATION: ProcessIncarnation = {
   bootSessionId: "managed-srt-test-boot",
   processStartId: "managed-srt-test-process",
 };
+const TRUSTED_NODE_INSTALL_LAYOUTS = [
+  ["NVM", [".nvm", "versions", "node", "v24.15.0", "bin", "node"]],
+  ["Homebrew", ["opt", "homebrew", "Cellar", "node@24", "24.15.0", "bin", "node"]],
+  ["system", ["usr", "bin", "node"]],
+  ["hosted toolcache", ["opt", "hostedtoolcache", "node", "24.15.0", "x64", "bin", "node"]],
+] as const;
 
 async function tempDir(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "managed-srt-test-"));
@@ -187,6 +193,51 @@ describe("managed SRT setup", () => {
       .toBe(await readFile(resolve(resourceRoot, "package-lock.json"), "utf8"));
   });
 
+  it.each(TRUSTED_NODE_INSTALL_LAYOUTS)(
+    "accepts a trusted single-link %s Node launcher during setup and status",
+    async (_label, pathSegments) => {
+      const cacheRoot = await tempDir();
+      const installPrefix = await tempDir();
+      const nodePath = resolve(installPrefix, ...pathSegments);
+      await mkdir(dirname(nodePath), { recursive: true });
+      await writeFile(nodePath, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+      await chmod(nodePath, 0o700);
+
+      const result = await setupManagedSrt({
+        ...options(cacheRoot),
+        nodePath,
+        verify: false,
+      });
+
+      expect(result.status).toMatchObject({ state: "ready", source: "managed", nodePath });
+      await expect(sandboxRuntimeStatus({ ...options(cacheRoot), nodePath }))
+        .resolves.toMatchObject({ state: "ready", source: "managed", nodePath });
+    },
+  );
+
+  it("rejects a hard-linked current-user Node launcher before creating managed cache state", async () => {
+    const cacheRoot = await tempDir();
+    const launchRoot = await tempDir();
+    const writableRoot = await tempDir();
+    const nodePath = resolve(launchRoot, ".nvm", "versions", "node", "v24.15.0", "bin", "node");
+    const writableAlias = resolve(writableRoot, "node-alias");
+    await mkdir(dirname(nodePath), { recursive: true });
+    await writeFile(nodePath, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    await chmod(nodePath, 0o700);
+    await link(nodePath, writableAlias);
+    expect((await lstat(nodePath)).nlink).toBe(2);
+
+    await expect(setupManagedSrt({
+      ...options(cacheRoot),
+      nodePath,
+      verify: false,
+    })).rejects.toMatchObject({
+      code: "managed_srt_corrupt",
+      details: { cause: expect.stringContaining("no writable-root alias can modify it") },
+    });
+    expect(existsSync(resolve(cacheRoot, "mono-agent"))).toBe(false);
+  });
+
   it("rejects a group-writable Node executable before creating managed cache state", async () => {
     const cacheRoot = await tempDir();
     const unsafeRoot = await tempDir();
@@ -201,6 +252,27 @@ describe("managed SRT setup", () => {
     })).rejects.toMatchObject({
       code: "managed_srt_corrupt",
       details: { cause: expect.stringContaining("writable by group or other users") },
+    });
+    expect(existsSync(resolve(cacheRoot, "mono-agent"))).toBe(false);
+  });
+
+  it.each([
+    ["setuid", 0o4700, "setuid or setgid privilege bits"],
+    ["non-executable", 0o600, "not executable by the current user"],
+  ] as const)("rejects a %s Node launcher before creating managed cache state", async (_label, mode, reason) => {
+    const cacheRoot = await tempDir();
+    const launchRoot = await tempDir();
+    const nodePath = resolve(launchRoot, "node");
+    await writeFile(nodePath, "fixture\n", { mode });
+    await chmod(nodePath, mode);
+
+    await expect(setupManagedSrt({
+      ...options(cacheRoot),
+      nodePath,
+      verify: false,
+    })).rejects.toMatchObject({
+      code: "managed_srt_corrupt",
+      details: { cause: expect.stringContaining(reason) },
     });
     expect(existsSync(resolve(cacheRoot, "mono-agent"))).toBe(false);
   });
@@ -598,6 +670,19 @@ describe("managed SRT setup", () => {
       state: "corrupt",
       source: "managed",
       message: expect.stringContaining("writable by group or other users"),
+    });
+  });
+
+  it("reports managed status as corrupt if its selected Node launcher gains a hardlink alias", async () => {
+    const cacheRoot = await tempDir();
+    const writableRoot = await tempDir();
+    await setupManagedSrt({ ...options(cacheRoot), verify: false });
+    await link(trustedNodePath, resolve(writableRoot, "node-alias"));
+
+    await expect(sandboxRuntimeStatus(options(cacheRoot))).resolves.toMatchObject({
+      state: "corrupt",
+      source: "managed",
+      message: expect.stringContaining("no writable-root alias can modify it"),
     });
   });
 
