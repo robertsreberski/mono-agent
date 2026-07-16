@@ -20,6 +20,7 @@
     "check:licenses": "node scripts/check-license-consistency.mjs",
     "check:dependency-vulnerabilities": "node scripts/check-dependency-vulnerabilities.mjs",
     "check:codex-discoverability": "node scripts/check-codex-discoverability.mjs",
+    "check:consumer-docs-consistency": "node scripts/check-consumer-docs-consistency.mjs",
     "check:architecture": "node scripts/check-package-architecture.mjs",
     "verify:consumers": "node scripts/verify-consumers.mjs",
     "verify:all": "node scripts/verify-all.mjs",

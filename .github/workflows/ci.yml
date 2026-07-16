@@ -66,6 +66,9 @@ jobs:
       - name: Check Codex discoverability
         run: pnpm run check:codex-discoverability
 
+      - name: Check consumer docs consistency
+        run: pnpm run check:consumer-docs-consistency
+
       - name: Derive release smoke tag
         id: release-smoke
         run: |

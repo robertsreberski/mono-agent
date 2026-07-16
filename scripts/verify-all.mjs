@@ -40,7 +40,7 @@ export const VERIFY_GATE_DELTA = Object.freeze({
     }),
     Object.freeze({
       key: "release-tag derivation",
-      after: "check:codex-discoverability",
+      after: "check:consumer-docs-consistency",
       reason: "CI exports the manifest-derived smoke tag for later steps; local verify:all reads that manifest value in-process.",
     }),
   ]),
@@ -177,6 +177,11 @@ export function createRepoGate({ releaseTag, nodeVersion = process.versions.node
       args: ["run", "check:dependency-vulnerabilities"],
     },
     { label: "check:codex-discoverability", command: "pnpm", args: ["run", "check:codex-discoverability"] },
+    {
+      label: "check:consumer-docs-consistency",
+      command: "pnpm",
+      args: ["run", "check:consumer-docs-consistency"],
+    },
     { label: "release:validate", command: "pnpm", args: ["run", "release:validate", "--", "--tag", releaseTag] },
     { label: "check:architecture", command: "pnpm", args: ["run", "check:architecture"] },
     { label: "build", command: "pnpm", args: ["run", "build"] },
@@ -310,7 +315,7 @@ function usage() {
     "Usage:",
     "  pnpm run verify:all",
     "",
-    "Runs the CI-aligned repo gate, including pnpm and dependency-vulnerability policy checks, consumer contracts immediately after build, release validation, package packing, and a packed-consumer smoke test.",
+    "Runs the CI-aligned repo gate, including consumer/docs consistency, pnpm and dependency-vulnerability policy checks, consumer contracts immediately after build, release validation, package packing, and a packed-consumer smoke test.",
   ].join("\n");
 }
 
