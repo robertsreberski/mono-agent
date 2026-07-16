@@ -45,6 +45,29 @@ describe("embedding provider failure taxonomy", () => {
     expect((error as Error).cause).toBeInstanceOf(SyntaxError);
   });
 
+  it.each(providerFactories)("preserves non-parser %s body-read failures by identity", async (_label, createProvider) => {
+    const bodyReadFailure = new Error("response adapter invariant failed");
+    const fetchImpl = (async () => ({
+      ok: true,
+      text: async () => {
+        throw bodyReadFailure;
+      },
+    }) as unknown as Response) as typeof fetch;
+
+    expect(await rejectionOf(createProvider(fetchImpl).embed(["text"]))).toBe(bodyReadFailure);
+  });
+
+  it.each(providerFactories)("propagates a native disturbed %s response as a hard TypeError", async (_label, createProvider) => {
+    const response = jsonResponse({ embeddings: [[1]], data: [{ embedding: [1] }] });
+    await response.text();
+    const fetchImpl = (async () => response) as typeof fetch;
+
+    const error = await rejectionOf(createProvider(fetchImpl).embed(["text"]));
+
+    expect(error).toBeInstanceOf(TypeError);
+    expect(error).not.toBeInstanceOf(MemorySearchError);
+  });
+
   it.each(providerFactories)("keeps non-OK %s responses in the request-failed category", async (_label, createProvider) => {
     const fetchImpl = (async () => new Response("unavailable", { status: 503 })) as typeof fetch;
 
@@ -110,10 +133,7 @@ describe("OllamaEmbeddingProvider", () => {
     ["a NaN component", [[Number.NaN]]],
     ["an infinite component", [[Number.POSITIVE_INFINITY]]],
   ])("rejects %s from the shared response validator", async (_name, embeddings) => {
-    const fetchImpl = (async () => ({
-      ok: true,
-      json: async () => ({ embeddings }),
-    }) as Response) as typeof fetch;
+    const fetchImpl = (async () => jsonResponse({ embeddings })) as typeof fetch;
     const provider = new OllamaEmbeddingProvider({ model: "m", fetchImpl });
 
     await expect(provider.embed(["x"])).rejects.toThrow(/non-empty array of finite numbers/u);

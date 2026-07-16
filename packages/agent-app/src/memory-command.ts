@@ -69,6 +69,13 @@ const FTS_FALLBACK_NETWORK_CODES = new Set([
   "UND_ERR_SOCKET",
 ]);
 const MAX_FTS_FALLBACK_CAUSE_CANDIDATES = 16;
+const INTRINSIC_ERROR = Error;
+const INTRINSIC_TYPE_ERROR = TypeError;
+const INTRINSIC_AGGREGATE_ERROR = AggregateError;
+const INTRINSIC_DOM_EXCEPTION = typeof DOMException === "undefined" ? undefined : DOMException;
+const DOM_EXCEPTION_NAME_GETTER = INTRINSIC_DOM_EXCEPTION === undefined
+  ? undefined
+  : Object.getOwnPropertyDescriptor(INTRINSIC_DOM_EXCEPTION.prototype, "name")?.get;
 const EMPTY_HEALTH_COUNTS = Object.freeze({
   pending: 0,
   due: 0,
@@ -1559,25 +1566,24 @@ export function isFtsFallbackEligible(
   if ("supermemory" in settings || settings.embeddings === undefined) {
     return false;
   }
-  if (error instanceof MemorySearchError) {
-    return FTS_FALLBACK_MEMORY_SEARCH_CODES.has(error.code);
+  if (isIntrinsicMemorySearchError(error)) {
+    const code = readErrorProperty(error, "code");
+    return code.ok
+      && typeof code.value === "string"
+      && FTS_FALLBACK_MEMORY_SEARCH_CODES.has(code.value as MemorySearchErrorCode);
   }
-  if (!(error instanceof Error)) {
-    return false;
-  }
-  if (error.name === "AbortError") {
+  if (isNativeAbortError(error)) {
     return true;
   }
-  if (error.name !== "TypeError" && error.name !== "AggregateError") {
+  if (!isIntrinsicTypeError(error) && !isIntrinsicAggregateError(error)) {
     return false;
   }
   return hasNetworkFailureCause(error);
 }
 
 function hasNetworkFailureCause(error: Error): boolean {
-  const root = error as unknown as Record<string, unknown>;
-  const pending: object[] = [];
-  const seen = new Set<object>();
+  const pending: Error[] = [];
+  const seen = new Set<Error>();
   let candidateCount = 0;
 
   const enqueue = (candidate: unknown): void => {
@@ -1585,40 +1591,130 @@ function hasNetworkFailureCause(error: Error): boolean {
       return;
     }
     candidateCount += 1;
-    if (typeof candidate !== "object" || candidate === null || seen.has(candidate)) {
+    if (!isIntrinsicError(candidate) || seen.has(candidate)) {
       return;
     }
     seen.add(candidate);
     pending.push(candidate);
   };
-  const enqueueErrors = (errors: unknown): void => {
-    if (!Array.isArray(errors)) {
+
+  const enqueueAggregateErrors = (aggregate: AggregateError): void => {
+    const errorsRead = readErrorProperty(aggregate, "errors");
+    if (!errorsRead.ok || !isArrayWithoutThrowing(errorsRead.value)) {
       return;
     }
-    for (let index = 0; index < errors.length && candidateCount < MAX_FTS_FALLBACK_CAUSE_CANDIDATES; index += 1) {
-      enqueue(errors[index]);
+    const errors = errorsRead.value;
+    const lengthRead = readErrorProperty(errors, "length");
+    if (
+      !lengthRead.ok
+      || typeof lengthRead.value !== "number"
+      || !Number.isSafeInteger(lengthRead.value)
+      || lengthRead.value < 0
+    ) {
+      return;
     }
-  };
-  const enqueueChildren = (record: Record<string, unknown>): void => {
-    if (record.cause !== undefined) {
-      enqueue(record.cause);
+    const readable = Math.min(
+      lengthRead.value,
+      MAX_FTS_FALLBACK_CAUSE_CANDIDATES - candidateCount,
+    );
+    for (let index = 0; index < readable; index += 1) {
+      const entry = readErrorProperty(errors, String(index));
+      // A hostile array slot still consumes its bounded candidate position.
+      enqueue(entry.ok ? entry.value : undefined);
     }
-    enqueueErrors(record.errors);
   };
 
-  enqueueChildren(root);
+  const enqueueChildren = (current: Error): void => {
+    const cause = readErrorProperty(current, "cause");
+    if (cause.ok && cause.value !== undefined) {
+      enqueue(cause.value);
+    }
+    if (isIntrinsicAggregateError(current)) {
+      enqueueAggregateErrors(current);
+    }
+  };
+
+  enqueueChildren(error);
   while (pending.length > 0) {
     const current = pending.shift();
     if (current === undefined) {
       continue;
     }
-    const record = current as Record<string, unknown>;
-    if (typeof record.code === "string" && FTS_FALLBACK_NETWORK_CODES.has(record.code.toUpperCase())) {
+    const code = readErrorProperty(current, "code");
+    if (
+      code.ok
+      && typeof code.value === "string"
+      && FTS_FALLBACK_NETWORK_CODES.has(code.value.toUpperCase())
+    ) {
       return true;
     }
-    enqueueChildren(record);
+    enqueueChildren(current);
   }
   return false;
+}
+
+type ErrorPropertyRead =
+  | { readonly ok: true; readonly value: unknown }
+  | { readonly ok: false };
+
+function readErrorProperty(value: object, key: PropertyKey): ErrorPropertyRead {
+  try {
+    return { ok: true, value: Reflect.get(value, key) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function isArrayWithoutThrowing(value: unknown): value is unknown[] {
+  try {
+    return Array.isArray(value);
+  } catch {
+    return false;
+  }
+}
+
+function isIntrinsicError(value: unknown): value is Error {
+  try {
+    return value instanceof INTRINSIC_ERROR;
+  } catch {
+    return false;
+  }
+}
+
+function isIntrinsicTypeError(value: unknown): value is TypeError {
+  try {
+    return value instanceof INTRINSIC_TYPE_ERROR;
+  } catch {
+    return false;
+  }
+}
+
+function isIntrinsicAggregateError(value: unknown): value is AggregateError {
+  try {
+    return value instanceof INTRINSIC_AGGREGATE_ERROR;
+  } catch {
+    return false;
+  }
+}
+
+function isIntrinsicMemorySearchError(value: unknown): value is MemorySearchError {
+  try {
+    return value instanceof MemorySearchError;
+  } catch {
+    return false;
+  }
+}
+
+function isNativeAbortError(value: unknown): boolean {
+  if (INTRINSIC_DOM_EXCEPTION === undefined || DOM_EXCEPTION_NAME_GETTER === undefined) {
+    return false;
+  }
+  try {
+    return value instanceof INTRINSIC_DOM_EXCEPTION
+      && Reflect.apply(DOM_EXCEPTION_NAME_GETTER, value, []) === "AbortError";
+  } catch {
+    return false;
+  }
 }
 
 function readLocalStats(db: MemoryDb, topEntitiesLimit: number): MemoryStoreStats {

@@ -225,9 +225,15 @@ export function createEmbeddingProvider(
 }
 
 async function readEmbeddingResponseJson(response: Response, provider: string): Promise<unknown> {
+  // Keep body transport/state failures honest. Only JSON.parse below can create
+  // the SyntaxError that this boundary translates into a provider response error.
+  const body = await response.text();
   try {
-    return await response.json() as unknown;
+    return JSON.parse(body) as unknown;
   } catch (cause) {
+    if (!(cause instanceof SyntaxError)) {
+      throw cause;
+    }
     throw new MemorySearchError(
       "embedding_response_invalid",
       `${provider} embedding response was not valid JSON.`,

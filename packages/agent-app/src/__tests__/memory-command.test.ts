@@ -40,6 +40,15 @@ describe("isFtsFallbackEligible", () => {
     expect(isFtsFallbackEligible(semanticSettings, error)).toBe(true);
   });
 
+  it("uses intrinsic TypeError identity even when its mutable name is changed", () => {
+    const cause = Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:11434"), {
+      code: "ECONNREFUSED",
+    });
+    const error = Object.assign(new TypeError("fetch failed"), { cause, name: "Error" });
+
+    expect(isFtsFallbackEligible(semanticSettings, error)).toBe(true);
+  });
+
   it("accepts bounded AggregateError network causes", () => {
     const nested = Object.assign(new Error("lookup failed"), { code: "ENOTFOUND" });
     const error = new AggregateError([new AggregateError([nested], "nested fetch failures")], "fetch failed");
@@ -89,10 +98,102 @@ describe("isFtsFallbackEligible", () => {
     expect(isFtsFallbackEligible(semanticSettings, error)).toBe(false);
   });
 
-  it("accepts provider aborts and timeouts represented as AbortError", () => {
+  it("accepts an intrinsic DOM AbortError even when an own name property tries to hide it", () => {
     const timeout = new DOMException("This operation was aborted", "AbortError");
+    Object.defineProperty(timeout, "name", { configurable: true, value: "Error" });
 
     expect(isFtsFallbackEligible(semanticSettings, timeout)).toBe(true);
+  });
+
+  it.each([
+    [
+      "an ordinary Error renamed AbortError",
+      () => Object.assign(new Error("programming failure"), { name: "AbortError" }),
+    ],
+    [
+      "an ordinary Error renamed TypeError with a plain network-shaped cause",
+      () => Object.assign(new Error("programming failure"), {
+        name: "TypeError",
+        cause: { code: "ECONNREFUSED" },
+      }),
+    ],
+    [
+      "a real TypeError whose plain cause carries an arbitrary errors array",
+      () => Object.assign(new TypeError("fetch failed"), {
+        cause: {
+          errors: [Object.assign(new Error("lookup failed"), { code: "ENOTFOUND" })],
+        },
+      }),
+    ],
+    [
+      "a real TypeError with a throwing cause getter",
+      () => {
+        const error = new TypeError("fetch failed");
+        Object.defineProperty(error, "cause", {
+          configurable: true,
+          get() {
+            throw new Error("cause getter exploded");
+          },
+        });
+        return error;
+      },
+    ],
+  ] as const)("reviewer honesty matrix rejects %s without replacing the original failure", (_label, createError) => {
+    expect(isFtsFallbackEligible(semanticSettings, createError())).toBe(false);
+  });
+
+  it("ignores an arbitrary errors array on a non-aggregate TypeError", () => {
+    const error = Object.assign(new TypeError("fetch failed"), {
+      errors: [Object.assign(new Error("lookup failed"), { code: "ENOTFOUND" })],
+    });
+
+    expect(isFtsFallbackEligible(semanticSettings, error)).toBe(false);
+  });
+
+  it.each([
+    [
+      "AggregateError.errors",
+      () => {
+        const error = new AggregateError([], "fetch failed");
+        Object.defineProperty(error, "errors", {
+          configurable: true,
+          get() {
+            throw new Error("errors getter exploded");
+          },
+        });
+        return error;
+      },
+    ],
+    [
+      "nested Error.code",
+      () => {
+        const cause = new Error("lookup failed");
+        Object.defineProperty(cause, "code", {
+          configurable: true,
+          get() {
+            throw new Error("code getter exploded");
+          },
+        });
+        return Object.assign(new TypeError("fetch failed"), { cause });
+      },
+    ],
+    [
+      "AggregateError.errors array entry",
+      () => {
+        const errors = new Array<Error>(1);
+        Object.defineProperty(errors, 0, {
+          configurable: true,
+          get() {
+            throw new Error("errors entry getter exploded");
+          },
+        });
+        const aggregate = new AggregateError([], "fetch failed");
+        Object.defineProperty(aggregate, "errors", { configurable: true, value: errors });
+        return aggregate;
+      },
+    ],
+  ] as const)("fails closed when %s inspection throws", (_label, createError) => {
+    expect(isFtsFallbackEligible(semanticSettings, createError())).toBe(false);
   });
 
   it.each([
@@ -111,6 +212,17 @@ describe("isFtsFallbackEligible", () => {
     [
       "a TypeError with only a top-level network code",
       Object.assign(new TypeError("fetch failed"), { code: "ECONNREFUSED" }),
+    ],
+    [
+      "a genuine TypeError with only a plain-object network cause",
+      Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } }),
+    ],
+    [
+      "an ordinary Error renamed AggregateError with an errors array",
+      Object.assign(new Error("fetch failed"), {
+        name: "AggregateError",
+        errors: [Object.assign(new Error("lookup failed"), { code: "ENOTFOUND" })],
+      }),
     ],
     [
       "an untyped lookalike provider error",

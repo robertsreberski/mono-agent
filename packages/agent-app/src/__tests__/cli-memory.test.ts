@@ -472,6 +472,38 @@ describe("runCli memory", () => {
     expect(search.stdout).toContain("Deploy pipeline uses blue green releases.");
   });
 
+  it("reviewer honesty matrix surfaces a native disturbed response as a hard memory search failure", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({
+      memory: {
+        mode: "journal",
+        path: memoryRoot,
+        writeMode: "append-host-summary",
+        embeddings: {
+          provider: "ollama",
+          model: "nomic-embed-text:v1.5",
+          endpoint: "http://127.0.0.1:11434",
+        },
+      },
+    });
+    await seedLocalStore(memoryRoot);
+    const disturbed = new Response(JSON.stringify({ embeddings: [[1]] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+    await disturbed.text();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(disturbed));
+
+    const search = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "search", "deploy", "releases"]))));
+
+    expect(search.code).toBe(1);
+    expect(search.stdout).toBe("");
+    expect(search.stderr).toContain("memory search failed:");
+    expect(search.stderr).not.toContain("Semantic embeddings unavailable");
+    expect(search.stderr).not.toContain("FTS-only");
+  });
+
   it.each([
     [
       "a programming TypeError whose message mentions ECONNREFUSED",
