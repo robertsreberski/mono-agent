@@ -153,7 +153,7 @@ function quoteIdentifier(value: string): string {
 }
 
 describe("memory schema evolution", () => {
-  it("represents every table and brings the baseline to the fresh database shape", () => {
+  it("represents every table, converges on first open, and remains idempotent", () => {
     const root = mkdtempSync(join(tmpdir(), "memory-schema-evolution-"));
     const baselinePath = join(root, "baseline.db");
     const freshPath = join(root, "fresh.db");
@@ -167,9 +167,11 @@ describe("memory schema evolution", () => {
 
     const upgraded = openMemoryDb({ path: baselinePath, dim: DIMENSION });
     upgraded.close();
+    const upgradedShape = readSchemaShape(baselinePath);
+    expect(upgradedShape).toEqual(freshShape);
+
     const reopened = openMemoryDb({ path: baselinePath, dim: DIMENSION });
     reopened.close();
-
-    expect(readSchemaShape(baselinePath)).toEqual(freshShape);
+    expect(readSchemaShape(baselinePath)).toEqual(upgradedShape);
   });
 });
