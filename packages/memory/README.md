@@ -63,6 +63,22 @@ await store.persistCompletedTurn?.({
 });
 ```
 
+### BuJo capture paths
+
+The bundled `@mono-agent/agent-harness` never calls `scheduleCapture` on
+`BujoMemoryStore`. BuJo implements `persistCompletedTurn`, so the harness always
+takes the strong, run-idempotent branch; `writeMode: "capture"` passes the
+approved turn text through that durable intake and the strict capture parser.
+
+`scheduleCapture`, direct `capture()`, and the loose capture primitives exported
+from `@mono-agent/memory/bujo` remain explicit opt-in compatibility/composition
+surfaces for direct embedders and offline calibration tooling. No bundled host
+invokes them. The `scheduleCapture` queue is allocated lazily on its first direct
+call. Creating a writable BuJo store through the bundled host therefore leaves
+that best-effort queue absent, rather than creating an idle queue that no shipped
+trigger can feed. New host integrations should implement or call
+`persistCompletedTurn`; they should not route BuJo turns through the legacy pair.
+
 The built-in store keeps `.capture-intake/{pending,dead,resolved}` private
 (`0700` directories, `0600` files). Filenames are SHA-256 run keys and contain
 no conversation or memory text. Exact retries return `duplicate`; reusing one

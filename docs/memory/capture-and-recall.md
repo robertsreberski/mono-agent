@@ -83,6 +83,20 @@ Across process restarts, the
 remote API's stable custom id preserves one logical upsert, but it does not expose a conditional
 create/read result that lets mono-agent distinguish a new document from a retry.
 
+### Legacy BuJo capture compatibility
+
+The bundled harness does not call `scheduleCapture` on `BujoMemoryStore`.
+Because the built-in store implements `persistCompletedTurn`, configured BuJo
+agents always use the strong branch described above; capture mode reaches the
+strict parser only after durable, run-idempotent admission.
+
+BuJo retains `scheduleCapture`, direct `capture()`, and the loose capture exports
+as explicit opt-in compatibility/composition surfaces for direct embedders and
+offline calibration tooling. No bundled host invokes them. Their best-effort
+queue is created only when a direct caller invokes `scheduleCapture`; it is absent
+during normal bundled host operation. New integrations should use
+`persistCompletedTurn` instead.
+
 ### Strict tier write behavior
 
 - **Lite:** projects the admitted normalized host observation to `daily/YYYY-MM-DD.md` and indexes it for FTS. It never embeds and never calls a chat model.
