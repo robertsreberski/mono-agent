@@ -10,6 +10,8 @@ description: Run the mono-agent verification gate — full repo green or fast si
 ## Full gate (CI order)
 
 ```bash
+node scripts/pnpm-release-age-policy.mjs  # direct pre-install guard; do not route through pnpm
+pnpm run check:node
 pnpm run check:secrets
 pnpm run check:oss-hygiene
 pnpm run check:licenses
