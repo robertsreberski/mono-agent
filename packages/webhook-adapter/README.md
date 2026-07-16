@@ -42,6 +42,8 @@ await startWebhookAdapter({ host: "127.0.0.1", port: 4310, path: "/webhook/invok
 
 For programmatic native-notify composition, an endpoint can set an explicit `notifyConversationId`, a pre-resolved `notifyFallbackConversationId`, or the adapter options can provide `resolveNotifyFallbackConversationId`. The resolver runs once per invocation after explicit and deliverable request destinations are considered. Its selected route is attached to the responder-facing request's host-only `replyTo`, retained privately by the run, and reconstructed on a separate completion request for `onResult`; responder mutation therefore cannot redirect, suppress, or inject final delivery. The resolver receives the request's optional `AbortSignal`, and the adapter also races its promise against that signal so disconnect/stop can reclaim the slot even when resolver code does not cooperate.
 
+`NATIVE_NOTIFY_CALLBACK_CHANNEL_IDS` is the exact request-conversation policy: Telegram and Slack are eligible, while WhatsApp remains excluded until its plugin driver exposes a native notify hook.
+
 Send a sync invocation (omit the `authorization` header when `apiKey` is not configured):
 
 ```bash
@@ -89,6 +91,7 @@ Every symbol exported by each public code entrypoint is listed below.
 
 ```text
 LoadWebhookAdapterConfigInput
+NATIVE_NOTIFY_CALLBACK_CHANNEL_IDS
 RedactedWebhookAdapterConfig
 WEBHOOK_CONFIG_FIELDS
 WebhookAdapterConfig

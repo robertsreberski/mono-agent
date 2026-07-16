@@ -7,10 +7,12 @@ import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.j
 export type { NotifyDeliveryResult } from "@mono-agent/agent-contracts";
 
 /**
- * Push channels a proactive notification can be delivered to. The conversationId
- * scheme (the part before the first `:`) identifies the owning channel; only
- * these channels run a destination harness that can both produce and deliver a
- * turn. cron/webhook/openai-api/a2a are request-driven, not push destinations.
+ * Push-shaped conversation schemes known to the app. The running channel's
+ * optional `notify` hook remains the authoritative delivery capability, so a
+ * recognized plugin destination can still fail closed as unsupported. This is
+ * intentionally wider than the webhook callback list: WhatsApp is recognized
+ * here, but its plugin driver does not expose a native notify hook yet.
+ * cron/webhook/openai-api/a2a are request-driven, not push destinations.
  */
 const PUSH_CHANNEL_BY_SCHEME: Partial<Record<string, ChannelId>> = {
   telegram: "telegram",
