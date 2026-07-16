@@ -1539,7 +1539,9 @@ async function acquireRuntimeLock(
     isSatisfied: () => verifyRuntime(layout, identity, additionalPackages),
     sleep: deps.sleep,
     staleRace: "return",
-    beforeStaleRename: () => mkdir(dirname(layout.quarantineDir), { recursive: true, mode: 0o700 }),
+    beforeStaleRename: async () => {
+      await mkdir(dirname(layout.quarantineDir), { recursive: true, mode: 0o700 });
+    },
     stalePath: () => `${layout.quarantineDir}-stale-lock`,
   });
 }
