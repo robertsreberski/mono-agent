@@ -6,47 +6,119 @@ import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { packageCatalog } from "./package-catalog.mjs";
+
 const execFileAsync = promisify(execFile);
 const MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
+const MAX_TEMPORARY_ACCEPTANCE_DAYS = 90;
+const DATE_ONLY_PATTERN = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})$/u;
 const SEVERITY_RANK = Object.freeze({ low: 0, moderate: 1, high: 2, critical: 3 });
+const DEFAULT_ROOT_PACKAGE_NAMES = packageCatalog
+  .filter((entry) => entry.publishable === true)
+  .map((entry) => entry.name)
+  .sort();
 
 export const DEFAULT_AUDIT_REGISTRY_URL = "https://registry.npmjs.org/";
 export const DEFAULT_DISPOSITIONS_PATH = fileURLToPath(
   new URL("./dependency-vulnerability-dispositions.json", import.meta.url),
 );
 
-export function parsePnpmLicenseInventory(source) {
+export function parsePnpmProductionInventory(source) {
+  // `pnpm list --prod --recursive --depth Infinity --parseable` reads the full
+  // lockfile graph, including skipped platform optionals, without materializing
+  // the deeply duplicated JSON tree. Workspace links do not live in `.pnpm/`
+  // and are deliberately excluded from the registry advisory request.
+  const inventory = {};
+  for (const rawPath of source.split(/\r?\n/u)) {
+    const packagePath = rawPath.trim();
+    if (packagePath.length === 0 || !packagePath.replaceAll("\\", "/").includes("/node_modules/.pnpm/")) {
+      continue;
+    }
+    const { name, version } = parseVirtualStorePackagePath(packagePath);
+    inventory[name] ??= [];
+    inventory[name].push(version);
+  }
+  return normalizeInventory(inventory);
+}
+
+export function parsePnpmWhyDependencyPaths(source, options) {
   let document;
   try {
     document = JSON.parse(source);
   } catch (error) {
-    throw new Error(`pnpm production inventory was not valid JSON: ${reasonOf(error)}`);
+    throw new Error(`pnpm why output was not valid JSON: ${reasonOf(error)}`);
   }
-  if (!isRecord(document)) {
-    throw new Error("pnpm production inventory must be an object grouped by license.");
+  if (!Array.isArray(document)) {
+    throw new Error("pnpm why output must be an array of workspace roots.");
   }
+  const packageName = options?.packageName;
+  const versions = options?.versions;
+  if (typeof packageName !== "string" || packageName.length === 0 || !Array.isArray(versions)
+    || versions.length === 0) {
+    throw new Error("pnpm why path parsing requires a package name and versions.");
+  }
+  const targetVersions = new Set(versions);
+  const rootPackageNames = new Set(normalizeRootPackageNames(
+    options.rootPackageNames ?? DEFAULT_ROOT_PACKAGE_NAMES,
+  ));
+  const dependencyPaths = {};
+  for (const root of document) {
+    if (!isRecord(root) || typeof root.name !== "string" || root.name.length === 0) {
+      throw new Error("pnpm why output contains a malformed workspace root.");
+    }
+    if (!rootPackageNames.has(root.name)) {
+      continue;
+    }
+    traverseWhyChildren(root, [root.name], new Set(), false);
+  }
+  for (const version of targetVersions) {
+    const key = packageVersionKey(packageName, version);
+    if (!Array.isArray(dependencyPaths[key]) || dependencyPaths[key].length === 0) {
+      throw new Error(`pnpm why found no production dependency path for ${key}.`);
+    }
+    dependencyPaths[key] = [...new Set(dependencyPaths[key])].sort();
+  }
+  return dependencyPaths;
 
-  const inventory = {};
-  for (const entries of Object.values(document)) {
-    if (!Array.isArray(entries)) {
-      throw new Error("pnpm production inventory contains a non-array license group.");
-    }
-    for (const entry of entries) {
-      if (!isRecord(entry) || typeof entry.name !== "string" || !Array.isArray(entry.versions)) {
-        throw new Error("pnpm production inventory contains a malformed package entry.");
+  function traverseWhyChildren(parent, parentPath, ancestors, traversedWorkspaceLink) {
+    for (const section of ["dependencies", "optionalDependencies"]) {
+      const children = parent[section];
+      if (children === undefined) {
+        continue;
       }
-      inventory[entry.name] ??= [];
-      for (const version of entry.versions) {
-        if (typeof version !== "string" || version.length === 0) {
-          throw new Error(`pnpm production inventory contains an invalid version for ${entry.name}.`);
+      if (!isRecord(children)) {
+        throw new Error(`pnpm why ${section} must be an object at ${parentPath.join(" -> ")}.`);
+      }
+      for (const [childName, child] of Object.entries(children).sort(([left], [right]) => left.localeCompare(right))) {
+        if (!isRecord(child) || typeof child.version !== "string" || child.version.length === 0) {
+          throw new Error(`pnpm why contains a malformed ${section} entry for ${childName}.`);
         }
-        inventory[entry.name].push(version);
+        const nodeKey = packageVersionKey(childName, child.version);
+        if (ancestors.has(nodeKey)) {
+          continue;
+        }
+        const localWorkspaceLink = isLocalDependencyVersion(child.version);
+        const label = localWorkspaceLink ? childName : nodeKey;
+        const childPath = [...parentPath, label];
+        const crossedWorkspaceBoundary = traversedWorkspaceLink || localWorkspaceLink;
+        // Every catalog-publishable workspace package is queried as its own root.
+        // Suppress paths that traverse another workspace link: their suffix is
+        // represented from that package's root, avoiding redundant consumer paths.
+        if (childName === packageName && targetVersions.has(child.version) && !crossedWorkspaceBoundary) {
+          dependencyPaths[nodeKey] ??= [];
+          dependencyPaths[nodeKey].push(childPath.join(" -> "));
+        }
+        traverseWhyChildren(
+          child,
+          childPath,
+          new Set([...ancestors, nodeKey]),
+          crossedWorkspaceBoundary,
+        );
       }
     }
   }
-  return normalizeInventory(inventory);
 }
 
 export function normalizeInventory(input) {
@@ -74,16 +146,85 @@ export function normalizeInventory(input) {
   return Object.fromEntries(entries);
 }
 
-export async function collectProductionInventory(options = {}) {
+export function normalizeProductionGraph(input) {
+  if (!isRecord(input)) {
+    throw new Error("production dependency graph must be an object.");
+  }
+  const inventory = normalizeInventory(input.inventory);
+  if (!isRecord(input.dependencyPaths)) {
+    throw new Error("production dependency graph must include dependencyPaths.");
+  }
+
+  const expectedKeys = new Set(
+    Object.entries(inventory).flatMap(([packageName, versions]) => (
+      versions.map((version) => packageVersionKey(packageName, version))
+    )),
+  );
+  const dependencyPaths = {};
+  for (const [key, paths] of Object.entries(input.dependencyPaths)) {
+    if (!expectedKeys.has(key)) {
+      throw new Error(`production dependency graph contains paths for absent package version ${key}.`);
+    }
+    if (!Array.isArray(paths) || paths.length === 0) {
+      throw new Error(`production dependency graph has an invalid empty path set for ${key}.`);
+    }
+    const normalizedPaths = [...new Set(paths.map((path) => {
+      if (typeof path !== "string" || path.length === 0) {
+        throw new Error(`production dependency graph contains an invalid path for ${key}.`);
+      }
+      if (!path.endsWith(` -> ${key}`)) {
+        throw new Error(`production dependency path does not end at ${key}: ${path}`);
+      }
+      return path;
+    }))].sort();
+    dependencyPaths[key] = normalizedPaths;
+  }
+  return { inventory, dependencyPaths };
+}
+
+export async function collectProductionGraph(options = {}) {
   const command = options.pnpmCommand ?? "pnpm";
   const cwd = options.cwd ?? process.cwd();
   const runCommand = options.runCommand ?? runCommandCapture;
-  const result = await runCommand(command, ["licenses", "list", "--prod", "--json"], { cwd });
+  const result = await runCommand(
+    command,
+    ["list", "--prod", "--recursive", "--depth", "Infinity", "--parseable"],
+    { cwd },
+  );
   if (result.exitCode !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`;
-    throw new Error(`could not collect pnpm production inventory: ${detail}`);
+    throw new Error(`could not collect pnpm production graph: ${detail}`);
   }
-  return parsePnpmLicenseInventory(result.stdout);
+  return { inventory: parsePnpmProductionInventory(result.stdout), dependencyPaths: {} };
+}
+
+export async function collectAdvisoryDependencyPaths(productionGraph, packageNames, options = {}) {
+  const graph = normalizeProductionGraph(productionGraph);
+  const command = options.pnpmCommand ?? "pnpm";
+  const cwd = options.cwd ?? process.cwd();
+  const runCommand = options.runCommand ?? runCommandCapture;
+  const dependencyPaths = { ...graph.dependencyPaths };
+  for (const packageName of [...new Set(packageNames)].sort()) {
+    const versions = graph.inventory[packageName];
+    if (!Array.isArray(versions) || versions.length === 0) {
+      throw new Error(`cannot collect dependency paths for package absent from inventory: ${packageName}.`);
+    }
+    const result = await runCommand(
+      command,
+      ["why", packageName, "--prod", "--recursive", "--json"],
+      { cwd },
+    );
+    if (result.exitCode !== 0) {
+      const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.exitCode}`;
+      throw new Error(`could not collect pnpm dependency paths for ${packageName}: ${detail}`);
+    }
+    Object.assign(dependencyPaths, parsePnpmWhyDependencyPaths(result.stdout, {
+      packageName,
+      versions,
+      rootPackageNames: options.rootPackageNames,
+    }));
+  }
+  return normalizeProductionGraph({ inventory: graph.inventory, dependencyPaths });
 }
 
 export async function loadDependencyVulnerabilityDispositions(path = DEFAULT_DISPOSITIONS_PATH) {
@@ -107,6 +248,7 @@ export function normalizeDispositions(input) {
   if (typeof input.reviewedAt !== "string" || input.reviewedAt.length === 0 || !Array.isArray(input.advisories)) {
     throw new Error("dispositions must include reviewedAt and an advisories array.");
   }
+  const reviewedAtEpoch = parseDateOnly(input.reviewedAt, "dispositions reviewedAt");
 
   const seen = new Set();
   const advisories = input.advisories.map((entry) => {
@@ -120,6 +262,7 @@ export function normalizeDispositions(input) {
       "url",
       "vulnerableVersions",
       "disposition",
+      "expiresAt",
       "rationale",
     ];
     for (const field of requiredStrings) {
@@ -129,6 +272,17 @@ export function normalizeDispositions(input) {
     }
     if (entry.disposition !== "accepted-temporarily") {
       throw new Error(`disposition advisory ${String(entry.id)} must be accepted-temporarily.`);
+    }
+    const expiresAtEpoch = parseDateOnly(
+      entry.expiresAt,
+      `disposition advisory ${String(entry.id)} expiresAt`,
+    );
+    const acceptanceDays = (expiresAtEpoch - reviewedAtEpoch) / 86_400_000;
+    if (acceptanceDays <= 0 || acceptanceDays > MAX_TEMPORARY_ACCEPTANCE_DAYS) {
+      throw new Error(
+        `disposition advisory ${String(entry.id)} expiresAt must be after reviewedAt and within `
+        + `${MAX_TEMPORARY_ACCEPTANCE_DAYS} days.`,
+      );
     }
     if (!(entry.severity in SEVERITY_RANK) || SEVERITY_RANK[entry.severity] < SEVERITY_RANK.high) {
       throw new Error(`disposition advisory ${String(entry.id)} must be high or critical.`);
@@ -158,7 +312,7 @@ export function normalizeDispositions(input) {
       ...entry,
       id: String(entry.id),
       versions: [...new Set(versions)].sort(),
-      dependencyPaths: [...entry.dependencyPaths],
+      dependencyPaths: [...new Set(entry.dependencyPaths)].sort(),
     };
   }).sort(compareAdvisories);
 
@@ -174,30 +328,55 @@ export async function queryBulkAdvisories(inventory, options = {}) {
   const registryUrl = options.registryUrl ?? DEFAULT_AUDIT_REGISTRY_URL;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const endpoint = new URL("-/npm/v1/security/advisories/bulk", ensureTrailingSlash(registryUrl));
+  const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("bulk advisory timeout must be a positive finite number.");
+  }
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? REQUEST_TIMEOUT_MS);
+  const timeoutError = new Error(`request timed out after ${timeoutMs}ms`);
+  let timeout;
 
   let response;
   let source;
   try {
-    response = await fetchImpl(endpoint, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-        "user-agent": "mono-agent-dependency-vulnerability-gate",
-      },
-      body: JSON.stringify(inventory),
-      signal: controller.signal,
+    const request = Promise.resolve().then(async () => {
+      const fetched = await fetchImpl(endpoint, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "user-agent": "mono-agent-dependency-vulnerability-gate",
+        },
+        body: JSON.stringify(inventory),
+        signal: controller.signal,
+      });
+      if (typeof fetched?.ok !== "boolean" || typeof fetched.status !== "number"
+        || typeof fetched.text !== "function") {
+        throw new Error("bulk advisory endpoint returned a malformed HTTP response");
+      }
+      const responseSource = await fetched.text();
+      if (typeof responseSource !== "string") {
+        throw new Error("bulk advisory endpoint returned a non-text response body");
+      }
+      return { response: fetched, source: responseSource };
     });
-    source = await response.text();
+    const timedOut = new Promise((_, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort(timeoutError);
+        reject(timeoutError);
+      }, timeoutMs);
+    });
+    ({ response, source } = await Promise.race([request, timedOut]));
   } catch (error) {
+    if (error === timeoutError) {
+      throw new Error(`bulk advisory request timed out after ${timeoutMs}ms.`);
+    }
     throw new Error(`bulk advisory request failed: ${reasonOf(error)}`);
   } finally {
     clearTimeout(timeout);
   }
 
-  if (source.length > MAX_RESPONSE_BYTES) {
+  if (Buffer.byteLength(source, "utf8") > MAX_RESPONSE_BYTES) {
     throw new Error(`bulk advisory response exceeded ${MAX_RESPONSE_BYTES} bytes.`);
   }
   if (!response.ok) {
@@ -214,9 +393,15 @@ export async function queryBulkAdvisories(inventory, options = {}) {
   }
 }
 
-export function evaluateDependencyVulnerabilities({ inventory, report, dispositions }) {
-  const normalizedInventory = normalizeInventory(inventory);
+export function evaluateDependencyVulnerabilities({ productionGraph, report, dispositions, now = new Date() }) {
+  const normalizedGraph = normalizeProductionGraph(productionGraph);
+  const normalizedInventory = normalizedGraph.inventory;
   const normalizedDispositions = normalizeDispositions(dispositions);
+  const todayEpoch = utcDayEpoch(now);
+  const reviewedAtEpoch = parseDateOnly(normalizedDispositions.reviewedAt, "dispositions reviewedAt");
+  if (reviewedAtEpoch > todayEpoch) {
+    throw new Error(`dispositions reviewedAt ${normalizedDispositions.reviewedAt} is in the future.`);
+  }
   if (!isRecord(report)) {
     throw new Error("bulk advisory report must be an object keyed by package name.");
   }
@@ -230,7 +415,12 @@ export function evaluateDependencyVulnerabilities({ inventory, report, dispositi
       throw new Error(`bulk advisory report for ${packageName} is not an array.`);
     }
     for (const advisory of advisories) {
-      const normalized = normalizeLiveAdvisory(packageName, normalizedInventory[packageName], advisory);
+      const normalized = normalizeLiveAdvisory(
+        packageName,
+        normalizedInventory[packageName],
+        normalizedGraph.dependencyPaths,
+        advisory,
+      );
       if (SEVERITY_RANK[normalized.severity] >= SEVERITY_RANK.high) {
         active.push(normalized);
       }
@@ -245,6 +435,12 @@ export function evaluateDependencyVulnerabilities({ inventory, report, dispositi
   const unreviewed = [];
   const mismatched = [];
   const stale = [];
+  const expired = normalizedDispositions.advisories.filter(
+    (disposition) => parseDateOnly(
+      disposition.expiresAt,
+      `disposition advisory ${disposition.id} expiresAt`,
+    ) <= todayEpoch,
+  );
 
   for (const advisory of active) {
     const disposition = dispositionsByKey.get(advisoryKey(advisory.package, advisory.id));
@@ -264,13 +460,15 @@ export function evaluateDependencyVulnerabilities({ inventory, report, dispositi
   }
 
   return {
-    ok: unreviewed.length === 0 && mismatched.length === 0 && stale.length === 0,
+    ok: unreviewed.length === 0 && mismatched.length === 0 && stale.length === 0 && expired.length === 0,
+    productionGraph: normalizedGraph,
     inventory: normalizedInventory,
     dispositions: normalizedDispositions,
     active,
     unreviewed,
     mismatched,
     stale,
+    expired,
   };
 }
 
@@ -291,9 +489,13 @@ export async function runDependencyVulnerabilityCheck(options = {}) {
 
   try {
     const cwd = options.cwd ?? process.cwd();
-    const inventory = options.inventory ?? await (options.collectInventory ?? collectProductionInventory)({
+    const productionGraph = options.productionGraph ?? await (
+      options.collectGraph ?? collectProductionGraph
+    )({
       cwd,
       pnpmCommand: options.pnpmCommand,
+      rootPackageNames: options.rootPackageNames,
+      runCommand: options.runCommand,
     });
     const dispositions = options.dispositions ?? await loadDependencyVulnerabilityDispositions(
       options.dispositionsPath ?? DEFAULT_DISPOSITIONS_PATH,
@@ -301,12 +503,36 @@ export async function runDependencyVulnerabilityCheck(options = {}) {
     const registryUrl = options.registryUrl
       ?? process.env.MONO_AGENT_DEPENDENCY_AUDIT_REGISTRY
       ?? DEFAULT_AUDIT_REGISTRY_URL;
-    const report = await (options.queryAdvisories ?? queryBulkAdvisories)(inventory, {
+    const normalizedGraph = normalizeProductionGraph(productionGraph);
+    const report = await (options.queryAdvisories ?? queryBulkAdvisories)(normalizedGraph.inventory, {
       registryUrl,
       fetchImpl: options.fetchImpl,
       timeoutMs: options.timeoutMs,
     });
-    const evaluation = evaluateDependencyVulnerabilities({ inventory, report, dispositions });
+    const highSeverityPackages = highSeverityReportPackageNames(report, normalizedGraph.inventory);
+    const packagesMissingPaths = highSeverityPackages.filter((packageName) => (
+      normalizedGraph.inventory[packageName].some((version) => (
+        !Array.isArray(normalizedGraph.dependencyPaths[packageVersionKey(packageName, version)])
+      ))
+    ));
+    const graphWithPaths = packagesMissingPaths.length === 0
+      ? normalizedGraph
+      : await (options.collectDependencyPaths ?? collectAdvisoryDependencyPaths)(
+        normalizedGraph,
+        packagesMissingPaths,
+        {
+          cwd,
+          pnpmCommand: options.pnpmCommand,
+          rootPackageNames: options.rootPackageNames,
+          runCommand: options.runCommand,
+        },
+      );
+    const evaluation = evaluateDependencyVulnerabilities({
+      productionGraph: graphWithPaths,
+      report,
+      dispositions,
+      now: options.now,
+    });
     renderEvaluation(evaluation, { stdout, stderr });
     return { exitCode: evaluation.ok ? 0 : 1, evaluation };
   } catch (error) {
@@ -329,6 +555,12 @@ function renderEvaluation(evaluation, { stdout, stderr }) {
     for (const mismatch of evaluation.mismatched) {
       stderr.write(`  MISMATCH ${formatAdvisory(mismatch.advisory)} — ${mismatch.differences.join("; ")}\n`);
     }
+    for (const disposition of evaluation.expired) {
+      stderr.write(
+        `  EXPIRED [${disposition.severity}] ${disposition.package}@${disposition.versions.join(",")} `
+        + `${disposition.url} — temporary acceptance expired ${disposition.expiresAt}\n`,
+      );
+    }
     for (const disposition of evaluation.stale) {
       stderr.write(
         `  STALE [${disposition.severity}] ${disposition.package}@${disposition.versions.join(",")} `
@@ -350,7 +582,7 @@ function renderEvaluation(evaluation, { stdout, stderr }) {
   }
 }
 
-function normalizeLiveAdvisory(packageName, versions, advisory) {
+function normalizeLiveAdvisory(packageName, versions, dependencyPaths, advisory) {
   if (!isRecord(advisory)) {
     throw new Error(`bulk advisory report for ${packageName} contains a malformed entry.`);
   }
@@ -367,9 +599,20 @@ function normalizeLiveAdvisory(packageName, versions, advisory) {
   if ((typeof advisory.id !== "number" && typeof advisory.id !== "string") || String(advisory.id).length === 0) {
     throw new Error(`bulk advisory for ${packageName} is missing id.`);
   }
+  const advisoryDependencyPaths = SEVERITY_RANK[severity] >= SEVERITY_RANK.high
+    ? versions.flatMap((version) => {
+      const key = packageVersionKey(packageName, version);
+      const paths = dependencyPaths[key];
+      if (!Array.isArray(paths) || paths.length === 0) {
+        throw new Error(`production dependency graph has no paths for advisory package ${key}.`);
+      }
+      return paths;
+    }).sort()
+    : [];
   return {
     package: packageName,
     versions: [...versions],
+    dependencyPaths: advisoryDependencyPaths,
     id: String(advisory.id),
     severity,
     title: advisory.title,
@@ -383,12 +626,42 @@ function dispositionDifferences(advisory, disposition) {
   if (JSON.stringify(advisory.versions) !== JSON.stringify(disposition.versions)) {
     differences.push(`exact versions changed (${disposition.versions.join(",")} -> ${advisory.versions.join(",")})`);
   }
+  if (JSON.stringify(advisory.dependencyPaths) !== JSON.stringify(disposition.dependencyPaths)) {
+    differences.push("production dependency paths changed");
+  }
   for (const field of ["severity", "title", "url", "vulnerableVersions"]) {
     if (advisory[field] !== disposition[field]) {
       differences.push(`${field} changed`);
     }
   }
   return differences;
+}
+
+function highSeverityReportPackageNames(report, inventory) {
+  if (!isRecord(report)) {
+    throw new Error("bulk advisory report must be an object keyed by package name.");
+  }
+  const packageNames = [];
+  for (const [packageName, advisories] of Object.entries(report)) {
+    if (!(packageName in inventory)) {
+      throw new Error(`bulk advisory report returned package absent from inventory: ${packageName}.`);
+    }
+    if (!Array.isArray(advisories)) {
+      throw new Error(`bulk advisory report for ${packageName} is not an array.`);
+    }
+    let active = false;
+    for (const advisory of advisories) {
+      if (!isRecord(advisory) || typeof advisory.severity !== "string"
+        || !(advisory.severity in SEVERITY_RANK)) {
+        throw new Error(`bulk advisory report for ${packageName} contains an unknown severity.`);
+      }
+      active ||= SEVERITY_RANK[advisory.severity] >= SEVERITY_RANK.high;
+    }
+    if (active) {
+      packageNames.push(packageName);
+    }
+  }
+  return packageNames.sort();
 }
 
 function parseArgs(argv) {
@@ -408,8 +681,8 @@ function usage() {
     "Usage:",
     "  pnpm run check:dependency-vulnerabilities",
     "",
-    "Audits installed production dependencies through npm's bulk advisory API.",
-    "Fails closed on registry errors and on unreviewed, stale, or metadata/version-mismatched high/critical findings.",
+    "Audits the full publishable cross-platform production/optional dependency graph through npm's bulk advisory API.",
+    "Fails closed on registry errors and on unreviewed, expired, stale, or metadata/version/path-mismatched high/critical findings.",
     "Set MONO_AGENT_DEPENDENCY_AUDIT_REGISTRY only to use a compatible registry mirror.",
   ].join("\n");
 }
@@ -445,6 +718,89 @@ function advisoryKey(packageName, id) {
 
 function ensureTrailingSlash(value) {
   return value.endsWith("/") ? value : `${value}/`;
+}
+
+function normalizeRootPackageNames(input) {
+  if (!Array.isArray(input) || input.length === 0) {
+    throw new Error("production graph rootPackageNames must be a non-empty array.");
+  }
+  const names = input.map((name) => {
+    if (typeof name !== "string" || name.length === 0) {
+      throw new Error("production graph rootPackageNames contains an invalid package name.");
+    }
+    return name;
+  });
+  if (new Set(names).size !== names.length) {
+    throw new Error("production graph rootPackageNames contains duplicates.");
+  }
+  return [...names].sort();
+}
+
+function parseVirtualStorePackagePath(value) {
+  const normalizedPath = value.replaceAll("\\", "/");
+  const marker = "/node_modules/.pnpm/";
+  const markerIndex = normalizedPath.indexOf(marker);
+  if (markerIndex < 0) {
+    throw new Error(`pnpm production inventory path is not in the virtual store: ${value}`);
+  }
+  const relative = normalizedPath.slice(markerIndex + marker.length);
+  const nodeModulesMarker = "/node_modules/";
+  const nodeModulesIndex = relative.indexOf(nodeModulesMarker);
+  if (nodeModulesIndex < 0) {
+    throw new Error(`pnpm production inventory path has no package suffix: ${value}`);
+  }
+  const virtualStoreDirectory = relative.slice(0, nodeModulesIndex);
+  const packageSegments = relative.slice(nodeModulesIndex + nodeModulesMarker.length).split("/");
+  const name = packageSegments[0]?.startsWith("@")
+    ? packageSegments.slice(0, 2).join("/")
+    : packageSegments[0];
+  if (typeof name !== "string" || name.length === 0 || (name.startsWith("@") && !name.includes("/"))) {
+    throw new Error(`pnpm production inventory path has an invalid package name: ${value}`);
+  }
+  const encodedPrefix = `${name.replace("/", "+")}@`;
+  if (!virtualStoreDirectory.startsWith(encodedPrefix)) {
+    throw new Error(`pnpm virtual-store directory does not match package ${name}: ${value}`);
+  }
+  const version = virtualStoreDirectory.slice(encodedPrefix.length).split("_", 1)[0];
+  if (version.length === 0) {
+    throw new Error(`pnpm production inventory path has no version for ${name}: ${value}`);
+  }
+  return { name, version };
+}
+
+function isLocalDependencyVersion(version) {
+  return version.startsWith("link:") || version.startsWith("file:") || version.startsWith("workspace:");
+}
+
+function packageVersionKey(packageName, version) {
+  return `${packageName}@${version}`;
+}
+
+function parseDateOnly(value, description) {
+  if (typeof value !== "string") {
+    throw new Error(`${description} must be a valid YYYY-MM-DD date.`);
+  }
+  const match = DATE_ONLY_PATTERN.exec(value);
+  if (match?.groups === undefined) {
+    throw new Error(`${description} must be a valid YYYY-MM-DD date.`);
+  }
+  const year = Number(match.groups.year);
+  const month = Number(match.groups.month);
+  const day = Number(match.groups.day);
+  const epoch = Date.UTC(year, month - 1, day);
+  const parsed = new Date(epoch);
+  if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day) {
+    throw new Error(`${description} must be a valid YYYY-MM-DD date.`);
+  }
+  return epoch;
+}
+
+function utcDayEpoch(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    throw new Error("dependency vulnerability evaluation time must be a valid date.");
+  }
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
 }
 
 function isRecord(value) {
