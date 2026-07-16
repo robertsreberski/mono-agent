@@ -1,5 +1,10 @@
 const UTF8_ENCODER = new TextEncoder();
-const UTF8_DECODER = new TextDecoder();
+const UTF8_DECODER = new TextDecoder('utf-8', {
+  fatal: true,
+  // TextDecoder strips an initial U+FEFF by default, which would violate the
+  // longest-prefix contract even when the complete BOM fits the byte budget.
+  ignoreBOM: true,
+});
 
 export function normalizeInlineText(value: string): string {
   return value

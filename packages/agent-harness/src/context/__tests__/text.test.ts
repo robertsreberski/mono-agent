@@ -16,6 +16,16 @@ describe('clampUtf8Bytes', () => {
     expect(clampUtf8Bytes('ABC', 4)).toBe('ABC');
   });
 
+  it('preserves a leading U+FEFF in every complete truncated prefix', () => {
+    const value = '\uFEFFA🧠Z';
+
+    expect(clampUtf8Bytes(value, 2)).toBe('');
+    expect(clampUtf8Bytes(value, 3)).toBe('\uFEFF');
+    expect(clampUtf8Bytes(value, 4)).toBe('\uFEFFA');
+    expect(clampUtf8Bytes(value, 5)).toBe('\uFEFFA');
+    expect(clampUtf8Bytes(value, 8)).toBe('\uFEFFA🧠');
+  });
+
   it.each([
     ['2-byte', 'é'],
     ['3-byte', '€'],
