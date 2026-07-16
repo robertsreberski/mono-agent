@@ -6,6 +6,8 @@ import { categoryStyle } from "../components/event-list.js";
 import { AssistantCell, NoticeCell, ThinkingCell, UserCell } from "../components/transcript-cells.js";
 import { ToolPanel } from "../components/tool-panel.js";
 import { extractUsage, formatClock, formatDurationMs, formatTokens, formatUsd } from "../format.js";
+import { sessionBoundaryNotice } from "../session-boundary.js";
+import { escapeTerminalControls } from "../terminal-text.js";
 import { styles } from "../theme.js";
 
 /** Canonical (not alphabetical) filter-category order matching the t/o/m/y/e keymap. */
@@ -117,10 +119,10 @@ export function buildStatusLine(state: StatusLineState): string {
  * cell redesign below -- only the BODY under it now varies by category.
  */
 export function buildPayloadHeader(item: ReplayTimelineItem): string {
-  let header = `#${item.index} ${item.label}`;
+  let header = `#${item.index} ${escapeTerminalControls(item.label)}`;
   const timing: string[] = [];
   if (item.timestamp !== undefined) {
-    timing.push(item.timestamp);
+    timing.push(escapeTerminalControls(item.timestamp));
   }
   if (item.deltaMs !== undefined) {
     timing.push(`+${formatDurationMs(item.deltaMs)}`);
@@ -141,8 +143,9 @@ export function buildPayloadHeader(item: ReplayTimelineItem): string {
  * Pretty-printed raw JSON body for the selected event, capped at today's
  * established line counts (12 collapsed / 40 expanded) with a
  * `… (+N more lines)` trailer when truncated. Used both as the WHOLE body for
- * runtime/telemetry items (no chat-style cell exists for those) and as the
- * optional strip appended below a chat-style cell once the pane is expanded.
+ * generic runtime/telemetry items (session boundaries and runtime warnings
+ * have notice cells) and as the optional strip appended below a chat-style
+ * cell once the pane is expanded.
  */
 export function buildRawPayloadBody(item: ReplayTimelineItem, expanded: boolean): string {
   const maxLines = expanded ? PAYLOAD_MAX_LINES_EXPANDED : PAYLOAD_MAX_LINES_COLLAPSED;
@@ -156,9 +159,10 @@ export function buildRawPayloadBody(item: ReplayTimelineItem, expanded: boolean)
  * The chat-style transcript cell for the selected event, reusing live chat's
  * OWN components (ThinkingCell/AssistantCell/UserCell/NoticeCell/ToolPanel) so
  * replay and live chat read as one interface. Returns `undefined` for
- * runtime/telemetry items (provider_request_*, run_config, cost,
- * capabilities…) and for a "tool" category item that -- despite the category
- * -- carries neither a `tool_use` nor a `tool_result` content block (e.g. a
+ * generic runtime/telemetry items (provider_request_*, run_config, cost,
+ * capabilities…; session boundaries and runtime warnings are exceptions) and
+ * for a "tool" category item that -- despite the category -- carries neither
+ * a `tool_use` nor a `tool_result` content block (e.g. a
  * `tool_update`/`tool_timing` progress event, classified "tool" purely by its
  * `type` string containing "tool"): callers fall back to
  * {@link buildRawPayloadBody} for both cases, exactly as before Part B.
@@ -166,12 +170,14 @@ export function buildRawPayloadBody(item: ReplayTimelineItem, expanded: boolean)
  * `timeline` (the run's coalesced persisted-event item list) is used to look AHEAD from
  * a `tool_use` item for its matching `tool_result` (by `tool_use_id`) so a
  * call+result pair renders as ONE unified panel, like a live tool call
- * settling. `rawEvents` (the run's raw, uncoalesced events) is used to
- * reconstruct the joined text retained in a coalesced thinking/text group's
- * already redacted/capped raw events -- the
- * combiner's own synthetic payload for a multi-event group carries only the
- * compacted (220-char) `summary`, not the full text (see
- * `combinedEventItem` in event-timeline.ts).
+ * settling. `rawEvents` contains the run reader's bounded, uncoalesced event
+ * projections and is used to reconstruct the joined text retained in a
+ * coalesced thinking/text group. The reader's key-pattern pass ensures
+ * non-numeric values under sensitive-looking object keys are redacted; numeric
+ * values under matched keys are retained; retained free text is not
+ * content-scanned. The combiner's own synthetic payload for a multi-event
+ * group carries only the compacted (220-char) `summary`, not the full text
+ * (see `combinedEventItem` in event-timeline.ts).
  */
 export function buildDetailCell(
   item: ReplayTimelineItem,
@@ -193,6 +199,10 @@ export function buildDetailCell(
     return new NoticeCell(item.summary, "error");
   }
   if (item.category === "runtime") {
+    const boundaryNotice = sessionBoundaryNotice(item.payload);
+    if (boundaryNotice !== undefined) {
+      return new NoticeCell(boundaryNotice, "info");
+    }
     return item.type === "runtime_warning" ? new NoticeCell(item.summary, "warning") : undefined;
   }
   if (item.category === "tool") {
@@ -262,12 +272,12 @@ function findToolResult(
   return undefined;
 }
 
-/** First content block of `blockType` on a redacted raw event's `message.content` array, if any. */
+/** First content block of `blockType` on a reader-projected event's `message.content` array, if any. */
 function firstBlock(payload: unknown, blockType: "tool_use" | "tool_result"): Record<string, unknown> | undefined {
   return blocksOfType(payload, blockType)[0];
 }
 
-/** Every content block of `blockType` on a redacted raw event's `message.content` array. */
+/** Every content block of `blockType` on a reader-projected event's `message.content` array. */
 function blocksOfType(payload: unknown, blockType: "tool_use" | "tool_result"): readonly Record<string, unknown>[] {
   if (!isRecord(payload)) {
     return [];
@@ -282,11 +292,14 @@ function blocksOfType(payload: unknown, blockType: "tool_use" | "tool_result"): 
 }
 
 /**
- * Joined thinking/text content retained by the run's already redacted/capped
- * raw events, without the replay coalescer's additional summary compaction.
- * A single-event item's `payload` IS the raw redacted event (walk it
- * directly); a coalesced group's synthetic payload carries only the
- * compacted `summary`, so walk the group's own raw events (via
+ * Joined thinking/text content retained by the run reader's bounded event
+ * projection, without the replay coalescer's additional summary compaction.
+ * The reader's key-pattern pass ensures non-numeric values under
+ * sensitive-looking object keys are redacted; numeric values under matched
+ * keys are retained; retained free text is not content-scanned. A single-event
+ * item's `payload` is that bounded projection (walk it directly); a coalesced
+ * group's synthetic payload carries only the compacted `summary`, so walk the
+ * group's projected events (via
  * `sourceEventStartIndex`/`sourceEventEndIndex`, which index into
  * `rawEvents` 1:1 -- see `toRecordedEvent`'s `index` in recorded-runs.ts)
  * instead. Falls back to `item.summary` when no block of `kind` is found
@@ -368,13 +381,19 @@ function thinkingStatsSuffix(contentChars: number, timestamp: string | undefined
 
 function formatPayloadRaw(payload: unknown): string {
   if (typeof payload === "string") {
-    return payload;
+    return escapeTerminalControls(payload);
   }
   try {
     const json = JSON.stringify(payload, null, 2);
-    return json ?? String(payload);
+    return json === undefined
+      ? escapeTerminalControls(String(payload))
+      : escapeTerminalControls(json, { allowLineFeed: true });
   } catch {
-    return String(payload);
+    try {
+      return escapeTerminalControls(String(payload));
+    } catch {
+      return "[unrenderable payload]";
+    }
   }
 }
 

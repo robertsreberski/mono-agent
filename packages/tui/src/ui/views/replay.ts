@@ -119,8 +119,11 @@ function buildRunDescription(run: ReplayRunListItem): string {
 
 /**
  * Recorded-run replay straight from the agent's artifact dir: run list →
- * debugger-style step-through of the redacted, bounded events that reached a
- * run's JSONL file (thinking, tools, telemetry, failover) from any channel.
+ * debugger-style step-through of bounded event projections (thinking, tools,
+ * telemetry, failover) from any channel. The reader's key-pattern pass ensures
+ * non-numeric values under sensitive-looking object keys are redacted; numeric
+ * values under matched keys are retained; retained free text is not
+ * content-scanned.
  * Recorder-capped payload tails and RAM-buffered events lost to a crash cannot
  * be reconstructed here.
  */
@@ -476,8 +479,9 @@ export class ReplayView extends Container {
   /**
    * Rebuild the selected-event pane from scratch: header, then EITHER a
    * chat-style cell (thinking/tool/message/error/notice -- reusing live
-   * chat's own components, see buildDetailCell) OR, for runtime/telemetry
-   * items and tool-shaped-but-blockless items, the unchanged raw-JSON body.
+   * chat's own components, see buildDetailCell) OR, for generic
+   * runtime/telemetry items and tool-shaped-but-blockless items, the unchanged
+   * raw-JSON body. Session boundaries and runtime warnings use notice cells.
    * Expanding (`enter`) appends the raw JSON below a chat-style cell too, so
    * the underlying event is always one keystroke away.
    */
