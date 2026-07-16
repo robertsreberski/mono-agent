@@ -1,6 +1,7 @@
 import type { RuntimeEventLike } from "@mono-agent/observability";
 
 import type { ContextBlockInput, HistoryMessage } from "../context/index.js";
+import { clampUtf8Bytes } from "../context/text.js";
 
 function memoryBlockText(memory: ContextBlockInput | undefined): string | undefined {
   if (memory === undefined) {
@@ -45,8 +46,6 @@ const TURN_CONTEXT_MEMORY_MAX_CHARS = 4_000;
 // per-value UTF-8 truncation cap). Kept as a local constant rather than importing
 // it, to avoid widening that package's public API for a single number.
 const TURN_CONTEXT_MAX_BYTES = 4_096;
-const TURN_CONTEXT_ENCODER = new TextEncoder();
-const TURN_CONTEXT_DECODER = new TextDecoder();
 
 /**
  * Builds the synthetic `turn_context` event: what context THIS turn was driven
@@ -114,15 +113,6 @@ function turnContextMemory(
 function clampTurnContextText(value: string, maxChars: number): { readonly text: string; readonly truncated: boolean } {
   const byChars = value.length > maxChars ? value.slice(0, maxChars) : value;
   const truncatedByChars = byChars.length < value.length;
-  const bytes = TURN_CONTEXT_ENCODER.encode(byChars);
-  if (bytes.length <= TURN_CONTEXT_MAX_BYTES) {
-    return { text: byChars, truncated: truncatedByChars };
-  }
-  // Walk back from the byte cap to a UTF-8 code-point boundary (past any
-  // 0b10xxxxxx continuation byte) so a multi-byte char is never split.
-  let end = TURN_CONTEXT_MAX_BYTES;
-  while (end > 0 && (bytes[end]! & 0b1100_0000) === 0b1000_0000) {
-    end -= 1;
-  }
-  return { text: TURN_CONTEXT_DECODER.decode(bytes.subarray(0, end)), truncated: true };
+  const byBytes = clampUtf8Bytes(byChars, TURN_CONTEXT_MAX_BYTES);
+  return { text: byBytes, truncated: truncatedByChars || byBytes !== byChars };
 }

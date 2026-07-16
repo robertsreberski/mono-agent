@@ -4,6 +4,34 @@ import { extractCapturePlan } from "../capture-batch.js";
 import { fakeLlm } from "./helpers.js";
 
 describe("extractCapturePlan intra-turn precision", () => {
+  it("normalizes legally escaped lone surrogates on the lenient capture path", async () => {
+    const response = JSON.stringify({
+      memories: [
+        { type: "note", text: "alpha\ud83dbeta", salience: 0.8, isInsight: false, entityIds: [] },
+        { type: "note", text: "gamma\udc00delta", salience: 0.8, isInsight: false, entityIds: [] },
+        { type: "note", text: "\ud83d", salience: 0.8, isInsight: false, entityIds: [] },
+        { type: "note", text: "valid 🧠 memory", salience: 0.8, isInsight: false, entityIds: [] },
+      ],
+      entities: [],
+      relations: [],
+    });
+    expect(response).toContain("\\ud83d");
+    expect(response).toContain("\\udc00");
+
+    const plan = await extractCapturePlan(
+      "The model returned legal JSON escapes.",
+      fakeLlm([["Extract one bounded", response]]),
+    );
+
+    expect(plan.candidates.map((candidate) => candidate.text)).toEqual([
+      "alphabeta",
+      "gammadelta",
+      "valid 🧠 memory",
+    ]);
+    expect(plan.candidates.every((candidate) => !candidate.text.includes("�"))).toBe(true);
+    expect(plan.candidates.every((candidate) => !/\p{Cs}/u.test(candidate.text))).toBe(true);
+  });
+
   it("merges normalized exact duplicates and unions only their explicit entity ids", async () => {
     const llm = fakeLlm([["Extract one bounded", JSON.stringify({
       memories: [

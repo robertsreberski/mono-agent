@@ -8,7 +8,11 @@ import {
   type CaptureIntentAction,
 } from "./capture-outbox.js";
 import { dailyFilePath, readBullet } from "./daily.js";
-import { normalizeCandidateText, type CandidateMemory } from "./distill.js";
+import {
+  MAX_RECONCILIATION_TEXT_CODE_POINTS,
+  normalizeCandidateText,
+  type CandidateMemory,
+} from "./distill.js";
 import { parseJsonExact, parseJsonLoose } from "./json.js";
 import type { LlmComplete } from "./llm.js";
 import type { CanonicalGraphRepairGuard } from "./graph.js";
@@ -51,6 +55,10 @@ export interface ReconcileDeps {
 }
 
 const VALID_ACTIONS = new Set(["add", "update", "supersede", "noop"]);
+
+function normalizeReconciliationText(value: unknown): string | undefined {
+  return normalizeCandidateText(value, "reconcile");
+}
 
 interface Classification {
   readonly action: string;
@@ -527,7 +535,7 @@ Rules:
 - Preserve every input index exactly once. N is the exact JSON integer from that input item.
 - For noop, update, and supersede, targetId is REQUIRED and copied byte-for-byte from that candidate's existing[].id. add MUST omit targetId.
 - A targetId may be selected by at most one decision in the whole batch.
-- add and noop MUST omit text. update and supersede REQUIRE one complete, non-empty replacement text with no leading/trailing whitespace, at most 280 Unicode code points, no control, formatting, surrogate, line-separator, or paragraph-separator characters, and no reserved <!--mem delimiter.
+- add and noop MUST omit text. update and supersede REQUIRE one complete, non-empty replacement text with no leading/trailing whitespace, at most ${MAX_RECONCILIATION_TEXT_CODE_POINTS} Unicode code points, no control, formatting, surrogate, line-separator, or paragraph-separator characters, and no reserved <!--mem delimiter.
 - Every object contains exactly the keys shown for its action. Do not emit duplicate object keys, nulls, extra keys, comments, or prose.
 
 INPUT:
@@ -564,7 +572,7 @@ ${JSON.stringify(input)}`,
     if (record.action !== "add" && (
       targetId === undefined || !(neighbours[index] ?? []).some((hit) => hit.record.id === targetId)
     )) continue;
-    const text = normalizeCandidateText(record.text);
+    const text = normalizeReconciliationText(record.text);
     decisions.set(index, {
       action: record.action,
       ...(targetId === undefined ? {} : { targetId }),
@@ -639,7 +647,8 @@ function parseStrictBatchClassifications(
 
 function strictClassificationText(value: unknown): string {
   if (typeof value !== "string" || value.length === 0 || value !== value.trim()
-    || [...value].length > 280 || Buffer.byteLength(value, "utf8") > 1_120
+    || [...value].length > MAX_RECONCILIATION_TEXT_CODE_POINTS
+    || Buffer.byteLength(value, "utf8") > MAX_RECONCILIATION_TEXT_CODE_POINTS * 4
     || /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(value) || value.includes("<!--mem")) {
     throw new MemoryModelOutputError("classify-batch", "replacement text is invalid or exceeds its bound");
   }
@@ -677,7 +686,7 @@ async function classify(
   if (action !== "add") {
     if (targetId === undefined || !similar.some((h) => h.record.id === targetId)) return undefined;
   }
-  const text = normalizeCandidateText(parsed.text);
+  const text = normalizeReconciliationText(parsed.text);
   return {
     action,
     ...(targetId !== undefined && { targetId }),
