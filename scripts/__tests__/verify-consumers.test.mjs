@@ -1,8 +1,95 @@
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import { runVerifyConsumers } from "../verify-consumers.mjs";
 
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const execFileAsync = promisify(execFile);
+
 describe("verify-consumers", () => {
+  it("is wired exactly once immediately after the CI build step", async () => {
+    const [workflow, packageJsonText] = await Promise.all([
+      readFile(resolve(repoRoot, ".github/workflows/ci.yml"), "utf8"),
+      readFile(resolve(repoRoot, "package.json"), "utf8"),
+    ]);
+    const packageJson = JSON.parse(packageJsonText);
+    const verifyStart = workflow.indexOf("  verify:\n");
+    const websiteStart = workflow.indexOf("\n  website:\n", verifyStart);
+
+    expect(packageJson.scripts?.["verify:consumers"]).toBe("node scripts/verify-consumers.mjs");
+    expect(verifyStart).toBeGreaterThanOrEqual(0);
+    expect(websiteStart).toBeGreaterThan(verifyStart);
+
+    const verifyJob = workflow.slice(verifyStart, websiteStart);
+    const command = "pnpm run verify:consumers --skip-build";
+    const expectedSequence = [
+      "      - name: Build packages and demos",
+      "        run: pnpm run build",
+      "",
+      "      - name: Verify consumer contracts",
+      `        run: ${command}`,
+    ].join("\n");
+
+    expect(verifyJob).toContain(expectedSequence);
+    expect(verifyJob.split(command)).toHaveLength(2);
+  });
+
+  it("accepts every package-script form advertised by help and rejects a standalone separator", async () => {
+    const { stdout: help } = await execFileAsync("pnpm", ["run", "verify:consumers", "--help"], {
+      cwd: repoRoot,
+    });
+    const commandPrefix = "pnpm run verify:consumers";
+    const advertisedForms = help
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith(commandPrefix));
+
+    expect(advertisedForms).toEqual([
+      commandPrefix,
+      `${commandPrefix} --skip-build`,
+      `${commandPrefix} --consumer <path>`,
+      `${commandPrefix} --consumer <path> --skip-build`,
+    ]);
+
+    for (const form of advertisedForms) {
+      const argv = form
+        .slice(commandPrefix.length)
+        .trim()
+        .split(/\s+/u)
+        .filter(Boolean)
+        .map((arg) => arg === "<path>" ? "/tmp/downstream-agent" : arg);
+      const result = await runVerifyConsumers({
+        argv,
+        cwd: "/repo",
+        dependencies: fakeDependencies(),
+        runCommand: async () => 0,
+        stdout: sink(),
+        stderr: sink(),
+      });
+
+      expect(result.exitCode, `${form} should be accepted`).toBe(0);
+    }
+
+    const stderr = sink();
+    const invalid = await runVerifyConsumers({
+      argv: ["--", "--skip-build"],
+      cwd: "/repo",
+      dependencies: fakeDependencies(),
+      runCommand: async () => 0,
+      stdout: sink(),
+      stderr,
+    });
+
+    expect(invalid.exitCode).toBe(1);
+    expect(stderr.text).toContain("Unknown argument: --");
+    expect(help).not.toContain("pnpm run verify:consumers -- --");
+  });
+
   it("prints PASS lines and an ok summary when both golden consumers pass", async () => {
     const stdout = sink();
     const result = await runVerifyConsumers({
