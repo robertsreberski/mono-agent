@@ -182,9 +182,15 @@ export function createRepoGate({ releaseTag, nodeVersion = process.versions.node
       command: "pnpm",
       args: ["run", "check:consumer-docs-consistency"],
     },
+    {
+      label: "check:getting-started-version-pins",
+      command: "pnpm",
+      args: ["run", "check:getting-started-version-pins"],
+    },
     { label: "release:validate", command: "pnpm", args: ["run", "release:validate", "--", "--tag", releaseTag] },
     { label: "check:architecture", command: "pnpm", args: ["run", "check:architecture"] },
     { label: "build", command: "pnpm", args: ["run", "build"] },
+    { label: "check:deep-imports", command: "pnpm", args: ["run", "check:deep-imports"] },
     {
       label: "verify:consumers",
       command: "pnpm",
