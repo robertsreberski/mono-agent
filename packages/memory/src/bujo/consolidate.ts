@@ -9,10 +9,7 @@ export interface ConsolidateDeps {
 }
 
 export interface ConsolidateResult {
-  readonly decayed: number;
   readonly duplicateGroups: number;
-  readonly superseded: number;
-  readonly markdownInvalidated: number;
 }
 
 /**
@@ -28,7 +25,7 @@ export async function consolidateBujoMemory(deps: ConsolidateDeps): Promise<Cons
 
   writeIndex(deps.root, deps.db, deps.now);
   writeEmptyFutureLog(deps.root);
-  return { decayed: 0, duplicateGroups, superseded: 0, markdownInvalidated: 0 };
+  return { duplicateGroups };
 }
 
 function groupByNormalizedText(records: readonly MemoryRecord[]): Map<string, MemoryRecord[]> {

@@ -192,6 +192,14 @@ prints one parseable metadata-only failure object on stdout; human mode prints
 the same code/message on stderr. Neither form includes paths, memory or model
 text, record/intent/decision ids, database details, or underlying error text.
 
+## Consolidation
+
+`BujoMemoryStore.consolidate()` performs projection-only maintenance. It
+refreshes the derived `index.md`, keeps the retired `future-log.md` projection
+as an empty stub, and returns `{ duplicateGroups }`, the number of
+exact-normalized duplicate-text groups it observed. It does not decay salience,
+supersede or merge records, rewrite canonical memories, or call a chat model.
+
 ## Public API
 
 - `@mono-agent/memory/store`: `openMemoryDb`, `MemoryDb`, `DEFAULT_VEC_DIM`, `MEMORY_TYPES`, `MEMORY_STATUSES`, local record/entity/recall/stats/audit types, and re-exported `MemoryBlock`, `MemoryLoadOptions`, `MemoryStore`, `MemoryWriteResult`
