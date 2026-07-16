@@ -29,6 +29,24 @@ afterEach(() => {
 });
 
 describe("dependency vulnerability gate", () => {
+  it("escapes hostile unknown arguments before rendering usage", async () => {
+    const stderr = sink();
+    const result = await runDependencyVulnerabilityCheck({
+      argv: ["bad\n::error file=ci.yml::forged\u001b[31m\u202ertl\u202c"],
+      stdout: sink(),
+      stderr,
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(stderr.text).toContain(
+      "Unknown argument: bad\\n::error file=ci.yml::forged\\u001b[31m\\u202ertl\\u202c",
+    );
+    expect(stderr.text).toContain("Usage:\n  pnpm run check:dependency-vulnerabilities");
+    expect(stderr.text).not.toContain("\n::error file=ci.yml::forged");
+    expect(stderr.text).not.toContain("\u001b");
+    expect(stderr.text).not.toContain("\u202e");
+  });
+
   it("parses pnpm 10's compact cross-platform production inventory", () => {
     expect(parsePnpmProductionInventory([
       "/repo/packages/portable-fixture",

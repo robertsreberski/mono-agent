@@ -985,7 +985,7 @@ export async function runDependencyVulnerabilityCheck(options = {}) {
   try {
     parsed = parseArgs(options.argv ?? process.argv.slice(2));
   } catch (error) {
-    stderr.write(`${reasonOf(error)}\n\n${usage()}\n`);
+    stderr.write(`${boundedSingleLine(reasonOf(error), 2_000)}\n\n${usage()}\n`);
     return { exitCode: 1 };
   }
   if (parsed.help) {
