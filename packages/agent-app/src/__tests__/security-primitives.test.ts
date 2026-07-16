@@ -1,19 +1,35 @@
 import { execFile } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+  type FileHandle,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  initMonoAgentFolder,
   mergeSecretEnvFile,
   SecretEnvConcurrentModificationError,
   secretEnvConcurrentModificationCause,
 } from "../init.js";
 import { acquireOwnerPrivateLock } from "../owner-private-lock.js";
+import {
+  PROJECT_SKILL_MANIFEST_PATH,
+  updateManagedProjectSkills,
+} from "../project-skills.js";
 import { redactSecrets } from "../redact-secrets.js";
 import { secureFileReplace } from "../secure-file-replace.js";
+import { defaultAnswers } from "../wizard/answers.js";
 
 const roots: string[] = [];
 const execFileAsync = promisify(execFile);
@@ -31,6 +47,26 @@ async function root(): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), "mono-agent-security-primitives-"));
   roots.push(path);
   return path;
+}
+
+async function agentRoot(): Promise<string> {
+  const path = await root();
+  await initMonoAgentFolder({
+    dir: path,
+    answers: defaultAnswers({ name: "Security Test", purpose: "Exercise shared security primitives." }),
+  });
+  return path;
+}
+
+async function makeManagedSkillsStale(path: string): Promise<void> {
+  const manifestPath = join(path, PROJECT_SKILL_MANIFEST_PATH);
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { version: string };
+  manifest.version = "0.0.0";
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+function isConfigureSkillPath(path: string): boolean {
+  return basename(path) === "SKILL.md" && basename(dirname(path)) === "mono-agent-configure";
 }
 
 async function expectFifoRejectionWithoutBlocking(pending: Promise<unknown>, fifo: string): Promise<void> {
@@ -198,6 +234,93 @@ describe("shared security primitives", () => {
     expect(cause.recoveryPath).toBeDefined();
     await expect(readFile(path, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(cause.recoveryPath!, "utf8")).toBe("TOKEN=original\n");
+  });
+
+  it("preserves a managed skill created at the exclusive publication boundary", async () => {
+    const dir = await agentRoot();
+    const path = join(dir, "skills", "mono-agent-configure", "SKILL.md");
+    await rm(path);
+    const operatorCopy = "# operator-created skill\n";
+    let injected = false;
+
+    await expect(updateManagedProjectSkills(dir, {
+      beforePublish: async (target) => {
+        if (injected || !isConfigureSkillPath(target)) return;
+        injected = true;
+        await writeFile(target, operatorCopy, { mode: 0o600 });
+      },
+    })).rejects.toThrow(/concurrently created/u);
+
+    expect(injected).toBe(true);
+    expect(await readFile(path, "utf8")).toBe(operatorCopy);
+  });
+
+  it("restores an operator edit raced into the managed target-claim boundary", async () => {
+    const dir = await agentRoot();
+    await makeManagedSkillsStale(dir);
+    const path = join(dir, "skills", "mono-agent-configure", "SKILL.md");
+    const operatorEdit = "# operator edit at target claim\n";
+    let injected = false;
+
+    await expect(updateManagedProjectSkills(dir, {
+      beforeTargetClaim: async (target) => {
+        if (injected || !isConfigureSkillPath(target)) return;
+        injected = true;
+        await writeFile(target, operatorEdit, { mode: 0o600 });
+      },
+    })).rejects.toThrow(/concurrently edited/u);
+
+    expect(injected).toBe(true);
+    expect(await readFile(path, "utf8")).toBe(operatorEdit);
+  });
+
+  it("restores an operator edit written through an fd retained across target claim", async () => {
+    const dir = await agentRoot();
+    await makeManagedSkillsStale(dir);
+    const path = join(dir, "skills", "mono-agent-configure", "SKILL.md");
+    const operatorEdit = "# operator edit through retained descriptor\n";
+    let retained: FileHandle | undefined;
+
+    try {
+      await expect(updateManagedProjectSkills(dir, {
+        beforeTargetClaim: async (target) => {
+          if (retained !== undefined || !isConfigureSkillPath(target)) return;
+          retained = await open(target, "r+");
+        },
+        beforePublish: async (target) => {
+          if (retained === undefined || !isConfigureSkillPath(target)) return;
+          await retained.truncate(0);
+          await retained.writeFile(operatorEdit);
+          await retained.sync();
+        },
+      })).rejects.toThrow(/concurrently edited/u);
+    } finally {
+      await retained?.close();
+    }
+
+    expect(retained).toBeDefined();
+    expect(await readFile(path, "utf8")).toBe(operatorEdit);
+  });
+
+  it("restores the prior managed skill when the staged inode changes after proof", async () => {
+    const dir = await agentRoot();
+    await makeManagedSkillsStale(dir);
+    const path = join(dir, "skills", "mono-agent-configure", "SKILL.md");
+    const prior = await readFile(path, "utf8");
+    let injected = false;
+
+    await expect(updateManagedProjectSkills(dir, {
+      beforePublish: async (target, temporary) => {
+        if (injected || !isConfigureSkillPath(target)) return;
+        injected = true;
+        const intended = await readFile(temporary);
+        await rename(temporary, `${temporary}.displaced`);
+        await writeFile(temporary, intended, { mode: 0o600 });
+      },
+    })).rejects.toThrow(/changed during publication|publication failed/u);
+
+    expect(injected).toBe(true);
+    expect(await readFile(path, "utf8")).toBe(prior);
   });
 
   it("serializes a private directory lock and releases only the acquired owner record", async () => {
