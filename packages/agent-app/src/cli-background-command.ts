@@ -48,7 +48,7 @@ import type {
 } from "./doctor.js";
 import { readCliConfigSnapshot } from "./first-run-readiness.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
-import { purgeSessions } from "./sessions.js";
+import { purgeConversationState } from "./sessions.js";
 import { launchdLogPathsForConfig } from "./launchd-logs.js";
 import { deriveLaunchdLabel } from "./launchd.js";
 import * as ui from "./ui.js";
@@ -368,10 +368,10 @@ export async function runLaunchdLogMaintenanceCommand(
 }
 
 /**
- * `restart --force`: stop the worker, purge its persisted pi-session store, then
- * start fresh. Stopping first guarantees the worker is not writing sessions while
- * they are deleted; the runtime recreates the store on the next session, and the
- * agent's durable memory lives elsewhere, so only resumable transcripts are dropped.
+ * `restart --force`: stop the worker, purge provider transcripts and canonical
+ * active-conversation history, then start fresh. Stopping first guarantees no
+ * conversation state is being written during deletion. Durable memory and run
+ * artifacts live elsewhere and remain untouched.
  */
 async function runForceRestart(
   target: InstanceTarget,
@@ -379,12 +379,24 @@ async function runForceRestart(
   environment: Record<string, string | undefined>,
 ): Promise<number> {
   return await forceRestartBackground(target, deps, async () => {
-    const result = await purgeSessions({ env: environment, cwd: target.cwd, configPath: target.configPath });
-    if (result.removed) {
-      const count = result.files === 0 ? "" : ` (${result.files} session file${result.files === 1 ? "" : "s"})`;
-      process.stdout.write(`${ui.badge("ok")}${ui.style.bold("Cleared persisted sessions")}${count}.\n`);
+    const result = await purgeConversationState({ env: environment, cwd: target.cwd, configPath: target.configPath });
+    const cleared: string[] = [];
+    if (result.sessions.removed) {
+      const count = result.sessions.files === 0
+        ? ""
+        : ` (${result.sessions.files} session file${result.sessions.files === 1 ? "" : "s"})`;
+      cleared.push(`persisted provider sessions${count}`);
+    }
+    if (result.history.removed) {
+      const count = result.history.files === 0
+        ? ""
+        : ` (${result.history.files} conversation file${result.history.files === 1 ? "" : "s"})`;
+      cleared.push(`active conversation history${count}`);
+    }
+    if (cleared.length > 0) {
+      process.stdout.write(`${ui.badge("ok")}${ui.style.bold(`Cleared ${cleared.join(" and ")}`)}.\n`);
     } else {
-      process.stdout.write(ui.style.dim("No persisted sessions to clear (in-memory or none on disk).") + "\n");
+      process.stdout.write(ui.style.dim("No persisted provider sessions or conversation history to clear.") + "\n");
     }
   });
 }

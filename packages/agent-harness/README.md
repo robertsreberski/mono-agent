@@ -143,7 +143,7 @@ toolPolicyToRuntimeOptions
 
 <!-- public-api-inventory:end -->
 
-With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation: resumed runs pass `sessionId`/`sessionKeepAlive` to the runtime and omit history from the prompt, stale sessions are evicted and retried once with history, rotated provider session ids are tracked, and `dispose()` retires everything on shutdown. History is still appended after every successful turn so post-expiry runs replay it as before.
+With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation. Confirmed warm runs pass `sessionId`/`sessionKeepAlive` and send only the current user message. A cold history-coordinated Pi reopen supplies canonical history as structured leading runtime messages, outside the system prompt; Pi seeds those messages when its durable JSONL is missing and skips them when the JSONL truly resumes. Stateless/fresh runs and the one stale-session retry keep the ordinary prompt-history replay path. Rotated provider session ids are tracked, `dispose()` retires this harness's live sessions, and history is appended after every successful turn.
 
 ## Dependency Boundary
 
