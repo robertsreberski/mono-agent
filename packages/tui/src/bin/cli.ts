@@ -93,6 +93,10 @@ export function exitWithError(message: string): never {
   process.exit(2);
 }
 
+function isAgentResponderLike(value: unknown): value is AgentResponderLike {
+  return typeof (value as { readonly respond?: unknown } | null | undefined)?.respond === "function";
+}
+
 /**
  * Resolve and import an `AgentResponderLike` from a host-supplied module.
  * Accepts either a `createResponder(env, cwd, configPath)` factory export or
@@ -108,12 +112,12 @@ export async function loadResponder(
   }
   const moduleUrl = pathToFileURL(absolute).href;
   const moduleExports = (await import(moduleUrl)) as {
-    default?: AgentResponderLike;
+    default?: unknown;
     createResponder?: (
       env: Record<string, string | undefined>,
       cwd: string,
       configPath: string | undefined,
-    ) => Promise<AgentResponderLike> | AgentResponderLike;
+    ) => Promise<unknown> | unknown;
   };
 
   if (typeof moduleExports.createResponder === "function") {
@@ -122,12 +126,12 @@ export async function loadResponder(
       process.cwd(),
       configPath,
     );
+    if (!isAgentResponderLike(result)) {
+      exitWithError(`createResponder() from module ${absolute} did not return an AgentResponderLike.`);
+    }
     return result;
   }
-  if (
-    moduleExports.default !== undefined &&
-    typeof moduleExports.default.respond === "function"
-  ) {
+  if (isAgentResponderLike(moduleExports.default)) {
     return moduleExports.default;
   }
   exitWithError(
