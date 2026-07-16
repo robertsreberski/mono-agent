@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createCompositeRunRecorder } from "../composite-recorder.js";
+import { DEFAULT_MAX_EVENTS_PER_RUN } from "../guards.js";
 import type {
   RunExportContext,
   RunExportEventContext,
@@ -245,6 +246,42 @@ describe("createCompositeRunRecorder", () => {
     expect(onEventCalls.map((c) => c.event?.type)).toEqual(["a", "b", "c"]);
     expect(onEventCalls.map((c) => c.eventIndex)).toEqual([0, 1, 2]);
     expect(calls.find((c) => c.method === "finish")).toBeDefined();
+  });
+
+  it("caps the exporter copy while preserving primary events and warning once", async () => {
+    const totalEvents = DEFAULT_MAX_EVENTS_PER_RUN + 3;
+    const finishSummary = makeSummary({ eventCount: totalEvents });
+    const { recorder, calls: recorderCalls } = makeFakeRecorder({ finishSummary });
+    const { exporter, calls: exporterCalls } = makeFakeExporter();
+    const warnings: Array<{ phase: string; message: string }> = [];
+    const composite = createCompositeRunRecorder({
+      recorder,
+      exporter,
+      context: makeContext(),
+      timeoutMs: 1000,
+      onWarning: (warning) => warnings.push(warning),
+    });
+
+    for (let index = 0; index < totalEvents; index += 1) {
+      composite.onEvent({ type: `event-${index}` });
+    }
+    const summary = await composite.finish({});
+
+    expect(summary).toBe(finishSummary);
+    expect(recorderCalls.filter((call) => call.method === "onEvent")).toHaveLength(totalEvents);
+    const replayed = exporterCalls.filter((call) => call.method === "onEvent");
+    expect(replayed).toHaveLength(DEFAULT_MAX_EVENTS_PER_RUN);
+    expect(replayed[0]?.event?.type).toBe("event-0");
+    expect(replayed.at(-1)?.event?.type).toBe(`event-${DEFAULT_MAX_EVENTS_PER_RUN - 1}`);
+    expect(replayed.map((call) => call.eventIndex)).toEqual(
+      Array.from({ length: DEFAULT_MAX_EVENTS_PER_RUN }, (_, index) => index),
+    );
+    expect(warnings).toEqual([
+      {
+        phase: "event_buffer",
+        message: `Exporter event buffer retained the first ${DEFAULT_MAX_EVENTS_PER_RUN} events and dropped 3 later events.`,
+      },
+    ]);
   });
 
   it("keeps prepare non-terminal and exports late warnings before one idempotent terminal", async () => {

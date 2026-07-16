@@ -6,6 +6,7 @@ import type {
   RunSummary,
 } from "../../types.js";
 
+import { DEFAULT_MAX_EVENTS_PER_RUN } from "../../guards.js";
 import { createPhoenixRunExporter } from "../phoenix-exporter.js";
 
 const summary: RunSummary = {
@@ -128,6 +129,27 @@ describe("createPhoenixRunExporter", () => {
 
     expect(cap.bodyText()).not.toContain(fixture);
     expect(cap.bodyText()).toContain("[redacted]");
+  });
+
+  it("caps events when used directly", async () => {
+    const cap = capturingFetch();
+    const exporter = createPhoenixRunExporter({ type: "phoenix" }, { fetch: cap.fetch, now: () => 1 });
+    const totalEvents = DEFAULT_MAX_EVENTS_PER_RUN + 1;
+
+    await exporter.start?.(baseCtx);
+    for (let index = 0; index < totalEvents; index += 1) {
+      const name =
+        index === DEFAULT_MAX_EVENTS_PER_RUN - 1
+          ? "last-kept-marker"
+          : index === DEFAULT_MAX_EVENTS_PER_RUN
+            ? "overflow-marker"
+            : "Read";
+      await exporter.onEvent?.({ type: "tool_call", name }, eventCtx(index));
+    }
+    await exporter.finish?.({ ...summary, eventCount: totalEvents }, baseCtx);
+
+    expect(cap.bodyText()).toContain("last-kept-marker");
+    expect(cap.bodyText()).not.toContain("overflow-marker");
   });
 
   it("uses deterministic ids: re-exporting the same run yields byte-identical bodies", async () => {
