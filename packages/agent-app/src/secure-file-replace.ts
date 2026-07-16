@@ -29,7 +29,6 @@ interface TargetPublicationOptions {
   readonly expected: ExpectedTarget; readonly recovery: RecoveryMode;
   readonly beforeClaim?: (targetPath: string, temporaryPath: string) => Awaitable<void>;
   readonly beforePublish?: (targetPath: string, temporaryPath: string) => Awaitable<void>;
-  /** Runs after the target is exclusively published and the staging pathname has been detached. */
   readonly afterPublish?: (targetPath: string, temporaryPath: string) => Awaitable<void>;
   readonly protectRecovery?: (path: string) => Awaitable<void>;
   readonly makeError?: (failure: SecureReplaceFailure) => Error;
@@ -159,13 +158,9 @@ async function publishTarget(targetPath: string, temporaryPath: string,
       throw error;
     }
     published = true;
-    // Keep the no-replace property of link(2), but do not yield while the
-    // externally visible target shares its inode with the staging pathname.
-    // Owner-file readers reject arbitrary hard links, so an await in this
-    // interval would make a legitimate concurrent lock contender fail closed.
-    unlinkSync(temporaryPath);
     await options.afterPublish?.(targetPath, temporaryPath);
-    await prove(targetPath);
+    await prove(temporaryPath, [2]);
+    await prove(targetPath, [2]);
     if (present !== undefined) {
       const claimed = present.validate(claimPath, true);
       if (!(typeof claimed === "boolean" ? claimed : await claimed)) invalid("published", present.invalidError);

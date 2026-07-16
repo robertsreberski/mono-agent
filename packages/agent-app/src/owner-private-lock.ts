@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, mkdir, open, rename, rm, type FileHandle } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import process from "node:process";
 
 import {
@@ -13,6 +13,9 @@ import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incar
 import { secureFileReplace } from "./secure-file-replace.js";
 
 const OWNER_MAX_BYTES = 4 * 1024;
+const OWNER_PUBLICATION_RETRY_ATTEMPTS = 20;
+const OWNER_PUBLICATION_RETRY_MS = 1;
+const OWNER_PUBLICATION_IN_PROGRESS = Symbol("owner-publication-in-progress");
 
 interface Identity { readonly dev: bigint; readonly ino: bigint }
 interface BaseOwner {
@@ -23,6 +26,7 @@ interface Owner {
   readonly pid: number; readonly incarnation?: ProcessIncarnation;
   readonly content: string; readonly identity: Identity;
 }
+type OwnerReadResult = Owner | undefined | typeof OWNER_PUBLICATION_IN_PROGRESS;
 type Observed =
   | { readonly kind: "ownerless"; readonly identity: Identity; readonly mtimeMs: number }
   | { readonly kind: "owned"; readonly identity: Identity; readonly owner: Owner };
@@ -251,6 +255,20 @@ async function inspect(path: string, options: OwnerPrivateLockOptions): Promise<
 }
 
 async function readOwner(path: string, options: OwnerPrivateLockOptions): Promise<Owner | undefined> {
+  for (let attempt = 0; ; attempt += 1) {
+    const result = await readOwnerOnce(path, options);
+    if (result !== OWNER_PUBLICATION_IN_PROGRESS) return result;
+    if (attempt >= OWNER_PUBLICATION_RETRY_ATTEMPTS) {
+      throw unsafe(
+        options,
+        `${options.label} owner ${path} remained multiply linked after a bounded publication wait.`,
+      );
+    }
+    await (options.sleep ?? sleep)(OWNER_PUBLICATION_RETRY_MS);
+  }
+}
+
+async function readOwnerOnce(path: string, options: OwnerPrivateLockOptions): Promise<OwnerReadResult> {
   let handle: FileHandle;
   try {
     // O_NONBLOCK matters before fstat: a same-user pathname swap to a FIFO
@@ -266,6 +284,11 @@ async function readOwner(path: string, options: OwnerPrivateLockOptions): Promis
   try {
     const before = await handle.stat({ bigint: true });
     if (before.nlink === 0n) return undefined;
+    // The current publisher temporarily gives the staged owner inode one exact
+    // second name. Never accept that state as an owner; prove the pair and retry.
+    if (before.nlink === 2n && await frameworkOwnerPublicationInProgress(handle, path, before, options)) {
+      return OWNER_PUBLICATION_IN_PROGRESS;
+    }
     ownerFile(before, path, options);
     const fileIdentity = identity(before);
     const content = await boundedRead(handle, path, options);
@@ -324,6 +347,97 @@ async function boundedRead(handle: FileHandle, path: string, options: OwnerPriva
   }
   if (offset > OWNER_MAX_BYTES) throw unsafe(options, `${options.label} owner record ${path} exceeds ${OWNER_MAX_BYTES} bytes.`);
   return buffer.subarray(0, offset).toString("utf8");
+}
+
+async function frameworkOwnerPublicationInProgress(
+  handle: FileHandle,
+  path: string,
+  before: BigIntStats,
+  options: OwnerPrivateLockOptions,
+): Promise<boolean> {
+  if (!ownerPublicationFile(before, before, 2n)) return false;
+  const content = await boundedRead(handle, path, options);
+  const after = await handle.stat({ bigint: true });
+  let named: BigIntStats;
+  try {
+    named = await lstat(path, { bigint: true });
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return false;
+    throw error;
+  }
+
+  // The publisher may have removed its staging name while this reader was
+  // proving the pair. Restart only after the visible owner is securely single-linked.
+  if (ownerPublicationFile(after, before, 1n)
+    && ownerPublicationFile(named, before, 1n)
+    && sameOwnerFileSnapshot(after, named)) return true;
+
+  if (!ownerPublicationFile(after, before, 2n)
+    || !ownerPublicationFile(named, before, 2n)
+    || !sameOwnerFileSnapshot(before, after)
+    || !sameOwnerFileSnapshot(after, named)) return false;
+
+  const temporaryPath = ownerPublicationTemporaryPath(path, content, options);
+  if (temporaryPath === undefined) return false;
+  let temporary: BigIntStats;
+  try {
+    temporary = await lstat(temporaryPath, { bigint: true });
+  } catch (error) {
+    if (!isErrno(error, "ENOENT")) throw error;
+    const settled = await handle.stat({ bigint: true });
+    let settledNamed: BigIntStats;
+    try {
+      settledNamed = await lstat(path, { bigint: true });
+    } catch (settledError) {
+      if (isErrno(settledError, "ENOENT")) return false;
+      throw settledError;
+    }
+    return ownerPublicationFile(settled, before, 1n)
+      && ownerPublicationFile(settledNamed, before, 1n)
+      && sameOwnerFileSnapshot(settled, settledNamed);
+  }
+  return ownerPublicationFile(temporary, before, 2n)
+    && sameOwnerFileSnapshot(named, temporary);
+}
+
+function ownerPublicationTemporaryPath(
+  path: string,
+  content: string,
+  options: OwnerPrivateLockOptions,
+): string | undefined {
+  let record: Readonly<Record<string, unknown>>;
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    record = parsed as Readonly<Record<string, unknown>>;
+  } catch {
+    return undefined;
+  }
+  if (record.schema !== options.schemaTag || !positivePid(record.pid) || !validToken(record.token)) return undefined;
+  return join(dirname(path), `.owner.${String(record.pid)}.${record.token}.tmp`);
+}
+
+function ownerPublicationFile(
+  details: BigIntStats,
+  expected: { readonly dev: bigint; readonly ino: bigint },
+  linkCount: bigint,
+): boolean {
+  return details.isFile()
+    && !details.isSymbolicLink()
+    && details.nlink === linkCount
+    && sameIdentity(details, expected)
+    && (typeof process.getuid !== "function" || details.uid === BigInt(process.getuid()))
+    && (details.mode & 0o777n) === 0o600n;
+}
+
+function sameOwnerFileSnapshot(left: BigIntStats, right: BigIntStats): boolean {
+  return sameIdentity(left, right)
+    && left.uid === right.uid
+    && left.nlink === right.nlink
+    && left.mode === right.mode
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs;
 }
 
 async function quarantine(
@@ -497,8 +611,14 @@ function sameIdentity(value: { readonly dev: bigint; readonly ino: bigint }, exp
   return value.dev === expected.dev && value.ino === expected.ino;
 }
 function checkedToken(value: string, label: string): string {
-  if (!/^[0-9A-Za-z._-]+$/u.test(value) || value.length === 0 || value.length > 256) throw new Error(`${label} token is invalid.`);
+  if (!validToken(value)) throw new Error(`${label} token is invalid.`);
   return value;
+}
+function validToken(value: unknown): value is string {
+  return typeof value === "string"
+    && /^[0-9A-Za-z._-]+$/u.test(value)
+    && value.length > 0
+    && value.length <= 256;
 }
 function unsafe(options: OwnerPrivateLockOptions, cause: string, details: Readonly<Record<string, unknown>> = {}): Error {
   return options.unsafeError?.(cause, details) ?? new Error(cause);

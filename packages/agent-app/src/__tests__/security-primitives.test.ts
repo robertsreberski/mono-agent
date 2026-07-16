@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import {
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -473,10 +474,11 @@ describe("shared security primitives", () => {
     await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("keeps owner publication single-linked while a concurrent acquirer inspects it", async () => {
+  it("serializes a concurrent acquirer across the exact owner-publication interval", async () => {
     const dir = await root();
     const path = join(dir, "publication-interval.lock");
     const ownerPath = join(path, "owner.json");
+    const temporaryPath = join(path, `.owner.${String(process.pid)}.publishing-owner.tmp`);
     const content = `${JSON.stringify({
       schema: "mono-agent.test-lock.v1",
       pid: process.pid,
@@ -492,31 +494,109 @@ describe("shared security primitives", () => {
       processIncarnation: incarnation,
       isSameProcessIncarnation: async () => true,
     };
-    let publishedLinkCount: number | undefined;
-    let contender: Awaited<ReturnType<typeof acquireOwnerPrivateLock>> = undefined;
+    let signalPublicationObserved!: () => void;
+    const publicationObserved = new Promise<void>((resolveObserved) => { signalPublicationObserved = resolveObserved; });
+    let resumeContender!: () => void;
+    const publicationFinished = new Promise<void>((resolveFinished) => { resumeContender = resolveFinished; });
+    let contender: Promise<Awaited<ReturnType<typeof acquireOwnerPrivateLock>>> | undefined;
 
     await mkdir(path, { mode: 0o700 });
     await secureFileReplace({
       path: ownerPath,
+      temporaryPath,
       contents: content,
       mode: 0o600,
       target: {
         expected: { kind: "missing" },
         recovery: "preserve-current",
-        afterPublish: async (publishedPath, temporaryPath) => {
-          publishedLinkCount = (await lstat(publishedPath)).nlink;
-          await expect(lstat(temporaryPath)).rejects.toMatchObject({ code: "ENOENT" });
-          contender = await acquireOwnerPrivateLock({
+        afterPublish: async (publishedPath, stagedPath) => {
+          expect((await lstat(publishedPath)).nlink).toBe(2);
+          expect((await lstat(stagedPath)).nlink).toBe(2);
+          contender = acquireOwnerPrivateLock({
             ...common,
             randomToken: () => "concurrent-owner",
+            sleep: async (milliseconds) => {
+              expect(milliseconds).toBe(1);
+              signalPublicationObserved();
+              await publicationFinished;
+            },
           });
+          void contender.catch(() => signalPublicationObserved());
+          await publicationObserved;
         },
       },
     });
 
-    expect(publishedLinkCount).toBe(1);
-    expect(contender).toBeUndefined();
+    expect((await lstat(ownerPath)).nlink).toBe(1);
+    await expect(lstat(temporaryPath)).rejects.toMatchObject({ code: "ENOENT" });
+    resumeContender();
+    expect(contender).toBeDefined();
+    await expect(contender!).resolves.toBeUndefined();
     expect(await readFile(ownerPath, "utf8")).toBe(content);
+  });
+
+  it("never retries or accepts an arbitrary hard link to an owner record", async () => {
+    const dir = await root();
+    const path = join(dir, "arbitrary-owner-link.lock");
+    const ownerPath = join(path, "owner.json");
+    const aliasPath = join(path, "owner-copy.json");
+    const content = `${JSON.stringify({
+      schema: "mono-agent.test-lock.v1",
+      pid: process.pid,
+      token: "hard-linked-owner",
+      createdAt: new Date(0).toISOString(),
+      incarnation,
+    })}\n`;
+    let retried = false;
+    await mkdir(path, { mode: 0o700 });
+    await writeFile(ownerPath, content, { mode: 0o600 });
+    await link(ownerPath, aliasPath);
+
+    await expect(acquireOwnerPrivateLock({
+      path,
+      label: "Arbitrary-hard-link test lock",
+      schemaTag: "mono-agent.test-lock.v1",
+      ownerlessGraceMs: 60_000,
+      processIncarnation: incarnation,
+      isSameProcessIncarnation: async () => true,
+      sleep: async () => { retried = true; },
+    })).rejects.toThrow(/single-link regular file/u);
+
+    expect(retried).toBe(false);
+    expect((await lstat(ownerPath)).nlink).toBe(2);
+    expect(await readFile(aliasPath, "utf8")).toBe(content);
+  });
+
+  it("bounds retries for an exact-looking owner publication pair that never settles", async () => {
+    const dir = await root();
+    const path = join(dir, "stuck-owner-publication.lock");
+    const ownerPath = join(path, "owner.json");
+    const temporaryPath = join(path, `.owner.${String(process.pid)}.stuck-owner.tmp`);
+    const content = `${JSON.stringify({
+      schema: "mono-agent.test-lock.v1",
+      pid: process.pid,
+      token: "stuck-owner",
+      createdAt: new Date(0).toISOString(),
+      incarnation,
+    })}\n`;
+    let retries = 0;
+    await mkdir(path, { mode: 0o700 });
+    await writeFile(temporaryPath, content, { mode: 0o600 });
+    await link(temporaryPath, ownerPath);
+
+    await expect(acquireOwnerPrivateLock({
+      path,
+      label: "Stuck-publication test lock",
+      schemaTag: "mono-agent.test-lock.v1",
+      ownerlessGraceMs: 60_000,
+      processIncarnation: incarnation,
+      isSameProcessIncarnation: async () => true,
+      sleep: async () => { retries += 1; },
+    })).rejects.toThrow(/bounded publication wait/u);
+
+    expect(retries).toBeGreaterThan(0);
+    expect((await lstat(ownerPath)).nlink).toBe(2);
+    expect((await lstat(temporaryPath)).nlink).toBe(2);
   });
 
   it("does not overwrite a competing owner published in the mkdir window", async () => {
