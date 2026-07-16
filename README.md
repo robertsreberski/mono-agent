@@ -10,6 +10,8 @@ Full documentation and end-to-end playbooks: **<https://mono-agent-docs.vercel.a
 
 Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — can become a running agent from one `mono-agent.config.json`. You need Node.js 22.19.0 or newer and credentials for the model you choose.
 
+Choose the wall-clock path up front: flags or non-TTY input use the fast scaffold-only path (unless explicit `--auth` adds provider setup) and never claim readiness. Bare `mono-agent init` on a TTY makes one real no-tool model call per selected route before committing the scaffold, with timeouts of 90s for each cloud route and 240s for each local route.
+
 ### 1. Install the CLI
 
 Install the convenience package to put `mono-agent` on your `PATH`:

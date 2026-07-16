@@ -6,6 +6,8 @@ channel plus traceability. Ships the
 `mono-agent` CLI (`init`, `auth`, `sandbox`, `validate`, `memory`, `tui`, `start`) so an agent folder works without
 hand-written composition code.
 
+Setup has two deliberate wall-clock paths: flags or non-TTY input use the fast scaffold-only path (unless explicit `--auth` adds provider setup) and never claim readiness. Bare `mono-agent init` on a TTY makes one real no-tool model call per selected route before committing the scaffold, with timeouts of 90s for each cloud route and 240s for each local route.
+
 ## Category
 
 Category: `app`
@@ -109,7 +111,8 @@ paths, stale locks, invalid dotenv, conflicts, and Windows fail closed to manual
 interactive wizard can start the background agent it requires one disposable no-tool
 response from every selected runtime route and a complete validation report with
 every selected expectation ready. Cancellation, provider failure, timeout (90s
-cloud / 240s local per route), empty output, or any tool action fails the check.
+for each cloud route and 240s for each local route), empty output, or any tool
+action fails the check.
 Escape or Ctrl-C interrupts preflight; recovery can resume verified routes when
 the non-secret plan fingerprint still matches, restart all checks, edit choices,
 or cancel. Authentication repair clears every prior route proof because it can
