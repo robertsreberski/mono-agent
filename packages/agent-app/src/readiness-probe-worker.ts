@@ -11,7 +11,8 @@ import type {
   RuntimeRunOptions,
 } from "@mono-agent/runtime-adapter";
 
-const MAX_SAFE_MESSAGE_CHARS = 400;
+import { redactSecrets } from "./redact-secrets.js";
+
 const TOOL_EVENT_TYPES = new Set([
   "bash",
   "collab_agent_tool_call",
@@ -163,43 +164,11 @@ export function safeWorkerMessage(
   additionalSecrets: ReadonlySet<string> = new Set(),
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): string {
-  let message = typeof value === "string"
-    ? value
-    : value instanceof Error
-      ? value.message
-      : fallback;
-
-  // Redact every credential-shaped value and every sufficiently distinctive
-  // environment value. This happens before IPC, so raw provider errors never
-  // cross the worker boundary even when an SDK includes request details.
-  const environmentValues = Object.entries(environment)
-    .filter(
-      (entry): entry is [string, string] =>
-        typeof entry[1] === "string"
-        && entry[1].length > 0
-        && (/(api.?key|credential|password|secret|token)/iu.test(entry[0]) || entry[1].length >= 4),
-    )
-    .map(([, environmentValue]) => environmentValue)
-    .concat([...additionalSecrets].filter((secret) => secret.length > 0))
-    .sort((left, right) => right.length - left.length);
-  for (const environmentValue of environmentValues) {
-    message = message.replaceAll(environmentValue, "[REDACTED]");
-  }
-  message = message
-    .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [REDACTED]")
-    .replace(
-      /\b(api[ _-]?key|access[ _-]?token|auth[ _-]?token|password|secret)(\s*[=:]\s*)([^\s,;]+)/giu,
-      (_match, label: string, separator: string) => `${label}${separator}[REDACTED]`,
-    )
-    .replace(/\b[A-Za-z0-9_+/=-]{24,}\b/gu, "[REDACTED]")
-    .replace(/\s+/gu, " ")
-    .trim();
-  if (message.length === 0) {
-    return fallback;
-  }
-  return message.length > MAX_SAFE_MESSAGE_CHARS
-    ? `${message.slice(0, MAX_SAFE_MESSAGE_CHARS - 1)}…`
-    : message;
+  return redactSecrets(value, {
+    fallback,
+    secrets: additionalSecrets,
+    environment,
+  });
 }
 
 function normalizedEventType(value: unknown): string {

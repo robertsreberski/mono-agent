@@ -12,7 +12,6 @@ import {
   realpath,
   rename,
   rm,
-  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -27,6 +26,8 @@ import {
   processIncarnationFromJson,
 } from "./process-incarnation.js";
 import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incarnation.js";
+import { acquireOwnerPrivateLock } from "./owner-private-lock.js";
+import type { OwnerPrivateLock } from "./owner-private-lock.js";
 
 const PACKAGE_NAME = "@mono-agent/agent-app";
 export const MANAGED_BACKGROUND_WORKER_ENV = "MONO_AGENT_MANAGED_WORKER";
@@ -156,11 +157,6 @@ interface RuntimeLayout {
   readonly lockDir: string;
   readonly stagingDir: string;
   readonly quarantineDir: string;
-}
-
-interface RuntimeLockIdentity {
-  readonly dev: number | bigint;
-  readonly ino: number | bigint;
 }
 
 interface RuntimeMarker extends RuntimeIdentity {
@@ -438,7 +434,7 @@ export async function ensureManagedBackgroundRuntime(
     await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
     return runtimeResult(layout, identity, input.nodePath);
   } finally {
-    await removeSameRuntimeLockDirectory(layout.lockDir, acquired).catch(() => undefined);
+    await acquired.release().catch(() => undefined);
   }
 }
 
@@ -1513,128 +1509,41 @@ async function acquireRuntimeLock(
   identity: RuntimeIdentity,
   additionalPackages: readonly ManagedRuntimeAdditionalPackage[],
   deps: ManagedBackgroundRuntimeDeps,
-): Promise<RuntimeLockIdentity | undefined> {
-  const deadline = deps.now() + LOCK_WAIT_TIMEOUT_MS;
+): Promise<OwnerPrivateLock | undefined> {
   const incarnation = await (deps.currentProcessIncarnation ?? currentProcessIncarnation)();
-  const isSameProcess = deps.isSameProcessIncarnation ?? matchesProcessIncarnation;
-  for (;;) {
-    let createdIdentity: RuntimeLockIdentity | undefined;
-    try {
-      await mkdir(layout.lockDir, { mode: 0o700 });
-      createdIdentity = runtimeLockIdentity(await assertPrivateRuntimeLockDirectory(layout.lockDir));
-      await writePrivateJson(join(layout.lockDir, "owner.json"), {
-        pid: process.pid,
-        createdAt: new Date(deps.now()).toISOString(),
-        incarnation,
-        ...identity,
-      });
-      if (!(await sameRuntimeLockDirectory(layout.lockDir, createdIdentity))) {
-        throw new Error(`Managed runtime lock ${layout.lockDir} changed while its owner record was written.`);
-      }
-      return createdIdentity;
-    } catch (error) {
-      if (createdIdentity !== undefined) {
-        await removeSameRuntimeLockDirectory(layout.lockDir, createdIdentity).catch(() => undefined);
-      }
-      if (!isErrno(error, "EEXIST")) throw error;
-    }
-
-    if (await verifyRuntime(layout, identity, additionalPackages)) return undefined;
-    let stale = false;
-    try {
-      const lockDetails = await assertPrivateRuntimeLockDirectory(layout.lockDir);
-      const observedIdentity = runtimeLockIdentity(lockDetails);
-      const owner = await runtimeLockOwner(join(layout.lockDir, "owner.json"));
-      stale = owner === undefined
-        ? deps.now() - (await stat(layout.lockDir)).mtimeMs >= LOCK_STALE_AFTER_MS
-        : !(await isSameProcess(owner.pid, owner.incarnation));
-      if (!(await sameRuntimeLockDirectory(layout.lockDir, observedIdentity))) continue;
-      if (stale) {
-        const staleLock = `${layout.quarantineDir}-stale-lock`;
-        await mkdir(dirname(staleLock), { recursive: true, mode: 0o700 });
-        try {
-          await rename(layout.lockDir, staleLock);
-        } catch (error) {
-          if (isErrno(error, "ENOENT") || isErrno(error, "EEXIST")) continue;
-          throw error;
-        }
-        const moved = await lstat(staleLock);
-        if (!sameRuntimeLockIdentity(moved, observedIdentity)) {
-          await rename(staleLock, layout.lockDir).catch(() => undefined);
-          return undefined;
-        }
-        continue;
-      }
-    } catch (error) {
-      if (isErrno(error, "ENOENT")) continue;
-      throw error;
-    }
-    if (deps.now() >= deadline) return undefined;
-    await deps.sleep(LOCK_POLL_INTERVAL_MS);
-  }
-}
-
-async function runtimeLockOwner(
-  path: string,
-): Promise<{ readonly pid: number; readonly incarnation: ProcessIncarnation } | undefined> {
-  try {
-    const owner = JSON.parse(await readFile(path, "utf8")) as { pid?: unknown; incarnation?: unknown };
-    const incarnation = processIncarnationFromJson(owner.incarnation);
-    return typeof owner.pid === "number"
-      && Number.isSafeInteger(owner.pid)
-      && owner.pid > 0
-      && incarnation !== undefined
-      ? { pid: owner.pid, incarnation }
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-async function assertPrivateRuntimeLockDirectory(path: string) {
-  const details = await lstat(path);
-  if (!details.isDirectory() || details.isSymbolicLink() || !ownedPrivately(details)) {
-    throw new Error(`Managed runtime lock ${path} is not a private current-user directory.`);
-  }
-  return details;
-}
-
-function runtimeLockIdentity(
-  details: { readonly dev: number | bigint; readonly ino: number | bigint },
-): RuntimeLockIdentity {
-  return { dev: details.dev, ino: details.ino };
-}
-
-function sameRuntimeLockIdentity(
-  details: { readonly dev: number | bigint; readonly ino: number | bigint },
-  identity: RuntimeLockIdentity,
-): boolean {
-  return details.dev === identity.dev && details.ino === identity.ino;
-}
-
-async function sameRuntimeLockDirectory(path: string, identity: RuntimeLockIdentity): Promise<boolean> {
-  try {
-    return sameRuntimeLockIdentity(await assertPrivateRuntimeLockDirectory(path), identity);
-  } catch {
-    return false;
-  }
-}
-
-async function removeSameRuntimeLockDirectory(path: string, identity: RuntimeLockIdentity): Promise<void> {
-  if (!(await sameRuntimeLockDirectory(path, identity))) return;
-  const released = `${path}.released-${process.pid}-${randomUUID()}`;
-  try {
-    await rename(path, released);
-  } catch (error) {
-    if (isErrno(error, "ENOENT")) return;
-    throw error;
-  }
-  const moved = await lstat(released);
-  if (!sameRuntimeLockIdentity(moved, identity)) {
-    await rename(released, path).catch(() => undefined);
-    throw new Error(`Managed runtime lock ${path} changed while it was released.`);
-  }
-  await rm(released, { recursive: true, force: true });
+  return acquireOwnerPrivateLock({
+    path: layout.lockDir,
+    label: "Managed runtime lock",
+    schemaTag: "mono-agent.managed-runtime-lock.v1",
+    ownerlessGraceMs: LOCK_STALE_AFTER_MS,
+    waitTimeoutMs: LOCK_WAIT_TIMEOUT_MS,
+    pollIntervalMs: LOCK_POLL_INTERVAL_MS,
+    now: deps.now,
+    processIncarnation: incarnation,
+    ...(deps.isSameProcessIncarnation === undefined
+      ? {}
+      : { isSameProcessIncarnation: deps.isSameProcessIncarnation }),
+    ownerFields: () => ({ ...identity }),
+    validateOwnerFields: (record) => Object.entries(identity)
+      .every(([key, value]) => record[key] === value),
+    parseLegacyOwner: (record) => {
+      const legacyIncarnation = processIncarnationFromJson(record.incarnation);
+      return typeof record.pid === "number"
+        && Number.isSafeInteger(record.pid)
+        && record.pid > 0
+        && legacyIncarnation !== undefined
+        ? { pid: record.pid, incarnation: legacyIncarnation }
+        : undefined;
+    },
+    invalidOwner: "ownerless",
+    isSatisfied: () => verifyRuntime(layout, identity, additionalPackages),
+    sleep: deps.sleep,
+    staleRace: "return",
+    beforeStaleRename: async () => {
+      await mkdir(dirname(layout.quarantineDir), { recursive: true, mode: 0o700 });
+    },
+    stalePath: () => `${layout.quarantineDir}-stale-lock`,
+  });
 }
 
 async function quarantineInvalidRuntime(
