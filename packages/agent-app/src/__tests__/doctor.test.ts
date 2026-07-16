@@ -447,23 +447,23 @@ describe("validateMonoAgentFolder", () => {
     const manifestPath = join(stateDir, "continuation-store-v3.json");
     await writeFile(manifestPath, JSON.stringify({
       schemaVersion: 3,
-      generation: "generation-v3",
+      generation: "TOP SECRET V3 GENERATION",
       updatedAt: new Date().toISOString(),
       stats: {
         format: "per-record-v3",
-        records: 4,
+        records: 8,
         active: 1,
-        unresolvedDelivery: 0,
-        deadLettered: 0,
-        terminalTombstones: 3,
+        unresolvedDelivery: 1,
+        deadLettered: 1,
+        terminalTombstones: 4,
         compacted: 3,
-        capturedText: 1,
+        capturedText: 2,
         historyDegraded: 1,
         limits: {
-          terminalMaxRecords: 50_000,
-          terminalMaxAgeMs: 31_536_000_000,
-          capturedTextMaxRecords: 1_000,
-          capturedTextMaxAgeMs: 2_592_000_000,
+          terminalMaxRecords: 50_001,
+          terminalMaxAgeMs: 31_536_000_002,
+          capturedTextMaxRecords: 1_003,
+          capturedTextMaxAgeMs: 2_592_000_004,
         },
       },
     }), { mode: 0o600 });
@@ -478,12 +478,104 @@ describe("validateMonoAgentFolder", () => {
 
     const section = sectionById(report, "continuations");
     expect(section.status).toBe("waiting");
-    expect(section.details.join("\n")).toContain("Store v3");
-    expect(section.details.join("\n")).toContain("4 retained; 1 active");
-    expect(section.details.join("\n")).toContain("1 history-degraded deliveries");
-    expect(section.details.join("\n")).toContain("at most 50000 terminal tombstones");
+    expect(section.details).toContain(
+      "Store v3: 8 retained; 1 active; 1 delivery unknown; 1 dead-lettered; 1 history-degraded deliveries; 4 terminal tombstones; 3 compacted; 2 captured answers.",
+    );
+    expect(section.details).toContain(
+      "Retention: at most 50001 terminal tombstones with a maximum age of 31536000002 ms and 1003 captured answers with a maximum age of 2592000004 ms.",
+    );
     expect(section.details.join("\n")).toContain("rollback guard prevents older runtimes");
     expect(section.details.join("\n")).not.toContain("TOP SECRET V3");
+  });
+
+  it("rejects continuation manifests whose compacted and age-limit fields are missing or malformed", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    const manifestPath = join(stateDir, "continuation-store-v3.json");
+    const validManifest = {
+      schemaVersion: 3,
+      generation: "PRIVATE MANIFEST SENTINEL",
+      updatedAt: new Date().toISOString(),
+      stats: {
+        format: "per-record-v3",
+        records: 3,
+        active: 1,
+        unresolvedDelivery: 0,
+        deadLettered: 0,
+        terminalTombstones: 2,
+        compacted: 2,
+        capturedText: 1,
+        historyDegraded: 0,
+        limits: {
+          terminalMaxRecords: 101,
+          terminalMaxAgeMs: 102,
+          capturedTextMaxRecords: 103,
+          capturedTextMaxAgeMs: 104,
+        },
+      },
+    };
+    const invalidCases: ReadonlyArray<{
+      readonly label: string;
+      readonly mutate: (manifest: typeof validManifest) => void;
+    }> = [
+      {
+        label: "missing compacted",
+        mutate: (manifest) => {
+          Reflect.deleteProperty(manifest.stats, "compacted");
+        },
+      },
+      {
+        label: "malformed compacted",
+        mutate: (manifest) => {
+          Reflect.set(manifest.stats, "compacted", "two");
+        },
+      },
+      {
+        label: "missing terminalMaxAgeMs",
+        mutate: (manifest) => {
+          Reflect.deleteProperty(manifest.stats.limits, "terminalMaxAgeMs");
+        },
+      },
+      {
+        label: "malformed terminalMaxAgeMs",
+        mutate: (manifest) => {
+          Reflect.set(manifest.stats.limits, "terminalMaxAgeMs", "102");
+        },
+      },
+      {
+        label: "missing capturedTextMaxAgeMs",
+        mutate: (manifest) => {
+          Reflect.deleteProperty(manifest.stats.limits, "capturedTextMaxAgeMs");
+        },
+      },
+      {
+        label: "malformed capturedTextMaxAgeMs",
+        mutate: (manifest) => {
+          Reflect.set(manifest.stats.limits, "capturedTextMaxAgeMs", "104");
+        },
+      },
+    ];
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      continuations: {},
+    });
+
+    for (const invalidCase of invalidCases) {
+      const manifest = structuredClone(validManifest);
+      invalidCase.mutate(manifest);
+      await writeFile(manifestPath, JSON.stringify(manifest), { mode: 0o600 });
+      await chmod(manifestPath, 0o600);
+
+      const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+      const section = sectionById(report, "continuations");
+      const details = section.details.join("\n");
+      expect(section.status, invalidCase.label).toBe("error");
+      expect(details, invalidCase.label).toContain("Continuation store manifest has an unsupported or malformed schema.");
+      expect(details, invalidCase.label).not.toContain("PRIVATE MANIFEST SENTINEL");
+    }
   });
 
   it("requires the same v3 manifest generation and timestamp fields as runtime recovery", async () => {
@@ -1099,23 +1191,23 @@ describe("validateMonoAgentFolder", () => {
     const manifestPath = join(stateDir, "continuation-store-v2.json");
     await writeFile(manifestPath, JSON.stringify({
       schemaVersion: 2,
-      generation: "generation-v2",
+      generation: "TOP SECRET LEGACY GENERATION",
       updatedAt: new Date().toISOString(),
       stats: {
         format: "per-record-v2",
-        records: 1,
+        records: 6,
         active: 1,
         unresolvedDelivery: 0,
         deadLettered: 0,
-        terminalTombstones: 0,
-        compacted: 0,
-        capturedText: 0,
+        terminalTombstones: 5,
+        compacted: 4,
+        capturedText: 3,
         historyDegraded: 0,
         limits: {
-          terminalMaxRecords: 50_000,
-          terminalMaxAgeMs: 31_536_000_000,
-          capturedTextMaxRecords: 1_000,
-          capturedTextMaxAgeMs: 2_592_000_000,
+          terminalMaxRecords: 40_001,
+          terminalMaxAgeMs: 41_536_000_002,
+          capturedTextMaxRecords: 2_003,
+          capturedTextMaxAgeMs: 3_592_000_004,
         },
       },
     }), { mode: 0o600 });
@@ -1130,7 +1222,12 @@ describe("validateMonoAgentFolder", () => {
 
     const section = sectionById(report, "continuations");
     expect(section.status).toBe("waiting");
-    expect(section.details.join("\n")).toContain("Legacy store v2 awaiting v3 migration");
+    expect(section.details).toContain(
+      "Legacy store v2 awaiting v3 migration: 6 retained; 1 active; 0 delivery unknown; 0 dead-lettered; 0 history-degraded deliveries; 5 terminal tombstones; 4 compacted; 3 captured answers.",
+    );
+    expect(section.details).toContain(
+      "Retention: at most 40001 terminal tombstones with a maximum age of 41536000002 ms and 2003 captured answers with a maximum age of 3592000004 ms.",
+    );
     expect(section.details.join("\n")).toContain("rollback guard prevents older runtimes");
     expect(section.details.join("\n")).not.toContain("TOP SECRET LEGACY");
 
