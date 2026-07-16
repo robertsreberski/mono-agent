@@ -11,11 +11,12 @@ every internal dep (including root devDependencies) to be `workspace:<version>`.
 Publishing happens in CI on tag push (`.github/workflows/npm-release.yml`) —
 local `npm publish` is NOT the normal path.
 
-**Lockstep set (2026-07, updated #198):** all **21 `publishable: true` packages**
-in `scripts/package-catalog.mjs` release together: 16 `tier: "core"` packages,
-the `create-mono-agent` alias under `packages/*`, and four plugin-tier extras
-under `extras/*` (a2a-adapter, agent-orchestrator, memory-supermemory, and
-whatsapp-adapter). Plugin extras are version-bumped and published alongside core.
+**Lockstep set:** all **21 `publishable: true` packages** in
+`scripts/package-catalog.mjs` release together: 16 core packages (entries without
+a `tier`), 1 `tier: "alias"` package (`create-mono-agent` under `packages/*`), and
+4 `tier: "plugin"` extras under `extras/*` (a2a-adapter, agent-orchestrator,
+memory-supermemory, and whatsapp-adapter). Plugin extras are version-bumped and
+published alongside core.
 `scripts/package-catalog.mjs` (`publishable: true`) is the source of truth, and
 `release:test`'s package-count-drift check guards the tier and total counts.
 
