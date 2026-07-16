@@ -162,6 +162,31 @@ embeddings, `bujo` → embeddings + chat model). See the [Memory overview](/memo
 A full, runnable example lives in the
 [Telegram + Supermemory playbook](/playbooks/telegram-supermemory-memory/).
 
+## Fleet-scale shared knowledge
+
+When memory is configured, one mono-agent app constructs one `MemoryStore` and
+shares it across its responders and ritual scheduler. BuJo opens the configured
+`memory.path` under a single-writer lease. The contract carries conversation
+identity on reads and writes, plus a stable run identity for strong completed-turn
+admission; it has no fleet-member, role, or approval identity. It does not provide
+a shared canonical knowledge service with role-scoped access, human approval
+queues, or cross-agent policies for curation, supersession, and retraction. Those
+guarantees are intentionally outside Memory v2's current scope.
+
+An external backend may deliberately point several agents at one namespace.
+Mono-agent treats that as backend-owned behavior: it does not add authorization,
+approval, or consistency semantics around the shared container. Fleets that need
+those guarantees should use a dedicated knowledge service behind an external
+plugin or MCP boundary rather than sharing a BuJo directory.
+
+The checked-in
+[v1-freeze fleet audit](https://github.com/robertsreberski/mono-agent/blob/main/audit/live-instances/a8c-fleet.md)
+describes `brain-core` as a worked external example: five mono-agent workers route
+durable knowledge through a separate SQLite/FTS5/embeddings service with temporal
+validity, role-scoped access, supersession, retraction, sensitivity floors, and a
+leased approval queue. `brain-core` is deployment-specific evidence, not a package
+shipped or supported by mono-agent.
+
 ## Limits & gotchas
 
 - **No shared index.** Switching `memory.backend` does **not** migrate existing memories —
