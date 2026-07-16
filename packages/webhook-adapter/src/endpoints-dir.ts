@@ -10,6 +10,7 @@ import { normalizePath, WebhookAdapterError, type WebhookInvocationMode } from "
 // shape used by cron-adapter's job files; webhook-adapter keeps a self-contained
 // parser so it takes on no extra dependency. Frontmatter is flat scalars only.
 const FRONTMATTER_PATTERN = /^---\n([\s\S]*?)\n---[ \t]*(?:\n|$)/u;
+const MAX_RUN_MS = 86_400_000;
 
 const invalidConfig = (message: string, details?: Record<string, unknown>): WebhookAdapterError =>
   new WebhookAdapterError("invalid_config", message, details);
@@ -92,6 +93,7 @@ export function parseWebhookEndpointMarkdown(
   const notifyConversationId = normalizeOptionalString(meta.notifyConversationId);
   const model = normalizeOptionalString(meta.model);
   const effort = normalizeOptionalString(meta.effort);
+  const maxRunMs = readOptionalMaxRunMs(meta.maxRunMs, fileName);
   const prompt = body.trim().length === 0 ? undefined : body.trim();
 
   return {
@@ -103,6 +105,7 @@ export function parseWebhookEndpointMarkdown(
     ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
+    ...(maxRunMs === undefined ? {} : { maxRunMs }),
     ...(prompt === undefined ? {} : { prompt }),
   };
 }
@@ -155,6 +158,27 @@ function stripQuotes(value: string): string {
 
 function stripMarkdownExtension(fileName: string): string {
   return fileName.replace(/\.md$/iu, "");
+}
+
+function readOptionalMaxRunMs(value: string | undefined, fileName: string): number | undefined {
+  const normalized = normalizeOptionalString(value);
+  if (normalized === undefined) {
+    return undefined;
+  }
+  if (!/^\d+$/u.test(normalized)) {
+    throw invalidConfig(`${fileName} frontmatter \`maxRunMs\` must be an integer from 0 to ${String(MAX_RUN_MS)} milliseconds.`, {
+      file: fileName,
+      value,
+    });
+  }
+  const parsed = Number(normalized);
+  if (!Number.isSafeInteger(parsed) || parsed > MAX_RUN_MS) {
+    throw invalidConfig(`${fileName} frontmatter \`maxRunMs\` must be an integer from 0 to ${String(MAX_RUN_MS)} milliseconds.`, {
+      file: fileName,
+      value,
+    });
+  }
+  return parsed;
 }
 
 function errorToMessage(error: unknown): string {

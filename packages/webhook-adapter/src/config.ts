@@ -32,6 +32,8 @@ export interface WebhookEndpointConfig {
   readonly model?: string;
   /** Per-endpoint reasoning effort override (e.g. `high`). A request body `effort` wins. */
   readonly effort?: string;
+  /** Per-endpoint run watchdog override in milliseconds. `0` disables it for this endpoint. */
+  readonly maxRunMs?: number;
 }
 
 export interface WebhookAdapterConfig {
@@ -73,6 +75,7 @@ const DEFAULT_MODE: WebhookInvocationMode = "sync";
 const DEFAULT_RETENTION_MS = 300_000;
 const DEFAULT_MAX_STORED_REQUESTS = 100;
 const DEFAULT_WEBHOOK_DIR = "webhook";
+const MAX_RUN_MS = 86_400_000;
 
 const WEBHOOK_MODES: readonly WebhookInvocationMode[] = ["sync", "async"];
 
@@ -102,7 +105,7 @@ export async function loadWebhookAdapterConfig(
   const maxRunMs =
     maxRunMsRaw === undefined
       ? undefined
-      : readInteger(maxRunMsRaw, "MONO_AGENT_WEBHOOK_MAX_RUN_MS", 0, invalidConfig, { min: 0, max: 86_400_000 });
+      : readInteger(maxRunMsRaw, "MONO_AGENT_WEBHOOK_MAX_RUN_MS", 0, invalidConfig, { min: 0, max: MAX_RUN_MS });
 
   const configEndpoints = loadConfigEndpoints(json, env, defaultMode);
   const directoryEndpoints = await loadDirectoryEndpoints(json, input, defaultMode);
@@ -279,6 +282,7 @@ function normalizeEndpointConfig(
   const notifyConversationId = asOptionalString(entry.notifyConversationId);
   const model = asOptionalString(entry.model);
   const effort = asOptionalString(entry.effort);
+  const maxRunMs = asOptionalMaxRunMs(entry.maxRunMs, "webhook.endpoints[].maxRunMs", { index });
   const name = asOptionalString(entry.name) ?? deriveEndpointName(path);
   const enabled = typeof entry.enabled === "boolean" ? entry.enabled : true;
   return {
@@ -291,6 +295,7 @@ function normalizeEndpointConfig(
     ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
+    ...(maxRunMs === undefined ? {} : { maxRunMs }),
   };
 }
 
@@ -358,6 +363,23 @@ function asOptionalBoolean(
   }
   if (typeof value !== "boolean") {
     throw invalidConfig(`${field} must be a boolean.`, { ...details, value });
+  }
+  return value;
+}
+
+function asOptionalMaxRunMs(
+  value: unknown,
+  field: string,
+  details: Record<string, unknown>,
+): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > MAX_RUN_MS) {
+    throw invalidConfig(`${field} must be an integer from 0 to ${String(MAX_RUN_MS)} milliseconds.`, {
+      ...details,
+      value,
+    });
   }
   return value;
 }

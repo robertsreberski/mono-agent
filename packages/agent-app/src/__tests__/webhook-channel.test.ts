@@ -111,6 +111,26 @@ describe("webhook channel driver — native notification delivery", () => {
     expect(captured.apiKey).toBe("fixture-webhook-key");
   });
 
+  it("passes endpoint maxRunMs overrides without replacing the adapter fallback", async () => {
+    const captured = await startCapturingWebhook({
+      ...baseInput,
+      config: {
+        ...baseInput.config,
+        maxRunMs: 60_000,
+        endpoints: [
+          { name: "bounded", path: "/bounded", mode: "async", enabled: true, maxRunMs: 5_000 },
+          { name: "unbounded", path: "/unbounded", mode: "async", enabled: true, maxRunMs: 0 },
+        ],
+      },
+    });
+
+    expect(captured.maxRunMs).toBe(60_000);
+    expect(captured.endpoints).toEqual([
+      { name: "bounded", path: "/bounded", mode: "async", maxRunMs: 5_000 },
+      { name: "unbounded", path: "/unbounded", mode: "async", maxRunMs: 0 },
+    ]);
+  });
+
   it("passes native notify settings through to the webhook adapter", async () => {
     const captured = await startCapturingWebhook({
       ...baseInput,

@@ -109,6 +109,7 @@ export function createWebhookChannelDriver(
           ...(endpoint.notifyConversationId === undefined ? {} : { notifyConversationId: endpoint.notifyConversationId }),
           ...(endpoint.model === undefined ? {} : { model: endpoint.model }),
           ...(endpoint.effort === undefined ? {} : { effort: endpoint.effort }),
+          ...(endpoint.maxRunMs === undefined ? {} : { maxRunMs: endpoint.maxRunMs }),
         })),
         responder: input.responder,
         ...(resolveNotifyFallbackConversationId === undefined ? {} : { resolveNotifyFallbackConversationId }),

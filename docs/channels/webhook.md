@@ -45,7 +45,8 @@ The actual bound host/port (when `port: 0`) is printed in the start log. In **sy
 | `apiKey` | string | — | Optional static bearer token on loopback; required for a non-loopback bind. Prefer `MONO_AGENT_WEBHOOK_API_KEY` over committed JSON. Protects invoke and status routes. |
 | `retentionMs` | integer | `300000` | How long async run statuses are retained (min 1, max 86_400_000). |
 | `maxStoredRequests` | integer | `100` | Max async statuses kept before pruning (min 1, max 10_000). Async only. |
-| `maxRunMs` | integer | `1200000` | Wall-clock bound per run (20 min). `0` disables; min 0, max 86_400_000. See [Run watchdog](#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve). |
+| `maxRunMs` | integer | `1200000` | Adapter-level wall-clock fallback per run (20 min). `endpoints[].maxRunMs` wins; `0` disables. Min 0, max 86_400_000. See [Run watchdog](#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve). |
+| `endpoints[].maxRunMs` | integer | inherited | Per-endpoint watchdog override. `0` disables only that endpoint; otherwise min 1, max 86_400_000. |
 | `prompt` | string | — | Pre-instructions prepended to the request text (see [Prompts](#endpoint-prompts)). |
 | `notify` | boolean | `false` | Deliver the successful final answer via native notification. |
 | `notifyConversationId` | string | inferred if exactly one destination | Destination conversation id for native notification. |
@@ -103,7 +104,7 @@ Harness response metadata is an external boundary. `metadata.summary` may includ
 
 A hung run (a destination resolver, responder, or provider call that never settles) would otherwise hold its conversation slot forever. This matters most in **async** mode: with no client connection to disconnect, nothing else bounds the run. To prevent that, each webhook run is raced against a **20-minute watchdog** (`maxRunMs`, default `1200000`): a run that does not finish in time has its request signal aborted and its conversation slot reclaimed even if its in-flight work never settles. This brings webhook to parity with [cron's](/channels/cron/#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve) `maxRunMs`.
 
-Set `webhook.maxRunMs` to override the default (min 0, max 86_400_000); `0` disables the watchdog. Run work that settles **after** the abort cannot produce a successful result — see [Run artifacts & traces](/observability/artifacts-and-traces/).
+Set `webhook.maxRunMs` to override the adapter default (min 0, max 86_400_000). Set `webhook.endpoints[].maxRunMs` to give one endpoint its own bound. Precedence is **endpoint `maxRunMs` > adapter `maxRunMs` > 20-minute app default**; because the lookup is nullish, an endpoint value of `0` explicitly disables its watchdog even when the adapter fallback is positive. Endpoints without an override continue to use the adapter fallback. A run whose responder resolves **after** the abort is classified `cancelled` rather than `succeeded` — see [Run artifacts & traces](/observability/artifacts-and-traces/).
 
 Programmatic destination resolvers receive the request's `AbortSignal`, and their promise is raced against it independently of the watchdog. A sync client disconnect or adapter stop therefore reclaims a slot that is still resolving even when `maxRunMs` is disabled and resolver code ignores the signal; later settlement cannot start a responder or emit another result.
 
@@ -147,11 +148,13 @@ You can serve several named endpoints on the **one** shared host/port, each with
     "enabled": true,
     "port": 8787,
     "defaultMode": "sync",
+    "maxRunMs": 1200000,
     "endpoints": [
       {
         "name": "triage",
         "path": "/hooks/triage",
         "mode": "async",
+        "maxRunMs": 3600000,
         "prompt": "You are triaging an inbound support ticket. Classify and summarize.",
         "notify": true,
         "notifyConversationId": "slack:C012345"
@@ -159,14 +162,15 @@ You can serve several named endpoints on the **one** shared host/port, each with
       {
         "name": "echo",
         "path": "/hooks/echo",
-        "enabled": true
+        "enabled": true,
+        "maxRunMs": 0
       }
     ]
   }
 }
 ```
 
-Each endpoint needs a **unique `name` and a unique `path`**; a duplicate of either (across inline config and folder files) is a hard configuration error. `mode` defaults to `defaultMode`, and `enabled` defaults to `true`.
+Each endpoint needs a **unique `name` and a unique `path`**; a duplicate of either (across inline config and folder files) is a hard configuration error. `mode` defaults to `defaultMode`, `enabled` defaults to `true`, and an omitted `maxRunMs` inherits the adapter-level value. Endpoint `maxRunMs: 0` disables the watchdog for only that endpoint.
 
 ### Endpoint files (`*.md`)
 
@@ -178,13 +182,14 @@ name: triage
 path: /hooks/triage
 mode: async
 enabled: true
+maxRunMs: 3600000
 notify: true
 notifyConversationId: slack:C012345
 ---
 You are triaging an inbound support ticket. Classify it and summarize the next action.
 ```
 
-`path` is required in frontmatter; `name` defaults to the filename stem, `mode` to `defaultMode`, `enabled` to `true`, and `notify` to `false`. Unlike [cron](/channels/cron/) jobs, the body may be empty (an endpoint with no prompt). Files are loaded in sorted filename order. This mirrors how cron jobs can be authored as `cron/*.md` files.
+`path` is required in frontmatter; `name` defaults to the filename stem, `mode` to `defaultMode`, `enabled` to `true`, and `notify` to `false`. Optional `maxRunMs` follows the same `0`–`86400000` endpoint semantics as inline config. Unlike [cron](/channels/cron/) jobs, the body may be empty (an endpoint with no prompt). Files are loaded in sorted filename order. This mirrors how cron jobs can be authored as `cron/*.md` files.
 
 ## Endpoint prompts
 

@@ -117,6 +117,7 @@ describe("loadWebhookAdapterConfig", () => {
               notifyConversationId: "telegram:42",
               model: "claude:claude-opus-4-8",
               effort: "high",
+              maxRunMs: 45_000,
             },
           ],
         },
@@ -137,6 +138,7 @@ describe("loadWebhookAdapterConfig", () => {
         notifyConversationId: "telegram:42",
         model: "claude:claude-opus-4-8",
         effort: "high",
+        maxRunMs: 45_000,
       },
     ]);
     expect(config.path).toBe("/webhook/invoke");
@@ -147,14 +149,40 @@ describe("loadWebhookAdapterConfig", () => {
     const config = await loadWebhookAdapterConfig({
       env: {
         MONO_AGENT_WEBHOOK_ENDPOINTS_JSON: JSON.stringify([
-          { name: "hook", path: "/hook", mode: "async", notify: true, notifyConversationId: "slack:C1" },
+          {
+            name: "hook",
+            path: "/hook",
+            mode: "async",
+            notify: true,
+            notifyConversationId: "slack:C1",
+            maxRunMs: 0,
+          },
         ]),
       },
     });
     expect(config.endpoints).toEqual([
-      { name: "hook", path: "/hook", mode: "async", enabled: true, notify: true, notifyConversationId: "slack:C1" },
+      {
+        name: "hook",
+        path: "/hook",
+        mode: "async",
+        enabled: true,
+        notify: true,
+        notifyConversationId: "slack:C1",
+        maxRunMs: 0,
+      },
     ]);
   });
+
+  it.each([-1, 1.5, 86_400_001, "1000"])(
+    "rejects invalid per-endpoint maxRunMs value %j",
+    async (maxRunMs) => {
+      await expect(loadWebhookAdapterConfig({
+        env: {
+          MONO_AGENT_WEBHOOK_ENDPOINTS_JSON: JSON.stringify([{ path: "/hook", maxRunMs }]),
+        },
+      })).rejects.toThrow(/webhook\.endpoints\[\]\.maxRunMs/u);
+    },
+  );
 
   it("loads native notification fields for the legacy single endpoint from env", async () => {
     const config = await loadWebhookAdapterConfig({
@@ -282,7 +310,7 @@ describe("redactWebhookAdapterConfig", () => {
       defaultMode: "async" as const,
       retentionMs: 60_000,
       maxStoredRequests: 100,
-      endpoints: [{ name: "default", path: "/webhook/invoke", mode: "async" as const, enabled: true }],
+      endpoints: [{ name: "default", path: "/webhook/invoke", mode: "async" as const, enabled: true, maxRunMs: 0 }],
     };
     const redacted = redactWebhookAdapterConfig(config);
     expect(redacted).toEqual({
@@ -295,7 +323,7 @@ describe("redactWebhookAdapterConfig", () => {
       defaultMode: "async",
       retentionMs: 60_000,
       maxStoredRequests: 100,
-      endpoints: [{ name: "default", path: "/webhook/invoke", mode: "async", enabled: true }],
+      endpoints: [{ name: "default", path: "/webhook/invoke", mode: "async", enabled: true, maxRunMs: 0 }],
     });
     expect(JSON.stringify(redacted)).not.toContain("fixture-redacted-value");
     // Endpoints are deep-cloned so callers cannot mutate the source array.

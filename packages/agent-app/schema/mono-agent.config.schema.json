@@ -1579,7 +1579,7 @@
       "additionalProperties": false,
       "properties": {
         "endpoints": {
-          "description": "Additional named webhook endpoints beyond webhook.path.",
+          "description": "Named webhook endpoints with per-endpoint prompt, model/effort, and maxRunMs overrides.",
           "examples": [
             [
               {
@@ -1626,6 +1626,11 @@
               },
               "effort": {
                 "type": "string"
+              },
+              "maxRunMs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 86400000
               }
             }
           },
