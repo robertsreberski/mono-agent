@@ -25,6 +25,9 @@ export const OWNER_DATABASE_FILE = "continuations-owner.sqlite";
 export const ORIGIN_CONTEXTS_DIRECTORY = "origin-context-v1";
 export const MAX_RECORD_BYTES = 2 * 1024 * 1024;
 export const MAX_TRANSACTION_BYTES = 16 * 1024 * 1024;
+export const MAX_MANIFEST_BYTES = 1024 * 1024;
+export const MAX_GENERATION_BYTES = 256;
+export const MAX_LEGACY_STORE_BYTES = 256 * 1024 * 1024;
 export const DEFAULT_TERMINAL_MAX_RECORDS = 50_000;
 export const DEFAULT_TERMINAL_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1_000;
 export const DEFAULT_CAPTURED_TEXT_MAX_RECORDS = 1_000;
@@ -160,7 +163,7 @@ export interface ContinuationStoreManifest {
   readonly schemaVersion: typeof CONTINUATION_RECORD_STORE_SCHEMA_VERSION;
   readonly generation: string;
   readonly updatedAt: string;
-  /** Monotonic after complete legacy materialization or the first native v3 commit. */
+  /** False only for a fresh evidence-free store. Absent means true for eager-guard manifests; true is monotonic. */
   readonly rollbackGuardRequired?: boolean;
   readonly stats: ContinuationStoreStats;
 }

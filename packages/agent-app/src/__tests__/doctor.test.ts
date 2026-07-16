@@ -1,4 +1,4 @@
-import { chmod, link, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,6 +9,7 @@ import { safeRebuildMemoryIndex } from "@mono-agent/memory/bujo";
 import * as memoryStore from "@mono-agent/memory/store";
 
 import { canonicalContinuationJson, continuationDigest } from "../continuations.js";
+import { MAX_RECORD_BYTES } from "../continuation-store-types.js";
 import { validateMonoAgentFolder } from "../doctor.js";
 import type { SdkAuthStatusExecFile } from "../doctor.js";
 import { agentAppPackageVersion } from "../package-version.js";
@@ -43,6 +44,91 @@ async function pathExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function doctorPreparedContinuationRecord(input: {
+  readonly id: string;
+  readonly originRunId: string;
+  readonly originConversationId: string;
+  readonly historyBoundary: string;
+  readonly snapshotDigest: string;
+}): Record<string, unknown> {
+  const now = "2026-07-14T12:00:00.000Z";
+  return {
+    continuationId: input.id,
+    serverName: "doctor-fixture",
+    originRunId: input.originRunId,
+    originConversationId: input.originConversationId,
+    replyToConversationId: input.originConversationId,
+    historyBoundary: input.historyBoundary,
+    originContextState: "pending",
+    originContextRef: {
+      schemaVersion: 1,
+      digest: input.snapshotDigest,
+      bytes: 128,
+      messageCount: 2,
+    },
+    originContextDigest: input.snapshotDigest,
+    originContextMessageCount: 2,
+    originContextFingerprint: continuationDigest(`origin-${input.id}`),
+    originContextBindingMac: continuationDigest(`binding-${input.id}`),
+    mode: "reply",
+    taskKey: `task-${input.id}`,
+    taskHash: continuationDigest(`task-${input.id}`),
+    claimFingerprint: continuationDigest(`claim-${input.id}`),
+    resultTokenHash: continuationDigest(`token-${input.id}`),
+    createdAt: now,
+    updatedAt: now,
+    deadline: "2030-07-14T13:00:00.000Z",
+    state: "claimed",
+    synthesisAttempts: 0,
+    synthesisDeferrals: 0,
+    deliveryAttempts: 0,
+  };
+}
+
+async function seedDoctorV3Store(
+  stateDir: string,
+  rollbackGuardRequired: boolean,
+): Promise<{ readonly recordsDir: string; readonly manifestPath: string }> {
+  const recordsDir = join(stateDir, "records-v3");
+  await mkdir(recordsDir, { recursive: true, mode: 0o700 });
+  await chmod(stateDir, 0o700);
+  await chmod(recordsDir, 0o700);
+  if (rollbackGuardRequired) {
+    const legacyRecordsDir = join(stateDir, "records-v2");
+    await mkdir(legacyRecordsDir, { mode: 0o700 });
+    await writeFile(
+      join(legacyRecordsDir, "UPGRADED-TO-RECORDS-V3"),
+      "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n",
+      { mode: 0o600 },
+    );
+  }
+  const manifestPath = join(stateDir, "continuation-store-v3.json");
+  await writeFile(manifestPath, JSON.stringify({
+    schemaVersion: 3,
+    generation: "doctor-v3-generation",
+    updatedAt: "2026-07-14T12:00:00.000Z",
+    rollbackGuardRequired,
+    stats: {
+      format: "per-record-v3",
+      records: 0,
+      active: 0,
+      unresolvedDelivery: 0,
+      deadLettered: 0,
+      terminalTombstones: 0,
+      compacted: 0,
+      capturedText: 0,
+      historyDegraded: 0,
+      limits: {
+        terminalMaxRecords: 50_000,
+        terminalMaxAgeMs: 31_536_000_000,
+        capturedTextMaxRecords: 1_000,
+        capturedTextMaxAgeMs: 2_592_000_000,
+      },
+    },
+  }), { mode: 0o600 });
+  return { recordsDir, manifestPath };
 }
 
 async function seedManagedMemoryFixture(input: {
@@ -175,9 +261,39 @@ describe("validateMonoAgentFolder", () => {
       schemaVersion: 1,
       updatedAt: new Date().toISOString(),
       records: {
-        unknown: { state: "delivery_unknown", resultPayload: "TOP SECRET" },
-        dead: { state: "dead_lettered", resultPayload: "MORE SECRET" },
-        pending: { state: "delivery_retry", synthesizedText: "PRIVATE ANSWER" },
+        unknown: {
+          ...doctorPreparedContinuationRecord({
+            id: "unknown",
+            originRunId: "run-unknown",
+            originConversationId: "doctor:legacy",
+            historyBoundary: "run-unknown",
+            snapshotDigest: continuationDigest("snapshot-unknown"),
+          }),
+          state: "delivery_unknown",
+          resultPayload: "TOP SECRET",
+        },
+        dead: {
+          ...doctorPreparedContinuationRecord({
+            id: "dead",
+            originRunId: "run-dead",
+            originConversationId: "doctor:legacy",
+            historyBoundary: "run-dead",
+            snapshotDigest: continuationDigest("snapshot-dead"),
+          }),
+          state: "dead_lettered",
+          resultPayload: "MORE SECRET",
+        },
+        pending: {
+          ...doctorPreparedContinuationRecord({
+            id: "pending",
+            originRunId: "run-pending",
+            originConversationId: "doctor:legacy",
+            historyBoundary: "run-pending",
+            snapshotDigest: continuationDigest("snapshot-pending"),
+          }),
+          state: "delivery_retry",
+          synthesizedText: "PRIVATE ANSWER",
+        },
       },
     }), { mode: 0o600 });
     await chmod(ledgerPath, 0o600);
@@ -196,7 +312,86 @@ describe("validateMonoAgentFolder", () => {
     expect(section.details.join("\n")).not.toContain("PRIVATE ANSWER");
   });
 
-  it("reports bounded v3 storage and history degradation without reading record payloads", async () => {
+  it("rejects a v1 monolith whose individual record cannot fit the v3 record bound", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    const recordId = "doctor-oversized-v1-record";
+    await writeFile(join(stateDir, "continuations-v1.json"), JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: "2026-07-14T12:00:00.000Z",
+      records: {
+        [recordId]: {
+          ...doctorPreparedContinuationRecord({
+            id: recordId,
+            originRunId: "run-doctor-oversized-v1",
+            originConversationId: "doctor:oversized-v1",
+            historyBoundary: "run-doctor-oversized-v1",
+            snapshotDigest: continuationDigest("doctor-oversized-v1-snapshot"),
+          }),
+          resultPayload: "x".repeat((2 * 1024 * 1024) + 1),
+        },
+      },
+    }), { mode: 0o600 });
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      continuations: {},
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const section = sectionById(report, "continuations");
+    expect(section.status).toBe("error");
+    expect(section.details.join("\n"))
+      .toContain("Continuation legacy record exceeds its 2097152 byte safety limit");
+  });
+
+  it("rejects a legacy retention projection that cannot fit its v3 tombstone", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    const recordId = "doctor-retention-growth";
+    const record = {
+      ...doctorPreparedContinuationRecord({
+        id: recordId,
+        originRunId: "run-doctor-retention-growth",
+        originConversationId: "doctor:retention-growth",
+        historyBoundary: "run-doctor-retention-growth",
+        snapshotDigest: continuationDigest("doctor-retention-growth-snapshot"),
+      }),
+      originContextState: "legacy_missing",
+      state: "delivered",
+      lastError: {
+        code: "retained_terminal",
+        reason: "",
+        at: "2026-07-14T12:00:00.000Z",
+      },
+    };
+    delete record.originContextRef;
+    const emptyReasonBytes = Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+    record.lastError.reason = "x".repeat(MAX_RECORD_BYTES - emptyReasonBytes);
+    expect(Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`, "utf8")).toBe(MAX_RECORD_BYTES);
+    await writeFile(join(stateDir, "continuations-v1.json"), JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: "2026-07-14T12:00:00.000Z",
+      records: { [recordId]: record },
+    }), { mode: 0o600 });
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      continuations: { retention: { terminalMaxAgeMs: Number.MAX_SAFE_INTEGER } },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const section = sectionById(report, "continuations");
+    expect(section.status).toBe("error");
+    expect(section.details.join("\n"))
+      .toContain("Continuation retained record exceeds its 2097152 byte safety limit");
+  });
+
+  it("reports bounded v3 storage and history degradation without exposing record payloads", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const stateDir = join(dir, ".mono-agent", "continuations");
     const recordsDir = join(stateDir, "records-v3");
@@ -206,8 +401,18 @@ describe("validateMonoAgentFolder", () => {
     await chmod(stateDir, 0o700);
     await chmod(recordsDir, 0o700);
     await chmod(legacyRecordsDir, 0o700);
-    const recordPath = join(recordsDir, "opaque.json");
-    await writeFile(recordPath, JSON.stringify({ resultPayload: "TOP SECRET V3" }), { mode: 0o600 });
+    const recordId = "doctor-valid-secret-record";
+    const recordPath = join(recordsDir, `${continuationDigest(recordId)}.json`);
+    await writeFile(recordPath, JSON.stringify({
+      ...doctorPreparedContinuationRecord({
+        id: recordId,
+        originRunId: "run-doctor-secret",
+        originConversationId: "doctor:secret",
+        historyBoundary: "run-doctor-secret",
+        snapshotDigest: continuationDigest("doctor-secret-snapshot"),
+      }),
+      resultPayload: "TOP SECRET V3",
+    }), { mode: 0o600 });
     await chmod(recordPath, 0o600);
     const rollbackGuardPath = join(legacyRecordsDir, "UPGRADED-TO-RECORDS-V3");
     await writeFile(
@@ -256,6 +461,41 @@ describe("validateMonoAgentFolder", () => {
     expect(section.details.join("\n")).toContain("at most 50000 terminal tombstones");
     expect(section.details.join("\n")).toContain("rollback guard prevents older runtimes");
     expect(section.details.join("\n")).not.toContain("TOP SECRET V3");
+  });
+
+  it("requires the same v3 manifest generation and timestamp fields as runtime recovery", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    const { manifestPath } = await seedDoctorV3Store(stateDir, false);
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      continuations: {},
+    });
+
+    await writeFile(manifestPath, JSON.stringify({ ...manifest, generation: "" }), { mode: 0o600 });
+    const emptyGeneration = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(emptyGeneration, "continuations")).toMatchObject({ status: "error" });
+    expect(sectionById(emptyGeneration, "continuations").details.join("\n"))
+      .toContain("manifest has an unsupported or malformed schema");
+
+    const missingTimestamp = { ...manifest };
+    delete missingTimestamp.updatedAt;
+    await writeFile(manifestPath, JSON.stringify(missingTimestamp), { mode: 0o600 });
+    const noUpdatedAt = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(noUpdatedAt, "continuations")).toMatchObject({ status: "error" });
+    expect(sectionById(noUpdatedAt, "continuations").details.join("\n"))
+      .toContain("manifest has an unsupported or malformed schema");
+
+    await writeFile(manifestPath, JSON.stringify({
+      ...manifest,
+      generation: "g".repeat(257),
+    }), { mode: 0o600 });
+    const oversizedGeneration = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(oversizedGeneration, "continuations")).toMatchObject({ status: "error" });
+    expect(sectionById(oversizedGeneration, "continuations").details.join("\n"))
+      .toContain("manifest has an unsupported or malformed schema");
   });
 
   it("accepts an empty v3 store before its lazy rollback guard is needed", async () => {
@@ -313,8 +553,15 @@ describe("validateMonoAgentFolder", () => {
     expect(unsafeLegacySection.details.join("\n")).toContain("single-link regular file");
     await rm(unsafeLegacyPath, { recursive: true });
 
-    const staleRecordPath = join(recordsDir, `${"a".repeat(64)}.json`);
-    await writeFile(staleRecordPath, "{}\n", { mode: 0o600 });
+    const staleRecordId = "doctor-stale-v3-record";
+    const staleRecordPath = join(recordsDir, `${continuationDigest(staleRecordId)}.json`);
+    await writeFile(staleRecordPath, JSON.stringify(doctorPreparedContinuationRecord({
+      id: staleRecordId,
+      originRunId: "run-doctor-stale",
+      originConversationId: "doctor:stale",
+      historyBoundary: "run-doctor-stale",
+      snapshotDigest: continuationDigest("doctor-stale-snapshot"),
+    })), { mode: 0o600 });
     const staleRecordReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
     const staleRecordSection = sectionById(staleRecordReport, "continuations");
     expect(staleRecordSection.status).toBe("error");
@@ -329,15 +576,28 @@ describe("validateMonoAgentFolder", () => {
     const groupKey = continuationDigest(
       `mono-agent-origin-context-group-v1\0${canonicalContinuationJson(groupIdentity)}`,
     );
+    const markerMemberId = "doctor-marker-member";
     const groupMarker = {
       schemaVersion: 1,
       groupKey,
       ...groupIdentity,
       snapshotDigest: continuationDigest("doctor-marker-snapshot"),
       memberCount: 1,
-      memberSetDigest: continuationDigest("doctor-marker-members"),
+      memberSetDigest: continuationDigest(
+        `mono-agent-origin-context-members-v1\0${canonicalContinuationJson([markerMemberId])}`,
+      ),
       activatedAt: "2026-07-14T12:01:00.000Z",
     };
+    const markerRecordPath = join(recordsDir, `${continuationDigest(markerMemberId)}.json`);
+    await writeFile(
+      markerRecordPath,
+      JSON.stringify(doctorPreparedContinuationRecord({
+        id: markerMemberId,
+        ...groupIdentity,
+        snapshotDigest: groupMarker.snapshotDigest,
+      })),
+      { mode: 0o600 },
+    );
     const originGroupsDir = join(stateDir, "origin-context-groups-v1");
     await mkdir(originGroupsDir, { mode: 0o700 });
     await writeFile(join(originGroupsDir, `${groupKey}.json`), JSON.stringify(groupMarker), { mode: 0o600 });
@@ -346,13 +606,25 @@ describe("validateMonoAgentFolder", () => {
     expect(groupMarkerSection.status).toBe("error");
     expect(groupMarkerSection.details.join("\n")).toContain("rollback guard is missing");
     await rm(originGroupsDir, { recursive: true });
+    await rm(markerRecordPath);
 
     const legacyTransactionPath = join(stateDir, "continuation-transaction-v2.json");
-    await writeFile(legacyTransactionPath, "{}\n", { mode: 0o600 });
+    await writeFile(legacyTransactionPath, JSON.stringify({
+      schemaVersion: 2,
+      generation: "doctor-v2-pending",
+      createdAt: "2026-07-14T12:00:00.000Z",
+      writes: [],
+      deletes: [],
+    }), { mode: 0o600 });
     const legacyReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
     const legacySection = sectionById(legacyReport, "continuations");
     expect(legacySection.status).toBe("waiting");
     expect(legacySection.details.join("\n")).toContain("awaiting idempotent v3 migration");
+    await writeFile(legacyTransactionPath, "{}\n", { mode: 0o600 });
+    const malformedLegacyReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const malformedLegacySection = sectionById(malformedLegacyReport, "continuations");
+    expect(malformedLegacySection.status).toBe("error");
+    expect(malformedLegacySection.details.join("\n")).toContain("v2 transaction has an unsupported or malformed schema");
     await rm(legacyTransactionPath);
 
     const legacyRecordsDir = join(stateDir, "records-v2");
@@ -390,6 +662,22 @@ describe("validateMonoAgentFolder", () => {
 
     await mkdir(originGroupsDir, { mode: 0o700 });
     await writeFile(join(originGroupsDir, `${groupKey}.json`), JSON.stringify(groupMarker), { mode: 0o600 });
+    const unmatchedMarkerReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const unmatchedMarkerSection = sectionById(unmatchedMarkerReport, "continuations");
+    expect(unmatchedMarkerSection.status).toBe("error");
+    expect(unmatchedMarkerSection.details.join("\n")).toContain("does not match the recoverable durable records");
+
+    const matchingMarker = groupMarker;
+    await writeFile(join(originGroupsDir, `${groupKey}.json`), JSON.stringify(matchingMarker), { mode: 0o600 });
+    await writeFile(
+      markerRecordPath,
+      JSON.stringify(doctorPreparedContinuationRecord({
+        id: markerMemberId,
+        ...groupIdentity,
+        snapshotDigest: matchingMarker.snapshotDigest,
+      })),
+      { mode: 0o600 },
+    );
     const guardedMarkerReport = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
     const guardedMarkerSection = sectionById(guardedMarkerReport, "continuations");
     expect(guardedMarkerSection.status).toBe("waiting");
@@ -399,6 +687,7 @@ describe("validateMonoAgentFolder", () => {
     const malformedMarkerSection = sectionById(malformedMarkerReport, "continuations");
     expect(malformedMarkerSection.status).toBe("error");
     expect(malformedMarkerSection.details.join("\n")).toContain("malformed schema or filename");
+    await rm(markerRecordPath);
     await rm(originGroupsDir, { recursive: true });
 
     await mkdir(originGroupsDir, { mode: 0o700 });
@@ -416,6 +705,347 @@ describe("validateMonoAgentFolder", () => {
     expect(directoryMarkerSection.details.join("\n")).toContain("unexpected entry");
   });
 
+  it("validates v2/v3 transaction schemas and activation members projected from recovery", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    await seedDoctorV3Store(stateDir, true);
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      continuations: {},
+    });
+    const memberId = "doctor-transaction-member";
+    const groupIdentity = {
+      originRunId: "run-doctor-transaction",
+      originConversationId: "doctor:transaction",
+      historyBoundary: "run-doctor-transaction",
+    };
+    const snapshotDigest = continuationDigest("doctor-transaction-snapshot");
+    const member = doctorPreparedContinuationRecord({
+      id: memberId,
+      ...groupIdentity,
+      snapshotDigest,
+    });
+    const v3TransactionPath = join(stateDir, "continuation-transaction-v3.json");
+    await writeFile(v3TransactionPath, JSON.stringify({
+      schemaVersion: 3,
+      generation: "doctor-v3-pending",
+      createdAt: "2026-07-14T12:00:00.000Z",
+      writes: [member],
+      deletes: [],
+    }), { mode: 0o600 });
+    const groupKey = continuationDigest(
+      `mono-agent-origin-context-group-v1\0${canonicalContinuationJson(groupIdentity)}`,
+    );
+    const groupsDir = join(stateDir, "origin-context-groups-v1");
+    await mkdir(groupsDir, { mode: 0o700 });
+    await writeFile(join(groupsDir, `${groupKey}.json`), JSON.stringify({
+      schemaVersion: 1,
+      groupKey,
+      ...groupIdentity,
+      snapshotDigest,
+      memberCount: 1,
+      memberSetDigest: continuationDigest(
+        `mono-agent-origin-context-members-v1\0${canonicalContinuationJson([memberId])}`,
+      ),
+      activatedAt: "2026-07-14T12:01:00.000Z",
+    }), { mode: 0o600 });
+
+    const projected = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const projectedSection = sectionById(projected, "continuations");
+    expect(projectedSection.status).toBe("waiting");
+    expect(projectedSection.details.join("\n")).toContain("interrupted durable v3 transaction");
+    expect(projectedSection.details.join("\n")).toContain("durable marker awaiting idempotent recovery");
+
+    await writeFile(v3TransactionPath, JSON.stringify({
+      schemaVersion: 3,
+      generation: "g".repeat((1024 * 1024) + 1),
+      createdAt: "2026-07-14T12:00:00.000Z",
+      writes: [],
+      deletes: [],
+    }), { mode: 0o600 });
+    const oversizedGeneration = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(oversizedGeneration, "continuations")).toMatchObject({ status: "error" });
+    expect(sectionById(oversizedGeneration, "continuations").details.join("\n"))
+      .toContain("v3 transaction has an unsupported or malformed schema");
+
+    await writeFile(v3TransactionPath, "{}\n", { mode: 0o600 });
+    const malformedV3 = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(malformedV3, "continuations")).toMatchObject({ status: "error" });
+    expect(sectionById(malformedV3, "continuations").details.join("\n"))
+      .toContain("v3 transaction has an unsupported or malformed schema");
+    await rm(v3TransactionPath);
+    await rm(groupsDir, { recursive: true });
+
+    const v2TransactionPath = join(stateDir, "continuation-transaction-v2.json");
+    await writeFile(v2TransactionPath, JSON.stringify({
+      schemaVersion: 2,
+      generation: "doctor-v2-stale-but-valid",
+      createdAt: "2026-07-14T12:00:00.000Z",
+      writes: [],
+      deletes: [],
+    }), { mode: 0o600 });
+    const validV2 = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(validV2, "continuations").status).toBe("ok");
+    await writeFile(v2TransactionPath, "{}\n", { mode: 0o600 });
+    const malformedV2 = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(malformedV2, "continuations")).toMatchObject({ status: "error" });
+    expect(sectionById(malformedV2, "continuations").details.join("\n"))
+      .toContain("v2 transaction has an unsupported or malformed schema");
+  });
+
+  it("rejects an activation marker whose projected record exceeds the v3 record bound", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    const { recordsDir } = await seedDoctorV3Store(stateDir, true);
+    const memberId = "doctor-oversized-activation";
+    const groupIdentity = {
+      originRunId: "run-doctor-oversized-activation",
+      originConversationId: "doctor:oversized-activation",
+      historyBoundary: "run-doctor-oversized-activation",
+    };
+    const snapshotDigest = continuationDigest("doctor-oversized-activation-snapshot");
+    const record = {
+      ...doctorPreparedContinuationRecord({ id: memberId, ...groupIdentity, snapshotDigest }),
+      updatedAt: "2026-01-01",
+      resultPayload: "",
+    };
+    const emptyPayloadBytes = Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+    record.resultPayload = "x".repeat(MAX_RECORD_BYTES - emptyPayloadBytes);
+    expect(Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`, "utf8")).toBe(MAX_RECORD_BYTES);
+    await writeFile(
+      join(recordsDir, `${continuationDigest(memberId)}.json`),
+      JSON.stringify(record),
+      { mode: 0o600 },
+    );
+    const groupKey = continuationDigest(
+      `mono-agent-origin-context-group-v1\0${canonicalContinuationJson(groupIdentity)}`,
+    );
+    const groupsDir = join(stateDir, "origin-context-groups-v1");
+    await mkdir(groupsDir, { mode: 0o700 });
+    await writeFile(join(groupsDir, `${groupKey}.json`), JSON.stringify({
+      schemaVersion: 1,
+      groupKey,
+      ...groupIdentity,
+      snapshotDigest,
+      memberCount: 1,
+      memberSetDigest: continuationDigest(
+        `mono-agent-origin-context-members-v1\0${canonicalContinuationJson([memberId])}`,
+      ),
+      activatedAt: "2026-07-14T12:01:00.000Z",
+    }), { mode: 0o600 });
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      continuations: {},
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const section = sectionById(report, "continuations");
+    expect(section.status).toBe("error");
+    expect(section.details.join("\n"))
+      .toContain("Continuation activated record exceeds its 2097152 byte safety limit");
+  });
+
+  it("inspects applied records and cross-generation conflicts before an unmanifested recovery verdict", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    const recordsV3 = join(stateDir, "records-v3");
+    await mkdir(recordsV3, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      continuations: {},
+    });
+    const recordId = "doctor-applied-before-manifest";
+    const record = doctorPreparedContinuationRecord({
+      id: recordId,
+      originRunId: "run-doctor-applied",
+      originConversationId: "doctor:applied",
+      historyBoundary: "run-doctor-applied",
+      snapshotDigest: continuationDigest("doctor-applied-snapshot"),
+    });
+    await writeFile(
+      join(recordsV3, `${continuationDigest(recordId)}.json`),
+      JSON.stringify(record),
+      { mode: 0o600 },
+    );
+
+    const appliedV3 = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const appliedV3Section = sectionById(appliedV3, "continuations");
+    expect(appliedV3Section.status).toBe("waiting");
+    expect(appliedV3Section.details.join("\n")).toContain("awaiting completion of the v3 manifest");
+    expect(appliedV3Section.details.join("\n")).not.toContain("No continuation ledger");
+
+    await rm(recordsV3, { recursive: true });
+    const recordsV2 = join(stateDir, "records-v2");
+    await mkdir(recordsV2, { mode: 0o700 });
+    await writeFile(
+      join(recordsV2, `${continuationDigest(recordId)}.json`),
+      JSON.stringify(record),
+      { mode: 0o600 },
+    );
+    const appliedV2 = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(appliedV2, "continuations").status).toBe("waiting");
+    expect(sectionById(appliedV2, "continuations").details.join("\n"))
+      .toContain("awaiting completion of the v3 manifest");
+
+    await writeFile(join(stateDir, "continuations-v1.json"), JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: "2026-07-14T12:00:00.000Z",
+      records: {
+        [recordId]: { ...record, taskHash: continuationDigest("conflicting-task") },
+      },
+    }), { mode: 0o600 });
+    const conflicting = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const conflictingSection = sectionById(conflicting, "continuations");
+    expect(conflictingSection.status).toBe("error");
+    expect(conflictingSection.details.join("\n")).toContain("refusing lossy migration");
+  });
+
+  it("classifies safe activation temporaries as cleanup-only without closing the fresh rollback window", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    const { recordsDir } = await seedDoctorV3Store(stateDir, false);
+    const groupsDir = join(stateDir, "origin-context-groups-v1");
+    await mkdir(groupsDir, { mode: 0o700 });
+    const recordTemporary = join(recordsDir, ".orphan-record.tmp");
+    const markerTemporary = join(groupsDir, ".orphan-marker.tmp");
+    await writeFile(recordTemporary, "incomplete\n", { mode: 0o600 });
+    await writeFile(markerTemporary, "incomplete\n", { mode: 0o600 });
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      continuations: {},
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const section = sectionById(report, "continuations");
+    expect(section.status).toBe("ok");
+    expect(section.details.join("\n")).toContain("only incomplete temporary debris awaiting cleanup");
+    expect(section.details.join("\n")).not.toContain("durable marker awaiting idempotent recovery");
+    expect(await pathExists(join(stateDir, "records-v2"))).toBe(false);
+    expect(await pathExists(recordTemporary)).toBe(true);
+    expect(await pathExists(markerTemporary)).toBe(true);
+
+    await rm(join(stateDir, "continuation-store-v3.json"));
+    const unmanifested = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(unmanifested, "continuations").status).toBe("ok");
+    expect(sectionById(unmanifested, "continuations").details.join("\n"))
+      .not.toContain("awaiting completion of the v3 manifest");
+    expect(await pathExists(join(stateDir, "records-v2"))).toBe(false);
+  });
+
+  it("rejects linked, aliased, permissive, and oversized continuation recovery evidence", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "continuations");
+    await seedDoctorV3Store(stateDir, true);
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      continuations: {},
+    });
+    const manifestPath = join(stateDir, "continuation-store-v3.json");
+    const validManifest = await readFile(manifestPath, "utf8");
+    const manifestAlias = join(stateDir, "manifest-alias.json");
+    await link(manifestPath, manifestAlias);
+    const hardlinkedManifest = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(hardlinkedManifest, "continuations").details.join("\n"))
+      .toContain("Continuation v3 manifest must have exactly one filesystem link");
+    await rm(manifestAlias);
+
+    await writeFile(manifestPath, "x".repeat((1024 * 1024) + 1), { mode: 0o600 });
+    const oversizedManifest = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(oversizedManifest, "continuations").details.join("\n"))
+      .toContain("Continuation v3 manifest exceeds its 1048576 byte safety limit");
+    await writeFile(manifestPath, validManifest, { mode: 0o600 });
+
+    const validTransaction = JSON.stringify({
+      schemaVersion: 3,
+      generation: "doctor-security-transaction",
+      createdAt: "2026-07-14T12:00:00.000Z",
+      writes: [],
+      deletes: [],
+    });
+    const transactionPath = join(stateDir, "continuation-transaction-v3.json");
+    const transactionSource = join(stateDir, "transaction-source.json");
+    await writeFile(transactionSource, validTransaction, { mode: 0o600 });
+    await link(transactionSource, transactionPath);
+    const hardlinkedTransaction = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(hardlinkedTransaction, "continuations").details.join("\n"))
+      .toContain("single-link regular file");
+    await rm(transactionPath);
+    await rm(transactionSource);
+
+    const transactionTarget = join(stateDir, "transaction-target.json");
+    await writeFile(transactionTarget, validTransaction, { mode: 0o600 });
+    await symlink(transactionTarget, transactionPath);
+    const linkedTransaction = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(linkedTransaction, "continuations").details.join("\n"))
+      .toContain("single-link regular file");
+    await rm(transactionPath);
+    await rm(transactionTarget);
+
+    await writeFile(transactionPath, validTransaction, { mode: 0o600 });
+    if (process.platform !== "win32") await chmod(transactionPath, 0o644);
+    const permissiveTransaction = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    if (process.platform !== "win32") {
+      expect(sectionById(permissiveTransaction, "continuations").details.join("\n")).toContain("permissions must be 600");
+    }
+    await rm(transactionPath);
+
+    await writeFile(transactionPath, "x".repeat((16 * 1024 * 1024) + 1), { mode: 0o600 });
+    const oversizedTransaction = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(oversizedTransaction, "continuations").details.join("\n")).toContain("safety limit");
+    await rm(transactionPath);
+
+    await writeFile(transactionPath, JSON.stringify({
+      schemaVersion: 3,
+      generation: "doctor-oversized-record-transaction",
+      createdAt: "2026-07-14T12:00:00.000Z",
+      writes: [{
+        ...doctorPreparedContinuationRecord({
+          id: "doctor-oversized-transaction-record",
+          originRunId: "run-doctor-oversized",
+          originConversationId: "doctor:oversized",
+          historyBoundary: "run-doctor-oversized",
+          snapshotDigest: continuationDigest("doctor-oversized-snapshot"),
+        }),
+        resultPayload: "x".repeat((2 * 1024 * 1024) + 1),
+      }],
+      deletes: [],
+    }), { mode: 0o600 });
+    const oversizedTransactionRecord = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(oversizedTransactionRecord, "continuations").details.join("\n"))
+      .toContain("transaction contains a record over its 2097152 byte safety limit");
+    await rm(transactionPath);
+
+    const groupsDir = join(stateDir, "origin-context-groups-v1");
+    await mkdir(groupsDir, { mode: 0o700 });
+    const markerPath = join(groupsDir, `${"a".repeat(64)}.json`);
+    const markerSource = join(stateDir, "marker-source");
+    await writeFile(markerSource, "{}\n", { mode: 0o600 });
+    await link(markerSource, markerPath);
+    const hardlinkedMarker = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(hardlinkedMarker, "continuations").details.join("\n"))
+      .toContain("single-link regular file");
+    await rm(markerPath);
+    await rm(markerSource);
+    await writeFile(markerPath, "x".repeat((64 * 1024) + 1), { mode: 0o600 });
+    const oversizedMarker = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(oversizedMarker, "continuations").details.join("\n")).toContain("exceeds its safety limit");
+    await rm(markerPath);
+    await rm(groupsDir);
+
+    const guardPath = join(stateDir, "records-v2", "UPGRADED-TO-RECORDS-V3");
+    const guardAlias = join(stateDir, "guard-alias");
+    await link(guardPath, guardAlias);
+    const hardlinkedGuard = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(hardlinkedGuard, "continuations").details.join("\n"))
+      .toContain("single-link regular file");
+  });
+
   it("reports a legacy v2 store as awaiting migration before and after its exact rollback guard is installed", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const stateDir = join(dir, ".mono-agent", "continuations");
@@ -423,8 +1053,18 @@ describe("validateMonoAgentFolder", () => {
     await mkdir(recordsDir, { recursive: true, mode: 0o700 });
     await chmod(stateDir, 0o700);
     await chmod(recordsDir, 0o700);
-    const recordPath = join(recordsDir, "opaque.json");
-    await writeFile(recordPath, JSON.stringify({ resultPayload: "TOP SECRET LEGACY" }), { mode: 0o600 });
+    const recordId = "doctor-valid-legacy-record";
+    const recordPath = join(recordsDir, `${continuationDigest(recordId)}.json`);
+    await writeFile(recordPath, JSON.stringify({
+      ...doctorPreparedContinuationRecord({
+        id: recordId,
+        originRunId: "run-doctor-legacy",
+        originConversationId: "doctor:legacy",
+        historyBoundary: "run-doctor-legacy",
+        snapshotDigest: continuationDigest("doctor-legacy-snapshot"),
+      }),
+      resultPayload: "TOP SECRET LEGACY",
+    }), { mode: 0o600 });
     await chmod(recordPath, 0o600);
     const rollbackGuardPath = join(recordsDir, "UPGRADED-TO-RECORDS-V3");
     await writeFile(

@@ -1,4 +1,4 @@
-import { chmod, link, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, readdir, readFile, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,9 +9,12 @@ import {
   type ContinuationOriginContextReference,
   type DurableContinuationRecord,
 } from "../continuation-store.js";
-import { continuationDigest } from "../continuations.js";
+import { loadLegacyStore } from "../continuation-store-records.js";
+import { MAX_RECORD_BYTES } from "../continuation-store-types.js";
+import { canonicalContinuationJson, continuationDigest } from "../continuations.js";
 
 const fixtures: string[] = [];
+const fixedNow = (): Date => new Date("2026-07-16T12:00:00.000Z");
 
 afterEach(async () => {
   await Promise.all(fixtures.splice(0).map(async (path) => await rm(path, { recursive: true, force: true })));
@@ -38,6 +41,49 @@ describe("continuation origin-context record store", () => {
 
     const restarted = await openContinuationStore(stateDir);
     await expect(restarted.stats()).resolves.toMatchObject({ format: "per-record-v3", records: 0 });
+    expect(await readdir(stateDir)).not.toContain("records-v2");
+  });
+
+  it("cleans incomplete v3 temporaries without treating them as committed rollback evidence", async () => {
+    const stateDir = fixture("fresh-temporary-cleanup");
+    await openContinuationStore(stateDir);
+    await writeFile(join(stateDir, "records-v3", ".orphan-record.tmp"), "incomplete\n", { mode: 0o600 });
+    await writeFile(
+      join(stateDir, "origin-context-groups-v1", ".orphan-activation.tmp"),
+      "incomplete\n",
+      { mode: 0o600 },
+    );
+
+    const restarted = await openContinuationStore(stateDir);
+
+    await expect(restarted.stats()).resolves.toMatchObject({ records: 0 });
+    expect(await readdir(join(stateDir, "records-v3"))).toEqual([]);
+    expect(await readdir(join(stateDir, "origin-context-groups-v1"))).toEqual([]);
+    expect(await readdir(stateDir)).not.toContain("records-v2");
+    await expect(readFile(join(stateDir, "continuation-store-v3.json"), "utf8")
+      .then((value) => JSON.parse(value) as Record<string, unknown>))
+      .resolves.toMatchObject({ rollbackGuardRequired: false });
+  });
+
+  it("rejects unsafe linked v3 temporaries without installing the rollback guard", async () => {
+    const stateDir = fixture("unsafe-temporary-cleanup");
+    await openContinuationStore(stateDir);
+    const activationSource = join(stateDir, "activation-temporary-source");
+    const activationTemporary = join(stateDir, "origin-context-groups-v1", ".linked-activation.tmp");
+    await writeFile(activationSource, "incomplete\n", { mode: 0o600 });
+    await link(activationSource, activationTemporary);
+
+    await expect(openContinuationStore(stateDir)).rejects.toThrow("exactly one filesystem link");
+    expect(await readdir(stateDir)).not.toContain("records-v2");
+
+    await rm(activationTemporary);
+    await rm(activationSource);
+    const recordSource = join(stateDir, "record-temporary-source");
+    const recordTemporary = join(stateDir, "records-v3", ".linked-record.tmp");
+    await writeFile(recordSource, "incomplete\n", { mode: 0o600 });
+    await link(recordSource, recordTemporary);
+
+    await expect(openContinuationStore(stateDir)).rejects.toThrow("exactly one filesystem link");
     expect(await readdir(stateDir)).not.toContain("records-v2");
   });
 
@@ -136,6 +182,330 @@ describe("continuation origin-context record store", () => {
       .resolves.toMatchObject({ rollbackGuardRequired: true });
   });
 
+  it("rejects unsafe activation temporary debris before fencing a legacy migration", async () => {
+    const stateDir = fixture("legacy-unsafe-activation-temporary");
+    const groupsDir = join(stateDir, "origin-context-groups-v1");
+    await mkdir(groupsDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    await writeFile(join(stateDir, "continuations-v1.json"), JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: "2026-07-14T12:00:00.000Z",
+      records: { legacy: durableRecord("legacy") },
+    }), { mode: 0o600 });
+    const source = join(stateDir, "activation-temporary-source");
+    const temporary = join(groupsDir, ".linked-activation.tmp");
+    await writeFile(source, "incomplete\n", { mode: 0o600 });
+    await link(source, temporary);
+
+    await expect(openContinuationStore(stateDir)).rejects.toThrow("exactly one filesystem link");
+    await expect(stat(join(stateDir, "records-v2"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(join(stateDir, "records-v3"))).toEqual([]);
+    await expect(stat(join(stateDir, "continuation-store-v3.json")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("commits normalized migration before retained-terminal and activation projections", async () => {
+    const stateDir = fixture("migration-phase-barrier");
+    await openContinuationStore(stateDir, { now: fixedNow });
+    const legacyRecordsDir = join(stateDir, "records-v2");
+    const reference = {
+      schemaVersion: 1 as const,
+      digest: hash("migration-phase-snapshot"),
+      bytes: 128,
+      messageCount: 2,
+    };
+    const active = preparedRecord("migration-active", reference);
+    const terminal = durableRecord("migration-terminal", {
+      historyBoundary: "run-migration-terminal",
+      state: "delivered",
+      resultPayload: { retained: true },
+      synthesizedText: "retained answer",
+    });
+    await writeRecord(legacyRecordsDir, active as unknown as Record<string, unknown>);
+    await writeRecord(legacyRecordsDir, terminal);
+    await writeFile(
+      join(legacyRecordsDir, "UPGRADED-TO-RECORDS-V3"),
+      "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n",
+      { mode: 0o600 },
+    );
+
+    const groupIdentity = {
+      originRunId: active.originRunId,
+      originConversationId: active.originConversationId,
+      historyBoundary: active.historyBoundary as string,
+    };
+    const groupKey = continuationDigest(
+      `mono-agent-origin-context-group-v1\0${canonicalContinuationJson(groupIdentity)}`,
+    );
+    await writeFile(
+      join(stateDir, "origin-context-groups-v1", `${groupKey}.json`),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        groupKey,
+        ...groupIdentity,
+        snapshotDigest: reference.digest,
+        memberCount: 2,
+        memberSetDigest: hash("intentionally-wrong-member-set"),
+        activatedAt: "2026-07-14T12:01:00.000Z",
+      }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+
+    await expect(openContinuationStore(stateDir, {
+      retention: { terminalMaxRecords: 1 },
+      now: fixedNow,
+    })).rejects.toThrow("member set does not match durable records");
+
+    const materializedActive = JSON.parse(await readFile(
+      join(stateDir, "records-v3", recordFileName("migration-active")),
+      "utf8",
+    )) as Record<string, unknown>;
+    const materializedTerminal = JSON.parse(await readFile(
+      join(stateDir, "records-v3", recordFileName("migration-terminal")),
+      "utf8",
+    )) as Record<string, unknown>;
+    expect(materializedActive).toMatchObject({
+      continuationId: "migration-active",
+      originContextState: "pending",
+      synthesisDeferrals: 0,
+    });
+    expect(materializedTerminal).toMatchObject({
+      continuationId: "migration-terminal",
+      resultPayload: { retained: true },
+      synthesizedText: "retained answer",
+      originContextState: "legacy_missing",
+      synthesisDeferrals: 0,
+    });
+    expect(materializedTerminal).not.toHaveProperty("compactedAt");
+    await expect(readFile(join(stateDir, "continuation-store-v3.json"), "utf8")
+      .then((value) => JSON.parse(value) as Record<string, unknown>))
+      .resolves.toMatchObject({ rollbackGuardRequired: true });
+
+    await rm(join(stateDir, "origin-context-groups-v1", `${groupKey}.json`));
+    const restarted = await openContinuationStore(stateDir, {
+      retention: { terminalMaxRecords: 1 },
+      now: fixedNow,
+    });
+    await expect(restarted.get("migration-active")).resolves.toMatchObject({
+      originContextState: "pending",
+    });
+    await expect(restarted.get("migration-terminal")).resolves.toMatchObject({
+      state: "delivered",
+      compactedAt: expect.any(String),
+    });
+    await expect(restarted.get("migration-terminal")).resolves.not.toHaveProperty("resultPayload");
+
+    const reopened = await openContinuationStore(stateDir, {
+      retention: { terminalMaxRecords: 1 },
+      now: fixedNow,
+    });
+    await expect(reopened.list()).resolves.toHaveLength(2);
+  });
+
+  it("replays a valid v2 transaction even when an interrupted migration already installed the guard", async () => {
+    const stateDir = fixture("guarded-v2-transaction");
+    await openContinuationStore(stateDir);
+    const legacyRecordsDir = join(stateDir, "records-v2");
+    await mkdir(legacyRecordsDir, { mode: 0o700 });
+    await writeFile(
+      join(legacyRecordsDir, "UPGRADED-TO-RECORDS-V3"),
+      "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n",
+      { mode: 0o600 },
+    );
+    const admitted = durableRecord("guarded-transaction-record", {
+      historyBoundary: "run-guarded-transaction-record",
+    });
+    await writeFile(join(stateDir, "continuation-transaction-v2.json"), `${JSON.stringify({
+      schemaVersion: 2,
+      generation: "guarded-v2-generation",
+      createdAt: "2026-07-14T12:00:00.000Z",
+      writes: [admitted],
+      deletes: [],
+    }, null, 2)}\n`, { mode: 0o600 });
+
+    const migrated = await openContinuationStore(stateDir);
+    await expect(migrated.get("guarded-transaction-record")).resolves.toMatchObject({
+      continuationId: "guarded-transaction-record",
+      originContextState: "legacy_missing",
+      synthesisDeferrals: 0,
+    });
+    await expect(stat(join(stateDir, "continuation-transaction-v2.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("fails closed on a malformed v2 transaction after an interrupted migration installed the guard", async () => {
+    const stateDir = fixture("guarded-malformed-v2-transaction");
+    await openContinuationStore(stateDir);
+    const legacyRecordsDir = join(stateDir, "records-v2");
+    await mkdir(legacyRecordsDir, { mode: 0o700 });
+    await writeFile(
+      join(legacyRecordsDir, "UPGRADED-TO-RECORDS-V3"),
+      "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n",
+      { mode: 0o600 },
+    );
+    const transactionPath = join(stateDir, "continuation-transaction-v2.json");
+    await writeFile(transactionPath, "{}\n", { mode: 0o600 });
+
+    await expect(openContinuationStore(stateDir)).rejects.toThrow("malformed schema");
+    await expect(stat(transactionPath)).resolves.toBeDefined();
+    await expect(readFile(join(stateDir, "continuation-store-v3.json"), "utf8")
+      .then((value) => JSON.parse(value) as Record<string, unknown>))
+      .resolves.toMatchObject({ rollbackGuardRequired: false });
+  });
+
+  it("rejects an oversized transaction generation before replay can publish an unreadable manifest", async () => {
+    const stateDir = fixture("oversized-v3-generation");
+    await mkdir(stateDir, { mode: 0o700 });
+    const transactionPath = join(stateDir, "continuation-transaction-v3.json");
+    await writeFile(transactionPath, JSON.stringify({
+      schemaVersion: 3,
+      generation: "g".repeat((1024 * 1024) + 1),
+      createdAt: "2026-07-14T12:00:00.000Z",
+      writes: [],
+      deletes: [],
+    }), { mode: 0o600 });
+
+    await expect(openContinuationStore(stateDir)).rejects.toThrow("malformed schema");
+    await expect(stat(transactionPath)).resolves.toBeDefined();
+    await expect(stat(join(stateDir, "continuation-store-v3.json")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(join(stateDir, "records-v3"))).toEqual([]);
+  });
+
+  it("does not complete migration when a legacy record exceeds the v3 per-record safety limit", async () => {
+    const stateDir = fixture("oversized-legacy-record");
+    await openContinuationStore(stateDir);
+    const oversized = durableRecord("oversized-legacy", {
+      historyBoundary: "run-oversized-legacy",
+      state: "delivered",
+      resultPayload: "x".repeat((2 * 1024 * 1024) + 1),
+    });
+    await writeRecord(join(stateDir, "records-v2"), oversized);
+
+    await expect(openContinuationStore(stateDir)).rejects.toThrow("exceeds its 2097152 byte safety limit");
+    await expect(readFile(join(stateDir, "continuation-store-v3.json"), "utf8")
+      .then((value) => JSON.parse(value) as Record<string, unknown>))
+      .resolves.toMatchObject({ rollbackGuardRequired: false });
+    expect(await readdir(join(stateDir, "records-v3"))).toEqual([]);
+  });
+
+  it("rejects an oversized record embedded in the v1 monolith before migration completion", async () => {
+    const stateDir = fixture("oversized-v1-record");
+    await openContinuationStore(stateDir);
+    const oversized = durableRecord("oversized-v1", {
+      historyBoundary: "run-oversized-v1",
+      state: "delivered",
+      resultPayload: "x".repeat((2 * 1024 * 1024) + 1),
+    });
+    await writeFile(join(stateDir, "continuations-v1.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: "2026-07-14T12:00:00.000Z",
+      records: { "oversized-v1": oversized },
+    })}\n`, { mode: 0o600 });
+
+    await expect(openContinuationStore(stateDir, { now: fixedNow })).rejects.toThrow(
+      "Continuation legacy record exceeds its 2097152 byte safety limit: oversized-v1",
+    );
+    await expect(readFile(join(stateDir, "continuation-store-v3.json"), "utf8")
+      .then((value) => JSON.parse(value) as Record<string, unknown>))
+      .resolves.toMatchObject({ rollbackGuardRequired: false });
+    expect(await readdir(join(stateDir, "records-v3"))).toEqual([]);
+  });
+
+  it("rejects a legacy record that crosses the v3 limit only after default normalization", async () => {
+    const stateDir = fixture("normalization-oversized-v1-record");
+    await openContinuationStore(stateDir);
+    const record = durableRecord("normalization-oversized-v1", {
+      historyBoundary: "run-normalization-oversized-v1",
+      resultPayload: "",
+    });
+    const emptyPayloadBytes = Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+    record.resultPayload = "x".repeat(MAX_RECORD_BYTES - emptyPayloadBytes);
+    expect(Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`, "utf8")).toBe(MAX_RECORD_BYTES);
+    await writeFile(join(stateDir, "continuations-v1.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: "2026-07-14T12:00:00.000Z",
+      records: { "normalization-oversized-v1": record },
+    })}\n`, { mode: 0o600 });
+
+    await expect(openContinuationStore(stateDir)).rejects.toThrow(
+      "Continuation normalized record exceeds its 2097152 byte safety limit: normalization-oversized-v1",
+    );
+    await expect(readFile(join(stateDir, "continuation-store-v3.json"), "utf8")
+      .then((value) => JSON.parse(value) as Record<string, unknown>))
+      .resolves.toMatchObject({ rollbackGuardRequired: false });
+    expect(await readdir(join(stateDir, "records-v3"))).toEqual([]);
+  });
+
+  it("preflights retained tombstone growth before fencing or materializing legacy state", async () => {
+    const stateDir = fixture("retention-growth-preflight");
+    await mkdir(stateDir, { mode: 0o700 });
+    const record = durableRecord("retention-growth", {
+      originContextState: "legacy_missing",
+      synthesisDeferrals: 0,
+      state: "delivered",
+      lastError: {
+        code: "retained_terminal",
+        reason: "",
+        at: "2026-07-14T12:00:00.000Z",
+      },
+    });
+    const emptyReasonBytes = Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+    (record.lastError as Record<string, unknown>).reason = "x".repeat(MAX_RECORD_BYTES - emptyReasonBytes);
+    expect(Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`, "utf8")).toBe(MAX_RECORD_BYTES);
+    await writeFile(join(stateDir, "continuations-v1.json"), JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: "2026-07-14T12:00:00.000Z",
+      records: { "retention-growth": record },
+    }), { mode: 0o600 });
+
+    await expect(openContinuationStore(stateDir, { now: fixedNow })).rejects.toThrow(
+      "Continuation retained record exceeds its 2097152 byte safety limit: retention-growth",
+    );
+    expect(await readdir(join(stateDir, "records-v3"))).toEqual([]);
+    await expect(stat(join(stateDir, "records-v2"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(stateDir, "continuation-store-v3.json")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects an oversized legacy monolith before allocating or publishing migrated state", async () => {
+    const legacyPath = fixture("oversized-legacy-monolith");
+    await writeFile(legacyPath, "{}\n", { mode: 0o600 });
+    await truncate(legacyPath, (256 * 1024 * 1024) + 1);
+
+    await expect(loadLegacyStore(legacyPath)).rejects.toThrow("268435456 byte safety limit");
+  });
+
+  it("does not reinterpret a disappearing v1 monolith as an empty legacy store", async () => {
+    const missingLegacyPath = fixture("missing-legacy-monolith");
+
+    await expect(loadLegacyStore(missingLegacyPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("treats a fieldless v3 manifest as permanently fenced and never reopens stale legacy records", async () => {
+    const stateDir = fixture("fieldless-manifest");
+    const first = await openContinuationStore(stateDir);
+    await first.mutate((records) => {
+      records.set("native-v3", durableRecord("native-v3", {
+        originContextState: "legacy_missing",
+        synthesisDeferrals: 0,
+      }) as unknown as DurableContinuationRecord);
+    });
+    const manifestPath = join(stateDir, "continuation-store-v3.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
+    delete manifest.rollbackGuardRequired;
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+    await writeRecord(join(stateDir, "records-v2"), durableRecord("stale-legacy", {
+      historyBoundary: "run-stale-legacy",
+    }));
+
+    const restarted = await openContinuationStore(stateDir);
+    await expect(restarted.get("native-v3")).resolves.toBeDefined();
+    await expect(restarted.get("stale-legacy")).resolves.toBeUndefined();
+    await expect(readFile(manifestPath, "utf8")
+      .then((value) => JSON.parse(value) as Record<string, unknown>))
+      .resolves.toMatchObject({ rollbackGuardRequired: true });
+  });
+
   it("does not reopen legacy migration after retention removes every migrated record", async () => {
     const stateDir = fixture("retained-empty-migration");
     await openContinuationStore(stateDir);
@@ -175,6 +545,74 @@ describe("continuation origin-context record store", () => {
     await rm(legacyRecordsPath);
     const restarted = await openContinuationStore(stateDir);
     expect(await readdir(stateDir)).not.toContain("records-v2");
+  });
+
+  it("serializes concurrent first record commit and origin activation behind one rollback fence", async () => {
+    const stateDir = fixture("concurrent-first-commit");
+    const store = await openContinuationStore(stateDir);
+    const snapshot = originContext("run-group", "slack:D1:1.1#2026-07-14");
+    const pin = await store.stageOriginContext(snapshot);
+    let releaseMutation!: () => void;
+    const mutationBlocked = new Promise<void>((resolve) => { releaseMutation = resolve; });
+    let mutatorEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { mutatorEntered = resolve; });
+    const mutation = store.mutate(async (records) => {
+      mutatorEntered();
+      await mutationBlocked;
+      records.set("concurrent-first", preparedRecord("concurrent-first", pin.reference));
+    });
+    await entered;
+    const activation = store.activateOriginContextGroup({
+      claimFingerprint: hash("fingerprint-concurrent-first"),
+      activatedAt: "2026-07-14T12:01:00.000Z",
+    });
+    releaseMutation();
+    await Promise.all([mutation, activation]);
+    await pin.release();
+
+    await expect(store.get("concurrent-first")).resolves.toMatchObject({ originContextState: "pinned" });
+    await expect(readFile(join(stateDir, "continuation-store-v3.json"), "utf8")
+      .then((value) => JSON.parse(value) as Record<string, unknown>))
+      .resolves.toMatchObject({ rollbackGuardRequired: true });
+    await expect(readFile(
+      join(stateDir, "records-v2", "UPGRADED-TO-RECORDS-V3"),
+      "utf8",
+    )).resolves.toBe(
+      "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n",
+    );
+    expect(await readdir(join(stateDir, "origin-context-groups-v1"))).toEqual([]);
+    const restarted = await openContinuationStore(stateDir);
+    await expect(restarted.get("concurrent-first")).resolves.toMatchObject({ originContextState: "pinned" });
+  });
+
+  it("preflights activation size before publishing an unrecoverable group marker", async () => {
+    const stateDir = fixture("activation-size-preflight");
+    const store = await openContinuationStore(stateDir);
+    const snapshot = originContext("run-activation-size", "slack:D1:1.1#2026-07-14");
+    const pin = await store.stageOriginContext(snapshot);
+    const record = preparedRecord("activation-size-record", pin.reference, {
+      originRunId: "run-activation-size",
+      historyBoundary: "run-activation-size",
+      updatedAt: "2026-01-01",
+      resultPayload: "",
+    });
+    const emptyPayloadBytes = Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+    record.resultPayload = "x".repeat(MAX_RECORD_BYTES - emptyPayloadBytes);
+    expect(Buffer.byteLength(`${JSON.stringify(record, null, 2)}\n`, "utf8")).toBe(MAX_RECORD_BYTES);
+    await store.mutate((records) => records.set(record.continuationId, record));
+    await pin.release();
+
+    await expect(store.activateOriginContextGroup({
+      claimFingerprint: record.claimFingerprint,
+      activatedAt: "2026-07-14T12:01:00.000Z",
+    })).rejects.toThrow(
+      "Continuation activated record exceeds its 2097152 byte safety limit: activation-size-record",
+    );
+    expect(await readdir(join(stateDir, "origin-context-groups-v1"))).toEqual([]);
+    await expect(store.get(record.continuationId)).resolves.toMatchObject({ originContextState: "pending" });
+
+    const restarted = await openContinuationStore(stateDir);
+    await expect(restarted.get(record.continuationId)).resolves.toMatchObject({ originContextState: "pending" });
   });
 
   it("retains a shared staged blob until every concurrent pin is released", async () => {

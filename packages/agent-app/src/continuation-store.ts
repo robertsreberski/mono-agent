@@ -11,6 +11,7 @@ import {
   OriginContextCorruptionError,
   applyOriginContextGroupCommit,
   applyOriginContextGroupCommits,
+  cleanOriginContextGroupTemporaries,
   loadOriginContextGroupCommit,
   originContextDigest,
   originContextStoreBytes,
@@ -161,9 +162,10 @@ export async function openContinuationStore(
     rollbackGuardValidated = true;
   };
 
+  const isCommittedEntry = (entry: string): boolean => !(entry.startsWith(".") && entry.endsWith(".tmp"));
   const v3StateExists = await continuationPathExists(transactionPath)
-    || (await readdir(recordsDir)).length > 0
-    || (await readdir(originContextGroupsDir)).length > 0;
+    || (await readdir(recordsDir)).some(isCommittedEntry)
+    || (await readdir(originContextGroupsDir)).some(isCommittedEntry);
   if (manifestRollbackGuardRequired) {
     if (!rollbackGuardInstalled) {
       throw new Error(`Continuation v2 rollback guard is missing from activated v3 state: ${rollbackGuardPath}`);
@@ -182,22 +184,23 @@ export async function openContinuationStore(
   const migrationRequired = legacyStateExists && !manifestRollbackGuardRequired;
   let migrationSource: Map<string, DurableContinuationRecord> | undefined;
   if (migrationRequired) {
-    await ensureLegacyRecordsDirectory();
-    // Finish an admitted v2 transaction before fencing the legacy reader.
-    if (!rollbackGuardInstalled) {
+    // A guard can already exist after an interrupted migration. Validate it
+    // before touching state, but always finish any admitted v2 transaction:
+    // the guard does not itself prove that v2 replay completed.
+    if (rollbackGuardInstalled) await ensureV2RollbackGuard();
+    if (await continuationPathExists(legacyTransactionPath)) {
+      await ensureLegacyRecordsDirectory();
       await recoverRecordTransaction(legacyRecordsDir, legacyTransactionPath, 2);
     }
-    migrationSource = await loadRecordDirectory(legacyRecordsDir, new Set([V2_ROLLBACK_GUARD]));
+    migrationSource = legacyRecordsDirectoryExists
+      ? await loadRecordDirectory(legacyRecordsDir, new Set([V2_ROLLBACK_GUARD]))
+      : new Map();
     normalizeLegacyContinuationRecords(migrationSource);
     if (await continuationPathExists(legacyPath)) {
       const legacy = await loadLegacyStore(legacyPath);
       normalizeLegacyContinuationRecords(legacy);
       mergeMigrationRecords(migrationSource, legacy, "v1 and v2");
     }
-    // The manifest stays explicitly false until every migration batch and the
-    // final manifest commit complete, so a crash after this fence replays the
-    // semantic merge instead of stranding retained v2 records.
-    await ensureV2RollbackGuard();
   }
   const recoveredGeneration = await recoverRecordTransaction(
     recordsDir,
@@ -205,21 +208,70 @@ export async function openContinuationStore(
     CONTINUATION_RECORD_STORE_SCHEMA_VERSION,
   );
   const records = await loadRecordDirectory(recordsDir);
-  const beforeOpen = cloneRecords(records);
+  const beforeMigration = cloneRecords(records);
   normalizeLegacyContinuationRecords(records);
   if (migrationSource !== undefined) {
     mergeMigrationRecords(records, migrationSource, "v2 and v3");
   }
-  const committedOriginGroups = await applyOriginContextGroupCommits(originContextGroupsDir, records);
-  applyRetention(records, policy, now());
+
+  // Migration has its own durable phase. While the manifest remains false,
+  // legacy records are still authoritative and every partially materialized
+  // v3 record must remain semantically identical to that normalized source.
+  // Retention and activation are v3-only projections: publishing either one
+  // before the manifest closes migration would make crash replay compare a
+  // projected v3 record with its unprojected legacy source and reject it as a
+  // lossy conflict.
+  const migrationCompletionRequired = !manifestRollbackGuardRequired
+    && (migrationSource !== undefined || v3StateExists || rollbackGuardInstalled);
+  const projectionTime = now();
+  if (migrationCompletionRequired) {
+    // Validate the retention projection before closing migration. This is a
+    // read-only draft: normalized legacy records remain the only durable v3
+    // state until the manifest commits, but a growing compaction tombstone
+    // cannot strand the store behind that completion fence. Activation markers
+    // remain the later v3-only durable projection; their publisher preflights
+    // exact membership and record bounds before creating the marker.
+    const projectionDraft = cloneRecords(records);
+    // Temporary marker debris is cleanup-only and therefore excluded from the
+    // v3-evidence fence decision. Validate and clean it before publishing the
+    // migration fence so an unsafe linked/oversized temporary cannot poison
+    // every subsequent restart.
+    await cleanOriginContextGroupTemporaries(originContextGroupsDir);
+    applyRetention(projectionDraft, policy, projectionTime);
+    // The preflight above is non-durable. Fence the v2 reader only after the
+    // retention projection is known to be materializable, then publish
+    // normalized records as their own migration phase.
+    await ensureV2RollbackGuard();
+  }
   const migrationGeneration = await persistRecordChanges(
     recordsDir,
     transactionPath,
-    beforeOpen,
+    beforeMigration,
     records,
     ensureV2RollbackGuard,
   );
   let generation = migrationGeneration ?? recoveredGeneration ?? randomUUID();
+  if (migrationCompletionRequired) {
+    await persistManifest(
+      manifestPath,
+      generation,
+      continuationStoreStats(records, policy),
+      now(),
+      true,
+    );
+  }
+
+  const beforeProjections = cloneRecords(records);
+  const committedOriginGroups = await applyOriginContextGroupCommits(originContextGroupsDir, records);
+  applyRetention(records, policy, projectionTime);
+  const projectionGeneration = await persistRecordChanges(
+    recordsDir,
+    transactionPath,
+    beforeProjections,
+    records,
+    ensureV2RollbackGuard,
+  );
+  if (projectionGeneration !== undefined) generation = projectionGeneration;
   await persistManifest(
     manifestPath,
     generation,
@@ -339,6 +391,9 @@ export async function openContinuationStore(
     try {
       commit = prepareOriginContextGroupCommit(draft, input);
       if (commit === undefined) return;
+      // Preflight the exact projection, including v3 record-size bounds,
+      // before the durable marker becomes the recovery commit point.
+      applyOriginContextGroupCommit(draft, commit);
       await ensureV2RollbackGuard();
       markerPath = join(originContextGroupsDir, `${commit.groupKey}.json`);
       if (await continuationPathExists(markerPath)) {
@@ -350,7 +405,6 @@ export async function openContinuationStore(
         await writeJsonAtomic(markerPath, commit, true, 64 * 1024);
       }
       published = true;
-      applyOriginContextGroupCommit(draft, commit);
       replaceRecords(records, draft);
 
       try {
