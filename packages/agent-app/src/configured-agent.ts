@@ -237,6 +237,7 @@ function composeRunRecorder(
       : { configPath: deps.observabilityContext.configPath }),
     artifactDir: deps.artifactDir,
     includeSensitiveData: exporterCfg.includeSensitiveData ?? false,
+    contentPatternRedaction: exporterCfg.contentPatternRedaction ?? false,
     ...(args.userInput === undefined ? {} : { userInput: args.userInput }),
     ...(args.runKind === undefined ? {} : { runKind: args.runKind }),
     ...(args.memoryOperation === undefined ? {} : { memoryOperation: args.memoryOperation }),

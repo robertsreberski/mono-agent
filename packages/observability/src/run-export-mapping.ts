@@ -35,9 +35,22 @@ export interface EventSpanMapping {
    * payload is still passed through `redactJsonValue` before it is attached:
    * non-numeric values under sensitive-looking object keys are redacted;
    * numeric values under matched keys are retained; free text is not
-   * content-scanned. Payload strings are byte-bounded by the export limit.
+   * content-scanned by default; `RunExportContext.contentPatternRedaction`
+   * enables the closed high-confidence scan. Payload strings are byte-bounded
+   * by the export limit.
    */
   readonly payload?: unknown;
+}
+
+function redactExportString(
+  value: string,
+  ctx: RunExportContext,
+  maxStringBytes: number = DEFAULT_MAX_STRING_BYTES,
+): string {
+  if (ctx.contentPatternRedaction !== true) {
+    return value;
+  }
+  return redactJsonValue(value, maxStringBytes, { contentPatternRedaction: true }) as string;
 }
 
 // Concise cap for the underlying error message woven into a failure status line.
@@ -124,16 +137,19 @@ export function composeFailureDetail(
 }
 
 /** Always-on operational attributes describing a run's failure (never gated content). */
-function failureDetailAttributes(summary: RunSummary): SpanAttributes {
+function failureDetailAttributes(summary: RunSummary, ctx: RunExportContext): SpanAttributes {
   const attrs: SpanAttributes = {};
   if (typeof summary.error === "string" && summary.error.trim().length > 0) {
-    attrs["mono.agent.error.message"] = compactString(summary.error, ERROR_ATTRIBUTE_CHARS);
+    attrs["mono.agent.error.message"] = redactExportString(
+      compactString(summary.error, ERROR_ATTRIBUTE_CHARS),
+      ctx,
+    );
   }
   const failover = summary.failoverHistory;
   if (failover !== undefined && failover.length > 0) {
     attrs["mono.agent.failover.count"] = failover.length;
     const detail = renderFailoverHistory(failover);
-    if (detail !== undefined) attrs["mono.agent.failover.detail"] = detail;
+    if (detail !== undefined) attrs["mono.agent.failover.detail"] = redactExportString(detail, ctx);
   }
   return attrs;
 }
@@ -167,7 +183,7 @@ export function buildRootSpanAttributes(
     // The underlying provider message + per-attempt failover detail (which models
     // were tried and how each failed) — operational metadata, always surfaced so a
     // failed trace shows the "why", not only the collapsed failure kind.
-    ...failureDetailAttributes(summary),
+    ...failureDetailAttributes(summary, ctx),
     ...(summary.providerSessionId === undefined || summary.providerSessionId === null
       ? {}
       : { "mono.agent.provider_session_id": summary.providerSessionId }),
@@ -256,7 +272,9 @@ function fileChangeExportAttributes(event: RuntimeEventLike, ctx: RunExportConte
     ...(removedLines === undefined ? {} : { "mono.agent.file_change.removed_lines": removedLines }),
     ...(changedLines === undefined ? {} : { "mono.agent.file_change.changed_lines": changedLines }),
     ...(unavailableCount === undefined ? {} : { "mono.agent.file_change.unavailable_count": unavailableCount }),
-    ...(ctx.includeSensitiveData && paths.length > 0 ? { "mono.agent.file_change.paths": paths.join(", ") } : {}),
+    ...(ctx.includeSensitiveData && paths.length > 0
+      ? { "mono.agent.file_change.paths": redactExportString(paths.join(", "), ctx) }
+      : {}),
   };
 }
 
@@ -277,6 +295,7 @@ export function buildEventSpanAttributes(
   maxStringBytes: number = DEFAULT_MAX_STRING_BYTES,
 ): EventSpanMapping {
   const { category, label, summary } = buildEventDescriptors(event, maxStringBytes);
+  const redactedSummary = redactExportString(summary, ctx, maxStringBytes);
   const eventType = typeof event.type === "string" ? event.type : "";
   const attributes: SpanAttributes = {
     "mono.agent.event.index": index,
@@ -288,7 +307,7 @@ export function buildEventSpanAttributes(
     // metadata-only mode it would otherwise leak run content the same way the raw
     // payload does. The structural `label` remains for navigation.
     "mono.agent.event.label": label,
-    ...(ctx.includeSensitiveData ? { "mono.agent.event.summary": summary } : {}),
+    ...(ctx.includeSensitiveData ? { "mono.agent.event.summary": redactedSummary } : {}),
     "mono.agent.run_id": ctx.runId,
     ...(ctx.sourceId === undefined ? {} : { "mono.agent.source_id": ctx.sourceId }),
     ...fileChangeExportAttributes(event, ctx),
@@ -299,7 +318,13 @@ export function buildEventSpanAttributes(
     attributes,
     // Metadata-only by default: omit the raw payload entirely. When sensitive
     // export is opted in, STILL redact before attaching (spec section 7).
-    ...(ctx.includeSensitiveData ? { payload: redactJsonValue(event, maxStringBytes) } : {}),
+    ...(ctx.includeSensitiveData
+      ? {
+          payload: redactJsonValue(event, maxStringBytes, {
+            contentPatternRedaction: ctx.contentPatternRedaction === true,
+          }),
+        }
+      : {}),
   };
 }
 
@@ -327,11 +352,15 @@ function asString(value: unknown): string | undefined {
  * Serialize tool args/results to a bounded display string. Structured input
  * uses shared key-based redaction: non-numeric values under sensitive-looking
  * object keys are redacted; numeric values under matched keys are retained;
- * free text is not content-scanned. Raw string input is retained free text:
- * capped for display, but not content-scanned or scrubbed.
+ * free text is not content-scanned by default. Raw string input is retained
+ * free text and capped for display. `contentPatternRedaction` enables the same
+ * closed high-confidence scan for structured and raw string input.
  */
-function toContentString(value: unknown, maxStringBytes: number): string {
-  const raw = typeof value === "string" ? value : JSON.stringify(redactJsonValue(value, maxStringBytes));
+function toContentString(value: unknown, maxStringBytes: number, ctx: RunExportContext): string {
+  const options = { contentPatternRedaction: ctx.contentPatternRedaction === true } as const;
+  const raw = typeof value === "string"
+    ? redactExportString(value, ctx, maxStringBytes)
+    : JSON.stringify(redactJsonValue(value, maxStringBytes, options));
   return compactString(raw ?? "", EXPORT_CONTENT_MAX_CHARS);
 }
 
@@ -373,7 +402,9 @@ function toolFileChangeAttributes(tool: ToolDraft, ctx: RunExportContext): SpanA
     ...(removedLines === undefined ? {} : { "mono.agent.tool.file_change.removed_lines": removedLines }),
     ...(changedLines === undefined ? {} : { "mono.agent.tool.file_change.changed_lines": changedLines }),
     ...(unavailableCount === undefined ? {} : { "mono.agent.tool.file_change.unavailable_count": unavailableCount }),
-    ...(ctx.includeSensitiveData && paths.length > 0 ? { "mono.agent.tool.file_change.paths": paths.join(", ") } : {}),
+    ...(ctx.includeSensitiveData && paths.length > 0
+      ? { "mono.agent.tool.file_change.paths": redactExportString(paths.join(", "), ctx) }
+      : {}),
   };
 }
 
@@ -424,7 +455,11 @@ export function buildEventSpans(
     const isThinking = buffer.kind === "thinking";
     const category: RecordedRunEventCategory = isThinking ? "thinking" : "message";
     const label = isThinking ? "Assistant thoughts" : "Assistant message";
-    const text = compactString(buffer.texts.join(""), EXPORT_CONTENT_MAX_CHARS);
+    const text = redactExportString(
+      compactString(buffer.texts.join(""), EXPORT_CONTENT_MAX_CHARS),
+      ctx,
+      maxStringBytes,
+    );
     const sourceCount = buffer.texts.length;
     drafts.push({
       orderIndex: buffer.orderIndex,
@@ -454,9 +489,9 @@ export function buildEventSpans(
 
   const emitTool = (tool: ToolDraft): void => {
     const label = `Tool: ${tool.name}`;
-    const inputValue = ctx.includeSensitiveData ? toContentString(tool.input, maxStringBytes) : label;
+    const inputValue = ctx.includeSensitiveData ? toContentString(tool.input, maxStringBytes, ctx) : label;
     const outputValue = ctx.includeSensitiveData
-      ? toContentString(tool.output, maxStringBytes)
+      ? toContentString(tool.output, maxStringBytes, ctx)
       : tool.isError === true
         ? "error"
         : "ok";
@@ -545,6 +580,7 @@ export function buildEventSpans(
     // Generic event (provider lifecycle, errors, plain messages): one span.
     flushBuffer();
     const { category, label, summary } = buildEventDescriptors(event, maxStringBytes);
+    const redactedSummary = redactExportString(summary, ctx, maxStringBytes);
     drafts.push({
       orderIndex: index,
       mapping: {
@@ -553,10 +589,16 @@ export function buildEventSpans(
         attributes: {
           ...baseAttrs(ctx, index, type, category, label),
           ...fileChangeExportAttributes(event, ctx),
-          ...openInferenceAttrs(category, label, ctx.includeSensitiveData ? summary : label, MIME_TEXT),
-          ...(ctx.includeSensitiveData ? { "mono.agent.event.summary": summary } : {}),
+          ...openInferenceAttrs(category, label, ctx.includeSensitiveData ? redactedSummary : label, MIME_TEXT),
+          ...(ctx.includeSensitiveData ? { "mono.agent.event.summary": redactedSummary } : {}),
         },
-        ...(ctx.includeSensitiveData ? { payload: redactJsonValue(event, maxStringBytes) } : {}),
+        ...(ctx.includeSensitiveData
+          ? {
+              payload: redactJsonValue(event, maxStringBytes, {
+                contentPatternRedaction: ctx.contentPatternRedaction === true,
+              }),
+            }
+          : {}),
       },
     });
   });

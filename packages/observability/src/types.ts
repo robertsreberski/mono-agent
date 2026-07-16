@@ -183,11 +183,17 @@ export interface RunExportContext {
   readonly artifactDir?: string;
   readonly includeSensitiveData: boolean;
   /**
+   * Defense-in-depth scan for high-confidence credential shapes inside retained
+   * free text. Opt-in and false by default; key-name redaction remains always on.
+   */
+  readonly contentPatternRedaction?: boolean;
+  /**
    * The user's prompt for this run, used as the root span's `input.value` so the
    * trace shows what was asked. Live export threads the request value directly;
    * backfill forwards persisted `summary.userInput` when the artifact carries
    * it (older artifacts may omit it). This retained free text is bounded at the
-   * Phoenix span boundary, but is not content-scanned or scrubbed.
+   * Phoenix span boundary. It is not content-scanned by default;
+   * `contentPatternRedaction` enables the closed high-confidence scan.
    */
   readonly userInput?: string;
   /**
@@ -219,6 +225,11 @@ export interface PhoenixExporterConfig {
   readonly endpoint?: string;
   readonly headers?: Readonly<Record<string, string>>;
   readonly includeSensitiveData?: boolean;
+  /**
+   * Scan retained exported free-text values for a closed set of high-confidence
+   * credential shapes. Defaults to false; key redaction remains enabled.
+   */
+  readonly contentPatternRedaction?: boolean;
   readonly timeoutMs?: number;
   /**
    * Phoenix project the traces land in (resource attr `openinference.project.name`).

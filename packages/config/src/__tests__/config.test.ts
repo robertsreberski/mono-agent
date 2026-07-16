@@ -1906,6 +1906,7 @@ describe("loadMonoAgentConfig", () => {
             endpoint: "http://127.0.0.1:6006/v1/traces",
             headers: { authorization: "Bearer secret-token" },
             includeSensitiveData: true,
+            contentPatternRedaction: true,
             timeoutMs: 7000,
           },
         ]),
@@ -1918,12 +1919,13 @@ describe("loadMonoAgentConfig", () => {
         endpoint: "http://127.0.0.1:6006/v1/traces",
         headers: { authorization: "Bearer secret-token" },
         includeSensitiveData: true,
+        contentPatternRedaction: true,
         timeoutMs: 7000,
       },
     ]);
   });
 
-  it("defaults the phoenix endpoint, timeout, and includeSensitiveData when omitted", () => {
+  it("defaults the phoenix endpoint, timeout, and redaction opt-ins when omitted", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
       env: {
@@ -1936,8 +1938,23 @@ describe("loadMonoAgentConfig", () => {
       type: "phoenix",
       endpoint: "http://127.0.0.1:6006/v1/traces",
       includeSensitiveData: false,
+      contentPatternRedaction: false,
       timeoutMs: 5000,
     });
+  });
+
+  it("rejects a non-boolean contentPatternRedaction value", () => {
+    expect(() =>
+      loadMonoAgentConfig({
+        cwd: "/repo",
+        env: {
+          ...baseEnv,
+          MONO_AGENT_OBSERVABILITY_EXPORTERS: JSON.stringify([
+            { type: "phoenix", contentPatternRedaction: "yes" },
+          ]),
+        },
+      }),
+    ).toThrow(/contentPatternRedaction/iu);
   });
 
   it("rejects an unknown observability exporter type", () => {

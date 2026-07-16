@@ -43,17 +43,31 @@ describe("resolveAppObservabilityExporters", () => {
     expect(exporters[0]?.type).toBe("phoenix");
     expect(exporters[0]?.endpoint).toBe("http://127.0.0.1:6006/v1/traces");
     expect(exporters[0]?.includeSensitiveData).toBe(false);
+    expect(exporters[0]?.contentPatternRedaction).toBe(false);
   });
 
-  it("honors an explicit endpoint and includeSensitiveData from config", async () => {
+  it("honors an explicit endpoint and content redaction opt-ins from config", async () => {
     const configPath = await writeConfig({
       observability: {
-        exporters: [{ type: "phoenix", endpoint: "http://collector:4318/v1/traces", includeSensitiveData: true }],
+        exporters: [{
+          type: "phoenix",
+          endpoint: "http://collector:4318/v1/traces",
+          includeSensitiveData: true,
+          contentPatternRedaction: true,
+        }],
       },
     });
     const exporters = await resolveAppObservabilityExporters(inputFor(configPath));
     expect(exporters[0]?.endpoint).toBe("http://collector:4318/v1/traces");
     expect(exporters[0]?.includeSensitiveData).toBe(true);
+    expect(exporters[0]?.contentPatternRedaction).toBe(true);
+  });
+
+  it("rejects a non-boolean contentPatternRedaction value", async () => {
+    const configPath = await writeConfig({
+      observability: { exporters: [{ type: "phoenix", contentPatternRedaction: "yes" }] },
+    });
+    await expect(resolveAppObservabilityExporters(inputFor(configPath))).rejects.toThrow(/contentPatternRedaction/iu);
   });
 
   it("lets MONO_AGENT_OBSERVABILITY_EXPORTERS override the config file", async () => {

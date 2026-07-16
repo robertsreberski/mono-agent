@@ -315,6 +315,7 @@ export async function backfillRuns(
   const sourceLabel = await resolveAppTraceSourceLabel(input);
   const projectName = resolveProjectName(exporter, sourceLabel, sourceId);
   const includeSensitiveData = exporter.includeSensitiveData ?? false;
+  const contentPatternRedaction = exporter.contentPatternRedaction ?? false;
 
   const scope: RunArtifactScope = options.run !== undefined ? "all" : options.includeMemory === true ? "all" : "agent";
   const runIds = options.run !== undefined ? [options.run] : await listRunIds(artifactDir, scope);
@@ -340,6 +341,7 @@ export async function backfillRuns(
         configPath: input.configPath,
         artifactDir,
         includeSensitiveData,
+        contentPatternRedaction,
         runKind: memInfo.runKind,
         ...(memInfo.operation === undefined ? {} : { memoryOperation: memInfo.operation }),
         // Recorded since this feature shipped; absent for older runs (input then

@@ -128,7 +128,12 @@ describe("backfill mapping integration", () => {
     const spans = buildRunReadableSpans({
       summary: parsed,
       events,
-      context: { runId: parsed.runId, conversationId: parsed.conversationId, includeSensitiveData: false },
+      context: {
+        runId: parsed.runId,
+        conversationId: parsed.conversationId,
+        includeSensitiveData: false,
+        contentPatternRedaction: false,
+      },
       projectName: "local-agent-alpha",
       startTimeUnixNanos: start,
       endTimeUnixNanos: end,
@@ -183,6 +188,58 @@ describe("backfill mapping integration", () => {
     expect(new TextDecoder().decode(postedBody)).toContain(persisted);
   });
 
+  it("redacts recorder-truncated userInput idempotently across repeated backfill", async () => {
+    const cwd = join(dir, "consumer-redacted");
+    const artifactDir = join(cwd, "artifacts");
+    const configPath = join(cwd, "mono-agent.config.json");
+    const fixture = ["xox", "b-", "A".repeat(24)].join("");
+    await mkdir(cwd, { recursive: true });
+    await writeFile(join(cwd, "IDENTITY.md"), "# Identity\n", "utf8");
+    await writeFile(configPath, JSON.stringify({
+      runtime: { model: "claude:claude-sonnet-4-6" },
+      context: { identityPath: "./IDENTITY.md" },
+      artifacts: { dir: "./artifacts" },
+      observability: {
+        exporters: [{
+          type: "phoenix",
+          endpoint: "http://127.0.0.1:6006/v1/traces",
+          includeSensitiveData: true,
+          contentPatternRedaction: true,
+        }],
+      },
+    }), "utf8");
+
+    const recorder = createJsonlRunRecorder({
+      runId: "run-long-redacted",
+      conversationId: "conv-long",
+      artifactDir,
+      userInput: `prefix ${fixture} ${"x".repeat(100_000)}`,
+    });
+    await recorder.finish({});
+    const persisted = (await readRunArtifacts(artifactDir, "run-long-redacted")).summary.userInput;
+    if (typeof persisted !== "string") throw new Error("recorder did not persist userInput");
+    expect(persisted).toContain(fixture);
+    expect(persisted.match(/…\[truncated/gu)).toHaveLength(1);
+
+    const postedBodies: Uint8Array[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.body instanceof Uint8Array) postedBodies.push(new Uint8Array(init.body));
+      return new Response(null, { status: 200 });
+    }));
+
+    const input = { env: {}, cwd, configPath };
+    await backfillRuns(input, { run: "run-long-redacted" });
+    await backfillRuns(input, { run: "run-long-redacted" });
+
+    expect(postedBodies).toHaveLength(2);
+    expect(postedBodies[1]).toEqual(postedBodies[0]);
+    const decoded = new TextDecoder().decode(postedBodies[0]);
+    const expected = persisted.replace(fixture, "[redacted]");
+    expect(decoded).toContain(expected);
+    expect(decoded).not.toContain(fixture);
+    expect(expected.match(/…\[truncated/gu)).toHaveLength(1);
+  });
+
   it("exports agent runs by default for --all and includes memory runs with includeMemory", async () => {
     const cwd = join(dir, "consumer");
     await mkdir(cwd, { recursive: true });
@@ -216,5 +273,50 @@ describe("backfill mapping integration", () => {
     expect(all.outcomes.map((outcome) => outcome.runId).sort()).toEqual(["mem-legacy", "mem-new", "run-agent"]);
     expect(explicitMemory.outcomes).toHaveLength(1);
     expect(explicitMemory.outcomes[0]).toMatchObject({ runId: "mem-new", status: "ok" });
+  });
+
+  it("threads content-pattern redaction into dry-run backfill mapping", async () => {
+    const cwd = join(dir, "consumer");
+    await mkdir(cwd, { recursive: true });
+    const artifactDir = join(cwd, "artifacts");
+    const configPath = join(cwd, "mono-agent.config.json");
+    const fixture = ["xapp", "-1-", "A".repeat(64)].join("");
+    await writeFile(join(cwd, "IDENTITY.md"), "# Identity\n", "utf8");
+    await writeRunIn(
+      artifactDir,
+      "run-agent",
+      { ...summary, runId: "run-agent", conversationId: "chat" },
+      [JSON.stringify({ type: "assistant_message", role: "assistant", text: `returned ${fixture}` })],
+    );
+
+    const writeConfig = async (contentPatternRedaction: boolean): Promise<void> => {
+      await writeFile(configPath, JSON.stringify({
+        runtime: { model: "claude:claude-sonnet-4-6" },
+        context: { identityPath: "./IDENTITY.md" },
+        artifacts: { dir: "./artifacts" },
+        observability: {
+          exporters: [{
+            type: "phoenix",
+            endpoint: "http://127.0.0.1:9/v1/traces",
+            includeSensitiveData: true,
+            contentPatternRedaction,
+          }],
+        },
+      }), "utf8");
+    };
+
+    await writeConfig(false);
+    const unscanned = await backfillRuns({ env: {}, cwd, configPath }, { run: "run-agent", dryRun: true });
+    await writeConfig(true);
+    const scanned = await backfillRuns({ env: {}, cwd, configPath }, { run: "run-agent", dryRun: true });
+
+    const unscannedOutcome = unscanned.outcomes[0];
+    const scannedOutcome = scanned.outcomes[0];
+    expect(unscannedOutcome).toMatchObject({ status: "ok", dryRun: true });
+    expect(scannedOutcome).toMatchObject({ status: "ok", dryRun: true });
+    if (unscannedOutcome?.status !== "ok" || scannedOutcome?.status !== "ok") {
+      throw new Error("expected successful dry-run backfill outcomes");
+    }
+    expect(scannedOutcome.bytes).toBeLessThan(unscannedOutcome.bytes);
   });
 });
