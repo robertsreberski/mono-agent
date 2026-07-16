@@ -1,8 +1,15 @@
+import dns from "node:dns";
+import { createServer } from "node:http";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 
-import { startWebhookAdapter } from "../index.js";
+import {
+  startWebhookAdapter,
+  WebhookAdapterError,
+  type WebhookAdapterStartResult,
+} from "../index.js";
 
 describe("Webhook adapter", () => {
   it("runs sync HTTP invocations through a structural responder", async () => {
@@ -43,6 +50,199 @@ describe("Webhook adapter", () => {
           requestId: expect.any(String),
         }),
       ]);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("requires the configured bearer token, protects status lookups, and strips secrets from request metadata", async () => {
+    const apiKey = "fixture-webhook-key";
+    const seenHeaders: unknown[] = [];
+    const responderCalls: string[] = [];
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const responder: AgentResponder = {
+      async respond(request, stream) {
+        responderCalls.push(request.text);
+        seenHeaders.push(request.metadata?.webhook);
+        await stream.append(`echo: ${request.text}`);
+        return {};
+      },
+    };
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      apiKey,
+      responder,
+      logger,
+    });
+
+    try {
+      const rejectedAuthorizationHeaders: readonly (string | undefined)[] = [
+        undefined,
+        "Bearer fixture-webhook-kex", // same length: exercises constant-time comparison
+        "Bearer short", // different length: still fails without leaking which part differed
+        `Basic ${apiKey}`,
+        "Bearer   ",
+        `Bearer ${apiKey} extra`,
+      ];
+      for (const authorization of rejectedAuthorizationHeaders) {
+        const response = await fetch(server.invokeUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(authorization === undefined ? {} : { authorization }),
+          },
+          body: JSON.stringify({ text: "must not run", mode: "sync" }),
+        });
+        expect(response.status).toBe(401);
+        await expect(response.json()).resolves.toEqual({
+          status: "unauthorized",
+          error: "Invalid API key.",
+        });
+      }
+      expect(responderCalls).toEqual([]);
+
+      const accepted = await fetch(server.invokeUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+          cookie: "session=fixture-cookie-secret",
+          "set-cookie": "session=fixture-response-cookie-secret",
+          "proxy-authorization": "Bearer fixture-proxy-secret",
+          "x-api-key": "fixture-secondary-secret",
+          "x-request-id": "safe-request-id",
+        },
+        body: JSON.stringify({ text: "authorized", mode: "async" }),
+      });
+      expect(accepted.status).toBe(202);
+      const acceptedBody = await accepted.json() as { requestId: string; statusUrl: string };
+      expect(responderCalls).toEqual(["authorized"]);
+      expect(seenHeaders).toEqual([
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-request-id": "safe-request-id" }),
+        }),
+      ]);
+      expect(seenHeaders[0]).not.toHaveProperty("headers.authorization");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.cookie");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.set-cookie");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.proxy-authorization");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.x-api-key");
+
+      const missingStatusAuth = await fetch(`${server.url}${acceptedBody.statusUrl}`);
+      expect(missingStatusAuth.status).toBe(401);
+      const wrongStatusAuth = await fetch(`${server.url}${acceptedBody.statusUrl}`, {
+        headers: { authorization: "Bearer wrong" },
+      });
+      expect(wrongStatusAuth.status).toBe(401);
+      const authorizedStatus = await fetch(`${server.url}${acceptedBody.statusUrl}`, {
+        headers: { authorization: `Bearer ${apiKey}` },
+      });
+      expect(authorizedStatus.status).toBe(200);
+
+      const logged = JSON.stringify(Object.values(logger).map((mock) => mock.mock.calls));
+      expect(logged).not.toContain(apiKey);
+      expect(logged).not.toContain("fixture-cookie-secret");
+      expect(logged).not.toContain("fixture-response-cookie-secret");
+      expect(logged).not.toContain("fixture-proxy-secret");
+      expect(logged).not.toContain("fixture-secondary-secret");
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("authenticates protected invocations before parsing malformed or oversized JSON", async () => {
+    const responder = {
+      respond: vi.fn(async () => ({ text: "must not run" })),
+    } satisfies AgentResponder;
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      apiKey: "fixture-webhook-key",
+      responder,
+      logger,
+    });
+    const malformedBody = '{"text":';
+    const oversizedBody = JSON.stringify({ text: "x".repeat(1_048_576) });
+
+    try {
+      for (const body of [malformedBody, oversizedBody]) {
+        for (const authorization of [undefined, "Bearer wrong-key"]) {
+          const response = await fetch(server.invokeUrl, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              ...(authorization === undefined ? {} : { authorization }),
+            },
+            body,
+          });
+          expect(response.status).toBe(401);
+          await expect(response.json()).resolves.toEqual({
+            status: "unauthorized",
+            error: "Invalid API key.",
+          });
+        }
+      }
+
+      for (const body of [malformedBody, oversizedBody]) {
+        const authorized = await fetch(server.invokeUrl, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer fixture-webhook-key",
+          },
+          body,
+        });
+        expect(authorized.status).toBe(400);
+        await expect(authorized.json()).resolves.toMatchObject({ status: "failed" });
+      }
+
+      expect(responder.respond).not.toHaveBeenCalled();
+      expect(Object.values(logger).flatMap((mock) => mock.mock.calls)).toEqual([]);
+    } finally {
+      await server.stop();
+    }
+
+    const keyless = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      responder: echoResponder(),
+    });
+    try {
+      const response = await fetch(keyless.invokeUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: malformedBody,
+      });
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({ status: "failed" });
+    } finally {
+      await keyless.stop();
+    }
+  });
+
+  it("preserves unauthenticated loopback compatibility when no API key is configured", async () => {
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      responder: echoResponder(),
+    });
+
+    try {
+      const response = await fetch(server.invokeUrl, postJson({ text: "compatible", mode: "sync" }));
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({ status: "succeeded", text: "echo: compatible" });
     } finally {
       await server.stop();
     }
@@ -1019,6 +1219,192 @@ describe("Webhook adapter", () => {
     ).rejects.toMatchObject({ code: "unsafe_host" });
   });
 
+  it("rejects an explicitly allowed non-loopback bind without bearer auth", async () => {
+    await expect(
+      startWebhookAdapter({
+        host: "0.0.0.0",
+        port: 0,
+        allowNonLoopback: true,
+        path: "/webhook/invoke",
+        responder: echoResponder(),
+      }),
+    ).rejects.toMatchObject({ code: "missing_required_config" });
+  });
+
+  it("closes a non-loopback actual bind when localhost resolution has no exposure consent", async () => {
+    const originalLookup = dns.lookup;
+    let unexpectedServer: WebhookAdapterStartResult | undefined;
+    let rejection: unknown;
+    dns.lookup = wildcardLocalhostLookup as typeof dns.lookup;
+    try {
+      try {
+        unexpectedServer = await startWebhookAdapter({
+          host: "localhost",
+          port: 0,
+          apiKey: "fixture-key-without-exposure-consent",
+          responder: echoResponder(),
+        });
+      } catch (error) {
+        rejection = error;
+      }
+    } finally {
+      await unexpectedServer?.stop();
+      dns.lookup = originalLookup;
+    }
+    expect(rejection).toMatchObject({
+      code: "unsafe_host",
+      details: {
+        host: "localhost",
+        boundAddress: expect.stringMatching(/^(?:0\.0\.0\.0|::)$/u),
+        boundPort: expect.any(Number),
+      },
+    });
+    if (!(rejection instanceof WebhookAdapterError)
+      || typeof rejection.details.boundPort !== "number") {
+      throw new Error("Expected rejected webhook bind details to include the kernel-selected port.");
+    }
+    await expectPortReusable(rejection.details.boundPort);
+  });
+
+  it("closes a consented non-loopback actual bind when no API key is configured", async () => {
+    const originalLookup = dns.lookup;
+    let unexpectedServer: WebhookAdapterStartResult | undefined;
+    let rejection: unknown;
+    dns.lookup = wildcardLocalhostLookup as typeof dns.lookup;
+    try {
+      try {
+        unexpectedServer = await startWebhookAdapter({
+          host: "localhost",
+          port: 0,
+          allowNonLoopback: true,
+          responder: echoResponder(),
+        });
+      } catch (error) {
+        rejection = error;
+      }
+    } finally {
+      await unexpectedServer?.stop();
+      dns.lookup = originalLookup;
+    }
+    expect(rejection).toMatchObject({
+      code: "missing_required_config",
+      details: {
+        host: "localhost",
+        boundAddress: expect.stringMatching(/^(?:0\.0\.0\.0|::)$/u),
+        boundPort: expect.any(Number),
+      },
+    });
+    if (!(rejection instanceof WebhookAdapterError)
+      || typeof rejection.details.boundPort !== "number") {
+      throw new Error("Expected rejected webhook bind details to include the kernel-selected port.");
+    }
+    await expectPortReusable(rejection.details.boundPort);
+  });
+
+  it("accepts a keyed non-loopback actual bind without weakening auth or header redaction", async () => {
+    const apiKey = "fixture-resolved-bind-key";
+    const seenHeaders: unknown[] = [];
+    const responder: AgentResponder = {
+      async respond(request, stream) {
+        seenHeaders.push(request.metadata?.webhook);
+        await stream.append("resolved bind ok");
+        return {};
+      },
+    };
+    const originalLookup = dns.lookup;
+    let server: WebhookAdapterStartResult | undefined;
+    dns.lookup = wildcardLocalhostLookup as typeof dns.lookup;
+    try {
+      server = await startWebhookAdapter({
+        host: "localhost",
+        port: 0,
+        allowNonLoopback: true,
+        apiKey,
+        responder,
+      });
+      const invokeUrl = `http://127.0.0.1:${server.port}/webhook/invoke`;
+      const unauthorizedResponses = [
+        await fetch(invokeUrl, postJson({ text: "missing auth" })),
+        await fetch(invokeUrl, {
+          ...postJson({ text: "wrong auth" }),
+          headers: { "content-type": "application/json", authorization: "Bearer wrong" },
+        }),
+      ];
+      for (const response of unauthorizedResponses) {
+        expect(response.status).toBe(401);
+        await expect(response.json()).resolves.toEqual({
+          status: "unauthorized",
+          error: "Invalid API key.",
+        });
+      }
+
+      const accepted = await fetch(invokeUrl, {
+        ...postJson({ text: "authorized" }),
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+          cookie: "session=fixture-cookie-secret",
+          "set-cookie": "session=fixture-response-cookie-secret",
+          "proxy-authorization": "Bearer fixture-proxy-secret",
+          "x-api-key": "fixture-secondary-secret",
+          "x-request-id": "safe-resolved-bind-request",
+        },
+      });
+      expect(accepted.status).toBe(200);
+      expect(seenHeaders).toEqual([
+        expect.objectContaining({
+          headers: expect.objectContaining({ "x-request-id": "safe-resolved-bind-request" }),
+        }),
+      ]);
+      expect(seenHeaders[0]).not.toHaveProperty("headers.authorization");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.cookie");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.set-cookie");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.proxy-authorization");
+      expect(seenHeaders[0]).not.toHaveProperty("headers.x-api-key");
+    } finally {
+      await server?.stop();
+      dns.lookup = originalLookup;
+    }
+  });
+
+  it("enforces bearer auth on an explicitly allowed non-loopback bind", async () => {
+    const server = await startWebhookAdapter({
+      host: "0.0.0.0",
+      port: 0,
+      allowNonLoopback: true,
+      apiKey: "fixture-non-loopback-key",
+      path: "/webhook/invoke",
+      responder: echoResponder(),
+    });
+    const invokeUrl = `http://127.0.0.1:${server.port}/webhook/invoke`;
+
+    try {
+      const missing = await fetch(invokeUrl, postJson({ text: "missing", mode: "sync" }));
+      expect(missing.status).toBe(401);
+
+      const incorrect = await fetch(invokeUrl, {
+        ...postJson({ text: "incorrect", mode: "sync" }),
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer wrong-key",
+        },
+      });
+      expect(incorrect.status).toBe(401);
+
+      const correct = await fetch(invokeUrl, {
+        ...postJson({ text: "authorized", mode: "sync" }),
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer fixture-non-loopback-key",
+        },
+      });
+      expect(correct.status).toBe(200);
+      await expect(correct.json()).resolves.toMatchObject({ status: "succeeded", text: "echo: authorized" });
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("aborts a hung async run at maxRunMs and reclaims the conversation slot", async () => {
     let resolveResult: ((status: { status: string; error?: string }) => void) | undefined;
     const resultPromise = new Promise<{ status: string; error?: string }>((resolve) => {
@@ -1274,5 +1660,41 @@ async function invokeSync(url: string, text: string, conversationId: string): Pr
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ text, conversationId, mode: "sync" }),
+  });
+}
+
+async function expectPortReusable(port: number): Promise<void> {
+  const probe = createServer();
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.once("error", rejectPromise);
+    probe.listen(port, "127.0.0.1", () => resolvePromise());
+  });
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    probe.close((error) => error === undefined ? resolvePromise() : rejectPromise(error));
+  });
+}
+
+function wildcardLocalhostLookup(
+  _hostname: string,
+  options: unknown,
+  callback?: unknown,
+): void {
+  const done = typeof options === "function" ? options : callback;
+  if (typeof done !== "function") {
+    throw new TypeError("dns.lookup callback is required");
+  }
+  const all = typeof options === "object"
+    && options !== null
+    && "all" in options
+    && options.all === true;
+  queueMicrotask(() => {
+    if (all) {
+      (done as (
+        error: null,
+        addresses: Array<{ address: string; family: number }>,
+      ) => void)(null, [{ address: "0.0.0.0", family: 4 }]);
+      return;
+    }
+    (done as (error: null, address: string, family: number) => void)(null, "0.0.0.0", 4);
   });
 }

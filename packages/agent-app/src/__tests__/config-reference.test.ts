@@ -118,6 +118,7 @@ interface SchemaNode {
   readonly default?: unknown;
   readonly minimum?: number;
   readonly maximum?: number;
+  readonly examples?: readonly unknown[];
   readonly minLength?: number;
   readonly maxLength?: number;
   readonly minProperties?: number;
@@ -332,6 +333,19 @@ describe("config reference", () => {
         { actionId: "triage", label: "Triage", prompt: "Triage today's requests.", channelId: "C0123" },
       ],
     });
+  });
+
+  it("does not advertise unsupported env-reference syntax for the webhook API key", () => {
+    const webhookApiKey = allConfigReferenceFields().find(
+      (field) => field.jsonPath === "webhook.apiKey",
+    );
+    expect(webhookApiKey?.example).toBe("set-via-MONO_AGENT_WEBHOOK_API_KEY");
+    expect(String(webhookApiKey?.example)).not.toMatch(/^env:/u);
+
+    const schema = buildMonoAgentConfigSchema() as SchemaNode;
+    expect(schemaNode(schema, "webhook", "apiKey").examples).toEqual([
+      "set-via-MONO_AGENT_WEBHOOK_API_KEY",
+    ]);
   });
 
   it("keeps JSON-only Slack interaction config discoverable across canonical and consumer docs", () => {

@@ -240,11 +240,13 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   },
 
   "webhook": {
+    // For bearer auth, put MONO_AGENT_WEBHOOK_API_KEY=<strong-random-secret> in
+    // the owner-only .env file; JSON strings are literal and do not interpolate env: values.
     "enabled": true,
     "host": "127.0.0.1",                   // loopback-only unless allowNonLoopback
     "port": 0,                             // 0 picks a free port
     "path": "/webhook/invoke",
-    "allowNonLoopback": false,
+    "allowNonLoopback": false,             // a non-loopback bind also requires the .env key
     "defaultMode": "sync",                 // sync | async (202 + status URL polling)
     "retentionMs": 300000,                 // async status retention
     "maxStoredRequests": 100

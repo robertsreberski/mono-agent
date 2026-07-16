@@ -210,7 +210,7 @@ Replace `<PORT>` with the port from the `start` output. A response means the run
 :::note
 Time-to-first-validated-folder is usually under a minute when Node is installed and the CLI package or source build is already available: `mkdir`, `init`, and `validate` are local filesystem/config checks. Time-to-first-reply is not a fixed promise; it depends on provider auth, network latency, model availability, and whether dependencies need to be installed or built first.
 :::
-The webhook channel binds to loopback only. To accept non-loopback requests you must set `webhook.allowNonLoopback: true` (and ideally a non-zero `port`). For async invocation, status polling, multiple named endpoints, and per-endpoint prompts, see [Webhook](/channels/webhook/).
+The webhook channel binds to loopback by default. To accept non-loopback requests you must set both `webhook.allowNonLoopback: true` and `MONO_AGENT_WEBHOOK_API_KEY` (plus, ideally, a non-zero `port`); callers send the key as a bearer on invocation and status requests. A key is optional on loopback and leaving it unset preserves the zero-credential smoke flow above. For async invocation, status polling, multiple named endpoints, and per-endpoint prompts, see [Webhook](/channels/webhook/).
 
 ## Where to next
 

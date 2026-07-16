@@ -95,6 +95,7 @@ export function createWebhookChannelDriver(
         host: input.config.host,
         port: input.config.port,
         allowNonLoopback: input.config.allowNonLoopback,
+        ...(input.config.apiKey === undefined ? {} : { apiKey: input.config.apiKey }),
         defaultMode: input.config.defaultMode,
         retentionMs: input.config.retentionMs,
         maxStoredRequests: input.config.maxStoredRequests,

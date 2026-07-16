@@ -102,6 +102,15 @@ async function startCapturingWebhook(input: unknown): Promise<WebhookAdapterOpti
 }
 
 describe("webhook channel driver — native notification delivery", () => {
+  it("passes the optional API key through to the webhook adapter", async () => {
+    const captured = await startCapturingWebhook({
+      ...baseInput,
+      config: { ...baseInput.config, apiKey: "fixture-webhook-key" },
+    });
+
+    expect(captured.apiKey).toBe("fixture-webhook-key");
+  });
+
   it("passes native notify settings through to the webhook adapter", async () => {
     const captured = await startCapturingWebhook({
       ...baseInput,

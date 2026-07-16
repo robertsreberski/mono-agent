@@ -503,6 +503,8 @@ export {
   generateBearerToken,
   readAuthorizationBearer,
 } from "./bearer.js";
+export { sanitizeInboundHttpHeaders } from "./http-headers.js";
+export type { InboundHttpHeaders } from "./http-headers.js";
 export {
   SettingsJsonError,
   readSettingsJson,

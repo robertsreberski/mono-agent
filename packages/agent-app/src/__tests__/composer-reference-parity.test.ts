@@ -196,6 +196,25 @@ describe("mono-agent-composer reference parity", () => {
     expect(pluginConfigRow?.[2]).toBe("`--`");
   });
 
+  it("keeps copyable webhook blueprints free of pseudo-interpolated credentials", () => {
+    const surfaces = [
+      [between(canonicalBlueprint, '"webhook": {', '"openaiApi": {'), "canonical blueprint"],
+      [between(blueprint, '"webhook": {', '"openaiApi": {'), "composer blueprint"],
+    ] as const;
+
+    for (const [webhookBlock, label] of surfaces) {
+      expect(webhookBlock, `${label} must omit a copyable literal API key`).not.toContain('"apiKey"');
+      expect(webhookBlock, `${label} must not imply env: interpolation`).not.toContain(
+        "env:MONO_AGENT_WEBHOOK_API_KEY",
+      );
+      expect(webhookBlock, `${label} must point to the real owner-only env path`).toContain(
+        "MONO_AGENT_WEBHOOK_API_KEY=<strong-random-secret>",
+      );
+      expect(webhookBlock).toContain("owner-only .env");
+      expect(webhookBlock).toContain("JSON strings are literal");
+    }
+  });
+
   it("fails the reviewer synthetic config-row mutation when the composer is unchanged", () => {
     const syntheticRow = readRepoFile(
       "packages/agent-app/src/__tests__/fixtures/composer-reference-synthetic-config-row.md",

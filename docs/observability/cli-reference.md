@@ -234,7 +234,7 @@ An empty or missing artifact directory prints `No runs recorded yet.`, reports `
 
 ### Secret placement
 
-`validate` includes a **Secret placement** section that warns when a secret-marked config field is resolved from the committed `mono-agent.config.json` rather than from `.env`. It covers the core secrets (`memory.embeddings.apiKey`, `memory.supermemory.apiKey`) and every channel credential — `telegram.botToken`, `slack.botToken` / `slack.appToken`, `openaiApi.apiKey`, and the A2A bearer tokens. The section reports `waiting` — it is advisory and never `error`, so it never blocks `start`. Each detail line is prefixed `[WARN]` and names the matching `MONO_AGENT_*` env var to move the secret to, e.g.:
+`validate` includes a **Secret placement** section that warns when a secret-marked config field is resolved from the committed `mono-agent.config.json` rather than from `.env`. It covers the core secrets (`memory.embeddings.apiKey`, `memory.supermemory.apiKey`) and every channel credential — `telegram.botToken`, `slack.botToken` / `slack.appToken`, `webhook.apiKey`, `openaiApi.apiKey`, and the A2A bearer tokens. The section reports `waiting` — it is advisory and never `error`, so it never blocks `start`. Each detail line is prefixed `[WARN]` and names the matching `MONO_AGENT_*` env var to move the secret to, e.g.:
 
 ```text
 [WARN] telegram.botToken is a secret read from mono-agent.config.json — move it to .env (MONO_AGENT_TELEGRAM_BOT_TOKEN).

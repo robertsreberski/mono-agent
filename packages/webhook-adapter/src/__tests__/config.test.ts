@@ -30,6 +30,7 @@ describe("loadWebhookAdapterConfig", () => {
           host: "127.0.0.1",
           port: 4111,
           path: "/json",
+          apiKey: "json-fixture-key",
           defaultMode: "async",
           retentionMs: 1000,
           maxStoredRequests: 10,
@@ -41,6 +42,7 @@ describe("loadWebhookAdapterConfig", () => {
     const config = await loadWebhookAdapterConfig({
       env: {
         MONO_AGENT_WEBHOOK_PORT: "4222",
+        MONO_AGENT_WEBHOOK_API_KEY: "env-fixture-key",
         MONO_AGENT_WEBHOOK_DEFAULT_MODE: "sync",
       },
       jsonPath: path,
@@ -52,11 +54,32 @@ describe("loadWebhookAdapterConfig", () => {
       port: 4222,
       path: "/json",
       allowNonLoopback: false,
+      apiKey: "env-fixture-key",
       defaultMode: "sync",
       retentionMs: 1000,
       maxStoredRequests: 10,
       endpoints: [{ name: "default", path: "/json", mode: "sync", enabled: true }],
     });
+  });
+
+  it("treats JSON apiKey strings literally and only uses the documented env override", async () => {
+    const pseudoReference = "env:MONO_AGENT_WEBHOOK_API_KEY";
+    const json = {
+      webhook: {
+        enabled: true,
+        host: "127.0.0.1",
+        apiKey: pseudoReference,
+      },
+    };
+
+    const jsonOnly = await loadWebhookAdapterConfig({ env: {}, json });
+    expect(jsonOnly.apiKey).toBe(pseudoReference);
+
+    const withEnvOverride = await loadWebhookAdapterConfig({
+      env: { MONO_AGENT_WEBHOOK_API_KEY: "actual-env-key" },
+      json,
+    });
+    expect(withEnvOverride.apiKey).toBe("actual-env-key");
   });
 
   it("defaults to a single /webhook/invoke endpoint when nothing is configured", async () => {
@@ -207,24 +230,89 @@ describe("loadWebhookAdapterConfig", () => {
       }),
     ).rejects.toMatchObject({ code: "invalid_config" });
   });
+
+  it("accepts an enabled non-loopback bind only with explicit consent and an API key", async () => {
+    const config = await loadWebhookAdapterConfig({
+      env: {
+        MONO_AGENT_WEBHOOK_ENABLED: "true",
+        MONO_AGENT_WEBHOOK_HOST: "0.0.0.0",
+        MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK: "true",
+        MONO_AGENT_WEBHOOK_API_KEY: "fixture-key",
+      },
+    });
+
+    expect(config).toMatchObject({
+      enabled: true,
+      host: "0.0.0.0",
+      allowNonLoopback: true,
+      apiKey: "fixture-key",
+    });
+  });
+
+  it("fails closed when an enabled non-loopback bind has no API key", async () => {
+    await expect(loadWebhookAdapterConfig({
+      env: {
+        MONO_AGENT_WEBHOOK_ENABLED: "true",
+        MONO_AGENT_WEBHOOK_HOST: "0.0.0.0",
+        MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK: "true",
+      },
+    })).rejects.toMatchObject({ code: "invalid_config" });
+  });
+
+  it("fails closed when an enabled non-loopback bind has no explicit consent", async () => {
+    await expect(loadWebhookAdapterConfig({
+      env: {
+        MONO_AGENT_WEBHOOK_ENABLED: "true",
+        MONO_AGENT_WEBHOOK_HOST: "0.0.0.0",
+        MONO_AGENT_WEBHOOK_API_KEY: "fixture-key",
+      },
+    })).rejects.toMatchObject({ code: "invalid_config" });
+  });
 });
 
 describe("redactWebhookAdapterConfig", () => {
-  it("returns public webhook settings without secrets", () => {
+  it("returns public webhook settings with the optional API key redacted", () => {
     const config = {
       enabled: true,
       host: "127.0.0.1",
       port: 0,
       path: "/webhook/invoke",
       allowNonLoopback: false,
+      apiKey: "fixture-redacted-value",
       defaultMode: "async" as const,
       retentionMs: 60_000,
       maxStoredRequests: 100,
       endpoints: [{ name: "default", path: "/webhook/invoke", mode: "async" as const, enabled: true }],
     };
     const redacted = redactWebhookAdapterConfig(config);
-    expect(redacted).toEqual(config);
+    expect(redacted).toEqual({
+      enabled: true,
+      host: "127.0.0.1",
+      port: 0,
+      path: "/webhook/invoke",
+      allowNonLoopback: false,
+      apiKey: { present: true, redacted: true },
+      defaultMode: "async",
+      retentionMs: 60_000,
+      maxStoredRequests: 100,
+      endpoints: [{ name: "default", path: "/webhook/invoke", mode: "async", enabled: true }],
+    });
+    expect(JSON.stringify(redacted)).not.toContain("fixture-redacted-value");
     // Endpoints are deep-cloned so callers cannot mutate the source array.
     expect(redacted.endpoints).not.toBe(config.endpoints);
+  });
+
+  it("reports an unset API key without inventing a secret", () => {
+    expect(redactWebhookAdapterConfig({
+      enabled: false,
+      host: "127.0.0.1",
+      port: 0,
+      path: "/webhook/invoke",
+      allowNonLoopback: false,
+      defaultMode: "sync",
+      retentionMs: 60_000,
+      maxStoredRequests: 100,
+      endpoints: [{ name: "default", path: "/webhook/invoke", mode: "sync", enabled: true }],
+    }).apiKey).toEqual({ present: false, redacted: true });
   });
 });

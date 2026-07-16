@@ -71,6 +71,23 @@ describe("channel config view", () => {
     expect(JSON.stringify(section)).not.toContain("secret-token");
   });
 
+  it("redacts the webhook API key in the channel config view", async () => {
+    const configPath = await writeConfig({
+      webhook: { enabled: true, apiKey: "fixture-webhook-secret" },
+    });
+    const section = await defaultChannelDrivers()
+      .find((driver) => driver.id === "webhook")!
+      .configView!({ env: {}, cwd: dir, configPath });
+
+    expect(section.fields.find((field) => field.id === "webhook.apiKey")).toMatchObject({
+      value: "set",
+      source: "json",
+      redacted: true,
+      envKey: "MONO_AGENT_WEBHOOK_API_KEY",
+    });
+    expect(JSON.stringify(section)).not.toContain("fixture-webhook-secret");
+  });
+
   it("reports a disabled channel section as disabled", async () => {
     const configPath = await writeConfig({ telegram: { enabled: false } });
     const driver = createTelegramChannelDriver();
@@ -155,6 +172,7 @@ describe("adapter field registries", () => {
         "slack.appToken",
         "slack.botToken",
         "telegram.botToken",
+        "webhook.apiKey",
       ].sort(),
     );
   });

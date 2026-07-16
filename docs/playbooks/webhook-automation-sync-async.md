@@ -59,10 +59,10 @@ The first three are **config** coverage (the `webhook` section plus `MONO_AGENT_
 }
 ```
 
-The matching env overrides are `MONO_AGENT_WEBHOOK_HOST`, `MONO_AGENT_WEBHOOK_PORT`, `MONO_AGENT_WEBHOOK_DEFAULT_MODE`, `MONO_AGENT_WEBHOOK_RETENTION_MS`, `MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS`, `MONO_AGENT_WEBHOOK_NOTIFY`, `MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID`, and `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON` (the `endpoints` array as a JSON string).
+The matching env overrides are `MONO_AGENT_WEBHOOK_HOST`, `MONO_AGENT_WEBHOOK_PORT`, `MONO_AGENT_WEBHOOK_DEFAULT_MODE`, `MONO_AGENT_WEBHOOK_API_KEY`, `MONO_AGENT_WEBHOOK_RETENTION_MS`, `MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS`, `MONO_AGENT_WEBHOOK_NOTIFY`, `MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID`, and `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON` (the `endpoints` array as a JSON string). Set `MONO_AGENT_WEBHOOK_API_KEY` to require `Authorization: Bearer <key>` on both invocation and status polling; it is optional for this loopback recipe.
 
 :::caution
-The server binds to loopback by default. A non-loopback `host` (e.g. `0.0.0.0`) without `allowNonLoopback: true` is rejected — and a public endpoint bypasses channel allowlists, so put it behind a reverse proxy or auth layer you control.
+The server binds to loopback by default. A non-loopback `host` (e.g. `0.0.0.0`) is rejected unless `allowNonLoopback: true` and a non-empty `MONO_AGENT_WEBHOOK_API_KEY` are both configured. The built-in bearer is necessary but public exposure still needs TLS, rate limiting, and any provider-specific verification at a reverse proxy or integration boundary you control.
 :::
 
 ### Endpoints as markdown files
@@ -105,7 +105,7 @@ This generic webhook feature does **not** prove that a later result belongs to t
 ## Smoke test
 
 :::tip
-`curl -X POST /webhook/invoke` and inspect the response body; `curl -X POST /webhook/jobs`, get `202` + a status URL, then poll that URL until the result is returned.
+`curl -X POST /webhook/invoke` and inspect the response body; `curl -X POST /webhook/jobs`, get `202` + a status URL, then poll that URL until the result is returned. When `MONO_AGENT_WEBHOOK_API_KEY` is set, add `-H "Authorization: Bearer $MONO_AGENT_WEBHOOK_API_KEY"` to every POST and status poll.
 :::
 
 ## Related

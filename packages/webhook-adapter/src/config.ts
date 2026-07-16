@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 
 import {
   fieldSpecMappings,
+  isLoopbackHost,
   layerJsonOntoEnv,
   normalizeOptionalString,
   readBoolean,
@@ -10,8 +11,9 @@ import {
   readJsonSection,
   readSettingsJson,
   readString,
+  redactedSecret,
 } from "@mono-agent/agent-contracts";
-import type { JsonEnvFieldSpec, SettingsJson } from "@mono-agent/agent-contracts";
+import type { JsonEnvFieldSpec, RedactedSecretValue, SettingsJson } from "@mono-agent/agent-contracts";
 
 import { loadWebhookEndpointsFromDirectory } from "./endpoints-dir.js";
 import { normalizePath, WebhookAdapterError, type WebhookInvocationMode } from "./server.js";
@@ -37,6 +39,7 @@ export interface WebhookAdapterConfig {
   readonly host: string;
   readonly port: number;
   readonly allowNonLoopback: boolean;
+  readonly apiKey?: string;
   readonly retentionMs: number;
   readonly maxStoredRequests: number;
   /** Wall-clock bound (ms) per webhook run. Omit to use the adapter default (20 min). */
@@ -48,7 +51,9 @@ export interface WebhookAdapterConfig {
   readonly defaultMode: WebhookInvocationMode;
 }
 
-export type RedactedWebhookAdapterConfig = WebhookAdapterConfig;
+export interface RedactedWebhookAdapterConfig extends Omit<WebhookAdapterConfig, "apiKey"> {
+  readonly apiKey: RedactedSecretValue;
+}
 
 export interface LoadWebhookAdapterConfigInput {
   readonly env: Record<string, string | undefined>;
@@ -83,6 +88,13 @@ export async function loadWebhookAdapterConfig(
   const host = readString(env.MONO_AGENT_WEBHOOK_HOST, DEFAULT_HOST);
   const port = readInteger(env.MONO_AGENT_WEBHOOK_PORT, "MONO_AGENT_WEBHOOK_PORT", DEFAULT_PORT, invalidConfig, { min: 0, max: 65535 });
   const allowNonLoopback = readBoolean(env.MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK, "MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK", false, invalidConfig);
+  const apiKey = normalizeOptionalString(env.MONO_AGENT_WEBHOOK_API_KEY);
+  if (enabled && !isLoopbackHost(host) && !allowNonLoopback) {
+    throw invalidConfig("MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK must be true when the enabled webhook adapter binds a non-loopback host.", { host });
+  }
+  if (enabled && !isLoopbackHost(host) && apiKey === undefined) {
+    throw invalidConfig("MONO_AGENT_WEBHOOK_API_KEY is required when the enabled webhook adapter binds a non-loopback host.", { host });
+  }
   const defaultMode = readChoice(env.MONO_AGENT_WEBHOOK_DEFAULT_MODE, "MONO_AGENT_WEBHOOK_DEFAULT_MODE", WEBHOOK_MODES, DEFAULT_MODE, invalidConfig);
   const retentionMs = readInteger(env.MONO_AGENT_WEBHOOK_RETENTION_MS, "MONO_AGENT_WEBHOOK_RETENTION_MS", DEFAULT_RETENTION_MS, invalidConfig, { min: 1, max: 86_400_000 });
   const maxStoredRequests = readInteger(env.MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS, "MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS", DEFAULT_MAX_STORED_REQUESTS, invalidConfig, { min: 1, max: 10_000 });
@@ -103,6 +115,7 @@ export async function loadWebhookAdapterConfig(
     host,
     port,
     allowNonLoopback,
+    ...(apiKey === undefined ? {} : { apiKey }),
     retentionMs,
     maxStoredRequests,
     ...(maxRunMs === undefined ? {} : { maxRunMs }),
@@ -113,7 +126,12 @@ export async function loadWebhookAdapterConfig(
 }
 
 export function redactWebhookAdapterConfig(config: WebhookAdapterConfig): RedactedWebhookAdapterConfig {
-  return { ...config, endpoints: config.endpoints.map((endpoint) => ({ ...endpoint })) };
+  const { apiKey: _apiKey, ...publicConfig } = config;
+  return {
+    ...publicConfig,
+    apiKey: redactedSecret(config.apiKey),
+    endpoints: config.endpoints.map((endpoint) => ({ ...endpoint })),
+  };
 }
 
 /**
@@ -311,6 +329,7 @@ export const WEBHOOK_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "webhook.model", env: "MONO_AGENT_WEBHOOK_MODEL", fromJson: (s) => s.model },
   { id: "webhook.effort", env: "MONO_AGENT_WEBHOOK_EFFORT", fromJson: (s) => s.effort },
   { id: "webhook.allowNonLoopback", env: "MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK", kind: "boolean", fromJson: (s) => s.allowNonLoopback },
+  { id: "webhook.apiKey", env: "MONO_AGENT_WEBHOOK_API_KEY", secret: true, fromJson: (s) => s.apiKey },
   { id: "webhook.defaultMode", env: "MONO_AGENT_WEBHOOK_DEFAULT_MODE", fromJson: (s) => s.defaultMode },
   { id: "webhook.retentionMs", env: "MONO_AGENT_WEBHOOK_RETENTION_MS", kind: "integer", fromJson: (s) => s.retentionMs },
   { id: "webhook.maxStoredRequests", env: "MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS", kind: "integer", fromJson: (s) => s.maxStoredRequests },
