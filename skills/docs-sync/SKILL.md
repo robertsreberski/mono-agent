@@ -103,7 +103,8 @@ and CI do NOT build it — this is a manual gate):
 
 ```bash
 pnpm -C website install                    # first time or after dep changes
-pnpm -C website build                      # sync-content + astro build + check-links
+pnpm -C website run check:asides           # canonical docs: no empty Starlight asides
+pnpm -C website build                      # check-asides + sync-content + astro build + check-links
 node website/scripts/sync-content.mjs      # sync only
 node website/scripts/check-links.mjs       # link check only (needs dist/)
 pnpm -C website preview -- --port 4329     # manual review
@@ -129,12 +130,9 @@ pnpm -C website preview -- --port 4329     # manual review
 - Keep README section headings byte-exact (`## Category`, `## Responsibility`,
   `## Install / Usage`, `## Public API`, `## Dependency Boundary`,
   `## What This Package Does Not Own`, `## Verification`) or the arch gate fails.
-- **Website anti-rot has two known blind spots — the build won't catch them for you.**
-  `website/scripts/check-links.mjs`'s doc comment claims a broader anti-rot mandate
-  than it delivers: it does **not** catch orphaned Starlight asides, so eyeball
-  asides on doc edits (adding an orphaned-aside check to the website CI remit is a
-  pending follow-up). And fenced `ts` code blocks in `docs/playbooks/**` and
-  `docs/programmatic/**` are **not** type-checked against the packages they demo —
-  a stale F5 playbook slipped through this way; a lightweight `tsc --noEmit` over
-  those fenced blocks is a follow-up, so verify playbook snippets against real
-  package types by hand until it lands.
+- `website/scripts/check-starlight-asides.mjs` rejects an opening Starlight
+  aside fence immediately followed by its closing fence; the website build and
+  CI job both run it before syncing canonical docs. Fenced `ts` code blocks in
+  `docs/playbooks/**` and `docs/programmatic/**` remain a known blind spot: they
+  are **not** type-checked against the packages they demo, so verify those
+  snippets against real package types by hand until a dedicated gate lands.

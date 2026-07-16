@@ -370,8 +370,8 @@ Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it
 A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` / `--env-file` paths there. Keep all secrets there or in `MONO_AGENT_*` env vars — never commit real tokens.
 
 :::caution
-:::
 For `memory.llm`, CLI-backed refs such as `codex:gpt-5.6-terra` are rejected; use `provider: "ollama"` with a local model string, or `provider: "agent-host"` with an SDK runtime ref like `pi:openai-codex:gpt-5.6-terra` and `executionMode: "sdk"` (omit `endpoint`). See [Capture & recall](/memory/capture-and-recall/).
+:::
 
 ## Section reference
 

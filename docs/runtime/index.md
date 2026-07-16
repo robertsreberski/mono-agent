@@ -98,5 +98,5 @@ By default a conversation keeps a continuous provider session that is evicted af
 Every backend exposes Read/Write/Edit/Glob/Grep/Bash/WebFetch/WebSearch, gated by [tool policy](/tools/policy/) (`tools.allowedTools` / `tools.disallowedTools`). Auto-guards run with no configuration: 256 KB tool-output truncation with best-effort separate artifact persistence to `artifacts.dir`, WebFetch in-tool retry on transient network errors, per-run cost/usage tracking, and bridge-driven context compaction. See [Built-in tools & auto-guards](/runtime/tools-and-guards/).
 
 :::tip
-:::
 Capabilities such as structured output (`runtimeOptions.outputSchema`), live in-flight input, human-in-the-loop approval gates, and tool parallelism are **code-only** — they are set through harness/runtime options, not config. See [Programmatic API](/programmatic/) and [Approval & structured output](/programmatic/approval-and-structured-output/).
+:::

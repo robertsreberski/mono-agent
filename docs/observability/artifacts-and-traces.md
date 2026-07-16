@@ -188,8 +188,8 @@ assert health of the remote index. For the exact strict CLI schema and exit cont
 Keep `staleAfterMs` comfortably larger than `heartbeatMs` (the defaults give a 3× margin) so a single missed write does not flap a healthy agent into the stale state. Registries also self-prune: manifests whose heartbeat is older than 7 days AND whose process is no longer running are deleted automatically the next time an agent starts or `mono-agent tui` runs.
 
 :::note
-:::
 `sourceLabel` doubles as the default Phoenix project name when no `projectName` is set on the exporter, so pick a label that reads well in a trace UI as well as in the CLI.
+:::
 
 ## How `start` and `status` use this
 
