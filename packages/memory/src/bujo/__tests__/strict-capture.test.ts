@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { openMemoryDb } from "../../store/index.js";
 import { extractCapturePlanStrict, MAX_CAPTURE_MEMORIES } from "../capture-batch.js";
 import { appendBullet } from "../daily.js";
+import { MAX_MODEL_JSON_CHARS } from "../json.js";
 import { reconcileBatch as reconcileBatchImpl } from "../reconcile.js";
 import { assertCanonicalGraphRepairBaseParity } from "../rebuild.js";
 import type { Bullet, CandidateMemory } from "../types.js";
@@ -56,6 +57,51 @@ describe("strict completed-turn extraction", () => {
     });
   });
 
+  it.each([
+    ["JSON-labelled", `\`\`\`json\n${JSON.stringify(validPlan)}\n\`\`\``],
+    ["unlabelled", `\`\`\`\n${JSON.stringify(validPlan)}\n\`\`\``],
+  ] as const)("accepts one complete %s fence around an otherwise exact plan", async (_label, output) => {
+    await expect(extractCapturePlanStrict("completed turn", {
+      id: "fenced",
+      complete: async () => output,
+    })).resolves.toEqual({
+      candidates: [{
+        type: "note",
+        text: "Morgan prefers strict durable capture.",
+        salience: 0.8,
+        isInsight: false,
+        entityIds: ["person:morgan"],
+      }],
+      entities: validPlan.entities,
+      relations: [],
+    });
+  });
+
+  it("accepts inline triple backticks inside a JSON string in one outer fence", async () => {
+    const plan = {
+      ...validPlan,
+      memories: [{
+        ...validPlan.memories[0],
+        text: "Morgan documents inline ``` markers.",
+      }],
+    };
+
+    await expect(extractCapturePlanStrict("completed turn", {
+      id: "fenced-inline-backticks",
+      complete: async () => `\`\`\`json\n${JSON.stringify(plan)}\n\`\`\``,
+    })).resolves.toEqual({
+      candidates: [{
+        type: "note",
+        text: "Morgan documents inline ``` markers.",
+        salience: 0.8,
+        isInsight: false,
+        entityIds: ["person:morgan"],
+      }],
+      entities: validPlan.entities,
+      relations: [],
+    });
+  });
+
   it("states the strict salience and entity-id contract that the validator enforces", async () => {
     let extractionPrompt = "";
     const plan = await extractCapturePlanStrict("completed turn", {
@@ -89,6 +135,14 @@ describe("strict completed-turn extraction", () => {
 
   it.each([
     ["prose wrapper", `result: ${JSON.stringify(validPlan)}`],
+    ["unterminated JSON fence", `\`\`\`json\n${JSON.stringify(validPlan)}`],
+    ["prose outside a JSON fence", `result:\n\`\`\`json\n${JSON.stringify(validPlan)}\n\`\`\`\ndone`],
+    ["multiple JSON fences", `\`\`\`json\n${JSON.stringify(validPlan)}\n\`\`\`\n\`\`\`json\n${JSON.stringify(validPlan)}\n\`\`\``],
+    ["nested JSON fence", `\`\`\`json\n\`\`\`json\n${JSON.stringify(validPlan)}\n\`\`\`\n\`\`\``],
+    ["non-JSON fence label", `\`\`\`javascript\n${JSON.stringify(validPlan)}\n\`\`\``],
+    ["non-ASCII JSON confusable fence label", `\`\`\`jſon\n${JSON.stringify(validPlan)}\n\`\`\``],
+    ["duplicate root key inside a JSON fence", "```json\n{\"memories\":[],\"memories\":[],\"entities\":[],\"relations\":[]}\n```"],
+    ["fenced output above the raw size bound", `\`\`\`json\n${JSON.stringify(validPlan)}${" ".repeat(MAX_MODEL_JSON_CHARS - JSON.stringify(validPlan).length)}\n\`\`\``],
     ["duplicate root key", '{"memories":[],"memories":[],"entities":[],"relations":[]}'],
     ["missing root array", JSON.stringify({ memories: [], entities: [] })],
     ["unknown root field", JSON.stringify({ ...validPlan, extra: [] })],
