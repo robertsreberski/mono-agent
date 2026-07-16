@@ -335,6 +335,60 @@ describe("writeIndex", () => {
     expect(db.allEntities()).toEqual(inventoryBefore);
   });
 
+  it("reconciles a conflicting duplicate after the first 50 preview groups", () => {
+    const root = newRoot();
+    const db = openDb(root);
+
+    for (let index = 0; index < 49; index += 1) {
+      const suffix = String(index).padStart(2, "0");
+      db.upsertEntity({
+        id: `project:useful-${suffix}`,
+        name: `A Useful ${suffix}`,
+        type: "project",
+        createdAt: FIXED.toISOString(),
+      });
+    }
+    for (let index = 0; index < 200; index += 1) {
+      const suffix = String(index).padStart(3, "0");
+      db.upsertEntity({
+        id: `time:filler-${suffix}`,
+        name: `B Temporal ${suffix}`,
+        type: "time",
+        createdAt: FIXED.toISOString(),
+      });
+    }
+    db.upsertEntity({
+      id: "concept:zulu",
+      name: "Zulu",
+      type: "concept",
+      createdAt: FIXED.toISOString(),
+    });
+    db.upsertEntity({
+      id: "tool:zulu",
+      name: "Zulu",
+      type: "tool",
+      createdAt: FIXED.toISOString(),
+    });
+    const inventoryBefore = db.allEntities();
+
+    expect(db.listEntities(2, 249).map((entity) => entity.id)).toEqual([
+      "concept:zulu",
+      "tool:zulu",
+    ]);
+
+    writeIndex(root, db, FIXED);
+
+    const content = readFileSync(join(root, "index.md"), "utf8");
+    const entityRows = content
+      .slice(content.indexOf("## Entities"))
+      .split("\n")
+      .filter((line) => line.startsWith("- "));
+    expect(entityRows).toHaveLength(50);
+    expect(entityRows.filter((line) => line.includes("Zulu"))).toEqual(["- Zulu"]);
+    expect(entityRows.join("\n")).not.toContain("B Temporal");
+    expect(db.allEntities()).toEqual(inventoryBefore);
+  });
+
   it("creates the root directory if it does not exist", () => {
     const base = mkdtempSync(join(tmpdir(), "bujo-projections-idx-mkdir-"));
     const root = join(base, "deep", "nested");

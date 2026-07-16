@@ -25,6 +25,13 @@ interface IndexEntityPreview {
   readonly type?: string;
 }
 
+interface IndexEntityGroup {
+  representative: EntityRecord;
+  /** The first non-empty normalized type; later disagreement flips the conflict bit. */
+  type?: string;
+  typeConflict: boolean;
+}
+
 /** Write <root>/future-log.md: the due/scheduled intentions queue, soonest first. Returns count. */
 export function writeFutureLog(root: string, db: MemoryDb, now: Date, horizonDays = 365): number {
   const horizon = new Date(now.getTime() + horizonDays * 86_400_000);
@@ -83,21 +90,21 @@ export function writeIndex(root: string, db: MemoryDb, _now: Date): void {
 }
 
 /**
- * Page past filtered/collapsed rows until the preview is full, the inventory is
- * exhausted, or the scheduled projection's explicit raw-scan ceiling is hit.
+ * Reconcile deterministic source pages through inventory exhaustion or the
+ * scheduled projection's explicit raw-scan ceiling. Filling the 50-row output
+ * is not a safe stopping condition: a later lexical duplicate can change the
+ * chosen representative or prove that its displayed type is ambiguous.
  */
 function collectEntityPreview(db: MemoryDb): IndexEntityPreview[] {
-  const scanned: EntityRecord[] = [];
+  const groups = new Map<string, IndexEntityGroup>();
   for (let offset = 0; offset < INDEX_ENTITY_MAX_SCAN; offset += INDEX_ENTITY_PAGE_SIZE) {
     const limit = Math.min(INDEX_ENTITY_PAGE_SIZE, INDEX_ENTITY_MAX_SCAN - offset);
     const page = db.listEntities(limit, offset);
     if (page.length === 0) break;
-    scanned.push(...page);
-    const preview = buildEntityPreview(scanned);
-    if (preview.length === INDEX_ENTITY_LIMIT) return preview;
+    mergeEntityPreviewGroups(groups, page);
     if (page.length < limit) break;
   }
-  return buildEntityPreview(scanned);
+  return buildEntityPreview(groups.values());
 }
 
 /**
@@ -109,8 +116,10 @@ function collectEntityPreview(db: MemoryDb): IndexEntityPreview[] {
  * canonical id/relation/association intact. Ephemeral calendar/time nodes stay
  * available to graph recall but do not consume the bounded human-facing list.
  */
-function buildEntityPreview(entities: readonly EntityRecord[]): IndexEntityPreview[] {
-  const groups = new Map<string, EntityRecord[]>();
+function mergeEntityPreviewGroups(
+  groups: Map<string, IndexEntityGroup>,
+  entities: readonly EntityRecord[],
+): void {
   for (const entity of entities) {
     const type = normalizedEntityType(entity);
     if (type !== undefined && LOW_VALUE_INDEX_ENTITY_TYPES.has(type)) continue;
@@ -118,22 +127,32 @@ function buildEntityPreview(entities: readonly EntityRecord[]): IndexEntityPrevi
     if (key.length === 0) continue;
     const group = groups.get(key);
     if (group === undefined) {
-      groups.set(key, [entity]);
-    } else {
-      group.push(entity);
+      groups.set(key, {
+        representative: entity,
+        ...(type === undefined ? {} : { type }),
+        typeConflict: false,
+      });
+      continue;
+    }
+    if (compareRepresentatives(entity, group.representative) < 0) {
+      group.representative = entity;
+    }
+    if (type !== undefined) {
+      if (group.type === undefined) {
+        group.type = type;
+      } else if (group.type !== type) {
+        group.typeConflict = true;
+      }
     }
   }
+}
 
-  return [...groups.values()]
+function buildEntityPreview(groups: Iterable<IndexEntityGroup>): IndexEntityPreview[] {
+  return [...groups]
     .map((group): IndexEntityPreview => {
-      const representative = [...group].sort(compareRepresentatives)[0]!;
-      const types = [...new Set(group
-        .map((entity) => normalizedEntityType(entity))
-        .filter((type): type is string => type !== undefined))]
-        .sort(compareStrings);
       return {
-        name: representative.name,
-        ...(types.length > 1 ? {} : { type: types[0] ?? "unknown" }),
+        name: group.representative.name,
+        ...(group.typeConflict ? {} : { type: group.type ?? "unknown" }),
       };
     })
     .sort((left, right) => compareStrings(left.name, right.name))
