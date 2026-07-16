@@ -79,15 +79,19 @@ grep -H '"license"' packages/agent-runtime/package.json packages/agent-app/packa
 # both => GPL-3.0-only
 ```
 
-- **`minimumReleaseAge` must be set before an exclude means anything.**
-  `pnpm-workspace.yaml`'s `minimumReleaseAgeExclude` (pi + the `claude-agent-sdk`
-  platform binaries) only does something if a global `minimumReleaseAge` cooldown
-  is actually configured; without it the exclude is inert from the moment it is
-  added. Confirm the cooldown is nonzero **before** adding or trusting an exclude
-  entry:
+- **A release-age exclusion is honest only with a real cooldown.** The workspace
+  intentionally enforces no `minimumReleaseAge` today, so it also carries no
+  `minimumReleaseAgeExclude`. Never add an exclusion by itself: without a positive
+  cooldown it is inert and creates false confidence. If a future change adopts the
+  policy, commit `minimumReleaseAge` and any narrowly justified exclusions together
+  in `pnpm-workspace.yaml`, then raise and enforce the pnpm floor that supports the
+  chosen selectors (`minimumReleaseAge` requires pnpm 10.16; version-specific
+  exclusions require 10.19). The current unpinned `pnpm >=10` range is not enough
+  to claim that policy. Confirm both effective values before trusting them:
 
 ```bash
-pnpm config get minimumReleaseAge   # must be nonzero; today it returns `undefined` — the exclude is currently inert
+pnpm config get minimumReleaseAge          # `undefined` while no cooldown is claimed
+pnpm config get minimumReleaseAgeExclude   # `undefined` while no exclusions are claimed
 ```
 
 ## Reading discipline
