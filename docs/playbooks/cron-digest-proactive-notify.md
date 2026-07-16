@@ -30,7 +30,7 @@ A timezone-aware cron job that builds a daily digest with shared run history and
 
 ## Configuration
 
-Enable the destination adapter and add the cron job. `conversationId` is the cron run-history thread; `notifyConversationId` is the delivery destination. If `notifyConversationId` is omitted, `mono-agent` only infers a destination when exactly one Telegram/Slack notify destination is available. With 0 or 2+ candidates delivery is skipped with a warning. Cron model-exhaustion notices require an explicit `notifyConversationId` and never infer a destination. Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the source config omits credentials.
+Enable the destination adapter and add the cron job. `conversationId` is the cron run-history thread; `notifyConversationId` is the delivery destination. If `notifyConversationId` is omitted, `mono-agent` only infers a destination when exactly one Telegram/Slack notify destination is available. With 0 or 2+ candidates delivery is skipped with a warning. Artifact-derived candidates use a 30-second in-process cache, measured from scan completion, to avoid rescanning a busy artifact directory for every notification. An artifact committed under a Telegram/Slack conversation id invalidates it at both running-summary and terminal-summary commits; runs using the default synthetic `cron:`/`webhook:` ids do not. Other artifact changes are picked up after cache expiry and the next scan completes. Cron model-exhaustion notices require an explicit `notifyConversationId` and never infer a destination. Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the source config omits credentials.
 
 ```json
 {

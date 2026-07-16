@@ -107,7 +107,7 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
 **Goal:** a timezone-aware cron job that builds a daily digest with shared history and delivers its final answer verbatim through native notification.
 **Features:** `cron.scheduled-prompts`, `channel.native-notify`, `slack.socket-mode`, `memory.journal`.
 
-**Destination resolution:** an explicit `notifyConversationId` wins; otherwise mono-agent infers only when exactly one notify-capable Telegram/Slack candidate exists. With 0 or 2+ candidates delivery is skipped with a warning. Cron model-exhaustion notices require an explicit `notifyConversationId` and never infer a destination.
+**Destination resolution:** an explicit `notifyConversationId` wins; otherwise mono-agent infers only when exactly one notify-capable Telegram/Slack candidate exists. With 0 or 2+ candidates delivery is skipped with a warning. Artifact-derived candidates are cached for 30 seconds after each scan completes. An artifact committed under a Telegram/Slack conversation id invalidates the cache immediately; runs using the default synthetic `cron:`/`webhook:` ids do not. Other artifact changes are picked up after cache expiry and the next scan completes. Cron model-exhaustion notices require an explicit `notifyConversationId` and never infer a destination.
 
 Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the source config omits credentials.
 

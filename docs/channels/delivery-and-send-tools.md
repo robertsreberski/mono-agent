@@ -169,6 +169,15 @@ Cron has one failure-side notification path as well: if a `notify: true` cron jo
 
 Inference is evaluated for each cron firing or webhook invocation, immediately before the agent run. That one route snapshot binds both host-only continuation `replyTo` and the run's final native delivery; webhook keeps the delivery route as a private scalar and reconstructs a separate completion request, so a structurally typed responder cannot redirect, delete, or inject it by mutating its request. If the candidate set becomes ambiguous before a later run, that later run has no reply target and its delivery is skipped rather than retaining a destination chosen at process start. Resolver promises are raced against the run's abort signal, so replacement, client disconnect, or stop can reclaim resolver-held slots without waiting for `maxRunMs`.
 
+Artifact-derived candidates are cached in-process for 30 seconds after a scan
+completes, so repeated notifications do not repeatedly `stat` a busy artifact
+directory. An artifact committed under a Telegram/Slack conversation id
+invalidates the cache at each local lifecycle commit: when its running summary
+appears and again when its terminal summary is written. Runs using the default
+synthetic `cron:`/`webhook:` ids do not invalidate it; a trigger configured with a
+Telegram/Slack conversation id does. Other artifact-directory changes are picked
+up after cache expiry and the next scan completes.
+
 The owning channel's allowlist is the destination boundary: a delivery to a Telegram/Slack id outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAllChats` / `allowAllChannels`) is refused. WhatsApp is not notify-capable. Delivery is best-effort — a skipped or failed notification does not change the cron job result or the webhook's HTTP response / async stored status.
 
 ### Staying silent ("nothing to report")

@@ -34,6 +34,7 @@ import type { RunningArtifactRetentionScheduler } from "./artifact-retention.js"
 import type { MemoryRetrievalService } from "./memory-retrieval.js";
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 import type { NotifyDestination } from "./notify-destinations.js";
+import { createSeenNotifyDestinationCache } from "./seen-conversations.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { sandboxStatusFromState } from "./app-controller-utils.js";
 import * as lifecycleOperations from "./app-controller-lifecycle.js";
@@ -294,6 +295,8 @@ export class MonoAgentAppController implements MonoAgentApp {
   // it over SSE. One instance for the app's lifetime — cheap, bounded ring buffer,
   // and it must exist before any responder is built (like the interaction bridge).
   readonly liveEventBus: RunEventBus = createLiveEventBus();
+  /** One bounded scan cache for artifact-derived native-notify destinations. */
+  readonly seenNotifyDestinations = createSeenNotifyDestinationCache();
 
   constructor(input: MonoAgentAppControllerInput) {
     this.cwd = input.cwd;

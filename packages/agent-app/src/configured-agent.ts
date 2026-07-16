@@ -25,6 +25,8 @@ import type {
   RunExportContext,
   RunExporter,
   RunRecorder,
+  RunSummary,
+  RuntimeResultLike,
 } from "@mono-agent/observability";
 import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 import {
@@ -149,6 +151,23 @@ export interface ConfiguredAgentHarnessOptions {
 
 export interface ConfiguredAgentResponderOptions extends ConfiguredAgentHarnessOptions {}
 
+interface RunArtifactCommitEvent {
+  readonly phase: "started" | "finished";
+  readonly runId: string;
+  readonly conversationId: string;
+}
+
+type RunArtifactCommitHook = (event: RunArtifactCommitEvent) => void | Promise<void>;
+
+interface ConfiguredAgentInternalHooks {
+  /**
+   * App-owned hook invoked after the local JSONL running/terminal summary is
+   * committed. Invocation runs before best-effort exporter work; a returned
+   * promise is not awaited and all hook failures are ignored.
+   */
+  readonly onRunArtifactCommitted?: RunArtifactCommitHook;
+}
+
 /**
  * Inputs the recorder composition needs that are stable across a run: the
  * artifact directory, the configured exporters, and the per-host export
@@ -161,15 +180,16 @@ interface RecorderCompositionDeps {
   readonly observabilityContext?: ConfiguredAgentHarnessOptions["observabilityContext"];
   readonly exporterWarn?: ConfiguredAgentHarnessOptions["exporterWarn"];
   readonly exporterFactory?: ConfiguredAgentHarnessOptions["exporterFactory"];
+  readonly onRunArtifactCommitted?: RunArtifactCommitHook;
   readonly runEventSink?: ConfiguredAgentHarnessOptions["runEventSink"];
 }
 
 /**
- * Build a recorder for one run. The JSONL recorder is always built first and
- * returned unchanged when no exporter is configured, so default recording stays
- * byte-identical. When an exporter is present the JSONL recorder is wrapped so
- * export is best-effort and additive — exporter failures only surface as
- * warnings and never change the run outcome.
+ * Build a recorder for one run. The JSONL recorder is always built first and is
+ * returned unchanged when neither an artifact hook nor exporter is configured.
+ * The optional artifact hook wraps only its commit boundary. When an exporter is
+ * present the result is wrapped again so export is best-effort and additive —
+ * exporter failures only surface as warnings and never change the run outcome.
  */
 function composeRunRecorder(
   deps: RecorderCompositionDeps,
@@ -187,7 +207,7 @@ function composeRunRecorder(
     readonly sourceDetail?: string;
   },
 ): RunRecorder {
-  const jsonl = createJsonlRunRecorder({
+  const jsonl = withArtifactCommitHook(createJsonlRunRecorder({
     runId: args.runId,
     conversationId: args.conversationId,
     artifactDir: deps.artifactDir,
@@ -197,7 +217,7 @@ function composeRunRecorder(
     ...(args.systemPrompt === undefined ? {} : { systemPrompt: args.systemPrompt }),
     ...(args.source === undefined ? {} : { source: args.source }),
     ...(args.sourceDetail === undefined ? {} : { sourceDetail: args.sourceDetail }),
-  });
+  }), deps.onRunArtifactCommitted, args);
   const exporterCfg = deps.exporters[0];
   if (exporterCfg === undefined) {
     return withBroadcast(jsonl, deps, args);
@@ -232,6 +252,68 @@ function composeRunRecorder(
 }
 
 /**
+ * Notify the app at the exact local-artifact boundary. This wrapper sits inside
+ * the exporter composite, unlike live broadcast, so slow exporter start/finish
+ * work cannot leave artifact-derived caches stale after JSONL has committed.
+ */
+function withArtifactCommitHook(
+  recorder: RunRecorder,
+  onCommitted: RunArtifactCommitHook | undefined,
+  args: { readonly runId: string; readonly conversationId: string },
+): RunRecorder {
+  if (onCommitted === undefined) {
+    return recorder;
+  }
+  let terminalPromise: Promise<RunSummary> | undefined;
+  const notify = (phase: "started" | "finished"): void => {
+    try {
+      // The cache invalidation used by the app is synchronous. Promise.resolve
+      // also contains an async implementation without delaying
+      // the JSONL/export pipeline or leaking an unhandled rejection.
+      void Promise.resolve(onCommitted({ phase, runId: args.runId, conversationId: args.conversationId }))
+        .catch(() => undefined);
+    } catch {
+      // Best-effort host bookkeeping must never alter the recorded run outcome.
+    }
+  };
+  const commitTerminal = (operation: () => Promise<RunSummary>): Promise<RunSummary> => {
+    terminalPromise ??= operation().then((summary) => {
+      notify("finished");
+      return summary;
+    });
+    return terminalPromise;
+  };
+  const wrapped: RunRecorder = {
+    onEvent(event): void {
+      recorder.onEvent(event);
+    },
+    async prepareFinish(result: RuntimeResultLike): Promise<void> {
+      await recorder.prepareFinish?.(result);
+    },
+    async commitFinish(result: RuntimeResultLike): Promise<RunSummary> {
+      return await commitTerminal(async () => recorder.commitFinish === undefined
+        ? await recorder.finish(result)
+        : await recorder.commitFinish(result));
+    },
+    async finish(result: RuntimeResultLike): Promise<RunSummary> {
+      await wrapped.prepareFinish?.(result);
+      return await wrapped.commitFinish!(result);
+    },
+    async fail(error: unknown): Promise<RunSummary> {
+      return await commitTerminal(async () => await recorder.fail(error));
+    },
+  };
+  if (recorder.start !== undefined) {
+    wrapped.start = async (): Promise<RunSummary> => {
+      const summary = await recorder.start!();
+      notify("started");
+      return summary;
+    };
+  }
+  return wrapped;
+}
+
+/**
  * Wrap the composed recorder so runs are ALSO published to the live bus when one
  * is configured. Outermost by design: it observes the authoritative final summary
  * the inner recorder returns. A no-op passthrough when no bus is present.
@@ -263,6 +345,7 @@ function recorderCompositionDeps(
     ConfiguredAgentHarnessOptions,
     "observabilityContext" | "exporterWarn" | "exporterFactory" | "runEventSink"
   >,
+  internalHooks: ConfiguredAgentInternalHooks = {},
 ): RecorderCompositionDeps {
   const sourceLabel = options.observabilityContext?.sourceLabel ?? config.agent?.name;
   const observabilityContext = options.observabilityContext === undefined && sourceLabel === undefined
@@ -279,6 +362,9 @@ function recorderCompositionDeps(
       : { observabilityContext }),
     ...(options.exporterWarn === undefined ? {} : { exporterWarn: options.exporterWarn }),
     ...(options.exporterFactory === undefined ? {} : { exporterFactory: options.exporterFactory }),
+    ...(internalHooks.onRunArtifactCommitted === undefined
+      ? {}
+      : { onRunArtifactCommitted: internalHooks.onRunArtifactCommitted }),
     ...(options.runEventSink === undefined ? {} : { runEventSink: options.runEventSink }),
   };
 }
@@ -369,6 +455,13 @@ const loadMemorySearchModule = async (): Promise<MemorySearchModule> =>
   (memorySearchModule ??= await import("@mono-agent/memory/search"));
 
 export async function createConfiguredAgentHarness(options: ConfiguredAgentHarnessOptions): Promise<AgentHarness> {
+  return await createConfiguredAgentHarnessInternal(options);
+}
+
+async function createConfiguredAgentHarnessInternal(
+  options: ConfiguredAgentHarnessOptions,
+  internalHooks: ConfiguredAgentInternalHooks = {},
+): Promise<AgentHarness> {
   const config = options.config;
   const model = options.model ?? config.runtime.model;
   const executionMode = options.executionMode ?? config.runtime.executionMode;
@@ -503,7 +596,7 @@ export async function createConfiguredAgentHarness(options: ConfiguredAgentHarne
     toolPolicy: createToolPolicy(toolPolicyInput(config)),
     ...(config.sandbox === undefined ? {} : { sandboxPolicy: config.sandbox }),
     recorderFactory: ({ runId, conversationId, userInput, source, sourceDetail, isolated }) =>
-      composeRunRecorder(recorderCompositionDeps(config, options), {
+      composeRunRecorder(recorderCompositionDeps(config, options, internalHooks), {
         runId,
         conversationId,
         runKind: "channel",
@@ -531,9 +624,27 @@ function configuredMemoryForHarness(
 }
 
 export async function createConfiguredAgentResponder(options: ConfiguredAgentResponderOptions): Promise<AgentResponder> {
+  return await createConfiguredAgentResponderInternal(options);
+}
+
+/**
+ * @internal Application-composition seam. This is deliberately absent from the
+ * package root so cache bookkeeping does not enlarge the supported harness API.
+ */
+export async function createConfiguredAgentResponderForApp(
+  options: ConfiguredAgentResponderOptions,
+  internalHooks: ConfiguredAgentInternalHooks,
+): Promise<AgentResponder> {
+  return await createConfiguredAgentResponderInternal(options, internalHooks);
+}
+
+async function createConfiguredAgentResponderInternal(
+  options: ConfiguredAgentResponderOptions,
+  internalHooks: ConfiguredAgentInternalHooks = {},
+): Promise<AgentResponder> {
   const session = options.config.runtime.session;
   return createAgentResponder({
-    harness: await createConfiguredAgentHarness(options),
+    harness: await createConfiguredAgentHarnessInternal(options, internalHooks),
     ...(session.rollover === undefined ? {} : { rollover: session.rollover }),
     ...(session.rolloverTimezone === undefined ? {} : { rolloverTimezone: session.rolloverTimezone }),
     ...(session.rolloverNotice === undefined ? {} : { rolloverNotice: session.rolloverNotice }),
