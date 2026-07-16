@@ -89,6 +89,7 @@ describe("dependency vulnerability gate", () => {
         "prod-only": ["1.0.0"],
       },
       dependencyPaths: {},
+      pnpmMajor: 10,
     });
     expect(calls).toEqual([
       { command: "pnpm-fixture", args: ["--version"], options: { cwd: "/repo" } },
@@ -756,7 +757,7 @@ describe("dependency vulnerability gate", () => {
         path: "/repo/packages/slack-adapter",
         dependencies: { "socket-alias": { from: "ws", version: "8.20.1" } },
       },
-    ]), options)).toEqual(expected);
+    ]), { ...options, pnpmMajor: 10 })).toEqual(expected);
 
     expect(parsePnpmWhyDependencyPaths(JSON.stringify([
       { name: "@mono-agent/agent-app", version: "0.11.2", path: "/repo/packages/agent-app" },
@@ -781,12 +782,13 @@ describe("dependency vulnerability gate", () => {
           },
         ],
       },
-    ]), options)).toEqual(expected);
+    ]), { ...options, pnpmMajor: 11 })).toEqual(expected);
   });
 
   it("requires every pnpm 10 workspace root and binds local links before suppressing paths", () => {
     const options = {
       packageName: "ws",
+      pnpmMajor: 10,
       versions: ["8.20.1"],
       rootPackageNames: ["root-a", "root-b", "workspace"],
     };
@@ -877,11 +879,33 @@ describe("dependency vulnerability gate", () => {
       ...options,
       rootPackageNames: ["root-a", "root-b"],
     })).toThrow("mixes child-tree and dependents-tree shapes");
+
+    const emptyRootShapeBypass = [
+      {
+        name: "root-a",
+        version: "1.0.0",
+        path: "/repo/packages/root-a",
+      },
+      {
+        name: "ws",
+        version: "8.20.1",
+        dependents: [{
+          name: "root-a",
+          version: "1.0.0",
+          depField: "dependencies",
+        }],
+      },
+    ];
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(emptyRootShapeBypass), {
+      ...options,
+      rootPackageNames: ["root-a", "root-b"],
+    })).toThrow("mixes child-tree and dependents-tree shapes");
   });
 
   it("hydrates realistic pnpm 11 reverse deduped branches by peer-aware identity", () => {
     const options = {
       packageName: "ws",
+      pnpmMajor: 11,
       versions: ["8.20.1"],
       rootPackageNames: ["@mono-agent/agent-app"],
     };
@@ -921,6 +945,7 @@ describe("dependency vulnerability gate", () => {
   it("validates reverse cycles and prevents target or peer expansion cross-binding", () => {
     const options = {
       packageName: "ws",
+      pnpmMajor: 11,
       versions: ["8.20.1"],
       rootPackageNames: ["@mono-agent/slack-adapter"],
     };
@@ -1085,6 +1110,7 @@ describe("dependency vulnerability gate", () => {
   it("fails closed on incomplete or non-production pnpm 11 why branches", () => {
     const options = {
       packageName: "ws",
+      pnpmMajor: 11,
       versions: ["8.20.1"],
       rootPackageNames: ["@mono-agent/slack-adapter"],
     };
@@ -1247,6 +1273,7 @@ describe("dependency vulnerability gate", () => {
       dependents: diamond(20),
     }]), {
       packageName: "ws",
+      pnpmMajor: 11,
       versions: ["8.20.1"],
       rootPackageNames: ["@mono-agent/slack-adapter"],
     })).toThrow("exceeded 10000 complete production dependency paths");
@@ -1261,6 +1288,7 @@ describe("dependency vulnerability gate", () => {
     }));
     expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(peerVariants), {
       packageName: "ws",
+      pnpmMajor: 11,
       versions: ["8.20.1"],
       rootPackageNames: ["@mono-agent/slack-adapter"],
     })).toThrow("target ws@8.20.1 exceeded 10000 complete production dependency paths");
@@ -1889,6 +1917,7 @@ describe("dependency vulnerability gate", () => {
       }],
     }]), {
       packageName: "ws",
+      pnpmMajor: 11,
       versions: ["8.20.1"],
       rootPackageNames: ["root"],
     })).toThrow("package/version identity cannot be represented unambiguously");
@@ -1919,6 +1948,7 @@ describe("dependency vulnerability gate", () => {
       ],
     }]), {
       packageName: "ws",
+      pnpmMajor: 11,
       versions: ["8.20.1"],
       rootPackageNames: ["root"],
     })).toThrow("package/version identity cannot be represented unambiguously");

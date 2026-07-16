@@ -224,6 +224,10 @@ export function parsePnpmWhyDependencyPaths(source, options) {
     options.rootPackageNames ?? DEFAULT_ROOT_PACKAGE_NAMES,
   );
   const rootPackageNames = new Set(normalizedRootPackageNames);
+  const pnpmMajor = options?.pnpmMajor;
+  if (pnpmMajor !== 10 && pnpmMajor !== 11) {
+    throw new Error("pnpm why path parsing requires audited pnpm major 10 or 11.");
+  }
   const hasDependentsShape = document.some(
     (entry) => isRecord(entry) && Object.hasOwn(entry, "dependents"),
   );
@@ -231,10 +235,10 @@ export function parsePnpmWhyDependencyPaths(source, options) {
     (entry) => isRecord(entry)
       && (Object.hasOwn(entry, "dependencies") || Object.hasOwn(entry, "optionalDependencies")),
   );
-  if (hasDependentsShape && hasChildTreeShape) {
+  if ((pnpmMajor === 10 && hasDependentsShape) || (pnpmMajor === 11 && hasChildTreeShape)) {
     throw new Error("pnpm why output mixes child-tree and dependents-tree shapes.");
   }
-  if (hasDependentsShape) {
+  if (pnpmMajor === 11) {
     return parseDependentsShape();
   }
   const rootsByName = new Map();
@@ -628,15 +632,19 @@ export async function collectProductionGraph(options = {}) {
     const detail = commandFailureDetail(result);
     throw new Error(`could not collect pnpm production graph: ${detail}`);
   }
-  return major === 10
+  const graph = major === 10
     ? { inventory: parsePnpmProductionInventory(result.stdout), dependencyPaths: {} }
     : parsePnpmProductionGraph(result.stdout, {
       rootPackageNames: options.rootPackageNames,
     });
+  return { ...graph, pnpmMajor: major };
 }
 
 export async function collectAdvisoryDependencyPaths(productionGraph, packageNames, options = {}) {
   const graph = normalizeProductionGraph(productionGraph);
+  if (options.pnpmMajor !== 10 && options.pnpmMajor !== 11) {
+    throw new Error("dependency-path collection requires audited pnpm major 10 or 11.");
+  }
   const command = options.pnpmCommand ?? "pnpm";
   const cwd = options.cwd ?? process.cwd();
   const runCommand = options.runCommand ?? runCommandCapture;
@@ -658,6 +666,7 @@ export async function collectAdvisoryDependencyPaths(productionGraph, packageNam
     Object.assign(dependencyPaths, parsePnpmWhyDependencyPaths(result.stdout, {
       packageName,
       versions,
+      pnpmMajor: options.pnpmMajor,
       rootPackageNames: options.rootPackageNames,
     }));
   }
@@ -1075,6 +1084,7 @@ export async function runDependencyVulnerabilityCheck(options = {}) {
         packagesMissingPaths,
         {
           cwd,
+          pnpmMajor: options.pnpmMajor ?? productionGraph.pnpmMajor,
           pnpmCommand: options.pnpmCommand,
           rootPackageNames: options.rootPackageNames,
           runCommand: options.runCommand,
