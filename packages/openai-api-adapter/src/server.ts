@@ -1115,6 +1115,23 @@ interface RenderedToolPayload {
   readonly originalBytes: number;
 }
 
+interface ProjectedToolPayload {
+  readonly text: string;
+  readonly retainedBytes: number;
+}
+
+interface ToolDetailsFrameCandidate {
+  readonly appliedMaxBytes: number;
+  readonly frame: string;
+  readonly frameBytes: number;
+  readonly retainedPayloadBytes: number;
+}
+
+interface ToolPayloadSearchInterval {
+  readonly start: number;
+  readonly end: number;
+}
+
 type ToolDetailsFrameSerializer = (content: string) => string;
 
 function boundedOpenWebUIToolDetailsFrame(
@@ -1124,41 +1141,123 @@ function boundedOpenWebUIToolDetailsFrame(
 ): string {
   const argumentsPayload = renderToolPayload(input.arguments);
   const resultPayload = renderToolPayload(input.result ?? null);
-  const frameAt = (appliedMaxBytes: number): string => {
-    const argumentsJson = projectToolPayload(argumentsPayload, appliedMaxBytes);
-    const resultJson = projectToolPayload(resultPayload, appliedMaxBytes);
-    return serializeFrame(openWebUIToolDetails(input, argumentsJson, resultJson));
+  const candidateAt = (appliedMaxBytes: number): ToolDetailsFrameCandidate => {
+    const argumentsProjection = projectToolPayload(argumentsPayload, appliedMaxBytes);
+    const resultProjection = projectToolPayload(resultPayload, appliedMaxBytes);
+    const frame = serializeFrame(openWebUIToolDetails(
+      input,
+      argumentsProjection.text,
+      resultProjection.text,
+    ));
+    return {
+      appliedMaxBytes,
+      frame,
+      frameBytes: utf8ByteLength(frame),
+      retainedPayloadBytes: argumentsProjection.retainedBytes + resultProjection.retainedBytes,
+    };
   };
 
-  const configuredFrame = frameAt(configuredMaxPayloadBytes);
-  if (utf8ByteLength(configuredFrame) <= MAX_TOOL_SSE_FRAME_BYTES) {
-    return configuredFrame;
+  const configuredCandidate = candidateAt(configuredMaxPayloadBytes);
+  if (configuredCandidate.frameBytes <= MAX_TOOL_SSE_FRAME_BYTES) {
+    return configuredCandidate.frame;
   }
 
-  // Search the shared per-field preview budget against the exact bytes sent to
-  // response.write(). This accounts for payload-dependent expansion from HTML
-  // escaping, JSON string escaping, and the final `data: ...\n\n` envelope.
-  const metadataOnlyFrame = frameAt(0);
-  if (utf8ByteLength(metadataOnlyFrame) > MAX_TOOL_SSE_FRAME_BYTES) {
-    throw new Error(
-      `OpenAI API tool details frame exceeds ${String(MAX_TOOL_SSE_FRAME_BYTES)} bytes without payload previews.`,
-    );
-  }
-
-  let lowerBound = 0;
-  let upperBound = configuredMaxPayloadBytes - 1;
-  let bestFrame = metadataOnlyFrame;
-  while (lowerBound <= upperBound) {
-    const candidateMaxBytes = lowerBound + Math.floor((upperBound - lowerBound) / 2);
-    const candidateFrame = frameAt(candidateMaxBytes);
-    if (utf8ByteLength(candidateFrame) <= MAX_TOOL_SSE_FRAME_BYTES) {
-      bestFrame = candidateFrame;
-      lowerBound = candidateMaxBytes + 1;
-    } else {
-      upperBound = candidateMaxBytes - 1;
+  // Search every interval on which serialized frame size is monotone. A raw
+  // payload replaces its truncation wrapper at originalBytes, which is the only
+  // possible downward discontinuity. Within a projected representation, each
+  // added scalar contributes at least one serialized byte while omittedBytes
+  // can lose at most one decimal digit; all other metadata lengths stay equal
+  // or grow. Splitting at each raw transition therefore makes binary search
+  // valid, while the global comparison maximizes retained useful payload.
+  let bestCandidate: ToolDetailsFrameCandidate | undefined;
+  for (const interval of toolPayloadSearchIntervals(
+    [argumentsPayload, resultPayload],
+    configuredMaxPayloadBytes,
+  )) {
+    const intervalCandidate = highestFittingToolPayloadCandidate(interval, candidateAt);
+    if (
+      intervalCandidate !== undefined
+      && (
+        bestCandidate === undefined
+        || isBetterToolPayloadCandidate(intervalCandidate, bestCandidate)
+      )
+    ) {
+      bestCandidate = intervalCandidate;
     }
   }
-  return bestFrame;
+  if (bestCandidate === undefined) {
+    throw new Error(
+      `OpenAI API tool details frame cannot fit within ${String(MAX_TOOL_SSE_FRAME_BYTES)} bytes.`,
+    );
+  }
+  return bestCandidate.frame;
+}
+
+function toolPayloadSearchIntervals(
+  payloads: readonly RenderedToolPayload[],
+  configuredMaxPayloadBytes: number,
+): readonly ToolPayloadSearchInterval[] {
+  const starts = new Set<number>([0]);
+  const addStart = (value: number): void => {
+    if (Number.isSafeInteger(value) && value >= 0 && value <= configuredMaxPayloadBytes) {
+      starts.add(value);
+    }
+  };
+
+  for (const payload of payloads) {
+    // At this exact budget projectToolPayload changes from a metadata wrapper
+    // to the raw payload, which can sharply reduce the serialized frame.
+    addStart(payload.originalBytes);
+  }
+
+  const orderedStarts = [...starts].sort((left, right) => left - right);
+  return orderedStarts.map((start, index) => ({
+    start,
+    end: (orderedStarts[index + 1] ?? configuredMaxPayloadBytes + 1) - 1,
+  }));
+}
+
+function highestFittingToolPayloadCandidate(
+  interval: ToolPayloadSearchInterval,
+  candidateAt: (appliedMaxBytes: number) => ToolDetailsFrameCandidate,
+): ToolDetailsFrameCandidate | undefined {
+  const endCandidate = candidateAt(interval.end);
+  if (endCandidate.frameBytes <= MAX_TOOL_SSE_FRAME_BYTES) {
+    return endCandidate;
+  }
+
+  const startCandidate = candidateAt(interval.start);
+  if (startCandidate.frameBytes > MAX_TOOL_SSE_FRAME_BYTES) {
+    return undefined;
+  }
+
+  let bestCandidate = startCandidate;
+  let lowerBound = interval.start + 1;
+  let upperBound = interval.end - 1;
+  while (lowerBound <= upperBound) {
+    const appliedMaxBytes = lowerBound + Math.floor((upperBound - lowerBound) / 2);
+    const candidate = candidateAt(appliedMaxBytes);
+    if (candidate.frameBytes <= MAX_TOOL_SSE_FRAME_BYTES) {
+      bestCandidate = candidate;
+      lowerBound = appliedMaxBytes + 1;
+    } else {
+      upperBound = appliedMaxBytes - 1;
+    }
+  }
+  return bestCandidate;
+}
+
+function isBetterToolPayloadCandidate(
+  candidate: ToolDetailsFrameCandidate,
+  current: ToolDetailsFrameCandidate,
+): boolean {
+  if (candidate.retainedPayloadBytes !== current.retainedPayloadBytes) {
+    return candidate.retainedPayloadBytes > current.retainedPayloadBytes;
+  }
+  if (candidate.frameBytes !== current.frameBytes) {
+    return candidate.frameBytes < current.frameBytes;
+  }
+  return candidate.appliedMaxBytes < current.appliedMaxBytes;
 }
 
 function openWebUIToolDetails(
@@ -1195,9 +1294,12 @@ const TOOL_PAYLOAD_DECODER = new TextDecoder("utf-8", {
  * applied UTF-8 preview budget. Projection operates on the already-rendered
  * text and never replaces fields on the source event object.
  */
-function projectToolPayload(payload: RenderedToolPayload, maxBytes: number): string {
+function projectToolPayload(payload: RenderedToolPayload, maxBytes: number): ProjectedToolPayload {
   if (payload.originalBytes <= maxBytes) {
-    return payload.text;
+    return {
+      text: payload.text,
+      retainedBytes: payload.originalBytes,
+    };
   }
   const preview = utf8Prefix(payload.text, maxBytes);
   const retainedBytes = utf8ByteLength(preview);
@@ -1208,10 +1310,13 @@ function projectToolPayload(payload: RenderedToolPayload, maxBytes: number): str
     retainedBytes,
     omittedBytes: payload.originalBytes - retainedBytes,
   };
-  return JSON.stringify({
-    __monoAgentTruncation: truncation,
-    preview,
-  });
+  return {
+    text: JSON.stringify({
+      __monoAgentTruncation: truncation,
+      preview,
+    }),
+    retainedBytes,
+  };
 }
 
 function renderToolPayload(value: unknown): RenderedToolPayload {
