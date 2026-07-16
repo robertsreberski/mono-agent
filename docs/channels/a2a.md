@@ -33,8 +33,8 @@ The provider is deliberately **text/task only**. It supports plain-text message 
 - No file exchange (text parts only)
 
 :::note
-:::
 If you need richer transport semantics, treat the provider as a stable text gateway and compose the missing pieces in front of it. The surface is kept small on purpose so it stays predictable for other agents to call.
+:::
 
 ## Configuration
 
@@ -168,8 +168,8 @@ To expose the provider publicly you must opt in on two axes:
 2. Set `requireBearer: true` with a `bearerToken` so callers must present `Authorization: Bearer <token>`. When `requireBearer` is on but no token is configured, start fails.
 
 :::caution
-:::
 A2A speaks plaintext HTTP. Terminate **HTTPS** at a reverse proxy in front of the provider, set `publicBaseUrl` to the public `https://` URL, and always pair public exposure with `requireBearer`. Keep `bearerToken` in `.env` (`MONO_AGENT_A2A_BEARER_TOKEN`), never in committed config.
+:::
 
 ## Startup status
 

@@ -104,8 +104,8 @@ The conversation id is resolved from the first present of these, in order:
 Open WebUI strips metadata from the bodies it forwards but, when `ENABLE_FORWARD_USER_INFO_HEADERS` is enabled, sends the chat id as `X-OpenWebUI-Chat-Id` — which is why the header fallbacks exist. `X-Conversation-Id` is the generic equivalent for other proxies.
 
 :::note
-:::
 If no id can be resolved, each request is treated as a fresh conversation. For multi-turn continuity, make sure your client forwards a stable id via body metadata or one of the headers above.
+:::
 
 Because only the latest turn is forwarded, the agent's [memory](/memory/capture-and-recall/) and [sessions](/runtime/sessions-concurrency/) handle history. The same [Tool Policy](/tools/policy/) and runtime guards apply to API turns as to any other channel.
 

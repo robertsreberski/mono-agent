@@ -20,8 +20,8 @@ This is a **code**-only capability — there is no config key for it. See the fe
 - The server binds loopback (`127.0.0.1`) and fails closed: a non-loopback host throws unless you pass `allowNonLoopback: true`.
 
 :::note
-:::
 The extension is request-scoped. You create it inside `runtimeOptionsForRequest` (one server per request) and return its `cleanup` so the host tears the MCP server down when the turn ends.
+:::
 
 ## API
 
@@ -98,8 +98,8 @@ const orchestrator = createConfiguredAgentResponder({
 ```
 
 :::caution
-:::
 Do not reuse one extension across requests. A new server is created per turn and `cleanup` closes it; returning `cleanup` from `runtimeOptionsForRequest` lets the host close it deterministically even if the turn errors or is aborted.
+:::
 
 ## Example topology
 
