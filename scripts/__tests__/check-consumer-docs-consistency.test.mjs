@@ -163,6 +163,7 @@ describe("check-consumer-docs-consistency", () => {
       "# Features",
       "live chat with full stream-event insight",
       "every structured `AgentStreamEvent` verbatim",
+      "Serialized event frames over 256 KiB receive field-level reduction.",
       "Rich traces are exported on every run.",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "docs/playbooks/phoenix-observed-agent.md", [
@@ -181,6 +182,7 @@ describe("check-consumer-docs-consistency", () => {
     await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/package-map.md", [
       "# Package map",
       "live chat with full stream-event insight",
+      "Serialized remote event frames are field-reduced to a strict cap.",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/playbooks.md", [
       "# Playbooks",
@@ -205,6 +207,8 @@ describe("check-consumer-docs-consistency", () => {
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/operator-adapter/src/tui/constants.ts", [
       "// Upper bound for one serialized NDJSON frame.",
+      "// Oversized events are field-reduced until the encoded frame fits.",
+      "// Every oversized event is field reduced.",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/agent-app/src/cli.ts", [
       "const help = [",
@@ -228,11 +232,14 @@ describe("check-consumer-docs-consistency", () => {
       "# TUI channel",
       "Structured event kinds are subject to the per-frame payload bound.",
       "Tool arguments and results stream up to the wire bound.",
+      "A serialized event frame over 256 KiB is field-reduced and remeasured.",
+      "Remote event frames above 256 KiB are field-reduced.",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "docs/observability/tui.md", [
       "# TUI",
       "Remote mode transports callbacks through the bounded wire protocol.",
       "Oversized remote event frames trigger reduction at the 256 KiB threshold; it is not a strict maximum.",
+      "Oversized events receive field-level payload reduction until they fit.",
     ].join("\n"));
 
     const result = await checkConsumerDocsConsistency([], { repoRoot });
@@ -248,6 +255,7 @@ describe("check-consumer-docs-consistency", () => {
     expect(reported).toContain("verbatim complete TUI event stream");
     expect(reported).toContain("broad TUI wire-bound claim");
     expect(reported).toContain("non-enforced TUI event reduction threshold");
+    expect(reported).toContain("blanket TUI event field-reduction claim");
     expect(reported).toContain("full thinking/tool/telemetry help insight");
     expect(reported).toContain("full-fidelity TUI NDJSON metadata");
     expect(reported).toContain("guaranteed tool-output artifact persistence");
@@ -291,7 +299,7 @@ describe("check-consumer-docs-consistency", () => {
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/package-map.md", [
       "# Package map",
-      "Serialized remote event frames are remeasured to a strict 256 KiB UTF-8 NDJSON cap; other frame kinds are unaffected.",
+      "Remote event frames have a strict 256 KiB UTF-8 NDJSON cap: assistant-thought/tool-call payload fields are reduced, while other oversized variants become bounded markers; other frame kinds are unaffected.",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md", [
       "# Discovery",
@@ -319,7 +327,7 @@ describe("check-consumer-docs-consistency", () => {
     ].join("\n"));
     await writeRepoDoc(repoRoot, "docs/channels/tui.md", [
       "# TUI channel",
-      "Serialized event frames are capped at 256 KiB after UTF-8 NDJSON encoding; non-event frames are unaffected.",
+      "Serialized event frames are capped at 256 KiB after UTF-8 NDJSON encoding. Assistant-thought/tool-call payload fields are reduced, while other oversized variants become bounded markers; non-event frames are unaffected.",
       "The full on-disk history remains pageable, subject to its documented retention contract.",
       "The full terminal-result replay horizon remains available after successful persistence.",
     ].join("\n"));

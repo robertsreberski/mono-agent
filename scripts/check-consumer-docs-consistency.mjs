@@ -191,6 +191,11 @@ const misleadingArtifactDurabilityClaims = [
       /\b(?:serialized\s+|oversized\s+|remote\s+)?event frames?\b[^\n.!?]{0,220}\b256\s+KiB\b[^\n.!?]{0,220}\bnot\s+a\s+strict\s+(?:byte\s+)?(?:maximum|cap)\b/iu,
   },
   {
+    label: "blanket TUI event field-reduction claim",
+    pattern:
+      /\b(?:(?:all|every)\s+)?oversized events?\s+(?:(?:is|are)\s+field[- ]reduced|receive\s+field[- ]level(?:\s+payload)?\s+reduction)\b|\b(?:(?:a|all|every)\s+)?(?:serialized(?:\s+remote)?|remote)\s+event frames?(?:\s+(?:over|above)\s+256\s+KiB)?\s+(?:(?:is|are)\s+field[- ]reduced|receive\s+field[- ]level(?:\s+payload)?\s+reduction)\b/iu,
+  },
+  {
     label: "guaranteed tool-output artifact persistence",
     pattern:
       /\bwhen\s+a\s+(?:tool\s+)?result\s+exceeds\b[^\n.!?]{0,180}\bit\s+is\s+persisted\s+as\s+an\s+artifact\b[^\n.!?]{0,180}\bnothing\s+is\s+silently\s+lost\b/iu,
