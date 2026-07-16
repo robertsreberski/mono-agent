@@ -379,19 +379,19 @@ Restarts the background instance for this config, starting it if stopped. Like `
 | --- | --- |
 | `--config <path>` | Target a non-default config. |
 | `--env-file <path>` | Load the same non-default dotenv file used by the managed worker and preserve it in recovery commands. |
-| `--force` | Stop, then purge the persisted pi-session store (`providers.piNative.piSessionsRoot`), then start fresh. |
+| `--force` | Stop, then purge the persisted pi-session store and active conversation-history store, then start fresh. |
 
-`--force` clears resumable provider sessions so the agent starts with fresh conversations instead of resuming saved transcripts. Durable memory under `memory.path` is untouched, and it is a no-op when sessions are in-memory (`piSessionsRoot` unset).
+`--force` clears both continuity paths: resumable provider transcripts under `providers.piNative.piSessionsRoot` and canonical active conversation history under `history/` beside `artifacts.dir`. The next turn therefore neither resumes nor replays pre-reset conversation state. Durable memory under `memory.path` and recorded run artifacts under `artifacts.dir` are untouched. Each missing store is a no-op.
 
 ```bash
 mono-agent restart
-mono-agent restart --force   # also purges piSessionsRoot
+mono-agent restart --force   # clears piSessionsRoot + active conversation history
 ```
 
 `piSessionsRoot` is set via `providers.piNative.piSessionsRoot` (env `MONO_AGENT_PI_SESSIONS_ROOT`), e.g. `.mono-agent/sessions`; leaving it unset keeps sessions in memory.
 
 :::caution
-`--force` permanently deletes saved transcripts for this instance. The agent's durable memory is preserved, but in-flight resumable conversations are dropped.
+`--force` permanently deletes saved provider transcripts and active conversation history for this instance. The agent's durable long-term memory and recorded run artifacts are preserved, but the current-chat context cannot be recovered after the reset.
 :::
 
 ## `stop`, `status`, `logs`

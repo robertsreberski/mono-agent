@@ -1243,7 +1243,22 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       }
       const after = await handle.stat();
       assertSameIdentity(opened, after, path);
-      const record = parseHistoryFile(bytes, path);
+      let record: LoadedHistoryRecord;
+      try {
+        record = parseHistoryFile(bytes, path);
+      } catch (error) {
+        if (error instanceof TruncatedHistoryRecordError) {
+          // Atomic replacement means our own writes cannot publish a partial
+          // record. If the filesystem nevertheless presents stable truncated
+          // JSON, fail cold instead of poisoning every future turn. Keep the
+          // unreadable file in place so the next locked append replaces it
+          // atomically; a fresh provider epoch then prevents stale transcript
+          // resume without guessing at data that can no longer be parsed.
+          await assertDirectoryIdentity(this.root, rootIdentity);
+          return { sourceVersion: 0, conversationId, messages: [] };
+        }
+        throw error;
+      }
       if (record.conversationId !== conversationId) {
         throw new Error(`History file ${path} does not belong to the requested conversation.`);
       }
@@ -1592,7 +1607,7 @@ function parseHistoryFile(bytes: Buffer, path: string): LoadedHistoryRecord {
   try {
     value = JSON.parse(bytes.toString("utf8"));
   } catch {
-    throw new Error(`History file ${path} is not valid JSON.`);
+    throw new TruncatedHistoryRecordError(`History file ${path} is not valid JSON.`);
   }
   if (!isRecord(value)) throw new Error(`History file ${path} must contain an object.`);
   if (typeof value.conversationId !== "string" || !Array.isArray(value.messages)) {
@@ -1654,6 +1669,8 @@ function parseHistoryFile(bytes: Buffer, path: string): LoadedHistoryRecord {
     },
   };
 }
+
+class TruncatedHistoryRecordError extends Error {}
 
 async function acquireCrossProcessLock(
   path: string,

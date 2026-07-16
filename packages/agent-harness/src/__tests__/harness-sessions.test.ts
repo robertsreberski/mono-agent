@@ -372,7 +372,7 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls[1]?.prompt).not.toContain("launch checklist");
   });
 
-  it("uses a history-owned epoch id for durable Pi resume and still seeds canonical history on cold reopen", async () => {
+  it("uses a history-owned epoch id and supplies canonical history structurally on cold durable reopen", async () => {
     const identityPath = await identityFixture();
     const durableRoot = await mkdtemp(join(tmpdir(), "agent-harness-durable-history-"));
     tempDirs.push(durableRoot);
@@ -398,14 +398,23 @@ describe("AgentHarness continuous sessions", () => {
     const legacyConversationOnlyId = createHash("sha256").update("conv-d").digest("hex").slice(0, 32);
     expect(fake.calls[0]?.options.sessionId).not.toBe(legacyConversationOnlyId);
     expect(fake.calls[0]?.options.piSessionsRoot).toBe(piSessionsRoot);
-    // A cold reopen still sends canonical history so create-on-miss cannot lose it.
-    expect(fake.calls[0]?.prompt).toContain(HISTORY_MARKER);
+    // A cold durable reopen keeps canonical history out of the system prompt and
+    // supplies it as leading structured messages. Pi can then seed create-on-miss
+    // while skipping the leading messages for a true durable resume.
+    expect(fake.calls[0]?.prompt).not.toContain(HISTORY_MARKER);
+    expect(fake.calls[0]?.options.messages).toEqual([
+      { role: "assistant", content: HISTORY_MARKER, timestamp: "2026-06-01T00:00:00Z" },
+      { role: "user", content: "first question" },
+    ]);
     expect(fake.syncedSessions).toEqual([fake.calls[0]?.options.sessionId]);
 
     // Once the exact clean epoch is live, the warm optimization omits history.
     const second = await harness.run(request("conv-d", "second question"));
     expect(fake.calls[1]?.options.sessionId).toBe(fake.calls[0]?.options.sessionId);
     expect(fake.calls[1]?.prompt).not.toContain(HISTORY_MARKER);
+    expect(fake.calls[1]?.options.messages).toEqual([
+      { role: "user", content: "second question" },
+    ]);
     expect(fake.syncedSessions).toEqual([
       fake.calls[0]?.options.sessionId,
       fake.calls[0]?.options.sessionId,
@@ -453,8 +462,12 @@ describe("AgentHarness continuous sessions", () => {
     await harnessA.run(request("conv-shared", "question-a2"));
     expect(fakeA.calls[1]?.options.sessionId).toBe(durableId);
     expect(fakeA.refreshedSessions).toEqual([durableId, durableId]);
-    expect(fakeA.calls[1]?.prompt).toContain("question-b");
-    expect(fakeA.calls[1]?.prompt).toContain("answer-from-b");
+    expect(fakeA.calls[1]?.prompt).not.toContain("question-b");
+    expect(fakeA.calls[1]?.prompt).not.toContain("answer-from-b");
+    expect(fakeA.calls[1]?.options.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user", content: "question-b" }),
+      expect.objectContaining({ role: "assistant", content: "answer-from-b" }),
+    ]));
   });
 
   it("cold-reopens a shared provider handle when a reloaded harness has no local session mapping", async () => {
@@ -510,8 +523,12 @@ describe("AgentHarness continuous sessions", () => {
 
     expect(fakeA.calls[1]?.options.sessionId).toBe(durableId);
     expect(fakeA.refreshedSessions).toEqual([durableId, durableId]);
-    expect(fakeA.calls[1]?.prompt).toContain("question-b");
-    expect(fakeA.calls[1]?.prompt).toContain("answer-from-b");
+    expect(fakeA.calls[1]?.prompt).not.toContain("question-b");
+    expect(fakeA.calls[1]?.prompt).not.toContain("answer-from-b");
+    expect(fakeA.calls[1]?.options.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "user", content: "question-b" }),
+      expect.objectContaining({ role: "assistant", content: "answer-from-b" }),
+    ]));
   });
 
   it("keeps a custom history store process-local even when extensions try to force durable Pi state", async () => {
@@ -578,8 +595,13 @@ describe("AgentHarness continuous sessions", () => {
     const second = await harness.run(request("conv-sync-failure", "second question"));
     expect(second.text).toBe("canonical answer");
     expect(fake.calls[1]?.options.sessionId).not.toBe(firstId);
-    expect(fake.calls[1]?.prompt).toContain("first question");
-    expect(fake.calls[1]?.prompt).toContain("canonical answer");
+    expect(fake.calls[1]?.prompt).not.toContain("first question");
+    expect(fake.calls[1]?.prompt).not.toContain("canonical answer");
+    expect(fake.calls[1]?.options.messages).toEqual([
+      expect.objectContaining({ role: "user", content: "first question" }),
+      expect.objectContaining({ role: "assistant", content: "canonical answer" }),
+      { role: "user", content: "second question" },
+    ]);
   });
 
   it.each(["failure result", "throw"] as const)(
@@ -646,7 +668,10 @@ describe("AgentHarness continuous sessions", () => {
     await harness.run(request("conv-verbatim", "follow-up"));
 
     expect(fake.calls[1]?.options.sessionId).not.toBe(firstId);
-    expect(fake.calls[1]?.prompt).toContain("Scheduled delivery.");
+    expect(fake.calls[1]?.prompt).not.toContain("Scheduled delivery.");
+    expect(fake.calls[1]?.options.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "assistant", content: "Scheduled delivery." }),
+    ]));
   });
 
   it("tracks provider session id rotation", async () => {

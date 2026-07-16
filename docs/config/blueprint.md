@@ -373,7 +373,7 @@ mono-agent validate     # section report; exit 0 means structurally valid, not z
 mono-agent validate --consumer ../local-agent-alpha  # read-only report for a downstream folder
 mono-agent start        # traceability + every configured channel
 mono-agent restart      # apply config edits (config is JSON-first; restart to re-apply)
-mono-agent restart --force  # restart AND purge persisted pi sessions (fresh start; durable memory kept)
+mono-agent restart --force  # restart AND clear provider sessions + active chat history (durable memory kept)
 ```
 
 Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it too) and run `mono-agent restart` to apply. There is no live browser re-apply. `start` prints the traceability source (Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts) and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason.
