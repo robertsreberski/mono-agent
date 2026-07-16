@@ -25,11 +25,15 @@ const DEFAULT_MAX_RUNS = 200;
 // AFTER this wider read and BEFORE the final `maxRuns` slice below.
 const FILTERED_READ_CEILING = 500;
 
-// observability's own default (~4096 bytes, see DEFAULT_MAX_STRING_BYTES in
-// @mono-agent/observability/src/guards.ts) is tuned for compact summaries and
-// guts tool/message payload expansion in the replay detail view. Replay needs
-// to show the (redacted) payload in full for drill-down, so it asks for a
-// much larger cap.
+/**
+ * observability's own default (~4096 bytes, see DEFAULT_MAX_STRING_BYTES in
+ * @mono-agent/observability/src/guards.ts) is tuned for compact summaries and
+ * guts tool/message payload expansion in the replay detail view. Replay asks
+ * for a larger, still-bounded projection for drill-down. The reader's
+ * key-pattern pass ensures non-numeric values under sensitive-looking object
+ * keys are redacted; numeric values under matched keys are retained; retained
+ * free text is not content-scanned.
+ */
 const REPLAY_MAX_STRING_BYTES = 32_768;
 
 export interface ReplayRunListItem extends RecordedRunListItem {

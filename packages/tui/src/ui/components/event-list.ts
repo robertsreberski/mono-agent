@@ -3,6 +3,7 @@ import type { Component } from "@earendil-works/pi-tui";
 
 import type { ReplayTimelineItem, TimelineTurn } from "../../data/replay.js";
 import { formatClock, formatDurationMs, formatTokens } from "../format.js";
+import { escapeTerminalControls } from "../terminal-text.js";
 import { styles } from "../theme.js";
 
 export interface EventTimelineListOptions {
@@ -319,7 +320,8 @@ export class EventTimelineList implements Component {
       return false;
     }
     const query = this.searchQuery.toLowerCase();
-    return item.label.toLowerCase().includes(query) || item.summary.toLowerCase().includes(query);
+    return escapeTerminalControls(item.label).toLowerCase().includes(query)
+      || escapeTerminalControls(item.summary).toLowerCase().includes(query);
   }
 
   private matchPositions(): number[] {
@@ -342,7 +344,7 @@ export class EventTimelineList implements Component {
     }
 
     const color = categoryStyle(item.category);
-    let labelPart = color(highlightMatches(item.label, this.searchQuery));
+    let labelPart = color(highlightMatches(escapeTerminalControls(item.label), this.searchQuery));
     if (selected) {
       labelPart = styles.bold(labelPart);
     }
@@ -353,8 +355,9 @@ export class EventTimelineList implements Component {
       item.category === "thinking" && item.contentChars !== undefined
         ? styles.dim(` (${formatThinkingStats(item.contentChars, item.timestamp, item.endTimestamp)})`)
         : "";
-    const summaryPart =
-      item.summary.length > 0 ? ` — ${styles.muted(highlightMatches(item.summary, this.searchQuery))}` : "";
+    const summaryPart = item.summary.length > 0
+      ? ` — ${styles.muted(highlightMatches(escapeTerminalControls(item.summary), this.searchQuery))}`
+      : "";
 
     const prefix = selected ? styles.accent("❯ ") : "  ";
     return `${prefix}${segments.join(" ")} ${glyphPart}${labelPart}${thinkingSuffix}${summaryPart}`;

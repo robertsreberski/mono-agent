@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,6 +6,9 @@ import { TUI } from "@earendil-works/pi-tui";
 import { createJsonlRunRecorder } from "@mono-agent/observability";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import type { ReplayTimelineItem } from "../data/replay.js";
+import { sessionBoundaryNotice } from "../ui/session-boundary.js";
+import { buildDetailCell, buildRawPayloadBody } from "../ui/views/replay-detail.js";
 import { ReplayView } from "../ui/views/replay.js";
 import { stripAnsi, TestTerminal } from "./test-terminal.js";
 
@@ -43,10 +46,104 @@ function trimmedLines(view: ReplayView): string[] {
   return view.render(100).map((line) => stripAnsi(line).trim());
 }
 
+function runtimeTimelineItem(index: number, payload: Record<string, unknown>): ReplayTimelineItem {
+  const type = typeof payload.type === "string" ? payload.type : undefined;
+  return {
+    index,
+    ...(type === undefined ? {} : { type }),
+    category: "runtime",
+    timestamp: "2026-07-16T00:00:00.000Z",
+    label: type ?? "Runtime event",
+    summary: JSON.stringify(payload),
+    payload,
+    sourceEventCount: 1,
+    sourceEventStartIndex: index,
+    sourceEventEndIndex: index,
+    endTimestamp: "2026-07-16T00:00:00.000Z",
+    turnIndex: 0,
+  };
+}
+
+function renderDetailCell(item: ReplayTimelineItem): string | undefined {
+  const cell = buildDetailCell(item, [item], []);
+  return cell === undefined ? undefined : stripAnsi(cell.render(160).join("\n")).trim();
+}
+
+function normalizedJSDocBefore(source: string, anchor: string): string {
+  const parts = source.split(anchor);
+  if (parts.length !== 2) {
+    throw new Error(`Expected one source anchor, found ${parts.length - 1}: ${anchor}`);
+  }
+  const prefix = parts[0]!.trimEnd();
+  const commentStart = prefix.lastIndexOf("/**");
+  const commentEnd = commentStart < 0 ? -1 : prefix.indexOf("*/", commentStart);
+  if (commentStart < 0 || commentEnd !== prefix.length - 2) {
+    throw new Error(`Missing adjacent JSDoc before source anchor: ${anchor}`);
+  }
+  return prefix
+    .slice(commentStart)
+    .replace(/^\s*\/\*\*\s?/u, "")
+    .replace(/\s*\*\/\s*$/u, "")
+    .replace(/^\s*\*\s?/gmu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
 async function openRun(view: ReplayView, runId: string): Promise<void> {
   view.list.onSelect?.({ value: runId, label: "", description: "" });
   await flush();
 }
+
+describe("replay projection contract comments", () => {
+  it("rejects an intervening block comment between a contract JSDoc and its anchor", () => {
+    const separated = [
+      "/** bounded key-pattern contract */",
+      "/* unrelated intervening comment */",
+      "const REPLAY_MAX_STRING_BYTES = 32_768;",
+    ].join("\n");
+
+    expect(() => normalizedJSDocBefore(separated, "const REPLAY_MAX_STRING_BYTES")).toThrow(
+      "Missing adjacent JSDoc before source anchor",
+    );
+  });
+
+  it("pins the bounded key-pattern and retained-free-text boundary at every replay layer", async () => {
+    const contracts = [
+      ["../data/replay.ts", "const REPLAY_MAX_STRING_BYTES"],
+      ["../ui/views/replay.ts", "export class ReplayView"],
+      ["../ui/views/replay-detail.ts", "export function buildDetailCell"],
+      ["../ui/views/replay-detail.ts", "function extractFullText"],
+    ] as const;
+    const sources = new Map<string, string>();
+
+    for (const [relativeSource, anchor] of contracts) {
+      let source = sources.get(relativeSource);
+      if (source === undefined) {
+        source = await readFile(new URL(relativeSource, import.meta.url), "utf8");
+        sources.set(relativeSource, source);
+      }
+      const comment = normalizedJSDocBefore(source, anchor);
+      expect(comment).toContain("bounded");
+      expect(comment).toContain("key-pattern");
+      expect(comment).toContain("non-numeric values under sensitive-looking object keys are redacted");
+      expect(comment).toContain("numeric values under matched keys are retained");
+      expect(comment).toContain("retained free text is not content-scanned");
+    }
+
+    const staleAbsolutes = [
+      /show the \(redacted\) payload in full/iu,
+      /\bredacted\s*,\s*bounded\b/iu,
+      /\balready redacted(?:\/capped)?\b/iu,
+      /\bredacted raw event\b/iu,
+      /\braw redacted event\b/iu,
+    ];
+    for (const [relativeSource, source] of sources) {
+      for (const staleAbsolute of staleAbsolutes) {
+        expect(source.match(staleAbsolute), `${relativeSource}: ${staleAbsolute.source}`).toBeNull();
+      }
+    }
+  });
+});
 
 /**
  * Two turns: coalesced thinking -> tool_use ("bash") -> tool_result -> thinking
@@ -225,6 +322,34 @@ async function writeCellShowcaseFixture(runId: string): Promise<void> {
     message: "provider degraded",
   });
   await recorder.finish({ text: "hello back" });
+}
+
+async function writeSessionBoundaryFixture(runId: string): Promise<void> {
+  const recorder = createJsonlRunRecorder({ runId, conversationId: "telegram:42#2026-07-16", artifactDir: dir });
+  recorder.onEvent({
+    type: "session_boundary",
+    timestamp: "2026-07-16T00:00:00.000Z",
+    kind: "rollover",
+    previousConversationId: "telegram:42#2026-07-15",
+    conversationId: "telegram:42#2026-07-16",
+    reason: "daily_rollover",
+  });
+  await recorder.finish({ text: "ready" });
+}
+
+async function writeHostileSessionBoundaryFixture(runId: string): Promise<void> {
+  const recorder = createJsonlRunRecorder({ runId, conversationId: "telegram:42#2026-07-16", artifactDir: dir });
+  recorder.onEvent({
+    type: "session_boundary",
+    timestamp: "2026-07-16T00:00:00.000Z",
+    summary: "row-only\u009b\u202e",
+    kind: "roll\u001b[2J-over",
+    previousConversationId: "previous\u001b]52;c;payload\u0007",
+    conversationId: "current\u001b_payload\u001b\\",
+    reason: "daily_rollover",
+    rawOnly: "raw-only\u0085\u2066",
+  });
+  await recorder.finish({ text: "ready" });
 }
 
 /** cron run identified by sourceDetail (job id); no userInput. Fixed clock => deterministic 0ms duration. */
@@ -659,7 +784,7 @@ describe("ReplayView detail mode", () => {
     expect(text).toContain("file contents here"); // t2's result, the SECOND block in the batched event
   });
 
-  it("shows a plain user message as chat's UserCell and keeps runtime/telemetry items as raw JSON, except runtime_warning (NoticeCell)", async () => {
+  it("shows a plain user message as chat's UserCell, keeps generic runtime JSON, and notices runtime_warning", async () => {
     await writeCellShowcaseFixture("run-showcase");
     const view = setup();
     view.setArtifactDir(dir);
@@ -681,6 +806,119 @@ describe("ReplayView detail mode", () => {
     expect(trimmedLines(view)).not.toContain("{");
     text = stripAnsi(view.render(100).join("\n"));
     expect(text).toContain("⚠ provider degraded");
+  });
+
+  it("shows a recorded session boundary as a friendly collapsed notice while preserving raw expansion", async () => {
+    await writeSessionBoundaryFixture("run-boundary");
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+    await openRun(view, "run-boundary");
+
+    const collapsed = trimmedLines(view);
+    expect(collapsed).toContain(
+      "i session boundary: rollover · daily rollover · telegram:42#2026-07-15 -> telegram:42#2026-07-16",
+    );
+    expect(collapsed).not.toContain("{");
+
+    view.handleInput("\r");
+    expect(trimmedLines(view)).toContain("{");
+  });
+
+  it("renders only exact session-boundary replay events with the live friendly notice contract", () => {
+    const direct = runtimeTimelineItem(0, {
+      type: "session_boundary",
+      kind: "rollover",
+      previousConversationId: "telegram:42#2026-07-15",
+      conversationId: "telegram:42#2026-07-16",
+      reason: "daily_rollover",
+    });
+    expect(renderDetailCell(direct)).toBe(
+      "i session boundary: rollover · daily rollover · telegram:42#2026-07-15 -> telegram:42#2026-07-16",
+    );
+
+    const liveShape = runtimeTimelineItem(1, {
+      type: "runtime_telemetry",
+      kind: "session_boundary",
+      data: {
+        type: "session_boundary",
+        kind: "rollover",
+        previousConversationId: "telegram:42#2026-07-15",
+        conversationId: "telegram:42#2026-07-16",
+        reason: "daily_rollover",
+      },
+    });
+    expect(renderDetailCell(liveShape)).toBe(renderDetailCell(direct));
+
+    const adjacentSessionEvent = runtimeTimelineItem(2, {
+      type: "session_boundary_started",
+      kind: "rollover",
+    });
+    const unrelatedTelemetry = runtimeTimelineItem(3, {
+      type: "runtime_telemetry",
+      kind: "cache_hit",
+      data: { kind: "cache_hit", tokens: 400 },
+    });
+    expect(buildDetailCell(adjacentSessionEvent, [adjacentSessionEvent], [])).toBeUndefined();
+    expect(buildDetailCell(unrelatedTelemetry, [unrelatedTelemetry], [])).toBeUndefined();
+  });
+
+  it("makes persisted session-boundary fields terminal-inert before notice rendering", () => {
+    // Assert the formatter directly: stripAnsi would erase an injected escape
+    // sequence and could turn a vulnerable NoticeCell assertion falsely green.
+    const notice = sessionBoundaryNotice({
+      type: "session_boundary",
+      kind: "roll\u001b[2J-over",
+      reason: "daily\nrollover\r\t\u0000\u007f\u009b\u202e",
+      previousConversationId: "previous\u001b]52;c;payload\u0007",
+      conversationId: "current\u001b_cursor\u001b\\",
+    });
+
+    expect(notice).toContain("session boundary: roll\\u001b[2J over");
+    expect(notice).toContain("daily\\u000arollover\\u000d\\u0009\\u0000\\u007f\\u009b\\u202e");
+    expect(notice).toContain("previous\\u001b]52;c;payload\\u0007 -> current\\u001b_cursor\\u001b\\");
+    expect(notice).not.toMatch(/[\u0000-\u001f\u007f-\u009f]|\p{Bidi_Control}/u);
+
+    const resumeNotice = sessionBoundaryNotice({
+      type: "session_boundary",
+      kind: "resume_replay",
+      providerSessionId: "provider\u001b]8;;https://example.invalid\u0007link\u001b]8;;\u0007",
+    });
+    expect(resumeNotice).toContain(
+      "provider provider\\u001b]8;;https://example.invalid\\u0007link\\u001b]8;;\\u0007",
+    );
+    expect(resumeNotice).not.toMatch(/[\u0000-\u001f\u007f-\u009f]|\p{Bidi_Control}/u);
+  });
+
+  it("keeps hostile persisted session-boundary controls inert in the event row and raw expansion", async () => {
+    await writeHostileSessionBoundaryFixture("run-hostile-boundary");
+    const view = setup();
+    view.setArtifactDir(dir);
+    await flush();
+    await openRun(view, "run-hostile-boundary");
+
+    const collapsed = view.render(100).join("\n");
+    expect(collapsed).toContain("row-only\\u009b\\u202e");
+    expect(collapsed).not.toContain("raw-only");
+    expect(collapsed).not.toContain("\u009b");
+    expect(collapsed).not.toContain("\u202e");
+    expect(collapsed).not.toContain("\u001b]52;c;payload\u0007");
+
+    view.handleInput("\r");
+    const expanded = view.render(100).join("\n");
+    expect(expanded).toContain("row-only\\u009b\\u202e");
+    expect(expanded).toContain("raw-only\\u0085\\u2066");
+    expect(expanded).not.toContain("\u009b");
+    expect(expanded).not.toContain("\u0085");
+    expect(expanded).not.toContain("\u202e");
+    expect(expanded).not.toContain("\u2066");
+    expect(expanded).not.toContain("\u001b]52;c;payload\u0007");
+
+    const directRaw = buildRawPayloadBody({
+      ...runtimeTimelineItem(0, { type: "runtime" }),
+      payload: "raw\n\u001b]52;c;payload\u0007\u009b\u202e",
+    }, true);
+    expect(directRaw).toBe("raw\\u000a\\u001b]52;c;payload\\u0007\\u009b\\u202e");
   });
 
   it("esc from plain detail (no search, no expansion) returns to the list (regression)", async () => {
