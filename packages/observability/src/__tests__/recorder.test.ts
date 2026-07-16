@@ -2,10 +2,35 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const writeFault = vi.hoisted(() => ({
+  intercept: undefined as undefined | ((
+    original: (filePath: string, contents: string) => Promise<void>,
+    filePath: string,
+    contents: string,
+  ) => Promise<void>),
+}));
+
+vi.mock("../artifact-fs.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../artifact-fs.js")>();
+  return {
+    ...actual,
+    writeJsonAtomic: async (filePath: string, contents: string): Promise<void> => {
+      const intercept = writeFault.intercept;
+      return intercept === undefined
+        ? await actual.writeJsonAtomic(filePath, contents)
+        : await intercept(actual.writeJsonAtomic, filePath, contents);
+    },
+  };
+});
 
 import { createJsonlRunRecorder } from "../index.js";
-import { redactJsonValue } from "../recorder.js";
+import {
+  RUN_CHECKPOINT_EVENT_INTERVAL,
+  RUN_CHECKPOINT_TIME_INTERVAL_MS,
+  redactJsonValue,
+} from "../recorder.js";
 
 const tempDirs: string[] = [];
 async function tempDir(): Promise<string> {
@@ -15,8 +40,29 @@ async function tempDir(): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.useRealTimers();
+  writeFault.intercept = undefined;
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
+
+interface CheckpointSummary {
+  readonly status: string;
+  readonly eventCount: number;
+  readonly endedAt?: string;
+}
+
+async function waitForSummary(
+  summaryPath: string,
+  predicate: (summary: CheckpointSummary) => boolean,
+): Promise<CheckpointSummary> {
+  return await vi.waitFor(async () => {
+    const summary = JSON.parse(await readFile(summaryPath, "utf8")) as CheckpointSummary;
+    if (!predicate(summary)) {
+      throw new Error(`summary has not reached the expected checkpoint: ${JSON.stringify(summary)}`);
+    }
+    return summary;
+  }, { interval: 10, timeout: 2_000 });
+}
 
 describe("JsonlRunRecorder", () => {
   it("persists the user prompt into the summary so backfill can show it as input", async () => {
@@ -240,7 +286,7 @@ describe("JsonlRunRecorder", () => {
     expect(await readFile(running.artifactPaths[0] ?? "", "utf8")).toBe("");
 
     recorder.onEvent({ type: "assistant", message: "visible" });
-    // onEvent() is process-local buffering, not an append/checkpoint boundary.
+    // One event at 2.5 seconds has reached neither checkpoint threshold.
     expect(await readFile(running.artifactPaths[0] ?? "", "utf8")).toBe("");
     now = Date.parse("2026-05-16T08:00:02.500Z");
     const final = await recorder.finish({});
@@ -255,6 +301,232 @@ describe("JsonlRunRecorder", () => {
     });
     expect(await readFile(final.artifactPaths[1] ?? "", "utf8")).toContain('"status": "succeeded"');
     expect(await readFile(final.artifactPaths[0] ?? "", "utf8")).toContain('"message":"visible"');
+  });
+
+  it("persists a running crash checkpoint after the event bound without requiring finish", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({
+      runId: "crash-mid-run",
+      conversationId: "webhook:crash",
+      artifactDir: dir,
+    });
+    const running = await recorder.start?.();
+    if (running === undefined) {
+      throw new Error("recorder must support start()");
+    }
+
+    for (let index = 0; index < RUN_CHECKPOINT_EVENT_INTERVAL - 1; index += 1) {
+      recorder.onEvent({ type: "assistant", index, text: `chunk-${index}` });
+    }
+    const beforeThreshold = JSON.parse(await readFile(running.artifactPaths[1] ?? "", "utf8")) as CheckpointSummary;
+    expect(beforeThreshold.eventCount).toBe(0);
+    recorder.onEvent({
+      type: "assistant",
+      index: RUN_CHECKPOINT_EVENT_INTERVAL - 1,
+      text: `chunk-${RUN_CHECKPOINT_EVENT_INTERVAL - 1}`,
+    });
+
+    // Deliberately never call finish()/fail(): abandoning the recorder models a
+    // process crash after the fire-and-forget checkpoint reaches disk.
+    const checkpoint = await waitForSummary(
+      running.artifactPaths[1] ?? "",
+      (summary) => summary.status === "running" && summary.eventCount === RUN_CHECKPOINT_EVENT_INTERVAL,
+    );
+    const events = (await readFile(running.artifactPaths[0] ?? "", "utf8")).trim().split("\n");
+
+    expect(checkpoint).toMatchObject({
+      status: "running",
+      eventCount: RUN_CHECKPOINT_EVENT_INTERVAL,
+    });
+    expect(checkpoint.endedAt).toBeUndefined();
+    expect(events).toHaveLength(RUN_CHECKPOINT_EVENT_INTERVAL);
+    expect(JSON.parse(events.at(-1) ?? "{}")).toMatchObject({
+      index: RUN_CHECKPOINT_EVENT_INTERVAL - 1,
+      text: `chunk-${RUN_CHECKPOINT_EVENT_INTERVAL - 1}`,
+    });
+  });
+
+  it("checkpoints sparse events at the time bound without debouncing the first event", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-16T08:00:00.000Z"));
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({
+      runId: "sparse-run",
+      conversationId: "cron:sparse",
+      artifactDir: dir,
+    });
+    const running = await recorder.start?.();
+    if (running === undefined) {
+      throw new Error("recorder must support start()");
+    }
+
+    recorder.onEvent({ type: "assistant", text: "first" });
+    await vi.advanceTimersByTimeAsync(RUN_CHECKPOINT_TIME_INTERVAL_MS - 1_000);
+    recorder.onEvent({ type: "assistant", text: "second" });
+    await vi.advanceTimersByTimeAsync(999);
+    const beforeDeadline = JSON.parse(await readFile(running.artifactPaths[1] ?? "", "utf8")) as CheckpointSummary;
+    expect(beforeDeadline.eventCount).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(1);
+    vi.useRealTimers();
+    const checkpoint = await waitForSummary(
+      running.artifactPaths[1] ?? "",
+      (summary) => summary.status === "running" && summary.eventCount === 2,
+    );
+    expect(checkpoint.endedAt).toBeUndefined();
+  });
+
+  it("serializes an already-queued checkpoint before terminal finalization", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({
+      runId: "checkpoint-terminal-race",
+      conversationId: "telegram:race",
+      artifactDir: dir,
+    });
+    await recorder.start?.();
+    for (let index = 0; index < RUN_CHECKPOINT_EVENT_INTERVAL; index += 1) {
+      recorder.onEvent({ type: "assistant", index });
+    }
+
+    // finish() starts while the threshold checkpoint is still fire-and-forget.
+    // The serialized writer must leave the terminal snapshot as the last write.
+    const final = await recorder.finish({ model: "test-model" });
+    const onDisk = JSON.parse(await readFile(final.artifactPaths[1] ?? "", "utf8")) as CheckpointSummary;
+    const events = (await readFile(final.artifactPaths[0] ?? "", "utf8")).trim().split("\n");
+
+    expect(final).toMatchObject({
+      status: "succeeded",
+      eventCount: RUN_CHECKPOINT_EVENT_INTERVAL,
+      model: "test-model",
+    });
+    expect(onDisk.status).toBe("succeeded");
+    expect(onDisk.eventCount).toBe(RUN_CHECKPOINT_EVENT_INTERVAL);
+    expect(onDisk.endedAt).toBeTypeOf("string");
+    expect(events).toHaveLength(RUN_CHECKPOINT_EVENT_INTERVAL);
+  });
+
+  it("coalesces repeated triggers behind slow checkpoint I/O and follows with the newest snapshot", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({
+      runId: "slow-checkpoint-coalescing",
+      conversationId: "webhook:slow-checkpoint",
+      artifactDir: dir,
+    });
+    const running = await recorder.start?.();
+    if (running === undefined) {
+      throw new Error("recorder must support start()");
+    }
+
+    const firstEventsWriteStarted = deferred();
+    const releaseFirstEventsWrite = deferred();
+    let eventsWriteCount = 0;
+    writeFault.intercept = async (original, filePath, contents) => {
+      if (filePath.endsWith(".events.jsonl")) {
+        eventsWriteCount += 1;
+        if (eventsWriteCount === 1) {
+          firstEventsWriteStarted.resolve();
+          await releaseFirstEventsWrite.promise;
+        }
+      }
+      await original(filePath, contents);
+    };
+
+    for (let index = 0; index < RUN_CHECKPOINT_EVENT_INTERVAL; index += 1) {
+      recorder.onEvent({ type: "assistant", index });
+    }
+    await firstEventsWriteStarted.promise;
+
+    const finalEventCount = RUN_CHECKPOINT_EVENT_INTERVAL * 5;
+    for (let index = RUN_CHECKPOINT_EVENT_INTERVAL; index < finalEventCount; index += 1) {
+      recorder.onEvent({ type: "assistant", index });
+    }
+    const eventsWriteCountWhileBlocked = eventsWriteCount;
+    releaseFirstEventsWrite.resolve();
+    const checkpoint = await waitForSummary(
+      running.artifactPaths[1] ?? "",
+      (summary) => summary.status === "running" && summary.eventCount === finalEventCount,
+    );
+    const events = (await readFile(running.artifactPaths[0] ?? "", "utf8")).trim().split("\n");
+
+    expect(checkpoint.endedAt).toBeUndefined();
+    expect(eventsWriteCountWhileBlocked).toBe(1);
+    expect(eventsWriteCount).toBe(2);
+    expect(events).toHaveLength(finalEventCount);
+    expect(events.map((line) => (JSON.parse(line) as { index: number }).index)).toEqual(
+      Array.from({ length: finalEventCount }, (_, index) => index),
+    );
+  });
+
+  it("swallows a checkpoint write failure without poisoning terminal recovery", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({
+      runId: "checkpoint-write-failure",
+      conversationId: "webhook:failure",
+      artifactDir: dir,
+    });
+    await recorder.start?.();
+
+    const checkpointAttempted = deferred();
+    let failCheckpoint = true;
+    writeFault.intercept = async (original, filePath, contents) => {
+      if (failCheckpoint) {
+        failCheckpoint = false;
+        checkpointAttempted.resolve();
+        throw new Error("simulated checkpoint disk failure");
+      }
+      await original(filePath, contents);
+    };
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown): void => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+    try {
+      for (let index = 0; index < RUN_CHECKPOINT_EVENT_INTERVAL; index += 1) {
+        recorder.onEvent({ type: "assistant", index });
+      }
+      await checkpointAttempted.promise;
+
+      // The required terminal write queues behind the rejected best-effort
+      // checkpoint and must get a fresh, non-poisoned writer attempt.
+      const final = await recorder.finish({ model: "recovered-model" });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const onDisk = JSON.parse(await readFile(final.artifactPaths[1] ?? "", "utf8")) as CheckpointSummary;
+      const events = (await readFile(final.artifactPaths[0] ?? "", "utf8")).trim().split("\n");
+
+      expect(unhandledRejections).toEqual([]);
+      expect(final).toMatchObject({
+        status: "succeeded",
+        eventCount: RUN_CHECKPOINT_EVENT_INTERVAL,
+        model: "recovered-model",
+      });
+      expect(onDisk.status).toBe("succeeded");
+      expect(onDisk.eventCount).toBe(RUN_CHECKPOINT_EVENT_INTERVAL);
+      expect(events).toHaveLength(RUN_CHECKPOINT_EVENT_INTERVAL);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+  });
+
+  it("cancels a pending sparse-event timer when terminal finalization starts", async () => {
+    vi.useFakeTimers();
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({
+      runId: "timer-terminal-race",
+      conversationId: "telegram:timer-race",
+      artifactDir: dir,
+    });
+    await recorder.start?.();
+    recorder.onEvent({ type: "assistant", text: "only event" });
+
+    const final = await recorder.finish({});
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(RUN_CHECKPOINT_TIME_INTERVAL_MS * 2);
+    const onDisk = JSON.parse(await readFile(final.artifactPaths[1] ?? "", "utf8")) as CheckpointSummary;
+
+    expect(onDisk.status).toBe("succeeded");
+    expect(onDisk.eventCount).toBe(1);
+    expect(onDisk.endedAt).toBeTypeOf("string");
   });
 
   it("keeps prepareFinish non-terminal and commits late warnings exactly once", async () => {
@@ -336,3 +608,9 @@ describe("redactJsonValue", () => {
     expect(redactJsonValue(value)).toEqual({ authorization: "[redacted]", self: "[circular]" });
   });
 });
+
+function deferred(): { readonly promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}

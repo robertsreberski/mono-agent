@@ -6,7 +6,7 @@ sidebar:
 
 # Artifacts, latency & trace registry
 
-mono-agent is local-first about observability: every run gets a JSONL event artifact and a summary in a folder on disk, and the host publishes a small heartbeat manifest so the CLI can discover running agents. At `start()`, the recorder performs separate atomic replacements for an empty events file and a `running` summary. It buffers key-redacted events in memory during the run and caps each event string at 4,096 bytes by default. Terminal `finish()`/`fail()` uses separate atomic replacements for that bounded events snapshot first and the summary second. These temp-file-and-rename writes provide no append, checkpoint, fsync, or cross-file transaction guarantee. The artifacts are the local on-disk record after a successful recorder boundary; the [Phoenix exporter](/observability/phoenix-and-backfill/) is an optional, additive layer on top.
+mono-agent is local-first about observability: every run gets a JSONL event artifact and a summary in a folder on disk, and the host publishes a small heartbeat manifest so the CLI can discover running agents. At `start()`, the recorder performs separate atomic replacements for an empty events file and a `running` summary. It applies key-based redaction and buffers later events with a 4,096-byte default cap per string, schedules incremental `running` snapshots, and writes a final snapshot at `finish()`/`fail()`. Every boundary replaces the events file first and summary second. These temp-file-and-rename writes provide no append, fsync, power-loss durability, or cross-file transaction guarantee. The artifacts are the best-effort on-disk prefix after a successful recorder boundary; the [Phoenix exporter](/observability/phoenix-and-backfill/) is an optional, additive layer on top.
 
 This page covers where artifacts land, the latency-attribution events inside them, and the trace-source registry that `mono-agent status` reads.
 
@@ -14,7 +14,7 @@ This page covers where artifacts land, the latency-attribution events inside the
 
 Each agent run writes two files into `artifacts.dir`:
 
-- `run-<id>.events.jsonl` — the terminal snapshot of key-redacted, bounded events that reached the recorder's in-memory buffer, one event per line (assistant deltas, tool calls/results, timing, usage/cost).
+- `run-<id>.events.jsonl` — the latest successfully replaced snapshot of key-redacted, bounded events that reached the recorder's in-memory buffer, one event per line (assistant deltas, tool calls/results, timing, usage/cost).
 - `run-<id>.summary.json` — a private local roll-up of the run (final `status`, aggregate usage/cost, model, and the compiled `systemPrompt` when captured). See [Run status](#run-status-and-stale-run-reconciliation) for the status values. Routed runs preserve normalized `failoverHistory` (model, failure, subkind, and request id when available). The companion events JSONL records bounded `provider_route_safety` events with each uniform or provider-native contract/status. Credentials and private resolver options are never copied into either artifact.
 
 Memory-maintenance runs (`mem-*`, used by BuJo capture and rituals) write the same two-file shape under `artifacts.dir/memory/`. Keeping them in a separate namespace lets operator surfaces default to human-facing agent runs while still allowing explicit memory export, audit, and metrics flows.
@@ -24,6 +24,24 @@ Artifacts are written for every run regardless of whether any exporter is config
 :::note
 Current matcher limitations remain follow-up work. Key names that put a space, dot, slash, or colon between `private`/`api` and `key` are not matched (for example, `private key`, `api.key`, `private/key`, or `api:key`). Because matching is substring-based, string values under benign keys such as `credentialType`, `bearerStatus`, and `privateKeyboard` are conservatively redacted. These classifications document the current behavior; this issue does not change the production matcher.
 :::
+
+The recorder writes the initial `running` summary immediately and then schedules
+a best-effort incremental snapshot after 25 new events or five seconds from the
+first uncheckpointed event, whichever comes first. `onEvent` does not await
+filesystem I/O: concurrent triggers coalesce behind one serialized writer, and
+an incremental write failure cannot fail the run. Summary and event contents
+are captured from the same in-memory point, and terminal finalization is queued
+after every already-scheduled checkpoint, so a late `running` write cannot
+replace `succeeded`, `failed`, or `cancelled`.
+
+This is best-effort, bounded crash-prefix recovery rather than whole-trail
+durability. With a healthy local filesystem, the scheduler leaves fewer than 25
+newly accepted events—or roughly five seconds of sparse events—outside a
+scheduled snapshot; it cannot bound filesystem completion time or failure. The
+events file is atomically replaced first and the summary file second. Those two
+renames are not a transaction, so a death between them may leave a newer events
+prefix beside the prior summary. A death before the first checkpoint, during a
+write, or after a filesystem failure can still lose the unsaved tail.
 
 ```json
 {
@@ -69,9 +87,9 @@ A run summary's `status` is one of:
 | `cancelled` | The turn was aborted by a caller (e.g. a newer follow-up cancelled it). |
 | `interrupted` | The run never settled on its own — the process died mid-run, or a watchdog (e.g. the [cron run watchdog](/channels/cron/#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve)) aborted a wedged run. |
 
-A crashed process can leave a summary stuck at `running` forever. To self-heal that, the host runs `reconcileStaleRunArtifacts()` **once at startup**: it scans the artifacts directory and rewrites any summary left at `running` by a *previous* process to `interrupted` (failure kind `process_death`). It is fire-and-forget — best-effort, runs in the background, and never gates readiness — so a large artifacts directory can never delay start. In the [Phoenix export](/observability/phoenix-and-backfill/), `interrupted` maps to an ERROR span, alongside `failed` and `cancelled`.
+A crashed process can leave the most recent incrementally checkpointed summary at `running`. To self-heal that, the host runs `reconcileStaleRunArtifacts()` **once at startup**: it scans the artifacts directory and rewrites any summary left at `running` by a *previous* process to `interrupted` (failure kind `process_death`) while preserving the checkpointed event trail. It is fire-and-forget — best-effort, runs in the background, and never gates readiness — so a large artifacts directory can never delay start. In the [Phoenix export](/observability/phoenix-and-backfill/), `interrupted` maps to an ERROR span, alongside `failed` and `cancelled`.
 
-Reconciliation repairs status only and can report only data that reached a recorder write boundary. If the process dies after events were buffered but before the terminal write, the reconciled run can report `process_death` with `eventCount: 0` even though events occurred. The live broadcast gives connected TUI/web clients best-effort real-time visibility, but it is not recovery or a post-mortem event trail.
+Reconciliation repairs status only and can report only data that reached a recorder write boundary. It can preserve the last completed checkpointed prefix; a death before the first incremental checkpoint or after a failed write can still reconcile as `process_death` with `eventCount: 0` even though events occurred. A death between the two file renames can also leave a newer events file beside the prior summary. The live broadcast may show connected TUI/web clients a newer best-effort tail, but it is not recovery for data absent from disk.
 
 Failure kinds are an open string set because provider/runtime adapters can surface new values. The display taxonomy currently explains the common operator-facing kinds including `usage_limit`, `process_death`, `cancelled` and its cancellation variants, `provider_unavailable`, `provider_unavailable_exhausted`, `runtime_error`, `session_not_found`, and `session_busy`; unknown values stay visible and get a generic artifact/log inspection hint.
 
