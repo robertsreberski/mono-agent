@@ -84,10 +84,14 @@ describe("BujoMemoryStore — tier derivation", () => {
         tier: "bujo",
         state: "running",
         counters: { embeddingCalls: 2, embeddingTexts: 2, llmCalls: 1 },
-        queues: { capture: { queued: 0, inFlight: 0 } },
       },
     });
+    expect(running.snapshot?.queues.capture).toBeUndefined();
 
+    // Activate the retained compatibility queue explicitly so the closed-snapshot schema check
+    // below still proves that queue metadata cannot grow a private payload field.
+    store.scheduleCapture("legacy-direct", "Explicit compatibility capture");
+    await store.flush();
     await store.close();
     expect(readBujoRuntimeSnapshot(root)).toMatchObject({
       available: true,
@@ -714,6 +718,22 @@ function recordingLlm(order: string[], opts: { throwOnText?: string } = {}): Llm
 }
 
 describe("BujoMemoryStore async capture queue", () => {
+  it("allocates the legacy queue only after an explicit scheduleCapture call", async () => {
+    const store = createBujoMemoryStore({
+      root: tmpRoot(),
+      tier: "bujo",
+      embeddings: fakeEmbeddings(64),
+      dim: 64,
+      llm: recordingLlm([]),
+    });
+
+    expect(store.queueSnapshot().capture).toBeUndefined();
+    store.scheduleCapture("legacy-direct", "Explicit compatibility capture");
+    expect(store.queueSnapshot().capture).toBeDefined();
+    await store.flush();
+    await store.close();
+  });
+
   it("serializes concurrent direct captures so the second replans without stranding an intent", async () => {
     const root = tmpRoot();
     const now = new Date("2026-06-15T12:00:00.000Z");
