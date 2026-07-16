@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { loadLiveAdapterConfig, redactLiveAdapterConfig } from "../index.js";
+import { LIVE_CONFIG_FIELDS, loadLiveAdapterConfig, redactLiveAdapterConfig } from "../index.js";
 import type { LiveAdapterConfig } from "../index.js";
 
 const SYNTHETIC_API_KEY = "sk-test-secret";
@@ -57,6 +57,29 @@ describe("loadLiveAdapterConfig", () => {
       host: "env.example.test",
       port: 4222,
       basePath: "/env/live",
+      allowNonLoopback: true,
+      apiKey: SYNTHETIC_API_KEY,
+    });
+  });
+
+  it("loads direct JSON values when no environment override is present", async () => {
+    await expect(loadLiveAdapterConfig({
+      json: {
+        live: {
+          enabled: false,
+          host: "direct-json.example.test",
+          port: 4123,
+          basePath: "/direct/json/",
+          allowNonLoopback: true,
+          apiKey: SYNTHETIC_API_KEY,
+        },
+      },
+      env: {},
+    })).resolves.toEqual({
+      enabled: false,
+      host: "direct-json.example.test",
+      port: 4123,
+      basePath: "/direct/json",
       allowNonLoopback: true,
       apiKey: SYNTHETIC_API_KEY,
     });
@@ -180,6 +203,21 @@ describe("loadLiveAdapterConfig", () => {
     await expect(loadLiveAdapterConfig({
       env: { [name]: value },
     })).rejects.toMatchObject({ code: "invalid_config" });
+  });
+});
+
+describe("LIVE_CONFIG_FIELDS", () => {
+  it("pins live.apiKey to its exact environment variable as secret metadata", () => {
+    const apiKeyFields = LIVE_CONFIG_FIELDS.filter((field) => field.id === "live.apiKey");
+
+    expect(apiKeyFields).toEqual([
+      expect.objectContaining({
+        id: "live.apiKey",
+        env: "MONO_AGENT_LIVE_API_KEY",
+        secret: true,
+      }),
+    ]);
+    expect(apiKeyFields[0]?.fromJson({ apiKey: SYNTHETIC_API_KEY })).toBe(SYNTHETIC_API_KEY);
   });
 });
 
