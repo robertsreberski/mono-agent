@@ -6,7 +6,7 @@ sidebar:
 
 # Environment variables
 
-Every field in `mono-agent.config.json` also has a `MONO_AGENT_*` environment variable that overrides it. This page is the exhaustive reference, grouped by domain, with the JSON key each variable overrides; CLI-only variables are marked explicitly. For the full annotated config see [blueprint.md](/config/blueprint/).
+Every environment-mappable field in `mono-agent.config.json` has a `MONO_AGENT_*` variable that overrides it. Some structured fields are intentionally JSON-only; those exceptions are called out explicitly. This page is the exhaustive environment-variable reference, grouped by domain, with the JSON key each variable overrides; CLI-only variables are marked explicitly. For the full annotated config, including JSON-only fields, see [blueprint.md](/config/blueprint/).
 
 ## Precedence and `.env` loading
 
@@ -196,7 +196,7 @@ Opted project stdio MCPs also receive host-owned filesystem context after all MC
 
 ## Channels
 
-Most channels are opt-in via their `enabled` flag (default off). The operator surfaces `tui` and `live` default on so `mono-agent tui` and `mono-agent web` can discover running agents without per-agent edits. Every field has a `MONO_AGENT_<CHANNEL>_*` env var. The tables below cover the commonly overridden keys; consult [blueprint.md](/config/blueprint/) for the complete per-channel shape.
+Most channels are opt-in via their `enabled` flag (default off). The operator surfaces `tui` and `live` default on so `mono-agent tui` and `mono-agent web` can discover running agents without per-agent edits. The tables below enumerate every channel environment variable. Structured JSON-only fields have no invented environment form and are identified beside the relevant channel; consult [blueprint.md](/config/blueprint/) for the complete per-channel shape.
 
 ### Telegram
 
@@ -205,6 +205,7 @@ Most channels are opt-in via their `enabled` flag (default off). The operator su
 | `MONO_AGENT_TELEGRAM_ENABLED` | `telegram.enabled` | |
 | `MONO_AGENT_TELEGRAM_BOT_TOKEN` | `telegram.botToken` | Bot token. |
 | `MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS` | `telegram.allowedChatIds` | Or `allowAllChats`. See [../channels/telegram.md](/channels/telegram/). |
+| `MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS` | `telegram.allowAllChats` | Allow any chat instead of requiring `allowedChatIds`; default `false`. |
 | `MONO_AGENT_TELEGRAM_REACTIONS` | `telegram.reactions` | All-on/all-off boolean override for the lifecycle status reactions (👀 working / 👍 done / 👎 error). Granular per-state control (`{ working, done, error }`) is JSON-only. |
 | `MONO_AGENT_TELEGRAM_IP_FAMILY` | `telegram.transport.ipFamily` | Pin the Bot API HTTP client to IPv4 (`4`) or IPv6 (`6`); omit for dual-stack. Workaround for a broken IPv6 route to `api.telegram.org`. |
 | `MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS` | `telegram.pollWatchdogMs` | Poll-liveness watchdog window (ms); default `120000`, `0` disables. Force-restarts a runner that stops delivering updates without crashing. |
@@ -225,6 +226,10 @@ Most channels are opt-in via their `enabled` flag (default off). The operator su
 | `MONO_AGENT_SLACK_BOT_TOKEN` | `slack.botToken` | `xoxb-...` |
 | `MONO_AGENT_SLACK_APP_TOKEN` | `slack.appToken` | `xapp-...` (Socket Mode). |
 | `MONO_AGENT_SLACK_ALLOWED_CHANNEL_IDS` | `slack.allowedChannelIds` | Or `allowAllChannels`. See [../channels/slack.md](/channels/slack/). |
+| `MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS` | `slack.allowAllChannels` | Allow any joined channel instead of requiring `allowedChannelIds`; default `false`. |
+| `MONO_AGENT_SLACK_BOT_USER_IDS` | `slack.botUserIds` | Comma-separated bot user IDs used to recognize native mentions. |
+| `MONO_AGENT_SLACK_MENTION_TEXT_ALIASES` | `slack.mentionTextAliases` | Comma-separated plain-text aliases that trigger the bot. |
+| `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` | `slack.stripMentionText` | Remove the matched mention or alias before the prompt reaches the agent. When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`. |
 | `MONO_AGENT_SLACK_HEARTBEAT_INTERVAL_MS` | `slack.heartbeatIntervalMs` | Socket Mode ping/silence probe interval (ms); default `30000`. |
 | `MONO_AGENT_SLACK_HEARTBEAT_TIMEOUT_MS` | `slack.heartbeatTimeoutMs` | Silence budget before the watchdog force-recycles the socket (ms); default `90000`, `0` disables the watchdog. |
 | `MONO_AGENT_SLACK_RECONNECT_INITIAL_BACKOFF_MS` | `slack.reconnectInitialBackoffMs` | First reconnect backoff after a non-graceful drop (ms); default `500`. |
@@ -235,6 +240,11 @@ Most channels are opt-in via their `enabled` flag (default off). The operator su
 
 All Slack resilience vars are optional integers (`0`–`3600000`); omit to use the default. They tune the terminate-first, jittered, stability-gated reconnect loop and the silence watchdog. See [../channels/slack.md](/channels/slack/).
 
+The structured Slack interaction fields are configured only in `mono-agent.config.json`:
+
+- `slack.shortcuts` is JSON-only and has no environment-variable form.
+- `slack.homeTab` is JSON-only and has no environment-variable form.
+
 ### WhatsApp
 
 WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/whatsapp-adapter"`. These env vars override that plugin entry's `config` fields.
@@ -243,13 +253,25 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | --- | --- | --- |
 | `MONO_AGENT_WHATSAPP_ENABLED` | plugin `config.enabled` | QR login; auth state in `.mono-agent/whatsapp-auth`. |
 | `MONO_AGENT_WHATSAPP_ALLOWED_CHAT_JIDS` | plugin `config.allowedChatJids` | Or `allowAllChats`. |
+| `MONO_AGENT_WHATSAPP_ALLOW_ALL_CHATS` | plugin `config.allowAllChats` | Allow any chat instead of requiring `allowedChatJids`; default `false`. |
 | `MONO_AGENT_WHATSAPP_GROUP_MODE` | plugin `config.groupMode` | `mention` / `any`. See [../channels/whatsapp.md](/channels/whatsapp/). |
+| `MONO_AGENT_WHATSAPP_BOT_JIDS` | plugin `config.botJids` | Comma-separated linked-account JIDs used to recognize native group mentions. |
+| `MONO_AGENT_WHATSAPP_MENTION_TEXT_ALIASES` | plugin `config.mentionTextAliases` | Comma-separated text aliases that count as group mentions. |
+| `MONO_AGENT_WHATSAPP_STRIP_MENTION_TEXT` | plugin `config.stripMentionText` | Remove the matched mention or alias before the prompt reaches the agent. When unset, defaults to `true` only when `mentionTextAliases` is non-empty; `botJids` alone does not enable stripping, so otherwise it defaults to `false`. |
 
 ### Webhook
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_WEBHOOK_ENABLED` | `webhook.enabled` | |
+| `MONO_AGENT_WEBHOOK_HOST` | `webhook.host` | Bind host; default `127.0.0.1`. |
+| `MONO_AGENT_WEBHOOK_PORT` | `webhook.port` | Bind port; default `0` selects a free port. |
+| `MONO_AGENT_WEBHOOK_PATH` | `webhook.path` | Default single-endpoint path; default `/webhook/invoke`. |
+| `MONO_AGENT_WEBHOOK_PROMPT` | `webhook.prompt` | Pre-instructions for the default single endpoint. |
+| `MONO_AGENT_WEBHOOK_DEFAULT_MODE` | `webhook.defaultMode` | `sync` or `async`; default `sync`. |
+| `MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK` | `webhook.allowNonLoopback` | Must be `true` for a non-loopback bind. |
+| `MONO_AGENT_WEBHOOK_RETENTION_MS` | `webhook.retentionMs` | Async status retention in milliseconds; default `300000`. |
+| `MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS` | `webhook.maxStoredRequests` | Maximum retained async statuses; default `100`. |
 | `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON` | `webhook.endpoints[]` | JSON array of named endpoints. |
 | `MONO_AGENT_WEBHOOK_NOTIFY` | `webhook.notify` | Single-endpoint native notification toggle. |
 | `MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID` | `webhook.notifyConversationId` | Single-endpoint native notification destination. |
@@ -335,6 +357,14 @@ The A2A provider is loaded through `channels.plugins[]` with `package: "@mono-ag
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_CRON_JOBS_JSON` | `cron.jobs[]` | Full JSON array of jobs. |
+| `MONO_AGENT_CRON_ENABLED` | `cron.enabled` | Enable the legacy/default single-job form; default `false`. |
+| `MONO_AGENT_CRON_EXPRESSION` | `cron.expression` | Five-field expression for the default single job. |
+| `MONO_AGENT_CRON_TIMEZONE` | `cron.timezone` | IANA timezone for the default single job; default `UTC`. |
+| `MONO_AGENT_CRON_PROMPT` | `cron.prompt` | Prompt for the default single job. |
+| `MONO_AGENT_CRON_CONVERSATION_ID` | `cron.conversationId` | Optional stable conversation id for the default single job. |
+| `MONO_AGENT_CRON_NOTIFY` | `cron.notify` | Deliver the default job's successful result natively; default `false`. |
+| `MONO_AGENT_CRON_NOTIFY_CONVERSATION_ID` | `cron.notifyConversationId` | Explicit native-notification destination for the default job. |
 | `MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS` | `cron.notifyFailureCooldownHours` | Single-job cooldown, in hours, for all-models-failed error notices on `notify: true` cron jobs; default `6`. |
-| `MONO_AGENT_CRON_*` | `cron.jobs[]` | Single-job field overrides (id, expression, timezone, prompt, conversationId, notify, notifyConversationId, notifyFailureCooldownHours, model, effort). |
+| `MONO_AGENT_CRON_MODEL` | `cron.model` | Runtime model override for the default single job. |
+| `MONO_AGENT_CRON_EFFORT` | `cron.effort` | Reasoning-effort override for the default single job, subject to model support. |
 | `MONO_AGENT_CRON_DIR` | `cron.dir` | Folder of per-job `*.md` files; default `cron/`. Folder and config jobs merge; duplicate ids error. See [../channels/cron.md](/channels/cron/). |

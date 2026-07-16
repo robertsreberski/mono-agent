@@ -913,6 +913,9 @@ function inferType(id: string): ConfigReferenceType {
 }
 
 function defaultLabelFor(id: string): string {
+  if (id === "slack.stripMentionText") {
+    return "conditional";
+  }
   const value = defaultValueFor(id);
   if (value !== undefined) {
     return jsonInline(value);
@@ -978,7 +981,6 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "telegram.allowAllChats": false,
     "slack.enabled": false,
     "slack.allowAllChannels": false,
-    "slack.stripMentionText": false,
     "webhook.enabled": false,
     "webhook.host": "127.0.0.1",
     "webhook.port": 0,
@@ -1040,6 +1042,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "telegram.botToken": "env:MONO_AGENT_TELEGRAM_BOT_TOKEN",
     "slack.botToken": "env:MONO_AGENT_SLACK_BOT_TOKEN",
     "slack.appToken": "env:MONO_AGENT_SLACK_APP_TOKEN",
+    "slack.stripMentionText": false,
     "openaiApi.apiKey": "env:MONO_AGENT_OPENAI_API_KEY",
   };
   if (examples[id] !== undefined) {
@@ -1063,6 +1066,9 @@ function exampleFor(id: string): SettingsJsonValue {
 function descriptionFor(id: string): string {
   const section = id.split(".")[0] ?? "config";
   const name = id.split(".").slice(1).join(".");
+  if (id === "slack.stripMentionText") {
+    return "When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`.";
+  }
   if (id === "memory.embeddings.provider") {
     return "Embedding service used by Journal/BuJo memory: ollama, lmstudio, or openai.";
   }

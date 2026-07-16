@@ -48,9 +48,9 @@ Put the Socket Mode credentials in `.env` as `MONO_AGENT_SLACK_BOT_TOKEN` and `M
 | `allowAllChannels` | boolean | `false` | Respond in any channel the bot is in. Alternative to `allowedChannelIds`. |
 | `botUserIds` | string[] | — | The bot's Slack user ID(s), used to detect real `@bot` mentions. |
 | `mentionTextAliases` | string[] | — | Plain-text aliases (e.g. `@agent`) that also trigger a response. |
-| `stripMentionText` | boolean | `true` | Strip the mention/alias text from the prompt before the agent sees it. |
-| `shortcuts` | object[] | `[]` | JSON-only global/message shortcut bindings that run configured prompts. See [Shortcuts](#shortcuts). |
-| `homeTab` | object | `{ "enabled": false, "buttons": [] }` | JSON-only App Home header/buttons. See [App Home](#app-home). |
+| `stripMentionText` | boolean | conditional | Strip the mention/alias text from the prompt before the agent sees it. When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`. |
+| `shortcuts` | object[] | `[]` | JSON-only global/message shortcut bindings that run configured prompts; no environment-variable form. See [Shortcuts](#shortcuts). |
+| `homeTab` | object | `{ "enabled": false, "buttons": [] }` | JSON-only App Home header/buttons; no environment-variable form. See [App Home](#app-home). |
 
 :::caution
 Both `botToken` and `appToken` are required when `enabled: true`. If either is missing, or if neither `allowedChannelIds` nor `allowAllChannels` is set, the channel reports `waiting_for_config` instead of starting.

@@ -111,6 +111,18 @@ describe("loadWhatsAppAdapterConfig", () => {
     });
   });
 
+  it("defaults mention stripping on only for text aliases, not bot JIDs", async () => {
+    const [withoutMentionIdentity, withBotJid, withTextAlias] = await Promise.all([
+      loadWhatsAppAdapterConfig({ env: {} }),
+      loadWhatsAppAdapterConfig({ env: { MONO_AGENT_WHATSAPP_BOT_JIDS: "bot@s.whatsapp.net" } }),
+      loadWhatsAppAdapterConfig({ env: { MONO_AGENT_WHATSAPP_MENTION_TEXT_ALIASES: "@agent" } }),
+    ]);
+
+    expect(withoutMentionIdentity.trigger.stripMentionText).toBe(false);
+    expect(withBotJid.trigger.stripMentionText).toBe(false);
+    expect(withTextAlias.trigger.stripMentionText).toBe(true);
+  });
+
   it("rejects invalid group modes", async () => {
     await expect(
       loadWhatsAppAdapterConfig({
