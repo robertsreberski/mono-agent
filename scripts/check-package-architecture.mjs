@@ -4,10 +4,12 @@ import { join, relative } from "node:path";
 
 import {
   PACKAGE_CATEGORIES,
+  SHIPPED_CHANNEL_IDS,
   packageByName,
   packageCatalog,
   packageRelativePath,
 } from "./package-catalog.mjs";
+import { findAdapterNeutralityErrors } from "./lib/adapter-neutrality.mjs";
 
 const root = process.cwd();
 const packageScope = "@mono-agent/";
@@ -33,6 +35,7 @@ for (const packagePath of packagePaths) {
   }
 }
 
+const channelOwnerById = new Map();
 for (const catalogEntry of packageCatalog) {
   const packagePath = packageRelativePath(catalogEntry);
   if (!PACKAGE_CATEGORIES.includes(catalogEntry.category)) {
@@ -42,6 +45,32 @@ for (const catalogEntry of packageCatalog) {
     if (!PACKAGE_CATEGORIES.includes(allowed)) {
       errors.push(`${packagePath} allows unknown dependency category ${allowed}.`);
     }
+  }
+  if (catalogEntry.category === "communication" && !Array.isArray(catalogEntry.channelIds)) {
+    errors.push(`${packagePath} must declare channelIds in scripts/package-catalog.mjs.`);
+    continue;
+  }
+  if (catalogEntry.category !== "communication" && catalogEntry.channelIds !== undefined) {
+    errors.push(`${packagePath} declares channelIds but is not a communication package.`);
+    continue;
+  }
+  if (!Array.isArray(catalogEntry.channelIds)) {
+    continue;
+  }
+  if (catalogEntry.channelIds.length === 0) {
+    errors.push(`${packagePath} must declare at least one shipped channel id.`);
+  }
+  for (const channelId of catalogEntry.channelIds) {
+    if (typeof channelId !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(channelId)) {
+      errors.push(`${packagePath} has invalid shipped channel id ${JSON.stringify(channelId)}.`);
+      continue;
+    }
+    const existingOwner = channelOwnerById.get(channelId);
+    if (existingOwner !== undefined) {
+      errors.push(`${packagePath} duplicates shipped channel id ${channelId} from ${existingOwner}.`);
+      continue;
+    }
+    channelOwnerById.set(channelId, packagePath);
   }
 }
 
@@ -149,15 +178,7 @@ for (const staleReference of staleReferences) {
   }
 }
 
-const sharedContractDir = join(root, "packages", "agent-contracts");
-if (existsSync(sharedContractDir)) {
-  for (const file of walkTextFiles(sharedContractDir)) {
-    const text = readFileSync(file, "utf8").toLowerCase();
-    if (text.includes("telegram") || text.includes("whatsapp")) {
-      errors.push(`${relative(root, file)} must stay adapter-neutral.`);
-    }
-  }
-}
+errors.push(...findAdapterNeutralityErrors({ root, channelIds: SHIPPED_CHANNEL_IDS }));
 
 if (errors.length > 0) {
   console.error("Package architecture check failed:");
