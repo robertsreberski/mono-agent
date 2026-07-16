@@ -44,7 +44,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
       throw new MemorySearchError("invalid_embedding_options", "Ollama embedding model is required.");
     }
     this.model = options.model;
-    this.endpoint = (options.endpoint ?? DEFAULT_OLLAMA_ENDPOINT).replace(/\/+$/u, "");
+    this.endpoint = normalizeServiceRoot(options.endpoint ?? DEFAULT_OLLAMA_ENDPOINT, "Ollama");
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.id = `ollama:${this.model}`;
@@ -161,7 +161,7 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
     }
     this.model = options.model;
     this.apiKey = options.apiKey;
-    this.endpoint = (options.endpoint ?? DEFAULT_OPENAI_ENDPOINT).replace(/\/+$/u, "");
+    this.endpoint = normalizeServiceRoot(options.endpoint ?? DEFAULT_OPENAI_ENDPOINT, "OpenAI");
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.id = `openai:${this.model}`;

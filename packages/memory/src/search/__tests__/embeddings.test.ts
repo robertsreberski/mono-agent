@@ -88,6 +88,17 @@ describe("embedding provider failure taxonomy", () => {
   });
 });
 
+function expectInvalidEmbeddingOptions(create: () => unknown): void {
+  try {
+    create();
+  } catch (error) {
+    expect(error).toBeInstanceOf(MemorySearchError);
+    expect(error).toMatchObject({ code: "invalid_embedding_options" });
+    return;
+  }
+  throw new Error("Expected invalid_embedding_options.");
+}
+
 describe("OllamaEmbeddingProvider", () => {
   it("posts to /api/embed and returns the embedding vectors", async () => {
     const calls: Array<{ url: string; body: unknown }> = [];
@@ -126,6 +137,33 @@ describe("OllamaEmbeddingProvider", () => {
     const provider = new OllamaEmbeddingProvider({ model: "m", fetchImpl });
     expect(await provider.embed([])).toEqual([]);
     expect(called).toBe(false);
+  });
+
+  it("preserves a configured service-root path while trimming whitespace and trailing slashes", async () => {
+    let calledUrl: string | undefined;
+    const fetchImpl = (async (url: string | URL) => {
+      calledUrl = String(url);
+      return jsonResponse({ embeddings: [[1]] });
+    }) as typeof fetch;
+    const provider = new OllamaEmbeddingProvider({
+      model: "m",
+      endpoint: "  https://embeddings.example.test/ollama-root///  ",
+      fetchImpl,
+    });
+
+    await provider.embed(["x"]);
+
+    expect(calledUrl).toBe("https://embeddings.example.test/ollama-root/api/embed");
+  });
+
+  it.each([
+    "/ollama-root",
+    "file:///tmp/ollama.sock",
+    "http://user:pass@localhost:11434",
+    "http://localhost:11434?route=elsewhere",
+    "http://localhost:11434#fragment",
+  ])("rejects invalid service root %s with the stable options code", (endpoint) => {
+    expectInvalidEmbeddingOptions(() => new OllamaEmbeddingProvider({ model: "m", endpoint }));
   });
 
   it.each([
@@ -228,6 +266,38 @@ describe("OpenAIEmbeddingProvider", () => {
       url: "https://api.openai.com/v1/embeddings",
       headers: { "content-type": "application/json", authorization: "Bearer openai-key" },
     }]);
+  });
+
+  it("preserves a configured service-root path while trimming whitespace and trailing slashes", async () => {
+    let calledUrl: string | undefined;
+    const fetchImpl = (async (url: string | URL) => {
+      calledUrl = String(url);
+      return jsonResponse({ data: [{ embedding: [1] }] });
+    }) as typeof fetch;
+    const provider = new OpenAIEmbeddingProvider({
+      model: "text-embedding-3-small",
+      apiKey: "openai-key",
+      endpoint: "  https://gateway.example.test/openai/v1///  ",
+      fetchImpl,
+    });
+
+    await provider.embed(["x"]);
+
+    expect(calledUrl).toBe("https://gateway.example.test/openai/v1/embeddings");
+  });
+
+  it.each([
+    "/v1",
+    "file:///tmp/openai.sock",
+    "https://user:pass@gateway.example.test/v1",
+    "https://gateway.example.test/v1?tenant=elsewhere",
+    "https://gateway.example.test/v1#fragment",
+  ])("rejects invalid service root %s with the stable options code", (endpoint) => {
+    expectInvalidEmbeddingOptions(() => new OpenAIEmbeddingProvider({
+      model: "text-embedding-3-small",
+      apiKey: "openai-key",
+      endpoint,
+    }));
   });
 });
 
