@@ -177,6 +177,8 @@ export interface RuntimeRunOptions {
   readonly mcpConfigPath?: string;
   readonly sandboxPolicy?: SandboxPolicy;
   readonly sandboxEngine?: MonoRuntimeSandboxEngine;
+  /** The sandbox implementation is owned by createMonoRuntime; callers supply policy/engine data only. */
+  readonly sandbox?: never;
   /** Typed tool-output limits (supported replacement for the `settings` tool keys). */
   readonly toolLimits?: RuntimeToolLimits;
   /** Typed compaction policy (supported replacement for the `settings` compaction keys). */
@@ -222,6 +224,8 @@ export interface RuntimeToolOptions {
   readonly qaOutputDir?: string;
   readonly sandboxPolicy?: SandboxPolicy;
   readonly sandboxEngine?: MonoRuntimeSandboxEngine;
+  /** The sandbox implementation is owned by createMonoRuntime; callers supply policy/engine data only. */
+  readonly sandbox?: never;
   readonly [key: string]: unknown;
 }
 
