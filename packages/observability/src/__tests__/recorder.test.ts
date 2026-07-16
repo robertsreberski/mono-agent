@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -26,6 +26,7 @@ vi.mock("../artifact-fs.js", async (importOriginal) => {
 });
 
 import { createJsonlRunRecorder } from "../index.js";
+import { ORPHANED_ATOMIC_WRITE_TEMP_MIN_AGE_MS } from "../artifact-fs.js";
 import {
   RUN_CHECKPOINT_EVENT_INTERVAL,
   RUN_CHECKPOINT_TIME_INTERVAL_MS,
@@ -65,6 +66,30 @@ async function waitForSummary(
 }
 
 describe("JsonlRunRecorder", () => {
+  it("removes old atomic-write temps on init while retaining fresh and unrelated temps", async () => {
+    const dir = await tempDir();
+    const oldTemp = `cleanup-run.summary.json.${process.pid}.999999997.tmp`;
+    const freshTemp = `cleanup-run.events.jsonl.${process.pid}.999999998.tmp`;
+    const unrelatedTemp = `unrelated.${process.pid}.999999999.tmp`;
+    for (const name of [oldTemp, freshTemp, unrelatedTemp]) {
+      await writeFile(join(dir, name), name, "utf8");
+    }
+    const old = new Date(Date.now() - ORPHANED_ATOMIC_WRITE_TEMP_MIN_AGE_MS - 1_000);
+    await utimes(join(dir, oldTemp), old, old);
+
+    const recorder = createJsonlRunRecorder({
+      runId: "cleanup-run",
+      conversationId: "cleanup",
+      artifactDir: dir,
+    });
+    await recorder.start?.();
+
+    const entries = await readdir(dir);
+    expect(entries).not.toContain(oldTemp);
+    expect(entries).toContain(freshTemp);
+    expect(entries).toContain(unrelatedTemp);
+  });
+
   it("persists the user prompt into the summary so backfill can show it as input", async () => {
     const dir = await tempDir();
     const recorder = createJsonlRunRecorder({

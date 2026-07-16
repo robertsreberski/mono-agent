@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -9,6 +9,7 @@ import {
   pruneRunArtifacts,
 } from "../index.js";
 import type { RunSummaryStatus } from "../index.js";
+import { ORPHANED_ATOMIC_WRITE_TEMP_MIN_AGE_MS } from "../artifact-fs.js";
 
 const NOW = Date.parse("2026-07-05T12:00:00.000Z");
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -26,6 +27,18 @@ afterEach(async () => {
 });
 
 describe("pruneRunArtifacts", () => {
+  it("removes an old atomic-write temp during retention", async () => {
+    const dir = await tempDir();
+    const orphanPath = join(dir, `orphan.summary.json.${process.pid}.1.tmp`);
+    await writeFile(orphanPath, "orphan", "utf8");
+    const old = new Date(NOW - ORPHANED_ATOMIC_WRITE_TEMP_MIN_AGE_MS - 1_000);
+    await utimes(orphanPath, old, old);
+
+    await pruneRunArtifacts({ artifactDir: dir, maxCount: 100_000, clock: () => NOW });
+
+    await expectExists(orphanPath, false);
+  });
+
   it("prunes terminal run artifacts older than maxAgeDays", async () => {
     const dir = await tempDir();
     await writeRun(dir, "old-run", "succeeded", NOW - 8 * DAY_MS);
@@ -81,6 +94,10 @@ describe("pruneRunArtifacts", () => {
   it("reports planned deletions during dryRun without deleting files", async () => {
     const dir = await tempDir();
     await writeRun(dir, "old-run", "succeeded", NOW - 30 * DAY_MS);
+    const orphanPath = join(dir, `dry-run.summary.json.${process.pid}.1.tmp`);
+    await writeFile(orphanPath, "orphan", "utf8");
+    const old = new Date(NOW - ORPHANED_ATOMIC_WRITE_TEMP_MIN_AGE_MS - 1_000);
+    await utimes(orphanPath, old, old);
 
     const result = await pruneRunArtifacts({
       artifactDir: dir,
@@ -95,6 +112,7 @@ describe("pruneRunArtifacts", () => {
     expect(relatives(dir, result.removedFilePaths)).toEqual(["old-run.events.jsonl", "old-run.summary.json"]);
     await expectExists(join(dir, "old-run.summary.json"), true);
     await expectExists(join(dir, "old-run.events.jsonl"), true);
+    await expectExists(orphanPath, true);
   });
 
   it("never prunes running summaries even when old or beyond maxCount", async () => {

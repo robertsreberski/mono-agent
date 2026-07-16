@@ -1,5 +1,5 @@
-import { mkdir, rename, writeFile } from "node:fs/promises";
-import { join, normalize, resolve, sep } from "node:path";
+import { lstat, mkdir, opendir, rename, unlink, writeFile } from "node:fs/promises";
+import { basename, join, normalize, resolve, sep } from "node:path";
 
 import type { Raise } from "./guards.js";
 
@@ -77,6 +77,71 @@ export function safeJoin(root: string, fileName: string, raise: Raise): string {
     raise("escape");
   }
   return resolved;
+}
+
+export const ORPHANED_ATOMIC_WRITE_TEMP_MIN_AGE_MS = 5 * 60 * 1000;
+const MAX_ORPHANED_ATOMIC_WRITE_TEMP_ENTRIES_PER_SWEEP = 512;
+const MAX_ORPHANED_ATOMIC_WRITE_TEMPS_PER_SWEEP = 128;
+
+const ATOMIC_WRITE_TEMP_PATTERN = /^.+\.(?:events\.jsonl|summary\.json)\.[1-9]\d*\.[1-9]\d*\.tmp$/u;
+
+interface SweepOrphanedAtomicWriteTempsOptions {
+  readonly nowMs?: number;
+  readonly entryNames?: readonly string[];
+}
+
+/**
+ * Best-effort cleanup for stale temp files left by interrupted artifact writes.
+ * Discovery and deletion are bounded, and every candidate failure is isolated.
+ */
+export async function sweepOrphanedAtomicWriteTemps(
+  directory: string,
+  options: SweepOrphanedAtomicWriteTempsOptions = {},
+): Promise<number> {
+  const nowMs = options.nowMs ?? Date.now();
+  if (!Number.isFinite(nowMs)) return 0;
+
+  const root = resolve(directory);
+  const entryNames = options.entryNames ?? await discoverAtomicWriteTempEntries(root);
+  const candidates = [...new Set(entryNames)]
+    .filter((name) => basename(name) === name && ATOMIC_WRITE_TEMP_PATTERN.test(name))
+    .sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
+    .slice(0, MAX_ORPHANED_ATOMIC_WRITE_TEMPS_PER_SWEEP);
+
+  let removed = 0;
+  for (const name of candidates) {
+    try {
+      const candidate = safeJoin(root, name, (message) => {
+        throw new Error(message);
+      });
+      const stats = await lstat(candidate);
+      if (!stats.isFile() || !Number.isFinite(stats.mtimeMs)) continue;
+      if (stats.mtimeMs >= nowMs - ORPHANED_ATOMIC_WRITE_TEMP_MIN_AGE_MS) continue;
+      await unlink(candidate);
+      removed += 1;
+    } catch {
+      // Cleanup is hygiene only; leave vanished or unreadable entries for a later pass.
+    }
+  }
+  return removed;
+}
+
+async function discoverAtomicWriteTempEntries(directory: string): Promise<string[]> {
+  const names: string[] = [];
+  let handle: Awaited<ReturnType<typeof opendir>> | undefined;
+  try {
+    handle = await opendir(directory);
+    for (let inspected = 0; inspected < MAX_ORPHANED_ATOMIC_WRITE_TEMP_ENTRIES_PER_SWEEP; inspected += 1) {
+      const entry = await handle.read();
+      if (entry === null) break;
+      names.push(entry.name);
+    }
+  } catch {
+    return names;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+  return names;
 }
 
 let atomicWriteSequence = 0;

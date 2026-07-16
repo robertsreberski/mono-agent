@@ -13,6 +13,7 @@ import {
   isErrno,
   isRecord,
   safeJoin as safeJoinGuard,
+  sweepOrphanedAtomicWriteTemps,
 } from "./artifact-fs.js";
 import {
   EVENTS_SUFFIX,
@@ -163,6 +164,13 @@ async function loadRetentionNamespace(
     }
     warnings.push(`Unable to read artifact directory: ${errorMessage(error)}.`);
     return emptyRetentionNamespace();
+  }
+
+  if (!normalized.dryRun) {
+    await sweepOrphanedAtomicWriteTemps(artifactDir, {
+      nowMs: normalized.now,
+      entryNames: entries.map((entry) => entry.name),
+    });
   }
 
   const summaryFiles = entries
