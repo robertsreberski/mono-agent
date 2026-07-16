@@ -284,6 +284,57 @@ describe("writeIndex", () => {
     expect(entityRows.join("\n")).not.toContain("2027");
   });
 
+  it("paginates past more than 500 early filtered and duplicate rows", () => {
+    const root = newRoot();
+    const db = openDb(root);
+
+    for (let index = 0; index < 260; index += 1) {
+      const suffix = String(index).padStart(3, "0");
+      db.upsertEntity({
+        id: `time:early-${suffix}`,
+        name: `000 Temporal ${suffix}`,
+        type: "time",
+        createdAt: FIXED.toISOString(),
+      });
+    }
+    for (let index = 0; index < 260; index += 1) {
+      const suffix = String(index).padStart(3, "0");
+      const type = index % 2 === 0 ? "concept" : "tool";
+      db.upsertEntity({
+        id: `${type}:duplicate-noise-${suffix}`,
+        name: "001 Duplicate Noise",
+        type,
+        createdAt: FIXED.toISOString(),
+      });
+    }
+    for (let index = 0; index < 50; index += 1) {
+      const suffix = String(index).padStart(2, "0");
+      db.upsertEntity({
+        id: `project:zulu-durable-${suffix}`,
+        name: `Zulu Durable ${suffix}`,
+        type: "project",
+        createdAt: FIXED.toISOString(),
+      });
+    }
+    const inventoryBefore = db.allEntities();
+
+    writeIndex(root, db, FIXED);
+
+    const content = readFileSync(join(root, "index.md"), "utf8");
+    const entityRows = content
+      .slice(content.indexOf("## Entities"))
+      .split("\n")
+      .filter((line) => line.startsWith("- "));
+    expect(entityRows).toHaveLength(50);
+    expect(new Set(entityRows).size).toBe(50);
+    expect(entityRows.filter((line) => line.includes("001 Duplicate Noise"))).toEqual([
+      "- 001 Duplicate Noise",
+    ]);
+    expect(entityRows.filter((line) => line.includes("Zulu Durable"))).toHaveLength(49);
+    expect(entityRows.join("\n")).not.toContain("000 Temporal");
+    expect(db.allEntities()).toEqual(inventoryBefore);
+  });
+
   it("creates the root directory if it does not exist", () => {
     const base = mkdtempSync(join(tmpdir(), "bujo-projections-idx-mkdir-"));
     const root = join(base, "deep", "nested");

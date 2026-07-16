@@ -2,7 +2,8 @@ import type { EntityRecord, MemoryDb } from "../store/index.js";
 import { writeCanonicalFileAtomic } from "./path-safety.js";
 
 const INDEX_ENTITY_LIMIT = 50;
-const INDEX_ENTITY_SCAN_LIMIT = INDEX_ENTITY_LIMIT * 10;
+const INDEX_ENTITY_PAGE_SIZE = 250;
+const INDEX_ENTITY_MAX_SCAN = 10_000;
 const LOW_VALUE_INDEX_ENTITY_TYPES = new Set([
   "date",
   "datetime",
@@ -44,7 +45,7 @@ export function writeIndex(root: string, db: MemoryDb, _now: Date): void {
   const memoryCount = db.count();
   const entityCount = db.countEntities();
   const topMemories = db.topSalient(15);
-  const entities = buildEntityPreview(db.listEntities(INDEX_ENTITY_SCAN_LIMIT));
+  const entities = collectEntityPreview(db);
 
   const overviewLines = [
     "## Overview",
@@ -79,6 +80,24 @@ export function writeIndex(root: string, db: MemoryDb, _now: Date): void {
   ].join("\n");
 
   writeCanonicalFileAtomic(root, "index.md", body);
+}
+
+/**
+ * Page past filtered/collapsed rows until the preview is full, the inventory is
+ * exhausted, or the scheduled projection's explicit raw-scan ceiling is hit.
+ */
+function collectEntityPreview(db: MemoryDb): IndexEntityPreview[] {
+  const scanned: EntityRecord[] = [];
+  for (let offset = 0; offset < INDEX_ENTITY_MAX_SCAN; offset += INDEX_ENTITY_PAGE_SIZE) {
+    const limit = Math.min(INDEX_ENTITY_PAGE_SIZE, INDEX_ENTITY_MAX_SCAN - offset);
+    const page = db.listEntities(limit, offset);
+    if (page.length === 0) break;
+    scanned.push(...page);
+    const preview = buildEntityPreview(scanned);
+    if (preview.length === INDEX_ENTITY_LIMIT) return preview;
+    if (page.length < limit) break;
+  }
+  return buildEntityPreview(scanned);
 }
 
 /**

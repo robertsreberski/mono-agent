@@ -134,6 +134,10 @@ describe("entity repository", () => {
     // Respects limit.
     const one = db.listEntities(1);
     expect(one).toHaveLength(1);
+    expect(db.listEntities(2, 2).map((entity) => entity.id)).toEqual([
+      "concept:shared-a",
+      "tool:shared-z",
+    ]);
 
     // Returns empty when no entities.
     const db2 = openMemoryDb({ path: ":memory:", embeddings: fakeEmbeddings(8), dim: 8 });
