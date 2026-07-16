@@ -1,6 +1,16 @@
+import { readFileSync } from "node:fs";
+
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { clearAuthToken, fetchInstances, fetchSessionPage, fetchSessions, openStream, saveAuthToken } from "./api";
+import {
+  AUTH_TOKEN_STORAGE,
+  clearAuthToken,
+  fetchInstances,
+  fetchSessionPage,
+  fetchSessions,
+  openStream,
+  saveAuthToken,
+} from "./api";
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -36,7 +46,11 @@ function throwingStorage(): Storage {
   };
 }
 
-function installWindow(search = "", storage: Storage = memoryStorage()): ReturnType<typeof vi.fn> {
+function installWindow(
+  search = "",
+  localStorage: Storage = memoryStorage(),
+  sessionStorage: Storage = localStorage,
+): ReturnType<typeof vi.fn> {
   let url = new URL(`https://sessions.example.test/${search}`);
   const replaceState = vi.fn((_state: unknown, _title: string, nextUrl?: string | URL | null) => {
     if (nextUrl !== undefined && nextUrl !== null) {
@@ -63,8 +77,8 @@ function installWindow(search = "", storage: Storage = memoryStorage()): ReturnT
       },
     },
     history: { replaceState },
-    localStorage: storage,
-    sessionStorage: storage,
+    localStorage,
+    sessionStorage,
   });
 
   return replaceState;
@@ -122,6 +136,52 @@ describe("session-web API auth", () => {
     expect(replaceState).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual(["/api/instances", "/api/instances"]);
     expect(fetchMock.mock.calls.map((call) => headersFrom(call).authorization)).toEqual(["Bearer url-secret", "Bearer url-secret"]);
+  });
+
+  test("persists tokens across browser restarts until both browser copies are cleared", () => {
+    const persistentStorage = memoryStorage();
+    const currentTabStorage = memoryStorage();
+    installWindow("", persistentStorage, currentTabStorage);
+
+    saveAuthToken("  persistent-secret  ");
+
+    expect(currentTabStorage.getItem(AUTH_TOKEN_STORAGE.currentTab.key)).toBe("persistent-secret");
+    expect(persistentStorage.getItem(AUTH_TOKEN_STORAGE.persistent.key)).toBe("persistent-secret");
+
+    clearAuthToken();
+
+    expect(currentTabStorage.getItem(AUTH_TOKEN_STORAGE.currentTab.key)).toBeNull();
+    expect(persistentStorage.getItem(AUTH_TOKEN_STORAGE.persistent.key)).toBeNull();
+  });
+
+  test("restores a token from persistent storage when a new browser session has no tab copy", async () => {
+    const persistentStorage = memoryStorage();
+    persistentStorage.setItem(AUTH_TOKEN_STORAGE.persistent.key, "restart-secret");
+    installWindow("", persistentStorage, memoryStorage());
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({ instances: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchInstances();
+
+    expect(headersFrom(fetchMock.mock.calls[0] ?? []).authorization).toBe("Bearer restart-secret");
+  });
+
+  test("keeps the package and canonical docs aligned with the browser-storage contract", () => {
+    const documents = [
+      readFileSync(new URL("../../../README.md", import.meta.url), "utf8"),
+      readFileSync(new URL("../../../../../docs/observability/cli-reference.md", import.meta.url), "utf8"),
+    ];
+
+    for (const document of documents) {
+      const normalized = document.replace(/\s+/gu, " ");
+      expect(normalized).toContain(`\`${AUTH_TOKEN_STORAGE.currentTab.storage}\``);
+      expect(normalized).toContain(`\`${AUTH_TOKEN_STORAGE.currentTab.key}\``);
+      expect(normalized).toContain(`\`${AUTH_TOKEN_STORAGE.persistent.storage}\``);
+      expect(normalized).toContain(`\`${AUTH_TOKEN_STORAGE.persistent.key}\``);
+      expect(normalized).toContain("survives page reloads, tab or browser closes, and browser restarts");
+      expect(normalized).toContain("Clear");
+      expect(normalized).toContain("site data");
+    }
   });
 
   test("ignores and removes a query token without disturbing unrelated URL state", async () => {

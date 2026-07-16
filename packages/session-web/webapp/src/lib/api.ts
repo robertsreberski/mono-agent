@@ -6,8 +6,17 @@
 import type { Session, WebInstance, StreamMessage } from "./types";
 
 const AUTH_TOKEN_PARAM = "token";
-const AUTH_TOKEN_STORAGE_KEY = "mono-agent.session-web.authToken";
-const AUTH_TOKEN_PERSIST_KEY = "mono-agent.session-web.authToken.persisted";
+export const AUTH_TOKEN_STORAGE = {
+  currentTab: {
+    storage: "sessionStorage",
+    key: "mono-agent.session-web.authToken",
+  },
+  persistent: {
+    storage: "localStorage",
+    key: "mono-agent.session-web.authToken.persisted",
+    lifetime: "until-cleared",
+  },
+} as const;
 const STREAM_RECONNECT_DELAY_MS = 1_000;
 let cachedAuthToken: string | undefined;
 
@@ -286,7 +295,7 @@ function currentAuthToken(): string | undefined {
   }
   if (cachedAuthToken !== undefined) return cachedAuthToken;
   try {
-    const stored = window.sessionStorage.getItem(AUTH_TOKEN_STORAGE_KEY)?.trim();
+    const stored = window.sessionStorage.getItem(AUTH_TOKEN_STORAGE.currentTab.key)?.trim();
     if (stored !== undefined && stored.length > 0) {
       cachedAuthToken = stored;
       return stored;
@@ -295,7 +304,7 @@ function currentAuthToken(): string | undefined {
     /* ignore storage failures */
   }
   try {
-    const stored = window.localStorage.getItem(AUTH_TOKEN_PERSIST_KEY)?.trim();
+    const stored = window.localStorage.getItem(AUTH_TOKEN_STORAGE.persistent.key)?.trim();
     if (stored === undefined || stored.length === 0) return undefined;
     cachedAuthToken = stored;
     return stored;
@@ -310,12 +319,12 @@ export function saveAuthToken(token: string): void {
   if (!trimmed) return;
   cachedAuthToken = trimmed;
   try {
-    window.sessionStorage.setItem(AUTH_TOKEN_STORAGE_KEY, trimmed);
+    window.sessionStorage.setItem(AUTH_TOKEN_STORAGE.currentTab.key, trimmed);
   } catch {
     /* ignore storage failures; caller may still use URL token */
   }
   try {
-    window.localStorage.setItem(AUTH_TOKEN_PERSIST_KEY, trimmed);
+    window.localStorage.setItem(AUTH_TOKEN_STORAGE.persistent.key, trimmed);
   } catch {
     /* ignore storage failures */
   }
@@ -325,12 +334,12 @@ export function clearAuthToken(): void {
   cachedAuthToken = undefined;
   if (typeof window === "undefined") return;
   try {
-    window.sessionStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+    window.sessionStorage.removeItem(AUTH_TOKEN_STORAGE.currentTab.key);
   } catch {
     /* ignore storage failures */
   }
   try {
-    window.localStorage.removeItem(AUTH_TOKEN_PERSIST_KEY);
+    window.localStorage.removeItem(AUTH_TOKEN_STORAGE.persistent.key);
   } catch {
     /* ignore storage failures */
   }

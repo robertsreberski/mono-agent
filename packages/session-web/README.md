@@ -49,6 +49,15 @@ appears in the stream URL. CLI bootstrap URLs use a fragment that is not sent
 to the server and is removed from browser history after capture. A configured
 token is also enforced when the server binds loopback.
 
+For each browser origin, the PWA mirrors a captured or manually entered token
+into current-tab `sessionStorage` as
+`mono-agent.session-web.authToken` and persistent `localStorage` as
+`mono-agent.session-web.authToken.persisted`. The persistent copy survives page
+reloads, tab or browser closes, and browser restarts. It remains until a
+401/403 response exposes the authentication form and its **Clear** action
+removes both copies, or you clear the site's browser storage/site data; closing
+the browser alone does not sign out.
+
 For direct LAN/Tailscale access, the CLI can bind the server itself; Tailscale
 Serve is not a prerequisite:
 

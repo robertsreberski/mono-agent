@@ -456,6 +456,15 @@ owner-only `.env` (`chmod 600 .env`), then run the non-loopback command above.
 
 Run history and live updates default to agent runs only; memory-maintenance runs are hidden plumbing unless you pass `--include-memory`. Loopback remains the default. With `--host 0.0.0.0 --allow-non-loopback`, startup prints usable loopback plus discovered private LAN and Tailscale IPv4 URLs instead of advertising `0.0.0.0`. Put a stable `MONO_AGENT_WEB_AUTH_TOKEN` in the invocation folder's owner-only `.env` (or the file selected by `--env-file`) for bookmarks and long-running services; a configured token is honored on loopback too. Non-interactive non-loopback startup refuses to generate a secret that would land in logs. Authenticated mode sends API and stream credentials only in the `Authorization` header. Explicitly revealed bootstrap URLs put the token in the URL fragment, which browsers do not send in HTTP requests or access logs, and the PWA removes it after capture.
 
+For each browser origin, the PWA mirrors a captured or manually entered token
+into current-tab `sessionStorage` as
+`mono-agent.session-web.authToken` and persistent `localStorage` as
+`mono-agent.session-web.authToken.persisted`. The persistent copy survives page
+reloads, tab or browser closes, and browser restarts. It remains until a
+401/403 response exposes the authentication form and its **Clear** action
+removes both copies, or you clear the site's browser storage/site data; closing
+the browser alone does not sign out.
+
 Each discovered instance also carries an independent memory-health badge: healthy (green), in
 progress (teal), degraded (amber), unhealthy (red), unknown/off (gray). Its accessible label and
 tooltip contain only the status and stable closed issue codes. A memory-only registry change emits
