@@ -66,7 +66,12 @@ export async function secureFileReplace(options: SecureFileReplaceOptions): Prom
 async function assertExactTemporary(
   path: string, identity: SecureFileIdentity, mode: number, expectedContents: Buffer,
 ): Promise<void> {
-  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  // O_NONBLOCK matters before fstat: a same-user pathname swap to a FIFO must
+  // fail closed instead of hanging the security check while opening it.
+  const handle = await open(
+    path,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+  );
   try {
     const before = await handle.stat();
     assertSecureTemporary(before, path, mode);

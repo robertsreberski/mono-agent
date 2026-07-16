@@ -247,7 +247,12 @@ async function inspect(path: string, options: OwnerPrivateLockOptions): Promise<
 async function readOwner(path: string, options: OwnerPrivateLockOptions): Promise<Owner | undefined> {
   let handle: FileHandle;
   try {
-    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    // O_NONBLOCK matters before fstat: a same-user pathname swap to a FIFO
+    // must fail closed instead of hanging lock inspection.
+    handle = await open(
+      path,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
   } catch (error) {
     if (isErrno(error, "ENOENT")) return undefined;
     throw unsafe(options, message(error));
