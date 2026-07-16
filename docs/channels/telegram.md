@@ -181,7 +181,7 @@ Download tuning — byte cap and timeout — is configurable via `telegram.attac
 
 Telegram can automatically transcribe inbound voice notes, audio files, and round-video `video_note`s through an OpenAI-compatible `POST /v1/audio/transcriptions` endpoint. The transcript is added to the attachment text the model sees on the current turn; the downloaded audio remains saved. If transcription fails or times out, the run continues with a one-line unavailable note pointing to the saved file.
 
-Transcription is opt-in. Set the full HTTP(S) transcriptions-route URL and a model name; with no `endpoint`, no transcription calls are made.
+Transcription is opt-in. Set the full HTTP(S) transcriptions-route URL and a model name; with no `endpoint`, no transcription calls are made. The built-in transcriber has no credential field and sends no `Authorization` header, so the endpoint must accept unauthenticated requests (typically from a local server).
 
 ```json
 {
