@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -69,10 +69,81 @@ function renderDetailCell(item: ReplayTimelineItem): string | undefined {
   return cell === undefined ? undefined : stripAnsi(cell.render(160).join("\n")).trim();
 }
 
+function normalizedJSDocBefore(source: string, anchor: string): string {
+  const parts = source.split(anchor);
+  if (parts.length !== 2) {
+    throw new Error(`Expected one source anchor, found ${parts.length - 1}: ${anchor}`);
+  }
+  const prefix = parts[0]!.trimEnd();
+  const commentStart = prefix.lastIndexOf("/**");
+  const commentEnd = commentStart < 0 ? -1 : prefix.indexOf("*/", commentStart);
+  if (commentStart < 0 || commentEnd !== prefix.length - 2) {
+    throw new Error(`Missing adjacent JSDoc before source anchor: ${anchor}`);
+  }
+  return prefix
+    .slice(commentStart)
+    .replace(/^\s*\/\*\*\s?/u, "")
+    .replace(/\s*\*\/\s*$/u, "")
+    .replace(/^\s*\*\s?/gmu, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
 async function openRun(view: ReplayView, runId: string): Promise<void> {
   view.list.onSelect?.({ value: runId, label: "", description: "" });
   await flush();
 }
+
+describe("replay projection contract comments", () => {
+  it("rejects an intervening block comment between a contract JSDoc and its anchor", () => {
+    const separated = [
+      "/** bounded key-pattern contract */",
+      "/* unrelated intervening comment */",
+      "const REPLAY_MAX_STRING_BYTES = 32_768;",
+    ].join("\n");
+
+    expect(() => normalizedJSDocBefore(separated, "const REPLAY_MAX_STRING_BYTES")).toThrow(
+      "Missing adjacent JSDoc before source anchor",
+    );
+  });
+
+  it("pins the bounded key-pattern and retained-free-text boundary at every replay layer", async () => {
+    const contracts = [
+      ["../data/replay.ts", "const REPLAY_MAX_STRING_BYTES"],
+      ["../ui/views/replay.ts", "export class ReplayView"],
+      ["../ui/views/replay-detail.ts", "export function buildDetailCell"],
+      ["../ui/views/replay-detail.ts", "function extractFullText"],
+    ] as const;
+    const sources = new Map<string, string>();
+
+    for (const [relativeSource, anchor] of contracts) {
+      let source = sources.get(relativeSource);
+      if (source === undefined) {
+        source = await readFile(new URL(relativeSource, import.meta.url), "utf8");
+        sources.set(relativeSource, source);
+      }
+      const comment = normalizedJSDocBefore(source, anchor);
+      expect(comment).toContain("bounded");
+      expect(comment).toContain("key-pattern");
+      expect(comment).toContain("non-numeric values under sensitive-looking object keys are redacted");
+      expect(comment).toContain("numeric values under matched keys are retained");
+      expect(comment).toContain("retained free text is not content-scanned");
+    }
+
+    const staleAbsolutes = [
+      /show the \(redacted\) payload in full/iu,
+      /\bredacted\s*,\s*bounded\b/iu,
+      /\balready redacted(?:\/capped)?\b/iu,
+      /\bredacted raw event\b/iu,
+      /\braw redacted event\b/iu,
+    ];
+    for (const [relativeSource, source] of sources) {
+      for (const staleAbsolute of staleAbsolutes) {
+        expect(source.match(staleAbsolute), `${relativeSource}: ${staleAbsolute.source}`).toBeNull();
+      }
+    }
+  });
+});
 
 /**
  * Two turns: coalesced thinking -> tool_use ("bash") -> tool_result -> thinking

@@ -119,8 +119,11 @@ function buildRunDescription(run: ReplayRunListItem): string {
 
 /**
  * Recorded-run replay straight from the agent's artifact dir: run list →
- * debugger-style step-through of the redacted, bounded events that reached a
- * run's JSONL file (thinking, tools, telemetry, failover) from any channel.
+ * debugger-style step-through of bounded event projections (thinking, tools,
+ * telemetry, failover) from any channel. The reader's key-pattern pass ensures
+ * non-numeric values under sensitive-looking object keys are redacted; numeric
+ * values under matched keys are retained; retained free text is not
+ * content-scanned.
  * Recorder-capped payload tails and RAM-buffered events lost to a crash cannot
  * be reconstructed here.
  */

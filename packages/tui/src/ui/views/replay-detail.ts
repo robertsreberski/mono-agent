@@ -170,12 +170,14 @@ export function buildRawPayloadBody(item: ReplayTimelineItem, expanded: boolean)
  * `timeline` (the run's coalesced persisted-event item list) is used to look AHEAD from
  * a `tool_use` item for its matching `tool_result` (by `tool_use_id`) so a
  * call+result pair renders as ONE unified panel, like a live tool call
- * settling. `rawEvents` (the run's raw, uncoalesced events) is used to
- * reconstruct the joined text retained in a coalesced thinking/text group's
- * already redacted/capped raw events -- the
- * combiner's own synthetic payload for a multi-event group carries only the
- * compacted (220-char) `summary`, not the full text (see
- * `combinedEventItem` in event-timeline.ts).
+ * settling. `rawEvents` contains the run reader's bounded, uncoalesced event
+ * projections and is used to reconstruct the joined text retained in a
+ * coalesced thinking/text group. The reader's key-pattern pass ensures
+ * non-numeric values under sensitive-looking object keys are redacted; numeric
+ * values under matched keys are retained; retained free text is not
+ * content-scanned. The combiner's own synthetic payload for a multi-event
+ * group carries only the compacted (220-char) `summary`, not the full text
+ * (see `combinedEventItem` in event-timeline.ts).
  */
 export function buildDetailCell(
   item: ReplayTimelineItem,
@@ -270,12 +272,12 @@ function findToolResult(
   return undefined;
 }
 
-/** First content block of `blockType` on a redacted raw event's `message.content` array, if any. */
+/** First content block of `blockType` on a reader-projected event's `message.content` array, if any. */
 function firstBlock(payload: unknown, blockType: "tool_use" | "tool_result"): Record<string, unknown> | undefined {
   return blocksOfType(payload, blockType)[0];
 }
 
-/** Every content block of `blockType` on a redacted raw event's `message.content` array. */
+/** Every content block of `blockType` on a reader-projected event's `message.content` array. */
 function blocksOfType(payload: unknown, blockType: "tool_use" | "tool_result"): readonly Record<string, unknown>[] {
   if (!isRecord(payload)) {
     return [];
@@ -290,11 +292,14 @@ function blocksOfType(payload: unknown, blockType: "tool_use" | "tool_result"): 
 }
 
 /**
- * Joined thinking/text content retained by the run's already redacted/capped
- * raw events, without the replay coalescer's additional summary compaction.
- * A single-event item's `payload` IS the raw redacted event (walk it
- * directly); a coalesced group's synthetic payload carries only the
- * compacted `summary`, so walk the group's own raw events (via
+ * Joined thinking/text content retained by the run reader's bounded event
+ * projection, without the replay coalescer's additional summary compaction.
+ * The reader's key-pattern pass ensures non-numeric values under
+ * sensitive-looking object keys are redacted; numeric values under matched
+ * keys are retained; retained free text is not content-scanned. A single-event
+ * item's `payload` is that bounded projection (walk it directly); a coalesced
+ * group's synthetic payload carries only the compacted `summary`, so walk the
+ * group's projected events (via
  * `sourceEventStartIndex`/`sourceEventEndIndex`, which index into
  * `rawEvents` 1:1 -- see `toRecordedEvent`'s `index` in recorded-runs.ts)
  * instead. Falls back to `item.summary` when no block of `kind` is found
