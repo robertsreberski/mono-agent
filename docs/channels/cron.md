@@ -125,7 +125,7 @@ This mirrors how the webhook channel authors per-endpoint prompts; see [Webhook]
 
 ## Configured overlap: ticks are skipped, never queued
 
-The `@mono-agent/agent-app` cron driver pins the scheduler to `overlap: "skip"`. If a tick fires while the previous run of the **same configured job** is still in flight, the new tick is **skipped** — it is not queued and does not run later. The in-flight run continues uninterrupted. Different jobs run independently and never block one another.
+The `@mono-agent/agent-app` cron driver pins the scheduler to `overlap: "skip"`. If a tick fires while the previous run of the **same configured job** is still in flight, the new tick is **skipped** — it is not queued and does not run later. The in-flight run continues uninterrupted. Scheduler overlap state is tracked per job, so one job's active run does not itself make a different job's tick overlap. After scheduler admission, however, shared agent-app harness admission and execution limits can serialize work across different jobs or reject a run when shared capacity is exhausted.
 
 The config schema intentionally has no `overlap`, `maxQueueDepth`, or `overflow` key. Direct embedders of `@mono-agent/cron-adapter` can select queue or replace behavior through the programmatic `startCronAdapter` API; those adapter options are outside this config-focused channel surface.
 
