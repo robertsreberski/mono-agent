@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants, type Stats } from "node:fs";
-import { link, lstat, mkdir, open, realpath, rename, rm, stat, unlink, writeFile, type FileHandle } from "node:fs/promises";
+import { constants, type BigIntStats, type Stats } from "node:fs";
+import { link, lstat, mkdir, open, realpath, rm, stat, unlink, writeFile, type FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { parseEnv } from "node:util";
@@ -16,7 +16,7 @@ import {
 } from "./first-run-managed-memory.js";
 import type { FirstRunManagedMemoryHooks } from "./first-run-managed-memory.js";
 import { assertManagedProjectSkillInitSafe } from "./project-skills.js";
-import { secureFileReplace } from "./secure-file-replace.js";
+import { readVerifiedFile, secureFileReplace } from "./secure-file-replace.js";
 
 export interface InitMonoAgentFolderOptions {
   /** Folder the agent is constructed in. Defaults to process.cwd(). */
@@ -737,7 +737,7 @@ async function readSecretEnvLockSnapshot(
 
   let handle: FileHandle | undefined;
   try {
-    handle = await open(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    handle = await open(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const handleStat = await handle.stat();
     assertSecretEnvLockFileStat(lockPath, handleStat, ownerUid);
     if (handleStat.dev !== pathStat.dev || handleStat.ino !== pathStat.ino) return undefined;
@@ -923,14 +923,14 @@ interface MissingFileSnapshot {
 interface ExistingFileSnapshot {
   readonly exists: true;
   readonly contents: Buffer;
-  readonly mode: number;
-  readonly dev: number;
-  readonly ino: number;
-  readonly uid: number;
-  readonly nlink: number;
-  readonly size: number;
-  readonly mtimeMs: number;
-  readonly ctimeMs: number;
+  readonly mode: bigint;
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly uid: bigint;
+  readonly nlink: bigint;
+  readonly size: bigint;
+  readonly mtimeNs: bigint;
+  readonly ctimeNs: bigint;
 }
 
 type SafeFileSnapshot = MissingFileSnapshot | ExistingFileSnapshot;
@@ -944,7 +944,7 @@ interface AtomicReplaceOptions {
   readonly mode: number;
   readonly verifyOwnerOnly?: boolean;
   readonly beforeCommit?: SecretEnvPersistenceOptions["beforeCommit"];
-  /** Final cross-file safety check, run after the test seam and immediately before rename. */
+  /** Final cross-file safety check before the shared target-claim sequence. */
   readonly beforeRename?: () => void | Promise<void>;
   readonly beforePromotion?: SecretEnvPersistenceOptions["beforePromotion"];
   readonly beforeInstallLink?: SecretEnvPersistenceOptions["beforeInstallLink"];
@@ -959,55 +959,42 @@ async function readSafeFile(
   allowedLinkCounts: readonly number[] = [1],
   reportedPath: string = path,
 ): Promise<SafeFileSnapshot> {
-  let pathStat;
   try {
-    pathStat = await lstat(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { exists: false };
-    throw error;
-  }
-  assertSafeSecretFileStat(reportedPath, pathStat, unsafeCode, ownerUid, allowedLinkCounts);
-
-  let handle;
-  try {
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    const handleStat = await handle.stat();
-    assertSafeSecretFileStat(reportedPath, handleStat, unsafeCode, ownerUid, allowedLinkCounts);
-    if (handleStat.dev !== pathStat.dev || handleStat.ino !== pathStat.ino) {
-      throw new SecretEnvConcurrentModificationError(reportedPath);
-    }
-    const contents = await handle.readFile();
-    decodeUtf8(contents, reportedPath, malformedCode);
-    const finalPathStat = await lstat(path);
-    assertSafeSecretFileStat(reportedPath, finalPathStat, unsafeCode, ownerUid, allowedLinkCounts);
-    if (finalPathStat.dev !== handleStat.dev || finalPathStat.ino !== handleStat.ino) {
-      throw new SecretEnvConcurrentModificationError(reportedPath);
-    }
+    const snapshot = await readVerifiedFile(path, {
+      validate: (details) => assertSafeSecretFileStat(
+        reportedPath,
+        details,
+        unsafeCode,
+        ownerUid,
+        allowedLinkCounts,
+      ),
+      changedError: () => new SecretEnvConcurrentModificationError(reportedPath),
+    });
+    if (snapshot === undefined) return { exists: false };
+    decodeUtf8(snapshot.contents, reportedPath, malformedCode);
     return {
       exists: true,
-      contents,
-      mode: handleStat.mode,
-      dev: handleStat.dev,
-      ino: handleStat.ino,
-      uid: handleStat.uid,
-      nlink: handleStat.nlink,
-      size: handleStat.size,
-      mtimeMs: handleStat.mtimeMs,
-      ctimeMs: handleStat.ctimeMs,
+      contents: snapshot.contents,
+      mode: snapshot.details.mode,
+      dev: snapshot.details.dev,
+      ino: snapshot.details.ino,
+      uid: snapshot.details.uid,
+      nlink: snapshot.details.nlink,
+      size: snapshot.details.size,
+      mtimeNs: snapshot.details.mtimeNs,
+      ctimeNs: snapshot.details.ctimeNs,
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ELOOP") {
       throw new SecretEnvPersistenceRefusedError(unsafeCode, `Automatic secret persistence refused unsafe path ${reportedPath}.`);
     }
     throw error;
-  } finally {
-    await handle?.close();
   }
 }
 
 function assertSafeSecretFileStat(
   path: string,
-  value: Stats,
+  value: BigIntStats,
   unsafeCode: Extract<SecretEnvRefusalCode, "unsafe-env-path" | "unsafe-gitignore-path">,
   ownerUid: number,
   allowedLinkCounts: readonly number[],
@@ -1018,13 +1005,13 @@ function assertSafeSecretFileStat(
       `Automatic secret persistence refused unsafe path ${path}.`,
     );
   }
-  if (value.uid !== ownerUid) {
+  if (value.uid !== BigInt(ownerUid)) {
     throw new SecretEnvPersistenceRefusedError(
       unsafeCode,
       `Automatic secret persistence refused ${path} because it is not owned by the current user.`,
     );
   }
-  if (!allowedLinkCounts.includes(value.nlink)) {
+  if (!allowedLinkCounts.some((linkCount) => value.nlink === BigInt(linkCount))) {
     throw new SecretEnvPersistenceRefusedError(
       unsafeCode,
       `Automatic secret persistence refused ${path} because its hard-link identity is unsafe.`,
@@ -1048,7 +1035,7 @@ function decodeUtf8(contents: Buffer, path: string, code: SecretEnvRefusalCode):
 function fileMode(snapshot: ExistingFileSnapshot): number;
 function fileMode(snapshot: MissingFileSnapshot): 0;
 function fileMode(snapshot: SafeFileSnapshot): number {
-  return snapshot.exists ? snapshot.mode & 0o777 : 0;
+  return snapshot.exists ? Number(snapshot.mode & 0o777n) : 0;
 }
 
 function changeFor(path: string, exists: boolean, needsWrite: boolean, dryRun: boolean): InitFileChange {
@@ -1207,6 +1194,10 @@ function ensureExactEnvIgnore(existing: string): string {
 
 async function atomicReplaceFile(options: AtomicReplaceOptions): Promise<void> {
   const temporaryPath = join(dirname(options.path), `.${basename(options.path)}.mono-agent-${randomUUID()}.tmp`);
+  const backupPath = join(dirname(options.path), `${basename(options.path)}.mono-agent-${randomUUID()}.backup`);
+  const expected = options.expected;
+  const unsafeCode = basename(options.path) === ".gitignore" ? "unsafe-gitignore-path" : "unsafe-env-path";
+  const malformedCode = basename(options.path) === ".gitignore" ? "malformed-gitignore" : "malformed-env";
   await secureFileReplace({
     path: options.path,
     temporaryPath,
@@ -1227,234 +1218,58 @@ async function atomicReplaceFile(options: AtomicReplaceOptions): Promise<void> {
       // beforeRename may perform async Git and cross-file checks. Re-read the
       // target afterwards so an editor cannot win that widened window silently.
       await assertSnapshotUnchanged(options.path, options.reportedPath, options.expected, options.ownerUid);
-      await options.beforePromotion?.(options.reportedPath, temporary);
     },
-    commit: async (temporary, proof) => {
-      await promoteTemporaryFileWithoutClobber(options, temporary, proof.assertPath);
-      await syncDirectoryBestEffort(dirname(options.path));
+    target: {
+      expected: expected.exists
+        ? {
+            kind: "present",
+            claimPath: backupPath,
+            validate: async (candidate, moved) => {
+              const current = await readSafeFile(
+                candidate,
+                unsafeCode,
+                malformedCode,
+                options.ownerUid,
+              );
+              return current.exists && sameExpectedFileSnapshot(current, expected, moved);
+            },
+            invalidError: () => new SecretEnvConcurrentModificationError(options.reportedPath),
+            mismatchRecovery: (phase) => phase === "claimed" || phase === "pre-publish"
+              ? "restore-previous"
+              : "preserve-current",
+          }
+        : { kind: "missing" },
+      recovery: "preserve-current",
+      beforeClaim: (_target, temporary) => options.beforePromotion?.(options.reportedPath, temporary),
+      ...(expected.exists ? {
+        beforePublish: (_target: string, temporary: string) => options.beforeInstallLink?.(options.reportedPath, temporary),
+        afterPublish: (_target: string, temporary: string) => options.afterInstallLink?.(options.reportedPath, temporary),
+      } : {}),
+      protectRecovery: tightenFileOwnerOnlyBestEffort,
+      makeError: ({ cause, recoveryPaths }) => recoveryPaths.length === 0
+        && (cause instanceof SecretEnvConcurrentModificationError
+          || cause instanceof SecretEnvPersistenceRefusedError)
+        ? cause
+        : new SecretEnvConcurrentModificationError(options.reportedPath, undefined, recoveryPaths[0]),
     },
   });
+  await syncDirectoryBestEffort(dirname(options.path));
 }
 
-async function promoteTemporaryFileWithoutClobber(
-  options: AtomicReplaceOptions,
-  temporaryPath: string,
-  assertStagedPath: (path: string, allowedLinkCounts?: readonly number[]) => Promise<void>,
-): Promise<void> {
-  if (!options.expected.exists) {
-    if (!await linkIfAbsent(temporaryPath, options.path)) {
-      throw new SecretEnvConcurrentModificationError(options.reportedPath);
-    }
-    await assertPromotedContents(options, temporaryPath, assertStagedPath);
-    return;
-  }
-
-  const backupPath = join(
-    dirname(options.path),
-    `${basename(options.path)}.mono-agent-${randomUUID()}.backup`,
-  );
-  let backupContainsExpected = false;
-  // Once target is moved, this backup is the only durable copy until a target
-  // is proven present. Preserve it by default on every unexpected failure.
-  let preserveConcurrentBackup = true;
-  try {
-    try {
-      // Claim whichever inode occupies the pathname at this exact instant.
-      // A path-based writer racing after this point creates a new target that
-      // the exclusive link below will preserve rather than overwrite.
-      await rename(options.path, backupPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        throw new SecretEnvConcurrentModificationError(options.reportedPath);
-      }
-      throw error;
-    }
-
-    let moved: SafeFileSnapshot;
-    try {
-      moved = await readSafeFile(
-        backupPath,
-        basename(options.path) === ".gitignore" ? "unsafe-gitignore-path" : "unsafe-env-path",
-        basename(options.path) === ".gitignore" ? "malformed-gitignore" : "malformed-env",
-        options.ownerUid,
-      );
-    } catch {
-      await tightenFileOwnerOnlyBestEffort(backupPath);
-      throw new SecretEnvConcurrentModificationError(options.reportedPath, undefined, backupPath);
-    }
-    backupContainsExpected = moved.exists && sameMovedFileSnapshot(moved, options.expected);
-    if (!backupContainsExpected) {
-      // We claimed a newer writer's file. Restore it without replacing any
-      // still-newer target; if restoration loses that race, retain a private,
-      // ignored recovery copy and fail closed.
-      try {
-        if (await linkIfAbsent(backupPath, options.path)) {
-          await rm(backupPath, { force: true });
-          preserveConcurrentBackup = false;
-        } else {
-          await tightenFileOwnerOnlyBestEffort(backupPath);
-        }
-      } catch {
-        await tightenFileOwnerOnlyBestEffort(backupPath);
-        throw new SecretEnvConcurrentModificationError(options.reportedPath, undefined, backupPath);
-      }
-      throw new SecretEnvConcurrentModificationError(
-        options.reportedPath,
-        undefined,
-        preserveConcurrentBackup ? backupPath : undefined,
-      );
-    }
-
-    let installed: boolean;
-    try {
-      await options.beforeInstallLink?.(options.reportedPath, temporaryPath);
-      if (!await claimedBackupStillMatchesExpected(options, backupPath)) {
-        // A writer holding the pre-rename inode changed it after pathname
-        // claim. Restore that inode when the target is still absent so future
-        // writes through the held descriptor remain visible at the target.
-        try {
-          if (await linkIfAbsent(backupPath, options.path)) {
-            preserveConcurrentBackup = false;
-          } else {
-            await tightenFileOwnerOnlyBestEffort(backupPath);
-          }
-        } catch {
-          await tightenFileOwnerOnlyBestEffort(backupPath);
-          throw new SecretEnvConcurrentModificationError(options.reportedPath, undefined, backupPath);
-        }
-        throw new SecretEnvConcurrentModificationError(
-          options.reportedPath,
-          undefined,
-          preserveConcurrentBackup ? backupPath : undefined,
-        );
-      }
-      await assertStagedPath(temporaryPath);
-      installed = await linkIfAbsent(temporaryPath, options.path);
-    } catch {
-      if (!preserveConcurrentBackup) {
-        throw new SecretEnvConcurrentModificationError(options.reportedPath);
-      }
-      await tightenFileOwnerOnlyBestEffort(backupPath);
-      throw new SecretEnvConcurrentModificationError(options.reportedPath, undefined, backupPath);
-    }
-    if (!installed) {
-      // A newer target already exists; the backup is only the superseded
-      // expected snapshot and is safe to remove.
-      preserveConcurrentBackup = false;
-      throw new SecretEnvConcurrentModificationError(options.reportedPath);
-    }
-    try {
-      await options.afterInstallLink?.(options.reportedPath, temporaryPath);
-      await assertPromotedContents(options, temporaryPath, assertStagedPath);
-    } catch {
-      // If a racing writer deleted our new target, restore the old expected
-      // snapshot. If it wrote a newer target, exclusive link preserves it.
-      const backupStillExpected = await claimedBackupStillMatchesExpected(options, backupPath);
-      try {
-        const restored = await linkIfAbsent(backupPath, options.path);
-        if (restored) {
-          preserveConcurrentBackup = false;
-        } else if (!backupStillExpected) {
-          await tightenFileOwnerOnlyBestEffort(backupPath);
-        }
-      } catch {
-        await tightenFileOwnerOnlyBestEffort(backupPath);
-        throw new SecretEnvConcurrentModificationError(options.reportedPath, undefined, backupPath);
-      }
-      throw new SecretEnvConcurrentModificationError(
-        options.reportedPath,
-        undefined,
-        preserveConcurrentBackup ? backupPath : undefined,
-      );
-    }
-    if (!await claimedBackupStillMatchesExpected(options, backupPath)) {
-      // The new target is already installed. Preserve the mutated claimed
-      // inode as an owner-only recovery copy instead of discarding its bytes.
-      await tightenFileOwnerOnlyBestEffort(backupPath);
-      throw new SecretEnvConcurrentModificationError(options.reportedPath, undefined, backupPath);
-    }
-    preserveConcurrentBackup = false;
-  } finally {
-    if (!preserveConcurrentBackup) {
-      // Once a newer target exists, the backup is only the superseded expected
-      // snapshot. Removing it cannot discard the racing writer's bytes.
-      await rm(backupPath, { force: true });
-    } else {
-      await tightenFileOwnerOnlyBestEffort(backupPath);
-    }
-  }
-}
-
-async function claimedBackupStillMatchesExpected(
-  options: AtomicReplaceOptions,
-  backupPath: string,
-): Promise<boolean> {
-  try {
-    const current = await readSafeFile(
-      backupPath,
-      basename(options.path) === ".gitignore" ? "unsafe-gitignore-path" : "unsafe-env-path",
-      basename(options.path) === ".gitignore" ? "malformed-gitignore" : "malformed-env",
-      options.ownerUid,
-    );
-    return current.exists && options.expected.exists && sameMovedFileSnapshot(current, options.expected);
-  } catch {
-    return false;
-  }
-}
-
-function sameMovedFileSnapshot(current: ExistingFileSnapshot, expected: ExistingFileSnapshot): boolean {
+function sameExpectedFileSnapshot(
+  current: ExistingFileSnapshot,
+  expected: ExistingFileSnapshot,
+  moved = false,
+): boolean {
   return current.dev === expected.dev &&
     current.ino === expected.ino &&
     current.uid === expected.uid &&
     current.nlink === expected.nlink &&
     current.size === expected.size &&
     current.mode === expected.mode &&
+    (moved || current.mtimeNs === expected.mtimeNs) &&
+    (moved || current.ctimeNs === expected.ctimeNs) &&
     current.contents.equals(expected.contents);
-}
-
-async function linkIfAbsent(source: string, target: string): Promise<boolean> {
-  try {
-    await link(source, target);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
-    throw error;
-  }
-}
-
-async function assertPromotedContents(
-  options: AtomicReplaceOptions,
-  temporaryPath: string,
-  assertStagedPath: (path: string, allowedLinkCounts?: readonly number[]) => Promise<void>,
-): Promise<void> {
-  await assertStagedPath(temporaryPath, [2]);
-  await assertStagedPath(options.path, [2]);
-  const temporary = await readSafeFile(
-    temporaryPath,
-    basename(options.path) === ".gitignore" ? "unsafe-gitignore-path" : "unsafe-env-path",
-    basename(options.path) === ".gitignore" ? "malformed-gitignore" : "malformed-env",
-    options.ownerUid,
-    [2],
-  );
-  const promoted = await readSafeFile(
-    options.path,
-    basename(options.path) === ".gitignore" ? "unsafe-gitignore-path" : "unsafe-env-path",
-    basename(options.path) === ".gitignore" ? "malformed-gitignore" : "malformed-env",
-    options.ownerUid,
-    [2],
-    options.reportedPath,
-  );
-  if (
-    !temporary.exists ||
-    !promoted.exists ||
-    temporary.dev !== promoted.dev ||
-    temporary.ino !== promoted.ino ||
-    !temporary.contents.equals(options.contents) ||
-    !promoted.contents.equals(options.contents) ||
-    fileMode(promoted) !== options.mode
-  ) {
-    throw new SecretEnvConcurrentModificationError(options.reportedPath);
-  }
 }
 
 async function tightenFileOwnerOnlyBestEffort(path: string): Promise<void> {
@@ -1503,7 +1318,7 @@ async function removeCreatedConfigIfUnchanged(
 ): Promise<boolean> {
   let handle: FileHandle | undefined;
   try {
-    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const opened = await handle.stat();
     if (!opened.isFile() || opened.nlink !== 1 || !sameFileIdentity(opened, expectedIdentity)) return false;
     if (await handle.readFile({ encoding: "utf8" }) !== expectedContents) return false;
@@ -1553,17 +1368,7 @@ async function assertSnapshotUnchanged(
   }
   if (current.exists !== expected.exists) throw new SecretEnvConcurrentModificationError(reportedPath);
   if (!current.exists || !expected.exists) return;
-  if (
-    current.dev !== expected.dev ||
-    current.ino !== expected.ino ||
-    current.uid !== expected.uid ||
-    current.nlink !== expected.nlink ||
-    current.size !== expected.size ||
-    current.mtimeMs !== expected.mtimeMs ||
-    current.ctimeMs !== expected.ctimeMs ||
-    current.mode !== expected.mode ||
-    !current.contents.equals(expected.contents)
-  ) {
+  if (!sameExpectedFileSnapshot(current, expected)) {
     throw new SecretEnvConcurrentModificationError(reportedPath);
   }
 }

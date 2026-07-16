@@ -6,22 +6,20 @@ import {
   fchmodSync,
   fstatSync,
   fsyncSync,
-  linkSync,
   lstatSync,
   openSync,
   readFileSync,
   realpathSync,
-  renameSync,
   type Stats,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { lstat, mkdir, readFile, realpath, stat } from "node:fs/promises";
+import { lstat, mkdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import type { GeneratedFile } from "./modules/types.js";
-import { secureFileReplace } from "./secure-file-replace.js";
+import { readVerifiedFile, secureFileReplace } from "./secure-file-replace.js";
 
 export const PROJECT_SKILL_VERSION = "1.1.0";
 export const PROJECT_SKILL_MANIFEST_PATH = "skills/.mono-agent-managed.json";
@@ -343,12 +341,15 @@ async function readManifest(path: string): Promise<ManagedSkillManifest | undefi
 }
 
 async function readOptional(path: string): Promise<string | undefined> {
-  try {
-    return await readFile(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
+  const snapshot = await readManagedSnapshot(path, "read");
+  return snapshot?.contents.toString("utf8");
+}
+
+function readManagedSnapshot(path: string, operation: string): ReturnType<typeof readVerifiedFile> {
+  return readVerifiedFile(path, {
+    validate: (details) => assertManagedFileInfo(details, path),
+    changedError: () => new Error(`Managed project skill changed while it was being ${operation}: ${path}`),
+  });
 }
 
 async function canonicalManagedRoot(cwd: string): Promise<string> {
@@ -465,20 +466,10 @@ function assertManagedPathInside(root: string, path: string, label: string): voi
 
 async function snapshotManagedFile(root: string, path: string): Promise<ManagedFileSnapshot> {
   await inspectManagedFileInside(root, path, "Managed project skill");
-  let info: Stats;
-  try {
-    info = await lstat(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { path };
-    throw error;
-  }
-  assertManagedFileInfo(info, path);
-  const contents = await readFile(path, "utf8");
-  const after = await lstat(path);
-  if (!sameManagedFileMetadata(info, after)) {
-    throw new Error(`Managed project skill changed while it was being snapshotted: ${path}`);
-  }
-  return { path, contents, mode: info.mode & 0o777 };
+  const snapshot = await readManagedSnapshot(path, "snapshotted");
+  return snapshot === undefined
+    ? { path }
+    : { path, contents: snapshot.contents.toString("utf8"), mode: Number(snapshot.details.mode & 0o777n) };
 }
 
 async function restoreManagedFile(
@@ -518,15 +509,21 @@ async function atomicWriteManagedExact(
     contents,
     mode,
     validateTemporary: (details) => assertManagedFileInfo(details, secureTemporary),
-    commit: async (temporaryPath, proof) => await commitManagedReplacement(
-      root,
-      securePath,
-      temporaryPath,
-      expected,
-      initialInfo,
-      proof,
-      hooks,
-    ),
+    target: {
+      expected: expected === undefined
+        ? { kind: "missing" }
+        : {
+            kind: "present",
+            validate: (candidate, moved) => managedReplacementMatches(candidate, expected, initialInfo, moved),
+            invalidError: () => new Error(
+              `Refusing to overwrite a concurrently edited managed project skill: ${securePath}`,
+            ),
+          },
+      recovery: "restore-previous",
+      ...(expected === undefined ? {} : { beforeClaim: () => hooks.beforeTargetClaim?.(securePath) }),
+      beforePublish: (_targetPath, temporaryPath) => hooks.beforePublish?.(securePath, temporaryPath),
+      makeError: ({ cause, recoveryPaths }) => managedPublicationError(securePath, cause, recoveryPaths),
+    },
   });
 }
 
@@ -536,128 +533,28 @@ async function managedFileInfo(
   expected: string | undefined,
 ): Promise<BigIntStats | undefined> {
   await inspectManagedFileInside(root, path, "Managed project skill");
-  let info: BigIntStats;
-  try {
-    info = await lstat(path, { bigint: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" && expected === undefined) return undefined;
-    throw error;
+  const snapshot = await readManagedSnapshot(path, "prepared for replacement");
+  if (snapshot === undefined) {
+    if (expected === undefined) return undefined;
+    throw new Error(`Refusing to overwrite a concurrently edited managed project skill: ${path}`);
   }
   if (expected === undefined) {
     throw new Error(`Refusing to overwrite a concurrently created managed project skill: ${path}`);
   }
-  assertManagedFileInfo(info, path);
-  if (await readFile(path, "utf8") !== expected) {
+  if (snapshot.contents.toString("utf8") !== expected) {
     throw new Error(`Refusing to overwrite a concurrently edited managed project skill: ${path}`);
   }
-  return info;
+  return snapshot.details;
 }
 
-interface ManagedReplacementProof {
-  readonly assertPath: (path: string, allowedLinkCounts?: readonly number[]) => Promise<void>;
-}
-
-/*
- * Publication uses unguessable same-directory claim paths plus exclusive hard
- * links. Node does not expose fd-relative rename/unlink, so a hostile same-UID
- * process can still race final pathname cleanup; detected replacements are
- * retained at named recovery paths rather than silently deleted.
- */
-async function commitManagedReplacement(
-  root: string,
-  path: string,
-  temporary: string,
-  expected: string | undefined,
-  initialInfo: BigIntStats | undefined,
-  proof: ManagedReplacementProof,
-  hooks: Pick<UpdateManagedProjectSkillsOptions, "beforeTargetClaim" | "beforePublish">,
-): Promise<void> {
-  const securePath = inspectManagedFileInsideSync(root, path, "Managed project skill", expected === undefined);
-  const claimPath = inspectManagedFileInsideSync(
-    root,
-    join(dirname(securePath), `.${basename(securePath)}.${randomUUID()}.mono-agent-previous`),
-    "Managed project-skill previous generation",
-    true,
-  );
-  const failedPath = inspectManagedFileInsideSync(
-    root,
-    join(dirname(securePath), `.${basename(securePath)}.${randomUUID()}.mono-agent-failed`),
-    "Managed project-skill failed publication",
-    true,
-  );
-  let claimed = false;
-  let published = false;
-  try {
-    if (expected === undefined) {
-      await proof.assertPath(temporary);
-      await hooks.beforePublish?.(securePath, temporary);
-      linkSync(temporary, securePath);
-      published = true;
-      await proof.assertPath(temporary, [2]);
-      await proof.assertPath(securePath, [2]);
-      return;
-    }
-
-    assertManagedReplacementTarget(securePath, expected, initialInfo);
-    await hooks.beforeTargetClaim?.(securePath);
-    renameSync(securePath, claimPath);
-    claimed = true;
-    assertManagedReplacementTarget(claimPath, expected, initialInfo, true);
-    await proof.assertPath(temporary);
-    await hooks.beforePublish?.(securePath, temporary);
-    linkSync(temporary, securePath);
-    published = true;
-    await proof.assertPath(temporary, [2]);
-    await proof.assertPath(securePath, [2]);
-    // A writer may retain an fd across the pathname claim. Re-prove the old
-    // inode after every async publication boundary before discarding its name.
-    assertManagedReplacementTarget(claimPath, expected, initialInfo, true);
-    unlinkSync(claimPath);
-    claimed = false;
-  } catch (error) {
-    const recoveryPaths: string[] = [];
-    const recoveryFailures: unknown[] = [];
-    if (published) {
-      try {
-        renameSync(securePath, failedPath);
-        recoveryPaths.push(failedPath);
-      } catch (recoveryError) {
-        if ((recoveryError as NodeJS.ErrnoException).code !== "ENOENT") recoveryFailures.push(recoveryError);
-      }
-    }
-    if (claimed) {
-      try {
-        linkSync(claimPath, securePath);
-        unlinkSync(claimPath);
-        claimed = false;
-      } catch (recoveryError) {
-        recoveryPaths.push(claimPath);
-        if ((recoveryError as NodeJS.ErrnoException).code !== "EEXIST") recoveryFailures.push(recoveryError);
-      }
-    }
-    const reason = (error as NodeJS.ErrnoException).code === "EEXIST"
-      ? `Refusing to overwrite a concurrently created managed project skill: ${securePath}.`
-      : `Managed project-skill publication failed: ${error instanceof Error ? error.message : String(error)}`;
-    const recovery = recoveryPaths.length === 0
-      ? ""
-      : ` Preserved recovery artifact${recoveryPaths.length === 1 ? "" : "s"}: ${recoveryPaths.join(", ")}.`;
-    if (recoveryFailures.length > 0) {
-      throw new AggregateError(
-        [error, ...recoveryFailures],
-        `${reason}${recovery} Automatic publication recovery was incomplete.`,
-        { cause: error },
-      );
-    }
-    throw new Error(`${reason}${recovery}`, { cause: error });
-  }
-}
-
-function assertManagedReplacementTarget(
+// Keep this validator synchronous so the shared publisher's final proof and
+// unlink stay adjacent; pathname races are retained at named recovery paths.
+function managedReplacementMatches(
   path: string,
   expected: string,
   initialInfo: BigIntStats | undefined,
   moved = false,
-): void {
+): boolean {
   let sourceHandle: number | undefined;
   try {
     sourceHandle = openSync(
@@ -669,38 +566,54 @@ function assertManagedReplacementTarget(
     const current = readFileSync(sourceHandle, "utf8");
     const openedAfter = fstatSync(sourceHandle, { bigint: true });
     const named = lstatSync(path, { bigint: true });
-    if (
-      current !== expected
-      || initialInfo === undefined
-      || !(moved
+    return current === expected
+      && initialInfo !== undefined
+      && (moved
         ? sameMovedManagedBigIntMetadata(initialInfo, openedBefore)
         : sameManagedBigIntMetadata(initialInfo, openedBefore))
-      || !sameManagedBigIntMetadata(openedBefore, openedAfter)
-      || !sameManagedBigIntMetadata(openedAfter, named)
-    ) {
-      throw new Error(`Refusing to overwrite a concurrently edited managed project skill: ${path}`);
-    }
+      && sameManagedBigIntMetadata(openedBefore, openedAfter)
+      && sameManagedBigIntMetadata(openedAfter, named);
   } finally {
     if (sourceHandle !== undefined) closeSync(sourceHandle);
   }
 }
 
-function removeManagedFileExactSync(root: string, path: string, expected: string): void {
-  const securePath = inspectManagedFileInsideSync(root, path, "Managed project skill", false);
+function managedPublicationError(path: string, cause: unknown, recoveryPaths: readonly string[]): Error {
+  const reason = (cause as NodeJS.ErrnoException).code === "EEXIST"
+    ? `Refusing to overwrite a concurrently created managed project skill: ${path}.`
+    : `Managed project-skill publication failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+  const recovery = recoveryPaths.length === 0
+    ? ""
+    : ` Preserved recovery artifact${recoveryPaths.length === 1 ? "" : "s"}: ${recoveryPaths.join(", ")}.`;
+  return new Error(`${reason}${recovery}`, { cause });
+}
+
+function removeManagedFileExactSync(
+  root: string,
+  path: string,
+  expectedContents: string,
+  expectedInfo?: BigIntStats,
+  label = "Managed project skill",
+): void {
+  const securePath = inspectManagedFileInsideSync(root, path, label, false);
   let sourceHandle: number | undefined;
   try {
-    sourceHandle = openSync(securePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    const openedBefore = fstatSync(sourceHandle);
+    sourceHandle = openSync(
+      securePath,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+    const openedBefore = fstatSync(sourceHandle, { bigint: true });
     assertManagedFileInfo(openedBefore, securePath);
     const current = readFileSync(sourceHandle, "utf8");
-    const openedAfter = fstatSync(sourceHandle);
-    const named = lstatSync(securePath);
+    const openedAfter = fstatSync(sourceHandle, { bigint: true });
+    const named = lstatSync(securePath, { bigint: true });
     if (
-      current !== expected
-      || !sameManagedFileMetadata(openedBefore, openedAfter)
-      || !sameManagedFileMetadata(openedAfter, named)
+      current !== expectedContents
+      || (expectedInfo !== undefined && !sameManagedBigIntMetadata(expectedInfo, openedBefore))
+      || !sameManagedBigIntMetadata(openedBefore, openedAfter)
+      || !sameManagedBigIntMetadata(openedAfter, named)
     ) {
-      throw new Error(`Refusing to remove a concurrently edited managed project skill: ${securePath}`);
+      throw new Error(`${label} changed unexpectedly and was left untouched: ${path}`);
     }
     unlinkSync(securePath);
   } finally {
@@ -721,19 +634,10 @@ function assertManagedFileInfo(info: Stats | BigIntStats, path: string): void {
   }
 }
 
-function sameManagedFileMetadata(left: Stats, right: Stats): boolean {
-  return left.dev === right.dev
-    && left.ino === right.ino
-    && left.nlink === right.nlink
-    && left.mode === right.mode
-    && left.size === right.size
-    && left.mtimeMs === right.mtimeMs
-    && left.ctimeMs === right.ctimeMs;
-}
-
 function sameManagedBigIntMetadata(left: BigIntStats, right: BigIntStats): boolean {
   return left.dev === right.dev
     && left.ino === right.ino
+    && left.uid === right.uid
     && left.nlink === right.nlink
     && left.mode === right.mode
     && left.size === right.size
@@ -744,6 +648,7 @@ function sameManagedBigIntMetadata(left: BigIntStats, right: BigIntStats): boole
 function sameMovedManagedBigIntMetadata(left: BigIntStats, right: BigIntStats): boolean {
   return left.dev === right.dev
     && left.ino === right.ino
+    && left.uid === right.uid
     && left.nlink === right.nlink
     && left.mode === right.mode
     && left.size === right.size
@@ -760,7 +665,7 @@ async function withManagedProjectSkillLock<T>(root: string, operation: () => Pro
     createdAt: new Date().toISOString(),
   })}\n`;
   let handle: number | undefined;
-  let identity: { readonly dev: number; readonly ino: number } | undefined;
+  let identity: BigIntStats | undefined;
   try {
     try {
       const secureLockPath = inspectManagedFileInsideSync(root, lockPath, "Managed project-skill lock", true);
@@ -778,25 +683,16 @@ async function withManagedProjectSkillLock<T>(root: string, operation: () => Pro
     writeFileSync(handle, contents, "utf8");
     fchmodSync(handle, 0o600);
     fsyncSync(handle);
-    const info = fstatSync(handle);
+    const info = fstatSync(handle, { bigint: true });
     assertManagedFileInfo(info, lockPath);
-    identity = { dev: info.dev, ino: info.ino };
+    identity = info;
     closeSync(handle);
     handle = undefined;
     return await operation();
   } finally {
     if (handle !== undefined) closeSync(handle);
     if (identity !== undefined) {
-      const secureLockPath = inspectManagedFileInsideSync(root, lockPath, "Managed project-skill lock", false);
-      const current = lstatSync(secureLockPath);
-      if (
-        current.dev !== identity.dev
-        || current.ino !== identity.ino
-        || readFileSync(secureLockPath, "utf8") !== contents
-      ) {
-        throw new Error(`Managed project-skill lock changed unexpectedly and was left untouched: ${lockPath}`);
-      }
-      unlinkSync(secureLockPath);
+      removeManagedFileExactSync(root, lockPath, contents, identity, "Managed project-skill lock");
     }
   }
 }

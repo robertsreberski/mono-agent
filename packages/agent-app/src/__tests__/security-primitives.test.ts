@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   open,
+  readdir,
   readFile,
   rename,
   rm,
@@ -69,7 +70,10 @@ function isConfigureSkillPath(path: string): boolean {
   return basename(path) === "SKILL.md" && basename(dirname(path)) === "mono-agent-configure";
 }
 
-async function expectFifoRejectionWithoutBlocking(pending: Promise<unknown>, fifo: string): Promise<void> {
+async function expectFifoRejectionWithoutBlocking(
+  pending: Promise<unknown>,
+  fifo: string | (() => Promise<string>),
+): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const outcome = await Promise.race([
     pending.then(
@@ -77,13 +81,14 @@ async function expectFifoRejectionWithoutBlocking(pending: Promise<unknown>, fif
       (error: unknown) => ({ kind: "rejected" as const, error }),
     ),
     new Promise<{ readonly kind: "blocked" }>((resolveBlocked) => {
-      timer = setTimeout(() => resolveBlocked({ kind: "blocked" }), 500);
+      timer = setTimeout(() => resolveBlocked({ kind: "blocked" }), 2_000);
     }),
   ]);
   if (timer !== undefined) clearTimeout(timer);
   if (outcome.kind === "blocked") {
+    const fifoPath = typeof fifo === "string" ? fifo : await fifo();
     await Promise.allSettled([
-      execFileAsync("sh", ["-c", "printf x > \"$1\"", "sh", fifo]),
+      execFileAsync("sh", ["-c", "printf x > \"$1\"", "sh", fifoPath]),
       pending,
     ]);
   }
@@ -91,8 +96,16 @@ async function expectFifoRejectionWithoutBlocking(pending: Promise<unknown>, fif
   if (outcome.kind === "rejected") expect(outcome.error).toBeInstanceOf(Error);
 }
 
+async function findFifo(path: string): Promise<string> {
+  for (const entry of await readdir(path)) {
+    const candidate = join(path, entry);
+    if ((await lstat(candidate)).isFIFO()) return candidate;
+  }
+  throw new Error(`No FIFO remained available to unblock under ${path}.`);
+}
+
 describe("shared security primitives", () => {
-  it("stages one durable private file before the caller's atomic publication", async () => {
+  it("stages and exclusively publishes one durable private file", async () => {
     const dir = await root();
     const path = join(dir, "managed.txt");
 
@@ -100,7 +113,7 @@ describe("shared security primitives", () => {
       path,
       contents: "managed\n",
       mode: 0o600,
-      commit: (temporary) => rename(temporary, path),
+      target: { expected: { kind: "missing" }, recovery: "preserve-current" },
     });
 
     expect(await readFile(path, "utf8")).toBe("managed\n");
@@ -121,7 +134,7 @@ describe("shared security primitives", () => {
         await rename(temporary, `${temporary}.displaced`);
         await writeFile(temporary, "replacement\n", { mode: 0o600 });
       },
-      commit: (temporary) => rename(temporary, path),
+      target: { expected: { kind: "missing" }, recovery: "preserve-current" },
     })).rejects.toThrow("changed");
 
     expect(await readFile(temporaryPath, "utf8")).toBe("replacement\n");
@@ -141,7 +154,7 @@ describe("shared security primitives", () => {
       beforeCommit: async (temporary) => {
         await writeFile(temporary, "mutated\n", { mode: 0o600 });
       },
-      commit: (temporary) => rename(temporary, path),
+      target: { expected: { kind: "missing" }, recovery: "preserve-current" },
     })).rejects.toThrow("contents changed");
 
     await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
@@ -161,7 +174,7 @@ describe("shared security primitives", () => {
         await rename(temporary, `${temporary}.displaced`);
         await execFileAsync("mkfifo", [temporary]);
       },
-      commit: (temporary) => rename(temporary, path),
+      target: { expected: { kind: "missing" }, recovery: "preserve-current" },
     });
     await expectFifoRejectionWithoutBlocking(fileReplacement, temporaryPath);
 
@@ -177,6 +190,62 @@ describe("shared security primitives", () => {
       processIncarnation: incarnation,
     });
     await expectFifoRejectionWithoutBlocking(lockReplacement, ownerPath);
+  });
+
+  it.skipIf(process.platform === "win32")("rejects FIFO swaps without blocking secret target validation", async () => {
+    const dir = await root();
+    const path = join(dir, ".env");
+    await writeFile(path, "TOKEN=original\n", { mode: 0o600 });
+    await writeFile(
+      join(dir, ".gitignore"),
+      "/.env\n/..env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n",
+    );
+
+    const replacement = mergeSecretEnvFile(path, { SECOND: "managed" }, {
+      beforePromotion: async (target) => {
+        await rm(target);
+        await execFileAsync("mkfifo", [target]);
+      },
+    });
+    await expectFifoRejectionWithoutBlocking(replacement, () => findFifo(dir));
+    await expect(lstat(path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.skipIf(process.platform === "win32")("rejects FIFO swaps without blocking managed target validation", async () => {
+    const dir = await agentRoot();
+    await makeManagedSkillsStale(dir);
+    const path = join(dir, "skills", "mono-agent-configure", "SKILL.md");
+    let injected = false;
+    const replacement = updateManagedProjectSkills(dir, {
+      beforeTargetClaim: async (target) => {
+        if (injected || !isConfigureSkillPath(target)) return;
+        injected = true;
+        await rm(target);
+        await execFileAsync("mkfifo", [target]);
+      },
+    });
+    await expectFifoRejectionWithoutBlocking(replacement, () => findFifo(dirname(path)));
+    expect(injected).toBe(true);
+    expect((await lstat(path)).isFIFO()).toBe(true);
+  });
+
+  it.skipIf(process.platform === "win32")("rejects FIFO swaps without blocking managed rollback", async () => {
+    const dir = await agentRoot();
+    const path = join(dir, "skills", "mono-agent-configure", "SKILL.md");
+    await rm(path);
+    let activations = 0;
+    const replacement = updateManagedProjectSkills(dir, {
+      beforeActivate: async () => {
+        activations += 1;
+        if (activations !== 2) return;
+        await rm(path);
+        await execFileAsync("mkfifo", [path]);
+        throw new Error("injected failure after FIFO swap");
+      },
+    });
+    await expectFifoRejectionWithoutBlocking(replacement, () => findFifo(dirname(path)));
+    expect(activations).toBe(2);
+    expect((await lstat(path)).isFIFO()).toBe(true);
   });
 
   it("rechecks staged secret bytes immediately before the caller's exclusive publication", async () => {
@@ -234,6 +303,58 @@ describe("shared security primitives", () => {
     expect(cause.recoveryPath).toBeDefined();
     await expect(readFile(path, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readFile(cause.recoveryPath!, "utf8")).toBe("TOKEN=original\n");
+  });
+
+  it("restores secret edits written through an fd retained across target claim", async () => {
+    const dir = await root();
+    const path = join(dir, ".env");
+    const operatorEdit = "TOKEN=operator-edit\n";
+    await writeFile(path, "TOKEN=original\n", { mode: 0o600 });
+    await writeFile(
+      join(dir, ".gitignore"),
+      "/.env\n/..env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n",
+    );
+    let retained: FileHandle | undefined;
+
+    try {
+      await expect(mergeSecretEnvFile(path, { SECOND: "managed" }, {
+        beforePromotion: async (target) => { retained = await open(target, "r+"); },
+        beforeInstallLink: async () => {
+          await retained!.truncate(0);
+          await retained!.writeFile(operatorEdit);
+          await retained!.sync();
+        },
+      })).rejects.toBeInstanceOf(SecretEnvConcurrentModificationError);
+    } finally {
+      await retained?.close();
+    }
+
+    expect(retained).toBeDefined();
+    expect(await readFile(path, "utf8")).toBe(operatorEdit);
+  });
+
+  it("drops a revalidated superseded secret claim after an exclusive publication conflict", async () => {
+    const dir = await root();
+    const path = join(dir, ".env");
+    const concurrent = "TOKEN=concurrent-writer\n";
+    await writeFile(path, "TOKEN=original\n", { mode: 0o600 });
+    await writeFile(
+      join(dir, ".gitignore"),
+      "/.env\n/..env.mono-agent-*.tmp\n/.env.mono-agent-*.backup\n",
+    );
+    let failure: unknown;
+    try {
+      await mergeSecretEnvFile(path, { SECOND: "managed" }, {
+        beforeInstallLink: async (target) => { await writeFile(target, concurrent, { mode: 0o600 }); },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(SecretEnvConcurrentModificationError);
+    expect((failure as SecretEnvConcurrentModificationError).recoveryPath).toBeUndefined();
+    expect(await readFile(path, "utf8")).toBe(concurrent);
+    expect((await readdir(dir)).filter((entry) => /^\.env\.mono-agent-.*\.backup$/u.test(entry))).toEqual([]);
   });
 
   it("preserves a managed skill created at the exclusive publication boundary", async () => {

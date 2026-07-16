@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
-import { link, lstat, mkdir, open, rename, rm, type FileHandle } from "node:fs/promises";
+import { lstat, mkdir, open, rename, rm, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import process from "node:process";
 
@@ -223,9 +223,8 @@ async function publishOwner(
     contents: content,
     mode: 0o600,
     beforeCommit: () => sameDirectoryRequired(options.path, directoryIdentity, options),
-    // The directory is new, so owner publication must also be create-only.
-    // A contender that appears in the mkdir-to-owner window is never replaced.
-    commit: (temporary) => link(temporary, ownerPath),
+    // A contender in the mkdir-to-owner window must never be replaced.
+    target: { expected: { kind: "missing" }, recovery: "preserve-current" },
   });
   await sameDirectoryRequired(options.path, directoryIdentity, options);
   const owner = await readOwner(ownerPath, options);
