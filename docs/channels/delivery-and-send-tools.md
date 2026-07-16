@@ -126,6 +126,8 @@ The native sandbox's network allowlist is a separate egress boundary. App-owned 
 
 When a blocking `AskUser` or `TelegramAskButtons` call completes, mono-agent stores its exact question, options, outcome, and answer/selection when present in the assistant history copy committed for that turn. This makes the interaction available to a later cold/stateless replay even though the transport posted the question out of band. The final outward message and long-term memory capture remain unchanged. Non-blocking `TelegramAskButtons` (`wait: false`) is not folded into that in-turn record; its later callback remains a synthetic next turn.
 
+The example assumes `MONO_AGENT_SLACK_BOT_TOKEN`, `MONO_AGENT_SLACK_APP_TOKEN`, and `MONO_AGENT_TELEGRAM_BOT_TOKEN` are set in `.env`; credentials are intentionally absent from the source config.
+
 ```json
 {
   "tools": {
@@ -133,13 +135,10 @@ When a blocking `AskUser` or `TelegramAskButtons` call completes, mono-agent sto
   },
   "slack": {
     "enabled": true,
-    "botToken": "xoxb-...",
-    "appToken": "xapp-...",
     "allowedChannelIds": ["C0123"]
   },
   "telegram": {
     "enabled": true,
-    "botToken": "...",
     "allowedChatIds": ["123456789"]
   }
 }

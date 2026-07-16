@@ -21,12 +21,12 @@ New here? Read [Getting Started → Quickstart](/getting-started/quickstart/) to
 ```json
 {
   "runtime": { "model": "codex:gpt-5.6-terra" },
-  "telegram": { "enabled": true, "botToken": "..." },
+  "telegram": { "enabled": true },
   "openaiApi": { "enabled": true }
 }
 ```
 
-Equivalent env override: `MONO_AGENT_MODEL=codex:gpt-5.6-terra`. See [Environment variables](/config/env-vars/) for the full mapping.
+Equivalent env overrides: `MONO_AGENT_MODEL=codex:gpt-5.6-terra` and, for the enabled Telegram channel, `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`. Source configs omit credentials; see [Environment variables](/config/env-vars/) for the full mapping.
 
 ## Site map
 

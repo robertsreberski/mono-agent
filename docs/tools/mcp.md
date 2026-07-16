@@ -58,14 +58,28 @@ SSE and streamable HTTP servers use a `url` instead of `command`/`args`:
 {
   "mcpServers": {
     "remote-api": {
-      "url": "https://mcp.example.com/sse",
-      "headers": { "Authorization": "Bearer sk-..." }
+      "url": "https://mcp.example.com/sse"
     }
   }
 }
 ```
 
-Keep tokens as placeholders in committed files; prefer `env` references or a non-tracked `mcp.json`. Run `mono-agent validate` to confirm the file is found — it reports the resolved `MCP config:` path or a `MCP config file is missing:` warning.
+HTTP/SSE header values in `mcp.json` are literal; mono-agent does not expand
+environment references inside them. Do not put credentials in this file,
+whether committed or merely untracked. There is currently no credential
+indirection for authenticated HTTP/SSE entries, so do not declare one unless a
+separate trusted mechanism supplies authentication without putting it in this
+file.
+
+Treat every declared stdio server as fully trusted. Environment delivery is
+runtime-dependent: some runtimes inherit the full agent process environment,
+including unrelated credentials loaded from `.env` or `--env-file`, while
+others launch from a restricted safe list. Literal per-server `env` entries are
+passed through. Do not rely on inherited variables for credential delivery or
+on a restricted runtime for per-server secret isolation.
+
+Run `mono-agent validate` to confirm the file is found; it reports the resolved
+`MCP config:` path or an `MCP config file is missing:` warning.
 
 ## Trusted request context for a stdio server
 

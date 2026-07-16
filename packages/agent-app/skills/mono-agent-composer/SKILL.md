@@ -36,7 +36,7 @@ Do **not** read or grep the `@mono-agent` TypeScript/package source — `package
 - Respect existing knowledge: if the folder has `AGENTS.md`, `CLAUDE.md`, `README.md`, or `SOUL.md`, reference it from the identity instead of copying it. `IDENTITY.md` → `## Role` is the single canonical guided-init Role location. Never overwrite an existing identity; say explicitly that a newly entered Role was not written and tell the user to add or edit that heading manually.
 - Fail closed: no allowed tools, no memory writes, loopback-only network until the user opts in.
 - Do not fake runtime success, silently broaden tool access, or hide provider/MCP failures. Backup models are configured failover (`runtime.fallbackModels`), never silent substitution.
-- Secrets stay in env vars or the untracked config file; never commit tokens or `.env*` files.
+- Secrets stay in `.env` or exported environment variables. An ignored or untracked config file is not permission to inline them; never commit tokens or `.env*` files.
 
 ## Prerequisites
 

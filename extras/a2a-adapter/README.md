@@ -135,6 +135,9 @@ omits the namespace; they never silently start without the advertised guard.
 
 Config can be loaded from a `channels.plugins[]` entry or explicit environment variables:
 
+Set `MONO_AGENT_A2A_BEARER_TOKEN` in `.env` when `requireBearer` is enabled;
+the source-config example omits the credential.
+
 ```json
 {
   "agent": {
@@ -151,7 +154,6 @@ Config can be loaded from a `channels.plugins[]` entry or explicit environment v
             "host": "127.0.0.1",
             "port": 4300,
             "requireBearer": true,
-            "bearerToken": "redacted-value",
             "idempotency": {
               "namespace": "agent-a-production",
               "stateDir": ".mono-agent/a2a-agent-a",

@@ -35,6 +35,8 @@ generated configs use `agent-host`, while this older fully-local recipe delibera
 explicit Ollama `memory.llm`. Selecting LM Studio embeddings would not move capture to LM
 Studio or create a cross-provider fallback.
 
+Put `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`; the source config omits the credential.
+
 ```json
 {
   "runtime": {
@@ -42,7 +44,6 @@ Studio or create a cross-provider fallback.
   },
   "telegram": {
     "enabled": true,
-    "botToken": "...",
     "allowedChatIds": ["123456789"]
   },
   "memory": {
@@ -65,7 +66,10 @@ Studio or create a cross-provider fallback.
 }
 ```
 
-Keep `botToken` out of the file in production by setting `MONO_AGENT_TELEGRAM_BOT_TOKEN` instead. The memory LLM provider/model/endpoint can also come from `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, and `MONO_AGENT_MEMORY_LLM_ENDPOINT`.
+Keep `botToken` out of the file by setting `MONO_AGENT_TELEGRAM_BOT_TOKEN` in
+`.env` instead. The memory LLM provider/model/endpoint can also come from
+`MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, and
+`MONO_AGENT_MEMORY_LLM_ENDPOINT`.
 
 :::note
 Consolidation runs in-app on the schedule above — no external cron or launchd is needed.
@@ -79,10 +83,11 @@ Use the exact `nomic-embed-text:v1.5` tag; the bare `nomic-embed-text` tag resol
 
 1. Pull the local models the memory tier needs: `ollama pull nomic-embed-text:v1.5 && ollama pull qwen3.6:latest`.
 2. Scaffold the agent: `mono-agent init --model claude:claude-sonnet-4-6 --memory bujo`.
-3. In guided init choose Ollama for this recipe's embeddings, then edit
-   `mono-agent.config.json`: add the `telegram` section with `botToken` and
-   `allowedChatIds`, set `memory.writeMode` to `capture`, and keep the explicit Ollama
-   `memory.llm` block shown above. To use LM Studio embeddings instead, choose it in the
+3. In guided init choose Ollama for this recipe's embeddings, put
+   `MONO_AGENT_TELEGRAM_BOT_TOKEN` in `.env`, then edit
+   `mono-agent.config.json`: add the `telegram` section with `allowedChatIds`,
+   set `memory.writeMode` to `capture`, and keep the explicit Ollama `memory.llm`
+   block shown above. To use LM Studio embeddings instead, choose it in the
    wizard and leave the capture LLM independently explicit.
 4. Run `mono-agent validate` and confirm memory liveness — embeddings and chat model pulled, and the consolidation cadence shown.
 5. Run `mono-agent start` and confirm telegram reports running.
