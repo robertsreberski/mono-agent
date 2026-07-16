@@ -80,6 +80,7 @@ describe("verify-all", () => {
       "check:licenses",
       "check:dependency-vulnerabilities",
       "check:codex-discoverability",
+      "check:consumer-docs-consistency",
       "release:validate",
       "check:architecture",
       "build",
@@ -163,6 +164,7 @@ describe("verify-all", () => {
       "check:licenses",
       "check:dependency-vulnerabilities",
       "check:codex-discoverability",
+      "check:consumer-docs-consistency",
       "release:validate",
       "check:architecture",
       "build",
@@ -1044,6 +1046,11 @@ const CI_RUN_STEP_CONTRACTS = Object.freeze([
     label: "check:codex-discoverability",
     command: "pnpm",
     args: ["run", "check:codex-discoverability"],
+  }),
+  gateRunContract("pnpm run check:consumer-docs-consistency", {
+    label: "check:consumer-docs-consistency",
+    command: "pnpm",
+    args: ["run", "check:consumer-docs-consistency"],
   }),
   setupRunContract("release-tag derivation", literalScript([
       "set -euo pipefail",

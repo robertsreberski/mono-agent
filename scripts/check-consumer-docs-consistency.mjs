@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { access, readFile, readdir, stat } from "node:fs/promises";
 import { constants } from "node:fs";
-import { dirname, extname, join, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const userDocRoots = [
@@ -9,12 +9,17 @@ const userDocRoots = [
   "README.md",
   "PACKAGES.md",
   "docs",
+  "packages/agent-app/README.md",
+  "packages/config/README.md",
+  "packages/memory/README.md",
+  "extras/memory-supermemory/README.md",
   "packages/observability/README.md",
   "packages/operator-adapter/README.md",
   "packages/session-web/README.md",
   "packages/tui/README.md",
   "packages/agent-app/skills/mono-agent-composer/references",
 ];
+const demoMarkdownRoot = "demos";
 
 const artifactContractSourcePaths = [
   "packages/agent-app/src/cli-background-command.ts",
@@ -110,6 +115,28 @@ const retiredDocReferences = [
     pattern: /\bNotifyConversation\b|\bnotify_conversation\b/iu,
   },
 ];
+
+const retiredDemoToolReferences = [
+  { label: "journal_append", pattern: /\bjournal_append\b/iu },
+  { label: "memory_search", pattern: /\bmemory_search\b/iu },
+  { label: "entity_get", pattern: /\bentity_get\b/iu },
+  { label: "memory_read_day", pattern: /\bmemory_read_day\b/iu },
+  { label: "memory_list_days", pattern: /\bmemory_list_days\b/iu },
+];
+
+const deprecatedMemoryRecallAlias = "memory_recall";
+const deprecatedMemoryRecallAliasPattern = /\bmemory_recall\b/gu;
+// The deprecated alias is forbidden in active shipped prose. Historical
+// references use one rigid, reader-visible record preceded by path-and-line
+// metadata. This is intentionally not an English classifier: arbitrary prose,
+// even prose that calls itself historical, remains forbidden.
+// <!-- mono-agent-doc-history:v1 {"path":"docs/example.md","line":2} -->
+// > Historical compatibility record: `memory_recall` is retired; canonical replacement: `MemoryRecall`.
+const deprecatedAliasHistoryAnnotation = "mono-agent-doc-history:v1";
+const deprecatedAliasHistoryMarkerPattern =
+  /^<!-- mono-agent-doc-history:v1 (\{[^\n]*\}) -->$/u;
+const deprecatedAliasHistoryPayload =
+  "> Historical compatibility record: `memory_recall` is retired; canonical replacement: `MemoryRecall`.";
 
 const misleadingArtifactDurabilityClaims = [
   {
@@ -231,13 +258,18 @@ export async function checkConsumerDocsConsistency(consumerPaths, options = {}) 
   if (options.scanUserDocs !== false) {
     const repoRoot = resolve(options.repoRoot ?? process.cwd());
     const userDocRecords = options.userDocRecords ?? await readUserDocRecords(repoRoot);
+    const demoMarkdownRecords = options.demoMarkdownRecords
+      ?? await readMarkdownRecordsIfPresent(join(repoRoot, demoMarkdownRoot));
     const artifactContractSourceRecords = options.artifactContractSourceRecords
       ?? await readExplicitTextRecords(repoRoot, artifactContractSourcePaths);
-    userDocsChecked = userDocRecords.length;
+    const shippedDocRecords = [...userDocRecords, ...demoMarkdownRecords];
+    userDocsChecked = shippedDocRecords.length;
     artifactContractSourcesChecked = artifactContractSourceRecords.length;
-    issues.push(...scanRetiredDocReferences(userDocRecords));
+    issues.push(...scanRetiredDocReferences(shippedDocRecords));
+    issues.push(...scanRetiredDemoTools(demoMarkdownRecords));
+    issues.push(...scanDeprecatedMemoryRecallAliases(shippedDocRecords, repoRoot));
     issues.push(...scanMisleadingArtifactDurabilityClaims([
-      ...userDocRecords,
+      ...shippedDocRecords,
       ...artifactContractSourceRecords,
     ]));
   }
@@ -258,7 +290,9 @@ export async function checkConsumerDocsConsistency(consumerPaths, options = {}) 
       continue;
     }
 
-    issues.push(...scanRetiredDocReferences([{ path: readmePath, text: readme }]));
+    const consumerReadmeRecord = { path: readmePath, text: readme };
+    issues.push(...scanRetiredDocReferences([consumerReadmeRecord]));
+    issues.push(...scanDeprecatedMemoryRecallAliases([consumerReadmeRecord], consumerDir));
 
     const mcpTexts = await readConfiguredMcpTexts(consumerDir, config);
     const exposureText = [
@@ -366,7 +400,8 @@ async function readExplicitTextRecords(repoRoot, relativePaths) {
 }
 
 async function readMarkdownRecords(dir) {
-  const entries = await readdir(dir, { withFileTypes: true });
+  const entries = (await readdir(dir, { withFileTypes: true }))
+    .sort((left, right) => compareCodeUnits(left.name, right.name));
   const records = [];
   for (const entry of entries) {
     const path = join(dir, entry.name);
@@ -381,6 +416,19 @@ async function readMarkdownRecords(dir) {
   return records;
 }
 
+export function compareCodeUnits(left, right) {
+  // ECMAScript string relational comparison is defined over UTF-16 code units
+  // and does not depend on the host's locale or ICU data.
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+async function readMarkdownRecordsIfPresent(dir) {
+  if (!(await pathExists(dir))) {
+    return [];
+  }
+  return await readMarkdownRecords(dir);
+}
+
 function scanRetiredDocReferences(records) {
   const issues = [];
   for (const record of records) {
@@ -390,6 +438,23 @@ function scanRetiredDocReferences(records) {
         issues.push(
           `${record.path}:${location.line}:${location.column}: references retired pre-v1 surface ` +
             `"${retiredReference.label}". Update the user docs to the current v1 package map.`,
+        );
+      }
+    }
+  }
+  return issues;
+}
+
+function scanRetiredDemoTools(records) {
+  const issues = [];
+  for (const record of records) {
+    for (const retiredReference of retiredDemoToolReferences) {
+      for (const match of findPatternMatches(retiredReference.pattern, record.text)) {
+        const location = lineAndColumn(record.text, match.index);
+        issues.push(
+          `${record.path}:${location.line}:${location.column}: references retired memory tool ` +
+            `"${retiredReference.label}". Use the current read-only MemoryRecall surface or ` +
+            "describe host-driven capture instead.",
         );
       }
     }
@@ -414,13 +479,150 @@ function scanMisleadingArtifactDurabilityClaims(records) {
   return issues;
 }
 
+function scanDeprecatedMemoryRecallAliases(records, repoRoot) {
+  const issues = [];
+  for (const record of records) {
+    const annotation = approvedHistoryAnnotationIndexes(record, repoRoot);
+    issues.push(...annotation.issues);
+    for (const match of findPatternMatches(deprecatedMemoryRecallAliasPattern, record.text)) {
+      if (annotation.approvedAliasIndexes.has(match.index)) {
+        continue;
+      }
+      const location = lineAndColumn(record.text, match.index);
+      issues.push(
+        `${record.path}:${location.line}:${location.column}: retired alias ` +
+          '"memory_recall" is forbidden in active shipped docs. Use canonical "MemoryRecall". ' +
+          `Historical references must use the exact ${deprecatedAliasHistoryAnnotation} record.`,
+      );
+    }
+  }
+  return issues;
+}
+
+function approvedHistoryAnnotationIndexes(record, repoRoot) {
+  const approvedAliasIndexes = new Set();
+  const issues = [];
+  const relativePath = repoRelativePath(repoRoot, record.path);
+  const lines = indexedLines(record.text);
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const markerLine = lines[lineIndex];
+    if (!markerLine.text.includes("<!-- mono-agent-doc-history")) {
+      continue;
+    }
+    const markerMatch = deprecatedAliasHistoryMarkerPattern.exec(markerLine.text);
+    if (markerMatch === null) {
+      issues.push(annotationIssue(record.path, markerLine.number, "history annotation marker is malformed"));
+      continue;
+    }
+    const metadata = parseHistoryAnnotationMetadata(markerMatch[1]);
+    if (metadata === undefined) {
+      issues.push(annotationIssue(record.path, markerLine.number, "history annotation metadata is invalid"));
+      continue;
+    }
+    if (relativePath === undefined || metadata.path !== relativePath) {
+      issues.push(
+        annotationIssue(
+          record.path,
+          markerLine.number,
+          `history annotation path "${metadata.path}" does not match "${relativePath ?? "<outside-repo>"}"`,
+        ),
+      );
+      continue;
+    }
+    const payloadLine = lines[lineIndex + 1];
+    if (payloadLine === undefined || metadata.line !== payloadLine.number) {
+      issues.push(
+        annotationIssue(
+          record.path,
+          markerLine.number,
+          `history annotation line ${metadata.line} does not match the next line`,
+        ),
+      );
+      continue;
+    }
+    if (payloadLine.text !== deprecatedAliasHistoryPayload) {
+      issues.push(
+        annotationIssue(
+          record.path,
+          markerLine.number,
+          "history annotation payload must match exactly",
+        ),
+      );
+      continue;
+    }
+    approvedAliasIndexes.add(
+      payloadLine.start + deprecatedAliasHistoryPayload.indexOf(deprecatedMemoryRecallAlias),
+    );
+  }
+
+  return { approvedAliasIndexes, issues };
+}
+
+function parseHistoryAnnotationMetadata(raw) {
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const keys = Object.keys(value).sort();
+  if (keys.length !== 2 || keys[0] !== "line" || keys[1] !== "path") {
+    return undefined;
+  }
+  if (
+    typeof value.path !== "string"
+    || value.path.length === 0
+    || isAbsolute(value.path)
+    || value.path.split("/").includes("..")
+    || !Number.isSafeInteger(value.line)
+    || value.line < 1
+  ) {
+    return undefined;
+  }
+  if (raw !== JSON.stringify({ path: value.path, line: value.line })) {
+    return undefined;
+  }
+  return { path: value.path, line: value.line };
+}
+
+function repoRelativePath(repoRoot, path) {
+  const absolutePath = isAbsolute(path) ? path : resolve(repoRoot, path);
+  const candidate = relative(repoRoot, absolutePath).replaceAll("\\", "/");
+  if (candidate.length === 0 || candidate === ".." || candidate.startsWith("../") || isAbsolute(candidate)) {
+    return undefined;
+  }
+  return candidate;
+}
+
+function indexedLines(text) {
+  const lines = [];
+  let start = 0;
+  for (const [index, rawLine] of text.split("\n").entries()) {
+    lines.push({
+      number: index + 1,
+      start,
+      text: rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine,
+    });
+    start += rawLine.length + 1;
+  }
+  return lines;
+}
+
+function annotationIssue(path, line, detail) {
+  return `${path}:${line}:1: invalid ${deprecatedAliasHistoryAnnotation} annotation: ${detail}.`;
+}
+
 function findPatternMatches(pattern, text) {
   const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
   const regex = new RegExp(pattern.source, flags);
   const matches = [];
   let match;
   while ((match = regex.exec(text)) !== null) {
-    matches.push({ index: match.index });
+    matches.push({ index: match.index, length: match[0].length });
     if (match[0] === "") {
       regex.lastIndex += 1;
     }
@@ -452,7 +654,7 @@ function usage() {
     `  node ${bin} [--consumer <path> ...]`,
     "",
     "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, relevant package READMEs,",
-    "and mono-agent-composer references)",
+    "mono-agent-composer references, and demos/**/*.md)",
     "for retired pre-v1 surfaces",
     "and scans those docs plus TUI/session-web source text for absolute artifact/replay claims",
     "that contradict wire truncation, best-effort export, recorder redaction, or terminal persistence.",

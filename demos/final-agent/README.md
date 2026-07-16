@@ -428,7 +428,7 @@ The agent supports three memory tiers, all sharing a single global brain across 
 
 `writeMode: "append-host-summary"` appends a concise turn summary to today's daily note after every completed turn. The `llm` block enables nightly reflection (entity extraction + graph update, default `0 3 * * *`) and monthly migration (archive compaction, default `0 4 1 * *`) — both auto-scheduled as internal cron jobs, no external MCP server needed.
 
-`IDENTITY.example.md` includes a *Memory discipline* section telling the agent when to journal; copy it into your `IDENTITY.md`.
+`IDENTITY.example.md` includes a *Memory discipline* section covering host-driven capture and the single read-only `MemoryRecall` tool; copy it into your `IDENTITY.md`.
 
 ## CLI options
 
