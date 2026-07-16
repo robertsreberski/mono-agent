@@ -157,9 +157,11 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     ]
   },
 
-  // Human-in-the-loop bridge: blocking AskUser + tool progress → channel status
-  // messages. Optional — auto-starts when AskUser is allowed (allow-all, or
-  // listed in tools.allowedTools) or when this block is present.
+  // Human-in-the-loop bridge: blocking AskUser / TelegramAskButtons plus tool
+  // progress → channel status messages. It auto-starts when either ask tool is
+  // allowed, this block or an interaction env override is configured, or
+  // interaction.progress.enabled resolves true while
+  // tools.mcpRequestContextServers names at least one opted project MCP server.
   "interaction": {
     "bridge": { "host": "127.0.0.1", "port": 0 }, // 0 = ephemeral; tools get the URL via env
     "askUser": { "timeoutMs": 600000 },           // max wait per question (10 min)

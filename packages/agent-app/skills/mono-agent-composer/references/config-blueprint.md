@@ -5,7 +5,7 @@
 > <https://mono-agent-docs.vercel.app/config/>. This annotated JSON
 > stays the offline canonical shape.
 
-One `mono-agent.config.json` declares the whole agent. Paths are relative to the folder; every field also has a `MONO_AGENT_*` env var that overrides it (env > JSON > defaults). Omit a section to leave that capability off — every section except `runtime.model` and `context.identityPath` is optional. `references/feature-coverage.md` maps every framework feature to its config key; if a capability is not listed there, it needs the programmatic escape hatch.
+One `mono-agent.config.json` declares the whole agent. Paths are relative to the folder; config fields may be JSON-only. Environment-variable overrides are optional: only fields with a documented `MONO_AGENT_*` mapping accept one (env > JSON > defaults), so consult the generated config reference's `Env override` column (`--` means none, as for `channels.plugins`) instead of inferring one. Omit a section to leave that capability off — every section except `runtime.model` and `context.identityPath` is optional. `references/feature-coverage.md` maps every framework feature to its config key; if a capability is not listed there, it needs the programmatic escape hatch.
 
 ## Folder Layout
 
@@ -34,12 +34,19 @@ my-agent/
   "runtime": {
     "model": "claude:claude-sonnet-4-6",   // claude:* | codex:* | pi:<provider>:<model>
     "fallbackModels": ["pi:ollama:gemma4:31b"],
+    "routeSafety": "uniform",              // uniform | per-route-native
     "executionMode": "sdk",                // sdk | cli (default inferred from model)
-    "effort": "medium",                    // none|low|medium|high|xhigh|max; omit for direct opencode:*
+    "effort": "medium",                    // none|minimal|low|medium|high|xhigh|max|ultra; omit for direct opencode:*
     "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "workspace": ".",
     "session": { "mode": "continuous", "idleTimeoutMs": 1800000 } // or "per-message"
+  },
+
+  // Per-channel admission/execution bounds. Each enabled channel owns one limiter.
+  "concurrency": {
+    "maxConcurrentRuns": 4,
+    "maxPendingRuns": 100
   },
 
   // Local/self-hosted providers for pi:<provider>:<model> references.
@@ -73,16 +80,19 @@ my-agent/
     "skillMaxBytes": 48000                 // per-skill byte cap (256-1,000,000)
   },
 
-  // Memory strategy. Omit the section for no memory.
+  // Memory strategy. Omit the section for no memory. The built-in "bujo"
+  // backend owns the three local tiers below; "supermemory" selects the
+  // separately installed, lockstep @mono-agent/memory-supermemory plugin.
   // Three tiers over one substrate (@mono-agent/memory store + bujo subpaths):
   //   lite    — FTS keyword recall + rapid-log; no external deps.
   //   journal — + hybrid recall (BM25+vector) + static, non-decaying salience; needs embeddings.
   //   bujo    — + LLM capture/reconcile + entity graph + auto-scheduled
   //             lightweight consolidation; needs embeddings + an app-level memory.llm for capture/tier selection.
   "memory": {
+    "backend": "bujo",                    // bujo (default) | supermemory
     "mode": "bujo",                        // lite | journal | bujo
     "path": "./.mono-agent/memory",        // root directory for all tiers
-    "writeMode": "capture",                // disabled | append-host-summary | capture (bujo only)
+    "writeMode": "capture",                // disabled | append-host-summary | capture (bujo tier or external backend)
     "maxBytes": 64000,
     "embeddings": {                        // required for journal and bujo
       "provider": "ollama",                // ollama | lmstudio | openai; exclusive, no fallback
@@ -100,7 +110,17 @@ my-agent/
     },
     // Bujo auto-scheduler — override the default or disable it.
     // Consolidation runs in-app; no external cron or launchd needed.
-    "consolidation": { "enabled": true, "cron": "0 */2 * * *" } // default: every two hours
+    "consolidation": { "enabled": true, "cron": "0 */2 * * *" }, // default: every two hours
+    // For backend: "supermemory", omit path/mode/embeddings/llm/consolidation
+    // and configure the external service instead. Keep API keys in env.
+    // "supermemory": {
+    //   "baseUrl": "http://127.0.0.1:6767",
+    //   "apiKey": "...",                 // untracked config only; prefer apiKeyEnv
+    //   "apiKeyEnv": "SUPERMEMORY_API_KEY",
+    //   "container": "my-agent",
+    //   "timeoutMs": 10000,
+    //   "exposeMcpServer": false
+    // }
   },
 
   // Tool policy (allow-all by default) + MCP servers. Deny wins; overlap is rejected.
@@ -108,6 +128,17 @@ my-agent/
     "allowedTools": ["*"],                 // omit or ["*"] = all tools; ["Read","Bash"] = just those; [] = none (chat-only)
     "disallowedTools": ["Bash"],           // deny wins even under allow-all; the escape hatch to subtract one tool
     "mcpConfigPath": "./mcp.json"          // stdio/sse/http servers; inlined for SDK runtimes
+  },
+
+  // Human-in-the-loop bridge: blocking AskUser / TelegramAskButtons plus
+  // run-scoped project-MCP progress. It auto-starts when either ask tool is
+  // allowed, this block or an interaction env override is configured, or
+  // interaction.progress.enabled resolves true while
+  // tools.mcpRequestContextServers names at least one opted project MCP server.
+  "interaction": {
+    "bridge": { "host": "127.0.0.1", "port": 0 },
+    "askUser": { "timeoutMs": 600000 },
+    "progress": { "enabled": true }
   },
 
   // Sandbox for Pi-owned runtime commands. Direct Codex uses its own sandbox;
@@ -179,6 +210,20 @@ my-agent/
     "path": "/webhook/invoke",
     "allowNonLoopback": false,
     "defaultMode": "sync",                 // sync | async (202 + status URL polling)
+    "endpoints": [
+      {
+        "name": "invoke",
+        "path": "/webhook/invoke",
+        "mode": "sync",
+        "prompt": "Respond to this request:",
+        "model": "claude:claude-sonnet-4-6", // optional per-trigger override
+        "effort": "high",                  // same eight-level effort enum as runtime
+        "notify": true,                     // deliver the successful final answer verbatim
+        // Explicit destination; if omitted, infer only with exactly one candidate.
+        // Zero or multiple candidates skip with a warning.
+        "notifyConversationId": "slack:C0123"
+      }
+    ],
     "retentionMs": 300000,                 // async status retention
     "maxStoredRequests": 100
   },
@@ -294,7 +339,15 @@ my-agent/
         "expression": "0 9 * * *",         // five-field cron
         "timezone": "UTC",                 // IANA timezone
         "prompt": "Post the morning summary.",
-        "conversationId": "cron-daily"     // optional: share memory/history across ticks
+        "conversationId": "cron-daily",    // optional: share memory/history across ticks
+        "model": "claude:claude-sonnet-4-6", // optional per-trigger override
+        "effort": "high",
+        "notify": true,                     // successful non-empty final answer is delivered verbatim
+        // Explicit destination; if omitted, infer only with exactly one candidate.
+        // Zero or multiple candidates skip with a warning.
+        "notifyConversationId": "slack:C0123",
+        // Model-exhaustion notices require this explicit destination; never infer.
+        "notifyFailureCooldownHours": 6
       }
     ]
     // Jobs here merge with cron/*.md files (duplicate ids error).
