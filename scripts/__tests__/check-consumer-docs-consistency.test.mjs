@@ -210,6 +210,11 @@ describe("check-consumer-docs-consistency", () => {
       "// Oversized events are field-reduced until the encoded frame fits.",
       "// Every oversized event is field reduced.",
     ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/agent-app/src/cli-background-command.ts", [
+      "function describeExporter() {",
+      "  return \"JSONL artifacts are always written locally\";",
+      "}",
+    ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/agent-app/src/cli-help.ts", [
       "const HELP_COMMANDS = [",
       "  \"Open the operator console from any directory: live chat with full\",",
@@ -246,11 +251,17 @@ describe("check-consumer-docs-consistency", () => {
     const reported = result.issues.join("\n");
 
     expect(result.userDocsChecked).toBe(10);
-    expect(result.artifactContractSourcesChecked).toBe(8);
+    expect(result.artifactContractSourcesChecked).toBe(9);
     expect(reported).toContain("full stream-event insight");
     expect(reported).toContain("guaranteed every-run Phoenix stream");
     expect(reported).toContain("guaranteed every-run Phoenix export");
     expect(reported).toContain("always-written JSONL artifacts");
+    expect(result.issues).toContain(
+      `${join(repoRoot, "packages/agent-app/src/cli-background-command.ts")}:2:11: ` +
+        "uses absolute observability/replay wording \"always-written JSONL artifacts\". " +
+        "Describe transport and string caps, best-effort export, the start snapshot, " +
+        "in-memory buffering, terminal replacement, and crash-loss/reconciliation boundaries instead.",
+    );
     expect(reported).toContain("unbounded session artifact detail");
     expect(reported).toContain("verbatim complete TUI event stream");
     expect(reported).toContain("broad TUI wire-bound claim");
@@ -271,6 +282,7 @@ describe("check-consumer-docs-consistency", () => {
       "packages/session-web/src/history.ts",
       "packages/session-web/src/aggregator.ts",
       "packages/session-web/webapp/src/views/DetailView.tsx",
+      "packages/agent-app/src/cli-background-command.ts",
       "packages/agent-app/src/cli-help.ts",
       "packages/operator-adapter/package.json",
       "packages/operator-adapter/src/tui/constants.ts",
@@ -315,6 +327,11 @@ describe("check-consumer-docs-consistency", () => {
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/session-web/src/aggregator.ts", [
       "// Tracks sessions whose persisted, bounded detail has been loaded.",
+    ].join("\n"));
+    await writeRepoDoc(repoRoot, "packages/agent-app/src/cli-background-command.ts", [
+      "function describeExporter() {",
+      "  return \"JSONL artifacts remain local\";",
+      "}",
     ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/agent-app/src/cli-help.ts", [
       "const HELP_COMMANDS = [",
