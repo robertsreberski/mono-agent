@@ -12,9 +12,13 @@ import {
 } from "@mono-agent/agent-contracts";
 import {
   assertSafeBind,
+  bearerTokensEqual,
   close,
   hostForUrl,
+  isLoopbackHost,
   listen,
+  readAuthorizationBearer,
+  sanitizeInboundHttpHeaders,
 } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
@@ -131,6 +135,8 @@ export interface WebhookAdapterOptions {
   readonly host?: string;
   readonly port?: number;
   readonly allowNonLoopback?: boolean;
+  /** Optional static bearer token. Required for every non-loopback bind. */
+  readonly apiKey?: string;
   readonly retentionMs?: number;
   readonly maxStoredRequests?: number;
   /**
@@ -247,11 +253,12 @@ const DEFAULT_PATH = "/webhook/invoke";
 const DEFAULT_MODE: WebhookInvocationMode = "sync";
 const DEFAULT_RETENTION_MS = 300_000;
 const DEFAULT_MAX_STORED_REQUESTS = 100;
-
+const FORCE_CLOSE_AFTER_MS = 250;
 export async function startWebhookAdapter(options: WebhookAdapterOptions): Promise<WebhookAdapterStartResult> {
   validateOptions(options);
   const host = options.host ?? DEFAULT_HOST;
   const port = options.port ?? DEFAULT_PORT;
+  const apiKey = normalizeOptionalString(options.apiKey);
   const retentionMs = options.retentionMs ?? DEFAULT_RETENTION_MS;
   const maxStoredRequests = options.maxStoredRequests ?? DEFAULT_MAX_STORED_REQUESTS;
   const endpoints = resolveEndpoints(options);
@@ -261,6 +268,13 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       "Webhook adapter refuses to bind a non-loopback host unless allowNonLoopback is true.",
       { host: boundHost },
     ));
+  if (!isLoopbackHost(host) && apiKey === undefined) {
+    throw new WebhookAdapterError(
+      "missing_required_config",
+      "Webhook adapter requires an API key for every non-loopback bind.",
+      { host },
+    );
+  }
 
   const app = express();
   const server = createServer(app);
@@ -269,24 +283,36 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
   const activeByRun = new Map<string, ActiveRun>();
   const statuses = new Map<string, StoredStatus>();
 
-  app.use(express.json({ limit: "1mb" }));
+  const parseJsonBody = express.json({ limit: "1mb" });
   for (const endpoint of endpoints) {
-    app.post(endpoint.path, (req, res) => {
-      void handleInvoke(req, res, endpoint).catch((error: unknown) => {
-        options.logger?.error?.("Webhook invocation failed before response.", {
-          endpoint: endpoint.name,
-          error: errorToMessage(error),
-        });
-        if (!res.headersSent) {
-          res.status(500).json({ status: "failed", error: errorToMessage(error) });
+    app.post(
+      endpoint.path,
+      (req, res, next) => {
+        if (authorize(req, res, apiKey)) {
+          next();
         }
-      });
-    });
+      },
+      parseJsonBody,
+      (req, res) => {
+        void handleInvoke(req, res, endpoint).catch((error: unknown) => {
+          options.logger?.error?.("Webhook invocation failed before response.", {
+            endpoint: endpoint.name,
+            error: errorToMessage(error),
+          });
+          if (!res.headersSent) {
+            res.status(500).json({ status: "failed", error: errorToMessage(error) });
+          }
+        });
+      },
+    );
   }
   // Register one status route per UNIQUE base path (endpoints sharing a parent
   // directory share a status route; lookups hit the shared, requestId-keyed store).
   for (const statusBasePath of new Set(endpoints.map((endpoint) => endpoint.statusBasePath))) {
     app.get(`${statusBasePath}/:requestId`, (req, res) => {
+      if (!authorize(req, res, apiKey)) {
+        return;
+      }
       pruneStatuses(statuses, retentionMs, maxStoredRequests);
       const requestId = req.params.requestId;
       const stored = requestId === undefined ? undefined : statuses.get(requestId);
@@ -312,6 +338,34 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       new WebhookAdapterError("start_failed", "Webhook adapter did not receive a TCP address."),
   });
   const boundPort = address.port;
+
+  async function closeRejectedServer(): Promise<void> {
+    for (const active of activeByRun.values()) {
+      active.controller.abort(new Error("Webhook adapter rejected its actual bound address."));
+    }
+    await closeServerBounded(server);
+    activeByRun.clear();
+    statuses.clear();
+  }
+
+  const boundNonLoopback = !isLoopbackHost(address.address);
+  if (boundNonLoopback && options.allowNonLoopback !== true) {
+    await closeRejectedServer();
+    throw new WebhookAdapterError(
+      "unsafe_host",
+      "Webhook adapter resolved a loopback host to a non-loopback bind address.",
+      { host, boundAddress: address.address, boundPort },
+    );
+  }
+  if (boundNonLoopback && apiKey === undefined) {
+    await closeRejectedServer();
+    throw new WebhookAdapterError(
+      "missing_required_config",
+      "Webhook adapter requires an API key when the actual bound address is non-loopback.",
+      { host, boundAddress: address.address, boundPort },
+    );
+  }
+
   const url = `http://${hostForUrl(host)}:${boundPort}`;
 
   async function handleInvoke(req: Request, res: Response, endpoint: ResolvedEndpoint): Promise<void> {
@@ -363,7 +417,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
           path: req.path,
           receivedAt,
           ...(req.socket.remoteAddress === undefined ? {} : { remoteAddress: req.socket.remoteAddress }),
-          headers: req.headers,
+          headers: sanitizeInboundHttpHeaders(req.headers),
           ...(body.metadata === undefined ? {} : { payloadMetadata: body.metadata }),
           ...(endpoint.notify === true
             ? {
@@ -477,6 +531,46 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       await close(server);
     },
   };
+}
+
+async function closeServerBounded(server: ReturnType<typeof createServer>): Promise<void> {
+  const closePromise = close(server);
+  void closePromise.catch(() => undefined);
+  server.closeIdleConnections();
+  let forceTimer: ReturnType<typeof setTimeout> | undefined;
+  const force = new Promise<"forced">((resolvePromise) => {
+    forceTimer = setTimeout(() => {
+      server.closeAllConnections();
+      resolvePromise("forced");
+    }, FORCE_CLOSE_AFTER_MS);
+    forceTimer.unref?.();
+  });
+  const outcome = await Promise.race([closePromise.then(() => "closed" as const), force]);
+  if (outcome === "closed") {
+    if (forceTimer !== undefined) {
+      clearTimeout(forceTimer);
+    }
+    return;
+  }
+  await Promise.race([
+    closePromise.catch(() => undefined),
+    new Promise<void>((resolvePromise) => {
+      const timer = setTimeout(resolvePromise, FORCE_CLOSE_AFTER_MS);
+      timer.unref?.();
+    }),
+  ]);
+}
+
+function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {
+  if (apiKey === undefined) {
+    return true;
+  }
+  const presented = readAuthorizationBearer(req.header("authorization"));
+  if (presented !== undefined && bearerTokensEqual(presented, apiKey)) {
+    return true;
+  }
+  res.status(401).json({ status: "unauthorized", error: "Invalid API key." });
+  return false;
 }
 
 async function runResponder(input: {

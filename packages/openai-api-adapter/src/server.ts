@@ -22,6 +22,7 @@ import {
   listen,
   normalizeHostForBind,
   readAuthorizationBearer,
+  sanitizeInboundHttpHeaders,
 } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
@@ -146,13 +147,6 @@ interface ChatCompletionChunkInput {
 
 const OPENAI_OWNED_BY = "host";
 const FORCE_CLOSE_AFTER_MS = 250;
-const SENSITIVE_REQUEST_HEADERS = new Set([
-  "authorization",
-  "cookie",
-  "set-cookie",
-  "proxy-authorization",
-  "x-api-key",
-]);
 const UNSUPPORTED_CHAT_REQUEST_FIELDS = [
   "tools",
   "tool_choice",
@@ -301,7 +295,7 @@ export async function startOpenAIApiAdapter(
           path: req.path,
           receivedAt,
           ...(req.socket.remoteAddress === undefined ? {} : { remoteAddress: req.socket.remoteAddress }),
-          headers: sanitizeRequestHeaders(req.headers),
+          headers: sanitizeInboundHttpHeaders(req.headers),
           parameters: body.parameters,
           ...(body.imageAttachments.length === 0 ? {} : { attachments: summarizeAttachments(body.imageAttachments) }),
         },
@@ -1110,18 +1104,6 @@ function chatCompletion(input: {
           },
         }),
   };
-}
-
-function sanitizeRequestHeaders(
-  headers: Record<string, string | string[] | undefined>,
-): Record<string, string | string[] | undefined> {
-  const sanitized: Record<string, string | string[] | undefined> = {};
-  for (const [name, value] of Object.entries(headers)) {
-    if (!SENSITIVE_REQUEST_HEADERS.has(name.toLowerCase())) {
-      sanitized[name] = value;
-    }
-  }
-  return sanitized;
 }
 
 function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {
