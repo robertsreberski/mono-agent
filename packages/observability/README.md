@@ -72,7 +72,15 @@ best-effort, and isolated from the JSONL recorder.
 
 ## Timeline Display
 
-Raw `.events.jsonl` artifacts stay append-only and one event per line. UI surfaces that need readable timelines can call `combineRecordedRunEvents()` to collapse adjacent assistant `thinking` or visible `text` stream chunks into bounded display rows while preserving raw source index ranges and event counts. Browser bundles can import the helper from `@mono-agent/observability/event-timeline` without pulling in the Node-backed artifact readers.
+`.events.jsonl` artifacts contain one event per line after a terminal recorder
+boundary. The recorder replaces the complete file at that boundary; it does not
+append events while a run is in progress. UI surfaces that need readable
+timelines can call `combineRecordedRunEvents()` to collapse adjacent assistant
+`thinking` or visible `text` stream chunks into bounded display rows while
+preserving raw source index ranges and event counts. Browser bundles can import
+the helper from
+`@mono-agent/observability/event-timeline` without pulling in the Node-backed
+artifact readers.
 
 ## Trace Registry
 
@@ -94,12 +102,15 @@ heartbeat or update cannot overwrite the stopped manifest.
 
 Running sources become `stale` when their heartbeat is older than the configured stale interval. Stopped and failed sources remain listed so the dashboard can distinguish a clean shutdown from a crashed or misconfigured host. The registry reader validates source/run ids against path traversal, ignores malformed manifests with warnings, and reuses the recorded-run reader's redaction and bounded-read limits.
 
-Stale-run reconciliation repairs summary status only. The JSONL recorder writes
-an empty event artifact at `start()` and buffers later events in memory until
-terminal `finish()`/`fail()`. A process that dies between those boundaries can
-therefore be reconciled as `process_death` with `eventCount: 0` even after events
-occurred. The app's live broadcast gives connected TUI/web clients best-effort
-real-time visibility, but it is not durable recovery or post-mortem evidence.
+Stale-run reconciliation repairs summary status from persisted data only. At
+`start()`, the JSONL recorder performs separate atomic replacements for an empty
+events file and a `running` summary. It then buffers redacted events in memory.
+Terminal `finish()`/`fail()` uses separate atomic replacements for the complete
+events file first and the summary second. These writes provide no append,
+checkpoint, fsync, or cross-file transaction guarantee: a process death can lose
+buffered events and reconcile as `process_death` with `eventCount: 0`. The app's
+live broadcast gives connected TUI/web clients best-effort visibility, not
+recovery or post-mortem evidence.
 
 ## Run Export Contract
 

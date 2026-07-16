@@ -6,7 +6,7 @@ sidebar:
 
 # Observability & CLI
 
-Every mono-agent run is recorded locally as append-only JSONL artifacts — the always-on source of truth — and optionally exported to [Phoenix](/observability/phoenix-and-backfill/) for a semantic trace timeline. A trace-source registry lets dashboards discover running agents, the `mono-agent` CLI operates the whole lifecycle, and operator surfaces (`tui` and `web`) give you live views over running agents. This page maps those surfaces and links the detail pages.
+Every mono-agent run gets local JSONL artifacts and can optionally be exported to [Phoenix](/observability/phoenix-and-backfill/) for a semantic trace timeline. The artifacts are the on-disk record after successful recorder boundaries, not a crash-safe in-flight journal. A trace-source registry lets dashboards discover running agents, the `mono-agent` CLI operates the whole lifecycle, and operator surfaces (`tui` and `web`) give you live views over running agents. This page maps those surfaces and links the detail pages.
 
 ## The surfaces
 
@@ -21,7 +21,7 @@ Every mono-agent run is recorded locally as append-only JSONL artifacts — the 
 
 ## JSONL run artifacts (always on)
 
-Run artifacts are the local source of truth and are written for every run regardless of whether any exporter is configured. Each run produces an events JSONL stream and a summary JSON, with secrets redacted and long strings truncated. They also carry the metrics other tools build on: per-run usage/cost/cache (`observability.cost-tracking`), per-turn `provider_bridge_latency`, per-tool `tool_timing` (`execution_ms`), and `mcp_call_duration_ms` on MCP results — letting you separate model-reasoning time from tool/MCP time.
+Run artifacts are created for every run regardless of whether any exporter is configured. At `start()`, the recorder performs separate atomic replacements for an empty events file and a `running` summary, then buffers redacted events in memory. Terminal `finish()`/`fail()` uses separate atomic replacements for the complete events file first and the summary second. These writes provide no append, checkpoint, fsync, or cross-file transaction guarantee, so a crash can lose buffered events and stale-run reconciliation can report only persisted data. The artifacts also carry the metrics other tools build on: per-run usage/cost/cache (`observability.cost-tracking`), per-turn `provider_bridge_latency`, per-tool `tool_timing` (`execution_ms`), and `mcp_call_duration_ms` on MCP results — letting you separate model-reasoning time from tool/MCP time.
 
 ```json
 {

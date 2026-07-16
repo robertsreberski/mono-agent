@@ -118,10 +118,12 @@ export interface ReconcileStaleRunsResult {
  * once at startup, before new runs begin. Read-only-safe and best-effort: a bad file is skipped
  * with a warning, never thrown.
  *
- * Reconciliation repairs summary status only. The JSONL recorder writes at `start()` and terminal
- * `finish()`/`fail()`; events received between those boundaries remain in memory. A crash can thus
- * yield `process_death` with `eventCount: 0` even after events occurred. The host's live broadcast
- * is only best-effort real-time visibility for connected clients, not durable recovery.
+ * Reconciliation repairs summary status only and can report only persisted artifacts. The JSONL
+ * recorder creates empty events plus a running summary at `start()`, buffers later events in
+ * memory, then uses separate atomic replacements for the complete events file and terminal
+ * summary at `finish()`/`fail()`. A crash can thus yield `process_death` with `eventCount: 0` even
+ * after events occurred. The host's live broadcast is best-effort visibility for connected clients,
+ * not recovery.
  */
 export async function reconcileStaleRunArtifacts(
   artifactDir: string,

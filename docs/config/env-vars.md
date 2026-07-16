@@ -184,7 +184,7 @@ Opted project stdio MCPs also receive host-owned filesystem context after all MC
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_ARTIFACT_DIR` | `artifacts.dir` | Append-only run JSONL + summaries. See [../observability/artifacts-and-traces.md](/observability/artifacts-and-traces/). |
+| `MONO_AGENT_ARTIFACT_DIR` | `artifacts.dir` | Run event JSONL + summaries, independently replaced at recorder boundaries rather than appended in flight. See [../observability/artifacts-and-traces.md](/observability/artifacts-and-traces/). |
 | `MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS` | `artifacts.retention.maxAgeDays` | Delete terminal run artifacts older than this many days (default `365`; bounds `1..3650`). |
 | `MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT` | `artifacts.retention.maxCount` | Keep at most this many newest terminal run artifacts (default `50000`; bounds `1..1000000`). |
 | `MONO_AGENT_ARTIFACT_RETENTION_DRY_RUN` | `artifacts.retention.dryRun` | Log what retention would delete without unlinking files. |
