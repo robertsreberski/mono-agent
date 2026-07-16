@@ -209,6 +209,56 @@ describe("dependency vulnerability gate", () => {
     expect(() => parsePnpmProductionGraph(JSON.stringify(missingOwner), {
       rootPackageNames: ["portable-fixture", "workspace-only"],
     })).toThrow("entry optional-win32 is missing registry-owner metadata");
+
+    const contradictoryWorkspaceClosure = [{
+      name: "consumer",
+      path: "/repo/packages/consumer",
+      dependencies: {
+        workspace: {
+          from: "workspace",
+          version: "link:../workspace",
+          path: "/repo/packages/workspace",
+          dependencies: {
+            vulnerable: {
+              from: "vulnerable",
+              version: "1.0.0",
+              path: "/repo/node_modules/vulnerable",
+            },
+          },
+        },
+      },
+    }, {
+      name: "workspace",
+      path: "/repo/packages/workspace",
+      dependencies: {
+        safe: {
+          from: "safe",
+          version: "1.0.0",
+          path: "/repo/node_modules/safe",
+        },
+      },
+    }];
+    expect(() => parsePnpmProductionGraph(JSON.stringify(contradictoryWorkspaceClosure), {
+      rootPackageNames: ["consumer", "workspace"],
+    })).toThrow("contains a production dependency that contradicts its publishable workspace root");
+
+    const optionalWorkspaceClosure = structuredClone(contradictoryWorkspaceClosure);
+    optionalWorkspaceClosure[0].dependencies.workspace.dependencies = {
+      "optional-native": {
+        from: "optional-native",
+        version: "1.0.0",
+        path: "/repo/node_modules/optional-native",
+      },
+    };
+    delete optionalWorkspaceClosure[1].dependencies;
+    optionalWorkspaceClosure[1].optionalDependencies = structuredClone(
+      optionalWorkspaceClosure[0].dependencies.workspace.dependencies,
+    );
+    expect(parsePnpmProductionGraph(JSON.stringify(optionalWorkspaceClosure), {
+      rootPackageNames: ["consumer", "workspace"],
+    }).dependencyPaths["optional-native@1.0.0"]).toEqual([
+      "workspace -> optional-native@1.0.0",
+    ]);
   });
 
   it("uses installed paths for workspace roots, cycles, peer variants, and owner identity", () => {
@@ -262,6 +312,12 @@ describe("dependency vulnerability gate", () => {
       "leaf@1.0.0": ["workspace-only -> workspace-runtime@9.0.0 -> leaf@1.0.0"],
       "workspace-runtime@9.0.0": ["workspace-only -> workspace-runtime@9.0.0"],
     });
+
+    const contradictoryWorkspaceCount = structuredClone(crossRootLinks);
+    contradictoryWorkspaceCount[1].dependencies["other-config-alias"].dedupedDependenciesCount = 999;
+    expect(() => parsePnpmProductionGraph(JSON.stringify(contradictoryWorkspaceCount), {
+      rootPackageNames: ["consumer-a", "consumer-b", "workspace-only"],
+    })).toThrow("reports 999 dependencies, but expanded occurrences contain 2");
 
     const cyclic = [{
       name: "cycle-root",
@@ -317,6 +373,164 @@ describe("dependency vulnerability gate", () => {
     expect(() => parsePnpmProductionGraph(JSON.stringify(reservedRootPath), {
       rootPackageNames: ["owner-root"],
     })).toThrow("registry package a@1.0.0 reuses publishable workspace root path");
+  });
+
+  it("normalizes one broad workspace root once across many expanded link occurrences", () => {
+    const workspaceDependencies = Object.fromEntries(Array.from({ length: 600 }, (_, index) => {
+      const name = `workspace-leaf-${index}`;
+      return [name, {
+        from: name,
+        version: "1.0.0",
+        path: `/repo/node_modules/${name}`,
+      }];
+    }));
+    const expandedWorkspaceLinks = Object.fromEntries(Array.from({ length: 200 }, (_, index) => {
+      const alias = `workspace-alias-${index}`;
+      return [alias, {
+        from: alias,
+        version: "link:../workspace",
+        path: "/repo/packages/workspace",
+        dependencies: {
+          "workspace-leaf-0": structuredClone(workspaceDependencies["workspace-leaf-0"]),
+        },
+      }];
+    }));
+
+    const graph = parsePnpmProductionGraph(JSON.stringify([
+      {
+        name: "consumer",
+        path: "/repo/packages/consumer",
+        dependencies: expandedWorkspaceLinks,
+      },
+      {
+        name: "workspace",
+        path: "/repo/packages/workspace",
+        dependencies: workspaceDependencies,
+      },
+    ]), {
+      rootPackageNames: ["consumer", "workspace"],
+    });
+    expect(Object.keys(graph.inventory)).toHaveLength(600);
+    expect(graph.dependencyPaths["workspace-leaf-0@1.0.0"]).toEqual([
+      "workspace -> workspace-leaf-0@1.0.0",
+    ]);
+  });
+
+  it("bounds forward-path hydration before a compact deduped diamond expands exponentially", () => {
+    const expandedDependencies = {};
+    const layers = [];
+    let priorLayer = [];
+    for (let layer = 0; layer < 15; layer += 1) {
+      const currentLayer = ["left", "right"].map((side) => {
+        const name = `${side}-${layer}`;
+        const node = {
+          from: name,
+          version: "1.0.0",
+          path: `/repo/node_modules/${name}`,
+          dependencies: layer === 0
+            ? {
+              [`terminal-${side}`]: {
+                from: `terminal-${side}`,
+                version: "1.0.0",
+                path: `/repo/node_modules/terminal-${side}`,
+              },
+            }
+            : Object.fromEntries(priorLayer.map((prior) => [
+              prior.name,
+              {
+                from: prior.name,
+                version: prior.node.version,
+                path: prior.node.path,
+                deduped: true,
+                dedupedDependenciesCount: layer === 1 ? 1 : 2,
+              },
+            ])),
+        };
+        expandedDependencies[name] = node;
+        return { name, node };
+      });
+      layers.push(currentLayer);
+      priorLayer = currentLayer;
+    }
+
+    const topLayer = layers.at(-1);
+    expect(() => parsePnpmProductionGraph(JSON.stringify([
+      {
+        name: "expansion-fixture",
+        path: "/repo/packages/expansion-fixture",
+        dependencies: expandedDependencies,
+      },
+      {
+        name: "audited-root",
+        path: "/repo/packages/audited-root",
+        dependencies: Object.fromEntries(topLayer.map(({ name, node }) => [
+          name,
+          {
+            from: name,
+            version: node.version,
+            path: node.path,
+            deduped: true,
+            dedupedDependenciesCount: 2,
+          },
+        ])),
+      },
+    ]), {
+      rootPackageNames: ["audited-root"],
+    })).toThrow("exceeded 10000 production dependency paths");
+  });
+
+  it("memoizes repeated deduped subtree counts during pre-traversal validation", () => {
+    const sharedDependencies = Object.fromEntries(Array.from({ length: 600 }, (_, index) => {
+      const name = `shared-leaf-${index}`;
+      return [name, {
+        from: name,
+        version: "1.0.0",
+        path: `/repo/node_modules/${name}`,
+      }];
+    }));
+    const sharedExpansion = {
+      from: "shared",
+      version: "1.0.0",
+      path: "/repo/node_modules/shared",
+      dependencies: sharedDependencies,
+    };
+    const repeatedDedupes = Object.fromEntries(Array.from({ length: 200 }, (_, index) => [
+      `shared-alias-${index}`,
+      {
+        from: "shared",
+        version: "1.0.0",
+        path: "/repo/node_modules/shared",
+        deduped: true,
+        dedupedDependenciesCount: 600,
+      },
+    ]));
+
+    expect(parsePnpmProductionGraph(JSON.stringify([
+      {
+        name: "unrequested-expansion-fixture",
+        path: "/repo/packages/unrequested-expansion-fixture",
+        dependencies: {
+          "shared-expanded": sharedExpansion,
+          ...repeatedDedupes,
+        },
+      },
+      {
+        name: "audited-root",
+        path: "/repo/packages/audited-root",
+        dependencies: {
+          safe: {
+            from: "safe",
+            version: "1.0.0",
+            path: "/repo/node_modules/safe",
+          },
+        },
+      },
+    ]), {
+      rootPackageNames: ["audited-root"],
+    })).toEqual({
+      inventory: { safe: ["1.0.0"] },
+      dependencyPaths: { "safe@1.0.0": ["audited-root -> safe@1.0.0"] },
+    });
   });
 
   it("pins production/optional inclusion and dev/peer/workspace exclusion at the JSON boundary", async () => {
@@ -737,6 +951,78 @@ describe("dependency vulnerability gate", () => {
         },
       ],
     }]), options)).toThrow("incomplete branch orphan@1.0.0 has an empty dependents tree");
+
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify([
+      {
+        name: "ws",
+        from: 0,
+        version: "8.20.1",
+        peersSuffixHash: "malformed-owner",
+        dependents: [],
+      },
+      {
+        name: "ws",
+        version: "8.20.1",
+        peersSuffixHash: "valid",
+        dependents: [{
+          name: "@mono-agent/slack-adapter",
+          version: "0.11.3",
+          depField: "dependencies",
+        }],
+      },
+    ]), options)).toThrow("target ws has an invalid registry package name");
+  });
+
+  it("bounds reverse-path hydration before a compact diamond can expand exponentially", () => {
+    const rootDependent = {
+      name: "@mono-agent/slack-adapter",
+      version: "0.11.3",
+      depField: "dependencies",
+    };
+    const diamond = (layerCount) => {
+      const expandedLayers = [];
+      let priorLayer = [];
+      for (let layer = 0; layer < layerCount; layer += 1) {
+        const currentLayer = ["left", "right"].map((side) => ({
+          name: `${side}-${layer}`,
+          version: "1.0.0",
+          dependents: layer === 0
+            ? [rootDependent]
+            : priorLayer.map((prior) => ({
+              name: prior.name,
+              version: prior.version,
+              deduped: true,
+            })),
+        }));
+        expandedLayers.push(...currentLayer);
+        priorLayer = currentLayer;
+      }
+      return expandedLayers;
+    };
+
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify([{
+      name: "ws",
+      version: "8.20.1",
+      dependents: diamond(20),
+    }]), {
+      packageName: "ws",
+      versions: ["8.20.1"],
+      rootPackageNames: ["@mono-agent/slack-adapter"],
+    })).toThrow("exceeded 10000 complete production dependency paths");
+
+    const peerVariants = ["peer-a", "peer-b"].map((peersSuffixHash) => ({
+      name: "ws",
+      version: "8.20.1",
+      peersSuffixHash,
+      // Each 12-layer variant yields 8,190 paths and stays below the cap;
+      // together they must share the package-version budget and fail closed.
+      dependents: diamond(12),
+    }));
+    expect(() => parsePnpmWhyDependencyPaths(JSON.stringify(peerVariants), {
+      packageName: "ws",
+      versions: ["8.20.1"],
+      rootPackageNames: ["@mono-agent/slack-adapter"],
+    })).toThrow("target ws@8.20.1 exceeded 10000 complete production dependency paths");
   });
 
   it("drives the real collector and HTTP parser for a deliberately vulnerable package", async () => {
