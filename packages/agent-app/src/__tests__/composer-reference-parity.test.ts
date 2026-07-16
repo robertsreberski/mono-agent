@@ -136,6 +136,20 @@ function expectNativeNotifyDestinationContract(page: string, label: string): voi
   );
 }
 
+function expectOptionalEnvMappingLegend(page: string, label: string): void {
+  expect(page, `${label} must allow JSON-only config fields`).toContain("config fields may be JSON-only");
+  expect(page, `${label} must require an explicit environment mapping`).toContain(
+    "only fields with a documented `MONO_AGENT_*` mapping accept one",
+  );
+  expect(page, `${label} must define the no-mapping marker`).toContain(
+    "`--` means none, as for `channels.plugins`",
+  );
+  expect(page, `${label} must not promise environment overrides for every field`).not.toMatch(
+    /every field[^.\n]*(?:env|environment)/iu,
+  );
+  expect(page).not.toContain("env var override always exists");
+}
+
 describe("mono-agent-composer reference parity", () => {
   const registry = readRepoFile("docs/reference/feature-registry.md");
   const matrix = readRepoFile("docs/reference/feature-matrix.md");
@@ -167,15 +181,18 @@ describe("mono-agent-composer reference parity", () => {
     });
   });
 
-  it("distinguishes JSON config coverage from optional environment mappings", () => {
-    const legend = between(coverage, "# Feature Coverage", "## Runtime");
+  it("distinguishes JSON config coverage from optional environment mappings in both authoritative references", () => {
+    const legends = [
+      [between(coverage, "# Feature Coverage", "## Runtime"), "feature-coverage legend"],
+      [between(blueprint, "# Config Blueprint", "## Folder Layout"), "config-blueprint introduction"],
+    ] as const;
     const pluginConfigRow = markdownTableRows(generatedConfigReference).find(
       (cells) => cells[0] === "`channels.plugins`",
     );
 
-    expect(legend).toContain("environment-variable overrides are optional");
-    expect(legend).toContain("`--` means none, as for `channels.plugins`");
-    expect(legend).not.toContain("env var override always exists");
+    for (const [legend, label] of legends) {
+      expectOptionalEnvMappingLegend(legend, label);
+    }
     expect(pluginConfigRow?.[2]).toBe("`--`");
   });
 

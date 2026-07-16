@@ -5,7 +5,7 @@
 > <https://mono-agent-docs.vercel.app/config/>. This annotated JSON
 > stays the offline canonical shape.
 
-One `mono-agent.config.json` declares the whole agent. Paths are relative to the folder; every field also has a `MONO_AGENT_*` env var that overrides it (env > JSON > defaults). Omit a section to leave that capability off — every section except `runtime.model` and `context.identityPath` is optional. `references/feature-coverage.md` maps every framework feature to its config key; if a capability is not listed there, it needs the programmatic escape hatch.
+One `mono-agent.config.json` declares the whole agent. Paths are relative to the folder; config fields may be JSON-only. Environment-variable overrides are optional: only fields with a documented `MONO_AGENT_*` mapping accept one (env > JSON > defaults), so consult the generated config reference's `Env override` column (`--` means none, as for `channels.plugins`) instead of inferring one. Omit a section to leave that capability off — every section except `runtime.model` and `context.identityPath` is optional. `references/feature-coverage.md` maps every framework feature to its config key; if a capability is not listed there, it needs the programmatic escape hatch.
 
 ## Folder Layout
 
