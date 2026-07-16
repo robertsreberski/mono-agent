@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
 import { lstat, mkdir, open, rename, rm, type FileHandle } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import process from "node:process";
 
 import {
@@ -14,8 +14,7 @@ import { secureFileReplace } from "./secure-file-replace.js";
 
 const OWNER_MAX_BYTES = 4 * 1024;
 const OWNER_PUBLICATION_TEMPORARY = ".owner.mono-agent-publication.tmp";
-const OWNER_PUBLICATION_RETRY_ATTEMPTS = 20;
-const OWNER_PUBLICATION_RETRY_MS = 1;
+const OWNER_PUBLICATION_IN_PROGRESS = Symbol("owner-publication-in-progress");
 
 interface Identity { readonly dev: bigint; readonly ino: bigint }
 interface BaseOwner {
@@ -26,6 +25,7 @@ interface Owner {
   readonly pid: number; readonly incarnation?: ProcessIncarnation;
   readonly content: string; readonly identity: Identity;
 }
+type OwnerReadResult = Owner | undefined | typeof OWNER_PUBLICATION_IN_PROGRESS;
 type Observed =
   | { readonly kind: "ownerless"; readonly identity: Identity; readonly mtimeMs: number }
   | { readonly kind: "owned"; readonly identity: Identity; readonly owner: Owner };
@@ -231,7 +231,7 @@ async function publishOwner(
   });
   await sameDirectoryRequired(options.path, directoryIdentity, options);
   const owner = await readOwner(ownerPath, options);
-  if (owner === undefined || owner.content !== content) {
+  if (owner === undefined || owner === OWNER_PUBLICATION_IN_PROGRESS || owner.content !== content) {
     throw unsafe(options, `The atomically published ${options.label} owner record could not be verified.`);
   }
   return owner;
@@ -248,16 +248,12 @@ async function inspect(path: string, options: OwnerPrivateLockOptions): Promise<
   const directoryIdentity = identity(details);
   const owner = await readOwner(join(path, "owner.json"), options);
   if (!(await sameDirectory(path, directoryIdentity, options))) return undefined;
-  return owner === undefined
+  return owner === undefined || owner === OWNER_PUBLICATION_IN_PROGRESS
     ? { kind: "ownerless", identity: directoryIdentity, mtimeMs: Number(details.mtimeMs) }
     : { kind: "owned", identity: directoryIdentity, owner };
 }
 
-async function readOwner(
-  path: string,
-  options: OwnerPrivateLockOptions,
-  publicationRetries = OWNER_PUBLICATION_RETRY_ATTEMPTS,
-): Promise<Owner | undefined> {
+async function readOwner(path: string, options: OwnerPrivateLockOptions): Promise<OwnerReadResult> {
   let handle: FileHandle;
   try {
     // O_NONBLOCK matters before fstat: a same-user pathname swap to a FIFO
@@ -274,16 +270,10 @@ async function readOwner(
     const before = await handle.stat({ bigint: true });
     if (before.nlink === 0n) return undefined;
     // The current publisher temporarily gives the staged owner inode one exact
-    // second name. Never accept that state as an owner; prove the pair and retry.
-    if (before.nlink === 2n && await frameworkOwnerPublicationInProgress(handle, path, before, options)) {
-      if (publicationRetries === 0) {
-        throw unsafe(
-          options,
-          `${options.label} owner ${path} remained multiply linked after a bounded publication wait.`,
-        );
-      }
-      await (options.sleep ?? sleep)(OWNER_PUBLICATION_RETRY_MS);
-      return readOwner(path, options, publicationRetries - 1);
+    // second name. Never accept that state as an owner; normal grace and
+    // quarantine policy treats a crashed publication like other ownerless state.
+    if (before.nlink === 2n && await frameworkOwnerPublicationInProgress(handle, path, before)) {
+      return OWNER_PUBLICATION_IN_PROGRESS;
     }
     ownerFile(before, path, options);
     const fileIdentity = identity(before);
@@ -349,12 +339,11 @@ async function frameworkOwnerPublicationInProgress(
   handle: FileHandle,
   path: string,
   before: BigIntStats,
-  options: OwnerPrivateLockOptions,
 ): Promise<boolean> {
   if (!ownerPublicationFile(before, before, 2n)) return false;
   try {
     return ownerPublicationFile(
-      await lstat(join(options.path, OWNER_PUBLICATION_TEMPORARY), { bigint: true }),
+      await lstat(join(dirname(path), OWNER_PUBLICATION_TEMPORARY), { bigint: true }),
       before,
       2n,
     );
@@ -524,7 +513,8 @@ async function syncDirectory(path: string, expected: Identity, options: OwnerPri
 
 function sameObserved(value: Observed | undefined, expected: Observed): boolean {
   if (value === undefined || value.kind !== expected.kind || !sameIdentity(value.identity, expected.identity)) return false;
-  return value.kind === "ownerless" || (expected.kind === "owned"
+  return value.kind === "ownerless" ? expected.kind === "ownerless" && value.mtimeMs === expected.mtimeMs
+    : (expected.kind === "owned"
     && value.owner.content === expected.owner.content
     && sameIdentity(value.owner.identity, expected.owner.identity));
 }

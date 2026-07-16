@@ -9,6 +9,7 @@ import {
   readFile,
   rename,
   rm,
+  utimes,
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
@@ -499,6 +500,7 @@ describe("shared security primitives", () => {
     let resumeContender!: () => void;
     const publicationFinished = new Promise<void>((resolveFinished) => { resumeContender = resolveFinished; });
     let contender: Promise<Awaited<ReturnType<typeof acquireOwnerPrivateLock>>> | undefined;
+    let contenderNow = 0;
 
     await mkdir(path, { mode: 0o700 });
     await secureFileReplace({
@@ -515,10 +517,14 @@ describe("shared security primitives", () => {
           contender = acquireOwnerPrivateLock({
             ...common,
             randomToken: () => "concurrent-owner",
+            waitTimeoutMs: 10,
+            pollIntervalMs: 1,
+            now: () => contenderNow,
             sleep: async (milliseconds) => {
               expect(milliseconds).toBe(1);
               signalPublicationObserved();
               await publicationFinished;
+              contenderNow = 10;
             },
           });
           void contender.catch(() => signalPublicationObserved());
@@ -567,7 +573,7 @@ describe("shared security primitives", () => {
     expect(await readFile(aliasPath, "utf8")).toBe(content);
   });
 
-  it("bounds retries for an exact-looking owner publication pair that never settles", async () => {
+  it("recovers an exact-looking owner publication pair after ownerless grace", async () => {
     const dir = await root();
     const path = join(dir, "stuck-owner-publication.lock");
     const ownerPath = join(path, "owner.json");
@@ -579,24 +585,65 @@ describe("shared security primitives", () => {
       createdAt: new Date(0).toISOString(),
       incarnation,
     })}\n`;
-    let retries = 0;
     await mkdir(path, { mode: 0o700 });
     await writeFile(temporaryPath, content, { mode: 0o600 });
     await link(temporaryPath, ownerPath);
+    await utimes(path, new Date(0), new Date(0));
 
-    await expect(acquireOwnerPrivateLock({
+    const held = await acquireOwnerPrivateLock({
       path,
       label: "Stuck-publication test lock",
       schemaTag: "mono-agent.test-lock.v1",
-      ownerlessGraceMs: 60_000,
+      ownerlessGraceMs: 0,
       processIncarnation: incarnation,
       isSameProcessIncarnation: async () => true,
-      sleep: async () => { retries += 1; },
-    })).rejects.toThrow(/bounded publication wait/u);
+      now: () => Date.now() + 60_000,
+      randomToken: () => "recovered-owner",
+    });
 
-    expect(retries).toBeGreaterThan(0);
-    expect((await lstat(ownerPath)).nlink).toBe(2);
-    expect((await lstat(temporaryPath)).nlink).toBe(2);
+    expect(held?.ownerPid).toBe(process.pid);
+    expect((await lstat(ownerPath)).nlink).toBe(1);
+    await expect(lstat(temporaryPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await held?.release();
+  });
+
+  it("does not quarantine restarted owner staging after a stale publication observation", async () => {
+    const dir = await root();
+    const path = join(dir, "restarted-owner-publication.lock");
+    const ownerPath = join(path, "owner.json");
+    const temporaryPath = join(path, ".owner.mono-agent-publication.tmp");
+    const content = `${JSON.stringify({
+      schema: "mono-agent.test-lock.v1",
+      pid: process.pid,
+      token: "stale-owner",
+      createdAt: new Date(0).toISOString(),
+      incarnation,
+    })}\n`;
+    const restarted = "restarted owner staging\n";
+    await mkdir(path, { mode: 0o700 });
+    await writeFile(temporaryPath, content, { mode: 0o600 });
+    await link(temporaryPath, ownerPath);
+    await utimes(path, new Date(0), new Date(0));
+
+    await expect(acquireOwnerPrivateLock({
+      path,
+      label: "Restarted-publication test lock",
+      schemaTag: "mono-agent.test-lock.v1",
+      ownerlessGraceMs: 0,
+      processIncarnation: incarnation,
+      now: () => Date.now() + 60_000,
+      randomToken: () => "replacement-owner",
+      beforeStaleRename: async () => {
+        await rm(ownerPath);
+        await rm(temporaryPath);
+        await writeFile(temporaryPath, restarted, { mode: 0o600 });
+        await utimes(path, new Date(1_000), new Date(1_000));
+      },
+      staleRace: "return",
+    })).resolves.toBeUndefined();
+
+    expect(await readFile(temporaryPath, "utf8")).toBe(restarted);
+    await expect(lstat(ownerPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("does not overwrite a competing owner published in the mkdir window", async () => {
