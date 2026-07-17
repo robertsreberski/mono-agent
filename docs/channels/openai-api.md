@@ -77,6 +77,8 @@ curl http://127.0.0.1:4040/v1/models \
 
 Standard Chat Completions request. The endpoint always streams token-by-token over SSE for streaming-capable clients, regardless of the final-only delivery default that Telegram and Slack use.
 
+Genuine assistant-thought events are emitted as `delta.reasoning_content`. Tool starts are not converted into synthetic thoughts such as `Running Bash...`; completed host-owned tools remain available as Open WebUI tool-detail blocks. This keeps reasoning content semantic while still exposing structured tool execution.
+
 ```bash
 curl http://127.0.0.1:4040/v1/chat/completions \
   -H "Authorization: Bearer sk-..." \

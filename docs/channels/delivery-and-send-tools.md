@@ -14,13 +14,21 @@ Each channel decides how a turn's output reaches the user. The two chat adapters
 
 | Channel | Default delivery | Working indicator | Coverage |
 |---|---|---|---|
-| Telegram | Final answer only (`stream.finalOnly: true`) | "typing…" chat action | `code` |
-| Slack | Final answer only (`stream.finalOnly: true`) | 👀 "seen" reaction on the user's message | `code` |
+| Telegram | Final answer only (`stream.finalOnly: true`) | "typing…" chat action, then one transient tool-activity message when tools run | `code` |
+| Slack | Final answer only (`stream.finalOnly: true`) | 👀/assistant status, then one transient tool-activity message when tools run | `code` |
 | OpenAI-compatible (`/v1/chat/completions`) | Token-by-token SSE streaming | n/a (SSE deltas) | `config` |
 
-Telegram and Slack default to delivering **only the final answer** — no streamed interim message edits — while showing a lightweight working indicator so the user knows a turn is in flight. This is built-in adapter behavior, not a JSON field you set in `mono-agent.config.json`.
+Telegram and Slack default to delivering **only the final answer** — answer tokens are not streamed into the chat. An inbound turn starts with the channel's lightweight working indicator. If the agent starts a tool, one temporary message exposes a cumulative, user-safe activity ledger such as `🌐 Browsing https://example.com` or `🖥️ Running pnpm test`. Later tool starts edit that same message; the final answer replaces it. Reasoning and answer deltas never overwrite the ledger. This is built-in adapter behavior, not a JSON field you set in `mono-agent.config.json`.
 
 The OpenAI-compatible endpoint always streams token-by-token (SSE), which is what clients like Open WebUI expect. See [OpenAI-compatible endpoint](/channels/openai-api/).
+
+### Transient tool activity
+
+The shared formatter maps common tool families to stable copy: web search/browse, file read/search/write/edit, shell commands, code execution, image inspection, and memory updates. Unknown or MCP-qualified tools use a humanized leaf name. Consecutive identical lines collapse in place as `(×N)`; a different tool starts a new line, so only adjacent duplicates are combined.
+
+Previews use at most one allowlisted scalar argument and are truncated to 40 Unicode code points after control-character and whitespace normalization. Credential assignments, authorization schemes, URL user information, sensitive query parameters, and known token shapes are redacted. Arbitrary tool arguments are never serialized, getters and proxies are not inspected, and memory content/text is deliberately excluded. Unsafe or missing input falls back to action-only copy.
+
+The transient message is limited to interactive inbound Slack and Telegram turns. Native proactive notifications do not post it. Setting the code-only `stream.showHints: false` preserves final-answer-only delivery with the ordinary working indicator. On an acknowledged `/cancel`, the adapter best-effort deletes a still-transient activity message and keeps the single `Cancelled.` acknowledgement; it never deletes a message after final-answer delivery has been attempted.
 
 ## Switching Telegram/Slack to live interim streaming
 
@@ -38,7 +46,8 @@ Status text, edit debounce, max message characters, and the welcome/help/error t
 
 | Knob | What it controls |
 |---|---|
-| `stream.finalOnly` | Final-only delivery vs. live interim edits (default `true` for Telegram/Slack) |
+| `stream.finalOnly` | Final-answer delivery vs. live interim answer edits (default `true` for Telegram/Slack); tool activity may still use one transient message |
+| `stream.showHints` | Whether interactive tool starts appear in the transient activity message (default `true`; proactive delivery forces `false`) |
 | Status / working-indicator text | The activity hint shown while a turn runs |
 | Edit debounce | How often an in-progress message is re-edited during streaming |
 | Max message chars | Where long replies are split into multiple messages |

@@ -47,6 +47,17 @@ import {
 
 Load adapter settings separately from core config, then pass a structural `AgentResponder` from the host or harness. The base responder, stream, response, and cancellation contracts come from `@mono-agent/agent-contracts`.
 
+## Final answer and transient tool activity
+
+Inbound turns do not stream answer tokens by default. Telegram first shows the
+`typing…` action; if tools run, one cumulative, secret-safe activity message is
+edited in place and then replaced by the final answer. Adjacent duplicates
+collapse as `(×N)`. Proactive deliveries suppress this message, and an
+acknowledged `/cancel` best-effort deletes it while retaining one `Cancelled.`
+acknowledgement. Programmatic drivers can set `stream.showHints: false` to keep
+only the ordinary working indicator or `stream.finalOnly: false` for live answer
+edits.
+
 ## Public API
 
 <!-- public-api-inventory:start -->
@@ -97,6 +108,7 @@ TelegramBotController
 TelegramChat
 TelegramChatId
 TelegramCommandConfig
+TelegramDeleteMessageParams
 TelegramDeleteWebhookParams
 TelegramDeliveryError
 TelegramDocument

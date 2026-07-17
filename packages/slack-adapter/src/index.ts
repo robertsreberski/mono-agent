@@ -2,6 +2,8 @@ export type {
   SlackAppsConnectionsOpenResult,
   SlackAuthTestResult,
   SlackChannelId,
+  SlackChatDeleteParams,
+  SlackChatDeleteResult,
   SlackChatPostMessageParams,
   SlackChatPostMessageResult,
   SlackChatUpdateParams,

@@ -257,11 +257,12 @@ new agent.
     "modelId": "my-agent"                  // model id advertised to API clients
   },
 
-  // Telegram & Slack deliver only the FINAL answer by default (no streamed
-  // interim edits) while showing a working indicator — Telegram a "typing…"
-  // action, Slack a 👀 "seen" reaction. This is built-in behavior (not a JSON
-  // field); restoring live interim streaming needs a custom channel driver with
-  // stream.finalOnly=false. The OpenAI-compatible endpoint still streams tokens.
+  // Telegram & Slack do not stream ANSWER tokens by default. They first show a
+  // working indicator; inbound tool starts then edit one temporary, redacted
+  // activity ledger that the final answer replaces. Proactive turns suppress
+  // the ledger. This is built-in behavior (not a JSON field); a custom channel
+  // driver can set stream.showHints=false or stream.finalOnly=false. The
+  // OpenAI-compatible endpoint still streams tokens.
   "telegram": {
     "enabled": true,                       // opt-in; defaults to false (off → "disabled")
     // Put MONO_AGENT_TELEGRAM_BOT_TOKEN in .env; do not inline botToken here.

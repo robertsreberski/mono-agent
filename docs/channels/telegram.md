@@ -144,11 +144,13 @@ other-run paths, and symlink escapes fail closed.
 { "tools": { "allowedTools": ["TelegramSendFile"] } }
 ```
 
-## Final-only delivery
+## Final-answer delivery and transient tool activity
 
-Telegram delivers **only the final answer**. While the run is in flight the bot shows a `typing…` chat action; when the run completes it sends one message with the final text. There are no streamed interim edits on Telegram by default.
+Telegram does not stream answer tokens. While an inbound run is in flight the bot first shows a `typing…` chat action. If the agent starts a tool, the bot posts one temporary cumulative activity message with a short, redacted preview. Later tool starts edit that message, adjacent identical lines collapse as `(×N)`, and the final answer replaces it. Agent reasoning is never shown. A run with no tools still sends only the final message, and proactive notifications never show the tool ledger.
 
-This is built-in behaviour, not a JSON field. Restoring live interim streaming requires a custom channel driver with `stream.finalOnly: false` (`createTelegramChannelDriver`) — coverage **code**. See [Delivery and Send Tools](/channels/delivery-and-send-tools/) for the streaming model across channels and [Custom Channels](/programmatic/custom-channels/) to build a driver.
+An acknowledged `/cancel` best-effort deletes a still-transient activity message and leaves one `Cancelled.` acknowledgement. The adapter will not delete a message after final-answer delivery has been attempted.
+
+This is built-in behaviour, not a JSON field. A custom channel driver can set `stream.showHints: false` for the previous answer-only behavior or `stream.finalOnly: false` (`createTelegramChannelDriver`) to restore live interim answer streaming — coverage **code**. See [Delivery and Send Tools](/channels/delivery-and-send-tools/) for the preview/redaction rules and streaming model across channels, and [Custom Channels](/programmatic/custom-channels/) to build a driver.
 
 :::note
 The OpenAI-compatible [`/v1/chat/completions` endpoint](/channels/openai-api/) still streams token-by-token; final-only applies to the chat adapters (Telegram and Slack).
@@ -261,7 +263,7 @@ The existing `telegram.*` adapter config (token + chat allowlist) remains the de
 
 ## Smoke test
 
-With the agent running, send your bot a direct message (`Hello`) from an allowed chat. You should see the `typing…` indicator, followed by a single reply containing the final answer. If nothing happens:
+With the agent running, send your bot a direct message (`Hello`) from an allowed chat. You should see the `typing…` indicator, followed by the final answer. A request that uses tools first shows one temporary activity message, which the final answer replaces. If nothing happens:
 
 - Confirm the chat ID is in `allowedChatIds` (or set `allowAllChats: true` temporarily) — messages from non-allowlisted chats are ignored.
 - Confirm `enabled: true` and that the start log shows the Telegram channel as active rather than disabled.

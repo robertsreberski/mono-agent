@@ -16,6 +16,7 @@ import { SlackApiError } from "../slack-client.js";
 import type {
   SlackChatPostMessageParams,
   SlackChatPostMessageResult,
+  SlackChatDeleteParams,
   SlackChatUpdateParams,
   SlackDownloadFileParams,
   SlackReactionsAddParams,
@@ -28,6 +29,7 @@ import type {
 class FakeSlackApi implements SlackWebApi {
   readonly postMessageCalls: SlackChatPostMessageParams[] = [];
   readonly updateCalls: SlackChatUpdateParams[] = [];
+  readonly deleteCalls: SlackChatDeleteParams[] = [];
   readonly reactionsAddCalls: SlackReactionsAddParams[] = [];
   readonly viewsPublishCalls: SlackViewsPublishParams[] = [];
   readonly setAssistantStatusCalls: Array<{ channelId: string; threadTs: string; status: string }> = [];
@@ -79,6 +81,11 @@ class FakeSlackApi implements SlackWebApi {
     this.updateCalls.push(params);
     if (this.updateFailure !== undefined) throw this.updateFailure;
     return { ok: true as const, channel: params.channel, ts: params.ts, text: params.text };
+  }
+
+  async chatDelete(params: SlackChatDeleteParams) {
+    this.deleteCalls.push(params);
+    return { ok: true as const, channel: params.channel, ts: params.ts };
   }
 
   async reactionsAdd(params: SlackReactionsAddParams): Promise<void> {
@@ -146,6 +153,28 @@ describe("SlackAdapter", () => {
     expect(post?.text).toContain("morning brief");
     // A proactive turn does not react to a (non-existent) inbound message.
     expect(api.reactionsAddCalls).toEqual([]);
+  });
+
+  it("notify() suppresses transient tool activity for proactive turns", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: responderFrom(async (_request, stream) => {
+        await stream.event?.({
+          type: "tool_call_started",
+          id: "t1",
+          name: "WebSearch",
+          arguments: { query: "scheduled research" },
+        });
+        return { text: "research complete" };
+      }),
+    });
+
+    await adapter.notify("C1", "171.5", "Research this in the background");
+
+    expect(api.postMessageCalls.map((call) => call.text)).toEqual(["research complete"]);
+    expect(api.updateCalls).toEqual([]);
   });
 
   it("notify() verbatim posts the text as-is without running a turn and records it to history", async () => {
@@ -664,8 +693,14 @@ describe("SlackAdapter", () => {
       allowAllChannels: true,
       stream: { editDebounceMs: 0 },
       responder: responderFrom(
-        async (request) =>
-          await new Promise<{ text: string }>((resolve) => {
+        async (request, stream) => {
+          await stream.event?.({
+            type: "tool_call_started",
+            id: "cancelled-tool",
+            name: "Bash",
+            arguments: { command: "pnpm test" },
+          });
+          return await new Promise<{ text: string }>((resolve) => {
             capturedSignal = request.abortSignal;
             request.abortSignal.addEventListener(
               "abort",
@@ -673,7 +708,8 @@ describe("SlackAdapter", () => {
               { once: true },
             );
             responderStarted.resolve(undefined);
-          }),
+          });
+        },
       ),
     });
 
@@ -1330,8 +1366,14 @@ describe("SlackAdapter", () => {
       allowAllChannels: true,
       stream: { editDebounceMs: 0 },
       responder: responderFrom(
-        async (request) =>
-          await new Promise<{ text: string }>((resolve) => {
+        async (request, stream) => {
+          await stream.event?.({
+            type: "tool_call_started",
+            id: "cancelled-inbound-tool",
+            name: "Bash",
+            arguments: { command: "pnpm test" },
+          });
+          return await new Promise<{ text: string }>((resolve) => {
             capturedSignal = request.abortSignal;
             request.abortSignal.addEventListener(
               "abort",
@@ -1339,7 +1381,8 @@ describe("SlackAdapter", () => {
               { once: true },
             );
             responderStarted.resolve(undefined);
-          }),
+          });
+        },
       ),
     });
 
@@ -1351,9 +1394,11 @@ describe("SlackAdapter", () => {
     ).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
     expect(capturedSignal?.aborted).toBe(true);
     await expect(first).resolves.toMatchObject({ kind: "cancelled", channelId: "D123" });
+    expect(api.deleteCalls).toEqual([{ channel: "D123", ts: "200.000001" }]);
+    expect(api.postMessageCalls.filter((call) => call.text === "Cancelled.")).toHaveLength(1);
   });
 
-  it("signals activity with a 👀 reaction and never leaks tool/reasoning text", async () => {
+  it("shows transient tool activity with a 👀 reaction and never leaks reasoning text", async () => {
     const api = new FakeSlackApi();
     const adapter = new SlackAdapter({
       api,
@@ -1375,18 +1420,16 @@ describe("SlackAdapter", () => {
       ...api.postMessageCalls.map((call) => call.text),
       ...api.updateCalls.map((call) => call.text),
     ];
-    // Final-only delivery: no interim hint text is posted/edited; the user sees a
-    // 👀 "seen" reaction while the agent works, then just the final answer.
+    // The existing 👀 acknowledgement accompanies one transient tool status,
+    // which the final answer replaces in place.
     expect(api.reactionsAddCalls).toEqual([
       { channel: "D123", timestamp: "171.000001", name: "eyes" },
     ]);
-    // Neither friendly tool hints nor private reasoning ever reach the channel.
-    expect(allText.some((text) => text.includes("Searching the web"))).toBe(false);
+    expect(allText.some((text) => text.includes("Searching the web"))).toBe(true);
     expect(allText.some((text) => text.includes("WebSearch"))).toBe(false);
     expect(allText.some((text) => text.includes("secret reasoning"))).toBe(false);
-    // The final answer is delivered as the single posted message.
-    expect(api.postMessageCalls.map((call) => call.text)).toEqual(["final answer"]);
-    expect(api.updateCalls).toEqual([]);
+    expect(api.postMessageCalls.map((call) => call.text)).toEqual(["🌐 Searching the web"]);
+    expect(api.updateCalls.map((call) => call.text)).toEqual(["final answer"]);
   });
 
   it("downloads inbound files into request.attachments with base64 data", async () => {

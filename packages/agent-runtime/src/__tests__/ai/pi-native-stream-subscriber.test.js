@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createStreamSubscriber, toolStartProgressText } from "../../ai/providers/pi-native/stream-subscriber.js";
+import { createStreamSubscriber } from "../../ai/providers/pi-native/stream-subscriber.js";
 
 function freshRunState() {
   return {
@@ -70,7 +70,7 @@ describe("createStreamSubscriber — text/thinking dedup", () => {
 });
 
 describe("createStreamSubscriber — tool lifecycle + timing", () => {
-  it("emits progress + tool_use on start, tool_update on update, tool_timing + tool_result on end", () => {
+  it("emits tool_use on start, tool_update on update, tool_timing + tool_result on end", () => {
     const { runState, emitted, handler } = driver();
     handler({ type: "tool_execution_start", toolName: "my_tool", toolCallId: "call-1", args: { a: 1 } });
     handler({ type: "tool_execution_update", toolName: "my_tool", toolCallId: "call-1", args: { a: 1 }, partialResult: "partial" });
@@ -78,8 +78,7 @@ describe("createStreamSubscriber — tool lifecycle + timing", () => {
 
     expect(runState.lastToolName).toBe("my_tool");
     expect(runState.toolResultsSeen).toBe(1);
-    // Start emits a "Running my_tool..." thinking line + the tool_use.
-    expect(emitted.some((e) => e.type === "assistant" && e.message.content[0].text === "Running my_tool...")).toBe(true);
+    expect(emitted.some((e) => e.type === "assistant" && e.message.content[0].type === "thinking")).toBe(false);
     expect(emitted.some((e) => e.type === "assistant" && e.message.content[0].type === "tool_use" && e.message.content[0].id === "call-1")).toBe(true);
     expect(emitted.some((e) => e.type === "tool_update" && e.tool_use_id === "call-1")).toBe(true);
     const timing = emitted.find((e) => e.type === "tool_timing");
@@ -159,14 +158,5 @@ describe("createStreamSubscriber — turn counting + maxTurns stop", () => {
     handler({ type: "turn_end", message: { stopReason: "toolUse" } });
     expect(runState.maxTurnsHit).toBe(false);
     expect(harness.calls.aborts).toBe(0);
-  });
-});
-
-describe("toolStartProgressText", () => {
-  it("returns a Running line for a valid name and null for blanks", () => {
-    expect(toolStartProgressText("Bash")).toBe("Running Bash...");
-    expect(toolStartProgressText("   ")).toBeNull();
-    expect(toolStartProgressText("")).toBeNull();
-    expect(toolStartProgressText(null)).toBeNull();
   });
 });

@@ -1,6 +1,8 @@
 import type {
   SlackAppsConnectionsOpenResult,
   SlackAuthTestResult,
+  SlackChatDeleteParams,
+  SlackChatDeleteResult,
   SlackChatPostMessageParams,
   SlackChatPostMessageResult,
   SlackChatUpdateParams,
@@ -155,6 +157,13 @@ export class SlackWebApiClient implements SlackWebApi {
     options?: SlackRequestOptions,
   ): Promise<SlackChatUpdateResult> {
     return this.request<SlackChatUpdateResult>("chat.update", params, this.botToken, options);
+  }
+
+  chatDelete(
+    params: SlackChatDeleteParams,
+    options?: SlackRequestOptions,
+  ): Promise<SlackChatDeleteResult> {
+    return this.request<SlackChatDeleteResult>("chat.delete", params, this.botToken, options);
   }
 
   async reactionsAdd(

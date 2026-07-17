@@ -92,6 +92,28 @@ describe("createTelegramBot notify (proactive)", () => {
     });
   });
 
+  it("suppresses transient tool activity for proactive turns", async () => {
+    const responder: AgentResponder = {
+      async respond(_request, stream) {
+        await stream.event?.({
+          type: "tool_call_started",
+          id: "t1",
+          name: "WebSearch",
+          arguments: { query: "scheduled research" },
+        });
+        return { text: "Research complete" };
+      },
+    };
+    const { controller, calls } = buildNotifiableBot(responder);
+
+    await controller.notify(42, "Research this in the background.");
+
+    expect(calls.filter((call) => call.method === "sendMessage").map((call) => call.payload.text))
+      .toEqual(["Research complete"]);
+    expect(calls.some((call) => String(call.payload.text).includes("Searching the web")))
+      .toBe(false);
+  });
+
   it("verbatim mode posts the text as-is without running a turn and records it to history", async () => {
     let responded = false;
     const verbatimCalls: Array<[string, string]> = [];

@@ -298,6 +298,13 @@ class SlackChannelTransport implements ChannelTransport {
     });
   }
 
+  async delete(ref: MessageRef): Promise<void> {
+    if (this.api.chatDelete === undefined) {
+      throw new Error("Slack chat.delete is unavailable on this client.");
+    }
+    await this.api.chatDelete({ channel: this.channelId, ts: ref.id });
+  }
+
   classifyError(error: unknown): ChannelSendOutcome {
     return classifySlackError(error);
   }
@@ -400,6 +407,10 @@ export class SlackMessageStream implements AgentMessageStream {
 
   event(event: AgentStreamEvent): Promise<void> {
     return this.inner.event(event);
+  }
+
+  dismissTransient(): Promise<void> {
+    return this.inner.dismissTransient();
   }
 
   async finish(finalText?: string): Promise<void> {

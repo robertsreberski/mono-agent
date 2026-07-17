@@ -9,6 +9,7 @@ import { SlackApiError } from "../slack-client.js";
 import type {
   SlackChatPostMessageParams,
   SlackChatPostMessageResult,
+  SlackChatDeleteParams,
   SlackChatUpdateParams,
   SlackWebApi,
 } from "../types.js";
@@ -16,6 +17,7 @@ import type {
 class FakeSlackApi implements SlackWebApi {
   readonly postMessageCalls: SlackChatPostMessageParams[] = [];
   readonly updateCalls: SlackChatUpdateParams[] = [];
+  readonly deleteCalls: SlackChatDeleteParams[] = [];
   nextTs = 100;
   failPostWith: Error | undefined;
   failUpdateWith: Error | undefined;
@@ -42,6 +44,11 @@ class FakeSlackApi implements SlackWebApi {
       throw this.failUpdateWith;
     }
     return { ok: true as const, channel: params.channel, ts: params.ts, text: params.text };
+  }
+
+  async chatDelete(params: SlackChatDeleteParams) {
+    this.deleteCalls.push(params);
+    return { ok: true as const, channel: params.channel, ts: params.ts };
   }
 
   async downloadFile(): Promise<Uint8Array> {
@@ -156,6 +163,48 @@ describe("SlackMessageStream", () => {
     expect(api.postMessageCalls).toEqual([
       { channel: "C1", text: "delivered normally", mrkdwn: true },
     ]);
+  });
+
+  it("replaces a final-only tool ledger with the final Slack answer", async () => {
+    const api = new FakeSlackApi();
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C1",
+      threadTs: "171.000001",
+      finalOnly: true,
+      editDebounceMs: 0,
+    });
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "t1",
+      name: "WebFetch",
+      arguments: { url: "https://example.test/product" },
+    });
+    await stream.finish("final answer");
+
+    expect(api.postMessageCalls).toEqual([{
+      channel: "C1",
+      text: "🌐 Browsing https://example.test/product",
+      thread_ts: "171.000001",
+      mrkdwn: false,
+    }]);
+    expect(api.updateCalls).toEqual([{
+      channel: "C1",
+      ts: "100.000001",
+      text: "final answer",
+      mrkdwn: true,
+    }]);
+  });
+
+  it("deletes a transient Slack tool ledger on dismissal", async () => {
+    const api = new FakeSlackApi();
+    const stream = new SlackMessageStream({ api, channelId: "C1", finalOnly: true });
+
+    await stream.event({ type: "tool_call_started", id: "t1", name: "Read", arguments: { path: "/repo/a.ts" } });
+    await stream.dismissTransient();
+
+    expect(api.deleteCalls).toEqual([{ channel: "C1", ts: "100.000001" }]);
   });
 
   it.each([

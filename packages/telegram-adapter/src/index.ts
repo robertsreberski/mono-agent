@@ -3,6 +3,7 @@ export type {
   TelegramChat,
   TelegramChatId,
   TelegramDeleteWebhookParams,
+  TelegramDeleteMessageParams,
   TelegramDocument,
   TelegramEditMessageTextParams,
   TelegramAudio,

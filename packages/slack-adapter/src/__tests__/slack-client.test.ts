@@ -63,6 +63,26 @@ describe("SlackWebApiClient", () => {
     expect(init?.headers).toMatchObject({ authorization: `Bearer ${APP_TOKEN}` });
   });
 
+  it("deletes a transient message through chat.delete", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ ok: true, channel: "C1", ts: "171.1" }),
+    ) as unknown as typeof fetch;
+    const client = new SlackWebApiClient({
+      botToken: BOT_TOKEN,
+      fetchImpl,
+      requestTimeoutMs: 0,
+    });
+
+    await expect(client.chatDelete({ channel: "C1", ts: "171.1" })).resolves.toMatchObject({
+      ok: true,
+      channel: "C1",
+      ts: "171.1",
+    });
+    const [url, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
+    expect(String(url)).toBe("https://slack.com/api/chat.delete");
+    expect(JSON.parse(String(init?.body))).toEqual({ channel: "C1", ts: "171.1" });
+  });
+
   it("allows send-only clients without an app token", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({ ok: true, channel: "C1", ts: "171.1" }),

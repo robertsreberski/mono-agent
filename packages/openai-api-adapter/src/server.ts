@@ -563,7 +563,6 @@ class SseChatMessageStream implements AgentMessageStream {
   private currentText = "";
   private done = false;
   private started = false;
-  private lastReasoningContent: string | undefined;
   private readonly activeTools = new Map<string, {
     readonly name: string;
     readonly arguments?: unknown;
@@ -590,9 +589,6 @@ class SseChatMessageStream implements AgentMessageStream {
     if (event.type === "assistant_thought") {
       if (event.text.length > 0) {
         this.writeChunk({ reasoning_content: event.text }, null);
-        this.lastReasoningContent = event.text;
-      } else {
-        this.lastReasoningContent = undefined;
       }
       return;
     }
@@ -601,15 +597,9 @@ class SseChatMessageStream implements AgentMessageStream {
         name: event.name,
         ...(event.arguments === undefined ? {} : { arguments: event.arguments }),
       });
-      const progressText = `Running ${event.name}...`;
-      if (this.lastReasoningContent !== progressText) {
-        this.writeChunk({ reasoning_content: progressText }, null);
-      }
-      this.lastReasoningContent = undefined;
       return;
     }
     if (event.type === "tool_call_completed") {
-      this.lastReasoningContent = undefined;
       const started = this.activeTools.get(event.id);
       const name = event.name ?? started?.name ?? "tool";
       const args = event.arguments ?? started?.arguments ?? {};
@@ -624,14 +614,12 @@ class SseChatMessageStream implements AgentMessageStream {
       return;
     }
     if (event.type === "runtime_warning") {
-      this.lastReasoningContent = undefined;
       this.writeChunk({ reasoning_content: `Warning: ${event.message}` }, null);
     }
   }
 
   async append(delta: string): Promise<void> {
     this.assertOpen();
-    this.lastReasoningContent = undefined;
     if (delta.length === 0) {
       return;
     }
@@ -641,7 +629,6 @@ class SseChatMessageStream implements AgentMessageStream {
 
   async replace(text: string): Promise<void> {
     this.assertOpen();
-    this.lastReasoningContent = undefined;
     const delta = text.startsWith(this.currentText) ? text.slice(this.currentText.length) : text;
     this.currentText = text;
     if (delta.length > 0) {

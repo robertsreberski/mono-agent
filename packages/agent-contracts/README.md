@@ -22,6 +22,12 @@ import type { AgentResponder } from "@mono-agent/agent-contracts";
 Adapter packages extend the base request with transport metadata while keeping the responder and stream shapes compatible across hosts.
 `isDeliverableConversation` parses a conversation scheme against caller-supplied channel ids, leaving concrete delivery policy with the adapter.
 
+`ResilientMessageStream` can keep answer deltas final-only while exposing tool
+starts in one transient cumulative status. Its shared formatter uses friendly
+tool-family copy, bounded allowlisted previews, and secret redaction; adapters
+can optionally delete a confirmed status during cancellation without risking an
+answer message.
+
 ## Public API
 
 <!-- public-api-inventory:start -->

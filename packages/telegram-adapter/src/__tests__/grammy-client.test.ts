@@ -17,6 +17,7 @@ function recordingApi(
     sendMessage?: (...args: unknown[]) => unknown;
     editMessageText?: (...args: unknown[]) => unknown;
     editMessageTextInline?: (...args: unknown[]) => unknown;
+    deleteMessage?: (...args: unknown[]) => unknown;
   },
 ): { api: Api; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
@@ -33,6 +34,10 @@ function recordingApi(
       calls.push({ args });
       return handlers.editMessageTextInline?.(...args);
     },
+    async deleteMessage(...args: unknown[]) {
+      calls.push({ args });
+      return handlers.deleteMessage?.(...args);
+    },
   } as unknown as Api;
   return { api, calls };
 }
@@ -43,6 +48,7 @@ describe("createGrammyTelegramApi", () => {
 
     expect(typeof client.sendMessage).toBe("function");
     expect(typeof client.editMessageText).toBe("function");
+    expect(typeof client.deleteMessage).toBe("function");
   });
 
   it("rejects blank bot tokens", () => {
@@ -124,6 +130,15 @@ describe("createGrammyTelegramApi", () => {
     expect(calls[0]?.args.slice(0, 2)).toEqual(["inline-1", "x"]);
     expect(calls[0]?.args[2]).toEqual({ parse_mode: "MarkdownV2" });
     expect(result).toBe(true);
+  });
+
+  it("translates deleteMessage params into grammY positional args", async () => {
+    const { api, calls } = recordingApi({ deleteMessage: () => true });
+    const client = createGrammyTelegramApi(api);
+
+    await expect(client.deleteMessage?.({ chat_id: 1, message_id: 9 })).resolves.toBe(true);
+
+    expect(calls[0]?.args.slice(0, 2)).toEqual([1, 9]);
   });
 
   it("maps a GrammyError to a TelegramApiError carrying retry_after", async () => {
