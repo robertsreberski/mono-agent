@@ -145,6 +145,74 @@
           ],
           "type": "integer"
         },
+        "compaction": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "description": "Enables adaptive proactive compaction and one-shot reactive overflow recovery.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": true
+            },
+            "triggerRatio": {
+              "description": "Fraction of the effective model context window used for the proactive trigger, additionally capped by adaptive safety headroom.",
+              "examples": [
+                0.7
+              ],
+              "type": "number",
+              "default": 0.7,
+              "minimum": 0.2,
+              "maximum": 0.95
+            },
+            "keepRecentTokens": {
+              "description": "Explicit recent-context retention override; omitted derives 10% of the effective context window, clamped to 4,000-20,000 tokens.",
+              "examples": [
+                12800
+              ],
+              "type": "integer",
+              "minimum": 4000,
+              "maximum": 200000
+            },
+            "summaryMaxTokens": {
+              "description": "Explicit combined summary-output budget override; omitted derives 4% of the effective context window, clamped to 2,000-12,000 tokens.",
+              "examples": [
+                5120
+              ],
+              "type": "integer",
+              "minimum": 1000,
+              "maximum": 64000
+            },
+            "minSavingsTokens": {
+              "description": "Minimum verified token reduction required for proactive compaction; omitted derives 10% of the effective window, clamped to 4,000-20,000. Reactive recovery accepts any positive reduction.",
+              "examples": [
+                12800
+              ],
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 500000
+            },
+            "fixedOverheadEnabled": {
+              "description": "Includes system instructions, tool schemas, and the current user turn in proactive request-size estimates.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": true
+            },
+            "contextWindowOverride": {
+              "description": "Persistent correction for inaccurate provider context-window metadata; learned overflow ceilings may lower it process-locally.",
+              "examples": [
+                128000
+              ],
+              "type": "integer",
+              "minimum": 32000,
+              "maximum": 10000000
+            }
+          }
+        },
         "workspace": {
           "description": "Configures workspace for the runtime section.",
           "examples": [

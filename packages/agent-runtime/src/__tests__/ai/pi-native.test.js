@@ -1048,12 +1048,12 @@ describe("pi-native auto-compaction", () => {
   // UNDER the trigger) so the ONLY thing that flips proactive compaction on is the
   // overhead from a large system prompt + several tools.
   //
-  // contextWindow 100000 -> trigger 75000, keepRecent 24000. The seeded transcript
+  // contextWindow 100000 -> trigger 70000, keepRecent 10000. The seeded transcript
   // (~56k tokens) sits below the trigger but above keepRecent (so compact() has a
   // prefix to summarize). The overhead counts the system prompt (~30k tokens) +
   // tool schemas + the trailing per-turn user message ("continue", ~3 tokens) —
   // NOT the prior transcript (already summed by the raw branch). That ~30k of
-  // overhead pushes the corrected estimate (~56k + ~30k = ~86k) over 75000.
+  // overhead pushes the corrected estimate (~56k + ~30k = ~86k) over 70000.
   function overheadFixture(reference) {
     const base = setup();
     const windowed = { ...base, contextWindow: 100000 };
@@ -1092,7 +1092,7 @@ describe("pi-native auto-compaction", () => {
     expect(result.diagnostics.context_fixed_overhead_tokens).toBeGreaterThan(0);
     expect(result.diagnostics.context_system_prompt_tokens).toBeGreaterThan(0);
     expect(typeof result.diagnostics.context_tool_schema_tokens).toBe("number");
-    expect(result.diagnostics.context_compaction_trigger_tokens).toBe(75000);
+    expect(result.diagnostics.context_compaction_trigger_tokens).toBe(70000);
     expect(result.diagnostics.context_transcript_estimate)
       .toBeGreaterThanOrEqual(result.diagnostics.context_compaction_trigger_tokens);
     // Regression guard for the transcript double-count: only the TRAILING per-turn
@@ -1130,6 +1130,7 @@ describe("pi-native auto-compaction", () => {
     expect(providerCalls).toBe(1);
     expect(result.text).toBe("turn-output");
     expect(result.diagnostics.context_compaction_proactive).toBeUndefined();
-    expect(result.diagnostics.context_fixed_overhead_tokens).toBeUndefined();
+    expect(result.diagnostics.context_fixed_overhead_tokens).toBe(0);
+    expect(result.diagnostics.context_request_estimate_tokens).toBeGreaterThan(0);
   });
 });

@@ -73,6 +73,13 @@ export const CONFIG_ENV_KEYS = {
   "runtime.effort": "MONO_AGENT_EFFORT",
   "runtime.permissionMode": "MONO_AGENT_PERMISSION_MODE",
   "runtime.maxTurns": "MONO_AGENT_MAX_TURNS",
+  "runtime.compaction.enabled": "MONO_AGENT_COMPACTION_ENABLED",
+  "runtime.compaction.triggerRatio": "MONO_AGENT_COMPACTION_TRIGGER_RATIO",
+  "runtime.compaction.keepRecentTokens": "MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS",
+  "runtime.compaction.summaryMaxTokens": "MONO_AGENT_COMPACTION_SUMMARY_MAX_TOKENS",
+  "runtime.compaction.minSavingsTokens": "MONO_AGENT_COMPACTION_MIN_SAVINGS_TOKENS",
+  "runtime.compaction.fixedOverheadEnabled": "MONO_AGENT_COMPACTION_FIXED_OVERHEAD_ENABLED",
+  "runtime.compaction.contextWindowOverride": "MONO_AGENT_COMPACTION_CONTEXT_WINDOW_OVERRIDE",
   "runtime.workspace": "MONO_AGENT_WORKSPACE",
   "runtime.session.mode": "MONO_AGENT_SESSION_MODE",
   "runtime.session.idleTimeoutMs": "MONO_AGENT_SESSION_IDLE_TIMEOUT_MS",
@@ -292,6 +299,7 @@ function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
   const { redacted, json, env } = input;
   const runtime = redacted.runtime;
   const session = runtime.session;
+  const compaction = runtime.compaction ?? {};
   return {
     id: "runtime",
     label: "Runtime",
@@ -355,6 +363,54 @@ function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
         label: "Max turns",
         value: runtime.maxTurns === undefined ? "unlimited" : String(runtime.maxTurns),
         jsonPresent: json.runtime?.maxTurns !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.compaction.enabled",
+        label: "Context compaction",
+        value: compaction.enabled === false ? "no" : "yes",
+        jsonPresent: json.runtime?.compaction?.enabled !== undefined,
+        jsonValue: json.runtime?.compaction?.enabled,
+        defaultValue: true,
+      }),
+      toField(env, {
+        id: "runtime.compaction.triggerRatio",
+        label: "Compaction trigger ratio",
+        value: String(compaction.triggerRatio ?? 0.70),
+        jsonPresent: json.runtime?.compaction?.triggerRatio !== undefined,
+        jsonValue: json.runtime?.compaction?.triggerRatio,
+        defaultValue: 0.70,
+      }),
+      toField(env, {
+        id: "runtime.compaction.keepRecentTokens",
+        label: "Compaction retained tokens",
+        value: compaction.keepRecentTokens === undefined ? "adaptive by model" : String(compaction.keepRecentTokens),
+        jsonPresent: json.runtime?.compaction?.keepRecentTokens !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.compaction.summaryMaxTokens",
+        label: "Compaction summary budget",
+        value: compaction.summaryMaxTokens === undefined ? "adaptive by model" : String(compaction.summaryMaxTokens),
+        jsonPresent: json.runtime?.compaction?.summaryMaxTokens !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.compaction.minSavingsTokens",
+        label: "Compaction minimum savings",
+        value: compaction.minSavingsTokens === undefined ? "adaptive by model" : String(compaction.minSavingsTokens),
+        jsonPresent: json.runtime?.compaction?.minSavingsTokens !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.compaction.fixedOverheadEnabled",
+        label: "Compaction fixed overhead",
+        value: compaction.fixedOverheadEnabled === false ? "no" : "yes",
+        jsonPresent: json.runtime?.compaction?.fixedOverheadEnabled !== undefined,
+        jsonValue: json.runtime?.compaction?.fixedOverheadEnabled,
+        defaultValue: true,
+      }),
+      toField(env, {
+        id: "runtime.compaction.contextWindowOverride",
+        label: "Context window override",
+        value: compaction.contextWindowOverride === undefined ? "auto" : String(compaction.contextWindowOverride),
+        jsonPresent: json.runtime?.compaction?.contextWindowOverride !== undefined,
       }),
       toField(env, {
         id: "runtime.workspace",

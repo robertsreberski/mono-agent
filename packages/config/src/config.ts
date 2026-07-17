@@ -122,6 +122,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   assertUniqueFallbackRoutes(model, fallbackModels, fallbacks);
   const executionMode = parseExecutionMode(input.env.MONO_AGENT_EXECUTION_MODE, model);
   const maxTurns = readMaxTurns(input.env.MONO_AGENT_MAX_TURNS);
+  const compaction = readRuntimeCompactionConfig(input.env);
   const workspace = readPath(input.env.MONO_AGENT_WORKSPACE, cwd, cwd);
   const session = readSessionConfig(input.env);
   const identityPath = readPath(readRequired(input.env, "MONO_AGENT_IDENTITY_PATH"), cwd);
@@ -171,6 +172,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     routeSafety,
     executionMode,
     ...(maxTurns === undefined ? {} : { maxTurns }),
+    compaction,
     workspace,
     session,
     ...(effort === undefined ? {} : { effort }),
@@ -460,6 +462,55 @@ function readOptionalTimeoutMs(raw: string | undefined, name: string): number | 
 function readMaxTurns(raw: string | undefined): number | undefined {
   const maxTurns = readInteger(raw, "MONO_AGENT_MAX_TURNS", 0, invalidEnv, { min: 0, max: 100 });
   return maxTurns === 0 ? undefined : maxTurns;
+}
+
+function readRuntimeCompactionConfig(
+  env: Record<string, string | undefined>,
+): NonNullable<MonoAgentConfig["runtime"]["compaction"]> {
+  const triggerRatio = readOptionalNumber(
+    env.MONO_AGENT_COMPACTION_TRIGGER_RATIO,
+    "MONO_AGENT_COMPACTION_TRIGGER_RATIO",
+    { min: 0.2, max: 0.95 },
+  );
+  const keepRecentTokens = readOptionalInteger(
+    env.MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS,
+    "MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS",
+    { min: 4_000, max: 200_000 },
+  );
+  const summaryMaxTokens = readOptionalInteger(
+    env.MONO_AGENT_COMPACTION_SUMMARY_MAX_TOKENS,
+    "MONO_AGENT_COMPACTION_SUMMARY_MAX_TOKENS",
+    { min: 1_000, max: 64_000 },
+  );
+  const minSavingsTokens = readOptionalInteger(
+    env.MONO_AGENT_COMPACTION_MIN_SAVINGS_TOKENS,
+    "MONO_AGENT_COMPACTION_MIN_SAVINGS_TOKENS",
+    { min: 0, max: 500_000 },
+  );
+  const contextWindowOverride = readOptionalInteger(
+    env.MONO_AGENT_COMPACTION_CONTEXT_WINDOW_OVERRIDE,
+    "MONO_AGENT_COMPACTION_CONTEXT_WINDOW_OVERRIDE",
+    { min: 32_000, max: 10_000_000 },
+  );
+  return {
+    enabled: readBoolean(
+      env.MONO_AGENT_COMPACTION_ENABLED,
+      "MONO_AGENT_COMPACTION_ENABLED",
+      true,
+      invalidEnv,
+    ),
+    ...(triggerRatio === undefined ? {} : { triggerRatio }),
+    ...(keepRecentTokens === undefined ? {} : { keepRecentTokens }),
+    ...(summaryMaxTokens === undefined ? {} : { summaryMaxTokens }),
+    ...(minSavingsTokens === undefined ? {} : { minSavingsTokens }),
+    fixedOverheadEnabled: readBoolean(
+      env.MONO_AGENT_COMPACTION_FIXED_OVERHEAD_ENABLED,
+      "MONO_AGENT_COMPACTION_FIXED_OVERHEAD_ENABLED",
+      true,
+      invalidEnv,
+    ),
+    ...(contextWindowOverride === undefined ? {} : { contextWindowOverride }),
+  };
 }
 
 function readArtifactRetentionConfig(env: Record<string, string | undefined>): MonoAgentConfig["artifacts"]["retention"] {
@@ -1627,6 +1678,26 @@ function readOptionalInteger(
     return undefined;
   }
   return readInteger(raw, name, bounds.min, invalidEnv, bounds);
+}
+
+function readOptionalNumber(
+  raw: string | undefined,
+  name: string,
+  bounds: { readonly min: number; readonly max: number },
+): number | undefined {
+  const normalized = normalizeOptionalString(raw);
+  if (normalized === undefined) {
+    return undefined;
+  }
+  const value = Number(normalized);
+  if (!Number.isFinite(value) || value < bounds.min || value > bounds.max) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${name} must be a number between ${bounds.min} and ${bounds.max}.`,
+      { env: name, reason: "out_of_range" },
+    );
+  }
+  return value;
 }
 
 function readPath(raw: string | undefined, cwd: string, defaultPath?: string): string {

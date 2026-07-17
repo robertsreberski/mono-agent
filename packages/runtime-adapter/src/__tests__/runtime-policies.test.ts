@@ -58,10 +58,9 @@ describe("resolveRuntimePolicies", () => {
     expect(resolveAgentCompactionPolicy(roundTrip, model)).toEqual(fromSettings);
   });
 
-  it("returns kernel defaults for an empty / undefined settings bag", () => {
+  it("keeps omitted legacy compaction settings omitted so live-model defaults stay adaptive", () => {
     const empty = resolveRuntimePolicies();
-    expect(empty.compaction.enabled).toBe(true);
-    expect(empty.compaction.fixedOverheadEnabled).toBe(true);
+    expect(empty.compaction).toEqual({});
     expect(typeof empty.toolLimits.toolTextLimitChars).toBe("number");
   });
 });

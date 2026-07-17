@@ -128,6 +128,15 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly effort?: string;
     readonly permissionMode?: string;
     readonly maxTurns?: number;
+    readonly compaction?: {
+      readonly enabled?: boolean;
+      readonly triggerRatio?: number;
+      readonly keepRecentTokens?: number;
+      readonly summaryMaxTokens?: number;
+      readonly minSavingsTokens?: number;
+      readonly fixedOverheadEnabled?: boolean;
+      readonly contextWindowOverride?: number;
+    };
     readonly workspace?: string;
     readonly session?: {
       readonly mode?: string;

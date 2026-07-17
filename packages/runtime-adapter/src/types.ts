@@ -130,7 +130,8 @@ export interface RuntimeToolLimits {
 /**
  * Typed per-run context-compaction policy (mirrors agent-runtime's
  * RuntimeCompactionPolicy). The supported replacement for the deprecated
- * `settings` compaction keys.
+ * `settings` compaction keys. Omitted scalar budgets resolve adaptively against
+ * the effective model context window.
  */
 export interface RuntimeCompactionPolicy {
   readonly enabled?: boolean;

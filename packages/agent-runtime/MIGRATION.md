@@ -54,14 +54,16 @@ These were Pi-bridge knobs the native path does not consume.
   overflows the bridge compacts once and re-prompts (reactive recovery).
 - Runs report **`capabilitiesUsed.context_compaction_applied`** as `true` (a
   compaction fired), `false` (enabled but not needed), or `null` (disabled via
-  `agent_compaction_enabled: false`). If you assert on this value, expect this
+  `runtime.compaction.enabled: false`). If you assert on this value, expect this
   tristate on the Pi path.
 - The host **`onCompactionRecorded`** callback now **fires on each automatic
   compaction** on the Pi path (previously inert).
-- The trigger window auto-tracks the model actually serving the request
-  (`harness.getModel()`) and self-corrects from any real ceiling stated in an
-  overflow error, so a wrong/default `context_window` no longer defeats it.
-  `resolveAgentCompactionPolicy` (`agent_compaction_*` settings) remains exported.
+- The trigger and omitted budgets adapt to the model actually serving the
+  request (`harness.getModel()`). Numeric overflow limits and generic failed
+  request estimates lower a learned process-local ceiling; use
+  `runtime.compaction.contextWindowOverride` for a persistent metadata
+  correction. Deprecated programmatic `agent_compaction_*` settings and
+  `resolveAgentCompactionPolicy` remain compatibility surfaces.
 
 ## 4. Durable Pi session resume: create-on-miss semantics
 
@@ -160,6 +162,9 @@ pass it, so this is a no-op there).
 `resolveAgentCompactionPolicy(settings, model)` stays exported (the canonical
 clamp/mapper both paths route through), and `@mono-agent/runtime-adapter` exposes
 `resolveRuntimePolicies(settings)` to map a legacy bag to the typed objects.
+The migration helper preserves omitted legacy compaction values so adaptive
+defaults are resolved later against the live model rather than frozen at the
+mapper's fallback window.
 **Action:** migrate `settings` → `toolLimits` / `compaction`; until then the shim
 keeps working with one deprecation warning per run.
 

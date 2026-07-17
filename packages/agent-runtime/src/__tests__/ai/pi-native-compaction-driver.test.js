@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { buildSessionContext } from "@earendil-works/pi-agent-core";
 import {
   estimateCurrentContextTokens,
+  piSummaryReserveTokens,
   resolveLiveCompactionPolicy,
   runProactiveCompaction,
   runReactiveCompaction,
@@ -13,6 +15,109 @@ function fakeSession({ entries = [], messages = [] } = {}) {
   return {
     getEntries: async () => entries,
     buildContext: async () => ({ messages }),
+  };
+}
+
+function userMessage(text) {
+  return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
+}
+
+function assistantMessage(text) {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: "openai-completions",
+    provider: "faux",
+    model: "m",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: "stop",
+    timestamp: Date.now(),
+  };
+}
+
+function reducibleMessages() {
+  return [
+    userMessage("a".repeat(40_000)),
+    userMessage("b".repeat(40_000)),
+    userMessage("recent".repeat(4_000)),
+  ];
+}
+
+function hookHarness({ sourceMessages = reducibleMessages(), summary = "short summary", compactError } = {}) {
+  const messages = [...sourceMessages];
+  const branchEntries = sourceMessages.map((message, index) => ({
+    type: "message",
+    id: `e${index + 1}`,
+    parentId: index === 0 ? null : `e${index}`,
+    timestamp: new Date(index + 1).toISOString(),
+    message,
+  }));
+  const session = fakeSession({ entries: branchEntries, messages });
+  const handlers = new Set();
+  const generationLimits = [];
+  let persisted = 0;
+  const model = {
+    id: "m",
+    provider: "faux",
+    api: "openai-completions",
+    contextWindow: 128_000,
+    maxTokens: 64_000,
+    reasoning: false,
+  };
+  const models = {
+    completeSimple: vi.fn(async (_model, _context, options) => {
+      generationLimits.push(options?.maxTokens);
+      return { role: "assistant", content: [{ type: "text", text: summary }], stopReason: "stop" };
+    }),
+  };
+  const harness = {
+    models,
+    getModel: () => model,
+    getThinkingLevel: () => "off",
+    waitForIdle: vi.fn(),
+    prompt: vi.fn(),
+    on: (type, handler) => {
+      expect(type).toBe("session_before_compact");
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+    compact: vi.fn(async () => {
+      if (compactError) throw compactError;
+      const handler = [...handlers].at(-1);
+      if (!handler) throw new Error("missing compaction hook");
+      const hookResult = await handler({
+        type: "session_before_compact",
+        preparation: {},
+        branchEntries,
+        signal: new AbortController().signal,
+      });
+      if (hookResult?.cancel) throw Object.assign(new Error("Compaction cancelled"), { code: "compaction" });
+      const result = hookResult?.compaction;
+      if (!result) throw new Error("hook did not provide compaction");
+      persisted += 1;
+      const compactedEntry = {
+        type: "compaction",
+        id: "compaction-1",
+        parentId: branchEntries.at(-1)?.id || null,
+        timestamp: new Date().toISOString(),
+        summary: result.summary,
+        firstKeptEntryId: result.firstKeptEntryId,
+        tokensBefore: result.tokensBefore,
+        details: result.details,
+        fromHook: true,
+      };
+      messages.splice(0, messages.length, ...buildSessionContext([...branchEntries, compactedEntry]).messages);
+      return result;
+    }),
+  };
+  return {
+    harness,
+    session,
+    messages,
+    branchEntries,
+    generationLimits,
+    handlerCount: () => handlers.size,
+    persistedCount: () => persisted,
   };
 }
 
@@ -46,57 +151,102 @@ describe("estimateCurrentContextTokens", () => {
     expect(out.source).toBe("estimate");
     expect(out.tokens).toBeGreaterThanOrEqual(10_000);
   });
+
+  it("adds the current user turn to a prior provider-usage estimate without double-counting fixed overhead", async () => {
+    const priorAssistant = assistantMessage("done");
+    priorAssistant.usage = {
+      input: 900,
+      output: 100,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 1_000,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+    const session = fakeSession({
+      entries: [{ type: "message", id: "e1", parentId: null, message: priorAssistant }],
+      messages: [priorAssistant],
+    });
+
+    const out = await estimateCurrentContextTokens(session, 500, 250);
+
+    expect(out).toEqual({ tokens: 1_250, source: "usage" });
+  });
 });
 
 describe("tryCompact", () => {
   it("emits the applied event, fires onCompactionRecorded, and reports applied", async () => {
     const events = [];
     const recorded = [];
-    const messages = [{ role: "user", content: "x".repeat(4000) }];
-    const session = fakeSession({ messages });
-    const harness = { compact: async () => {
-      messages.splice(0, messages.length, { role: "user", content: "summary" });
-      return { tokensBefore: 1234, summary: "s", firstKeptEntryId: "e1" };
-    } };
-    const res = await tryCompact(harness, {
+    const fixture = hookHarness();
+    const res = await tryCompact(fixture.harness, {
       trigger: "proactive",
       onEvent: (e) => events.push(e),
       runtimeWarnings: [],
       onCompactionRecorded: (row) => recorded.push(row),
       runId: "r1",
       model: "pi:faux:m",
-      session,
+      session: fixture.session,
+      policy: { keepRecentTokens: 4_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 0 },
     });
-    expect(res).toMatchObject({ applied: true, tokensBefore: 1234, reduced: true, nothingToCompact: false });
+    expect(res).toMatchObject({ applied: true, reduced: true, nothingToCompact: false });
     expect(res.tokensAfter).toBeGreaterThan(0);
     expect(events[0]).toMatchObject({
       warning_kind: "context_compaction_applied",
       trigger: "proactive",
-      tokens_before: 1234,
       reduced: true,
     });
-    expect(recorded[0]).toMatchObject({ trigger: "proactive", provider_kind: "pi", tokens_before: 1234, status: "succeeded" });
+    expect(recorded[0]).toMatchObject({ trigger: "proactive", provider_kind: "pi", status: "succeeded" });
+    expect(fixture.persistedCount()).toBe(1);
+    expect(fixture.handlerCount()).toBe(0);
   });
 
-  it("reports an applied compaction that did not reduce the built context", async () => {
+  it("cancels a non-reducing compaction before it is persisted", async () => {
     const warnings = [];
-    const session = fakeSession({ messages: [{ role: "user", content: "unchanged" }] });
+    const fixture = hookHarness({ sourceMessages: [userMessage("unchanged")] });
     const res = await tryCompact(
-      { compact: async () => ({ tokensBefore: 10 }) },
-      { trigger: "reactive_overflow", onEvent: () => {}, runtimeWarnings: warnings, session },
+      fixture.harness,
+      {
+        trigger: "reactive_overflow",
+        onEvent: () => {},
+        runtimeWarnings: warnings,
+        session: fixture.session,
+        policy: { keepRecentTokens: 4_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 0 },
+      },
     );
-    expect(res).toMatchObject({ applied: true, reduced: false });
+    expect(res).toMatchObject({ applied: false, reduced: false });
     expect(warnings).toContainEqual(expect.objectContaining({
       warning_kind: "context_compaction_not_reducible",
       trigger: "reactive_overflow",
     }));
+    expect(fixture.persistedCount()).toBe(0);
+    expect(fixture.handlerCount()).toBe(0);
+    expect(fixture.messages).toHaveLength(1);
+  });
+
+  it("skips a proactive compaction below the configured minimum savings", async () => {
+    const warnings = [];
+    const fixture = hookHarness();
+    const res = await tryCompact(fixture.harness, {
+      trigger: "proactive",
+      onEvent: () => {},
+      runtimeWarnings: warnings,
+      session: fixture.session,
+      policy: { keepRecentTokens: 4_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 500_000 },
+    });
+    expect(res.applied).toBe(false);
+    expect(warnings).toContainEqual(expect.objectContaining({
+      warning_kind: "context_compaction_insufficient_savings",
+      minimum_savings_tokens: 500_000,
+    }));
+    expect(fixture.persistedCount()).toBe(0);
+    expect(fixture.handlerCount()).toBe(0);
   });
 
   it("classifies a nothing-to-compact failure as a warning, not a throw", async () => {
     const warnings = [];
     const err = Object.assign(new Error("nothing to compact"), { code: "compaction" });
-    const harness = { compact: async () => { throw err; } };
-    const res = await tryCompact(harness, { trigger: "proactive", onEvent: () => {}, runtimeWarnings: warnings });
+    const fixture = hookHarness({ compactError: err });
+    const res = await tryCompact(fixture.harness, { trigger: "proactive", onEvent: () => {}, runtimeWarnings: warnings });
     expect(res).toEqual({
       applied: false,
       tokensBefore: null,
@@ -115,8 +265,8 @@ describe("tryCompact", () => {
       ["other", "context_compaction_failed"],
     ]) {
       const warnings = [];
-      const harness = { compact: async () => { throw Object.assign(new Error("x"), { code }); } };
-      await tryCompact(harness, { trigger: "reactive_overflow", onEvent: () => {}, runtimeWarnings: warnings });
+      const fixture = hookHarness({ compactError: Object.assign(new Error("x"), { code }) });
+      await tryCompact(fixture.harness, { trigger: "reactive_overflow", onEvent: () => {}, runtimeWarnings: warnings });
       kinds.push(warnings[0].warning_kind);
     }
     expect(kinds).toEqual([
@@ -124,6 +274,65 @@ describe("tryCompact", () => {
       "context_compaction_busy",
       "context_compaction_failed",
     ]);
+  });
+
+  it("maps summaryMaxTokens to Pi generation limits, including split-turn dual summaries", () => {
+    const normalReserve = piSummaryReserveTokens(5_000, false);
+    expect(Math.floor(normalReserve * 0.8)).toBeLessThanOrEqual(5_000);
+    expect(Math.floor((normalReserve + 1) * 0.8)).toBeGreaterThan(5_000);
+
+    const splitReserve = piSummaryReserveTokens(5_000, true);
+    const splitBudget = Math.floor(splitReserve * 0.8) + Math.floor(splitReserve * 0.5);
+    const nextSplitBudget = Math.floor((splitReserve + 1) * 0.8) + Math.floor((splitReserve + 1) * 0.5);
+    expect(splitBudget).toBeLessThanOrEqual(5_000);
+    expect(nextSplitBudget).toBeGreaterThan(5_000);
+  });
+
+  it("uses configured retention to change Pi's first-kept cut point", async () => {
+    const lowRetention = hookHarness();
+    const highRetention = hookHarness();
+    const lowRows = [];
+    const highRows = [];
+    await tryCompact(lowRetention.harness, {
+      trigger: "reactive_overflow",
+      onEvent: () => {},
+      runtimeWarnings: [],
+      session: lowRetention.session,
+      onCompactionRecorded: (row) => lowRows.push(row),
+      policy: { keepRecentTokens: 4_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 0 },
+    });
+    await tryCompact(highRetention.harness, {
+      trigger: "reactive_overflow",
+      onEvent: () => {},
+      runtimeWarnings: [],
+      session: highRetention.session,
+      onCompactionRecorded: (row) => highRows.push(row),
+      policy: { keepRecentTokens: 14_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 0 },
+    });
+    expect(lowRows[0].first_kept_entry_id).toBe("e3");
+    expect(highRows[0].first_kept_entry_id).toBe("e2");
+  });
+
+  it("keeps the combined generation caps within summaryMaxTokens for a split turn", async () => {
+    const fixture = hookHarness({
+      sourceMessages: [
+        userMessage("prior".repeat(8_000)),
+        assistantMessage("prior answer".repeat(4_000)),
+        userMessage("current".repeat(7_000)),
+        assistantMessage("current answer".repeat(4_000)),
+        userMessage("recent".repeat(4_000)),
+      ],
+    });
+    const result = await tryCompact(fixture.harness, {
+      trigger: "reactive_overflow",
+      onEvent: () => {},
+      runtimeWarnings: [],
+      session: fixture.session,
+      policy: { keepRecentTokens: 14_000, summaryMaxTokens: 3_000, compactionMinSavingsTokens: 0 },
+    });
+    expect(result.applied).toBe(true);
+    expect(fixture.generationLimits).toHaveLength(2);
+    expect(fixture.generationLimits.reduce((sum, limit) => sum + limit, 0)).toBeLessThanOrEqual(3_000);
   });
 });
 
@@ -150,10 +359,36 @@ describe("resolveLiveCompactionPolicy — window recognition", () => {
     });
     expect(policy.contextWindow).toBe(40_000);
   });
+
+  it("uses a persistent context-window override instead of inaccurate provider metadata", () => {
+    const policy = resolveLiveCompactionPolicy({
+      harness: { getModel: () => ({ id: "override-only", contextWindow: 128_000 }) },
+      runtime: { model: { id: "override-only", contextWindow: 128_000 } },
+      resolved: { reference: "pi:faux:override-only" },
+      settings: {},
+      contextWindowOverride: 272_000,
+    });
+    expect(policy).toMatchObject({
+      contextWindow: 272_000,
+      triggerTokens: 190_400,
+      keepRecentTokens: 20_000,
+      summaryMaxTokens: 10_880,
+      compactionMinSavingsTokens: 20_000,
+    });
+  });
 });
 
 describe("runProactiveCompaction — trigger math", () => {
-  const policy = (over = {}) => ({ enabled: true, contextWindow: 1_000, triggerTokens: 500, ...over });
+  const policy = (over = {}) => ({
+    enabled: true,
+    contextWindow: 1_000,
+    triggerTokens: 500,
+    keepRecentTokens: 4_000,
+    summaryMaxTokens: 2_000,
+    compactionMinSavingsTokens: 0,
+    fixedOverheadEnabled: true,
+    ...over,
+  });
 
   it("does nothing when the policy is disabled", async () => {
     const runState = freshRunState(fakeSession(), { policy: policy({ enabled: false }) });
@@ -168,7 +403,9 @@ describe("runProactiveCompaction — trigger math", () => {
 
   it("does not compact when the estimate is below the trigger", async () => {
     // tiny transcript, fixed overhead disabled → estimate well under 500.
-    const runState = freshRunState(fakeSession({ messages: [{ role: "user", content: "hi" }] }), { policy: policy() });
+    const runState = freshRunState(fakeSession({ messages: [{ role: "user", content: "hi" }] }), {
+      policy: policy({ fixedOverheadEnabled: false }),
+    });
     const harness = { waitForIdle: vi.fn(), compact: vi.fn(async () => ({ tokensBefore: 1 })) };
     await runProactiveCompaction(runState, {
       harness, systemPrompt: "s",
@@ -176,26 +413,31 @@ describe("runProactiveCompaction — trigger math", () => {
       tools: [], promptText: "hi", promptImages: [], reference: "pi:faux:m", onEvent: () => {}, runtimeWarnings: [],
     });
     expect(harness.compact).not.toHaveBeenCalled();
+    expect(runState.compaction.diagnostics).toMatchObject({
+      context_request_estimate_tokens: expect.any(Number),
+      context_fixed_overhead_tokens: expect.any(Number),
+      context_compaction_trigger_tokens: 500,
+    });
   });
 
   it("compacts, records diagnostics, and re-anchors the baseline when the estimate crosses the trigger", async () => {
     // Large fixed overhead pushes the estimate over triggerTokens.
-    const session = fakeSession({ messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "yo" }] });
-    const runState = freshRunState(session, { policy: policy() });
-    const harness = { waitForIdle: vi.fn(), compact: vi.fn(async () => ({ tokensBefore: 900 })) };
+    const fixture = hookHarness();
+    const runState = freshRunState(fixture.session, { policy: policy() });
     await runProactiveCompaction(runState, {
-      harness, systemPrompt: "s",
+      harness: fixture.harness, systemPrompt: "s",
       options: { settings: {} }, // fixed overhead ON
       tools: [{ name: "Bash", description: "x".repeat(4000), parameters: {} }],
       promptText: "hi", promptImages: [], reference: "pi:faux:m", onEvent: () => {}, runtimeWarnings: [],
     });
-    expect(harness.compact).toHaveBeenCalledTimes(1);
+    expect(fixture.harness.compact).toHaveBeenCalledTimes(1);
     expect(runState.compaction.applied).toBe(true);
     expect(runState.compaction.compactedThisRun).toBe(true);
     expect(runState.compaction.diagnostics.context_compaction_proactive).toBe(true);
-    expect(runState.compaction.diagnostics.context_compaction_tokens_before).toBe(900);
-    // re-anchored to the (2-message) compacted length.
-    expect(runState.sessionBaselineCount).toBe(2);
+    expect(runState.compaction.diagnostics.context_compaction_tokens_before).toBeGreaterThan(0);
+    expect(runState.compaction.diagnostics.context_request_estimate_tokens).toBeGreaterThan(500);
+    // Re-anchored to the compacted context length.
+    expect(runState.sessionBaselineCount).toBe(fixture.messages.length);
   });
 });
 
@@ -218,28 +460,22 @@ describe("runReactiveCompaction — overflow recovery", () => {
   });
 
   it("compacts once and re-prompts once on a fresh overflow", async () => {
-    const messages = [{ role: "user", content: "x".repeat(4000) }];
-    const runState = freshRunState(fakeSession({ messages }), { policy: { enabled: true } });
-    const captured = [];
-    const harness = {
-      waitForIdle: vi.fn(),
-      compact: vi.fn(async () => {
-        messages.splice(0, messages.length, { role: "user", content: "summary" });
-        return { tokensBefore: 5000 };
-      }),
-      prompt: vi.fn(async () => { captured.push("prompt"); }),
-      getModel: () => ({ id: "m", contextWindow: 8000 }),
-    };
+    const fixture = hookHarness();
+    const runState = freshRunState(fixture.session, {
+      // Reactive recovery accepts any positive reduction even when the
+      // proactive minimum is intentionally impossible to meet.
+      policy: { enabled: true, keepRecentTokens: 4_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 500_000 },
+    });
     const rerunState = { stopReason: "endTurn", lastAssistant: { content: [{ type: "text", text: "recovered" }] } };
     let capturedCalls = 0;
     const out = await runReactiveCompaction(runState, {
-      harness, runtime: { model: { id: "m" } }, resolved: { reference: "pi:faux:m" }, options: {},
+      harness: fixture.harness, runtime: { model: { id: "m" } }, resolved: { reference: "pi:faux:reactive-success" }, options: {},
       promptText: "hi", promptImages: [], reference: "pi:faux:m", onEvent: () => {}, runtimeWarnings: [],
       state: overflowState, runError: null,
       captureState: async () => { capturedCalls += 1; return rerunState; },
     });
-    expect(harness.compact).toHaveBeenCalledTimes(1);
-    expect(harness.prompt).toHaveBeenCalledTimes(1);
+    expect(fixture.harness.compact).toHaveBeenCalledTimes(1);
+    expect(fixture.harness.prompt).toHaveBeenCalledTimes(1);
     expect(runState.compaction.applied).toBe(true);
     expect(runState.compaction.diagnostics.context_compaction_reactive).toBe(true);
     expect(runState.compaction.diagnostics.context_compaction_reactive_attempted).toBe(true);
@@ -249,25 +485,60 @@ describe("runReactiveCompaction — overflow recovery", () => {
   });
 
   it("does not re-prompt when compaction leaves the built context unchanged", async () => {
-    const session = fakeSession({ messages: [{ role: "user", content: "unchanged" }] });
-    const runState = freshRunState(session, { policy: { enabled: true } });
+    const fixture = hookHarness({ sourceMessages: [userMessage("unchanged")] });
+    const runState = freshRunState(fixture.session, {
+      policy: { enabled: true, keepRecentTokens: 4_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 0 },
+    });
     const warnings = [];
-    const harness = {
-      waitForIdle: vi.fn(),
-      compact: vi.fn(async () => ({ tokensBefore: 5000 })),
-      prompt: vi.fn(),
-      getModel: () => ({ id: "m", contextWindow: 8000 }),
-    };
     const out = await runReactiveCompaction(runState, {
-      harness, runtime: { model: { id: "m" } }, resolved: { reference: "pi:faux:m" }, options: {},
+      harness: fixture.harness, runtime: { model: { id: "m" } }, resolved: { reference: "pi:faux:reactive-no-reduction" }, options: {},
       promptText: "hi", promptImages: [], reference: "pi:faux:m", onEvent: () => {}, runtimeWarnings: warnings,
       state: overflowState, runError: null, captureState: vi.fn(),
     });
-    expect(harness.compact).toHaveBeenCalledTimes(1);
-    expect(harness.prompt).not.toHaveBeenCalled();
+    expect(fixture.harness.compact).toHaveBeenCalledTimes(1);
+    expect(fixture.harness.prompt).not.toHaveBeenCalled();
     expect(runState.compaction.diagnostics.context_compaction_reduced).toBe(false);
     expect(warnings).toContainEqual(expect.objectContaining({ warning_kind: "context_compaction_not_reducible" }));
     expect(out.state).toBe(overflowState);
+  });
+
+  it("lowers a process-local ceiling to 90% of a failed estimate for a generic overflow", async () => {
+    const fixture = hookHarness({
+      sourceMessages: [
+        userMessage("a".repeat(100_000)),
+        userMessage("b".repeat(100_000)),
+        userMessage("c".repeat(100_000)),
+      ],
+    });
+    const reference = "pi:faux:generic-ceiling";
+    const runState = freshRunState(fixture.session, {
+      policy: { enabled: true, keepRecentTokens: 4_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 0 },
+    });
+    await runReactiveCompaction(runState, {
+      harness: fixture.harness,
+      runtime: { model: { id: "m", contextWindow: 128_000 } },
+      resolved: { reference },
+      options: {},
+      promptText: "hi",
+      promptImages: [],
+      reference,
+      onEvent: () => {},
+      runtimeWarnings: [],
+      state: overflowState,
+      runError: null,
+      captureState: async () => ({ stopReason: "endTurn", lastAssistant: null }),
+    });
+    const failedEstimate = runState.compaction.diagnostics.context_failed_request_estimate_tokens;
+    expect(runState.compaction.diagnostics.context_learned_window).toBe(Math.floor(failedEstimate * 0.90));
+    expect(runState.compaction.diagnostics.context_learned_window_source).toBe("generic_overflow");
+    const nextPolicy = resolveLiveCompactionPolicy({
+      harness: fixture.harness,
+      runtime: { model: { id: "m", contextWindow: 128_000 } },
+      resolved: { reference },
+      settings: {},
+      contextWindowOverride: 200_000,
+    });
+    expect(nextPolicy.contextWindow).toBe(Math.floor(failedEstimate * 0.90));
   });
 
   it("does not fire on a non-overflow error", async () => {

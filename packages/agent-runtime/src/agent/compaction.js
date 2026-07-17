@@ -35,10 +35,7 @@
  */
 
 const DEFAULT_CONTEXT_WINDOW = 128000;
-const DEFAULT_TRIGGER_RATIO = 0.85;
-const DEFAULT_KEEP_RECENT_TOKENS = 24000;
-const DEFAULT_SUMMARY_MAX_TOKENS = 16000;
-const DEFAULT_MIN_SAVINGS_TOKENS = 20000;
+const DEFAULT_TRIGGER_RATIO = 0.70;
 const DEFAULT_TOOL_PAYLOAD_COMPACTION_TRIGGER_CHARS = 0;
 const DEFAULT_TOOL_PRUNE_TRIGGER_TOKENS = 40000;
 // intelligence-ramp Phase 3: lifted from 16K/20K/12K. Mid-task tool reads
@@ -100,22 +97,43 @@ export function resolveAgentCompactionPolicy(settings = {}, model = {}) {
     0.2,
     0.95,
   );
-  const reserveTokens = Math.max(16000, Math.min(64000, Math.floor(contextWindow * 0.25)));
-  const ratioTrigger = Math.floor(contextWindow * triggerRatio);
-  const reserveTrigger = Math.max(1, contextWindow - reserveTokens);
+  const safetyHeadroom = clampInteger(contextWindow * 0.25, 16000, 16000, 96000);
+  // Add a tiny scale-aware epsilon before flooring so decimal ratios such as
+  // 0.70 do not lose a token to IEEE-754 representation (372000 * 0.70 is
+  // otherwise 260399.99999999997 in JavaScript).
+  const ratioTrigger = Math.floor((contextWindow * triggerRatio) + (Number.EPSILON * contextWindow));
+  const reserveTrigger = Math.max(1, contextWindow - safetyHeadroom);
+  const adaptiveKeepRecentTokens = clampInteger(contextWindow * 0.10, 4000, 4000, 20000);
+  const adaptiveSummaryMaxTokens = clampInteger(contextWindow * 0.04, 2000, 2000, 12000);
+  const adaptiveMinSavingsTokens = clampInteger(contextWindow * 0.10, 4000, 4000, 20000);
   return {
     enabled: settings.agent_compaction_enabled !== false,
     contextWindow,
     triggerRatio,
     triggerTokens: Math.min(ratioTrigger, reserveTrigger),
-    keepRecentTokens: clampInteger(settings.agent_compaction_keep_recent_tokens, DEFAULT_KEEP_RECENT_TOKENS, 4000, 200000),
-    summaryMaxTokens: clampInteger(settings.agent_compaction_summary_max_tokens, DEFAULT_SUMMARY_MAX_TOKENS, 1000, 64000),
+    keepRecentTokens: clampInteger(
+      settings.agent_compaction_keep_recent_tokens,
+      adaptiveKeepRecentTokens,
+      4000,
+      200000,
+    ),
+    summaryMaxTokens: clampInteger(
+      settings.agent_compaction_summary_max_tokens,
+      adaptiveSummaryMaxTokens,
+      1000,
+      64000,
+    ),
     // ON by default; the proactive fixed-overhead correction (system prompt +
     // tool schemas + per-turn message) is disabled only when explicitly false.
     // Read by the compaction driver off the resolved policy so it never has to
     // re-sniff the raw settings/policy inputs.
     fixedOverheadEnabled: settings.agent_compaction_fixed_overhead_enabled !== false,
-    compactionMinSavingsTokens: clampInteger(settings.agent_compaction_min_savings_tokens, DEFAULT_MIN_SAVINGS_TOKENS, 0, 500000),
+    compactionMinSavingsTokens: clampInteger(
+      settings.agent_compaction_min_savings_tokens,
+      adaptiveMinSavingsTokens,
+      0,
+      500000,
+    ),
     toolPayloadCompactionTriggerChars: clampInteger(
       settings.agent_tool_payload_compaction_trigger_chars,
       DEFAULT_TOOL_PAYLOAD_COMPACTION_TRIGGER_CHARS,

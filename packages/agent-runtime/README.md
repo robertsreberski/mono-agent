@@ -825,19 +825,34 @@ Hosts that don't supply `persistArtifact` get the truncation summary but no on-d
 The sole pi bridge runs on pi-agent-core's native `AgentHarness`. pi performs **no**
 automatic in-loop compaction, so the bridge drives it: before each turn it estimates the
 running model's context usage and calls `AgentHarness.compact()` when near the window
-(proactive), and if a turn still overflows it compacts once and re-prompts only when
-the built session context was reduced (reactive recovery). The context window auto-tracks the model actually serving the request
-(`harness.getModel()`), self-correcting from any real ceiling stated in an overflow error.
+(proactive), and if a turn still overflows it compacts once and re-prompts exactly once
+only after a rebuilt-context preview proves positive reduction (reactive recovery).
+The bridge installs a one-shot `session_before_compact` hook around the public harness
+operation, using Pi's public `prepareCompaction()` and `compact()` primitives so the
+harness still owns phase changes, persistence, and events. Non-reducing previews and
+proactive savings below policy are cancelled before persistence.
+
+The context window auto-tracks the model actually serving the request
+(`harness.getModel()`). Numeric provider limits become learned ceilings; generic
+overflow temporarily lowers the process-local ceiling to 90% of the failed request
+estimate. A configured `contextWindowOverride` provides a persistent metadata
+correction, while learned evidence may still lower it.
 Runs report `context_compaction_applied: true` (fired), `false` (enabled but not needed),
-or `null` (disabled), plus reactive-attempted, tokens-after, and reduced diagnostics.
+or `null` (disabled), plus request-estimate, fixed-overhead, reactive-attempted,
+tokens-after, and reduced diagnostics.
 Persistent overflow is classified as `context_limit`, allowing the fallback router to
 try the next configured model. The other backends manage their windows per their own behavior.
 (`docs/reference/feature-registry.md` is the source of truth for this row.)
 
-`resolveAgentCompactionPolicy(...)` (the `agent_compaction_*` settings: trigger ratio,
-keep-recent, enable/disable) and the `onCompactionRecorded(record)` host callback (fired
-on each automatic compaction) are exported from
-`@mono-agent/agent-runtime/agent/compaction.js` and consumed by the pi bridge.
+Hosts pass the typed `RuntimeCompactionPolicy` through `runOptions.compaction`; the
+deprecated programmatic `agent_compaction_*` settings remain a compatibility fallback.
+The config-first host exposes this as `runtime.compaction.*` plus matching
+`MONO_AGENT_COMPACTION_*` variables. Omitted values resolve against effective window
+`W`: trigger ratio `0.70`; safety headroom `clamp(floor(W × 0.25), 16000, 96000)`;
+retained context and minimum proactive savings `clamp(floor(W × 0.10), 4000, 20000)`;
+summary output `clamp(floor(W × 0.04), 2000, 12000)`. Explicit values retain their
+scalar validation bounds. `onCompactionRecorded(record)` fires only for accepted,
+persisted automatic compactions.
 
 ## Advanced exports
 
