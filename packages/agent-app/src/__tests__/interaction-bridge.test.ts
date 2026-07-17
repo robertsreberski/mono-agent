@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
@@ -10,6 +10,7 @@ import {
   startInteractionBridge,
   type ChannelInteractionSink,
   type InteractionBridgeHandle,
+  type InteractionBridgeOptions,
 } from "../interaction-bridge.js";
 
 let bridge: InteractionBridgeHandle | undefined;
@@ -20,7 +21,7 @@ afterEach(async () => {
 });
 
 async function startBridge(
-  options: { askTimeoutMs?: number; now?: () => Date } = {},
+  options: Omit<InteractionBridgeOptions, "host" | "port"> = {},
 ): Promise<InteractionBridgeHandle> {
   bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, ...options });
   return bridge;
@@ -113,6 +114,113 @@ describe("interaction bridge", () => {
       headers: { authorization: `Bearer ${bridge.token}` },
     });
     expect(response.status).toBe(404);
+  });
+
+  it("queues destination history through a run-scoped channel capability without waiting for the append", async () => {
+    const records: Array<{ conversationId: string; text: string; idempotencyKey: string }> = [];
+    let finishRecord!: () => void;
+    const recordGate = new Promise<void>((resolve) => { finishRecord = resolve; });
+    const handle = await startBridge({
+      recordDeliveryHistory: async (input) => {
+        records.push(input);
+        await recordGate;
+        return { recorded: true };
+      },
+    });
+    const capability = handle.issueDeliveryHistoryCapability({
+      runId: "run-history-1",
+      producerConversationId: "telegram:42",
+      allowedChannels: ["telegram"],
+    });
+    const requestHeaders = {
+      authorization: `Bearer ${capability.token}`,
+      "content-type": "application/json",
+    };
+    const body = {
+      conversationId: "telegram:42",
+      text: "Exact delivered text",
+      idempotencyKey: "adapter-send:telegram:42:7",
+    };
+
+    const accepted = await fetch(new URL("/v1/delivery-history", capability.url), {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify(body),
+    });
+    expect(accepted.status).toBe(202);
+    expect(await accepted.json()).toEqual({ accepted: true, conversationId: "telegram:42" });
+    expect(records).toEqual([body]);
+
+    const wrongChannel = await fetch(new URL("/v1/delivery-history", capability.url), {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify({ ...body, conversationId: "slack:C1:1.1" }),
+    });
+    expect(wrongChannel.status).toBe(403);
+
+    const mismatchedReceipt = await fetch(new URL("/v1/delivery-history", capability.url), {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify({ ...body, idempotencyKey: "adapter-send:telegram:99:7" }),
+    });
+    expect(mismatchedReceipt.status).toBe(400);
+
+    const masterAttempt = await fetch(new URL("/v1/delivery-history", handle.url), {
+      method: "POST",
+      headers: headers(handle),
+      body: JSON.stringify(body),
+    });
+    expect(masterAttempt.status).toBe(401);
+
+    capability.release();
+    const revoked = await fetch(new URL("/v1/delivery-history", capability.url), {
+      method: "POST",
+      headers: requestHeaders,
+      body: JSON.stringify(body),
+    });
+    expect(revoked.status).toBe(401);
+    finishRecord();
+  });
+
+  it("waits for cross-conversation history before acknowledging a posted-message alias", async () => {
+    let finishRecord!: () => void;
+    let recordStarted = false;
+    const recordGate = new Promise<void>((resolve) => { finishRecord = resolve; });
+    const handle = await startBridge({
+      recordDeliveryHistory: async () => {
+        recordStarted = true;
+        await recordGate;
+        return { recorded: true };
+      },
+    });
+    const capability = handle.issueDeliveryHistoryCapability({
+      runId: "run-history-cross-conversation",
+      producerConversationId: "cron:scan",
+      allowedChannels: ["slack"],
+    });
+    let settled = false;
+    const pending = fetch(new URL("/v1/delivery-history", capability.url), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${capability.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        conversationId: "slack:C1:171.2",
+        text: "Exact delivered text",
+        idempotencyKey: "adapter-send:slack:C1:171.2",
+      }),
+    }).then((response) => {
+      settled = true;
+      return response;
+    });
+
+    await vi.waitFor(() => expect(recordStarted).toBe(true));
+    expect(settled).toBe(false);
+    finishRecord();
+    const response = await pending;
+    expect(response.status).toBe(202);
+    capability.release();
   });
 
   it("posts the question through the channel sink and resolves the long-poll with the user's answer", async () => {

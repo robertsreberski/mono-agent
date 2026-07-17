@@ -1684,6 +1684,47 @@ describe("startMonoAgentApp", () => {
     expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
   });
 
+  it("starts the interaction bridge for a send tool and gives its child only a run-scoped history bearer", async () => {
+    await writeConfig({
+      ...baseConfig(),
+      tools: { allowedTools: ["TelegramSendMessage"], disallowedTools: [] },
+      telegram: { enabled: true, botToken: "test-token", allowedChatIds: ["42"] },
+    });
+    const calls: RuntimeRunOptions[] = [];
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        calls.push(options);
+        return { text: "ok" };
+      },
+    };
+    const driver: ChannelDriver = {
+      id: "probe" as never,
+      label: "Probe",
+      async loadConfig() { return { enabled: true }; },
+      isConfigError() { return false; },
+      async start(input) {
+        await input.responder.respond({
+          conversationId: "cron:send-history",
+          text: "send the update",
+          abortSignal: new AbortController().signal,
+        }, { append: async () => undefined });
+        return { summary: {}, stop: async () => undefined };
+      },
+    };
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver], runtime });
+    try {
+      const server = calls[0]?.mcpServers?.[ADAPTER_SEND_TOOLS_MCP_SERVER_NAME] as
+        | { env?: Record<string, string> }
+        | undefined;
+      expect(server?.env?.MONO_AGENT_ADAPTER_TOOLS_HISTORY_BRIDGE_URL).toMatch(/^http:\/\/127\.0\.0\.1:/u);
+      expect(server?.env?.MONO_AGENT_ADAPTER_TOOLS_HISTORY_BRIDGE_TOKEN).toBeTruthy();
+      expect(server?.env?.MONO_AGENT_INTERACTION_BRIDGE_TOKEN).toBeUndefined();
+    } finally {
+      await app.stop();
+    }
+  });
+
   it("starts the interaction bridge when TelegramAskButtons is allowed", async () => {
     await writeConfig({
       ...baseConfig(),
