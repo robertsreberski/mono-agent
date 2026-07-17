@@ -49,8 +49,9 @@ selection is exclusive—an LM Studio failure never falls back to Ollama or Open
 Fetch timeouts (`AbortError`) and structurally identified network `TypeError`
 failures from all three providers surface as `MemorySearchError` with code
 `embedding_request_failed` and retain the original error as `cause`. Network
-classification requires a known transport code on an `Error` cause; unstructured
-`TypeError` and other adapter failures retain their identity.
+classification requires a known transport code in a bounded `Error` cause graph,
+including aggregate failures; unstructured `TypeError` and other adapter failures
+retain their identity.
 The config-first guided wizard and provider-native model discovery/probe live in
 `@mono-agent/agent-app`, not this package.
 

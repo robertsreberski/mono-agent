@@ -192,9 +192,9 @@ wrapped in a circuit breaker so a slow or failing embedding service cannot stall
 
 - A timeout (`AbortError`) or structurally identified network `TypeError` is reported as
   `MemorySearchError` with code `embedding_request_failed`, retaining the original error as
-  `cause`. Network classification requires a known transport code on an `Error` cause;
-  unstructured `TypeError`, other adapter failures, and response-validation failures preserve
-  their existing identity and taxonomy.
+  `cause`. Network classification requires a known transport code in a bounded `Error` cause
+  graph, including aggregate failures; unstructured `TypeError`, other adapter failures, and
+  response-validation failures preserve their existing identity and taxonomy.
 
 - After **3 consecutive failures** the breaker trips **OPEN** and fails fast, throwing
   `embedding_circuit_open` instead of waiting on the unhealthy backend.
