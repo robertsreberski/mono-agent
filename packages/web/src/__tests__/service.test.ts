@@ -38,6 +38,34 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<voi
 }
 
 describe("WebService", () => {
+  it("preserves operator context-window metadata through discovery, storage, and bootstrap", async () => {
+    const service = await createService();
+
+    expect((await service.bootstrap()).agents[0]?.modelOptions?.["provider/default"]?.contextWindow)
+      .toBe(128_000);
+
+    await service.stop();
+  });
+
+  it("publishes persisted pin changes through bootstrap and agent invalidation events", async () => {
+    const service = await createService();
+    const events: unknown[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "agents.changed") events.push(event.payload);
+    });
+
+    expect(service.patchAgent("agent-one", { pinned: true })).toMatchObject({ sourceId: "agent-one", pinned: true });
+    expect((await service.bootstrap()).agents[0]).toMatchObject({ sourceId: "agent-one", pinned: true });
+    expect(events).toEqual([
+      { agents: [expect.objectContaining({ sourceId: "agent-one", pinned: true })] },
+    ]);
+    await service.refreshAgents();
+    expect((await service.bootstrap()).agents[0]).toMatchObject({ sourceId: "agent-one", pinned: true });
+    expect(() => service.patchAgent("missing", { pinned: true })).toThrowError(expect.objectContaining({ code: "agent_not_found" }));
+    unsubscribe();
+    await service.stop();
+  });
+
   it("keeps a losing second service from mutating live turns", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

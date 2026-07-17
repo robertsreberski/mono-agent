@@ -1,6 +1,13 @@
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useConsoleStore } from "../console-store";
+import { effortLevelsForAgentModel, useConsoleStore } from "../console-store";
+import { conversationConsoleUsage } from "../usage";
+import { ContextDisplay } from "./assistant-ui/ContextDisplay";
+import {
+  ModelSelector,
+  type ModelSelectorEffortOption,
+  type ModelSelectorOption,
+} from "./assistant-ui/ModelSelector";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
 import { Composer } from "./Composer";
 import { Icon } from "./Icon";
@@ -76,7 +83,7 @@ function ConversationTitle() {
   );
 }
 
-function ModelControls() {
+export function ModelControls() {
   const {
     model,
     effort,
@@ -88,84 +95,100 @@ function ModelControls() {
     selectedAgent,
     detail,
   } = useConsoleStore();
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const disabled = selectedThread?.runState.status === "running";
-  const toggleReasoning = selectedAgent?.modelOptions?.[model]?.reasoningMode === "toggle";
-  const metrics = useMemo(() => {
-    for (let messageIndex = (detail?.messages.length ?? 0) - 1; messageIndex >= 0; messageIndex -= 1) {
-      const message = detail?.messages[messageIndex];
-      if (!message) continue;
-      for (let partIndex = message.parts.length - 1; partIndex >= 0; partIndex -= 1) {
-        const part = message.parts[partIndex];
-        if (part?.type !== "telemetry" || part.event !== "usage_update") continue;
-        const data = part.data && typeof part.data === "object"
-          ? part.data as Record<string, unknown>
-          : {};
-        const tokens = data.tokens && typeof data.tokens === "object"
-          ? data.tokens as Record<string, unknown>
-          : data;
-        const input = finite(tokens.input ?? tokens.input_tokens ?? tokens.inputTokens);
-        const output = finite(tokens.output ?? tokens.output_tokens ?? tokens.outputTokens);
-        const cost = finite(data.cumulativeUsd ?? data.totalUsd ?? data.cost_usd);
-        if (input === undefined && output === undefined && cost === undefined) return null;
-        return { input, output, cost };
-      }
-    }
-    return null;
-  }, [detail?.messages]);
+  const usage = useMemo(() => conversationConsoleUsage(detail), [detail]);
+  const effectiveModel = model || selectedAgent?.defaultModel || modelOptions[0] || "";
+  const usageModel = usage?.model ?? effectiveModel;
+  const contextWindow = usageModel
+    ? selectedAgent?.modelOptions?.[usageModel]?.contextWindow
+    : undefined;
+
+  useEffect(() => {
+    const openSettings = () => setSettingsOpen(true);
+    window.addEventListener("mono-agent:run-settings", openSettings);
+    return () => {
+      window.removeEventListener("mono-agent:run-settings", openSettings);
+    };
+  }, []);
+
+  const selectorModels = useMemo<readonly ModelSelectorOption[]>(() => {
+    if (!selectedAgent) return [];
+    const effortChoices = (reference: string): readonly ModelSelectorEffortOption[] => {
+      const effectiveReference = reference || selectedAgent.defaultModel || modelOptions[0] || "";
+      const toggle = selectedAgent.modelOptions?.[effectiveReference]?.reasoningMode === "toggle";
+      const levels = effortLevelsForAgentModel(selectedAgent, effectiveReference);
+      if (levels.length === 0) return [];
+      return [
+        { id: "", name: "Automatic" },
+        ...levels.map((level) => ({
+          id: level,
+          name: toggle
+            ? level === "none" ? "Off" : "On"
+            : effortName(level),
+        })),
+      ];
+    };
+    return [
+      {
+        id: "",
+        name: "Automatic model",
+        description: selectedAgent.defaultModel
+          ? `Agent default · ${selectedAgent.modelOptions?.[selectedAgent.defaultModel]?.label ?? selectedAgent.defaultModel}`
+          : "Use the agent default",
+        efforts: effortChoices(""),
+      },
+      ...modelOptions.map((reference) => ({
+        id: reference,
+        name: selectedAgent.modelOptions?.[reference]?.label ?? reference,
+        description: reference,
+        efforts: effortChoices(reference),
+      })),
+    ];
+  }, [modelOptions, selectedAgent]);
+
+  const hasSettings = modelOptions.length > 0 || effortOptions.length > 0;
   return (
     <div className="model-controls" aria-label="Run settings">
-      {metrics && (
-        <span className="run-metrics" title="Latest turn usage">
-          {metrics.input !== undefined && <span>↑{compactNumber(metrics.input)}</span>}
-          {metrics.output !== undefined && <span>↓{compactNumber(metrics.output)}</span>}
-          {metrics.cost !== undefined && <span>${metrics.cost.toFixed(metrics.cost < 0.01 ? 4 : 2)}</span>}
-        </span>
+      {usage && (
+        <ContextDisplay
+          usage={{
+            input: usage.input,
+            cachedInput: usage.cachedInput,
+            cacheCreation: usage.cacheCreation,
+            output: usage.output,
+            reasoning: usage.reasoning,
+            cost: usage.cost,
+          }}
+          contextWindow={contextWindow}
+        />
       )}
-      {modelOptions.length > 0 && (
-        <label className="compact-select">
-          <span className="sr-only">Model</span>
-          <select value={model} onChange={(event) => setModel(event.target.value)} disabled={disabled}>
-            <option value="">Provider default</option>
-            {modelOptions.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-          <Icon name="arrow-down" size={13} />
-        </label>
-      )}
-      {effortOptions.length > 0 && (
-        <label className="compact-select effort-select">
-          <span className="sr-only">Reasoning effort</span>
-          <select value={effort} onChange={(event) => setEffort(event.target.value)} disabled={disabled}>
-            <option value="">Provider default</option>
-            {effortOptions.map((option) => (
-              <option key={option} value={option}>
-                {toggleReasoning
-                  ? option === "none"
-                    ? "thinking off"
-                    : "thinking on"
-                  : option}
-              </option>
-            ))}
-          </select>
-          <Icon name="arrow-down" size={13} />
-        </label>
+      {hasSettings && (
+        <ModelSelector
+          models={selectorModels}
+          value={model}
+          effort={effort}
+          onValueChange={setModel}
+          onEffortChange={setEffort}
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          disabled={disabled}
+        />
       )}
     </div>
   );
 }
 
-const finite = (value: unknown): number | undefined =>
-  typeof value === "number" && Number.isFinite(value) ? value : undefined;
-
-const compactNumber = (value: number): string =>
-  value >= 1_000_000
-    ? `${Math.round((value / 1_000_000) * 10) / 10}m`
-    : value >= 1_000
-      ? `${Math.round((value / 1_000) * 10) / 10}k`
-      : String(value);
+const effortName = (effort: string): string => ({
+  none: "Off",
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+  ultra: "Ultra",
+}[effort] ?? effort);
 
 function EmptyConversation() {
   const { selectedAgent, createThread, selectedThread } = useConsoleStore();

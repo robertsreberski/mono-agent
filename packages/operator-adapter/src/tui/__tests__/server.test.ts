@@ -134,7 +134,12 @@ describe("startTuiAdapter", () => {
         modelOptions: {
           // A toggle-reasoning model (mode, no graded levels) and an effort model
           // (mode + levels) — both pass through /v1/info verbatim.
-          "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
+          "pi:ollama:qwen3.6": {
+            reasoning: true,
+            reasoningMode: "toggle",
+            label: "qwen3.6",
+            contextWindow: 131_072,
+          },
           "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
         },
       },
@@ -149,7 +154,12 @@ describe("startTuiAdapter", () => {
       model: "pi:ollama:qwen3.6",
       models: ["pi:ollama:qwen3.6", "pi:lmstudio:qwen3-8b"],
       modelOptions: {
-        "pi:ollama:qwen3.6": { reasoning: true, reasoningMode: "toggle", label: "qwen3.6" },
+        "pi:ollama:qwen3.6": {
+          reasoning: true,
+          reasoningMode: "toggle",
+          label: "qwen3.6",
+          contextWindow: 131_072,
+        },
         "pi:lmstudio:qwen3-8b": { effortLevels: ["low", "medium", "high"], reasoning: true, reasoningMode: "effort", label: "qwen3-8b" },
       },
     });

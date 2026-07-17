@@ -67,6 +67,38 @@ describe("convertWebMessage", () => {
       },
     ]);
   });
+
+  it("preserves interleaved reasoning, tools, telemetry, and answer parts", () => {
+    const converted = convertWebMessage(
+      message({
+        role: "assistant",
+        status: "running",
+        parts: [
+          { type: "reasoning", text: "Inspecting" },
+          {
+            type: "tool-call",
+            toolCallId: "tool-1",
+            toolName: "inspect",
+            args: { depth: 2 },
+            result: { ok: true },
+            status: "complete",
+          },
+          { type: "telemetry", event: "usage_update", data: { tokens: { input: 10 } } },
+          { type: "text", text: "Ready" },
+        ],
+      }),
+    );
+
+    expect(Array.isArray(converted.content)).toBe(true);
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content.map((part) => part.type)).toEqual([
+      "reasoning",
+      "tool-call",
+      "data-telemetry",
+      "text",
+    ]);
+    expect(converted.status).toEqual({ type: "running" });
+  });
 });
 
 describe("runtime capability gates", () => {

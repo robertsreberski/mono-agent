@@ -17,7 +17,9 @@ export type IconName =
   | "restore"
   | "search"
   | "send"
+  | "settings"
   | "spark"
+  | "star"
   | "stop"
   | "threads";
 
@@ -72,7 +74,16 @@ const paths: Record<IconName, React.ReactNode> = {
     </>
   ),
   send: <path d="m4 4 17 8-17 8 3-8zM7 12h14" />,
+  settings: (
+    <>
+      <path d="M4 7h10M18 7h2M4 17h2M10 17h10M4 12h4M12 12h8" />
+      <circle cx="16" cy="7" r="2" />
+      <circle cx="8" cy="17" r="2" />
+      <circle cx="10" cy="12" r="2" />
+    </>
+  ),
   spark: <path d="M12 2c.6 5.4 4.6 9.4 10 10-5.4.6-9.4 4.6-10 10-.6-5.4-4.6-9.4-10-10 5.4-.6 9.4-4.6 10-10z" />,
+  star: <path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z" />,
   stop: <rect x="6" y="6" width="12" height="12" rx="2" />,
   threads: (
     <>

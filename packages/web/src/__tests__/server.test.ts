@@ -237,6 +237,46 @@ describe("web HTTP server", () => {
     expect((await json(archived)).thread).toMatchObject({ id: thread.id });
   });
 
+  it("validates and persists agent pins with pinned-first bootstrap ordering", async () => {
+    const first = fakeDiscoveredAgent();
+    const second = fakeDiscoveredAgent({
+      source: { ...first.source, sourceId: "agent-two", label: "Agent Two" },
+    });
+    const { baseUrl } = await start({
+      host: "127.0.0.1",
+      discoverImpl: async () => [first, second],
+    });
+    const headers = { "content-type": "application/json" };
+
+    const invalid = await fetch(`${baseUrl}/api/v1/agents/agent-two`, {
+      method: "PATCH", headers, body: JSON.stringify({ pinned: "yes" }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(await json(invalid)).toMatchObject({ error: { code: "invalid_request" } });
+    const missing = await fetch(`${baseUrl}/api/v1/agents/missing`, {
+      method: "PATCH", headers, body: JSON.stringify({ pinned: true }),
+    });
+    expect(missing.status).toBe(404);
+    expect(await json(missing)).toMatchObject({ error: { code: "agent_not_found" } });
+
+    const pinned = await fetch(`${baseUrl}/api/v1/agents/agent-two`, {
+      method: "PATCH", headers, body: JSON.stringify({ pinned: true }),
+    });
+    expect(pinned.status).toBe(200);
+    expect(await json(pinned)).toMatchObject({ agent: { sourceId: "agent-two", pinned: true } });
+    const bootstrap = await json(await fetch(`${baseUrl}/api/v1/bootstrap`)) as { agents: Array<{ sourceId: string; pinned: boolean }> };
+    expect(bootstrap.agents.map(({ sourceId, pinned: isPinned }) => ({ sourceId, pinned: isPinned }))).toEqual([
+      { sourceId: "agent-two", pinned: true },
+      { sourceId: "agent-one", pinned: false },
+    ]);
+
+    const unpinned = await fetch(`${baseUrl}/api/v1/agents/agent-two`, {
+      method: "PATCH", headers, body: JSON.stringify({ pinned: false }),
+    });
+    expect(unpinned.status).toBe(200);
+    expect(await json(unpinned)).toMatchObject({ agent: { sourceId: "agent-two", pinned: false } });
+  });
+
   it("caps SSE clients and permits reconnect/bootstrap semantics", async () => {
     const { baseUrl } = await start({ host: "127.0.0.1" });
     const streams = await Promise.all(Array.from({ length: 64 }, async () => fetch(`${baseUrl}/api/v1/events`)));

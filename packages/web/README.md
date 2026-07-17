@@ -13,7 +13,8 @@ Category: `operator-surface`
 - Discover local agents through the shared trace-source registry and probe their
   loopback operator endpoints.
 - Persist agents, threads, messages, structured reasoning/tool/telemetry parts,
-  revisions, turns, and attachments under `~/.mono-agent/web`.
+  revisions, turns, attachments, and agent pin preferences under
+  `~/.mono-agent/web`.
 - Keep an upstream turn running when a browser reloads or disconnects, and expose
   state invalidations over SSE so any connected browser can catch up.
 - Accept browser-selected files through bounded staged uploads and forward the
@@ -45,6 +46,23 @@ Tailscale DNS name); suffix wildcards are intentionally not trusted. When a
 managed agent protects its loopback operator endpoint, discovery reads only
 `MONO_AGENT_TUI_API_KEY` from that agent's attested, owner-owned dotenv file.
 
+On desktop, drag the agent rail's right edge to reveal full agent names. The
+resize separator is keyboard-operable, and its width is remembered by that
+browser so each device can keep an appropriate layout. Pin or unpin an agent
+with its star control in the desktop rail or mobile agent picker. Pins are
+stored by the web service rather than in browser storage, so the same favorites
+appear over localhost, LAN, and Tailscale; pinned agents sort before the
+remaining discovered agents.
+
+The assistant-ui run-settings popover combines searchable model selection with
+the selected model's supported reasoning-effort choices and becomes a
+viewport-safe bottom sheet on narrow screens. Usage telemetry remains internal
+and is summarized through a context display that accumulates the conversation's
+newest per-turn snapshots; it reports a percentage only when the agent advertises
+a trustworthy context-window size. Structured reasoning is grouped into a
+stream-aware disclosure without reordering adjacent tool or answer parts.
+Typing `/` in an empty composer opens the available command triggers.
+
 ## Public API
 
 <!-- public-api-inventory:start -->
@@ -61,6 +79,7 @@ DEFAULT_WEB_HOST
 DEFAULT_WEB_PORT
 DiscoverOperatorAgentsOptions
 DiscoveredOperatorAgent
+PatchWebAgentInput
 PatchWebThreadInput
 StartWebServerOptions
 StartWebTurnInput
@@ -112,7 +131,7 @@ the actual bound address/port plus idempotent `stop()` and `close()` methods.
 
 The browser API is rooted at `/api/v1`:
 
-- `GET /bootstrap` and `GET/PATCH /threads/:id`
+- `GET /bootstrap`, `PATCH /agents/:id`, and `GET/PATCH /threads/:id`
 - `POST /threads`, `/threads/:id/turns`, and `/threads/:id/cancel`
 - `POST /uploads`, `PUT/GET /uploads/:id/content`, and `DELETE /uploads/:id`
 - `GET /events` (SSE)
@@ -121,11 +140,15 @@ The browser API is rooted at `/api/v1`:
 
 ## Dependency Boundary
 
-Depends only on the `core` `@mono-agent/agent-contracts` and
-`@mono-agent/config` packages and the `observability` trace-source registry,
-plus Express. Running agents are reached
-over their loopback HTTP operator endpoints; this package does not import a
-communication adapter or another operator surface.
+The server depends only on the `core` `@mono-agent/agent-contracts` and
+`@mono-agent/config` packages, the `observability` trace-source registry, and
+Express. Its compiled browser bundle additionally contains the production graph
+from the isolated `webapp` lockfile: assistant-ui, Base UI, cmdk, React, and
+Workbox plus their transitive dependencies. The repository advisory and license
+gates audit that nested production graph separately because it ships inside this
+package even though it is not part of the root pnpm workspace. Running agents
+are reached over their loopback HTTP operator endpoints; this package does not
+import a communication adapter or another operator surface.
 
 ## What This Package Does Not Own
 

@@ -24,6 +24,7 @@ interface AgentRow {
   source_id: string;
   label: string;
   status: string;
+  pinned: number;
   health: string | null;
   supports_attachments: number;
   models_json: string | null;
@@ -218,13 +219,25 @@ export class WebStore {
   }
 
   listAgents(): WebAgentSummary[] {
-    const rows = this.database.prepare("SELECT * FROM agents ORDER BY label COLLATE NOCASE, source_id").all() as unknown as AgentRow[];
+    const rows = this.database.prepare(agentSelectSql("ORDER BY pinned DESC, a.label COLLATE NOCASE, a.source_id")).all() as unknown as AgentRow[];
     return rows.map(mapAgent);
   }
 
   getAgent(sourceId: string): WebAgentSummary | undefined {
-    const row = this.database.prepare("SELECT * FROM agents WHERE source_id = ?").get(sourceId) as unknown as AgentRow | undefined;
+    const row = this.database.prepare(agentSelectSql("WHERE a.source_id = ?")).get(sourceId) as unknown as AgentRow | undefined;
     return row === undefined ? undefined : mapAgent(row);
+  }
+
+  setAgentPinned(sourceId: string, pinned: boolean): WebAgentSummary {
+    if (this.getAgent(sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
+    }
+    const key = agentPinSettingKey(sourceId);
+    if (pinned) this.setSetting(key, "1");
+    else this.database.prepare("DELETE FROM settings WHERE key = ?").run(key);
+    const agent = this.getAgent(sourceId);
+    if (agent === undefined) throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
+    return agent;
   }
 
   createThread(sourceId: string): WebThread {
@@ -860,6 +873,22 @@ function threadSelectSql(suffix: string): string {
   `;
 }
 
+function agentSelectSql(suffix: string): string {
+  return `
+    SELECT a.*,
+           CASE WHEN EXISTS (
+             SELECT 1 FROM settings s
+             WHERE s.key = 'agent_pin:' || a.source_id AND s.value = '1'
+           ) THEN 1 ELSE 0 END AS pinned
+    FROM agents a
+    ${suffix}
+  `;
+}
+
+function agentPinSettingKey(sourceId: string): string {
+  return `agent_pin:${sourceId}`;
+}
+
 function mapAgent(row: AgentRow): WebAgentSummary {
   const models = parseStringArray(row.models_json);
   const efforts = parseStringArray(row.efforts_json);
@@ -868,6 +897,7 @@ function mapAgent(row: AgentRow): WebAgentSummary {
     sourceId: row.source_id,
     label: row.label,
     status: row.status === "online" || row.status === "degraded" ? row.status : "offline",
+    pinned: row.pinned === 1,
     ...(row.health === null ? {} : { health: row.health }),
     supportsAttachments: row.supports_attachments === 1,
     ...(models === undefined ? {} : { models }),

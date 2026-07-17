@@ -24,7 +24,13 @@ describe("OperatorClient", () => {
         model: "p/m",
         effort: "high",
         models: ["p/m"],
-        modelOptions: { "p/m": { effortLevels: ["low", "high"], reasoning: true } },
+        modelOptions: {
+          "p/m": {
+            effortLevels: ["low", "high"],
+            reasoning: true,
+            contextWindow: 128_000,
+          },
+        },
         capabilities: { attachments: true },
       })) as typeof fetch,
     });
@@ -34,8 +40,40 @@ describe("OperatorClient", () => {
       model: "p/m",
       effort: "high",
       models: ["p/m"],
-      modelOptions: { "p/m": { effortLevels: ["low", "high"], reasoning: true } },
+      modelOptions: {
+        "p/m": {
+          effortLevels: ["low", "high"],
+          reasoning: true,
+          contextWindow: 128_000,
+        },
+      },
       supportsAttachments: true,
+    });
+  });
+
+  it("drops non-positive and non-integral context-window metadata", async () => {
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/tui",
+      fetchImpl: (async () => Response.json({
+        schema: 1,
+        modelOptions: {
+          zero: { contextWindow: 0 },
+          negative: { contextWindow: -1 },
+          fractional: { contextWindow: 4_096.5 },
+          text: { contextWindow: "8192" },
+          valid: { contextWindow: 8_192 },
+        },
+      })) as typeof fetch,
+    });
+
+    await expect(client.info()).resolves.toMatchObject({
+      modelOptions: {
+        zero: {},
+        negative: {},
+        fractional: {},
+        text: {},
+        valid: { contextWindow: 8_192 },
+      },
     });
   });
 

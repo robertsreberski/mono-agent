@@ -1,4 +1,5 @@
 import type {
+  AgentSummary,
   Bootstrap,
   StartTurnInput,
   ThreadDetail,
@@ -68,6 +69,14 @@ export const api = {
       body: JSON.stringify({ sourceId }),
     });
     return result.thread;
+  },
+
+  patchAgent: async (sourceId: string, pinned: boolean) => {
+    const result = await request<{ agent: AgentSummary }>(
+      `/api/v1/agents/${encodeURIComponent(sourceId)}`,
+      { method: "PATCH", body: JSON.stringify({ pinned }) },
+    );
+    return result.agent;
   },
 
   patchThread: async (

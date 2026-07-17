@@ -19,31 +19,61 @@ export function BrandMark() {
   );
 }
 
-export function AgentRail({ onSelect }: { readonly onSelect?: () => void }) {
-  const { agents, selectedAgentId, selectAgent, connection } = useConsoleStore();
+export function AgentRail({
+  expanded = false,
+  onSelect,
+}: {
+  readonly expanded?: boolean;
+  readonly onSelect?: () => void;
+}) {
+  const {
+    agents,
+    connection,
+    selectedAgentId,
+    selectAgent,
+    setAgentPinned,
+  } = useConsoleStore();
   return (
-    <nav className="agent-rail" aria-label="Agents">
+    <nav className={`agent-rail${expanded ? " is-expanded" : ""}`} aria-label="Agents">
       <div className="rail-brand" title="mono-agent">
         <BrandMark />
+        <span className="rail-brand-copy">mono-agent</span>
       </div>
       <div className="agent-list" role="list">
-        {agents.map((agent) => (
-          <button
-            key={agent.sourceId}
-            type="button"
-            className={`agent-button${selectedAgentId === agent.sourceId ? " is-active" : ""}`}
-            onClick={() => {
-              selectAgent(agent.sourceId);
-              onSelect?.();
-            }}
-            aria-pressed={selectedAgentId === agent.sourceId}
-            aria-label={`${agent.label}, ${agent.status}`}
-            title={`${agent.label} · ${agent.status}`}
-          >
-            <span className="agent-avatar">{initials(agent.label)}</span>
-            <span className={`agent-status is-${agent.status}`} />
-          </button>
-        ))}
+        {agents.map((agent) => {
+          const pinned = Boolean(agent.pinned);
+          return (
+            <div className="agent-item" role="listitem" key={agent.sourceId}>
+              <button
+                type="button"
+                className={`agent-button${selectedAgentId === agent.sourceId ? " is-active" : ""}`}
+                onClick={() => {
+                  selectAgent(agent.sourceId);
+                  onSelect?.();
+                }}
+                aria-pressed={selectedAgentId === agent.sourceId}
+                aria-label={`${agent.label}, ${agent.status}${pinned ? ", pinned" : ""}`}
+                title={`${agent.label} · ${agent.status}`}
+              >
+                <span className="agent-avatar-wrap">
+                  <span className="agent-avatar">{initials(agent.label)}</span>
+                  <span className={`agent-status is-${agent.status}`} />
+                </span>
+                <span className="agent-label">{agent.label}</span>
+              </button>
+              <button
+                type="button"
+                className={`agent-pin${pinned ? " is-pinned" : ""}`}
+                aria-pressed={pinned}
+                aria-label={`${pinned ? "Unpin" : "Pin"} ${agent.label}`}
+                title={`${pinned ? "Remove from" : "Add to"} favorites`}
+                onClick={() => { void setAgentPinned(agent.sourceId, !pinned).catch(() => {}); }}
+              >
+                <Icon name="star" size={14} fill={pinned ? "currentColor" : "none"} />
+              </button>
+            </div>
+          );
+        })}
         {agents.length === 0 && (
           <span className="rail-empty" title="No agents discovered">
             <Icon name="agent" size={19} />
@@ -69,7 +99,7 @@ export function AgentRail({ onSelect }: { readonly onSelect?: () => void }) {
 }
 
 export function MobileAgentPicker({ onSelect }: { readonly onSelect: () => void }) {
-  const { agents, selectedAgentId, selectAgent } = useConsoleStore();
+  const { agents, selectedAgentId, selectAgent, setAgentPinned } = useConsoleStore();
   return (
     <aside className="mobile-agent-picker" aria-label="Choose an agent">
       <header>
@@ -80,26 +110,41 @@ export function MobileAgentPicker({ onSelect }: { readonly onSelect: () => void 
         </div>
       </header>
       <div className="mobile-agent-list">
-        {agents.map((agent) => (
-          <button
-            key={agent.sourceId}
-            type="button"
-            className={selectedAgentId === agent.sourceId ? "is-active" : undefined}
-            aria-pressed={selectedAgentId === agent.sourceId}
-            onClick={() => {
-              selectAgent(agent.sourceId);
-              onSelect();
-            }}
-          >
-            <span className="mobile-agent-avatar">{initials(agent.label)}</span>
-            <span className="mobile-agent-copy">
-              <strong>{agent.label}</strong>
-              <small>{agent.status === "degraded" ? "Available with warnings" : agent.status}</small>
-            </span>
-            <span className={`agent-status is-${agent.status}`} />
-            {selectedAgentId === agent.sourceId && <Icon name="check" size={16} />}
-          </button>
-        ))}
+        {agents.map((agent) => {
+          const pinned = Boolean(agent.pinned);
+          return (
+            <div className="mobile-agent-row" key={agent.sourceId}>
+              <button
+                type="button"
+                className={`mobile-agent-select${selectedAgentId === agent.sourceId ? " is-active" : ""}`}
+                aria-pressed={selectedAgentId === agent.sourceId}
+                aria-label={`${agent.label}, ${agent.status}${pinned ? ", pinned" : ""}`}
+                onClick={() => {
+                  selectAgent(agent.sourceId);
+                  onSelect();
+                }}
+              >
+                <span className="mobile-agent-avatar">{initials(agent.label)}</span>
+                <span className="mobile-agent-copy">
+                  <strong>{agent.label}</strong>
+                  <small>{agent.status === "degraded" ? "Available with warnings" : agent.status}</small>
+                </span>
+                <span className={`agent-status is-${agent.status}`} />
+                {selectedAgentId === agent.sourceId && <Icon name="check" size={16} />}
+              </button>
+              <button
+                type="button"
+                className={`mobile-agent-pin${pinned ? " is-pinned" : ""}`}
+                aria-pressed={pinned}
+                aria-label={`${pinned ? "Unpin" : "Pin"} ${agent.label}`}
+                title={`${pinned ? "Remove from" : "Add to"} favorites`}
+                onClick={() => { void setAgentPinned(agent.sourceId, !pinned).catch(() => {}); }}
+              >
+                <Icon name="star" size={17} fill={pinned ? "currentColor" : "none"} />
+              </button>
+            </div>
+          );
+        })}
         {agents.length === 0 && (
           <p>No agents discovered. Running agents will appear automatically.</p>
         )}

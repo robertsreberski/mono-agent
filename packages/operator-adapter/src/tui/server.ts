@@ -63,7 +63,14 @@ export interface TuiAdapterInfo {
    * with no mode/levels so the TUI falls back to the global effort enum. Absent
    * on older agents; the TUI tolerates that and offers no model-aware picker.
    */
-  readonly modelOptions?: Record<string, { readonly effortLevels?: readonly string[]; readonly reasoning?: boolean; readonly reasoningMode?: string; readonly label?: string }>;
+  readonly modelOptions?: Record<string, {
+    readonly effortLevels?: readonly string[];
+    readonly reasoning?: boolean;
+    readonly reasoningMode?: string;
+    readonly label?: string;
+    /** Known model context capacity, in tokens. Omitted when unknown. */
+    readonly contextWindow?: number;
+  }>;
 }
 
 export interface TuiAdapterOptions {

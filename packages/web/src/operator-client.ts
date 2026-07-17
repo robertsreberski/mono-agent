@@ -282,6 +282,9 @@ function parseModelOptions(value: unknown): Record<string, WebModelOption> | und
       ...(typeof option.reasoning === "boolean" ? { reasoning: option.reasoning } : {}),
       ...(typeof option.reasoningMode === "string" ? { reasoningMode: option.reasoningMode } : {}),
       ...(typeof option.label === "string" ? { label: option.label } : {}),
+      ...(Number.isSafeInteger(option.contextWindow) && Number(option.contextWindow) > 0
+        ? { contextWindow: option.contextWindow as number }
+        : {}),
     };
   }
   return Object.keys(result).length === 0 ? undefined : result;

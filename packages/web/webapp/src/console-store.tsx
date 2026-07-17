@@ -42,6 +42,7 @@ interface ConsoleStoreValue {
   readonly modelOptions: readonly string[];
   readonly effortOptions: readonly string[];
   readonly selectAgent: (sourceId: string) => void;
+  readonly setAgentPinned: (sourceId: string, pinned: boolean) => Promise<void>;
   readonly selectThread: (threadId: string) => void;
   readonly createThread: () => Promise<ThreadSummary>;
   readonly renameThread: (threadId: string, title: string) => Promise<void>;
@@ -74,6 +75,25 @@ export interface StoredRunPreference {
   readonly model: string;
   readonly effort: string;
 }
+
+const asciiNoCase = (value: string): string =>
+  value.replace(/[A-Z]/g, (character) =>
+    String.fromCharCode(character.charCodeAt(0) + 32),
+  );
+
+export const sortAgentsPinnedFirst = (
+  agents: readonly AgentSummary[],
+): readonly AgentSummary[] => [...agents].sort((left, right) => {
+  const pinOrder = Number(right.pinned) - Number(left.pinned);
+  if (pinOrder !== 0) return pinOrder;
+  // SQLite NOCASE folds ASCII only. Keep optimistic ordering identical to the
+  // authoritative store so a refresh never makes international labels jump.
+  const leftLabel = asciiNoCase(left.label);
+  const rightLabel = asciiNoCase(right.label);
+  if (leftLabel < rightLabel) return -1;
+  if (leftLabel > rightLabel) return 1;
+  return left.sourceId < right.sourceId ? -1 : left.sourceId > right.sourceId ? 1 : 0;
+});
 
 export const readStoredRunPreferences = (): Record<string, StoredRunPreference> => {
   try {
@@ -387,7 +407,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     };
   }, [queueRefresh]);
 
-  const agents = bootstrap?.agents ?? [];
+  const agents = useMemo(
+    () => sortAgentsPinnedFirst(bootstrap?.agents ?? []),
+    [bootstrap?.agents],
+  );
   const threads = bootstrap?.threads ?? [];
   const selectedAgent =
     agents.find((agent) => agent.sourceId === selectedAgentId) ?? null;
@@ -425,6 +448,27 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     },
     [threads],
   );
+
+  const setAgentPinned = useCallback(async (sourceId: string, pinned: boolean) => {
+    try {
+      const agent = await api.patchAgent(sourceId, pinned);
+      setBootstrap((current) => current
+        ? {
+            ...current,
+            agents: sortAgentsPinnedFirst(
+              current.agents.map((item) => item.sourceId === sourceId
+                ? { ...item, pinned: agent.pinned }
+                : item),
+            ),
+          }
+        : current);
+      setActionError(null);
+      queueRefresh();
+    } catch (pinError) {
+      setActionError(errorMessage(pinError));
+      throw pinError;
+    }
+  }, [queueRefresh]);
 
   const selectThread = useCallback(
     (threadId: string) => {
@@ -681,6 +725,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       modelOptions,
       effortOptions,
       selectAgent,
+      setAgentPinned,
       selectThread,
       createThread,
       renameThread,
@@ -724,6 +769,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       selectedThreadId,
       sendTurn,
       setEffort,
+      setAgentPinned,
       setModel,
       showArchived,
       threads,

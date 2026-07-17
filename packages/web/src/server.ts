@@ -15,6 +15,7 @@ import {
   WEB_API_VERSION,
   type CreateWebThreadInput,
   type CreateWebUploadInput,
+  type PatchWebAgentInput,
   type PatchWebThreadInput,
   type StartWebTurnInput,
   type WebEvent,
@@ -80,6 +81,15 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   app.get("/api/v1/bootstrap", (_req, res, next) => {
     void service.bootstrap().then((bootstrap) => res.status(200).json(bootstrap)).catch(next);
+  });
+
+  app.patch("/api/v1/agents/:id", (req, res, next) => {
+    try {
+      const input = parsePatchAgent(req.body);
+      res.status(200).json({ agent: service.patchAgent(pathParam(req.params.id), input) });
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/v1/threads", (req, res, next) => {
@@ -490,6 +500,12 @@ function securityHeaders(_req: Request, res: Response, next: NextFunction): void
 function parseCreateThread(value: unknown): CreateWebThreadInput {
   const body = requireRecord(value);
   return { sourceId: requireString(body.sourceId, "sourceId", 256) };
+}
+
+function parsePatchAgent(value: unknown): PatchWebAgentInput {
+  const body = requireRecord(value);
+  if (typeof body.pinned !== "boolean") throw invalidBody("pinned must be boolean.");
+  return { pinned: body.pinned };
 }
 
 function parsePatchThread(value: unknown): PatchWebThreadInput {

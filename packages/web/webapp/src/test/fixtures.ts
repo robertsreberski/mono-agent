@@ -35,6 +35,7 @@ export const agent = (
   sourceId,
   label: sourceId.toUpperCase(),
   status: "online",
+  pinned: false,
   supportsAttachments: true,
   models: ["provider/model"],
   defaultModel: "provider/model",

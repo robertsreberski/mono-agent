@@ -42,7 +42,11 @@ export function operatorFetch(options: {
         effort: "medium",
         models: ["provider/default", "provider/fallback"],
         modelOptions: {
-          "provider/default": { effortLevels: ["low", "medium", "high"], reasoning: true },
+          "provider/default": {
+            effortLevels: ["low", "medium", "high"],
+            reasoning: true,
+            contextWindow: 128_000,
+          },
           "provider/fallback": { effortLevels: ["low", "high"], reasoning: true },
         },
         capabilities: { attachments: options.supportsAttachments ?? true },

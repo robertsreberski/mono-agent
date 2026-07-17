@@ -19,6 +19,7 @@ import {
   WEB_MAX_TURN_ATTACHMENT_BYTES,
   WEB_STAGED_UPLOAD_TTL_MS,
   type CreateWebUploadInput,
+  type PatchWebAgentInput,
   type StartWebTurnInput,
   type WebAgentSummary,
   type WebAttachment,
@@ -169,6 +170,12 @@ export class WebService {
     this.emit("thread.changed", id, { thread });
     this.emit("threads.changed", id);
     return thread;
+  }
+
+  patchAgent(sourceId: string, patch: PatchWebAgentInput): WebAgentSummary {
+    const agent = this.store.setAgentPinned(sourceId, patch.pinned);
+    this.emit("agents.changed", undefined, { agents: this.store.listAgents() });
+    return agent;
   }
 
   async startTurn(threadId: string, input: StartWebTurnInput): Promise<{ readonly thread: WebThread; readonly turn: WebThread["runState"] }> {
@@ -436,6 +443,7 @@ export class WebService {
           sourceId: agent.source.sourceId,
           label: info.label ?? agent.source.label,
           status: agent.source.health === "running" ? "online" : "degraded",
+          pinned: false,
           health: agent.source.health,
           supportsAttachments: info.supportsAttachments,
           ...(info.models === undefined ? {} : { models: info.models }),
@@ -455,7 +463,7 @@ export class WebService {
     }));
     this.connections = nextConnections;
     this.store.replaceAgents(summaries);
-    this.emit("agents.changed", undefined, { agents: summaries });
+    this.emit("agents.changed", undefined, { agents: this.store.listAgents() });
     this.emit("threads.changed");
   }
 
@@ -662,6 +670,7 @@ function offlineSummary(agent: DiscoveredOperatorAgent): WebAgentSummary {
     sourceId: agent.source.sourceId,
     label: agent.source.label,
     status: "offline",
+    pinned: false,
     health: agent.source.health,
     supportsAttachments: false,
     updatedAt: agent.source.updatedAt,

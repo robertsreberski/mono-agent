@@ -6,6 +6,7 @@ import {
   readStoredRunPreferences,
   resolveBootstrapSelection,
   RUN_PREFERENCES_STORAGE_KEY,
+  sortAgentsPinnedFirst,
   validateRunPreference,
 } from "./console-store";
 import { agent, bootstrap, thread } from "./test/fixtures";
@@ -53,6 +54,40 @@ describe("resolveBootstrapSelection", () => {
     expect(
       resolveBootstrapSelection(payload, "a", null, { a: "removed" }).threadId,
     ).toBe("active-new");
+  });
+});
+
+describe("sortAgentsPinnedFirst", () => {
+  it("places favorites first using the backend label and source-id ordering", () => {
+    const agents = [
+      agent("z", { label: "Zulu" }),
+      agent("b", { label: "beta", pinned: true }),
+      agent("a-2", { label: "Alpha", pinned: true }),
+      agent("a-1", { label: "Alpha", pinned: true, status: "offline" }),
+    ];
+
+    expect(sortAgentsPinnedFirst(agents).map((item) => item.sourceId)).toEqual([
+      "a-1",
+      "a-2",
+      "b",
+      "z",
+    ]);
+    expect(agents.map((item) => item.sourceId)).toEqual(["z", "b", "a-2", "a-1"]);
+  });
+
+  it("returns an unpinned agent immediately to its alphabetical position", () => {
+    expect(sortAgentsPinnedFirst([
+      agent("beta", { label: "Beta", pinned: false }),
+      agent("alpha", { label: "Alpha", pinned: false }),
+    ]).map((item) => item.sourceId)).toEqual(["alpha", "beta"]);
+  });
+
+  it("matches SQLite ASCII-only NOCASE ordering for international labels", () => {
+    expect(sortAgentsPinnedFirst([
+      agent("istanbul", { label: "İstanbul" }),
+      agent("zulu", { label: "Zulu" }),
+      agent("alpha", { label: "alpha" }),
+    ]).map((item) => item.sourceId)).toEqual(["alpha", "zulu", "istanbul"]);
   });
 });
 

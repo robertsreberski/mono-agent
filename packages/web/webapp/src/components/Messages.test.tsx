@@ -1,10 +1,7 @@
-import type { DataMessagePartProps } from "@assistant-ui/react";
-import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   copyableMessageText,
   copyTextWithFallback,
-  TelemetryPart,
 } from "./Messages";
 
 const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, "clipboard");
@@ -71,51 +68,6 @@ describe("message copy", () => {
 
     await expect(copyTextWithFallback("blocked")).rejects.toThrow(
       "did not allow clipboard access",
-    );
-  });
-});
-
-const telemetryProps = (event: string, data: unknown) =>
-  ({ data: { event, data } }) as unknown as DataMessagePartProps;
-
-describe("telemetry presentation", () => {
-  it("renders runtime warnings as readable notices", () => {
-    render(
-      <TelemetryPart
-        {...telemetryProps("provider_event", {
-          kind: "runtime_warning",
-          message: "Primary provider is approaching its limit.",
-        })}
-      />,
-    );
-
-    expect(screen.getByText("Runtime warning")).toBeInTheDocument();
-    expect(screen.getByText("Primary provider is approaching its limit.")).toBeInTheDocument();
-  });
-
-  it("renders model failover and token usage as first-class status", () => {
-    const { rerender } = render(
-      <TelemetryPart
-        {...telemetryProps("provider_event", {
-          kind: "failover_started",
-          from: "primary",
-          to: "backup",
-        })}
-      />,
-    );
-    expect(screen.getByText("Model failover")).toBeInTheDocument();
-    expect(screen.getByText("primary → backup")).toBeInTheDocument();
-
-    rerender(
-      <TelemetryPart
-        {...telemetryProps("usage_update", {
-          tokens: { input: 1200, output: 345 },
-          cumulativeUsd: 0.012,
-        })}
-      />,
-    );
-    expect(screen.getByLabelText("Token usage and cost")).toHaveTextContent(
-      "↑1.2k ↓345 · $0.01",
     );
   });
 });

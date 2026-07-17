@@ -1,16 +1,19 @@
 import {
   ActionBarPrimitive,
-  ChainOfThoughtPrimitive,
   MessagePrimitive,
   type DataMessagePartProps,
   type EmptyMessagePartProps,
-  type ReasoningMessagePartProps,
   type ToolCallMessagePartProps,
   useAuiState,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
-import { type PropsWithChildren, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { UserMessageAttachments } from "./Attachments";
+import {
+  REASONING_GROUP_BY,
+  Reasoning,
+  ReasoningGroup,
+} from "./assistant-ui/Reasoning";
 import { Icon } from "./Icon";
 
 const safeJson = (value: unknown): string => {
@@ -91,6 +94,24 @@ function MessageCopyButton({ label }: { readonly label: string }) {
   );
 }
 
+function MessageActions({
+  label,
+  persistentWhenLast = false,
+}: {
+  readonly label: string;
+  readonly persistentWhenLast?: boolean;
+}) {
+  const isLast = useAuiState((state) => state.message.isLast);
+  return (
+    <ActionBarPrimitive.Root
+      className={`message-actions${persistentWhenLast && isLast ? " is-persistent" : ""}`}
+      autohide="never"
+    >
+      <MessageCopyButton label={label} />
+    </ActionBarPrimitive.Root>
+  );
+}
+
 function MarkdownText() {
   return <MarkdownTextPrimitive className="markdown" defer smooth />;
 }
@@ -105,10 +126,6 @@ function RunningText({ status }: EmptyMessagePartProps) {
       <i />
     </span>
   );
-}
-
-function ReasoningPart({ text }: ReasoningMessagePartProps) {
-  return <p className="reasoning-text">{text}</p>;
 }
 
 export function ToolFallback({
@@ -143,102 +160,11 @@ export function ToolFallback({
   );
 }
 
-function ThoughtLayout({ children }: PropsWithChildren) {
-  return <div className="thought-parts">{children}</div>;
+// Runtime/provider telemetry remains attached to the message so the context
+// display can summarize it, but transport diagnostics are not transcript UI.
+function HiddenTelemetryPart(): null {
+  return null;
 }
-
-function ChainOfThought() {
-  return (
-    <ChainOfThoughtPrimitive.Root className="chain-of-thought">
-      <ChainOfThoughtPrimitive.AccordionTrigger className="thought-trigger">
-        <span className="thought-mark">
-          <Icon name="spark" size={14} />
-        </span>
-        <span className="thought-label">Reasoning &amp; actions</span>
-        <Icon className="thought-chevron" name="chevron" size={14} />
-      </ChainOfThoughtPrimitive.AccordionTrigger>
-      <ChainOfThoughtPrimitive.Parts
-        components={{
-          Reasoning: ReasoningPart,
-          tools: { Fallback: ToolFallback },
-          Layout: ThoughtLayout,
-        }}
-      />
-    </ChainOfThoughtPrimitive.Root>
-  );
-}
-
-export function TelemetryPart({ data }: DataMessagePartProps) {
-  const payload = data as { event?: unknown; data?: unknown };
-  const event = String(payload.event ?? "event");
-  const detail = payload.data;
-  const detailRecord = detail && typeof detail === "object" ? detail as Record<string, unknown> : {};
-  const kind = typeof detailRecord.kind === "string" ? detailRecord.kind : "";
-  const normalized = `${event} ${kind}`.toLowerCase();
-  if (normalized.includes("warning") || normalized.includes("failover")) {
-    const message =
-      detail && typeof detail === "object" && "message" in detail
-        ? String((detail as { message?: unknown }).message ?? event)
-        : kind === "failover_started"
-          ? `${String(detailRecord.from ?? "Current model")} → ${String(detailRecord.to ?? "fallback")}`
-          : kind === "failover_completed"
-            ? `Answered by ${String(detailRecord.model ?? "fallback model")}`
-        : typeof detail === "string"
-          ? detail
-          : event.replaceAll("_", " ");
-    return (
-      <div className="runtime-notice" role="status">
-        <span className="runtime-notice-icon">!</span>
-        <div>
-          <strong>{normalized.includes("failover") ? "Model failover" : "Runtime warning"}</strong>
-          <span>{message}</span>
-        </div>
-      </div>
-    );
-  }
-  if (event === "usage_update" || normalized.includes("usage") || normalized.includes("cost")) {
-    const tokens =
-      detailRecord.tokens && typeof detailRecord.tokens === "object"
-        ? detailRecord.tokens as Record<string, unknown>
-        : detailRecord;
-    const input = numberValue(tokens.input ?? tokens.input_tokens ?? tokens.inputTokens);
-    const output = numberValue(tokens.output ?? tokens.output_tokens ?? tokens.outputTokens);
-    const cache = numberValue(tokens.cacheRead ?? tokens.cache_read_tokens);
-    const cost = numberValue(
-      detailRecord.cumulativeUsd ?? detailRecord.totalUsd ?? detailRecord.cost_usd,
-    );
-    return (
-      <div className="telemetry-metrics" aria-label="Token usage and cost">
-        <span>Usage</span>
-        <code>
-          {input !== undefined ? `↑${formatTokens(input)}` : ""}
-          {output !== undefined ? ` ↓${formatTokens(output)}` : ""}
-          {cache !== undefined && cache > 0 ? ` · cache ${formatTokens(cache)}` : ""}
-          {cost !== undefined ? ` · $${cost.toFixed(cost < 0.01 ? 4 : 2)}` : ""}
-        </code>
-      </div>
-    );
-  }
-  return (
-    <details className="telemetry-part">
-      <summary>
-        <span>Telemetry</span>
-        <strong>{event}</strong>
-      </summary>
-      {payload.data !== undefined && <pre>{safeJson(payload.data)}</pre>}
-    </details>
-  );
-}
-
-const numberValue = (value: unknown): number | undefined =>
-  typeof value === "number" && Number.isFinite(value) ? value : undefined;
-
-const formatTokens = (tokens: number): string =>
-  tokens >= 1_000_000
-    ? `${Math.round((tokens / 1_000_000) * 10) / 10}m`
-    : tokens >= 1_000
-      ? `${Math.round((tokens / 1_000) * 10) / 10}k`
-      : String(tokens);
 
 function ErrorPart({ data }: DataMessagePartProps) {
   const payload = data as { code?: unknown; message?: unknown };
@@ -253,14 +179,44 @@ function ErrorPart({ data }: DataMessagePartProps) {
 const parts = {
   Text: MarkdownText,
   Empty: RunningText,
-  ChainOfThought,
   data: {
     by_name: {
-      telemetry: TelemetryPart,
+      telemetry: HiddenTelemetryPart,
       error: ErrorPart,
     },
   },
 } as const;
+
+function AssistantParts() {
+  return (
+    <MessagePrimitive.GroupedParts groupBy={REASONING_GROUP_BY} indicator="no-text">
+      {({ part, children }) => {
+        switch (part.type) {
+          case "group-reasoning":
+            return <ReasoningGroup status={part.status}>{children}</ReasoningGroup>;
+          case "text":
+            return part.text.length > 0
+              ? <MarkdownText />
+              : part.status.type === "running"
+                ? <RunningText status={part.status} />
+                : null;
+          case "reasoning":
+            return <Reasoning {...part} />;
+          case "tool-call":
+            return part.toolUI ?? <ToolFallback {...part} />;
+          case "data":
+            if (part.name === "telemetry") return null;
+            if (part.name === "error") return <ErrorPart {...part} />;
+            return part.dataRendererUI;
+          case "indicator":
+            return <RunningText status={{ type: "running" }} />;
+          default:
+            return null;
+        }
+      }}
+    </MessagePrimitive.GroupedParts>
+  );
+}
 
 export function UserMessage() {
   return (
@@ -269,9 +225,7 @@ export function UserMessage() {
         <UserMessageAttachments />
         <MessagePrimitive.Parts components={parts} />
       </div>
-      <ActionBarPrimitive.Root className="message-actions" autohide="always">
-        <MessageCopyButton label="Copy message" />
-      </ActionBarPrimitive.Root>
+      <MessageActions label="Copy message" />
     </MessagePrimitive.Root>
   );
 }
@@ -283,13 +237,11 @@ export function AssistantMessage() {
         <Icon name="spark" size={15} />
       </div>
       <div className="assistant-content">
-        <MessagePrimitive.Parts components={parts} />
+        <AssistantParts />
         <MessagePrimitive.Error>
           <div className="message-error" role="alert">The response ended with an error.</div>
         </MessagePrimitive.Error>
-        <ActionBarPrimitive.Root className="message-actions" autohide="not-last">
-          <MessageCopyButton label="Copy response" />
-        </ActionBarPrimitive.Root>
+        <MessageActions label="Copy response" persistentWhenLast />
       </div>
     </MessagePrimitive.Root>
   );

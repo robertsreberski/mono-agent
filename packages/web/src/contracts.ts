@@ -17,12 +17,14 @@ export interface WebModelOption {
   readonly reasoning?: boolean;
   readonly reasoningMode?: string;
   readonly label?: string;
+  readonly contextWindow?: number;
 }
 
 export interface WebAgentSummary {
   readonly sourceId: string;
   readonly label: string;
   readonly status: WebAgentStatus;
+  readonly pinned?: boolean;
   readonly health?: string;
   readonly supportsAttachments: boolean;
   readonly models?: readonly string[];
@@ -144,6 +146,10 @@ export interface WebEvent {
 
 export interface CreateWebThreadInput {
   readonly sourceId: string;
+}
+
+export interface PatchWebAgentInput {
+  readonly pinned: boolean;
 }
 
 export interface PatchWebThreadInput {

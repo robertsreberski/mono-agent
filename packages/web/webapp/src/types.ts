@@ -14,12 +14,14 @@ export interface ModelOption {
   readonly reasoning?: boolean;
   readonly reasoningMode?: string;
   readonly label?: string;
+  readonly contextWindow?: number;
 }
 
 export interface AgentSummary {
   readonly sourceId: string;
   readonly label: string;
   readonly status: AgentStatus;
+  readonly pinned: boolean;
   readonly health?: string;
   readonly supportsAttachments: boolean;
   readonly models?: readonly string[];

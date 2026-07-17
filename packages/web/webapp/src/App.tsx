@@ -1,4 +1,7 @@
 import {
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   type RefObject,
   useCallback,
   useEffect,
@@ -6,6 +9,15 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  AGENT_RAIL_DEFAULT_EXPANDED_WIDTH,
+  AGENT_RAIL_EXPANDED_WIDTH,
+  AGENT_RAIL_MAX_WIDTH,
+  AGENT_RAIL_MIN_WIDTH,
+  clampAgentRailWidth,
+  readAgentRailWidth,
+  writeAgentRailWidth,
+} from "./agent-rail-layout";
 import { AgentRail, BrandMark, MobileAgentPicker } from "./components/AgentRail";
 import { Chat } from "./components/Chat";
 import { Icon, type IconName } from "./components/Icon";
@@ -137,6 +149,19 @@ function CommandPalette({ open, onClose }: { readonly open: boolean; readonly on
         icon: store.showArchived ? "threads" : "archive",
         run: () => store.setShowArchived(!store.showArchived),
       },
+      {
+        id: "pin-agent",
+        label: store.selectedAgent?.pinned
+          ? `Unpin ${store.selectedAgent.label}`
+          : `Pin ${store.selectedAgent?.label ?? "agent"}`,
+        icon: "star",
+        disabled: !store.selectedAgent,
+        run: () => {
+          const agent = store.selectedAgent;
+          if (!agent) return;
+          void store.setAgentPinned(agent.sourceId, !agent.pinned).catch(() => undefined);
+        },
+      },
       ...store.agents.map((agent) => ({
         id: `agent:${agent.sourceId}`,
         label: `Switch to ${agent.label}`,
@@ -240,8 +265,80 @@ export function App() {
   const [threadDrawer, setThreadDrawer] = useState(false);
   const [palette, setPalette] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [agentRailWidth, setAgentRailWidth] = useState(readAgentRailWidth);
   const agentDrawerRef = useRef<HTMLDivElement>(null);
   const threadDrawerRef = useRef<HTMLDivElement>(null);
+  const agentRailDragRef = useRef<{
+    readonly pointerId: number;
+    readonly startX: number;
+    readonly startWidth: number;
+  } | null>(null);
+
+  const agentRailExpanded = agentRailWidth >= AGENT_RAIL_EXPANDED_WIDTH;
+  const appStyle = {
+    "--agent-rail-width": `${agentRailWidth}px`,
+  } as CSSProperties;
+
+  const commitAgentRailWidth = useCallback((next: number) => {
+    const normalized = clampAgentRailWidth(next);
+    setAgentRailWidth(normalized);
+    writeAgentRailWidth(normalized);
+  }, []);
+
+  const toggleAgentRail = useCallback(() => {
+    commitAgentRailWidth(
+      agentRailWidth >= AGENT_RAIL_EXPANDED_WIDTH
+        ? AGENT_RAIL_MIN_WIDTH
+        : AGENT_RAIL_DEFAULT_EXPANDED_WIDTH,
+    );
+  }, [agentRailWidth, commitAgentRailWidth]);
+
+  const resizeAgentRailFromKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    let next: number | undefined;
+    if (event.key === "ArrowLeft") next = agentRailWidth - 16;
+    if (event.key === "ArrowRight") next = agentRailWidth + 16;
+    if (event.key === "Home") next = AGENT_RAIL_MIN_WIDTH;
+    if (event.key === "End") next = AGENT_RAIL_MAX_WIDTH;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      toggleAgentRail();
+      return;
+    }
+    if (next === undefined) return;
+    event.preventDefault();
+    commitAgentRailWidth(next);
+  }, [agentRailWidth, commitAgentRailWidth, toggleAgentRail]);
+
+  const startAgentRailResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    agentRailDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: agentRailWidth,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    document.body.classList.add("is-resizing-agent-rail");
+  }, [agentRailWidth]);
+
+  const continueAgentRailResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = agentRailDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setAgentRailWidth(clampAgentRailWidth(drag.startWidth + event.clientX - drag.startX));
+  }, []);
+
+  const finishAgentRailResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = agentRailDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const finalWidth = clampAgentRailWidth(drag.startWidth + event.clientX - drag.startX);
+    agentRailDragRef.current = null;
+    setAgentRailWidth(finalWidth);
+    writeAgentRailWidth(finalWidth);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    document.body.classList.remove("is-resizing-agent-rail");
+  }, []);
 
   const closeDrawers = useCallback(() => {
     setAgentDrawer(false);
@@ -289,16 +386,32 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [actionError, clearActionError, notice]);
 
+  useEffect(() => () => {
+    document.body.classList.remove("is-resizing-agent-rail");
+  }, []);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const typing =
-        target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+        target?.tagName === "INPUT" ||
+        target?.tagName === "SELECT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.isContentEditable;
+      const modalOpen = Boolean(document.querySelector(
+        '[role="dialog"][aria-modal="true"]:not([aria-hidden="true"]), [data-slot="model-selector-content"]',
+      ));
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
+        if (palette) {
+          setPalette(false);
+          return;
+        }
+        if (modalOpen) return;
         togglePalette();
         return;
       }
+      if (modalOpen) return;
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "o") {
         event.preventDefault();
         window.dispatchEvent(new CustomEvent("mono-agent:new-thread"));
@@ -315,7 +428,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeDrawers, togglePalette]);
+  }, [closeDrawers, palette, togglePalette]);
 
   const store = useConsoleStore();
   useEffect(() => {
@@ -330,8 +443,29 @@ export function App() {
   if (error && !bootstrap) return <FatalError />;
 
   return (
-    <div className="app-shell">
-      <div className="desktop-agent-rail"><AgentRail /></div>
+    <div className="app-shell" style={appStyle}>
+      <div className="desktop-agent-rail">
+        <AgentRail expanded={agentRailExpanded} />
+        <div
+          className="agent-rail-resize-handle"
+          role="separator"
+          aria-label="Resize agent sidebar"
+          aria-orientation="vertical"
+          aria-valuemin={AGENT_RAIL_MIN_WIDTH}
+          aria-valuemax={AGENT_RAIL_MAX_WIDTH}
+          aria-valuenow={agentRailWidth}
+          aria-valuetext={`${agentRailWidth} pixels, ${agentRailExpanded ? "expanded" : "collapsed"}`}
+          tabIndex={0}
+          title="Resize agents · double-click to toggle"
+          onDoubleClick={toggleAgentRail}
+          onKeyDown={resizeAgentRailFromKey}
+          onPointerDown={startAgentRailResize}
+          onPointerMove={continueAgentRailResize}
+          onPointerUp={finishAgentRailResize}
+          onPointerCancel={finishAgentRailResize}
+          onLostPointerCapture={finishAgentRailResize}
+        />
+      </div>
       <div className="desktop-thread-sidebar"><ThreadSidebar /></div>
       <Chat onOpenAgents={openAgents} onOpenThreads={openThreads} />
 

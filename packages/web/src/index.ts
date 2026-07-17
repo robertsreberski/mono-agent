@@ -43,6 +43,7 @@ export {
 export type {
   CreateWebThreadInput,
   CreateWebUploadInput,
+  PatchWebAgentInput,
   PatchWebThreadInput,
   StartWebTurnInput,
   WebAgentStatus,

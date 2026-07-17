@@ -6,7 +6,7 @@ sidebar:
 
 # Always-on web console
 
-`mono-agent web` is the browser operator console for every running agent discovered on this computer. It is a separate `@mono-agent/web` application built on assistant-ui's External Store Runtime and native Thread, ThreadList, Message, Composer, Attachment, ChainOfThought, and ToolFallback primitives. The service owns conversations and in-flight turns, so refreshing or closing a browser tab does not abort work.
+`mono-agent web` is the browser operator console for every running agent discovered on this computer. It is a separate `@mono-agent/web` application built on assistant-ui's External Store Runtime and native Thread, ThreadList, Message, Composer, Attachment, GroupedParts, and ToolFallback primitives, with the assistant-ui Reasoning disclosure adapted for structured runtime parts. The service owns conversations and in-flight turns, so refreshing or closing a browser tab does not abort work.
 
 This is the chat-first companion to [`mono-agent tui`](/observability/tui/). The previous read-only run browser remains available as [`mono-agent sessions`](#session-recorder-moved-to-sessions).
 
@@ -47,13 +47,25 @@ At startup, mono-agent inspects the existing Tailscale Serve configuration. It p
 
 ## Agents, threads, and turns
 
-The left rail lists auto-discovered trace sources and their current health. Selecting an agent filters its conversations; each conversation is permanently bound to that source id so a label change or a different agent cannot inherit its history. An offline agent and its threads remain visible, but sending is disabled until that exact source returns.
+The left rail lists auto-discovered trace sources and their current health. On desktop, drag its right-edge resize handle to widen the rail and reveal full agent names. The handle is also a focusable keyboard separator: arrow keys resize incrementally, while Home and End select its minimum and maximum widths. The chosen width is a browser-local presentation preference, so a phone, laptop, and different browser profiles can keep different layouts.
+
+Use the star beside an agent to add or remove it from favorites. The same pin control is available in the mobile agent picker. Pin state is persisted in the web service's SQLite settings rather than in browser storage, so favorites stay consistent when the same console is opened through localhost, a LAN address, or Tailscale. Pinned agents sort first; the remaining agents retain the normal discovery ordering.
+
+Selecting an agent filters its conversations; each conversation is permanently bound to that source id so a label change or a different agent cannot inherit its history. An offline agent and its threads remain visible, but sending is disabled until that exact source returns.
 
 Threads use the first prompt as their initial title and can be renamed. They are archived rather than individually deleted, and archived threads can be restored. The console permits one active turn per thread while different threads and agents can run concurrently.
 
 The service, not the browser tab, owns the upstream operator connection. A browser disconnect or reload can therefore reconnect through the event stream while the turn continues. If the web service itself restarts, any turn that was still active is marked interrupted instead of being shown as permanently running.
 
-During a turn the transcript shows streamed markdown, reasoning, tool calls and results, runtime notices, provider failover, token/cost telemetry, and the final outcome. The composer exposes the selected agent's available model and effort controls. Copy, cancel, archive, and unarchive are supported; edit/regenerate/branch/steer and browser-defined client tools are deliberately not enabled.
+During a turn the transcript shows streamed markdown, reasoning, tool calls and results, user-facing errors, and the final outcome. Raw runtime, provider, and usage telemetry remains internal; measured token and cost data appears only through the context control. The composer exposes the selected agent's available model and effort controls. Copy, cancel, archive, and unarchive are supported; edit/regenerate/branch/steer and browser-defined client tools are deliberately not enabled.
+
+## Run controls and context
+
+The run-settings control uses a searchable model picker with the selected model's supported reasoning-effort choices in the same popover. On narrow screens it becomes a full-width bottom sheet so every effort level remains reachable without overflowing the viewport. Choosing **Automatic model** or **Automatic** effort delegates that setting to the agent.
+
+When the selected agent advertises a model context window and turns report token usage, the context control accumulates the conversation's newest per-turn snapshots and shows the percentage directly in the header plus the exact token breakdown and progress bar in its popover. Repeated cumulative snapshots within one turn are counted once. If the runtime cannot establish a trustworthy context-window size, the console shows the measured token counts without inventing a percentage.
+
+Assistant reasoning is grouped into a disclosure that opens while that reasoning is actively streaming and collapses when it completes; adjacent tool calls and the final answer retain their original order. Type `/` in an empty composer to open the keyboard-friendly command popover for available actions such as run settings, starting a new conversation, or stopping an active response.
 
 ## Attachments use the browser device picker
 
@@ -75,7 +87,7 @@ Older running agents that do not advertise attachment support remain usable for 
 
 ## Local state and reset
 
-The service keeps its owner-private SQLite store, settings, upload stages, and logs under `~/.mono-agent/web/`. Stored messages, attachment metadata, revisions, and run state are local to this computer; they are independent from browser storage and from the agents' provider-side sessions.
+The service keeps its owner-private SQLite store, settings, upload stages, and logs under `~/.mono-agent/web/`. Stored messages, attachment metadata, revisions, run state, and pinned agents are local to this computer; they are independent from browser storage and from the agents' provider-side sessions. The desktop agent-rail width is the exception: it is an intentionally browser-local display preference and is removed when that browser's site data is cleared.
 
 There is no per-message or per-thread destructive delete. To intentionally erase the whole console store, stop the service and use the explicit two-part confirmation:
 
@@ -83,11 +95,11 @@ There is no per-message or per-thread destructive delete. To intentionally erase
 mono-agent web reset --all --yes
 ```
 
-Reset removes the web console's conversations, committed uploads, staged uploads, and settings. It does not remove an agent's config, durable conversation history, memory, or recorded run artifacts.
+Reset removes the web console's conversations, committed uploads, staged uploads, and server settings, including agent pins. It does not clear browser-local display preferences such as the rail width, and it does not remove an agent's config, durable conversation history, memory, or recorded run artifacts.
 
 ## Current scope
 
-The first web-console release covers discovery, persistent multi-conversation chat, model/effort selection, streamed reasoning/tools/telemetry/failover, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a PWA when served from a secure browser context.
+The first web-console release covers discovery, persistent multi-conversation chat, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a PWA when served from a secure browser context.
 
 Recorded-run replay, source-annotated config inspection, and managed conversational configuration remain in the TUI and Session Recorder for now. Use:
 

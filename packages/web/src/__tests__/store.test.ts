@@ -31,6 +31,38 @@ function agent(sourceId = "agent-one", supportsAttachments = true): WebAgentSumm
 }
 
 describe("WebStore", () => {
+  it("persists agent pins independently of discovery and sorts pinned agents first", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent("alpha"), agent("zulu")]);
+
+    expect(store.listAgents().map(({ sourceId, pinned }) => ({ sourceId, pinned }))).toEqual([
+      { sourceId: "alpha", pinned: false },
+      { sourceId: "zulu", pinned: false },
+    ]);
+    expect(store.setAgentPinned("zulu", true)).toMatchObject({ sourceId: "zulu", pinned: true });
+    store.replaceAgents([agent("alpha")]);
+    expect(store.listAgents()[0]).toMatchObject({
+      sourceId: "zulu",
+      pinned: true,
+      status: "offline",
+    });
+    store.replaceAgents([agent("zulu"), agent("alpha")]);
+    expect(store.listAgents().map(({ sourceId, pinned }) => ({ sourceId, pinned }))).toEqual([
+      { sourceId: "zulu", pinned: true },
+      { sourceId: "alpha", pinned: false },
+    ]);
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.listAgents()[0]).toMatchObject({ sourceId: "zulu", pinned: true });
+    expect(reopened.setAgentPinned("zulu", false)).toMatchObject({ sourceId: "zulu", pinned: false });
+    expect(() => reopened.setAgentPinned("missing", true)).toThrowError(expect.objectContaining({ code: "agent_not_found" }));
+    reopened.close();
+  });
+
   it("persists permanently agent-bound threads, structured messages, and archive state", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

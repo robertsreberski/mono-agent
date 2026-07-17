@@ -3,6 +3,7 @@
   "version": "0.4.0",
   "private": true,
   "type": "module",
+  "license": "GPL-3.0-only",
   "description": "Native-like assistant-ui PWA for the mono-agent always-on web console.",
   "scripts": {
     "dev": "vite",
@@ -14,6 +15,8 @@
   "dependencies": {
     "@assistant-ui/react": "0.14.27",
     "@assistant-ui/react-markdown": "0.14.6",
+    "@base-ui/react": "1.6.0",
+    "cmdk": "1.1.1",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "workbox-window": "7.4.1"

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, uploadContent } from "./api";
-import { attachment } from "./test/fixtures";
+import { agent, attachment } from "./test/fixtures";
 
 class FakeXMLHttpRequest {
   static latest: FakeXMLHttpRequest;
@@ -98,7 +98,7 @@ describe("turn overrides", () => {
     vi.unstubAllGlobals();
   });
 
-  it("omits model and effort when Provider default is selected", async () => {
+  it("omits model and effort when automatic provider defaults are selected", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ thread: {}, turn: { id: "turn", status: "running" } }), {
         status: 202,
@@ -111,5 +111,32 @@ describe("turn overrides", () => {
 
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(String(init.body))).toEqual({ text: "hello" });
+  });
+});
+
+describe("agent favorites", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("patches the desired pin state using the encoded stable source id", async () => {
+    const pinned = agent("alpha/one", { pinned: true });
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ agent: pinned }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.patchAgent("alpha/one", true)).resolves.toEqual(pinned);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/agents/alpha%2Fone",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ pinned: true }),
+      }),
+    );
   });
 });
