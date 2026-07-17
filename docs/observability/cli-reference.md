@@ -503,6 +503,8 @@ mono-agent sessions --max-runs 500
 
 `MONO_AGENT_WEB_AUTH_TOKEN` remains the Session Recorder's compatibility bearer. It is not used by the new `mono-agent web` console. Non-loopback recorder mode still requires a stable token for non-interactive startup, uses URL fragments only for browser bootstrap, and sends API/SSE credentials in the `Authorization` header.
 
+For each browser origin, the recorder mirrors a captured or manually entered token into current-tab `sessionStorage` as `mono-agent.session-web.authToken` and persistent `localStorage` as `mono-agent.session-web.authToken.persisted`. The persistent copy survives page reloads, tab or browser closes, and browser restarts. On initial page load or after a manual reload, a JSON API 401/403 exposes the authentication form. If the server token changes while the page remains open, a stream 401/403 stays in the reconnecting state and retries with the stored token instead of exposing the form. Reload the page to expose the form; enter the current token and choose **Retry**, or choose **Clear** first to remove both browser-storage copies. Clearing the site's browser storage/site data also removes them; closing the browser alone does not sign out.
+
 ## `install-skill`
 
 Copies the bundled `mono-agent-composer` skill into the agent skill folders (`~/.claude/skills` and/or `~/.agents/skills`). Refuses to overwrite an existing copy unless `--force` is passed.
