@@ -1,5 +1,41 @@
 # Release notes
 
+## 0.12.0 — Always-on web console and resilient agent sessions (2026-07-17)
+
+### Highlights
+
+- `mono-agent web start` installs an always-on assistant-ui browser console for
+  every locally discovered agent. The service owns its conversations and
+  in-flight turns, persists owner-private state and uploads, and keeps work
+  running across browser reloads or disconnects.
+- The Pi runtime adds the managed `NodeRepl` tool: a run-scoped JavaScript REPL
+  with multiline input, top-level `await`, workspace package resolution, and
+  the same native-sandbox boundary as `Bash`.
+
+### Reliability
+
+- Pi compaction now treats a still-overflowing context as `context_limit`,
+  preserving typed failure evidence and allowing the configured fallback chain
+  to recover instead of terminating as an unclassified provider error.
+- TUI self-configuration remains attached to the same marked conversation
+  after approvals, rejections, proposal-free turns, `done`, and `no changes`.
+  Only an explicit exit leaves configuration mode, while successful changes
+  restart the managed agent and reconnect to the proven fresh endpoint.
+
+### Compatibility and security
+
+- `mono-agent web` now owns the persistent chat console; the previous read-only
+  run browser remains available as `mono-agent sessions`.
+- The web console listens on `0.0.0.0:5050` by default for trusted LAN and
+  Tailnet use and deliberately has no application login. Use `--loopback` when
+  network peers must not have owner-equivalent access, and do not expose it to
+  an untrusted or public network.
+- `NodeRepl` joins the Pi bridge's managed allow-all tool set. Restrictive tool
+  policies must name it explicitly when JavaScript evaluation is desired.
+- All 22 catalog-publishable packages, including the new `@mono-agent/web`,
+  move together to 0.12.0. Keep every `@mono-agent/*` package and
+  `create-mono-agent` on the same exact version.
+
 ## 0.11.6 — Configurable A2A request bodies (2026-07-17)
 
 ### Added
