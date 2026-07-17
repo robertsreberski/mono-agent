@@ -5,7 +5,7 @@ import {
   type ThreadMessageLike,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WebUploadAttachmentAdapter } from "./attachment-adapter";
 import { canSendInConsole, canUploadInConsole } from "./capabilities";
 import { useConsoleStore, useUploadLimits } from "./console-store";
@@ -19,6 +19,27 @@ export { canSendInConsole, canUploadInConsole } from "./capabilities";
 
 type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 type JsonObject = { readonly [key: string]: JsonValue };
+
+interface ComposerRecovery {
+  readonly id: number;
+  readonly text: string;
+  readonly attachments: readonly CompleteAttachment[];
+  readonly agentId: string | null;
+  readonly threadId: string | null;
+}
+
+const mergeComposerText = (recovered: string, current: string): string => {
+  if (!recovered) return current;
+  if (!current || current === recovered) return recovered;
+  return `${recovered}\n\n${current}`;
+};
+
+const canRestoreRecovery = (
+  recovery: ComposerRecovery,
+  selection: { readonly agentId: string | null; readonly threadId: string | null },
+): boolean =>
+  recovery.agentId === selection.agentId &&
+  recovery.threadId === selection.threadId;
 
 const jsonValue = (value: unknown): JsonValue => {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
@@ -126,6 +147,18 @@ export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
 export function WebRuntimeProvider({ children }: { readonly children: ReactNode }) {
   const store = useConsoleStore();
   const limits = useUploadLimits();
+  const [turnStarting, setTurnStarting] = useState(false);
+  const [recoveries, setRecoveries] = useState<readonly ComposerRecovery[]>([]);
+  const turnStartingRef = useRef(false);
+  const recoveryIdRef = useRef(0);
+  const selectionRef = useRef({
+    agentId: store.selectedAgentId,
+    threadId: store.selectedThreadId,
+  });
+  selectionRef.current = {
+    agentId: store.selectedAgentId,
+    threadId: store.selectedThreadId,
+  };
   const limitKey = `${limits.maxFileBytes}:${limits.maxFilesPerTurn}:${limits.maxTurnBytes}:${limits.accept.join("|")}`;
   const attachmentAdapter = useMemo(
     () => new WebUploadAttachmentAdapter(limits),
@@ -146,7 +179,27 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   }, [attachmentAdapter, attachmentContext]);
   useEffect(
     () => () => {
-      attachmentAdapter.disposeUnsent();
+      attachmentAdapter.disposeUnsent({ includeRecovering: true });
+    },
+    [attachmentAdapter],
+  );
+
+  const queueRecovery = useCallback(
+    (
+      text: string,
+      attachments: readonly CompleteAttachment[],
+      context: { readonly agentId: string | null; readonly threadId: string | null },
+    ) => {
+      attachmentAdapter.retainForRecovery(attachments);
+      setRecoveries((current) => [
+        ...current,
+        {
+          id: ++recoveryIdRef.current,
+          text,
+          attachments,
+          ...context,
+        },
+      ]);
     },
     [attachmentAdapter],
   );
@@ -160,25 +213,66 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         .map((part) => part.text)
         .join("\n")
         .trim();
-      const attachments = message.attachments ?? [];
-      const attachmentIds = attachmentAdapter.beginSend(attachments);
-      if (!text && attachmentIds.length === 0) return;
-      try {
-        await store.sendTurn({
-          text: text || undefined,
-          attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
-          model: store.model || undefined,
-          effort: store.effort || undefined,
-        });
-        attachmentAdapter.completeSend(attachments);
-      } catch (error) {
-        // assistant-ui has already cleared the composer at this point. Clean
-        // the staged server objects and let the store's visible error surface.
-        await attachmentAdapter.failSend(attachments);
-        throw error;
+      const attachments: readonly CompleteAttachment[] = message.attachments ?? [];
+      if (!text && attachments.length === 0) return;
+
+      const submissionContext = {
+        agentId: store.selectedAgentId,
+        threadId: store.selectedThreadId,
+      };
+      if (turnStartingRef.current) {
+        queueRecovery(text, attachments, submissionContext);
+        return;
       }
+
+      // The ref closes the gap before React publishes isSendDisabled. This must
+      // happen before the first await so two same-tick composer sends are atomic.
+      turnStartingRef.current = true;
+      setTurnStarting(true);
+      const attachmentIds = attachmentAdapter.beginSend(attachments);
+      void (async () => {
+        let resolvedThreadId = submissionContext.threadId;
+        try {
+          await store.sendTurn(
+            {
+              text: text || undefined,
+              attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
+              model: store.model || undefined,
+              effort: store.effort || undefined,
+            },
+            (threadId) => {
+              resolvedThreadId = threadId;
+              if (submissionContext.threadId === null) {
+                setRecoveries((current) =>
+                  current.map((recovery) =>
+                    recovery.agentId === submissionContext.agentId && recovery.threadId === null
+                      ? { ...recovery, threadId }
+                      : recovery,
+                  ),
+                );
+              }
+            },
+          );
+          attachmentAdapter.completeSend(attachments);
+        } catch {
+          const recoveryContext = {
+            agentId: submissionContext.agentId,
+            threadId: resolvedThreadId,
+          };
+          // Selection state may not have committed yet after createThread.
+          // Queue first, then let the post-render recovery effect compare the
+          // exact resolved context and either rehydrate or clean it up.
+          attachmentAdapter.recoverSend(attachments);
+          queueRecovery(text, attachments, recoveryContext);
+          // sendTurn owns the visible action error. assistant-ui does not await
+          // onNew, so containing the rejection here prevents an unhandled task.
+        } finally {
+          turnStartingRef.current = false;
+          setTurnStarting(false);
+        }
+      })();
     },
-    [attachmentAdapter, store],
+    [attachmentAdapter, queueRecovery, store],
   );
 
   const threadList = useMemo(
@@ -241,7 +335,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     convertMessage: convertWebMessage,
     isLoading: store.detailLoading,
     isRunning: store.selectedThread?.runState.status === "running",
-    isSendDisabled: !selectedCanSend,
+    isSendDisabled: !selectedCanSend || turnStarting,
     onNew,
     onCancel: store.cancelTurn,
     unstable_capabilities: { copy: true },
@@ -250,6 +344,57 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
       attachments: selectedCanUpload ? attachmentAdapter : undefined,
     },
   });
+
+  useEffect(() => {
+    // Keep queued drafts protected until the admitted request resolves. For a
+    // new conversation, sendTurn binds them to the exact created thread before
+    // this effect rehydrates them, so the context transition cannot dispose the
+    // upload or restore it into a different same-agent conversation.
+    if (turnStarting) return;
+    const recovery = recoveries[0];
+    if (!recovery) return;
+
+    if (!canRestoreRecovery(recovery, selectionRef.current)) {
+      setRecoveries((current) => current.filter(({ id }) => id !== recovery.id));
+      void attachmentAdapter.failSend(recovery.attachments);
+      return;
+    }
+
+    const composer = runtime.thread.composer;
+    const current = composer.getState();
+    if (recovery.text) {
+      composer.setText(mergeComposerText(recovery.text, current.text));
+    }
+    if (recovery.attachments.length > 0 && !selectedCanUpload) {
+      // Reconnecting/offline stores deliberately remove the runtime adapter.
+      // Restore text now, but keep staged files protected until this exact
+      // conversation exposes attachment support again.
+      if (recovery.text) {
+        setRecoveries((items) =>
+          items.map((item) => item.id === recovery.id ? { ...item, text: "" } : item),
+        );
+      }
+      return;
+    }
+    setRecoveries((items) => items.filter(({ id }) => id !== recovery.id));
+    const existingIds = new Set(current.attachments.map(({ id }) => id));
+    void (async () => {
+      try {
+        await Promise.all(
+          recovery.attachments
+            .filter(({ id }) => !existingIds.has(id))
+            .map((attachment) =>
+              composer.addAttachment(
+                attachmentAdapter.prepareRecoveryAttachment(attachment),
+              ),
+            ),
+        );
+        attachmentAdapter.releaseRecovery(recovery.attachments);
+      } catch {
+        await attachmentAdapter.failSend(recovery.attachments);
+      }
+    })();
+  }, [attachmentAdapter, recoveries, runtime, selectedCanUpload, turnStarting]);
 
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
 }

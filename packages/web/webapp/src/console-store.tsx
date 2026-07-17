@@ -47,7 +47,10 @@ interface ConsoleStoreValue {
   readonly renameThread: (threadId: string, title: string) => Promise<void>;
   readonly archiveThread: (threadId: string) => Promise<void>;
   readonly unarchiveThread: (threadId: string) => Promise<void>;
-  readonly sendTurn: (input: StartTurnInput) => Promise<void>;
+  readonly sendTurn: (
+    input: StartTurnInput,
+    onThreadResolved?: (threadId: string) => void,
+  ) => Promise<void>;
   readonly cancelTurn: () => Promise<void>;
   readonly setShowArchived: (show: boolean) => void;
   readonly setModel: (model: string) => void;
@@ -608,10 +611,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   );
 
   const sendTurn = useCallback(
-    async (input: StartTurnInput) => {
+    async (input: StartTurnInput, onThreadResolved?: (threadId: string) => void) => {
       let thread = selectedThread;
       if (!thread) thread = await createThread();
       if (thread.archivedAt) throw new Error("Unarchive this conversation before sending.");
+      onThreadResolved?.(thread.id);
       try {
         const result = await api.startTurn(thread.id, {
           ...input,

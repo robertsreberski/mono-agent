@@ -122,6 +122,36 @@ describe("WebUploadAttachmentAdapter", () => {
     await expect(adapter.send(completed)).rejects.toThrow("has not finished uploading");
   });
 
+  it("rehydrates a recoverable failed send without uploading or deleting the staged file", async () => {
+    const adapter = new WebUploadAttachmentAdapter(uploadLimits);
+    const generator = adapter.add({ file: createFile("retry.md") });
+    await generator.next();
+    const completed = (await generator.next()).value as PendingAttachment;
+    const submitted = await adapter.send(completed);
+
+    adapter.beginSend([submitted]);
+    adapter.disposeUnsent();
+    adapter.recoverSend([submitted]);
+
+    const recoveryFile = adapter.prepareRecoveryAttachment(submitted);
+    if (!(recoveryFile instanceof File)) throw new Error("Expected the original local file.");
+    const recovery = adapter.add({ file: recoveryFile });
+    const restored = (await recovery.next()).value as PendingAttachment;
+
+    expect(restored).toMatchObject({
+      id: "upload-1",
+      status: { type: "requires-action", reason: "composer-send" },
+    });
+    expect(api.createUpload).toHaveBeenCalledTimes(1);
+    expect(api.deleteUpload).not.toHaveBeenCalled();
+    await expect(adapter.send(restored)).resolves.toMatchObject({ id: "upload-1" });
+
+    adapter.releaseRecovery([restored]);
+    adapter.beginSend([restored]);
+    adapter.completeSend([restored]);
+    await expect(adapter.send(restored)).rejects.toThrow("has not finished uploading");
+  });
+
   it("aborts an in-flight transfer and cannot resurrect it after removal", async () => {
     vi.mocked(uploadContent).mockImplementation(
       (_upload, _file, _onProgress, signal) =>

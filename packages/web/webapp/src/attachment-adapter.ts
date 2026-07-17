@@ -2,6 +2,7 @@ import type {
   Attachment,
   AttachmentAdapter,
   CompleteAttachment,
+  CreateAttachment,
   PendingAttachment,
 } from "@assistant-ui/react";
 import { api, uploadContent } from "./api";
@@ -64,6 +65,9 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
   >();
   private readonly removing = new Set<string>();
   private readonly sending = new Set<string>();
+  private readonly recovering = new Set<string>();
+  private readonly files = new Map<string, File>();
+  private readonly recoveryFiles = new WeakMap<File, string>();
   private reservationTail: Promise<void> = Promise.resolve();
   private generation = 0;
 
@@ -77,6 +81,23 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
   }
 
   async *add({ file }: { file: File }): AsyncGenerator<PendingAttachment, void> {
+    const recoveryId = this.recoveryFiles.get(file);
+    if (recoveryId) {
+      this.recoveryFiles.delete(file);
+      const upload = this.uploads.get(recoveryId);
+      if (upload?.uploaded) {
+        yield {
+          id: recoveryId,
+          type: attachmentType(upload.contentType),
+          name: upload.name,
+          contentType: upload.contentType,
+          file,
+          status: { type: "requires-action", reason: "composer-send" },
+        };
+        return;
+      }
+    }
+
     const generation = this.generation;
     const contentType = inferAttachmentContentType(file);
     const normalizedFile = file.type === contentType ? file : new File([file], file.name, {
@@ -84,6 +105,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
       lastModified: file.lastModified,
     });
     const reservation = await this.reserveUpload(normalizedFile, generation);
+    this.files.set(reservation.id, normalizedFile);
 
     let progress = 0;
     let settled = false;
@@ -136,6 +158,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
       this.transfers.delete(reservation.id);
       this.activeSizes.delete(reservation.id);
       this.uploads.delete(reservation.id);
+      this.files.delete(reservation.id);
       if (!this.removing.has(reservation.id)) {
         void api.deleteUpload(reservation.id).catch(() => undefined);
       }
@@ -182,8 +205,11 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
 
   async remove(attachment: Attachment): Promise<void> {
     this.removing.add(attachment.id);
+    this.sending.delete(attachment.id);
+    this.recovering.delete(attachment.id);
     this.activeSizes.delete(attachment.id);
     const existed = this.uploads.delete(attachment.id);
+    this.files.delete(attachment.id);
     const transfer = this.transfers.get(attachment.id);
     transfer?.controller.abort();
     await transfer?.done.catch(() => undefined);
@@ -200,6 +226,7 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
 
   beginSend(attachments: readonly { id: string }[]): readonly string[] {
     const ids = attachments.map(({ id }) => {
+      this.recovering.delete(id);
       this.sending.add(id);
       return this.uploads.get(id)?.id ?? id;
     });
@@ -209,29 +236,71 @@ export class WebUploadAttachmentAdapter implements AttachmentAdapter {
   completeSend(attachments: readonly { id: string }[]): void {
     for (const { id } of attachments) {
       this.sending.delete(id);
+      this.recovering.delete(id);
       this.activeSizes.delete(id);
       this.uploads.delete(id);
+      this.files.delete(id);
     }
+  }
+
+  retainForRecovery(attachments: readonly { id: string }[]): void {
+    for (const { id } of attachments) this.recovering.add(id);
+  }
+
+  recoverSend(attachments: readonly { id: string }[]): void {
+    for (const { id } of attachments) {
+      this.sending.delete(id);
+      this.recovering.add(id);
+    }
+  }
+
+  releaseRecovery(attachments: readonly { id: string }[]): void {
+    for (const { id } of attachments) this.recovering.delete(id);
+  }
+
+  prepareRecoveryAttachment(attachment: CompleteAttachment): File | CreateAttachment {
+    const file = this.files.get(attachment.id);
+    if (file) {
+      this.recoveryFiles.set(file, attachment.id);
+      return file;
+    }
+    return {
+      id: attachment.id,
+      type: attachment.type,
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: attachment.content,
+    };
   }
 
   async failSend(attachments: readonly { id: string }[]): Promise<void> {
     const ids = attachments.map(({ id }) => this.uploads.get(id)?.id ?? id);
     for (const { id } of attachments) {
       this.sending.delete(id);
+      this.recovering.delete(id);
       this.activeSizes.delete(id);
       this.uploads.delete(id);
+      this.files.delete(id);
     }
     await Promise.all(ids.map((id) => api.deleteUpload(id).catch(() => undefined)));
   }
 
-  disposeUnsent(): void {
+  disposeUnsent({ includeRecovering = false }: { readonly includeRecovering?: boolean } = {}): void {
     this.generation += 1;
-    const ids = [...this.uploads.keys()].filter((id) => !this.sending.has(id));
-    for (const id of ids) this.removing.add(id);
-    const transfers = ids.map((id) => this.transfers.get(id)).filter(Boolean);
-    this.activeSizes.clear();
-    this.uploads.clear();
-    this.transfers.clear();
+    const ids = [...this.uploads.keys()].filter(
+      (id) => !this.sending.has(id) && (includeRecovering || !this.recovering.has(id)),
+    );
+    for (const id of ids) {
+      this.removing.add(id);
+      this.activeSizes.delete(id);
+      this.uploads.delete(id);
+      this.files.delete(id);
+    }
+    const transfers = ids.flatMap((id) => {
+      const transfer = this.transfers.get(id);
+      this.transfers.delete(id);
+      return transfer ? [transfer] : [];
+    });
     for (const transfer of transfers) transfer?.controller.abort();
     void Promise.all(transfers.map((transfer) => transfer?.done.catch(() => undefined))).then(
       async () => {
