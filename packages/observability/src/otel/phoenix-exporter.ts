@@ -1,3 +1,4 @@
+import { DEFAULT_MAX_EVENTS_PER_RUN } from "../guards.js";
 import type {
   PhoenixExporterConfig,
   RunExportContext,
@@ -100,7 +101,9 @@ export function createPhoenixRunExporter(
       events.length = 0;
     },
     onEvent(event: RuntimeEventLike, _context: RunExportEventContext): void {
-      events.push(event);
+      if (events.length < DEFAULT_MAX_EVENTS_PER_RUN) {
+        events.push(event);
+      }
     },
     async finish(summary: RunSummary, context: RunExportContext): Promise<void> {
       await exportRun(summary, context);
