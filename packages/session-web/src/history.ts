@@ -98,18 +98,6 @@ export async function readInstanceSessionSummaryByFileName(
   return summaries.find((entry) => entry.signature.summaryFileName === summaryFileName);
 }
 
-/**
- * Back-compat alias for callers that only need list rows. These rows are
- * deliberately step-less; use {@link readInstanceSession} for persisted,
- * bounded detail.
- */
-export async function listInstanceSessions(
-  instance: DiscoveredWebInstance,
-  options: ListInstanceSessionsOptions,
-): Promise<readonly SourceStampedSession[]> {
-  return (await listInstanceSessionSummaries(instance, options)).map((entry) => entry.session);
-}
-
 /** A single run mapped from its persisted, bounded artifact; `undefined` when the run isn't on disk. */
 export async function readInstanceSession(
   instance: DiscoveredWebInstance,

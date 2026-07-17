@@ -224,7 +224,6 @@ The Telegram adapter's stream and message options:
 | `stream.initialStatusText` | `string` | `"Agent is thinking..."` | Placeholder shown before the first token. |
 | `stream.editDebounceMs` | `number` | `350` | Min gap between message edits while streaming. |
 | `stream.maxMessageChars` | `number` | platform cap | Split threshold; must be an integer ≥ 32. |
-| `stream.showThoughts` | `boolean` | `true` | Stream reasoning/thoughts as interim text. |
 | `stream.finalOnly` | `boolean` | `true` (bot) | `true` posts one final answer; **set `false` for live interim streaming** (edit-in-place as tokens arrive). |
 | `messages.welcomeText` | `string` | "Agent is online…" | Shown on `/start`. |
 | `messages.helpText` | `string` | "Send a message…" | Shown on `/help`. |
@@ -265,7 +264,6 @@ const liveTelegram: ChannelDriver<TelegramAdapterConfig> = {
       stream: {
         finalOnly: false,        // live interim streaming
         editDebounceMs: 500,     // throttle edits harder
-        showThoughts: false,     // hide reasoning, stream the answer only
       },
       messages: {
         welcomeText: "Hi! Ask me anything.",

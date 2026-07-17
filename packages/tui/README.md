@@ -121,11 +121,8 @@ ReplayRunListItem
 ReplayTimelineItem
 StartMonoAgentTuiHandle
 StartMonoAgentTuiOptions
-TUI_PACKAGE_VERSION
 TimelineTurn
 TraceSourceListItem
-TuiAgentCancelledError
-TuiAgentCancelledErrorOptions
 TuiAppLogger
 TuiConfigFieldSource
 TuiConfigFieldSummary
@@ -142,7 +139,6 @@ buildTuiConfigSummary
 createInMemoryTuiHistory
 defaultTraceRegistryDir
 discoverInstances
-isTuiAgentCancelledError
 listReplayRuns
 readReplayRun
 resolveInstanceApiKey

@@ -3,11 +3,6 @@ export type {
   AgentRequestLike,
   AgentResponderLike,
   AgentResponseLike,
-  TuiAgentCancelledErrorOptions,
-} from "./agent/responder.js";
-export {
-  TuiAgentCancelledError,
-  isTuiAgentCancelledError,
 } from "./agent/responder.js";
 
 export type {
@@ -71,5 +66,3 @@ export type {
   StartMonoAgentTuiOptions,
 } from "./runtime/start.js";
 export { startMonoAgentTui } from "./runtime/start.js";
-
-export { TUI_PACKAGE_VERSION } from "./runtime/version.js";
