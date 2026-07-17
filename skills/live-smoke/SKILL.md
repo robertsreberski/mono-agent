@@ -1,15 +1,28 @@
 ---
 name: live-smoke
-description: Live smoke-test mono-agent surfaces against real runtimes — throwaway agent dir (CLI/e2e), TUI via tmux, web PWA via curl. Use before merging runtime/adapter/TUI/web changes, or when asked to "smoke test", "test it live", "drive the TUI".
+description: Run one live mono-agent smoke scenario matching the changed runtime, adapter, TUI, web, or worker boundary. Use for high-risk changes or when asked to smoke test, test live, or drive the TUI.
 ---
 
 # Live smoke
 
-Live smoke finds what unit tests can't (real-pi parallel-batch turn segmentation
-and the atomic trace-source write race were both found only this way). Rules:
-real models/providers only — fixtures are for tests, not smoke (AGENTS.md:
-"Prefer real execution paths in verification"). Smoke runs **dist**, so rebuild
-the touched packages first: `pnpm --filter @mono-agent/<pkg>... build`.
+Live smoke finds integration failures that unit tests cannot. Select the one
+scenario that exercises the changed boundary; do not run every section as a
+generic merge ritual.
+
+| Changed boundary | Scenario |
+|---|---|
+| CLI lifecycle, adapter startup, memory wiring | A. Throwaway agent |
+| TUI rendering or input | B. TUI via tmux |
+| Web server, API, PWA | C. Web via curl |
+| Readiness worker transport | D. Real worker with local protocol server |
+| Provider routing or provider-specific behavior | A with the explicitly approved real provider |
+
+Add another scenario only when the diff independently changes another live
+surface. Paid/provider-backed runs are reserved for provider behavior; local
+lifecycle and UI smoke should not spend model calls.
+
+Smoke runs built `dist`, so build the touched dependency closure first:
+`pnpm --filter @mono-agent/<pkg>... build`.
 
 ## A. Throwaway agent e2e (CLI-level)
 

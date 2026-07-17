@@ -23,18 +23,16 @@ This repository is a config-first agent framework built from npm packages under 
 - Do not hide model/runtime/provider failures behind broad fallbacks or fake success states.
 - Do not commit secrets, provider API keys, OAuth tokens, generated credentials, or local `.env*` files.
 
-## Goal-loop development protocol
+## Development workflow
 
-- Work on this repo is organized as goal issues (label `goal`, milestone "v1 — deliver the premise") executed in iterative loops. The protocol lives in epic #119 and its "Protocol v1.1" amendment comment — read both before executing any goal.
-- Checkpoint on the ISSUE, not the PR: post `goal_status: in_progress | complete | blocked` comments that cite exact evidence — commands run, their results, and the HEAD sha.
-- The final checkpoint enumerates every "Done when" item as Done / Blocked / Cancelled; never silently substitute a different check for a stated one.
-- Cite symbol + file, not bare line numbers, and re-verify every reference at orient time (line numbers drift).
-- An unsatisfiable "Done when" makes the goal `blocked`, naming the exact discrepancy — never improvise a replacement.
-- Give every external review finding an explicit disposition (fixed / follow-up issue / rejected-with-reason) before merge.
+- The user's request is the execution contract. Do not infer an issue workflow, post issue checkpoints, or expand the requested release/deployment targets unless the user explicitly asks.
 - All changes land through a PR; never commit directly to `main`.
-- Start any task by checking whether a skill already covers it. `skills/` holds the repo workflow skills: verify-green, worktree-feature, fleet-deploy, live-smoke, release-lockstep, docs-sync, pi-upstream-recon, new-package.
+- The normal `main` checkout is the clean live source for the local mono-agent CLI and Personal Agent. Keep it usable and make tracked changes only in isolated worktrees (see `skills/worktree-feature`).
+- Start with the single skill that best matches the requested outcome. Add another skill only when the requested scope crosses that skill's boundary; a release does not imply deployment, deployment does not imply a full-fleet audit, and docs do not imply a website build unless those surfaces changed.
+- Select verification from the diff's risk, using `verify-green`: docs/skills/process changes use their focused contract checks; ordinary package changes use focused build/test/typecheck plus one broad CI gate; security, storage, lifecycle, provider-routing, delivery, and public-boundary changes add one local full gate and one matching smoke scenario.
+- Release and restart only explicitly requested consumers. Prove the exact target's version, process, and bounded health evidence instead of automatically verifying unrelated agents.
+- Give every external review finding an explicit disposition (fixed / follow-up issue / rejected-with-reason) before merge.
 - `agents/` holds the subagent templates; each `agents/*.md` has a `.toml` companion kept in sync by `pnpm run check:codex-discoverability`.
-- The main checkout is a frozen deploy tree serving the live fleet — all work happens in worktrees (see `skills/worktree-feature`; fleet state tracked in #148).
 
 ## Package expectations
 

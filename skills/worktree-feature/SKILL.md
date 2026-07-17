@@ -1,15 +1,14 @@
 ---
 name: worktree-feature
-description: Start isolated feature work in a git worktree, keep its dist fresh (worktree-dist gotcha), and open the PR from it. Use when starting any multi-commit feature/fix, when asked to "work in a worktree", or before executing an implementation plan.
+description: Start isolated mono-agent work with diff-aware setup, keep only required dist fresh, and ship through a PR with safe cleanup. Use for tracked repository changes, multi-commit work, or before executing an implementation plan.
 ---
 
 # Worktree feature workflow
 
-Why worktrees here: the normal non-bare `main` checkout is the frozen deploy
-tree, and its built dist is live across the launchd fleet. Never destabilize,
-develop in, commit from, or `git stash` WIP in that checkout. All development
-happens in isolated worktrees; the deploy checkout is updated and built only as
-part of the fleet deployment workflow.
+The normal non-bare `main` checkout is the clean live source for the global
+local mono-agent CLI and Personal Agent. Never develop in, commit from, or
+`git stash` WIP in that checkout. All tracked changes happen in isolated
+worktrees; `main` advances only to reviewed commits.
 
 Current practice keeps worktrees under
 `~/.config/superpowers/worktrees/mono-agent/`.
@@ -26,33 +25,37 @@ git worktree add ~/.config/superpowers/worktrees/mono-agent/<name> -b <branch> H
 
 Branch naming in this repo: `feat/<topic>`, `fix/<topic>`, `docs/<topic>`, `worktree-<topic>`.
 
-## MANDATORY first step — dist baseline
+## First step — choose setup from the diff
 
-When a worktree package's `dist/` is absent, TypeScript/vitest module resolution
-can follow workspace links to stale built output — cross-package
-typechecks/tests may silently run against the wrong code (false greens and false
-reds; confirmed via `tsc --traceResolution`). So:
+Do not build the whole monorepo by default:
+
+| Diff | Worktree preparation |
+|---|---|
+| Docs, skills, agent metadata, process files | No package build |
+| One package or a narrow package boundary | Install dependencies if needed, then build that package's dependency closure |
+| Cross-cutting package graph or build tooling | Install dependencies, then run the full dependency-ordered build |
 
 ```bash
 cd ~/.config/superpowers/worktrees/mono-agent/<name>
-pnpm install                 # if lockfile/deps changed; workspace links otherwise suffice
-pnpm -r --sort run build     # worktree-local dist baseline that shadows the main repo
+
+# Only when dependencies are absent or manifests/lockfile changed:
+pnpm install --frozen-lockfile
+
+# Narrow package work:
+pnpm --filter @mono-agent/<X>... run build
+
+# Cross-cutting work only:
+pnpm -r --sort run build
 ```
 
-After every edit to package X, before verifying any dependent:
+Cross-package TypeScript and tests resolve workspace imports through `dist/`.
+After editing package X, rebuild it before checking a dependent. Intra-package
+Vitest runs use `src` directly. A process-only diff does not exercise either
+path and needs no dist baseline.
 
-```bash
-pnpm --filter @mono-agent/<X> run build
-```
-
-Intra-package vitest runs use `src` directly and are exempt — only CROSS-package
-resolution hits this.
-
-**Stale-dist rescue:** if a cross-package typecheck/build fails inexplicably in a
-worktree, don't debug it in place — a poisoned dist can't be reasoned about.
-Spin up a FRESH worktree and rebuild in dependency order
-(`pnpm -r --sort run build`). Wave-1 goal #124 lost iterations to this and
-recovered exactly this way (a "rescue worktree").
+If cross-package resolution still appears stale, confirm the worktree's local
+`dist/` and rebuild the affected dependency closure. Use a fresh worktree and
+full ordered build only when the local outputs cannot be trusted.
 
 ## Website inside a worktree
 
