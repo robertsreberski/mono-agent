@@ -98,6 +98,11 @@ describe("ChatView model override (Layer 3)", () => {
       operatorPrompt: "handle one configuration response",
     });
     await waitForSettle(chat);
+    chat.continueConfiguration({
+      conversationId: "configuration",
+      sessionId: "11111111-2222-4333-8444-555555555555",
+      operatorPrompt: "handle one configuration response",
+    });
     chat.editor.onSubmit?.("make a safe change");
     await waitForSettle(chat);
 

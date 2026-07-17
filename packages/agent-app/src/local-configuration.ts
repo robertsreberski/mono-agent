@@ -64,10 +64,10 @@ import { RUN_HISTORY_MCP_SERVER_NAME, RUN_HISTORY_TOOL_NAME } from "./run-histor
 import { configuredRuntimeFallbackModels } from "./runtime-routes.js";
 
 export const LOCAL_CONFIGURATION_PROMPT =
-  "Begin temporary post-wizard configuration mode. This is not an ordinary chat. Read the mono-agent-configure skill. Your first assistant message must explain that this short conversation is for discussing the agent's Role (the configured identity document → ## Role; normally IDENTITY.md → ## Role), behavior, memory, skills, tools, or channels; secrets must never be entered; nothing changes without a separate host-owned approval; the operator can reply done or no changes to finish without edits; and ordinary chat starts after the operator's reply and any approval or rejection. Mention that /quit closes only the console and never sends a background stop request; the agent remains running unless a later restart or recovery explicitly reports failure. Then ask one concise question: how would the operator like to configure you further? Do not repeat the setup wizard. After the operator's single reply, either record one constrained proposal with ProposeAgentConfiguration or explain that no changes are needed. Never claim a proposal was applied: the local host validates it and asks for separate approval.";
+  "Begin the dedicated self-configuration session. This is not ordinary chat. Read the mono-agent-configure skill. In the first assistant message, identify the session as SELF-CONFIG and show one compact, user-led map of every capability area: identity and knowledge; runtime and models; skills, tools, MCP servers, and plugins; memory; channels, APIs, and A2A; automation and proactive work; security, sandboxing, and secrets; observability and operations; and acceptance criteria. Explain that the conversation can build a workflow from trigger → context/data → tools/actions → delivery → memory → safety/operations → success checks. State that secrets must never be entered, every file change requires a separate host-owned approval, and approval, rejection, done, or no changes keeps SELF-CONFIG active. Only /quit, /exit, or ctrl+c twice exits this session; quitting never sends a background stop request. Invite the operator to choose an area or describe the workflow they want, using one concise question. Do not repeat the setup wizard and do not overwhelm the operator with a questionnaire. The session may use multiple turns: ask one focused question at a time, and record one minimal coherent proposal with ProposeAgentConfiguration only when enough information is available. It is valid to explain or ask the next question without proposing a change. Never execute ordinary tasks with configuration authority or claim a proposal was applied; the local host validates proposals and asks for separate approval.";
 
 export const LOCAL_CONFIGURATION_OPERATOR_PROMPT =
-  "Continue the temporary post-wizard configuration exchange after the opening invitation. The invitation was already shown in a separate provider conversation: do not repeat it and do not ask the opening question again. Read the mono-agent-configure skill, act on the operator's one reply, and either record one constrained proposal with ProposeAgentConfiguration or clearly state that no changes are proposed so the host can hand off to ordinary chat. Never ask for secrets or claim a proposal was applied.";
+  "Continue the dedicated SELF-CONFIG conversation. The capability map and opening invitation were already shown: do not repeat them. Read the mono-agent-configure skill and use the existing conversation plus any host outcome below. Help the operator shape a usable workflow across trigger → context/data → tools/actions → delivery → memory → safety/operations → success checks. Take one conversational step: ask at most one focused question, explain the relevant supported or guided path, or, when the request is decision-complete, record one minimal coherent proposal with ProposeAgentConfiguration. A turn without a proposal is expected while exploring. After a host-applied or rejected proposal, continue with the next relevant area instead of handing off to ordinary chat. Never ask for secrets, execute an ordinary task with configuration authority, or claim a proposal was applied.";
 
 const CONFIGURATION_READ_ONLY_TOOLS = [
   "ReadSkill",
@@ -142,7 +142,7 @@ export async function createLocalConfigurationSession(
   options: CreateLocalConfigurationSessionOptions,
 ): Promise<LocalConfigurationSession> {
   if (options.configure === true) {
-    throw new Error("Temporary configuration must attach to the authoritative background agent; use `mono-agent tui --configure` without `--local`.");
+    throw new Error("Self-configuration must attach to the authoritative background agent; use `mono-agent tui --configure` without `--local`.");
   }
   const authenticated = await authenticatedLocalConfig(options.cwd, options.configPath);
   const secureOptions = { ...options, ...authenticated };
@@ -263,7 +263,7 @@ async function rotateAttemptSafely(
     await manager.disableConfigurationAttempts(error);
     return (
       `Warning: the completed configuration capability could not be rotated (${reasonOf(error)}). ` +
-      "Configuration re-entry is disabled in this console; close it and run `mono-agent tui --configure` again."
+      "Self-configuration cannot continue safely in this console; quit it and run `mono-agent tui --configure` again."
     );
   }
 }
@@ -284,7 +284,7 @@ async function approveAndRestart(
       kind: "applied",
       connection: attempted.connection,
       message:
-        `Configuration applied and the background agent restarted successfully. Ordinary chat is now active. ` +
+        `Configuration applied and the background agent restarted successfully. Self-configuration remains active. ` +
         `Rollback evidence: ${applied.rollbackDir}`,
     };
   }
@@ -298,7 +298,7 @@ async function approveAndRestart(
         connection: recovered.connection,
         message:
           `The new configuration could not start, so the approved files were restored and the previous background agent was restarted. ` +
-          `Ordinary chat is now active. ${attempted.message} Rollback evidence: ${applied.rollbackDir}`,
+          `Self-configuration remains active. ${attempted.message} Rollback evidence: ${applied.rollbackDir}`,
       };
     }
     return {
@@ -408,7 +408,7 @@ function configurationRuntimeRoute(config: MonoAgentConfig): {
   if (config.runtime.model.sdk !== "opencode") {
     if (directOpenCodeFallbacks.length > 0) {
       throw new Error(
-        "Temporary configuration is unavailable while the fallback chain contains direct OpenCode. " +
+        "Self-configuration is unavailable while the fallback chain contains direct OpenCode. " +
         "Its provider-owned tool loop cannot receive the host-owned proposal MCP capability, so a failover could silently lose the proposal. " +
         "Use a Pi route such as pi:opencode-go:<model>, or remove the direct opencode:* fallback before running /configure.",
       );
@@ -419,7 +419,7 @@ function configurationRuntimeRoute(config: MonoAgentConfig): {
   const supported = fallbacks.find((model) => model.sdk !== "opencode");
   if (supported === undefined || directOpenCodeFallbacks.length > 0) {
     throw new Error(
-      "Temporary configuration cannot use direct OpenCode's provider-owned tool loop because it cannot receive the host-owned proposal MCP capability. " +
+      "Self-configuration cannot use direct OpenCode's provider-owned tool loop because it cannot receive the host-owned proposal MCP capability. " +
       "Add a proposal-capable fallback such as pi:opencode-go:<model>, or switch the primary runtime before running /configure.",
     );
   }
@@ -547,7 +547,7 @@ export class LocalConfigurationManager {
   private assertAttemptsEnabled(): void {
     if (this.disabledReason !== undefined) {
       throw new Error(
-        `Temporary configuration re-entry is disabled because the prior capability could not be rotated: ${this.disabledReason}`,
+        `Self-configuration continuation is disabled because the prior capability could not be rotated: ${this.disabledReason}`,
       );
     }
   }
@@ -594,7 +594,7 @@ export class LocalConfigurationManager {
     }
     return {
       kind: "rejected",
-      message: `Proposal rejected; no files changed. Ordinary chat is now active.`,
+      message: `Proposal rejected; no files changed. Self-configuration remains active.`,
     };
   }
 
