@@ -8,11 +8,9 @@ import {
   readJsonSection,
   readRequired,
   readSettingsJson,
-  redactedSecret,
 } from "@mono-agent/agent-contracts";
 import type {
   JsonEnvFieldSpec,
-  RedactedSecretValue,
   SettingsJson,
 } from "@mono-agent/agent-contracts";
 
@@ -68,27 +66,6 @@ export interface SlackAdapterConfig {
   // Optional Socket Mode resilience tuning. Each is undefined unless the operator
   // sets it; the Socket Mode runner then applies its own defaults. See the runner's
   // SlackSocketModeRunnerBackoffOptions / SlackSocketModeRunnerHeartbeatOptions.
-  readonly heartbeatIntervalMs?: number;
-  readonly heartbeatTimeoutMs?: number;
-  readonly reconnectInitialBackoffMs?: number;
-  readonly reconnectMaxBackoffMs?: number;
-  readonly reconnectStabilityMs?: number;
-  readonly reconnectStartupGraceMs?: number;
-  readonly drainDeadlineMs?: number;
-}
-
-export interface RedactedSlackAdapterConfig {
-  readonly enabled: boolean;
-  readonly botToken: RedactedSecretValue;
-  readonly appToken: RedactedSecretValue;
-  readonly allowedChannelIds: { readonly count: number };
-  readonly allowAllChannels: boolean;
-  readonly botUserIds: { readonly count: number };
-  readonly mentionTextAliases: { readonly count: number };
-  readonly stripMentionText: boolean;
-  readonly shortcuts: { readonly count: number };
-  readonly homeTab: { readonly enabled: boolean; readonly buttonCount: number };
-  // Tuning values are plain integers (non-secret) — echoed as-is for the operator view.
   readonly heartbeatIntervalMs?: number;
   readonly heartbeatTimeoutMs?: number;
   readonly reconnectInitialBackoffMs?: number;
@@ -247,18 +224,6 @@ function readSlackSocketTuning(env: Record<string, string | undefined>): SlackSo
       continue;
     }
     tuning[key] = readInteger(raw, name, 0, invalidConfig, { min: 0, max: 3_600_000 });
-  }
-  return tuning;
-}
-
-/** Copy only the set Socket Mode tuning fields from a loaded config (for redaction/forwarding). */
-function extractSlackSocketTuning(config: SlackAdapterConfig): SlackSocketTuning {
-  const tuning: { -readonly [K in keyof SlackSocketTuning]?: number } = {};
-  for (const [key] of SLACK_SOCKET_TUNING_ENV) {
-    const value = config[key];
-    if (value !== undefined) {
-      tuning[key] = value;
-    }
   }
   return tuning;
 }
@@ -432,25 +397,6 @@ function normalizeHomeButtonConfig(entry: unknown, index: number): SlackHomeButt
     config.threadReply = threadReply;
   }
   return config;
-}
-
-export function redactSlackAdapterConfig(
-  config: SlackAdapterConfig,
-): RedactedSlackAdapterConfig {
-  return {
-    enabled: config.enabled,
-    botToken: redactedSecret(config.botToken),
-    appToken: redactedSecret(config.appToken),
-    allowedChannelIds: { count: config.allowedChannelIds.length },
-    allowAllChannels: config.allowAllChannels,
-    botUserIds: { count: config.botUserIds.length },
-    mentionTextAliases: { count: config.mentionTextAliases.length },
-    stripMentionText: config.stripMentionText,
-    shortcuts: { count: config.shortcuts.length },
-    homeTab: { enabled: config.homeTab.enabled, buttonCount: config.homeTab.buttons.length },
-    // Plain (non-secret) tuning values, only the ones the operator actually set.
-    ...extractSlackSocketTuning(config),
-  };
 }
 
 /**

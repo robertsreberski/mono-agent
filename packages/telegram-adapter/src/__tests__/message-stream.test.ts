@@ -132,32 +132,6 @@ describe("TelegramMessageStream", () => {
     ).toBe(false);
   });
 
-  it("does not render reasoning even with the legacy showThoughts flag set", async () => {
-    const api = new FakeTelegramApi();
-    const stream = new TelegramMessageStream({
-      api,
-      chatId: 42,
-      editDebounceMs: 0,
-      // showThoughts is retained for compatibility but is a no-op for prose.
-      showThoughts: true,
-    });
-
-    await stream.event({ type: "assistant_thought", text: "I" });
-    await stream.event({ type: "assistant_thought", text: " think" });
-    await stream.append("Final answer.");
-    await stream.finish("Final answer.");
-
-    // No "Thinking"/"Answer" labels; reasoning never appears. The streamed answer
-    // shows directly, then the final delivery re-renders it as MarkdownV2 with the
-    // reserved "." escaped.
-    expect(api.editMessageTextCalls.map((call) => call.text)).toEqual([
-      "Final answer.",
-      "Final answer\\.",
-    ]);
-    expect(api.editMessageTextCalls.slice(0, 1).every((call) => call.parse_mode === undefined)).toBe(true);
-    expect(api.editMessageTextCalls.at(-1)?.parse_mode).toBe("MarkdownV2");
-  });
-
   it("shows a friendly activity hint on tool_call_started, then is replaced by the answer", async () => {
     const api = new FakeTelegramApi();
     const stream = new TelegramMessageStream({

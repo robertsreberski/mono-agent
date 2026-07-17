@@ -1254,9 +1254,6 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     if (tuning?.retryBaseDelayMs !== undefined) {
       streamOptions.retryBaseDelayMs = tuning.retryBaseDelayMs;
     }
-    if (tuning?.showThoughts !== undefined) {
-      streamOptions.showThoughts = tuning.showThoughts;
-    }
     if (tuning?.showHints !== undefined) {
       streamOptions.showHints = tuning.showHints;
     }

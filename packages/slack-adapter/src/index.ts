@@ -99,13 +99,11 @@ export type {
 } from "./start.js";
 export {
   loadSlackAdapterConfig,
-  redactSlackAdapterConfig,
   SLACK_CONFIG_FIELDS,
   SlackAdapterConfigError,
 } from "./config.js";
 export type {
   LoadSlackAdapterConfigInput,
-  RedactedSlackAdapterConfig,
   SlackAdapterConfig,
   SlackAdapterConfigErrorCode,
   SlackAdapterConfigErrorDetails,

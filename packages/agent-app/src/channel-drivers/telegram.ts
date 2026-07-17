@@ -203,7 +203,6 @@ function telegramStartOptions(
       editDebounceMs: 350,
       maxSendRetries: 3,
       retryCapMs: 60_000,
-      showThoughts: true,
       formatMarkdown: true,
     },
     messages: {

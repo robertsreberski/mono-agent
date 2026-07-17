@@ -187,7 +187,6 @@ export interface TelegramAdapterStreamOptions {
   maxSendRetries?: number;
   retryCapMs?: number;
   retryBaseDelayMs?: number;
-  showThoughts?: boolean;
   showHints?: boolean;
   formatMarkdown?: boolean;
   /**

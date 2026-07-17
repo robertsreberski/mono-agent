@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   loadSlackAdapterConfig,
-  redactSlackAdapterConfig,
   SlackAdapterConfigError,
 } from "../config.js";
 
@@ -54,7 +53,7 @@ describe("loadSlackAdapterConfig", () => {
     });
   });
 
-  it("loads Socket Mode resilience tuning from JSON, lets env override it, and redacts it", async () => {
+  it("loads Socket Mode resilience tuning from JSON and lets env override it", async () => {
     const path = join(dir, "mono-agent.config.json");
     await writeFile(
       path,
@@ -91,9 +90,6 @@ describe("loadSlackAdapterConfig", () => {
       jsonPath: path,
     });
     expect(overridden.reconnectMaxBackoffMs).toBe(60000);
-
-    // The tuning is plain (non-secret) and surfaces in the redacted view.
-    expect(redactSlackAdapterConfig(config).reconnectMaxBackoffMs).toBe(20000);
   });
 
   it("defaults Socket Mode tuning to undefined when unset (runner defaults apply)", async () => {
@@ -556,38 +552,5 @@ describe("loadSlackAdapterConfig", () => {
         },
       }),
     ).rejects.toMatchObject({ code: "invalid_config" });
-  });
-});
-
-describe("redactSlackAdapterConfig", () => {
-  it("redacts tokens and reports identifiers only by count", () => {
-    const redacted = redactSlackAdapterConfig({
-      enabled: true,
-      botToken: "redacted-bot-token",
-      appToken: "redacted-app-token",
-      allowedChannelIds: ["D111", "C222"],
-      allowAllChannels: false,
-      botUserIds: ["Ubot"],
-      mentionTextAliases: ["@mono"],
-      stripMentionText: true,
-      shortcuts: [{ callbackId: "sync_now", prompt: "Run the sync." }],
-      homeTab: { enabled: true, buttons: [{ actionId: "sync_now", label: "Sync", prompt: "Run." }] },
-    });
-
-    expect(JSON.stringify(redacted)).not.toContain("secret");
-    expect(JSON.stringify(redacted)).not.toContain("D111");
-    expect(JSON.stringify(redacted)).not.toContain("Ubot");
-    expect(redacted).toEqual({
-      enabled: true,
-      botToken: { present: true, redacted: true },
-      appToken: { present: true, redacted: true },
-      allowedChannelIds: { count: 2 },
-      allowAllChannels: false,
-      botUserIds: { count: 1 },
-      mentionTextAliases: { count: 1 },
-      stripMentionText: true,
-      shortcuts: { count: 1 },
-      homeTab: { enabled: true, buttonCount: 1 },
-    });
   });
 });
