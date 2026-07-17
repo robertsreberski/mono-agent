@@ -4,7 +4,12 @@ import { MAX_AGENT_NAME_LENGTH } from "@mono-agent/config";
 import type { EffortLevel } from "@mono-agent/config";
 
 import { findModule, modulesByKind } from "../modules/catalog.js";
-import { ADAPTER_SEND_TOOL_NAMES, APP_TOOL_NAMES, BUILTIN_TOOL_NAMES } from "../modules/known-tools.js";
+import {
+  ADAPTER_SEND_TOOL_NAMES,
+  APP_TOOL_NAMES,
+  BUILTIN_TOOL_NAMES,
+  PI_ONLY_BUILTIN_TOOL_NAMES,
+} from "../modules/known-tools.js";
 import { STATIC_MODEL_CANDIDATES, type WizardModelCandidate } from "./model-discovery.js";
 import { PRESET_CATALOG } from "./presets.js";
 
@@ -120,6 +125,7 @@ const BUILTIN_TOOL_HINTS: Readonly<Record<string, string>> = {
   Glob: "find files by pattern",
   Grep: "search file contents",
   Bash: "run shell commands (pair with the sandbox)",
+  NodeRepl: "execute JavaScript in a run-scoped Node REPL (Pi only)",
   WebFetch: "fetch a URL",
   WebSearch: "search the web",
 };
@@ -349,8 +355,15 @@ export function creationReviewOptions(options: { readonly setupRequired: boolean
  * policy-gated tools, adapter send tools contributed by the selected channels
  * (deduped, in channel order), and finally the channel-agnostic `AskUser`.
  */
-export function toolMultiselectOptions(selectedChannelIds: readonly string[]): WizardSelectOption[] {
-  const options: WizardSelectOption[] = BUILTIN_TOOL_NAMES.map((name) => ({
+export function toolMultiselectOptions(
+  selectedChannelIds: readonly string[],
+  { includePiOnly = true }: { readonly includePiOnly?: boolean } = {},
+): WizardSelectOption[] {
+  const piOnly = new Set<string>(PI_ONLY_BUILTIN_TOOL_NAMES);
+  const builtIns = includePiOnly
+    ? BUILTIN_TOOL_NAMES
+    : BUILTIN_TOOL_NAMES.filter((name) => !piOnly.has(name));
+  const options: WizardSelectOption[] = builtIns.map((name) => ({
     value: name,
     label: name,
     ...(BUILTIN_TOOL_HINTS[name] === undefined ? {} : { hint: BUILTIN_TOOL_HINTS[name] }),
@@ -362,7 +375,7 @@ export function toolMultiselectOptions(selectedChannelIds: readonly string[]): W
     ...(APP_TOOL_HINTS[name] === undefined ? {} : { hint: APP_TOOL_HINTS[name] }),
   })));
 
-  const seen = new Set<string>([...BUILTIN_TOOL_NAMES, ...APP_TOOL_NAMES]);
+  const seen = new Set<string>([...builtIns, ...APP_TOOL_NAMES]);
   for (const channelId of selectedChannelIds) {
     const module = findModule(channelId);
     if (module === undefined) {

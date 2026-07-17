@@ -16,7 +16,11 @@ import {
   probeMemoryEmbeddingSelection,
 } from "../memory-embedding-service.js";
 import { DEFAULT_MODEL } from "../modules/base.js";
-import { ALLOW_ALL_TOOLS, APP_TOOL_NAMES, BUILTIN_TOOL_NAMES, isAllowAllTools } from "../modules/known-tools.js";
+import {
+  ADAPTER_SEND_TOOL_NAMES,
+  ALLOW_ALL_TOOLS,
+  isAllowAllTools,
+} from "../modules/known-tools.js";
 import {
   hasDurableProviderEnvironmentCredential,
   isProviderSetupPiApiKeyAction,
@@ -125,7 +129,7 @@ interface DraftAnswers {
   moduleInputs: Record<string, Record<string, string>>;
 }
 
-const SANDBOXABLE_TOOLS = new Set(["Bash", "Write", "Edit"]);
+const SANDBOXABLE_TOOLS = new Set(["Bash", "Write", "Edit", "NodeRepl"]);
 const MANAGED_MEMORY_MODULE_IDS = new Set(["memory:journal", "memory:bujo"]);
 const MANUAL_EMBEDDING_MODEL = "__manual_embedding_model__";
 
@@ -804,7 +808,7 @@ async function promptSafetyPolicy(draft: DraftAnswers): Promise<void> {
   const mixedPiProviderNativeChain = mixed && hasPiRoute && providerNative;
   if (hasSandboxableTools && hasPiRoute) {
     draft.sandbox = await confirm({
-      message: "Install and use managed SRT for Pi shell/file tools? (localhost-only network; setup verifies fail-closed enforcement)",
+      message: "Install and use managed SRT for Pi shell/file/Node REPL tools? (localhost-only network; setup verifies fail-closed enforcement)",
       initialValue: true,
     });
   } else {
@@ -898,7 +902,7 @@ async function promptSafetyPolicy(draft: DraftAnswers): Promise<void> {
 
 async function confirmHighRiskUnsandboxedAccess(): Promise<boolean> {
   return confirm({
-    message: "Proceed with high-risk unsandboxed access? The model may run shell commands, change files, access the web, and send through enabled channels.",
+    message: "Proceed with high-risk unsandboxed access? The model may run shell commands or JavaScript, change files, access the web, and send through enabled channels.",
     initialValue: false,
   });
 }
@@ -1240,10 +1244,10 @@ function alwaysOnDisplay(alwaysOn: readonly string[]): string[] {
  * multiselect option builder so the framing note can never drift from the picker.
  */
 function channelSendTools(channels: readonly string[]): string[] {
+  const channelTools = new Set<string>(ADAPTER_SEND_TOOL_NAMES);
   return toolMultiselectOptions(channels)
-    .slice(BUILTIN_TOOL_NAMES.length + APP_TOOL_NAMES.length)
     .map((option) => option.value)
-    .filter((value) => value !== "AskUser");
+    .filter((value) => value !== "AskUser" && channelTools.has(value));
 }
 
 /**
@@ -1257,6 +1261,7 @@ function channelSendTools(channels: readonly string[]): string[] {
  */
 function toolSituationFraming(draft: DraftAnswers, alwaysOn: readonly string[]): string {
   const sends = channelSendTools(draft.channels);
+  const piOnly = selectedRuntimeModels(draft).every((model) => model.startsWith("pi:"));
   const channelLine = sends.length > 0
     ? `Channel tools (from the channels you enabled): ${sends.join(", ")}, plus AskUser (ask the human, any channel).`
     : "Channel tools: AskUser (ask the human, any channel).";
@@ -1264,10 +1269,10 @@ function toolSituationFraming(draft: DraftAnswers, alwaysOn: readonly string[]):
     alwaysOn.length > 0
       ? `Always on (auto-provisioned, not affected by this choice): ${alwaysOnDisplay(alwaysOn).join(", ")}.`
       : "Always on (auto-provisioned): none for this setup.",
-    "Built-ins: files (Read/Write/Edit/Glob/Grep), shell (Bash), web (WebFetch/WebSearch).",
+    `Built-ins: files (Read/Write/Edit/Glob/Grep), shell (Bash), web (WebFetch/WebSearch)${piOnly ? ", JavaScript (NodeRepl, Pi only)" : ""}.`,
     "App tools: RunHistory (read-only evidence from completed prior runs in this conversation).",
     channelLine,
-    '"Allow all" lets the model run shell commands, read/change files, access the web, and send through enabled channels. These actions can modify data or contact people; you can turn specific tools off later via tools.disallowedTools.',
+    '"Allow all" lets the model run shell commands or JavaScript on Pi routes, read/change files, access the web, and send through enabled channels. These actions can modify data or contact people; you can turn specific tools off later via tools.disallowedTools.',
   ].join("\n");
 }
 
@@ -1289,7 +1294,7 @@ async function promptTools(draft: DraftAnswers): Promise<void> {
     return;
   }
   const allowAll = await confirm({
-      message: "Allow all tools? (shell commands, file changes, web access, and enabled-channel sends)",
+      message: "Allow all tools? (shell/JavaScript execution, file changes, web access, and enabled-channel sends)",
       initialValue: true,
     });
   if (allowAll) {
@@ -1307,7 +1312,9 @@ async function promptTools(draft: DraftAnswers): Promise<void> {
  * `tools.allowedTools` is deterministic regardless of toggle order.
  */
 async function pickSpecificTools(draft: DraftAnswers): Promise<void> {
-  const options = toolMultiselectOptions(draft.channels);
+  const options = toolMultiselectOptions(draft.channels, {
+    includePiOnly: selectedRuntimeModels(draft).every((model) => model.startsWith("pi:")),
+  });
   const optionOrder = new Map(options.map((option, index) => [option.value, index]));
   const recommended = recommendedToolSelection(toWizardAnswers(draft));
 

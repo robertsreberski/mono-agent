@@ -770,9 +770,9 @@ describe("pi MCP tool helpers", () => {
   });
 });
 
-// The set of built-in tool names getPiBuiltinTools owns (Read/Write/Edit/Glob/
-// Grep/Bash/WebFetch/WebSearch). ReadSkill (legacy alias read_skill) is appended separately
-// only when skills are supplied.
+// The always-created built-ins getPiBuiltinTools owns. NodeRepl is run-owned and
+// joins this set only when its controller is supplied. ReadSkill (legacy alias
+// read_skill) is appended separately only when skills are supplied.
 const BUILTIN_TOOL_NAMES = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "WebSearch"];
 
 function toolNames(tools) {
@@ -809,6 +809,39 @@ describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", 
   it("applies disallowedTools to an explicit allow list (deny wins)", () => {
     const tools = getPiBuiltinTools(["Read", "Bash"], { disallowedTools: ["Bash"] });
     expect(tools.map((tool) => tool.name)).toEqual(["Read"]);
+  });
+
+  it("exposes a sequential NodeRepl tool only when its run-owned controller is supplied", async () => {
+    const execute = vi.fn(async () => "42");
+    const controller = { execute };
+    const tools = getPiBuiltinTools(["NodeRepl"], { nodeReplController: controller });
+    const nodeRepl = tools.find((tool) => tool.name === "NodeRepl");
+    const signal = new AbortController().signal;
+
+    expect(nodeRepl).toMatchObject({
+      label: "Node REPL",
+      executionMode: "sequential",
+      parameters: {
+        type: "object",
+        required: ["code"],
+        additionalProperties: false,
+        properties: { code: { type: "string", minLength: 1 } },
+      },
+    });
+    await expect(nodeRepl.execute("NodeRepl:1", { code: "40 + 2" }, signal))
+      .resolves.toMatchObject({ content: [{ type: "text", text: "42" }] });
+    expect(execute).toHaveBeenCalledWith({ code: "40 + 2" }, { signal });
+    expect(getPiBuiltinTools(["NodeRepl"], {})).toEqual([]);
+  });
+
+  it("applies wildcard and deny-wins policy to the run-owned NodeRepl tool", () => {
+    const controller = { execute: vi.fn(async () => "ok") };
+    expect(toolNames(getPiBuiltinTools(["*"], { nodeReplController: controller })))
+      .toContain("NodeRepl");
+    expect(toolNames(getPiBuiltinTools(["*"], {
+      nodeReplController: controller,
+      disallowedTools: ["NodeRepl"],
+    }))).not.toContain("NodeRepl");
   });
 
   it("drops the ReadSkill tool when ReadSkill is disallowed, even with skills present", () => {

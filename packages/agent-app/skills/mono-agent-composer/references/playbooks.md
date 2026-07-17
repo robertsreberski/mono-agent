@@ -175,7 +175,7 @@ const orchestrator = await createConfiguredAgentResponder({
 
 ## 9. Sandboxed code agent (loopback only, deny .env)
 **For:** a security team deploying an internal code assistant.
-**Goal:** read repos + run Bash inside the native srt sandbox with loopback-only network access and protected secrets.
+**Goal:** read repos + run Bash or Pi's run-scoped NodeRepl inside the native srt sandbox with loopback-only network access and protected secrets.
 **Features:** `sandbox.mode`, `sandbox.network-policy`, `sandbox.filesystem-scopes`, `sandbox.fallback`, `tool-policy.allow-all`, `memory.journal`.
 
 ```json
@@ -186,7 +186,7 @@ const orchestrator = await createConfiguredAgentResponder({
 }
 ```
 **Steps:** `mono-agent init --memory journal` → leave tools at the allow-all default (`["*"]`); the **sandbox**, not an allowlist, is what constrains the code tools → `sandbox.mode native` + `network localhost` + deny-write defaults → keep `fallback: fail-closed` (do NOT set `unsafe-host-process`) → `validate` → `start`.
-**Smoke:** ask it to read a file + run Bash (works), then fetch an external URL or write `.env` (both blocked in the artifact). Keep every primary/fallback/trigger model on Pi; direct Codex, Claude, and direct OpenCode reject this mono-agent sandbox policy.
+**Smoke:** ask it to read a file, run Bash, then use NodeRepl twice to retain a variable and produce `42` (all work); next fetch an external URL or write `.env` (both blocked in the artifact). Keep every primary/fallback/trigger model on Pi; direct Codex, Claude, and direct OpenCode reject this mono-agent sandbox policy.
 
 ## 10. Phoenix-observed agent with the TUI
 **For:** an agent builder evaluating runs in a tracing dashboard.

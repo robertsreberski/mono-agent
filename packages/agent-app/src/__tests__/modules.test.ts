@@ -106,15 +106,16 @@ describe("baseConfig", () => {
 });
 
 describe("known-tools", () => {
-  it("lists all eight built-in tools", () => {
-    expect(BUILTIN_TOOL_NAMES).toHaveLength(8);
-    for (const name of ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "WebSearch"]) {
+  it("lists all nine built-in tools", () => {
+    expect(BUILTIN_TOOL_NAMES).toHaveLength(9);
+    for (const name of ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "NodeRepl", "WebFetch", "WebSearch"]) {
       expect(BUILTIN_TOOL_NAMES).toContain(name);
     }
   });
 
   it("recognizes exact built-in and adapter-send tool names, case-sensitively", () => {
     expect(isKnownToolName("Read")).toBe(true);
+    expect(isKnownToolName("NodeRepl")).toBe(true);
     expect(isKnownToolName("read")).toBe(false);
     expect(isKnownToolName("TelegramAskButtons")).toBe(true);
     expect(APP_TOOL_NAMES).toEqual(["RunHistory"]);

@@ -6,7 +6,7 @@ sidebar:
 
 # Tools, MCP & Sandbox
 
-This section covers how an agent's tool surface is controlled in mono-agent: the **tool policy** (`@mono-agent/agent-harness`) that allow/deny-lists built-in and adapter tools, the **MCP servers** you attach to extend that surface, and the **native sandbox** (`@mono-agent/runtime-adapter`) that confines what tools like `Bash`, `Write`, and `Edit` may touch on disk and over the network.
+This section covers how an agent's tool surface is controlled in mono-agent: the **tool policy** (`@mono-agent/agent-harness`) that allow/deny-lists built-in and adapter tools, the **MCP servers** you attach to extend that surface, and the **native sandbox** (`@mono-agent/runtime-adapter`) that confines what tools like `Bash`, Pi's `NodeRepl`, `Write`, and `Edit` may touch on disk and over the network.
 
 All three are configured in `mono-agent.config.json`; enforcement depends on the selected runtime boundary and unsupported combinations fail closed. The tool policy is **allow-all by default**. In `uniform` route safety, every attempt must represent one common contract. Explicit `per-route-native` lets Pi keep mono-agent tool policy and an active SRT policy, while Claude/Codex/OpenCode use their documented native contract. When Pi has no active native sandbox, route telemetry says SRT is `disabled` and Bash/stdio MCP subprocesses are unsandboxed. The route matrix is visible and unsupported capabilities are never silently removed.
 
@@ -42,7 +42,9 @@ The `tools` block selects the surface; the `sandbox` block confines it. A minima
 }
 ```
 
-The built-in tools are `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `WebFetch`, and `WebSearch` (coverage: `config`). They are gated by `tools.allowedTools` / `tools.disallowedTools`.
+The common managed built-ins are `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `WebFetch`, and `WebSearch` (coverage: `config`). Pi routes additionally expose `NodeRepl({ code })`, a run-scoped JavaScript REPL. They are gated by `tools.allowedTools` / `tools.disallowedTools`.
+
+`NodeRepl` shares state only within one Pi run and uses the same sandbox policy as `Bash`; it is not exposed on Claude, Codex, or direct OpenCode routes. See [Built-in tools & auto-guards](/runtime/tools-and-guards/#noderepl-pi-only) for its lifecycle and limits.
 
 Equivalent environment overrides exist for headless deploys:
 

@@ -17,9 +17,13 @@ export const BUILTIN_TOOL_NAMES = [
   "Glob",
   "Grep",
   "Bash",
+  "NodeRepl",
   "WebFetch",
   "WebSearch",
 ] as const;
+
+/** Built-ins only exposed by the Pi runtime. */
+export const PI_ONLY_BUILTIN_TOOL_NAMES = ["NodeRepl"] as const;
 
 /** App-owned tools injected by the configured host and governed by tool policy. */
 export const APP_TOOL_NAMES = [

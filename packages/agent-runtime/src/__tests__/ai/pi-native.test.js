@@ -414,6 +414,52 @@ describe("pi-native AgentHarness bridge", () => {
     }
   });
 
+  it("keeps one NodeRepl session for the Pi run and cleans it up afterward", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-native-node-repl-"));
+    const cleanup = vi.fn(async () => {});
+    const sandbox = {
+      mergePolicies: (configured, request) => request ?? configured,
+      prepareCommand: async ({ command }) => ({
+        ...command,
+        args: command.args ?? [],
+        cwd: command.cwd ?? root,
+        sandboxed: false,
+        cleanup,
+      }),
+      networkAllowsUrl: () => true,
+    };
+    try {
+      const model = setup();
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("NodeRepl", { code: "const answer = 40" }, { id: "repl-1" })]),
+        fauxAssistantMessage([fauxToolCall("NodeRepl", { code: "answer + 2" }, { id: "repl-2" })]),
+        fauxAssistantMessage([fauxText("done")]),
+      ]);
+      const onEvent = vi.fn();
+
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        cwd: root,
+        allowedTools: ["NodeRepl"],
+        messages: [{ role: "user", content: "calculate in Node" }],
+        onEvent,
+        sandbox,
+      }));
+
+      expect(result.error).toBeNull();
+      expect(result.text).toBe("done");
+      const toolResults = onEvent.mock.calls
+        .map(([event]) => event?.message?.content?.[0])
+        .filter((block) => block?.type === "tool_result");
+      expect(toolResults).toEqual(expect.arrayContaining([
+        expect.objectContaining({ tool_use_id: "repl-1", content: "undefined", is_error: false }),
+        expect.objectContaining({ tool_use_id: "repl-2", content: "42", is_error: false }),
+      ]));
+      expect(cleanup).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("records a pi-native Write call without synthetic file_edit tool events", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-write-"));
     try {

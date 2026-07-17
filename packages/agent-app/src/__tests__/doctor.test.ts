@@ -5741,6 +5741,29 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(report.ok).toBe(true);
   });
 
+  it("accepts NodeRepl for a Pi runtime", async () => {
+    const configPath = await writeToolsConfig({ allowedTools: ["NodeRepl"] });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("ok");
+    expect(tools.details.join("\n")).not.toMatch(/Unknown tool|Pi-only/u);
+  });
+
+  it("warns when NodeRepl is selected without a Pi runtime route", async () => {
+    const configPath = await writeToolsConfig(
+      { allowedTools: ["NodeRepl"] },
+      { runtime: { model: "claude:claude-sonnet-4-6", executionMode: "sdk" } },
+    );
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("waiting");
+    expect(tools.details.join("\n")).toMatch(/NodeRepl is Pi-only.*no Pi runtime route/u);
+  });
+
   it("notes MemoryRecall as a harmless no-op (status ok) when recall is enabled", async () => {
     // recallTool enabled → MemoryRecall is auto-provisioned; listing it is redundant
     // but harmless, so it is an INFO note that does not downgrade the tools status.

@@ -252,7 +252,7 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
     label,
     description,
     parameters,
-    executionMode: name === "Write" || name === "Edit" || name === "Bash" ? "sequential" : undefined,
+    executionMode: name === "Write" || name === "Edit" || name === "Bash" || name === "NodeRepl" ? "sequential" : undefined,
     async execute(toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("tool execution aborted");
       const normalized = normalizePiBuiltinToolParams(name, params, { cwd, toolLimits, ctx });
@@ -379,7 +379,7 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
 
 /**
  * @param {any} allowedTools
- * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, ctx?: any}} [options]
+ * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, ctx?: any}} [options]
  */
 export function getPiBuiltinTools(allowedTools, {
   disallowedTools = [],
@@ -399,6 +399,7 @@ export function getPiBuiltinTools(allowedTools, {
   sandboxEngine = null,
   approvalManager = null,
   approvalModel = null,
+  nodeReplController = null,
   ctx = null,
 } = {}) {
   const textLimitSchema = integerSchema();
@@ -457,6 +458,16 @@ export function getPiBuiltinTools(allowedTools, {
       timeout: bashTimeoutSchema,
       max_output_chars: bashLimitSchema,
     }, ["command"]), bashToolImpl, toolContext),
+    NodeRepl: nodeReplController
+      ? createBuiltinTool(
+        "NodeRepl",
+        "Node REPL",
+        "Evaluate JavaScript in a run-scoped Node.js REPL. Variables persist across NodeRepl calls in this run.",
+        objectSchema({ code: { type: "string", minLength: 1 } }, ["code"]),
+        (params, { signal }) => nodeReplController.execute(params, { signal }),
+        toolContext,
+      )
+      : null,
     WebFetch: createBuiltinTool("WebFetch", "Web Fetch", "Fetch a URL and return text.", objectSchema({
       url: { type: "string" },
       headers: { type: "object", additionalProperties: { type: "string" } },

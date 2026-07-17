@@ -79,6 +79,8 @@ Plus, independently: MCP servers from an mcp.json config file?
 
 Fills: `tools.allowedTools`, `tools.disallowedTools` (denylist wins, even under allow-all), `tools.mcpConfigPath`. The default is allow-all (`["*"]`) — write that unless the user asks to narrow. Under allow-all the adapter-derived send tools (`SlackSendMessage` / `TelegramSendMessage` / …) are auto-available once the channel is enabled; only a **specific** allowlist needs their exact names added. Valid enabled Slack/Telegram adapter config and destination allowlists are required either way. On the pi-native runtime `disallowedTools` does not filter external MCP-server tools — to withhold one, don't declare its server.
 
+For an all-Pi route chain, offer the Pi-only `NodeRepl` built-in when the user wants run-scoped JavaScript evaluation. It executes with the same sandbox authority as `Bash`; do not offer it as a cross-runtime capability on mixed or non-Pi chains.
+
 ## 6. Memory Strategy
 
 Question:
