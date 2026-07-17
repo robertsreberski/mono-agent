@@ -38,7 +38,7 @@ The composable factory behind an adapter (e.g. `createTelegramChannelDriver`, or
 
 ## Context compaction
 
-When a turn approaches the model's context window, the pi bridge drives `AgentHarness.compact()` — proactively before a turn and reactively (compact + single re-prompt) on overflow. The window auto-tracks the serving model; runs report `context_compaction_applied: true`/`false`/`null`. See [Sessions and concurrency](/runtime/sessions-concurrency/).
+When a turn approaches the model's context window, the pi bridge drives `AgentHarness.compact()` — proactively before a turn and reactively (compact + single re-prompt when the built session context was reduced) on overflow. The window auto-tracks the serving model; runs report compaction application and before/after effectiveness. Persistent overflow is `context_limit` and may advance to the next configured fallback. See [Sessions and concurrency](/runtime/sessions-concurrency/).
 
 ## Entity graph
 

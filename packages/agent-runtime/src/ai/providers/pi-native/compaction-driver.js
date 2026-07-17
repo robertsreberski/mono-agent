@@ -26,6 +26,7 @@
 import {
   calculateContextTokens,
   estimateContextTokens,
+  estimateTokens,
   getLastAssistantUsage,
   shouldCompact,
 } from "@earendil-works/pi-agent-core";
@@ -120,21 +121,53 @@ export async function estimateCurrentContextTokens(session, fixedOverheadTokens 
     : { tokens: rawTokens, source: "estimate" };
 }
 
+// Compaction effectiveness must be measured independently of the provider's
+// last-assistant usage. That usage can describe the pre-compaction request and
+// remain attached to a retained message, making estimateContextTokens() report
+// the old large value even after the transcript prefix was summarized. Summing
+// pi's per-message estimator gives a stable before/after comparison over the
+// actual context the session will build next.
+async function estimateSessionMessageTokens(session) {
+  if (!session || typeof session.buildContext !== "function") return null;
+  try {
+    const context = await session.buildContext();
+    return (context?.messages || []).reduce((total, message) => total + (Number(estimateTokens(message)) || 0), 0);
+  } catch {
+    return null;
+  }
+}
+
 // Run a single guarded compaction. Requires the harness idle (callers
 // waitForIdle first). Never throws — classifies AgentHarnessError into a warning
 // and reports back whether anything was compacted. Fires onCompactionRecorded on
 // success so a host can persist the compaction row.
-export async function tryCompact(harness, { trigger, onEvent, runtimeWarnings, onCompactionRecorded, runId, model }) {
+export async function tryCompact(harness, { trigger, onEvent, runtimeWarnings, onCompactionRecorded, runId, model, session }) {
   try {
+    const measuredTokensBefore = await estimateSessionMessageTokens(session);
     const result = await harness.compact();
     const tokensBefore = Number(result?.tokensBefore) || null;
+    const tokensAfter = await estimateSessionMessageTokens(session);
+    const reduced = measuredTokensBefore === null || tokensAfter === null
+      ? null
+      : tokensAfter < measuredTokensBefore;
     onEvent?.({
       type: "runtime_warning",
       warning_kind: "context_compaction_applied",
       source: "pi",
       trigger,
       tokens_before: tokensBefore,
+      tokens_after: tokensAfter,
+      reduced,
     });
+    if (reduced === false) {
+      runtimeWarnings.push({
+        warning_kind: "context_compaction_not_reducible",
+        source: "pi",
+        trigger,
+        tokens_before: measuredTokensBefore,
+        tokens_after: tokensAfter,
+      });
+    }
     if (typeof onCompactionRecorded === "function") {
       try {
         onCompactionRecorded({
@@ -156,7 +189,7 @@ export async function tryCompact(harness, { trigger, onEvent, runtimeWarnings, o
         });
       }
     }
-    return { applied: true, tokensBefore, nothingToCompact: false };
+    return { applied: true, tokensBefore, tokensAfter, reduced, nothingToCompact: false };
   } catch (err) {
     const message = err?.message || String(err);
     const code = err?.code;
@@ -169,7 +202,7 @@ export async function tryCompact(harness, { trigger, onEvent, runtimeWarnings, o
           ? "context_compaction_busy"
           : "context_compaction_failed";
     runtimeWarnings.push({ warning_kind: warningKind, source: "pi", trigger, message });
-    return { applied: false, tokensBefore: null, nothingToCompact };
+    return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact };
   }
 }
 
@@ -290,6 +323,7 @@ export async function runProactiveCompaction(runState, {
         onCompactionRecorded: options.onCompactionRecorded,
         runId: options.runId,
         model: reference,
+        session: runState.session,
       });
       if (res.applied) {
         runState.compaction.applied = true;
@@ -297,6 +331,8 @@ export async function runProactiveCompaction(runState, {
         Object.assign(runState.compaction.diagnostics, {
           context_compaction_proactive: true,
           context_compaction_tokens_before: res.tokensBefore,
+          context_compaction_tokens_after: res.tokensAfter,
+          context_compaction_reduced: res.reduced,
           context_compaction_estimate_source: est.source,
           context_window: policy.contextWindow,
           // Additive observability (A4): the overhead components folded into
@@ -357,6 +393,7 @@ export async function runReactiveCompaction(runState, {
   const provisionalError = normalizePiErrorMessage(provisionalRaw);
   if (provisionalError && isReactiveCompactionCandidate(provisionalError, c.diagnostics)) {
     c.reactiveAttempted = true;
+    c.diagnostics.context_compaction_reactive_attempted = true;
     // Learn the real ceiling from the error so future runs trigger
     // proactively at it even when the configured contextWindow was wrong.
     recordDiscoveredContextWindow(harness, runtime, resolved, parseContextLimitFromError(provisionalError));
@@ -371,6 +408,7 @@ export async function runReactiveCompaction(runState, {
         onCompactionRecorded: options.onCompactionRecorded,
         runId: options.runId,
         model: reference,
+        session: runState.session,
       });
       if (res.applied) {
         c.applied = true;
@@ -378,15 +416,20 @@ export async function runReactiveCompaction(runState, {
         Object.assign(c.diagnostics, {
           context_compaction_reactive: true,
           context_compaction_tokens_before: res.tokensBefore,
+          context_compaction_tokens_after: res.tokensAfter,
+          context_compaction_reduced: res.reduced,
         });
         // Re-anchor the transcript baseline to the compacted length so the
         // re-prompt's turn (and its stopReason/usage) slices out correctly.
         runState.sessionBaselineCount = (await runState.session.buildContext()).messages.length;
-        // Re-prompt ONCE in the now-compacted session. The trailing user turn
-        // is already persisted, so a fresh prompt continues against it.
-        const rerun = await runHarnessPrompt(harness, promptText, promptImages);
-        runError = rerun.runError;
-        state = await captureState();
+        // Re-prompt ONCE only when compaction actually reduced the built
+        // session context (or when measurement was unavailable). Re-sending an
+        // unchanged oversized request only repeats the same provider error.
+        if (res.reduced !== false) {
+          const rerun = await runHarnessPrompt(harness, promptText, promptImages);
+          runError = rerun.runError;
+          state = await captureState();
+        }
       }
     }
   }

@@ -71,7 +71,9 @@ Related per-turn timing also lands in the JSONL: a `provider_bridge_latency` eve
 Compaction is delegated to the active provider bridge rather than hand-rolled in the runtime. On the pi-native bridge, the bridge drives `AgentHarness.compact()`:
 
 - **Proactively** — before a turn when the running model is near its context window.
-- **Reactively** — if a turn still overflows, it compacts and re-prompts once.
+- **Reactively** — if a turn still overflows, it compacts and re-prompts once
+  when the built session context was reduced. A non-reducing compaction is not
+  sent back to the same model unchanged.
 
 The window auto-tracks whichever model is actually serving the request and self-corrects from a real ceiling reported in an overflow error, so a fallback to a smaller-window model is handled without manual tuning.
 
@@ -82,6 +84,11 @@ Every run reports `context_compaction_applied`:
 | `true` | Compaction fired this run. |
 | `false` | Enabled but not needed. |
 | `null` | Compaction disabled (or the bridge does not support it). |
+
+Pi diagnostics also report `context_compaction_reactive_attempted`,
+`context_compaction_tokens_after`, and `context_compaction_reduced`. If the
+request still exceeds the primary model's window, the run is classified as
+`context_limit`; the fallback router may then try the next configured model.
 
 This is automatic on the pi-native bridge (coverage: `provider` + `settings`); tune it via the `agent_compaction_*` settings. Other bridges follow their own compaction behavior. See [Backends](/runtime/backends/) for bridge differences, [Sessions & concurrency](/runtime/sessions-concurrency/) for how sessions persist, and [Fallback](/runtime/fallback/) for window changes across the fallback chain.
 

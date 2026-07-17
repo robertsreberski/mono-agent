@@ -17,7 +17,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Pi OAuth credentials | config | `providers.piAuthPath` | `runtime.pi-credentials` |
 | Pi-native transport, retry, and durable provider-session tuning | config | `providers.piNative.{transport,piMaxRetries,maxRetryDelayMs,piSessionsRoot}` | `runtime.pi-native-tuning` |
 | Tool-output bloat guard, cost tracking | auto | built into every run | — |
-| Context handling / auto-compaction | provider + auto | delegated to the provider; the pi bridge drives `AgentHarness.compact()` (proactive before a near-window turn + reactive recovery on overflow). Runs report `context_compaction_applied: true` / `false` / `null` | — |
+| Context handling / auto-compaction | provider + auto | delegated to the provider; the pi bridge drives `AgentHarness.compact()` (proactive before a near-window turn + reactive recovery only when compaction reduced the built context). Runs report application plus before/after effectiveness; persistent `context_limit` advances to a configured fallback | — |
 | Structured output (JSON schema), live input steering | code | harness `runtimeOptions` | — |
 | Tool approval gates (risk tiers, timeouts, always-allow) | code | `createMonoRuntime({ onToolApprovalRequest, ... })` — needs a host UI | — |
 | Fully custom runtime | code | `startMonoAgentApp({ runtime })` | — |

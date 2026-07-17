@@ -52,7 +52,12 @@ describe("tryCompact", () => {
   it("emits the applied event, fires onCompactionRecorded, and reports applied", async () => {
     const events = [];
     const recorded = [];
-    const harness = { compact: async () => ({ tokensBefore: 1234, summary: "s", firstKeptEntryId: "e1" }) };
+    const messages = [{ role: "user", content: "x".repeat(4000) }];
+    const session = fakeSession({ messages });
+    const harness = { compact: async () => {
+      messages.splice(0, messages.length, { role: "user", content: "summary" });
+      return { tokensBefore: 1234, summary: "s", firstKeptEntryId: "e1" };
+    } };
     const res = await tryCompact(harness, {
       trigger: "proactive",
       onEvent: (e) => events.push(e),
@@ -60,10 +65,31 @@ describe("tryCompact", () => {
       onCompactionRecorded: (row) => recorded.push(row),
       runId: "r1",
       model: "pi:faux:m",
+      session,
     });
-    expect(res).toEqual({ applied: true, tokensBefore: 1234, nothingToCompact: false });
-    expect(events[0]).toMatchObject({ warning_kind: "context_compaction_applied", trigger: "proactive", tokens_before: 1234 });
+    expect(res).toMatchObject({ applied: true, tokensBefore: 1234, reduced: true, nothingToCompact: false });
+    expect(res.tokensAfter).toBeGreaterThan(0);
+    expect(events[0]).toMatchObject({
+      warning_kind: "context_compaction_applied",
+      trigger: "proactive",
+      tokens_before: 1234,
+      reduced: true,
+    });
     expect(recorded[0]).toMatchObject({ trigger: "proactive", provider_kind: "pi", tokens_before: 1234, status: "succeeded" });
+  });
+
+  it("reports an applied compaction that did not reduce the built context", async () => {
+    const warnings = [];
+    const session = fakeSession({ messages: [{ role: "user", content: "unchanged" }] });
+    const res = await tryCompact(
+      { compact: async () => ({ tokensBefore: 10 }) },
+      { trigger: "reactive_overflow", onEvent: () => {}, runtimeWarnings: warnings, session },
+    );
+    expect(res).toMatchObject({ applied: true, reduced: false });
+    expect(warnings).toContainEqual(expect.objectContaining({
+      warning_kind: "context_compaction_not_reducible",
+      trigger: "reactive_overflow",
+    }));
   });
 
   it("classifies a nothing-to-compact failure as a warning, not a throw", async () => {
@@ -71,7 +97,13 @@ describe("tryCompact", () => {
     const err = Object.assign(new Error("nothing to compact"), { code: "compaction" });
     const harness = { compact: async () => { throw err; } };
     const res = await tryCompact(harness, { trigger: "proactive", onEvent: () => {}, runtimeWarnings: warnings });
-    expect(res).toEqual({ applied: false, tokensBefore: null, nothingToCompact: true });
+    expect(res).toEqual({
+      applied: false,
+      tokensBefore: null,
+      tokensAfter: null,
+      reduced: null,
+      nothingToCompact: true,
+    });
     expect(warnings[0].warning_kind).toBe("context_compaction_nothing_to_compact");
   });
 
@@ -186,11 +218,15 @@ describe("runReactiveCompaction — overflow recovery", () => {
   });
 
   it("compacts once and re-prompts once on a fresh overflow", async () => {
-    const runState = freshRunState(fakeSession({ messages: [{ role: "user", content: "a" }] }), { policy: { enabled: true } });
+    const messages = [{ role: "user", content: "x".repeat(4000) }];
+    const runState = freshRunState(fakeSession({ messages }), { policy: { enabled: true } });
     const captured = [];
     const harness = {
       waitForIdle: vi.fn(),
-      compact: vi.fn(async () => ({ tokensBefore: 5000 })),
+      compact: vi.fn(async () => {
+        messages.splice(0, messages.length, { role: "user", content: "summary" });
+        return { tokensBefore: 5000 };
+      }),
       prompt: vi.fn(async () => { captured.push("prompt"); }),
       getModel: () => ({ id: "m", contextWindow: 8000 }),
     };
@@ -206,8 +242,32 @@ describe("runReactiveCompaction — overflow recovery", () => {
     expect(harness.prompt).toHaveBeenCalledTimes(1);
     expect(runState.compaction.applied).toBe(true);
     expect(runState.compaction.diagnostics.context_compaction_reactive).toBe(true);
+    expect(runState.compaction.diagnostics.context_compaction_reactive_attempted).toBe(true);
+    expect(runState.compaction.diagnostics.context_compaction_reduced).toBe(true);
     expect(out.state).toBe(rerunState);
     expect(capturedCalls).toBe(1);
+  });
+
+  it("does not re-prompt when compaction leaves the built context unchanged", async () => {
+    const session = fakeSession({ messages: [{ role: "user", content: "unchanged" }] });
+    const runState = freshRunState(session, { policy: { enabled: true } });
+    const warnings = [];
+    const harness = {
+      waitForIdle: vi.fn(),
+      compact: vi.fn(async () => ({ tokensBefore: 5000 })),
+      prompt: vi.fn(),
+      getModel: () => ({ id: "m", contextWindow: 8000 }),
+    };
+    const out = await runReactiveCompaction(runState, {
+      harness, runtime: { model: { id: "m" } }, resolved: { reference: "pi:faux:m" }, options: {},
+      promptText: "hi", promptImages: [], reference: "pi:faux:m", onEvent: () => {}, runtimeWarnings: warnings,
+      state: overflowState, runError: null, captureState: vi.fn(),
+    });
+    expect(harness.compact).toHaveBeenCalledTimes(1);
+    expect(harness.prompt).not.toHaveBeenCalled();
+    expect(runState.compaction.diagnostics.context_compaction_reduced).toBe(false);
+    expect(warnings).toContainEqual(expect.objectContaining({ warning_kind: "context_compaction_not_reducible" }));
+    expect(out.state).toBe(overflowState);
   });
 
   it("does not fire on a non-overflow error", async () => {

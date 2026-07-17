@@ -126,7 +126,7 @@ The tool-bloat guard is always on. When a large tool result is truncated in-cont
 
 ## Context compaction
 
-Assembly produces the prompt; **compaction** keeps it within the model's context window over long conversations. On the pi-native bridge, the runtime drives `AgentHarness.compact()` proactively (before a turn when the running model is near its window) and reactively (compact + a single re-prompt if a turn still overflows). The window auto-tracks the serving model. Runs report `context_compaction_applied` as `true`/`false`/`null` (fired / enabled-but-not-needed / disabled). Tune via `agent_compaction_*` settings. See [Sessions and concurrency](/runtime/sessions-concurrency/).
+Assembly produces the prompt; **compaction** keeps it within the model's context window over long conversations. On the pi-native bridge, the runtime drives `AgentHarness.compact()` proactively (before a turn when the running model is near its window) and reactively (compact + a single re-prompt if a turn still overflows and the built session context was reduced). The window auto-tracks the serving model. Runs report `context_compaction_applied` as `true`/`false`/`null` (fired / enabled-but-not-needed / disabled), plus before/after effectiveness diagnostics. A persistent overflow becomes `context_limit`, allowing the configured fallback chain to try a model with a different usable window. Tune via `agent_compaction_*` settings. See [Sessions and concurrency](/runtime/sessions-concurrency/).
 
 ## Related
 

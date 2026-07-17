@@ -199,6 +199,18 @@ describe("failureKindForPiError", () => {
     expect(failureKindForPiError("No API key for provider: openai-codex", {}, {})).toBe("provider_auth");
     expect(failureKindForPiError("OAuth refresh failed for openai-codex", {}, {})).toBe("provider_auth");
   });
+
+  it("classifies the OpenAI Codex input overflow as context_limit", () => {
+    expect(failureKindForPiError(
+      "Codex error: Your input exceeds the context window of this model. Please adjust your input and try again.",
+      {},
+      {},
+    )).toBe("context_limit");
+  });
+
+  it("keeps max-turn termination in usage_limit", () => {
+    expect(failureKindForPiError("Maximum turns reached", {}, { maxTurnsHit: true })).toBe("usage_limit");
+  });
 });
 
 let faux = null;
@@ -957,7 +969,7 @@ describe("pi-native auto-compaction", () => {
     // surfaces the overflow WITHOUT a second compaction or a re-prompt.
     expect(result.diagnostics.context_compaction_proactive).toBe(true);
     expect(result.error).toBe("Your input exceeds the context window of this model.");
-    expect(result.failureKind).toBe("usage_limit");
+    expect(result.failureKind).toBe("context_limit");
     expect(providerCalls).toBe(2); // summary + main overflow; no re-prompt
   });
 
@@ -978,7 +990,7 @@ describe("pi-native auto-compaction", () => {
       resolvePiApiKey: async () => "faux-key",
       piSessionsRoot: sessionsRoot,
     }));
-    expect(result.failureKind).toBe("usage_limit");
+    expect(result.failureKind).toBe("context_limit");
     // overflow + summary + ONE re-prompt overflow = 3 calls; never the 4th.
     expect(providerCalls).toBe(3);
     expect(result.diagnostics.context_compaction_reactive).toBe(true);

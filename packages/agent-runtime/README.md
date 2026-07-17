@@ -275,6 +275,7 @@ PROVIDER_ABORT_RE
 RetryableProviderFailureInfo
 classifyFailure
 createStderrTail
+isContextLimitFailureText
 isProviderAuthFailureText
 retryableProviderFailureInfo
 ```
@@ -478,7 +479,7 @@ console.log(result.text);
 `@mono-agent/agent-runtime` is purpose-built for **autonomous, long-running agent work** with provider portability and operational resilience as first-class concerns. It is *not* a streaming-chat UI kit. Where each peer fits:
 
 - **Vercel AI SDK** — best when you're building a chat / generative-UI experience inside a React or Next.js app. `useChat`, `useCompletion`, streaming server components, and edge-runtime compatibility are their strengths. Their provider list is curated (Anthropic, OpenAI, Google, etc., via `@ai-sdk/*` packages); there's no Pi gateway, no Claude Code CLI, no Codex CLI app-server, and no per-call provider fallback. If you're rendering a streaming chat into a browser, use them. If you're orchestrating multi-turn autonomous work that must survive a rate-limited primary provider, use us.
-- **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) — first-party Anthropic SDK. Tight integration with Claude features (canUseTool, sub-agents, hooks, MCP). We *wrap* it as one of our five bridges and add transcript-resume across provider drops, a 22-kind failure taxonomy, a tool-bloat guard with artifact persistence, and a provider fallback router. Context/window handling stays with the provider — the runtime does not run its own in-loop summarization pass. Reach for the bare Anthropic SDK when you only ever talk to Claude and don't need cross-provider portability or resume.
+- **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) — first-party Anthropic SDK. Tight integration with Claude features (canUseTool, sub-agents, hooks, MCP). We *wrap* it as one of our five bridges and add transcript-resume across provider drops, a structured failure taxonomy, a tool-bloat guard with artifact persistence, and a provider fallback router. Context/window handling remains bridge-specific; the pi-native bridge drives its own compaction recovery. Reach for the bare Anthropic SDK when you only ever talk to Claude and don't need cross-provider portability or resume.
 - **Mastra** — a workflow engine + memory + RAG stack. Different category: it's the layer *above* a runtime. You can layer Mastra workflows on top of `@mono-agent/agent-runtime` if you want both.
 - **OpenAI Agents SDK** — first-party OpenAI SDK. Same trade-off as the Claude Agent SDK: tight integration with OpenAI, no other providers. Pi providers in our runtime cover OpenAI plus a dozen others through a single API.
 - **LangChain.js** — kitchen sink with deep abstraction stacks. We're deliberately lean; if you want chains, agents, vector stores, and parsers under one umbrella, LangChain is built for that. If you want a focused runtime kernel, use us.
@@ -713,6 +714,7 @@ Behaviour:
 
 - Successful run on entry N → returns the result with `failoverHistory` set to attempts 0..N-1.
 - Retryable provider failure → emits `provider_failover_started`, builds a transcript snapshot, and retries on the next entry.
+- Context-window failure after bridge compaction recovery → preserves `failureKind: "context_limit"` in `failoverHistory` and tries the next entry; quota/output/max-turn `usage_limit` remains terminal.
 - Provider auth failure → retries the next chain entry and preserves `failureKind: "provider_auth"` in `failoverHistory` for the failed attempt.
 - Malformed request/config/billing-type non-retryable failure → returns immediately with `failoverHistory` containing the one attempt.
 - Cancellation → returns immediately.
@@ -823,11 +825,13 @@ Hosts that don't supply `persistArtifact` get the truncation summary but no on-d
 The sole pi bridge runs on pi-agent-core's native `AgentHarness`. pi performs **no**
 automatic in-loop compaction, so the bridge drives it: before each turn it estimates the
 running model's context usage and calls `AgentHarness.compact()` when near the window
-(proactive), and if a turn still overflows it compacts once and re-prompts (reactive
-recovery). The context window auto-tracks the model actually serving the request
+(proactive), and if a turn still overflows it compacts once and re-prompts only when
+the built session context was reduced (reactive recovery). The context window auto-tracks the model actually serving the request
 (`harness.getModel()`), self-correcting from any real ceiling stated in an overflow error.
 Runs report `context_compaction_applied: true` (fired), `false` (enabled but not needed),
-or `null` (disabled). The other backends manage their windows per their own behavior.
+or `null` (disabled), plus reactive-attempted, tokens-after, and reduced diagnostics.
+Persistent overflow is classified as `context_limit`, allowing the fallback router to
+try the next configured model. The other backends manage their windows per their own behavior.
 (`docs/reference/feature-registry.md` is the source of truth for this row.)
 
 `resolveAgentCompactionPolicy(...)` (the `agent_compaction_*` settings: trigger ratio,

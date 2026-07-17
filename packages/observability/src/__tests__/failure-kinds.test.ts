@@ -4,6 +4,13 @@ import { describeRunFailureKind, KNOWN_RUN_FAILURE_KINDS } from "../index.js";
 
 describe("describeRunFailureKind", () => {
   it("documents the core operator-facing failure kinds", () => {
+    expect(describeRunFailureKind({ failureKind: "context_limit" })).toMatchObject({
+      kind: "context_limit",
+      label: "Context limit",
+      known: true,
+    });
+    expect(describeRunFailureKind({ failureKind: "context_limit" }).nextStep).toContain("compaction");
+
     expect(describeRunFailureKind({ failureKind: "usage_limit" })).toMatchObject({
       kind: "usage_limit",
       label: "Usage limit",
