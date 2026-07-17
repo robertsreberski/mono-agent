@@ -27,7 +27,8 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `stop` | Stop the background instance, unloading log maintenance first, and remove both LaunchAgent definitions. | `--config <path>`, `--env-file <path>` |
 | `status` | Show this config's instance plus any other running instances. | `--config <path>`, `--env-file <path>` |
 | `logs` | Print (and optionally follow) the background instance's log files. | `--config <path>`, `--env-file <path>`, `--follow` / `-f`, `--lines <n>` |
-| `web` | Serve the read-only Session Recorder web PWA for every discovered running agent. | `--host <addr>`, `--port <n>`, `--no-open`, `--allow-non-loopback`, `--show-auth-url`, `--include-memory`, `--max-runs <n>`, `--config <path>`, `--env-file <path>` |
+| `web` | Operate the always-on browser conversation console for every discovered running agent. Bare `web` is read-only status/help. | `start`, `restart`, `stop`, `status`, `logs`, `run`, `reset`; `--host <addr>`, `--loopback`, `--port <n>` |
+| `sessions` | Serve the legacy read-only Session Recorder for discovered agents. | `--host <addr>`, `--port <n>`, `--no-open`, `--allow-non-loopback`, `--show-auth-url`, `--include-memory`, `--max-runs <n>`, `--config <path>`, `--env-file <path>` |
 | `tui` | Open remote discovery/chat, attach to a managed macOS background agent for temporary configuration, or use ordinary in-process local chat. | `--agent`, `--conversation`, `--configure`, `--local` |
 | `install-skill` | Copy the authoring composer to coding harnesses, or check/update managed project-local skills. | `--target claude\|codex\|both`, `--force`, `--project`, `--check`, `--update` |
 | `backfill` | Export already-recorded run artifacts to the Phoenix exporter with their historical timestamps. | `--run <id>`, `--all`, `--since <iso>`, `--until <iso>`, `--dry-run`, `--config <path>`, `--env-file <path>` |
@@ -447,71 +448,60 @@ Reply `done` or `no changes` to finish without edits. No proposal or rejection a
 
 ## `web`
 
-Serves the read-only [Session Recorder web PWA](/observability/) from any directory. It discovers running agents through the same trace-source registries as `mono-agent tui`, reads their recorded run artifacts, connects to each agent's default-on `live` event relay when available, and streams session updates to the browser.
+Operates the [always-on browser console](/observability/web-console/) for persistent conversations with every auto-discovered agent. Bare `mono-agent web` prints status, usable URLs, and subcommand help without changing service state.
 
 ```bash
 mono-agent web
-mono-agent web --port 4599 --no-open
-mono-agent web --host 0.0.0.0 --allow-non-loopback
-mono-agent web --include-memory
-mono-agent web --max-runs 500
+mono-agent web start
+mono-agent web restart --port 5051
+mono-agent web logs --follow
+mono-agent web run --loopback
+mono-agent web stop
 ```
 
-For stable authenticated startup, put
-`MONO_AGENT_WEB_AUTH_TOKEN=<strong-stable-token>` in the invocation folder's
-owner-only `.env` (`chmod 600 .env`), then run the non-loopback command above.
+`start`, `restart`, `stop`, `status`, and `logs` manage the dedicated launchd service on macOS. `run` is the blocking foreground path on every supported platform. The default is `0.0.0.0:5050`; use `--loopback` to bind `127.0.0.1`. `--loopback` conflicts with `--host`.
+
+| Command / flag | Effect |
+| --- | --- |
+| `start [--host <addr> \| --loopback] [--port <n>]` | Install/start the managed macOS service. Defaults to `0.0.0.0:5050`. |
+| `restart [--host <addr> \| --loopback] [--port <n>]` | Restart with the stored bind or replace it with the supplied bind. |
+| `stop` | Stop the managed service and remove only the Tailscale Serve route it owns. |
+| `status` | Print process health, effective bind, local/LAN/Tailscale URLs, and Serve state. |
+| `logs [--follow\|-f] [--lines <n>]` | Print or follow the managed service logs. |
+| `run [--host <addr> \| --loopback] [--port <n>]` | Run the service in the foreground; cross-platform. |
+| `reset --all --yes` | With the service stopped, erase the whole web-console store and uploads. Both confirmations are mandatory. |
+
+There is no application authentication. Anyone who can reach the port can read conversations, upload files, and operate discovered agents. Keep the listener on a trusted LAN/tailnet or use `--loopback`; Host/Origin checks and the absence of CORS do not turn an untrusted network into a safe one.
+
+Managed start tries to claim a conflict-free Tailscale Serve HTTPS endpoint. It uses `:443` only when free, otherwise the first free port in `8443`–`8499`, never resets another handler, records ownership, and removes only its own route. Failure to create the first route is non-fatal: the direct local/LAN/tailnet HTTP URLs remain healthy and status prints remediation. If a restart changes the app port but cannot migrate an already-owned route, mono-agent restores the prior worker, service record, plist, and exact Serve route, then exits nonzero instead of leaving a healthy-looking split configuration.
+
+State lives owner-private under `~/.mono-agent/web/`. Threads are archived/restored rather than individually deleted. A running turn continues when the browser disconnects; a service restart marks any still-active turn interrupted. See the [web console guide](/observability/web-console/) for attachment limits, thread binding, and the chat-first scope.
+
+## `sessions`
+
+Serves the legacy read-only Session Recorder from any directory. This is the former `mono-agent web` command, moved without changing its defaults, flags, bearer behavior, recorded-run paging, or live-relay aggregation.
+
+```bash
+mono-agent sessions
+mono-agent sessions --port 4599 --no-open
+mono-agent sessions --host 0.0.0.0 --allow-non-loopback
+mono-agent sessions --include-memory
+mono-agent sessions --max-runs 500
+```
 
 | Flag | Effect |
 | --- | --- |
-| `--host <addr>` | Bind address for the PWA backend (default `127.0.0.1`). |
-| `--port <n>` | Bind port (default `4599`, printed on start for reverse-proxy targets). |
-| `--no-open` | Do not launch the browser after the backend starts. |
-| `--allow-non-loopback` | Permit a non-loopback bind. `/api/*` and `/api/stream` require a bearer token: `MONO_AGENT_WEB_AUTH_TOKEN` for non-interactive/service use, or an interactively generated one-run token. |
-| `--show-auth-url` | Reveal a configured token in the printed URL fragment. This opt-in works only when stdout is an interactive terminal; redirected/service output stays redacted. |
-| `--include-memory` | Include memory-maintenance runs from both the `memory/` artifact namespace and legacy mixed directories. Defaults to agent runs only. |
-| `--max-runs <n>` | Cap the per-instance in-memory working set and the initial browser snapshot (positive integer, default `200`). Disk paging via "Load older" still reaches the full on-disk history, so this only bounds memory — not history reachability. |
-| `--config <path>` | Resolve a custom `traceability.registryDir` from this config, in addition to the global registry. |
+| `--host <addr>` | Bind address (default `127.0.0.1`). |
+| `--port <n>` | Bind port (default `4599`). |
+| `--no-open` | Do not launch a browser. |
+| `--allow-non-loopback` | Permit a non-loopback bind; APIs require the recorder bearer. |
+| `--show-auth-url` | On an interactive terminal, reveal a configured token in the printed URL fragment. |
+| `--include-memory` | Include memory-maintenance runs. |
+| `--max-runs <n>` | Bound the per-instance in-memory working set; disk paging still reaches full history. |
+| `--config <path>` | Add the configured trace-source registry to global discovery. |
+| `--env-file <path>` | Load the recorder token and overrides from a non-default dotenv file. |
 
-Run history and live updates default to agent runs only; memory-maintenance runs are hidden plumbing unless you pass `--include-memory`. Loopback remains the default. With `--host 0.0.0.0 --allow-non-loopback`, startup prints usable loopback plus discovered private LAN and Tailscale IPv4 URLs instead of advertising `0.0.0.0`. Put a stable `MONO_AGENT_WEB_AUTH_TOKEN` in the invocation folder's owner-only `.env` (or the file selected by `--env-file`) for bookmarks and long-running services; a configured token is honored on loopback too. Non-interactive non-loopback startup refuses to generate a secret that would land in logs. Authenticated mode sends API and stream credentials only in the `Authorization` header. Explicitly revealed bootstrap URLs put the token in the URL fragment, which browsers do not send in HTTP requests or access logs, and the PWA removes it after capture.
-
-For each browser origin, the PWA mirrors a captured or manually entered token
-into current-tab `sessionStorage` as `mono-agent.session-web.authToken` and
-persistent `localStorage` as `mono-agent.session-web.authToken.persisted`. The
-persistent copy survives page reloads, tab or browser closes, and browser
-restarts. On initial page load or after a manual reload, a JSON API 401/403
-exposes the authentication form. If the server token changes while the page
-remains open, a stream 401/403 stays in the reconnecting state and retries with
-the stored token instead of exposing the form. Reload the page to expose the
-form; enter the current token and choose **Retry**, or choose **Clear** first to
-remove both browser-storage copies. Clearing the site's browser storage/site
-data also removes them; closing the browser alone does not sign out.
-
-Each discovered instance also carries an independent memory-health badge: healthy (green), in
-progress (teal), degraded (amber), unhealthy (red), unknown/off (gray). Its accessible label and
-tooltip contain only the status and stable closed issue codes. A memory-only registry change emits
-an `instances` SSE frame, so the badge updates without requiring a process-health change or a new
-run.
-
-Direct authenticated HTTP over LAN or Tailscale does **not** require `tailscale serve`. Serve is optional; use it (or another HTTPS reverse proxy) only when you want HTTPS-dependent browser capabilities such as an installable/offline PWA. Non-loopback mode remains read-only but exposes prompts, cwd/artifact paths, tool events, and run text to anyone with the bearer token, so use a strong token and a trusted network boundary. Plain LAN HTTP is not transport-encrypted; direct access through Tailscale remains protected by the tailnet transport.
-
-The web API returns recent sessions first and supports paged older history with
-`instance`, `limit`, and `offset` query parameters on `/api/sessions`. The PWA
-uses those pages behind its "Load older" action, projects stale `running`
-summaries as `stalled`, shows failure/error/failover details when present, and
-formats single-instance run lists in the instance's discovered timezone.
-Cap-eviction of completed runs from the in-memory working set is silent, so
-every recorded run stays reachable through "Load older" regardless of the
-`--max-runs` bound.
-
-Each run's detail view carries a **Context (this turn)** section that surfaces
-the context every provider call was driven with: recalled long-term memory (with
-its source), the replayed prior conversation messages (role-badged), and the
-full compiled system prompt behind a collapsible raw view. When a confirmed
-warm in-process provider session already held the transcript, it reads
-*context carried by the provider session*. Cold durable reopens report the
-canonical history loaded for that turn, including an authoritative empty history. Runs
-recorded before this feature fall back to the raw compiled prompt only; runs with
-neither show no section.
+`MONO_AGENT_WEB_AUTH_TOKEN` remains the Session Recorder's compatibility bearer. It is not used by the new `mono-agent web` console. Non-loopback recorder mode still requires a stable token for non-interactive startup, uses URL fragments only for browser bootstrap, and sends API/SSE credentials in the `Authorization` header.
 
 ## `install-skill`
 

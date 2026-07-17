@@ -27,6 +27,15 @@ afterEach(async () => {
 });
 
 describe("package architecture adapter-neutrality guard", () => {
+  it("catalogs the always-on web console as a publishable operator surface", () => {
+    expect(packageCatalog.find((entry) => entry.name === "@mono-agent/web")).toMatchObject({
+      dir: "web",
+      category: "operator-surface",
+      allowedDependencyCategories: ["core", "observability"],
+      publishable: true,
+    });
+  });
+
   it("exports shipped channel ids from communication-package catalog metadata", () => {
     const declaredIds = packageCatalog
       .filter((entry) => entry.category === "communication")

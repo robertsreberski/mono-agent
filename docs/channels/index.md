@@ -17,8 +17,8 @@ Channels are how a mono-agent receives input and delivers replies. Core channels
 | Webhook | HTTP POST, sync or async | `webhook` | [Webhook](/channels/webhook/) |
 | OpenAI-compatible API | `/v1/chat/completions` (SSE) | `openaiApi` | [OpenAI-compatible API](/channels/openai-api/) |
 | Cron | Scheduled prompts | `cron` | [Cron](/channels/cron/) |
-| TUI stream endpoint | Loopback NDJSON stream for `mono-agent tui` | `tui` | [TUI stream endpoint](/channels/tui/) |
-| Live event relay | Loopback SSE stream of run lifecycle frames for `mono-agent web` | `live` | [Live event relay](/channels/tui/#live-event-relay-for-web-pwa) |
+| Operator stream endpoint | Loopback NDJSON turns for `mono-agent tui` and `mono-agent web` | `tui` | [Operator stream endpoint](/channels/tui/) |
+| Live event relay | Loopback SSE stream of run lifecycle frames for `mono-agent sessions` | `live` | [Live event relay](/channels/tui/#live-event-relay-for-session-recorder) |
 
 ## External channel packages
 
@@ -31,7 +31,7 @@ Channels are fully independent: enabling one neither requires nor affects anothe
 
 ## Opt-in and the status lifecycle
 
-Most channels default to **off**. The deliberate exceptions are the operator surfaces: the [TUI stream endpoint](/channels/tui/) and the `live` event relay both default to **on** (loopback-only, ephemeral ports, so `mono-agent tui` and `mono-agent web` can reach any running agent without a config edit). Set `"tui": {"enabled": false}` or `"live": {"enabled": false}` to opt out. You turn other channels on with `enabled: true` and supply their required settings; external channels also need a `channels.plugins[]` entry naming the package. On `mono-agent start`, the host prints one status line per channel reflecting one of five states:
+Most channels default to **off**. The deliberate exceptions are the operator surfaces: the [`tui` operator stream endpoint](/channels/tui/) and the `live` event relay both default to **on** (loopback-only, ephemeral ports, so the TUI/web console can chat and the Session Recorder can observe runs without a config edit). Set `"tui": {"enabled": false}` or `"live": {"enabled": false}` to opt out. You turn other channels on with `enabled: true` and supply their required settings; external channels also need a `channels.plugins[]` entry naming the package. On `mono-agent start`, the host prints one status line per channel reflecting one of five states:
 
 | State | Meaning |
 | --- | --- |

@@ -220,8 +220,9 @@ rm ~/Library/LaunchAgents/<label>.plist
 
 - Orchestrator fallback `pi:opencode-go:glm-5.2` has no creds in
   `~/.pi/a8c-agent/auth.json` — validate warns; pre-existing, not your bug.
-- The Session Web app (`mono-agent web`, :4599) runs separately from the agent
-  launchd fleet, so restarting agents does not restart it. A wildcard bind is
+- The Session Recorder (`mono-agent sessions`, :4599) and assistant-ui web
+  console (`mono-agent web`, :5050) run separately from the agent
+  launchd fleet, so restarting agents does not restart either service. A wildcard bind is
   directly reachable over private LAN/Tailscale HTTP without Tailscale Serve.
   Serve is optional only when HTTPS and installable/offline PWA behavior are
   wanted. Moving agents onto the `live` channel is a separate config step.
@@ -258,7 +259,7 @@ val=$(grep -E '^<SECRET_VAR>=' .brain.env | cut -d= -f2-)
 [ "${#val}" -ge 32 ] || { echo "rotated secret too short: ${#val} chars — rotation FAILED"; false; }
 ```
 
-- **Package layout is 17 directories under `packages/` (16 core + the
+- **Package layout is 18 directories under `packages/` (17 core + the
   `create-mono-agent` alias) and four publishable plugin extras under `extras/`.** After a
   consolidation deploy, retired packages leave behind their git-ignored `dist/`
   once their source is gone — remove those leftover dirs so nothing stale stays

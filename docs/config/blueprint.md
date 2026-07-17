@@ -249,7 +249,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   },
 
   "live": {
-    "enabled": true,                       // default-on read-only SSE relay for mono-agent web
+    "enabled": true,                       // default-on read-only SSE relay for mono-agent sessions
     "host": "127.0.0.1",
     "port": 0,
     "basePath": "/live",

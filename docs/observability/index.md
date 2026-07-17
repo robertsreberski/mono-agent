@@ -6,7 +6,7 @@ sidebar:
 
 # Observability & CLI
 
-Every mono-agent run gets local JSONL artifacts and can optionally be exported to [Phoenix](/observability/phoenix-and-backfill/) for a semantic trace timeline. The artifacts are the on-disk record after successful recorder boundaries, not a crash-safe in-flight journal. A trace-source registry lets dashboards discover running agents, the `mono-agent` CLI operates the whole lifecycle, and operator surfaces (`tui` and `web`) give you live views over running agents. This page maps those surfaces and links the detail pages.
+Every mono-agent run gets local JSONL artifacts and can optionally be exported to [Phoenix](/observability/phoenix-and-backfill/) for a semantic trace timeline. The artifacts are the on-disk record after successful recorder boundaries, not a crash-safe in-flight journal. A trace-source registry lets dashboards discover running agents, the `mono-agent` CLI operates the whole lifecycle, and the TUI, always-on web console, and Session Recorder provide complementary operator views. This page maps those surfaces and links the detail pages.
 
 ## The surfaces
 
@@ -15,9 +15,10 @@ Every mono-agent run gets local JSONL artifacts and can optionally be exported t
 | JSONL run artifacts | Per-run `run-*.events.jsonl` + `run-*.summary.json`; non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned | config / auto | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Trace-source registry | Heartbeat manifest so dashboards discover live agents | config | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Phoenix exporter + backfill | Best-effort OTLP/HTTP export of run lifecycles; retroactive backfill | config / cli | [Phoenix export & backfill](/observability/phoenix-and-backfill/) |
-| `mono-agent` CLI | init / validate / start / stop / logs / restart / tui / web / backfill / audit-runs / metrics / install-skill | cli | [CLI reference](/observability/cli-reference/) |
+| `mono-agent` CLI | init / validate / start / stop / logs / restart / tui / web / sessions / backfill / audit-runs / metrics / install-skill | cli | [CLI reference](/observability/cli-reference/) |
 | TUI | Operator console: live chat with thinking/tool/telemetry insight, run replay, config view | cli | [TUI](/observability/tui/) |
-| Web PWA | Read-only Session Recorder: all discovered agents, run lists/details, live sub-run updates | cli | [CLI reference](/observability/cli-reference/#web) |
+| Web console | Always-on persistent multi-agent conversations, streamed turns, and local-device attachments | cli | [Web console](/observability/web-console/) |
+| Session Recorder | Read-only discovered-agent run lists/details and live sub-run updates | cli | [CLI reference](/observability/cli-reference/#sessions) |
 
 ## JSONL run artifacts (always on)
 
@@ -92,23 +93,28 @@ mono-agent tui --agent personal-agent # pick one directly
 
 See the [TUI page](/observability/tui/) for details, including the embedded `--responder` mode for custom hosts.
 
-## The web PWA
+## The always-on web console
 
-`mono-agent web` serves the read-only Session Recorder from any directory. It discovers every running agent via the trace-source registry, folds local run artifacts with each agent's default-on `live` relay, and streams updates to the browser.
+`mono-agent web start` installs the persistent browser conversation console on macOS; `mono-agent web run` is the foreground cross-platform path. It auto-discovers running agents and keeps threads and in-flight work in an owner-private service store, so a browser refresh does not cancel a turn.
 
 ```bash
-mono-agent web
-mono-agent web --port 4599 --no-open
-mono-agent web --host 0.0.0.0 --allow-non-loopback
-mono-agent web --include-memory
-mono-agent web --max-runs 500
+mono-agent web start
+mono-agent web               # read-only status + exact URLs
 ```
 
-The backend binds loopback on the stable default port `4599`. Run lists and the initial browser stream are summary-only; a run's persisted, bounded timeline is loaded lazily from its detail endpoint when opened. Memory-maintenance runs are hidden by default; pass `--include-memory` to inspect them.
+The default bind is `0.0.0.0:5050`, making LAN and tailnet access the normal path; `--loopback` narrows it to this computer. There is no application login, so network reachability is authority to operate the agents. Keep the service on a trusted LAN/tailnet and do not expose it publicly. See the [web console guide](/observability/web-console/) for lifecycle, Tailscale HTTPS, security, conversations, archive/reset behavior, and attachments.
 
-For direct LAN and Tailscale access, bind `0.0.0.0` with `--allow-non-loopback`. Startup prints concrete loopback, private LAN, and Tailscale IPv4 URLs instead of `0.0.0.0`. The read-only `/api/*` and `/api/stream` surfaces require a bearer token: set stable `MONO_AGENT_WEB_AUTH_TOKEN` in the invocation folder's owner-only `.env` (or `--env-file`) for service/non-interactive use. A configured token is honored on loopback too. An interactive non-loopback command may generate a one-run token; non-interactive non-loopback startup without a configured token fails closed. Configured tokens are redacted from ordinary output, authenticated mode is not auto-opened through process arguments, and `--show-auth-url` reveals a fragment-bearing bootstrap URL only through an explicit interactive-terminal invocation. The PWA sends API and SSE credentials as an Authorization header, never as an API query parameter.
+## The Session Recorder
 
-Direct authenticated HTTP does not depend on Tailscale Serve. Serve is optional; use it (or another HTTPS reverse proxy) only for browser capabilities such as installing the PWA and using it offline. Use a strong token and a trusted network boundary; plain LAN HTTP itself is not encrypted.
+`mono-agent sessions` is the existing read-only Session Recorder under its new command name. It discovers every running agent, folds local run artifacts with each agent's default-on `live` relay, and streams updates to the browser.
+
+```bash
+mono-agent sessions
+mono-agent sessions --port 4599 --no-open
+mono-agent sessions --include-memory
+```
+
+Its loopback `127.0.0.1:4599` default, flags, `MONO_AGENT_WEB_AUTH_TOKEN` bearer compatibility, paging, and recorded-run views are unchanged. Bind `0.0.0.0` with `--allow-non-loopback` only when the read-only recorder should be reachable across a trusted network.
 
 A run's detail view includes a **Context (this turn)** section showing what each
 provider call was actually driven with: any recalled long-term memory (with its

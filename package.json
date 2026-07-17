@@ -64,6 +64,7 @@
     "@mono-agent/telegram-adapter": "workspace:0.11.6",
     "@mono-agent/tui": "workspace:0.11.6",
     "@mono-agent/operator-adapter": "workspace:0.11.6",
+    "@mono-agent/web": "workspace:0.11.6",
     "@mono-agent/webhook-adapter": "workspace:0.11.6",
     "@mono-agent/whatsapp-adapter": "workspace:0.11.6",
     "typescript": "^5.8.3",
