@@ -50,7 +50,3 @@ Because of that, link validation uses the custom `scripts/check-links.mjs` (whic
 ## Vercel deployment
 
 `vercel.json` pins `framework: astro`, `buildCommand: pnpm run build`, `outputDirectory: dist`. In the Vercel project, set **Root Directory = `website`** so the isolated workspace is what builds. The site is live at `https://mono-agent-docs.vercel.app/`.
-
-## One-off migration scripts
-
-`scripts/migrate-frontmatter.mjs`, `scripts/migrate-callouts.mjs`, and `scripts/migrate-links.mjs` were used once to convert the old just-the-docs / Jekyll content (`nav_order` → `sidebar.order`, `{: .note }` → `:::note` asides, relative `.md` links → root-relative routes). They are kept for reference; you do not run them in the normal authoring loop.
