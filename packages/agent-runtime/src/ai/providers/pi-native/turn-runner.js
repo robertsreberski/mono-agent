@@ -14,6 +14,7 @@ import {
   getPiBuiltinTools,
   initPiMcpTools,
 } from "../../../agent/tools/pi-bridge.js";
+import { createNodeReplController } from "../../../agent/tools/node-repl.js";
 import { readToolRuntime } from "../../../agent/tools/shared/runtime-context.js";
 import { formatLiveInputGuidance } from "../../live-input-prompt.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
@@ -24,10 +25,11 @@ import { createStreamSubscriber } from "./stream-subscriber.js";
  * tools, the MCP tool bridge, and the StructuredOutput tool (whose callback
  * writes runState.structuredResult). Surfaces MCP init/list failures to both the
  * event stream and runtimeWarnings. Returns the assembled tools plus the MCP
- * clients (closed by the caller's finally) and the structured tool.
+ * clients (closed by the caller's finally), run-owned tool cleanup, and the
+ * structured tool.
  * @param {any} runState
  * @param {any} params
- * @returns {Promise<{tools: any[], structuredTool: any, mcpClients: any[]}>}
+ * @returns {Promise<{tools: any[], structuredTool: any, mcpClients: any[], closeRunTools: () => Promise<void>}>}
  */
 export async function buildTurnTools(runState, {
   options,
@@ -62,6 +64,15 @@ export async function buildTurnTools(runState, {
     ? { ...(options.toolContext ?? readToolRuntime()), sandbox: options.sandbox }
     : options.toolContext;
   const sandboxEngine = options.sandboxEngine ?? runCtx?.sandboxEngine;
+  const nodeReplController = capabilities.tool_use === false
+    ? null
+    : createNodeReplController({
+      cwd: options.cwd,
+      maxOutputChars: toolLimits.bashOutputLimitChars || toolLimits.toolTextLimitChars,
+      sandboxPolicy: options.sandboxPolicy,
+      sandboxEngine,
+      ctx: runCtx,
+    });
 
   // REUSED custom pieces: built-in tool sandboxing + allowlist/bloat filter +
   // approval gates. These are identical to the legacy bridge.
@@ -97,6 +108,7 @@ export async function buildTurnTools(runState, {
       sandboxEngine,
       approvalManager,
       approvalModel: runtime.model?.id || runtime.model?.name || resolved.model,
+      nodeReplController,
       ctx: runCtx,
     }));
 
@@ -134,7 +146,12 @@ export async function buildTurnTools(runState, {
     ...mcpInit.tools,
     ...(structuredTool ? [structuredTool] : []),
   ];
-  return { tools, structuredTool, mcpClients: mcpInit.clients };
+  return {
+    tools,
+    structuredTool,
+    mcpClients: mcpInit.clients,
+    closeRunTools: async () => { await nodeReplController?.close(); },
+  };
 }
 
 /**

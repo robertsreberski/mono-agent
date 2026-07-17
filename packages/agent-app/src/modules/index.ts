@@ -23,6 +23,7 @@ export {
   isKnownToolName,
   isMcpToolName,
   LEGACY_TOOL_ALIASES,
+  PI_ONLY_BUILTIN_TOOL_NAMES,
   suggestToolName,
 } from "./known-tools.js";
 

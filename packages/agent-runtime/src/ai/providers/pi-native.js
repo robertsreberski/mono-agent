@@ -223,6 +223,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   const events = [];
   const runtimeWarnings = [];
   let mcpClients = [];
+  let closeRunTools = async () => {};
   let harness = null;
   // The ONE explicit runState the extracted modules (stream subscriber, session
   // lifecycle, compaction driver, turn runner, result builder) read/write.
@@ -399,7 +400,12 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // Build the turn's tools (builtins + MCP bridge + StructuredOutput). The
     // StructuredOutput callback writes runState.structuredResult; the MCP clients
     // are closed in the finally.
-    const { tools, structuredTool, mcpClients: builtMcpClients } = await buildTurnTools(runState, {
+    const {
+      tools,
+      structuredTool,
+      mcpClients: builtMcpClients,
+      closeRunTools: builtCloseRunTools,
+    } = await buildTurnTools(runState, {
       options,
       capabilities,
       toolLimits,
@@ -410,6 +416,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       runtimeWarnings,
     });
     mcpClients = builtMcpClients;
+    closeRunTools = builtCloseRunTools;
 
     // Provider retry/backoff is delegated to pi-ai via streamOptions, replacing
     // the legacy hand-rolled stream-retry loop.
@@ -750,7 +757,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   } finally {
     if (runState.sessionEntry) runState.sessionEntry.busy = false;
     runState.removeAbortHandler?.();
-    await closePiMcpClients(mcpClients);
+    try {
+      await closeRunTools();
+    } finally {
+      await closePiMcpClients(mcpClients);
+    }
   }
 }
 
