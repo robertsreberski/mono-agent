@@ -1,4 +1,8 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
+import {
+  DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS,
+  DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT,
+} from "@mono-agent/memory/bujo";
 
 import { loadAppCoreConfig, resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
@@ -119,6 +123,9 @@ export function restartArtifactRetentionScheduler(controller: MonoAgentAppContro
       artifactDir,
       retention: coreConfig.artifacts.retention,
       memoryRetention: coreConfig.artifacts.memoryRetention,
+      ...(coreConfig.memory === undefined || coreConfig.memory.backend === "supermemory"
+        ? {}
+        : { memoryRoot: coreConfig.memory.path }),
       ...(controller.logger === undefined ? {} : { logger: controller.logger }),
       beforeFirstRun: () => controller.reconcileStaleRunsOnce(artifactDir),
     });
@@ -135,6 +142,15 @@ export function restartArtifactRetentionScheduler(controller: MonoAgentAppContro
         maxCount: coreConfig.artifacts.memoryRetention.maxCount,
         dryRun: coreConfig.artifacts.memoryRetention.dryRun,
       },
+      forgetBackups: coreConfig.memory === undefined || coreConfig.memory.backend === "supermemory"
+        ? { enabled: false }
+        : {
+            enabled: true,
+            memoryRoot: coreConfig.memory.path,
+            maxAgeDays: DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS,
+            maxCount: DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT,
+            dryRun: coreConfig.artifacts.memoryRetention.dryRun,
+          },
     });
   })();
 }

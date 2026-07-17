@@ -144,7 +144,7 @@ export class ExplicitMemoryForgetError extends Error {
   }
 }
 
-interface BackupManifest {
+export interface ExplicitMemoryForgetBackupManifest {
   readonly schemaVersion: typeof SCHEMA_VERSION;
   readonly operation: "memory-forget-backup";
   readonly status: BackupStatus;
@@ -175,7 +175,7 @@ interface BackupState {
   readonly snapshotPath: string;
   readonly manifestPath: string;
   readonly postRootPath: string;
-  manifest: BackupManifest;
+  manifest: ExplicitMemoryForgetBackupManifest;
 }
 
 export async function applyExplicitMemoryForget(
@@ -407,7 +407,7 @@ function createBackup(
     if (memoryTreeFingerprint(snapshotPath) !== treeFingerprint) throw new Error("backup mismatch");
     const activeDbRelativePath = relative(root, dbPath);
     assertSafeRelative(activeDbRelativePath);
-    const manifest: BackupManifest = {
+    const manifest: ExplicitMemoryForgetBackupManifest = {
       schemaVersion: SCHEMA_VERSION,
       operation: "memory-forget-backup",
       status: "prepared",
@@ -649,12 +649,31 @@ function assertHealthyRoot(root: string, dbPath: string, dimension: number, sour
 
 function readBackup(path: string): BackupState {
   const info = lstatSync(path);
+  assertExplicitMemoryForgetBackupDirectoryInfo(info);
+  const manifestPath = join(path, "manifest.json");
+  const manifest = parseExplicitMemoryForgetBackupManifest(readOwnerJson(manifestPath));
+  return {
+    path,
+    snapshotPath: join(path, "snapshot"),
+    manifestPath,
+    postRootPath: join(path, "post-root"),
+    manifest,
+  };
+}
+
+/** @internal Shared with the asynchronous retention reader. */
+export function assertExplicitMemoryForgetBackupDirectoryInfo(info: Stats): void {
   if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o077) !== 0
     || (typeof process.getuid === "function" && info.uid !== process.getuid())) {
     throw new Error("backup directory is unsafe");
   }
-  const manifestPath = join(path, "manifest.json");
-  const manifest = readOwnerJson(manifestPath) as Partial<BackupManifest>;
+}
+
+/** @internal Shared with the asynchronous retention reader. */
+export function parseExplicitMemoryForgetBackupManifest(value: unknown): ExplicitMemoryForgetBackupManifest {
+  const manifest = value !== null && typeof value === "object"
+    ? value as Partial<ExplicitMemoryForgetBackupManifest>
+    : {};
   if (manifest.schemaVersion !== SCHEMA_VERSION || manifest.operation !== "memory-forget-backup"
     || !["prepared", "applying", "applied", "recovered"].includes(String(manifest.status))
     || !isSha256(manifest.rootFingerprint) || !isSha256(manifest.sourceFingerprint)
@@ -668,13 +687,7 @@ function readBackup(path: string): BackupState {
   }
   assertSafeRelative(manifest.activeDbRelativePath);
   if (manifest.postActiveDbRelativePath !== undefined) assertSafeRelative(manifest.postActiveDbRelativePath);
-  return {
-    path,
-    snapshotPath: join(path, "snapshot"),
-    manifestPath,
-    postRootPath: join(path, "post-root"),
-    manifest: manifest as BackupManifest,
-  };
+  return manifest as ExplicitMemoryForgetBackupManifest;
 }
 
 function readTransactionOptional(path: string): MaintenanceTransaction | undefined {
@@ -744,7 +757,7 @@ function hashFilePinned(path: string, before: Stats, hash: ReturnType<typeof cre
   const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const opened = fstatSync(fd);
-    assertSameFile(before, opened, path);
+    assertSameExplicitMemoryForgetFile(before, opened, path);
     const buffer = Buffer.allocUnsafe(COPY_CHUNK_BYTES);
     let offset = 0;
     while (offset < opened.size) {
@@ -753,8 +766,8 @@ function hashFilePinned(path: string, before: Stats, hash: ReturnType<typeof cre
       hash.update(buffer.subarray(0, count));
       offset += count;
     }
-    assertSameSnapshot(opened, fstatSync(fd), path);
-    assertSameFile(opened, lstatSync(path), path);
+    assertSameExplicitMemoryForgetSnapshot(opened, fstatSync(fd), path);
+    assertSameExplicitMemoryForgetFile(opened, lstatSync(path), path);
   } finally {
     closeSync(fd);
   }
@@ -783,7 +796,7 @@ function copyTreeDurably(source: string, destination: string, sourceRoot: string
   let output: number | undefined;
   try {
     const opened = fstatSync(input);
-    assertSameFile(info, opened, source);
+    assertSameExplicitMemoryForgetFile(info, opened, source);
     output = openSync(
       destination,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
@@ -801,8 +814,8 @@ function copyTreeDurably(source: string, destination: string, sourceRoot: string
     }
     futimesSync(output, opened.atime, opened.mtime);
     fsyncSync(output);
-    assertSameSnapshot(opened, fstatSync(input), source);
-    assertSameFile(opened, lstatSync(source), source);
+    assertSameExplicitMemoryForgetSnapshot(opened, fstatSync(input), source);
+    assertSameExplicitMemoryForgetFile(opened, lstatSync(source), source);
   } finally {
     closeSync(input);
     if (output !== undefined) closeSync(output);
@@ -864,15 +877,11 @@ function replaceJsonDurable(path: string, value: unknown): void {
 
 function readOwnerJson(path: string): unknown {
   const before = lstatSync(path);
-  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1
-    || before.size > MAX_ARTIFACT_BYTES || (before.mode & 0o077) !== 0
-    || (typeof process.getuid === "function" && before.uid !== process.getuid())) {
-    throw new Error("memory-forget: private artifact is unsafe");
-  }
+  assertExplicitMemoryForgetPrivateArtifactInfo(before);
   const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const opened = fstatSync(fd);
-    assertSameFile(before, opened, path);
+    assertSameExplicitMemoryForgetFile(before, opened, path);
     const data = Buffer.alloc(opened.size);
     let offset = 0;
     while (offset < data.length) {
@@ -880,11 +889,20 @@ function readOwnerJson(path: string): unknown {
       if (count <= 0) throw new Error("memory-forget: short artifact read");
       offset += count;
     }
-    assertSameSnapshot(opened, fstatSync(fd), path);
-    assertSameFile(opened, lstatSync(path), path);
+    assertSameExplicitMemoryForgetSnapshot(opened, fstatSync(fd), path);
+    assertSameExplicitMemoryForgetFile(opened, lstatSync(path), path);
     return JSON.parse(data.toString("utf8")) as unknown;
   } finally {
     closeSync(fd);
+  }
+}
+
+/** @internal Shared with the asynchronous retention reader. */
+export function assertExplicitMemoryForgetPrivateArtifactInfo(info: Stats): void {
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1
+    || info.size > MAX_ARTIFACT_BYTES || (info.mode & 0o077) !== 0
+    || (typeof process.getuid === "function" && info.uid !== process.getuid())) {
+    throw new Error("memory-forget: private artifact is unsafe");
   }
 }
 
@@ -910,7 +928,7 @@ function assertSafeRelative(path: string): void {
   }
 }
 
-function assertSameFile(
+export function assertSameExplicitMemoryForgetFile(
   expected: Pick<Stats, "dev" | "ino" | "isFile" | "isSymbolicLink" | "nlink">,
   actual: Stats,
   label: string,
@@ -921,7 +939,7 @@ function assertSameFile(
   }
 }
 
-function assertSameSnapshot(
+export function assertSameExplicitMemoryForgetSnapshot(
   expected: Stats,
   actual: Stats,
   label: string,

@@ -45,6 +45,15 @@ export type {
   RestoreExplicitMemoryForgetOptions,
 } from "./explicit-forget.js";
 export {
+  DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS,
+  DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT,
+  pruneExplicitMemoryForgetBackups,
+} from "./forget-backup-retention.js";
+export type {
+  MemoryForgetBackupRetentionOptions,
+  MemoryForgetBackupRetentionResult,
+} from "./forget-backup-retention.js";
+export {
   BUJO_RUNTIME_SNAPSHOT_SCHEMA_VERSION,
   BUJO_RUNTIME_SNAPSHOT_STALE_AFTER_MS,
   readBujoRuntimeSnapshot,

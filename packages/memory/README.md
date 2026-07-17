@@ -175,6 +175,15 @@ atomically renames it into place while retaining the current root as quarantine
 until validation and durable manifest publication succeed. The low-level
 per-decision mutator is intentionally not exported from `@mono-agent/memory/bujo`.
 
+The app's artifact-retention scheduler calls `pruneExplicitMemoryForgetBackups`
+at startup and hourly. The fixed rollback window keeps the three newest
+root-bound managed or conventional `operator/forget-*` snapshots and expires
+them after 30 days. The sweep shares the stopped-store maintenance lease,
+defers during recovery, refuses symlinks or foreign manifests, and supports the
+memory-artifact dry-run boundary. Before deletion it atomically renames each
+selected directory to another reserved retention name, so an interrupted sweep
+leaves a claim that the next sweep can discover and finish.
+
 One legacy case needs an explicit trust decision: a stopped built-in BuJo root,
 managed or still using the legacy unmanaged `memory.db`, may contain
 structurally valid replay state from before the sidecar existed. After reviewing
@@ -264,6 +273,8 @@ CompletedTurnIntakeAudit
 CompletedTurnIntakeInspection
 CompletedTurnIntakeItem
 CompletedTurnIntakeSnapshot
+DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS
+DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT
 ExplicitForgetPreview
 ExplicitMemoryForgetApplyResult
 ExplicitMemoryForgetError
@@ -287,6 +298,8 @@ MEMORY_HEALTH_ISSUE_CODES
 MEMORY_REBUILD_POLICY_VERSION
 ManagedGeneration
 ManagedIndexManifest
+MemoryForgetBackupRetentionOptions
+MemoryForgetBackupRetentionResult
 MemoryHealthCounts
 MemoryHealthIssueCode
 MemoryHealthStatus
@@ -328,6 +341,7 @@ migrate
 parseBullet
 parseDailyFile
 previewCanonicalExplicitForgetMemories
+pruneExplicitMemoryForgetBackups
 readBujoCanonicalSourceFingerprint
 readBujoRuntimeSnapshot
 readGraph
