@@ -1177,10 +1177,6 @@ function cloneResult<T extends SendMessageResult>(value: T): T {
   return revivePersistedResult(value) as T;
 }
 
-function cloneRecord<T extends IdempotencyRecord>(value: T): T {
-  return structuredClone(value);
-}
-
 function parseRecord(value: unknown, expectedKeyHash: string): IdempotencyRecord {
   if (!isRecord(value)) {
     throw new Error("record must be an object");
