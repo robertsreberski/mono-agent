@@ -124,6 +124,39 @@ describe("buildMonoAgentConfigView", () => {
     expect(field(sections, "runtime.effort").value).toBe("—");
   });
 
+  it("shows adaptive compaction defaults and JSON/env source precedence", () => {
+    const defaults = buildView(baseEnv);
+    expect(field(defaults, "runtime.compaction.enabled")).toMatchObject({ value: "yes", source: "default" });
+    expect(field(defaults, "runtime.compaction.triggerRatio")).toMatchObject({ value: "0.7", source: "default" });
+    expect(field(defaults, "runtime.compaction.keepRecentTokens")).toMatchObject({
+      value: "adaptive by model",
+      source: "default",
+    });
+    expect(field(defaults, "runtime.compaction.summaryMaxTokens")).toMatchObject({
+      value: "adaptive by model",
+      source: "default",
+    });
+    expect(field(defaults, "runtime.compaction.minSavingsTokens")).toMatchObject({
+      value: "adaptive by model",
+      source: "default",
+    });
+    expect(field(defaults, "runtime.compaction.fixedOverheadEnabled")).toMatchObject({
+      value: "yes",
+      source: "default",
+    });
+    expect(field(defaults, "runtime.compaction.contextWindowOverride")).toMatchObject({
+      value: "auto",
+      source: "default",
+    });
+
+    const overridden = buildView(
+      { ...baseEnv, MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS: "12000" },
+      { runtime: { compaction: { triggerRatio: 0.8, keepRecentTokens: 9_000 } } },
+    );
+    expect(field(overridden, "runtime.compaction.triggerRatio")).toMatchObject({ value: "0.8", source: "json" });
+    expect(field(overridden, "runtime.compaction.keepRecentTokens")).toMatchObject({ value: "12000", source: "env" });
+  });
+
   it("lets a real env var win over a json-present value", () => {
     const sections = buildView(
       { ...baseEnv, MONO_AGENT_MAX_TURNS: "9" },

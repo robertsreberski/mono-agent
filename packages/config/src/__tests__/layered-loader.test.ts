@@ -180,6 +180,73 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_PERMISSION_MODE).toBe("default");
   });
 
+  it("translates runtime.compaction JSON and lets env override individual fields", () => {
+    const layered = layerJsonOntoEnv(
+      {
+        runtime: {
+          compaction: {
+            enabled: false,
+            triggerRatio: 0.75,
+            keepRecentTokens: 9_000,
+            summaryMaxTokens: 3_000,
+            minSavingsTokens: 7_000,
+            fixedOverheadEnabled: false,
+            contextWindowOverride: 272_000,
+          },
+        },
+      },
+      {
+        MONO_AGENT_COMPACTION_ENABLED: "true",
+        MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS: "12000",
+      },
+    );
+    expect(layered).toMatchObject({
+      MONO_AGENT_COMPACTION_ENABLED: "true",
+      MONO_AGENT_COMPACTION_TRIGGER_RATIO: "0.75",
+      MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS: "12000",
+      MONO_AGENT_COMPACTION_SUMMARY_MAX_TOKENS: "3000",
+      MONO_AGENT_COMPACTION_MIN_SAVINGS_TOKENS: "7000",
+      MONO_AGENT_COMPACTION_FIXED_OVERHEAD_ENABLED: "false",
+      MONO_AGENT_COMPACTION_CONTEXT_WINDOW_OVERRIDE: "272000",
+    });
+  });
+
+  it("loads runtime.compaction from JSON with env precedence", async () => {
+    const configPath = join(dir, "mono-agent.config.json");
+    await writeFile(configPath, JSON.stringify({
+      runtime: {
+        model: "pi:openai-codex:gpt-5.5",
+        compaction: { triggerRatio: 0.75, summaryMaxTokens: 3_000 },
+      },
+      context: { identityPath: "IDENTITY.md" },
+    }));
+    const loaded = await loadMonoAgentConfigWithSources({
+      cwd: "/repo",
+      jsonPath: configPath,
+      env: { MONO_AGENT_COMPACTION_TRIGGER_RATIO: "0.8" },
+    });
+    expect(loaded.runtime.compaction).toEqual({
+      enabled: true,
+      triggerRatio: 0.8,
+      summaryMaxTokens: 3_000,
+      fixedOverheadEnabled: true,
+    });
+  });
+
+  it.each([
+    ["not-an-object", "runtime.compaction"],
+    [{ enabled: "yes" }, "runtime.compaction.enabled"],
+    [{ triggerRatio: 0.1 }, "runtime.compaction.triggerRatio"],
+    [{ keepRecentTokens: 4_000.5 }, "runtime.compaction.keepRecentTokens"],
+    [{ summaryMaxTokens: 999 }, "runtime.compaction.summaryMaxTokens"],
+    [{ minSavingsTokens: -1 }, "runtime.compaction.minSavingsTokens"],
+    [{ fixedOverheadEnabled: "yes" }, "runtime.compaction.fixedOverheadEnabled"],
+    [{ contextWindowOverride: 31_999 }, "runtime.compaction.contextWindowOverride"],
+  ])("rejects invalid runtime.compaction JSON at %s", (compaction, path) => {
+    expect(() => layerJsonOntoEnv({ runtime: { compaction: compaction as never } }, {}))
+      .toThrowError(expect.objectContaining({ code: "invalid_json", details: expect.objectContaining({ path }) }));
+  });
+
   it("translates JSON concurrency to env keys", () => {
     const layered = layerJsonOntoEnv(
       { concurrency: { maxConcurrentRuns: 4 } },

@@ -13,18 +13,14 @@ describe("isContextLimitError", () => {
     "token limit exceeded",
     "prompt is too long",
     // Newly-covered phrasings.
-    "max tokens reached",
-    "max_tokens exceeded",
-    "maximum tokens for this model",
     "context window exceeded",
     "context budget exhausted",
     "prompt too long",
     "the request exceeds max context",
-    "exceeds maximum",
     "input tokens exceed the limit",
     "input exceeds the allowed size",
-    "output tokens exceed the cap",
     "tokens exceed the model limit",
+    "Codex error: Your input exceeds the context window of this model. Please adjust your input and try again.",
   ];
 
   for (const message of contextLimitMessages) {
@@ -41,6 +37,11 @@ describe("isContextLimitError", () => {
     "internal server error",
     "invalid api key",
     "network timeout",
+    "max tokens reached",
+    "max_tokens exceeded",
+    "maximum tokens for this model",
+    "maximum output tokens for this model",
+    "output tokens exceed the cap",
   ];
 
   for (const message of nonContextLimitMessages) {

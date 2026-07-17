@@ -347,7 +347,7 @@ export interface ConfigReferenceField {
   readonly secret?: boolean;
 }
 
-export type ConfigReferenceType = "string" | "integer" | "boolean" | "string[]" | "object" | "array";
+export type ConfigReferenceType = "string" | "number" | "integer" | "boolean" | "string[]" | "object" | "array";
 
 interface JsonSchema {
   readonly [key: string]: unknown;
@@ -757,6 +757,9 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     examples: [field.example],
   };
   switch (field.type) {
+    case "number":
+      schema.type = "number";
+      break;
     case "integer":
       schema.type = "integer";
       break;
@@ -815,6 +818,18 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.enum = ["producing-conversation"];
   } else if (field.jsonPath === "telegram.sendTools.pathScope") {
     schema.enum = ["run-output"];
+  }
+  const numericBounds: Record<string, { readonly minimum: number; readonly maximum: number }> = {
+    "runtime.compaction.triggerRatio": { minimum: 0.2, maximum: 0.95 },
+    "runtime.compaction.keepRecentTokens": { minimum: 4_000, maximum: 200_000 },
+    "runtime.compaction.summaryMaxTokens": { minimum: 1_000, maximum: 64_000 },
+    "runtime.compaction.minSavingsTokens": { minimum: 0, maximum: 500_000 },
+    "runtime.compaction.contextWindowOverride": { minimum: 32_000, maximum: 10_000_000 },
+  };
+  const bounds = numericBounds[field.jsonPath];
+  if (bounds !== undefined) {
+    schema.minimum = bounds.minimum;
+    schema.maximum = bounds.maximum;
   }
   if (field.jsonPath === "tools.mcpRequestContextServers") {
     schema.uniqueItems = true;
@@ -898,6 +913,20 @@ function inferType(id: string): ConfigReferenceType {
   if (id === "providers.piNative.transport") {
     return "string";
   }
+  if (id === "runtime.compaction.triggerRatio") {
+    return "number";
+  }
+  if ([
+    "runtime.compaction.keepRecentTokens",
+    "runtime.compaction.summaryMaxTokens",
+    "runtime.compaction.minSavingsTokens",
+    "runtime.compaction.contextWindowOverride",
+  ].includes(id)) {
+    return "integer";
+  }
+  if (id === "runtime.compaction.fixedOverheadEnabled") {
+    return "boolean";
+  }
   if (id.endsWith("Models") || id.endsWith("Tools") || id.endsWith("Servers") || id.endsWith("Roots") || id.endsWith("allowlist") || id.endsWith("denyWrite") || id.endsWith("selectedSkills") || id.endsWith("Ids") || id.endsWith("Aliases")) {
     return "string[]";
   }
@@ -914,6 +943,16 @@ function inferType(id: string): ConfigReferenceType {
 }
 
 function defaultLabelFor(id: string): string {
+  if ([
+    "runtime.compaction.keepRecentTokens",
+    "runtime.compaction.summaryMaxTokens",
+    "runtime.compaction.minSavingsTokens",
+  ].includes(id)) {
+    return "adaptive by model";
+  }
+  if (id === "runtime.compaction.contextWindowOverride") {
+    return "auto-detected";
+  }
   if (id === "slack.stripMentionText") {
     return "conditional";
   }
@@ -932,6 +971,9 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "runtime.fallbackModels": [],
     "runtime.fallbacks": [],
     "runtime.routeSafety": "uniform",
+    "runtime.compaction.enabled": true,
+    "runtime.compaction.triggerRatio": 0.70,
+    "runtime.compaction.fixedOverheadEnabled": true,
     "runtime.executionMode": "inferred",
     "runtime.workspace": ".",
     "runtime.session.mode": "continuous",
@@ -1027,6 +1069,11 @@ function exampleFor(id: string): SettingsJsonValue {
     "runtime.routeSafety": "per-route-native",
     "runtime.effort": "medium",
     "runtime.permissionMode": "default",
+    "runtime.compaction.triggerRatio": 0.70,
+    "runtime.compaction.keepRecentTokens": 12_800,
+    "runtime.compaction.summaryMaxTokens": 5_120,
+    "runtime.compaction.minSavingsTokens": 12_800,
+    "runtime.compaction.contextWindowOverride": 128_000,
     "context.identityPath": "./IDENTITY.md",
     "memory.mode": "journal",
     "memory.path": "./.mono-agent/memory",
@@ -1056,6 +1103,9 @@ function exampleFor(id: string): SettingsJsonValue {
   if (inferType(id) === "integer") {
     return defaultValueFor(id) ?? 1;
   }
+  if (inferType(id) === "number") {
+    return defaultValueFor(id) ?? 0.5;
+  }
   if (inferType(id) === "string[]") {
     return id.endsWith("Tools") ? ["Read", "Grep"] : ["example"];
   }
@@ -1070,6 +1120,18 @@ function descriptionFor(id: string): string {
   const name = id.split(".").slice(1).join(".");
   if (id === "slack.stripMentionText") {
     return "When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`.";
+  }
+  const compactionDescriptions: Record<string, string> = {
+    "runtime.compaction.enabled": "Enables adaptive proactive compaction and one-shot reactive overflow recovery.",
+    "runtime.compaction.triggerRatio": "Fraction of the effective model context window used for the proactive trigger, additionally capped by adaptive safety headroom.",
+    "runtime.compaction.keepRecentTokens": "Explicit recent-context retention override; omitted derives 10% of the effective context window, clamped to 4,000-20,000 tokens.",
+    "runtime.compaction.summaryMaxTokens": "Explicit combined summary-output budget override; omitted derives 4% of the effective context window, clamped to 2,000-12,000 tokens.",
+    "runtime.compaction.minSavingsTokens": "Minimum verified token reduction required for proactive compaction; omitted derives 10% of the effective window, clamped to 4,000-20,000. Reactive recovery accepts any positive reduction.",
+    "runtime.compaction.fixedOverheadEnabled": "Includes system instructions, tool schemas, and the current user turn in proactive request-size estimates.",
+    "runtime.compaction.contextWindowOverride": "Persistent correction for inaccurate provider context-window metadata; learned overflow ceilings may lower it process-locally.",
+  };
+  if (compactionDescriptions[id] !== undefined) {
+    return compactionDescriptions[id];
   }
   if (id === "memory.embeddings.provider") {
     return "Embedding service used by Journal/BuJo memory: ollama, lmstudio, or openai.";

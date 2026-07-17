@@ -66,14 +66,23 @@ Each run collects per-turn usage, cost, and cache metrics as events for its JSON
 
 Related per-turn timing also lands in the JSONL: a `provider_bridge_latency` event separates provider/tool/IO time from harness overhead, and per-tool `tool_timing` events carry `execution_ms`. See [Artifacts & traces](/observability/artifacts-and-traces/) and the [CLI reference](/observability/cli-reference/) for reading these, and [Phoenix & backfill](/observability/phoenix-and-backfill/) to export them as spans.
 
-## Context compaction (provider-delegated, auto)
+## Context compaction (provider-delegated, configurable)
 
 Compaction is delegated to the active provider bridge rather than hand-rolled in the runtime. On the pi-native bridge, the bridge drives `AgentHarness.compact()`:
 
 - **Proactively** — before a turn when the running model is near its context window.
-- **Reactively** — if a turn still overflows, it compacts and re-prompts once.
+- **Reactively** — if a turn still overflows, it compacts and re-prompts once
+  only after the rebuilt context preview proves a positive reduction. A
+  non-reducing compaction is cancelled before persistence and is not sent back
+  to the same model unchanged.
 
-The window auto-tracks whichever model is actually serving the request and self-corrects from a real ceiling reported in an overflow error, so a fallback to a smaller-window model is handled without manual tuning.
+The window auto-tracks whichever model is actually serving the request. Numeric
+provider overflow limits become learned ceilings; a generic overflow temporarily
+lowers the process-local ceiling to 90% of the failed request estimate. If the
+provider metadata is persistently wrong, set `runtime.compaction.contextWindowOverride`.
+The runtime still cannot make a malformed model definition, one individually
+oversized prompt, or a provider failure compactable; unrecovered overflow remains
+an explicit `context_limit` and advances through configured fallbacks.
 
 Every run reports `context_compaction_applied`:
 
@@ -83,7 +92,20 @@ Every run reports `context_compaction_applied`:
 | `false` | Enabled but not needed. |
 | `null` | Compaction disabled (or the bridge does not support it). |
 
-This is automatic on the pi-native bridge (coverage: `provider` + `settings`); tune it via the `agent_compaction_*` settings. Other bridges follow their own compaction behavior. See [Backends](/runtime/backends/) for bridge differences, [Sessions & concurrency](/runtime/sessions-concurrency/) for how sessions persist, and [Fallback](/runtime/fallback/) for window changes across the fallback chain.
+Pi diagnostics also report the full proactive request estimate and fixed
+overhead components on every check, plus `context_compaction_reactive_attempted`,
+`context_compaction_tokens_after`, and `context_compaction_reduced`. If the
+request still exceeds the primary model's window, the run is classified as
+`context_limit`; the fallback router may then try the next configured model.
+
+This is automatic and configurable on the pi-native bridge. Defaults resolve
+against the effective context window `W`: trigger ratio `0.70`, safety headroom
+`clamp(floor(W × 0.25), 16000, 96000)`, retained context
+`clamp(floor(W × 0.10), 4000, 20000)`, summary output
+`clamp(floor(W × 0.04), 2000, 12000)`, and minimum proactive savings
+`clamp(floor(W × 0.10), 4000, 20000)`. Configure overrides under
+`runtime.compaction` (or the matching `MONO_AGENT_COMPACTION_*` variables).
+Other bridges follow their own compaction behavior. See [Backends](/runtime/backends/) for bridge differences, [Sessions & concurrency](/runtime/sessions-concurrency/) for how sessions persist, and [Fallback](/runtime/fallback/) for window changes across the fallback chain.
 
 ## WebFetch retry (auto)
 
@@ -112,6 +134,6 @@ There is no config-file or CLI key for this (coverage: `code`). Enable it only w
 | Built-in tools | `config` | `tools.allowedTools` / `tools.disallowedTools` |
 | Bloat guard (256KB + artifacts) | `auto` | Built in; artifacts to `artifacts.dir` |
 | Usage/cost tracking | `auto` | Recorded in JSONL artifacts |
-| Context compaction | `provider` + `settings` | Bridge-driven; `agent_compaction_*` settings |
+| Context compaction | `config` + `provider` | `runtime.compaction.*`; bridge-driven Pi compaction |
 | WebFetch retry | `auto` | Built into the WebFetch tool |
 | Tool parallelism | `code` | `runtimeOptions.piToolParallelismMode` |

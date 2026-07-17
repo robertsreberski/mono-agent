@@ -127,6 +127,51 @@ describe("resolveAgentCompactionPolicy MCP call timeouts", () => {
   });
 });
 
+describe("resolveAgentCompactionPolicy adaptive defaults", () => {
+  const cases = [
+    { window: 32_000, trigger: 16_000, keep: 4_000, summary: 2_000, savings: 4_000 },
+    { window: 128_000, trigger: 89_600, keep: 12_800, summary: 5_120, savings: 12_800 },
+    { window: 272_000, trigger: 190_400, keep: 20_000, summary: 10_880, savings: 20_000 },
+    { window: 372_000, trigger: 260_400, keep: 20_000, summary: 12_000, savings: 20_000 },
+  ];
+
+  for (const row of cases) {
+    it(`derives conservative defaults for a ${row.window}-token window`, () => {
+      const policy = resolveAgentCompactionPolicy({}, { contextWindow: row.window });
+      expect(policy).toMatchObject({
+        enabled: true,
+        contextWindow: row.window,
+        triggerRatio: 0.70,
+        triggerTokens: row.trigger,
+        keepRecentTokens: row.keep,
+        summaryMaxTokens: row.summary,
+        compactionMinSavingsTokens: row.savings,
+        fixedOverheadEnabled: true,
+      });
+    });
+  }
+
+  it("lets every explicit scalar override its adaptive value while retaining existing clamps", () => {
+    const policy = resolveAgentCompactionPolicy({
+      agent_compaction_enabled: false,
+      agent_compaction_trigger_ratio: 0.8,
+      agent_compaction_keep_recent_tokens: 9_000,
+      agent_compaction_summary_max_tokens: 3_000,
+      agent_compaction_min_savings_tokens: 7_000,
+      agent_compaction_fixed_overhead_enabled: false,
+    }, { contextWindow: 372_000 });
+    expect(policy).toMatchObject({
+      enabled: false,
+      triggerRatio: 0.8,
+      triggerTokens: 279_000,
+      keepRecentTokens: 9_000,
+      summaryMaxTokens: 3_000,
+      compactionMinSavingsTokens: 7_000,
+      fixedOverheadEnabled: false,
+    });
+  });
+});
+
 describe("resolveRuntimePolicyInputs (typed policy objects <-> deprecated settings shim)", () => {
   it("consumes no settings when typed objects are supplied (per-group precedence)", () => {
     const { settingsLike, consumedSettingsKeys } = resolveRuntimePolicyInputs({

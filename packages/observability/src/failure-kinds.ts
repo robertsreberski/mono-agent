@@ -22,10 +22,16 @@ export interface DescribeRunFailureKindInput {
 
 export const KNOWN_RUN_FAILURE_KINDS = [
   {
+    kind: "context_limit",
+    label: "Context limit",
+    explanation: "The request exceeded the selected model's usable context window after compaction recovery.",
+    nextStep: "Inspect the compaction diagnostics and failover history, then shorten the retained conversation or configure a fallback with a larger usable window.",
+  },
+  {
     kind: "usage_limit",
     label: "Usage limit",
-    explanation: "The runtime hit a model, provider, turn, or context limit before the run could finish.",
-    nextStep: "Narrow the prompt or task, check quota/model limits, then inspect the local artifact summary for the partial run.",
+    explanation: "The runtime hit a provider usage, quota, output-token, or turn limit before the run could finish.",
+    nextStep: "Narrow the task, check quota/model limits, then inspect the local artifact summary for the partial run.",
   },
   {
     kind: "process_death",

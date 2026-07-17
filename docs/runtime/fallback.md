@@ -108,10 +108,13 @@ runtime checks fail closed or skip that route with `safety_unavailable` /
 ## What failover does
 
 The router advances after retryable provider errors (transport failures, rate
-limits, transient server failures) and provider-auth failures. Successful but
-undesired output does not trigger failover. Mid-turn sandbox/safety failures are
-terminal because retrying them on another provider could weaken the established
-contract.
+limits, transient server failures), provider-auth failures, and a classified
+`context_limit` after the active bridge's compaction recovery is exhausted. A
+fallback may have a larger usable window even when the primary cannot reduce its
+request further. Quota, output-token, and max-turn failures remain
+`usage_limit` and do not become context failover. Successful but undesired output
+does not trigger failover. Mid-turn sandbox/safety failures are terminal because
+retrying them on another provider could weaken the established contract.
 
 Any configured fallback chain is stateless across provider sessions. The harness
 keeps the logical conversation replayable, strips route-owned session ids, and

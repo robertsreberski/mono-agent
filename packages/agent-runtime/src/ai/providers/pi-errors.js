@@ -1,9 +1,11 @@
 // Shared pi error-normalization helpers.
 //
 // Extracted so the pi-native bridge does not have to import from a sibling
-// provider module. Both the message-normalizer (unwrap nested provider error
-// envelopes) and the context-limit classifier are pure string helpers with no
-// runtime dependencies.
+// provider module. The message normalizer unwraps nested provider error
+// envelopes; the context-limit classifier delegates to the runtime-wide
+// taxonomy so every bridge makes the same fallback decision.
+
+import { isContextLimitFailureText } from "../failure.js";
 
 function tryParseJson(text) {
   try { return JSON.parse(text); } catch { return null; }
@@ -21,14 +23,7 @@ export function normalizePiErrorMessage(message) {
 }
 
 export function isContextLimitError(message) {
-  const text = String(message || "");
-  // Rate-limit wording takes precedence: it is a throttle, not a context overflow.
-  if (/rate limit|too many requests/i.test(text)) return false;
-  // Broadened to catch the many ways providers phrase a context/token overflow:
-  // "context length/window/budget", "max(imum) tokens", "token limit",
-  // "too many tokens", "prompt (is) too long", "exceeds the context/maximum/max",
-  // "input tokens/exceeds", "output token(s)", "token(s) exceed".
-  return /context[_ ](?:length|window|budget)|max(?:imum)?[_ ]?tokens?|token[_ ]limit|too[_ ]many[_ ]tokens?|prompt[_ ](?:is[_ ])?too[_ ]long|exceeds?[_ ](?:the context|maximum|max)|input[_ ](?:tokens?|exceeds)|output[_ ]tokens?|tokens?[_ ]exceed/i.test(text);
+  return isContextLimitFailureText(message);
 }
 
 // Best-effort extraction of the model's real context-window ceiling from an

@@ -180,8 +180,9 @@ Key responsibilities by subsystem:
   Real hosts inject `@mono-agent/runtime-adapter`'s sandbox implementation.
 - `agent/compaction.js`: pure helpers consumed by the pi bridge —
   `resolveAgentCompactionPolicy` (derives the context-window compaction trigger +
-  tool-output payload limits from `agent_compaction_*` settings and the running
-  model), `estimateFixedOverheadTokens` (the proactive fixed-overhead correction:
+  adaptive budgets and tool-output payload limits from the typed compaction
+  policy and running model; deprecated `agent_compaction_*` settings remain a
+  compatibility input), `estimateFixedOverheadTokens` (the proactive fixed-overhead correction:
   system prompt + tool schemas + per-turn message), `isLikelyContextTermination`
   (classifies a context-pressure error), and the typed-policy/`settings`-bag shim
   helpers (`resolveRuntimePolicyInputs`, `deprecatedSettingsWarning`) that let a
@@ -255,12 +256,12 @@ provider exposes queue-after-turn), not durability/cost:
 The pi runtime is built on pi-agent-core's native `AgentHarness` (the hand-rolled
 bridge was removed once native reached parity); it owns the session and
 pi-ai-managed retry. `AgentHarness` itself has **no** automatic compaction, so
-the pi bridge drives it directly: before each turn it estimates the running
-model's context usage and calls `AgentHarness.compact()` when near the window
-(proactive), and if a turn still overflows it compacts once and re-prompts
-(reactive recovery). Runs report `context_compaction_applied` as `true` (a
+the pi bridge drives it through a one-shot `session_before_compact` hook: before
+each turn it compares the full request estimate with an adaptive trigger, and if
+a turn still overflows it retries exactly once only after a preview verifies a
+positive reduction. Runs report `context_compaction_applied` as `true` (a
 compaction fired), `false` (enabled but not needed), or `null` (disabled via
-`agent_compaction_enabled: false`).
+`runtime.compaction.enabled: false`).
 
 | Provider | Warm session | Resume across turns | Survives process restart |
 |---|---|---|---|
