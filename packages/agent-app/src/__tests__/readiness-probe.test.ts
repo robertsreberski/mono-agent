@@ -9,7 +9,7 @@ import { defaultAnswers, composeWizardPlan } from "../wizard/answers.js";
 import {
   readinessProbeEnvironment,
   readinessProbeTimeoutMs,
-  runReadinessProbe,
+  runAllRouteReadinessProbe,
 } from "../readiness-probe.js";
 import { trackPiCredentialResolverSecrets } from "../readiness-probe-worker.js";
 
@@ -52,7 +52,29 @@ async function syntheticReadinessWorker(): Promise<{ readonly url: URL; readonly
   return { url: pathToFileURL(path), cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
-describe("runReadinessProbe", () => {
+async function runProbeForTest(
+  options: Parameters<typeof runAllRouteReadinessProbe>[0],
+): Promise<Awaited<ReturnType<typeof runAllRouteReadinessProbe>>> {
+  const result = await runAllRouteReadinessProbe(options);
+  const runtime = (options.plan.configJson.runtime ?? {}) as Record<string, unknown>;
+  const hasFallbacks =
+    (Array.isArray(runtime.fallbacks) && runtime.fallbacks.length > 0)
+    || (Array.isArray(runtime.fallbackModels) && runtime.fallbackModels.length > 0);
+  if (hasFallbacks || options.resume !== undefined) {
+    return result;
+  }
+  if (result.ok) {
+    return { ok: true };
+  }
+  const route = result.routes?.[0];
+  return {
+    ok: false,
+    kind: route?.kind ?? result.kind,
+    message: route?.message ?? result.message,
+  };
+}
+
+describe("readiness probe", () => {
   const plan = composeWizardPlan(defaultAnswers(), { dirBasename: "agent", skillsRootExists: false });
 
   it("returns a typed unsupported result before probing direct OpenCode", async () => {
@@ -62,7 +84,7 @@ describe("runReadinessProbe", () => {
     const run = vi.fn(async () => ({ text: "must not run" }));
     const dispose = vi.fn(async () => {});
 
-    await expect(runReadinessProbe({
+    await expect(runProbeForTest({
       plan: directOpenCodePlan,
       run,
       dispose,
@@ -77,7 +99,7 @@ describe("runReadinessProbe", () => {
 
   it("runs against the selected model with a no-tool disposable config", async () => {
     let seen: { model: unknown; allowedTools: readonly string[]; workspace: string; identityPath: string } | undefined;
-    const result = await runReadinessProbe({
+    const result = await runProbeForTest({
       plan,
       run: async ({ config, options }) => {
         seen = {
@@ -132,7 +154,7 @@ describe("runReadinessProbe", () => {
       PROVIDER_SECRET: "selected-in-memory-secret",
       MONO_AGENT_PI_AUTH_PATH: "/resolved/pi/auth.json",
     });
-    await expect(runReadinessProbe({
+    await expect(runProbeForTest({
       plan,
       hostEnv,
       secretValues,
@@ -160,7 +182,7 @@ describe("runReadinessProbe", () => {
     delete hostEnv.ANTHROPIC_API_KEY;
 
     try {
-      await expect(runReadinessProbe({
+      await expect(runProbeForTest({
         plan,
         hostEnv,
         run: async ({ options }) => {
@@ -187,7 +209,7 @@ describe("runReadinessProbe", () => {
     const previousShellOnly = process.env.SHELL_ONLY_PROVIDER_KEY;
     process.env.SHELL_ONLY_PROVIDER_KEY = "ambient-shell-key";
     try {
-      await expect(runReadinessProbe({
+      await expect(runProbeForTest({
         plan,
         hostEnv: {
           READINESS_WORKER_TEST_MODE: "exact-env",
@@ -208,7 +230,7 @@ describe("runReadinessProbe", () => {
       dirBasename: "agent",
       skillsRootExists: false,
     });
-    await expect(runReadinessProbe({
+    await expect(runProbeForTest({
       plan: effortPlan,
       run: async ({ options }) => {
         expect(options.effort).toBe("max");
@@ -218,7 +240,7 @@ describe("runReadinessProbe", () => {
 
     const synthetic = await syntheticReadinessWorker();
     try {
-      await expect(runReadinessProbe({
+      await expect(runProbeForTest({
         plan: effortPlan,
         hostEnv: { READINESS_WORKER_TEST_MODE: "effort" },
         workerUrl: synthetic.url,
@@ -236,7 +258,7 @@ describe("runReadinessProbe", () => {
     };
     const transportPlan = { ...plan, configJson: configJson as never };
 
-    await expect(runReadinessProbe({
+    await expect(runProbeForTest({
       plan: transportPlan,
       run: async ({ config, options }) => {
         expect(config.providers?.piNative?.transport).toBe("sse");
@@ -247,7 +269,7 @@ describe("runReadinessProbe", () => {
 
     const synthetic = await syntheticReadinessWorker();
     try {
-      await expect(runReadinessProbe({
+      await expect(runProbeForTest({
         plan: transportPlan,
         hostEnv: { READINESS_WORKER_TEST_MODE: "transport" },
         workerUrl: synthetic.url,
@@ -260,7 +282,7 @@ describe("runReadinessProbe", () => {
   it("accepts tool_result as a worker-reported no-tool policy violation", async () => {
     const synthetic = await syntheticReadinessWorker();
     try {
-      await expect(runReadinessProbe({
+      await expect(runProbeForTest({
         plan,
         hostEnv: { READINESS_WORKER_TEST_MODE: "tool-result" },
         workerUrl: synthetic.url,
@@ -274,7 +296,7 @@ describe("runReadinessProbe", () => {
     const synthetic = await syntheticReadinessWorker();
     const startedAt = Date.now();
     try {
-      await expect(runReadinessProbe({
+      await expect(runProbeForTest({
         plan,
         hostEnv: { READINESS_WORKER_TEST_MODE: "ignore-abort" },
         timeoutMs: 15,
@@ -287,19 +309,19 @@ describe("runReadinessProbe", () => {
   });
 
   it("surfaces an empty first response as not ready", async () => {
-    await expect(runReadinessProbe({ plan, run: async () => ({ text: "" }) })).resolves.toMatchObject({
+    await expect(runProbeForTest({ plan, run: async () => ({ text: "" }) })).resolves.toMatchObject({
       ok: false,
       kind: "empty_response",
     });
   });
 
   it("rejects partial text from cancelled and failed provider runs", async () => {
-    await expect(runReadinessProbe({
+    await expect(runProbeForTest({
       plan,
       run: async () => ({ text: "partial", cancelled: true }),
     })).resolves.toMatchObject({ ok: false, kind: "cancelled" });
 
-    await expect(runReadinessProbe({
+    await expect(runProbeForTest({
       plan,
       run: async () => ({
         text: "partial",
@@ -311,7 +333,7 @@ describe("runReadinessProbe", () => {
 
   it("rejects tool actions observed live or returned in the result", async () => {
     let observedSignal: AbortSignal | undefined;
-    await expect(runReadinessProbe({
+    await expect(runProbeForTest({
       plan,
       run: async ({ options }) => {
         observedSignal = options.abortSignal;
@@ -324,7 +346,7 @@ describe("runReadinessProbe", () => {
     })).resolves.toMatchObject({ ok: false, kind: "tool_used" });
     expect(observedSignal?.aborted).toBe(true);
 
-    await expect(runReadinessProbe({
+    await expect(runProbeForTest({
       plan,
       run: async () => ({ text: "ready", events: [{ type: "file_change" }] }),
     })).resolves.toMatchObject({ ok: false, kind: "tool_used" });
@@ -336,7 +358,7 @@ describe("runReadinessProbe", () => {
     const run = vi.fn(() => new Promise<never>(() => {}));
     const dispose = vi.fn(async () => {});
 
-    await expect(runReadinessProbe({
+    await expect(runProbeForTest({
       plan,
       abortSignal: caller.signal,
       timeoutMs: 10_000,
@@ -345,7 +367,7 @@ describe("runReadinessProbe", () => {
     })).resolves.toMatchObject({ ok: false, kind: "cancelled" });
 
     expect(run).not.toHaveBeenCalled();
-    expect(dispose).toHaveBeenCalledOnce();
+    expect(dispose).not.toHaveBeenCalled();
   });
 
   it("cancels a never-settling provider immediately, aborts it, and disposes it", async () => {
@@ -356,7 +378,7 @@ describe("runReadinessProbe", () => {
       markStarted = resolve;
     });
     const dispose = vi.fn(async () => {});
-    const pending = runReadinessProbe({
+    const pending = runProbeForTest({
       plan,
       abortSignal: caller.signal,
       timeoutMs: 10_000,
@@ -379,7 +401,7 @@ describe("runReadinessProbe", () => {
   it("returns immediately when a never-settling provider emits a tool event", async () => {
     let providerSignal: AbortSignal | undefined;
     const dispose = vi.fn(async () => {});
-    const pending = runReadinessProbe({
+    const pending = runProbeForTest({
       plan,
       timeoutMs: 10_000,
       dispose,
@@ -417,7 +439,7 @@ describe("runReadinessProbe", () => {
     let seenSignal: AbortSignal | undefined;
     const dispose = vi.fn(async () => {});
     try {
-      const pending = runReadinessProbe({
+      const pending = runProbeForTest({
         plan,
         hostEnv,
         timeoutMs: 15,
@@ -461,7 +483,7 @@ describe("runReadinessProbe", () => {
 
   it("bounds and redacts provider errors before returning them", async () => {
     const secret = "super-secret-provider-token";
-    const result = await runReadinessProbe({
+    const result = await runProbeForTest({
       plan,
       secretValues: { PROVIDER_SECRET: secret },
       run: async () => ({
@@ -492,7 +514,7 @@ describe("runReadinessProbe", () => {
     const seen: Array<{ model: string; effort?: string }> = [];
     const starts: string[] = [];
     const completions: string[] = [];
-    const result = await runReadinessProbe({
+    const result = await runProbeForTest({
       plan: allRoutesPlan,
       onRouteStart: (route) => { starts.push(`${route.index + 1}/${route.total}:${route.model}`); },
       onRouteComplete: (route) => { completions.push(`${route.index}:${route.status}`); },
@@ -537,11 +559,11 @@ describe("runReadinessProbe", () => {
       effort: "xhigh",
     };
     const resumePlan = { ...plan, configJson: configJson as never };
-    const first = await runReadinessProbe({ plan: resumePlan, run: async () => ({ text: "ready" }) });
+    const first = await runProbeForTest({ plan: resumePlan, run: async () => ({ text: "ready" }) });
     expect(first.ok).toBe(true);
     if (!first.ok || first.routes === undefined || first.planFingerprint === undefined) throw new Error("route summary missing");
     const run = vi.fn(async () => ({ text: "ready" }));
-    const resumed = await runReadinessProbe({
+    const resumed = await runProbeForTest({
       plan: resumePlan,
       run,
       resume: {
@@ -563,7 +585,7 @@ describe("runReadinessProbe", () => {
       fallbackModels: ["pi:openai-codex:gpt-5.6-sol"],
     };
     const resumePlan = { ...plan, configJson: configJson as never };
-    const first = await runReadinessProbe({ plan: resumePlan, run: async () => ({ text: "ready" }) });
+    const first = await runProbeForTest({ plan: resumePlan, run: async () => ({ text: "ready" }) });
     if (!first.ok || first.routes === undefined || first.planFingerprint === undefined) {
       throw new Error("route summary missing");
     }
@@ -571,7 +593,7 @@ describe("runReadinessProbe", () => {
     controller.abort();
     const run = vi.fn(async () => ({ text: "should not run" }));
 
-    const interrupted = await runReadinessProbe({
+    const interrupted = await runProbeForTest({
       plan: resumePlan,
       run,
       abortSignal: controller.signal,
@@ -598,13 +620,13 @@ describe("runReadinessProbe", () => {
     };
     firstConfig.providers = { piAuthPath: "/tmp/readiness-auth-a.json" };
     const firstPlan = { ...plan, configJson: firstConfig as never };
-    const first = await runReadinessProbe({ plan: firstPlan, run: async () => ({ text: "ready" }) });
+    const first = await runProbeForTest({ plan: firstPlan, run: async () => ({ text: "ready" }) });
     if (!first.ok || first.routes === undefined || first.planFingerprint === undefined) throw new Error("route summary missing");
 
     const changedConfig = structuredClone(firstConfig);
     changedConfig.providers = { piAuthPath: "/tmp/readiness-auth-b.json" };
     const run = vi.fn(async () => ({ text: "ready" }));
-    const changed = await runReadinessProbe({
+    const changed = await runProbeForTest({
       plan: { ...plan, configJson: changedConfig as never },
       run,
       resume: {
@@ -624,7 +646,7 @@ describe("runReadinessProbe", () => {
       fallbackModels: ["pi:openai-codex:gpt-5.6-sol"],
     };
     const controller = new AbortController();
-    const result = await runReadinessProbe({
+    const result = await runProbeForTest({
       plan: { ...plan, configJson: configJson as never },
       abortSignal: controller.signal,
       run: async () => {

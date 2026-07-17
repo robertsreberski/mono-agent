@@ -1,5 +1,4 @@
 export {
-  acceptedSdkIdsForBackend,
   assertExecutionModeCompatible,
   assertParsedRuntimeModelReference,
   createMonoRuntime,
@@ -8,7 +7,6 @@ export {
   describeMonoRuntimeSupport,
   isRuntimeExecutionMode,
   listMonoRuntimeBackends,
-  listMonoRuntimeSelectionTable,
   modelReferenceKey,
   monoRuntimeSupportsSessionResume,
   parseMonoRuntimeModelReference,
@@ -29,15 +27,9 @@ export type {
 export { discoverClaudeSdkModels } from "@mono-agent/agent-runtime";
 export { CodedError, isCodedError } from "@mono-agent/agent-contracts";
 export {
-  applyTemporaryEnv,
-  assertBaseRunOptions,
-  buildRuntimeResult,
   isPlainObject,
   isValidMcpServerName,
-  readLastStringUserMessage,
-  withTemporaryEnv,
 } from "./runtime-helpers.js";
-export type { RuntimeErrorFactory, RuntimeResultParts } from "./runtime-helpers.js";
 export { parseMcpServers } from "./mcp-servers.js";
 export type { NormalizedMcpServer, NormalizedMcpTransport } from "./mcp-servers.js";
 export { resolveRuntimePolicies } from "./runtime-policies.js";

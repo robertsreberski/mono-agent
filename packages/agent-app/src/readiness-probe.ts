@@ -521,22 +521,10 @@ function singleRouteWizardPlan(plan: WizardPlan, route: ReadinessRoutePlan): Wiz
 
 /**
  * Make one real, sequential no-tool turn for every selected persistent runtime
- * route. A route is never allowed to invoke its configured fallback chain.
- * Ordinary failures are collected so the operator gets one complete summary;
- * caller cancellation stops the current route and records interruption state.
- */
-export async function runReadinessProbe(options: ReadinessProbeOptions): Promise<ReadinessProbeResult> {
-  const selected = selectedReadinessRoutes(options.plan, options);
-  if (selected.routes.length <= 1 && options.resume === undefined) {
-    return runSingleReadinessProbe(options);
-  }
-  return runSelectedReadinessRoutes(options, selected);
-}
-
-/**
- * Always return the ordered route ledger, including for a primary-only plan.
- * Guided setup uses this surface so a successful call can be resumed by its
- * stable key; legacy callers may keep using runReadinessProbe's compact result.
+ * route and return the ordered route ledger, including for a primary-only plan.
+ * A route is never allowed to invoke its configured fallback chain. Ordinary
+ * failures are collected so the operator gets one complete summary; caller
+ * cancellation stops the current route and records interruption state.
  */
 export async function runAllRouteReadinessProbe(
   options: ReadinessProbeOptions,
