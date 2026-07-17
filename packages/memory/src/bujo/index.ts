@@ -109,12 +109,10 @@ export type {
   CompletedTurnIntakeItem,
   CompletedTurnIntakeSnapshot,
 } from "./capture-intake.js";
-export { distill } from "./distill.js";
 export type { CandidateMemory } from "./distill.js";
 export { reconcile } from "./reconcile.js";
 export { reconcileBatch } from "./reconcile.js";
 export type { ReconcileAction, ReconcileDeps } from "./reconcile.js";
-export { extractEntities } from "./entities.js";
 export type { Extraction, ExtractedEntity, ExtractedRelation } from "./entities.js";
 export { appendAssociation, appendGraphBatch, readGraph } from "./graph.js";
 export type { GraphBatchInput, GraphBatchResult } from "./graph.js";

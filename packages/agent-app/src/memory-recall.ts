@@ -1,6 +1,3 @@
-import process from "node:process";
-import { fileURLToPath } from "node:url";
-
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type {
   CircuitBreakerEmbeddingOptions,
@@ -40,15 +37,10 @@ export type {
  * embeddings + FTS — no chat LLM — and still serves FTS-only (lexical) results when embeddings are
  * absent. Capture stays in-app (unchanged); this module never touches it.
  *
- * The child-process settings below remain as a standalone/compatibility surface. Their embeddings
- * path keeps parity with the in-app store (`createConfiguredMemory`): the recall child applies the
- * same per-call timeout and circuit breaker.
- *
- * Secret handling: the raw embeddings api key is NOT copied into the recall child's env. When the
- * key was sourced from a named environment variable (`apiKeyEnv`) we forward only the NAME and the
- * child re-reads the value from its inherited process env at runtime. An inline literal key (no
- * `apiKeyEnv`) still has to transit the child env as a value — that residual is documented on
- * {@link memoryRecallMcpEnv}.
+ * The separately published `mono-agent-memory-recall` binary remains a standalone compatibility
+ * surface. It reads explicitly supplied `MONO_AGENT_MEMORY_*` settings through
+ * {@link memoryRecallSettingsFromEnv}; the app itself does not construct or inject a stdio-child
+ * server spec.
  *
  * MCP tools are not gated by `tools.allowedTools`, so no allowlist entry is required.
  */
@@ -212,86 +204,6 @@ export function memoryRecallSettingsFromEnv(env: Record<string, string | undefin
 }
 
 /**
- * Env passed to the recall stdio child. Reuses the MONO_AGENT_MEMORY_* names the old memory-mcp used.
- *
- * With no embeddings the child runs FTS-only and only the memory path is emitted. The embeddings
- * resilience knobs (timeout + circuit breaker) are forwarded so the child wraps its provider exactly
- * like the in-app store. SECRET HANDLING (F13): when `apiKeyEnv` is present the env-var NAME is
- * forwarded (NOT the value) and the child re-reads it from its inherited process env; the raw
- * `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY` value is emitted ONLY for the inline-key residual (an inline
- * `apiKey` with no `apiKeyEnv`), where there is no name to forward.
- */
-export function memoryRecallMcpEnv(settings: MemoryRecallSettings): Record<string, string> {
-  if (isSupermemorySettings(settings)) {
-    const sm = settings.supermemory;
-    // Forward the RESOLVED key value (not an env-var name): the recall stdio child does not inherit
-    // the parent's full env under claude-sdk/codex-app, so a name handoff would fail to authenticate.
-    // Same exposure class as the embeddings inline-key residual — the child is our own subprocess.
-    return {
-      MONO_AGENT_MEMORY_BACKEND: "supermemory",
-      MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: sm.baseUrl,
-      MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER: sm.container,
-      ...(sm.apiKey === undefined ? {} : { MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY: sm.apiKey }),
-      ...(sm.timeoutMs === undefined ? {} : { MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS: String(sm.timeoutMs) }),
-    };
-  }
-  const { embeddings } = settings;
-  if (embeddings === undefined) {
-    return {
-      MONO_AGENT_MEMORY_PATH: settings.root,
-      ...(settings.tier === undefined ? {} : { MONO_AGENT_MEMORY_MODE: settings.tier }),
-    };
-  }
-  // Forward the secret only as a last resort: prefer the env-var name passthrough.
-  const forwardLiteralApiKey = embeddings.apiKeyEnv === undefined && embeddings.apiKey !== undefined;
-  return {
-    MONO_AGENT_MEMORY_PATH: settings.root,
-    ...(settings.tier === undefined ? {} : { MONO_AGENT_MEMORY_MODE: settings.tier }),
-    MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: embeddings.provider,
-    MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: embeddings.model,
-    ...(embeddings.endpoint === undefined ? {} : { MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: embeddings.endpoint }),
-    ...(embeddings.apiKeyEnv === undefined ? {} : { MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: embeddings.apiKeyEnv }),
-    ...(forwardLiteralApiKey ? { MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: embeddings.apiKey as string } : {}),
-    ...(embeddings.dim === undefined ? {} : { MONO_AGENT_MEMORY_EMBEDDINGS_DIM: String(embeddings.dim) }),
-    ...(embeddings.timeoutMs === undefined ? {} : { MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS: String(embeddings.timeoutMs) }),
-    ...(embeddings.circuitBreaker?.failureThreshold === undefined
-      ? {}
-      : { MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD: String(embeddings.circuitBreaker.failureThreshold) }),
-    ...(embeddings.circuitBreaker?.cooldownMs === undefined
-      ? {}
-      : { MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS: String(embeddings.circuitBreaker.cooldownMs) }),
-  };
-}
-
-export function memoryRecallMcpServerSpec(settings: MemoryRecallSettings, cwd: string): Record<string, unknown> {
-  return {
-    type: "stdio",
-    command: process.execPath,
-    args: [fileURLToPath(new URL("./memory-recall-main.js", import.meta.url))],
-    cwd,
-    env: memoryRecallMcpEnv(settings),
-  };
-}
-
-/**
- * Build the per-request runtime extension that injects the recall server. The cleanup is a no-op:
- * the stdio child owns its store lifecycle and drains on signal (see memory-recall-main).
- */
-export function createMemoryRecallRuntimeExtension(
-  settings: MemoryRecallSettings,
-  cwd: string,
-): () => Promise<MemoryRecallRuntimeExtension> {
-  return async () => ({
-    runtimeOptions: {
-      mcpServers: {
-        [MEMORY_RECALL_MCP_SERVER_NAME]: memoryRecallMcpServerSpec(settings, cwd),
-      },
-    },
-    cleanup: async () => {},
-  });
-}
-
-/**
  * Build a RECALL-ONLY store: embeddings + FTS, no chat LLM (recall needs none, so capture/reflect
  * stay disabled here). With no embeddings (lite tier / explicit FTS-only opt-in) the store is built
  * without an embedding provider and serves FTS-only recall.
@@ -302,10 +214,9 @@ export function createMemoryRecallRuntimeExtension(
  * circuit breaker fast-fails after repeated failures so a sustained outage stops blocking it.
  */
 export async function createRecallStore(settings: MemoryRecallSettings): Promise<RecallCapableStore> {
-  // The backend packages load lazily so importing this module (the app does, for
-  // the runtime extension + settings resolution) never pulls the SQLite/BuJo
-  // stack or the Supermemory client into the main process — only the spawned
-  // recall child pays for the backend it actually serves.
+  // Backend packages load lazily so importing the settings/type surface never pulls the
+  // SQLite/BuJo stack or Supermemory client into the main process. Only a recall command or the
+  // standalone binary pays for the backend it actually serves.
   if (isSupermemorySettings(settings)) {
     const { createSupermemoryStore } = await loadSupermemoryPlugin();
     const sm = settings.supermemory;

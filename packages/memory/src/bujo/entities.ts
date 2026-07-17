@@ -1,7 +1,3 @@
-import type { LlmComplete } from "./llm.js";
-import { parseJsonLoose } from "./json.js";
-import { MemoryModelError } from "./model-error.js";
-
 export interface ExtractedEntity {
   readonly id: string;
   readonly name: string;
@@ -27,20 +23,6 @@ const RELATION_MAX_CHARS = 96;
 const ENTITY_ID = /^[a-z][a-z0-9-]{0,31}:[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const ENTITY_TYPE = /^[a-z][a-z0-9-]*$/u;
 const RELATION = /^[a-z0-9]+(?:[ -][a-z0-9]+)*$/u;
-
-const PROMPT = (text: string) =>
-  `Extract named entities and their relations from the text below as JSON.
-Return ONLY the following JSON structure with no additional text:
-{"entities":[{"id":"type:name-kebab","name":"display name","type":"person|project|org|concept|..."}],"relations":[{"src":"entity-id","dst":"entity-id","relation":"verb phrase"}]}
-
-Rules:
-- Entity id must be a slug like "person:morgan-reberski" or "project:mono-agent"
-- Include only entities clearly mentioned in the text
-- Relations must reference entity ids present in the entities array
-- Use lowercase kebab-case for ids
-
-TEXT:
-${text}`;
 
 interface RawEntity {
   id?: unknown;
@@ -91,27 +73,6 @@ function normalizeBoundedString(value: unknown, maxChars: number): string | unde
   }
   if (/[\p{Cc}\p{Cs}]/u.test(normalized)) return undefined;
   return normalized;
-}
-
-/**
- * Use the LLM to extract named entities and their relations from `text`.
- * Empty/whitespace text → `{entities:[], relations:[]}`.
- * Malformed LLM *output* is handled defensively (→ EMPTY), but a model *failure* (Ollama down,
- * timeout, 5xx) is rethrown as a {@link MemoryModelError} so it surfaces rather than looking like
- * "no entities found".
- */
-export async function extractEntities(text: string, llm: LlmComplete): Promise<Extraction> {
-  if (text.trim().length === 0) return EMPTY;
-
-  let raw: string;
-  try {
-    raw = await llm.complete(PROMPT(text), { label: "capture:entities" });
-  } catch (cause) {
-    throw new MemoryModelError("llm", "entities", cause);
-  }
-
-  const parsed = parseJsonLoose<RawExtraction>(raw);
-  return normalizeExtraction(parsed);
 }
 
 export function normalizeExtraction(parsed: unknown): Extraction {

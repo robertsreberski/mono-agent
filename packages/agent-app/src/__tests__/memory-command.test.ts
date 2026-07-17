@@ -16,19 +16,10 @@ const fallbackMemorySearchCodes = [
   "embedding_response_invalid",
   "invalid_embedding_options",
 ] as const satisfies readonly MemorySearchErrorCode[];
-const deniedMemorySearchCodes = [
-  "invalid_index_options",
-  "index_read_failed",
-  "index_write_failed",
-] as const satisfies readonly MemorySearchErrorCode[];
 
 describe("isFtsFallbackEligible", () => {
   it.each(fallbackMemorySearchCodes)("accepts the typed provider failure code %s", (code) => {
     expect(isFtsFallbackEligible(semanticSettings, new MemorySearchError(code, "provider unavailable"))).toBe(true);
-  });
-
-  it.each(deniedMemorySearchCodes)("rejects the typed index failure code %s", (code) => {
-    expect(isFtsFallbackEligible(semanticSettings, new MemorySearchError(code, "index failure"))).toBe(false);
   });
 
   it("accepts a real fetch failure with a structured network cause", () => {

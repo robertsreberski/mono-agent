@@ -39,7 +39,7 @@ export interface BujoOptions {
   readonly dim?: number;
   readonly maxBytes?: number;
   readonly clock?: () => Date;
-  /** Optional LLM for the intelligent capture path (distill + reconcile + entity extraction).
+  /** Optional LLM for the intelligent batched capture and reconciliation path.
    * When absent, `capture()` returns `undefined` and `appendHostSummary` is the only write path. */
   readonly llm?: LlmComplete;
   /** Explicit tier override. When absent, the tier is derived from the options:
