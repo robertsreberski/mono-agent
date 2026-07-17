@@ -82,7 +82,7 @@ Everything below runs in the user's agent folder, not the workspace.
    mono-agent start
    ```
 
-   Then run the acceptance smoke test matching the chosen channel (see `references/validation.md`). To change anything, edit `mono-agent.config.json` or `IDENTITY.md` directly and run `mono-agent restart`; there is no live browser re-apply. On macOS, `mono-agent tui --configure` can open a temporary proposal-only configuration conversation against the already-running background agent. It is separate from ordinary chat, never accepts secrets, requires an out-of-band approval, and restarts or rolls back through the managed lifecycle. Off macOS, use manual edits plus `validate`, foreground `start`, and ordinary `tui`; conversational configuration is unavailable.
+   Then run the acceptance smoke test matching the chosen channel (see `references/validation.md`). To change anything, edit `mono-agent.config.json` or `IDENTITY.md` directly and run `mono-agent restart`; there is no live browser re-apply. On macOS, `mono-agent tui --configure` opens a persistent, visibly marked proposal-only SELF-CONFIG conversation against the already-running background agent. It maps the available capabilities, helps build a workflow conversationally, never accepts secrets, requires an out-of-band approval, and restarts or rolls back through the managed lifecycle. Approval, rejection, and no-change turns continue SELF-CONFIG; only quitting exits. Off macOS, use manual edits plus `validate`, foreground `start`, and ordinary `tui`; conversational configuration is unavailable.
 
 ## When Config Is Not Enough
 

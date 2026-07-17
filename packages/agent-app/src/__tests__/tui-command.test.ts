@@ -397,7 +397,7 @@ describe("runTui", () => {
     expect(errors.join("")).toContain("reachable TUI endpoint");
   });
 
-  it("fails explicitly when temporary configuration cannot use managed macOS lifecycle", async () => {
+  it("fails explicitly when self-configuration cannot use managed macOS lifecycle", async () => {
     const errors: string[] = [];
     const code = await runTui({ ...baseOptions, configure: true }, {
       isTty: true,

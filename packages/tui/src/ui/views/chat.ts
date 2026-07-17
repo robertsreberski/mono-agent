@@ -31,7 +31,7 @@ export interface ChatViewOptions {
 
 export interface ChatTurnSettledEvent {
   readonly configuration: boolean;
-  /** Distinguishes the hidden host invitation from the operator's one configuration reply. */
+  /** Distinguishes the hidden opening guide from an operator configuration turn. */
   readonly configurationPhase?: "invitation" | "operator";
   /** Host-owned completion that deliberately skipped the proposal-capable model turn. */
   readonly configurationCompletion?: "no-changes";
@@ -64,25 +64,11 @@ export class ChatView extends Container {
   /** Conversation ids currently executing, used by the explicit remote cancel fallback. */
   private readonly activeConversationIds = new Map<AbortController, string>();
   /**
-   * Ordinary turns submitted while temporary configuration owns the endpoint.
-   * If apply and recovery both fail, these must be cancelled instead of being
-   * released to an endpoint the host can no longer prove is the agent.
-   */
-  private readonly configurationBlockedControllers = new Set<AbortController>();
-  /**
    * TUI turns are serialized through their full settled hook. This keeps a
    * fast follow-up from entering a responder that the configuration hook is
    * about to rotate and dispose.
    */
   private turnBoundary: Promise<void> = Promise.resolve();
-  /** Host-owned apply/restart boundaries that queued chat turns must not cross. */
-  private submissionGate: Promise<void> = Promise.resolve();
-  /**
-   * Ordinary turns stay behind this gate for the entire temporary
-   * configuration attempt. Invitation and operator turns deliberately bypass
-   * it; no-change, rejection, apply, and recovery release it explicitly.
-   */
-  private configurationGate: { readonly promise: Promise<void>; readonly release: () => void } | undefined;
   private turnCounter = 0;
   private thinkingExpandedFlag = false;
   /**
@@ -111,8 +97,12 @@ export class ChatView extends Container {
    * override string). Mirror of {@link defaultModel}; set via {@link setDefaultEffort}.
    */
   private defaultEffort: string | undefined;
-  /** The next operator-submitted turn is the single response to a configuration invitation. */
-  private nextUserTurnConfiguration: ChatConfigurationTurn | undefined;
+  /** Dedicated self-configuration state. It lives until the TUI session quits. */
+  private configuration: ChatConfigurationTurn | undefined;
+  /** The host rearms this only after the preceding configuration transaction settles. */
+  private configurationReady = false;
+  /** Safe host-authored context injected into the next operator turn exactly once. */
+  private configurationHostOutcome: string | undefined;
 
   constructor(options: ChatViewOptions) {
     super();
@@ -133,31 +123,24 @@ export class ChatView extends Container {
     this.responder = responder;
   }
 
-  /** Queue subsequent turns until a host transaction and endpoint swap settle. */
-  gateSubmissions(until: Promise<void>): void {
-    this.submissionGate = Promise.all([
-      this.submissionGate.catch(() => undefined),
-      until.catch(() => undefined),
-    ]).then(() => undefined);
+  /** Keep the dedicated session active and accept its next configuration reply. */
+  continueConfiguration(configuration: ChatConfigurationTurn, hostOutcome?: string): void {
+    this.configuration = configuration;
+    this.configurationHostOutcome = hostOutcome;
+    this.configurationReady = true;
+    this.options.statusBar.setEphemeral("self-config ready");
+    this.options.tui.requestRender();
   }
 
-  /** Cancel ordinary turns that have not crossed the configuration endpoint boundary. */
-  cancelConfigurationBlockedTurns(): number {
-    const controllers = [...this.configurationBlockedControllers];
-    const reason = createChannelUserCancelReason(
-      "TUI configuration restart and recovery did not produce a verified endpoint",
-    );
-    for (const controller of controllers) {
-      controller.abort(reason);
-    }
-    return controllers.length;
+  /** End the dedicated self-configuration session as part of quitting the TUI. */
+  finishConfigurationSession(): void {
+    this.configuration = undefined;
+    this.configurationHostOutcome = undefined;
+    this.configurationReady = false;
   }
 
-  /** Release ordinary turns after the host has fully resolved configuration. */
-  finishConfigurationAttempt(): void {
-    this.nextUserTurnConfiguration = undefined;
-    this.configurationGate?.release();
-    this.configurationGate = undefined;
+  isConfigurationSessionActive(): boolean {
+    return this.configuration !== undefined;
   }
 
   /**
@@ -289,12 +272,9 @@ export class ChatView extends Container {
       this.addNotice("Wait for the active turn to settle, then run /configure again.", "warning");
       return;
     }
-    let release: (() => void) | undefined;
-    const promise = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.configurationGate = { promise, release: () => release?.() };
-    this.nextUserTurnConfiguration = configuration;
+    this.configuration = configuration;
+    this.configurationReady = false;
+    this.configurationHostOutcome = undefined;
     void this.runTurn(prompt, {
       configuration: {
         ...configuration,
@@ -310,27 +290,39 @@ export class ChatView extends Container {
     if (text.length === 0) {
       return;
     }
-    this.editor.setText("");
-    this.editor.addToHistory(text);
     if (text.startsWith("/")) {
       const [command = "", ...rest] = text.slice(1).split(/\s+/u);
       if (this.options.onSlashCommand(command.toLowerCase(), rest.join(" "))) {
+        this.editor.setText("");
+        this.editor.addToHistory(text);
         return;
       }
     }
-    const configuration = this.nextUserTurnConfiguration;
-    this.nextUserTurnConfiguration = undefined;
+    const configuration = this.configuration;
+    if (configuration !== undefined && (!this.configurationReady || this.hasActiveTurn())) {
+      // pi-tui clears Editor before invoking onSubmit, so explicitly restore
+      // the unsubmitted draft while the host settles this configuration step.
+      this.editor.setText(raw);
+      this.options.statusBar.setEphemeral("self-config is settling — your draft is still in the editor");
+      this.options.tui.requestRender();
+      return;
+    }
+    this.editor.setText("");
+    this.editor.addToHistory(text);
+    if (configuration !== undefined) {
+      this.configurationReady = false;
+    }
     if (configuration !== undefined && isConfigurationNoChangeReply(text)) {
       this.completeConfigurationWithoutModel(text, configuration);
       return;
     }
+    const hostOutcome = this.configurationHostOutcome;
+    this.configurationHostOutcome = undefined;
     void this.runTurn(text, {
       ...(configuration === undefined
         ? {}
         : {
-            requestText:
-              `${configuration.operatorPrompt ?? "Continue temporary configuration mode."}\n\n` +
-              `The operator replied:\n\n${text}`,
+            requestText: createConfigurationOperatorRequest(configuration, text, hostOutcome),
             configuration: {
               ...configuration,
               conversationId: `${configuration.conversationId}-operator`,
@@ -414,26 +406,15 @@ export class ChatView extends Container {
     }
 
     const controller = new AbortController();
-    const blockedByConfigurationAttempt =
-      options.configuration === undefined && this.configurationGate !== undefined;
-    if (blockedByConfigurationAttempt) {
-      this.configurationBlockedControllers.add(controller);
-    }
     const serializeThroughSettledHook = this.options.onTurnSettled !== undefined;
     const previousTurnBoundary = serializeThroughSettledHook ? this.turnBoundary : Promise.resolve();
-    const submissionGate = options.configuration === undefined
-      ? Promise.all([
-          this.submissionGate,
-          this.configurationGate?.promise ?? Promise.resolve(),
-        ]).then(() => undefined)
-      : Promise.resolve();
     let releaseTurnBoundary: (() => void) | undefined;
     if (serializeThroughSettledHook) {
       this.turnBoundary = new Promise<void>((resolve) => {
         releaseTurnBoundary = resolve;
       });
     }
-    // Temporary configuration is an OS-owner capability bound to the host's
+    // Self-configuration is an OS-owner capability bound to the host's
     // validated route plan. Session /model and /effort preferences belong to
     // ordinary chat and must never replace that route (notably with direct
     // OpenCode, which cannot receive the proposal MCP boundary).
@@ -467,7 +448,7 @@ export class ChatView extends Container {
     };
     let status: "ok" | "cancelled" | "error" = "ok";
     try {
-      await Promise.all([previousTurnBoundary, submissionGate]);
+      await previousTurnBoundary;
       if (controller.signal.aborted) {
         throw new Error("Turn cancelled before it started.");
       }
@@ -529,7 +510,6 @@ export class ChatView extends Container {
       } finally {
         this.activeControllers.delete(controller);
         this.activeConversationIds.delete(controller);
-        this.configurationBlockedControllers.delete(controller);
         if (this.activeControllers.size === 0) {
           this.setLoading(false);
         }
@@ -584,4 +564,16 @@ export class ChatView extends Container {
 function isConfigurationNoChangeReply(text: string): boolean {
   const normalized = text.trim().toLocaleLowerCase().replace(/[.!]$/u, "").trim();
   return normalized === "done" || normalized === "no changes";
+}
+
+function createConfigurationOperatorRequest(
+  configuration: ChatConfigurationTurn,
+  text: string,
+  hostOutcome: string | undefined,
+): string {
+  const outcome = hostOutcome === undefined
+    ? ""
+    : `\n\nHost outcome from the previous self-configuration step:\n${hostOutcome}`;
+  return `${configuration.operatorPrompt ?? "Continue the dedicated self-configuration session."}${outcome}\n\n` +
+    `The operator replied:\n\n${text}`;
 }

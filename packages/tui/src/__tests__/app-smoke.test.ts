@@ -33,10 +33,11 @@ function echoResponder(): AgentResponder {
 }
 
 describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
-  it("runs the hidden configuration invitation, marks one operator response, and confirms out of band", async () => {
+  it("keeps a marked self-configuration conversation active across an approved checkpoint", async () => {
     const requests: Array<{ text: string; conversationId: string; metadata?: Record<string, unknown> }> = [];
     let takeCount = 0;
     let approved = 0;
+    let sessionId = "11111111-2222-4333-8444-555555555555";
     const terminal = new TestTerminal(110, 34);
     const responder: AgentResponder = {
       respond: async (request) => {
@@ -47,7 +48,7 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
         });
         return {
           text: requests.length === 1
-            ? "This temporary configuration conversation is for your Role (IDENTITY.md → ## Role), behavior, memory, skills, tools, or channels. Do not enter secrets. Nothing changes without separate host approval. Reply done or no changes to finish without edits; after your reply and any decision, ordinary chat starts. /quit closes only the console and sends no background stop; the agent remains running unless restart or recovery reports failure. How would you like to configure me further?"
+            ? "SELF-CONFIG capability map: identity and knowledge; runtime and models; skills, tools, MCP servers, and plugins; memory; channels, APIs, and A2A; automation and proactive work; security, sandboxing, and secrets; observability and operations; acceptance criteria. We can build trigger → context/data → tools/actions → delivery → memory → safety/operations → success checks. Which area or workflow should we shape first?"
             : "I prepared a safe proposal.",
         };
       },
@@ -58,7 +59,7 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
       flushIntervalMs: 0,
       conversationId: "ordinary-chat",
       configuration: {
-        sessionId: "11111111-2222-4333-8444-555555555555",
+        get sessionId() { return sessionId; },
         conversationId: "configuration-chat",
         roleLocation: "IDENTITY.md → ## Role",
         initialPrompt: "begin configuration",
@@ -72,7 +73,8 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
         },
         approve: async () => {
           approved += 1;
-          return { kind: "applied", message: "Configuration applied and the background agent restarted successfully. Ordinary chat is now active." };
+          sessionId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+          return { kind: "applied", message: "Configuration applied and the background agent restarted successfully. Self-configuration remains active." };
         },
         reject: async () => ({ message: "Rejected" }),
         abandon: async () => undefined,
@@ -90,14 +92,14 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
           configurationPhase: "invitation",
         },
       });
-      expect(requests[0]?.conversationId).toBe("configuration-chat-1-invitation");
+      expect(requests[0]?.conversationId).toBe("configuration-chat-invitation");
       const firstOutput = stripAnsi(terminal.output()).replace(/\s+/gu, " ");
-      expect(firstOutput).toContain("Role (IDENTITY.md → ## Role)");
-      expect(firstOutput).toContain("Reply done or no changes");
-      expect(firstOutput).toContain("sends no background stop");
-      expect(firstOutput).toContain("How would you like to configure me further?");
-      expect(firstOutput).toContain("Nothing changes without separate host approval");
-      expect(firstOutput).toContain("/quit closes only the console");
+      expect(firstOutput).toContain("[SELF-CONFIG]");
+      expect(firstOutput).toContain("identity and knowledge");
+      expect(firstOutput).toContain("channels, APIs, and A2A");
+      expect(firstOutput).toContain("acceptance criteria");
+      expect(firstOutput).toContain("trigger → context/data → tools/actions");
+      expect(firstOutput).toContain("only /quit, /exit, or ctrl+c x2 exits");
       expect(firstOutput).not.toContain("you begin configuration");
       expect(takeCount).toBe(0); // Hidden invitation never consumes/checks a proposal sink.
 
@@ -113,7 +115,7 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
       expect(requests[1]?.metadata).toMatchObject({
         tui: { configuration: true, configurationPhase: "operator" },
       });
-      expect(requests[1]?.conversationId).toBe("configuration-chat-1-operator");
+      expect(requests[1]?.conversationId).toBe("configuration-chat-operator");
       expect(requests[1]?.text).toContain("act on the reply; do not ask again");
       expect(requests[1]?.text).toContain("The operator replied:\n\nmake the name concise");
       expect(requests[1]?.text).not.toContain("begin configuration");
@@ -126,27 +128,97 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
       expect(approved).toBe(1);
       expect(stripAnsi(terminal.output())).toContain("background agent restarted successfully");
 
-      for (const char of "do an ordinary task") terminal.feed(char);
+      for (const char of "explore memory next") terminal.feed(char);
       terminal.feed("\r");
       await frame();
-      expect(requests[2]?.conversationId).toBe("ordinary-chat");
-      expect(requests[2]?.metadata?.tui).toBeUndefined();
-      expect(takeCount).toBe(1);
+      await frame();
+      expect(requests[2]?.conversationId).toBe("configuration-chat-operator");
+      expect(requests[2]?.metadata).toMatchObject({
+        tui: {
+          configuration: true,
+          configurationSessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+          configurationPhase: "operator",
+        },
+      });
+      expect(requests[2]?.text).toContain("Host outcome from the previous self-configuration step");
+      expect(requests[2]?.text).toContain("host applied it");
+      expect(requests[2]?.text).toContain("The operator replied:\n\nexplore memory next");
+      expect(takeCount).toBe(2);
 
       for (const char of "/configure") terminal.feed(char);
       terminal.feed("\r");
       await frame();
-      expect(requests[3]).toMatchObject({ text: "begin configuration" });
-      expect(requests[3]?.conversationId).toBe("configuration-chat-2-invitation");
-      expect(requests[3]?.metadata).toMatchObject({
-        tui: { configuration: true, configurationPhase: "invitation" },
-      });
+      expect(requests).toHaveLength(3);
+      expect(stripAnsi(terminal.output())).toContain("Self-configuration is already active");
     } finally {
       await handle.stop();
     }
   });
 
-  it("handles explicit done and an ordinary-task reply as no-change handoffs, including re-entry", async () => {
+  it("keeps the marker but blocks continuation when an applied result cannot rotate capability", async () => {
+    const requests: string[] = [];
+    const terminal = new TestTerminal(110, 34);
+    const handle = startMonoAgentTui({
+      terminal,
+      responder: {
+        respond: async (request) => {
+          requests.push(request.text);
+          return { text: requests.length === 1 ? "What should change?" : "Proposal ready." };
+        },
+      },
+      flushIntervalMs: 0,
+      configuration: {
+        sessionId: "11111111-2222-4333-8444-555555555555",
+        conversationId: "configuration",
+        roleLocation: "IDENTITY.md → ## Role",
+        initialPrompt: "open configuration",
+        prompt: "open configuration",
+        operatorPrompt: "act on this reply once",
+        takeProposal: async () => ({
+          id: "p1",
+          title: "Agent configuration proposal",
+          rationale: "Test failed capability rotation",
+          details: ["replace /agent/name"],
+        }),
+        approve: async () => ({
+          kind: "applied",
+          message:
+            "Configuration applied and the background agent restarted successfully. " +
+            "Warning: the completed configuration capability could not be rotated (synthetic failure). " +
+            "Self-configuration cannot continue safely in this console; quit it and run `mono-agent tui --configure` again.",
+        }),
+        reject: async () => ({ message: "unused" }),
+        abandon: async () => undefined,
+      },
+    });
+    try {
+      await frame();
+      await frame();
+      for (const char of "change it") terminal.feed(char);
+      terminal.feed("\r");
+      await frame();
+      await frame();
+
+      terminal.feed(UP);
+      terminal.feed("\r");
+      await frame();
+      expect(requests).toHaveLength(2);
+      expect(stripAnsi(terminal.output())).toContain("proposal capability could not be rotated safely");
+      expect(stripAnsi(terminal.output())).toContain("[SELF-CONFIG]");
+
+      for (const char of "must remain a draft") terminal.feed(char);
+      terminal.feed("\r");
+      await frame();
+      expect(requests).toHaveLength(2);
+      const output = stripAnsi(terminal.output()).replace(/\s+/gu, " ");
+      expect(output).toContain("must remain a draft");
+      expect(output).toContain("self-config is settling — your draft is still in the editor");
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it("keeps self-configuration active after done and no-proposal turns", async () => {
     const terminal = new TestTerminal(110, 34);
     let takeCount = 0;
     let abandoned = 0;
@@ -197,7 +269,7 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
       expect(abandoned).toBe(1);
       expect(requests).toHaveLength(1); // No proposal-capable operator model turn ran.
       expect(stripAnsi(terminal.output())).toContain(
-        "Configuration mode finished; no changes were requested. Ordinary chat is now active.",
+        "No changes were requested. Self-configuration remains active",
       );
       expect(stripAnsi(terminal.output())).not.toContain("Must not be shown");
 
@@ -205,32 +277,36 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
       for (const char of "/configure") terminal.feed(char);
       terminal.feed("\r");
       await frame();
-      await frame();
-      expect(requests[1]?.conversationId).toBe("configuration-2-invitation");
+      expect(requests).toHaveLength(1);
+      expect(stripAnsi(terminal.output())).toContain("Self-configuration is already active");
 
-      // This is an ordinary task, not configuration intent. The temporary
-      // request must produce no proposal and hand control to ordinary chat.
+      // Even an ordinary-looking message remains configuration input until quit.
       for (const char of "summarize today's notes") terminal.feed(char);
       terminal.feed("\r");
       await frame();
       await frame();
       expect(takeCount).toBe(1);
-      expect(requests[2]?.conversationId).toBe("configuration-2-operator");
+      expect(requests[1]?.conversationId).toBe("configuration-operator");
+      expect(requests[1]?.metadata).toMatchObject({
+        tui: { configuration: true, configurationPhase: "operator" },
+      });
+      expect(stripAnsi(terminal.output())).toContain("No configuration change was proposed. Self-configuration remains active");
+
+      for (const char of "turn that task into a workflow") terminal.feed(char);
+      terminal.feed("\r");
+      await frame();
+      await frame();
+      expect(requests[2]?.conversationId).toBe("configuration-operator");
       expect(requests[2]?.metadata).toMatchObject({
         tui: { configuration: true, configurationPhase: "operator" },
       });
-
-      for (const char of "now do that ordinary task") terminal.feed(char);
-      terminal.feed("\r");
-      await frame();
-      expect(requests[3]?.conversationId).toBe("ordinary");
-      expect(requests[3]?.metadata?.tui).toBeUndefined();
+      expect(requests.every((request) => request.conversationId !== "ordinary")).toBe(true);
     } finally {
       await handle.stop();
     }
   });
 
-  it("revokes a failed invitation attempt before returning to ordinary chat", async () => {
+  it("revokes a failed invitation attempt and remains in self-configuration", async () => {
     const terminal = new TestTerminal(110, 34);
     let abandoned = 0;
     const requests: Array<{ conversationId: string; metadata?: Record<string, unknown> }> = [];
@@ -245,7 +321,7 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
           if (requests.length === 1) {
             throw new Error("Direct OpenCode cannot receive the host-owned proposal MCP capability.");
           }
-          return { text: "ordinary turn resumed" };
+          return { text: "self-configuration resumed" };
         },
       },
       conversationId: "ordinary",
@@ -269,23 +345,30 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
       expect(abandoned).toBe(1);
       expect(stripAnsi(terminal.output())).toContain("cannot receive the host-owned proposal MCP capability");
 
-      for (const char of "resume ordinary work") terminal.feed(char);
+      for (const char of "resume workflow design") terminal.feed(char);
       terminal.feed("\r");
       await frame();
-      expect(requests[1]?.conversationId).toBe("ordinary");
-      expect(requests[1]?.metadata?.tui).toBeUndefined();
-      expect(stripAnsi(terminal.output())).toContain("ordinary turn resumed");
+      await frame();
+      expect(requests[1]?.conversationId).toBe("configuration-operator");
+      expect(requests[1]?.metadata).toMatchObject({
+        tui: { configuration: true, configurationPhase: "operator" },
+      });
+      expect(stripAnsi(terminal.output())).toContain("self-configuration resumed");
     } finally {
       await handle.stop();
     }
   });
 
-  it("rejects a proposal out of band and hands off to ordinary chat with no files changed", async () => {
+  it("rejects a proposal out of band and keeps self-configuration active", async () => {
     let rejected = 0;
+    const requests: string[] = [];
     const terminal = new TestTerminal(110, 34);
     const handle = startMonoAgentTui({
       terminal,
-      responder: { respond: async () => ({ text: "Configuration response." }) },
+      responder: { respond: async (request) => {
+        requests.push(request.conversationId);
+        return { text: "Configuration response." };
+      } },
       flushIntervalMs: 0,
       configuration: {
         sessionId: "11111111-2222-4333-8444-555555555555",
@@ -309,7 +392,7 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
           rejected += 1;
           return {
             kind: "rejected",
-            message: "Proposal rejected; no files changed. Ordinary chat is now active.",
+            message: "Proposal rejected; no files changed. Self-configuration remains active.",
           };
         },
         abandon: async () => undefined,
@@ -330,8 +413,13 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
       await frame();
       expect(rejected).toBe(1);
       expect(stripAnsi(terminal.output())).toContain(
-        "Proposal rejected; no files changed. Ordinary chat is now active.",
+        "Proposal rejected; no files changed. Self-configuration remains active.",
       );
+      for (const char of "explore another area") terminal.feed(char);
+      terminal.feed("\r");
+      await frame();
+      await frame();
+      expect(requests[2]).toBe("configuration-operator");
     } finally {
       await handle.stop();
     }
@@ -455,9 +543,11 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
     }
   });
 
-  it("queues a fast ordinary message until approval swaps to the fresh background endpoint", async () => {
+  it("retains a fast follow-up draft until approval swaps to the fresh self-config endpoint", async () => {
     const oldRequests: string[] = [];
     const freshRequests: string[] = [];
+    const freshConversationIds: string[] = [];
+    const freshMetadata: Array<Record<string, unknown> | undefined> = [];
     const oldAgent = await startTuiAdapter({
       responder: {
         respond: async (request) => {
@@ -470,6 +560,8 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
       responder: {
         respond: async (request) => {
           freshRequests.push(request.text);
+          freshConversationIds.push(request.conversationId);
+          freshMetadata.push(request.metadata as Record<string, unknown> | undefined);
           return { text: "fresh endpoint handled it" };
         },
       },
@@ -478,6 +570,7 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
     let markApprovalStarted: (() => void) | undefined;
     const approvalGate = new Promise<void>((resolve) => { releaseApproval = resolve; });
     const approvalStarted = new Promise<void>((resolve) => { markApprovalStarted = resolve; });
+    let takeCount = 0;
     const terminal = new TestTerminal(110, 34);
     const handle = startMonoAgentTui({
       terminal,
@@ -491,19 +584,24 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
         initialPrompt: "open configuration",
         prompt: "open configuration",
         operatorPrompt: "act on this reply once",
-        takeProposal: async () => ({
-          id: "p1",
-          title: "Agent configuration proposal",
-          rationale: "Test endpoint swap",
-          details: ["replace /agent/name"],
-        }),
+        takeProposal: async () => {
+          takeCount += 1;
+          return takeCount === 1
+            ? {
+                id: "p1",
+                title: "Agent configuration proposal",
+                rationale: "Test endpoint swap",
+                details: ["replace /agent/name"],
+              }
+            : undefined;
+        },
         approve: async () => {
           markApprovalStarted?.();
           await approvalGate;
           return {
             kind: "applied",
             connection: { baseUrl: freshAgent.baseUrl },
-            message: "Configuration applied and the background agent restarted successfully. Ordinary chat is now active.",
+            message: "Configuration applied and the background agent restarted successfully. Self-configuration remains active.",
           };
         },
         reject: async () => ({ message: "unused" }),
@@ -517,7 +615,7 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
       terminal.feed("\r");
 
       // Submit before the operator turn can settle and paint its review card.
-      // This ordinary turn must already be behind the attempt-wide gate.
+      // The draft must stay in the editor; it is never queued as ordinary chat.
       for (const char of "run ordinary work") terminal.feed(char);
       terminal.feed("\r");
       await frame();
@@ -536,7 +634,20 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
       await frame();
       await frame();
       expect(oldRequests).toHaveLength(2);
-      expect(freshRequests).toEqual(["run ordinary work"]);
+      expect(freshRequests).toEqual([]);
+      expect(stripAnsi(terminal.output())).toContain("run ordinary work");
+
+      terminal.feed("\r"); // Explicitly submit the retained draft after the host transaction settled.
+      await frame();
+      await frame();
+      expect(oldRequests).toHaveLength(2);
+      expect(freshRequests).toHaveLength(1);
+      expect(freshRequests[0]).toContain("Host outcome from the previous self-configuration step");
+      expect(freshRequests[0]).toContain("The operator replied:\n\nrun ordinary work");
+      expect(freshConversationIds).toEqual(["configuration-operator"]);
+      expect(freshMetadata[0]).toMatchObject({
+        tui: { configuration: true, configurationPhase: "operator" },
+      });
       expect(stripAnsi(terminal.output())).toContain("fresh endpoint handled it");
     } finally {
       releaseApproval?.();
@@ -546,7 +657,7 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
     }
   });
 
-  it("cancels a queued ordinary message when apply and recovery return no verified endpoint", async () => {
+  it("retains a follow-up draft and blocks it when recovery returns no verified endpoint", async () => {
     const oldRequests: string[] = [];
     const oldAgent = await startTuiAdapter({
       responder: {
@@ -614,14 +725,16 @@ describe("MonoAgentTuiApp end-to-end (TestTerminal)", () => {
       const output = stripAnsi(terminal.output());
       const normalizedOutput = output.replace(/\s+/gu, " ");
       expect(normalizedOutput).toContain("Manual recovery is required");
-      expect(normalizedOutput).toContain("1 ordinary message was cancelled");
+      expect(normalizedOutput).toContain("Self-configuration remains marked");
+      expect(normalizedOutput).toContain("must not reach stale endpoint");
       expect(output).not.toContain("echo: must not reach stale endpoint");
 
-      for (const char of "also must not reach stale endpoint") terminal.feed(char);
       terminal.feed("\r");
       await frame();
       expect(oldRequests).toHaveLength(2);
-      expect(stripAnsi(terminal.output())).toContain("Not connected to an agent");
+      expect(stripAnsi(terminal.output()).replace(/\s+/gu, " ")).toContain(
+        "self-config is settling — your draft is still in the editor",
+      );
     } finally {
       releaseApproval?.();
       await handle.stop();

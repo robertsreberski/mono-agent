@@ -42,15 +42,15 @@ export interface ConfigurationProposalResult {
 export interface TuiConfigurationController {
   /** Opaque capability id; the daemon derives an owner-only proposal sink from it. */
   readonly sessionId: string;
-  /** Unique base for configuration-only conversations; ordinary chat never uses it. */
+  /** Stable base for configuration-only conversations; ordinary chat never uses it. */
   readonly conversationId: string;
   /** Effective configured identity destination shown honestly to the operator. */
   readonly roleLocation: string;
-  /** When present, boot immediately starts the recorded configuration invitation turn. */
+  /** When present, boot immediately starts the recorded self-configuration guide turn. */
   readonly initialPrompt?: string;
-  /** Prompt used when the operator invokes /configure later. */
+  /** Prompt used to open the dedicated self-configuration session. */
   readonly prompt: string;
-  /** Fresh operator-phase instruction; must not repeat the opening invitation. */
+  /** Repeated operator-phase instruction for the persistent conversation. */
   readonly operatorPrompt: string;
   takeProposal(): Promise<ConfigurationProposalCard | undefined>;
   approve(id: string): Promise<ConfigurationProposalResult>;
@@ -231,8 +231,6 @@ export class MonoAgentTuiApp {
   private exitResolve: (() => void) | undefined;
   private readonly exitPromise: Promise<void>;
   private stopped = false;
-  private configurationAttempt = 0;
-  private configurationAttemptActive = false;
   private configurationResolutionActive = false;
   private stopAfterConfigurationResolution = false;
 
@@ -267,6 +265,10 @@ export class MonoAgentTuiApp {
     this.tui.addChild(this.viewHost);
     this.tui.addChild(this.statusBar);
     this.tui.addInputListener((data) => this.handleGlobalInput(data));
+
+    if (options.configuration !== undefined) {
+      this.statusBar.setHint("SELF-CONFIG · only /quit, /exit, or ctrl+c x2 exits");
+    }
 
     this.applyStaticIdentity();
     this.wireInitialMode();
@@ -303,7 +305,7 @@ export class MonoAgentTuiApp {
     if (this.stopped) return;
     this.stopped = true;
     this.chat.cancelActiveTurn();
-    this.chat.finishConfigurationAttempt();
+    this.chat.finishConfigurationSession();
     this.tui.stop();
     this.exitResolve?.();
   }
@@ -463,10 +465,13 @@ export class MonoAgentTuiApp {
   private updateHeader(): void {
     const title = this.options.title ?? "mono-agent";
     const subtitle = this.options.subtitle === undefined ? "" : ` ${styles.dim(this.options.subtitle)}`;
+    const configurationMarker = this.options.configuration === undefined
+      ? ""
+      : ` ${styles.bold(styles.warning("[SELF-CONFIG]"))}`;
     const tabs = VIEW_ORDER.map((view) =>
       view === this.view ? styles.bold(styles.accent(`[${view}]`)) : styles.dim(view),
     ).join(" ");
-    this.header.setText(`${styles.bold(title)}${subtitle}  ${tabs}`);
+    this.header.setText(`${styles.bold(title)}${configurationMarker}${subtitle}  ${tabs}`);
   }
 
   private handleGlobalInput(data: string): { consume?: boolean } | undefined {
@@ -609,7 +614,7 @@ export class MonoAgentTuiApp {
       case "agents":
         if (this.options.configuration !== undefined) {
           this.chat.addNotice(
-            "This temporary configuration console is pinned to the background agent it can safely restart. Close it before choosing another agent.",
+            "This self-configuration session is pinned to the background agent it can safely restart. Quit this session before choosing another agent.",
             "warning",
           );
           return true;
@@ -674,7 +679,9 @@ export class MonoAgentTuiApp {
         styles.dim("effort options are model-specific"),
         "",
         `${styles.accent("/help /agents /replay /config /configure /cancel /thinking /model /effort /quit")}`,
-        styles.dim("/configure opens one temporary proposal-only conversation; /quit closes only this console"),
+        styles.dim(this.options.configuration === undefined
+          ? "/configure opens a dedicated self-configuration session; /quit closes only this console"
+          : "[SELF-CONFIG] remains active after every decision; only /quit exits it"),
         "",
         styles.dim("any key closes this help"),
       ].join("\n"),
@@ -755,31 +762,26 @@ export class MonoAgentTuiApp {
     const configuration = this.options.configuration;
     if (configuration === undefined) {
       this.chat.addNotice(
-        "Temporary configuration mode is unavailable in this console. On macOS, open the managed agent with `mono-agent tui --configure`.",
+        "Self-configuration is unavailable in this console. On macOS, open the managed agent with `mono-agent tui --configure`.",
         "warning",
       );
+      return;
+    }
+    if (this.chat.isConfigurationSessionActive()) {
+      this.chat.addInfo("Self-configuration is already active. Continue the conversation, or use /quit to exit it.");
       return;
     }
     if (this.chat.hasActiveTurn()) {
-      this.chat.addNotice("Wait for the active turn to settle, then run /configure again.", "warning");
-      return;
-    }
-    if (this.configurationAttemptActive) {
-      this.chat.addNotice(
-        "Finish the current configuration reply and its host approval or rejection before running /configure again.",
-        "warning",
-      );
+      this.chat.addNotice("Wait for the active turn to settle before starting self-configuration.", "warning");
       return;
     }
     this.showView("chat");
-    this.configurationAttemptActive = true;
-    this.configurationAttempt += 1;
     this.chat.addInfo(
-      `Temporary post-wizard configuration mode: discuss the agent's Role (${configuration.roleLocation}), behavior, memory, skills, tools, or channels. Do not enter secrets. Nothing changes until the host shows a separate approval. Reply done or no changes to finish without edits. After your reply and any approval or rejection, ordinary chat starts. /quit closes only this console and sends no background stop; the agent remains running unless restart/recovery reports failure.`,
+      `Dedicated self-configuration session for this agent. The guide will map the available capability areas, then help build your workflow by conversation. The effective Role is ${configuration.roleLocation}. Do not enter secrets. Every proposed file change requires separate host approval. Approval, rejection, done, and no changes all keep self-configuration active; only /quit, /exit, or ctrl+c twice exits the session. Quitting sends no background stop.`,
     );
     this.chat.beginConfiguration(configuration.prompt, {
       sessionId: configuration.sessionId,
-      conversationId: `${configuration.conversationId}-${this.configurationAttempt}`,
+      conversationId: configuration.conversationId,
       operatorPrompt: configuration.operatorPrompt,
     });
   }
@@ -792,47 +794,67 @@ export class MonoAgentTuiApp {
       if (event.status !== "ok") {
         try {
           await configuration.abandon();
+          this.chat.addInfo("The opening guide turn did not complete. No changes were made; self-configuration remains active.");
+          this.continueConfiguration(
+            "The opening guide turn did not complete. No configuration changes were made. Help the operator continue from their next message.",
+          );
         } catch (error) {
           this.chat.addNotice(
-            `The failed configuration attempt could not revoke its proposal capability: ${error instanceof Error ? error.message : String(error)}`,
+            `The failed guide turn could not rotate its proposal capability: ${error instanceof Error ? error.message : String(error)} Quit and reopen self-configuration before trying again.`,
             "error",
           );
-        } finally {
-          this.finishConfigurationAttempt();
         }
+      } else {
+        this.continueConfiguration();
       }
       return;
     }
     if (event.configurationCompletion === "no-changes") {
       try {
         await configuration.abandon();
-        this.chat.addInfo("Configuration mode finished; no changes were requested. Ordinary chat is now active.");
+        this.chat.addInfo("No changes were requested. Self-configuration remains active; continue with another area or /quit to exit.");
+        this.continueConfiguration(
+          "The operator completed that topic without requesting changes. No files changed. Continue self-configuration and offer the next relevant capability area.",
+        );
       } catch (error) {
         this.chat.addNotice(
-          `Configuration ended without changes, but its proposal capability could not be revoked cleanly: ${error instanceof Error ? error.message : String(error)}`,
+          `No files changed, but the proposal capability could not be rotated safely: ${error instanceof Error ? error.message : String(error)} Quit and reopen self-configuration before trying again.`,
           "error",
         );
-        this.chat.addInfo("Configuration mode finished; no files changed. Ordinary chat is now active.");
-      } finally {
-        this.finishConfigurationAttempt();
       }
       return;
     }
-    let proposalShown = false;
     try {
       const proposal = await configuration.takeProposal();
       if (proposal !== undefined) {
         this.showConfigurationProposal(proposal);
-        proposalShown = true;
         return;
       }
-      this.chat.addInfo("Configuration mode finished; no changes were proposed. Ordinary chat is now active.");
+      this.chat.addInfo("No configuration change was proposed. Self-configuration remains active; keep exploring or /quit to exit.");
+      this.continueConfiguration(
+        "The previous turn produced no configuration proposal. No files changed. Continue the workflow conversation without repeating the opening capability map.",
+      );
     } catch (error) {
       this.chat.addNotice(error instanceof Error ? error.message : String(error), "error");
-      this.chat.addInfo("Configuration mode finished; no files changed. Ordinary chat is now active.");
-    } finally {
-      if (!proposalShown) this.finishConfigurationAttempt();
+      if (!isConfigurationRotationFailure(error)) {
+        this.chat.addInfo("No files changed. Self-configuration remains active.");
+        this.continueConfiguration(
+          "The host could not accept the previous proposal. No files changed. Continue self-configuration and help the operator correct or refine the request.",
+        );
+      } else {
+        this.chat.addNotice("Quit and reopen self-configuration before trying again.", "error");
+      }
     }
+  }
+
+  private continueConfiguration(hostOutcome?: string): void {
+    const configuration = this.options.configuration;
+    if (configuration === undefined || this.stopped || this.stopAfterConfigurationResolution) return;
+    this.chat.continueConfiguration({
+      sessionId: configuration.sessionId,
+      conversationId: configuration.conversationId,
+      operatorPrompt: configuration.operatorPrompt,
+    }, hostOutcome);
   }
 
   private showConfigurationProposal(proposal: ConfigurationProposalCard): void {
@@ -901,13 +923,10 @@ export class MonoAgentTuiApp {
     if (configuration === undefined) return;
     if (this.configurationResolutionActive) return;
     this.configurationResolutionActive = true;
-    let releaseSubmissions: (() => void) | undefined;
-    const submissionsReleased = new Promise<void>((resolve) => {
-      releaseSubmissions = resolve;
-    });
-    this.chat.gateSubmissions(submissionsReleased);
     this.statusBar.setEphemeral(approve ? "validating and applying approved configuration…" : "rejecting proposal…");
     this.tui.requestRender();
+    let hostOutcome: string | undefined;
+    let continuationBlock: "endpoint" | "rotation" | undefined;
     try {
       const result = approve
         ? await configuration.approve(proposal.id)
@@ -917,47 +936,51 @@ export class MonoAgentTuiApp {
       }
       if (approve && result.connection === undefined && result.kind === "error") {
         this.chat.setResponder(undefined);
-        const cancelled = this.chat.cancelConfigurationBlockedTurns();
-        if (cancelled > 0) {
-          this.chat.addNotice(
-            `${cancelled} ordinary message${cancelled === 1 ? " was" : "s were"} cancelled because restart and recovery did not produce a verified agent endpoint. Submit it again only after manual recovery succeeds.`,
-            "error",
-          );
-        }
+        continuationBlock = "endpoint";
       }
       if (result.kind === "error" || result.kind === "rolled_back") {
         this.chat.addNotice(result.message, "error");
       } else {
         this.chat.addInfo(result.message);
       }
+      if (isConfigurationRotationFailure(result.message)) {
+        continuationBlock ??= "rotation";
+      }
+      hostOutcome = configurationOutcomeForNextTurn(approve, result.kind);
+      if (continuationBlock === "endpoint") {
+        this.chat.addNotice(
+          "Self-configuration remains marked, but the agent endpoint could not be recovered. Perform manual recovery, then quit and reopen this session.",
+          "error",
+        );
+      } else if (continuationBlock === "rotation") {
+        this.chat.addNotice(
+          "Self-configuration remains marked, but the proposal capability could not be rotated safely. Quit and reopen this session before trying again.",
+          "error",
+        );
+      }
     } catch (error) {
       if (approve) {
         this.chat.setResponder(undefined);
-        const cancelled = this.chat.cancelConfigurationBlockedTurns();
-        if (cancelled > 0) {
-          this.chat.addNotice(
-            `${cancelled} ordinary message${cancelled === 1 ? " was" : "s were"} cancelled because the configuration transaction did not return a verified agent endpoint. Recover the background agent before resubmitting it.`,
-            "error",
-          );
-        }
+        continuationBlock = "endpoint";
+      } else if (isConfigurationRotationFailure(error)) {
+        continuationBlock = "rotation";
       }
       this.chat.addNotice(error instanceof Error ? error.message : String(error), "error");
+      if (continuationBlock !== undefined) {
+        this.chat.addNotice("Quit and reopen self-configuration before trying again.", "error");
+      } else {
+        hostOutcome = "The host could not settle the previous proposal. No files changed. Help the operator refine or retry it.";
+      }
     } finally {
-      releaseSubmissions?.();
       this.configurationResolutionActive = false;
-      this.finishConfigurationAttempt();
       this.statusBar.setEphemeral("");
       this.tui.requestRender();
       if (this.stopAfterConfigurationResolution) {
         this.finishStop();
+      } else if (continuationBlock === undefined) {
+        this.continueConfiguration(hostOutcome);
       }
     }
-  }
-
-  private finishConfigurationAttempt(): void {
-    if (!this.configurationAttemptActive) return;
-    this.configurationAttemptActive = false;
-    this.chat.finishConfigurationAttempt();
   }
 
   /**
@@ -1086,12 +1109,35 @@ function withCurrentMarker(label: string, isCurrent: boolean): string {
   return isCurrent ? `${label} (current)` : label;
 }
 
+function configurationOutcomeForNextTurn(
+  approved: boolean,
+  kind: ConfigurationProposalResult["kind"],
+): string {
+  if (!approved || kind === "rejected") {
+    return "The operator rejected the previous proposal. No files changed. Continue self-configuration from their next message.";
+  }
+  if (kind === "rolled_back") {
+    return "The operator approved the previous proposal, but startup verification failed. The host restored the prior files and recovered the previous agent. Continue self-configuration without assuming the rejected change is active.";
+  }
+  if (kind === "error") {
+    return "The approved change did not produce a verified agent endpoint. Manual recovery is required before continuing.";
+  }
+  return "The operator approved the previous proposal. The host applied it, restarted the background agent, and verified the endpoint. Continue self-configuration using the updated setup.";
+}
+
+function isConfigurationRotationFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("could not be rotated")
+    || message.includes("re-entry is disabled")
+    || message.includes("continuation is disabled");
+}
+
 const SLASH_COMMANDS: readonly SlashCommand[] = [
   { name: "help", description: "Show keybindings and commands" },
   { name: "agents", description: "Pick another running agent" },
   { name: "replay", description: "Browse persisted run events" },
   { name: "config", description: "Read-only resolved config" },
-  { name: "configure", description: "Open one temporary host-approved configuration conversation" },
+  { name: "configure", description: "Open a dedicated host-approved self-configuration session" },
   { name: "cancel", description: "Cancel the in-flight turn" },
   { name: "thinking", description: "Expand/collapse thinking blocks" },
   { name: "model", description: "Override this session's model (no arg opens a picker)" },

@@ -23,23 +23,30 @@ It connects to agents two ways:
   `startMonoAgentTui({ responder, … })`, or
   run the `mono-agent-tui` bin with `--responder <module>`.
 
-Temporary post-wizard configuration is deliberately attached to the managed
+The dedicated self-configuration session is deliberately attached to the managed
 remote agent, not an embedded responder. From the agent project, `mono-agent
 tui --configure` connects to the ready background process that owns the
-current config. The first agent message explains that this is a short
-configuration exchange, identifies the Role destination (the configured
-identity document's `## Role`, normally `IDENTITY.md → ## Role`), warns against
-entering secrets, says `done` or `no changes` finishes without edits, and asks
-for one configuration reply.
+current config. A persistent `[SELF-CONFIG]` header and bottom exit hint make the
+session boundary visible. The first agent message identifies the Role destination
+(the configured identity document's `## Role`, normally `IDENTITY.md → ## Role`),
+warns against entering secrets, maps every framework capability area once, and
+lets the operator choose where to begin. It then builds the workflow
+conversationally from trigger through context, tools/actions, delivery, memory,
+safety/operations, and success checks.
 
 If the agent proposes a change, the host shows a separate approve/reject card,
 validates any config or Role edit, and writes only after approval. It then
 restarts the managed background agent, proves the fresh endpoint ready, and
 switches the console to it; a failed restart restores the previous files and
-attempts to recover the prior agent. After approval, rejection, or a no-change
-reply, the console hands off to ordinary chat. `/quit` closes only this console
-while the background agent keeps running; if an approval/restart transaction is
-already active, closing waits until that transaction settles. Long Role bodies
+attempts to recover the prior agent. Approval, rejection, a proposal-free turn,
+`done`, and `no changes` rotate the proposal capability and continue the same
+self-configuration conversation. Every non-command message remains a marked
+configuration turn. Only `/quit`, `/exit`, or `ctrl+c` twice exits the session;
+quitting closes only this console while the background agent keeps running. If an
+approval/restart transaction is already active, closing waits until that
+transaction settles. A fast follow-up remains in the editor until the transaction
+settles and must be submitted explicitly; it never leaks to ordinary chat or a
+stale endpoint. Long Role bodies
 are paged with the decision controls still visible; unsafe terminal or bidi
 control characters are rejected before review text is rendered.
 
@@ -49,7 +56,7 @@ control characters are rejected before review text is rendered.
 pnpm --filter @mono-agent/tui run build
 ```
 
-Open the managed agent's temporary post-wizard configuration exchange from its
+Open the managed agent's dedicated self-configuration session from its
 project directory:
 
 ```bash

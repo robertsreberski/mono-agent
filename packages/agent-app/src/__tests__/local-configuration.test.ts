@@ -31,6 +31,8 @@ import {
   createLocalConfigurationSession,
   createRemoteConfigurationSession,
   isLocalConfigurationRequest,
+  LOCAL_CONFIGURATION_OPERATOR_PROMPT,
+  LOCAL_CONFIGURATION_PROMPT,
   LocalConfigurationManager,
 } from "../local-configuration.js";
 import { readMonoAgentConfigJson, type MonoAgentConfigJson } from "@mono-agent/config";
@@ -121,6 +123,19 @@ describe("RFC 6902 configuration proposals", () => {
 });
 
 describe("local configuration transaction", () => {
+  it("prompts a persistent, user-led workflow conversation across every capability area", () => {
+    expect(LOCAL_CONFIGURATION_PROMPT).toContain("dedicated self-configuration session");
+    expect(LOCAL_CONFIGURATION_PROMPT).toContain("identity and knowledge; runtime and models");
+    expect(LOCAL_CONFIGURATION_PROMPT).toContain("skills, tools, MCP servers, and plugins");
+    expect(LOCAL_CONFIGURATION_PROMPT).toContain("channels, APIs, and A2A");
+    expect(LOCAL_CONFIGURATION_PROMPT).toContain("security, sandboxing, and secrets");
+    expect(LOCAL_CONFIGURATION_PROMPT).toContain("observability and operations; and acceptance criteria");
+    expect(LOCAL_CONFIGURATION_PROMPT).toContain("trigger → context/data → tools/actions → delivery → memory → safety/operations → success checks");
+    expect(LOCAL_CONFIGURATION_PROMPT).toContain("approval, rejection, done, or no changes keeps SELF-CONFIG active");
+    expect(LOCAL_CONFIGURATION_OPERATOR_PROMPT).toContain("do not repeat");
+    expect(LOCAL_CONFIGURATION_OPERATOR_PROMPT).toContain("After a host-applied or rejected proposal, continue");
+  });
+
   it("classifies configuration authority from the worker's frozen config", async () => {
     const { dir, configPath } = await scaffold();
     const canonical = JSON.parse(await readFile(configPath, "utf8")) as MonoAgentConfigJson;
@@ -353,7 +368,7 @@ describe("local configuration transaction", () => {
       .rejects.toThrow(/group\/world writable/u);
   });
 
-  it("applies through the host, proves a fresh background endpoint, and returns to ordinary chat", async () => {
+  it("applies through the host, proves a fresh background endpoint, and continues self-configuration", async () => {
     const { dir, configPath } = await scaffold();
     const restartSnapshots: BackgroundSnapshot[] = [];
     const session = await createRemoteConfigurationSession({
@@ -379,7 +394,7 @@ describe("local configuration transaction", () => {
         connection: { baseUrl: "http://127.0.0.1:7001/tui", apiKey: "local-test-key" },
       });
       expect(result.message).toContain("background agent restarted successfully");
-      expect(result.message).toContain("Ordinary chat is now active");
+      expect(result.message).toContain("Self-configuration remains active");
       expect((await readMonoAgentConfigJson(configPath)).json.agent?.name).toBe("Clear Local Test");
       expect(restartSnapshots).toHaveLength(1);
       expect(restartSnapshots[0]?.configPath).toBe(await realpath(configPath));
@@ -449,7 +464,7 @@ describe("local configuration transaction", () => {
         connection: { baseUrl: "http://127.0.0.1:7004/tui", apiKey: "fresh-key" },
       });
       expect(result.message).toContain("background agent restarted successfully");
-      expect(result.message).toContain("Configuration re-entry is disabled in this console");
+      expect(result.message).toContain("Self-configuration cannot continue safely in this console");
       expect(result.message).toContain("synthetic capability rotation failure");
       expect(restarts).toBe(1);
       expect(rotationAttempts).toBe(1);
@@ -459,7 +474,7 @@ describe("local configuration transaction", () => {
       expect(disabledSessionId).not.toBe(firstSessionId);
       await expect(writeProposalSink(dir, disabledSessionId, proposal(version), "disabled"))
         .rejects.toMatchObject({ code: "ENOENT" });
-      await expect(session.configuration.takeProposal()).rejects.toThrow(/re-entry is disabled/u);
+      await expect(session.configuration.takeProposal()).rejects.toThrow(/continuation is disabled/u);
     } finally {
       await session.dispose();
     }
