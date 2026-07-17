@@ -70,6 +70,12 @@ describe("runSourceFromRequest", () => {
     expect(runSourceFromRequest(req({ source: "tui" }))).toEqual({ source: "tui" });
   });
 
+  it("derives 'web' from metadata.source === 'web'", () => {
+    expect(runSourceFromRequest(req({ source: "web", web: { threadId: "thread-1" } }))).toEqual({
+      source: "web",
+    });
+  });
+
   it("derives 'cron' + sourceDetail from metadata.cron.jobId", () => {
     expect(runSourceFromRequest(req({ cron: { jobId: "nightly-digest" } }))).toEqual({
       source: "cron",
@@ -114,6 +120,17 @@ describe("requestOverridesModel", () => {
 
   it("returns true for a tui model override that differs from the default", () => {
     expect(requestOverridesModel(req({ tui: { model: "claude:claude-opus-4-8" } }), defaultModel)).toBe(true);
+  });
+
+  it("returns true for a web model override that differs from the default", () => {
+    expect(requestOverridesModel(req({ web: { model: "claude:claude-opus-4-8" } }), defaultModel)).toBe(true);
+  });
+
+  it("prefers the web override over its compatibility TUI mirror", () => {
+    expect(requestOverridesModel(req({
+      web: { model: "claude:claude-fable-5" },
+      tui: { model: "claude:claude-opus-4-8" },
+    }), defaultModel)).toBe(false);
   });
 
   it("returns false for a tui model override equal to the default", () => {

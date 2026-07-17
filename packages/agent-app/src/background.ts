@@ -909,7 +909,7 @@ async function writePlists(target: InstanceTarget, deps: BackgroundDeps): Promis
   await deps.writeFile(maintenance.plistPath, maintenanceXml);
 }
 
-async function ensureOwnerPrivateLaunchdDirectory(path: string): Promise<void> {
+export async function ensureOwnerPrivateLaunchdDirectory(path: string): Promise<void> {
   const parent = dirname(path);
   const parentDetails = await lstat(parent);
   assertOwnerDirectory(parentDetails, parent, "LaunchAgent parent");
@@ -948,7 +948,7 @@ async function ensureOwnerPrivateLaunchdDirectory(path: string): Promise<void> {
   }
 }
 
-async function writeOwnerPrivateLaunchdFile(path: string, data: string): Promise<void> {
+export async function writeOwnerPrivateLaunchdFile(path: string, data: string): Promise<void> {
   let existing: Stats | undefined;
   try {
     existing = await lstat(path);

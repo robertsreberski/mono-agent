@@ -73,6 +73,8 @@ AgentRequest
 AgentResponder
 AgentResponse
 CreateTelegramBotOptions
+DEFAULT_AGENT_ATTACHMENT_MAX_BYTES
+DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST
 DEFAULT_ATTACHMENT_MAX_BYTES
 DEFAULT_ATTACHMENT_MIME_ALLOWLIST
 DownloadTelegramAttachmentsOptions
@@ -145,11 +147,13 @@ TelegramVideoNote
 TelegramVideoNoteAttachment
 TelegramVoice
 TelegramVoiceAttachment
+agentAttachmentKindFromMimeType
 classifyTelegramError
 createGrammyTelegramApi
 createOpenAiTranscriber
 createTelegramBot
 createTelegramMessageSender
+decodeAgentAttachmentText
 downloadTelegramAttachments
 isTelegramAskCallbackData
 isWithinQuietHours

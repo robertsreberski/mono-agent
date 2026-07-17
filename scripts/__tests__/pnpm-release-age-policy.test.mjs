@@ -56,6 +56,31 @@ describe("pnpm release-age policy", () => {
     expect(normalizedGuidance).toContain("bare package names require 10.16");
   });
 
+  it("keeps root-built isolated webapps on the explicit disabled policy", async () => {
+    for (const relativePath of [
+      "packages/session-web/webapp/pnpm-workspace.yaml",
+      "packages/web/webapp/pnpm-workspace.yaml",
+    ]) {
+      const directory = dirname(join(repoRoot, relativePath));
+      const source = await readFile(join(directory, "pnpm-workspace.yaml"), "utf8");
+
+      expect(source.split(/\r?\n/u)).toContain(`# ${DISABLED_RELEASE_AGE_POLICY_COMMENT}`);
+
+      for (const [key, expected] of [
+        ["minimumReleaseAge", 0],
+        ["minimumReleaseAgeExclude", undefined],
+      ]) {
+        const probe = spawnSync(
+          "pnpm",
+          ["--dir", directory, "config", "get", key, "--location=project", "--json"],
+          { cwd: repoRoot, encoding: "utf8", env: process.env },
+        );
+        expect(probe.status, probe.stderr).toBe(0);
+        expect(parsePnpmConfigGetOutput(probe.stdout, key)).toBe(expected);
+      }
+    }
+  });
+
   it("requires an explicit non-negative integer instead of inheriting a pnpm-major default", () => {
     expect(validate({ minimumReleaseAge: undefined }).issues).toContain(
       "minimumReleaseAge must be explicit because pnpm 10 and pnpm 11 have different defaults.",

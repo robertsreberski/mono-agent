@@ -2,7 +2,7 @@
 
 `scripts/package-catalog.mjs` is the source of truth for package category metadata and dependency boundary checks. Core packages live under `packages/<package-name>`; optional **plugin-tier** extras live under `extras/<package-name>` (marked `tier: "plugin"`). Both tiers are `publishable: true` and release together on the npm lockstep tag, but plugin-tier extras are not part of the core `@mono-agent/agent-app` dependency closure — channels load through `channels.plugins[]`, orchestration is a request-scoped runtime extension, and Supermemory resolves only when `memory.backend` explicitly selects the installed plugin. The diagram shows logical layers, not filesystem nesting.
 
-Current catalog count: 16 core publishable packages plus 4 plugin-tier extras (also publishable, released in the same lockstep) plus 1 unscoped alias (`create-mono-agent`, the `npm create mono-agent` installer whose `create-mono-agent`/`mono-agent` bins delegate to `@mono-agent/agent-app`).
+Current catalog count: 17 core publishable packages plus 4 plugin-tier extras (also publishable, released in the same lockstep) plus 1 unscoped alias (`create-mono-agent`, the `npm create mono-agent` installer whose `create-mono-agent`/`mono-agent` bins delegate to `@mono-agent/agent-app`).
 
 ```mermaid
 flowchart TB
@@ -17,6 +17,7 @@ flowchart TB
   subgraph OperatorSurfaces["operator-surface"]
     SessionWeb["@mono-agent/session-web"]
     Tui["@mono-agent/tui"]
+    Web["@mono-agent/web"]
   end
 
   subgraph Communication["communication"]
@@ -66,6 +67,7 @@ flowchart TB
   AgentApp --> Webhook
   AgentApp --> SessionWeb
   AgentApp --> Tui
+  AgentApp --> Web
   AgentApp --> Harness
   AgentApp --> Config
   AgentApp --> Memory
@@ -77,6 +79,9 @@ flowchart TB
   Tui --> Config
   Tui --> Observability
   SessionWeb --> Observability
+  Web --> Contracts
+  Web --> Config
+  Web --> Observability
 
   A2A --> Contracts
   Cron --> Contracts
@@ -110,7 +115,7 @@ flowchart TB
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-orchestrator` (extra) |
 | `observability` | `@mono-agent/observability` |
 | `communication` | `@mono-agent/a2a-adapter` (extra), `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` (extra) |
-| `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` |
+| `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui`, `@mono-agent/web` |
 | `app` | `@mono-agent/agent-app` |
 
 `@mono-agent/runtime-adapter` wraps the in-repo `@mono-agent/agent-runtime` package (claude / claude-code-cli / codex-app-cli / pi-sdk backends, with provider session support). Configured hosts use this one runtime implementation path by default; programmatic hosts may still pass any custom `MonoRuntimeLike` to `createConfiguredAgentResponder({ runtime, model })` when they genuinely need a private escape hatch.

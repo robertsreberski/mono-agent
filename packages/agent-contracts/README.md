@@ -80,6 +80,8 @@ ChannelUserCancelReason
 CodedError
 ConfigErrorFactory
 CreateLiveEventBusOptions
+DEFAULT_AGENT_ATTACHMENT_MAX_BYTES
+DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST
 DEFAULT_EMPTY_FINAL_TEXT
 DEFAULT_MAX_MESSAGE_CHARS
 DEFAULT_RUN_EVENT_BUFFER_SIZE
@@ -117,6 +119,7 @@ SettingsJsonErrorCode
 SettingsJsonErrorDetails
 SettingsJsonValue
 SettingsPrimitive
+agentAttachmentKindFromMimeType
 assertAgentContinuationOriginContext
 assertSafeBind
 bearerTokensEqual
@@ -124,6 +127,7 @@ buildStreamingTailPreview
 close
 createChannelUserCancelReason
 createLiveEventBus
+decodeAgentAttachmentText
 encodeJsonEnvValue
 fieldSpecMappings
 frameFeedingMessageStream

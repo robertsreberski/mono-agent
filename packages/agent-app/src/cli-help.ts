@@ -122,19 +122,24 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    signature: "mono-agent web [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback] [--show-auth-url] [--include-memory] [--max-runs <n>] [--config <path>] [--env-file <path>]",
+    signature: "mono-agent web [start|stop|restart|status|logs|run] [--host <addr>|--loopback] [--port <n>]\n" +
+      "               web reset --all --yes",
     lines: [
-      "Serve the read-only Session Recorder web PWA from any directory: a live",
-      "flight-recorder over every agent's runs (prompt, reasoning, tools, cost).",
-      "Discovers running agents via the trace-source registry — the same",
-      "mechanism as `tui` — and streams new/updated runs in real time.",
-      "--include-memory also shows memory-maintenance runs. --max-runs (default",
-      "200) bounds the in-memory working set; the UI still pages the full",
-      "on-disk history via \"Load older\".",
-      "Non-loopback service use requires MONO_AGENT_WEB_AUTH_TOKEN; an",
-      "interactive run may generate one. --show-auth-url reveals a configured",
-      "token only to an interactive terminal. Authenticated URLs are not",
-      "auto-opened through process arguments.",
+      "Operate the always-on assistant-ui console for persistent conversations",
+      "with every discovered local agent. Bare `web` prints status and help only.",
+      "The default 0.0.0.0:5050 bind is reachable over LAN/Tailnet; --loopback",
+      "narrows it to 127.0.0.1. There is no app login: network reachability is",
+      "the access boundary. start/restart claim a conflict-free Tailscale Serve",
+      "HTTPS port without replacing existing handlers; run stays in the foreground.",
+    ],
+  },
+  {
+    signature: "mono-agent sessions [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback]\n" +
+      "                   [--show-auth-url] [--include-memory] [--max-runs <n>]\n" +
+      "                   [--config <path>] [--env-file <path>]",
+    lines: [
+      "Serve the legacy read-only Session Recorder PWA (default 127.0.0.1:4599).",
+      "Its existing flags and MONO_AGENT_WEB_AUTH_TOKEN behavior are preserved.",
     ],
   },
   {

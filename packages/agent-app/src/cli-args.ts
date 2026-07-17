@@ -10,7 +10,7 @@ import type { InstallSkillTarget } from "./install-skill.js";
 import { INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND } from "./launchd.js";
 import type { CodexLoginMode } from "./provider-setup.js";
 
-const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "recipes", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "audit-runs", "metrics", "memory", "continuations"] as const;
+const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "recipes", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "sessions", "install-skill", "backfill", "audit-runs", "metrics", "memory", "continuations"] as const;
 const KNOWN_COMMANDS = [...PUBLIC_COMMANDS, INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND] as const;
 
 // `doctor`/`setup`/`recipes` never reach routing: parseCliArgs normalizes them to
@@ -69,7 +69,7 @@ export interface ParsedCliArgs {
   readonly until?: string;
   /** backfill: map + serialize but do not POST. */
   readonly dryRun: boolean;
-  /** audit-runs/metrics/backfill/web: include memory-run artifacts. */
+  /** audit-runs/metrics/backfill/sessions: include memory-run artifacts. */
   readonly includeMemory: boolean;
   /** audit-runs: read this artifact directory directly. */
   readonly artifactDir?: string;
@@ -109,17 +109,19 @@ export interface ParsedCliArgs {
   readonly planPath?: string;
   /** memory forget restore: owner-private backup directory. */
   readonly backupPath?: string;
-  /** web: bind host (default 127.0.0.1). */
+  /** web/sessions: bind host (web defaults to 0.0.0.0; sessions to 127.0.0.1). */
   readonly host?: string;
-  /** web: bind port (default 4599). */
+  /** web/sessions: bind port (web defaults to 5050; sessions to 4599). */
   readonly port?: number;
-  /** web: `--no-open` sets this false to suppress the browser launch. */
+  /** web: narrow the default LAN bind to 127.0.0.1. */
+  readonly loopback?: boolean;
+  /** sessions: `--no-open` sets this false to suppress the browser launch. */
   readonly open?: boolean;
-  /** web: `--allow-non-loopback` permits a non-loopback bind. */
+  /** sessions: `--allow-non-loopback` permits a non-loopback bind. */
   readonly allowNonLoopback?: boolean;
-  /** web: reveal a configured auth token only to an interactive terminal. */
+  /** sessions: reveal a configured auth token only to an interactive terminal. */
   readonly showAuthUrl?: boolean;
-  /** web: `--max-runs` caps the per-instance in-memory working set (default 200). */
+  /** sessions: `--max-runs` caps the per-instance in-memory working set (default 200). */
   readonly maxRunsPerInstance?: number;
 }
 
@@ -163,7 +165,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   ) {
     throw new Error("The internal launchd log maintenance command accepts only --config <path> and requires it.");
   }
-  const isLogs = cmd === "logs";
+  const isLogs = cmd === "logs" || (cmd === "web" && rest[0] === "logs");
 
   let configPath: string | undefined;
   let name: string | undefined;
@@ -217,6 +219,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let backupPath: string | undefined;
   let host: string | undefined;
   let port: number | undefined;
+  let loopback = false;
   let open: boolean | undefined;
   let allowNonLoopback: boolean | undefined;
   let showAuthUrl: boolean | undefined;
@@ -338,6 +341,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         port = parsed;
         break;
       }
+      case "--loopback":
+        loopback = true;
+        break;
       case "--no-open":
         open = false;
         break;
@@ -537,17 +543,27 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     (
       host !== undefined
       || port !== undefined
+      || loopback
       || open !== undefined
       || allowNonLoopback !== undefined
       || showAuthUrl !== undefined
       || maxRunsPerInstance !== undefined
     ) &&
-    cmd !== "web"
+    cmd !== "web" && cmd !== "sessions"
   ) {
-    throw new Error("--host, --port, --no-open, --allow-non-loopback, --show-auth-url, and --max-runs are only supported for `mono-agent web`.");
+    throw new Error("--host and --port are only supported for `mono-agent web` or `mono-agent sessions`; --loopback is web-only; Session Recorder flags are sessions-only.");
   }
-  if (includeMemory && cmd !== "audit-runs" && cmd !== "metrics" && cmd !== "backfill" && cmd !== "web") {
-    throw new Error("--include-memory is only supported for `mono-agent audit-runs`, `mono-agent metrics`, `mono-agent backfill`, and `mono-agent web`.");
+  if (loopback && cmd !== "web") {
+    throw new Error("--loopback is only supported for `mono-agent web`.");
+  }
+  if ((open !== undefined || allowNonLoopback !== undefined || showAuthUrl !== undefined || maxRunsPerInstance !== undefined) && cmd !== "sessions") {
+    throw new Error("--no-open, --allow-non-loopback, --show-auth-url, and --max-runs are only supported for `mono-agent sessions`.");
+  }
+  if (cmd === "web" && (configPath !== undefined || envFile !== undefined)) {
+    throw new Error("The machine-wide `mono-agent web` console does not load an agent --config or --env-file; use `mono-agent sessions` for the recorder.");
+  }
+  if (includeMemory && cmd !== "audit-runs" && cmd !== "metrics" && cmd !== "backfill" && cmd !== "sessions") {
+    throw new Error("--include-memory is only supported for `mono-agent audit-runs`, `mono-agent metrics`, `mono-agent backfill`, and `mono-agent sessions`.");
   }
   if (limit !== undefined && cmd !== "memory" && cmd !== "continuations") {
     throw new Error("--limit is only supported for `mono-agent memory` and `mono-agent continuations list`.");
@@ -643,6 +659,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(update ? { update } : {}),
     ...(host === undefined ? {} : { host }),
     ...(port === undefined ? {} : { port }),
+    ...(loopback ? { loopback } : {}),
     ...(open === undefined ? {} : { open }),
     ...(allowNonLoopback === undefined ? {} : { allowNonLoopback }),
     ...(showAuthUrl === undefined ? {} : { showAuthUrl }),

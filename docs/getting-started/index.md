@@ -29,6 +29,7 @@ Once your agent runs, branch out by topic:
 - [Configuration](/config/) — the full annotated config blueprint, environment variables, and folder layout.
 - [Runtime](/runtime/) — model backends, fallback chains, sessions, and execution effort.
 - [Channels](/channels/) — connect Telegram, Slack, WhatsApp, webhooks, the OpenAI-compatible API, A2A, and cron.
+- [Always-on web console](/observability/web-console/) — keep multiple browser conversations with auto-discovered local agents over a trusted LAN or tailnet.
 - [Programmatic](/programmatic/) — for capabilities that are code-only rather than config-driven.
 
 :::note

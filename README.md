@@ -103,6 +103,19 @@ This authoring-oriented composer is not auto-selected inside generated agents. N
 
 To use it as a selected mono-agent skill instead, point `context.skillsRoot` at `./packages/agent-app/skills` and add `mono-agent-composer` to `context.selectedSkills`.
 
+## Always-on web console
+
+Start the browser operator console once, then open it from this computer, the local network, or Tailscale:
+
+```bash
+mono-agent web start
+mono-agent web                 # status and exact URLs; does not start or change anything
+```
+
+It binds `0.0.0.0:5050` by default, auto-discovers running agents, and keeps separate persistent conversations for each selected agent. The console has no application login: anyone who can reach the port can operate the discovered agents and see retained conversations, so expose it only on a trusted LAN or tailnet. When Tailscale Serve is available it adds an HTTPS route without replacing an existing handler; otherwise direct LAN/Tailscale HTTP remains available. Use `--loopback` when the service must stay on this computer.
+
+Attachments come from the browser device's native file picker, not a browser over the host filesystem. The web transport uses the same `AgentAttachment` contract, MIME allowlist, 20 MiB per-file limit, image/document classification, text decoding, and harness persistence as Telegram; each turn additionally allows at most 10 files and 64 MiB total. See the [web console guide](./docs/observability/web-console.md) for lifecycle, security, retention, and current scope. The existing read-only Session Recorder remains available as `mono-agent sessions`.
+
 ## Package Architecture
 
 Package categories are catalog metadata, documentation, and architecture-guard inputs. Core packages live under `packages/<package-name>` and optional **plugin-tier** extras live under `extras/<package-name>`. Both use `@mono-agent/<package-name>` names and both are `publishable: true` (released together on the npm lockstep tag); the extras are marked `tier: "plugin"` and are loaded only through explicit composition or `channels.plugins[]`.
@@ -111,7 +124,7 @@ See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 
 Before adding new capability surface area, use the [`Capability ladder`](./docs/reference/capability-ladder.md) to decide whether the work belongs in an existing package, config/skills, a new package, an MCP tool boundary, or a shared core contract.
 
-Current catalog count: 16 core publishable packages plus 4 plugin-tier extras plus 1 unscoped alias (`create-mono-agent`, the `npm create mono-agent` installer that ships `create-mono-agent`/`mono-agent` bins delegating to `@mono-agent/agent-app`).
+Current catalog count: 17 core publishable packages plus 4 plugin-tier extras plus 1 unscoped alias (`create-mono-agent`, the `npm create mono-agent` installer that ships `create-mono-agent`/`mono-agent` bins delegating to `@mono-agent/agent-app`).
 
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
@@ -121,7 +134,7 @@ Current catalog count: 16 core publishable packages plus 4 plugin-tier extras pl
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-orchestrator` (extra) | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, prompt assembly, selected-skill loading, tool/MCP policy normalization (with a fail-closed no-policy safety net), and bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@mono-agent/observability` (`./otel` subpath for Phoenix export) | `core` | JSONL run recorder, local artifact reader, file-backed trace source registry, and subpath-only OTLP trace export. |
 | `communication` | `@mono-agent/a2a-adapter` (extra), `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` (extra) | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. Built-in channel sections cover Telegram, Slack, webhook, OpenAI API, cron, TUI stream, and live relay; A2A and WhatsApp are config-loaded channel plugins. Operator exposes the TUI NDJSON and live SSE loopback endpoints. |
-| `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui` | `core`, `observability` | Local operator surfaces. They read registered source runs but do not own runtime hosting or communication transport. |
+| `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui`, `@mono-agent/web` | `core`, `observability` | Local operator surfaces: the read-only recorder, terminal console, and always-on browser conversation console. They discover registered sources but do not own agent runtime hosting or communication transport. |
 | `app` | `@mono-agent/agent-app`, `create-mono-agent` (unscoped `alias` tier) | `app` | Config-first host: loads `mono-agent.config.json`, builds the responder, drives every configured channel plus traceability, and ships the `mono-agent` CLI (`init`/`validate`/`start`). The only publishable package allowed to compose communication adapters. `create-mono-agent` is the unscoped `npm create mono-agent` installer whose `create-mono-agent`/`mono-agent` bins delegate to it (the bare `mono-agent` npm name is blocked as too similar to an unrelated `monoagent`). |
 | `host-demo` | `demos/final-agent` | All packages by explicit host composition | Non-publishable proof of composition. `demos/final-agent` is now a thin facade over `@mono-agent/agent-app`. |
 
@@ -146,6 +159,7 @@ demos/final-agent (not a workspace package)
   ├─ observability
   ├─ session-web ── agent-contracts, observability
   ├─ tui ── config
+  ├─ web ── agent-contracts, config, observability
   └─ core leaf packages as needed
 ```
 

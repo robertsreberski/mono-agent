@@ -197,6 +197,15 @@ export const packageCatalog = [
     publishable: true,
   },
   {
+    dir: "web",
+    name: "@mono-agent/web",
+    category: "operator-surface",
+    responsibility:
+      "Serves the always-on browser operator console for persistent multi-agent conversations, streamed turns, and local-device attachments.",
+    allowedDependencyCategories: ["core", "observability"],
+    publishable: true,
+  },
+  {
     dir: "whatsapp-adapter",
     name: "@mono-agent/whatsapp-adapter",
     path: "extras/whatsapp-adapter",

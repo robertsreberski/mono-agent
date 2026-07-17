@@ -171,7 +171,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return 1;
     }
   }
-  loadCliEnvFile(envFilePath);
+  // The machine-wide web console is not an agent/config consumer. In
+  // particular, its managed `web run` worker must never ingest an arbitrary
+  // .env from whichever directory invoked the controller.
+  if (shouldLoadCommandDotenv(args.command)) loadCliEnvFile(envFilePath);
 
   switch (args.command) {
     case "help":
@@ -214,9 +217,24 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       });
     }
     case "web": {
-      // Lazy import: the web server (and express/session-web) load only on demand.
-      const { runWeb } = await import("./web-command.js");
-      return await runWeb({
+      // Lazy import: assistant-ui and the persistent web store load only on demand.
+      const { runWebCommand } = await import("./web-command.js");
+      return await runWebCommand({
+        positionals: args.positionals,
+        env: process.env,
+        ...(args.host === undefined ? {} : { host: args.host }),
+        ...(args.port === undefined ? {} : { port: args.port }),
+        ...(args.loopback === true ? { loopback: true } : {}),
+        ...(args.follow === true ? { follow: true } : {}),
+        ...(args.lines === undefined ? {} : { lines: args.lines }),
+        ...(args.all === true ? { all: true } : {}),
+        ...(args.yes === true ? { yes: true } : {}),
+      });
+    }
+    case "sessions": {
+      // Legacy read-only Session Recorder, kept independent from the chat console.
+      const { runSessions } = await import("./sessions-command.js");
+      return await runSessions({
         configPath: resolve(process.cwd(), args.configPath ?? "mono-agent.config.json"),
         cwd: process.cwd(),
         env: process.env,
@@ -290,6 +308,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       });
     }
   }
+}
+
+export function shouldLoadCommandDotenv(command: ParsedCliArgs["command"]): boolean {
+  return command !== "web";
 }
 
 function writeCliDeprecationHints(

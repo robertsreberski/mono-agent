@@ -4,6 +4,10 @@
 # Mirrors how website/ is isolated.
 packages: []
 
+# Package release-age cooldown is explicitly disabled across supported pnpm versions.
+# Keep minimumReleaseAgeExclude absent while minimumReleaseAge remains 0.
+minimumReleaseAge: 0
+
 allowBuilds:
   esbuild: true
 

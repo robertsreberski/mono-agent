@@ -55,6 +55,7 @@
     "@mono-agent/slack-adapter": "workspace:0.11.6",
     "@mono-agent/telegram-adapter": "workspace:0.11.6",
     "@mono-agent/tui": "workspace:0.11.6",
+    "@mono-agent/web": "workspace:0.11.6",
     "@mono-agent/webhook-adapter": "workspace:0.11.6",
     "undici": "8.7.0",
     "zod": "^4.4.3"

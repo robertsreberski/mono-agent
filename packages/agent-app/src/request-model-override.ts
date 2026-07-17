@@ -10,8 +10,9 @@ import type {
 /**
  * Per-request runtime-options extension that applies a per-turn model/effort
  * override carried on webhook (`metadata.webhook`), cron (`metadata.cron`), or
- * interactive TUI (`metadata.tui`) request metadata — an operator can pick a
- * per-session model/effort from the TUI just as a trigger can pin one. The
+ * web console (`metadata.web`) or interactive TUI (`metadata.tui`) request
+ * metadata — an operator can pick a per-session model/effort from either UI
+ * just as a trigger can pin one. The
  * adapters carry the override as raw strings; this is the
  * first place with both the model parser and the effort enum, so validation
  * lives here. An invalid value is WARNED and IGNORED (the turn falls back to the
@@ -378,10 +379,10 @@ function applyLocalProviderBlock(
 }
 
 /**
- * Read model/effort from webhook, cron, or TUI request metadata. Webhook takes
- * precedence, then cron, then an interactive TUI per-session override — a turn
- * is only ever one of the three. A turn carrying none of these blocks (e.g. an
- * ordinary chat turn) returns `{}`, leaving only the keyword escalation scan.
+ * Read model/effort from webhook, cron, web-console, or TUI request metadata.
+ * Webhook takes precedence, then cron, then the web block, then its optional TUI
+ * compatibility mirror. A turn carrying none of these blocks (e.g. an ordinary
+ * chat turn) returns `{}`, leaving only the keyword escalation scan.
  */
 function readOverride(metadata: Record<string, unknown> | undefined): {
   readonly model?: string;
@@ -394,9 +395,11 @@ function readOverride(metadata: Record<string, unknown> | undefined): {
     ? metadata.webhook
     : isRecord(metadata.cron)
       ? metadata.cron
-      : isRecord(metadata.tui)
-        ? metadata.tui
-        : undefined;
+      : isRecord(metadata.web)
+        ? metadata.web
+        : isRecord(metadata.tui)
+          ? metadata.tui
+          : undefined;
   if (source === undefined) {
     return {};
   }

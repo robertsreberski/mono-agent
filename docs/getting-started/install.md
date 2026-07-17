@@ -6,9 +6,9 @@ sidebar:
 
 # Install & Prerequisites
 
-This page covers how to install the `mono-agent` CLI (which includes the `mono-agent tui` operator console), the runtime prerequisites you need, and how to run an unreleased build straight from a clone of the repo.
+This page covers how to install the `mono-agent` CLI (including the terminal and browser operator consoles), the runtime prerequisites you need, and how to run an unreleased build straight from a clone of the repo.
 
-The shipped command line lives in `@mono-agent/agent-app` (the config-first host that reads one `mono-agent.config.json`), and the terminal chat console lives in `@mono-agent/tui`. Both publish under the `@mono-agent/*` scope on npm. For convenience there is also an unscoped **`create-mono-agent`** installer: run it with `npm create mono-agent@latest`, and a global install of it puts the natural `mono-agent` command on your `PATH`. Its bins just delegate to `@mono-agent/agent-app`.
+The shipped command line lives in `@mono-agent/agent-app` (the config-first host that reads one `mono-agent.config.json`), the terminal console lives in `@mono-agent/tui`, and the always-on browser console lives in `@mono-agent/web`. All publish under the `@mono-agent/*` scope on npm. For convenience there is also an unscoped **`create-mono-agent`** installer: run it with `npm create mono-agent@latest`, and a global install of it puts the natural `mono-agent` command on your `PATH`. Its bins just delegate to `@mono-agent/agent-app`.
 
 :::note
 The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to an unrelated `monoagent` package — so the installer follows npm's `create-*` convention (`create-mono-agent`), which `npm create mono-agent` resolves natively.
@@ -85,6 +85,19 @@ npm i -g @mono-agent/tui   # only needed for the standalone bin
 
 See [TUI](/observability/tui/) for the console walkthrough.
 
+## The always-on web console
+
+Once one or more agents are running, start the managed browser console from any directory on macOS:
+
+```bash
+mono-agent web start
+mono-agent web
+```
+
+On Linux and other supported non-macOS hosts, use the foreground `mono-agent web run` command under your preferred service manager.
+
+It listens on `0.0.0.0:5050` by default for local, LAN, and tailnet use; bare `web` only reports status and exact URLs. There is no application login, so use it only on a trusted LAN/tailnet or pass `--loopback`. See the [web console guide](/observability/web-console/) for persistent threads, attachments, service lifecycle, and the Session Recorder's `mono-agent sessions` command.
+
 ## Verify the install
 
 Confirm both binaries resolve and print their help:
@@ -104,6 +117,8 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 | `start` | Start the host for every configured channel (backgrounds on macOS; use `--foreground`/`-f` elsewhere). |
 | `restart` / `stop` / `status` / `logs` | Manage the backgrounded instance (macOS). |
 | `tui` | Open the operator console and connect to any running agent. |
+| `web` | Manage or run the always-on browser conversation console. |
+| `sessions` | Open the legacy read-only Session Recorder. |
 | `install-skill` | Install a skill into the agent folder. |
 | `backfill` | Replay historical runs into observability. |
 
@@ -146,7 +161,7 @@ npm update -g create-mono-agent     # (or @mono-agent/agent-app)
 npm update -g @mono-agent/tui
 ```
 
-The `create-mono-agent` installer, `@mono-agent/agent-app`, `@mono-agent/tui`, and every other `@mono-agent/*` package release in lockstep at one version — keep any pinned references (scoped or the `create-mono-agent` installer) on the same version.
+The `create-mono-agent` installer, `@mono-agent/agent-app`, `@mono-agent/tui`, `@mono-agent/web`, and every other `@mono-agent/*` package release in lockstep at one version — keep any pinned references (scoped or the `create-mono-agent` installer) on the same version.
 
 For reproducible installs or one-shot scaffolds, pin the version explicitly to a published release — use the same version across every `@mono-agent/*` package (pick one from the [published npm versions](https://www.npmjs.com/package/@mono-agent/agent-app?activeTab=versions)):
 

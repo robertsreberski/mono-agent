@@ -6,7 +6,7 @@ sidebar:
 
 This page covers how the runtime keeps provider sessions warm per conversation, how it bounds in-flight work with admission and execution limits, and the Pi-native transport knobs for transport selection, retries, and durable on-disk sessions. Every option here is `config` coverage with a matching `MONO_AGENT_*` env var unless noted.
 
-## The four "session" meanings
+## The five "session" meanings
 
 Mono-agent uses "session" for four related but different boundaries:
 
@@ -15,7 +15,8 @@ Mono-agent uses "session" for four related but different boundaries:
 | `runtime.session` config block | Agent config / env | Whether turns try to reuse a warm provider session and how long idle warmth lasts | Changing config, setting `mode: "per-message"`, or disabling resume support |
 | Provider session | Runtime backend / provider bridge | Warm runtime continuity: provider-side context, provider session id, busy state, and idle eviction | Idle eviction, stale/busy resume retry, provider session rotation, cancelled successful turn, harness disposal, or process restart when only in-memory |
 | Durable Pi transcript | Pi-native JSONL store plus the canonical history record's random provider epoch and transcript revision | Crash-safe cross-restart and cross-process resume for Pi-native provider sessions | `mono-agent restart --force`, deleting either store, a dirty fence or legacy/missing history record, host-only history append, failed provider sync, or leaving `piSessionsRoot` unset |
-| Web run-Session | `mono-agent web` / `@mono-agent/session-web` | Browser-visible run artifact: one recorded run with prompt, events, status, totals, and final text | Artifact retention/removal or source disappearance; the aggregator's in-memory working-set cap (`--max-runs`, default 200) only evicts completed runs from memory — they stay reachable via disk paging ("Load older") — and provider rollover does not rewrite old run records |
+| Web console thread | `mono-agent web` / `@mono-agent/web` | Persistent source-bound browser conversation, its messages/attachments, and at most one active turn; different threads can run concurrently | Archive only hides it; `mono-agent web reset --all --yes` removes the entire stopped console store. Browser disconnect does not end its active turn; service restart marks that turn interrupted |
+| Recorder run-session | `mono-agent sessions` / `@mono-agent/session-web` | Browser-visible recorded run with prompt, events, status, totals, and final text | Artifact retention/removal or source disappearance; the aggregator's in-memory working-set cap (`--max-runs`, default 200) only evicts completed runs from memory — they stay reachable via disk paging ("Load older") — and provider rollover does not rewrite old run records |
 
 Boundary rules:
 
@@ -29,6 +30,9 @@ Boundary rules:
 | Idle eviction / replaced / disposed provider session | Warm runtime continuity for that conversation id | Durable Pi transcripts, durable history, memory, and run artifacts | App log line and status metadata event (`evicted`) with reason |
 | Detached status read | Nothing | All runtime/session state | No runtime event; status reads the latest published config + store snapshot |
 | `mono-agent restart --force` / explicit purge | Durable Pi transcripts under `piSessionsRoot` and canonical active conversation history beside `artifacts.dir` | Durable memory under `memory.path` and recorded run artifacts | Restart/status output only |
+| Browser disconnect or reload | Only that SSE/browser connection | Web service turn, source-bound thread, messages, committed attachments, provider/harness work | Reconnect receives current state and subsequent events |
+| Web service restart | Any web-owned active upstream connection | Terminal messages, archived/active threads, committed attachments, agent memory/history, recorded runs | Active web turn is projected as `interrupted` |
+| `mono-agent web reset --all --yes` | Entire stopped web-console SQLite/settings/upload state | Agent configs, provider/harness history, memory, and recorded-run artifacts | CLI confirmation/result only |
 
 ## Provider sessions
 
@@ -82,6 +86,8 @@ Warm in-memory sessions are lost on restart. To resume across restarts, use the 
 Env vars: `MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS`, `MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS`.
 
 These bounds cover the harness run path (which begins at `responder.respond`). Channel adapters (Slack/Telegram) do per-conversation admission and attachment downloads *before* that boundary, so cross-conversation transport download IO is not covered here — per-file byte caps and timeouts apply to that instead. Adapter queues are drained and aborted on `/cancel` and stop.
+
+The web console separately admits only one active turn per thread. Because each thread has its own permanent conversation id, distinct web threads and distinct agents can execute concurrently subject to the selected agent's ordinary harness limits. Closing the browser does not free a harness slot or cancel that turn; use the visible cancel action when cancellation is intended.
 
 ### Per-channel scope gotcha
 

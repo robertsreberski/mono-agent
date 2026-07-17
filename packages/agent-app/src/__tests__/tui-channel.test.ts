@@ -23,7 +23,7 @@ const baseConfig: TuiAdapterConfig = {
 
 interface BuildInputOptions {
   readonly effort?: string;
-  readonly fallbackModels?: readonly { sdk: string; model: string; reference?: string }[];
+  readonly fallbackModels?: readonly { sdk: string; model: string; provider?: string; reference?: string }[];
   readonly localProviders?: readonly LocalProviderDefinition[];
 }
 
@@ -119,6 +119,49 @@ describe("tui channel driver — info composition", () => {
     expect(info.models).toEqual(["claude:claude-fable-5", "codex:gpt-5.5"]);
   });
 
+  it("publishes known direct and Pi context windows, preferring configured Pi capabilities", async () => {
+    const captured = await startCapturingTui({
+      fallbackModels: [
+        { sdk: "codex", model: "gpt-5.6-sol" },
+        { sdk: "pi", provider: "openai-codex", model: "gpt-5.5" },
+        { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-terra" },
+        { sdk: "pi", provider: "openai-codex", model: "gpt-5.4" },
+        { sdk: "pi", provider: "anthropic", model: "claude-sonnet-4-6" },
+        { sdk: "pi", provider: "unknown-provider", model: "unknown-model" },
+      ],
+      localProviders: [{
+        id: "openai-codex",
+        type: "openai_compat",
+        baseUrl: "http://localhost:1234",
+        enabled: true,
+        models: [
+          {
+            name: "gpt-5.5",
+            capabilities: { context_window: 16_384, num_ctx: 8_192 },
+          },
+          {
+            name: "gpt-5.6-terra",
+            capabilities: { num_ctx: 32_768 },
+          },
+          {
+            name: "gpt-5.4",
+            capabilities: { context_window: 0, num_ctx: -1 },
+          },
+        ],
+      }],
+      discoverModels: async () => [],
+    });
+    const info = await resolveInfo(captured);
+
+    expect(info.modelOptions?.["codex:gpt-5.6-sol"]?.contextWindow).toBe(372_000);
+    expect(info.modelOptions?.["pi:openai-codex:gpt-5.5"]?.contextWindow).toBe(16_384);
+    expect(info.modelOptions?.["pi:openai-codex:gpt-5.6-terra"]?.contextWindow).toBe(32_768);
+    expect(info.modelOptions?.["pi:openai-codex:gpt-5.4"]).not.toHaveProperty("contextWindow");
+    expect(info.modelOptions?.["pi:anthropic:claude-sonnet-4-6"]?.contextWindow).toBe(1_000_000);
+    expect(info.modelOptions?.["pi:unknown-provider:unknown-model"]).not.toHaveProperty("contextWindow");
+    expect(info.modelOptions?.["claude:claude-fable-5"]).not.toHaveProperty("contextWindow");
+  });
+
   it("degrades to no discovered models/no local modelOptions detail when no local providers are configured", async () => {
     const discoverModels = vi.fn().mockResolvedValue([]);
     const captured = await startCapturingTui({ discoverModels });
@@ -140,7 +183,12 @@ describe("tui channel driver — info composition", () => {
         models: [
           {
             name: "qwen/qwen3-8b",
-            capabilities: { reasoning: true, reasoning_mode: "effort", reasoning_levels: ["low", "medium", "high"] },
+            capabilities: {
+              reasoning: true,
+              reasoning_mode: "effort",
+              reasoning_levels: ["low", "medium", "high"],
+              context_window: 65_536,
+            },
           },
         ],
       },
@@ -165,6 +213,7 @@ describe("tui channel driver — info composition", () => {
         reasoning: true,
         reasoningMode: "effort",
         label: "qwen/qwen3-8b",
+        contextWindow: 65_536,
       },
       "pi:lmstudio:llama-3.1": { reasoning: false, reasoningMode: "none", label: "llama-3.1" },
     });

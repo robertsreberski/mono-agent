@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { describeChannelStatus, loadCliEnvFile, monoAgentVersion, parseCliArgs, renderHelp, runCli } from "../cli.js";
+import { describeChannelStatus, loadCliEnvFile, monoAgentVersion, parseCliArgs, renderHelp, runCli, shouldLoadCommandDotenv } from "../cli.js";
 import { MANAGED_BACKGROUND_WORKER_ENV } from "../background-runtime.js";
 import {
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
@@ -396,7 +396,7 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["--help"]).command).toBe("help");
     expect(() => parseCliArgs(["serve"])).toThrow(/Unknown command/u);
     expect(() => parseCliArgs(["start", "--what"])).toThrow(/Unknown flag/u);
-    // `--port` is a recognized (web-only) flag; it is rejected for non-web commands.
+    // `--port` is a recognized web/sessions flag; it is rejected elsewhere.
     expect(() => parseCliArgs(["start", "--port", "4100"])).toThrow(/only supported for/u);
     expect(() => parseCliArgs(["start", "--include-memory"])).toThrow(/--include-memory/u);
     expect(() => parseCliArgs(["validate", "--auth"])).toThrow(/--auth/u);
@@ -410,9 +410,9 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["version"]).command).toBe("version");
   });
 
-  it("parses web command flags", () => {
+  it("parses legacy sessions command flags", () => {
     const result = parseCliArgs([
-      "web",
+      "sessions",
       "--host",
       "0.0.0.0",
       "--port",
@@ -426,7 +426,7 @@ describe("parseCliArgs", () => {
       "--env-file",
       "./agent.env",
     ]);
-    expect(result.command).toBe("web");
+    expect(result.command).toBe("sessions");
     expect(result.host).toBe("0.0.0.0");
     expect(result.port).toBe(4599);
     expect(result.open).toBe(false);
@@ -435,15 +435,50 @@ describe("parseCliArgs", () => {
     expect(result.includeMemory).toBe(true);
     expect(result.configPath).toBe("./agent.json");
     expect(result.envFile).toBe("./agent.env");
-    expect(() => parseCliArgs(["web", "--port", "notaport"])).toThrow(/--port/u);
-    expect(() => parseCliArgs(["start", "--show-auth-url"])).toThrow(/only supported for/u);
+    expect(() => parseCliArgs(["sessions", "--port", "notaport"])).toThrow(/--port/u);
+    expect(() => parseCliArgs(["web", "--show-auth-url"])).toThrow(/sessions/u);
   });
 
-  it("parses the web --max-runs cap and rejects bad or misplaced uses", () => {
-    expect(parseCliArgs(["web", "--max-runs", "500"]).maxRunsPerInstance).toBe(500);
-    expect(() => parseCliArgs(["web", "--max-runs", "0"])).toThrow(/--max-runs/u);
-    expect(() => parseCliArgs(["web", "--max-runs", "nope"])).toThrow(/--max-runs/u);
+  it("parses the sessions --max-runs cap and rejects bad or misplaced uses", () => {
+    expect(parseCliArgs(["sessions", "--max-runs", "500"]).maxRunsPerInstance).toBe(500);
+    expect(() => parseCliArgs(["sessions", "--max-runs", "0"])).toThrow(/--max-runs/u);
+    expect(() => parseCliArgs(["sessions", "--max-runs", "nope"])).toThrow(/--max-runs/u);
     expect(() => parseCliArgs(["start", "--max-runs", "500"])).toThrow(/only supported for/u);
+  });
+
+  it("parses the web service namespace and LAN/loopback bind flags", () => {
+    expect(parseCliArgs(["web"])).toMatchObject({ command: "web", positionals: [] });
+    expect(parseCliArgs(["web", "start", "--port", "5050"])).toMatchObject({
+      command: "web",
+      positionals: ["start"],
+      port: 5050,
+    });
+    expect(parseCliArgs(["web", "run", "--loopback"])).toMatchObject({
+      command: "web",
+      positionals: ["run"],
+      loopback: true,
+    });
+    expect(parseCliArgs(["web", "logs", "-f", "--lines", "25"])).toMatchObject({
+      command: "web",
+      positionals: ["logs"],
+      follow: true,
+      lines: 25,
+    });
+    expect(parseCliArgs(["web", "reset", "--all", "--yes"])).toMatchObject({
+      command: "web",
+      positionals: ["reset"],
+      all: true,
+      yes: true,
+    });
+    expect(() => parseCliArgs(["sessions", "--loopback"])).toThrow(/loopback/u);
+    expect(() => parseCliArgs(["web", "run", "--env-file", ".env"])).toThrow(/does not load/u);
+    expect(() => parseCliArgs(["web", "--config", "agent.json"])).toThrow(/does not load/u);
+  });
+
+  it("never loads an invoking folder dotenv for the machine-wide web console", () => {
+    expect(shouldLoadCommandDotenv("web")).toBe(false);
+    expect(shouldLoadCommandDotenv("sessions")).toBe(true);
+    expect(shouldLoadCommandDotenv("start")).toBe(true);
   });
 
   it("includes setup, presets, and web in the help screen", () => {
@@ -459,15 +494,15 @@ describe("parseCliArgs", () => {
     expect(renderHelp()).toContain("direct opencode:<provider>:<model>");
     expect(renderHelp()).toContain("hand-authored runtime backend config");
     expect(renderHelp()).toContain("mono-agent web");
+    expect(renderHelp()).toContain("mono-agent sessions");
     expect(renderHelp()).toContain("live chat with structured");
     expect(renderHelp()).not.toContain("live chat with full");
     expect(renderHelp()).toContain("--allow-non-loopback");
     expect(renderHelp()).toContain("MONO_AGENT_WEB_AUTH_TOKEN");
     expect(renderHelp()).toContain("--show-auth-url");
     expect(renderHelp()).toContain("--include-memory");
-    expect(renderHelp()).toContain(
-      "[--max-runs <n>] [--config <path>] [--env-file <path>]",
-    );
+    expect(renderHelp()).toContain("web reset --all --yes");
+    expect(renderHelp()).toContain("0.0.0.0:5050");
   });
 
   it("accepts --memory bujo and --memory lite, rejects --memory markdown", () => {
