@@ -43,11 +43,6 @@ export interface TelegramMessageStreamOptions {
   /** Base delay for exponential backoff between final-delivery retries. Default 500. */
   retryBaseDelayMs?: number;
   /**
-   * Retained for compatibility. Reasoning prose is never rendered, so this is a
-   * no-op for assistant thoughts. Default false.
-   */
-  showThoughts?: boolean;
-  /**
    * Show lightweight, friendly activity hints (e.g. "Searching the web…") while
    * the agent works, before any answer text has arrived. Default true.
    */

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { discoverWebInstances } from "../discovery.js";
 import type { DiscoveredWebInstance } from "../discovery.js";
-import { listInstanceSessionSummaries, listInstanceSessions, readInstanceSession } from "../history.js";
+import { listInstanceSessionSummaries, readInstanceSession } from "../history.js";
 import { makeTmpDir, registerSource, removeDir, seedRun } from "./helpers.js";
 
 const tmpDirs: string[] = [];
@@ -30,7 +30,7 @@ async function discoverOne(artifactDir: string): Promise<DiscoveredWebInstance> 
   return discovered;
 }
 
-describe("listInstanceSessions", () => {
+describe("listInstanceSessionSummaries", () => {
   it("maps recorded summaries to step-less sessions, newest-first", async () => {
     const agentDir = await tmp("agent");
     const artifactDir = join(agentDir, "runs");
@@ -54,7 +54,8 @@ describe("listInstanceSessions", () => {
     });
 
     const discovered = await discoverOne(artifactDir);
-    const sessions = await listInstanceSessions(discovered, { maxRuns: 50 });
+    const sessions = (await listInstanceSessionSummaries(discovered, { maxRuns: 50 }))
+      .map((entry) => entry.session);
 
     expect(sessions.map((session) => session.id).sort()).toEqual(["run-newer", "run-older"]);
     // Newest-first: run-newer (startedAt 2_000_000) precedes run-older.
@@ -148,13 +149,18 @@ describe("listInstanceSessions", () => {
     });
     const discovered = await discoverOne(artifactDir);
 
-    await expect(listInstanceSessions(discovered, { maxRuns: 50 })).resolves.toMatchObject([
+    const defaultSessions = (await listInstanceSessionSummaries(discovered, { maxRuns: 50 }))
+      .map((entry) => entry.session);
+    expect(defaultSessions).toMatchObject([
       { id: "run-agent" },
     ]);
     await expect(readInstanceSession(discovered, "mem-new")).resolves.toBeUndefined();
     await expect(readInstanceSession(discovered, "mem-legacy")).resolves.toBeUndefined();
 
-    const withMemory = await listInstanceSessions(discovered, { maxRuns: 50, includeMemory: true });
+    const withMemory = (await listInstanceSessionSummaries(discovered, {
+      maxRuns: 50,
+      includeMemory: true,
+    })).map((entry) => entry.session);
     expect(withMemory.map((session) => session.id).sort()).toEqual(["mem-legacy", "mem-new", "run-agent"]);
     await expect(readInstanceSession(discovered, "mem-new", { includeMemory: true })).resolves.toMatchObject({
       id: "mem-new",
@@ -218,7 +224,8 @@ describe("readInstanceSession", () => {
     const discovered = await discoverOne(artifactDir);
 
     // List rows stay light: no ctx / sysPrompt / sysPromptTr leaks into snapshots.
-    const [row] = await listInstanceSessions(discovered, { maxRuns: 50 });
+    const [rowEntry] = await listInstanceSessionSummaries(discovered, { maxRuns: 50 });
+    const row = rowEntry?.session;
     expect(row?.id).toBe("run-ctx");
     expect(row?.ctx).toBeUndefined();
     expect(row?.sysPrompt).toBeUndefined();
@@ -253,7 +260,8 @@ describe("readInstanceSession", () => {
     });
     const discovered = await discoverOne(artifactDir);
 
-    const [summary] = await listInstanceSessions(discovered, { maxRuns: 50 });
+    const [summaryEntry] = await listInstanceSessionSummaries(discovered, { maxRuns: 50 });
+    const summary = summaryEntry?.session;
     expect(summary).toMatchObject({
       id: "run-identity",
       conversationId: "chat:identity",

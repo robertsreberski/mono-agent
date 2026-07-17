@@ -97,7 +97,6 @@ AgentRequest
 AgentResponder
 AgentResponse
 LoadSlackAdapterConfigInput
-RedactedSlackAdapterConfig
 SLACK_CONFIG_FIELDS
 SLACK_MAX_MESSAGE_CHARS
 SerialQueueFullError
@@ -176,7 +175,6 @@ classifySlackError
 formatMarkdownForSlack
 loadSlackAdapterConfig
 normalizeSlackMarkdownToMarkdown
-redactSlackAdapterConfig
 startSlackAdapter
 ```
 
