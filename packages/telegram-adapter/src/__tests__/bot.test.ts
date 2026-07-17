@@ -1017,11 +1017,16 @@ describe("createTelegramBot", () => {
     expect(calls.some((call) => String(call.payload.text).includes("secret"))).toBe(false);
   });
 
-  it("shows a typing indicator for tool_call_started and never leaks the raw tool name", async () => {
+  it("shows a transient tool ledger and typing indicator without leaking the raw tool name", async () => {
     const { bot, calls } = buildTestBot({
       stream: { editDebounceMs: 0 },
       responder: responderFrom(async (_request, stream) => {
-        await stream.event?.({ type: "tool_call_started", id: "t1", name: "WebSearch" });
+        await stream.event?.({
+          type: "tool_call_started",
+          id: "t1",
+          name: "WebSearch",
+          arguments: { query: "mono agent" },
+        });
         await stream.append("the answer");
         return { text: "the answer" };
       }),
@@ -1029,14 +1034,12 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(textUpdate("look it up"));
 
-    // Final-only delivery: tool activity is surfaced via a "typing…" chat action,
-    // not a hint message. At least one sendChatAction(typing) is sent while working.
     const typing = calls.filter(
       (call) => call.method === "sendChatAction" && call.payload.action === "typing",
     );
     expect(typing.length).toBeGreaterThanOrEqual(1);
-    // The final answer is delivered as a single sendMessage.
-    expect(texts(calls, "sendMessage").at(-1)).toBe("the answer");
+    expect(texts(calls, "sendMessage")).toEqual(["🌐 Searching the web for mono agent"]);
+    expect(texts(calls, "editMessageText")).toEqual(["the answer"]);
     // The raw tool name never leaks into any outbound payload text.
     expect(calls.some((call) => String(call.payload.text).includes("WebSearch"))).toBe(false);
   });
@@ -1052,12 +1055,10 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(textUpdate("clean up todoist"));
 
-    // No hint messages in final-only mode. With no answer text, the run delivers
-    // an explicit final placeholder as a single sendMessage rendered as MarkdownV2.
-    expect(texts(calls, "editMessageText")).toEqual([]);
-    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
-    expect(finalSend?.payload.text).toBe("No response text was returned\\.");
-    expect(finalSend?.payload.parse_mode).toBe("MarkdownV2");
+    expect(texts(calls, "sendMessage")).toEqual(["🔧 Todoist"]);
+    const finalEdit = calls.filter((call) => call.method === "editMessageText").at(-1);
+    expect(finalEdit?.payload.text).toBe("No response text was returned\\.");
+    expect(finalEdit?.payload.parse_mode).toBe("MarkdownV2");
   });
 
   it("preserves streamed bot answers when the responder returns no text", async () => {
@@ -1513,8 +1514,14 @@ describe("createTelegramBot", () => {
     const { bot, calls } = buildTestBot({
       stream: { editDebounceMs: 0 },
       responder: {
-        respond: async (request) =>
-          await new Promise<{ text: string }>((resolve) => {
+        respond: async (request, stream) => {
+          await stream.event?.({
+            type: "tool_call_started",
+            id: "cancelled-tool",
+            name: "Bash",
+            arguments: { command: "pnpm test" },
+          });
+          return await new Promise<{ text: string }>((resolve) => {
             capturedSignal = request.abortSignal;
             request.abortSignal.addEventListener(
               "abort",
@@ -1522,7 +1529,8 @@ describe("createTelegramBot", () => {
               { once: true },
             );
             started.resolve();
-          }),
+          });
+        },
         cancel: (conversationId, reason) => {
           cancelCalls.push({ conversationId, reason });
         },
@@ -1549,6 +1557,8 @@ describe("createTelegramBot", () => {
     expect(cancelledSends).toHaveLength(1);
     const cancelledSend = cancelledSends[0];
     expect(cancelledSend?.payload.parse_mode).toBeUndefined();
+    expect(calls.filter((call) => call.method === "deleteMessage").map((call) => call.payload))
+      .toEqual([{ chat_id: 42, message_id: 1000 }]);
   });
 
   it("acknowledges /cancel exactly once while a proactive turn is active", async () => {

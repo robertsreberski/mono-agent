@@ -96,7 +96,7 @@ Communication adapters are edge packages. They accept an `AgentResponder` and ow
 | Surface | Package | First smoke |
 | --- | --- | --- |
 | Telegram | `@mono-agent/telegram-adapter` | Allowed chat sends a message |
-| Slack | `@mono-agent/slack-adapter` | Allowed channel or DM gets a streamed reply |
+| Slack | `@mono-agent/slack-adapter` | Allowed channel or DM gets the final reply |
 | WhatsApp | `@mono-agent/whatsapp-adapter` (external channel plugin) | Allowed sender/group trigger produces a reply |
 | OpenAI-compatible API | `@mono-agent/openai-api-adapter` | `curl /v1/models` and `/v1/chat/completions` |
 | Operator endpoints | `@mono-agent/operator-adapter` | `mono-agent tui` connects; `mono-agent web` observes live runs |

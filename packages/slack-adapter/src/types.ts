@@ -59,6 +59,18 @@ export interface SlackChatUpdateResult {
   [key: string]: unknown;
 }
 
+export interface SlackChatDeleteParams {
+  channel: SlackChannelId;
+  ts: SlackMessageTs;
+}
+
+export interface SlackChatDeleteResult {
+  ok: true;
+  channel: SlackChannelId;
+  ts: SlackMessageTs;
+  [key: string]: unknown;
+}
+
 /** Parameters for an authenticated download of a private Slack file. */
 export interface SlackDownloadFileParams {
   /** The file's `url_private` (or `url_private_download`). */
@@ -130,6 +142,11 @@ export interface SlackWebApi {
     params: SlackChatUpdateParams,
     options?: SlackRequestOptions,
   ): Promise<SlackChatUpdateResult>;
+  /** Optional for custom clients; built-in clients use it to clear transient status. */
+  chatDelete?(
+    params: SlackChatDeleteParams,
+    options?: SlackRequestOptions,
+  ): Promise<SlackChatDeleteResult>;
   /**
    * Download a private Slack file's bytes using the bot token. Slack serves
    * `url_private` only with an `Authorization: Bearer <bot token>` header.

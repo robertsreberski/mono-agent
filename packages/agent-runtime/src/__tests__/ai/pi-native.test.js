@@ -380,9 +380,8 @@ describe("pi-native AgentHarness bridge", () => {
       expect(result.text).toBe("done");
 
       const events = onEvent.mock.calls.map(([event]) => event);
-      const progress = events.find((event) =>
-        event?.message?.content?.[0]?.type === "thinking"
-        && event.message.content[0].text === "Running Read...");
+      const syntheticProgress = events.find((event) =>
+        event?.message?.content?.[0]?.type === "thinking");
       const toolUse = events.find((event) =>
         event?.message?.content?.[0]?.type === "tool_use"
         && event.message.content[0].name === "Read");
@@ -391,7 +390,7 @@ describe("pi-native AgentHarness bridge", () => {
         && event.message.content[0].tool_use_id === "call-1");
       const toolTiming = events.find((event) =>
         event?.type === "tool_timing" && event.tool_use_id === "call-1");
-      expect(progress).toBeTruthy();
+      expect(syntheticProgress).toBeUndefined();
       expect(toolUse).toBeTruthy();
       expect(toolResult).toBeTruthy();
       expect(toolTiming).toBeTruthy();

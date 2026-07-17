@@ -14,17 +14,6 @@ import {
   streamContentKey,
 } from "../pi-events.js";
 
-/**
- * The tool-start progress line surfaced as a thinking block, or null for a
- * blank/invalid tool name.
- * @param {unknown} toolName
- * @returns {string|null}
- */
-export function toolStartProgressText(toolName) {
-  if (typeof toolName !== "string" || toolName.trim().length === 0) return null;
-  return `Running ${toolName}...`;
-}
-
 function toolResultFileChange(result) {
   const fileChange = result?.details?.file_change;
   return fileChange && typeof fileChange === "object" && !Array.isArray(fileChange)
@@ -84,10 +73,6 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
       if (event.toolName) runState.lastToolName = event.toolName;
       if (event.toolCallId) runState.toolStartTimes.set(event.toolCallId, Date.now());
       const input = eventToolArgs(event.toolName, event.args, { cwd: options.cwd, toolLimits });
-      const progressText = toolStartProgressText(event.toolName);
-      if (progressText) {
-        onEvent({ type: "assistant", message: { content: [{ type: "thinking", text: progressText }] } });
-      }
       onEvent({
         type: "assistant",
         message: { content: [{ type: "tool_use", id: event.toolCallId, name: event.toolName, input }] },
