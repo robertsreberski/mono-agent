@@ -1,244 +1,93 @@
 ---
 name: verify-green
-description: Run the mono-agent verification gate — full repo green or fast single-package iteration. Use before claiming any change works, before committing, before PRs, or when asked to "verify", "run the gate", "make it green", or "check architecture".
+description: Select and run the smallest risk-based verification lane that proves a mono-agent change. Use before claiming a change works, before committing or opening a PR, or when asked to verify, run the gate, make it green, or check architecture.
 ---
 
 # Verify green
 
-"Green" means both jobs in `.github/workflows/ci.yml` pass. The hosted jobs may
-be unavailable, but their exact commands still define the gate; run them
-locally rather than treating an unavailable check as evidence.
+Verification is selected from the diff, not accumulated from every available
+workflow. Run focused checks while iterating, then execute the chosen lane once
+before shipping. Do not repeat a passing broad gate at the same SHA.
 
-## Full local gate (CI order plus documented delta)
+## 1. Classify the change
 
-Run this exact CI sequence once under Node 22.19.0 and once under Node 24. On
-the Node 24 pass, skip the two commands annotated as Node 22.19-only.
+Choose the highest applicable lane:
+
+| Lane | Typical diff | Required proof |
+|---|---|---|
+| Process | `AGENTS.md`, `skills/`, agent metadata, internal docs | Relevant contract tests, discoverability, OSS hygiene, whitespace |
+| Package | Ordinary implementation within existing package boundaries | Dependency-closure build, focused tests, package typecheck, one broad CI gate |
+| High risk | Security/sandbox, storage or migration, lifecycle, provider routing, delivery, public package boundaries | Focused checks, one local `verify:all`, CI, one matching live smoke |
+| Release | Mechanical lockstep version/publish work | Use `release-lockstep`; do not add deployment or consumer checks here |
+
+A mixed diff uses the highest lane. Explain the classification in the final
+evidence so reviewers can challenge it.
+
+## 2. Process lane
+
+Do not build packages, run live smoke, inspect the fleet, or run release checks
+for a docs/skills/process-only diff. Select tests that cover the edited contract.
+For the engineering-skill surface, use:
 
 ```bash
-corepack enable
-node scripts/pnpm-release-age-policy.mjs  # direct pre-install guard; do not route through pnpm
-pnpm run check:node
-pnpm install --frozen-lockfile
-pnpm run check:dependency-vulnerabilities  # Node 22.19 lane only
-docker run --rm \
-  -v "$PWD:/repo" \
-  ghcr.io/gitleaks/gitleaks:v8.30.1 \
-  dir --redact --no-banner --config /repo/.gitleaks.toml /repo
+pnpm exec vitest run \
+  scripts/__tests__/check-codex-discoverability.test.mjs \
+  scripts/__tests__/repo-hygiene-skills.test.mjs \
+  scripts/release/__tests__/package-count-drift.test.mjs
+pnpm run check:codex-discoverability
 pnpm run check:oss-hygiene
-pnpm run check:licenses
-pnpm run check:codex-discoverability  # skills/agents Codex parity (wired into CI + verify:all by PR #142)
-VERSION="$(node -e "process.stdout.write(require('./packages/agent-app/package.json').version)")"
-pnpm run release:validate -- --tag "v${VERSION}"
-pnpm run check:architecture     # catalog + README sections + dependency categories
-pnpm run build                  # packages + demos, then strict deploy-output marker on POSIX/macOS
-pnpm run verify:consumers --skip-build
-pnpm run release:pack -- --tag "v${VERSION}"
-pnpm run release:consumer -- --tag "v${VERSION}" --require-minimum  # Node 22.19 lane only
-pnpm run typecheck
-pnpm run test                   # includes release:test + scripts:test + all packages + demos
-git diff --check                # whitespace — CI runs this too
+git diff --check
 ```
 
-The Node 24 website job runs independently:
+Run the website build only when `docs/`, `website/`, or published-site inputs
+changed; use `docs-sync` to choose that surface.
+
+## 3. Package lane
+
+While iterating on package X:
 
 ```bash
-(cd website && corepack enable && pnpm install --frozen-lockfile && pnpm run build)
+pnpm --filter @mono-agent/<X>... run build
+pnpm --filter @mono-agent/<X> test
+pnpm --filter @mono-agent/<X> run typecheck
 ```
 
-`pnpm run verify:all` runs the local command-level gate, including the
-dependency-vulnerability policy, release package graph, tarballs, packed
-consumer, and alpha/beta consumer contracts:
+Add focused dependent-package checks when the changed public behavior crosses a
+package boundary. Before merge, rely on one successful hosted CI run for the
+exact head SHA. If Actions is unavailable, run `pnpm run verify:all` once under
+a supported Node runtime and record why CI could not provide the broad gate.
+
+## 4. High-risk lane
+
+Run the focused package checks above, then:
 
 ```bash
 pnpm run verify:all
 ```
 
-The semantic guard in `scripts/__tests__/verify-all.test.mjs` parses strict YAML
-and checks the complete ordered CI projection: checkout/setup actions, Corepack,
-the direct pnpm release-age policy guard, the Node-floor check, frozen dependency
-install, every exact decoded run script, release-tag derivation, failure policy,
-and `if:` behavior on both exact matrix legs (`22.19.0` and `24`). Its
-intentional differences live in `VERIFY_GATE_DELTA`. `ciSetup` documents
-CI-only checkout, Node setup, Corepack, dependency install, and release-tag
-export steps. The other entries document that CI runs the pinned gitleaks
-container instead of the host-aware `check:secrets` wrapper and spells the test
-alias `pnpm test`; local `verify:all` repeats `test:demo` after the root test
-command. CI executes the release-age policy script directly after Corepack and
-before using pnpm; local `verify:all` first checks the Node floor, then invokes
-the equivalent `check:pnpm-policy` package script. CI restricts
-`check:dependency-vulnerabilities` and the packed consumer to Node 22.19.0;
-local `verify:all` runs both on newer supported Node versions, without the
-minimum-version assertion for the packed consumer. CI runs the vulnerability
-check after the frozen install, while the local gate runs it after
-`check:licenses`.
+Require hosted CI for the exact head SHA and select exactly one scenario from
+`live-smoke` that exercises the risky boundary. Add a second scenario only when
+the diff independently changes a second live surface.
 
-After applying those declared substitutions, `verify:all` is a strict
-command-coverage superset of the CI verify job. It is still not a one-shot
-equivalent of the whole CI workflow: CI supplies the Node 22.19.0/24 matrix,
-performs a frozen dependency install, and runs the separate website job.
+Provider-backed smoke is reserved for provider behavior. UI, worker transport,
+and lifecycle changes should use their narrower local scenarios instead of paid
+model calls.
 
-Temporary dependency-vulnerability dispositions are strict, accountable
-exceptions rather than a loose allowlist. Every advisory entry pins its exact
-metadata, installed versions, complete production paths, expiry, and a
-nonblank `owner`; `rationale` must already be trimmed and is capped at 4096
-UTF-8 bytes.
-`owner` is capped at 200 UTF-8 bytes, and both accountability fields reject
-control and default-ignorable Unicode characters.
-Unknown fields, duplicate versions/paths, stale entries, drift, and expiry fail
-closed. Update `scripts/dependency-vulnerability-dispositions.json` only with
-the corresponding security review evidence.
+## Worktree dist rule
 
-On supported POSIX/macOS hosts, the root build holds an exclusive ignored build
-lock, clears any prior marker, builds packages and demos, syncs the output tree,
-and atomically publishes an owner-only marker containing the full source SHA,
-source state, Node/ABI, completion time, and deterministic output digest. A
-concurrent build fails closed. Windows and unsupported hosts still run the
-normal build commands but do not publish this deploy proof. If a crash leaves a
-lock, remove it only after confirming no root build is still active, then rerun
-the whole build.
+Cross-package imports resolve through built `dist/`. After editing package A,
+rebuild A before testing or typechecking a dependent package. A process-only
+change does not exercise package resolution and needs no dist baseline. See
+`worktree-feature` for diff-aware worktree setup.
 
-Release-relevant tarball sanity (CI runs both in every verify job; `<version>` =
-`packages/agent-app/package.json` version):
+## Failure handling
 
-```bash
-pnpm run release:validate -- --tag v<version>
-pnpm run release:pack -- --tag v<version>
-pnpm run release:consumer -- --tag v<version>
-```
-
-CI runs the packed consumer only on its Node 22.19.0 leg with
-`--require-minimum`; `verify:all` adds that assertion when the local runtime is
-exactly 22.19.0 and otherwise still performs the packed-consumer smoke test.
-
-## Fast iteration loop (while developing)
-
-Do not run the full gate per edit. Iterate on one package:
-
-```bash
-pnpm --filter @mono-agent/<pkg> run build
-pnpm --filter @mono-agent/<pkg> test            # or append: -- src/__tests__/<file>.test.ts --runInBand
-pnpm --filter @mono-agent/<pkg> run typecheck
-pnpm --filter @mono-agent/<pkg>... build        # trailing ... also builds its workspace dependencies
-```
-
-Single test file, directly:
-
-```bash
-pnpm --dir packages/<pkg> exec vitest run src/__tests__/<file>.test.ts
-```
-
-## Cross-package rebuild rule (stale-dist gotcha)
-
-`pnpm test` / `pnpm typecheck` do NOT build first. Cross-package imports resolve
-against each package's built `dist/` (tsconfig NodeNext, `exports` point at dist —
-no src aliases). After editing package A, rebuild A **before** building, testing,
-or typechecking any dependent B, or B silently runs against A's stale dist.
-Intra-package vitest uses `src` via relative imports and is unaffected — a
-package's own tests passing proves nothing about its dependents.
-
-In worktrees this is worse: missing worktree dist falls through to the MAIN
-repo's dist (see the `worktree-feature` skill).
-
-## Review checklist (prove it in the same diff)
-
-The mechanical gate only knows pass/fail on tests that already exist. These are
-the diff-review checks that catch what a green gate can't — each already shipped
-broken at least once. The rule is the same every time: prove the property in the
-**same diff**.
-
-- **Redaction-helper reuse** — before writing a new secret-redaction regex set,
-  grep for the existing helper; if a second impl is truly needed, add a test
-  proving both are equivalent on the same fixture. Two independently-drifted
-  redactors already exist across one worker boundary.
-
-```bash
-grep -rn "safeMessage\|safeWorkerMessage\|redactionValues" packages/*/src --include=*.ts | grep -v __tests__
-```
-
-- **Security-boundary comment ⇒ security-boundary test** — when a diff adds an
-  option whose doc comment states a security property (e.g.
-  `preserveMcpServersUnderOverride`: "an arbitrary caller cannot X"), require a
-  co-located test asserting exactly that property before merge.
-- **Snapshot-vs-dynamic drift ⇒ a test they can't disagree** — if a diff adds a
-  `*Fallback*`/`*Cached*`/`*Snapshot*` value alongside an existing dynamic
-  resolver of the same fact (e.g. `inferUniqueNotifyDestination`), add a test
-  proving they can't diverge, or document why staleness is safe.
-- **Error-taxonomy completeness for provider-shaped code** — when wrapping an
-  external network call in a typed-error class, cover the timeout / `AbortError` /
-  connection-refused paths, not just non-2xx and malformed-body.
-- **`enabled` early-out ordering across config loaders** — for every field parsed
-  in a `loadXConfig`, confirm it is parsed strictly *after* that function's own
-  `if (!enabled) return` guard (or carries a comment saying why it's exempt). The
-  exact same bug shipped in both `telegram-adapter/config.ts` and
-  `slack-adapter/config.ts`.
-- **Live↔replay rendering parity** — when adding rendering for a new
-  `runtime_telemetry`/stream-event kind, grep the sibling surface and add matching
-  treatment (don't leave replay falling back to raw JSON). `turn-presenter.ts` ↔
-  `replay-detail.ts`; the step-kind switch in
-  `session-web/webapp/src/views/DetailView.tsx`.
-
-```bash
-grep -rn "session_boundary" packages/tui/src packages/session-web/webapp/src
-```
-
-- **Webapp component smoke-render** — require at least a mount+assert test for any
-  new top-level view component, not only its extracted pure helpers.
-  `grep -rL "render("` finds pure-only coverage:
-
-```bash
-grep -rL "render(" packages/*/webapp/src/views/*.test.ts
-```
-
-## Gotchas
-
-- The demo gate is chained into `pnpm run build` / `pnpm test` — demos are not optional extras; a demo break is a gate break.
-- A failure may pre-exist on main. The normal non-bare `main` checkout is frozen
-  for fleet deployment, not development. Never edit or `git stash` it; check
-  main via a detached worktree instead:
-
-```bash
-git worktree add --detach /tmp/base-check origin/main
-cd /tmp/base-check && pnpm install --frozen-lockfile && pnpm --filter @mono-agent/<pkg> test
-git worktree remove /tmp/base-check
-```
-
-- `git diff --check` failures (trailing whitespace) fail CI — run it locally.
-- `check:codex-discoverability` enforces skills/agents Codex parity: editing an
-  `agents/*.md` template requires syncing its `agents/*.toml` companion (and vice
-  versa) or the gate fails (`codex-agent-toml-missing` / `-orphan`).
-- Do NOT run `check:architecture` in parallel with the website build:
-  `website/scripts/sync-content.mjs` deletes and recreates the synced docs dir,
-  and the two race (observed on goal #124). Run them sequentially.
-- `pnpm --filter <pkg> exec mono-agent …` resolves the Homebrew/global binary,
-  NOT your worktree build — so it silently verifies the wrong code. Invoke the
-  worktree CLI explicitly: `node packages/agent-app/dist/cli.js …` (bit goals
-  #122 and #139's executor).
-- **Phantom gates** — any `scripts/*.mjs` with real logic and an `isCli`/`main()`
-  entry must be a *named* `pnpm run check:<name>` wired into `repoGate` in
-  `scripts/verify-all.mjs`. A check that "works" only because a non-mocked test
-  happens to call it (`verify-deep-imports.mjs`,
-  `check-getting-started-version-pins.mjs` — both independently found) is
-  invisible in `package.json` and fragile to test-glob refactors. Audit it: every
-  `scripts/*.mjs` with an `isCli` block must appear in **both** `package.json`'s
-  `check:*` scripts and `verify-all.mjs`'s `repoGate` array; one in neither is a
-  phantom gate. `grep -rl "const isCli" scripts/*.mjs` lists the candidates. Also:
-  "deep-imports ok" should still show in `pnpm run test` output whenever
-  `scripts:test`'s glob changes.
-- **DDL-migration guard** — before a `schema.ts` edit lands, diff it against the
-  previous release tag and confirm no *existing* `CREATE TABLE` column list
-  changed (only new statements appended); a changed column list on a live table
-  needs a migration:
-
-```bash
-git diff <last-release-tag> -- packages/memory/src/store/schema.ts
-```
-
-- **gitleaks self-test (periodic, not every-PR)** — a secret-scanning gate that
-  silently no-ops is worse than an absent one. Periodically run a scratch-repo
-  test with synthetic Telegram/Slack/OpenAI-shaped tokens against `.gitleaks.toml`
-  to prove it still catches them.
+- Diagnose the first stable failure; do not rerun an unchanged failing broad gate.
+- When a failure may pre-exist, compare against the exact base SHA in a detached worktree.
+- If hosted CI fails immediately for an account or billing condition, stop polling and report that external blocker.
+- Never replace a failed stated check with a different check without naming the substitution.
 
 ## Report format
 
-State exactly which commands you ran and their outcomes. "Green" claims without
-command evidence are worthless; quote the failing test name and file on red.
+State the lane, exact commands, SHA, and pass/fail result. For failures, name the
+failing test or gate. A green claim without command evidence is not complete.

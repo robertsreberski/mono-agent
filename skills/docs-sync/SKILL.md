@@ -1,9 +1,24 @@
 ---
 name: docs-sync
-description: Keep docs/ (canonical) and the Astro Starlight website in sync with shipped changes — per-PR doc updates or a PR-range audit. Use when asked to "update the docs", "sync docs with recent PRs", "check the website builds", or after any user-facing feature lands.
+description: Update and verify only the documentation surfaces affected by a mono-agent change. Use when asked to update docs, sync docs, check the website, or when a user-facing contract actually changed.
 ---
 
 # Docs sync
+
+## Select the affected surface
+
+Documentation work is diff-scoped:
+
+- Changes only under `skills/`, `agents/`, or internal process instructions
+  do not require package docs or an Astro build.
+- Package behavior/API changes update the owning README and relevant canonical
+  `docs/` pages.
+- Config changes also update the feature registry and closest task playbook.
+- Website-only presentation changes run the website gate.
+- A PR-range audit is explicit work; never infer it from a single feature PR.
+
+If no user-facing contract or published documentation input changed, record
+"docs not affected" and stop this skill.
 
 ## Source-of-truth rule
 
@@ -13,7 +28,7 @@ skill). `website/src/content/docs` is **generated** by
 Top-level `docs/superpowers/` and `docs/skills/` are excluded from the published
 site.
 
-## Doc surfaces checklist (per shipped feature)
+## Doc surfaces checklist (when affected)
 
 - `docs/<area>/*.md` (channels, config, runtime, memory, tools, observability, …)
 - `docs/reference/feature-registry.md` — the feature→config map; every new config key lands here
@@ -104,11 +119,11 @@ comm -23 \
 Any left-only line is a config key with no registry row (would have caught the
 F2/F3 misses).
 
-## Build + verify
+## Build + verify only when published inputs changed
 
-`website/` is its own pnpm workspace. The root `pnpm build` does not build it;
-CI runs a dedicated parallel website job, and local reviewers must invoke this
-gate explicitly:
+`website/` is its own pnpm workspace. Run this gate only when `docs/`,
+`website/`, or another published-site input changed. The root `pnpm build`
+does not build it:
 
 ```bash
 pnpm -C website install                    # first time or after dep changes

@@ -1,18 +1,15 @@
 ---
 name: repo-hygiene-gc
-description: Periodic branch/worktree garbage collection plus the post-merge cleanup protocol that keeps the repo from drowning in dead branches and worktrees. Use for branch/worktree cleanup, when asked to "clean up the repo", when either count climbs into double digits, or as a standing item at the end of a goal-loop wave.
+description: Explicit bulk branch/worktree garbage collection using API-bound deletion proof. Use when asked to clean up the repository or run a deliberate maintenance sweep; ordinary PR cleanup belongs to worktree-feature.
 ---
 
 # Repo hygiene GC
 
-The frozen `main` deploy checkout stays put, but every feature spins up its own
-branch + worktree under `~/.config/superpowers/worktrees/mono-agent/` (see
-`worktree-feature`). Local worktrees are never reaped automatically, and remote
-branches accumulated while `delete_branch_on_merge` was off. Goal-loop velocity
-buries the repo fast: #167 verified a clean **2 branches / 3 worktrees**, and 8
-days of continued waves regressed it to **47 branches / 50 worktrees**
-(`git branch --list | wc -l` = 47, `git worktree list | wc -l` = 50). This is the
-janitorial sweep `worktree-feature` doesn't own.
+The clean `main` checkout stays in place because it backs local live tooling,
+while feature work uses branches and worktrees under
+`~/.config/superpowers/worktrees/mono-agent/` (see `worktree-feature`).
+Per-PR cleanup prevents new residue. This skill handles an explicitly requested
+historical sweep; never start it merely because another task finished.
 
 ## Verify server-side auto-delete
 
@@ -52,7 +49,7 @@ git worktree list
 git -C <path> status --porcelain
 ```
 
-`git worktree list` shows the frozen `main` deploy checkout as its first row —
+`git worktree list` shows the live `main` checkout as its first row —
 never remove that one; only sweep the feature worktrees under
 `~/.config/superpowers/worktrees/mono-agent/`.
 
@@ -164,10 +161,10 @@ Keep every dirty worktree, branch without an exact merged-PR/head match, and
 closed-unmerged or open PR branch. Record the survivor and its reason instead
 of guessing.
 
-## Cadence
+## Inventory before an explicit sweep
 
-Run the full sweep whenever either count climbs into double digits, or as a
-standing item at the end of a goal-loop wave:
+Counts can justify proposing maintenance, but do not mutate historical branches
+or worktrees without a cleanup request:
 
 ```bash
 git branch --list | wc -l
