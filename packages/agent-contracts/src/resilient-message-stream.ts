@@ -27,7 +27,7 @@ import {
   normalizeTrailing,
   splitTextByCodePoints,
 } from "./stream-text.js";
-import { toolHintFor } from "./tool-hints.js";
+import { formatToolActivityLine, toolHintFor } from "./tool-hints.js";
 
 /** Opaque handle to a posted message, returned by {@link ChannelTransport.post}. */
 export interface MessageRef {
@@ -67,6 +67,8 @@ export interface ChannelTransport {
     text: string,
     options: { markdown: boolean; contentKind?: ChannelMessageContentKind },
   ): Promise<void>;
+  /** Delete a transient message, when the channel supports it. Best-effort. */
+  delete?(ref: MessageRef): Promise<void>;
   /** Classify a post/edit failure into a recovery strategy. */
   classifyError(error: unknown): ChannelSendOutcome;
   /** Render markdown to the channel's wire format. Defaults to identity. */
@@ -106,9 +108,10 @@ export interface ResilientMessageStreamOptions {
   /** Render the final answer with `transport.renderMarkdown`. Default true. */
   formatMarkdown?: boolean;
   /**
-   * Deliver only the final answer: suppress all interim message posts/edits and,
-   * instead, surface progress via `transport.indicateActivity()` (typing/seen).
-   * The single chat message is posted once at finish(). Default false.
+   * Deliver answer text only at finish. When hints are enabled, tool starts use
+   * one transient cumulative status message that the final answer replaces;
+   * other activity uses `transport.indicateActivity()` (typing/seen). Default
+   * false.
    */
   finalOnly?: boolean;
   /** Aborts in-flight retry waits (e.g. on /cancel). */
@@ -184,6 +187,10 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
   private inFlightEdit: Promise<void> | undefined;
   private lastFlushedText: string | undefined;
   private lastFlushedMarkdown = false;
+  private lastFlushedContentKind: ChannelMessageContentKind | undefined;
+  private answerDeliveryAttempted = false;
+  private readonly toolActivityEntries: Array<{ line: string; count: number }> = [];
+  private dismissPromise: Promise<void> | undefined;
   private finished = false;
 
   constructor(options: ResilientMessageStreamOptions) {
@@ -224,9 +231,13 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
 
   async status(text: string): Promise<void> {
     this.assertOpen();
-    this.statusText = normalizeTrailing(text, EMPTY_FINAL_TEXT);
+    if (this.toolActivityEntries.length === 0) {
+      this.statusText = normalizeTrailing(text, EMPTY_FINAL_TEXT);
+    }
     if (this.finalOnly) {
-      await this.maybeIndicateActivity();
+      if (this.toolActivityEntries.length === 0) {
+        await this.maybeIndicateActivity();
+      }
       return;
     }
     await this.awaitInFlightEdit();
@@ -248,8 +259,10 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     }
     if (this.finalOnly) {
       // Accumulate the answer but do not post/edit until finish(); just keep the
-      // working indicator alive.
-      await this.maybeIndicateActivity();
+      // working indicator alive until a visible tool ledger takes over.
+      if (this.toolActivityEntries.length === 0) {
+        await this.maybeIndicateActivity();
+      }
       return;
     }
     await this.awaitInFlightEdit();
@@ -264,7 +277,9 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
       this.hasAnswerText = true;
     }
     if (this.finalOnly) {
-      await this.maybeIndicateActivity();
+      if (this.toolActivityEntries.length === 0) {
+        await this.maybeIndicateActivity();
+      }
       return;
     }
     await this.awaitInFlightEdit();
@@ -276,8 +291,6 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     this.assertOpen();
 
     if (this.finalOnly) {
-      // No interim posts/edits in final-only mode. Any activity (reasoning,
-      // tool calls) just keeps the working indicator (typing/seen) alive.
       if (event.type === "runtime_warning") {
         this.logger?.warn?.("Resilient stream received runtime warning.", {
           warningKind: event.warningKind,
@@ -285,7 +298,44 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
         });
         return;
       }
-      await this.maybeIndicateActivity();
+      if (event.type === "tool_call_started") {
+        this.logger?.debug?.("Resilient stream received tool start event.", {
+          id: event.id,
+          name: event.name,
+        });
+        if (!this.showHints) {
+          await this.maybeIndicateActivity();
+          return;
+        }
+
+        await this.awaitInFlightEdit();
+        this.appendToolActivity(formatToolActivityLine(event.name, event.arguments));
+        const hadMessage = this.sentMessage !== undefined;
+        try {
+          await this.ensureMessage();
+          if (hadMessage) {
+            this.scheduleEdit();
+          }
+        } catch (error) {
+          // Progress is best-effort. A failed transient post must never abort a
+          // successful model run or poison the later classified final send.
+          this.logger?.warn?.("Resilient stream transient activity post failed (ignored).", {
+            error: errorMessage(error),
+          });
+          await this.maybeIndicateActivity();
+        }
+        return;
+      }
+      if (event.type === "tool_call_completed") {
+        this.logger?.debug?.("Resilient stream received tool completion event.", {
+          id: event.id,
+          name: event.name,
+          isError: event.isError === true,
+        });
+      }
+      if (this.toolActivityEntries.length === 0) {
+        await this.maybeIndicateActivity();
+      }
       return;
     }
 
@@ -384,7 +434,22 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     }
   }
 
+  /** Remove a confirmed status bubble without ever deleting an answer. */
+  async dismissTransient(): Promise<void> {
+    if (this.dismissPromise === undefined) {
+      this.dismissPromise = this.performDismissTransient();
+    }
+    await this.dismissPromise;
+  }
+
   private interimDisplayText(): string {
+    if (this.finalOnly && this.toolActivityEntries.length > 0) {
+      return buildStreamingTailPreview(
+        normalizeTrailing(this.statusText, EMPTY_FINAL_TEXT),
+        this.maxMessageChars,
+        "…\n",
+      );
+    }
     if (this.hasAnswerText || this.currentText.length > 0) {
       // The answer streams directly — no label.
       return buildStreamingTailPreview(
@@ -443,6 +508,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
         .then((message) => {
           this.lastFlushedText = initialText;
           this.lastFlushedMarkdown = false;
+          this.lastFlushedContentKind = "status";
           return message;
         });
     }
@@ -475,7 +541,11 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     const text = this.interimDisplayText();
     this.inFlightEdit = this.deliverText(text, {
       final: false,
-      contentKind: this.hasAnswerText || this.currentText.length > 0 ? "answer" : "status",
+      contentKind: this.finalOnly && this.toolActivityEntries.length > 0
+        ? "status"
+        : this.hasAnswerText || this.currentText.length > 0
+          ? "answer"
+          : "status",
     }).catch((error: unknown) => {
       // Interim edits are best-effort; deliverText already swallows, but guard
       // against an abort rejection so a streaming hiccup never aborts the run.
@@ -496,6 +566,11 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     sourceText: string,
     options: { final: boolean; post?: boolean; contentKind: ChannelMessageContentKind },
   ): Promise<void> {
+    if (options.contentKind === "answer") {
+      // Once an answer write is attempted, deletion is unsafe even if the
+      // channel returns an ambiguous failure: the edit may have landed.
+      this.answerDeliveryAttempted = true;
+    }
     const normalizedSource = normalizeTrailing(sourceText, EMPTY_FINAL_TEXT);
     let useMarkdown = options.final && this.formatMarkdown;
     let renderedText = this.render(normalizedSource, useMarkdown);
@@ -529,6 +604,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
         }
         this.lastFlushedText = renderedText;
         this.lastFlushedMarkdown = useMarkdown;
+        this.lastFlushedContentKind = options.contentKind;
         return;
       } catch (error) {
         lastError = error;
@@ -538,6 +614,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
         if (outcome.kind === "not_modified") {
           this.lastFlushedText = renderedText;
           this.lastFlushedMarkdown = useMarkdown;
+          this.lastFlushedContentKind = options.contentKind;
           return;
         }
         if (outcome.kind === "reformat_plain" && useMarkdown) {
@@ -595,6 +672,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
         this.sentMessage = sent;
         this.lastFlushedText = normalized;
         this.lastFlushedMarkdown = false;
+        this.lastFlushedContentKind = "answer";
         return;
       } catch (error) {
         lastError = error;
@@ -671,6 +749,57 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     if (this.editTimer !== undefined) {
       clearTimeout(this.editTimer);
       this.editTimer = undefined;
+    }
+  }
+
+  private appendToolActivity(line: string): void {
+    const last = this.toolActivityEntries.at(-1);
+    if (last?.line === line) {
+      last.count += 1;
+    } else {
+      this.toolActivityEntries.push({ line, count: 1 });
+      // Runtime turn limits normally keep this far smaller. The cap prevents a
+      // pathological tool loop from growing a user-visible transient ledger
+      // without bound; the channel tail preview still preserves newest work.
+      if (this.toolActivityEntries.length > 512) {
+        this.toolActivityEntries.shift();
+      }
+    }
+    this.statusText = this.toolActivityEntries
+      .map((entry) => entry.count === 1 ? entry.line : `${entry.line} (×${entry.count})`)
+      .join("\n");
+  }
+
+  private async performDismissTransient(): Promise<void> {
+    this.finished = true;
+    this.cancelScheduledEdit();
+    await this.awaitInFlightEdit();
+
+    if (this.sentMessage === undefined && this.sendMessagePromise !== undefined) {
+      try {
+        this.sentMessage = await this.sendMessagePromise;
+      } catch {
+        // The transient never landed, so there is nothing to dismiss.
+      }
+    }
+    if (
+      this.sentMessage === undefined
+      || this.transport.delete === undefined
+      || this.lastFlushedContentKind !== "status"
+      || this.answerDeliveryAttempted
+    ) {
+      return;
+    }
+    try {
+      await this.transport.delete(this.sentMessage);
+      this.sentMessage = undefined;
+      this.sendMessagePromise = undefined;
+      this.lastFlushedText = undefined;
+      this.lastFlushedContentKind = undefined;
+    } catch (error) {
+      this.logger?.debug?.("Resilient stream transient activity deletion failed (ignored).", {
+        error: errorMessage(error),
+      });
     }
   }
 

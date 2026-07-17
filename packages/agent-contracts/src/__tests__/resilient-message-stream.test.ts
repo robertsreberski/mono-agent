@@ -19,7 +19,11 @@ interface RecordedEdit {
   readonly text: string;
   readonly markdown: boolean;
 }
-type Recorded = RecordedPost | RecordedEdit;
+interface RecordedDelete {
+  readonly op: "delete";
+  readonly ref: MessageRef;
+}
+type Recorded = RecordedPost | RecordedEdit | RecordedDelete;
 
 /**
  * A scriptable in-memory transport. `failures` maps a 1-based call index (across
@@ -74,6 +78,10 @@ class FakeTransport implements ChannelTransport {
     this.calls.push({ op: "edit", ref, text, markdown: options.markdown });
   }
 
+  async delete(ref: MessageRef): Promise<void> {
+    this.calls.push({ op: "delete", ref });
+  }
+
   classifyError(error: unknown): ChannelSendOutcome {
     if (error && typeof error === "object" && "outcome" in error) {
       return (error as { outcome: ChannelSendOutcome }).outcome;
@@ -102,6 +110,7 @@ function makeStream(
     initialStatusText: string;
     showHints: boolean;
     formatMarkdown: boolean;
+    finalOnly: boolean;
   }>,
 ): ResilientMessageStream {
   return new ResilientMessageStream({
@@ -167,7 +176,7 @@ describe("ResilientMessageStream", () => {
     );
   });
 
-  it("finalOnly mode: no interim posts/edits, indicates activity, posts the final answer once", async () => {
+  it("finalOnly mode: posts one tool status and replaces it with the final answer", async () => {
     const transport = new FakeTransport();
     const stream = new ResilientMessageStream({
       transport,
@@ -177,23 +186,98 @@ describe("ResilientMessageStream", () => {
     });
 
     await stream.status("Thinking...");
-    await stream.event({ type: "tool_call_started", id: "t1", name: "WebSearch" });
+    await stream.event({
+      type: "tool_call_started",
+      id: "t1",
+      name: "WebSearch",
+      arguments: { query: "release notes" },
+    });
     await stream.append("the ");
     await stream.append("answer");
 
-    // Nothing is posted or edited while the agent works.
-    expect(transport.calls).toHaveLength(0);
-    // A working affordance (typing/seen) was surfaced instead.
+    expect(transport.calls).toEqual([
+      { op: "post", text: "🌐 Searching the web for release notes", markdown: false },
+    ]);
     expect(transport.activityCount).toBeGreaterThanOrEqual(1);
 
     await stream.finish();
 
-    // The answer is delivered as a single post (no interim edits at all).
     const posts = transport.calls.filter((c) => c.op === "post") as RecordedPost[];
     expect(posts).toHaveLength(1);
-    expect(posts[0]?.text).toContain("the answer");
     expect(transport.calls[0]?.op).toBe("post");
-    expect(transport.calls.filter((c) => c.op === "edit")).toHaveLength(0);
+    const edits = transport.calls.filter((c) => c.op === "edit") as RecordedEdit[];
+    expect(edits).toHaveLength(1);
+    expect(edits[0]?.text).toContain("the answer");
+  });
+
+  it("finalOnly mode: accumulates tool calls, dedupes adjacent repeats, and ignores hidden answer deltas", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    const search = {
+      type: "tool_call_started" as const,
+      name: "WebSearch",
+      arguments: { query: "mono agent" },
+    };
+    await stream.event({ ...search, id: "t1" });
+    await stream.append("hidden draft");
+    await stream.event({ ...search, id: "t2" });
+    await stream.event({
+      type: "tool_call_started",
+      id: "t3",
+      name: "Bash",
+      arguments: { command: "pnpm test" },
+    });
+    await stream.finish("final answer");
+
+    expect(transport.calls.map((call) => call.op === "delete" ? "delete" : call.text)).toEqual([
+      "🌐 Searching the web for mono agent",
+      "🌐 Searching the web for mono agent (×2)",
+      "🌐 Searching the web for mono agent (×2)\n🖥️ Running pnpm test",
+      "final answer",
+    ]);
+    expect(transport.calls.map((call) => call.op === "delete" ? "" : call.text).join("\n"))
+      .not.toContain("hidden draft");
+  });
+
+  it("finalOnly mode: showHints false preserves the previous answer-only behavior", async () => {
+    const transport = new FakeTransport();
+    const stream = makeStream(transport, { finalOnly: true, showHints: false });
+
+    await stream.event({ type: "tool_call_started", id: "t1", name: "WebSearch" });
+    expect(transport.calls).toHaveLength(0);
+    await stream.finish("answer only");
+    expect(transport.calls).toEqual([
+      { op: "post", text: "answer only", markdown: true },
+    ]);
+  });
+
+  it("dismisses only a confirmed transient status and is idempotent", async () => {
+    const transport = new FakeTransport();
+    const stream = makeStream(transport, { finalOnly: true });
+
+    await stream.event({ type: "tool_call_started", id: "t1", name: "Read", arguments: { path: "/repo/a.ts" } });
+    await stream.dismissTransient();
+    await stream.dismissTransient();
+    await stream.finish("must not land");
+
+    expect(transport.calls).toEqual([
+      { op: "post", text: "📖 Reading /repo/a.ts", markdown: false },
+      { op: "delete", ref: { id: "m1" } },
+    ]);
+  });
+
+  it("never deletes a message after an answer delivery was attempted", async () => {
+    const transport = new FakeTransport();
+    const stream = makeStream(transport, { finalOnly: false });
+
+    await stream.replace("answer");
+    await stream.finish("answer");
+    await stream.dismissTransient();
+
+    expect(transport.calls.some((call) => call.op === "delete")).toBe(false);
+    expect((transport.calls.filter((call) => call.op === "edit") as RecordedEdit[]).at(-1)?.text)
+      .toBe("answer");
   });
 
   it("finalOnly mode: retries a transient first-post failure and still delivers the answer", async () => {
@@ -444,7 +528,9 @@ describe("ResilientMessageStream", () => {
 
     // No message exists yet, so the hint lands as the first post's status text.
     await stream.event?.({ type: "tool_call_started", id: "1", name: "websearch" });
-    const rendered = transport.calls.map((c) => c.text).join("\n");
+    const rendered = transport.calls
+      .map((call) => call.op === "delete" ? "" : call.text)
+      .join("\n");
     expect(rendered).toContain("Searching the web");
   });
 
@@ -453,7 +539,9 @@ describe("ResilientMessageStream", () => {
     const stream = makeStream(transport);
 
     await stream.event?.({ type: "assistant_thought", text: "secret reasoning" });
-    const everySeen = transport.calls.map((c) => c.text).join("\n");
+    const everySeen = transport.calls
+      .map((call) => call.op === "delete" ? "" : call.text)
+      .join("\n");
     expect(everySeen).not.toContain("secret reasoning");
   });
 

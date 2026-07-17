@@ -479,6 +479,8 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       (isAgentResponseCancelledError(error) && isChannelUserCancelReason(error.reason));
     if (!acknowledgedByCommand) {
       await finishSafely(stream, messages.cancelledText, logger);
+    } else {
+      await stream.dismissTransient();
     }
   }
 
@@ -1080,7 +1082,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           },
         },
       };
-      const stream = new TelegramMessageStream(buildStreamOptions(chatId, undefined, controller.signal, silent));
+      const stream = new TelegramMessageStream(buildStreamOptions(chatId, undefined, controller.signal, silent, false));
       let response: AgentResponse;
       try {
         response = await options.responder.respond(request, stream);
@@ -1137,7 +1139,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       if (text.trim().length === 0) {
         return { delivered: false, reason: "empty notification" };
       }
-      const stream = new TelegramMessageStream(buildStreamOptions(chatId, undefined, controller.signal, silent));
+      const stream = new TelegramMessageStream(buildStreamOptions(chatId, undefined, controller.signal, silent, false));
       try {
         await stream.finish(text);
       } catch (error) {
@@ -1218,6 +1220,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     replyToMessageId: number | undefined,
     signal: AbortSignal,
     silent = false,
+    showHintsOverride?: boolean,
   ): TelegramMessageStreamOptions {
     const streamOptions: TelegramMessageStreamOptions = {
       api: sender,
@@ -1254,8 +1257,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     if (tuning?.retryBaseDelayMs !== undefined) {
       streamOptions.retryBaseDelayMs = tuning.retryBaseDelayMs;
     }
-    if (tuning?.showHints !== undefined) {
-      streamOptions.showHints = tuning.showHints;
+    const showHints = showHintsOverride ?? tuning?.showHints;
+    if (showHints !== undefined) {
+      streamOptions.showHints = showHints;
     }
     if (tuning?.formatMarkdown !== undefined) {
       streamOptions.formatMarkdown = tuning.formatMarkdown;

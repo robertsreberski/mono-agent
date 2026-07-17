@@ -981,7 +981,7 @@ describe("OpenAI API adapter", () => {
       expect(response.status).toBe(200);
       const body = await response.text();
       expect(body).toContain("\"reasoning_content\":\"checking available context\"");
-      expect(body).toContain("\"reasoning_content\":\"Running mcp__context_example__search...\"");
+      expect(body).not.toContain("Running mcp__context_example__search...");
       expect(body).toContain("<details type=\\\"tool_calls\\\" done=\\\"true\\\"");
       expect(body).toContain("id=\\\"call-1\\\"");
       expect(body).toContain("name=\\\"mcp__context_example__search\\\"");
@@ -1459,7 +1459,7 @@ describe("OpenAI API adapter", () => {
     }
   });
 
-  it("streams internally executed tool progress before the tool completes", async () => {
+  it("streams genuine thought but no synthetic tool progress before the tool completes", async () => {
     const releaseTool = deferred<void>();
     const responder: AgentResponder = {
       async respond(_request, stream) {
@@ -1469,6 +1469,7 @@ describe("OpenAI API adapter", () => {
           name: "mcp__context_example__search",
           arguments: { query: "OpenWebUI tool rendering" },
         });
+        await stream.event?.({ type: "assistant_thought", text: "waiting for the tool result" });
         await releaseTool.promise;
         await stream.event?.({
           type: "tool_call_completed",
@@ -1504,8 +1505,9 @@ describe("OpenAI API adapter", () => {
       }
       const earlyBody = await readUntil(
         reader,
-        "\"reasoning_content\":\"Running mcp__context_example__search...\"",
+        "\"reasoning_content\":\"waiting for the tool result\"",
       );
+      expect(earlyBody).not.toContain("Running mcp__context_example__search...");
       expect(earlyBody).not.toContain("<details type=\\\"tool_calls\\\" done=\\\"true\\\"");
 
       releaseTool.resolve(undefined);
@@ -1518,7 +1520,7 @@ describe("OpenAI API adapter", () => {
     }
   });
 
-  it("does not duplicate tool-start progress already emitted as a runtime thought", async () => {
+  it("preserves a genuine runtime thought that happens to mention a tool start", async () => {
     const responder: AgentResponder = {
       async respond(_request, stream) {
         await stream.event?.({ type: "assistant_thought", text: "Running mcp__context_example__search..." });

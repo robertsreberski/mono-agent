@@ -166,6 +166,16 @@ class TelegramChannelTransport implements ChannelTransport {
     await this.api.editMessageText(this.buildEditParams(ref, text, useMarkdown));
   }
 
+  async delete(ref: MessageRef): Promise<void> {
+    if (this.api.deleteMessage === undefined) {
+      throw new Error("Telegram deleteMessage is unavailable on this client.");
+    }
+    await this.api.deleteMessage({
+      chat_id: this.chatId,
+      message_id: messageIdOf(ref),
+    });
+  }
+
   classifyError(error: unknown): ChannelSendOutcome {
     if (isMarkdownOverflowError(error)) {
       return { kind: "reformat_plain" };
@@ -315,6 +325,10 @@ export class TelegramMessageStream implements AgentMessageStream {
 
   async event(event: AgentStreamEvent): Promise<void> {
     await this.inner.event(event);
+  }
+
+  async dismissTransient(): Promise<void> {
+    await this.inner.dismissTransient();
   }
 
   async finish(finalText?: string, options?: { format?: boolean }): Promise<void> {

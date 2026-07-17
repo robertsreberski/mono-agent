@@ -20,7 +20,7 @@ Adapter settings can be loaded from nested JSON under `slack` or explicit enviro
 
 The adapter is opt-in: `slack.enabled` / `MONO_AGENT_SLACK_ENABLED` defaults to `false`. While disabled the loader skips token validation and the channel reports `disabled` rather than `waiting_for_config`. Set `enabled: true` to turn it on; missing tokens or allowlist then surface as a real `waiting_for_config` reason.
 
-## Activity indicator (assistant status / 👀)
+## Activity indicator and transient tool ledger
 
 While the agent works, the message stream surfaces progress in the thread. It
 prefers Slack's official assistant-thread status — `assistant.threads.setStatus`
@@ -30,6 +30,13 @@ applies inside a Slack **AI-assistant thread** and requires the app to have the
 **Agents & AI Apps** feature enabled plus the **`assistant:write`** scope; in
 regular channels/DMs (or without the scope) the call errors and the adapter uses
 the reaction instead — no configuration needed for the fallback.
+
+With final-only delivery, the first tool start posts one cumulative, secret-safe
+activity message. Later starts edit it in place, adjacent duplicates collapse as
+`(×N)`, and the final answer replaces it. Answer deltas and reasoning never enter
+that ledger. Proactive deliveries suppress it. An acknowledged `/cancel`
+best-effort deletes the still-transient ledger and keeps the command's one
+`Cancelled.` acknowledgement.
 
 ## Silent-delivery limitation
 
@@ -122,6 +129,8 @@ SlackAuthTestResult
 SlackBlockAction
 SlackBlockActionsPayload
 SlackChannelId
+SlackChatDeleteParams
+SlackChatDeleteResult
 SlackChatPostMessageParams
 SlackChatPostMessageResult
 SlackChatUpdateParams

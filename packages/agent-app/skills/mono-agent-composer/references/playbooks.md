@@ -14,7 +14,7 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 ## 1. Personal Telegram assistant with BuJo memory
 **For:** an individual wanting a private assistant that remembers.
 **Goal:** a Telegram bot (long polling) that captures every turn into BuJo memory with scheduled consolidation and recalls past notes semantically.
-**Features:** `telegram.long-polling`, `channel.final-only-delivery`, `memory.bujo`, `memory.per-turn-capture`, `memory.bujo-consolidation`, `memory.recall-tool`, `memory.embeddings`.
+**Features:** `telegram.long-polling`, `channel.final-only-delivery`, `channel.transient-tool-activity`, `memory.bujo`, `memory.per-turn-capture`, `memory.bujo-consolidation`, `memory.recall-tool`, `memory.embeddings`.
 
 Put `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`; the source config omits the credential.
 
@@ -31,12 +31,12 @@ Put `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`; the source config omits the c
 }
 ```
 **Steps:** `ollama pull nomic-embed-text:v1.5 && ollama pull qwen3.6:latest` → `mono-agent init --model claude:claude-sonnet-4-6 --memory bujo` → add telegram + fill embeddings/llm + `writeMode: capture` → `mono-agent validate` (confirm memory liveness + consolidation cadence) → `mono-agent start`.
-**Smoke:** send a fact from the allowed chat, then ask a paraphrased question later; confirm `MemoryRecall` in the run JSONL and that the answer uses it.
+**Smoke:** send a fact from the allowed chat, then ask a paraphrased question later; confirm the temporary memory-tool activity is replaced by the final answer, `MemoryRecall` appears in the run JSONL, and the answer uses it.
 
 ## 2. Slack team bot with MCP tools
 **For:** a DevOps engineer running a shared team bot.
 **Goal:** a mention-triggered Slack Socket Mode bot with a custom MCP tool, Read/Grep, and `SlackSendMessage` for proactive posts.
-**Features:** `slack.socket-mode`, `tool-policy.allowlist`, `tool-policy.mcp-servers`, `agent-app.adapter-send-tools`, `runtime.concurrency`.
+**Features:** `slack.socket-mode`, `channel.transient-tool-activity`, `tool-policy.allowlist`, `tool-policy.mcp-servers`, `agent-app.adapter-send-tools`, `runtime.concurrency`.
 
 Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the source config omits credentials.
 
@@ -49,7 +49,7 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
 }
 ```
 **Steps:** create a Slack app (Socket Mode app token + bot token) → `mono-agent init` (allow-all by default) → write `mcp.json` (the MCP tool becomes available from the server declaration — MCP tools aren't gated by `allowedTools`) → add slack; `SlackSendMessage` is auto-available under allow-all, or name it if you narrow to a specific allowlist → `validate` → `start`.
-**Smoke:** mention the bot in an allowed channel; confirm the 👀 reaction, final answer, the MCP tool firing in the artifact, and that `SlackSendMessage` posts only to allowed channels.
+**Smoke:** mention the bot in an allowed channel; confirm the 👀/assistant status, the temporary MCP-tool activity message being replaced by the final answer, the tool firing in the artifact, and `SlackSendMessage` posting only to allowed channels.
 
 ## 3. Fully local Ollama agent (no cloud)
 **For:** a privacy-focused user with no cloud budget.

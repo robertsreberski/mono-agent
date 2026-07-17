@@ -8,6 +8,7 @@ import {
 import { TelegramApiError } from "../telegram-error.js";
 import type {
   TelegramBotApi,
+  TelegramDeleteMessageParams,
   TelegramEditMessageTextParams,
   TelegramGetUpdatesParams,
   TelegramSendMessageParams,
@@ -18,6 +19,7 @@ import type {
 class FakeTelegramApi implements TelegramBotApi {
   readonly sendMessageCalls: TelegramSendMessageParams[] = [];
   readonly editMessageTextCalls: TelegramEditMessageTextParams[] = [];
+  readonly deleteMessageCalls: TelegramDeleteMessageParams[] = [];
   nextMessageId = 100;
   failSendWith: Error | undefined;
   failEditWith: Error | undefined;
@@ -50,6 +52,11 @@ class FakeTelegramApi implements TelegramBotApi {
       chat: { id: params.chat_id ?? 0 },
       text: params.text,
     };
+  }
+
+  async deleteMessage(params: TelegramDeleteMessageParams): Promise<true> {
+    this.deleteMessageCalls.push(params);
+    return true;
   }
 
   async getUpdates(_params: TelegramGetUpdatesParams): Promise<TelegramUpdate[]> {
@@ -106,6 +113,45 @@ describe("TelegramMessageStream", () => {
     ]);
     await vi.runOnlyPendingTimersAsync();
     expect(api.editMessageTextCalls).toHaveLength(1);
+  });
+
+  it("replaces a final-only tool ledger with the final Telegram answer", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      finalOnly: true,
+      editDebounceMs: 0,
+    });
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "t1",
+      name: "WebFetch",
+      arguments: { url: "https://example.test/product" },
+    });
+    await stream.finish("final answer");
+
+    expect(api.sendMessageCalls).toEqual([{
+      chat_id: 42,
+      text: "🌐 Browsing https://example.test/product",
+    }]);
+    expect(api.editMessageTextCalls).toEqual([{
+      chat_id: 42,
+      message_id: 100,
+      text: "final answer",
+      parse_mode: "MarkdownV2",
+    }]);
+  });
+
+  it("deletes a transient Telegram tool ledger on dismissal", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({ api, chatId: 42, finalOnly: true });
+
+    await stream.event({ type: "tool_call_started", id: "t1", name: "Read", arguments: { path: "/repo/a.ts" } });
+    await stream.dismissTransient();
+
+    expect(api.deleteMessageCalls).toEqual([{ chat_id: 42, message_id: 100 }]);
   });
 
   it("never renders assistant reasoning as message text", async () => {

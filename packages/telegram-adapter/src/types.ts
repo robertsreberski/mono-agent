@@ -174,6 +174,11 @@ export interface TelegramEditMessageTextParams {
   reply_markup?: TelegramInlineKeyboardMarkup;
 }
 
+export interface TelegramDeleteMessageParams {
+  chat_id: TelegramChatId;
+  message_id: number;
+}
+
 export interface TelegramGetUpdatesParams {
   offset?: number;
   limit?: number;
@@ -199,6 +204,11 @@ export interface TelegramMessageSender {
     params: TelegramEditMessageTextParams,
     options?: TelegramRequestOptions,
   ): Promise<TelegramSentMessage | true>;
+  /** Optional for custom clients; built-in clients use it to clear transient status. */
+  deleteMessage?(
+    params: TelegramDeleteMessageParams,
+    options?: TelegramRequestOptions,
+  ): Promise<true>;
   /** Optional: surface a transient chat action such as "typing". Best-effort. */
   sendChatAction?(
     params: TelegramSendChatActionParams,

@@ -1128,6 +1128,8 @@ export class SlackAdapter {
       channelId,
       // No reactToTs: a proactive turn has no inbound message to react to.
       finalOnly: this.streamOptions.finalOnly ?? true,
+      // Proactive delivery has no waiting user watching a live turn.
+      showHints: false,
       abortSignal: controller.signal,
       ...(deliveryKey === undefined ? {} : { clientMsgId: slackClientMessageId(deliveryKey) }),
       ...(silent === true ? { silent: true } : {}),
@@ -1496,6 +1498,8 @@ export class SlackAdapter {
       ));
     if (!acknowledgedByCommand) {
       await finishSafely(stream, this.messages.cancelledText, this.logger);
+    } else {
+      await stream.dismissTransient();
     }
   }
 

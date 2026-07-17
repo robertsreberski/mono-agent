@@ -13,6 +13,7 @@ import {
 } from "./telegram-error.js";
 import type {
   TelegramEditMessageTextParams,
+  TelegramDeleteMessageParams,
   TelegramMessageSender,
   TelegramRequestOptions,
   TelegramSendChatActionParams,
@@ -93,6 +94,22 @@ export function createGrammyTelegramApi(api: Api): TelegramMessageSender {
         "grammY editMessageText requires inline_message_id, or chat_id and message_id.",
         { kind: "telegram", method: "editMessageText" },
       );
+    },
+
+    async deleteMessage(
+      params: TelegramDeleteMessageParams,
+      options?: TelegramRequestOptions,
+    ): Promise<true> {
+      try {
+        await api.deleteMessage(
+          params.chat_id,
+          params.message_id,
+          asGrammySignal(options?.signal),
+        );
+        return true;
+      } catch (error) {
+        throw toTelegramApiError("deleteMessage", error, options?.signal);
+      }
     },
 
     async sendChatAction(
