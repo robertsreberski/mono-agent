@@ -116,6 +116,9 @@ export function createA2AChannelDriver(
         allowNonLoopback: config.provider.allowNonLoopback,
         requireBearer: config.provider.requireBearer,
         ...(config.provider.bearerToken === undefined ? {} : { bearerToken: config.provider.bearerToken }),
+        ...(config.provider.maxRequestBytes === undefined
+          ? {}
+          : { maxRequestBytes: config.provider.maxRequestBytes }),
         ...(idempotency === undefined
           ? {}
           : {
@@ -291,6 +294,7 @@ function validateA2AAdapterRawConfig(config: A2AAdapterRawConfig): void {
     validateRawBoolean(provider, "allowNonLoopback", "a2a.provider.allowNonLoopback");
     validateRawBoolean(provider, "requireBearer", "a2a.provider.requireBearer");
     validateRawString(provider, "bearerToken", "a2a.provider.bearerToken");
+    validateRawInteger(provider, "maxRequestBytes", "a2a.provider.maxRequestBytes");
     const idempotency = readOptionalRawSection(provider, "idempotency", "a2a.provider.idempotency");
     if (idempotency !== undefined) {
       validateRawString(idempotency, "stateDir", "a2a.provider.idempotency.stateDir");

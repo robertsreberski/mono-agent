@@ -112,6 +112,139 @@ describe("A2A adapter contract", () => {
     }
   });
 
+  it("accepts a request above the SDK default when maxRequestBytes is configured", async () => {
+    let observedLength = 0;
+    const provider = await startA2AProvider({
+      host: "127.0.0.1",
+      port: 0,
+      maxRequestBytes: 512 * 1_024,
+      responder: {
+        async respond(request) {
+          observedLength = request.text.length;
+          return { text: "accepted" };
+        },
+      },
+      agent: {
+        name: "Large Request Mono",
+        description: "Accepts a configured large request",
+        version: "0.1.0",
+      },
+      skill: {
+        id: "large-request",
+        name: "Large Request",
+        description: "Accept a configured large request",
+        tags: ["large-request"],
+      },
+    });
+
+    try {
+      const text = "x".repeat(150_000);
+      await expect(sendA2AMessage({ agentUrl: provider.agentCardUrl, text }))
+        .resolves.toMatchObject({ text: "accepted" });
+      expect(observedLength).toBe(text.length);
+    } finally {
+      await provider.stop();
+    }
+  });
+
+  it("authenticates before enforcing configured JSON-RPC and REST request limits", async () => {
+    let responderCalls = 0;
+    const provider = await startA2AProvider({
+      host: "127.0.0.1",
+      port: 0,
+      requireBearer: true,
+      bearerToken: "request-limit-token",
+      maxRequestBytes: 1_024,
+      responder: {
+        async respond() {
+          responderCalls += 1;
+          return { text: "unexpected" };
+        },
+      },
+      agent: {
+        name: "Bounded Mono",
+        description: "Rejects oversized requests",
+        version: "0.1.0",
+      },
+      skill: {
+        id: "bounded",
+        name: "Bounded",
+        description: "Reject oversized requests",
+        tags: ["bounded"],
+      },
+    });
+    const oversized = JSON.stringify({ payload: "x".repeat(2_048) });
+
+    try {
+      const unauthenticated = await fetch(provider.jsonRpcUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: oversized,
+      });
+      expect(unauthenticated.status).toBe(401);
+
+      const jsonRpc = await fetch(provider.jsonRpcUrl, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer request-limit-token",
+          "content-type": "application/json",
+        },
+        body: oversized,
+      });
+      expect(jsonRpc.status).toBe(413);
+      await expect(jsonRpc.json()).resolves.toMatchObject({
+        jsonrpc: "2.0",
+        error: { message: "Request body exceeds the configured limit." },
+      });
+
+      const rest = await fetch(provider.restUrl, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer request-limit-token",
+          "content-type": "application/a2a+json",
+        },
+        body: oversized,
+      });
+      expect(rest.status).toBe(413);
+      await expect(rest.json()).resolves.toMatchObject({
+        error: {
+          code: 413,
+          status: "RESOURCE_EXHAUSTED",
+          message: "Request body exceeds the configured limit.",
+        },
+      });
+      expect(responderCalls).toBe(0);
+    } finally {
+      await provider.stop();
+    }
+  });
+
+  it.each([1_023, 100_000_001])(
+    "rejects an invalid programmatic maxRequestBytes value (%s)",
+    async (maxRequestBytes) => {
+      await expect(startA2AProvider({
+        host: "127.0.0.1",
+        port: 0,
+        maxRequestBytes,
+        responder: echoResponder(),
+        agent: {
+          name: "Invalid Limit Mono",
+          description: "Invalid request limit",
+          version: "0.1.0",
+        },
+        skill: {
+          id: "invalid-limit",
+          name: "Invalid Limit",
+          description: "Invalid request limit",
+          tags: ["invalid-limit"],
+        },
+      })).rejects.toMatchObject({
+        code: "invalid_config",
+        details: { field: "maxRequestBytes" },
+      });
+    },
+  );
+
   it.each([
     ["no capabilities", (card: Record<string, unknown>) => {
       delete card.capabilities;
@@ -434,6 +567,7 @@ describe("A2A adapter contract", () => {
       env: {
         MONO_AGENT_A2A_PROVIDER_ENABLED: "true",
         MONO_AGENT_A2A_BEARER_TOKEN: "env-token",
+        MONO_AGENT_A2A_MAX_REQUEST_BYTES: "50000000",
         MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE: "env-principal",
         MONO_AGENT_A2A_IDEMPOTENCY_MAX_RECORDS: "321",
         MONO_AGENT_A2A_REMOTE_AGENT_URLS: "http://127.0.0.1:4300, http://127.0.0.1:4301",
@@ -444,6 +578,7 @@ describe("A2A adapter contract", () => {
             host: "127.0.0.1",
             port: 4300,
             requireBearer: true,
+            maxRequestBytes: 40000000,
             idempotency: {
               stateDir: ".mono-agent/a2a-state",
               namespace: "json-principal",
@@ -476,6 +611,7 @@ describe("A2A adapter contract", () => {
       port: 4300,
       requireBearer: true,
       bearerToken: "env-token",
+      maxRequestBytes: 50000000,
       idempotency: {
         stateDir: ".mono-agent/a2a-state",
         namespace: "env-principal",
@@ -512,6 +648,29 @@ describe("A2A adapter contract", () => {
       },
     });
     expect(config.provider.enabled).toBe(true);
+  });
+
+  it.each(["1023", "100000001"])(
+    "rejects an out-of-range configured request limit (%s)",
+    async (maxRequestBytes) => {
+      await expect(loadA2AAdapterConfig({
+        env: {
+          MONO_AGENT_A2A_ENABLED: "true",
+          MONO_AGENT_A2A_MAX_REQUEST_BYTES: maxRequestBytes,
+        },
+        json: {},
+      })).rejects.toMatchObject({
+        code: "invalid_config",
+        details: { env: "MONO_AGENT_A2A_MAX_REQUEST_BYTES" },
+      });
+    },
+  );
+
+  it("does not parse provider-only request limits while the provider is disabled", async () => {
+    await expect(loadA2AAdapterConfig({
+      env: { MONO_AGENT_A2A_MAX_REQUEST_BYTES: "not-an-integer" },
+      json: {},
+    })).resolves.toMatchObject({ provider: { enabled: false } });
   });
 
   it("uses the public agent name as the default Agent Card name without overriding A2A-specific identity", async () => {
@@ -873,6 +1032,7 @@ describe("A2A adapter contract", () => {
       allowNonLoopback: false,
       requireBearer: true,
       bearerToken: "provider-token",
+      maxRequestBytes: 50_000_000,
       idempotency: {
         stateDir: expect.stringMatching(/^\/repo\/\.mono-agent\/a2a-idempotency\/driver-production-/u),
         namespace: "driver-production",
@@ -1055,6 +1215,11 @@ describe("A2A adapter contract", () => {
         path: "a2a.provider.port",
       },
       {
+        name: "request limit integer",
+        config: { provider: { maxRequestBytes: "50000000" } },
+        path: "a2a.provider.maxRequestBytes",
+      },
+      {
         name: "skill csv",
         config: { skill: { tags: "a,b" } },
         path: "a2a.skill.tags",
@@ -1114,6 +1279,7 @@ function completeChannelConfig(): A2AAdapterConfig {
       allowNonLoopback: false,
       requireBearer: true,
       bearerToken: "provider-token",
+      maxRequestBytes: 50_000_000,
       idempotency: {
         namespace: "driver-production",
         retentionMs: 120_000,

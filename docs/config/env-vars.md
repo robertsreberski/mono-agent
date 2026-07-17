@@ -335,6 +335,7 @@ The A2A provider is loaded through `channels.plugins[]` with `package: "@mono-ag
 | `MONO_AGENT_A2A_ALLOW_NON_LOOPBACK` | plugin `config.provider.allowNonLoopback` | Explicit opt-in for a non-loopback bind or public base URL. |
 | `MONO_AGENT_A2A_REQUIRE_BEARER` | plugin `config.provider.requireBearer` | Requires bearer authentication on message/task endpoints. |
 | `MONO_AGENT_A2A_BEARER_TOKEN` | plugin `config.provider.bearerToken` | Used when `requireBearer` is set. See [../channels/a2a.md](/channels/a2a/). |
+| `MONO_AGENT_A2A_MAX_REQUEST_BYTES` | plugin `config.provider.maxRequestBytes` | Optional JSON request-body ceiling for JSON-RPC and REST; 1024–100000000 bytes. |
 | `MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE` | plugin `config.provider.idempotency.namespace` | Explicitly enables durable keyed dispatch and defines its stable authenticated-principal boundary. |
 | `MONO_AGENT_A2A_IDEMPOTENCY_STATE_DIR` | plugin `config.provider.idempotency.stateDir` | Optional durable receipt directory; a namespace-derived owner-only path is used when omitted. |
 | `MONO_AGENT_A2A_IDEMPOTENCY_RETENTION_MS` | plugin `config.provider.idempotency.retentionMs` | Full terminal-result replay horizon; defaults to 30 days. |
