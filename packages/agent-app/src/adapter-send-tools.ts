@@ -850,13 +850,12 @@ function registerSlackSendTool(
           idempotencyKey: `adapter-send:slack:${result.channel}:${result.ts}`,
         });
         historyOutcomes.push(historyOutcome);
-        // Link every posted chunk back to this conversation so an in-thread reply can
-        // resume it. When the app supplied destination-history recording, publish
-        // the alias only after its durable acknowledgement. A failed/timed-out
-        // record deliberately falls back to the physical Slack thread instead of
-        // exposing a producer alias whose replay can race or miss the sent text.
-        // Legacy callers without a history bridge retain best-effort indexing.
-        if (indexing !== undefined && (historyOutcome === undefined || historyOutcome.accepted)) {
+        // Link every confirmed posted chunk back to its producing conversation.
+        // The history attempt always settles first; an accepted cross-conversation
+        // record is therefore durable before the alias appears. A rejected or
+        // unreachable best-effort history path remains visible in the tool result
+        // but must never regress the existing producer-reply routing contract.
+        if (indexing !== undefined) {
           await appendPostedMessage(indexing.indexPath, {
             channelId: result.channel,
             ts: result.ts,

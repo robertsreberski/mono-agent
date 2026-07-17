@@ -123,13 +123,14 @@ message has a different receipt and therefore a second history entry, matching
 what the user actually received. Failed platform sends record nothing. If the
 best-effort history path is unavailable after a successful post, the tool result
 includes a warning but remains a successful delivery. Cross-conversation sends
-write only the destination history. For a new top-level Slack post, the producer
-reply alias is published only after that destination append is durable; a failed
-or timed-out append leaves replies on the physical thread rather than exposing an
-alias with missing context. A warm producer session already owns the tool call in
-its provider transcript; cold replay supplements the aliased producer context
-with the one receipt-matched destination entry, without copying it into producer
-history.
+write only the destination history. For a new top-level Slack post, the history
+attempt settles before the producer reply alias is published; an accepted
+cross-conversation append is therefore durable first. A failed or timed-out
+history attempt stays visible in the successful tool result, while the existing
+producer alias is still published so routing does not regress. A warm producer
+session already owns the tool call in its provider transcript; after a successful
+history append, cold replay supplements the aliased producer context with the one
+receipt-matched destination entry, without copying it into producer history.
 
 ### `AskUser` — blocking free-text ask (interaction bridge)
 

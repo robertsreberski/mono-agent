@@ -1114,7 +1114,7 @@ describe("adapter send MCP tools", () => {
         text: "Sent Slack message to C1 at 171.300. Delivery succeeded, but destination history was not queued (history_bridge_unreachable).",
       }]);
     });
-    expect(await lookupProducingConversation(indexPath, "C1", "171.300")).toBeUndefined();
+    expect(await lookupProducingConversation(indexPath, "C1", "171.300")).toBe("cron:history-failure");
   });
 
   it("forwards MCP cancellation to Slack, Telegram message, and Telegram file requests", async () => {
