@@ -1,0 +1,9 @@
+# Keep the console frontend isolated from the monorepo package graph. The
+# publishable @mono-agent/web package builds this app explicitly.
+packages: []
+
+allowBuilds:
+  esbuild: true
+
+onlyBuiltDependencies:
+  - esbuild
