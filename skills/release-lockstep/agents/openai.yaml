@@ -1,4 +1,4 @@
 interface:
   display_name: "Release Lockstep"
-  short_description: "Cut lockstep npm releases"
-  default_prompt: "Use $release-lockstep to cut a verified lockstep @mono-agent npm release."
+  short_description: "Publish a registry-scoped lockstep release"
+  default_prompt: "Use $release-lockstep to publish and registry-verify a lockstep @mono-agent release without implicitly deploying consumers."

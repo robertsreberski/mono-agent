@@ -1,4 +1,4 @@
 interface:
   display_name: "Verify Green"
-  short_description: "Run the mono-agent verification gate"
-  default_prompt: "Use $verify-green to run the mono-agent verification gate before claiming a change is green."
+  short_description: "Choose a risk-based verification lane"
+  default_prompt: "Use $verify-green to select and run the smallest verification lane that proves this mono-agent change."

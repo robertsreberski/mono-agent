@@ -12,25 +12,31 @@ They are **NOT runtime skills for mono-agent instances** — those live in each
 agent's own folder (e.g. `~/personal-agent/skills/`) and are selected via
 `context.selectedSkills` in `mono-agent.config.json`.
 
-The content was mined from real development-session history (Claude Code +
-Codex sessions on this repo, June–July 2026): command frequencies, exact
-observed command forms, and the gotchas that repeatedly cost time (worktree
-dist resolution, npm registry proxy, fleet-dist deploys, pi version behavior).
-Three skills (`dead-code-audit`, `repo-hygiene-gc`, `ops-log-hygiene`) plus
-amendments across all eight originals were derived from the 2026-07-15
-v1-freeze audit (`audit/agent-workflow-improvements.md`), which codified the
-recurring failure shapes the audit proved out.
+## Selection rule
+
+Choose one primary skill from the requested outcome. Use a second skill only
+when the request explicitly crosses that boundary. In particular:
+
+- `release-lockstep` ends at public-registry verification; it does not imply a deploy.
+- `fleet-deploy` operates only on named consumers; it does not imply a fleet-wide audit.
+- `live-smoke` runs one scenario matching the changed surface, not every scenario.
+- `docs-sync` checks only documentation surfaces affected by the diff.
+- `repo-hygiene-gc` is an explicit bulk-maintenance workflow; normal PR cleanup stays in `worktree-feature`.
+
+`verify-green` is the shared lane selector. A docs/skills/process diff does not
+build the monorepo. Ordinary code gets focused checks plus one broad CI gate.
+Only high-risk runtime changes add a local full gate and one live smoke.
 
 | Skill | Use when |
 |---|---|
-| `verify-green` | Verifying any change — full CI-order gate or single-package loop |
-| `worktree-feature` | Isolated feature work through API-confirmed post-merge cleanup |
-| `fleet-deploy` | Deploying/restarting the live launchd agents |
-| `live-smoke` | Real end-to-end smoke: throwaway agent dir, tmux TUI, web curl |
-| `release-lockstep` | Cutting a lockstep npm release |
-| `docs-sync` | Updating docs/ + website; PR-range docs audits |
+| `verify-green` | Select and run the smallest risk-appropriate verification lane |
+| `worktree-feature` | Isolated feature work with diff-aware setup and safe cleanup |
+| `fleet-deploy` | Restart or deploy only the explicitly requested live consumers |
+| `live-smoke` | Run one real end-to-end scenario matching the changed surface |
+| `release-lockstep` | Cut and registry-verify a lockstep npm release; no implicit deploy |
+| `docs-sync` | Update and verify only documentation surfaces affected by a change |
 | `pi-upstream-recon` | Reading vendored pi source before building; pi bumps |
 | `new-package` | Adding a package that passes `check:architecture` first try |
 | `dead-code-audit` | Prove-or-remove sweeps: dead exports, orphaned wiring, deprecation removability |
-| `repo-hygiene-gc` | API-confirmed branch/worktree GC + lease-safe remote cleanup |
-| `ops-log-hygiene` | Live-fleet log health: size caps, crash-loop tails, restart-churn detection |
+| `repo-hygiene-gc` | Explicit bulk branch/worktree GC with API-bound deletion proof |
+| `ops-log-hygiene` | Targeted post-restart log checks or an explicitly requested full audit |
