@@ -32,5 +32,5 @@ export {
   WizardCancelled,
 } from "./prompts.js";
 
-export type { ModelRepairOutcome, WizardOutcome, WizardRunContext } from "./run.js";
-export { runInitWizard, runModelRepairWizard } from "./run.js";
+export type { WizardOutcome, WizardRunContext } from "./run.js";
+export { runInitWizard } from "./run.js";
