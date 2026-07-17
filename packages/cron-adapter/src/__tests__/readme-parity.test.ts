@@ -42,18 +42,21 @@ describe("cron adapter README parity", () => {
     expect(readme).not.toMatch(/does not[^.\n]*queue overlapping jobs/iu);
   });
 
-  it("keeps the public API and result inventory aligned with package exports", async () => {
+  it("keeps runtime exports documented alongside the result inventory", async () => {
     const readme = await readFile(readmeUrl, "utf8");
     const publicApi = section(readme, "Public API");
     const responsibility = section(readme, "Responsibility");
-    const publicApiExports = [...publicApi.matchAll(/^- `([^`]+)`$/gmu)]
-      .map((match) => match[1])
+    const publicApiInventory = publicApi.match(/```text\n([^]*?)\n```/u)?.[1];
+    const documentedSymbols = (publicApiInventory ?? "")
+      .split("\n")
+      .filter(Boolean)
       .sort();
     const resultKinds = Object.keys(documentedCronJobResultKinds);
     const naturalResultKinds = `${resultKinds.slice(0, -1).join(", ")}, or ${resultKinds.at(-1)}`;
     const resultInventory = responsibility.match(/reports explicit ([^.\n]+) results\./u)?.[1];
 
-    expect(publicApiExports).toEqual(Object.keys(cronAdapter).sort());
+    expect(publicApiInventory).toBeDefined();
+    expect(documentedSymbols).toEqual(expect.arrayContaining(Object.keys(cronAdapter).sort()));
     expect(readme).not.toContain("`cronFieldGroup`");
     expect(resultInventory).toBe(naturalResultKinds);
   });

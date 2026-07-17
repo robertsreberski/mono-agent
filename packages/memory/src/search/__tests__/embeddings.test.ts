@@ -108,6 +108,51 @@ describe("embedding provider failure taxonomy", () => {
     expect((error as Error).cause).toBe(networkFailure);
   });
 
+  it.each(providerFactories)("preserves unstructured %s TypeErrors by identity", async (_provider, createProvider) => {
+    const programmingFailure = new TypeError("Cannot read properties of undefined (reading 'ECONNREFUSED')");
+    const fetchImpl = (async () => {
+      throw programmingFailure;
+    }) as typeof fetch;
+
+    expect(await rejectionOf(createProvider(fetchImpl).embed(["text"]))).toBe(programmingFailure);
+  });
+
+  it.each(providerFactories)("preserves unknown-code %s TypeErrors by identity", async (_provider, createProvider) => {
+    const unknownCause = Object.assign(new Error("adapter failure"), { code: "EADAPTERBUG" });
+    const programmingFailure = new TypeError("fetch adapter bug", { cause: unknownCause });
+    const fetchImpl = (async () => {
+      throw programmingFailure;
+    }) as typeof fetch;
+
+    expect(await rejectionOf(createProvider(fetchImpl).embed(["text"]))).toBe(programmingFailure);
+  });
+
+  it.each(providerFactories)("wraps nested aggregate %s network failures", async (_provider, createProvider) => {
+    const dnsFailure = Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" });
+    const aggregateFailure = new AggregateError([new Error("other address failed"), dnsFailure]);
+    const networkFailure = new TypeError("fetch failed", { cause: aggregateFailure });
+    const fetchImpl = (async () => {
+      throw networkFailure;
+    }) as typeof fetch;
+
+    const error = await rejectionOf(createProvider(fetchImpl).embed(["text"]));
+
+    expect(error).toBeInstanceOf(MemorySearchError);
+    expect(error).toMatchObject({ code: "embedding_request_failed" });
+    expect((error as Error).cause).toBe(networkFailure);
+  });
+
+  it.each(providerFactories)("bounds cyclic %s cause graphs and preserves identity", async (_provider, createProvider) => {
+    const cycle = new AggregateError([]);
+    Object.defineProperty(cycle, "errors", { value: [cycle] });
+    const programmingFailure = new TypeError("fetch adapter bug", { cause: cycle });
+    const fetchImpl = (async () => {
+      throw programmingFailure;
+    }) as typeof fetch;
+
+    expect(await rejectionOf(createProvider(fetchImpl).embed(["text"]))).toBe(programmingFailure);
+  });
+
   it.each(providerFactories)("wraps %s abort failures with a stable code and original cause", async (provider, createProvider) => {
     const abortFailure = new DOMException("request aborted", "AbortError");
     const fetchImpl = (async () => {
