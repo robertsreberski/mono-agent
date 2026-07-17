@@ -12,6 +12,7 @@ import {
   removeOwnedTailscaleServe,
   runWebCommand,
   tailscaleProxyTarget,
+  webHealthcheck,
   webPaths,
   WEB_LAUNCHD_LABEL,
 } from "../web-command.js";
@@ -25,6 +26,7 @@ const prepareState = async (options: { readonly stateDir?: string }) => {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   if (dir !== undefined) await rm(dir, { recursive: true, force: true });
   dir = undefined;
 });
@@ -45,7 +47,16 @@ describe("runWebCommand", () => {
       {
         platform: "linux",
         homeDir: home,
-        discoverNetworkAddresses: () => ["192.0.2.42", "100.64.0.7"],
+        discoverNetworkAddresses: () => [
+          "203.0.113.9",
+          "192.168.2.42",
+          "100.64.0.7",
+          "fd7a:115c:a1e0::7",
+          "2001:4860:4860::8888",
+          "fe80::7",
+          "fe80::7%en0",
+          "192.168.2.42",
+        ],
         stdout: { write: (text) => { output += text; } },
         startServer,
         resetState,
@@ -57,8 +68,14 @@ describe("runWebCommand", () => {
     expect(output).toContain("service");
     expect(output).toContain("stopped");
     expect(output).toContain("http://127.0.0.1:5050/");
-    expect(output).toContain("http://192.0.2.42:5050/");
+    expect(output).toContain("http://192.168.2.42:5050/");
     expect(output).toContain("http://100.64.0.7:5050/");
+    expect(output).toContain("Tailscale  → http://[fd7a:115c:a1e0::7]:5050/");
+    expect(output.match(/http:\/\/192\.168\.2\.42:5050\//gu)).toHaveLength(1);
+    expect(output).not.toContain("203.0.113.9");
+    expect(output).not.toContain("2001:4860:4860::8888");
+    expect(output).not.toContain("http://[fe80::7]:5050/");
+    expect(output).not.toContain("fe80::7%25en0");
     expect(output).not.toContain("http://0.0.0.0:5050/");
     expect(startServer).not.toHaveBeenCalled();
     expect(resetState).not.toHaveBeenCalled();
@@ -169,7 +186,7 @@ describe("runWebCommand", () => {
     )).resolves.toBe(0);
 
     expect(prepareContendedState).not.toHaveBeenCalled();
-    expect(calls.some((args) => args[0] === "bootout")).toBe(true);
+    expect(calls.map((args) => args[0])).toContain("bootout");
   });
 
   it("surfaces the web package's shared-state lease for concurrent ports and reset", async () => {
@@ -312,6 +329,313 @@ describe("runWebCommand", () => {
     expect(calls.filter((args) => args[0] === "bootstrap")).toHaveLength(2);
     expect(errors).toContain("previous web worker is running again");
   });
+
+  it("refuses a malformed service record without overwriting it or launching", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await writeFile(paths.recordPath, "{broken\n", { mode: 0o600 });
+    const ensureManagedRuntime = vi.fn();
+    const launchctl = vi.fn(async () => ({ code: 1, stdout: "", stderr: "not loaded" }));
+    let errors = "";
+
+    const code = await runWebCommand(
+      { positionals: ["start"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl,
+        ensureManagedRuntime,
+        stdout: { write: () => undefined },
+        stderr: { write: (text) => { errors += text; } },
+      },
+    );
+
+    expect(code).toBe(1);
+    expect(errors).toContain("service record is malformed");
+    expect(await readFile(paths.recordPath, "utf8")).toBe("{broken\n");
+    expect(ensureManagedRuntime).not.toHaveBeenCalled();
+    expect(launchctl).not.toHaveBeenCalledWith(expect.arrayContaining(["bootstrap"]));
+  });
+
+  it("removes a partial first-start publication when the plist write fails", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(join(home, "Library"), { mode: 0o700 });
+    let writes = 0;
+    const writePrivateFile = async (path: string, contents: string) => {
+      writes += 1;
+      if (writes === 2) throw new Error("plist disk failure");
+      await writeFile(path, contents, { mode: 0o600 });
+    };
+    const launchctl = vi.fn(async () => ({ code: 1, stdout: "", stderr: "not loaded" }));
+
+    const code = await runWebCommand(
+      { positionals: ["start"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl,
+        tailscale: unavailableTailscaleRunner(),
+        ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
+        writePrivateFile,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    );
+
+    expect(code).toBe(1);
+    await expect(stat(paths.recordPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(paths.launchd.plistPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(launchctl).not.toHaveBeenCalledWith(expect.arrayContaining(["bootstrap"]));
+  });
+
+  it("pins the node's exact Tailscale DNS hostname into the worker before claiming Serve", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(join(home, "Library"), { mode: 0o700 });
+    let loaded = false;
+    const launchctl = async (args: readonly string[]) => {
+      if (args[0] === "print") return { code: loaded ? 0 : 1, stdout: loaded ? "pid = 777\n" : "", stderr: "" };
+      if (args[0] === "bootstrap") {
+        loaded = true;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+
+    const code = await runWebCommand(
+      { positionals: ["start"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl,
+        tailscale: scriptedClaimRunner(),
+        ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
+        healthcheck: async () => true,
+        isAlive: () => loaded,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    );
+
+    expect(code).toBe(0);
+    const plist = await readFile(paths.launchd.plistPath, "utf8");
+    expect(plist).toContain("<string>MONO_AGENT_WEB_ALLOWED_HOSTS=host.example.ts.net</string>");
+  });
+
+  it("boots out a partially loaded first start and removes its artifacts after bootstrap failure", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(join(home, "Library"), { mode: 0o700 });
+    let loaded = false;
+    const calls: string[][] = [];
+    const launchctl = async (args: readonly string[]) => {
+      calls.push([...args]);
+      if (args[0] === "print") return { code: loaded ? 0 : 1, stdout: loaded ? "pid = 777\n" : "", stderr: "" };
+      if (args[0] === "bootstrap") {
+        loaded = true;
+        return { code: 1, stdout: "", stderr: "bootstrap failed after load" };
+      }
+      if (args[0] === "bootout") {
+        loaded = false;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+    let errors = "";
+
+    const code = await runWebCommand(
+      { positionals: ["start"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl,
+        tailscale: unavailableTailscaleRunner(),
+        ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
+        isAlive: () => false,
+        stdout: { write: () => undefined },
+        stderr: { write: (text) => { errors += text; } },
+      },
+    );
+
+    expect(code).toBe(1);
+    expect(errors).toContain("launchctl could not start");
+    expect(loaded).toBe(false);
+    expect(calls.map((args) => args[0])).toContain("bootout");
+    await expect(stat(paths.recordPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(paths.launchd.plistPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("stops a crash-looping first start and removes its artifacts after readiness timeout", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(join(home, "Library"), { mode: 0o700 });
+    let loaded = false;
+    const calls: string[][] = [];
+    const launchctl = async (args: readonly string[]) => {
+      calls.push([...args]);
+      if (args[0] === "print") return { code: loaded ? 0 : 1, stdout: loaded ? "pid = 777\n" : "", stderr: "" };
+      if (args[0] === "bootstrap") {
+        loaded = true;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "bootout") {
+        loaded = false;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+    let clock = 0;
+
+    const code = await runWebCommand(
+      { positionals: ["start"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl,
+        tailscale: unavailableTailscaleRunner(),
+        ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
+        healthcheck: async () => false,
+        isAlive: () => false,
+        now: () => { clock += 20_000; return clock; },
+        sleep: async () => undefined,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    );
+
+    expect(code).toBe(1);
+    expect(loaded).toBe(false);
+    expect(calls.some((args) => args[0] === "bootout")).toBe(true);
+    await expect(stat(paths.recordPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(paths.launchd.plistPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rolls worker, service record, plist, and Tailnet route back to 5050 when a 5051 migration claim fails", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, {
+      homeDir: home,
+      tailscale: scriptedClaimRunner(),
+    });
+    const oldPlist = "old 5050 plist\n";
+    const oldRecord = `${JSON.stringify({
+      schema: "mono-agent.web-service.v1",
+      host: "0.0.0.0",
+      port: 5050,
+      updatedAt: "2026-07-17T00:00:00.000Z",
+    }, undefined, 2)}\n`;
+    await writeFile(paths.launchd.plistPath, oldPlist, { mode: 0o600 });
+    await writeFile(paths.recordPath, oldRecord, { mode: 0o600 });
+
+    let loaded = true;
+    let currentTarget: string | undefined = "http://127.0.0.1:5050";
+    const launchCalls: string[][] = [];
+    const launchctl = async (args: readonly string[]) => {
+      launchCalls.push([...args]);
+      if (args[0] === "print") return { code: loaded ? 0 : 1, stdout: loaded ? "pid = 777\n" : "", stderr: "" };
+      if (args[0] === "bootout") {
+        loaded = false;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "bootstrap") {
+        loaded = true;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+    const tailscale: CommandRunner = async (args) => {
+      if (args[0] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+      }
+      if (args[0] === "serve" && args[1] === "status") {
+        return {
+          code: 0,
+          stderr: "",
+          stdout: JSON.stringify(currentTarget === undefined ? { TCP: {}, Web: {} } : {
+            TCP: { "443": { HTTPS: true } },
+            Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: currentTarget } } } },
+          }),
+        };
+      }
+      if (args[0] === "serve" && args[1] === "--https=443" && args[2] === "off") {
+        currentTarget = undefined;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "serve" && args[1] === "--bg") {
+        if (args[3] === "http://127.0.0.1:5051") return { code: 1, stdout: "", stderr: "claim failed" };
+        currentTarget = args[3];
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+
+    const code = await runWebCommand(
+      { positionals: ["restart"], env: {}, port: 5051 },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl,
+        tailscale,
+        ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
+        healthcheck: async () => true,
+        isAlive: () => loaded,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    );
+
+    expect(code).toBe(1);
+    expect(loaded).toBe(true);
+    expect(currentTarget).toBe("http://127.0.0.1:5050");
+    expect(await readFile(paths.launchd.plistPath, "utf8")).toBe(oldPlist);
+    expect(await readFile(paths.recordPath, "utf8")).toBe(oldRecord);
+    expect(await readFile(paths.tailscalePath, "utf8")).toContain("http://127.0.0.1:5050");
+    expect(launchCalls.filter((args) => args[0] === "bootstrap")).toHaveLength(2);
+  });
+});
+
+describe("webHealthcheck", () => {
+  it("accepts only the exact versioned JSON health contract", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    fetchMock.mockResolvedValueOnce(new Response("unrelated service", { status: 200, headers: { "content-type": "text/plain" } }));
+    await expect(webHealthcheck("http://127.0.0.1:5050/healthz")).resolves.toBe(false);
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: "ok", version: 1, extra: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    await expect(webHealthcheck("http://127.0.0.1:5050/healthz")).resolves.toBe(false);
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: "ok", version: 1 }), {
+      status: 200,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    }));
+    await expect(webHealthcheck("http://127.0.0.1:5050/healthz")).resolves.toBe(true);
+  });
 });
 
 describe("Tailscale Serve ownership", () => {
@@ -395,8 +719,8 @@ describe("Tailscale Serve ownership", () => {
           code: 0,
           stderr: "",
           stdout: JSON.stringify({
-            TCP: { "8443": { HTTPS: true } },
-            Web: { "host.example.ts.net:8443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } },
+            TCP: { "443": { HTTPS: true } },
+            Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:9999" } } } },
           }),
         };
       }
@@ -404,8 +728,77 @@ describe("Tailscale Serve ownership", () => {
     });
     const result = await removeOwnedTailscaleServe(paths, { homeDir: home, tailscale: off });
     expect(result).toMatchObject({ kind: "unavailable" });
-    expect(off).not.toHaveBeenCalledWith(["serve", "--https=8443", "off"]);
+    expect(off).not.toHaveBeenCalledWith(["serve", "--https=443", "off"]);
     await expect(stat(paths.tailscalePath)).resolves.toBeDefined();
+  });
+
+  it("refuses post-claim ownership when a sibling handler appears in the immediate status", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
+    let statusReads = 0;
+    const runner = vi.fn<CommandRunner>(async (args) => {
+      if (args[0] === "serve" && args[1] === "status") {
+        statusReads += 1;
+        return {
+          code: 0,
+          stderr: "",
+          stdout: JSON.stringify(statusReads === 1 ? { TCP: {}, Web: {} } : {
+            TCP: { "443": { HTTPS: true } },
+            Web: {
+              "host.example.ts.net:443": {
+                Handlers: {
+                  "/": { Proxy: "http://127.0.0.1:5050" },
+                  "/user-added": { Proxy: "http://127.0.0.1:7000" },
+                },
+              },
+            },
+          }),
+        };
+      }
+      if (args[0] === "status") {
+        return { code: 0, stderr: "", stdout: JSON.stringify({ Self: { DNSName: "host.example.ts.net." } }) };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+
+    const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: home, tailscale: runner });
+    expect(result).toMatchObject({ kind: "unavailable" });
+    expect(result.kind === "unavailable" ? result.detail : "").toContain("root Proxy-only shape");
+    expect(runner).not.toHaveBeenCalledWith(["serve", "--https=443", "off"]);
+    await expect(stat(paths.tailscalePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("fails closed on a malformed ownership record without touching Tailscale", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.tailscalePath, "{not-json\n", { mode: 0o600 });
+    const runner = vi.fn<CommandRunner>();
+
+    const result = await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, { homeDir: home, tailscale: runner });
+    expect(result).toMatchObject({ kind: "unavailable" });
+    expect(result.kind === "unavailable" ? result.detail : "").toContain("malformed");
+    expect(runner).not.toHaveBeenCalled();
+    expect(await readFile(paths.tailscalePath, "utf8")).toBe("{not-json\n");
+  });
+
+  it("clears an ownership record only after confirming its exact route is absent twice", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
+    await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, {
+      homeDir: home,
+      tailscale: scriptedClaimRunner(),
+    });
+    const runner = vi.fn<CommandRunner>(async (args) => args[0] === "serve" && args[1] === "status"
+      ? { code: 0, stderr: "", stdout: JSON.stringify({ TCP: {}, Web: {} }) }
+      : { code: 1, stderr: "unexpected mutation", stdout: "" });
+
+    await expect(removeOwnedTailscaleServe(paths, { homeDir: home, tailscale: runner })).resolves.toEqual({ kind: "absent" });
+    expect(runner.mock.calls.filter(([args]) => args[0] === "serve" && args[1] === "status")).toHaveLength(2);
+    expect(runner).not.toHaveBeenCalledWith(["serve", "--https=443", "off"]);
+    await expect(stat(paths.tailscalePath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("refuses to turn off a port when a sibling handler was added after ownership", async () => {
@@ -603,6 +996,10 @@ function scriptedClaimRunner(): CommandRunner {
     }
     return { code: 0, stdout: "", stderr: "" };
   };
+}
+
+function unavailableTailscaleRunner(): CommandRunner {
+  return async () => ({ code: 1, stdout: "", stderr: "tailscale unavailable" });
 }
 
 describe("web service identity", () => {

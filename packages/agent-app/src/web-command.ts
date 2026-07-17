@@ -133,6 +133,16 @@ interface PreviousWebServiceSnapshot {
   readonly record?: WebServiceRecord;
 }
 
+interface WebPublicationSnapshot {
+  readonly plist?: string;
+  readonly recordText?: string;
+}
+
+type WebServiceRecordRead =
+  | { readonly kind: "absent" }
+  | { readonly kind: "valid"; readonly record: WebServiceRecord; readonly contents: string }
+  | { readonly kind: "invalid"; readonly detail: string };
+
 export interface TailscaleServeOwnership {
   readonly schema: typeof TAILSCALE_OWNERSHIP_SCHEMA;
   readonly webKey: string;
@@ -146,6 +156,22 @@ export interface TailscaleServeOwnership {
 
 type TailscaleServeResult =
   | { readonly kind: "active"; readonly ownership: TailscaleServeOwnership; readonly reused: boolean }
+  | {
+      readonly kind: "unavailable";
+      readonly detail: string;
+      /** The old owned route was migrated, so the replacement worker must also be rolled back. */
+      readonly requiresServiceRollback?: true;
+    };
+
+type TailscaleOwnershipRead =
+  | { readonly kind: "absent" }
+  | { readonly kind: "valid"; readonly ownership: TailscaleServeOwnership; readonly contents: string }
+  | { readonly kind: "invalid"; readonly detail: string };
+
+type OwnedRouteInspection =
+  | { readonly kind: "exact" }
+  | { readonly kind: "absent" }
+  | { readonly kind: "changed" }
   | { readonly kind: "unavailable"; readonly detail: string };
 
 export interface WebPaths {
@@ -313,6 +339,9 @@ async function startWebBackground(
   }
   let previous: PreviousWebServiceSnapshot | undefined;
   let previousStopped = false;
+  let replacementLaunchAttempted = false;
+  let publicationAttempted = false;
+  let publicationSnapshot: WebPublicationSnapshot | undefined;
   const fail = async (message: string, error?: unknown): Promise<number> => {
     stderr.write(ui.errorLine(`${message}${error === undefined ? "" : `: ${errorMessage(error)}`}`));
     if (previousStopped && previous !== undefined) {
@@ -321,6 +350,30 @@ async function startWebBackground(
         stderr.write(ui.style.yellow("⚠ The failed restart was rolled back and the previous web worker is running again.\n"));
       } else {
         stderr.write(ui.style.yellow(`⚠ The failed restart could not restore the prior worker: ${recovery.detail}\n`));
+      }
+    } else {
+      let safeToRestorePublication = true;
+      if (replacementLaunchAttempted) {
+        try {
+          const replacement = await launchdServiceInfo(launchctl, WEB_LAUNCHD_LABEL, getuid());
+          if (replacement.loaded) {
+            const stopped = await stopLaunchdOnly(replacement, launchctl, getuid(), deps);
+            safeToRestorePublication = stopped;
+            stderr.write(stopped
+              ? ui.style.yellow("⚠ The failed initial web worker was stopped.\n")
+              : ui.style.yellow("⚠ The failed initial web worker could not be proven stopped; inspect `mono-agent web status` and logs.\n"));
+          }
+        } catch (cleanupError) {
+          safeToRestorePublication = false;
+          stderr.write(ui.style.yellow(`⚠ Could not clean up the failed initial web worker: ${errorMessage(cleanupError)}\n`));
+        }
+      }
+      if (publicationAttempted && publicationSnapshot !== undefined && safeToRestorePublication) {
+        try {
+          await restoreWebPublication(paths, publicationSnapshot, deps.writePrivateFile ?? writeOwnerPrivateLaunchdFile);
+        } catch (restoreError) {
+          stderr.write(ui.style.yellow(`⚠ Could not restore the pre-start service definition: ${errorMessage(restoreError)}\n`));
+        }
       }
     }
     return 1;
@@ -332,16 +385,23 @@ async function startWebBackground(
       stdout.write(ui.style.dim("mono-agent web is already managed by launchd.\n"));
       return await statusWeb(options, deps, true);
     }
+    const recordRead = await readServiceRecord(paths.recordPath);
+    if (recordRead.kind === "invalid") {
+      return await fail(`Refusing to start because ${recordRead.detail}`);
+    }
+    const existingPlist = await readOptionalText(paths.launchd.plistPath);
+    publicationSnapshot = {
+      ...(existingPlist === undefined ? {} : { plist: existingPlist }),
+      ...(recordRead.kind === "valid" ? { recordText: recordRead.contents } : {}),
+    };
     if (existing.loaded && restart) {
       try {
-        const plist = await readOptionalText(paths.launchd.plistPath);
-        if (plist === undefined) throw new Error("the loaded LaunchAgent plist is missing");
-        const recordText = await readOptionalText(paths.recordPath);
-        const record = await readServiceRecord(paths.recordPath);
+        if (existingPlist === undefined) throw new Error("the loaded LaunchAgent plist is missing");
+        if (recordRead.kind !== "valid") throw new Error("the loaded web service record is missing");
         previous = {
-          plist,
-          ...(recordText === undefined ? {} : { recordText }),
-          ...(record === undefined ? {} : { record }),
+          plist: existingPlist,
+          recordText: recordRead.contents,
+          record: recordRead.record,
         };
       } catch (error) {
         return await fail("Refusing restart because the current web service could not be snapshotted", error);
@@ -356,7 +416,7 @@ async function startWebBackground(
       previousStopped = restart && previous !== undefined;
     }
 
-    const priorRecord = await readServiceRecord(paths.recordPath);
+    const priorRecord = recordRead.kind === "valid" ? recordRead.record : undefined;
     const host = effectiveHost(options, priorRecord?.host);
     const port = options.port ?? priorRecord?.port ?? DEFAULT_WEB_PORT;
     await ensureWebDirectories(paths);
@@ -370,12 +430,15 @@ async function startWebBackground(
     } catch (error) {
       return await fail("Could not install the durable web runtime", error);
     }
+    const tailscaleRunner = deps.tailscale ?? makeTailscaleRunner(options.env);
+    const tailscaleDnsName = await readTailscaleDnsName(tailscaleRunner);
     const environment = {
       ...selectBackgroundOperationalEnvironment(options.env),
       PATH: defaultPathEnv(options.env),
       ...(options.env.MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR === undefined
         ? {}
         : { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: options.env.MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR }),
+      ...(tailscaleDnsName === undefined ? {} : { MONO_AGENT_WEB_ALLOWED_HOSTS: tailscaleDnsName }),
     };
     const record: WebServiceRecord = {
       schema: WEB_SERVICE_SCHEMA,
@@ -395,6 +458,7 @@ async function startWebBackground(
       environment,
     });
     const writePrivateFile = deps.writePrivateFile ?? writeOwnerPrivateLaunchdFile;
+    publicationAttempted = true;
     try {
       await writePrivateFile(paths.recordPath, `${JSON.stringify(record, undefined, 2)}\n`);
       await writePrivateFile(paths.launchd.plistPath, plist);
@@ -402,6 +466,7 @@ async function startWebBackground(
       return await fail("Could not publish the web LaunchAgent definition", error);
     }
 
+    replacementLaunchAttempted = true;
     const bootstrapped = await bootstrap(launchctl, paths.launchd.plistPath, uid);
     if (bootstrapped.code !== 0) {
       writeCommandDetail(stderr, bootstrapped);
@@ -413,11 +478,24 @@ async function startWebBackground(
       return await fail("mono-agent web did not become healthy before the startup timeout");
     }
 
+    const tailscale = tailscaleDnsName === undefined
+      ? { kind: "unavailable" as const, detail: "the node's exact Tailscale DNS name could not be resolved; no Serve handler was changed" }
+      : await ensureTailscaleServe(
+          paths,
+          host,
+          port,
+          options.env,
+          { ...deps, tailscale: tailscaleRunner },
+          tailscaleDnsName,
+        );
+    if (tailscale.kind === "unavailable" && tailscale.requiresServiceRollback === true) {
+      return await fail(`Tailscale route migration failed and the replacement web worker cannot remain active: ${tailscale.detail}`);
+    }
+
     stdout.write(`${ui.badge("ok")}${ui.style.bold(restart ? "Restarted mono-agent web" : "Started mono-agent web")}\n`);
     printWebUrls(stdout, `http://${urlHost(host)}:${String(port)}/`, port, host, deps.discoverNetworkAddresses);
     stdout.write("No app authentication is enabled; anyone who can reach this port can operate discovered agents.\n");
 
-    const tailscale = await ensureTailscaleServe(paths, host, port, options.env, deps);
     if (tailscale.kind === "active") {
       stdout.write(`Tailscale HTTPS → ${tailscale.ownership.url}${tailscale.reused ? " (existing owned handler)" : ""}\n`);
     } else {
@@ -488,7 +566,8 @@ async function statusWeb(
 ): Promise<number> {
   const stdout = deps.stdout ?? process.stdout;
   const paths = webPaths(deps.homeDir);
-  const record = await readServiceRecord(paths.recordPath);
+  const recordRead = await readServiceRecord(paths.recordPath);
+  const record = recordRead.kind === "valid" ? recordRead.record : undefined;
   const host = record?.host ?? DEFAULT_WEB_HOST;
   const port = record?.port ?? DEFAULT_WEB_PORT;
   let service: LaunchdServiceInfo = { loaded: false };
@@ -499,34 +578,41 @@ async function statusWeb(
       (deps.getuid ?? requiredUid)(),
     );
   }
-  const healthy = service.loaded && await (deps.healthcheck ?? defaultHealthcheck)(healthUrl(host, port));
+  const healthy = recordRead.kind !== "invalid"
+    && service.loaded
+    && await (deps.healthcheck ?? webHealthcheck)(healthUrl(host, port));
   stdout.write(ui.rule("Web console status"));
   stdout.write(ui.keyValue([
     ["service", service.loaded ? (healthy ? "running" : "loaded, not healthy") : "stopped"],
-    ["bind", `${host}:${String(port)}`],
+    ["bind", recordRead.kind === "invalid" ? "invalid service record" : `${host}:${String(port)}`],
     ["state", paths.stateDir],
     ["pid", service.pid === undefined ? "—" : String(service.pid)],
     ["authentication", "none (network reachability is the boundary)"],
   ]));
-  printWebUrls(
-    stdout,
-    `http://${urlHost(host)}:${String(port)}/`,
-    port,
-    host,
-    deps.discoverNetworkAddresses,
-  );
+  if (recordRead.kind === "invalid") stdout.write(ui.errorLine(recordRead.detail));
+  else {
+    printWebUrls(
+      stdout,
+      `http://${urlHost(host)}:${String(port)}/`,
+      port,
+      host,
+      deps.discoverNetworkAddresses,
+    );
+  }
   const owned = await readTailscaleOwnership(paths.tailscalePath);
-  if (owned === undefined) {
+  if (owned.kind === "absent") {
     stdout.write("Tailscale HTTPS: not owned by mono-agent web.\n");
+  } else if (owned.kind === "invalid") {
+    stdout.write(`Tailscale HTTPS: ${owned.detail}\n`);
   } else {
-    const inspection = await inspectOwnedTailscaleRoute(owned, deps);
-    stdout.write(inspection
-      ? `Tailscale HTTPS: ${owned.url}\n`
-      : `Tailscale HTTPS: ownership record is stale or cannot be verified; existing handlers will not be changed.\n`);
+    const inspection = await inspectOwnedTailscaleRoute(owned.ownership, deps);
+    stdout.write(inspection.kind === "exact"
+      ? `Tailscale HTTPS: ${owned.ownership.url}\n`
+      : "Tailscale HTTPS: ownership record is stale or cannot be verified; existing handlers will not be changed.\n");
   }
   if (!service.loaded) stdout.write(ui.hint("Start it with: mono-agent web start"));
   else if (!healthy) stdout.write(ui.hint("Inspect: mono-agent web logs"));
-  return strictExit && !healthy ? 1 : 0;
+  return (strictExit && !healthy) || recordRead.kind === "invalid" ? 1 : 0;
 }
 
 async function tailWebLogs(options: RunWebCommandOptions, deps: RunWebCommandDeps): Promise<number> {
@@ -668,7 +754,7 @@ async function restorePreviousWebService(
       const alive = restored.pid !== undefined && (deps.isAlive ?? processIsAlive)(restored.pid);
       const healthy = snapshot.record === undefined
         ? true
-        : await (deps.healthcheck ?? defaultHealthcheck)(healthUrl(snapshot.record.host, snapshot.record.port));
+        : await (deps.healthcheck ?? webHealthcheck)(healthUrl(snapshot.record.host, snapshot.record.port));
       if (restored.loaded && alive && healthy) return { ok: true };
       if (now() >= deadline) return { ok: false, detail: "the restored LaunchAgent did not become healthy" };
       await sleep(READY_POLL_MS);
@@ -676,6 +762,17 @@ async function restorePreviousWebService(
   } catch (error) {
     return { ok: false, detail: errorMessage(error) };
   }
+}
+
+async function restoreWebPublication(
+  paths: WebPaths,
+  snapshot: WebPublicationSnapshot,
+  writer: (path: string, contents: string) => Promise<void>,
+): Promise<void> {
+  if (snapshot.recordText === undefined) await rm(paths.recordPath, { force: true });
+  else await writer(paths.recordPath, snapshot.recordText);
+  if (snapshot.plist === undefined) await rm(paths.launchd.plistPath, { force: true });
+  else await writer(paths.launchd.plistPath, snapshot.plist);
 }
 
 async function waitForWebReady(
@@ -687,7 +784,7 @@ async function waitForWebReady(
 ): Promise<boolean> {
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolvePromise) => setTimeout(resolvePromise, ms)));
-  const healthcheck = deps.healthcheck ?? defaultHealthcheck;
+  const healthcheck = deps.healthcheck ?? webHealthcheck;
   const deadline = now() + READY_TIMEOUT_MS;
   for (;;) {
     const service = await launchdServiceInfo(launchctl, WEB_LAUNCHD_LABEL, uid);
@@ -703,10 +800,17 @@ function healthUrl(host: string, port: number): string {
   return `http://${checkHost}:${String(port)}/healthz`;
 }
 
-async function defaultHealthcheck(url: string): Promise<boolean> {
+export async function webHealthcheck(url: string): Promise<boolean> {
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
-    return response.ok;
+    if (!response.ok || response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+      return false;
+    }
+    const body = await response.json() as unknown;
+    return isRecord(body)
+      && hasExactKeys(body, ["status", "version"])
+      && body.status === "ok"
+      && body.version === 1;
   } catch {
     return false;
   }
@@ -718,10 +822,15 @@ export async function ensureTailscaleServe(
   appPort: number,
   env: Record<string, string | undefined>,
   deps: RunWebCommandDeps,
+  expectedDnsName?: string,
 ): Promise<TailscaleServeResult> {
   const runner = deps.tailscale ?? makeTailscaleRunner(env);
   const proxyTarget = tailscaleProxyTarget(bindHost, appPort);
-  const existing = await readTailscaleOwnership(paths.tailscalePath);
+  const ownershipRead = await readTailscaleOwnership(paths.tailscalePath);
+  if (ownershipRead.kind === "invalid") {
+    return { kind: "unavailable", detail: ownershipRead.detail };
+  }
+  let existing = ownershipRead.kind === "valid" ? ownershipRead.ownership : undefined;
   let priorMigration: { readonly ownership: TailscaleServeOwnership; readonly contents: string } | undefined;
   const failMigration = async (detail: string): Promise<TailscaleServeResult> => {
     if (priorMigration === undefined) return { kind: "unavailable", detail };
@@ -732,32 +841,47 @@ export async function ensureTailscaleServe(
       runner,
       deps,
     );
-    return { kind: "unavailable", detail: `${detail}; ${restored}` };
+    return { kind: "unavailable", detail: `${detail}; ${restored}`, requiresServiceRollback: true };
   };
-  if (existing !== undefined) {
-    if (!await inspectOwnedTailscaleRoute(existing, deps, runner)) {
-      return {
-        kind: "unavailable",
-        detail: "the prior Tailscale ownership record no longer matches its exact handler; refusing to overwrite it",
-      };
-    }
-    if (proxyTarget !== undefined && existing.proxyTarget === proxyTarget) {
-      return { kind: "active", ownership: existing, reused: true };
-    }
-    const priorContents = await readOptionalText(paths.tailscalePath);
-    if (proxyTarget !== undefined && priorContents !== undefined) {
-      priorMigration = { ownership: existing, contents: priorContents };
-    }
-    const removed = await removeOwnedTailscaleServe(paths, { ...deps, tailscale: runner });
-    if (removed.kind === "unavailable") {
-      return await failMigration(`could not migrate the prior exact Tailscale handler: ${removed.detail}`);
-    }
-  }
   if (proxyTarget === undefined) {
     return {
       kind: "unavailable",
       detail: `bind host ${bindHost} is not reachable through a loopback proxy; use --host 0.0.0.0, --host ::, or --loopback`,
     };
+  }
+  if (existing !== undefined) {
+    const inspection = await inspectOwnedTailscaleRoute(existing, deps, runner);
+    if (inspection.kind === "absent") {
+      const cleared = await clearProvablyAbsentTailscaleOwnership(paths, existing, runner);
+      if (cleared.kind === "unavailable") return { kind: "unavailable", detail: cleared.detail };
+      existing = undefined;
+    } else if (inspection.kind !== "exact") {
+      return {
+        kind: "unavailable",
+        detail: inspection.kind === "unavailable"
+          ? inspection.detail
+          : "the prior Tailscale ownership record no longer matches its exact handler; refusing to overwrite it",
+      };
+    }
+  }
+  if (existing !== undefined) {
+    if (expectedDnsName !== undefined && tailscaleWebHostname(existing.webKey) !== expectedDnsName) {
+      return {
+        kind: "unavailable",
+        detail: "the owned Tailscale handler hostname does not match this node's exact DNS name; refusing to reuse or replace it",
+      };
+    }
+    if (proxyTarget !== undefined && existing.proxyTarget === proxyTarget) {
+      return { kind: "active", ownership: existing, reused: true };
+    }
+    if (ownershipRead.kind !== "valid") {
+      return { kind: "unavailable", detail: "the prior Tailscale ownership record changed during migration; refusing to remove its handler" };
+    }
+    priorMigration = { ownership: existing, contents: ownershipRead.contents };
+    const removed = await removeOwnedTailscaleServe(paths, { ...deps, tailscale: runner });
+    if (removed.kind === "unavailable") {
+      return await failMigration(`could not migrate the prior exact Tailscale handler: ${removed.detail}`);
+    }
   }
   const initial = await readTailscaleServeStatus(runner);
   if (initial.kind === "error") return await failMigration(initial.detail);
@@ -769,18 +893,36 @@ export async function ensureTailscaleServe(
   if (configured.code !== 0) {
     return await failMigration(commandDetail(configured) || `tailscale serve exited ${String(configured.code)}`);
   }
-  const [after, dnsName] = await Promise.all([
+  const [after, observedDnsName] = await Promise.all([
     readTailscaleServeStatus(runner),
     readTailscaleDnsName(runner),
   ]);
   if (after.kind === "error") {
-    const rollback = await rollbackJustCreatedTailscaleRoute(runner, httpsPort, proxyTarget, dnsName);
+    const rollback = await rollbackJustCreatedTailscaleRoute(
+      runner,
+      httpsPort,
+      proxyTarget,
+      expectedDnsName ?? observedDnsName,
+    );
     return await failMigration(`handler command succeeded but verification failed: ${after.detail}; ${rollback}`);
   }
+  if (expectedDnsName !== undefined && observedDnsName !== expectedDnsName) {
+    const rollback = await rollbackJustCreatedTailscaleRoute(runner, httpsPort, proxyTarget, observedDnsName);
+    return await failMigration(`handler command succeeded but the node's exact Tailscale DNS name changed or became unavailable; ${rollback}`);
+  }
+  const dnsName = expectedDnsName ?? observedDnsName;
   const webKey = findTailscaleWebKey(after.status, httpsPort, proxyTarget, dnsName);
   if (webKey === undefined) {
     const rollback = await rollbackJustCreatedTailscaleRoute(runner, httpsPort, proxyTarget, dnsName);
     return await failMigration(`handler command succeeded but the exact proxy target could not be verified; ${rollback}`);
+  }
+  if (!isExactExpectedTailscaleRoute(after.status, webKey, httpsPort, proxyTarget)) {
+    const rollback = await rollbackJustCreatedTailscaleRoute(runner, httpsPort, proxyTarget, dnsName);
+    return await failMigration(`handler command succeeded but its TCP or Web handler set was not the exact root Proxy-only shape; ${rollback}`);
+  }
+  if (expectedDnsName !== undefined && tailscaleWebHostname(webKey) !== expectedDnsName) {
+    const rollback = await rollbackJustCreatedTailscaleRoute(runner, httpsPort, proxyTarget, dnsName);
+    return await failMigration(`handler command succeeded under an unexpected Tailscale hostname; ${rollback}`);
   }
   const hostname = webKey.slice(0, webKey.lastIndexOf(":"));
   const ownership: TailscaleServeOwnership = {
@@ -829,14 +971,12 @@ async function restorePriorTailscaleRoute(
   const after = await readTailscaleServeStatus(runner);
   if (after.kind === "error" || !routeMatches(after.status, ownership)) {
     if (after.kind === "ok") {
-      const webKey = findTailscaleWebKey(after.status, ownership.httpsPort, ownership.proxyTarget, undefined);
-      if (webKey !== undefined) {
-        await rollbackExactTailscaleRoute(runner, after.status, {
-          ...ownership,
-          webKey,
-          configSha256: tailscalePortConfigSha256(after.status, webKey, ownership.httpsPort),
-        });
-      }
+      await rollbackJustCreatedTailscaleRoute(
+        runner,
+        ownership.httpsPort,
+        ownership.proxyTarget,
+        undefined,
+      );
     }
     return "the prior HTTPS route command succeeded but its exact previous handler set was not restored";
   }
@@ -873,6 +1013,9 @@ async function rollbackJustCreatedTailscaleRoute(
   }
   const webKey = findTailscaleWebKey(current.status, httpsPort, proxyTarget, dnsName);
   if (webKey === undefined) return "no exact newly-created handler remained to remove";
+  if (!isExactExpectedTailscaleRoute(current.status, webKey, httpsPort, proxyTarget)) {
+    return "rollback refused because the newly-created port no longer had the exact root Proxy-only shape";
+  }
   const ownership: TailscaleServeOwnership = {
     schema: TAILSCALE_OWNERSHIP_SCHEMA,
     webKey,
@@ -901,12 +1044,16 @@ export async function removeOwnedTailscaleServe(
   paths: WebPaths,
   deps: RunWebCommandDeps,
 ): Promise<{ readonly kind: "removed" | "absent" } | { readonly kind: "unavailable"; readonly detail: string }> {
-  const ownership = await readTailscaleOwnership(paths.tailscalePath);
-  if (ownership === undefined) return { kind: "absent" };
+  const ownershipRead = await readTailscaleOwnership(paths.tailscalePath);
+  if (ownershipRead.kind === "absent") return { kind: "absent" };
+  if (ownershipRead.kind === "invalid") return { kind: "unavailable", detail: ownershipRead.detail };
+  const ownership = ownershipRead.ownership;
   const runner = deps.tailscale ?? makeTailscaleRunner(process.env);
-  const current = await readTailscaleServeStatus(runner);
-  if (current.kind === "error") return { kind: "unavailable", detail: current.detail };
-  if (!routeMatches(current.status, ownership)) {
+  const inspection = await inspectOwnedTailscaleRoute(ownership, deps, runner);
+  if (inspection.kind === "absent") {
+    return await clearProvablyAbsentTailscaleOwnership(paths, ownership, runner);
+  }
+  if (inspection.kind !== "exact") {
     return { kind: "unavailable", detail: "the recorded handler no longer matches its exact host, port, and proxy target; refusing to remove it" };
   }
   const removed = await runner(["serve", `--https=${String(ownership.httpsPort)}`, "off"]);
@@ -925,9 +1072,37 @@ async function inspectOwnedTailscaleRoute(
   ownership: TailscaleServeOwnership,
   deps: RunWebCommandDeps,
   suppliedRunner?: CommandRunner,
-): Promise<boolean> {
+): Promise<OwnedRouteInspection> {
   const status = await readTailscaleServeStatus(suppliedRunner ?? deps.tailscale ?? makeTailscaleRunner(process.env));
-  return status.kind === "ok" && routeMatches(status.status, ownership);
+  if (status.kind === "error") return { kind: "unavailable", detail: status.detail };
+  return classifyOwnedTailscaleRoute(status.status, ownership);
+}
+
+function classifyOwnedTailscaleRoute(
+  status: Record<string, unknown>,
+  ownership: TailscaleServeOwnership,
+): OwnedRouteInspection {
+  if (routeMatches(status, ownership)) return { kind: "exact" };
+  const tcp = isRecord(status.TCP) ? status.TCP : {};
+  const web = isRecord(status.Web) ? status.Web : {};
+  if (!Object.hasOwn(tcp, String(ownership.httpsPort)) && !Object.hasOwn(web, ownership.webKey)) {
+    return { kind: "absent" };
+  }
+  return { kind: "changed" };
+}
+
+async function clearProvablyAbsentTailscaleOwnership(
+  paths: WebPaths,
+  ownership: TailscaleServeOwnership,
+  runner: CommandRunner,
+): Promise<{ readonly kind: "absent" } | { readonly kind: "unavailable"; readonly detail: string }> {
+  const confirmation = await readTailscaleServeStatus(runner);
+  if (confirmation.kind === "error") return { kind: "unavailable", detail: confirmation.detail };
+  if (classifyOwnedTailscaleRoute(confirmation.status, ownership).kind !== "absent") {
+    return { kind: "unavailable", detail: "the recorded Tailscale handler changed while confirming its absence; ownership was preserved" };
+  }
+  await rm(paths.tailscalePath, { force: true });
+  return { kind: "absent" };
 }
 
 type TailscaleStatusRead =
@@ -968,6 +1143,10 @@ function findTailscaleWebKey(
   return Object.keys(web).find((key) => key.endsWith(`:${String(port)}`) && webHandlerProxy(web[key]) === proxyTarget);
 }
 
+function tailscaleWebHostname(webKey: string): string {
+  return webKey.slice(0, webKey.lastIndexOf(":"));
+}
+
 function routeMatches(status: Record<string, unknown>, ownership: TailscaleServeOwnership): boolean {
   const tcp = isRecord(status.TCP) ? status.TCP : {};
   const port = tcp[String(ownership.httpsPort)];
@@ -976,6 +1155,29 @@ function routeMatches(status: Record<string, unknown>, ownership: TailscaleServe
     && port.HTTPS === true
     && webHandlerProxy(web[ownership.webKey]) === ownership.proxyTarget
     && tailscalePortConfigSha256(status, ownership.webKey, ownership.httpsPort) === ownership.configSha256;
+}
+
+function isExactExpectedTailscaleRoute(
+  status: Record<string, unknown>,
+  webKey: string,
+  httpsPort: number,
+  proxyTarget: string,
+): boolean {
+  const tcp = isRecord(status.TCP) ? status.TCP : {};
+  const port = tcp[String(httpsPort)];
+  const web = isRecord(status.Web) ? status.Web : {};
+  const entry = web[webKey];
+  if (!isRecord(port) || !hasExactKeys(port, ["HTTPS"]) || port.HTTPS !== true) return false;
+  if (!isRecord(entry) || !hasExactKeys(entry, ["Handlers"]) || !isRecord(entry.Handlers)) return false;
+  if (!hasExactKeys(entry.Handlers, ["/"]) || !isRecord(entry.Handlers["/"])) return false;
+  return hasExactKeys(entry.Handlers["/"], ["Proxy"])
+    && entry.Handlers["/"].Proxy === proxyTarget;
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return actual.length === sortedExpected.length && actual.every((key, index) => key === sortedExpected[index]);
 }
 
 function tailscalePortConfigSha256(status: Record<string, unknown>, webKey: string, httpsPort: number): string {
@@ -1004,7 +1206,7 @@ async function readTailscaleDnsName(runner: CommandRunner): Promise<string | und
   try {
     const parsed = JSON.parse(result.stdout) as unknown;
     if (!isRecord(parsed) || !isRecord(parsed.Self) || typeof parsed.Self.DNSName !== "string") return undefined;
-    return parsed.Self.DNSName.replace(/\.$/u, "");
+    return parsed.Self.DNSName.replace(/\.$/u, "").toLowerCase();
   } catch {
     return undefined;
   }
@@ -1028,30 +1230,50 @@ function spawnCapture(command: string, args: readonly string[], env: Record<stri
   });
 }
 
-async function readServiceRecord(path: string): Promise<WebServiceRecord | undefined> {
-  const value = await readJson(path);
+async function readServiceRecord(path: string): Promise<WebServiceRecordRead> {
+  let contents: string;
+  try {
+    contents = await readFile(path, "utf8");
+  } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") return { kind: "absent" };
+    return { kind: "invalid", detail: "the web service record is unreadable; repair or remove ~/.mono-agent/web/service.json" };
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(contents) as unknown;
+  } catch {
+    return { kind: "invalid", detail: "the web service record is malformed; repair or remove ~/.mono-agent/web/service.json" };
+  }
   if (!isRecord(value) || value.schema !== WEB_SERVICE_SCHEMA || typeof value.host !== "string"
     || !Number.isSafeInteger(value.port) || (value.port as number) < 1 || (value.port as number) > 65_535
-    || typeof value.updatedAt !== "string") return undefined;
-  return value as unknown as WebServiceRecord;
+    || typeof value.updatedAt !== "string") {
+    return { kind: "invalid", detail: "the web service record has an invalid schema; repair or remove ~/.mono-agent/web/service.json" };
+  }
+  return { kind: "valid", record: value as unknown as WebServiceRecord, contents };
 }
 
-async function readTailscaleOwnership(path: string): Promise<TailscaleServeOwnership | undefined> {
-  const value = await readJson(path);
+async function readTailscaleOwnership(path: string): Promise<TailscaleOwnershipRead> {
+  let contents: string;
+  try {
+    contents = await readFile(path, "utf8");
+  } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") return { kind: "absent" };
+    return { kind: "invalid", detail: "the Tailscale ownership record is unreadable; refusing to change any Serve handler" };
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(contents) as unknown;
+  } catch {
+    return { kind: "invalid", detail: "the Tailscale ownership record is malformed; refusing to change any Serve handler" };
+  }
   if (!isRecord(value) || value.schema !== TAILSCALE_OWNERSHIP_SCHEMA
     || typeof value.webKey !== "string" || typeof value.proxyTarget !== "string" || typeof value.url !== "string"
     || typeof value.configSha256 !== "string" || !/^[0-9a-f]{64}$/u.test(value.configSha256)
     || typeof value.configuredAt !== "string" || !Number.isSafeInteger(value.httpsPort)
-    || (value.httpsPort as number) < 1 || (value.httpsPort as number) > 65_535) return undefined;
-  return value as unknown as TailscaleServeOwnership;
-}
-
-async function readJson(path: string): Promise<unknown> {
-  try {
-    return JSON.parse(await readFile(path, "utf8")) as unknown;
-  } catch {
-    return undefined;
+    || (value.httpsPort as number) < 1 || (value.httpsPort as number) > 65_535) {
+    return { kind: "invalid", detail: "the Tailscale ownership record has an invalid schema; refusing to change any Serve handler" };
   }
+  return { kind: "valid", ownership: value as unknown as TailscaleServeOwnership, contents };
 }
 
 async function readOptionalText(path: string): Promise<string | undefined> {
@@ -1114,7 +1336,7 @@ function printWebUrls(
 ): void {
   if (host === "0.0.0.0" || host === "::" || host === "[::]") {
     stdout.write(`Local      → http://127.0.0.1:${String(port)}/\n`);
-    for (const address of (discover ?? discoverNetworkAddresses)()) {
+    for (const address of advertisableNetworkAddresses((discover ?? discoverNetworkAddresses)())) {
       const label = isTailscaleAddress(address) ? "Tailscale" : "LAN";
       stdout.write(`${label.padEnd(10)} → http://${urlHost(address)}:${String(port)}/\n`);
     }
@@ -1124,25 +1346,57 @@ function printWebUrls(
 }
 
 function isTailscaleAddress(address: string): boolean {
-  const match = /^(\d{1,3})\.(\d{1,3})\./u.exec(address);
+  const normalized = normalizeNetworkAddress(address);
+  if (normalized.split("%", 1)[0]?.startsWith("fd7a:115c:a1e0:")) return true;
+  const match = /^(\d{1,3})\.(\d{1,3})\./u.exec(normalized);
   if (match?.[1] !== "100" || match[2] === undefined) return false;
   const second = Number(match[2]);
   return second >= 64 && second <= 127;
 }
 
 function discoverNetworkAddresses(): readonly string[] {
-  const addresses = new Set<string>();
+  const addresses: string[] = [];
   for (const entries of Object.values(networkInterfaces())) {
     for (const entry of entries ?? []) {
-      if (!entry.internal && (entry.family === "IPv4" || entry.family === "IPv6")) addresses.add(entry.address);
+      if (!entry.internal && (entry.family === "IPv4" || entry.family === "IPv6")) addresses.push(entry.address);
     }
   }
-  return [...addresses];
+  return advertisableNetworkAddresses(addresses);
+}
+
+function advertisableNetworkAddresses(addresses: readonly string[]): readonly string[] {
+  return [...new Set(addresses.map(normalizeNetworkAddress).filter(isAdvertisableNetworkAddress))]
+    .sort((left, right) => left.localeCompare(right, "en", { numeric: true, sensitivity: "base" }));
+}
+
+function normalizeNetworkAddress(address: string): string {
+  const unbracketed = address.startsWith("[") && address.endsWith("]") ? address.slice(1, -1) : address;
+  return unbracketed.toLowerCase();
+}
+
+function isAdvertisableNetworkAddress(address: string): boolean {
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/u.exec(address);
+  if (ipv4 !== null) {
+    const octets = ipv4.slice(1).map(Number);
+    if (octets.some((value) => value > 255)) return false;
+    const [first = -1, second = -1] = octets;
+    return first === 10
+      || (first === 172 && second >= 16 && second <= 31)
+      || (first === 192 && second === 168)
+      || (first === 100 && second >= 64 && second <= 127)
+      || (first === 169 && second === 254);
+  }
+  const [literal = ""] = address.split("%", 2);
+  const firstHextet = Number.parseInt(literal.split(":", 1)[0] ?? "", 16);
+  if (!Number.isFinite(firstHextet)) return false;
+  // Browser URL implementations do not consistently support IPv6 zone IDs,
+  // so even scoped link-local literals are not advertised as concrete links.
+  return (firstHextet & 0xfe00) === 0xfc00;
 }
 
 function urlHost(host: string): string {
   const normalized = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
-  return normalized.includes(":") ? `[${normalized}]` : normalized;
+  return normalized.includes(":") ? `[${normalized.replace("%", "%25")}]` : normalized;
 }
 
 function commandDetail(result: CommandResult): string {
