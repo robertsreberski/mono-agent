@@ -70,7 +70,7 @@ describe("runWebCommand", () => {
     expect(output).toContain("http://127.0.0.1:5050/");
     expect(output).toContain("http://192.168.2.42:5050/");
     expect(output).toContain("http://100.64.0.7:5050/");
-    expect(output).toContain("Tailscale  → http://[fd7a:115c:a1e0::7]:5050/");
+    expect(output).not.toContain("fd7a:115c:a1e0::7");
     expect(output.match(/http:\/\/192\.168\.2\.42:5050\//gu)).toHaveLength(1);
     expect(output).not.toContain("203.0.113.9");
     expect(output).not.toContain("2001:4860:4860::8888");
@@ -80,6 +80,34 @@ describe("runWebCommand", () => {
     expect(startServer).not.toHaveBeenCalled();
     expect(resetState).not.toHaveBeenCalled();
     expect(await readdir(home)).toEqual([]);
+  });
+
+  it("prints only reachable IPv6 URLs for an IPv6 wildcard bind", async () => {
+    const home = await testHome();
+    const registryDir = join(home, "registry");
+    await mkdir(registryDir, { mode: 0o700 });
+    let output = "";
+    const stop = vi.fn(async () => undefined);
+    const startServer = vi.fn(async () => ({ url: "http://[::]:5050/", host: "::", port: 5050, stop }));
+
+    const code = await runWebCommand(
+      { positionals: ["run"], host: "::", env: { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: registryDir } },
+      {
+        homeDir: home,
+        prepareState,
+        startServer,
+        waitForShutdown: async () => undefined,
+        discoverNetworkAddresses: () => ["192.168.2.42", "100.64.0.7", "fd7a:115c:a1e0::7"],
+        stdout: { write: (text) => { output += text; } },
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(output).toContain("http://[::1]:5050/");
+    expect(output).toContain("Tailscale  → http://[fd7a:115c:a1e0::7]:5050/");
+    expect(output).not.toContain("192.168.2.42");
+    expect(output).not.toContain("100.64.0.7");
+    expect(stop).toHaveBeenCalledOnce();
   });
 
   it("runs foreground on the LAN default without adding authentication", async () => {
@@ -411,7 +439,7 @@ describe("runWebCommand", () => {
     };
 
     const code = await runWebCommand(
-      { positionals: ["start"], env: {} },
+      { positionals: ["start"], env: { MONO_AGENT_WEB_ALLOWED_HOSTS: "console.home.arpa" } },
       {
         platform: "darwin",
         homeDir: home,
@@ -430,7 +458,7 @@ describe("runWebCommand", () => {
 
     expect(code).toBe(0);
     const plist = await readFile(paths.launchd.plistPath, "utf8");
-    expect(plist).toContain("<string>MONO_AGENT_WEB_ALLOWED_HOSTS=host.example.ts.net</string>");
+    expect(plist).toContain("<string>MONO_AGENT_WEB_ALLOWED_HOSTS=console.home.arpa,host.example.ts.net</string>");
   });
 
   it("boots out a partially loaded first start and removes its artifacts after bootstrap failure", async () => {
@@ -652,6 +680,7 @@ describe("Tailscale Serve ownership", () => {
     expect(tailscaleProxyTarget("127.0.0.1", 5050)).toBe("http://127.0.0.1:5050");
     expect(tailscaleProxyTarget("::", 5050)).toBe("http://[::1]:5050");
     expect(tailscaleProxyTarget("::1", 5050)).toBe("http://[::1]:5050");
+    expect(tailscaleProxyTarget("localhost", 5050)).toBeUndefined();
     expect(tailscaleProxyTarget("192.0.2.42", 5050)).toBeUndefined();
     expect(tailscaleProxyTarget("2001:db8::42", 5050)).toBeUndefined();
 

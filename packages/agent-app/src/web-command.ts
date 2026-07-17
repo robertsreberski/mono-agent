@@ -432,13 +432,14 @@ async function startWebBackground(
     }
     const tailscaleRunner = deps.tailscale ?? makeTailscaleRunner(options.env);
     const tailscaleDnsName = await readTailscaleDnsName(tailscaleRunner);
+    const allowedHosts = mergeWebAllowedHosts(options.env.MONO_AGENT_WEB_ALLOWED_HOSTS, tailscaleDnsName);
     const environment = {
       ...selectBackgroundOperationalEnvironment(options.env),
       PATH: defaultPathEnv(options.env),
       ...(options.env.MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR === undefined
         ? {}
         : { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: options.env.MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR }),
-      ...(tailscaleDnsName === undefined ? {} : { MONO_AGENT_WEB_ALLOWED_HOSTS: tailscaleDnsName }),
+      ...(allowedHosts === undefined ? {} : { MONO_AGENT_WEB_ALLOWED_HOSTS: allowedHosts }),
     };
     const record: WebServiceRecord = {
       schema: WEB_SERVICE_SCHEMA,
@@ -993,10 +994,14 @@ export function tailscaleProxyTarget(bindHost: string, appPort: number): string 
   const normalized = bindHost.startsWith("[") && bindHost.endsWith("]")
     ? bindHost.slice(1, -1).toLowerCase()
     : bindHost.toLowerCase();
-  if (normalized === "0.0.0.0" || normalized === "localhost") {
+  if (normalized === "0.0.0.0") {
     return `http://127.0.0.1:${String(appPort)}`;
   }
   if (normalized === "::") return `http://[::1]:${String(appPort)}`;
+  // Node may resolve localhost to either loopback family. Without the actual
+  // bound address, publishing a numeric Serve target could point at the other
+  // family. --loopback is the deterministic 127.0.0.1 spelling.
+  if (normalized === "localhost") return undefined;
   if (!isLoopbackHost(normalized)) return undefined;
   return `http://${urlHost(normalized)}:${String(appPort)}`;
 }
@@ -1335,8 +1340,10 @@ function printWebUrls(
   discover?: () => readonly string[],
 ): void {
   if (host === "0.0.0.0" || host === "::" || host === "[::]") {
-    stdout.write(`Local      → http://127.0.0.1:${String(port)}/\n`);
-    for (const address of advertisableNetworkAddresses((discover ?? discoverNetworkAddresses)())) {
+    const ipv6Bind = host === "::" || host === "[::]";
+    stdout.write(`Local      → http://${ipv6Bind ? "[::1]" : "127.0.0.1"}:${String(port)}/\n`);
+    for (const address of advertisableNetworkAddresses((discover ?? discoverNetworkAddresses)())
+      .filter((candidate) => candidate.includes(":") === ipv6Bind)) {
       const label = isTailscaleAddress(address) ? "Tailscale" : "LAN";
       stdout.write(`${label.padEnd(10)} → http://${urlHost(address)}:${String(port)}/\n`);
     }
@@ -1372,6 +1379,15 @@ function advertisableNetworkAddresses(addresses: readonly string[]): readonly st
 function normalizeNetworkAddress(address: string): string {
   const unbracketed = address.startsWith("[") && address.endsWith("]") ? address.slice(1, -1) : address;
   return unbracketed.toLowerCase();
+}
+
+function mergeWebAllowedHosts(configured: string | undefined, tailscaleDnsName: string | undefined): string | undefined {
+  const hosts = [
+    ...(configured?.split(",") ?? []),
+    ...(tailscaleDnsName === undefined ? [] : [tailscaleDnsName]),
+  ].map((host) => host.trim()).filter((host) => host.length > 0);
+  const merged = [...new Set(hosts)].join(",");
+  return merged.length === 0 ? undefined : merged;
 }
 
 function isAdvertisableNetworkAddress(address: string): boolean {
