@@ -438,6 +438,15 @@ describe("runWebCommand", () => {
       return { code: 1, stdout: "", stderr: "unexpected" };
     };
 
+    const claimRunner = scriptedClaimRunner();
+    let dnsReads = 0;
+    const tailscale: CommandRunner = async (args) => {
+      if (args[0] === "status" && dnsReads++ === 0) {
+        return { code: 1, stdout: "", stderr: "transient LocalAPI failure" };
+      }
+      return claimRunner(args);
+    };
+    const sleep = vi.fn(async () => undefined);
     const code = await runWebCommand(
       { positionals: ["start"], env: { MONO_AGENT_WEB_ALLOWED_HOSTS: "console.home.arpa" } },
       {
@@ -447,7 +456,8 @@ describe("runWebCommand", () => {
         prepareState,
         acquireLifecycleLock: async () => async () => undefined,
         launchctl,
-        tailscale: scriptedClaimRunner(),
+        tailscale,
+        sleep,
         ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
         healthcheck: async () => true,
         isAlive: () => loaded,
@@ -457,8 +467,71 @@ describe("runWebCommand", () => {
     );
 
     expect(code).toBe(0);
+    expect(sleep).toHaveBeenCalledWith(200);
+    expect(dnsReads).toBeGreaterThanOrEqual(2);
     const plist = await readFile(paths.launchd.plistPath, "utf8");
     expect(plist).toContain("<string>MONO_AGENT_WEB_ALLOWED_HOSTS=console.home.arpa,host.example.ts.net</string>");
+  });
+
+  it("retains an exact owned Tailscale hostname when LocalAPI status is transiently unavailable", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.stateDir, { recursive: true, mode: 0o700 });
+    await mkdir(join(home, "Library"), { mode: 0o700 });
+    await ensureTailscaleServe(paths, DEFAULT_WEB_HOST, 5050, {}, {
+      homeDir: home,
+      tailscale: scriptedClaimRunner(),
+    });
+
+    let loaded = false;
+    const launchctl = async (args: readonly string[]) => {
+      if (args[0] === "print") return { code: loaded ? 0 : 1, stdout: loaded ? "pid = 777\n" : "", stderr: "" };
+      if (args[0] === "bootstrap") {
+        loaded = true;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+    const tailscale = vi.fn<CommandRunner>(async (args) => {
+      if (args[0] === "status") return { code: 1, stdout: "", stderr: "LocalAPI unavailable" };
+      if (args[0] === "serve" && args[1] === "status") {
+        return {
+          code: 0,
+          stderr: "",
+          stdout: JSON.stringify({
+            TCP: { "443": { HTTPS: true } },
+            Web: { "host.example.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:5050" } } } },
+          }),
+        };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    });
+    let output = "";
+
+    const code = await runWebCommand(
+      { positionals: ["start"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl,
+        tailscale,
+        sleep: async () => undefined,
+        ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
+        healthcheck: async () => true,
+        isAlive: () => loaded,
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write: () => undefined },
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(await readFile(paths.launchd.plistPath, "utf8"))
+      .toContain("<string>MONO_AGENT_WEB_ALLOWED_HOSTS=host.example.ts.net</string>");
+    expect(output).toContain("https://host.example.ts.net/ (existing owned handler)");
+    expect(tailscale.mock.calls.filter(([args]) => args[0] === "status")).toHaveLength(3);
   });
 
   it("boots out a partially loaded first start and removes its artifacts after bootstrap failure", async () => {

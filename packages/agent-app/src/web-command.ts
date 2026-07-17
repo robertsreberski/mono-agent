@@ -41,6 +41,8 @@ const READY_TIMEOUT_MS = 15_000;
 const READY_POLL_MS = 200;
 const TAILSCALE_FALLBACK_PORT_START = 8443;
 const TAILSCALE_FALLBACK_PORT_END = 8499;
+const TAILSCALE_STATUS_ATTEMPTS = 3;
+const TAILSCALE_STATUS_RETRY_MS = 200;
 const WEB_PACKAGE_NAME = "@mono-agent/web";
 
 interface WebServerHandle {
@@ -431,7 +433,15 @@ async function startWebBackground(
       return await fail("Could not install the durable web runtime", error);
     }
     const tailscaleRunner = deps.tailscale ?? makeTailscaleRunner(options.env);
-    const tailscaleDnsName = await readTailscaleDnsName(tailscaleRunner);
+    const priorTailscaleOwnership = await readTailscaleOwnership(paths.tailscalePath);
+    const recordedTailscaleDnsName = priorTailscaleOwnership.kind === "valid"
+      ? tailscaleWebHostname(priorTailscaleOwnership.ownership.webKey)
+      : undefined;
+    // A healthy existing Serve route must keep working through a transient
+    // LocalAPI outage during restart. The owner-private, exact-route record is
+    // re-verified by ensureTailscaleServe after the replacement worker starts.
+    const tailscaleDnsName = await readTailscaleDnsName(tailscaleRunner, deps.sleep)
+      ?? recordedTailscaleDnsName;
     const allowedHosts = mergeWebAllowedHosts(options.env.MONO_AGENT_WEB_ALLOWED_HOSTS, tailscaleDnsName);
     const environment = {
       ...selectBackgroundOperationalEnvironment(options.env),
@@ -896,7 +906,7 @@ export async function ensureTailscaleServe(
   }
   const [after, observedDnsName] = await Promise.all([
     readTailscaleServeStatus(runner),
-    readTailscaleDnsName(runner),
+    readTailscaleDnsName(runner, deps.sleep),
   ]);
   if (after.kind === "error") {
     const rollback = await rollbackJustCreatedTailscaleRoute(
@@ -1205,16 +1215,26 @@ function webHandlerProxy(value: unknown): string | undefined {
   return typeof value.Handlers["/"].Proxy === "string" ? value.Handlers["/"].Proxy : undefined;
 }
 
-async function readTailscaleDnsName(runner: CommandRunner): Promise<string | undefined> {
-  const result = await runner(["status", "--json"]);
-  if (result.code !== 0) return undefined;
-  try {
-    const parsed = JSON.parse(result.stdout) as unknown;
-    if (!isRecord(parsed) || !isRecord(parsed.Self) || typeof parsed.Self.DNSName !== "string") return undefined;
-    return parsed.Self.DNSName.replace(/\.$/u, "").toLowerCase();
-  } catch {
-    return undefined;
+async function readTailscaleDnsName(
+  runner: CommandRunner,
+  suppliedSleep?: (ms: number) => Promise<void>,
+): Promise<string | undefined> {
+  const sleep = suppliedSleep ?? ((ms: number) => new Promise<void>((resolvePromise) => setTimeout(resolvePromise, ms)));
+  for (let attempt = 0; attempt < TAILSCALE_STATUS_ATTEMPTS; attempt += 1) {
+    const result = await runner(["status", "--json"]);
+    if (result.code === 0) {
+      try {
+        const parsed = JSON.parse(result.stdout) as unknown;
+        if (isRecord(parsed) && isRecord(parsed.Self) && typeof parsed.Self.DNSName === "string") {
+          return parsed.Self.DNSName.replace(/\.$/u, "").toLowerCase();
+        }
+      } catch {
+        // A transiently truncated LocalAPI response is retried below.
+      }
+    }
+    if (attempt + 1 < TAILSCALE_STATUS_ATTEMPTS) await sleep(TAILSCALE_STATUS_RETRY_MS);
   }
+  return undefined;
 }
 
 function makeTailscaleRunner(env: Record<string, string | undefined>): CommandRunner {
