@@ -27,6 +27,7 @@ export interface A2AAdapterProviderConfig {
   readonly allowNonLoopback: boolean;
   readonly requireBearer: boolean;
   readonly bearerToken?: string;
+  readonly maxRequestBytes?: number;
   readonly idempotency?: {
     readonly stateDir?: string;
     readonly namespace: string;
@@ -102,6 +103,15 @@ export async function loadA2AAdapterConfig(
   const enabled = readBoolean(env.MONO_AGENT_A2A_ENABLED ?? env.MONO_AGENT_A2A_PROVIDER_ENABLED, enabledVar, false, invalidConfig);
   const publicBaseUrl = normalizeOptionalString(env.MONO_AGENT_A2A_PUBLIC_BASE_URL);
   const providerBearerToken = normalizeOptionalString(env.MONO_AGENT_A2A_BEARER_TOKEN);
+  const maxRequestBytes = enabled && env.MONO_AGENT_A2A_MAX_REQUEST_BYTES !== undefined
+    ? readInteger(
+      env.MONO_AGENT_A2A_MAX_REQUEST_BYTES,
+      "MONO_AGENT_A2A_MAX_REQUEST_BYTES",
+      100 * 1_024,
+      invalidConfig,
+      { min: 1_024, max: 100_000_000 },
+    )
+    : undefined;
   const idempotencyStateDir = normalizeOptionalString(env.MONO_AGENT_A2A_IDEMPOTENCY_STATE_DIR);
   const idempotencyNamespace = normalizeOptionalString(env.MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE);
   const idempotencyWasConfigured = jsonIdempotencyWasConfigured || [
@@ -125,6 +135,7 @@ export async function loadA2AAdapterConfig(
     allowNonLoopback: readBoolean(env.MONO_AGENT_A2A_ALLOW_NON_LOOPBACK, "MONO_AGENT_A2A_ALLOW_NON_LOOPBACK", false, invalidConfig),
     requireBearer: readBoolean(env.MONO_AGENT_A2A_REQUIRE_BEARER, "MONO_AGENT_A2A_REQUIRE_BEARER", false, invalidConfig),
     ...(providerBearerToken === undefined ? {} : { bearerToken: providerBearerToken }),
+    ...(maxRequestBytes === undefined ? {} : { maxRequestBytes }),
     ...(idempotencyNamespace === undefined
       ? {}
       : {
@@ -342,6 +353,7 @@ export const A2A_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "a2a.provider.allowNonLoopback", env: "MONO_AGENT_A2A_ALLOW_NON_LOOPBACK", kind: "boolean", fromJson: (s) => readRecord(s.provider).allowNonLoopback },
   { id: "a2a.provider.requireBearer", env: "MONO_AGENT_A2A_REQUIRE_BEARER", kind: "boolean", fromJson: (s) => readRecord(s.provider).requireBearer },
   { id: "a2a.provider.bearerToken", env: "MONO_AGENT_A2A_BEARER_TOKEN", secret: true, fromJson: (s) => readRecord(s.provider).bearerToken },
+  { id: "a2a.provider.maxRequestBytes", env: "MONO_AGENT_A2A_MAX_REQUEST_BYTES", kind: "integer", fromJson: (s) => readRecord(s.provider).maxRequestBytes },
   { id: "a2a.provider.idempotency.stateDir", env: "MONO_AGENT_A2A_IDEMPOTENCY_STATE_DIR", fromJson: (s) => readRecord(readRecord(s.provider).idempotency).stateDir },
   { id: "a2a.provider.idempotency.namespace", env: "MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE", fromJson: (s) => readRecord(readRecord(s.provider).idempotency).namespace },
   { id: "a2a.provider.idempotency.retentionMs", env: "MONO_AGENT_A2A_IDEMPOTENCY_RETENTION_MS", kind: "integer", fromJson: (s) => readRecord(readRecord(s.provider).idempotency).retentionMs },

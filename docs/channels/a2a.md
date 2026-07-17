@@ -57,6 +57,7 @@ credential.
             "publicBaseUrl": "https://agent.example.com",
             "allowNonLoopback": true,
             "requireBearer": true,
+            "maxRequestBytes": 50000000,
             "idempotency": {
               "namespace": "my-agent-production",
               "retentionMs": 2592000000,
@@ -94,6 +95,7 @@ credential.
 | `allowNonLoopback` | boolean | `false` | Must be `true` to bind a non-loopback `host` or advertise a non-loopback `publicBaseUrl`. |
 | `requireBearer` | boolean | `false` | Require `Authorization: Bearer <token>` on `/a2a/json-rpc` and `/a2a/rest`. |
 | `bearerToken` | string | — | The expected token. Required when `requireBearer` is `true`. |
+| `maxRequestBytes` | integer | A2A SDK default (100 KiB) | Optional JSON request-body ceiling for JSON-RPC and REST. Range: 1024–100000000 bytes. Authentication runs before body parsing. |
 | `idempotency.namespace` | string | — | Explicitly enables durable logical-dispatch idempotency and defines the stable authenticated principal boundary. Never derive it from URL/version/token. |
 | `idempotency.stateDir` | string | derived owner-only path | Durable receipt/tombstone directory. Relative paths resolve from the agent cwd. |
 | `idempotency.retentionMs` | integer | `2592000000` | Full terminal-result replay horizon; compact tombstones remain permanent. |
@@ -140,6 +142,7 @@ Every key has a `MONO_AGENT_*` override. Strings split on commas where the value
 | `MONO_AGENT_A2A_ALLOW_NON_LOOPBACK` | plugin `config.provider.allowNonLoopback` |
 | `MONO_AGENT_A2A_REQUIRE_BEARER` | plugin `config.provider.requireBearer` |
 | `MONO_AGENT_A2A_BEARER_TOKEN` | plugin `config.provider.bearerToken` |
+| `MONO_AGENT_A2A_MAX_REQUEST_BYTES` | plugin `config.provider.maxRequestBytes` |
 | `MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE` | plugin `config.provider.idempotency.namespace` |
 | `MONO_AGENT_A2A_IDEMPOTENCY_STATE_DIR` | plugin `config.provider.idempotency.stateDir` |
 | `MONO_AGENT_A2A_IDEMPOTENCY_RETENTION_MS` | plugin `config.provider.idempotency.retentionMs` |
