@@ -1261,7 +1261,6 @@ function channelSendTools(channels: readonly string[]): string[] {
  */
 function toolSituationFraming(draft: DraftAnswers, alwaysOn: readonly string[]): string {
   const sends = channelSendTools(draft.channels);
-  const piOnly = selectedRuntimeModels(draft).every((model) => model.startsWith("pi:"));
   const channelLine = sends.length > 0
     ? `Channel tools (from the channels you enabled): ${sends.join(", ")}, plus AskUser (ask the human, any channel).`
     : "Channel tools: AskUser (ask the human, any channel).";
@@ -1269,10 +1268,10 @@ function toolSituationFraming(draft: DraftAnswers, alwaysOn: readonly string[]):
     alwaysOn.length > 0
       ? `Always on (auto-provisioned, not affected by this choice): ${alwaysOnDisplay(alwaysOn).join(", ")}.`
       : "Always on (auto-provisioned): none for this setup.",
-    `Built-ins: files (Read/Write/Edit/Glob/Grep), shell (Bash), web (WebFetch/WebSearch)${piOnly ? ", JavaScript (NodeRepl, Pi only)" : ""}.`,
+    "Built-ins: files (Read/Write/Edit/Glob/Grep), shell (Bash), JavaScript (NodeRepl), web (WebFetch/WebSearch).",
     "App tools: RunHistory (read-only evidence from completed prior runs in this conversation).",
     channelLine,
-    '"Allow all" lets the model run shell commands or JavaScript on Pi routes, read/change files, access the web, and send through enabled channels. These actions can modify data or contact people; you can turn specific tools off later via tools.disallowedTools.',
+    '"Allow all" lets the model run shell commands or JavaScript, read/change files, access the web, and send through enabled channels. These actions can modify data or contact people; you can turn specific tools off later via tools.disallowedTools.',
   ].join("\n");
 }
 
@@ -1312,9 +1311,7 @@ async function promptTools(draft: DraftAnswers): Promise<void> {
  * `tools.allowedTools` is deterministic regardless of toggle order.
  */
 async function pickSpecificTools(draft: DraftAnswers): Promise<void> {
-  const options = toolMultiselectOptions(draft.channels, {
-    includePiOnly: selectedRuntimeModels(draft).every((model) => model.startsWith("pi:")),
-  });
+  const options = toolMultiselectOptions(draft.channels);
   const optionOrder = new Map(options.map((option, index) => [option.value, index]));
   const recommended = recommendedToolSelection(toWizardAnswers(draft));
 

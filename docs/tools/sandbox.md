@@ -6,7 +6,7 @@ sidebar:
 
 # Sandbox
 
-For Pi-native agents, the sandbox confines mono-agent-owned commands by wrapping them with `srt` (the native sandbox runtime) and a generated settings file: a filesystem scope (readable/writable roots, deny-write globs), a network policy, and a fallback for when the sandbox engine is unavailable. This includes both `Bash` commands and the child process behind Pi's `NodeRepl` tool. This page covers the `sandbox` config block, the matching `MONO_AGENT_SANDBOX_*` env vars, and the monotonic merge that lets request-scoped policies tighten — but never widen — the configured baseline.
+For Pi-native agents, the sandbox confines mono-agent-owned commands by wrapping them with `srt` (the native sandbox runtime) and a generated settings file: a filesystem scope (readable/writable roots, deny-write globs), a network policy, and a fallback for when the sandbox engine is unavailable. This includes both `Bash` commands and the child process behind `NodeRepl`. This page covers the `sandbox` config block, the matching `MONO_AGENT_SANDBOX_*` env vars, and the monotonic merge that lets request-scoped policies tighten — but never widen — the configured baseline.
 
 The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`. Under the default `runtime.routeSafety: "uniform"`, a non-Pi route that cannot represent the configured SRT policy fails closed. Explicit `per-route-native` allows a mixed chain only with route-local contracts: Pi keeps this exact policy, while Claude/Codex/OpenCode use their documented provider-native safety and do not pretend the SRT roots/network rules apply. Use Pi (including `pi:opencode-go:*`) whenever every attempted route must enforce the mono-agent policy.
 
@@ -78,7 +78,7 @@ compatibility path; it does not satisfy the guided managed-install choice.
 
 ## Mode
 
-- **`native`** — every sandboxed command is rewritten to `srt --settings <generated-file> <command> ...`. The generated settings file encodes the network and filesystem policy below. Pi's run-scoped `NodeRepl` child is prepared through this same path, so evaluated JavaScript does not bypass the policy.
+- **`native`** — every sandboxed command is rewritten to `srt --settings <generated-file> <command> ...`. The generated settings file encodes the network and filesystem policy below. The run-scoped `NodeRepl` child is prepared through this same path, so evaluated JavaScript does not bypass the policy.
 - **`off`** — commands run unwrapped on the host. Equivalent to omitting the `sandbox` block.
 
 ## Network policy
