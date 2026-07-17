@@ -151,32 +151,23 @@ describe("memory forget-backup retention", () => {
     expect((await readdir(dirname(candidate))).some((name) => name.startsWith("forget-retention-"))).toBe(false);
   });
 
-  it("yields while claimed and restores the candidate when cancellation arrives", async () => {
+  it("restores the claim when cancellation arrives during final identity revalidation", async () => {
     const root = await memoryFixture();
     const candidate = await writeOperator(root, "forget-cancelled", 40);
-    let cancelled = false;
-    let releaseClaim: (() => void) | undefined;
-    let markClaimed: (() => void) | undefined;
-    const claimed = new Promise<void>((resolve) => { markClaimed = resolve; });
-    const waitForRelease = new Promise<void>((resolve) => { releaseClaim = resolve; });
+    let claimed = false;
+    let postClaimChecks = 0;
 
-    const sweep = pruneExplicitMemoryForgetBackups({
+    const result = await pruneExplicitMemoryForgetBackups({
       root,
       clock: () => NOW,
-      shouldContinue: () => !cancelled,
+      shouldContinue: () => !claimed || ++postClaimChecks === 1,
       hooks: {
-        afterClaim: async () => {
-          markClaimed?.();
-          await waitForRelease;
-        },
+        afterClaim: () => { claimed = true; },
       },
     });
-    await claimed;
-    cancelled = true;
-    releaseClaim?.();
-    const result = await sweep;
 
     expect(result.prunedCount).toBe(0);
+    expect(postClaimChecks).toBe(2);
     expect(existsSync(candidate)).toBe(true);
     expect((await readdir(dirname(candidate))).some((name) => name.startsWith("forget-retention-"))).toBe(false);
   });

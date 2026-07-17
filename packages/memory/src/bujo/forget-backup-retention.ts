@@ -407,6 +407,10 @@ async function claimAndRemoveCandidate(
       await restoreClaimedCandidate(candidate, claimedPath, warnings);
       return false;
     }
+    if (!shouldContinue(options)) {
+      await restoreClaimedCandidate(candidate, claimedPath, warnings);
+      return false;
+    }
     await rm(claimedPath, { recursive: true, force: false });
     return true;
   } catch (error) {
