@@ -28,6 +28,7 @@ import { startA2AProvider } from "@mono-agent/a2a-adapter";
 const provider = await startA2AProvider({
   host: "127.0.0.1",
   port: 4300,
+  maxRequestBytes: 50_000_000,
   responder,
   agent: {
     name: "Agent A",
@@ -208,6 +209,7 @@ the source-config example omits the credential.
             "host": "127.0.0.1",
             "port": 4300,
             "requireBearer": true,
+            "maxRequestBytes": 50000000,
             "idempotency": {
               "namespace": "agent-a-production",
               "stateDir": ".mono-agent/a2a-agent-a",
@@ -252,6 +254,7 @@ Important env names:
 - `MONO_AGENT_A2A_ALLOW_NON_LOOPBACK`
 - `MONO_AGENT_A2A_REQUIRE_BEARER`
 - `MONO_AGENT_A2A_BEARER_TOKEN`
+- `MONO_AGENT_A2A_MAX_REQUEST_BYTES`
 - `MONO_AGENT_A2A_IDEMPOTENCY_NAMESPACE`
 - `MONO_AGENT_A2A_IDEMPOTENCY_STATE_DIR`
 - `MONO_AGENT_A2A_IDEMPOTENCY_RETENTION_MS`

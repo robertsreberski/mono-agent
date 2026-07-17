@@ -6,6 +6,8 @@ import {
   DefaultExecutionEventBusManager,
   DefaultRequestHandler,
   InMemoryTaskStore,
+  JsonRpcTransportHandler,
+  RequestMalformedError,
   type A2ARequestHandler,
   type AgentExecutor,
   type ExecutionEventBus,
@@ -43,7 +45,12 @@ import {
   listen,
   readAuthorizationBearer,
 } from "@mono-agent/agent-contracts";
-import express, { type NextFunction, type Request, type Response } from "express";
+import express, {
+  type ErrorRequestHandler,
+  type NextFunction,
+  type Request,
+  type Response,
+} from "express";
 
 import {
   type A2AAgentCardOptions,
@@ -91,6 +98,8 @@ export interface A2AProviderOptions {
   readonly allowNonLoopback?: boolean;
   readonly requireBearer?: boolean;
   readonly bearerToken?: string;
+  /** Optional request-body ceiling. Omit to preserve the A2A SDK's default. */
+  readonly maxRequestBytes?: number;
   /** Enables the advertised mono-agent extension only with durable state. */
   readonly idempotency?: A2AProviderIdempotencyOptions;
   readonly responder: AgentResponder<A2AAgentRequest, AgentMessageStream, AgentResponse>;
@@ -191,14 +200,33 @@ export async function startA2AProvider(
     : (_req: Request, _res: Response, next: NextFunction) => next();
 
   app.use("/.well-known/agent-card.json", agentCardHandler({ agentCardProvider: requestHandler }));
-  app.use("/a2a/json-rpc", auth, jsonRpcHandler({
+  const jsonRpc = jsonRpcHandler({
     requestHandler,
     userBuilder: UserBuilder.noAuthentication,
-  }));
-  app.use("/a2a/rest", auth, restHandler({
+  });
+  const rest = restHandler({
     requestHandler,
     userBuilder: UserBuilder.noAuthentication,
-  }));
+  });
+  if (options.maxRequestBytes === undefined) {
+    app.use("/a2a/json-rpc", auth, jsonRpc);
+    app.use("/a2a/rest", auth, rest);
+  } else {
+    app.use(
+      "/a2a/json-rpc",
+      auth,
+      configuredJsonParser(options.maxRequestBytes),
+      requestBodyErrorHandler("json-rpc"),
+      jsonRpc,
+    );
+    app.use(
+      "/a2a/rest",
+      auth,
+      configuredJsonParser(options.maxRequestBytes),
+      requestBodyErrorHandler("rest"),
+      rest,
+    );
+  }
 
   const url = publicBaseUrl.replace(/\/+$/u, "");
   return {
@@ -417,9 +445,74 @@ function validateProviderOptions(options: A2AProviderOptions): void {
   if (!Number.isInteger(options.port ?? 0) || (options.port ?? 0) < 0 || (options.port ?? 0) > 65535) {
     throw new A2AProviderError("invalid_config", "A2A provider port must be an integer from 0 to 65535.");
   }
+  if (
+    options.maxRequestBytes !== undefined
+    && (
+      !Number.isInteger(options.maxRequestBytes)
+      || options.maxRequestBytes < 1_024
+      || options.maxRequestBytes > 100_000_000
+    )
+  ) {
+    throw new A2AProviderError(
+      "invalid_config",
+      "A2A provider maxRequestBytes must be an integer from 1024 to 100000000.",
+      { field: "maxRequestBytes" },
+    );
+  }
   if (options.idempotency !== undefined) {
     validateA2AProviderIdempotencyOptions(options.idempotency);
   }
+}
+
+function configuredJsonParser(maxRequestBytes: number) {
+  return express.json({
+    limit: maxRequestBytes,
+    type: ["application/json", "application/a2a+json"],
+  });
+}
+
+function requestBodyErrorHandler(binding: "json-rpc" | "rest"): ErrorRequestHandler {
+  return (error, _request, response, next): void => {
+    if (isPayloadTooLargeError(error)) {
+      sendRequestBodyError(response, binding, 413, "Request body exceeds the configured limit.");
+      return;
+    }
+    if (error instanceof SyntaxError && "body" in error) {
+      sendRequestBodyError(response, binding, 400, "Invalid JSON payload.");
+      return;
+    }
+    next(error);
+  };
+}
+
+function isPayloadTooLargeError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const shaped = error as Error & { readonly status?: unknown; readonly type?: unknown };
+  return shaped.status === 413 || shaped.type === "entity.too.large";
+}
+
+function sendRequestBodyError(
+  response: Response,
+  binding: "json-rpc" | "rest",
+  status: 400 | 413,
+  message: string,
+): void {
+  if (binding === "json-rpc") {
+    response.status(status).json({
+      jsonrpc: "2.0",
+      id: null,
+      error: JsonRpcTransportHandler.mapToJSONRPCError(new RequestMalformedError(message)),
+    });
+    return;
+  }
+  response.status(status).json({
+    error: {
+      code: status,
+      status: status === 413 ? "RESOURCE_EXHAUSTED" : "INVALID_ARGUMENT",
+      message,
+      details: [],
+    },
+  });
 }
 
 function assertSafePublicBaseUrl(publicBaseUrl: string, allowNonLoopback: boolean): void {

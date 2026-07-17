@@ -144,7 +144,7 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
 }
 ```
 **Credentials:** put `MONO_AGENT_A2A_BEARER_TOKEN` in the provider's `.env` and `MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN` in the consumer's `.env`; source config omits both tokens.
-**Steps:** provider — `init`, add the `@mono-agent/a2a-adapter` plugin entry with `provider`/`agent`/`skill` + env-backed bearer; for paid/non-repeatable calls choose a reviewed stable `provider.idempotency.namespace`; `validate`, `start`, confirm the Agent Card is reachable. Consumer — set plugin `config.consumer` (or compose `createA2AConsumerResponder`), then pass the existing logical dispatch id through `idempotencyKey` / `idempotencyKeyForRequest` rather than generating one per attempt.
+**Steps:** provider — `init`, add the `@mono-agent/a2a-adapter` plugin entry with `provider`/`agent`/`skill` + env-backed bearer; set `provider.maxRequestBytes` only when the caller's task envelope exceeds the 100 KiB SDK default; for paid/non-repeatable calls choose a reviewed stable `provider.idempotency.namespace`; `validate`, `start`, confirm the Agent Card is reachable. Consumer — set plugin `config.consumer` (or compose `createA2AConsumerResponder`), then pass the existing logical dispatch id through `idempotencyKey` / `idempotencyKeyForRequest` rather than generating one per attempt.
 **Smoke:** repeat one keyed message to the provider's Agent Card URL with the bearer; confirm the same task/result is returned and the responder runs once.
 
 ## 8. Multi-agent orchestration (`AskCollaborator`) — code
