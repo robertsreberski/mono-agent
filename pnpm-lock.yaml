@@ -60,7 +60,7 @@ importers:
         specifier: workspace:0.11.6
         version: link:packages/tui
       '@mono-agent/web':
-        specifier: workspace:0.11.4
+        specifier: workspace:0.11.5
         version: link:packages/web
       '@mono-agent/webhook-adapter':
         specifier: workspace:0.11.6
@@ -178,7 +178,7 @@ importers:
         specifier: workspace:0.11.6
         version: link:../tui
       '@mono-agent/web':
-        specifier: workspace:0.11.4
+        specifier: workspace:0.11.5
         version: link:../web
       '@mono-agent/webhook-adapter':
         specifier: workspace:0.11.6
@@ -387,13 +387,13 @@ importers:
   packages/web:
     dependencies:
       '@mono-agent/agent-contracts':
-        specifier: workspace:0.11.4
+        specifier: workspace:0.11.5
         version: link:../agent-contracts
       '@mono-agent/config':
-        specifier: workspace:0.11.4
+        specifier: workspace:0.11.5
         version: link:../config
       '@mono-agent/observability':
-        specifier: workspace:0.11.4
+        specifier: workspace:0.11.5
         version: link:../observability
       express:
         specifier: ^5.1.0
