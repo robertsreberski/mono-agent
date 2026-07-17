@@ -305,6 +305,25 @@ describe("pi-native AgentHarness bridge", () => {
     const events = onEvent.mock.calls.map(([event]) => event);
     expect(events[0]).toMatchObject({ type: "provider_request_started", sdk: "pi", runtime: "pi" });
     expect(events.some((event) => event?.type === "provider_request_completed")).toBe(true);
+    const contextUsage = events.find((event) => event?.type === "context_usage");
+    expect(contextUsage).toMatchObject({
+      sdk: "pi",
+      model: "pi:faux:faux-model",
+      contextWindow: 128_000,
+      tokens: {
+        input: expect.any(Number),
+        output: expect.any(Number),
+        cacheRead: 0,
+        cacheCreation: expect.any(Number),
+        total: expect.any(Number),
+      },
+    });
+    expect(contextUsage.tokens.total).toBe(
+      contextUsage.tokens.input +
+      contextUsage.tokens.output +
+      contextUsage.tokens.cacheRead +
+      contextUsage.tokens.cacheCreation,
+    );
     const textBlocks = events
       .filter((event) => event?.type === "assistant")
       .flatMap((event) => event.message?.content || [])
@@ -614,17 +633,20 @@ describe("pi-native AgentHarness bridge", () => {
 
   it("surfaces a provider stream error in the unified failure shape", async () => {
     const model = setup();
+    const onEvent = vi.fn();
     faux.setResponses([
       fauxAssistantMessage([], { stopReason: "error", errorMessage: "boom provider failure" }),
     ]);
 
     const result = await generatePiNativeResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
+      onEvent,
     }));
 
     expect(result.error).toBe("boom provider failure");
     expect(result.failureKind).toBeTruthy();
     expect(result.cancelled).toBe(false);
+    expect(onEvent.mock.calls.some(([event]) => event?.type === "context_usage")).toBe(false);
   });
 
   it("resumes a durable session and seeds the next run with the prior transcript", async () => {

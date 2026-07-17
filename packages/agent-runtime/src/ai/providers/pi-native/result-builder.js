@@ -7,6 +7,7 @@
 // takes its inputs explicitly and returns the verbatim runtime-result contract
 // (diagnostics key spellings, error fields, and shape unchanged — I9).
 
+import { calculateContextTokens } from "@earendil-works/pi-agent-core";
 import { isContextLimitError } from "../pi-errors.js";
 import { isLikelyContextTermination } from "../../../agent/compaction.js";
 import { isProviderAuthFailureText } from "../../failure.js";
@@ -32,6 +33,28 @@ export function usageFromMessages(messages = []) {
 }
 
 /**
+ * Normalize the final provider request's usage into an exact context snapshot.
+ * Unlike usageFromMessages(), this deliberately does not aggregate earlier
+ * requests in the run: the last assistant usage is the same provider-counted
+ * value Pi's compaction logic trusts, so it can decrease after compaction.
+ * @param {any} assistantMessage
+ * @returns {{input: number, output: number, cacheRead: number, cacheCreation: number, total: number}|null}
+ */
+export function contextUsageFromAssistantMessage(assistantMessage) {
+  if (assistantMessage?.role !== "assistant" || !assistantMessage.usage) return null;
+  if (assistantMessage.stopReason === "error" || assistantMessage.stopReason === "aborted") return null;
+  const total = Number(calculateContextTokens(assistantMessage.usage)) || 0;
+  if (total <= 0) return null;
+  return {
+    input: Number(assistantMessage.usage.input) || 0,
+    output: Number(assistantMessage.usage.output) || 0,
+    cacheRead: Number(assistantMessage.usage.cacheRead) || 0,
+    cacheCreation: Number(assistantMessage.usage.cacheWrite) || 0,
+    total,
+  };
+}
+
+/**
  * Classify a pi error message into a runtime failure kind. Context-window
  * overflows map to context_limit so the router can try the configured fallback;
  * max-turns terminations remain usage_limit. Credential/config auth failures
@@ -51,9 +74,19 @@ export function failureKindForPiError(message, diagnostics, { maxTurnsHit = fals
 
 /**
  * Emit the per-run cache / cost / provider-completed events.
- * @param {{onEvent: (event: any) => void, resolved: any, reference: string, usage: {input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}, estimatedCost: number, start: number, externalAbort: boolean}} params
+ * @param {{onEvent: (event: any) => void, resolved: any, reference: string, usage: {input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}, contextUsage?: {input: number, output: number, cacheRead: number, cacheCreation: number, total: number}|null, contextWindow?: number, estimatedCost: number, start: number, externalAbort: boolean}} params
  */
-export function emitUsageCostEvents({ onEvent, resolved, reference, usage, estimatedCost, start, externalAbort }) {
+export function emitUsageCostEvents({
+  onEvent,
+  resolved,
+  reference,
+  usage,
+  contextUsage,
+  contextWindow,
+  estimatedCost,
+  start,
+  externalAbort,
+}) {
   if (usage.cacheRead > 0) {
     onEvent({ type: "cache_hit", sdk: resolved.sdk, model: reference, tokens: usage.cacheRead, source: "prompt_cache" });
   }
@@ -72,6 +105,16 @@ export function emitUsageCostEvents({ onEvent, resolved, reference, usage, estim
       cacheCreationTokens: Number(usage.cacheWrite) || 0,
     },
   });
+  if (contextUsage) {
+    const effectiveContextWindow = Number(contextWindow) || 0;
+    onEvent({
+      type: "context_usage",
+      sdk: resolved.sdk,
+      model: reference,
+      ...(effectiveContextWindow > 0 ? { contextWindow: effectiveContextWindow } : {}),
+      tokens: contextUsage,
+    });
+  }
   onEvent({
     type: "provider_request_completed",
     sdk: resolved.sdk,

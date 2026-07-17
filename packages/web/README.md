@@ -57,10 +57,12 @@ remaining discovered agents.
 The assistant-ui run-settings popover combines searchable model selection with
 the selected model's supported reasoning-effort choices and becomes a
 viewport-safe bottom sheet on narrow screens. Usage telemetry remains internal
-and is summarized through a context display that accumulates the conversation's
-newest per-turn snapshots; it reports a percentage only when the agent advertises
-a trustworthy context-window size. Structured reasoning is grouped into a
-stream-aware disclosure without reordering adjacent tool or answer parts.
+and is summarized through a context display that keeps the final provider
+request's exact context snapshot separate from last-turn processed tokens and
+conversation cost. Exact snapshots can decrease after compaction; legacy threads
+show `Context —` instead of deriving a percentage from aggregate work. Structured
+reasoning and routine tools share one stream-aware Activity disclosure that
+collapses at every terminal message state without reordering answer parts.
 Typing `/` in an empty composer opens the available command triggers.
 
 ## Public API

@@ -33,6 +33,12 @@ export const REASONING_GROUP_BY = groupPartByType({
   reasoning: ["group-reasoning"] as const,
 });
 
+export const ACTIVITY_GROUP_BY = groupPartByType({
+  reasoning: ["group-activity"] as const,
+  "tool-call": ["group-activity"] as const,
+  "standalone-tool-call": [] as const,
+});
+
 export interface ReasoningRootProps extends Omit<
   Collapsible.Root.Props,
   "className" | "defaultOpen" | "onOpenChange" | "open"
@@ -46,6 +52,8 @@ export interface ReasoningRootProps extends Omit<
    * it. Streaming opens the live preview and settling collapses it.
    */
   readonly streaming?: boolean;
+  /** Force a running disclosure closed when the message reaches a terminal state. */
+  readonly collapseOnSettle?: boolean;
 }
 
 export function ReasoningRoot({
@@ -54,6 +62,7 @@ export function ReasoningRoot({
   onOpenChange,
   defaultOpen = false,
   streaming,
+  collapseOnSettle = false,
   children,
   ...props
 }: ReasoningRootProps) {
@@ -72,9 +81,13 @@ export function ReasoningRoot({
 
   useLayoutEffect(() => {
     if (previousStreamingRef.current === streaming) return;
+    const wasStreaming = previousStreamingRef.current;
     previousStreamingRef.current = streaming;
+    if (collapseOnSettle && wasStreaming === true && streaming === false && !controlled) {
+      setUserOpen(false);
+    }
     if (!controlled && userOpen === null) lockScroll();
-  }, [controlled, lockScroll, streaming, userOpen]);
+  }, [collapseOnSettle, controlled, lockScroll, streaming, userOpen]);
 
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     lockScroll();
@@ -254,6 +267,12 @@ export interface ReasoningGroupProps extends PropsWithChildren {
   readonly streaming?: boolean;
 }
 
+export interface ActivityGroupProps extends PropsWithChildren {
+  readonly className?: string;
+  readonly status?: { readonly type: string };
+  readonly streaming?: boolean;
+}
+
 const ReasoningGroupImpl = ({
   children,
   className,
@@ -293,3 +312,35 @@ Reasoning.displayName = "Reasoning";
 
 export const ReasoningGroup = memo(ReasoningGroupImpl);
 ReasoningGroup.displayName = "ReasoningGroup";
+
+const ActivityGroupImpl = ({
+  children,
+  className,
+  status,
+  streaming,
+}: ActivityGroupProps) => {
+  const isStreaming = streaming ?? status?.type === "running";
+  return (
+    <ReasoningRoot
+      className={joinClassNames("activity-root", className)}
+      collapseOnSettle
+      streaming={isStreaming}
+    >
+      <ReasoningTrigger active={isStreaming} className="activity-trigger">
+        <span className="reasoning-trigger-icon" aria-hidden="true">
+          <Icon name="spark" size={14} />
+        </span>
+        <span className="reasoning-trigger-label">
+          Activity{isStreaming && <span className="sr-only"> in progress</span>}
+        </span>
+        <Icon className="reasoning-trigger-chevron" name="chevron" size={14} />
+      </ReasoningTrigger>
+      <ReasoningContent className="activity-content" aria-busy={isStreaming}>
+        <ReasoningText>{children}</ReasoningText>
+      </ReasoningContent>
+    </ReasoningRoot>
+  );
+};
+
+export const ActivityGroup = memo(ActivityGroupImpl);
+ActivityGroup.displayName = "ActivityGroup";
