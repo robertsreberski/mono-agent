@@ -62,7 +62,7 @@ Coverage: `config`. Three conditions must hold for a send tool to work:
 
 1. The tool must be **permitted by the policy**. Under allow-all (the default) that is automatic once the channel is enabled — no allowlist entry needed. On runtimes that enforce specific lists, include the exact name or deny it normally. Direct `codex:*` rejects all restrictive normal-run policies before start; it never silently widens them.
 2. The corresponding adapter must have **valid config** — `slack.*` for `SlackSendMessage`, `telegram.*` for the Telegram tools — which supplies the credentials and the destination bounds.
-3. With `sandbox.mode: "native"`, the sandbox network policy must admit the tool's HTTP endpoint: `slack.com`, `api.telegram.org` (or the configured Telegram `apiRoot` host), and the configured loopback interaction-bridge host for `AskUser` / `TelegramAskButtons`. `mono-agent validate` names any missing host.
+3. With `sandbox.mode: "native"`, the sandbox network policy must admit the tool's HTTP endpoint: `slack.com`, `api.telegram.org` (or the configured Telegram `apiRoot` host), and the configured loopback interaction-bridge host used by send-history recording, `AskUser`, and `TelegramAskButtons`. `mono-agent validate` names any missing host.
 
 ### Telegram interactive send tools
 
@@ -98,7 +98,7 @@ become a filesystem-existence oracle. The scratch directory is deleted after the
 run and its tool clients settle. Missing trusted request context fails closed.
 Omitting this block preserves the legacy allowlist-only behavior.
 
-The native sandbox's network allowlist is a separate egress boundary. App-owned send tools run in a sandboxed child and use SRT's authenticated proxy automatically; no `NODE_USE_ENV_PROXY` setting is needed. A `localhost`-only policy cannot reach Slack or Telegram. In `allowlist` mode, include the exact external API hosts plus an explicit loopback host (normally `127.0.0.1`) when a blocking ask tool is enabled. Mono-agent grants SRT's coarse loopback capability only to this trusted app-owned child; it does not let Bash or project MCP servers bind arbitrary loopback ports:
+The native sandbox's network allowlist is a separate egress boundary. App-owned send tools run in a sandboxed child and use SRT's authenticated proxy automatically; no `NODE_USE_ENV_PROXY` setting is needed. A `localhost`-only policy cannot reach Slack or Telegram. In `allowlist` mode, include the exact external API hosts plus an explicit loopback host (normally `127.0.0.1`) when a message-send or blocking ask tool is enabled. Mono-agent grants SRT's coarse loopback capability only to this trusted app-owned child; it does not let Bash or project MCP servers bind arbitrary loopback ports:
 
 ```json
 {
@@ -114,9 +114,27 @@ The native sandbox's network allowlist is a separate egress boundary. App-owned 
 
 `SlackSendMessage` accepts standard Markdown by default, renders it to Slack `mrkdwn`, and preserves Slack thread/formatting options on every chunk. Set its `mrkdwn` argument to `false` only when you need plain text sent unchanged. Text below Slack's 40,000-character platform limit is one post; text above the limit is split and each posted chunk is indexed so replies in those threads can resume the producing conversation.
 
+After Slack or Telegram confirms a send-tool post, mono-agent records the exact
+delivered text into that destination's assistant history: the Telegram chat, or
+the Slack thread selected by `thread_ts` (a new top-level post uses its confirmed
+message timestamp). The history key comes from the platform receipt, so replaying
+the same confirmed receipt is idempotent. A retry that creates a second platform
+message has a different receipt and therefore a second history entry, matching
+what the user actually received. Failed platform sends record nothing. If the
+best-effort history path is unavailable after a successful post, the tool result
+includes a warning but remains a successful delivery. Cross-conversation sends
+write only the destination history. For a new top-level Slack post, the history
+attempt settles before the producer reply alias is published; an accepted
+cross-conversation append is therefore durable first. A failed or timed-out
+history attempt stays visible in the successful tool result, while the existing
+producer alias is still published so routing does not regress. A warm producer
+session already owns the tool call in its provider transcript; after a successful
+history append, cold replay supplements the aliased producer context with the one
+receipt-matched destination entry, without copying it into producer history.
+
 ### `AskUser` — blocking free-text ask (interaction bridge)
 
-`AskUser` is the free-text blocking ask: the tool call posts a question to the current conversation's chat and **waits for the user's next message**, which is returned as the tool result — so the agent keeps its full mid-turn context. It is channel-agnostic and backed by the app's **interaction bridge**. The loopback registry starts automatically when `AskUser` or `TelegramAskButtons` is allowed (under the allow-all default, or listed in a specific `tools.allowedTools`), when the `interaction` block or an interaction env override is configured, or when `interaction.progress.enabled` resolves true and `tools.mcpRequestContextServers` names at least one opted project MCP server.
+`AskUser` is the free-text blocking ask: the tool call posts a question to the current conversation's chat and **waits for the user's next message**, which is returned as the tool result — so the agent keeps its full mid-turn context. It is channel-agnostic and backed by the app's **interaction bridge**. The loopback registry starts automatically when a configured Slack/Telegram send tool, `AskUser`, or `TelegramAskButtons` is allowed (under the allow-all default, or listed in a specific `tools.allowedTools`), when the `interaction` block or an interaction env override is configured, or when `interaction.progress.enabled` resolves true and `tools.mcpRequestContextServers` names at least one opted project MCP server.
 
 - While an ask is pending, the user's next **plain-text** message on that chat is consumed as the ANSWER (acknowledged with a 👍 reaction) and never runs as a turn; media and `/`-commands pass through normally, and `/cancel` fails the pending ask.
 - One pending ask per conversation: consolidate everything into a single question. A second concurrent ask returns an "already pending" result.
@@ -188,7 +206,7 @@ To send nothing for a tick or request, the agent either produces an **empty fina
 
 | | **Native notify** (`notify: true`) | **Send tools** (`SlackSendMessage` / `TelegramSendMessage`) |
 |---|---|---|
-| Effect | Posts the final answer **verbatim** and records it as a remembered turn | Posts a message into a **channel** (side-channel; not a turn) |
+| Effect | Posts the final answer **verbatim** and records it as a remembered turn | Posts exact tool text into a **channel** and records each confirmed post in destination history |
 | Available on | **cron / webhook turns** (opt-in per job/endpoint) | any turn |
 | Agent involvement | None — the app delivers the final answer; no tool call | Agent calls the tool explicitly |
 | Allowlist entry | **Not** a `tools.allowedTools` entry (config-level toggle) | Available under allow-all (the default); a specific `tools.allowedTools` needs the exact tool name |

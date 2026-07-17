@@ -64,6 +64,40 @@ describe("telegram proactive notify allowlist", () => {
     const result = await running.notify!({ conversationId: "telegram:999", text: "hi" });
     expect(result).toEqual({ delivered: true });
   });
+
+  it("records destination history through the responder with the receipt idempotency key", async () => {
+    const notify = vi.fn(async () => ({ delivered: true }));
+    const deliverVerbatim = vi.fn(async () => undefined);
+    const running = await telegramDriver(notify).start({
+      ...startInput(config({})),
+      responder: { deliverVerbatim } as never,
+    });
+    const recordHistory = (running as unknown as {
+      recordContinuationHistory(input: {
+        conversationId: string;
+        text: string;
+        deliveryKey: string;
+      }): Promise<{ recorded: boolean; code?: string }>;
+    }).recordContinuationHistory;
+
+    await expect(recordHistory({
+      conversationId: "telegram:42",
+      text: "Exact delivered text",
+      deliveryKey: "adapter-send:telegram:42:7",
+    })).resolves.toEqual({ recorded: true });
+    expect(deliverVerbatim).toHaveBeenCalledWith(
+      "telegram:42",
+      "Exact delivered text",
+      { idempotencyKey: "adapter-send:telegram:42:7" },
+    );
+
+    await expect(recordHistory({
+      conversationId: "telegram:999",
+      text: "blocked",
+      deliveryKey: "adapter-send:telegram:999:8",
+    })).resolves.toEqual({ recorded: false, code: "telegram_destination_not_allowlisted" });
+    expect(deliverVerbatim).toHaveBeenCalledOnce();
+  });
 });
 
 describe("slack proactive notify allowlist", () => {

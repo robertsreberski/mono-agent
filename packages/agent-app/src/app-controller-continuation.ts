@@ -1,7 +1,10 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
 
 import { isAppCoreConfigError, loadAppCoreConfig } from "./app-config.js";
-import { isAdapterSendToolAllowed } from "./adapter-send-tools.js";
+import {
+  isAdapterSendToolAllowed,
+  resolveAdapterSendToolsSettings,
+} from "./adapter-send-tools.js";
 import { loadInteractionSettings, startInteractionBridge } from "./interaction-bridge.js";
 import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import { loadContinuationSettings } from "./continuation-config.js";
@@ -36,9 +39,21 @@ export function ensureInteractionBridge(controller: MonoAgentAppController, core
       allowedTools: coreConfig.tools.allowedTools,
       disallowedTools: coreConfig.tools.disallowedTools,
     });
+    const adapterSendSettings = await resolveAdapterSendToolsSettings({
+      env: controller.env,
+      cwd: controller.cwd,
+      configPath: controller.configReadPath,
+    }, {
+      allowedTools: coreConfig.tools.allowedTools,
+      disallowedTools: coreConfig.tools.disallowedTools,
+      suppressInteractionTools: true,
+      ...(controller.logger === undefined ? {} : { logger: controller.logger }),
+    });
+    const deliveryHistoryNeeded = adapterSendSettings?.slack !== undefined
+      || adapterSendSettings?.telegram?.tools.send === true;
     const scopedProgressNeeded = settings.progressEnabled
       && (coreConfig.tools.mcpRequestContextServers?.length ?? 0) > 0;
-    if (!askUserAllowed && !telegramAskAllowed && !scopedProgressNeeded && !settings.configured) {
+    if (!askUserAllowed && !telegramAskAllowed && !deliveryHistoryNeeded && !scopedProgressNeeded && !settings.configured) {
       return undefined;
     }
     try {
@@ -46,13 +61,19 @@ export function ensureInteractionBridge(controller: MonoAgentAppController, core
         host: settings.host,
         port: settings.port,
         askTimeoutMs: settings.askTimeoutMs,
+        recordDeliveryHistory: async (input) => await recordContinuationHistory(
+          controller,
+          input.conversationId,
+          input.text,
+          input.idempotencyKey,
+        ),
         ...(controller.logger === undefined ? {} : { logger: controller.logger }),
       });
       controller.interactionBridge = bridge;
       controller.logger?.info?.("Interaction bridge started.", { url: bridge.url });
       return bridge;
     } catch (error) {
-      controller.logger?.warn?.("Interaction bridge failed to start; AskUser and tool progress are unavailable.", {
+      controller.logger?.warn?.("Interaction bridge failed to start; AskUser, adapter history, and tool progress are unavailable.", {
         reason: reasonOf(error),
       });
       return undefined;

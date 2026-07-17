@@ -166,6 +166,8 @@ interface ConfiguredAgentInternalHooks {
    * promise is not awaited and all hook failures are ignored.
    */
   readonly onRunArtifactCommitted?: RunArtifactCommitHook;
+  /** App-only read decoration around the configured canonical history store. */
+  readonly wrapHistoryStore?: (store: ConversationHistoryStore) => ConversationHistoryStore;
 }
 
 /**
@@ -521,7 +523,7 @@ async function createConfiguredAgentHarnessInternal(
   };
   const piSessionsRoot = config.providers?.piNative?.piSessionsRoot;
   const retireDurableSession = runtime.retireDurableSession?.bind(runtime);
-  const historyStore = options.historyStore ?? createDurableHistoryStore({
+  const baseHistoryStore = options.historyStore ?? createDurableHistoryStore({
     root: resolvePath(config.artifacts.dir, "..", "history"),
     maxMessages: DEFAULT_HISTORY_MAX_MESSAGES,
     ...(piSessionsRoot === undefined || retireDurableSession === undefined
@@ -532,6 +534,7 @@ async function createConfiguredAgentHarnessInternal(
           },
         }),
   });
+  const historyStore = internalHooks.wrapHistoryStore?.(baseHistoryStore) ?? baseHistoryStore;
 
   return createAgentHarness({
     identityPath: config.context.identityPath,
@@ -653,7 +656,8 @@ async function createConfiguredAgentResponderInternal(
   }) as AgentResponder;
 }
 
-const DEFAULT_HISTORY_MAX_MESSAGES = 64;
+/** @internal Shared only with app-local history decorators; absent from the package root. */
+export const DEFAULT_HISTORY_MAX_MESSAGES = 64;
 
 function hasConfiguredFallback(config: MonoAgentConfig): boolean {
   return (config.runtime.fallbacks?.length ?? 0) > 0
