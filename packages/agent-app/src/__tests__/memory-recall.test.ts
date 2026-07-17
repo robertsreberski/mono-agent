@@ -22,8 +22,6 @@ import {
   createMemoryEmbeddingProvider,
   createMemoryRecallServer,
   createRecallStore,
-  memoryRecallMcpEnv,
-  memoryRecallMcpServerSpec,
   memoryRecallSettingsFromEnv,
   resolveMemoryRecallSettings,
 } from "../memory-recall.js";
@@ -95,12 +93,6 @@ describe("resolveMemoryRecallSettings", () => {
         circuitBreaker: { failureThreshold: 7, cooldownMs: 12_000 },
       },
     });
-    expect(memoryRecallMcpEnv(previewSettings as MemoryRecallSettings)).toMatchObject({
-      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "MEMORY_EMBEDDINGS_KEY",
-    });
-    expect(memoryRecallMcpEnv(previewSettings as MemoryRecallSettings)).not.toHaveProperty(
-      "MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY",
-    );
   });
 
   it("defaults the recall tool on for a programmatic memory config that omits recallTool", () => {
@@ -131,7 +123,7 @@ describe("resolveMemoryRecallSettings", () => {
   });
 
   it("carries embeddings timeout + circuit-breaker tuning into the recall settings", () => {
-    // F11: the resilience knobs must reach the recall child, not be dropped.
+    // F11: the resilience knobs must reach the recall store, not be dropped.
     const settings = resolveMemoryRecallSettings(
       configWithMemory({
         mode: "journal",
@@ -231,7 +223,7 @@ describe("resolveMemoryRecallSettings", () => {
   });
 });
 
-describe("memoryRecallMcpServerSpec / env", () => {
+describe("memoryRecallSettingsFromEnv", () => {
   const settings = {
     root: "/memory",
     tier: "bujo" as const,
@@ -243,24 +235,15 @@ describe("memoryRecallMcpServerSpec / env", () => {
     },
   };
 
-  it("emits a stdio spec pointing at the recall bin with the memory env", () => {
-    const spec = memoryRecallMcpServerSpec(settings, "/agent");
-    expect(spec.type).toBe("stdio");
-    expect(spec.command).toBe(process.execPath);
-    expect(spec.cwd).toBe("/agent");
-    expect(String((spec.args as string[])[0])).toMatch(/memory-recall-main\.js$/u);
-    expect(spec.env).toMatchObject({
+  it("hydrates built-in settings from the standalone binary environment", () => {
+    const env = {
       MONO_AGENT_MEMORY_PATH: "/memory",
       MONO_AGENT_MEMORY_MODE: "bujo",
       MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
       MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "nomic-embed-text:v1.5",
       MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: "http://localhost:11434",
       MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "768",
-    });
-  });
-
-  it("round-trips through the MONO_AGENT_MEMORY_* env back to settings", () => {
-    const env = memoryRecallMcpEnv(settings);
+    };
     expect(memoryRecallSettingsFromEnv(env)).toEqual(settings);
   });
 
@@ -268,7 +251,7 @@ describe("memoryRecallMcpServerSpec / env", () => {
     expect(() => memoryRecallSettingsFromEnv({})).toThrow(/missing required environment/u);
   });
 
-  it("round-trips embeddings timeout + circuit-breaker tuning through the env (F11)", () => {
+  it("hydrates embeddings timeout + circuit-breaker tuning from the env (F11)", () => {
     const tuned: MemoryRecallSettings = {
       root: "/memory",
       embeddings: {
@@ -278,59 +261,39 @@ describe("memoryRecallMcpServerSpec / env", () => {
         circuitBreaker: { failureThreshold: 7, cooldownMs: 12_000 },
       },
     };
-    const env = memoryRecallMcpEnv(tuned);
-    expect(env).toMatchObject({
+    const env = {
+      MONO_AGENT_MEMORY_PATH: "/memory",
+      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
+      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "nomic-embed-text:v1.5",
       MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS: "4000",
       MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD: "7",
       MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS: "12000",
-    });
+    };
     expect(memoryRecallSettingsFromEnv(env)).toEqual(tuned);
   });
 
-  it("forwards the apiKeyEnv NAME (not the secret) and the child resolves it from inherited env (F13)", () => {
-    const withApiKeyEnv: MemoryRecallSettings = {
-      root: "/memory",
-      embeddings: {
-        provider: "openai",
-        model: "text-embedding-3-small",
-        apiKey: "resolved-secret",
-        apiKeyEnv: "MY_OPENAI_KEY",
-      },
+  it("resolves a declared apiKeyEnv from the inherited standalone-binary environment (F13)", () => {
+    const env = {
+      MONO_AGENT_MEMORY_PATH: "/memory",
+      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
+      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "text-embedding-3-small",
+      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "MY_OPENAI_KEY",
     };
-    const env = memoryRecallMcpEnv(withApiKeyEnv);
-    // The NAME is forwarded; the raw secret value is NOT placed in the spec env.
-    expect(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV).toBe("MY_OPENAI_KEY");
-    expect(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY).toBeUndefined();
-    expect(Object.values(env)).not.toContain("resolved-secret");
-
-    // The child re-reads the key from its inherited env at runtime.
     const resolved = bujo(memoryRecallSettingsFromEnv({ ...env, MY_OPENAI_KEY: "resolved-secret" }));
     expect(resolved.embeddings?.apiKey).toBe("resolved-secret");
     expect(resolved.embeddings?.apiKeyEnv).toBe("MY_OPENAI_KEY");
   });
 
-  it("round-trips LM Studio through the recall child env without putting its named secret in the spec", () => {
-    const lmStudio: MemoryRecallSettings = {
-      root: "/memory",
-      tier: "journal",
-      embeddings: {
-        provider: "lmstudio",
-        model: "text-embedding-test",
-        endpoint: "http://localhost:1234",
-        apiKey: "resolved-secret",
-        apiKeyEnv: "LM_STUDIO_API_KEY",
-        dim: 4,
-      },
-    };
-
-    const env = memoryRecallMcpEnv(lmStudio);
-    expect(env).toMatchObject({
+  it("hydrates LM Studio settings with a named secret", () => {
+    const env = {
+      MONO_AGENT_MEMORY_PATH: "/memory",
+      MONO_AGENT_MEMORY_MODE: "journal",
       MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "lmstudio",
+      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "text-embedding-test",
       MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: "http://localhost:1234",
       MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "LM_STUDIO_API_KEY",
-    });
-    expect(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY).toBeUndefined();
-    expect(Object.values(env)).not.toContain("resolved-secret");
+      MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "4",
+    };
 
     expect(memoryRecallSettingsFromEnv({ ...env, LM_STUDIO_API_KEY: "child-secret" })).toEqual({
       root: "/memory",
@@ -356,22 +319,14 @@ describe("memoryRecallMcpServerSpec / env", () => {
     })).toThrow(/LM_STUDIO_API_KEY.*no non-empty value/iu);
   });
 
-  it("falls back to forwarding a literal inline apiKey when no apiKeyEnv is present (F13 residual)", () => {
-    const inline: MemoryRecallSettings = {
-      root: "/memory",
-      embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "inline-secret" },
+  it("accepts a literal apiKey when no apiKeyEnv is declared (F13 residual)", () => {
+    const env = {
+      MONO_AGENT_MEMORY_PATH: "/memory",
+      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
+      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "text-embedding-3-small",
+      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "inline-secret",
     };
-    const env = memoryRecallMcpEnv(inline);
-    expect(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY).toBe("inline-secret");
-    expect(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV).toBeUndefined();
     expect(bujo(memoryRecallSettingsFromEnv(env)).embeddings?.apiKey).toBe("inline-secret");
-  });
-
-  it("round-trips an FTS-only (no-embeddings) settings object through the env (F12)", () => {
-    const ftsOnly: MemoryRecallSettings = { root: "/memory" };
-    const env = memoryRecallMcpEnv(ftsOnly);
-    expect(env).toEqual({ MONO_AGENT_MEMORY_PATH: "/memory" });
-    expect(memoryRecallSettingsFromEnv(env)).toEqual(ftsOnly);
   });
 
   it("resolves FTS-only settings from an env carrying only the memory path (F12)", () => {
@@ -800,31 +755,31 @@ describe("supermemory backend recall", () => {
         timeoutMs: 4_500,
       },
     });
-    expect(memoryRecallMcpEnv(previewSettings as MemoryRecallSettings)).toMatchObject({
-      MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY: "resolved-sm-secret",
-      MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER: "explicit-container",
-      MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS: "4500",
-    });
   });
 
-  it("forwards the resolved apiKey VALUE into the child env and round-trips it (cross-runtime safe)", () => {
-    // The loader already resolved any apiKeyEnv → apiKey, so recall forwards the value (not a name):
-    // the stdio child does not inherit the parent's full env under every runtime.
+  it("hydrates a resolved Supermemory apiKey value from the standalone-binary env", () => {
     const settings: MemoryRecallSettings = {
       supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha", apiKey: "sm-secret", timeoutMs: 5_000 },
     };
-    const env = memoryRecallMcpEnv(settings);
-    expect(env.MONO_AGENT_MEMORY_BACKEND).toBe("supermemory");
-    expect(env.MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY).toBe("sm-secret");
+    const env = {
+      MONO_AGENT_MEMORY_BACKEND: "supermemory",
+      MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:6767",
+      MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER: "agent-alpha",
+      MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY: "sm-secret",
+      MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS: "5000",
+    };
     expect(memoryRecallSettingsFromEnv(env)).toEqual(settings);
   });
 
-  it("round-trips a keyless (local, no-auth) supermemory recall config", () => {
+  it("hydrates a keyless (local, no-auth) Supermemory recall config", () => {
     const keyless: MemoryRecallSettings = {
       supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
     };
-    const env = memoryRecallMcpEnv(keyless);
-    expect(env.MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY).toBeUndefined();
+    const env = {
+      MONO_AGENT_MEMORY_BACKEND: "supermemory",
+      MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:6767",
+      MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER: "agent-alpha",
+    };
     expect(memoryRecallSettingsFromEnv(env)).toEqual(keyless);
   });
 

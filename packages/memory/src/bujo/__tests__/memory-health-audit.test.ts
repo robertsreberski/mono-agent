@@ -227,7 +227,6 @@ describe("strict BuJo memory health", () => {
     });
     try {
       await store.load("private-conversation", "nothing yet");
-      await store.reflect();
       await store.consolidate();
       await store.appendHostSummary("private-conversation", "BuJo raw audit is outside rollback source truth.");
       appendGraphBatch(root, { entities: [], relations: [], associations: [] });

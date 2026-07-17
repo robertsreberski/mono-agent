@@ -1,4 +1,4 @@
-/** Per-call hints for a completion. `label` tags the ritual (e.g. "capture:distill") so a recording host can group/name the run. */
+/** Per-call hints for a completion. `label` tags the ritual (e.g. "capture:extract") so a recording host can group/name the run. */
 export interface LlmCompleteOptions {
   readonly label?: string;
   readonly abortSignal?: AbortSignal;

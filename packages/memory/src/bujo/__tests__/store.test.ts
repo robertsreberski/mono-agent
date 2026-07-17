@@ -33,7 +33,7 @@ describe("BujoMemoryStore — tier derivation", () => {
     await store.close();
   });
 
-  it("journal tier: embeddings + no llm → tier() === 'journal'; load works; decay() is a no-op; capture() undefined", async () => {
+  it("journal tier: embeddings + no llm → tier() === 'journal'; load works; capture() undefined", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-tier-journal-"));
     const now = new Date("2026-06-16T09:00:00.000Z");
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });
@@ -43,9 +43,6 @@ describe("BujoMemoryStore — tier derivation", () => {
     await store.appendHostSummary("s1", "Morgan's weekly review status is complete.");
     const block = await store.load("What is Morgan's weekly review status?");
     expect(block?.content).toContain("weekly review");
-
-    const decayResult = await store.decay();
-    expect(decayResult).toEqual({ decayed: 0 });
 
     expect(await store.capture("s1", "some text")).toBeUndefined();
 
@@ -363,19 +360,6 @@ describe("BujoMemoryStore — tier derivation", () => {
     })).toThrow(/lexical-only/i);
   });
 
-  it("decay() remains a compatibility no-op in lite tier", async () => {
-    const root = mkdtempSync(join(tmpdir(), "bujo-tier-lite-decay-"));
-    const store = createBujoMemoryStore({ root });
-
-    expect(store.tier()).toBe("lite");
-
-    await store.appendHostSummary("s1", "Something to decay.");
-    const result = await store.decay();
-    expect(result).toEqual({ decayed: 0 });
-
-    await store.close();
-  });
-
   it("consolidate() is available without an llm and preserves derived tier semantics", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-tier-consolidate-"));
     let now = new Date("2026-06-01T09:00:00.000Z");
@@ -530,86 +514,12 @@ describe("BujoMemoryStore", () => {
     await store.close();
   });
 
-  it("reflect() is a read-only compatibility probe without an llm", async () => {
-    const root = mkdtempSync(join(tmpdir(), "bujo-store-reflect-nollm-"));
-    const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64 });
-    const result = await store.reflect();
-    expect(result).toEqual({ decayed: 0, insights: 0, due: 0 });
-    expect(existsSync(join(root, "future-log.md"))).toBe(false);
-    expect(existsSync(join(root, "index.md"))).toBe(false);
-    await store.close();
-  });
-
   it("migrate() returns undefined when no llm configured", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-store-migrate-nollm-"));
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64 });
     const result = await store.migrate();
     expect(result).toBeUndefined();
     await store.close();
-  });
-
-  it("reflect() never invokes the configured llm or mutates memory state", async () => {
-    const DIM = 64;
-    const root = mkdtempSync(join(tmpdir(), "bujo-store-reflect-llm-"));
-    const now = new Date("2026-06-15T12:00:00.000Z");
-
-    // Seed 3+ memories directly into the db: the old implementation would synthesize an insight.
-    const db = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(DIM), dim: DIM });
-    const sourceFile = relative(root, dailyFilePath(root, now));
-
-    interface SeedSpec { id: string; text: string; salience: number }
-    const seedSpecs: SeedSpec[] = [
-      { id: "S1", text: "Morgan prefers morning focused work", salience: 0.7 },
-      { id: "S2", text: "Morgan blocks calendar for deep work sessions", salience: 0.65 },
-      { id: "S3", text: "Morgan avoids meetings before noon", salience: 0.6 },
-    ];
-    for (const spec of seedSpecs) {
-      const bullet: Bullet = {
-        id: spec.id,
-        type: "note",
-        status: spec.id === "S1" ? "scheduled" : "open",
-        text: spec.text,
-        salience: spec.salience,
-        isInsight: false,
-        createdAt: now.toISOString(),
-        ...(spec.id === "S1" ? { dueAt: new Date(now.getTime() - 1_000).toISOString() } : {}),
-        refs: [],
-      };
-      appendBullet(root, bullet, now);
-      const record: MemoryRecord = {
-        id: spec.id,
-        type: "note",
-        status: bullet.status,
-        text: spec.text,
-        salience: spec.salience,
-        isInsight: false,
-        createdAt: now.toISOString(),
-        accessCount: 0,
-        tags: [],
-        ...(bullet.dueAt === undefined ? {} : { dueAt: bullet.dueAt }),
-        source: { file: sourceFile },
-      };
-      await db.upsert(record);
-    }
-    const before = seedSpecs.map((spec) => db.get(spec.id));
-    db.close();
-
-    const complete = vi.fn(async () => { throw new Error("reflection llm must not run"); });
-    const llm = { id: "must-not-run", complete };
-
-    const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(DIM), dim: DIM, clock: () => now, llm });
-
-    const result = await store.reflect();
-
-    expect(result).toEqual({ decayed: 0, insights: 0, due: 1 });
-    expect(complete).not.toHaveBeenCalled();
-    expect(existsSync(join(root, "future-log.md"))).toBe(false);
-    expect(existsSync(join(root, "index.md"))).toBe(false);
-
-    await store.close();
-    const inspected = openMemoryDb({ path: join(root, "memory.db"), readOnly: true, dim: DIM });
-    expect(seedSpecs.map((spec) => inspected.get(spec.id))).toEqual(before);
-    inspected.close();
   });
 
   it("migrate() with llm: returns MigrateResult and writes future-log.md", async () => {
@@ -700,19 +610,18 @@ function tmpRoot(): string {
   return mkdtempSync(join(tmpdir(), "bujo-queue-"));
 }
 
-// A fake LLM that records the order of completion calls and yields empty JSON
-// (distill/reconcile/entities all tolerate empty arrays → a no-op capture).
+// A fake LLM that records completion order and yields an empty capture plan.
 function recordingLlm(order: string[], opts: { throwOnText?: string } = {}): LlmComplete {
   return {
     id: "fake",
     async complete(prompt: string): Promise<string> {
       // Push the full prompt so the caller can detect "FIRST" / "SECOND" / "POISON" / "HEALTHY"
-      // (these appear in the TEXT: section at the tail of the distill prompt).
+      // (these appear in the TURN section at the tail of the capture prompt).
       order.push(prompt);
       if (opts.throwOnText !== undefined && prompt.includes(opts.throwOnText)) {
         throw new Error("boom");
       }
-      return "[]"; // empty distillation/entities — safe no-op
+      return "[]"; // no capture plan — safe no-op
     },
   };
 }
@@ -1016,10 +925,8 @@ describe("BujoMemoryStore async capture queue", () => {
   });
 
   it("scheduleCapture surfaces a REAL model failure through the logger (not silent)", async () => {
-    // The whole point of the fix: when the AI model is down, the failure must be visible. Previously
-    // the LLM error was swallowed inside distill/entities, so capture looked like a successful no-op
-    // and the logger never fired. Now a throwing LLM reaches scheduleCapture's catch and is logged
-    // with the underlying cause — so an operator can tell "the model failed" from "nothing to capture".
+    // A throwing capture model reaches scheduleCapture's catch and is logged with the underlying
+    // cause, so an operator can tell "the model failed" from "nothing to capture".
     const warnings: string[] = [];
     const throwingLlm: LlmComplete = { id: "throws", complete: async () => { throw new Error("ollama down"); } };
     const store = createBujoMemoryStore({
@@ -1321,9 +1228,7 @@ describe("BujoMemoryStore async capture queue", () => {
     await expect(store.appendHostSummary("late", "must not escape after close")).rejects.toThrow(/closing or closed/iu);
     expect(() => store.scheduleCapture("late", "must not enter queue")).toThrow(/closing or closed/iu);
     await expect(store.capture("late", "must not capture")).rejects.toThrow(/closing or closed/iu);
-    await expect(store.reflect()).rejects.toThrow(/closing or closed/iu);
     await expect(store.migrate()).rejects.toThrow(/closing or closed/iu);
-    await expect(store.decay()).rejects.toThrow(/closing or closed/iu);
     await expect(store.consolidate()).rejects.toThrow(/closing or closed/iu);
     await expect(store.load("late", "audit")).rejects.toThrow(/closing or closed/iu);
     await expect(store.recall("audit")).rejects.toThrow(/closing or closed/iu);
@@ -1357,7 +1262,6 @@ describe("BujoMemoryStore async capture queue", () => {
     await expect(store.appendHostSummary("late", "late append")).rejects.toThrow(/closing or closed/iu);
     expect(() => store.scheduleCapture("late", "late queue admission")).toThrow(/closing or closed/iu);
     await expect(store.capture("late", "late capture")).rejects.toThrow(/closing or closed/iu);
-    await expect(store.decay()).rejects.toThrow(/closing or closed/iu);
     await expect(store.consolidate()).rejects.toThrow(/closing or closed/iu);
     expect(store.queueSnapshot().capture).toMatchObject({ queued: 0, inFlight: 1, accepting: false });
     expect(readFileSync(write.source, "utf8")).toBe(sourceBefore);

@@ -48,7 +48,6 @@ import {
 } from "./capture-intake.js";
 import { composeRecallBlock } from "./recall.js";
 import { recoverDurableMutationState, withSerializedBujoMutation } from "./mutation-lock.js";
-import { reflect as reflectFn, type ReflectResult } from "./reflect.js";
 import {
   migrate as migrateFn,
   type MigrateResult,
@@ -662,29 +661,6 @@ export class BujoMemoryStore implements MemoryStore {
     return { conversationId, source: path, bytesWritten: Buffer.byteLength(`${serializeBullet(bullet)}\n`, "utf8") };
   }
 
-  /** @deprecated Read-only compatibility probe; returns the current due count. */
-  async reflect(): Promise<ReflectResult> {
-    this.assertOpen("reflect");
-    return await this.runAdmittedOperation(async (abortSignal) => {
-      // ReflectDeps keeps its historical LLM field for source compatibility.
-      // The compatibility implementation never invokes it.
-      const llm = this.llm ?? {
-        id: "reflect-disabled",
-        complete: async (): Promise<string> => {
-          throw new Error("memory-bujo: read-only reflection must not call an LLM.");
-        },
-      };
-      return await reflectFn({
-        db: this.db,
-        root: this.root,
-        llm,
-        nextId: this.nextId,
-        now: this.clock,
-        abortSignal,
-      });
-    });
-  }
-
   /**
    * Run the monthly BuJo migration ritual: review aging open memories and apply LLM decisions
    * (promote / reschedule / cluster / forget). Also writes future-log.md.
@@ -807,15 +783,6 @@ export class BujoMemoryStore implements MemoryStore {
         canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
       });
       return { actions: res.actions.length, entities: res.entities };
-    });
-  }
-
-  /** @deprecated Salience is static canonical state; this is a compatibility no-op. */
-  async decay(): Promise<{ decayed: number }> {
-    this.assertOpen("decay");
-    return await this.runAdmittedOperation(async (abortSignal) => {
-      abortSignal.throwIfAborted();
-      return { decayed: 0 };
     });
   }
 
