@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/session-web",
-  "version": "0.11.4",
+  "version": "0.11.5",
   "description": "Discovers local mono-agent instances and serves a read-only web PWA that visualises their runs live — aggregating recorded-run history with operator-adapter live sub-run streams.",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -34,8 +34,8 @@
     "test": "vitest run --passWithNoTests src/__tests__ && pnpm --dir webapp run test"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.11.4",
-    "@mono-agent/observability": "workspace:0.11.4",
+    "@mono-agent/agent-contracts": "workspace:0.11.5",
+    "@mono-agent/observability": "workspace:0.11.5",
     "express": "^5.1.0"
   },
   "devDependencies": {
