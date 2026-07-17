@@ -658,6 +658,62 @@ describe("startMonoAgentApp", () => {
     await app.stop();
   });
 
+  it("publishes durable startup proof only after lifecycle completion and preserves it across later refreshes", async () => {
+    await writeConfig(baseConfig());
+    let releaseStart!: () => void;
+    let startGate: Promise<void> = new Promise<void>((resolve) => { releaseStart = resolve; });
+    const driver: ChannelDriver = {
+      id: "probe" as never,
+      label: "Probe",
+      loadConfig: async () => ({ enabled: true }),
+      isConfigError: () => false,
+      start: async () => {
+        await startGate;
+        return { summary: {}, stop: async () => undefined };
+      },
+    };
+    const runtime = { run: async (): Promise<RuntimeResult> => ({ text: "ok" }) };
+    const starting = startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver], runtime });
+
+    await vi.waitFor(async () => {
+      const { sources } = await listTraceSources({ registryDir: join(dir, "trace-sources") });
+      expect(sources[0]?.metadata?.reason).toBe("startup");
+      expect(sources[0]?.metadata).not.toHaveProperty("lifecycle.startupCompleted");
+    });
+
+    releaseStart();
+    const app = await starting;
+    try {
+      let sources = (await listTraceSources({ registryDir: join(dir, "trace-sources") })).sources;
+      expect(sources[0]?.metadata?.reason).toBe("startup-complete");
+      expect(sources[0]?.metadata).toHaveProperty("lifecycle.startupCompleted", true);
+
+      const controller = app as unknown as { refreshTraceSource(reason: string): Promise<void> };
+      await controller.refreshTraceSource("memory-health-periodic");
+      sources = (await listTraceSources({ registryDir: join(dir, "trace-sources") })).sources;
+      expect(sources[0]?.metadata?.reason).toBe("memory-health-periodic");
+      expect(sources[0]?.metadata).toHaveProperty("lifecycle.startupCompleted", true);
+
+      let releaseReload!: () => void;
+      startGate = new Promise<void>((resolve) => { releaseReload = resolve; });
+      const reloading = app.applyConfigChange("proof-reload");
+      await vi.waitFor(async () => {
+        const current = (await listTraceSources({ registryDir: join(dir, "trace-sources") })).sources[0];
+        expect(current?.health).toBe("running");
+        expect(current?.metadata?.reason).toBe("proof-reload");
+        expect(current?.metadata).not.toHaveProperty("lifecycle.startupCompleted");
+      });
+      releaseReload();
+      await reloading;
+
+      sources = (await listTraceSources({ registryDir: join(dir, "trace-sources") })).sources;
+      expect(sources[0]?.metadata?.reason).toBe("proof-reload:complete");
+      expect(sources[0]?.metadata).toHaveProperty("lifecycle.startupCompleted", true);
+    } finally {
+      await app.stop();
+    }
+  });
+
   it("refreshes memory independently of a fast heartbeat and clears its timer at stop entry", async () => {
     await writeConfig({
       ...baseConfig(),

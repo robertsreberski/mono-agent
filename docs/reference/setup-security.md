@@ -90,7 +90,9 @@ permissions or rotate.
 
 Before app or channel loading, managed startup freezes the attested config, Identity, optional Soul, and external MCP authority file into private read-only runtime inputs. Trace and status records still identify the canonical operator-facing config path.
 
-`startup-complete` is accepted only when the trace PID is alive and launchd-owned; the committed config, `.env`, Identity, Soul, MCP authority, and operational-environment fingerprints agree; configured channels have not failed; and the TUI endpoint is reachable. Only then does guided init open `mono-agent tui --configure` against that process. Start or timeout failure preserves the committed files, skips configuration chat, and prints exact `start`, `status`, and `logs --follow` recovery commands.
+Managed readiness waits up to 60 seconds for the worker's durable `metadata.lifecycle.startupCompleted: true` proof. The worker publishes it only after channels, memory rituals, and the final memory-health lifecycle refresh complete. Later trace publications retain the proof while `metadata.reason` records their latest diagnostic reason, so a periodic health refresh cannot close the attach window. Readiness also requires the trace PID to be alive and launchd-owned; the committed config, `.env`, Identity, Soul, MCP authority, and operational-environment fingerprints to agree; configured channels and current memory health not to have failed; and, for configuration, the TUI endpoint to be reachable. Workers from a release that predates the durable proof must restart once before SELF-CONFIG can attach.
+
+Only after those checks does guided init open `mono-agent tui --configure` against that process. A readiness deadline or trace/TUI-probe error preserves the committed files and skips configuration chat, then uses the same ownership-proven stop path to unload the worker and scheduled-maintenance jobs and remove both definitions. If launchd or PID checks cannot prove the stop, the command fails explicitly that a process may still be running and prints exact `start`, `status`, and `logs --follow` recovery commands.
 
 ### Keyed background snapshot commitments
 

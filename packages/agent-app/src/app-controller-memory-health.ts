@@ -150,6 +150,7 @@ export async function refreshMemoryHealthAfterLifecycle(controller: MonoAgentApp
     await controller.refreshMemoryHealthSnapshot(reason, true);
   }
   if (controller.stopped || generation !== controller.memoryHealthGeneration) return;
+  controller.startupCompleted = true;
   await controller.refreshTraceSource(reason);
 }
 
@@ -161,6 +162,7 @@ export function clearMemoryHealthRefreshTimer(controller: MonoAgentAppController
 }
 
 export function invalidateMemoryHealthRefresh(controller: MonoAgentAppController): void {
+  controller.startupCompleted = false;
   controller.memoryHealthRefreshLoopActive = false;
   controller.clearMemoryHealthRefreshTimer();
   controller.memoryHealthGeneration += 1;

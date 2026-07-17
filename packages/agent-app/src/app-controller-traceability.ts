@@ -418,6 +418,7 @@ export function traceMetadata(controller: MonoAgentAppController, reason: string
   }
   return {
     reason,
+    ...(controller.startupCompleted ? { lifecycle: { startupCompleted: true } } : {}),
     ...(controller.backgroundSnapshot === undefined ? {} : { backgroundSnapshot: controller.backgroundSnapshot }),
     ...(controller.exporterStatusValue.kind === "configured"
       ? {

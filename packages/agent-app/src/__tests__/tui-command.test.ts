@@ -52,6 +52,7 @@ function source(overrides: Partial<TraceSourceListItem> = {}): TraceSourceListIt
     configPath: "/agents/a/mono-agent.config.json",
     metadata: {
       reason: "startup-complete",
+      lifecycle: { startupCompleted: true },
       channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/tui" } },
     },
     health: "running",
@@ -226,6 +227,11 @@ describe("runTui", () => {
       sourceId: "current",
       label: "current",
       configPath: baseOptions.configPath,
+      metadata: {
+        reason: "memory-health-periodic",
+        lifecycle: { startupCompleted: true },
+        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/tui" } },
+      },
     });
     const other = source({ sourceId: "other", label: "other", configPath: "/other/mono-agent.config.json" });
     const code = await runTui({ ...baseOptions, env: shellEnvironment, configure: true }, {
@@ -409,7 +415,7 @@ describe("runTui", () => {
     expect(errors.join("")).toContain("IDENTITY.md");
   });
 
-  it("rejects local configuration programmatically and ignores traces without startup-complete readiness", async () => {
+  it("rejects local configuration and a reason-only legacy trace without durable startup proof", async () => {
     const localErrors: string[] = [];
     expect(await runTui({ ...baseOptions, configure: true, local: true }, {
       isTty: true,
@@ -421,7 +427,7 @@ describe("runTui", () => {
     const readinessErrors: string[] = [];
     const stale = source({
       configPath: baseOptions.configPath,
-      metadata: { reason: "heartbeat", channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/tui" } } },
+      metadata: { reason: "startup-complete", channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/tui" } } },
     });
     expect(await runTui({ ...baseOptions, configure: true }, {
       isTty: true,
