@@ -96,11 +96,11 @@ Before app or channel loading, managed startup freezes the attested config, Iden
 
 Exact background file bytes are committed with a per-config 256-bit HMAC key stored under owner-only `~/.mono-agent/background-snapshot-keys/`. The controller creates the key and managed workers load it. Process arguments and trace metadata contain neither the plaintext files nor an offline-testable unkeyed credential digest.
 
-## Temporary configuration and rollback
+## Persistent self-configuration and rollback
 
-The first TUI exchange after guided macOS setup is visibly separate temporary configuration mode, not ordinary chat. It tells the operator not to enter secrets and requires a host-rendered approval before any proposed change can be applied. Ordinary action tools and configured MCP servers are replaced with the narrow configuration capability for that request.
+The first TUI session after guided macOS setup is visibly marked `[SELF-CONFIG]`, not ordinary chat. Its opening guide maps all capability areas once and helps the operator shape a workflow one focused question at a time. It tells the operator not to enter secrets and requires a host-rendered approval before any proposed change can be applied. Ordinary action tools and configured MCP servers are replaced with the narrow configuration capability for every non-command turn in that session.
 
-A proposal-free finish, rejection, successful approval, or recovered rollback transitions the console to a fresh ordinary conversation. Approval commits the files, restarts the agent, waits for its new ready source, and only then swaps the TUI endpoint. If the new configuration cannot start, the host restores the previous files and attempts to restart the prior agent. If neither the new start nor recovery can prove a live endpoint, queued ordinary messages are cancelled instead of being sent to stale local state. `/quit` closes the console but does not stop the background agent.
+A proposal-free turn, rejection, successful approval, `done`, `no changes`, or recovered rollback rotates the opaque proposal capability and continues the same configuration conversation. Approval commits the files, restarts the agent, waits for its new ready source, and only then swaps the TUI endpoint and supplies a fixed host-outcome summary to the next turn. If the new configuration cannot start, the host restores the previous files and attempts to restart the prior agent. Text submitted while settlement is in progress is restored to the editor and never sent to ordinary chat or stale local state. If neither the new start nor recovery can prove a live endpoint, the marker remains visible, the endpoint disconnects, and manual recovery is required. Only `/quit`, `/exit`, or double `ctrl+c` exits self-configuration; quitting does not stop the background agent.
 
 ## Related references
 
@@ -111,5 +111,5 @@ A proposal-free finish, rejection, successful approval, or recovered rollback tr
 | Dotenv precedence and secret fields | [Environment Variables](/config/env-vars/) |
 | Agent-folder ownership and generated paths | [Folder Layout](/config/folder-layout/) |
 | Exact command, readiness, and recovery behavior | [CLI Reference](/observability/cli-reference/) |
-| Temporary configuration authority | [TUI](/observability/tui/) |
+| Self-configuration authority | [TUI](/observability/tui/) |
 | Feature-level coverage contracts | [Feature Registry](/reference/feature-registry/) |

@@ -20,7 +20,7 @@ export interface RunTuiOptions {
   readonly conversationId?: string;
   /** Build the current folder's responder in this process instead of discovering a service. */
   readonly local?: boolean;
-  /** Attach to the managed background agent in temporary configuration mode. */
+  /** Attach to the managed background agent in a dedicated self-configuration session. */
   readonly configure?: boolean;
 }
 
@@ -151,7 +151,7 @@ export async function runTui(options: RunTuiOptions, deps: RunTuiDeps = {}): Pro
     return 1;
   }
   if (options.configure === true && options.local === true) {
-    stderr.write("Temporary configuration must attach to the authoritative background agent; remove `--local`.\n");
+    stderr.write("Self-configuration must attach to the authoritative background agent; remove `--local`.\n");
     return 1;
   }
   if (options.configure === true && (deps.platform ?? process.platform) !== "darwin") {
@@ -325,7 +325,7 @@ export async function runTui(options: RunTuiOptions, deps: RunTuiDeps = {}): Pro
 
   if (plan.kind === "picker") {
     if (options.configure === true) {
-      stderr.write("Temporary configuration must target the current folder's one authoritative background agent.\n");
+      stderr.write("Self-configuration must target the current folder's one authoritative background agent.\n");
       return 1;
     }
     const handle = await startTui({ ...common, discovery: { registryDirs } });
@@ -343,7 +343,7 @@ export async function runTui(options: RunTuiOptions, deps: RunTuiDeps = {}): Pro
   }
   const baseUrl = tuiEndpointOf(source);
   if (options.configure === true && baseUrl === undefined) {
-    stderr.write("Temporary configuration needs the background agent's running TUI endpoint; enable the tui channel and restart it.\n");
+    stderr.write("Self-configuration needs the background agent's running TUI endpoint; enable the tui channel and restart it.\n");
     return 1;
   }
   const apiKey = await resolveAgentApiKey(source, effectiveEnvironment);
@@ -366,7 +366,7 @@ export async function runTui(options: RunTuiOptions, deps: RunTuiDeps = {}): Pro
         restartBackground,
       });
     } catch (error) {
-      stderr.write(`Could not open temporary configuration mode: ${error instanceof Error ? error.message : String(error)}\n`);
+      stderr.write(`Could not open self-configuration: ${error instanceof Error ? error.message : String(error)}\n`);
       return 1;
     }
   }

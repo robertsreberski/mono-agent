@@ -30,7 +30,7 @@ cd my-agent
 mono-agent init
 ```
 
-Bare `init` on a TTY opens the guided wizard: name the agent, write its Role, choose a model and capabilities, review the result, and complete any provider setup. On macOS, a successful guided run proves the selected routes, starts the background agent, and opens temporary configuration mode before ordinary chat. Any flag or non-TTY invocation is scaffold-only; on other platforms, continue with the foreground start below.
+Bare `init` on a TTY opens the guided wizard: name the agent, write its Role, choose a model and capabilities, review the result, and complete any provider setup. On macOS, a successful guided run proves the selected routes, starts the background agent, and opens a dedicated `[SELF-CONFIG]` session that maps the framework and helps build the user's workflow conversationally. Approval, rejection, and no-change turns keep that session active; only quitting it exits self-configuration. Any flag or non-TTY invocation is scaffold-only; on other platforms, continue with the foreground start below.
 
 The complete wizard, non-interactive flags, generated files, and provider-specific setup are documented in [Your First Agent](./docs/getting-started/quickstart.md).
 

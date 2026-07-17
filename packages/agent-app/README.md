@@ -129,14 +129,19 @@ canonical owner-only non-symlink parent chain, per-project owner lock, and
 compare-and-swap activation prevent outside or concurrent
 operator edits from being overwritten, and a partial activation restores only
 files that still equal the managed bytes it wrote.
+The persistent SELF-CONFIG workflow guidance is managed-skill version `1.2.0`.
+Existing unchanged copies are reported as stale and are never rewritten on TUI
+startup; run `mono-agent install-skill --project --update` explicitly to refresh them.
 
-In the separate **Temporary post-wizard configuration mode** only, the background app injects proposal-only
-`ProposeAgentConfiguration`. The opening message says to discuss the agent's Role,
-behavior, memory, skills, tools, or channels; never enter secrets; and expect a
-separate host approval before anything changes. Reply `done` or `no changes` to
-finish without edits. It also says ordinary chat starts
-after the reply and any approval or rejection, while `/quit` closes only the console
-and leaves the background agent running. The host accepts only a fail-closed low-risk
+In the separate, visibly marked **SELF-CONFIG** session only, the background app injects proposal-only
+`ProposeAgentConfiguration`. The opening message shows a user-led map of identity/knowledge,
+runtime/models, skills/tools/MCP/plugins, memory, channels/APIs/A2A, automation,
+security, observability/operations, and acceptance criteria, then builds the chosen
+workflow conversationally. It says never to enter secrets and to expect a separate
+host approval before anything changes. Approval, rejection, a proposal-free turn,
+`done`, and `no changes` all keep SELF-CONFIG active; only `/quit`, `/exit`, or
+double `ctrl+c` exits the session, and quitting leaves the background agent running.
+The host accepts only a fail-closed low-risk
 allowlist: public name; effort, turn/session UX; selected project skills and
 disclosure; memory size or MemoryRecall enablement; semantic tool-policy
 tightening; and the separately validated Role body. Every path, memory-tier or
@@ -153,12 +158,15 @@ tool only. Pure direct-Codex chains use its native read-only plan posture;
 mixed chains keep the finite proposal surface so a route that cannot represent
 it cannot widen authority. Direct OpenCode cannot receive the host-owned MCP
 proposal capability: a direct-OpenCode primary is routed through a configured
-proposal-capable fallback, while a direct-OpenCode fallback makes temporary
-configuration unavailable with explicit remediation. The approval card shows
+proposal-capable fallback, while a direct-OpenCode fallback makes self-configuration
+unavailable with explicit remediation. The approval card shows
 every full, untruncated JSON patch value and pages through the exact Role body
 while keeping Reject/Approve reachable, and rejects
-terminal-control or bidi-control review text before displaying it. Fast follow-ups wait through responder rotation.
-Ordinary chat uses a different conversation id. A proposal-free finish, rejection, successful approval, or recovered rollback ends the temporary mode and activates ordinary chat; `/quit` closes only the console while the daemon keeps running. Remote/proactive channels never receive this tool.
+terminal-control or bidi-control review text before displaying it. The configuration
+conversation id stays stable across incremental checkpoints and verified restarts;
+each settled turn receives a fresh opaque proposal capability plus a safe host-outcome
+summary. Fast follow-up text remains in the editor until settlement and is never sent
+as ordinary chat or to a stale endpoint. Remote/proactive channels never receive this tool.
 
 Before the first macOS background launch, the CLI copies the exact package and
 already-resolved dependency closure it is currently executing—including configured

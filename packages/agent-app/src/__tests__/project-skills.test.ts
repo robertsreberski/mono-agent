@@ -43,12 +43,17 @@ describe("managed project skills", () => {
       skillDisclosure: "index",
     });
     expect((await checkManagedProjectSkills(dir)).ok).toBe(true);
-    expect(PROJECT_SKILL_VERSION).toBe("1.1.0");
+    expect(PROJECT_SKILL_VERSION).toBe("1.2.0");
     const configureSkill = await readFile(join(dir, "skills", "mono-agent-configure", "SKILL.md"), "utf8");
     expect(configureSkill).toContain("ProposeAgentConfiguration once");
     expect(configureSkill).toContain("IDENTITY.md → ## Role");
     expect(configureSkill).toContain("authoritative background agent");
-    expect(configureSkill).toContain("ordinary chat uses a separate conversation");
+    expect(configureSkill).toContain("dedicated, multi-turn SELF-CONFIG session");
+    expect(configureSkill).toContain("identity and knowledge; runtime and models");
+    expect(configureSkill).toContain("channels, APIs, and A2A");
+    expect(configureSkill).toContain("observability and operations; and acceptance criteria");
+    expect(configureSkill).toContain("trigger → context/data → tools/actions → delivery → memory → safety/operations → success checks");
+    expect(configureSkill).toContain("Approval, rejection, a no-proposal turn, `done`, and `no changes` do not end SELF-CONFIG");
   });
 
   it("detects an operator edit and refuses to overwrite it", async () => {
