@@ -9,7 +9,6 @@ import {
   DEPENDENCY_SECTIONS,
   REPO_ROOT,
   discoverPackages,
-  internalDependencies,
   publishablePackages,
   sortForPublish,
 } from "./package-graph.mjs";
@@ -20,6 +19,7 @@ const ROOT_DEPENDENCY_SECTIONS = [
   ...DEPENDENCY_SECTIONS,
   "devDependencies",
 ];
+const PACKAGE_PIN_SECTIONS = ROOT_DEPENDENCY_SECTIONS;
 export const RELEASE_REPOSITORY = Object.freeze({
   type: "git",
   url: "git+https://github.com/robertsreberski/mono-agent.git",
@@ -109,14 +109,19 @@ export function validateRelease({
   }
 
   for (const pkg of publishable) {
-    for (const dep of internalDependencies(pkg, packagesByName)) {
-      if (dep.package.catalogEntry.publishable !== true) {
-        issues.push(`${pkg.name} ${dep.section}.${dep.name} points at nonpublishable workspace package ${dep.name}`);
-        continue;
-      }
-
-      if (dep.range !== expectedWorkspaceRange) {
-        issues.push(`${pkg.name} ${dep.section}.${dep.name} must be ${expectedWorkspaceRange}; found ${dep.range}`);
+    for (const section of PACKAGE_PIN_SECTIONS) {
+      for (const [name, range] of Object.entries(pkg.packageJson[section] || {})) {
+        const dependency = packagesByName.get(name);
+        if (dependency === undefined) {
+          continue;
+        }
+        if (dependency.catalogEntry.publishable !== true) {
+          issues.push(`${pkg.name} ${section}.${name} points at nonpublishable workspace package ${name}`);
+          continue;
+        }
+        if (range !== expectedWorkspaceRange) {
+          issues.push(`${pkg.name} ${section}.${name} must be ${expectedWorkspaceRange}; found ${range}`);
+        }
       }
     }
   }
@@ -141,7 +146,7 @@ export function validateRelease({
     for (const pkg of publishOrder) {
       console.log(`- ${pkg.name}@${pkg.version} (${pkg.relativeDir})`);
     }
-    console.log(`Checked package internal dependency sections: ${DEPENDENCY_SECTIONS.join(", ")}`);
+    console.log(`Checked package internal pin sections: ${PACKAGE_PIN_SECTIONS.join(", ")}`);
     console.log(`Checked root internal dependency sections: ${ROOT_DEPENDENCY_SECTIONS.join(", ")}`);
   }
 

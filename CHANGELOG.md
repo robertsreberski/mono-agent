@@ -19,6 +19,9 @@
 - Confirmed Slack and Telegram sends are appended to the destination
   conversation history, so later replies and cold replay include what the user
   actually received. TUI replay also renders recorded session boundaries.
+- Slack's code-only `silent` delivery option is now explicit: both proactive
+  sends and message streams accept the request, warn once that Slack cannot
+  suppress bot-post notifications, and post with normal notification behavior.
 
 ### Reliability
 
@@ -39,8 +42,8 @@
   FIFO handling per chat while allowing independent chats to progress
   concurrently.
 - Release assurance now checks package-count drift, root workspace pins,
-  compatible Pi dependency age, high-severity advisory dispositions, and
-  isolated packed-consumer installs.
+  exact known-compatible Pi dependency pins, explicit release-age policy,
+  high-severity advisory dispositions, and isolated packed-consumer installs.
 
 ### Security
 
@@ -66,6 +69,10 @@
   Slack's redaction wrapper, Telegram's no-op `showThoughts`, unused
   wizard/readiness/runtime helpers, and legacy memory distillation,
   entity-extraction, vector-index, and recall-factory surfaces.
+- The deprecated `recipes` command, `--recipe` init/validate alias, and CLI
+  `--fallback-models <csv>` flag remain supported in 0.11.4 and are scheduled
+  for removal in v2.0.0. JSON `runtime.fallbackModels`, the matching environment
+  input, and legacy tool-policy aliases are not scheduled for removal.
 - All 21 catalog-publishable packages move together to 0.11.4. Keep every
   `@mono-agent/*` package and `create-mono-agent` on the same exact version.
 

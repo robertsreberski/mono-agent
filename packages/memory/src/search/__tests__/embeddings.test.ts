@@ -117,6 +117,16 @@ describe("embedding provider failure taxonomy", () => {
     expect(await rejectionOf(createProvider(fetchImpl).embed(["text"]))).toBe(programmingFailure);
   });
 
+  it.each(providerFactories)("preserves unknown-code %s TypeErrors by identity", async (_provider, createProvider) => {
+    const unknownCause = Object.assign(new Error("adapter failure"), { code: "EADAPTERBUG" });
+    const programmingFailure = new TypeError("fetch adapter bug", { cause: unknownCause });
+    const fetchImpl = (async () => {
+      throw programmingFailure;
+    }) as typeof fetch;
+
+    expect(await rejectionOf(createProvider(fetchImpl).embed(["text"]))).toBe(programmingFailure);
+  });
+
   it.each(providerFactories)("wraps nested aggregate %s network failures", async (_provider, createProvider) => {
     const dnsFailure = Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" });
     const aggregateFailure = new AggregateError([new Error("other address failed"), dnsFailure]);
