@@ -297,12 +297,6 @@ describe("wizard prompt builders", () => {
     expect(ask?.hint).toContain("any channel");
   });
 
-  it("toolMultiselectOptions can omit the Pi-only NodeRepl tool", () => {
-    const options = toolMultiselectOptions([], { includePiOnly: false });
-    expect(options.map((option) => option.value)).not.toContain("NodeRepl");
-    expect(options.map((option) => option.value)).toContain("Bash");
-  });
-
   it("presetSelectOptions ends with the __custom__ escape hatch", () => {
     const options = presetSelectOptions();
     expect(options.length).toBeGreaterThan(1);

@@ -6,7 +6,7 @@ sidebar:
 
 # Built-in tools & auto-guards
 
-This page covers mono-agent's common built-ins (Read, Write, Edit, Glob, Grep, Bash, WebFetch, WebSearch), Pi's additional NodeRepl tool, and the runtime guards that protect each turn: the tool-output bloat guard, per-run usage/cost tracking, provider-delegated context compaction, and WebFetch's in-tool retry. It also notes which behaviors you configure versus which run automatically.
+This page covers mono-agent's managed built-ins (Read, Write, Edit, Glob, Grep, Bash, NodeRepl, WebFetch, WebSearch) and the runtime guards that protect each turn: the tool-output bloat guard, per-run usage/cost tracking, provider-delegated context compaction, and WebFetch's in-tool retry. It also notes which behaviors you configure versus which run automatically.
 
 ## Built-in tools
 
@@ -20,11 +20,11 @@ These tools need no extra capability config (coverage: `config` — they exist b
 | `Glob` | Match files by glob pattern. |
 | `Grep` | Search file contents. |
 | `Bash` | Run a shell command. |
-| `NodeRepl` | Evaluate JavaScript in a run-scoped Node.js REPL (Pi only). |
+| `NodeRepl` | Evaluate JavaScript in a run-scoped Node.js REPL. |
 | `WebFetch` | Fetch a URL and return its content. |
 | `WebSearch` | Run a web search. |
 
-These are gated by `tools.allowedTools` / `tools.disallowedTools`. Deny always wins, and listing the same tool in both is rejected at validation time. `NodeRepl` is registered only on Pi routes; `validate` reports a specific `NodeRepl` allowlist entry as `waiting` when the agent has no Pi route. See [Tool Policy](/tools/policy/) for the full allow/deny semantics, plus [MCP tools](/tools/mcp/) and the [sandbox](/tools/sandbox/) for `Bash` and `NodeRepl` confinement.
+These are gated by `tools.allowedTools` / `tools.disallowedTools`. Deny always wins, and listing the same tool in both is rejected at validation time. Mono-agent-managed built-ins are provided by the Pi bridge; provider-owned routes use their native tool surfaces. See [Tool Policy](/tools/policy/) for the full allow/deny semantics, plus [MCP tools](/tools/mcp/) and the [sandbox](/tools/sandbox/) for `Bash` and `NodeRepl` confinement.
 
 ```json
 {
@@ -43,11 +43,11 @@ An **omitted** `allowedTools` (or `["*"]`) allows **every** tool subject to `dis
 
 These are the normalized policy semantics, but the selected runtime must be able to enforce them. Direct `codex:*` normal runs currently accept exact allow-all only (`["*"]` or omitted, with no denylist); restrictive variants fail validation/runtime setup instead of being silently widened. See [Tool policy](/tools/policy/#allow-all-by-default).
 
-## NodeRepl (Pi only)
+## NodeRepl
 
-`NodeRepl({ code })` uses Node's built-in [`node:repl`](https://nodejs.org/api/repl.html) default evaluator. Mono-agent lazily starts one child REPL for a Pi run and reuses it for later `NodeRepl` calls in that run. Variables, the module cache, `_`, and `_error` therefore persist between calls; the child is destroyed when the run ends, so the next run starts clean. The evaluator supports multiline JavaScript, top-level `await`, Node built-ins, `console` output, and `require()` of packages already installed for the workspace.
+`NodeRepl({ code })` uses Node's built-in [`node:repl`](https://nodejs.org/api/repl.html) default evaluator. Mono-agent lazily starts one child REPL for a run and reuses it for later `NodeRepl` calls in that run. Variables, the module cache, `_`, and `_error` therefore persist between calls; the child is destroyed when the run ends, so the next run starts clean. The evaluator supports multiline JavaScript, top-level `await`, Node built-ins, `console` output, and `require()` of packages already installed for the workspace.
 
-This is code execution, with the same filesystem, process, and network authority as `Bash`. The child goes through the same sandbox preparation seam and configured Pi SRT policy. With no active sandbox it runs on the host; with native SRT it receives the configured roots, deny-write rules, and network policy. A fixed 120-second evaluation timeout, abort, child exit, or hard output overflow kills the child and resets its state before a later call. Normal results use the existing tool-output cap.
+This is code execution, with the same filesystem, process, and network authority as `Bash`. The child goes through the same sandbox preparation seam and configured SRT policy. With no active sandbox it runs on the host; with native SRT it receives the configured roots, deny-write rules, and network policy. A fixed 120-second evaluation timeout, abort, child exit, or hard output overflow kills the child and resets its state before a later call. Normal results use the existing tool-output cap.
 
 `NodeRepl` is intentionally small: it has no session ids, persistent history, reset command, terminal emulation, or package installer. Use `Bash` for shell commands and install dependencies before the run. REPL dot commands such as `.save` and `.load` are not a supported tool interface.
 

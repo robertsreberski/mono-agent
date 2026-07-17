@@ -40,7 +40,7 @@ flowchart TB
   Registry --> PiSDK["Pi SDK bridge<br/>OpenAI, Codex, Gemini, OpenRouter,<br/>Ollama, custom providers"]
   Registry --> CodexApp["Codex app-server CLI bridge"]
 
-  AgentKernel --> Builtins["Read / Write / Edit / Glob / Grep / Bash<br/>WebFetch / WebSearch / Pi-only NodeRepl"]
+  AgentKernel --> Builtins["Read / Write / Edit / Glob / Grep / Bash<br/>NodeRepl / WebFetch / WebSearch"]
   AgentKernel --> MCP["MCP stdio / SSE / HTTP tools"]
   AgentKernel --> Sandbox["Sandbox policy<br/>path/network checks + stdio command wrapping"]
   AgentKernel --> Artifacts["Tool-output bloat guard<br/>host artifact persistence"]
