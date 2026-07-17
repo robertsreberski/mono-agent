@@ -474,6 +474,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .reasoning-text-content { display: grid; gap: 9px; }
 .reasoning-part p { margin: 0; white-space: pre-wrap; }
 .reasoning-root[data-streaming="true"] .reasoning-text { mask-image: linear-gradient(to bottom, #000 70%, transparent 100%); }
+.activity-root[data-streaming="true"] .reasoning-text { max-height: none; overflow-y: visible; mask-image: none; }
 .activity-root .reasoning-text-content { gap: 8px; }
 .tool-call { color: var(--text-soft); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 9px; font-size: 11px; }
 .tool-call summary { min-height: 35px; display: flex; align-items: center; gap: 8px; padding: 0 10px; list-style: none; cursor: pointer; }
