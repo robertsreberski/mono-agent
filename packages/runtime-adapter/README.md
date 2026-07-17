@@ -78,7 +78,6 @@ RuntimeAdapterError
 RuntimeAdapterErrorCode
 RuntimeAdapterErrorDetails
 RuntimeCompactionPolicy
-RuntimeErrorFactory
 RuntimeEventLike
 RuntimeExecutionMode
 RuntimeMessage
@@ -86,7 +85,6 @@ RuntimeModelReference
 RuntimePolicies
 RuntimePromptOverrides
 RuntimeResult
-RuntimeResultParts
 RuntimeRunOptions
 RuntimeToolLimits
 RuntimeToolOptions
@@ -113,12 +111,8 @@ SrtFilesystemSettings
 SrtNetworkSettings
 SrtSandboxEngineOptions
 SrtSettings
-acceptedSdkIdsForBackend
-applyTemporaryEnv
-assertBaseRunOptions
 assertExecutionModeCompatible
 assertParsedRuntimeModelReference
-buildRuntimeResult
 createMonoRuntime
 createPiOAuthApiKeyResolver
 createSandboxPolicy
@@ -135,7 +129,6 @@ isPrivateBaseUrl
 isRuntimeExecutionMode
 isValidMcpServerName
 listMonoRuntimeBackends
-listMonoRuntimeSelectionTable
 mergeSandboxPolicies
 modelReferenceKey
 monoRuntimeSupportsSessionResume
@@ -143,7 +136,6 @@ networkPolicyAllowsUrl
 parseMcpServers
 parseMonoRuntimeModelReference
 prepareSandboxedCommand
-readLastStringUserMessage
 resolveModelEffortLevels
 resolveRuntimePolicies
 resolveSandboxEffectiveState
@@ -155,7 +147,6 @@ sandboxRequired
 selectMonoRuntimeBackendId
 srtSettingsForPolicy
 validateLocalProviderDefinition
-withTemporaryEnv
 ```
 
 <!-- public-api-inventory:end -->

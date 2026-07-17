@@ -15,7 +15,6 @@ const mocks = vi.hoisted(() => ({
   logError: vi.fn(),
   passwordAnswers: [] as unknown[],
   runInitWizard: vi.fn(),
-  runModelRepairWizard: vi.fn(),
   runSetupRepairWizard: vi.fn(),
   runTui: vi.fn(),
   resolveInstanceTarget: vi.fn(),
@@ -66,7 +65,6 @@ vi.mock("../wizard/run.js", async (importOriginal) => {
   return {
     ...actual,
     runInitWizard: mocks.runInitWizard,
-    runModelRepairWizard: mocks.runModelRepairWizard,
     runSetupRepairWizard: mocks.runSetupRepairWizard,
   };
 });
@@ -187,7 +185,6 @@ beforeEach(async () => {
   mocks.executeProviderSetupPlan.mockReset();
   mocks.logError.mockReset();
   mocks.runInitWizard.mockReset();
-  mocks.runModelRepairWizard.mockReset();
   mocks.runSetupRepairWizard.mockReset();
   mocks.runTui.mockReset();
   mocks.runTui.mockResolvedValue(0);

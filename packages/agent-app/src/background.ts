@@ -1615,10 +1615,6 @@ async function findInstances(target: InstanceTarget, deps: BackgroundDeps): Prom
   return matches.filter((entry) => entry.matches).map((entry) => entry.source);
 }
 
-async function findInstance(target: InstanceTarget, deps: BackgroundDeps): Promise<TraceSourceListItem | undefined> {
-  return (await findInstances(target, deps))[0];
-}
-
 async function maybeUnlinkDeadManifest(
   target: InstanceTarget,
   deps: BackgroundDeps,

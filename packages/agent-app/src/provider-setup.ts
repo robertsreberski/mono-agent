@@ -248,10 +248,6 @@ export function piLoginCommand(provider: string, piCliPath = resolvePiCliPath())
   return [process.execPath, piCliPath, provider];
 }
 
-export function piLoginCommandLine(provider: string): string {
-  return piAuthRecoveryCommand(provider);
-}
-
 export function piAuthRecoveryCommand(provider: string, piAuthPath?: string): string {
   return piAuthPath === undefined
     ? `mono-agent auth login ${shellQuote(provider)}`

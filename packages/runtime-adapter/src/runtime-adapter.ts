@@ -472,14 +472,9 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
 
 /**
  * The additive (sdk, executionMode) -> backend selection table. This is a
- * declarative building block: it states which backend serves a given sdk under a
- * given execution mode, and which sdk-id spellings each runtime accepts. It is
- * NOT wired into agent-host routing; consumers read it to align vocabularies.
- *
- * `sdkAliases[0]` is the canonical sdk id used by the backend descriptor; later
- * entries may be accepted legacy spellings. Runtime packages derive their
- * fail-closed `model.sdk` guard sets from these aliases via
- * {@link acceptedSdkIdsForBackend}.
+ * internal routing table: it states which backend serves a given sdk under a
+ * given execution mode. `sdkAliases[0]` is the canonical sdk id used by the
+ * backend descriptor; later entries may be accepted legacy spellings.
  */
 const RUNTIME_SELECTION_TABLE: readonly MonoRuntimeSelectionEntry[] = [
   { sdk: "claude", sdkAliases: ["claude"], executionMode: "sdk", backendId: "claude-sdk" },
@@ -488,17 +483,6 @@ const RUNTIME_SELECTION_TABLE: readonly MonoRuntimeSelectionEntry[] = [
   { sdk: "opencode", sdkAliases: ["opencode"], executionMode: "cli", backendId: "opencode-app-cli" },
   { sdk: "pi", sdkAliases: ["pi"], executionMode: "sdk", backendId: "pi-sdk" },
 ];
-
-/**
- * Returns a defensive copy of the (sdk, executionMode) selection table. Additive
- * building block; does not perform routing.
- */
-export function listMonoRuntimeSelectionTable(): readonly MonoRuntimeSelectionEntry[] {
-  return RUNTIME_SELECTION_TABLE.map((entry) => ({
-    ...entry,
-    sdkAliases: [...entry.sdkAliases],
-  }));
-}
 
 /**
  * Resolves a backend id from the selection table by sdk (canonical or alias) and
@@ -513,23 +497,6 @@ export function selectMonoRuntimeBackendId(
     (candidate) => candidate.executionMode === executionMode && candidate.sdkAliases.includes(sdk),
   );
   return entry?.backendId;
-}
-
-/**
- * The set of accepted `model.sdk` spellings for a backend, drawn from the
- * selection table. SDK runtimes use this to build a single-source-of-truth
- * fail-closed guard instead of hard-coding the vocabulary.
- */
-export function acceptedSdkIdsForBackend(backendId: MonoRuntimeBackendId): readonly string[] {
-  const aliases = new Set<string>();
-  for (const entry of RUNTIME_SELECTION_TABLE) {
-    if (entry.backendId === backendId) {
-      for (const alias of entry.sdkAliases) {
-        aliases.add(alias);
-      }
-    }
-  }
-  return [...aliases];
 }
 
 function buildBackendDescriptor(

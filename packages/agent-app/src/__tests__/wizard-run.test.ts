@@ -165,7 +165,6 @@ import { defaultAnswers } from "../wizard/answers.js";
 import {
   guidedModelRefProblem,
   runInitWizard,
-  runModelRepairWizard,
   runSetupRepairWizard,
 } from "../wizard/run.js";
 
@@ -1054,100 +1053,4 @@ describe("wizard production flow", () => {
     });
   });
 
-  it("repairs only model settings and preserves unrelated answers", async () => {
-    const current = defaultAnswers({
-      name: "Operations Partner",
-      model: "codex:gpt-5.6-terra",
-      channels: ["channel:telegram", "channel:cron"],
-      memory: "memory:bujo",
-      observability: true,
-      moduleInputs: { "channel:cron": { cronExpression: "30 7 * * 1-5" } },
-    });
-    promptMock.autocompleteAnswers.push("codex:gpt-5.6-sol");
-    promptMock.selectAnswers.push("", "create");
-    promptMock.confirmAnswers.push(
-      false, // no fallback
-      false, // do not run provider setup in repair
-      true, // use repaired configuration
-    );
-
-    const result = await runModelRepairWizard({ cwd: "/tmp/agent", answers: current });
-
-    expect(result.status).toBe("answers");
-    if (result.status !== "answers") return;
-    expect(result.answers.name).toBe("Operations Partner");
-    expect(result.answers.model).toBe("codex:gpt-5.6-sol");
-    expect(result.answers.channels).toEqual(current.channels);
-    expect(result.answers.memory).toBe(current.memory);
-    expect(result.answers.moduleInputs).toEqual(current.moduleInputs);
-  });
-
-  it("preserves durable provider credential detection during model repair", async () => {
-    const current = defaultAnswers({ model: "claude:claude-sonnet-5", effort: "high" });
-    promptMock.autocompleteAnswers.push("claude:claude-sonnet-5");
-    promptMock.selectAnswers.push("high");
-    promptMock.confirmAnswers.push(
-      false, // no fallback
-      true, // use repaired configuration
-    );
-
-    const result = await runModelRepairWizard({
-      cwd: "/tmp/agent",
-      answers: current,
-      persistedEnv: { CLAUDE_CODE_OAUTH_TOKEN: "durable-repair-token" },
-    });
-
-    expect(result.status).toBe("answers");
-    if (result.status !== "answers") return;
-    expect(result.credentialStates).toEqual({ claude: "credential_detected" });
-    expect(result.runProviderSetup).toBe(false);
-    expect(promptMock.notes.some((note) => note.message.includes("durable-repair-token"))).toBe(false);
-  });
-
-  it("repairs a pre-existing uniform managed-SRT mixed chain even when its families stay unchanged", async () => {
-    const current = defaultAnswers({
-      model: "pi:ollama:qwen3:8b",
-      fallbacks: [{ model: "codex:gpt-5.6-terra", effort: "low" }],
-      routeSafety: "uniform",
-      sandbox: true,
-      allowedTools: ["*"],
-    });
-    promptMock.autocompleteAnswers.push(
-      "pi:ollama:qwen3:8b",
-      "codex:gpt-5.6-terra",
-      "__done__",
-    );
-    promptMock.selectAnswers.push(
-      "", // primary provider-default effort
-      "low", // fallback effort
-      "uniform",
-      "disable-managed-srt",
-    );
-    promptMock.confirmAnswers.push(
-      true, // keep a fallback
-      true, // keep allow-all tools while re-confirming safety
-      true, // managed SRT before mismatch resolution
-      true, // explicit high-risk unsandboxed acceptance
-      false, // skip provider setup
-      true, // use repaired configuration
-    );
-
-    const result = await runModelRepairWizard({ cwd: "/tmp/agent", answers: current });
-
-    expect(result.status).toBe("answers");
-    if (result.status !== "answers") return;
-    expect(result.answers).toMatchObject({ routeSafety: "uniform", sandbox: false });
-    expect(promptMock.notes.some((note) => note.title === "Safety choice required")).toBe(true);
-  });
-
-  it("treats Escape in model repair as Back without opening exit confirmation", async () => {
-    promptMock.autocompleteAnswers.push(ESCAPE);
-    await withTtyStdin(async () => {
-      await expect(runModelRepairWizard({
-        cwd: "/tmp/agent",
-        answers: defaultAnswers({ model: "codex:gpt-5.6-terra" }),
-      })).resolves.toEqual({ status: "cancelled" });
-      expect(promptMock.confirmCalls).toEqual([]);
-    });
-  });
 });

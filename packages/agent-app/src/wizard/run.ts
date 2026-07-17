@@ -104,19 +104,6 @@ export interface SetupRepairRunContext extends WizardRunContext {
   readonly moduleSecrets: Readonly<Record<string, string>>;
 }
 
-/** A focused model repair never re-prompts or returns channel/module secrets. */
-export type ModelRepairOutcome =
-  | {
-      readonly status: "answers";
-      readonly answers: WizardAnswers;
-      readonly runProviderSetup: boolean;
-      readonly providerSetupSecrets: Readonly<Record<string, string>>;
-      readonly providerEnvironmentSecrets: Readonly<Record<string, string>>;
-      readonly piApiKeyPersistenceByProvider: Readonly<Record<string, "secure-store" | "environment">>;
-      readonly credentialStates: Readonly<Record<string, ProviderCredentialState>>;
-    }
-  | { readonly status: "cancelled" };
-
 /**
  * A mutable working copy of {@link WizardAnswers} the flow builds up prompt by
  * prompt. `memory` stays `string | undefined` here (unlike the exact-optional
@@ -320,67 +307,6 @@ export async function runSetupRepairWizard(ctx: SetupRepairRunContext): Promise<
   } catch (error) {
     if (error instanceof WizardBack || error instanceof WizardCancelled) {
       p.log.info("Returning to the preflight recovery menu; previous setup choices were kept.");
-      return { status: "cancelled" };
-    }
-    throw error;
-  }
-}
-
-/**
- * Re-select only primary/fallback models and effort after a failed model check.
- * Capabilities, module inputs, and observability are copied from `ctx.answers`,
- * and no module secret is requested again. Tool/sandbox choices are re-confirmed
- * when the runtime family crosses the direct-Codex boundary or changes whether
- * a provider-owned Claude/direct-OpenCode tool loop is present.
- */
-export async function runModelRepairWizard(
-  ctx: {
-    readonly cwd: string;
-    readonly answers: WizardAnswers;
-    readonly piAuthPath?: string;
-    /** Values parsed from the destination `.env`; shell-only credentials must not be supplied here. */
-    readonly persistedEnv?: Readonly<Record<string, string | undefined>>;
-  },
-): Promise<ModelRepairOutcome> {
-  try {
-    p.log.step("Repair model configuration");
-    for (;;) {
-      const draft = draftFrom(ctx.answers);
-      try {
-        const previousFamilies = selectedRuntimeModels(draft).map(runtimeFamily).join(",");
-        await promptModelSettings(draft, ctx);
-        const nextFamilies = selectedRuntimeModels(draft).map(runtimeFamily).join(",");
-        if (
-          previousFamilies !== nextFamilies
-          || !hasExactAllowAllTools(draft)
-          || hasInvalidUniformManagedSrtChain(draft)
-        ) {
-          p.log.info("The runtime route changed, so tool and sandbox safety choices must be confirmed again.");
-          await promptTools(draft);
-          await promptSafetyPolicy(draft);
-        }
-        const answers = toWizardAnswers(draft);
-        const plan = await composePlanForCwd(answers, ctx.cwd);
-        const providerSetup = await promptProviderSetup(plan, ctx, draft.credentialStates);
-        if (!await confirm({ message: "Use this model configuration?", initialValue: true })) {
-          return { status: "cancelled" };
-        }
-        return { status: "answers", answers, ...providerSetup, credentialStates: { ...draft.credentialStates } };
-      } catch (error) {
-        if (error instanceof WizardBack) {
-          p.log.info("Returning to the preflight recovery menu; previous model choices were kept.");
-          return { status: "cancelled" };
-        }
-        if (error instanceof WizardExitRequested) {
-          if (await confirmExitSetup()) throw new WizardCancelled();
-          continue;
-        }
-        throw error;
-      }
-    }
-  } catch (error) {
-    if (error instanceof WizardCancelled) {
-      p.cancel("Model repair cancelled — previous choices were kept.");
       return { status: "cancelled" };
     }
     throw error;
