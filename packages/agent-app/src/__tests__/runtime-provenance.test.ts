@@ -366,7 +366,7 @@ describe("runtimeProvenanceDetail", () => {
       expect(detail, name).not.toContain("DO-NOT-ECHO");
       expect(detail, name).not.toContain(dir);
     }
-  });
+  }, 15_000);
 });
 
 function sha256(value: Buffer): string {

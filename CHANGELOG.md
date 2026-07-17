@@ -1,5 +1,74 @@
 # Release notes
 
+## 0.11.4 — Hardened runtime operations and bounded state (2026-07-17)
+
+### Highlights
+
+- Webhooks now support static bearer authentication through `webhook.apiKey` /
+  `MONO_AGENT_WEBHOOK_API_KEY`. Non-loopback binds require both explicit
+  opt-in and a key, while endpoint-specific `maxRunMs` values can override the
+  adapter watchdog.
+- Managed macOS launchd instances now bound stdout and stderr automatically:
+  active files plus three retained generations are capped at 5 MiB each and
+  checked every five minutes. `validate` and `doctor` report the safely
+  inspected inventory.
+- Running observability artifacts checkpoint after 25 events or five seconds.
+  Retention also sweeps orphaned atomic temporaries, exporter buffers are
+  bounded, and sensitive exports can opt into high-confidence content-pattern
+  secret redaction.
+- Confirmed Slack and Telegram sends are appended to the destination
+  conversation history, so later replies and cold replay include what the user
+  actually received. TUI replay also renders recorded session boundaries.
+
+### Reliability
+
+- Durable A2A admissions publish atomically; continuation migration and
+  rollback recovery are hardened; notification fallbacks are resolved and
+  cancellation-bound per run rather than retained from process startup.
+- Cold durable Pi resumes seed canonical history structurally only when a
+  transcript must be recreated, avoiding duplicated or omitted turns.
+  `restart --force` now removes both Pi transcripts and canonical active
+  conversation history for a genuine fresh start.
+- Memory maintenance now keeps read-only opens side-effect free, bounds replay
+  guards and Supermemory completion fingerprints, normalizes proven embedding
+  transport failures without swallowing programming errors, and retains at
+  most three explicit-forget backups for 30 days while preserving active
+  recovery state.
+- OpenAI-compatible streaming caps serialized tool-result SSE frames at
+  256 KiB and warns when sampling parameters are ignored. WhatsApp preserves
+  FIFO handling per chat while allowing independent chats to progress
+  concurrently.
+- Release assurance now checks package-count drift, root workspace pins,
+  compatible Pi dependency age, high-severity advisory dispositions, and
+  isolated packed-consumer installs.
+
+### Security
+
+- Runtime-adapter sandbox injection is authoritative, and native Node launcher
+  trust checks prevent caller overrides and unsafe launcher substitution.
+- Network adapters recheck the actual resolved bind address; Pi OAuth stores
+  refuse symlinked paths; managed-runtime provenance is bound to the verified
+  dependency closure and rejects hardlinked runtime files.
+- Session Web markdown rendering is hardened against adversarial fragments.
+  Slack credential logging is redacted, and repository secret scanning now
+  recognizes Telegram Bot API tokens, including token-bearing URLs.
+- Shared owner-private publication, locking, replacement, and redaction
+  primitives fail closed on FIFOs, link swaps, interrupted publication, and
+  unsafe recovery races.
+
+### Compatibility
+
+- Existing loopback-only webhooks remain unauthenticated unless `apiKey` is
+  configured. Existing non-loopback webhook deployments must add an API key;
+  endpoint watchdog overrides are optional.
+- Proven-dead compatibility exports were removed, including TUI cancellation
+  aliases and `TUI_PACKAGE_VERSION`, Session Web's `listInstanceSessions`,
+  Slack's redaction wrapper, Telegram's no-op `showThoughts`, unused
+  wizard/readiness/runtime helpers, and legacy memory distillation,
+  entity-extraction, vector-index, and recall-factory surfaces.
+- All 21 catalog-publishable packages move together to 0.11.4. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.11.3 — Configurable Pi provider transport (2026-07-16)
 
 ### Added

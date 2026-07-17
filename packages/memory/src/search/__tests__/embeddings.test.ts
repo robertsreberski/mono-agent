@@ -108,6 +108,15 @@ describe("embedding provider failure taxonomy", () => {
     expect((error as Error).cause).toBe(networkFailure);
   });
 
+  it.each(providerFactories)("preserves unstructured %s TypeErrors by identity", async (_provider, createProvider) => {
+    const programmingFailure = new TypeError("Cannot read properties of undefined (reading 'ECONNREFUSED')");
+    const fetchImpl = (async () => {
+      throw programmingFailure;
+    }) as typeof fetch;
+
+    expect(await rejectionOf(createProvider(fetchImpl).embed(["text"]))).toBe(programmingFailure);
+  });
+
   it.each(providerFactories)("wraps %s abort failures with a stable code and original cause", async (provider, createProvider) => {
     const abortFailure = new DOMException("request aborted", "AbortError");
     const fetchImpl = (async () => {

@@ -198,7 +198,6 @@ describe("observability redaction docs parity", () => {
       ["packages/agent-app/skills/mono-agent-composer/references/package-map.md", "Traceability is local-first"],
       ["packages/agent-app/skills/mono-agent-composer/references/playbooks.md", "**Goal:** run locally with the TUI"],
       ["packages/observability/README.md", "`.events.jsonl` artifacts contain"],
-      ["packages/observability/README.md", "events file and a `running` summary"],
     ] as const;
 
     for (const [relativePath, anchor] of surfaces) {
@@ -206,6 +205,10 @@ describe("observability redaction docs parity", () => {
         /\bkey-(?:based|redacted)\b/u,
       );
     }
+    expect(paragraphContaining(
+      "packages/observability/README.md",
+      "Stale-run reconciliation repairs summary status",
+    )).toMatch(/\bkey-(?:based|redacted)\b/u);
   });
 
   it("keeps public replay and payload boundaries explicit about shared redaction semantics", () => {

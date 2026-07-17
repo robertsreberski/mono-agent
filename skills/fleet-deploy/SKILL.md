@@ -14,9 +14,10 @@ the deploy checkout.
 ## Fleet map
 
 The daily tracker and the installed `com.mono-agent.*` launchd plists are the
-authoritative fleet map; do not restrict a deploy to the two historically
-documented instances. The current mono-agent fleet is exactly four active,
-running agents: `finances`, `inner-child`, `personal-agent`, and `transcription`.
+authoritative fleet map; do not restrict a deploy to the historically
+documented instances. The current mono-agent fleet is exactly five active,
+running agents: `finances`, `inner-child`, `ambra-sleep`, `transcription`, and
+`personal-agent`.
 The separately managed `~/a8c-agents` services use their own launchd namespace
 and status command; do not silently mix stopped A8C services into this gate. A missing PID,
 an extra matching plist, or any row that cannot be reconciled is a fleet blocker.
@@ -29,6 +30,7 @@ or invalid plist is a fleet blocker, not an instance to omit from the report.
 |---|---|---|
 | `~/personal/finances` | `mono-agent.config.json` / `com.mono-agent.finances-e9c073d7` | Telegram, webhook, bujo memory |
 | `~/agents/inner-child` | `mono-agent.config.json` / `com.mono-agent.inner-child-fdfc3392` | Telegram, webhook, cron, native sandbox, bujo memory |
+| `~/agents/ambra-sleep` | `mono-agent.config.json` / `com.mono-agent.ambra-sleep-083399be` | Webhook, managed workspace, bujo memory |
 | `~/agents/transcription` | `mono-agent.config.json` / `com.mono-agent.transcription-f4a742c8` | Telegram, no configured memory |
 | `~/personal-agent` | `mono-agent.config.json` / `com.mono-agent.personal-agent-059657c8` | Telegram, webhook, OpenAI API :4312/v1, cron, bujo memory, restart last |
 
@@ -56,7 +58,7 @@ tree clean. Do steps 1–4 in one uninterrupted pass:
 git fetch origin main && git reset --hard <sha>   # 1. or: git pull --ff-only; tree MUST be clean first
 pnpm install --frozen-lockfile                     # 2.
 pnpm run build                                     # 3. builds dist, finalizes executable modes, then publishes the marker
-# 4. rolling restart: finances, inner-child, transcription, personal-agent LAST
+# 4. rolling restart: finances, inner-child, ambra-sleep, transcription, personal-agent LAST
 ```
 
 **Never leave the tree between install and restart.** `pnpm install` rewrites
@@ -80,14 +82,15 @@ stash, copy a marker, fabricate its timestamp, or bypass the `loaded` failure.
 
 ## Restart + verify
 
-Roll all four instances one at a time, **personal-agent last**. Every instance
+Roll all five instances one at a time, **personal-agent last**. Every instance
 must be running at the end. Discover each working
 directory and label from its plist/tracker row instead of guessing; after the
-first three instances, finish with:
+first four instances, finish with:
 
 ```bash
 cd ~/personal/finances && mono-agent restart
 cd ~/agents/inner-child && mono-agent restart
+cd ~/agents/ambra-sleep && mono-agent restart
 cd ~/agents/transcription && mono-agent restart
 cd ~/personal-agent && mono-agent restart 2>&1 | tail -25
 cd ~/personal-agent && mono-agent validate 2>&1 | tail -45
@@ -126,7 +129,7 @@ claiming cross-version proof:
 
 ```bash
 DEPLOY_REPO=/Users/example/Personal_Repositories/mono-agent
-FLEET_LABELS='com.mono-agent.finances-e9c073d7,com.mono-agent.inner-child-fdfc3392,com.mono-agent.personal-agent-059657c8,com.mono-agent.transcription-f4a742c8'
+FLEET_LABELS='com.mono-agent.ambra-sleep-083399be,com.mono-agent.finances-e9c073d7,com.mono-agent.inner-child-fdfc3392,com.mono-agent.personal-agent-059657c8,com.mono-agent.transcription-f4a742c8'
 
 # Exact host gate: print only.
 node scripts/fleet-green-check.mjs --dry-run \
@@ -154,7 +157,7 @@ it cannot prove that a removed plist still belongs to the fleet. The nightly
 `fleet-green-check` job — *if it is actually installed*, which this skill has
 before wrongly assumed as fact (re-verify it against `launchctl list`; see
 Gotchas) — and all deployment evidence therefore use `--expect-labels` with the
-exact four-label set above. Missing or extra labels drive RED before any row can
+exact five-label set above. Missing or extra labels drive RED before any row can
 be treated as healthy. `--expect-sha` accepts a full SHA and applies it
 independently to every instance; multiple deploy checkouts do not weaken that
 requirement.

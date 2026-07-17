@@ -23,6 +23,18 @@ const DEFAULT_OLLAMA_ENDPOINT = "http://localhost:11434";
 const DEFAULT_LMSTUDIO_ENDPOINT = "http://localhost:1234";
 const DEFAULT_OPENAI_ENDPOINT = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_MS = 30_000;
+const EMBEDDING_NETWORK_ERROR_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
 
 export interface OllamaEmbeddingOptions {
   readonly model: string;
@@ -325,7 +337,7 @@ function normalizeServiceRoot(value: string, label: string): string {
 }
 
 function normalizeEmbeddingRequestFailure(provider: string, cause: unknown): unknown {
-  if (!(cause instanceof TypeError) && !(cause instanceof Error && cause.name === "AbortError")) {
+  if (!isStructuredNetworkTypeError(cause) && !(cause instanceof Error && cause.name === "AbortError")) {
     return cause;
   }
   return new MemorySearchError(
@@ -334,6 +346,28 @@ function normalizeEmbeddingRequestFailure(provider: string, cause: unknown): unk
     {},
     { cause },
   );
+}
+
+function isStructuredNetworkTypeError(value: unknown): value is TypeError {
+  if (!(value instanceof TypeError)) {
+    return false;
+  }
+  let cause: unknown;
+  try {
+    cause = Reflect.get(value, "cause");
+  } catch {
+    return false;
+  }
+  if (!(cause instanceof Error)) {
+    return false;
+  }
+  let code: unknown;
+  try {
+    code = Reflect.get(cause, "code");
+  } catch {
+    return false;
+  }
+  return typeof code === "string" && EMBEDDING_NETWORK_ERROR_CODES.has(code.toUpperCase());
 }
 
 async function withTimeout(timeoutMs: number, run: (signal: AbortSignal) => Promise<Response>): Promise<Response> {
