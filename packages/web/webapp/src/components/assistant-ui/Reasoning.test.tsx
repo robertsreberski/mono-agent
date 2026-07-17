@@ -57,18 +57,30 @@ describe("Reasoning", () => {
 });
 
 describe("ActivityGroup", () => {
-  it("opens while running, force-collapses on settle, and can be reopened afterward", () => {
-    const { rerender } = render(
+  it("stays open while running, force-collapses on settle, and can be reopened afterward", () => {
+    const { container, rerender } = render(
       <ActivityGroup streaming>
         <p>Live activity</p>
       </ActivityGroup>,
     );
 
+    expect(container.querySelector(".activity-trigger .reasoning-trigger-icon")).toBeNull();
     const activeTrigger = screen.getByRole("button", { name: "Activity in progress" });
     expect(activeTrigger).toHaveAttribute("aria-expanded", "true");
     fireEvent.click(activeTrigger);
-    fireEvent.click(activeTrigger);
     expect(activeTrigger).toHaveAttribute("aria-expanded", "true");
+
+    rerender(
+      <ActivityGroup streaming>
+        <p>Live activity</p>
+        <p>Another tool completed</p>
+      </ActivityGroup>,
+    );
+    expect(screen.getByRole("button", { name: "Activity in progress" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByText("Another tool completed")).toBeVisible();
 
     rerender(
       <ActivityGroup streaming={false}>

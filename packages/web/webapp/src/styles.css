@@ -461,6 +461,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .message-error strong { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
 /* Reasoning and tool calls */
 .reasoning-root { margin: 5px 0 11px; }
+.assistant-content > .activity-root:first-child { margin-top: -4px; }
 .reasoning-trigger { min-height: 32px; display: inline-flex; align-items: center; gap: 7px; padding: 0 7px 0 3px; color: var(--text-muted); background: transparent; border-radius: 8px; cursor: pointer; font-size: 11px; }
 .reasoning-trigger:hover { color: var(--text-soft); background: var(--surface-subtle); }
 .reasoning-trigger[data-active="true"] .reasoning-trigger-label { color: var(--accent); }
@@ -626,6 +627,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .message-assistant { grid-template-columns: 24px minmax(0, 1fr); gap: 8px; }
   .assistant-mark { width: 24px; height: 24px; border-radius: 7px; }
   .assistant-content { padding-right: 2px; }
+  .assistant-content > .activity-root:first-child { margin-top: -6px; }
   .markdown { font-size: 13.5px; line-height: 1.62; }
   .thread-footer { padding: 24px max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); }
   .composer-root { border-radius: 14px; }
