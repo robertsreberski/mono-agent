@@ -324,12 +324,10 @@ const ActivityGroupImpl = ({
     <ReasoningRoot
       className={joinClassNames("activity-root", className)}
       collapseOnSettle
+      open={isStreaming ? true : undefined}
       streaming={isStreaming}
     >
       <ReasoningTrigger active={isStreaming} className="activity-trigger">
-        <span className="reasoning-trigger-icon" aria-hidden="true">
-          <Icon name="spark" size={14} />
-        </span>
         <span className="reasoning-trigger-label">
           Activity{isStreaming && <span className="sr-only"> in progress</span>}
         </span>
