@@ -184,7 +184,7 @@ describe("WebStore", () => {
     store.close();
   });
 
-  it("maps warnings/failover/usage and keeps run_config model/effort", async () => {
+  it("maps warnings/failover/usage and persists runtime telemetry payloads", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const store = await WebStore.open({ stateDir: join(base, "state") });
@@ -196,12 +196,29 @@ describe("WebStore", () => {
       { kind: "event", event: { type: "provider_status", kind: "failover_started", from: "one", to: "two" } },
       { kind: "event", event: { type: "usage_update", model: "two", cumulativeUsd: 0.01 } },
       { kind: "event", event: { type: "runtime_telemetry", kind: "run_config", data: { model: "actual", effort: "xhigh" } } },
+      {
+        kind: "event",
+        event: {
+          type: "runtime_telemetry",
+          kind: "context_usage",
+          data: { contextWindow: 372_000, tokens: { total: 12_345 } },
+        },
+      },
     ]);
     const detail = store.completeTurn(turn.turnId, "");
     expect(detail.thread.runState).toMatchObject({ model: "actual", effort: "xhigh" });
     expect(detail.messages.at(-1)?.parts.map((part) => part.type === "telemetry" ? part.event : part.type)).toEqual([
-      "runtime_warning", "provider_status", "usage_update", "runtime_telemetry",
+      "runtime_warning", "provider_status", "usage_update", "runtime_telemetry", "runtime_telemetry",
     ]);
+    expect(detail.messages.at(-1)?.parts.at(-1)).toEqual({
+      type: "telemetry",
+      event: "runtime_telemetry",
+      data: {
+        type: "runtime_telemetry",
+        kind: "context_usage",
+        data: { contextWindow: 372_000, tokens: { total: 12_345 } },
+      },
+    });
     store.close();
   });
 

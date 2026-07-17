@@ -46,7 +46,9 @@ function ThreadListItem({
         </span>
         <span className="thread-preview">
           {running && <i className="thread-running" aria-label="Agent is responding" />}
-          {thread.lastMessagePreview || (thread.messageCount ? `${thread.messageCount} messages` : "New conversation")}
+          <span className="thread-preview-text">
+            {thread.lastMessagePreview || (thread.messageCount ? `${thread.messageCount} messages` : "New conversation")}
+          </span>
         </span>
       </ThreadListItemPrimitive.Trigger>
       {archived ? (

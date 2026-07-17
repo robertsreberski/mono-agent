@@ -10,9 +10,9 @@ import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import { useEffect, useState } from "react";
 import { UserMessageAttachments } from "./Attachments";
 import {
-  REASONING_GROUP_BY,
+  ACTIVITY_GROUP_BY,
+  ActivityGroup,
   Reasoning,
-  ReasoningGroup,
 } from "./assistant-ui/Reasoning";
 import { Icon } from "./Icon";
 
@@ -162,10 +162,6 @@ export function ToolFallback({
 
 // Runtime/provider telemetry remains attached to the message so the context
 // display can summarize it, but transport diagnostics are not transcript UI.
-function HiddenTelemetryPart(): null {
-  return null;
-}
-
 function ErrorPart({ data }: DataMessagePartProps) {
   const payload = data as { code?: unknown; message?: unknown };
   return (
@@ -181,7 +177,6 @@ const parts = {
   Empty: RunningText,
   data: {
     by_name: {
-      telemetry: HiddenTelemetryPart,
       error: ErrorPart,
     },
   },
@@ -189,11 +184,11 @@ const parts = {
 
 function AssistantParts() {
   return (
-    <MessagePrimitive.GroupedParts groupBy={REASONING_GROUP_BY} indicator="no-text">
+    <MessagePrimitive.GroupedParts groupBy={ACTIVITY_GROUP_BY} indicator="no-text">
       {({ part, children }) => {
         switch (part.type) {
-          case "group-reasoning":
-            return <ReasoningGroup status={part.status}>{children}</ReasoningGroup>;
+          case "group-activity":
+            return <ActivityGroup status={part.status}>{children}</ActivityGroup>;
           case "text":
             return part.text.length > 0
               ? <MarkdownText />
