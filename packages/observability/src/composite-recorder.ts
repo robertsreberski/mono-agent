@@ -10,7 +10,7 @@
  * exporter is injected by agent-host; this module never reaches the transport.
  */
 
-import { errorMessage } from "./guards.js";
+import { DEFAULT_MAX_EVENTS_PER_RUN, errorMessage } from "./guards.js";
 import type {
   RunExportContext,
   RunExporter,
@@ -50,6 +50,7 @@ export function createCompositeRunRecorder(options: CompositeRunRecorderOptions)
   let preparePromise: Promise<void> | undefined;
   let terminalPromise: Promise<RunSummary> | undefined;
   let terminalStarted = false;
+  let droppedEventCount = 0;
 
   function warn(phase: string, message: string): void {
     try {
@@ -59,6 +60,14 @@ export function createCompositeRunRecorder(options: CompositeRunRecorderOptions)
       // must never turn an exporter degradation into a run failure or suppress
       // the outer recorder's sole terminal frame.
     }
+  }
+
+  function warnAboutDroppedEvents(): void {
+    if (droppedEventCount === 0) return;
+    warn(
+      "event_buffer",
+      `Exporter event buffer retained the first ${DEFAULT_MAX_EVENTS_PER_RUN} events and dropped ${droppedEventCount} later events.`,
+    );
   }
 
   async function withTimeout(fn: () => Promise<void> | void): Promise<void> {
@@ -108,6 +117,7 @@ export function createCompositeRunRecorder(options: CompositeRunRecorderOptions)
         const summary = recorder.commitFinish === undefined
           ? await recorder.finish(result)
           : await recorder.commitFinish(result);
+        warnAboutDroppedEvents();
         await bestEffort("finish", async () => {
           await replayEvents();
           await exporter.finish?.(summary, context);
@@ -124,7 +134,11 @@ export function createCompositeRunRecorder(options: CompositeRunRecorderOptions)
       if (terminalStarted) return;
       // JSONL recorder FIRST (synchronous), then buffer for batch export.
       recorder.onEvent(event);
-      events.push(event);
+      if (events.length < DEFAULT_MAX_EVENTS_PER_RUN) {
+        events.push(event);
+      } else {
+        droppedEventCount += 1;
+      }
     },
     prepareFinish,
     commitFinish,
@@ -137,6 +151,7 @@ export function createCompositeRunRecorder(options: CompositeRunRecorderOptions)
         terminalStarted = true;
         terminalPromise = (async () => {
           const summary = await recorder.fail(error);
+          warnAboutDroppedEvents();
           await bestEffort("fail", async () => {
             await replayEvents();
             await exporter.fail?.(summary, error, context);
