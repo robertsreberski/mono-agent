@@ -1,4 +1,10 @@
 import type { ArtifactRetentionConfig } from "@mono-agent/config";
+import {
+  DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS,
+  DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT,
+  pruneExplicitMemoryForgetBackups,
+} from "@mono-agent/memory/bujo";
+import type { MemoryForgetBackupRetentionResult } from "@mono-agent/memory/bujo";
 import { pruneRunArtifacts } from "@mono-agent/observability";
 import type { PruneRunArtifactsResult, RunArtifactScope } from "@mono-agent/observability";
 
@@ -20,6 +26,7 @@ export interface RunArtifactRetentionPassInput {
 
 export interface StartArtifactRetentionSchedulerInput extends RunArtifactRetentionPassInput {
   readonly memoryRetention?: ArtifactRetentionConfig;
+  readonly memoryRoot?: string;
   readonly sweepIntervalMs?: number;
   readonly beforeFirstRun?: () => Promise<void>;
   readonly setInterval?: (callback: () => void, ms: number) => { readonly unref?: () => void };
@@ -90,6 +97,16 @@ export function startArtifactRetentionScheduler(
           shouldContinue: () => !stopped && (input.shouldContinue?.() ?? true),
         });
       }
+      if (stopped || input.memoryRoot === undefined) {
+        return;
+      }
+      const forgetBackups = pruneExplicitMemoryForgetBackups({
+        root: input.memoryRoot,
+        dryRun: (input.memoryRetention ?? input.retention).dryRun,
+        ...(input.clock === undefined ? {} : { clock: input.clock }),
+        shouldContinue: () => !stopped && (input.shouldContinue?.() ?? true),
+      });
+      logMemoryForgetBackupRetentionResult(input.logger, forgetBackups);
     })().catch((error: unknown) => {
       input.logger?.warn?.("Artifact retention sweep failed.", { reason: reasonOf(error) });
     }).finally(() => {
@@ -110,6 +127,35 @@ export function startArtifactRetentionScheduler(
       clearIntervalFn(handle);
     },
     runNow: run,
+  };
+}
+
+function logMemoryForgetBackupRetentionResult(
+  logger: ArtifactRetentionLogger | undefined,
+  result: MemoryForgetBackupRetentionResult,
+): void {
+  for (const warning of result.warnings) {
+    logger?.warn?.(`Memory forget-backup retention: ${warning}`);
+  }
+  if (result.dryRun) {
+    logger?.info?.("Memory forget-backup retention dry run completed.", forgetBackupResultMeta(result));
+    return;
+  }
+  if (result.prunedCount > 0) {
+    logger?.info?.("Memory forget-backup retention pruned snapshots.", forgetBackupResultMeta(result));
+  }
+}
+
+function forgetBackupResultMeta(result: MemoryForgetBackupRetentionResult): Record<string, unknown> {
+  return {
+    memoryRoot: result.root,
+    maxAgeDays: DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS,
+    maxCount: DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT,
+    candidateCount: result.candidateCount,
+    retainedCount: result.retainedCount,
+    prunedCount: result.prunedCount,
+    prunedPaths: result.prunedPaths,
+    skippedForActiveMaintenance: result.skippedForActiveMaintenance,
   };
 }
 
