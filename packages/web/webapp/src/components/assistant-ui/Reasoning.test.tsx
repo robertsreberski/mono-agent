@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import "../../styles.css";
 import {
   ACTIVITY_GROUP_BY,
   ActivityGroup,
@@ -57,6 +58,34 @@ describe("Reasoning", () => {
 });
 
 describe("ActivityGroup", () => {
+  it("shows all running activity without an inner scroll and restores the settled bound", () => {
+    const { container, rerender } = render(
+      <ActivityGroup streaming>
+        <p>Live activity</p>
+      </ActivityGroup>,
+    );
+
+    const runningText = container.querySelector<HTMLElement>("[data-slot='reasoning-text']");
+    expect(runningText).not.toBeNull();
+    const runningStyle = getComputedStyle(runningText!);
+    expect(runningStyle.maxHeight).toBe("none");
+    expect(runningStyle.overflowY).toBe("visible");
+    expect(runningStyle.maskImage).toBe("none");
+
+    rerender(
+      <ActivityGroup streaming={false}>
+        <p>Finished activity</p>
+      </ActivityGroup>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+
+    const settledText = container.querySelector<HTMLElement>("[data-slot='reasoning-text']");
+    expect(settledText).not.toBeNull();
+    const settledStyle = getComputedStyle(settledText!);
+    expect(settledStyle.maxHeight).toBe("256px");
+    expect(settledStyle.overflowY).toBe("auto");
+  });
+
   it("stays open while running, force-collapses on settle, and can be reopened afterward", () => {
     const { container, rerender } = render(
       <ActivityGroup streaming>
