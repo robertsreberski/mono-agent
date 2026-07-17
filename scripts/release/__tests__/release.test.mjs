@@ -47,6 +47,7 @@ function packageRecord({
   dependencies = {},
   optionalDependencies = {},
   peerDependencies = {},
+  devDependencies = {},
   nodeEngine = SUPPORTED_NODE_ENGINE,
   repository,
 }) {
@@ -71,6 +72,7 @@ function packageRecord({
       dependencies,
       optionalDependencies,
       peerDependencies,
+      devDependencies,
     },
   };
 }
@@ -159,6 +161,28 @@ describe("release graph validation", () => {
           `root package.json ${section}.@mono-agent/agent-contracts must be workspace:1.2.3; found workspace:1.2.2`,
         ]);
       }
+    }
+  });
+
+  test("requires exact lockstep ranges in package-local devDependencies", () => {
+    const contracts = packageRecord({ name: "@mono-agent/agent-contracts" });
+    const tui = packageRecord({
+      name: "@mono-agent/tui",
+      devDependencies: { "@mono-agent/agent-contracts": "workspace:1.2.2" },
+    });
+
+    try {
+      validateRelease({
+        tag: "v1.2.3",
+        packages: [contracts, tui],
+        rootPackageJson: rootPackageRecord(),
+        silent: true,
+      });
+      throw new Error("validateRelease did not reject the stale package devDependency");
+    } catch (error) {
+      expect(error.issues).toEqual([
+        "@mono-agent/tui devDependencies.@mono-agent/agent-contracts must be workspace:1.2.3; found workspace:1.2.2",
+      ]);
     }
   });
 

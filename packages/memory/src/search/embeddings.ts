@@ -23,6 +23,19 @@ const DEFAULT_OLLAMA_ENDPOINT = "http://localhost:11434";
 const DEFAULT_LMSTUDIO_ENDPOINT = "http://localhost:1234";
 const DEFAULT_OPENAI_ENDPOINT = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_MS = 30_000;
+const MAX_EMBEDDING_NETWORK_CAUSE_CANDIDATES = 64;
+const EMBEDDING_NETWORK_ERROR_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
 
 export interface OllamaEmbeddingOptions {
   readonly model: string;
@@ -325,7 +338,7 @@ function normalizeServiceRoot(value: string, label: string): string {
 }
 
 function normalizeEmbeddingRequestFailure(provider: string, cause: unknown): unknown {
-  if (!(cause instanceof TypeError) && !(cause instanceof Error && cause.name === "AbortError")) {
+  if (!isStructuredNetworkTypeError(cause) && !(cause instanceof Error && cause.name === "AbortError")) {
     return cause;
   }
   return new MemorySearchError(
@@ -334,6 +347,87 @@ function normalizeEmbeddingRequestFailure(provider: string, cause: unknown): unk
     {},
     { cause },
   );
+}
+
+function isStructuredNetworkTypeError(value: unknown): value is TypeError {
+  if (!(value instanceof TypeError)) {
+    return false;
+  }
+
+  const pending: Error[] = [];
+  const seen = new Set<Error>();
+  let candidateCount = 0;
+
+  const enqueue = (candidate: unknown): void => {
+    if (candidateCount >= MAX_EMBEDDING_NETWORK_CAUSE_CANDIDATES) {
+      return;
+    }
+    candidateCount += 1;
+    let isError = false;
+    try {
+      isError = candidate instanceof Error;
+    } catch {
+      return;
+    }
+    if (!isError || seen.has(candidate as Error)) {
+      return;
+    }
+    seen.add(candidate as Error);
+    pending.push(candidate as Error);
+  };
+
+  const readProperty = (target: object, key: PropertyKey): unknown => {
+    try {
+      return Reflect.get(target, key);
+    } catch {
+      return undefined;
+    }
+  };
+
+  const enqueueChildren = (current: Error): void => {
+    enqueue(readProperty(current, "cause"));
+    let isAggregate = false;
+    try {
+      isAggregate = current instanceof AggregateError;
+    } catch {
+      return;
+    }
+    if (!isAggregate) {
+      return;
+    }
+    const errors = readProperty(current, "errors");
+    let errorEntries: unknown[];
+    try {
+      if (!Array.isArray(errors)) {
+        return;
+      }
+      errorEntries = errors;
+    } catch {
+      return;
+    }
+    const length = readProperty(errorEntries, "length");
+    if (typeof length !== "number" || !Number.isSafeInteger(length) || length < 0) {
+      return;
+    }
+    const readable = Math.min(length, MAX_EMBEDDING_NETWORK_CAUSE_CANDIDATES - candidateCount);
+    for (let index = 0; index < readable; index += 1) {
+      enqueue(readProperty(errorEntries, String(index)));
+    }
+  };
+
+  enqueue(readProperty(value, "cause"));
+  while (pending.length > 0) {
+    const current = pending.shift();
+    if (current === undefined) {
+      continue;
+    }
+    const code = readProperty(current, "code");
+    if (typeof code === "string" && EMBEDDING_NETWORK_ERROR_CODES.has(code.toUpperCase())) {
+      return true;
+    }
+    enqueueChildren(current);
+  }
+  return false;
 }
 
 async function withTimeout(timeoutMs: number, run: (signal: AbortSignal) => Promise<Response>): Promise<Response> {
