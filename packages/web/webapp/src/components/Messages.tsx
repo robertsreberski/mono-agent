@@ -183,12 +183,15 @@ const parts = {
 } as const;
 
 function AssistantParts() {
+  const isMessageRunning = useAuiState(
+    (state) => state.message.status?.type === "running",
+  );
   return (
     <MessagePrimitive.GroupedParts groupBy={ACTIVITY_GROUP_BY} indicator="no-text">
       {({ part, children }) => {
         switch (part.type) {
           case "group-activity":
-            return <ActivityGroup status={part.status}>{children}</ActivityGroup>;
+            return <ActivityGroup streaming={isMessageRunning}>{children}</ActivityGroup>;
           case "text":
             return part.text.length > 0
               ? <MarkdownText />

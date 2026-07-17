@@ -96,21 +96,95 @@ describe("AssistantMessage grouped parts", () => {
     );
   });
 
-  it("auto-opens the activity disclosure while the message is streaming", () => {
-    render(
+  it("keeps activity open while completed tool entries arrive in a running message", async () => {
+    const runningMessage: WebMessage = {
+      ...assistantMessage("running"),
+      parts: [
+        { type: "reasoning", text: "Still reasoning" },
+        {
+          type: "tool-call",
+          toolCallId: "tool-1",
+          toolName: "first_completed_tool",
+          args: {},
+          result: { ok: true },
+          status: "complete",
+        },
+      ],
+    };
+    const { rerender } = render(<MessageHarness message={runningMessage} />);
+
+    const trigger = screen.getByRole("button", { name: "Activity in progress" });
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+
+    rerender(
       <MessageHarness
         message={{
-          ...assistantMessage("running"),
-          parts: [{ type: "reasoning", text: "Still reasoning" }],
+          ...runningMessage,
+          updatedAt: "2026-07-17T10:00:01.000Z",
+          parts: [
+            ...runningMessage.parts,
+            {
+              type: "tool-call",
+              toolCallId: "tool-2",
+              toolName: "second_completed_tool",
+              args: {},
+              result: { ok: true },
+              status: "complete",
+            },
+          ],
         }}
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Activity in progress" })).toHaveAttribute(
+    expect(await screen.findByRole("button", { name: "Activity in progress" })).toHaveAttribute(
       "aria-expanded",
       "true",
     );
+    expect(await screen.findByText("second_completed_tool")).toBeVisible();
   });
+
+  it.each(["complete", "failed", "cancelled", "interrupted"] as const)(
+    "collapses activity when the parent message becomes %s and allows reopening",
+    async (status) => {
+      const runningMessage: WebMessage = {
+        ...assistantMessage("running"),
+        parts: [
+          { type: "reasoning", text: "Still reasoning" },
+          {
+            type: "tool-call",
+            toolCallId: "tool-1",
+            toolName: "completed_tool",
+            args: {},
+            result: { ok: true },
+            status: "complete",
+          },
+        ],
+      };
+      const { rerender } = render(<MessageHarness message={runningMessage} />);
+
+      expect(screen.getByRole("button", { name: "Activity in progress" })).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
+
+      rerender(
+        <MessageHarness
+          message={{
+            ...runningMessage,
+            status,
+            updatedAt: "2026-07-17T10:00:01.000Z",
+          }}
+        />,
+      );
+
+      const settledTrigger = await screen.findByRole("button", { name: "Activity" });
+      expect(settledTrigger).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(settledTrigger);
+      expect(settledTrigger).toHaveAttribute("aria-expanded", "true");
+    },
+  );
 });
 
 describe("message actions", () => {
