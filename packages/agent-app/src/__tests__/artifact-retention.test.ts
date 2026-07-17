@@ -175,6 +175,50 @@ describe("artifact retention app scheduler", () => {
     scheduler.stop();
   });
 
+  it("lets stop cancel an asynchronously claimed forget backup before removal", async () => {
+    const dir = await tempDir();
+    const memoryRoot = join(dir, ".mono-agent", "memory");
+    const operatorRoot = join(dir, ".mono-agent", "operator");
+    const candidate = join(operatorRoot, "forget-cancelled");
+    await mkdir(join(dir, "artifacts"), { recursive: true });
+    await mkdir(memoryRoot, { recursive: true, mode: 0o700 });
+    await mkdir(operatorRoot, { mode: 0o755 });
+    await writeOperatorBackup(operatorRoot, "forget-cancelled", NOW - 40 * DAY_MS);
+    let releaseClaim: (() => void) | undefined;
+    let markClaimed: (() => void) | undefined;
+    const claimed = new Promise<void>((resolve) => { markClaimed = resolve; });
+    const waitForRelease = new Promise<void>((resolve) => { releaseClaim = resolve; });
+    const logger = { info: vi.fn(), warn: vi.fn() };
+
+    const scheduler = startArtifactRetentionScheduler({
+      artifactDir: join(dir, "artifacts"),
+      retention: { maxAgeDays: 30, maxCount: 5000, dryRun: false },
+      memoryRetention: { maxAgeDays: 7, maxCount: 500, dryRun: false },
+      memoryRoot,
+      logger,
+      clock: () => NOW,
+      forgetBackupRetentionHooks: {
+        afterClaim: async () => {
+          markClaimed?.();
+          await waitForRelease;
+        },
+      },
+      setInterval: () => ({ unref: vi.fn() }),
+      clearInterval: vi.fn(),
+    });
+
+    await claimed;
+    scheduler.stop();
+    releaseClaim?.();
+    await vi.waitFor(async () => {
+      await expectExists(candidate, true);
+    });
+    expect(logger.info).not.toHaveBeenCalledWith(
+      "Memory forget-backup retention pruned snapshots.",
+      expect.anything(),
+    );
+  });
+
   it("does not prune after stop while the first-run hook is still pending", async () => {
     const dir = await tempDir();
     await writeRun(dir, "old-run", NOW - 40 * DAY_MS);

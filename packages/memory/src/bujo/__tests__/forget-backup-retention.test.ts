@@ -1,6 +1,18 @@
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  link,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -27,7 +39,7 @@ describe("memory forget-backup retention", () => {
     const recovered = await writeManaged(root, "f", 0, "recovered");
     const staging = await writeStaging(root, "e", 40);
 
-    const result = pruneExplicitMemoryForgetBackups({ root, clock: () => NOW });
+    const result = await pruneExplicitMemoryForgetBackups({ root, clock: () => NOW });
 
     expect(result).toMatchObject({
       candidateCount: 7,
@@ -56,7 +68,7 @@ describe("memory forget-backup retention", () => {
       await writeOperator(root, `forget-${day}`, day);
     }
 
-    const result = pruneExplicitMemoryForgetBackups({ root, dryRun: true, clock: () => NOW });
+    const result = await pruneExplicitMemoryForgetBackups({ root, dryRun: true, clock: () => NOW });
 
     expect(result).toMatchObject({ dryRun: true, candidateCount: 4, retainedCount: 3, prunedCount: 1 });
     expect(result.prunedPaths).toEqual(["operator/forget-4"]);
@@ -75,12 +87,12 @@ describe("memory forget-backup retention", () => {
     const transaction = join(dirname(root), ".memory.maintenance.json");
     await writeFile(transaction, "{}\n", { encoding: "utf8", mode: 0o600 });
 
-    const deferred = pruneExplicitMemoryForgetBackups({ root, clock: () => NOW });
+    const deferred = await pruneExplicitMemoryForgetBackups({ root, clock: () => NOW });
     expect(deferred.skippedForActiveMaintenance).toBe(true);
     expect(existsSync(oldOperator)).toBe(true);
 
     await rm(transaction);
-    const result = pruneExplicitMemoryForgetBackups({ root, clock: () => NOW });
+    const result = await pruneExplicitMemoryForgetBackups({ root, clock: () => NOW });
 
     expect(result.prunedPaths).toEqual(["operator/forget-old"]);
     expect(result.warnings.join("\n")).toMatch(/applying backup was preserved|foreign manifest|unsafe directory/iu);
@@ -89,11 +101,117 @@ describe("memory forget-backup retention", () => {
     expect(existsSync(linked)).toBe(true);
   });
 
+  it("preserves old managed candidates rejected by the authoritative backup reader invariants", async () => {
+    const root = await memoryFixture();
+    const incomplete = await writeManaged(root, "1", 40, "applied");
+    const incompleteManifest = join(incomplete, "manifest.json");
+    const incompleteValue = JSON.parse(await readFile(incompleteManifest, "utf8")) as Record<string, unknown>;
+    delete incompleteValue["sourceFingerprint"];
+    await writeFile(incompleteManifest, `${JSON.stringify(incompleteValue)}\n`, "utf8");
+
+    const publicManifest = await writeManaged(root, "2", 40, "applied");
+    await chmod(join(publicManifest, "manifest.json"), 0o644);
+
+    const linkedManifest = await writeManaged(root, "3", 40, "applied");
+    await link(join(linkedManifest, "manifest.json"), join(linkedManifest, "manifest-copy.json"));
+
+    const publicBackup = await writeManaged(root, "4", 40, "applied");
+    await chmod(publicBackup, 0o755);
+
+    const result = await pruneExplicitMemoryForgetBackups({ root, clock: () => NOW });
+
+    expect(result).toMatchObject({ candidateCount: 0, prunedCount: 0 });
+    expect(result.warnings.join("\n")).toMatch(/backup manifest is invalid|private artifact is unsafe|backup directory is unsafe/iu);
+    for (const backup of [incomplete, publicManifest, linkedManifest, publicBackup]) {
+      expect(existsSync(backup)).toBe(true);
+    }
+  });
+
+  it("atomically claims a candidate and restores a raced replacement instead of deleting it", async () => {
+    const root = await memoryFixture();
+    const candidate = await writeOperator(root, "forget-raced", 40);
+    const original = `${candidate}-original`;
+
+    const result = await pruneExplicitMemoryForgetBackups({
+      root,
+      clock: () => NOW,
+      hooks: {
+        beforeClaim: async () => {
+          await rename(candidate, original);
+          await mkdir(candidate, { mode: 0o755 });
+          await writeFile(join(candidate, "replacement.txt"), "keep\n", "utf8");
+        },
+      },
+    });
+
+    expect(result.prunedCount).toBe(0);
+    expect(result.warnings.join("\n")).toMatch(/claimed directory identity changed/iu);
+    expect(await readFile(join(candidate, "replacement.txt"), "utf8")).toBe("keep\n");
+    expect(existsSync(original)).toBe(true);
+    expect((await readdir(dirname(candidate))).some((name) => name.startsWith("forget-retention-"))).toBe(false);
+  });
+
+  it("yields while claimed and restores the candidate when cancellation arrives", async () => {
+    const root = await memoryFixture();
+    const candidate = await writeOperator(root, "forget-cancelled", 40);
+    let cancelled = false;
+    let releaseClaim: (() => void) | undefined;
+    let markClaimed: (() => void) | undefined;
+    const claimed = new Promise<void>((resolve) => { markClaimed = resolve; });
+    const waitForRelease = new Promise<void>((resolve) => { releaseClaim = resolve; });
+
+    const sweep = pruneExplicitMemoryForgetBackups({
+      root,
+      clock: () => NOW,
+      shouldContinue: () => !cancelled,
+      hooks: {
+        afterClaim: async () => {
+          markClaimed?.();
+          await waitForRelease;
+        },
+      },
+    });
+    await claimed;
+    cancelled = true;
+    releaseClaim?.();
+    const result = await sweep;
+
+    expect(result.prunedCount).toBe(0);
+    expect(existsSync(candidate)).toBe(true);
+    expect((await readdir(dirname(candidate))).some((name) => name.startsWith("forget-retention-"))).toBe(false);
+  });
+
+  it("rediscovers and removes managed and operator claims left by an interrupted sweep", async () => {
+    const root = await memoryFixture();
+    const managed = await writeManaged(root, "5", 40, "applied");
+    const operator = await writeOperator(root, "forget-interrupted", 40);
+
+    const interrupted = await pruneExplicitMemoryForgetBackups({
+      root,
+      clock: () => NOW,
+      hooks: {
+        afterClaim: () => { throw new Error("simulated process interruption"); },
+      },
+    });
+
+    expect(interrupted.prunedCount).toBe(0);
+    expect(existsSync(managed)).toBe(false);
+    expect(existsSync(operator)).toBe(false);
+    expect((await readdir(dirname(root))).some((name) => /^\.memory-forget-backup-[a-f0-9]{24}\.tmp-/u.test(name))).toBe(true);
+    expect((await readdir(dirname(operator))).some((name) => name.startsWith("forget-retention-"))).toBe(true);
+
+    const recovered = await pruneExplicitMemoryForgetBackups({ root, clock: () => NOW });
+
+    expect(recovered.prunedCount).toBe(2);
+    expect((await readdir(dirname(root))).some((name) => /^\.memory-forget-backup-[a-f0-9]{24}\.tmp-/u.test(name))).toBe(false);
+    expect((await readdir(dirname(operator))).some((name) => name.startsWith("forget-retention-"))).toBe(false);
+  });
+
   it("does not assign the conventional operator namespace to a custom root", async () => {
     const root = await memoryFixture("custom-memory");
     const operator = await writeOperator(root, "forget-old", 40);
 
-    const result = pruneExplicitMemoryForgetBackups({ root, clock: () => NOW });
+    const result = await pruneExplicitMemoryForgetBackups({ root, clock: () => NOW });
 
     expect(result.candidateCount).toBe(0);
     expect(existsSync(operator)).toBe(true);
@@ -124,9 +242,15 @@ async function writeManaged(
     operation: "memory-forget-backup",
     status,
     rootFingerprint,
+    sourceFingerprint: "1".repeat(64),
+    treeFingerprint: "2".repeat(64),
+    activeDbRelativePath: ".index/generations/current/memory.db",
+    dimension: 768,
     planDigest,
     createdAt: new Date(NOW - ageDays * DAY_MS).toISOString(),
   })}\n`, { encoding: "utf8", mode: 0o600 });
+  const timestamp = new Date(NOW - ageDays * DAY_MS);
+  await utimes(backup, timestamp, timestamp);
   return backup;
 }
 

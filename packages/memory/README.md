@@ -180,7 +180,9 @@ at startup and hourly. The fixed rollback window keeps the three newest
 root-bound managed or conventional `operator/forget-*` snapshots and expires
 them after 30 days. The sweep shares the stopped-store maintenance lease,
 defers during recovery, refuses symlinks or foreign manifests, and supports the
-memory-artifact dry-run boundary.
+memory-artifact dry-run boundary. Before deletion it atomically renames each
+selected directory to another reserved retention name, so an interrupted sweep
+leaves a claim that the next sweep can discover and finish.
 
 One legacy case needs an explicit trust decision: a stopped built-in BuJo root,
 managed or still using the legacy unmanaged `memory.db`, may contain

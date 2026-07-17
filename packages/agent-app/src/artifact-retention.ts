@@ -4,7 +4,10 @@ import {
   DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT,
   pruneExplicitMemoryForgetBackups,
 } from "@mono-agent/memory/bujo";
-import type { MemoryForgetBackupRetentionResult } from "@mono-agent/memory/bujo";
+import type {
+  MemoryForgetBackupRetentionOptions,
+  MemoryForgetBackupRetentionResult,
+} from "@mono-agent/memory/bujo";
 import { pruneRunArtifacts } from "@mono-agent/observability";
 import type { PruneRunArtifactsResult, RunArtifactScope } from "@mono-agent/observability";
 
@@ -27,6 +30,8 @@ export interface RunArtifactRetentionPassInput {
 export interface StartArtifactRetentionSchedulerInput extends RunArtifactRetentionPassInput {
   readonly memoryRetention?: ArtifactRetentionConfig;
   readonly memoryRoot?: string;
+  /** Test seam for deterministic cancellation coverage. */
+  readonly forgetBackupRetentionHooks?: MemoryForgetBackupRetentionOptions["hooks"];
   readonly sweepIntervalMs?: number;
   readonly beforeFirstRun?: () => Promise<void>;
   readonly setInterval?: (callback: () => void, ms: number) => { readonly unref?: () => void };
@@ -100,10 +105,13 @@ export function startArtifactRetentionScheduler(
       if (stopped || input.memoryRoot === undefined) {
         return;
       }
-      const forgetBackups = pruneExplicitMemoryForgetBackups({
+      const forgetBackups = await pruneExplicitMemoryForgetBackups({
         root: input.memoryRoot,
         dryRun: (input.memoryRetention ?? input.retention).dryRun,
         ...(input.clock === undefined ? {} : { clock: input.clock }),
+        ...(input.forgetBackupRetentionHooks === undefined
+          ? {}
+          : { hooks: input.forgetBackupRetentionHooks }),
         shouldContinue: () => !stopped && (input.shouldContinue?.() ?? true),
       });
       logMemoryForgetBackupRetentionResult(input.logger, forgetBackups);
