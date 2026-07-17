@@ -71,7 +71,7 @@ const jsonText = (value: unknown): string => {
 
 const convertPart = (
   part: MessagePart,
-): Exclude<ThreadMessageLike["content"], string>[number] => {
+): Exclude<ThreadMessageLike["content"], string>[number] | null => {
   switch (part.type) {
     case "text":
       return { type: "text", text: part.text };
@@ -88,7 +88,10 @@ const convertPart = (
         isError: part.status === "failed",
       };
     case "telemetry":
-      return { type: "data-telemetry", data: { event: part.event, data: part.data } };
+      // Telemetry remains persisted in WebMessage/store state for chrome such
+      // as ContextDisplay. Keeping it out of assistant-ui content prevents
+      // hidden data parts from splitting adjacent reasoning/tool activity.
+      return null;
     case "error":
       return { type: "data-error", data: { code: part.code, message: part.message } };
   }
@@ -119,7 +122,10 @@ const completeAttachment = (attachment: WebAttachment): CompleteAttachment => {
 };
 
 export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
-  const content = message.parts.map(convertPart);
+  const content = message.parts.flatMap((part) => {
+    const converted = convertPart(part);
+    return converted === null ? [] : [converted];
+  });
   const status: ThreadMessageLike["status"] =
     message.status === "running"
       ? { type: "running" }

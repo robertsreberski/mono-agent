@@ -1,6 +1,10 @@
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { effortLevelsForAgentModel, useConsoleStore } from "../console-store";
+import {
+  type ConnectionState,
+  effortLevelsForAgentModel,
+  useConsoleStore,
+} from "../console-store";
 import { conversationConsoleUsage } from "../usage";
 import { ContextDisplay } from "./assistant-ui/ContextDisplay";
 import {
@@ -20,6 +24,36 @@ const runLabel: Record<string, string> = {
   cancelled: "Stopped",
   interrupted: "Interrupted",
 };
+
+export const CONNECTION_NOTICE_DELAY_MS = 5_000;
+
+export function ConnectionBanner({ connection }: { readonly connection: ConnectionState }) {
+  const [visible, setVisible] = useState(connection === "offline");
+
+  useEffect(() => {
+    if (connection === "live") {
+      setVisible(false);
+      return;
+    }
+    if (connection === "offline") {
+      setVisible(true);
+      return;
+    }
+    setVisible(false);
+    const timer = window.setTimeout(() => setVisible(true), CONNECTION_NOTICE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [connection]);
+
+  if (!visible || connection === "live") return null;
+  return (
+    <div className="connection-banner" role="status">
+      <span className="connection-pulse" />
+      {connection === "offline"
+        ? "You’re offline. Existing conversations remain readable; you can send again after reconnecting."
+        : "Live updates are reconnecting. The agent keeps working on the server."}
+    </div>
+  );
+}
 
 function ConversationTitle() {
   const { selectedThread, renameThread } = useConsoleStore();
@@ -98,11 +132,6 @@ export function ModelControls() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const disabled = selectedThread?.runState.status === "running";
   const usage = useMemo(() => conversationConsoleUsage(detail), [detail]);
-  const effectiveModel = model || selectedAgent?.defaultModel || modelOptions[0] || "";
-  const usageModel = usage?.model ?? effectiveModel;
-  const contextWindow = usageModel
-    ? selectedAgent?.modelOptions?.[usageModel]?.contextWindow
-    : undefined;
 
   useEffect(() => {
     const openSettings = () => setSettingsOpen(true);
@@ -152,15 +181,9 @@ export function ModelControls() {
     <div className="model-controls" aria-label="Run settings">
       {usage && (
         <ContextDisplay
-          usage={{
-            input: usage.input,
-            cachedInput: usage.cachedInput,
-            cacheCreation: usage.cacheCreation,
-            output: usage.output,
-            reasoning: usage.reasoning,
-            cost: usage.cost,
-          }}
-          contextWindow={contextWindow}
+          context={usage.context}
+          processed={usage.processed}
+          conversationCost={usage.cost}
         />
       )}
       {hasSettings && (
@@ -297,14 +320,7 @@ export function Chat({
           )}
         </div>
       </header>
-      {connection !== "live" && (
-        <div className="connection-banner" role="status">
-          <span className="connection-pulse" />
-          {connection === "offline"
-            ? "You’re offline. Existing conversations remain readable; you can send again after reconnecting."
-            : "Live updates are reconnecting. The agent keeps working on the server."}
-        </div>
-      )}
+      <ConnectionBanner connection={connection} />
       <ThreadPrimitive.Root className="thread-root">
         <ThreadPrimitive.Viewport className="thread-viewport" autoScroll>
           <div className="message-column">

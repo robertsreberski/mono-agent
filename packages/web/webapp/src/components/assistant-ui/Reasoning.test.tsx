@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
+  ACTIVITY_GROUP_BY,
+  ActivityGroup,
   REASONING_GROUP_BY,
   Reasoning,
   ReasoningGroup,
@@ -34,6 +36,50 @@ describe("Reasoning", () => {
       text: "answer",
       status: { type: "complete" },
     })).toEqual([]);
+  });
+
+  it("groups reasoning and routine tools into one activity while leaving standalone tools outside", () => {
+    expect(ACTIVITY_GROUP_BY({
+      type: "reasoning",
+      text: "thinking",
+      status: { type: "running" },
+    })).toEqual(["group-activity"]);
+    expect(ACTIVITY_GROUP_BY({
+      type: "tool-call",
+      toolCallId: "tool-1",
+      toolName: "inspect",
+      args: {},
+      argsText: "{}",
+      status: { type: "running" },
+    })).toEqual(["group-activity"]);
+    expect(ACTIVITY_GROUP_BY({ type: "standalone-tool-call" } as never)).toEqual([]);
+  });
+});
+
+describe("ActivityGroup", () => {
+  it("opens while running, force-collapses on settle, and can be reopened afterward", () => {
+    const { rerender } = render(
+      <ActivityGroup streaming>
+        <p>Live activity</p>
+      </ActivityGroup>,
+    );
+
+    const activeTrigger = screen.getByRole("button", { name: "Activity in progress" });
+    expect(activeTrigger).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(activeTrigger);
+    fireEvent.click(activeTrigger);
+    expect(activeTrigger).toHaveAttribute("aria-expanded", "true");
+
+    rerender(
+      <ActivityGroup streaming={false}>
+        <p>Finished activity</p>
+      </ActivityGroup>,
+    );
+
+    const settledTrigger = screen.getByRole("button", { name: "Activity" });
+    expect(settledTrigger).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(settledTrigger);
+    expect(settledTrigger).toHaveAttribute("aria-expanded", "true");
   });
 });
 

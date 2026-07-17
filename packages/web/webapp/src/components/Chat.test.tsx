@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, thread } from "../test/fixtures";
 
@@ -13,7 +13,7 @@ vi.mock("../console-store", async (importOriginal) => {
   };
 });
 
-import { ModelControls } from "./Chat";
+import { CONNECTION_NOTICE_DELAY_MS, ConnectionBanner, ModelControls } from "./Chat";
 
 class ResizeObserverStub implements ResizeObserver {
   observe() {}
@@ -30,6 +30,26 @@ beforeAll(() => {
 afterAll(() => {
   vi.unstubAllGlobals();
   Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+});
+
+describe("ConnectionBanner", () => {
+  it("suppresses brief reconnects, clears on recovery, and shows offline immediately", () => {
+    vi.useFakeTimers();
+    const { rerender } = render(<ConnectionBanner connection="live" />);
+    rerender(<ConnectionBanner connection="reconnecting" />);
+
+    expect(screen.queryByText(/Live updates are reconnecting/u)).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(CONNECTION_NOTICE_DELAY_MS - 1));
+    expect(screen.queryByText(/Live updates are reconnecting/u)).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByText(/Live updates are reconnecting/u)).toBeVisible();
+
+    rerender(<ConnectionBanner connection="live" />);
+    expect(screen.queryByText(/Live updates are reconnecting/u)).not.toBeInTheDocument();
+    rerender(<ConnectionBanner connection="offline" />);
+    expect(screen.getByText(/You’re offline/u)).toBeVisible();
+    vi.useRealTimers();
+  });
 });
 
 describe("ModelControls", () => {
@@ -98,7 +118,7 @@ describe("ModelControls", () => {
     await waitFor(() => expect(within(dialog).getByRole("combobox", { name: "Search models" })).toHaveFocus());
   });
 
-  it("renders cumulative conversation usage against the advertised capacity", async () => {
+  it("renders exact current context separately from cumulative conversation cost", async () => {
     storeMock.current = {
       ...storeMock.current,
       detail: {
@@ -115,6 +135,17 @@ describe("ModelControls", () => {
                 model: MODEL,
                 tokens: { input: 400, output: 100, cacheRead: 300, cacheCreation: 20 },
                 cumulativeUsd: 0.01,
+              },
+            }, {
+              type: "telemetry",
+              event: "runtime_telemetry",
+              data: {
+                kind: "context_usage",
+                data: {
+                  model: MODEL,
+                  contextWindow: 2_000,
+                  tokens: { input: 600, cacheRead: 300, cacheCreation: 20, output: 80, total: 1_000 },
+                },
               },
             }],
             attachments: [],
@@ -154,7 +185,7 @@ describe("ModelControls", () => {
     );
   });
 
-  it("does not borrow selected-model capacity when telemetry names an unknown failover", async () => {
+  it("does not borrow selected-model capacity for legacy aggregate telemetry", async () => {
     storeMock.current = {
       ...storeMock.current,
       detail: {
@@ -180,8 +211,11 @@ describe("ModelControls", () => {
     };
     render(<ModelControls />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Context usage: 1k tokens" }));
+    const trigger = screen.getByRole("button", { name: "Context usage: unavailable" });
+    expect(trigger).toHaveTextContent("Context —");
+    fireEvent.click(trigger);
     const popover = await screen.findByRole("dialog", { name: "Context usage" });
     expect(within(popover).queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(within(popover).getByText("Exact context usage was not recorded for this conversation.")).toBeVisible();
   });
 });

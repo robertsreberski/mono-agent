@@ -586,6 +586,20 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
       .toEqual({ type: "runtime_telemetry", kind: "capabilities_resolved", data: { capabilitiesUsed: ["vision"] } });
     expect(streamEventFromRuntimeEvent({ type: "provider_bridge_latency", durationMs: 88, timestamp: "t" }))
       .toEqual({ type: "runtime_telemetry", kind: "provider_bridge_latency", data: { durationMs: 88, timestamp: "t" } });
+    expect(streamEventFromRuntimeEvent({
+      type: "context_usage",
+      model: "pi:openai-codex:gpt-5.5",
+      contextWindow: 372_000,
+      tokens: { input: 100, output: 20, cacheRead: 800, cacheCreation: 5, total: 925 },
+    })).toEqual({
+      type: "runtime_telemetry",
+      kind: "context_usage",
+      data: {
+        model: "pi:openai-codex:gpt-5.5",
+        contextWindow: 372_000,
+        tokens: { input: 100, output: 20, cacheRead: 800, cacheCreation: 5, total: 925 },
+      },
+    });
   });
 
   it("wraps run_config as runtime_telemetry with effort/model intact", () => {

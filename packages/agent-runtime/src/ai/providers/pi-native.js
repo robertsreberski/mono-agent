@@ -52,6 +52,7 @@ import {
   buildErrorDetails,
   buildErrorResult,
   buildSuccessResult,
+  contextUsageFromAssistantMessage,
   emitCapabilitiesResolved,
   emitUsageCostEvents,
   usageFromMessages,
@@ -608,7 +609,19 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       cachedTokens: usage.cacheRead,
       cacheWriteTokens: usage.cacheWrite,
     });
-    emitUsageCostEvents({ onEvent, resolved, reference, usage, estimatedCost, start, externalAbort: runState.externalAbort });
+    emitUsageCostEvents({
+      onEvent,
+      resolved,
+      reference,
+      usage,
+      contextUsage: runState.externalAbort || runState.maxTurnsHit || runError
+        ? null
+        : contextUsageFromAssistantMessage(lastAssistant),
+      contextWindow: runState.compaction.policy?.contextWindow,
+      estimatedCost,
+      start,
+      externalAbort: runState.externalAbort,
+    });
 
     const rawErrorMessage = runState.externalAbort
       ? null

@@ -55,7 +55,7 @@ Selecting an agent filters its conversations; each conversation is permanently b
 
 Threads use the first prompt as their initial title and can be renamed. They are archived rather than individually deleted, and archived threads can be restored. The console permits one active turn per thread while different threads and agents can run concurrently.
 
-The service, not the browser tab, owns the upstream operator connection. A browser disconnect or reload can therefore reconnect through the event stream while the turn continues. If the web service itself restarts, any turn that was still active is marked interrupted instead of being shown as permanently running.
+The service, not the browser tab, owns the upstream operator connection. A browser disconnect or reload can therefore reconnect through the event stream while the turn continues. Brief event-stream reconnects do not raise the full reconnect banner; it appears after five seconds, while a browser-offline event is shown immediately. If the web service itself restarts, any turn that was still active is marked interrupted instead of being shown as permanently running.
 
 During a turn the transcript shows streamed markdown, reasoning, tool calls and results, user-facing errors, and the final outcome. Raw runtime, provider, and usage telemetry remains internal; measured token and cost data appears only through the context control. The composer exposes the selected agent's available model and effort controls. Copy, cancel, archive, and unarchive are supported; edit/regenerate/branch/steer and browser-defined client tools are deliberately not enabled.
 
@@ -63,9 +63,9 @@ During a turn the transcript shows streamed markdown, reasoning, tool calls and 
 
 The run-settings control uses a searchable model picker with the selected model's supported reasoning-effort choices in the same popover. On narrow screens it becomes a full-width bottom sheet so every effort level remains reachable without overflowing the viewport. Choosing **Automatic model** or **Automatic** effort delegates that setting to the agent.
 
-When the selected agent advertises a model context window and turns report token usage, the context control accumulates the conversation's newest per-turn snapshots and shows the percentage directly in the header plus the exact token breakdown and progress bar in its popover. Repeated cumulative snapshots within one turn are counted once. If the runtime cannot establish a trustworthy context-window size, the console shows the measured token counts without inventing a percentage.
+For Pi turns, the context control uses the final provider request's measured context snapshot and effective model window. That value can decrease after compaction, and it alone drives the header percentage and progress bar. The popover keeps the latest turn's aggregate processed tokens and the conversation's accumulated cost separate from current context occupancy. Older conversations without an exact snapshot show **Context —** and their last-turn processed breakdown without inventing a percentage; the next compatible turn records an exact snapshot.
 
-Assistant reasoning is grouped into a disclosure that opens while that reasoning is actively streaming and collapses when it completes; adjacent tool calls and the final answer retain their original order. Type `/` in an empty composer to open the keyboard-friendly command popover for available actions such as run settings, starting a new conversation, or stopping an active response.
+Assistant reasoning and routine tool calls share one compact **Activity** disclosure without changing their order. It opens while the message is running and force-collapses when the message completes, fails, is cancelled, or is interrupted; it can be reopened afterward, and individual tool payloads remain collapsed inside it. Standalone interactive tools remain outside the group. Type `/` in an empty composer to open the keyboard-friendly command popover for available actions such as run settings, starting a new conversation, or stopping an active response.
 
 ## Attachments use the browser device picker
 

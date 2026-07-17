@@ -68,7 +68,7 @@ describe("convertWebMessage", () => {
     ]);
   });
 
-  it("preserves interleaved reasoning, tools, telemetry, and answer parts", () => {
+  it("preserves visible parts while keeping persisted telemetry out of assistant-ui content", () => {
     const converted = convertWebMessage(
       message({
         role: "assistant",
@@ -94,7 +94,6 @@ describe("convertWebMessage", () => {
     expect(converted.content.map((part) => part.type)).toEqual([
       "reasoning",
       "tool-call",
-      "data-telemetry",
       "text",
     ]);
     expect(converted.status).toEqual({ type: "running" });

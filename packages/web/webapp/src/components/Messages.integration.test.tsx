@@ -81,11 +81,11 @@ describe("AssistantMessage grouped parts", () => {
   it("preserves reasoning, tools, and answer order while keeping telemetry internal", () => {
     render(<MessageHarness message={assistantMessage("complete")} />);
 
-    expect(screen.getByRole("button", { name: "Reasoning" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Activity" })).toHaveAttribute(
       "aria-expanded",
       "false",
     );
-    fireEvent.click(screen.getByRole("button", { name: "Reasoning" }));
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
     expect(screen.getByText("Inspect the real state.")).toBeVisible();
     expect(screen.getByText("inspect_workspace")).toBeVisible();
     expect(screen.queryByText("Telemetry")).not.toBeInTheDocument();
@@ -96,7 +96,7 @@ describe("AssistantMessage grouped parts", () => {
     );
   });
 
-  it("auto-opens the reasoning disclosure while the reasoning part is streaming", () => {
+  it("auto-opens the activity disclosure while the message is streaming", () => {
     render(
       <MessageHarness
         message={{
@@ -106,7 +106,7 @@ describe("AssistantMessage grouped parts", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Reasoning in progress" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Activity in progress" })).toHaveAttribute(
       "aria-expanded",
       "true",
     );
