@@ -59,7 +59,13 @@ describe("startTuiAdapter", () => {
 
     const info = await (await fetch(running.infoUrl)).json();
 
-    expect(info).toEqual({ schema: 1, pid: process.pid, label: "test-agent", model: "claude-fable-5" });
+    expect(info).toEqual({
+      schema: 1,
+      pid: process.pid,
+      capabilities: { attachments: true },
+      label: "test-agent",
+      model: "claude-fable-5",
+    });
   });
 
   it("includes effort in /v1/info when configured", async () => {
@@ -73,6 +79,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
+      capabilities: { attachments: true },
       label: "test-agent",
       model: "claude-fable-5",
       effort: "high",
@@ -90,6 +97,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
+      capabilities: { attachments: true },
       model: "claude-fable-5",
       models: ["claude-fable-5", "codex:gpt-5.5"],
     });
@@ -137,6 +145,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
+      capabilities: { attachments: true },
       model: "pi:ollama:qwen3.6",
       models: ["pi:ollama:qwen3.6", "pi:lmstudio:qwen3-8b"],
       modelOptions: {
@@ -202,6 +211,7 @@ describe("startTuiAdapter", () => {
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,
+      capabilities: { attachments: true },
       model: "claude-fable-5",
       modelOptions: { "claude-fable-5": { reasoning: true } },
     });
@@ -239,6 +249,51 @@ describe("startTuiAdapter", () => {
       { kind: "append", delta: " you go." },
       { kind: "finish", finalText: "Here you go.", metadata: { runId: "r1" } },
     ]);
+  });
+
+  it("accepts attachment-only web turns and preserves web metadata with a TUI override mirror", async () => {
+    const requests: AgentRequestBase[] = [];
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async (request) => {
+        requests.push(request);
+        return { text: "received" };
+      }),
+    });
+
+    const data = Buffer.from("hello from the browser", "utf8").toString("base64");
+    const frames = await readFrames(await postTurn(running.baseUrl, {
+      client: "web",
+      conversationId: "web:thread-1",
+      metadata: { web: { model: "claude:claude-opus-4-8", effort: "high" } },
+      attachments: [{
+        kind: "document",
+        mimeType: "text/plain",
+        data,
+        name: "note.txt",
+        sizeBytes: 22,
+      }],
+    }));
+
+    expect(frames).toEqual([{ kind: "finish", finalText: "received" }]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      conversationId: "web:thread-1",
+      text: "",
+      metadata: {
+        source: "web",
+        web: { model: "claude:claude-opus-4-8", effort: "high" },
+        tui: { model: "claude:claude-opus-4-8", effort: "high" },
+        webRequestId: expect.any(String),
+      },
+      attachments: [{
+        kind: "document",
+        mimeType: "text/plain",
+        data,
+        name: "note.txt",
+        text: "hello from the browser",
+        sizeBytes: 22,
+      }],
+    });
   });
 
   it("emits a terminal error frame with cancelled=true for a cancelled turn", async () => {
@@ -323,7 +378,88 @@ describe("startTuiAdapter", () => {
 
     expect((await postTurn(running.baseUrl, { text: "no conversation" })).status).toBe(400);
     expect((await postTurn(running.baseUrl, { conversationId: "c" })).status).toBe(400);
+    expect((await postTurn(running.baseUrl, {
+      client: "web",
+      conversationId: "c",
+      attachments: [{ kind: "image", mimeType: "text/plain", data: "aGk=" }],
+    })).status).toBe(400);
+    expect((await postTurn(running.baseUrl, {
+      client: "web",
+      conversationId: "c",
+      attachments: [{ kind: "document", mimeType: "application/octet-stream", data: "aGk=" }],
+    })).status).toBe(400);
+    expect((await postTurn(running.baseUrl, {
+      client: "web",
+      conversationId: "c",
+      attachments: [{ kind: "document", mimeType: "text/plain", data: "not-base64" }],
+    })).status).toBe(400);
+    expect((await postTurn(running.baseUrl, {
+      client: "web",
+      conversationId: "c",
+      attachments: Array.from({ length: 11 }, () => ({
+        kind: "document",
+        mimeType: "text/plain",
+        data: "AA==",
+      })),
+    })).status).toBe(400);
   });
+
+  it("enforces the decoded 20 MiB per-file limit", async () => {
+    running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })) });
+    const oversized = Buffer.alloc((20 * 1024 * 1024) + 1).toString("base64");
+
+    const response = await postTurn(running.baseUrl, {
+      client: "web",
+      conversationId: "c",
+      attachments: [{ kind: "document", mimeType: "text/plain", data: oversized }],
+    });
+
+    expect(response.status).toBe(400);
+  }, 30_000);
+
+  it("accepts 64 MiB of control-heavy text through the 96 MiB parser, derives text, and rejects one byte more", async () => {
+    let responderCalls = 0;
+    let derivedTextBytes = 0;
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async (request) => {
+        responderCalls += 1;
+        derivedTextBytes = request.attachments?.reduce(
+          (total, attachment) => total + Buffer.byteLength(attachment.text ?? "", "utf8"),
+          0,
+        ) ?? 0;
+        return { text: "ok" };
+      }),
+    });
+    const twentyMiB = Buffer.alloc(20 * 1024 * 1024).toString("base64");
+    const fourMiB = Buffer.alloc(4 * 1024 * 1024).toString("base64");
+    const atLimit = [twentyMiB, twentyMiB, twentyMiB, fourMiB].map((data, index) => ({
+      kind: "document",
+      mimeType: "text/plain",
+      data,
+      name: `part-${String(index + 1)}.txt`,
+    }));
+
+    const accepted = await postTurn(running.baseUrl, {
+      client: "web",
+      conversationId: "web:limit",
+      attachments: atLimit,
+    });
+    expect(accepted.status).toBe(200);
+    await accepted.text();
+    expect(responderCalls).toBe(1);
+    expect(derivedTextBytes).toBe(64 * 1024 * 1024);
+
+    const rejected = await postTurn(running.baseUrl, {
+      client: "web",
+      conversationId: "web:over-limit",
+      attachments: [
+        ...atLimit,
+        { kind: "document", mimeType: "text/plain", data: "AA==", name: "one-more-byte.txt" },
+      ],
+    });
+    expect(rejected.status).toBe(400);
+    expect(responderCalls).toBe(1);
+  }, 30_000);
 
   it("reports server-side handler failures as 500, not 400", async () => {
     running = await startTuiAdapter({
@@ -352,6 +488,18 @@ describe("startTuiAdapter", () => {
 
     expect(response.status).toBe(400);
   });
+
+  it("reports turn bodies over the parser ceiling as 413", async () => {
+    running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })) });
+
+    const response = await fetch(`${running.baseUrl}/v1/turns`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: Buffer.alloc((96 * 1024 * 1024) + 1, 0x20),
+    });
+
+    expect(response.status).toBe(413);
+  }, 30_000);
 
   it("enforces the bearer key on every route when configured", async () => {
     running = await startTuiAdapter({

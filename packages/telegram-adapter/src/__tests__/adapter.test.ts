@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
+  DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
+} from "@mono-agent/agent-contracts";
+
+import {
+  DEFAULT_ATTACHMENT_MAX_BYTES,
+  DEFAULT_ATTACHMENT_MIME_ALLOWLIST,
   downloadTelegramAttachments,
   normalizeTelegramMessageInput,
   type TelegramAttachment,
@@ -28,6 +35,13 @@ function fakeDownloader(bytesByFileId: Record<string, Uint8Array>): TelegramFile
 
 const TRANSCRIPTION_UNAVAILABLE_NOTE =
   "[automatic transcription unavailable — audio saved at the path above]";
+
+describe("shared attachment policy", () => {
+  it("retains the Telegram exports as exact aliases of the neutral contract", () => {
+    expect(DEFAULT_ATTACHMENT_MAX_BYTES).toBe(DEFAULT_AGENT_ATTACHMENT_MAX_BYTES);
+    expect(DEFAULT_ATTACHMENT_MIME_ALLOWLIST).toBe(DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST);
+  });
+});
 
 describe("video_note extraction", () => {
   it("extracts a video_note and downloads it as video/mp4", async () => {
