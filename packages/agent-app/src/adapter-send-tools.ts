@@ -113,6 +113,20 @@ export interface AdapterSendToolsClients {
 
 export interface AdapterSendToolsHttpOptions {
   readonly fetchImpl?: typeof fetch;
+  readonly deliveryHistory?: AdapterSendToolsDeliveryHistory;
+}
+
+export interface AdapterSendToolsDeliveryHistory {
+  readonly bridgeUrl: string;
+  readonly bridgeToken: string;
+}
+
+export interface AdapterSendToolsDeliveryHistoryCapabilityIssuer {
+  issueDeliveryHistoryCapability(input: {
+    readonly runId: string;
+    readonly producerConversationId: string;
+    readonly allowedChannels: readonly ("slack" | "telegram")[];
+  }): { readonly url: string; readonly token: string; release(): void };
 }
 
 export interface AdapterSendToolsRuntimeExtension {
@@ -259,6 +273,7 @@ export interface AdapterSendToolsChildContext {
   readonly indexPath?: string;
   readonly runOutputDir?: string;
   readonly runOutputIdentity?: FileIdentity;
+  readonly deliveryHistory?: AdapterSendToolsDeliveryHistory;
 }
 
 export interface AdapterSendToolsInteractionEnv {
@@ -294,6 +309,9 @@ export function adapterSendToolsMcpEnv(
           MONO_AGENT_ADAPTER_TOOLS_RUN_OUTPUT_DEV: String(context.runOutputIdentity.dev),
           MONO_AGENT_ADAPTER_TOOLS_RUN_OUTPUT_INO: String(context.runOutputIdentity.ino),
         }),
+    // Reserved app-owned credentials must override inherited host environment.
+    MONO_AGENT_ADAPTER_TOOLS_HISTORY_BRIDGE_URL: context?.deliveryHistory?.bridgeUrl ?? "",
+    MONO_AGENT_ADAPTER_TOOLS_HISTORY_BRIDGE_TOKEN: context?.deliveryHistory?.bridgeToken ?? "",
     ...(interaction === undefined
       ? {}
       : {
@@ -308,6 +326,7 @@ export interface AdapterSendToolsChildConfig {
   readonly input: MonoAgentAppConfigInput;
   readonly allowedTools: readonly string[];
   readonly indexing?: AdapterSendToolsIndexing;
+  readonly deliveryHistory?: AdapterSendToolsDeliveryHistory;
 }
 
 export function adapterSendToolsChildConfigFromEnv(env: Record<string, string | undefined>, cwd: string): AdapterSendToolsChildConfig {
@@ -317,12 +336,22 @@ export function adapterSendToolsChildConfigFromEnv(env: Record<string, string | 
   }
   const conversationId = optionalString(env.MONO_AGENT_ADAPTER_TOOLS_PRODUCING_CONVERSATION_ID);
   const indexPath = optionalString(env.MONO_AGENT_ADAPTER_TOOLS_POST_INDEX_PATH);
+  const historyBridgeUrl = optionalString(env.MONO_AGENT_ADAPTER_TOOLS_HISTORY_BRIDGE_URL);
+  const historyBridgeToken = optionalString(env.MONO_AGENT_ADAPTER_TOOLS_HISTORY_BRIDGE_TOKEN);
+  if ((historyBridgeUrl === undefined) !== (historyBridgeToken === undefined)) {
+    throw new Error(
+      "adapter-send-tools: delivery-history bridge URL and token must either both be present or both be absent.",
+    );
+  }
   // Both must be present to index; either alone is a misconfiguration we simply skip.
   const indexing = conversationId !== undefined && indexPath !== undefined ? { conversationId, indexPath } : undefined;
   return {
     input: { env, cwd, configPath },
     allowedTools: parseAllowedToolNames(env.MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS),
     ...(indexing === undefined ? {} : { indexing }),
+    ...(historyBridgeUrl === undefined || historyBridgeToken === undefined
+      ? {}
+      : { deliveryHistory: { bridgeUrl: historyBridgeUrl, bridgeToken: historyBridgeToken } }),
   };
 }
 
@@ -368,6 +397,7 @@ export function createAdapterSendToolsRuntimeExtension(
   indexPath?: string,
   interaction?: AdapterSendToolsInteractionEnv,
   runOutputRoot?: string,
+  deliveryHistoryCapabilityIssuer?: AdapterSendToolsDeliveryHistoryCapabilityIssuer,
 ): (input: AdapterSendToolsRequestInput) => Promise<AdapterSendToolsRuntimeExtension> {
   return async (input) => {
     const conversationId = input?.request?.conversationId;
@@ -377,6 +407,20 @@ export function createAdapterSendToolsRuntimeExtension(
     const runOutput = runOutputRoot === undefined || !hasRunId
       ? undefined
       : await ensureAdapterRunOutputDir(runOutputRoot, runId);
+    const deliveryHistoryChannels = [
+      ...(allowedTools.includes("SlackSendMessage") ? ["slack" as const] : []),
+      ...(allowedTools.includes("TelegramSendMessage") ? ["telegram" as const] : []),
+    ];
+    const deliveryHistory = !hasRunId
+      || !hasConversation
+      || deliveryHistoryCapabilityIssuer === undefined
+      || deliveryHistoryChannels.length === 0
+      ? undefined
+      : deliveryHistoryCapabilityIssuer.issueDeliveryHistoryCapability({
+          runId,
+          producerConversationId: conversationId as string,
+          allowedChannels: deliveryHistoryChannels,
+        });
     // The conversation id is forwarded whenever known — AskUser targets it even
     // without indexing; the index path additionally enables posted-message links.
     const context: AdapterSendToolsChildContext | undefined = hasConversation || hasRunId
@@ -387,6 +431,14 @@ export function createAdapterSendToolsRuntimeExtension(
           ...(runOutput === undefined
             ? {}
             : { runOutputDir: runOutput.path, runOutputIdentity: runOutput.identity }),
+          ...(deliveryHistory === undefined
+            ? {}
+            : {
+                deliveryHistory: {
+                  bridgeUrl: deliveryHistory.url,
+                  bridgeToken: deliveryHistory.token,
+                },
+              }),
         }
       : undefined;
     return {
@@ -401,7 +453,9 @@ export function createAdapterSendToolsRuntimeExtension(
           ),
         },
       },
-      cleanup: async () => {},
+      cleanup: async () => {
+        deliveryHistory?.release();
+      },
       settleCleanup: async () => {
         if (runOutput !== undefined) {
           await removeOwnedDirectory(runOutput.path, runOutput.identity);
@@ -445,7 +499,15 @@ export async function createAdapterSendToolsServer(
 
   if (settings.slack !== undefined && clients.slack !== undefined) {
     const adapter = await loadSlackModule();
-    registerSlackSendTool(server, settings.slack, clients.slack, adapter.formatMarkdownForSlack, indexing);
+    registerSlackSendTool(
+      server,
+      settings.slack,
+      clients.slack,
+      adapter.formatMarkdownForSlack,
+      indexing,
+      options.deliveryHistory,
+      options.fetchImpl ?? globalThis.fetch,
+    );
   }
   if (settings.telegram !== undefined && clients.telegram !== undefined) {
     // Loaded once here (not per-register-call) because registerTelegramAskTool
@@ -453,7 +515,13 @@ export async function createAdapterSendToolsServer(
     // schema, at registration time — not deferred into the request handler.
     const adapter = await loadTelegramModule();
     if (settings.telegram.tools.send) {
-      registerTelegramSendTool(server, settings.telegram, clients.telegram);
+      registerTelegramSendTool(
+        server,
+        settings.telegram,
+        clients.telegram,
+        options.deliveryHistory,
+        options.fetchImpl ?? globalThis.fetch,
+      );
     }
     if (settings.telegram.tools.ask) {
       registerTelegramAskTool(server, settings.telegram, clients.telegram, adapter, options.fetchImpl ?? globalThis.fetch);
@@ -675,12 +743,70 @@ async function sendAskProgress(extra: unknown, elapsedSeconds: number): Promise<
   }
 }
 
+interface DeliveryHistoryOutcome {
+  readonly accepted: boolean;
+  readonly code: string;
+}
+
+const DELIVERY_HISTORY_BRIDGE_TIMEOUT_MS = 2_000;
+
+async function recordAdapterDeliveryHistory(input: {
+  readonly settings: AdapterSendToolsDeliveryHistory | undefined;
+  readonly fetchImpl: typeof fetch;
+  readonly conversationId: string;
+  readonly text: string;
+  readonly idempotencyKey: string;
+}): Promise<DeliveryHistoryOutcome | undefined> {
+  if (input.settings === undefined) return undefined;
+  try {
+    const response = await input.fetchImpl(new URL("/v1/delivery-history", input.settings.bridgeUrl), {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${input.settings.bridgeToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        conversationId: input.conversationId,
+        text: input.text,
+        idempotencyKey: input.idempotencyKey,
+      }),
+      signal: AbortSignal.timeout(DELIVERY_HISTORY_BRIDGE_TIMEOUT_MS),
+    });
+    if (response.status === 202) return { accepted: true, code: "queued" };
+    if (response.status === 400) return { accepted: false, code: "history_record_invalid" };
+    if (response.status === 401) return { accepted: false, code: "history_capability_rejected" };
+    if (response.status === 403) return { accepted: false, code: "history_capability_scope_rejected" };
+    if (response.status === 501) return { accepted: false, code: "history_record_unavailable" };
+    if (response.status === 503) return { accepted: false, code: "history_record_failed" };
+    return { accepted: false, code: `history_bridge_http_${String(response.status)}` };
+  } catch {
+    return { accepted: false, code: "history_bridge_unreachable" };
+  }
+}
+
+function deliveryHistorySummary(
+  outcomes: readonly (DeliveryHistoryOutcome | undefined)[],
+): DeliveryHistoryOutcome | undefined {
+  const present = outcomes.filter((outcome): outcome is DeliveryHistoryOutcome => outcome !== undefined);
+  if (present.length === 0) return undefined;
+  const failed = present.find((outcome) => !outcome.accepted);
+  return failed ?? { accepted: true, code: "queued" };
+}
+
+function withDeliveryHistoryWarning(message: string, history: DeliveryHistoryOutcome | undefined): string {
+  return history?.accepted === false
+    ? `${message} Delivery succeeded, but destination history was not queued (${history.code}).`
+    : message;
+}
+
 function registerSlackSendTool(
   server: McpServer,
   settings: SlackSendToolSettings,
   client: Pick<SlackWebApi, "chatPostMessage">,
   formatMarkdownForSlack: (text: string) => string,
   indexing?: AdapterSendToolsIndexing,
+  deliveryHistory?: AdapterSendToolsDeliveryHistory,
+  fetchImpl: typeof fetch = globalThis.fetch,
 ): void {
   server.registerTool(
     "SlackSendMessage",
@@ -702,6 +828,7 @@ function registerSlackSendTool(
       const text = mrkdwn ? formatMarkdownForSlack(args.text) : args.text;
       const chunks = splitTextByCodePoints(text, SLACK_SEND_MESSAGE_MAX_CHARS);
       const results: SlackChatPostMessageResult[] = [];
+      const historyOutcomes: Array<DeliveryHistoryOutcome | undefined> = [];
       for (const chunk of chunks) {
         const result: SlackChatPostMessageResult = await client.chatPostMessage(
           {
@@ -715,10 +842,21 @@ function registerSlackSendTool(
           { signal: extra.signal },
         );
         results.push(result);
+        const historyOutcome = await recordAdapterDeliveryHistory({
+          settings: deliveryHistory,
+          fetchImpl,
+          conversationId: `slack:${result.channel}:${args.thread_ts?.trim() || result.ts}`,
+          text: chunk,
+          idempotencyKey: `adapter-send:slack:${result.channel}:${result.ts}`,
+        });
+        historyOutcomes.push(historyOutcome);
         // Link every posted chunk back to this conversation so an in-thread reply can
-        // resume it. Best-effort: appendPostedMessage never throws, so a failed index
-        // write can never fail the send.
-        if (indexing !== undefined) {
+        // resume it. When the app supplied destination-history recording, publish
+        // the alias only after its durable acknowledgement. A failed/timed-out
+        // record deliberately falls back to the physical Slack thread instead of
+        // exposing a producer alias whose replay can race or miss the sent text.
+        // Legacy callers without a history bridge retain best-effort indexing.
+        if (indexing !== undefined && (historyOutcome === undefined || historyOutcome.accepted)) {
           await appendPostedMessage(indexing.indexPath, {
             channelId: result.channel,
             ts: result.ts,
@@ -735,17 +873,24 @@ function registerSlackSendTool(
         results.length === 1
           ? `Sent Slack message to ${firstResult.channel} at ${firstResult.ts}.`
           : `Sent ${String(results.length)} Slack messages to ${firstResult.channel} starting at ${firstResult.ts}.`;
+      const history = deliveryHistorySummary(historyOutcomes);
       return {
-        content: [{ type: "text", text: message }],
+        content: [{ type: "text", text: withDeliveryHistoryWarning(message, history) }],
         structuredContent:
           results.length === 1
-            ? { ok: true, channel: firstResult.channel, ts: firstResult.ts }
+            ? {
+                ok: true,
+                channel: firstResult.channel,
+                ts: firstResult.ts,
+                ...(history === undefined ? {} : { history }),
+              }
             : {
                 ok: true,
                 channel: firstResult.channel,
                 ts: firstResult.ts,
                 chunkCount: results.length,
                 chunks: chunkRefs,
+                ...(history === undefined ? {} : { history }),
               },
       };
     },
@@ -756,6 +901,8 @@ function registerTelegramSendTool(
   server: McpServer,
   settings: TelegramSendToolSettings,
   client: Pick<TelegramMessageSender, "sendMessage">,
+  deliveryHistory?: AdapterSendToolsDeliveryHistory,
+  fetchImpl: typeof fetch = globalThis.fetch,
 ): void {
   server.registerTool(
     "TelegramSendMessage",
@@ -782,9 +929,22 @@ function registerTelegramSendTool(
         },
         { signal: extra.signal },
       );
+      const history = await recordAdapterDeliveryHistory({
+        settings: deliveryHistory,
+        fetchImpl,
+        conversationId: `telegram:${String(result.chat.id)}`,
+        text: args.text,
+        idempotencyKey: `adapter-send:telegram:${String(result.chat.id)}:${String(result.message_id)}`,
+      });
+      const message = `Sent Telegram message ${result.message_id} to ${String(result.chat.id)}.`;
       return {
-        content: [{ type: "text", text: `Sent Telegram message ${result.message_id} to ${String(result.chat.id)}.` }],
-        structuredContent: { ok: true, chat_id: result.chat.id, message_id: result.message_id },
+        content: [{ type: "text", text: withDeliveryHistoryWarning(message, history) }],
+        structuredContent: {
+          ok: true,
+          chat_id: result.chat.id,
+          message_id: result.message_id,
+          ...(history === undefined ? {} : { history }),
+        },
       };
     },
   );

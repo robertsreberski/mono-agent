@@ -96,7 +96,7 @@ pnpm run test:demo
 | TUI | Start the host, connect with ordinary `mono-agent tui`, and complete one real prompt against the running responder. |
 | Telegram | Send one allowed chat message and verify the reply. |
 | Slack | Send one allowed DM or channel message and verify formatting. |
-| Adapter send tools | When `SlackSendMessage` / `TelegramSendMessage` are available (allow-all, or an explicit `tools.allowedTools` entry) with the channel enabled, call them from a non-Slack/Telegram surface such as TUI, cron, or OpenAI API to an allowed destination and verify delivery. |
+| Adapter send tools | When `SlackSendMessage` / `TelegramSendMessage` are available (allow-all, or an explicit `tools.allowedTools` entry) with the channel enabled, call them from a non-Slack/Telegram surface such as TUI, cron, or OpenAI API to an allowed destination; verify delivery, then reply at the destination and verify the exact sent text appears in replayed history. |
 | WhatsApp | Send one allowed sender/group trigger and verify the reply. |
 | OpenAI API | `curl /v1/models` and `/v1/chat/completions`. |
 | A2A | Send text to the Agent Card URL with `sendA2AMessage()`. |

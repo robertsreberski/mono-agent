@@ -98,6 +98,34 @@ export function createTelegramChannelDriver(
               };
           return await result.notify(chatId, text, notifyOptions);
         },
+        recordContinuationHistory: async (historyInput: {
+          readonly conversationId: string;
+          readonly text: string;
+          readonly deliveryKey: string;
+        }) => {
+          try {
+            requireAllowedTelegramChat(historyInput.conversationId, input);
+          } catch {
+            return { recorded: false as const, code: "telegram_destination_not_allowlisted" };
+          }
+          if (input.responder.deliverVerbatim === undefined) {
+            return { recorded: false as const, code: "history_record_unavailable" };
+          }
+          try {
+            await input.responder.deliverVerbatim(
+              historyInput.conversationId,
+              historyInput.text,
+              { idempotencyKey: historyInput.deliveryKey },
+            );
+            return { recorded: true as const };
+          } catch (error) {
+            input.logger?.warn?.("Telegram destination history commit failed after delivery.", {
+              conversationId: historyInput.conversationId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return { recorded: false as const, code: "history_record_failed" };
+          }
+        },
       };
     },
   };

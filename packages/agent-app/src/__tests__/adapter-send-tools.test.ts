@@ -7,6 +7,7 @@ import { once } from "node:events";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
+import { createAgentHarness, createAgentResponder, createInMemoryHistoryStore } from "@mono-agent/agent-harness";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 import { SlackAdapter } from "@mono-agent/slack-adapter";
 import type {
@@ -47,6 +48,7 @@ import {
 import type { AdapterSendToolsSettings } from "../adapter-send-tools.js";
 import { lookupProducingConversation, resolvePostedMessageIndexPath } from "../posted-message-index.js";
 import { startInteractionBridge } from "../interaction-bridge.js";
+import { createSlackPostedReplyHistory } from "../posted-reply-history.js";
 
 let dir: string;
 
@@ -264,6 +266,8 @@ describe("adapter send tools MCP spec/env", () => {
     expect(spec.env).toEqual({
       MONO_AGENT_ADAPTER_TOOLS_CONFIG_PATH: "/agent/mono-agent.config.json",
       MONO_AGENT_ADAPTER_TOOLS_ALLOWED_TOOLS: JSON.stringify(allowedTools),
+      MONO_AGENT_ADAPTER_TOOLS_HISTORY_BRIDGE_URL: "",
+      MONO_AGENT_ADAPTER_TOOLS_HISTORY_BRIDGE_TOKEN: "",
     });
     expect(spec.env).not.toHaveProperty("HTTP_PROXY");
     expect(spec.env).not.toHaveProperty("HTTPS_PROXY");
@@ -393,6 +397,44 @@ describe("adapter send tools MCP spec/env", () => {
       conversationId: "telegram:42#today",
       runId: "run-bridge-env",
     });
+  });
+
+  it("forwards and revokes a run-scoped history capability only for send tools", async () => {
+    const release = vi.fn();
+    const issueDeliveryHistoryCapability = vi.fn(() => ({
+      url: "http://127.0.0.1:43124",
+      token: "history-token",
+      release,
+    }));
+    const extension = createAdapterSendToolsRuntimeExtension(
+      "/agent/mono-agent.config.json",
+      "/agent",
+      ["SlackSendMessage", "TelegramSendMessage"],
+      undefined,
+      undefined,
+      undefined,
+      { issueDeliveryHistoryCapability },
+    );
+
+    const result = await extension({ runId: "run-history-env", request: { conversationId: "cron:scan" } });
+    const spec = result.runtimeOptions.mcpServers[ADAPTER_SEND_TOOLS_MCP_SERVER_NAME] as {
+      env: Record<string, string | undefined>;
+    };
+    expect(spec.env).toMatchObject({
+      MONO_AGENT_ADAPTER_TOOLS_HISTORY_BRIDGE_URL: "http://127.0.0.1:43124",
+      MONO_AGENT_ADAPTER_TOOLS_HISTORY_BRIDGE_TOKEN: "history-token",
+    });
+    expect(adapterSendToolsChildConfigFromEnv(spec.env, "/agent").deliveryHistory).toEqual({
+      bridgeUrl: "http://127.0.0.1:43124",
+      bridgeToken: "history-token",
+    });
+    expect(issueDeliveryHistoryCapability).toHaveBeenCalledWith({
+      runId: "run-history-env",
+      producerConversationId: "cron:scan",
+      allowedChannels: ["slack", "telegram"],
+    });
+    await result.cleanup();
+    expect(release).toHaveBeenCalledOnce();
   });
 });
 
@@ -964,6 +1006,115 @@ describe("adapter send MCP tools", () => {
       },
     ]);
     expect(telegramCalls).toEqual([{ chat_id: -100, text: "hi", disable_web_page_preview: true }]);
+  });
+
+  it("records confirmed Slack and Telegram receipts in destination history with exact delivered text", async () => {
+    const records: Array<{ conversationId: string; text: string; idempotencyKey: string }> = [];
+    const historyBridge = await startInteractionBridge({
+      host: "127.0.0.1",
+      port: 0,
+      recordDeliveryHistory: async (input) => {
+        records.push(input);
+        return { recorded: true };
+      },
+    });
+    const capability = historyBridge.issueDeliveryHistoryCapability({
+      runId: "run-destination-history",
+      producerConversationId: "cron:destination-history",
+      allowedChannels: ["slack", "telegram"],
+    });
+    try {
+      const server = await createAdapterSendToolsServer(
+        bothAdaptersSettings(),
+        {
+          slack: {
+            async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
+              return { ok: true, channel: params.channel, ts: "171.200" };
+            },
+          },
+          telegram: {
+            async sendMessage(params: TelegramSendMessageParams): Promise<TelegramSentMessage> {
+              return { message_id: 88, chat: { id: params.chat_id }, text: params.text };
+            },
+            editMessageText: vi.fn(),
+          },
+        },
+        undefined,
+        { deliveryHistory: { bridgeUrl: capability.url, bridgeToken: capability.token } },
+      );
+
+      await withMcpClient(server, async (client) => {
+        const slackResult = await client.callTool({
+          name: "SlackSendMessage",
+          arguments: { channel: "C1", thread_ts: "170.100", text: "**delivered**" },
+        });
+        expect(slackResult.structuredContent).toMatchObject({
+          ok: true,
+          history: { accepted: true, code: "queued" },
+        });
+        const telegramResult = await client.callTool({
+          name: "TelegramSendMessage",
+          arguments: { chat_id: 42, text: "telegram exact" },
+        });
+        expect(telegramResult.structuredContent).toMatchObject({
+          ok: true,
+          history: { accepted: true, code: "queued" },
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(records).toEqual([
+          {
+            conversationId: "slack:C1:170.100",
+            text: "*delivered*",
+            idempotencyKey: "adapter-send:slack:C1:171.200",
+          },
+          {
+            conversationId: "telegram:42",
+            text: "telegram exact",
+            idempotencyKey: "adapter-send:telegram:42:88",
+          },
+        ]);
+      });
+    } finally {
+      capability.release();
+      await historyBridge.stop();
+    }
+  });
+
+  it("keeps a successful platform delivery authoritative when history queueing fails", async () => {
+    const indexPath = resolvePostedMessageIndexPath(dir);
+    const server = await createAdapterSendToolsServer(
+      bothAdaptersSettings(),
+      {
+        slack: {
+          async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
+            return { ok: true, channel: params.channel, ts: "171.300" };
+          },
+        },
+      },
+      { conversationId: "cron:history-failure", indexPath },
+      {
+        deliveryHistory: { bridgeUrl: "http://127.0.0.1:9", bridgeToken: "unreachable" },
+        fetchImpl: async () => { throw new Error("bridge unavailable"); },
+      },
+    );
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "SlackSendMessage",
+        arguments: { channel: "C1", text: "delivered despite history failure", mrkdwn: false },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        ok: true,
+        history: { accepted: false, code: "history_bridge_unreachable" },
+      });
+      expect(result.content).toEqual([{
+        type: "text",
+        text: "Sent Slack message to C1 at 171.300. Delivery succeeded, but destination history was not queued (history_bridge_unreachable).",
+      }]);
+    });
+    expect(await lookupProducingConversation(indexPath, "C1", "171.300")).toBeUndefined();
   });
 
   it("forwards MCP cancellation to Slack, Telegram message, and Telegram file requests", async () => {
@@ -1669,6 +1820,56 @@ describe("adapter send MCP tools", () => {
 });
 
 describe("adapter send tool posted-message indexing", () => {
+  it("publishes a cross-conversation Slack index only after destination history is durable", async () => {
+    const indexPath = resolvePostedMessageIndexPath(dir);
+    let recordStarted = false;
+    let finishRecord!: () => void;
+    const recordGate = new Promise<void>((resolve) => { finishRecord = resolve; });
+    const historyBridge = await startInteractionBridge({
+      host: "127.0.0.1",
+      port: 0,
+      recordDeliveryHistory: async () => {
+        recordStarted = true;
+        await recordGate;
+        return { recorded: true };
+      },
+    });
+    const capability = historyBridge.issueDeliveryHistoryCapability({
+      runId: "run-index-after-history",
+      producerConversationId: "scheduled-scan",
+      allowedChannels: ["slack"],
+    });
+    try {
+      const server = await createAdapterSendToolsServer(
+        bothAdaptersSettings(),
+        {
+          slack: {
+            async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
+              return { ok: true, channel: params.channel, ts: "170.000099" };
+            },
+          },
+        },
+        { conversationId: "scheduled-scan", indexPath },
+        { deliveryHistory: { bridgeUrl: capability.url, bridgeToken: capability.token } },
+      );
+
+      await withMcpClient(server, async (client) => {
+        const pending = client.callTool({
+          name: "SlackSendMessage",
+          arguments: { channel: "C1", text: "history first" },
+        });
+        await vi.waitFor(() => expect(recordStarted).toBe(true));
+        expect(await lookupProducingConversation(indexPath, "C1", "170.000099")).toBeUndefined();
+        finishRecord();
+        await expect(pending).resolves.toMatchObject({ structuredContent: { ok: true } });
+      });
+      expect(await lookupProducingConversation(indexPath, "C1", "170.000099")).toBe("scheduled-scan");
+    } finally {
+      capability.release();
+      await historyBridge.stop();
+    }
+  });
+
   it("records a successful SlackSendMessage as (channel, ts) → producing conversation, de-bucketed", async () => {
     const indexPath = resolvePostedMessageIndexPath(dir);
     const server = await createAdapterSendToolsServer(
@@ -1791,6 +1992,105 @@ describe("adapter send tool posted-message indexing", () => {
 
     // The reply resumes the scan conversation instead of a fresh, history-less thread.
     expect(captured?.conversationId).toBe("scheduled-scan");
+  });
+
+  it("replays confirmed Slack and Telegram sends on destination replies without copying Slack text to the producer", async () => {
+    const indexPath = resolvePostedMessageIndexPath(dir);
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 64 });
+    await historyStore.append("scheduled-scan", [
+      { role: "user", content: "Run the scan.", timestamp: "2026-07-17T08:00:00.000Z" },
+      { role: "assistant", content: "Scan complete.", timestamp: "2026-07-17T08:00:01.000Z" },
+    ]);
+    const fake = createFakeRuntime(async () => ({ text: "reply handled" }));
+    const postedReplyHistory = createSlackPostedReplyHistory({ maxMessages: 64, rollover: "none" });
+    const harness = createAgentHarness({
+      identityPath: join(dir, "IDENTITY.md"),
+      runtime: fake.runtime,
+      model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" },
+      cwd: dir,
+      historyStore: postedReplyHistory.wrapHistoryStore(historyStore),
+    });
+    const responder = postedReplyHistory.wrapResponder(createAgentResponder({ harness }));
+    const historyBridge = await startInteractionBridge({
+      host: "127.0.0.1",
+      port: 0,
+      recordDeliveryHistory: async (input) => {
+        if (responder.deliverVerbatim === undefined) return { recorded: false, code: "history_record_unavailable" };
+        await responder.deliverVerbatim(input.conversationId, input.text, { idempotencyKey: input.idempotencyKey });
+        return { recorded: true };
+      },
+    });
+    const capability = historyBridge.issueDeliveryHistoryCapability({
+      runId: "run-real-destination-replay",
+      producerConversationId: "scheduled-scan",
+      allowedChannels: ["slack", "telegram"],
+    });
+    try {
+      const server = await createAdapterSendToolsServer(
+        bothAdaptersSettings(),
+        {
+          slack: {
+            async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
+              return { ok: true, channel: params.channel, ts: "170.000100" };
+            },
+          },
+          telegram: {
+            async sendMessage(params: TelegramSendMessageParams): Promise<TelegramSentMessage> {
+              return { message_id: 77, chat: { id: params.chat_id }, text: params.text };
+            },
+            editMessageText: vi.fn(),
+          },
+        },
+        { conversationId: "scheduled-scan", indexPath },
+        { deliveryHistory: { bridgeUrl: capability.url, bridgeToken: capability.token } },
+      );
+      await withMcpClient(server, async (client) => {
+        await client.callTool({
+          name: "SlackSendMessage",
+          arguments: { channel: "C1", text: "SLACK_DESTINATION_RECEIPT", mrkdwn: false },
+        });
+        await client.callTool({
+          name: "TelegramSendMessage",
+          arguments: { chat_id: 42, text: "TELEGRAM_DESTINATION_RECEIPT" },
+        });
+      });
+
+      const slackAdapter = new SlackAdapter({
+        api: new MinimalSlackApi() as unknown as SlackWebApi,
+        allowAllChannels: true,
+        responder,
+        resolvePostIndex: (channelId, ts) => lookupProducingConversation(indexPath, channelId, ts),
+      });
+      await slackAdapter.handleEventCallback(
+        threadedDmReply({ channel: "C1", threadTs: "170.000100", ts: "171.000001", text: "Slack follow-up" }),
+      );
+      await responder.respond(
+        {
+          conversationId: "telegram:42",
+          replyTo: { conversationId: "telegram:42" },
+          text: "Telegram follow-up",
+          abortSignal: new AbortController().signal,
+          metadata: { telegram: { chat: { id: 42 }, message: { id: 78 } } },
+        },
+        { append: async () => undefined },
+      );
+
+      expect(runtimeInputOccurrences(fake.calls[0], "SLACK_DESTINATION_RECEIPT")).toBe(1);
+      expect(runtimeInputOccurrences(fake.calls[0], "TELEGRAM_DESTINATION_RECEIPT")).toBe(0);
+      expect(runtimeInputOccurrences(fake.calls[1], "TELEGRAM_DESTINATION_RECEIPT")).toBe(1);
+      expect(runtimeInputOccurrences(fake.calls[1], "SLACK_DESTINATION_RECEIPT")).toBe(0);
+      expect((await historyStore.load("scheduled-scan")).some(
+        (message) => message.content === "SLACK_DESTINATION_RECEIPT",
+      )).toBe(false);
+      expect((await historyStore.load("slack:C1:170.000100")).at(-1)?.content).toBe("SLACK_DESTINATION_RECEIPT");
+      expect((await historyStore.load("telegram:42")).some(
+        (message) => message.content === "TELEGRAM_DESTINATION_RECEIPT",
+      )).toBe(true);
+    } finally {
+      capability.release();
+      await historyBridge.stop();
+      await (responder as AgentResponder & { dispose?: () => Promise<void> }).dispose?.();
+    }
   });
 
   it("writes no index entry when indexing is not configured", async () => {
@@ -1972,6 +2272,19 @@ function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => 
     },
   };
   return fake;
+}
+
+function runtimeInputOccurrences(
+  call: { readonly prompt: string; readonly options: RuntimeRunOptions } | undefined,
+  needle: string,
+): number {
+  if (call === undefined) return 0;
+  const input = [
+    call.prompt,
+    ...(call.options.messages ?? []).map((message) =>
+      typeof message.content === "string" ? message.content : JSON.stringify(message.content)),
+  ].join("\n");
+  return input.split(needle).length - 1;
 }
 
 describe("AskUser tool", () => {

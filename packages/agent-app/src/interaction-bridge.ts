@@ -41,6 +41,12 @@ export interface InteractionBridgeOptions {
   readonly askTimeoutMs?: number;
   /** Injectable wall clock for deterministic interaction-history timestamps. */
   readonly now?: () => Date;
+  /** Record one already-delivered adapter message in its destination history. */
+  readonly recordDeliveryHistory?: (input: {
+    readonly conversationId: string;
+    readonly text: string;
+    readonly idempotencyKey: string;
+  }) => Promise<{ readonly recorded: boolean; readonly code?: string }>;
   readonly logger?: {
     warn?: (message: string, metadata?: Record<string, unknown>) => void;
     debug?: (message: string, metadata?: Record<string, unknown>) => void;
@@ -63,6 +69,12 @@ export interface InteractionBridgeHandle {
   issueProgressCapability(input: {
     readonly runId: string;
     readonly conversationId: string;
+  }): { readonly url: string; readonly token: string; release(): void };
+  /** Issue a bearer limited to destination-history recording for one adapter-send run. */
+  issueDeliveryHistoryCapability(input: {
+    readonly runId: string;
+    readonly producerConversationId: string;
+    readonly allowedChannels: readonly ("slack" | "telegram")[];
   }): { readonly url: string; readonly token: string; release(): void };
   /** Add this run's answered/expired blocking asks to its durable assistant history text. */
   enrichAssistantHistory(input: {
@@ -212,6 +224,12 @@ interface ProgressCapabilityBinding {
   readonly conversationId: string;
 }
 
+interface DeliveryHistoryCapabilityBinding {
+  readonly runId: string;
+  readonly producerConversationId: string;
+  readonly allowedChannels: ReadonlySet<"slack" | "telegram">;
+}
+
 /** Strip the daily-rollover `#bucket` suffix so registry keys match the channel's base id. */
 function normalizeConversationId(conversationId: string): string {
   return conversationId.split("#", 1)[0] ?? conversationId;
@@ -219,6 +237,20 @@ function normalizeConversationId(conversationId: string): string {
 
 function channelIdOf(conversationId: string): string {
   return conversationId.split(":", 1)[0] ?? conversationId;
+}
+
+function validAdapterDeliveryReceipt(conversationId: string, idempotencyKey: string): boolean {
+  const slack = /^slack:([^:#]+):(\d+(?:\.\d+)?)$/u.exec(conversationId);
+  if (slack !== null) {
+    const receipt = /^adapter-send:slack:([^:]+):(\d+(?:\.\d+)?)$/u.exec(idempotencyKey);
+    return slack[1] !== undefined && receipt?.[1] === slack[1];
+  }
+  const telegram = /^telegram:(-?\d+)$/u.exec(conversationId);
+  if (telegram !== null) {
+    const receipt = /^adapter-send:telegram:(-?\d+):(\d+)$/u.exec(idempotencyKey);
+    return telegram[1] !== undefined && receipt?.[1] === telegram[1];
+  }
+  return false;
 }
 
 export async function startInteractionBridge(
@@ -235,6 +267,7 @@ export async function startInteractionBridge(
   const asksById = new Map<string, PendingAsk>();
   const interactionJournals = new Map<string, InteractionJournal>();
   const progressCapabilities = new Map<string, ProgressCapabilityBinding>();
+  const deliveryHistoryCapabilities = new Map<string, DeliveryHistoryCapabilityBinding>();
   let askCounter = 0;
 
   function appendInteractionJournal(ask: PendingAsk, outcome: "answered" | "expired", answer?: string): void {
@@ -518,6 +551,90 @@ export async function startInteractionBridge(
       });
   }
 
+  async function handleDeliveryHistory(
+    request: IncomingMessage,
+    response: ServerResponse,
+    bearer: string,
+    capability: DeliveryHistoryCapabilityBinding,
+  ): Promise<void> {
+    const body = await readJsonBody(request);
+    const conversationId = stringField(body, "conversationId");
+    const text = stringField(body, "text");
+    const idempotencyKey = stringField(body, "idempotencyKey");
+    if (conversationId === undefined || text === undefined || idempotencyKey === undefined) {
+      sendJson(response, 400, { error: "conversationId, text, and idempotencyKey are required." });
+      return;
+    }
+    const channelId = channelIdOf(conversationId);
+    if ((channelId !== "slack" && channelId !== "telegram") || !capability.allowedChannels.has(channelId)) {
+      sendJson(response, 403, { error: "delivery-history capability is not valid for that channel." });
+      return;
+    }
+    if (!validAdapterDeliveryReceipt(conversationId, idempotencyKey)) {
+      sendJson(response, 400, { error: "conversationId and idempotencyKey do not identify one adapter receipt." });
+      return;
+    }
+    // Revalidate after reading the body so cleanup/release cannot race a slow request.
+    if (deliveryHistoryCapabilities.get(bearer) !== capability) {
+      sendJson(response, 401, { error: "missing, invalid, or revoked delivery-history bearer token." });
+      return;
+    }
+    if (options.recordDeliveryHistory === undefined) {
+      sendJson(response, 501, { error: "destination history recording is unavailable." });
+      return;
+    }
+
+    // Install the responder's destination-keyed serialization task before
+    // acknowledging. A different producer/destination is safe to await and must
+    // be durable before Slack publishes its posted-message alias. A same-key
+    // send is queued only: awaiting it would deadlock the active responder turn.
+    let recording: Promise<{ readonly recorded: boolean; readonly code?: string }>;
+    try {
+      recording = options.recordDeliveryHistory({ conversationId, text, idempotencyKey });
+    } catch (error) {
+      recording = Promise.reject(error);
+    }
+    const sameConversation = normalizeConversationId(capability.producerConversationId)
+      === normalizeConversationId(conversationId);
+    if (!sameConversation) {
+      try {
+        const result = await recording;
+        if (!result.recorded) {
+          options.logger?.warn?.("interaction bridge: destination history recording failed after delivery.", {
+            conversationId,
+            code: result.code ?? "history_record_failed",
+          });
+          sendJson(response, 503, { error: result.code ?? "history_record_failed" });
+          return;
+        }
+        sendJson(response, 202, { accepted: true, conversationId });
+      } catch (error) {
+        options.logger?.warn?.("interaction bridge: destination history recording threw after delivery.", {
+          conversationId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        sendJson(response, 503, { error: "history_record_failed" });
+      }
+      return;
+    }
+    void recording
+      .then((result) => {
+        if (!result.recorded) {
+          options.logger?.warn?.("interaction bridge: destination history recording failed after delivery.", {
+            conversationId,
+            code: result.code ?? "history_record_failed",
+          });
+        }
+      })
+      .catch((error: unknown) => {
+        options.logger?.warn?.("interaction bridge: destination history recording threw after delivery.", {
+          conversationId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    sendJson(response, 202, { accepted: true, conversationId });
+  }
+
   const server = createServer((request, response) => {
     void routeRequest(request, response).catch((error: unknown) => {
       options.logger?.warn?.("interaction bridge: request handling failed.", {
@@ -534,6 +651,15 @@ export async function startInteractionBridge(
   async function routeRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? "/", "http://bridge.local");
     const bearer = bearerTokenOf(request.headers.authorization);
+    if (request.method === "POST" && url.pathname === "/v1/delivery-history") {
+      const capability = bearer === undefined ? undefined : deliveryHistoryCapabilities.get(bearer);
+      if (bearer === undefined || capability === undefined) {
+        sendJson(response, 401, { error: "missing, invalid, or revoked delivery-history bearer token." });
+        return;
+      }
+      await handleDeliveryHistory(request, response, bearer, capability);
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/v1/progress") {
       const capability = bearer === undefined ? undefined : progressCapabilities.get(bearer);
       if (bearer !== token && capability === undefined) {
@@ -627,6 +753,27 @@ export async function startInteractionBridge(
         },
       };
     },
+    issueDeliveryHistoryCapability(input) {
+      const historyToken = randomBytes(24).toString("base64url");
+      const binding: DeliveryHistoryCapabilityBinding = {
+        runId: input.runId,
+        producerConversationId: input.producerConversationId,
+        allowedChannels: new Set(input.allowedChannels),
+      };
+      deliveryHistoryCapabilities.set(historyToken, binding);
+      let released = false;
+      return {
+        url,
+        token: historyToken,
+        release() {
+          if (released) return;
+          released = true;
+          if (deliveryHistoryCapabilities.get(historyToken) === binding) {
+            deliveryHistoryCapabilities.delete(historyToken);
+          }
+        },
+      };
+    },
     enrichAssistantHistory(input) {
       const journal = interactionJournals.get(input.runId);
       if (journal === undefined || journal.conversationId !== input.conversationId || journal.entries.length === 0) {
@@ -644,6 +791,11 @@ export async function startInteractionBridge(
           progressCapabilities.delete(progressToken);
         }
       }
+      for (const [historyToken, binding] of deliveryHistoryCapabilities) {
+        if (binding.runId === input.runId) {
+          deliveryHistoryCapabilities.delete(historyToken);
+        }
+      }
     },
     async stop() {
       for (const ask of asksById.values()) {
@@ -652,6 +804,7 @@ export async function startInteractionBridge(
       asksById.clear();
       interactionJournals.clear();
       progressCapabilities.clear();
+      deliveryHistoryCapabilities.clear();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error === undefined || error === null ? resolve() : reject(error)));
       });

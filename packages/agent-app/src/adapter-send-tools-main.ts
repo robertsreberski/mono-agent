@@ -25,11 +25,17 @@ async function main(): Promise<void> {
       settings.telegram?.apiRoot,
       settings.telegram?.askBridge?.bridgeUrl,
       settings.askUser?.bridgeUrl,
+      childConfig.deliveryHistory?.bridgeUrl,
     ].filter((value): value is string => value !== undefined),
   });
   const removeProxyLifecycle = proxy === undefined ? () => {} : installProxyLifecycle(proxy);
   try {
-    const httpOptions = proxy === undefined ? {} : { fetchImpl: proxy.fetchImpl };
+    const httpOptions = {
+      ...(proxy === undefined ? {} : { fetchImpl: proxy.fetchImpl }),
+      ...(childConfig.deliveryHistory === undefined
+        ? {}
+        : { deliveryHistory: childConfig.deliveryHistory }),
+    };
     const clients = await createAdapterSendToolsClients(settings, httpOptions);
     const server = await createAdapterSendToolsServer(settings, clients, childConfig.indexing, httpOptions);
     await server.connect(new StdioServerTransport());

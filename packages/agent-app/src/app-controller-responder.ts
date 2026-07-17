@@ -8,7 +8,11 @@ import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime
 
 import { resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
-import { createConfiguredAgentResponderForApp, createConfiguredAgentRuntime } from "./configured-agent.js";
+import {
+  createConfiguredAgentResponderForApp,
+  createConfiguredAgentRuntime,
+  DEFAULT_HISTORY_MAX_MESSAGES,
+} from "./configured-agent.js";
 import {
   adapterSendToolNames,
   createAdapterSendToolsRuntimeExtension,
@@ -24,6 +28,7 @@ import {
 import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
 import { configuredRuntimeFallbackModels, hasConfiguredRuntimeFallbacks } from "./runtime-routes.js";
 import { isNotifyDestinationConversationId } from "./notify-destinations.js";
+import { createSlackPostedReplyHistory } from "./posted-reply-history.js";
 import {
   isInteractionToolName,
   reasonOf,
@@ -106,6 +111,15 @@ export async function buildResponder(controller: MonoAgentAppController, coreCon
     ? controller.buildRuntimeForModel(coreConfig)
     : undefined;
   const observabilityContext = await controller.observabilityContext();
+  const postedReplyHistory = createSlackPostedReplyHistory({
+    maxMessages: DEFAULT_HISTORY_MAX_MESSAGES,
+    ...(coreConfig.runtime.session.rollover === undefined
+      ? {}
+      : { rollover: coreConfig.runtime.session.rollover }),
+    ...(coreConfig.runtime.session.rolloverTimezone === undefined
+      ? {}
+      : { rolloverTimezone: coreConfig.runtime.session.rolloverTimezone }),
+  });
   const responder = await createConfiguredAgentResponderForApp({
     config: coreConfig,
     cwd: controller.cwd,
@@ -138,6 +152,7 @@ export async function buildResponder(controller: MonoAgentAppController, coreCon
     // channel can relay it. Best-effort + additive (see broadcast recorder).
     runEventSink: controller.liveEventBus,
   }, {
+    wrapHistoryStore: postedReplyHistory.wrapHistoryStore,
     // Follow the local JSONL source of truth, not outer live/exporter work:
     // exporter start/finish may still be pending after the summary commits.
     onRunArtifactCommitted: ({ conversationId }) => {
@@ -146,7 +161,7 @@ export async function buildResponder(controller: MonoAgentAppController, coreCon
       }
     },
   });
-  return responder;
+  return postedReplyHistory.wrapResponder(responder);
 }
 
 export function requestModelOverrideRuntimeOptions(
@@ -278,6 +293,7 @@ export async function adapterSendToolsRuntimeOptions(controller: MonoAgentAppCon
       indexPath,
       effectiveInteraction,
       runOutputRoot,
+      controller.interactionBridge,
     )(requestInput);
   };
   return { createExtension, blockingToolNames };
