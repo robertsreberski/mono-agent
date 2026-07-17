@@ -46,6 +46,13 @@ export { renderTelegramMarkdown } from "./telegram-markdown.js";
 export { createGrammyTelegramApi, createTelegramMessageSender } from "./grammy-client.js";
 
 export {
+  DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
+  DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
+  agentAttachmentKindFromMimeType,
+  decodeAgentAttachmentText,
+} from "@mono-agent/agent-contracts";
+
+export {
   TELEGRAM_ASK_CALLBACK_PREFIX,
   TELEGRAM_ASK_MAX_OPTIONS,
   isTelegramAskCallbackData,

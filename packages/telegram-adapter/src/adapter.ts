@@ -1,8 +1,12 @@
-import type {
-  AgentAttachment,
-  AgentRequestBase,
-  AgentResponder as SharedAgentResponder,
-  AgentResponse,
+import {
+  DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
+  DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
+  agentAttachmentKindFromMimeType,
+  decodeAgentAttachmentText,
+  type AgentAttachment,
+  type AgentRequestBase,
+  type AgentResponder as SharedAgentResponder,
+  type AgentResponse,
 } from "@mono-agent/agent-contracts";
 
 import {
@@ -559,43 +563,9 @@ function formatBytes(bytes: number): string {
   return `${Math.round(bytes / (1024 * 1024))} MB`;
 }
 
-/** Telegram's hard cap for bot file downloads is 20 MB. */
-export const DEFAULT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
-
-/**
- * MIME types the adapter will download and inline. Images flow to vision-capable
- * runtimes; documents/text are saved to disk (and decoded inline for text/*).
- */
-export const DEFAULT_ATTACHMENT_MIME_ALLOWLIST: readonly string[] = [
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-  "application/pdf",
-  "application/json",
-  "application/zip",
-  "application/msword",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  "application/vnd.ms-excel",
-  "text/plain",
-  "text/markdown",
-  "text/csv",
-  "text/html",
-  // Audio (Telegram voice messages normalize to audio/ogg; see attachmentMimeType).
-  "audio/ogg",
-  "audio/mpeg",
-  "audio/mp4",
-  "audio/aac",
-  "audio/wav",
-  "audio/webm",
-  "audio/flac",
-  // Video.
-  "video/mp4",
-  "video/mpeg",
-  "video/quicktime",
-  "video/webm",
-];
+/** Telegram-compatible aliases retained for existing adapter consumers. */
+export const DEFAULT_ATTACHMENT_MAX_BYTES = DEFAULT_AGENT_ATTACHMENT_MAX_BYTES;
+export const DEFAULT_ATTACHMENT_MIME_ALLOWLIST = DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST;
 
 /**
  * Minimal seam over the Telegram Bot API needed to fetch attachment bytes:
@@ -752,7 +722,7 @@ function buildAgentAttachment(
   bytes: Uint8Array,
   transcript?: string,
 ): AgentAttachment {
-  const kind: AgentAttachment["kind"] = mimeType.startsWith("image/") ? "image" : "document";
+  const kind = agentAttachmentKindFromMimeType(mimeType);
   const attachment: { -readonly [K in keyof AgentAttachment]?: AgentAttachment[K] } = {
     kind,
     mimeType: source.mimeType,
@@ -768,8 +738,11 @@ function buildAgentAttachment(
   if (transcript !== undefined) {
     // Audio transcript (or the fallback note) inlined so the model sees words.
     attachment.text = transcript;
-  } else if (mimeType.startsWith("text/")) {
-    attachment.text = Buffer.from(bytes).toString("utf8");
+  } else {
+    const text = decodeAgentAttachmentText(mimeType, bytes);
+    if (text !== undefined) {
+      attachment.text = text;
+    }
   }
   return attachment as AgentAttachment;
 }

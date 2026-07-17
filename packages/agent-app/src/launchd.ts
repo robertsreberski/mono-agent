@@ -58,6 +58,19 @@ export interface MaintenancePlistInput {
   readonly intervalSeconds: number;
 }
 
+export interface WebPlistInput {
+  readonly label: string;
+  readonly nodePath: string;
+  readonly cliPath: string;
+  readonly cwd: string;
+  readonly host: string;
+  readonly port: number;
+  readonly stdoutPath: string;
+  readonly stderrPath: string;
+  /** Deliberately allowlisted, non-secret worker environment. */
+  readonly environment: Readonly<Record<string, string>>;
+}
+
 export interface LaunchdServiceInfo {
   readonly loaded: boolean;
   readonly pid?: number;
@@ -226,6 +239,56 @@ ${argsXml}
 `;
 }
 
+/** Always-on web-console LaunchAgent. It runs the public blocking `web run` worker. */
+export function buildWebPlistXml(input: WebPlistInput): string {
+  if (!Number.isSafeInteger(input.port) || input.port < 1 || input.port > 65_535) {
+    throw new Error("Web LaunchAgent port must be an integer between 1 and 65535.");
+  }
+  for (const [name, value] of [
+    ["web launchd label", input.label],
+    ["web working directory", input.cwd],
+    ["web bind host", input.host],
+    ["web stdout path", input.stdoutPath],
+    ["web stderr path", input.stderrPath],
+  ] as const) {
+    assertControlFree(value, name);
+  }
+  const argsXml = buildWebLaunchdProgramArguments(input)
+    .map((argument) => `    <string>${escapeXml(argument)}</string>`)
+    .join("\n");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${escapeXml(input.label)}</string>
+  <key>ProgramArguments</key>
+  <array>
+${argsXml}
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${escapeXml(input.cwd)}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>${escapeXml(input.stdoutPath)}</string>
+  <key>StandardErrorPath</key>
+  <string>${escapeXml(input.stderrPath)}</string>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+</dict>
+</plist>
+`;
+}
+
 /** Exact argv persisted by the managed LaunchAgent producer. */
 export function buildLaunchdProgramArguments(input: PlistInput): readonly string[] {
   const environmentArguments = buildEnvironmentArguments(input.environment);
@@ -262,6 +325,25 @@ export function buildLaunchdMaintenanceProgramArguments(
     input.configPath,
   ];
   for (const argument of arguments_) assertControlFree(argument, "launchd maintenance program argument");
+  return arguments_;
+}
+
+/** Exact argv persisted for the always-on web console. */
+export function buildWebLaunchdProgramArguments(input: WebPlistInput): readonly string[] {
+  const arguments_ = [
+    "/usr/bin/env",
+    "-i",
+    ...buildEnvironmentArguments(input.environment),
+    input.nodePath,
+    input.cliPath,
+    "web",
+    "run",
+    "--host",
+    input.host,
+    "--port",
+    String(input.port),
+  ];
+  for (const argument of arguments_) assertControlFree(argument, "web launchd program argument");
   return arguments_;
 }
 

@@ -1,11 +1,36 @@
 import { describe, expect, it } from "vitest";
 
-import type {
-  AgentAttachment,
-  AgentRequestBase,
+import {
+  DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
+  DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
+  agentAttachmentKindFromMimeType,
+  decodeAgentAttachmentText,
+  type AgentAttachment,
+  type AgentRequestBase,
 } from "../index.js";
 
 describe("multimodal attachment contracts", () => {
+  it("shares the default Telegram-compatible size and MIME policy", () => {
+    expect(DEFAULT_AGENT_ATTACHMENT_MAX_BYTES).toBe(20 * 1024 * 1024);
+    expect(DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST).toContain("image/png");
+    expect(DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST).toContain("text/plain");
+    expect(DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST).toContain("audio/ogg");
+    expect(DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST).toContain("video/mp4");
+  });
+
+  it("classifies images and decodes only text MIME payloads", () => {
+    const bytes = new TextEncoder().encode("hello, web");
+
+    expect(agentAttachmentKindFromMimeType(" IMAGE/PNG ")).toBe("image");
+    expect(agentAttachmentKindFromMimeType("application/pdf")).toBe("document");
+    expect(decodeAgentAttachmentText("TEXT/PLAIN", bytes)).toBe("hello, web");
+    expect(decodeAgentAttachmentText("application/json", bytes)).toBeUndefined();
+    expect(decodeAgentAttachmentText(
+      "text/plain",
+      Uint8Array.from([0xef, 0xbb, 0xbf, 0x68, 0x69]),
+    )).toBe("\ufeffhi");
+  });
+
   it("models image and document attachments", () => {
     const image: AgentAttachment = {
       kind: "image",

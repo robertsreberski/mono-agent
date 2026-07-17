@@ -8,6 +8,8 @@ import {
   buildLaunchdMaintenanceProgramArguments,
   buildPlistXml,
   buildLaunchdProgramArguments,
+  buildWebLaunchdProgramArguments,
+  buildWebPlistXml,
   defaultPathEnv,
   deriveLaunchdLabel,
   deriveLaunchdMaintenanceLabel,
@@ -19,7 +21,7 @@ import {
   parseLaunchdServicePid,
   serviceTarget,
 } from "../launchd.js";
-import type { MaintenancePlistInput, PlistInput } from "../launchd.js";
+import type { MaintenancePlistInput, PlistInput, WebPlistInput } from "../launchd.js";
 
 function plistInput(overrides: Partial<PlistInput> = {}): PlistInput {
   return {
@@ -48,6 +50,21 @@ function maintenanceInput(overrides: Partial<MaintenancePlistInput> = {}): Maint
       [MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV]: "1",
     },
     intervalSeconds: 300,
+    ...overrides,
+  };
+}
+
+function webInput(overrides: Partial<WebPlistInput> = {}): WebPlistInput {
+  return {
+    label: "com.mono-agent-web",
+    nodePath: "/managed/bin/node",
+    cliPath: "/managed/node_modules/@mono-agent/agent-app/dist/cli.js",
+    cwd: "/home/u/.mono-agent/web",
+    host: "0.0.0.0",
+    port: 5050,
+    stdoutPath: "/home/u/.mono-agent/web/logs/web.out.log",
+    stderrPath: "/home/u/.mono-agent/web/logs/web.err.log",
+    environment: { HOME: "/home/u", PATH: "/usr/bin:/bin" },
     ...overrides,
   };
 }
@@ -209,6 +226,43 @@ describe("buildPlistXml", () => {
     expect(() => buildLaunchdProgramArguments(plistInput({
       environment: { "PATH=shadow": "/private", PATH: "/usr/bin:/bin" },
     }))).toThrow(/portable identifier grammar/u);
+  });
+});
+
+describe("buildWebPlistXml", () => {
+  it("runs the web worker through env -i with only explicit operational values", () => {
+    const args = buildWebLaunchdProgramArguments(webInput());
+    expect(args).toEqual([
+      "/usr/bin/env",
+      "-i",
+      "HOME=/home/u",
+      "PATH=/usr/bin:/bin",
+      "/managed/bin/node",
+      "/managed/node_modules/@mono-agent/agent-app/dist/cli.js",
+      "web",
+      "run",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "5050",
+    ]);
+    expect(args).not.toContain("--env-file");
+    expect(args).not.toContain("MONO_AGENT_WEB_AUTH_TOKEN");
+  });
+
+  it("keeps the console label outside agent fleet discovery and emits KeepAlive launchd XML", () => {
+    const input = webInput();
+    expect(input.label).not.toMatch(/^com\.mono-agent\./u);
+    const xml = buildWebPlistXml(input);
+    expect(xml).toContain("<string>com.mono-agent-web</string>");
+    expect(xml).toContain("<string>web</string>");
+    expect(xml).toContain("<string>run</string>");
+    expect(xml).toMatch(/<key>KeepAlive<\/key>\s*<dict>\s*<key>SuccessfulExit<\/key>\s*<false\/>/u);
+  });
+
+  it("rejects an ephemeral or out-of-range managed port", () => {
+    expect(() => buildWebPlistXml(webInput({ port: 0 }))).toThrow(/between 1 and 65535/u);
+    expect(() => buildWebPlistXml(webInput({ port: 65_536 }))).toThrow(/between 1 and 65535/u);
   });
 });
 

@@ -40,7 +40,7 @@ console.log(server.url);
 await server.stop();
 ```
 
-The `mono-agent web` CLI command wraps this with registry resolution + browser open.
+The `mono-agent sessions` CLI command wraps this with registry resolution + browser open.
 Loopback on port `4599` is the default. Startup prints the exact URL to target
 from reverse proxies. A non-loopback bind requires `allowNonLoopback: true`
 and an `authToken`; `/api/*` and `/api/stream` require `Authorization: Bearer
@@ -66,7 +66,7 @@ Serve is not a prerequisite:
 
 ```bash
 MONO_AGENT_WEB_AUTH_TOKEN='<strong-stable-token>' \
-  mono-agent web --host 0.0.0.0 --allow-non-loopback --no-open
+  mono-agent sessions --host 0.0.0.0 --allow-non-loopback --no-open
 ```
 
 Startup advertises concrete loopback, private-LAN, and Tailscale IPv4 URLs, not

@@ -85,6 +85,21 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     expect(result.runtimeOptions.effort).toBe("low");
   });
 
+  it("applies a web per-thread model + effort override", async () => {
+    const result = await run({ web: { model: "claude:claude-opus-4-8", effort: "low" } });
+    expect(result.runtimeOptions.model).toEqual(expect.objectContaining({ sdk: "claude", model: "claude-opus-4-8" }));
+    expect(result.runtimeOptions.effort).toBe("low");
+  });
+
+  it("prefers web metadata over its TUI compatibility mirror", async () => {
+    const result = await run({
+      web: { model: "claude:claude-opus-4-8", effort: "high" },
+      tui: { model: "codex:gpt-5.5", effort: "low" },
+    });
+    expect(result.runtimeOptions.model).toEqual(expect.objectContaining({ sdk: "claude", model: "claude-opus-4-8" }));
+    expect(result.runtimeOptions.effort).toBe("high");
+  });
+
   it("prefers cron metadata over tui metadata when both are present", async () => {
     const result = await run({
       cron: { model: "codex:gpt-5.5" },

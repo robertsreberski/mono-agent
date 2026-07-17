@@ -11,8 +11,8 @@ every internal dep (including root devDependencies) to be `workspace:<version>`.
 Publishing happens in CI on tag push (`.github/workflows/npm-release.yml`) —
 local `npm publish` is NOT the normal path.
 
-**Lockstep set:** all **21 `publishable: true` packages** in
-`scripts/package-catalog.mjs` release together: 16 core packages (entries without
+**Lockstep set:** all **22 `publishable: true` packages** in
+`scripts/package-catalog.mjs` release together: 17 core packages (entries without
 a `tier`), 1 `tier: "alias"` package (`create-mono-agent` under `packages/*`), and
 4 `tier: "plugin"` extras under `extras/*` (a2a-adapter, agent-orchestrator,
 memory-supermemory, and whatsapp-adapter). Plugin extras are version-bumped and
@@ -68,7 +68,7 @@ Do not tag until all of the above are green locally. `release:test` also catches
 package-count drift (a package missing from the release graph).
 
 `release:consumer` proves the packed public surface rather than a hand-picked
-sample. It installs all 21 tarballs together, derives every concrete runtime
+sample. It installs all 22 tarballs together, derives every concrete runtime
 specifier from each installed package's `exports` (and legacy `main`) field,
 imports all of them, and retains the four established packed CLI smokes.
 Wildcard exports fail the gate until the verifier can enumerate them
@@ -110,7 +110,7 @@ guarantee.
 Do not report tokenless publishing or public provenance until all of these are
 true and verified in a supported GitHub Actions run:
 
-- a trusted publisher is configured on npm for every one of the 21 package
+- a trusted publisher is configured on npm for every one of the 22 package
   names and this exact workflow;
 - the staged all-package promotion has a supported tokenless replacement, or
   the remaining token boundary is stated explicitly;

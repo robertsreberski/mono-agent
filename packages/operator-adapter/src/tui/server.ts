@@ -2,9 +2,14 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 
 import {
+  DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
+  DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
+  agentAttachmentKindFromMimeType,
   createChannelUserCancelReason,
+  decodeAgentAttachmentText,
   isAgentResponseCancelledError,
   serializeAgentStreamFrame,
+  type AgentAttachment,
   type AgentMessageStream,
   type AgentRequestBase,
   type AgentResponder,
@@ -58,7 +63,14 @@ export interface TuiAdapterInfo {
    * with no mode/levels so the TUI falls back to the global effort enum. Absent
    * on older agents; the TUI tolerates that and offers no model-aware picker.
    */
-  readonly modelOptions?: Record<string, { readonly effortLevels?: readonly string[]; readonly reasoning?: boolean; readonly reasoningMode?: string; readonly label?: string }>;
+  readonly modelOptions?: Record<string, {
+    readonly effortLevels?: readonly string[];
+    readonly reasoning?: boolean;
+    readonly reasoningMode?: string;
+    readonly label?: string;
+    /** Known model context capacity, in tokens. Omitted when unknown. */
+    readonly contextWindow?: number;
+  }>;
 }
 
 export interface TuiAdapterOptions {
@@ -97,6 +109,13 @@ export interface TuiAdapterStartResult {
   stop(): Promise<void>;
 }
 
+const MAX_TURN_BODY_BYTES = 96 * 1024 * 1024;
+const MAX_WEB_ATTACHMENTS = 10;
+const MAX_WEB_ATTACHMENT_BYTES = 64 * 1024 * 1024;
+const ALLOWED_ATTACHMENT_MIME_TYPES = new Set(
+  DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST.map((mimeType) => mimeType.toLowerCase()),
+);
+
 export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAdapterStartResult> {
   if (typeof options.responder?.respond !== "function") {
     throw new TuiAdapterError("invalid_config", "startTuiAdapter requires a responder with respond().");
@@ -118,8 +137,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const turnsPath = `${basePath}/v1/turns`;
   const cancelPath = `${basePath}/v1/conversations/:conversationId/cancel`;
 
-  app.use(express.json({ limit: "1mb" }));
-
   app.get(infoPath, (req, res) => {
     if (!authorize(req, res, apiKey)) {
       return;
@@ -129,6 +146,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         res.status(200).json({
           schema: TUI_WIRE_SCHEMA,
           pid: process.pid,
+          capabilities: { attachments: true },
           ...(info?.label === undefined ? {} : { label: info.label }),
           ...(info?.model === undefined ? {} : { model: info.model }),
           ...(info?.effort === undefined ? {} : { effort: info.effort }),
@@ -144,7 +162,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       });
   });
 
-  app.post(turnsPath, (req, res) => {
+  // Keep the enlarged parser scoped to turn submission. 64 MiB of decoded
+  // files expands to about 85.4 MiB in base64, while info/cancel stay bodyless.
+  app.post(turnsPath, express.json({ limit: MAX_TURN_BODY_BYTES }), (req, res) => {
     if (!authorize(req, res, apiKey)) {
       return;
     }
@@ -179,6 +199,12 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) {
       next(error);
+      return;
+    }
+    const parserStatus = (error as { status?: unknown } | null)?.status;
+    const parserType = (error as { type?: unknown } | null)?.type;
+    if (parserStatus === 413 || parserType === "entity.too.large") {
+      sendJsonError(res, 413, error);
       return;
     }
     // 400 only for client mistakes (invalid_request, body-parse SyntaxError);
@@ -223,7 +249,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       conversationId: body.conversationId,
       text: body.text,
       abortSignal: controller.signal,
-      metadata: { ...body.metadata, source: "tui", tuiRequestId: requestId },
+      metadata: requestMetadata(body, requestId),
+      ...(body.attachments === undefined || body.attachments.length === 0
+        ? {}
+        : { attachments: body.attachments }),
     };
 
     res.status(200);
@@ -452,6 +481,8 @@ interface NormalizedTurnBody {
   readonly conversationId: string;
   readonly text: string;
   readonly metadata: Record<string, unknown>;
+  readonly client: "tui" | "web";
+  readonly attachments?: readonly AgentAttachment[];
 }
 
 function normalizeTurnBody(body: unknown): NormalizedTurnBody {
@@ -462,18 +493,222 @@ function normalizeTurnBody(body: unknown): NormalizedTurnBody {
   const conversationId = normalizeOptionalString(
     typeof record.conversationId === "string" ? record.conversationId : undefined,
   );
-  const text = typeof record.text === "string" ? record.text : undefined;
   if (conversationId === undefined) {
     throw new TuiAdapterError("invalid_request", "conversationId is required.");
   }
-  if (text === undefined || text.length === 0) {
-    throw new TuiAdapterError("invalid_request", "text is required.");
+  if (record.text !== undefined && typeof record.text !== "string") {
+    throw new TuiAdapterError("invalid_request", "text must be a string when provided.");
   }
+  const text = typeof record.text === "string" ? record.text : "";
   const metadata =
     typeof record.metadata === "object" && record.metadata !== null && !Array.isArray(record.metadata)
       ? (record.metadata as Record<string, unknown>)
       : {};
-  return { conversationId, text, metadata };
+  if (record.client !== undefined && record.client !== "tui" && record.client !== "web") {
+    throw new TuiAdapterError("invalid_request", "client must be 'tui' or 'web' when provided.");
+  }
+  const client = record.client === "web" || (record.client === undefined && metadata.source === "web")
+    ? "web"
+    : "tui";
+  const attachments = normalizeTurnAttachments(record.attachments, client);
+  if (text.length === 0 && (attachments === undefined || attachments.length === 0)) {
+    throw new TuiAdapterError("invalid_request", "text or at least one attachment is required.");
+  }
+  return {
+    conversationId,
+    text,
+    metadata,
+    client,
+    ...(attachments === undefined ? {} : { attachments }),
+  };
+}
+
+function requestMetadata(body: NormalizedTurnBody, requestId: string): Record<string, unknown> {
+  if (body.client === "tui") {
+    return { ...body.metadata, source: "tui", tuiRequestId: requestId };
+  }
+
+  const web = isRecord(body.metadata.web) ? body.metadata.web : undefined;
+  const existingTui = isRecord(body.metadata.tui) ? body.metadata.tui : undefined;
+  const overrideMirror = web === undefined
+    ? undefined
+    : {
+        ...(typeof web.model === "string" ? { model: web.model } : {}),
+        ...(typeof web.effort === "string" ? { effort: web.effort } : {}),
+      };
+  const tui = existingTui === undefined && (overrideMirror === undefined || Object.keys(overrideMirror).length === 0)
+    ? undefined
+    : { ...existingTui, ...overrideMirror };
+
+  return {
+    ...body.metadata,
+    web: web ?? {},
+    ...(tui === undefined ? {} : { tui }),
+    source: "web",
+    webRequestId: requestId,
+  };
+}
+
+function normalizeTurnAttachments(
+  value: unknown,
+  client: NormalizedTurnBody["client"],
+): readonly AgentAttachment[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new TuiAdapterError("invalid_request", "attachments must be an array when provided.");
+  }
+  if (client === "web" && value.length > MAX_WEB_ATTACHMENTS) {
+    throw new TuiAdapterError(
+      "invalid_request",
+      `A web turn supports at most ${String(MAX_WEB_ATTACHMENTS)} attachments.`,
+    );
+  }
+
+  let totalBytes = 0;
+  const attachments = value.map((entry, index) => {
+    const attachment = normalizeTurnAttachment(entry, index, client);
+    totalBytes += attachment.sizeBytes ?? 0;
+    return attachment;
+  });
+  if (client === "web" && totalBytes > MAX_WEB_ATTACHMENT_BYTES) {
+    throw new TuiAdapterError(
+      "invalid_request",
+      `Web turn attachments exceed the ${String(MAX_WEB_ATTACHMENT_BYTES)}-byte aggregate limit.`,
+    );
+  }
+  return attachments;
+}
+
+function normalizeTurnAttachment(
+  value: unknown,
+  index: number,
+  client: NormalizedTurnBody["client"],
+): AgentAttachment {
+  if (!isRecord(value)) {
+    throw invalidAttachment(index, "must be a JSON object");
+  }
+  if (value.kind !== "image" && value.kind !== "document") {
+    throw invalidAttachment(index, "kind must be 'image' or 'document'");
+  }
+  const mimeType = normalizeOptionalString(typeof value.mimeType === "string" ? value.mimeType : undefined);
+  if (mimeType === undefined) {
+    throw invalidAttachment(index, "mimeType is required");
+  }
+  const normalizedMimeType = mimeType.toLowerCase();
+  if (!ALLOWED_ATTACHMENT_MIME_TYPES.has(normalizedMimeType)) {
+    throw invalidAttachment(index, `MIME type '${mimeType}' is not allowed`);
+  }
+  if (value.kind !== agentAttachmentKindFromMimeType(normalizedMimeType)) {
+    throw invalidAttachment(index, `kind does not match MIME type '${mimeType}'`);
+  }
+  if (typeof value.data !== "string" || !isCanonicalBase64(value.data)) {
+    throw invalidAttachment(index, "data must be canonical base64");
+  }
+  const decoded = Buffer.from(value.data, "base64");
+  if (decoded.byteLength > DEFAULT_AGENT_ATTACHMENT_MAX_BYTES) {
+    throw invalidAttachment(
+      index,
+      `decoded data exceeds the ${String(DEFAULT_AGENT_ATTACHMENT_MAX_BYTES)}-byte limit`,
+    );
+  }
+  const name = optionalAttachmentString(value.name, index, "name");
+  // Web uploads intentionally carry the bytes only. Reconstruct text after
+  // decoding so a valid 64 MiB turn remains bounded by the 96 MiB JSON parser
+  // and browser-supplied text can never disagree with the attachment bytes.
+  // Legacy TUI callers retain their explicit extracted-text behavior.
+  const text = client === "web"
+    ? decodeAgentAttachmentText(normalizedMimeType, decoded)
+    : optionalAttachmentString(value.text, index, "text");
+  const declaredSizeBytes = optionalAttachmentNumber(value.sizeBytes, index, "sizeBytes");
+  if (declaredSizeBytes !== undefined && declaredSizeBytes !== decoded.byteLength) {
+    throw invalidAttachment(index, "sizeBytes does not match decoded data");
+  }
+  const durationSeconds = optionalAttachmentNumber(value.durationSeconds, index, "durationSeconds");
+
+  return {
+    kind: value.kind,
+    mimeType,
+    data: value.data,
+    sizeBytes: decoded.byteLength,
+    ...(name === undefined ? {} : { name }),
+    ...(text === undefined ? {} : { text }),
+    ...(durationSeconds === undefined ? {} : { durationSeconds }),
+  };
+}
+
+function optionalAttachmentString(
+  value: unknown,
+  index: number,
+  field: "name" | "text",
+): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    throw invalidAttachment(index, `${field} must be a string when provided`);
+  }
+  return value;
+}
+
+function optionalAttachmentNumber(
+  value: unknown,
+  index: number,
+  field: "sizeBytes" | "durationSeconds",
+): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw invalidAttachment(index, `${field} must be a non-negative finite number when provided`);
+  }
+  return value;
+}
+
+function isCanonicalBase64(value: string): boolean {
+  if (value.length % 4 !== 0) {
+    return false;
+  }
+  if (value.length === 0) {
+    return true;
+  }
+
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  const payloadLength = value.length - padding;
+  for (let index = 0; index < payloadLength; index += 1) {
+    if (base64Value(value.charCodeAt(index)) === undefined) {
+      return false;
+    }
+  }
+  // Padding is only legal in the final quartet, and its unused bits must be
+  // zero for the spelling to be canonical rather than merely decodable.
+  if (padding === 2) {
+    const tail = base64Value(value.charCodeAt(payloadLength - 1));
+    return payloadLength >= 2 && tail !== undefined && (tail & 0b1111) === 0;
+  }
+  if (padding === 1) {
+    const tail = base64Value(value.charCodeAt(payloadLength - 1));
+    return payloadLength >= 3 && tail !== undefined && (tail & 0b11) === 0;
+  }
+  return true;
+}
+
+function base64Value(code: number): number | undefined {
+  if (code >= 65 && code <= 90) return code - 65;
+  if (code >= 97 && code <= 122) return code - 71;
+  if (code >= 48 && code <= 57) return code + 4;
+  if (code === 43) return 62;
+  if (code === 47) return 63;
+  return undefined;
+}
+
+function invalidAttachment(index: number, reason: string): TuiAdapterError {
+  return new TuiAdapterError("invalid_request", `attachments[${String(index)}] ${reason}.`);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function resolveInfo(info: TuiAdapterOptions["info"]): Promise<TuiAdapterInfo | undefined> {

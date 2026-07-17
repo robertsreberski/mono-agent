@@ -1,17 +1,17 @@
 ---
-title: "TUI stream endpoint"
+title: "Operator stream endpoint"
 sidebar:
   order: 8
 ---
 
-# TUI stream endpoint
+# Operator stream endpoint
 
-This channel serves the loopback NDJSON stream the [`mono-agent tui`](/observability/tui/) operator console connects to. Unlike the [OpenAI-compatible API](/channels/openai-api/) (which flattens events into Chat Completions chunks), it preserves structured `AgentStreamEvent` kinds — thinking deltas, tool calls with arguments/progress/results/timing, token usage, cost, provider lifecycle and failover, warnings — subject to the serialized event-frame cap described below.
+This channel serves the loopback NDJSON stream used by the [`mono-agent tui`](/observability/tui/) and [always-on web console](/observability/web-console/). Unlike the [OpenAI-compatible API](/channels/openai-api/) (which flattens events into Chat Completions chunks), it preserves structured `AgentStreamEvent` kinds — thinking deltas, tool calls with arguments/progress/results/timing, token usage, cost, provider lifecycle and failover, warnings — subject to the serialized event-frame cap described below.
 
 Coverage: `config` (the `tui` section of `mono-agent.config.json`).
 
 :::note
-**This operator surface is ON by default.** `tui` and the read-only `live` event relay are the two default-on channels: both bind loopback with ephemeral ports and need no credentials by default, so `mono-agent tui` and `mono-agent web` can reach any running agent without a per-agent config edit. Set `"tui": { "enabled": false }` to opt out of the TUI endpoint; everything else about the channel lifecycle (status lines, `degraded`/`failed` reporting) matches the other channels.
+**This operator surface is ON by default.** `tui` and the read-only `live` event relay are the two default-on channels: both bind loopback with ephemeral ports and need no credentials by default, so the TUI/web console can chat and `mono-agent sessions` can observe runs without a per-agent config edit. Set `"tui": { "enabled": false }` to opt out of the operator endpoint; everything else about the channel lifecycle (status lines, `degraded`/`failed` reporting) matches the other channels.
 :::
 
 ## Configuration
@@ -50,9 +50,9 @@ Coverage: `config` (the `tui` section of `mono-agent.config.json`).
 
 Keep the bearer value in `.env` (or an exported environment variable). `mono-agent tui` resolves the effective value automatically without putting it in the trace-source registry.
 
-## Live event relay for web PWA
+## Live event relay for Session Recorder
 
-The `live` channel is the sibling default-on operator surface consumed by `mono-agent web`. It is read-only: it exposes run lifecycle frames over SSE, never accepts turns, and lets the web PWA show sub-run updates before the on-disk recorder flushes the final summary.
+The `live` channel is the sibling default-on operator surface consumed by `mono-agent sessions`. It is read-only: it exposes run lifecycle frames over SSE, never accepts turns, and lets the Session Recorder show sub-run updates before the on-disk recorder flushes the final summary.
 
 ```json
 {
@@ -68,7 +68,7 @@ The `live` channel is the sibling default-on operator surface consumed by `mono-
 
 | Key | Type | Default | Purpose |
 | --- | --- | --- | --- |
-| `enabled` | boolean | **`true`** | Default-on read-only operator relay for `mono-agent web`; set `false` to opt out. |
+| `enabled` | boolean | **`true`** | Default-on read-only operator relay for `mono-agent sessions`; set `false` to opt out. |
 | `host` | string | `127.0.0.1` | Bind address. Loopback by default. |
 | `port` | integer | `0` | `0` = ephemeral. The bound `baseUrl` is published to the trace-source registry. |
 | `basePath` | string | `/live` | Path prefix for `/v1/events` and `/v1/info`. |
@@ -84,16 +84,16 @@ The `live` channel is the sibling default-on operator surface consumed by `mono-
 | `MONO_AGENT_LIVE_ALLOW_NON_LOOPBACK` | `live.allowNonLoopback` |
 | `MONO_AGENT_LIVE_API_KEY` | `live.apiKey` |
 
-Keep the bearer value in `.env` (or an exported environment variable). `mono-agent web` resolves the effective value and sends it only to trusted loopback live URLs.
+Keep the bearer value in `.env` (or an exported environment variable). `mono-agent sessions` resolves the effective value and sends it only to trusted loopback live URLs.
 
-`mono-agent web` trusts live relay URLs only when they resolve to loopback, and it only sends a live API key to those trusted URLs. If you deliberately expose `live` beyond loopback, put it behind a trusted network boundary; the stream contains run prompts, tool events, usage, and terminal summaries.
+`mono-agent sessions` trusts live relay URLs only when they resolve to loopback, and it only sends a live API key to those trusted URLs. If you deliberately expose `live` beyond loopback, put it behind a trusted network boundary; the stream contains run prompts, tool events, usage, and terminal summaries.
 
 ## Endpoints & wire protocol
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET {basePath}/v1/info` | `{ schema, pid, label?, model?, effort? }` — identity + wire-schema version for skew detection. `effort` is the statically configured reasoning-effort level; per-run overrides arrive via the `run_config` runtime_telemetry event instead. |
-| `POST {basePath}/v1/turns` | Body `{ conversationId, text, metadata? }`. Responds with chunked `application/x-ndjson`, one frame per stream callback: `status`, `append`, `replace`, `event` (any `AgentStreamEvent`), then a terminal `finish` (final text + response metadata) or `error` (`cancelled` flagged). Closing the socket aborts the in-flight turn. |
+| `GET {basePath}/v1/info` | `{ schema, pid, capabilities:{attachments:true}, label?, model?, models?, modelOptions?, effort? }` — identity, attachment support, model choices, and wire-schema version for skew detection. `effort` is the statically configured reasoning-effort level; per-run overrides arrive via the `run_config` runtime_telemetry event instead. |
+| `POST {basePath}/v1/turns` | Body `{ conversationId, text, attachments?, metadata? }`. Responds with chunked `application/x-ndjson`, one frame per stream callback: `status`, `append`, `replace`, `event` (any `AgentStreamEvent`), then a terminal `finish` (final text + response metadata) or `error` (`cancelled` flagged). Attachment-only turns are accepted when advertised by `/v1/info`. Closing the socket aborts the in-flight turn. |
 | `POST {basePath}/v1/conversations/:id/cancel` | Explicit cancel (`202`; `501` if the responder has no cancel). |
 
 Frames are defined in `@mono-agent/agent-contracts` (`stream-wire`); parsing is tolerant in both directions, so version-skewed console/agent pairs keep talking (unknown frame kinds and event types pass through). A serialized event frame is capped at 256 KiB for its complete UTF-8 NDJSON line, including the newline. Above that cap, `assistant_thought` and `tool_call_started`/`tool_call_progress`/`tool_call_completed` payload fields are reduced, marked truncated, and remeasured. Any other oversized event variant — including `runtime_warning` or `runtime_telemetry` — and any reducible event whose minimal form still does not fit because of metadata or invariant fields becomes a small `oversized_event` marker instead. Other frame kinds do not use this cap. Replay does not restore the omitted tail: the JSONL recorder separately applies key-based redaction and caps each event string at 4,096 bytes by default, buffers events in RAM, and replaces the events file only at terminal `finish()`/`fail()`. A crash before that boundary can therefore leave no in-flight events to replay. The tool-bloat guard may separately save oversized tool-result blocks under `tool-output/` when its persistence callback succeeds; those files are not the run's JSONL event stream and do not recover arbitrary streamed payloads. See the [artifact write-boundary contract](/observability/artifacts-and-traces/).
@@ -108,6 +108,6 @@ How the endpoint is discovered: the running channel's summary (`baseUrl`) is fol
 
 ## Related
 
-- [Terminal UI](/observability/tui/) — the console that consumes this endpoint.
+- [Terminal UI](/observability/tui/) and [web console](/observability/web-console/) — the consoles that consume this endpoint.
 - [Channels overview](/channels/) — shared lifecycle and status lines.
 - [OpenAI-compatible API](/channels/openai-api/) — the lossy-but-standard HTTP alternative for third-party clients.

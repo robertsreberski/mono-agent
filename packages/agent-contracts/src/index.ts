@@ -39,6 +39,65 @@ export interface AgentAttachment {
   readonly durationSeconds?: number;
 }
 
+/** Default decoded-byte ceiling shared by transports that ingest attachments. */
+export const DEFAULT_AGENT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Transport-neutral MIME types accepted by the built-in attachment flows.
+ * Keeping this list beside {@link AgentAttachment} prevents browser and chat
+ * adapters from drifting into subtly different upload behavior.
+ */
+export const DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST: readonly string[] = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "application/pdf",
+  "application/json",
+  "application/zip",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel",
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "text/html",
+  "audio/ogg",
+  "audio/mpeg",
+  "audio/mp4",
+  "audio/aac",
+  "audio/wav",
+  "audio/webm",
+  "audio/flac",
+  "video/mp4",
+  "video/mpeg",
+  "video/quicktime",
+  "video/webm",
+];
+
+/** Classify an allowed MIME type into the runtime's two attachment kinds. */
+export function agentAttachmentKindFromMimeType(mimeType: string): AgentAttachment["kind"] {
+  return mimeType.trim().toLowerCase().startsWith("image/") ? "image" : "document";
+}
+
+/**
+ * Decode the text payloads transports inline for the model. Binary and
+ * application/* documents deliberately return undefined, matching the
+ * established Telegram behavior.
+ */
+export function decodeAgentAttachmentText(
+  mimeType: string,
+  bytes: Uint8Array,
+): string | undefined {
+  if (!mimeType.trim().toLowerCase().startsWith("text/")) {
+    return undefined;
+  }
+  // `ignoreBOM: true` means treat a leading BOM as ordinary decoded text,
+  // matching Node Buffer's established Telegram UTF-8 behavior exactly.
+  return new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes);
+}
+
 /**
  * Host-owned destination for a later reply.  This is deliberately separate
  * from {@link AgentRequestBase.conversationId}: the latter may be rewritten for

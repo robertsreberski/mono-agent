@@ -279,7 +279,6 @@ describe("mono-agent-composer reference parity", () => {
   it("uses exact value-bearing Session Recorder CLI syntax everywhere", () => {
     const surfaces = [
       [rowWithRegistryId(registry, "session-web.pwa"), "session-web registry row"],
-      [rowWithRegistryId(registry, "app.cli-web"), "app CLI registry row"],
       [rowWithRegistryId(matrix, "session-web.pwa"), "feature matrix row"],
       [
         between(coverage, "Session Recorder web PWA", "Setup presets"),
@@ -288,6 +287,7 @@ describe("mono-agent-composer reference parity", () => {
     ] as const;
 
     for (const [page, label] of surfaces) {
+      expect(page, `${label} still routes the recorder through mono-agent web`).toContain("mono-agent sessions");
       for (const syntax of [
         "--host <addr>",
         "--port <n>",
@@ -297,6 +297,16 @@ describe("mono-agent-composer reference parity", () => {
         expect(page, `${label} is missing ${syntax}`).toContain(syntax);
       }
     }
+  });
+
+  it("keeps the always-on web console distinct from the Session Recorder", () => {
+    const cliWeb = rowWithRegistryId(registry, "app.cli-web");
+    expect(cliWeb).toContain("mono-agent web");
+    expect(cliWeb).toContain("--loopback");
+    expect(cliWeb).toContain("--all --yes");
+    expect(cliWeb).not.toContain("--include-memory");
+    expect(packageMap).toContain("@mono-agent/web");
+    expect(packageMap).toContain("@mono-agent/session-web");
   });
 
   it("keeps the annotated config blueprint complete for audited config keys", () => {
@@ -325,6 +335,8 @@ describe("mono-agent-composer reference parity", () => {
     expect(packageMap).toContain("@mono-agent/memory-supermemory");
     expect(packageMap).toContain('memory.backend: "supermemory"');
     expect(packageMap).toContain("@mono-agent/session-web");
+    expect(packageMap).toContain("@mono-agent/web");
+    expect(packageMap).toContain("mono-agent sessions");
   });
 
   it("mirrors native-notify configuration and destination-resolution semantics", () => {
