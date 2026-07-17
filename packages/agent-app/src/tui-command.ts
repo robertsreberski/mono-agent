@@ -7,6 +7,7 @@ import { loadTuiAdapterConfig } from "@mono-agent/operator-adapter";
 
 import { resolveAppTraceRegistryDir, resolveGlobalTraceRegistryDir } from "./app-config.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
+import { hasCompletedManagedStartup } from "./managed-startup.js";
 
 export interface RunTuiOptions {
   readonly configPath: string;
@@ -575,5 +576,5 @@ function shellQuote(value: string): string {
 }
 
 function isConfigurationReadySource(source: TraceSourceListItem): boolean {
-  return source.health === "running" && source.metadata?.reason === "startup-complete";
+  return source.health === "running" && hasCompletedManagedStartup(source);
 }

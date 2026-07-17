@@ -15,6 +15,7 @@ import {
   resolveAppTraceStaleAfterMs,
 } from "./app-config.js";
 import { formatChannelFactValue } from "./channel-fact-format.js";
+import { hasCompletedManagedStartup } from "./managed-startup.js";
 import {
   bootout,
   bootstrap,
@@ -349,7 +350,8 @@ export interface ReadyPollOptions extends PollOptions {
   readonly requireTui?: boolean;
 }
 
-const DEFAULT_POLL: PollOptions = { timeoutMs: 18_000, intervalMs: 400 };
+const DEFAULT_CONTROL_POLL: PollOptions = { timeoutMs: 18_000, intervalMs: 400 };
+const DEFAULT_READINESS_POLL: PollOptions = { timeoutMs: 60_000, intervalMs: 400 };
 
 export type BackgroundLaunchAction = "started" | "restarted";
 
@@ -369,7 +371,7 @@ export type BackgroundLaunchResult =
 export async function startBackground(
   target: InstanceTarget,
   deps: BackgroundDeps,
-  poll: PollOptions = DEFAULT_POLL,
+  poll?: PollOptions,
 ): Promise<number> {
   return (await ensureBackgroundReady(target, deps, poll)).ok ? 0 : 1;
 }
@@ -378,7 +380,7 @@ export async function startBackground(
 export async function restartBackground(
   target: InstanceTarget,
   deps: BackgroundDeps,
-  poll: PollOptions = DEFAULT_POLL,
+  poll?: PollOptions,
 ): Promise<number> {
   return (await ensureBackgroundReady(target, deps, poll)).ok ? 0 : 1;
 }
@@ -392,7 +394,7 @@ export async function forceRestartBackground(
   target: InstanceTarget,
   deps: BackgroundDeps,
   whileStopped: () => Promise<void>,
-  poll: PollOptions = DEFAULT_POLL,
+  poll?: PollOptions,
 ): Promise<number> {
   const release = await deps.acquireLifecycleLock(target);
   if (release === undefined) {
@@ -401,10 +403,16 @@ export async function forceRestartBackground(
     return 1;
   }
   try {
-    const stopCode = await stopBackgroundUnlocked(target, deps, poll);
+    const controlPoll = poll ?? DEFAULT_CONTROL_POLL;
+    const stopCode = await stopBackgroundUnlocked(target, deps, controlPoll);
     if (stopCode !== 0) return stopCode;
     await whileStopped();
-    return (await ensureBackgroundReadyUnlocked(target, deps, poll)).ok ? 0 : 1;
+    return (await ensureBackgroundReadyUnlocked(
+      target,
+      deps,
+      controlPoll,
+      poll ?? DEFAULT_READINESS_POLL,
+    )).ok ? 0 : 1;
   } finally {
     await release().catch((error: unknown) => {
       deps.stderr(ui.errorLine(
@@ -423,7 +431,7 @@ export async function forceRestartBackground(
 export async function maintainLaunchdLogs(
   target: BackgroundLifecycleTarget,
   deps: BackgroundDeps,
-  poll: PollOptions = DEFAULT_POLL,
+  poll: PollOptions = DEFAULT_CONTROL_POLL,
 ): Promise<number> {
   const release = await deps.acquireLifecycleLock(target);
   if (release === undefined) {
@@ -698,14 +706,14 @@ function maintenanceErrorMessage(error: unknown): string {
 
 /**
  * Ensure the canonical per-config LaunchAgent is running and return the fresh
- * trace source that proved it reached `startup-complete`. This is the shared
+ * trace source that proved it completed the full startup lifecycle. This is the shared
  * lifecycle boundary for CLI start/restart and remote configuration handoffs;
  * callers must not open a console when the result is not ok.
  */
 export async function ensureBackgroundReady(
   target: InstanceTarget,
   deps: BackgroundDeps,
-  poll: PollOptions = DEFAULT_POLL,
+  poll?: PollOptions,
 ): Promise<BackgroundLaunchResult> {
   const release = await deps.acquireLifecycleLock(target);
   if (release === undefined) {
@@ -714,7 +722,12 @@ export async function ensureBackgroundReady(
     return { ok: false, action: "start", reason: "ownership" };
   }
   try {
-    return await ensureBackgroundReadyUnlocked(target, deps, poll);
+    return await ensureBackgroundReadyUnlocked(
+      target,
+      deps,
+      poll ?? DEFAULT_CONTROL_POLL,
+      poll ?? DEFAULT_READINESS_POLL,
+    );
   } finally {
     await release().catch((error: unknown) => {
       deps.stderr(ui.errorLine(
@@ -727,7 +740,8 @@ export async function ensureBackgroundReady(
 async function ensureBackgroundReadyUnlocked(
   target: InstanceTarget,
   deps: BackgroundDeps,
-  poll: PollOptions,
+  controlPoll: PollOptions,
+  readinessPoll: PollOptions,
 ): Promise<BackgroundLaunchResult> {
   if (target.expectedSnapshot === undefined) {
     deps.stderr(ui.errorLine("Refusing to launch a managed worker without an approved background snapshot."));
@@ -795,7 +809,7 @@ async function ensureBackgroundReadyUnlocked(
         );
       }
     }
-    outcome = await bootstrapOrRestart(launchTarget, deps, uid, poll, async () => {
+    outcome = await bootstrapOrRestart(launchTarget, deps, uid, controlPoll, async () => {
       const stoppedIntent = interruptedMaintenance;
       if (stoppedIntent?.phase === "stopped") {
         interruptedMaintenance = await deps.markLaunchdLogMaintenanceStopping(
@@ -841,17 +855,19 @@ async function ensureBackgroundReadyUnlocked(
   let ready: TraceSourceListItem | undefined;
   try {
     ready = await pollInstanceReady(launchTarget, deps, {
-      ...poll,
+      ...readinessPoll,
       sinceMs,
       ...(launchTarget.requireTui === true ? { requireTui: true } : {}),
     });
   } catch (error) {
-    reportLifecycleException(launchTarget, deps, "read the worker readiness trace", error);
+    reportReadinessException(deps, error);
+    const stopped = await cleanUpUnreadyBackground(launchTarget, deps, controlPoll);
+    reportReadinessCleanup(launchTarget, deps, stopped);
     return { ok: false, action, reason: "readiness" };
   }
   if (ready === undefined) {
     if (!(await snapshotStillMatches(launchTarget, deps))) {
-      const stopped = await stopBackgroundUnlocked(launchTarget, deps, poll);
+      const stopped = await stopBackgroundUnlocked(launchTarget, deps, controlPoll);
       reportSnapshotDrift(launchTarget, deps);
       if (stopped === 0) {
         deps.stderr(ui.style.dim("The drifted LaunchAgent was stopped before returning control.") + "\n");
@@ -860,7 +876,9 @@ async function ensureBackgroundReadyUnlocked(
       }
       return { ok: false, action, reason: "snapshot" };
     }
-    reportTimeout(launchTarget, deps);
+    reportTimeout(deps);
+    const stopped = await cleanUpUnreadyBackground(launchTarget, deps, controlPoll);
+    reportReadinessCleanup(launchTarget, deps, stopped);
     return { ok: false, action, reason: "timeout" };
   }
   const completedAction = outcome.restarted ? "restarted" as const : "started" as const;
@@ -1344,7 +1362,7 @@ function uniquePids(values: readonly (number | undefined)[]): number[] {
 export async function stopBackground(
   target: InstanceTarget,
   deps: BackgroundDeps,
-  poll: PollOptions = DEFAULT_POLL,
+  poll: PollOptions = DEFAULT_CONTROL_POLL,
 ): Promise<number> {
   const release = await deps.acquireLifecycleLock(target);
   if (release === undefined) {
@@ -1660,9 +1678,37 @@ function reportLifecycleException(
   reportLaunchRecovery(target, deps);
 }
 
-function reportTimeout(target: InstanceTarget, deps: BackgroundDeps): void {
+function reportReadinessException(deps: BackgroundDeps, error: unknown): void {
+  deps.stderr(ui.errorLine(
+    `Failed to read the worker readiness trace: ${error instanceof Error ? error.message : String(error)}`,
+  ));
+  deps.stderr(ui.style.dim("The committed agent files were preserved.") + "\n");
+}
+
+function reportTimeout(deps: BackgroundDeps): void {
   deps.stderr(ui.errorLine("mono-agent did not report ready within the timeout."));
-  deps.stderr(ui.style.dim("The committed agent files were preserved. It may still be starting, or it may have failed.") + "\n");
+  deps.stderr(ui.style.dim("The committed agent files were preserved.") + "\n");
+}
+
+async function cleanUpUnreadyBackground(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  poll: PollOptions,
+): Promise<boolean> {
+  try {
+    return await stopBackgroundUnlocked(target, { ...deps, stdout: () => undefined }, poll) === 0;
+  } catch (error) {
+    deps.stderr(ui.errorLine(
+      `Failed while trying to stop the unready LaunchAgent: ${error instanceof Error ? error.message : String(error)}`,
+    ));
+    return false;
+  }
+}
+
+function reportReadinessCleanup(target: InstanceTarget, deps: BackgroundDeps, stopped: boolean): void {
+  deps.stderr(stopped
+    ? ui.style.dim("The unready LaunchAgent and scheduled maintenance were stopped and their definitions removed before returning control.") + "\n"
+    : ui.style.yellow("The unready LaunchAgent could not be proven stopped; a worker or maintenance helper may still be running.") + "\n");
   reportLaunchRecovery(target, deps);
 }
 
@@ -1774,7 +1820,7 @@ async function matchesConfig(source: TraceSourceListItem, configPath: string): P
 }
 
 function isReady(source: TraceSourceListItem, requireTui: boolean): boolean {
-  if (source.health !== "running" || metadataReason(source) !== "startup-complete") return false;
+  if (source.health !== "running" || !hasCompletedManagedStartup(source)) return false;
   if (source.memoryHealth?.status === "unhealthy") return false;
   const channels = channelRecords(source);
   if (channels.some((channel) => channel.kind === "failed")) return false;
@@ -1789,11 +1835,6 @@ function channelRecords(source: TraceSourceListItem): readonly Record<string, un
   if (channels === null || typeof channels !== "object") return [];
   return Object.values(channels as Record<string, unknown>)
     .filter((value): value is Record<string, unknown> => value !== null && typeof value === "object");
-}
-
-function metadataReason(source: TraceSourceListItem): string | undefined {
-  const reason = source.metadata?.reason;
-  return typeof reason === "string" ? reason : undefined;
 }
 
 function startedAtMs(source: TraceSourceListItem): number {

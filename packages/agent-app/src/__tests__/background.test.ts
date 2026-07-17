@@ -76,6 +76,7 @@ function makeTarget(
 function makeSource(target: InstanceTarget, overrides: Partial<TraceSourceListItem> = {}): TraceSourceListItem {
   const metadata = {
     reason: "startup-complete",
+    lifecycle: { startupCompleted: true },
     channels: {
       telegram: { kind: "running" },
       slack: { kind: "waiting_for_config", reason: "Missing appToken" },
@@ -242,6 +243,8 @@ function makeHarness(opts: {
   acquireLifecycleLock?: BackgroundDeps["acquireLifecycleLock"];
   probeTui?: BackgroundDeps["probeTui"];
   captureSnapshot?: NonNullable<BackgroundDeps["captureSnapshot"]>;
+  now?: BackgroundDeps["now"];
+  sleep?: BackgroundDeps["sleep"];
 }): Harness {
   const out: string[] = [];
   const err: string[] = [];
@@ -258,10 +261,10 @@ function makeHarness(opts: {
   const deps: BackgroundDeps = {
     runner: opts.runner,
     getuid: () => 501,
-    now: () => clock,
-    sleep: async (ms) => {
+    now: opts.now ?? (() => clock),
+    sleep: opts.sleep ?? (async (ms) => {
       clock += ms;
-    },
+    }),
     listRecordedRuns: opts.listRecordedRuns ?? (async () => ({ totalRuns: 0, runs: [], warnings: [] })),
     listTraceSources: opts.list,
     writeFile: async (path, data) => {
@@ -471,6 +474,34 @@ describe("startBackground", () => {
 
     expect(result).toEqual({ ok: true, action: "started", source });
     expect(clearedIntents).toBe(1);
+  });
+
+  it("allows a worker that completes after 35 seconds within the default 60-second readiness budget", async () => {
+    const { runner } = makeRunner({ loaded: false, bootstrapPid: 9876 });
+    const target = makeTarget();
+    const ready = makeSource(target, { sourceId: "mono-agent-slow-ready", pid: 9876 });
+    let clock = CLOCK_START;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => clock - CLOCK_START >= 35_000 ? [ready] : []),
+      now: () => clock,
+      sleep: async (ms) => { clock += ms; },
+    });
+
+    await expect(ensureBackgroundReady(target, harness.deps))
+      .resolves.toEqual({ ok: true, action: "started", source: ready });
+    expect(clock - CLOCK_START).toBeGreaterThanOrEqual(35_000);
+    expect(clock - CLOCK_START).toBeLessThan(60_000);
+  });
+
+  it("keeps durable startup readiness after the latest trace reason changes", async () => {
+    const { runner } = makeRunner({ loaded: false });
+    const target = makeTarget();
+    const source = makeSource(target, { metadata: { reason: "memory-health-periodic" } });
+    const harness = makeHarness({ runner, list: listReturning(() => [source]) });
+
+    await expect(ensureBackgroundReady(target, harness.deps, POLL))
+      .resolves.toEqual({ ok: true, action: "started", source });
   });
 
   it("requires the live worker metadata and current files to match the exact approved snapshot", async () => {
@@ -702,6 +733,29 @@ describe("startBackground", () => {
     expect(stderr).toContain("mono-agent start");
     expect(stderr).toContain("mono-agent status");
     expect(stderr).toContain("mono-agent logs --follow");
+    expect(stderr).toContain("were stopped and their definitions removed");
+    expect(runner.isLoaded(target.label)).toBe(false);
+    expect(runner.isLoaded("com.mono-agent-maintenance.demo-0a1b2c3d")).toBe(false);
+    expect(harness.removed).toContain(target.paths.plistPath);
+    expect(harness.removed).toContain("/home/u/Library/LaunchAgents/com.mono-agent-maintenance.demo-0a1b2c3d.plist");
+  });
+
+  it("fails explicitly when readiness cleanup cannot prove the worker stopped", async () => {
+    const { runner } = makeRunner({ loaded: false, bootoutKeepsLoaded: true });
+    const target = makeTarget();
+    const harness = makeHarness({ runner, list: listReturning(() => []) });
+
+    const result = await ensureBackgroundReady(target, harness.deps, { timeoutMs: 300, intervalMs: 100 });
+
+    expect(result).toEqual({ ok: false, action: "start", reason: "timeout" });
+    expect(runner.isLoaded(target.label)).toBe(true);
+    expect(runner.isLoaded("com.mono-agent-maintenance.demo-0a1b2c3d")).toBe(true);
+    expect(harness.removed).not.toContain(target.paths.plistPath);
+    const stderr = harness.err.join("");
+    expect(stderr).toContain("could not be proven stopped");
+    expect(stderr).toContain("may still be running");
+    expect(stderr).toContain("mono-agent status");
+    expect(stderr).toContain("mono-agent logs --follow");
   });
 
   it("returns a structured launchctl failure and prints exact recovery commands", async () => {
@@ -873,8 +927,8 @@ describe("startBackground", () => {
     let calls = 0;
     const list = (async () => {
       calls += 1;
-      if (calls === 1) return { registryDir: target.registryDir, sources: [], warnings: [] };
-      throw new Error("trace registry is unreadable");
+      if (calls === 2) throw new Error("trace registry is unreadable");
+      return { registryDir: target.registryDir, sources: [], warnings: [] };
     }) as BackgroundDeps["listTraceSources"];
     const harness = makeHarness({ runner, list });
 
@@ -886,6 +940,10 @@ describe("startBackground", () => {
     expect(stderr).toContain("trace registry is unreadable");
     expect(stderr).toContain("committed agent files were preserved");
     expect(stderr).toContain("mono-agent status");
+    expect(stderr).toContain("were stopped and their definitions removed");
+    expect(runner.isLoaded(target.label)).toBe(false);
+    expect(runner.isLoaded("com.mono-agent-maintenance.demo-0a1b2c3d")).toBe(false);
+    expect(harness.removed).toContain(target.paths.plistPath);
   });
 
   it("fails before writing a plist when the durable runtime cannot be verified", async () => {

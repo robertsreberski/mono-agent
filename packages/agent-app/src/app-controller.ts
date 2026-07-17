@@ -255,6 +255,8 @@ export class MonoAgentAppController implements MonoAgentApp {
   /** One bounded forced refresh reserved by a due timer tick. */
   memoryHealthRefreshDue = false;
   memoryHealthGeneration = 0;
+  /** Durable trace fact published only after the full current lifecycle completes. */
+  startupCompleted = false;
   selectedSkillsValue: readonly string[] | undefined;
   sessionMetadataValue: SessionTraceMetadata | undefined;
   /** The exporter the responder threads into agent-host (first configured exporter). */
