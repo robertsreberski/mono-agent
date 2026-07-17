@@ -1,5 +1,29 @@
 # Release notes
 
+## 0.11.5 — Transient tool activity without thought clutter (2026-07-17)
+
+### Added
+
+- Interactive Slack and Telegram replies now expose tool starts in one
+  cumulative, redacted status message while the agent works. Adjacent duplicate
+  calls are compacted, and the same message is replaced by the final answer.
+- `showHints: false` remains the opt-out for these activity previews. Proactive
+  deliveries do not create a ledger, and acknowledged cancellation removes a
+  still-transient status message on a best-effort basis.
+
+### Fixed
+
+- Pi streams and the OpenAI-compatible API no longer synthesize messages such
+  as `Running Bash...` into assistant reasoning. Structured tool events and
+  genuine model thoughts remain available to their intended consumers.
+
+### Compatibility
+
+- Existing Slack and Telegram configurations require no changes. Preview text
+  is bounded and redacted before delivery.
+- All 21 catalog-publishable packages move together to 0.11.5. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.11.4 — Hardened runtime operations and bounded state (2026-07-17)
 
 ### Highlights
