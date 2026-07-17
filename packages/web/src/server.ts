@@ -199,9 +199,12 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     res.status(404).json({ error: { code: "not_found", message: "Not found." } });
   });
 
-  app.use(express.static(staticDir, { fallthrough: true, index: false }));
-  app.get("*splat", (_req, res, next) => {
-    res.sendFile(resolve(staticDir, "index.html"), (error) => {
+  app.use(express.static(staticDir, { fallthrough: true, index: false, redirect: false }));
+  app.get("/{*splat}", (_req, res, next) => {
+    // Keep the managed runtime's hidden ~/.mono-agent parent out of the
+    // request-relative path. Express otherwise applies its dotfile policy to
+    // the absolute path and rejects an existing index.html as Not Found.
+    res.sendFile("index.html", { root: staticDir }, (error) => {
       if (error !== undefined && error !== null) next(error);
     });
   });

@@ -20,9 +20,11 @@ afterEach(async () => {
 async function start(options: Partial<Parameters<typeof startWebServer>[0]> = {}): Promise<{ handle: WebServerHandle; baseUrl: string; root: string }> {
   const root = await temporaryRoot();
   cleanup.push(root);
-  const staticDir = join(root, "static");
+  // Managed runtimes live below ~/.mono-agent. Keep a hidden parent in the
+  // fixture so SPA fallback tests exercise Express's dotfile handling.
+  const staticDir = join(root, ".mono-agent", "static");
   const { mkdir } = await import("node:fs/promises");
-  await mkdir(staticDir);
+  await mkdir(staticDir, { recursive: true });
   await writeFile(join(staticDir, "index.html"), "<!doctype html><title>web</title>");
   const handle = await startWebServer({
     port: 0,
@@ -49,6 +51,12 @@ describe("web HTTP server", () => {
     const health = await fetch(`${baseUrl}/healthz`);
     expect(health.status).toBe(200);
     expect(await health.json()).toEqual({ status: "ok", version: 1 });
+    const root = await fetch(`${baseUrl}/`);
+    expect(root.status).toBe(200);
+    expect(await root.text()).toContain("<title>web</title>");
+    const clientRoute = await fetch(`${baseUrl}/conversations/example`);
+    expect(clientRoute.status).toBe(200);
+    expect(await clientRoute.text()).toContain("<title>web</title>");
     const bootstrap = await fetch(`${baseUrl}/api/v1/bootstrap`);
     expect(bootstrap.status).toBe(200);
     expect(bootstrap.headers.get("cache-control")).toBe("no-store");
