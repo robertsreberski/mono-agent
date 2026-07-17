@@ -2054,17 +2054,6 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     details.push(`Disallowed tools: ${config.tools.disallowedTools.join(", ")}.`);
   }
   const runtimeModels = configuredRuntimeModels(config.runtime);
-  if (
-    !allowAll
-    && allowedTools.includes("NodeRepl")
-    && !config.tools.disallowedTools.includes("NodeRepl")
-    && !runtimeModels.some((model) => model.sdk === "pi")
-  ) {
-    status = "waiting";
-    details.push(
-      "NodeRepl is Pi-only, but this agent has no Pi runtime route — the tool will not be exposed.",
-    );
-  }
   const directCodexModels = runtimeModels
     .filter((model) => model.sdk === "codex")
     .map(referenceOf);

@@ -29,7 +29,7 @@ If you set no `tools` block, or omit `allowedTools`, the agent can call **every*
 
 An explicit empty list is still expressible and still meaningful: `"allowedTools": []` means the agent can hold a conversation but cannot read files, run commands, or send proactively. [`validate` / `doctor`](/observability/cli-reference/#validate) reports that as `waiting` (never a silent `ok`) so an accidental empty list surfaces, while allow-all reports `All tools allowed.`
 
-In guided init, **Allow all tools** remains the default product choice. Pi/Claude flows explicitly name the resulting code-execution, file, web, and enabled channel-send surface before accepting it. All-Pi route chains also offer the Pi-only `NodeRepl` checkbox. If no enforceable sandbox constrains that runtime, a second confirmation is required before continuing; the review never presents allow-all as a risk-free default. Direct Codex skips the tool and mono-srt prompts because normal runs require exact allow-all and use the Codex-native network-off workspace sandbox.
+In guided init, **Allow all tools** remains the default product choice. Pi/Claude flows explicitly name the resulting code-execution, file, web, and enabled channel-send surface before accepting it. If no enforceable sandbox constrains that runtime, a second confirmation is required before continuing; the review never presents allow-all as a risk-free default. Direct Codex skips the tool and mono-srt prompts because normal runs require exact allow-all and use the Codex-native network-off workspace sandbox.
 
 :::note
 Allow-all is the **config** default, not a programmatic one. For code-defined agents built directly on `@mono-agent/agent-harness`, the no-config safety net is the opposite: `failClosedToolPolicy()` returns `{ allowedTools: [], disallowedTools: [] }` — an empty, fail-closed policy — so a harness constructed with no policy starts with zero tools until you pass one. The allow-all default lives in the config loader, not the harness.
@@ -85,11 +85,9 @@ The example above keeps allow-all (every tool stays available) but denies `Bash`
 
 These are the names recognized for built-in runtime tools (coverage: `config`, gated by this policy):
 
-Common managed built-ins: `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `WebFetch`, `WebSearch`.
+Managed built-ins: `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`. They are supplied through the Pi bridge; provider-owned routes use their documented native tool surfaces.
 
-Pi additionally exposes `NodeRepl`, which evaluates JavaScript in one REPL child per run. A specific `NodeRepl` allowlist entry has no effect on a non-Pi route; `validate` reports `waiting` when the agent has no Pi route at all.
-
-Code run by `Bash` or Pi's `NodeRepl` is further constrained by the [sandbox](/tools/sandbox/) (filesystem scopes and network policy) when `sandbox.mode` is `native`. The allowlist controls *whether* a tool exists; the sandbox controls *what it can reach*. See [Tools and guards](/runtime/tools-and-guards/#noderepl-pi-only).
+`NodeRepl` evaluates JavaScript in one REPL child per run. Code run by `Bash` or `NodeRepl` is further constrained by the [sandbox](/tools/sandbox/) (filesystem scopes and network policy) when `sandbox.mode` is `native`. The allowlist controls *whether* a tool exists; the sandbox controls *what it can reach*. See [Tools and guards](/runtime/tools-and-guards/#noderepl).
 
 ## Adapter send tools
 

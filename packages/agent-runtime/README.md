@@ -675,13 +675,13 @@ Returns:
 
 ## Built-in tools
 
-The agent kernel's common managed tools are `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `WebFetch`, and `WebSearch`. Pi runs additionally expose `NodeRepl({ code })`, backed by one lazily started Node.js REPL child per run. You select them via `allowedTools`. Tool implementations honor:
+The agent kernel's managed tools are `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `NodeRepl`, `WebFetch`, and `WebSearch`. `NodeRepl({ code })` is backed by one lazily started Node.js REPL child per run. You select them via `allowedTools`. Tool implementations honor:
 
 - `cwd` (required for path-based tools)
 - The runtime context's `workspace` / `repoRoot` allow-list (paths outside both, plus `/tmp` and `process.cwd()`, are rejected)
 - Output truncation with optional artifact persistence (`{toolArtifactDir}/tool-output/{runId}/...` when `toolArtifactDir` is configured)
 
-`NodeRepl` uses Node's default `node:repl` evaluator, so variables, `_`, `_error`, and loaded modules persist across calls in the same Pi run. It supports multiline input and top-level `await`, resolves workspace-installed packages, and is closed with the run. Its child is prepared through the same sandbox seam as `Bash`; abort, the fixed 120-second timeout, child exit, or hard output overflow resets the session. It deliberately has no session ids, persistent history, terminal commands, or package-install surface.
+`NodeRepl` uses Node's default `node:repl` evaluator, so variables, `_`, `_error`, and loaded modules persist across calls in the same run. It supports multiline input and top-level `await`, resolves workspace-installed packages, and is closed with the run. Its child is prepared through the same sandbox seam as `Bash`; abort, the fixed 120-second timeout, child exit, or hard output overflow resets the session. It deliberately has no session ids, persistent history, terminal commands, or package-install surface.
 
 Override or extend the tool surface by passing `mcpServers` for MCP-backed tools.
 

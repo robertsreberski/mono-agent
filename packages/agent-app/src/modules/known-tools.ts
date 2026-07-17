@@ -9,7 +9,7 @@ import { ALLOW_ALL_TOOLS } from "@mono-agent/config";
 /** Re-export the allow-all sentinel so agent-app callers share one canonical value. */
 export { ALLOW_ALL_TOOLS };
 
-/** Built-in tools gated by `tools.allowedTools` (pi-bridge.js). */
+/** Mono-agent-managed built-ins gated by `tools.allowedTools` (pi-bridge.js). */
 export const BUILTIN_TOOL_NAMES = [
   "Read",
   "Write",
@@ -21,9 +21,6 @@ export const BUILTIN_TOOL_NAMES = [
   "WebFetch",
   "WebSearch",
 ] as const;
-
-/** Built-ins only exposed by the Pi runtime. */
-export const PI_ONLY_BUILTIN_TOOL_NAMES = ["NodeRepl"] as const;
 
 /** App-owned tools injected by the configured host and governed by tool policy. */
 export const APP_TOOL_NAMES = [

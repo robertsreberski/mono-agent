@@ -175,7 +175,7 @@ const orchestrator = await createConfiguredAgentResponder({
 
 ## 9. Sandboxed code agent (loopback only, deny .env)
 **For:** a security team deploying an internal code assistant.
-**Goal:** read repos + run Bash or Pi's run-scoped NodeRepl inside the native srt sandbox with loopback-only network access and protected secrets.
+**Goal:** read repos + run Bash or run-scoped NodeRepl inside the native srt sandbox with loopback-only network access and protected secrets.
 **Features:** `sandbox.mode`, `sandbox.network-policy`, `sandbox.filesystem-scopes`, `sandbox.fallback`, `tool-policy.allow-all`, `memory.journal`.
 
 ```json
