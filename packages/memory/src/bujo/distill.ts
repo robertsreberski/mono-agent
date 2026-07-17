@@ -1,7 +1,4 @@
 import type { MemoryType } from "../store/index.js";
-import type { LlmComplete } from "./llm.js";
-import { parseJsonLoose } from "./json.js";
-import { MemoryModelError } from "./model-error.js";
 
 export interface CandidateMemory {
   readonly type: MemoryType;          // task | event | note
@@ -16,28 +13,6 @@ export const MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS = 160;
 export const MAX_RECONCILIATION_TEXT_CODE_POINTS = 280;
 
 type CandidateTextPath = "capture" | "reconcile";
-
-const PROMPT = (text: string) => `Extract durable memories from the text below as a JSON array.
-Each item: {"type":"task|event|note","text":"<one atomic sentence>","salience":0..1,"isInsight":true|false}.
-Rules: one fact per item; <=${MAX_CAPTURE_CANDIDATE_TEXT_CODE_POINTS} Unicode code points; omit chit-chat; salience reflects long-term importance; isInsight=true only for synthesized higher-level conclusions. Return ONLY the JSON array.
-
-TEXT:
-${text}`;
-
-export async function distill(text: string, llm: LlmComplete): Promise<CandidateMemory[]> {
-  if (text.trim().length === 0) return [];
-  let raw: string;
-  try {
-    raw = await llm.complete(PROMPT(text), { label: "capture:distill" });
-  } catch (cause) {
-    // Surface model outages (Ollama down, timeout, 5xx) instead of returning [] — an empty result is
-    // indistinguishable from "nothing worth remembering", which is exactly how a dead model hides.
-    throw new MemoryModelError("llm", "distill", cause);
-  }
-  const parsed = parseJsonLoose<unknown[]>(raw);
-  if (!Array.isArray(parsed)) return [];
-  return parsed.flatMap((it) => normalizeCandidate(it));
-}
 
 const VALID_TYPES = new Set<string>(["task", "event", "note"]);
 

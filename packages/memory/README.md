@@ -6,7 +6,7 @@ Category: `context`
 
 ## Responsibility
 
-Local memory building blocks published as one package with explicit subpaths. `@mono-agent/memory/store` owns the SQLite substrate, schema, FTS5/sqlite-vec hybrid recall, and rebuildable record database. `@mono-agent/memory/search` owns embedding providers, circuit-breaking, chunk gathering, and the in-memory cosine vector index. `@mono-agent/memory/bujo` owns the Bullet-Journal memory engine: markdown grammar, canonical daily files, tier-aware capture/recall, entity graph and replay projections, reflection, migration, and the `memory-bujo` maintenance CLI.
+Local memory building blocks published as one package with explicit subpaths. `@mono-agent/memory/store` owns the SQLite substrate, schema, FTS5/sqlite-vec hybrid recall, and rebuildable record database. `@mono-agent/memory/search` owns embedding providers and circuit-breaking for that store. `@mono-agent/memory/bujo` owns the Bullet-Journal memory engine: markdown grammar, canonical daily files, tier-aware capture/recall, entity graph and replay projections, reflection, migration, and the `memory-bujo` maintenance CLI.
 
 The shared `MemoryBlock`, `MemoryStore`, and `MemoryWriteResult` contracts live in `@mono-agent/agent-contracts`. The store subpath re-exports them for local-store consumers, but `@mono-agent/agent-contracts` is the source of truth.
 
@@ -331,10 +331,8 @@ createBujoMemoryStore
 createIdFactory
 createOllamaLlm
 dailyFilePath
-distill
 extractCapturePlan
 extractCapturePlanStrict
-extractEntities
 inspectCompletedTurnIntake
 isConversationRelativeQuery
 migrate
@@ -372,20 +370,13 @@ CircuitBreakerEmbeddingProvider
 EmbeddingProvider
 EmbeddingProviderConfig
 EmbeddingProviderKind
-EntityLike
 LmStudioEmbeddingProvider
-MemoryChunk
 MemorySearchError
 MemorySearchErrorCode
 OllamaEmbeddingProvider
 OpenAIEmbeddingProvider
-SearchHit
-VectorMemoryIndex
-VectorMemoryIndexOptions
 createCircuitBreakerEmbeddingProvider
 createEmbeddingProvider
-createVectorMemoryIndex
-gatherMemoryChunks
 ```
 
 **`@mono-agent/memory/store`**

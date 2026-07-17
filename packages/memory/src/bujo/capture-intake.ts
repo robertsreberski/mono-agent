@@ -1969,12 +1969,6 @@ function retryDelay(attempt: number, baseMs: number, maxMs: number): number {
   return Math.min(maxMs, baseMs * (2 ** Math.min(Math.max(0, attempt - 1), 20)));
 }
 
-function compareLocated(left: LocatedRecord<PendingRecord>, right: LocatedRecord<PendingRecord>): number {
-  return left.record.nextAttemptAt.localeCompare(right.record.nextAttemptAt)
-    || left.record.admittedAt.localeCompare(right.record.admittedAt)
-    || left.record.id.localeCompare(right.record.id);
-}
-
 function positiveInteger(value: number | undefined, fallback: number, label: string): number {
   const selected = value ?? fallback;
   if (!Number.isInteger(selected) || selected <= 0) {
