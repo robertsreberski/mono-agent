@@ -1,5 +1,22 @@
 # Release notes
 
+## 0.11.6 — Configurable A2A request bodies (2026-07-17)
+
+### Added
+
+- A2A providers can set `provider.maxRequestBytes` or
+  `MONO_AGENT_A2A_MAX_REQUEST_BYTES` when authenticated task envelopes exceed
+  the SDK's default request-body size.
+- Configured JSON-RPC and REST routes authenticate before parsing and return
+  protocol-shaped errors for oversized or malformed JSON bodies.
+
+### Compatibility
+
+- Omitting the setting preserves the A2A SDK default. Configured values must be
+  integers from 1,024 through 100,000,000 bytes.
+- All 21 catalog-publishable packages move together to 0.11.6. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.11.5 — Transient tool activity without thought clutter (2026-07-17)
 
 ### Added
