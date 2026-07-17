@@ -46,6 +46,7 @@ describe("auditRecordedRuns", () => {
       provider_unavailable_exhausted: 1,
       provider_auth: 0,
       skipped_capability_mismatch: 0,
+      context_limit: 0,
       usage_limit: 1,
       process_death: 2,
       runtime_error: 1,

@@ -8,7 +8,7 @@
  */
 
 /**
- * @typedef {"spawn" | "timeout" | "stall" | "usage_limit" | "invalid_result"
+ * @typedef {"spawn" | "timeout" | "stall" | "context_limit" | "usage_limit" | "invalid_result"
  *   | "invalid_delegation" | "tool_failure" | "provider_unavailable"
  *   | "provider_unavailable_exhausted" | "provider_auth"
  *   | "skipped_capability_mismatch" | "cancelled" | "cancelled_user"
@@ -41,6 +41,7 @@ export const FAILURE_KINDS = [
   "spawn",
   "timeout",
   "stall",
+  "context_limit",
   "usage_limit",
   "invalid_result",
   "invalid_delegation",
@@ -69,7 +70,8 @@ export const FAILURE_KINDS = [
   "session_busy",
 ];
 
-const USAGE_LIMIT_RE = /(rate limit|usage limit|max tokens|max turns|context length|too many tokens)/i;
+const CONTEXT_LIMIT_RE = /(?:context[_ ](?:length|window|budget)|token[_ ]limit|(?:input|prompt)(?:[_ ]tokens?)?[_ ](?:is[_ ])?too[_ ]long|(?:input|prompt|request)(?:[_ ]tokens?)?[_ ]exceeds?[_ ](?:the[_ ])?(?:context|maximum|max|limit|allowed[_ ]size)|too[_ ]many[_ ](?:input[_ ])?tokens?|tokens?[_ ]exceed(?:s|ed)?[_ ](?:the[_ ])?(?:context|maximum|max|(?:model[_ ])?limit))/i;
+const USAGE_LIMIT_RE = /(rate limit|usage limit|max(?:imum)?(?:[_ ]output)?[_ ]tokens?|max turns)/i;
 const PROVIDER_AUTH_RE = /(no api key|missing api key|api key required|invalid api key|incorrect api key|authentication|authorization|not authorized|forbidden|oauth (?:refresh|auth|authentication|token).*failed|credential store (?:read|modify) failed|401|403)/i;
 // Mirrors the conservative connection-error/refused/failed alternation added to
 // RETRYABLE_PROVIDER_RE / retryableProviderSubkind below for pi 0.80's terse
@@ -94,6 +96,21 @@ export const PROVIDER_ABORT_RE = /\b(?:terminated|aborted before final output|ab
  */
 export function isProviderAuthFailureText(text = "") {
   return PROVIDER_AUTH_RE.test(text || "");
+}
+
+/**
+ * Identify request-input/context-window overflows without conflating provider
+ * throttling or output-token ceilings. Context overflows are route-local: a
+ * fallback model may have a larger usable window, while rate/quota/max-turn
+ * failures retain the terminal `usage_limit` classification.
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function isContextLimitFailureText(text = "") {
+  const value = String(text || "");
+  if (/rate limit|too many requests/i.test(value)) return false;
+  if (/output[_ ]tokens?|output[_ ]token[_ ]limit/i.test(value)) return false;
+  return CONTEXT_LIMIT_RE.test(value);
 }
 
 function requestIdFromText(text) {
@@ -125,10 +142,17 @@ export function retryableProviderFailureInfo({
   stderrTail = "",
   failureKind = null,
 } = {}) {
+  const haystack = `${errorText || ""}\n${stderrTail || ""}`.trim();
+  if (failureKind === "context_limit") {
+    return {
+      retryable: true,
+      subkind: "context_limit",
+      requestId: requestIdFromText(haystack),
+    };
+  }
   if (failureKind && failureKind !== "provider_unavailable") {
     return { retryable: false, subkind: null, requestId: null };
   }
-  const haystack = `${errorText || ""}\n${stderrTail || ""}`.trim();
   if (!haystack) return { retryable: false, subkind: null, requestId: null };
   const requestId = requestIdFromText(haystack);
   if (NON_RETRYABLE_PROVIDER_RE.test(haystack)) {
@@ -206,6 +230,7 @@ export function classifyFailure({
   if (hint && FAILURE_KINDS.includes(hint)) return hint;
 
   const haystack = `${errorText || ""}\n${stderrTail || ""}`;
+  if (isContextLimitFailureText(haystack)) return "context_limit";
   if (USAGE_LIMIT_RE.test(haystack)) return "usage_limit";
   if (TOOL_FAILURE_RE.test(haystack)) return "tool_failure";
   if (PROVIDER_AUTH_RE.test(haystack)) return "provider_auth";

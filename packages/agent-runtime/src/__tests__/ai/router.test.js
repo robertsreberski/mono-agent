@@ -116,6 +116,44 @@ describe("createRouterRuntime — fallback on retryable", () => {
     expect(executeMock).toHaveBeenCalledTimes(2);
   });
 
+  it("falls back when the primary model still exceeds its context window after compaction", async () => {
+    executeMock
+      .mockResolvedValueOnce({
+        text: null,
+        error: "Codex error: Your input exceeds the context window of this model. Please adjust your input and try again.",
+        failureKind: "context_limit",
+        events: [],
+        cancelled: false,
+        diagnostics: {
+          context_compaction_reactive_attempted: true,
+          context_compaction_reduced: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        text: "recovered through Kimi",
+        events: [],
+        failureKind: null,
+      });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-sol" },
+        { sdk: "pi", provider: "opencode-go", model: "kimi-k2.6" },
+      ],
+    });
+
+    const result = await router.run("sys", { messages: [] });
+
+    expect(result.text).toBe("recovered through Kimi");
+    expect(result.failoverHistory).toEqual([
+      expect.objectContaining({
+        model: expect.objectContaining({ provider: "openai-codex", model: "gpt-5.6-sol" }),
+        failureKind: "context_limit",
+        retryableSubkind: "context_limit",
+      }),
+    ]);
+    expect(executeMock).toHaveBeenCalledTimes(2);
+  });
+
   it("returns the last failure with provider_unavailable_exhausted when every entry fails", async () => {
     executeMock.mockResolvedValue({
       text: null,

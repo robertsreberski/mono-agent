@@ -6,7 +6,7 @@
 // bridge DRIVES it: proactively before a turn when the running model's context
 // is near the window, and reactively (compact + single re-prompt) if a turn
 // still overflows. The window auto-tracks the model actually serving the request
-// and self-corrects from any real ceiling stated in an overflow error.
+// and learns lower effective ceilings from numeric or generic overflow errors.
 //
 // DELEGATED to pi where pi provides the primitive: the proactive trigger
 // DECISION runs through pi's shouldCompact() (via piCompactionSettings) and the
@@ -24,9 +24,13 @@
 // on the caller-owned runState.compaction.
 
 import {
+  buildSessionContext,
   calculateContextTokens,
+  compact as compactPreparedContext,
   estimateContextTokens,
+  estimateTokens,
   getLastAssistantUsage,
+  prepareCompaction,
   shouldCompact,
 } from "@earendil-works/pi-agent-core";
 import {
@@ -61,8 +65,11 @@ function liveModelContextWindow(harness, runtime) {
   return win > 0 ? win : 0;
 }
 
-function effectiveContextWindow(harness, runtime, resolved) {
-  const declared = liveModelContextWindow(harness, runtime);
+function effectiveContextWindow(harness, runtime, resolved, contextWindowOverride) {
+  const override = Number(contextWindowOverride);
+  const declared = Number.isFinite(override) && override > 0
+    ? override
+    : liveModelContextWindow(harness, runtime);
   const discovered = discoveredContextWindows.get(modelWindowKey(harness, runtime, resolved));
   if (Number.isFinite(discovered) && discovered > 0) {
     return declared > 0 ? Math.min(declared, discovered) : discovered;
@@ -97,11 +104,12 @@ function recordDiscoveredContextWindow(harness, runtime, resolved, limit) {
 // `fixedOverheadTokens` is the system-prompt + tool-schema + per-turn user
 // message overhead the provider meters but the transcript estimate (which covers
 // only session.buildContext().messages) excludes. It is added to the ESTIMATE
-// branch ONLY: the usage-based count already includes that overhead (it is what
-// the provider actually counted), so adding it there would double-count. With a
-// stale/0 usage and a seeded session the estimate branch wins, and without this
-// the trigger under-counts and the real request overflows.
-export async function estimateCurrentContextTokens(session, fixedOverheadTokens = 0) {
+// branch. The usage-based count already includes the prior request's system/tool
+// overhead, but a proactive check runs before the current user turn is appended;
+// `usageIncrementTokens` adds that new turn without double-counting the stable
+// system/tool portion. With stale/0 usage and a seeded session the estimate
+// branch wins, and without this the trigger under-counts the real request.
+export async function estimateCurrentContextTokens(session, fixedOverheadTokens = 0, usageIncrementTokens = 0) {
   let usageTokens = 0;
   let rawTokens = 0;
   try {
@@ -110,31 +118,204 @@ export async function estimateCurrentContextTokens(session, fixedOverheadTokens 
   } catch { /* ignore — fall back to the transcript estimate */ }
   try {
     const context = await session.buildContext();
-    rawTokens = Number(estimateContextTokens(context?.messages || []).tokens) || 0;
+    const messages = context?.messages || [];
+    const piEstimate = estimateContextTokens(messages);
+    // When a valid provider usage record exists, Pi adds estimates for messages
+    // trailing that record. Prefer that request-shaped count over the bare entry
+    // usage gathered above.
+    if (Number(piEstimate.usageTokens) > 0) {
+      usageTokens = Number(piEstimate.tokens) || usageTokens;
+    }
+    // Keep the independent transcript branch genuinely usage-free. Calling
+    // estimateContextTokens() here would fold provider usage in a second time,
+    // then adding fixed overhead would double-count prior system/tool tokens.
+    rawTokens = messages.reduce((total, message) => total + (Number(estimateTokens(message)) || 0), 0);
   } catch { /* ignore — usage-based estimate stands */ }
   // Apply the fixed overhead to the transcript estimate only (see note above).
   rawTokens += Number(fixedOverheadTokens) || 0;
-  if (usageTokens === 0 && rawTokens === 0) return { tokens: 0, source: "unavailable" };
-  return usageTokens >= rawTokens
-    ? { tokens: usageTokens, source: "usage" }
+  const currentUsageTokens = usageTokens > 0 ? usageTokens + (Number(usageIncrementTokens) || 0) : 0;
+  if (currentUsageTokens === 0 && rawTokens === 0) return { tokens: 0, source: "unavailable" };
+  return currentUsageTokens >= rawTokens
+    ? { tokens: currentUsageTokens, source: "usage" }
     : { tokens: rawTokens, source: "estimate" };
+}
+
+// Compaction effectiveness must be measured independently of the provider's
+// last-assistant usage. That usage can describe the pre-compaction request and
+// remain attached to a retained message, making estimateContextTokens() report
+// the old large value even after the transcript prefix was summarized. Summing
+// pi's per-message estimator gives a stable before/after comparison over the
+// actual context the session will build next.
+async function estimateSessionMessageTokens(session) {
+  if (!session || typeof session.buildContext !== "function") return null;
+  try {
+    const context = await session.buildContext();
+    return (context?.messages || []).reduce((total, message) => total + (Number(estimateTokens(message)) || 0), 0);
+  } catch {
+    return null;
+  }
+}
+
+function estimateBuiltContextTokens(branchEntries) {
+  try {
+    return buildSessionContext(branchEntries).messages.reduce(
+      (total, message) => total + (Number(estimateTokens(message)) || 0),
+      0,
+    );
+  } catch {
+    return null;
+  }
+}
+
+function piSummaryGenerationLimit(reserveTokens, isSplitTurn) {
+  return Math.floor(0.8 * reserveTokens) + (isSplitTurn ? Math.floor(0.5 * reserveTokens) : 0);
+}
+
+/**
+ * Pi derives its summary output limit from reserveTokens. A normal compaction
+ * uses floor(0.8 * reserve); a split-turn compaction may generate both that
+ * history summary and floor(0.5 * reserve) for the turn prefix. Return the
+ * largest reserve whose derived generation budget does not exceed the public
+ * summaryMaxTokens setting.
+ * @param {number} summaryMaxTokens
+ * @param {boolean} isSplitTurn
+ */
+export function piSummaryReserveTokens(summaryMaxTokens, isSplitTurn) {
+  const budget = Math.max(1, Math.floor(Number(summaryMaxTokens) || 1));
+  const factor = isSplitTurn ? 1.3 : 0.8;
+  let reserve = Math.max(1, Math.floor(budget / factor));
+  while (piSummaryGenerationLimit(reserve + 1, isSplitTurn) <= budget) reserve += 1;
+  while (reserve > 1 && piSummaryGenerationLimit(reserve, isSplitTurn) > budget) reserve -= 1;
+  return reserve;
+}
+
+function previewCompactedContext(branchEntries, result) {
+  const previewEntry = {
+    type: "compaction",
+    id: "mono-agent-compaction-preview",
+    parentId: branchEntries.at(-1)?.id || null,
+    timestamp: new Date().toISOString(),
+    summary: result.summary,
+    firstKeptEntryId: result.firstKeptEntryId,
+    tokensBefore: result.tokensBefore,
+    details: result.details,
+    fromHook: true,
+  };
+  return estimateBuiltContextTokens([...branchEntries, previewEntry]);
 }
 
 // Run a single guarded compaction. Requires the harness idle (callers
 // waitForIdle first). Never throws — classifies AgentHarnessError into a warning
 // and reports back whether anything was compacted. Fires onCompactionRecorded on
 // success so a host can persist the compaction row.
-export async function tryCompact(harness, { trigger, onEvent, runtimeWarnings, onCompactionRecorded, runId, model }) {
+export async function tryCompact(harness, {
+  trigger,
+  onEvent,
+  runtimeWarnings,
+  onCompactionRecorded,
+  runId,
+  model,
+  session,
+  policy,
+}) {
+  const adaptivePolicy = resolveAgentCompactionPolicy({}, {
+    contextWindow: typeof harness?.getModel === "function" ? harness.getModel()?.contextWindow : undefined,
+  });
+  const effectivePolicy = { ...adaptivePolicy, ...(policy || {}) };
+  /** @type {null | {kind: string, tokensBefore?: number|null, tokensAfter?: number|null, savings?: number|null, error?: any}} */
+  let hookDecision = null;
+  let removeHook = null;
   try {
+    if (typeof harness?.on !== "function") {
+      throw new Error("Pi AgentHarness does not expose session_before_compact hooks");
+    }
+    removeHook = harness.on("session_before_compact", async (event) => {
+      try {
+        let settings = {
+          enabled: true,
+          reserveTokens: piSummaryReserveTokens(effectivePolicy.summaryMaxTokens, false),
+          keepRecentTokens: effectivePolicy.keepRecentTokens,
+        };
+        let prepared = prepareCompaction(event.branchEntries, settings);
+        if (prepared.ok === false) {
+          hookDecision = { kind: "failed", error: prepared.error };
+          return { cancel: true };
+        }
+        if (!prepared.value) {
+          hookDecision = { kind: "nothing_to_compact" };
+          return { cancel: true };
+        }
+        if (prepared.value.isSplitTurn) {
+          settings = {
+            ...settings,
+            reserveTokens: piSummaryReserveTokens(effectivePolicy.summaryMaxTokens, true),
+          };
+          prepared = prepareCompaction(event.branchEntries, settings);
+          if (prepared.ok === false) {
+            hookDecision = { kind: "failed", error: prepared.error };
+            return { cancel: true };
+          }
+          if (!prepared.value) {
+            hookDecision = { kind: "nothing_to_compact" };
+            return { cancel: true };
+          }
+        }
+        const compacted = await compactPreparedContext(
+          prepared.value,
+          harness.models,
+          harness.getModel(),
+          event.customInstructions,
+          event.signal,
+          typeof harness.getThinkingLevel === "function" ? harness.getThinkingLevel() : undefined,
+        );
+        if (compacted.ok === false) {
+          hookDecision = { kind: "failed", error: compacted.error };
+          return { cancel: true };
+        }
+        const tokensBefore = estimateBuiltContextTokens(event.branchEntries);
+        const tokensAfter = previewCompactedContext(event.branchEntries, compacted.value);
+        const savings = tokensBefore === null || tokensAfter === null ? null : tokensBefore - tokensAfter;
+        if (savings === null || savings <= 0) {
+          hookDecision = { kind: "not_reducible", tokensBefore, tokensAfter, savings };
+          return { cancel: true };
+        }
+        if (trigger === "proactive" && savings < effectivePolicy.compactionMinSavingsTokens) {
+          hookDecision = { kind: "insufficient_savings", tokensBefore, tokensAfter, savings };
+          return { cancel: true };
+        }
+        hookDecision = { kind: "accepted", tokensBefore, tokensAfter, savings };
+        return { compaction: compacted.value };
+      } catch (error) {
+        hookDecision = { kind: "failed", error };
+        return { cancel: true };
+      }
+    });
     const result = await harness.compact();
+    const measuredTokensBefore = hookDecision?.tokensBefore ?? null;
     const tokensBefore = Number(result?.tokensBefore) || null;
+    const measuredTokensAfter = await estimateSessionMessageTokens(session);
+    const tokensAfter = measuredTokensAfter ?? hookDecision?.tokensAfter ?? null;
+    const reduced = measuredTokensBefore === null || tokensAfter === null
+      ? null
+      : tokensAfter < measuredTokensBefore;
     onEvent?.({
       type: "runtime_warning",
       warning_kind: "context_compaction_applied",
       source: "pi",
       trigger,
       tokens_before: tokensBefore,
+      tokens_after: tokensAfter,
+      reduced,
     });
+    if (reduced === false) {
+      runtimeWarnings?.push({
+        warning_kind: "context_compaction_not_reducible",
+        source: "pi",
+        trigger,
+        tokens_before: measuredTokensBefore,
+        tokens_after: tokensAfter,
+      });
+    }
     if (typeof onCompactionRecorded === "function") {
       try {
         onCompactionRecorded({
@@ -149,17 +330,52 @@ export async function tryCompact(harness, { trigger, onEvent, runtimeWarnings, o
           created_at: Date.now(),
         });
       } catch (err) {
-        runtimeWarnings.push({
+        runtimeWarnings?.push({
           warning_kind: "context_compaction_record_failed",
           source: "pi",
           message: err?.message || String(err),
         });
       }
     }
-    return { applied: true, tokensBefore, nothingToCompact: false };
+    return { applied: true, tokensBefore, tokensAfter, reduced, nothingToCompact: false };
   } catch (err) {
-    const message = err?.message || String(err);
-    const code = err?.code;
+    if (hookDecision?.kind === "not_reducible" || hookDecision?.kind === "insufficient_savings") {
+      const warningKind = hookDecision.kind === "not_reducible"
+        ? "context_compaction_not_reducible"
+        : "context_compaction_insufficient_savings";
+      runtimeWarnings?.push({
+        warning_kind: warningKind,
+        source: "pi",
+        trigger,
+        tokens_before: hookDecision.tokensBefore ?? null,
+        tokens_after: hookDecision.tokensAfter ?? null,
+        savings_tokens: hookDecision.savings ?? null,
+        ...(hookDecision.kind === "insufficient_savings"
+          ? { minimum_savings_tokens: effectivePolicy.compactionMinSavingsTokens }
+          : {}),
+      });
+      return {
+        applied: false,
+        tokensBefore: hookDecision.tokensBefore ?? null,
+        tokensAfter: hookDecision.tokensAfter ?? null,
+        reduced: false,
+        nothingToCompact: false,
+      };
+    }
+    if (hookDecision?.kind === "nothing_to_compact") {
+      runtimeWarnings?.push({
+        warning_kind: "context_compaction_nothing_to_compact",
+        source: "pi",
+        trigger,
+        message: "Nothing to compact",
+      });
+      return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact: true };
+    }
+    const effectiveError = hookDecision?.kind === "failed" && hookDecision.error
+      ? hookDecision.error
+      : err;
+    const message = effectiveError?.message || String(effectiveError);
+    const code = effectiveError?.code;
     const nothingToCompact = code === "compaction" && /nothing to compact/i.test(message);
     const warningKind = nothingToCompact
       ? "context_compaction_nothing_to_compact"
@@ -168,8 +384,10 @@ export async function tryCompact(harness, { trigger, onEvent, runtimeWarnings, o
         : code === "busy"
           ? "context_compaction_busy"
           : "context_compaction_failed";
-    runtimeWarnings.push({ warning_kind: warningKind, source: "pi", trigger, message });
-    return { applied: false, tokensBefore: null, nothingToCompact };
+    runtimeWarnings?.push({ warning_kind: warningKind, source: "pi", trigger, message });
+    return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact };
+  } finally {
+    removeHook?.();
   }
 }
 
@@ -211,17 +429,14 @@ export function piCompactionSettings(policy) {
  * Resolve the compaction policy against the LIVE model's context window
  * (auto-recognized from the model actually serving the request, lowered by any
  * ceiling learned from a prior overflow). A positive `contextWindowOverride`
- * (from the typed `compaction` policy object) replaces the auto-recognized
- * window — it is not a legacy `settings` key, so it is applied here directly
- * rather than through the settings shim. Drives the proactive trigger +
- * reactive recovery.
+ * (from the typed `compaction` policy object) replaces provider metadata, but
+ * process-local overflow evidence can still lower it. It is not a legacy
+ * `settings` key, so it is applied here directly rather than through the
+ * settings shim. Drives the proactive trigger + reactive recovery.
  * @param {{harness: any, runtime: any, resolved: any, settings: any, contextWindowOverride?: number}} params
  */
 export function resolveLiveCompactionPolicy({ harness, runtime, resolved, settings, contextWindowOverride }) {
-  const overrideWindow = Number(contextWindowOverride);
-  const contextWindow = Number.isFinite(overrideWindow) && overrideWindow > 0
-    ? overrideWindow
-    : effectiveContextWindow(harness, runtime, resolved);
+  const contextWindow = effectiveContextWindow(harness, runtime, resolved, contextWindowOverride);
   return resolveAgentCompactionPolicy(settings || {}, { contextWindow });
 }
 
@@ -252,9 +467,8 @@ export async function runProactiveCompaction(runState, {
   // sends to the provider, then folded into the raw estimate so the trigger
   // reflects the real request size. ON by default (this corrects a real
   // undercount that lets seeded sessions overflow); set
-  // compaction.fixedOverheadEnabled:false (or the deprecated
-  // agent_compaction_fixed_overhead_enabled:false) restores the prior
-  // transcript-only trigger (overhead = 0). The flag is already resolved onto
+  // compaction.fixedOverheadEnabled:false to restore the prior transcript-only
+  // trigger (overhead = 0). The flag is already resolved onto
   // policy.fixedOverheadEnabled, so read it there rather than re-sniffing the
   // raw settings bag. See estimateFixedOverheadTokens.
   //
@@ -276,7 +490,26 @@ export async function runProactiveCompaction(runState, {
       messages: [{ role: "user", content: perTurnContent }],
     })
     : { systemPromptTokens: 0, toolSchemaTokens: 0, userMessageTokens: 0, fixedOverheadTokens: 0 };
-  const est = await estimateCurrentContextTokens(runState.session, fixedOverhead.fixedOverheadTokens);
+  const est = await estimateCurrentContextTokens(
+    runState.session,
+    fixedOverhead.fixedOverheadTokens,
+    fixedOverhead.userMessageTokens,
+  );
+  // Record the complete request estimate on every proactive check, including
+  // below-threshold runs. This is also the failed-request baseline used when a
+  // provider reports a generic overflow without a numeric ceiling.
+  Object.assign(runState.compaction.diagnostics, {
+    context_compaction_estimate_source: est.source,
+    context_window: policy.contextWindow,
+    context_fixed_overhead_tokens: fixedOverhead.fixedOverheadTokens,
+    context_system_prompt_tokens: fixedOverhead.systemPromptTokens,
+    context_tool_schema_tokens: fixedOverhead.toolSchemaTokens,
+    context_user_message_tokens: fixedOverhead.userMessageTokens,
+    context_compaction_trigger_tokens: policy.triggerTokens,
+    context_request_estimate_tokens: est.tokens,
+    // Retained for compatibility with the diagnostics introduced in PR #489.
+    context_transcript_estimate: est.tokens,
+  });
   // DELEGATED trigger decision: pi's shouldCompact() with the policy mapped to
   // pi CompactionSettings (see piCompactionSettings — exact `>=`-preserving
   // mapping). Equivalent to the prior `est.tokens >= policy.triggerTokens`.
@@ -290,24 +523,19 @@ export async function runProactiveCompaction(runState, {
         onCompactionRecorded: options.onCompactionRecorded,
         runId: options.runId,
         model: reference,
+        session: runState.session,
+        policy,
+      });
+      Object.assign(runState.compaction.diagnostics, {
+        context_compaction_tokens_before: res.tokensBefore,
+        context_compaction_tokens_after: res.tokensAfter,
+        context_compaction_reduced: res.reduced,
       });
       if (res.applied) {
         runState.compaction.applied = true;
         runState.compaction.compactedThisRun = true;
         Object.assign(runState.compaction.diagnostics, {
           context_compaction_proactive: true,
-          context_compaction_tokens_before: res.tokensBefore,
-          context_compaction_estimate_source: est.source,
-          context_window: policy.contextWindow,
-          // Additive observability (A4): the overhead components folded into
-          // the trigger comparison, the trigger itself (read back by
-          // isLikelyContextTermination but otherwise never set), and the
-          // transcript-plus-overhead estimate that fired this compaction.
-          context_fixed_overhead_tokens: fixedOverhead.fixedOverheadTokens,
-          context_system_prompt_tokens: fixedOverhead.systemPromptTokens,
-          context_tool_schema_tokens: fixedOverhead.toolSchemaTokens,
-          context_compaction_trigger_tokens: policy.triggerTokens,
-          context_transcript_estimate: est.tokens,
         });
         // Compaction collapses the transcript prefix, so the pre-run baseline
         // no longer aligns. Re-anchor it to the compacted length so the run's
@@ -357,9 +585,24 @@ export async function runReactiveCompaction(runState, {
   const provisionalError = normalizePiErrorMessage(provisionalRaw);
   if (provisionalError && isReactiveCompactionCandidate(provisionalError, c.diagnostics)) {
     c.reactiveAttempted = true;
-    // Learn the real ceiling from the error so future runs trigger
-    // proactively at it even when the configured contextWindow was wrong.
-    recordDiscoveredContextWindow(harness, runtime, resolved, parseContextLimitFromError(provisionalError));
+    c.diagnostics.context_compaction_reactive_attempted = true;
+    // Learn the real ceiling from the error so future runs trigger proactively
+    // even when provider metadata was wrong. Numeric limits are authoritative;
+    // a generic overflow lowers the process-local ceiling to 90% of the failed
+    // request estimate so the next run creates meaningful headroom.
+    const statedLimit = parseContextLimitFromError(provisionalError);
+    const failedEstimate = await estimateCurrentContextTokens(
+      runState.session,
+      Number(c.diagnostics.context_fixed_overhead_tokens) || 0,
+    );
+    const learnedLimit = statedLimit
+      || (failedEstimate.tokens > 0 ? Math.floor(failedEstimate.tokens * 0.90) : null);
+    recordDiscoveredContextWindow(harness, runtime, resolved, learnedLimit);
+    Object.assign(c.diagnostics, {
+      context_failed_request_estimate_tokens: failedEstimate.tokens,
+      context_learned_window: learnedLimit,
+      context_learned_window_source: statedLimit ? "provider" : (learnedLimit ? "generic_overflow" : "unavailable"),
+    });
     // A second compaction immediately after a fresh proactive one is almost
     // always "nothing to compact"; skip it and surface the original error.
     if (!c.compactedThisRun) {
@@ -371,22 +614,31 @@ export async function runReactiveCompaction(runState, {
         onCompactionRecorded: options.onCompactionRecorded,
         runId: options.runId,
         model: reference,
+        session: runState.session,
+        policy: c.policy,
+      });
+      Object.assign(c.diagnostics, {
+        context_compaction_tokens_before: res.tokensBefore,
+        context_compaction_tokens_after: res.tokensAfter,
+        context_compaction_reduced: res.reduced,
       });
       if (res.applied) {
         c.applied = true;
         c.compactedThisRun = true;
         Object.assign(c.diagnostics, {
           context_compaction_reactive: true,
-          context_compaction_tokens_before: res.tokensBefore,
         });
         // Re-anchor the transcript baseline to the compacted length so the
         // re-prompt's turn (and its stopReason/usage) slices out correctly.
         runState.sessionBaselineCount = (await runState.session.buildContext()).messages.length;
-        // Re-prompt ONCE in the now-compacted session. The trailing user turn
-        // is already persisted, so a fresh prompt continues against it.
-        const rerun = await runHarnessPrompt(harness, promptText, promptImages);
-        runError = rerun.runError;
-        state = await captureState();
+        // Re-prompt ONCE only after a verified positive reduction. Re-sending
+        // an unchanged or unmeasurable oversized request only repeats the same
+        // provider error.
+        if (res.reduced === true) {
+          const rerun = await runHarnessPrompt(harness, promptText, promptImages);
+          runError = rerun.runError;
+          state = await captureState();
+        }
       }
     }
   }

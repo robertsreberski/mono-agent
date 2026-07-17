@@ -199,6 +199,18 @@ describe("failureKindForPiError", () => {
     expect(failureKindForPiError("No API key for provider: openai-codex", {}, {})).toBe("provider_auth");
     expect(failureKindForPiError("OAuth refresh failed for openai-codex", {}, {})).toBe("provider_auth");
   });
+
+  it("classifies the OpenAI Codex input overflow as context_limit", () => {
+    expect(failureKindForPiError(
+      "Codex error: Your input exceeds the context window of this model. Please adjust your input and try again.",
+      {},
+      {},
+    )).toBe("context_limit");
+  });
+
+  it("keeps max-turn termination in usage_limit", () => {
+    expect(failureKindForPiError("Maximum turns reached", {}, { maxTurnsHit: true })).toBe("usage_limit");
+  });
 });
 
 let faux = null;
@@ -957,7 +969,7 @@ describe("pi-native auto-compaction", () => {
     // surfaces the overflow WITHOUT a second compaction or a re-prompt.
     expect(result.diagnostics.context_compaction_proactive).toBe(true);
     expect(result.error).toBe("Your input exceeds the context window of this model.");
-    expect(result.failureKind).toBe("usage_limit");
+    expect(result.failureKind).toBe("context_limit");
     expect(providerCalls).toBe(2); // summary + main overflow; no re-prompt
   });
 
@@ -978,7 +990,7 @@ describe("pi-native auto-compaction", () => {
       resolvePiApiKey: async () => "faux-key",
       piSessionsRoot: sessionsRoot,
     }));
-    expect(result.failureKind).toBe("usage_limit");
+    expect(result.failureKind).toBe("context_limit");
     // overflow + summary + ONE re-prompt overflow = 3 calls; never the 4th.
     expect(providerCalls).toBe(3);
     expect(result.diagnostics.context_compaction_reactive).toBe(true);
@@ -1036,12 +1048,12 @@ describe("pi-native auto-compaction", () => {
   // UNDER the trigger) so the ONLY thing that flips proactive compaction on is the
   // overhead from a large system prompt + several tools.
   //
-  // contextWindow 100000 -> trigger 75000, keepRecent 24000. The seeded transcript
+  // contextWindow 100000 -> trigger 70000, keepRecent 10000. The seeded transcript
   // (~56k tokens) sits below the trigger but above keepRecent (so compact() has a
   // prefix to summarize). The overhead counts the system prompt (~30k tokens) +
   // tool schemas + the trailing per-turn user message ("continue", ~3 tokens) —
   // NOT the prior transcript (already summed by the raw branch). That ~30k of
-  // overhead pushes the corrected estimate (~56k + ~30k = ~86k) over 75000.
+  // overhead pushes the corrected estimate (~56k + ~30k = ~86k) over 70000.
   function overheadFixture(reference) {
     const base = setup();
     const windowed = { ...base, contextWindow: 100000 };
@@ -1080,7 +1092,7 @@ describe("pi-native auto-compaction", () => {
     expect(result.diagnostics.context_fixed_overhead_tokens).toBeGreaterThan(0);
     expect(result.diagnostics.context_system_prompt_tokens).toBeGreaterThan(0);
     expect(typeof result.diagnostics.context_tool_schema_tokens).toBe("number");
-    expect(result.diagnostics.context_compaction_trigger_tokens).toBe(75000);
+    expect(result.diagnostics.context_compaction_trigger_tokens).toBe(70000);
     expect(result.diagnostics.context_transcript_estimate)
       .toBeGreaterThanOrEqual(result.diagnostics.context_compaction_trigger_tokens);
     // Regression guard for the transcript double-count: only the TRAILING per-turn
@@ -1118,6 +1130,7 @@ describe("pi-native auto-compaction", () => {
     expect(providerCalls).toBe(1);
     expect(result.text).toBe("turn-output");
     expect(result.diagnostics.context_compaction_proactive).toBeUndefined();
-    expect(result.diagnostics.context_fixed_overhead_tokens).toBeUndefined();
+    expect(result.diagnostics.context_fixed_overhead_tokens).toBe(0);
+    expect(result.diagnostics.context_request_estimate_tokens).toBeGreaterThan(0);
   });
 });

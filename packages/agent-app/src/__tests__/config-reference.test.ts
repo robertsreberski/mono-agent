@@ -29,6 +29,13 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "runtime.effort": "string",
   "runtime.permissionMode": "string",
   "runtime.maxTurns": "integer",
+  "runtime.compaction.enabled": "boolean",
+  "runtime.compaction.triggerRatio": "number",
+  "runtime.compaction.keepRecentTokens": "integer",
+  "runtime.compaction.summaryMaxTokens": "integer",
+  "runtime.compaction.minSavingsTokens": "integer",
+  "runtime.compaction.fixedOverheadEnabled": "boolean",
+  "runtime.compaction.contextWindowOverride": "integer",
   "runtime.workspace": "string",
   "runtime.session.mode": "string",
   "runtime.session.idleTimeoutMs": "integer",
@@ -242,6 +249,40 @@ describe("config reference", () => {
     expect(schemaNode(schema, "runtime", "fallbacks").items?.properties?.effort?.enum)
       .toEqual(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
     expect(schemaNode(schema, "runtime", "routeSafety").enum).toEqual(["uniform", "per-route-native"]);
+    expect(schemaNode(schema, "runtime", "compaction", "enabled")).toMatchObject({
+      type: "boolean",
+      default: true,
+    });
+    expect(schemaNode(schema, "runtime", "compaction", "triggerRatio")).toMatchObject({
+      type: "number",
+      default: 0.7,
+      minimum: 0.2,
+      maximum: 0.95,
+    });
+    expect(schemaNode(schema, "runtime", "compaction", "keepRecentTokens")).toMatchObject({
+      type: "integer",
+      minimum: 4_000,
+      maximum: 200_000,
+    });
+    expect(schemaNode(schema, "runtime", "compaction", "summaryMaxTokens")).toMatchObject({
+      type: "integer",
+      minimum: 1_000,
+      maximum: 64_000,
+    });
+    expect(schemaNode(schema, "runtime", "compaction", "minSavingsTokens")).toMatchObject({
+      type: "integer",
+      minimum: 0,
+      maximum: 500_000,
+    });
+    expect(schemaNode(schema, "runtime", "compaction", "fixedOverheadEnabled")).toMatchObject({
+      type: "boolean",
+      default: true,
+    });
+    expect(schemaNode(schema, "runtime", "compaction", "contextWindowOverride")).toMatchObject({
+      type: "integer",
+      minimum: 32_000,
+      maximum: 10_000_000,
+    });
     expect(schemaNode(schema, "memory", "backend").enum).toEqual(["bujo", "supermemory"]);
     expect(schemaNode(schema, "memory", "mode").enum).toEqual(["lite", "journal", "bujo"]);
     expect(schemaNode(schema, "memory", "writeMode").enum).toEqual(["disabled", "append-host-summary", "capture"]);

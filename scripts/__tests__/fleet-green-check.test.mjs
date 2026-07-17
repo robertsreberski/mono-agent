@@ -924,6 +924,12 @@ describe("evaluateRuns", () => {
     expect(result.untoleratedKinds).toEqual(["usage_limit"]);
   });
 
+  it("keeps context_limit RED so an exhausted overflow remains visible", () => {
+    const result = evaluateRuns(metrics({ totalRuns: 40, failedRuns: 1, failureKinds: [{ kind: "context_limit", count: 1 }] }));
+    expect(result.status).toBe("fail");
+    expect(result.untoleratedKinds).toEqual(["context_limit"]);
+  });
+
   it("48-of-48 provider_auth is RED (untolerated kind, and it dominates)", () => {
     const result = evaluateRuns(metrics({ totalRuns: 48, failedRuns: 48, failureKinds: [{ kind: "provider_auth", count: 48 }] }));
     expect(result.status).toBe("fail");

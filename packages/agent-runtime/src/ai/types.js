@@ -98,14 +98,15 @@
  * @typedef {Object} RuntimeCompactionPolicy
  * Typed per-run context-compaction policy (the supported replacement for the
  * `agent_compaction_*` keys of the deprecated `settings` bag). Every field is
- * optional; an omitted field falls back to the kernel default.
+ * optional; omitted scalar budgets resolve adaptively against the effective
+ * model context window.
  * @property {boolean} [enabled]              Whether auto-compaction runs at all.
  * @property {number} [triggerRatio]          Fraction of the context window that arms the proactive trigger.
  * @property {number} [keepRecentTokens]      Recent-token budget preserved across a compaction.
- * @property {number} [summaryMaxTokens]      Max tokens of the generated summary.
- * @property {number} [minSavingsTokens]      Minimum token savings required to keep a compaction.
+ * @property {number} [summaryMaxTokens]      Combined output-token budget for generated compaction summaries.
+ * @property {number} [minSavingsTokens]      Minimum token savings required for proactive compaction; reactive recovery accepts any positive reduction.
  * @property {boolean} [fixedOverheadEnabled] Whether the system-prompt + tool-schema overhead correction is folded into the trigger.
- * @property {number} [contextWindowOverride] Forces the compaction window instead of the live-model-recognized one (applied at resolveLiveCompactionPolicy; has no legacy settings equivalent).
+ * @property {number} [contextWindowOverride] Persistent correction for provider context-window metadata; learned overflow evidence may lower it process-locally (applied at resolveLiveCompactionPolicy; has no legacy settings equivalent).
  */
 
 /**

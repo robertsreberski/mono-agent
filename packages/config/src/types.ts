@@ -1,4 +1,4 @@
-import type { LocalProviderDefinition, PiTransport, RuntimeExecutionMode, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type { LocalProviderDefinition, PiTransport, RuntimeCompactionPolicy, RuntimeExecutionMode, RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
 import type { RedactedSecretValue } from "@mono-agent/agent-contracts";
 
@@ -198,6 +198,8 @@ export interface MonoAgentConfig {
     readonly permissionMode?: PermissionMode;
     /** Optional hard cap per run; omitted means unlimited. */
     readonly maxTurns?: number;
+    /** Adaptive context compaction policy forwarded directly to the runtime. */
+    readonly compaction?: RuntimeCompactionPolicy;
     readonly workspace: string;
     readonly session: {
       readonly mode: SessionMode;

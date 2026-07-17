@@ -1116,7 +1116,7 @@ function toolPolicyInput(config: MonoAgentConfig): ToolPolicyInput {
 }
 
 function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | undefined {
-  const { permissionMode } = config.runtime;
+  const { permissionMode, compaction } = config.runtime;
   // NOTE: there is intentionally no reasoning-summary runtime option. The sole pi
   // runtime (pi-native) derives reasoning from `effort` and does not consume an
   // explicit summary level, and the codex/claude CLIs emit summaries
@@ -1140,6 +1140,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
     && piNative?.transport === undefined
     && piNative?.piMaxRetries === undefined
     && piNative?.maxRetryDelayMs === undefined
+    && compaction === undefined
     && settings === undefined
   ) {
     return undefined;
@@ -1149,6 +1150,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
     ...(piNative?.transport === undefined ? {} : { piTransport: piNative.transport }),
     ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
     ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
+    ...(compaction === undefined ? {} : { compaction }),
     ...(settings === undefined ? {} : { settings }),
   };
 }

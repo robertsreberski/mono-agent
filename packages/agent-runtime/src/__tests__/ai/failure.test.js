@@ -3,6 +3,7 @@ import {
   classifyFailure,
   createStderrTail,
   FAILURE_KINDS,
+  isContextLimitFailureText,
   retryableProviderFailureInfo,
 } from "../../ai/failure.js";
 
@@ -63,6 +64,14 @@ describe("classifyFailure", () => {
   it("matches usage limit messages from stderr", () => {
     expect(classifyFailure({ exitCode: 2, stderrTail: "rate limit reached" })).toBe("usage_limit");
     expect(classifyFailure({ exitCode: 2, errorText: "Max turns" })).toBe("usage_limit");
+    expect(classifyFailure({ exitCode: 2, errorText: "maximum output tokens reached" })).toBe("usage_limit");
+  });
+
+  it("classifies request context overflows separately from usage limits", () => {
+    const codexError = "Codex error: Your input exceeds the context window of this model. Please adjust your input and try again.";
+    expect(isContextLimitFailureText(codexError)).toBe(true);
+    expect(classifyFailure({ exitCode: 2, errorText: codexError })).toBe("context_limit");
+    expect(isContextLimitFailureText("429 rate limit: too many requests")).toBe(false);
   });
 
   it("matches provider unavailable messages", () => {
@@ -97,7 +106,7 @@ describe("classifyFailure", () => {
   it("FAILURE_KINDS includes the new entries", () => {
     expect(FAILURE_KINDS).toEqual(expect.arrayContaining([
       "budget_exceeded", "child_failed", "cancelled", "cancelled_user", "cancelled_stale", "cancelled_signal",
-      "invalid_delegation", "provider_unavailable_exhausted",
+      "context_limit", "invalid_delegation", "provider_unavailable_exhausted",
     ]));
   });
 
@@ -231,5 +240,12 @@ describe("retryableProviderFailureInfo", () => {
       failureKind: "provider_auth",
       errorText: "No API key for provider: openai-codex",
     })).toMatchObject({ retryable: false, subkind: null });
+  });
+
+  it("treats a classified context overflow as route-fallback eligible", () => {
+    expect(retryableProviderFailureInfo({
+      failureKind: "context_limit",
+      errorText: "Your input exceeds the context window of this model.",
+    })).toMatchObject({ retryable: true, subkind: "context_limit" });
   });
 });

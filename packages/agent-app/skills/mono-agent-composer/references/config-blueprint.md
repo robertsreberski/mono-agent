@@ -51,6 +51,16 @@ new agent.
                                            // Ranking above max only prevents keyword downgrade.
     "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (CLI backends)
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
+    "compaction": {
+      "enabled": true,                     // default true
+      "triggerRatio": 0.70,                // default 0.70; adaptive safety headroom also applies
+      // Omit these three to derive model-window-aware defaults.
+      "keepRecentTokens": 12800,
+      "summaryMaxTokens": 5120,
+      "minSavingsTokens": 12800,
+      "fixedOverheadEnabled": true,        // include system prompt, tool schemas, and current turn
+      "contextWindowOverride": 128000      // optional persistent correction for bad provider metadata
+    },
     "workspace": ".",
     "session": { "mode": "continuous", "idleTimeoutMs": 1800000 } // or "per-message"
   },

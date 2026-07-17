@@ -126,7 +126,7 @@ export const ISO_INSTANT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d
 
 // The ONLY failure kind treated as fleet-normal: a transient provider failover
 // (this is #136's "healthy failover" resilience evidence). Every OTHER kind in
-// the observability taxonomy — provider_auth, usage_limit, process_death,
+// the observability taxonomy — provider_auth, context_limit, usage_limit, process_death,
 // runtime_error, etc. (see KNOWN_ARTIFACT_FAILURE_KINDS in
 // packages/observability/src/summary-schema.ts) — and any unclassified failure
 // drives RED. Even a tolerated kind drives RED when it dominates the window

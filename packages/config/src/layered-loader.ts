@@ -623,6 +623,7 @@ export function layerJsonOntoEnv(
   json: MonoAgentConfigJson,
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
+  validateJsonRuntimeCompaction(json);
   const fromJson: Record<string, string | undefined> = {};
   if (json.agent?.name !== undefined) {
     fromJson.MONO_AGENT_NAME = json.agent.name;
@@ -656,6 +657,37 @@ export function layerJsonOntoEnv(
   }
   if (json.runtime?.maxTurns !== undefined) {
     fromJson.MONO_AGENT_MAX_TURNS = String(json.runtime.maxTurns);
+  }
+  if (json.runtime?.compaction?.enabled !== undefined) {
+    if (typeof json.runtime.compaction.enabled !== "boolean") {
+      throw new MonoAgentConfigError("invalid_json", "runtime.compaction.enabled must be a boolean.", {
+        path: "runtime.compaction.enabled",
+      });
+    }
+    fromJson.MONO_AGENT_COMPACTION_ENABLED = String(json.runtime.compaction.enabled);
+  }
+  if (json.runtime?.compaction?.triggerRatio !== undefined) {
+    fromJson.MONO_AGENT_COMPACTION_TRIGGER_RATIO = String(json.runtime.compaction.triggerRatio);
+  }
+  if (json.runtime?.compaction?.keepRecentTokens !== undefined) {
+    fromJson.MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS = String(json.runtime.compaction.keepRecentTokens);
+  }
+  if (json.runtime?.compaction?.summaryMaxTokens !== undefined) {
+    fromJson.MONO_AGENT_COMPACTION_SUMMARY_MAX_TOKENS = String(json.runtime.compaction.summaryMaxTokens);
+  }
+  if (json.runtime?.compaction?.minSavingsTokens !== undefined) {
+    fromJson.MONO_AGENT_COMPACTION_MIN_SAVINGS_TOKENS = String(json.runtime.compaction.minSavingsTokens);
+  }
+  if (json.runtime?.compaction?.fixedOverheadEnabled !== undefined) {
+    if (typeof json.runtime.compaction.fixedOverheadEnabled !== "boolean") {
+      throw new MonoAgentConfigError("invalid_json", "runtime.compaction.fixedOverheadEnabled must be a boolean.", {
+        path: "runtime.compaction.fixedOverheadEnabled",
+      });
+    }
+    fromJson.MONO_AGENT_COMPACTION_FIXED_OVERHEAD_ENABLED = String(json.runtime.compaction.fixedOverheadEnabled);
+  }
+  if (json.runtime?.compaction?.contextWindowOverride !== undefined) {
+    fromJson.MONO_AGENT_COMPACTION_CONTEXT_WINDOW_OVERRIDE = String(json.runtime.compaction.contextWindowOverride);
   }
   if (json.runtime?.workspace !== undefined) {
     fromJson.MONO_AGENT_WORKSPACE = json.runtime.workspace;
@@ -918,6 +950,45 @@ export function layerJsonOntoEnv(
     delete layered.MONO_AGENT_MEMORY_LLM_ENDPOINT;
   }
   return layered;
+}
+
+function validateJsonRuntimeCompaction(json: MonoAgentConfigJson): void {
+  const compaction: unknown = json.runtime?.compaction;
+  if (compaction === undefined) return;
+  if (!isJsonObject(compaction)) {
+    throw new MonoAgentConfigError("invalid_json", "runtime.compaction must be an object.", {
+      path: "runtime.compaction",
+    });
+  }
+  for (const field of ["enabled", "fixedOverheadEnabled"] as const) {
+    const value = compaction[field];
+    if (value !== undefined && typeof value !== "boolean") {
+      throw new MonoAgentConfigError("invalid_json", `runtime.compaction.${field} must be a boolean.`, {
+        path: `runtime.compaction.${field}`,
+      });
+    }
+  }
+  const numbers = [
+    ["triggerRatio", 0.2, 0.95, false],
+    ["keepRecentTokens", 4_000, 200_000, true],
+    ["summaryMaxTokens", 1_000, 64_000, true],
+    ["minSavingsTokens", 0, 500_000, true],
+    ["contextWindowOverride", 32_000, 10_000_000, true],
+  ] as const;
+  for (const [field, min, max, integer] of numbers) {
+    const value = compaction[field];
+    if (
+      value !== undefined
+      && (typeof value !== "number" || !Number.isFinite(value) || (integer && !Number.isInteger(value)) || value < min || value > max)
+    ) {
+      const kind = integer ? "an integer" : "a number";
+      throw new MonoAgentConfigError(
+        "invalid_json",
+        `runtime.compaction.${field} must be ${kind} between ${min} and ${max}.`,
+        { path: `runtime.compaction.${field}` },
+      );
+    }
+  }
 }
 
 function csv(values: readonly string[]): string {

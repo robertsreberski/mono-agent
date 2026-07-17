@@ -1617,7 +1617,7 @@ describe("startMonoAgentApp", () => {
       onFailure: vi.fn(),
     });
 
-    // The channel wires a host errorText callback that turns runtime usage-limit
+    // The channel wires a host errorText callback that turns runtime limit
     // failures into actionable copy; the adapter applies it on responder failure.
     const errorText = captured?.messages?.errorText;
     expect(typeof errorText).toBe("function");
@@ -1631,10 +1631,23 @@ describe("startMonoAgentApp", () => {
       }),
       request: { text: "calendar lions" } as never,
     });
-    expect(terminalText).toContain("model, provider, turn, or context limit");
+    expect(terminalText).toContain("provider usage, quota, output-token, or turn limit");
     expect(terminalText).toContain("8 turns");
-    expect(terminalText).toContain("Narrow the prompt or task");
+    expect(terminalText).toContain("Narrow the task");
     expect(terminalText).not.toContain("failed honestly");
+
+    const contextLimitText = await (errorText as Extract<TelegramAdapterErrorText, (input: never) => unknown>)({
+      error: Object.assign(new Error("Your input exceeds the context window of this model."), {
+        failure: {
+          kind: "context_limit",
+          message: "Your input exceeds the context window of this model.",
+        },
+      }),
+      request: { text: "calendar lions" } as never,
+    });
+    expect(contextLimitText).toContain("selected model's usable context window");
+    expect(contextLimitText).toContain("compaction diagnostics and failover history");
+    expect(contextLimitText).not.toContain("Configured turn cap");
 
     const cancelledText = await (errorText as Extract<TelegramAdapterErrorText, (input: never) => unknown>)({
       error: Object.assign(new Error("cancelled"), {

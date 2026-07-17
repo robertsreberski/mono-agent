@@ -42,7 +42,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `runtime.pi-native-tuning` | config | `providers.piNative.transport`, `providers.piNative.piMaxRetries`, `providers.piNative.maxRetryDelayMs`, `providers.piNative.piSessionsRoot` | `MONO_AGENT_PI_TRANSPORT`, `MONO_AGENT_PI_MAX_RETRIES`, `MONO_AGENT_MAX_RETRY_DELAY_MS`, `MONO_AGENT_PI_SESSIONS_ROOT` | [Sessions & concurrency](/runtime/sessions-concurrency/) | — |
 | `runtime.tool-parallelism` | code | `runtimeOptions.piToolParallelismMode` | — | [Tools & guards](/runtime/tools-and-guards/) | — |
 | `runtime.webfetch-retry` | auto | (built into WebFetch) | — | [Tools & guards](/runtime/tools-and-guards/) | — |
-| `runtime.context-compaction` | provider + settings | `agent_compaction_*` (pi-native settings) | — | [Sessions & concurrency](/runtime/sessions-concurrency/) | — |
+| `runtime.context-compaction` | config + provider | `runtime.compaction.*` | `MONO_AGENT_COMPACTION_*` | [Tools & guards](/runtime/tools-and-guards/) | — |
 | `runtime.tool-bloat-guard` | auto | (artifacts land in `artifacts.dir`) | `MONO_AGENT_ARTIFACT_DIR` | [Tools & guards](/runtime/tools-and-guards/) | — |
 | `runtime.cost-tracking` | auto | (recorded in JSONL artifacts) | — | [Artifacts & traces](/observability/artifacts-and-traces/) | — |
 | `runtime.builtin-tools` | config | `tools.allowedTools`, `tools.disallowedTools` | `MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS` | [Tools & guards](/runtime/tools-and-guards/) | — |
@@ -180,5 +180,5 @@ Built-in channels are independent JSON sections: `telegram`, `slack`, `webhook`,
 A `code`-only feature has no `mono-agent.config.json` key — you reach it through `startMonoAgentApp` options or lower-level packages. See [Programmatic API](/programmatic/) for the entry points referenced above (`createConfiguredAgentResponder`, `createMonoRuntime`, `createCollaboratorToolRuntimeExtension`, custom `ChannelDriver`/`runtime`/`memory`/`historyStore` injection).
 
 :::note
-Two registry rows carry a non-standard coverage label: `runtime.context-compaction` is `provider + settings` (driven by the pi bridge, tuned via `agent_compaction_*` pi-native settings) and `a2a.consumer` is `config + code` (settings live in plugin config, but invoking remote agents is programmatic).
+Two registry rows carry a non-standard coverage label: `runtime.context-compaction` is `config + provider` (configured through `runtime.compaction.*`, executed by the pi bridge) and `a2a.consumer` is `config + code` (settings live in plugin config, but invoking remote agents is programmatic).
 :::

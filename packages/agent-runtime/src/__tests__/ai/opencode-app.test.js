@@ -1148,13 +1148,13 @@ describe("opencode-app bridge", () => {
     expect(mapSpawnFailureKind({ message: "network blip" })).toBe("provider_unavailable");
     expect(mapErrorFailureKind({ name: "MessageAbortedError" })).toBe("cancelled");
     expect(mapErrorFailureKind({ name: "MessageOutputLengthError" })).toBe("usage_limit");
-    expect(mapErrorFailureKind({ name: "ContextOverflowError" })).toBe("usage_limit");
+    expect(mapErrorFailureKind({ name: "ContextOverflowError" })).toBe("context_limit");
     expect(mapErrorFailureKind({ name: "ProviderAuthError" })).toBe("provider_auth");
   });
 
   it.each([
     ["ProviderAuthError", "Sign in to GitHub Copilot.", "provider_auth"],
-    ["ContextOverflowError", "The model context window is full.", "usage_limit"],
+    ["ContextOverflowError", "The model context window is full.", "context_limit"],
     ["APIError", "The provider API is temporarily unavailable.", "provider_unavailable"],
   ])("surfaces the safe nested SDK message for %s", async (name, message, failureKind) => {
     fakeOpencode({

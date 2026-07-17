@@ -2214,7 +2214,7 @@ describe("statusBackground", () => {
     expect(stdout).toContain("Process death [process_death, 1 recent]");
     expect(stdout).toContain("Cancelled [cancelled, 1 recent]");
     expect(stdout).toContain("Unclassified failure (provider_error) [provider_error (unclassified), 1 recent]");
-    expect(stdout).toContain("The runtime hit a model, provider, turn, or context limit");
+    expect(stdout).toContain("The runtime hit a provider usage, quota, output-token, or turn limit");
     expect(stdout).toContain("not yet part of the documented display taxonomy");
   });
 

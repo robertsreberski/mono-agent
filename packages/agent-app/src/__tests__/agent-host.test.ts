@@ -90,7 +90,20 @@ describe("agent host composition helpers", () => {
     });
 
     const responder = await createConfiguredAgentResponder({
-      config: monoConfig({ dir, identityPath, artifactDir }),
+      config: monoConfig({
+        dir,
+        identityPath,
+        artifactDir,
+        compaction: {
+          enabled: true,
+          triggerRatio: 0.75,
+          keepRecentTokens: 9_000,
+          summaryMaxTokens: 3_000,
+          minSavingsTokens: 7_000,
+          fixedOverheadEnabled: false,
+          contextWindowOverride: 128_000,
+        },
+      }),
       runtime: fake.runtime,
       createRunId: () => "run-host",
       runtimeOptionsForRequest: ({ request, runId }) => {
@@ -133,6 +146,15 @@ describe("agent host composition helpers", () => {
       },
       mcpServers: {
         collaborators: { type: "http", url: "http://127.0.0.1:9876/mcp" },
+      },
+      compaction: {
+        enabled: true,
+        triggerRatio: 0.75,
+        keepRecentTokens: 9_000,
+        summaryMaxTokens: 3_000,
+        minSavingsTokens: 7_000,
+        fixedOverheadEnabled: false,
+        contextWindowOverride: 128_000,
       },
     });
 
@@ -1238,6 +1260,47 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[1]?.options.sessionKeepAlive).toBe(true);
   });
 
+  it("keeps OpenAI API and Telegram histories and provider sessions independent", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, ".mono-agent", "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async (prompt) => ({
+      text: prompt.includes("TELEGRAM_") ? "TELEGRAM_ANSWER" : "OPENAI_API_ANSWER",
+      providerSessionId: prompt.includes("TELEGRAM_") ? "telegram-provider-session" : "openai-api-provider-session",
+    }));
+    const base = monoConfig({ dir, identityPath, artifactDir });
+    const harness = await createConfiguredAgentHarness({
+      config: {
+        ...base,
+        runtime: { ...base.runtime, session: { mode: "continuous", idleTimeoutMs: 60_000 } },
+      },
+      runtime: fake.runtime,
+    });
+
+    await harness.run({ conversationId: "telegram:42", userMessage: "TELEGRAM_FIRST", abortSignal: new AbortController().signal });
+    await harness.run({ conversationId: "openai-api:request-1", userMessage: "OPENAI_API_FIRST", abortSignal: new AbortController().signal });
+    await harness.run({ conversationId: "telegram:42", userMessage: "TELEGRAM_SECOND", abortSignal: new AbortController().signal });
+    await harness.run({ conversationId: "openai-api:request-1", userMessage: "OPENAI_API_SECOND", abortSignal: new AbortController().signal });
+
+    expect(fake.calls.map((call) => call.options.sessionId)).toEqual([
+      undefined,
+      undefined,
+      "telegram-provider-session",
+      "openai-api-provider-session",
+    ]);
+    const historyRoot = join(dir, ".mono-agent", "history");
+    const historyFiles = (await readdir(historyRoot)).filter((name) => name.endsWith(".history.json"));
+    expect(historyFiles).toHaveLength(2);
+    const histories = await Promise.all(historyFiles.map((name) => readFile(join(historyRoot, name), "utf8")));
+    const telegramHistory = histories.find((history) => history.includes("TELEGRAM_FIRST"));
+    const openaiApiHistory = histories.find((history) => history.includes("OPENAI_API_FIRST"));
+    expect(telegramHistory).toContain("TELEGRAM_SECOND");
+    expect(telegramHistory).not.toContain("OPENAI_API_FIRST");
+    expect(openaiApiHistory).toContain("OPENAI_API_SECOND");
+    expect(openaiApiHistory).not.toContain("TELEGRAM_FIRST");
+  });
+
   it("replays later-turn history for stateless fallbacks when maxTurns is unlimited", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -1742,6 +1805,7 @@ function monoConfig(input: {
   readonly mcpCallTimeoutMs?: number;
   readonly mcpCallMaxTotalTimeoutMs?: number;
   readonly permissionMode?: "default" | "plan" | "acceptEdits" | "bypassPermissions";
+  readonly compaction?: NonNullable<MonoAgentConfig["runtime"]["compaction"]>;
   readonly observability?: NonNullable<MonoAgentConfig["observability"]>;
 }): MonoAgentConfig {
   return {
@@ -1752,6 +1816,7 @@ function monoConfig(input: {
       workspace: input.dir,
       session: { mode: "per-message", idleTimeoutMs: 1_800_000 },
       ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
+      ...(input.compaction === undefined ? {} : { compaction: input.compaction }),
     },
     providers: {
       local: [

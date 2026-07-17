@@ -97,8 +97,49 @@ describe("loadMonoAgentConfig", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
 
     expect(config.runtime.routeSafety).toBe("uniform");
+    expect(config.runtime.compaction).toEqual({ enabled: true, fixedOverheadEnabled: true });
     expect(config.artifacts.retention).toEqual({ maxAgeDays: 365, maxCount: 50000, dryRun: false });
     expect(config.artifacts.memoryRetention).toEqual({ maxAgeDays: 7, maxCount: 5000, dryRun: false });
+  });
+
+  it("loads every runtime compaction override from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_COMPACTION_ENABLED: "false",
+        MONO_AGENT_COMPACTION_TRIGGER_RATIO: "0.8",
+        MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS: "9000",
+        MONO_AGENT_COMPACTION_SUMMARY_MAX_TOKENS: "3000",
+        MONO_AGENT_COMPACTION_MIN_SAVINGS_TOKENS: "7000",
+        MONO_AGENT_COMPACTION_FIXED_OVERHEAD_ENABLED: "false",
+        MONO_AGENT_COMPACTION_CONTEXT_WINDOW_OVERRIDE: "272000",
+      },
+    });
+    expect(config.runtime.compaction).toEqual({
+      enabled: false,
+      triggerRatio: 0.8,
+      keepRecentTokens: 9_000,
+      summaryMaxTokens: 3_000,
+      minSavingsTokens: 7_000,
+      fixedOverheadEnabled: false,
+      contextWindowOverride: 272_000,
+    });
+  });
+
+  it.each([
+    ["MONO_AGENT_COMPACTION_ENABLED", "sometimes"],
+    ["MONO_AGENT_COMPACTION_TRIGGER_RATIO", "0.1"],
+    ["MONO_AGENT_COMPACTION_KEEP_RECENT_TOKENS", "3999"],
+    ["MONO_AGENT_COMPACTION_SUMMARY_MAX_TOKENS", "999"],
+    ["MONO_AGENT_COMPACTION_MIN_SAVINGS_TOKENS", "-1"],
+    ["MONO_AGENT_COMPACTION_FIXED_OVERHEAD_ENABLED", "sometimes"],
+    ["MONO_AGENT_COMPACTION_CONTEXT_WINDOW_OVERRIDE", "31999"],
+  ])("rejects invalid compaction env %s=%s", (name, value) => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, [name]: value },
+    })).toThrowError(expect.objectContaining({ code: "invalid_env" }));
   });
 
   it("expands a home-relative Pi auth path instead of treating tilde as a directory", () => {

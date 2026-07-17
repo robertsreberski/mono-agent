@@ -34,18 +34,14 @@ describe("proactive compaction trigger — old (>=) vs new (shouldCompact) parit
   // production values, then probes the boundary. `modelWindow` feeds
   // resolveAgentCompactionPolicy's model.contextWindow (clamped to [32k, 10M]).
   const scenarios = [
-    // reserve-dominant: 128k window -> reserve 32k -> reserveTrigger 96k <
-    // ratioTrigger floor(128000*0.85)=108800, so triggerTokens = 96000.
-    { name: "reserve-dominant window (128k)", modelWindow: 128_000, settings: {}, expectTrigger: 96_000 },
-    // ratio-dominant: 1M window -> reserve caps at 64k -> reserveTrigger 936000 >
-    // ratioTrigger floor(1_000_000*0.85)=850000, so triggerTokens = 850000.
-    { name: "ratio-dominant window (1M)", modelWindow: 1_000_000, settings: {}, expectTrigger: 850_000 },
-    // tiny: clamps to the 32k floor -> reserve max(16k, min(64k, 8k))=16k ->
-    // reserveTrigger 16000 < ratioTrigger floor(32000*0.85)=27200 -> 16000.
+    // 128k: ratioTrigger=89.6k is below the 96k headroom trigger.
+    { name: "ratio-dominant window (128k)", modelWindow: 128_000, settings: {}, expectTrigger: 89_600 },
+    // 1M: safety headroom caps at 96k, while the 0.70 ratio fires at 700k.
+    { name: "ratio-dominant window (1M)", modelWindow: 1_000_000, settings: {}, expectTrigger: 700_000 },
+    // tiny: clamps to the 32k floor; 16k minimum headroom wins over 70%.
     { name: "tiny window (32k floor)", modelWindow: 1_000, settings: {}, expectTrigger: 16_000 },
-    // huge: clamps to the 10M ceiling -> reserve 64k -> reserveTrigger 9_936_000 >
-    // ratioTrigger 8_500_000 -> triggerTokens = 8_500_000.
-    { name: "huge window (10M clamp)", modelWindow: 50_000_000, settings: {}, expectTrigger: 8_500_000 },
+    // huge: clamps to the 10M ceiling and the 0.70 ratio remains dominant.
+    { name: "huge window (10M clamp)", modelWindow: 50_000_000, settings: {}, expectTrigger: 7_000_000 },
     // custom ratio still resolves to an integer trigger via Math.floor.
     { name: "custom ratio 0.5 on 200k", modelWindow: 200_000, settings: { agent_compaction_trigger_ratio: 0.5 }, expectTrigger: 100_000 },
   ];

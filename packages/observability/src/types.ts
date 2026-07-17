@@ -37,6 +37,7 @@ export type KnownArtifactFailureKind =
   | "provider_unavailable_exhausted"
   | "provider_auth"
   | "skipped_capability_mismatch"
+  | "context_limit"
   | "usage_limit"
   | "process_death"
   | "runtime_error"

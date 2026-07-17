@@ -364,7 +364,8 @@ function finalTextFromParts(parts) {
 export function mapErrorFailureKind(error) {
   const name = error?.name || error?.data?.name || "";
   if (name === "MessageAbortedError") return "cancelled";
-  if (name === "MessageOutputLengthError" || name === "ContextOverflowError") return "usage_limit";
+  if (name === "ContextOverflowError") return "context_limit";
+  if (name === "MessageOutputLengthError") return "usage_limit";
   if (name === "ProviderAuthError") return "provider_auth";
   return "provider_unavailable";
 }

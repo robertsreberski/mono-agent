@@ -32,8 +32,9 @@ export function usageFromMessages(messages = []) {
 }
 
 /**
- * Classify a pi error message into a runtime failure kind. Context-limit /
- * max-turns terminations map to usage_limit; credential/config auth failures
+ * Classify a pi error message into a runtime failure kind. Context-window
+ * overflows map to context_limit so the router can try the configured fallback;
+ * max-turns terminations remain usage_limit. Credential/config auth failures
  * map to provider_auth; everything else to provider_unavailable. Null message → null.
  * @param {string|null} message
  * @param {Record<string, unknown>} diagnostics
@@ -42,9 +43,8 @@ export function usageFromMessages(messages = []) {
  */
 export function failureKindForPiError(message, diagnostics, { maxTurnsHit = false } = {}) {
   if (!message) return null;
-  if (maxTurnsHit || isContextLimitError(message) || isLikelyContextTermination(message, diagnostics)) {
-    return "usage_limit";
-  }
+  if (maxTurnsHit) return "usage_limit";
+  if (isContextLimitError(message) || isLikelyContextTermination(message, diagnostics)) return "context_limit";
   if (isProviderAuthFailureText(message)) return "provider_auth";
   return "provider_unavailable";
 }
