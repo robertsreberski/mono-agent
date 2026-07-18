@@ -58,9 +58,9 @@ acknowledgement. Programmatic drivers can set `stream.showHints: false` to keep
 only the ordinary working indicator or `stream.finalOnly: false` for live answer
 edits.
 
-Memory recall has its own preview-free activity line, `📚 Reading memory`.
-Memory writes remain `🧠 Updating memory`, and ordinary file reads remain
-`📖 Reading`.
+`ReadSkill` and memory recall have their own preview-free activity lines,
+`📚 Reading` and `📚 Reading memory`. Memory writes remain `🧠 Updating memory`,
+and ordinary file reads remain `📖 Reading`.
 
 ## Per-chat runtime controls
 

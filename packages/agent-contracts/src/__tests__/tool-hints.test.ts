@@ -25,7 +25,7 @@ describe("formatToolActivityLine", () => {
     expect(formatToolActivityLine("WebSearch", { query: "  exact   product\nretailer  " }))
       .toBe("🌐 Searching the web for exact product retailer");
     expect(formatToolActivityLine("ReadSkill", { path: "/repo/skills/review/SKILL.md" }))
-      .toBe("📖 Reading /repo/skills/review/SKILL.md");
+      .toBe("📚 Reading");
     expect(formatToolActivityLine("apply_patch", { path: "/repo/src/really-long-file-name-that-keeps-going.ts" }))
       .toBe("✏️ Editing /repo/src/really-long-file-name-that-ke…");
     expect(formatToolActivityLine("mcp__browser__browser_console", {}))

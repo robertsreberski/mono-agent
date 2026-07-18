@@ -88,7 +88,8 @@ const WEB_BROWSE_NAMES = new Set([
   "openurl",
   "fetch",
 ]);
-const READ_NAMES = new Set(["read", "readfile", "readskill"]);
+const READ_NAMES = new Set(["read", "readfile"]);
+const SKILL_READ_NAMES = new Set(["readskill"]);
 const FILE_SEARCH_NAMES = new Set(["glob", "grep", "searchfiles"]);
 const WRITE_NAMES = new Set(["write", "writefile"]);
 const EDIT_NAMES = new Set(["applypatch", "edit", "editfile", "patch"]);
@@ -162,6 +163,9 @@ function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
   }
   if (WEB_BROWSE_NAMES.has(normalized)) {
     return { action: "🌐 Browsing", previewFields: ["url", "href", "uri", "ref_id"] };
+  }
+  if (SKILL_READ_NAMES.has(normalized)) {
+    return { action: "📚 Reading", previewFields: [] };
   }
   if (READ_NAMES.has(normalized)) {
     return { action: "📖 Reading", previewFields: ["file_path", "path", "name", "skill", "skill_name"] };

@@ -26,9 +26,10 @@ Adapter packages extend the base request with transport metadata while keeping t
 starts in one transient cumulative status. Its shared formatter uses friendly
 tool-family copy, bounded allowlisted previews, and secret redaction; adapters
 can optionally delete a confirmed status during cancellation without risking an
-answer message. Read-only memory recall is deliberately preview-free and renders
-as `📚 Reading memory`; memory writes and file reads retain their distinct
-`🧠 Updating memory` and `📖 Reading` families.
+answer message. Skill disclosure and read-only memory recall are deliberately
+preview-free and render as `📚 Reading` and `📚 Reading memory`; memory writes
+and ordinary file reads retain their distinct `🧠 Updating memory` and
+`📖 Reading` families.
 
 ## Public API
 
