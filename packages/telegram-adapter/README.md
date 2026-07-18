@@ -51,8 +51,9 @@ Load adapter settings separately from core config, then pass a structural `Agent
 
 Inbound turns do not stream answer tokens by default. Telegram first shows the
 `typing…` action; if tools run, one cumulative, secret-safe activity message is
-edited in place and then replaced by the final answer. Adjacent duplicates
-collapse as `(×N)`. Proactive deliveries suppress this message, and an
+edited in place. Once the response is ready, Telegram posts it as a new message
+and deletes the activity message. Adjacent duplicates collapse as `(×N)`.
+Proactive deliveries suppress this message, and an
 acknowledged `/cancel` best-effort deletes it while retaining one `Cancelled.`
 acknowledgement. Programmatic drivers can set `stream.showHints: false` to keep
 only the ordinary working indicator or `stream.finalOnly: false` for live answer
@@ -61,6 +62,9 @@ edits.
 `ReadSkill` renders the selected skill as `📚 Reading "<skill>"` without exposing
 its path. Memory recall remains preview-free as `🧠 Recalling memory`. Memory
 writes remain `🧠 Updating memory`, and ordinary file reads remain `📖 Reading`.
+Long file paths keep both their leading location and trailing filename; long
+commands keep a balanced prefix and suffix. Every preview remains capped at 40
+Unicode code points after secret redaction.
 
 ## Per-chat runtime controls
 
@@ -77,6 +81,20 @@ only when the new model does not support it. Interactive messages, configured
 command prompts, and synthetic button-answer turns carry the selection under
 `metadata.telegram`; public proactive `notify` calls intentionally retain the
 configured runtime defaults.
+
+The inline menus include **Cancel**, which deletes the menu without changing the
+selection. Choosing a model or effort edits that menu into its confirmation
+instead of posting another message.
+
+When the host supplies `startNewSession`, `/new` cancels current work and starts
+a fresh session for only that Telegram conversation. In the mono-agent app this
+retires the warm provider session, clears that conversation's canonical history,
+and reloads skills/startup context on the next message; durable memory and the
+chat's model/effort selection remain intact.
+
+When a blocking `TelegramAskButtons` question is pending, the next authorized
+plain-text message is accepted as a custom answer to that same tool call. The
+adapter removes the obsolete inline keyboard; slash commands remain commands.
 
 ## Public API
 

@@ -17,6 +17,7 @@ import {
   createInMemoryHistoryStore,
 } from "../index.js";
 import type { AgentHarnessSessionOptions, ConversationHistoryStore } from "../index.js";
+import type { SkillsCache } from "../skills/index.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
@@ -881,6 +882,60 @@ describe("AgentHarness continuous sessions", () => {
     const history = await historyStore.load("conv-1");
     expect(history).toHaveLength(4);
     expect(history.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+  });
+
+  it("resets one conversation's history and warm session while clearing the skills cache", async () => {
+    const identityPath = await identityFixture();
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-reset" }));
+    let cacheClears = 0;
+    const skillsCache: SkillsCache = {
+      loadSelectedSkillsCached: async () => ({ index: [], instructions: [], loaded: [] }),
+      clear: () => { cacheClears += 1; },
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      historyStore,
+      skillsCache,
+      session,
+    });
+    await harness.run(request("telegram:42", "old"));
+    await historyStore.append("telegram:99", [{ role: "assistant", content: "keep" }]);
+
+    await harness.resetConversation?.("telegram:42");
+
+    await expect(historyStore.load("telegram:42")).resolves.toEqual([]);
+    await expect(historyStore.load("telegram:99")).resolves.toEqual([{ role: "assistant", content: "keep" }]);
+    expect(fake.disposedSessions).toContain("ps-reset");
+    expect(cacheClears).toBe(1);
+  });
+
+  it("rejects an unsupported history reset before evicting the warm session", async () => {
+    const identityPath = await identityFixture();
+    const backingStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const historyStore: ConversationHistoryStore = {
+      load: (conversationId) => backingStore.load(conversationId),
+      append: (conversationId, messages) => backingStore.append(conversationId, messages),
+    };
+    const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-preserved" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      historyStore,
+      session,
+    });
+    await harness.run(request("telegram:42", "old"));
+
+    await expect(harness.resetConversation?.("telegram:42"))
+      .rejects.toThrow("does not support session reset");
+
+    expect(fake.disposedSessions).toEqual([]);
+    await expect(historyStore.load("telegram:42")).resolves.toHaveLength(2);
   });
 
   it("a concurrent second run goes fresh instead of resuming a busy session", async () => {

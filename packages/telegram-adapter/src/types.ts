@@ -113,6 +113,8 @@ export interface TelegramSendMessageParams {
   text: string;
   parse_mode?: string;
   reply_to_message_id?: number;
+  /** Deliver even if the referenced reply parent was deleted before this send. */
+  allow_sending_without_reply?: boolean;
   disable_web_page_preview?: boolean;
   /** Send silently — message arrives without a push notification sound. */
   disable_notification?: boolean;

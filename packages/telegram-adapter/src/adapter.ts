@@ -175,6 +175,8 @@ export interface TelegramAdapterMessages {
   busyText?: string;
   unauthorizedText?: string;
   cancelledText?: string;
+  newSessionText?: string;
+  newSessionErrorText?: string;
   errorText?: TelegramAdapterErrorText;
   unsupportedText?: string;
 }
@@ -199,7 +201,9 @@ export interface TelegramAdapterStreamOptions {
   formatMarkdown?: boolean;
   /**
    * Deliver only the final answer with a "typing…" indicator while working,
-   * instead of streaming interim edits. Defaults to true for the Telegram bot.
+   * instead of streaming interim edits. When tools produced a progress message,
+   * the final answer is posted separately and that progress message is removed.
+   * Defaults to true for the Telegram bot.
    */
   finalOnly?: boolean;
 }
@@ -218,6 +222,8 @@ export const DEFAULT_MESSAGES: Required<TelegramAdapterMessages> = {
   busyText: "I am still working on your previous message. Use /cancel to stop it.",
   unauthorizedText: "This Telegram chat is not authorized to use this bot.",
   cancelledText: "Cancelled.",
+  newSessionText: "Started a new session. Conversation history was cleared; skills and startup context will reload on your next message.",
+  newSessionErrorText: "I could not start a new session. The existing conversation was left available; check the agent logs for details.",
   errorText: DEFAULT_ERROR_TEXT,
   unsupportedText: "I can handle text and Telegram document, photo, audio, video, round video, or voice metadata in this adapter.",
 };

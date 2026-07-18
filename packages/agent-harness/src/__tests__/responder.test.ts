@@ -193,6 +193,32 @@ describe("createAgentResponder", () => {
     expect(cancelled).toEqual(["conv-7"]);
   });
 
+  it("starts a new session under the same rollover bucket after cancelling earlier work", async () => {
+    const calls: string[] = [];
+    const harness: AgentHarness = {
+      run: async (request) => okResponse(request.conversationId),
+      cancel: (conversationId) => {
+        calls.push(`cancel:${conversationId}`);
+      },
+      resetConversation: async (conversationId) => {
+        calls.push(`reset:${conversationId}`);
+      },
+    };
+    const responder = createAgentResponder({
+      harness,
+      rollover: "daily",
+      rolloverTimezone: "UTC",
+      now: () => new Date("2026-07-18T12:00:00Z"),
+    });
+
+    await responder.startNewSession("telegram:42");
+
+    expect(calls).toEqual([
+      "cancel:telegram:42#2026-07-18",
+      "reset:telegram:42#2026-07-18",
+    ]);
+  });
+
   it("cancels responder-queued turns before they can reach the harness", async () => {
     let releaseFirst!: () => void;
     let firstStarted!: () => void;

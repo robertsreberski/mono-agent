@@ -234,6 +234,32 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
+  async reset(conversationId: string): Promise<void> {
+    const normalizedId = normalizeConversationId(conversationId);
+    const held = await this.acquireConversation(normalizedId);
+    const rootIdentity = held.rootIdentity;
+    let prepared: PreparedHistoryAppend;
+    try {
+      const existing = await this.readRecord(normalizedId, rootIdentity);
+      const retirementFence = await this.prepareProviderRetirement(existing, rootIdentity);
+      prepared = await this.prepareRecord({
+        version: STORE_VERSION,
+        conversationId: normalizedId,
+        messages: [],
+        providerSession: { epoch: createProviderSessionEpoch(), revision: 0 },
+      }, held, rootIdentity, undefined, retirementFence);
+    } catch (error) {
+      await this.releaseConversation(held, rootIdentity).catch(() => undefined);
+      throw error;
+    }
+    try {
+      await prepared.commit();
+    } catch (error) {
+      await prepared.abort().catch(() => undefined);
+      throw error;
+    }
+  }
+
   async prepareAppend(
     conversationId: string,
     messages: readonly HistoryMessage[],

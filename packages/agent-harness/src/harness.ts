@@ -128,6 +128,25 @@ export class MonoAgentHarness implements AgentHarness {
     this.liveSessionManager?.cancel(conversationId, reason);
   }
 
+  async resetConversation(conversationId: string): Promise<void> {
+    if (typeof conversationId !== "string" || conversationId.trim().length === 0) {
+      throw new TypeError("conversationId must be a non-empty string.");
+    }
+    const normalized = conversationId.trim();
+    const historyStore = this.options.historyStore;
+    if (historyStore !== undefined && historyStore.reset === undefined) {
+      throw new Error("The configured conversation history store does not support session reset.");
+    }
+    // The responder serializes this behind the cancelled turn. Evict the warm
+    // handle first, then atomically replace only this conversation's canonical
+    // history. A reset failure is surfaced and never acknowledged as success.
+    await this.sessionStore?.evict(normalized, "stale");
+    await historyStore?.reset?.(normalized);
+    // Identity/soul are already read per turn. Clearing the skill cache forces
+    // installed skill metadata and content to be re-read on the next turn too.
+    this.skillsCache.clear();
+  }
+
   async appendVerbatimTurn(
     conversationId: string,
     text: string,

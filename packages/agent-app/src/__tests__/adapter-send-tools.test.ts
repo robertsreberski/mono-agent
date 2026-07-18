@@ -1247,9 +1247,16 @@ describe("adapter send MCP tools", () => {
     ]);
   });
 
-  it("TelegramAskButtons posts the question with an inline keyboard and waits for the tapped label", async () => {
+  it("TelegramAskButtons posts the question and accepts the next custom text reply", async () => {
     const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, askTimeoutMs: 5_000 });
-    bridge.registerSink("telegram", { postQuestion: async () => {}, postStatus: async () => {} });
+    const dismissed: Array<[string, string]> = [];
+    bridge.registerSink("telegram", {
+      postQuestion: async () => {},
+      postStatus: async () => {},
+      dismissQuestion: async (conversationId, messageRef) => {
+        dismissed.push([conversationId, messageRef]);
+      },
+    });
     const telegramCalls: TelegramSendMessageParams[] = [];
     let telegramSignal: AbortSignal | undefined;
     const settings: AdapterSendToolsSettings = {
@@ -1293,16 +1300,17 @@ describe("adapter send MCP tools", () => {
         await vi.waitFor(() => {
           expect(telegramCalls).toHaveLength(1);
         });
-        expect(bridge.tryResolveAsk("telegram:42", "typed text")).toBe(false);
-        expect(bridge.tryResolveAsk("telegram:42", "Approve", "callback")).toBe(true);
+        expect(bridge.tryResolveAsk("telegram:42", "Ship tomorrow instead")).toBe(true);
         const result = await pending;
         expect(result.structuredContent).toMatchObject({
           ok: true,
           answered: true,
-          answer: "Approve",
+          answer: "Ship tomorrow instead",
           chat_id: 42,
           message_id: 88,
         });
+        expect(JSON.stringify(result.content)).toContain("The user answered:");
+        expect(JSON.stringify(result.content)).not.toContain("The user tapped:");
       });
 
       expect(telegramCalls[0]?.text).toBe("Deploy now?");
@@ -1313,6 +1321,7 @@ describe("adapter send MCP tools", () => {
         ],
       });
       expect(telegramSignal).toBeInstanceOf(AbortSignal);
+      expect(dismissed).toEqual([["telegram:42", "88"]]);
       const history = bridge.enrichAssistantHistory({
         runId: "run-telegram-buttons",
         conversationId: "telegram:42#2026-07-12",
@@ -1322,7 +1331,7 @@ describe("adapter send MCP tools", () => {
       expect(history).toContain("Deploy now?");
       expect(history).toContain("- ⟦Approve⟧");
       expect(history).toContain("Outcome: answered");
-      expect(history).toContain("Approve");
+      expect(history).toContain("Ship tomorrow instead");
       expect(history.endsWith("Deployment approved.")).toBe(true);
     } finally {
       await bridge.stop();
@@ -1701,6 +1710,81 @@ describe("adapter send MCP tools", () => {
     expect(cleanupSignal).toBeInstanceOf(AbortSignal);
     expect(cleanupSignal?.aborted).toBe(true);
   }, 3_000);
+
+  it("TelegramAskButtons cleans up the pending ask when registering the keyboard reference fails", async () => {
+    const bridge = await startInteractionBridge({ host: "127.0.0.1", port: 0, askTimeoutMs: 5_000 });
+    bridge.registerSink("telegram", { postQuestion: async () => {}, postStatus: async () => {} });
+    let cleanedUp = false;
+    const fetchImpl = vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
+      if (init?.method === "PUT") throw new Error("presentation connection dropped");
+      if (init?.method === "DELETE") cleanedUp = true;
+      return await fetch(input, init);
+    });
+    const editMessageText = vi.fn(async (
+      _params: TelegramEditMessageTextParams,
+      _options?: { readonly signal?: AbortSignal },
+    ): Promise<true> => true);
+    try {
+      const server = await createAdapterSendToolsServer(
+        {
+          telegram: {
+            botToken: "telegram-token",
+            allowedChatIds: ["42"],
+            allowAllChats: false,
+            tools: { send: false, ask: true, file: false },
+            askBridge: {
+              bridgeUrl: bridge.url,
+              bridgeToken: bridge.token,
+              timeoutMs: 5_000,
+              conversationId: "telegram:42#presentation-failed",
+              runId: "run-presentation-failed",
+            },
+          },
+        },
+        {
+          telegram: {
+            sendMessage: vi.fn(async (params: TelegramSendMessageParams) => ({
+              message_id: 89,
+              chat: { id: params.chat_id },
+              text: params.text,
+            })),
+            editMessageText,
+          },
+        },
+        undefined,
+        { fetchImpl: fetchImpl as unknown as typeof fetch },
+      );
+
+      await withMcpClient(server, async (client) => {
+        const result = await client.callTool({
+          name: "TelegramAskButtons",
+          arguments: { chat_id: 42, question: "Deploy now?", options: ["Approve", "Reject"] },
+        });
+        expect(result.isError).toBe(true);
+        expect(JSON.stringify(result.content)).toContain("presentation connection dropped");
+      });
+
+      expect(cleanedUp).toBe(true);
+      expect(editMessageText).toHaveBeenCalledTimes(1);
+      expect(editMessageText).toHaveBeenCalledWith(
+        expect.objectContaining({
+          chat_id: 42,
+          message_id: 89,
+          text: expect.any(String),
+        }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+      expect(editMessageText.mock.calls[0]?.[0]).not.toHaveProperty("reply_markup");
+      expect(bridge.tryResolveAsk("telegram:42", "Approve")).toBe(false);
+      expect(bridge.enrichAssistantHistory({
+        runId: "run-presentation-failed",
+        conversationId: "telegram:42#presentation-failed",
+        assistantText: "Presentation failed.",
+      })).toBe("Presentation failed.");
+    } finally {
+      await bridge.stop();
+    }
+  });
 
   it("TelegramSendFile uploads base64 bytes with the given filename and caption", async () => {
     const docCalls: Array<{ chat_id: unknown; filename: string; bytes: number; caption?: string }> = [];

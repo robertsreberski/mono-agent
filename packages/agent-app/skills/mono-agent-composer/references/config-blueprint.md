@@ -272,8 +272,9 @@ new agent.
 
   // Telegram & Slack do not stream ANSWER tokens by default. They first show a
   // working indicator; inbound tool starts then edit one temporary, redacted
-  // activity ledger that the final answer replaces. Proactive turns suppress
-  // the ledger. This is built-in behavior (not a JSON field); a custom channel
+  // activity ledger. Telegram posts the final separately and deletes its ledger;
+  // Slack replaces its ledger with the final. Proactive turns suppress the
+  // ledger. This is built-in behavior (not a JSON field); a custom channel
   // driver can set stream.showHints=false or stream.finalOnly=false. The
   // OpenAI-compatible endpoint still streams tokens.
   // Telegram also exposes built-in per-chat /model and /effort menus over the

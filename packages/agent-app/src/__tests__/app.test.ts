@@ -2298,6 +2298,9 @@ describe("startMonoAgentApp", () => {
     let captured: TelegramAdapterStartOptions | undefined;
     const post = vi.fn(async () => undefined);
     const postStatus = vi.fn(async () => undefined);
+    const dismissInlineKeyboard = vi.fn(async () => undefined);
+    const startNewSession = vi.fn(async () => undefined);
+    const responder = { respond: async () => ({ text: "" }), startNewSession };
     const driver = createTelegramChannelDriver({
       startAdapter: async (options) => {
         captured = options;
@@ -2306,6 +2309,7 @@ describe("startMonoAgentApp", () => {
           notify: async () => ({ delivered: true }),
           post,
           postStatus,
+          dismissInlineKeyboard,
         };
       },
     });
@@ -2323,7 +2327,7 @@ describe("startMonoAgentApp", () => {
     const running = await driver.start({
       config: { enabled: true, botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
       coreConfig: parsedCoreConfig(),
-      responder: { respond: async () => ({ text: "" }) },
+      responder,
       cwd: dir,
       onFailure: vi.fn(),
       interaction: hub,
@@ -2337,6 +2341,8 @@ describe("startMonoAgentApp", () => {
     expect(hasPendingAsk).toHaveBeenCalledWith("telegram:42");
     captured?.pendingAsks?.cancel("telegram:42");
     expect(cancelAsks).toHaveBeenCalledWith("telegram:42");
+    await captured?.startNewSession?.("telegram:42");
+    expect(startNewSession).toHaveBeenCalledWith("telegram:42");
 
     // …and the driver registered a telegram sink that posts through the adapter.
     const sink = sinks.get("telegram");
@@ -2345,8 +2351,16 @@ describe("startMonoAgentApp", () => {
     expect(post).toHaveBeenCalledWith(42, "Who is speaking?");
     await sink?.postStatus("telegram:42#2026-07-02", "Transcribing…", { key: "job", state: "working" });
     expect(postStatus).toHaveBeenCalledWith(42, "Transcribing…", { key: "job", state: "working" });
+    const telegramSink = sink as ChannelInteractionSink & {
+      dismissQuestion(conversationId: string, messageRef: string): Promise<void>;
+    };
+    await telegramSink.dismissQuestion("telegram:42", "88");
+    expect(dismissInlineKeyboard).toHaveBeenCalledWith(42, 88);
+    await expect(telegramSink.dismissQuestion("telegram:42", "not-a-message-id"))
+      .rejects.toThrow(/invalid Telegram question message reference/iu);
     // Destination boundary: a chat outside the adapter allowlist is refused.
     await expect(sink?.postQuestion("telegram:999", "nope")).rejects.toThrow(/allowlist/iu);
+    await expect(telegramSink.dismissQuestion("telegram:999", "89")).rejects.toThrow(/allowlist/iu);
 
     await running.stop();
   });

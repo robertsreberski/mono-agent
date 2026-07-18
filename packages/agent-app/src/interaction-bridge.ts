@@ -31,6 +31,8 @@ export interface ChannelInteractionSink {
     text: string,
     options: { readonly key: string; readonly state: "working" | "done" | "failed" },
   ): Promise<void>;
+  /** Remove channel-native question controls after a custom text answer. */
+  dismissQuestion?(conversationId: string, messageRef: string): Promise<void>;
 }
 
 export interface InteractionBridgeOptions {
@@ -199,6 +201,8 @@ interface PendingAsk {
   readonly answerKind: AskAnswerKind;
   status: AskStatus;
   answer?: string;
+  presentationRef?: string;
+  dismissPresentationWhenAvailable?: boolean;
   expiryTimer?: ReturnType<typeof setTimeout>;
   readonly waiters: Set<(snapshot: AskSnapshot) => void>;
 }
@@ -365,6 +369,46 @@ export async function startInteractionBridge(
     }
     ask.expiryTimer = setTimeout(() => settleAsk(ask, "expired"), timeoutMs);
     ask.expiryTimer.unref?.();
+  }
+
+  function dismissAskPresentationBestEffort(ask: PendingAsk): void {
+    const presentationRef = ask.presentationRef;
+    const sink = sinks.get(channelIdOf(ask.conversationId));
+    if (presentationRef === undefined || sink?.dismissQuestion === undefined) return;
+    void sink.dismissQuestion(ask.conversationId, presentationRef).catch((error: unknown) => {
+      options.logger?.debug?.("interaction bridge: question controls could not be dismissed (best-effort).", {
+        conversationId: ask.conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
+  async function handleRegisterAskPresentation(
+    request: IncomingMessage,
+    response: ServerResponse,
+    askId: string,
+  ): Promise<void> {
+    const ask = asksById.get(askId);
+    if (ask === undefined) {
+      sendJson(response, 404, { error: "unknown askId." });
+      return;
+    }
+    const body = await readJsonBody(request);
+    const messageRef = stringField(body, "messageRef");
+    if (messageRef === undefined || !/^\d{1,32}$/u.test(messageRef)) {
+      sendJson(response, 400, { error: "messageRef must be an opaque numeric channel message reference." });
+      return;
+    }
+    if (ask.answerKind !== "callback") {
+      sendJson(response, 409, { error: "this ask does not own channel-native controls." });
+      return;
+    }
+    ask.presentationRef = messageRef;
+    if (ask.dismissPresentationWhenAvailable === true) {
+      dismissAskPresentationBestEffort(ask);
+    }
+    response.statusCode = 204;
+    response.end();
   }
 
   async function handleCreateAsk(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -677,6 +721,11 @@ export async function startInteractionBridge(
       await handleCreateAsk(request, response);
       return;
     }
+    const askPresentationMatch = /^\/v1\/asks\/([^/]+)\/presentation$/u.exec(url.pathname);
+    if (askPresentationMatch !== null && request.method === "PUT") {
+      await handleRegisterAskPresentation(request, response, askPresentationMatch[1] as string);
+      return;
+    }
     const askMatch = /^\/v1\/asks\/([^/]+)$/u.exec(url.pathname);
     if (askMatch !== null && request.method === "GET") {
       handleAwaitAsk(request, response, askMatch[1] as string, url);
@@ -711,8 +760,13 @@ export async function startInteractionBridge(
       if (ask === undefined) {
         return false;
       }
-      if (ask.answerKind !== answerKind) {
+      const customTextForButtons = ask.answerKind === "callback" && answerKind === "text";
+      if (ask.answerKind !== answerKind && !customTextForButtons) {
         return false;
+      }
+      if (customTextForButtons) {
+        ask.dismissPresentationWhenAvailable = true;
+        dismissAskPresentationBestEffort(ask);
       }
       settleAsk(ask, "answered", answer);
       return true;

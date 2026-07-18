@@ -12,4 +12,15 @@ describe("InMemoryConversationHistoryStore", () => {
 
     await expect(store.load("conversation")).resolves.toEqual([]);
   });
+
+  it("resets only the selected conversation", async () => {
+    const store = createInMemoryHistoryStore();
+    await store.append("first", [{ role: "user", content: "remove me" }]);
+    await store.append("second", [{ role: "assistant", content: "keep me" }]);
+
+    await store.reset("first");
+
+    await expect(store.load("first")).resolves.toEqual([]);
+    await expect(store.load("second")).resolves.toEqual([{ role: "assistant", content: "keep me" }]);
+  });
 });

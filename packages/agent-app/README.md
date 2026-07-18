@@ -290,6 +290,12 @@ bounded by newest whole interactions, without changing the outward message or
 long-term memory capture. `TelegramAskButtons` with `wait: false` continues to produce a
 synthetic next turn when the user taps later.
 
+For blocking `TelegramAskButtons`, the next plain-text Telegram message is also
+a valid custom answer. It resolves the same in-flight tool call and the app asks
+the Telegram sink to remove the inline keyboard. The built-in Telegram `/new`
+command uses the configured responder's host-owned reset surface to clear only
+that conversation and force skill/startup-context reload on its next turn.
+
 The app publishes a cached, content-free `memoryHealth` snapshot in the primary
 trace-source heartbeat and any enabled best-effort global mirror. Built-in
 health is computed through a dynamic memory import so a native SQLite ABI

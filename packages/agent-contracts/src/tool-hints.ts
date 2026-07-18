@@ -129,7 +129,11 @@ const MEMORY_READ_NAMES = new Set(["memoryrecall"]);
 const SENSITIVE_ASSIGNMENT_PATTERN = /\b((?:[A-Za-z][A-Za-z0-9_-]*)?(?:authorization|cookie|api[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|security[-_]?token|password|passwd|secret|private[-_]?key|credential|session[-_]?(?:id|token)|token))\s*[:=]\s*(?:(?:Bearer|Basic)\s+)?(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
 const AUTH_SCHEME_PATTERN = /\b(Bearer|Basic)\s+(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
 const SENSITIVE_QUERY_PATTERN = /([?&](?:api[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|client[-_]?secret|password|passwd|secret|signature|x-amz-signature|ticket|token)=)[^&#\s]*/giu;
-const URL_USERINFO_PATTERN = /\b(https?:\/\/)[^/\s:@]+(?::[^/\s@]*)?@/giu;
+const URL_USERINFO_PATTERN = /\b([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s@]*@/gu;
+const SENSITIVE_FLAG_PATTERN = /(^|\s)(--?(?:[A-Za-z][A-Za-z0-9_-]*[-_])?(?:authorization|cookie|api[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|security[-_]?token|password|passwd|secret|private[-_]?key|credential|session[-_]?(?:id|token)|token))(?:\s+|=)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
+const BASIC_AUTH_FLAG_PATTERN = /(^|\s)(-u|--user(?:name)?)(?:\s+|=)(?:"[^"]*:[^"]*"|'[^']*:[^']*'|[^\s,;]+:[^\s,;]+)/giu;
+const MYSQL_PASSWORD_FLAG_PATTERN = /(\b(?:mysql|mysqladmin|mysqldump|mysqlshow|mysqlimport|mysqlslap|mariadb|mariadb-dump)\b(?:(?![;&|]).)*?\s)(-p)(?:\s+|=)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
+const MYSQL_ATTACHED_PASSWORD_FLAG_PATTERN = /(\b(?:mysql|mysqladmin|mysqldump|mysqlshow|mysqlimport|mysqlslap|mariadb|mariadb-dump)\b(?:(?![;&|]).)*?\s)(-p)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
 const KNOWN_SECRET_PATTERNS: readonly RegExp[] = [
   /\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{12,}\b/gu,
   /\bgh[oprsu]_[A-Za-z0-9]{20,}\b/gu,
@@ -237,10 +241,22 @@ function previewFromArguments(
   for (const key of previewFields) {
     const value = safeOwnScalar(record, key);
     if (value === undefined) continue;
-    const preview = sanitizePreview(value);
+    const preview = sanitizePreview(value, previewTruncationForField(key));
     if (preview !== undefined) return preview;
   }
   return undefined;
+}
+
+type PreviewTruncation = "head" | "middle" | "balanced";
+
+function previewTruncationForField(field: string): PreviewTruncation {
+  if (field === "file_path" || field === "path" || field === "destination") {
+    return "middle";
+  }
+  if (field === "command" || field === "cmd" || field === "script" || field === "code" || field === "source") {
+    return "balanced";
+  }
+  return "head";
 }
 
 function safePlainRecord(value: unknown): object | undefined {
@@ -268,7 +284,7 @@ function safeOwnScalar(record: object, key: string): string | undefined {
   return undefined;
 }
 
-function sanitizePreview(value: string): string | undefined {
+function sanitizePreview(value: string, truncation: PreviewTruncation): string | undefined {
   let sanitized = truncateCodePoints(value, TOOL_PREVIEW_SCAN_CODE_POINTS)
     .replace(/[\p{Cc}\p{Cf}]+/gu, " ")
     .replace(/\s+/gu, " ")
@@ -278,6 +294,14 @@ function sanitizePreview(value: string): string | undefined {
   sanitized = sanitized
     .replace(URL_USERINFO_PATTERN, "$1")
     .replace(SENSITIVE_QUERY_PATTERN, `$1${REDACTED}`)
+    .replace(SENSITIVE_FLAG_PATTERN, (_match, boundary: string, flag: string) =>
+      `${boundary}${flag} ${REDACTED}`)
+    .replace(BASIC_AUTH_FLAG_PATTERN, (_match, boundary: string, flag: string) =>
+      `${boundary}${flag} ${REDACTED}`)
+    .replace(MYSQL_PASSWORD_FLAG_PATTERN, (_match, prefix: string, flag: string) =>
+      `${prefix}${flag} ${REDACTED}`)
+    .replace(MYSQL_ATTACHED_PASSWORD_FLAG_PATTERN, (_match, prefix: string, flag: string) =>
+      `${prefix}${flag}${REDACTED}`)
     .replace(SENSITIVE_ASSIGNMENT_PATTERN, (_match, key: string) => `${key}=${REDACTED}`)
     .replace(AUTH_SCHEME_PATTERN, (_match, scheme: string) => `${scheme} ${REDACTED}`);
   for (const pattern of KNOWN_SECRET_PATTERNS) {
@@ -285,7 +309,17 @@ function sanitizePreview(value: string): string | undefined {
   }
   sanitized = sanitized.replace(/\s+/gu, " ").trim();
   if (sanitized.length === 0) return undefined;
-  return truncateCodePoints(sanitized, TOOL_PREVIEW_CODE_POINTS);
+  return truncatePreview(sanitized, TOOL_PREVIEW_CODE_POINTS, truncation);
+}
+
+function truncatePreview(value: string, maxCodePoints: number, mode: PreviewTruncation): string {
+  if (mode === "head") return truncateCodePoints(value, maxCodePoints);
+  const points = Array.from(value);
+  if (points.length <= maxCodePoints) return value;
+  const visible = Math.max(0, maxCodePoints - 1);
+  const prefixLength = mode === "middle" ? Math.floor(visible / 3) : Math.ceil(visible / 2);
+  const suffixLength = visible - prefixLength;
+  return `${points.slice(0, prefixLength).join("")}…${points.slice(-suffixLength).join("")}`;
 }
 
 function truncateCodePoints(value: string, maxCodePoints: number): string {

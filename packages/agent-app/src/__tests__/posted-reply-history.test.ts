@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
   AgentMessageStream,
@@ -140,6 +140,29 @@ function occurrences(haystack: string, needle: string): number {
 }
 
 describe("createSlackPostedReplyHistory", () => {
+  it("forwards conversation reset controls through both decorators", async () => {
+    const reset = vi.fn(async () => undefined);
+    const startNewSession = vi.fn(async () => undefined);
+    const bridge = createSlackPostedReplyHistory({ maxMessages: 64 });
+    const history = bridge.wrapHistoryStore({
+      load: async () => [],
+      append: async () => undefined,
+      reset,
+    });
+    const responder = bridge.wrapResponder({
+      respond: async () => ({ text: "ok" }),
+      startNewSession,
+    } as AgentResponder & { startNewSession(conversationId: string): Promise<void> });
+
+    await history.reset?.("telegram:42");
+    await (responder as AgentResponder & {
+      startNewSession?: (conversationId: string) => Promise<void>;
+    }).startNewSession?.("telegram:42");
+
+    expect(reset).toHaveBeenCalledWith("telegram:42");
+    expect(startNewSession).toHaveBeenCalledWith("telegram:42");
+  });
+
   it("adds the exact destination receipt once to a cold real replay without changing producer history", async () => {
     const identityPath = await identityFixture();
     const canonical = createInMemoryHistoryStore({ maxMessages: 64 });

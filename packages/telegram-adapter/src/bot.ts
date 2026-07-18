@@ -67,6 +67,7 @@ const CALLBACK_DEDUPE_MAX = 200;
 const RUNTIME_CALLBACK_PREFIX = "ma:";
 const MODEL_CALLBACK_PREFIX = `${RUNTIME_CALLBACK_PREFIX}m:`;
 const EFFORT_CALLBACK_PREFIX = `${RUNTIME_CALLBACK_PREFIX}e:`;
+const RUNTIME_CANCEL_CALLBACK = `${RUNTIME_CALLBACK_PREFIX}cancel`;
 const RUNTIME_CALLBACK_TOKEN_LENGTH = 16;
 const TELEGRAM_BUTTON_LABEL_CODE_POINTS = 60;
 
@@ -249,7 +250,7 @@ export interface CreateTelegramBotOptions {
   /**
    * Custom command-menu entries. When non-empty the bot registers them (plus the
    * available built-ins) via `setMyCommands` at startup and dispatches each
-   * command's `prompt` as a turn. Built-in start/help/cancel/model/effort cannot
+   * command's `prompt` as a turn. Built-in start/help/cancel/new/model/effort cannot
    * be overridden.
    */
   readonly commands?: readonly TelegramCommandConfig[];
@@ -323,6 +324,8 @@ export interface CreateTelegramBotOptions {
    * otherwise queue behind that very turn and deadlock until the ask times out.
    */
   readonly pendingAsks?: TelegramPendingAsks;
+  /** Clear one host-owned conversation session for the built-in `/new` command. */
+  readonly startNewSession?: (conversationId: string) => Promise<void>;
   /**
    * Base URL of a self-hosted Bot API server (e.g. `http://127.0.0.1:8081`).
    * Applied to every API call and to file downloads; a `--local` server's
@@ -371,6 +374,8 @@ export interface TelegramBotController {
     text: string,
     options: { readonly key: string; readonly state: "working" | "done" | "failed" },
   ): Promise<void>;
+  /** Remove an inline keyboard from one known message (best-effort). */
+  dismissInlineKeyboard(chatId: TelegramChatId, messageId: number): Promise<void>;
   /**
    * Test seam: total in-flight AbortControllers tracked across all chats. Used to
    * assert the over-cap busy path does not leak an eagerly-created controller.
@@ -378,7 +383,7 @@ export interface TelegramBotController {
   activeControllerCount(): number;
 }
 
-type TelegramControlCommand = "start" | "help" | "cancel";
+type TelegramControlCommand = "start" | "help" | "cancel" | "new";
 
 interface TelegramRuntimeSelection {
   model?: string;
@@ -741,8 +746,8 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     const model = effectiveRuntimeModel(chatId);
     const isDefault = runtimeSelectionFor(chatId).model === undefined;
     const base = isDefault
-      ? `Model reset to the configured default: ${model?.label ?? "unknown"}.`
-      : `Model set to ${model?.label ?? "unknown"} for this chat until /model default or restart.`;
+      ? `Model changed to the configured default: ${model?.label ?? "unknown"}.`
+      : `Model changed to ${model?.label ?? "unknown"} for this chat until /model default or restart.`;
     return effortCleared
       ? `${base} The previous effort selection was reset because this model does not support it.`
       : base;
@@ -753,12 +758,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     if (selection.effort === undefined) {
       const configured = runtimeCatalog?.controls.defaultEffort;
       return configured === undefined
-        ? "Effort reset to the configured provider default."
-        : `Effort reset to the configured default: ${configured}.`;
+        ? "Effort changed to the configured provider default."
+        : `Effort changed to the configured default: ${configured}.`;
     }
     const model = effectiveRuntimeModel(chatId);
     const effort = model?.efforts.find((candidate) => candidate.value === selection.effort);
-    return `Effort set to ${effort?.label ?? selection.effort} for this chat until /effort default or restart.`;
+    return `Effort changed to ${effort?.label ?? selection.effort} for this chat until /effort default or restart.`;
   }
 
   function modelMenuMarkup(chatId: TelegramChatId): {
@@ -780,6 +785,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         callback_data: `${MODEL_CALLBACK_PREFIX}${catalog.modelTokenByValue.get(model.value) as string}`,
       }]);
     }
+    rows.push([{ text: "Cancel", callback_data: RUNTIME_CANCEL_CALLBACK }]);
     return { inline_keyboard: rows };
   }
 
@@ -802,6 +808,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         callback_data: `${EFFORT_CALLBACK_PREFIX}${modelToken}:${token}`,
       }]);
     }
+    rows.push([{ text: "Cancel", callback_data: RUNTIME_CANCEL_CALLBACK }]);
     return { inline_keyboard: rows };
   }
 
@@ -874,6 +881,24 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     await ctx.reply(effortSelectionConfirmation(chatId));
   }
 
+  async function handleNewSessionCommand(ctx: Context): Promise<void> {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined) return;
+    const conversationId = `telegram:${String(chatId)}`;
+    if (options.startNewSession === undefined) {
+      await ctx.reply(messages.newSessionErrorText);
+      return;
+    }
+    cancelChat(chatId);
+    try {
+      await options.startNewSession(conversationId);
+      await ctx.reply(messages.newSessionText);
+    } catch (error) {
+      logger?.warn?.("Telegram /new session reset failed.", { error: errorMessage(error) });
+      await ctx.reply(messages.newSessionErrorText);
+    }
+  }
+
   const reactions = options.reactions;
   /**
    * Set (or clear, when `emoji` is undefined) the bot's reaction on a message.
@@ -927,6 +952,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
     await ctx.reply(messages.cancelledText);
   });
+  bot.command("new", handleNewSessionCommand);
   if (runtimeCatalog !== undefined) {
     bot.command("model", handleModelCommand);
     bot.command("effort", handleEffortCommand);
@@ -936,7 +962,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   // handler so a `/cmd` is dispatched here (and never falls through to the agent
   // as raw text). A command with a `prompt` runs it as a turn through the same
   // per-chat queue as a typed message; a prompt-less command is menu-only and
-  // just echoes its description. Built-in start/help/cancel/model/effort are reserved (config
+  // just echoes its description. Built-in start/help/cancel/new/model/effort are reserved (config
   // validation rejects them), so these never shadow a built-in.
   const customCommands = options.commands ?? [];
   for (const command of customCommands) {
@@ -987,6 +1013,27 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       });
     }
   }
+  async function replaceRuntimeMenuQuietly(ctx: Context, text: string): Promise<void> {
+    try {
+      await ctx.editMessageText(text);
+    } catch (error) {
+      logger?.debug?.("Telegram editMessageText failed after runtime selection; replying instead.", {
+        error: errorMessage(error),
+      });
+      await stripCallbackKeyboardQuietly(ctx);
+      await ctx.reply(text);
+    }
+  }
+  async function deleteRuntimeMenuQuietly(ctx: Context): Promise<void> {
+    try {
+      await ctx.deleteMessage();
+    } catch (error) {
+      logger?.debug?.("Telegram deleteMessage failed after runtime-menu cancel; editing instead.", {
+        error: errorMessage(error),
+      });
+      await replaceRuntimeMenuQuietly(ctx, "Selection cancelled.");
+    }
+  }
   async function expireRuntimeCallback(ctx: Context): Promise<void> {
     await answerCallbackQuietly(ctx, "This menu has expired.");
     await stripCallbackKeyboardQuietly(ctx);
@@ -1006,6 +1053,13 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       return true;
     }
 
+    if (data === RUNTIME_CANCEL_CALLBACK) {
+      rememberAnswered(dedupeKey);
+      await answerCallbackQuietly(ctx, "Cancelled.");
+      await deleteRuntimeMenuQuietly(ctx);
+      return true;
+    }
+
     if (data.startsWith(MODEL_CALLBACK_PREFIX)) {
       const token = data.slice(MODEL_CALLBACK_PREFIX.length);
       const model = runtimeCatalog.modelByToken.get(token);
@@ -1016,8 +1070,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       rememberAnswered(dedupeKey);
       const effortCleared = selectRuntimeModel(chatId, model.value);
       await answerCallbackQuietly(ctx, "Model updated.");
-      await stripCallbackKeyboardQuietly(ctx);
-      await ctx.reply(modelSelectionConfirmation(chatId, effortCleared));
+      await replaceRuntimeMenuQuietly(ctx, modelSelectionConfirmation(chatId, effortCleared));
       return true;
     }
 
@@ -1041,8 +1094,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       rememberAnswered(dedupeKey);
       selectRuntimeEffort(chatId, effortToken === "d" ? undefined : effort?.value);
       await answerCallbackQuietly(ctx, "Effort updated.");
-      await stripCallbackKeyboardQuietly(ctx);
-      await ctx.reply(effortSelectionConfirmation(chatId));
+      await replaceRuntimeMenuQuietly(ctx, effortSelectionConfirmation(chatId));
       return true;
     }
 
@@ -1650,6 +1702,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       await ctx.reply(messages.helpText);
       return;
     }
+    if (command === "new") {
+      await handleNewSessionCommand(ctx);
+      return;
+    }
     const chatId = ctx.chat?.id;
     if (chatId !== undefined) {
       cancelChat(chatId);
@@ -1975,6 +2031,15 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         }
       }
     },
+    async dismissInlineKeyboard(chatId, messageId): Promise<void> {
+      try {
+        await bot.api.editMessageReplyMarkup(chatId, messageId);
+      } catch (error) {
+        logger?.debug?.("Telegram inline-keyboard dismissal failed (best-effort).", {
+          error: errorMessage(error),
+        });
+      }
+    },
     activeControllerCount(): number {
       let total = 0;
       for (const set of activeControllers.values()) {
@@ -2024,12 +2089,15 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           });
         }
       }
-      // Register the command menu when custom commands or host-supplied runtime
-      // controls exist. Best-effort + bounded so a flaky network can't stall boot.
-      if (customCommands.length > 0 || runtimeCatalog !== undefined) {
+      // Register the command menu when host-backed controls are available.
+      // Best-effort + bounded so a flaky network can't stall boot.
+      if (options.startNewSession !== undefined || customCommands.length > 0 || runtimeCatalog !== undefined) {
         const menu = [
           { command: "help", description: "How to use this agent" },
           { command: "cancel", description: "Stop the current response" },
+          ...(options.startNewSession === undefined
+            ? []
+            : [{ command: "new", description: "Start a fresh conversation session" }]),
           ...(runtimeCatalog === undefined
             ? []
             : [
@@ -2403,7 +2471,7 @@ function controlCommandFromCaption(
       return undefined;
     }
   }
-  return command === "start" || command === "help" || command === "cancel"
+  return command === "start" || command === "help" || command === "cancel" || command === "new"
     ? command
     : undefined;
 }
