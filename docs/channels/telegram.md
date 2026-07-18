@@ -170,9 +170,19 @@ request that produced the run and restrict path delivery to its output directory
 }
 ```
 
-This is opt-in. In strict mode a guessed second allowed chat is rejected, and a
-file path must realpath beneath the current run output directory; traversal,
-other-run paths, and symlink escapes fail closed.
+This is opt-in. In strict mode `TelegramSendFile` has no model-facing `chat_id`:
+the host derives the destination from the Telegram conversation that produced
+the run, rechecks it against the adapter allowlist, and omits the raw chat id
+from the tool result. Unexpected destination input cannot redirect the upload;
+missing or non-Telegram request context fails closed. A file path must realpath
+beneath the current run output directory; traversal, other-run paths, and
+symlink escapes fail closed.
+
+For example, a strict file call contains only the file operation and content:
+
+```json
+{ "kind": "document", "path": "artifacts/outbound/<run-id>/transcript.md" }
+```
 
 ```json
 { "tools": { "allowedTools": ["TelegramSendFile"] } }
