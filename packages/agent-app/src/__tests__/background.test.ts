@@ -28,6 +28,7 @@ import type { BackgroundSnapshot } from "../background-snapshot.js";
 import type { LaunchdLogInspection } from "../launchd-logs.js";
 import type { LaunchctlRunner } from "../launchd.js";
 import type { ProcessIncarnation } from "../process-incarnation.js";
+import type { OwnerPrivateLock } from "../owner-private-lock.js";
 
 const POLL = { timeoutMs: 5_000, intervalMs: 100 };
 const CLOCK_START = 1_000_000;
@@ -241,6 +242,7 @@ function makeHarness(opts: {
   ensureManagedRuntime?: BackgroundDeps["ensureManagedRuntime"];
   resolveManagedRuntimePackages?: NonNullable<BackgroundDeps["resolveManagedRuntimePackages"]>;
   acquireLifecycleLock?: BackgroundDeps["acquireLifecycleLock"];
+  acquireRuntimePublicationBarrier?: NonNullable<BackgroundDeps["acquireRuntimePublicationBarrier"]>;
   probeTui?: BackgroundDeps["probeTui"];
   captureSnapshot?: NonNullable<BackgroundDeps["captureSnapshot"]>;
   now?: BackgroundDeps["now"];
@@ -307,11 +309,17 @@ function makeHarness(opts: {
       packageVersion: "0.8.0",
       cliSha256: "a".repeat(64),
       nodeAbi: "137",
+      launchProof: "verified-runtime-launch-proof",
     })),
     ...(opts.resolveManagedRuntimePackages === undefined
       ? {}
       : { resolveManagedRuntimePackages: opts.resolveManagedRuntimePackages }),
     acquireLifecycleLock: opts.acquireLifecycleLock ?? (async () => async () => undefined),
+    acquireRuntimePublicationBarrier: opts.acquireRuntimePublicationBarrier ?? (async () => ({
+      path: "/home/u/.mono-agent/locks/com.mono-agent.demo-0a1b2c3d.runtime-install.lock",
+      ownerPid: 1234,
+      release: async () => undefined,
+    } satisfies OwnerPrivateLock)),
     probeTui: opts.probeTui ?? (async () => true),
     captureSnapshot: opts.captureSnapshot ?? (async (target) => target.expectedSnapshot ?? makeSnapshot(target)),
     stdout: (text) => out.push(text),
@@ -547,6 +555,7 @@ describe("startBackground", () => {
           packageVersion: "0.8.0",
           cliSha256: "a".repeat(64),
           nodeAbi: "137",
+          launchProof: "unused-runtime-launch-proof",
         };
       },
     });
@@ -616,6 +625,64 @@ describe("startBackground", () => {
     expect(stdout).toContain(target.label);
   });
 
+  it("keeps the current worker serving until runtime installation resolves, then releases the barrier after plist commit", async () => {
+    const { runner, calls } = makeRunner({ loaded: true, initialPid: 1111, bootstrapPid: 4321 });
+    const target = makeTarget();
+    const oldSource = makeSource(target, { pid: 1111, startedAt: new Date(CLOCK_START - 1).toISOString() });
+    const newSource = makeSource(target, { pid: 4321, startedAt: new Date(CLOCK_START + 1).toISOString() });
+    let resolveInstall!: () => void;
+    const installGate = new Promise<void>((resolvePromise) => { resolveInstall = resolvePromise; });
+    let markInstallStarted!: () => void;
+    const installStarted = new Promise<void>((resolvePromise) => { markInstallStarted = resolvePromise; });
+    const events: string[] = [];
+    let harness!: Harness;
+    const barrier: OwnerPrivateLock = {
+      path: "/home/u/.mono-agent/locks/runtime-install.lock",
+      ownerPid: 1234,
+      release: async () => {
+        events.push(`barrier-released:writes=${harness.written.length}:bootstraps=${calls.filter((call) => call[0] === "bootstrap").length}`);
+      },
+    };
+    harness = makeHarness({
+      runner,
+      list: listReturning(() => calls.some((call) => call[0] === "bootstrap" && call[2] === target.paths.plistPath)
+        ? [newSource]
+        : [oldSource]),
+      acquireRuntimePublicationBarrier: async () => {
+        events.push("barrier-acquired");
+        return barrier;
+      },
+      ensureManagedRuntime: async (input) => {
+        events.push("runtime-install-started");
+        markInstallStarted();
+        await installGate;
+        events.push("runtime-install-finished");
+        return {
+          cliPath: "/home/u/.mono-agent/runtimes/agent-app/verified/dist/cli.js",
+          nodePath: input.nodePath,
+          installRoot: "/home/u/.mono-agent/runtimes/agent-app/verified",
+          packageVersion: "0.8.0",
+          cliSha256: "a".repeat(64),
+          nodeAbi: "137",
+          launchProof: "deferred-runtime-launch-proof",
+        };
+      },
+    });
+
+    const starting = ensureBackgroundReady(target, harness.deps, POLL);
+    await installStarted;
+
+    expect(events).toEqual(["barrier-acquired", "runtime-install-started"]);
+    expect(harness.written).toEqual([]);
+    expect(calls.some((call) => call[0] === "bootout" || call[0] === "bootstrap")).toBe(false);
+
+    resolveInstall();
+    await expect(starting).resolves.toMatchObject({ ok: true, action: "restarted" });
+    expect(events).toContain("barrier-released:writes=2:bootstraps=0");
+    expect(harness.written[0]?.data).toContain("--expected-managed-runtime-launch");
+    expect(harness.written[0]?.data).toContain("deferred-runtime-launch-proof");
+  });
+
   it("binds config-selected plugin packages into the managed runtime request", async () => {
     const { runner } = makeRunner({ loaded: false });
     const target = makeTarget();
@@ -640,6 +707,7 @@ describe("startBackground", () => {
           packageVersion: "0.8.0",
           cliSha256: "a".repeat(64),
           nodeAbi: "137",
+          launchProof: "plugin-runtime-launch-proof",
         };
       },
     });
@@ -949,9 +1017,15 @@ describe("startBackground", () => {
   it("fails before writing a plist when the durable runtime cannot be verified", async () => {
     const { runner, calls } = makeRunner({ loaded: false });
     const target = makeTarget();
+    let barrierReleases = 0;
     const harness = makeHarness({
       runner,
       list: listReturning(() => []),
+      acquireRuntimePublicationBarrier: async () => ({
+        path: "/home/u/.mono-agent/locks/runtime-install.lock",
+        ownerPid: 1234,
+        release: async () => { barrierReleases += 1; },
+      }),
       ensureManagedRuntime: async () => { throw new Error("exact CLI SHA mismatch"); },
     });
 
@@ -961,6 +1035,7 @@ describe("startBackground", () => {
     expect(harness.written).toEqual([]);
     expect(calls.map((call) => call[0])).not.toContain("bootstrap");
     expect(harness.err.join("")).toContain("exact CLI SHA mismatch");
+    expect(barrierReleases).toBe(1);
   });
 
   it("fails closed when a live matching manifest is not owned by launchd", async () => {

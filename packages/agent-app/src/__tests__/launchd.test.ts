@@ -31,6 +31,7 @@ function plistInput(overrides: Partial<PlistInput> = {}): PlistInput {
     configPath: "/work/demo/mono-agent.config.json",
     cwd: "/work/demo",
     expectedBackgroundSnapshot: "approved-background-snapshot",
+    expectedManagedRuntimeLaunch: "finalized-runtime-proof",
     stdoutPath: "/home/u/.mono-agent/logs/com.mono-agent.demo-0a1b2c3d.out.log",
     stderrPath: "/home/u/.mono-agent/logs/com.mono-agent.demo-0a1b2c3d.err.log",
     environment: { PATH: "/usr/bin:/bin" },
@@ -165,6 +166,8 @@ describe("buildPlistXml", () => {
     expect(xml.indexOf("--foreground")).toBeLessThan(xml.indexOf("--config"));
     expect(xml).toContain("<string>--expected-background-snapshot</string>");
     expect(xml).toContain("<string>approved-background-snapshot</string>");
+    expect(xml).toContain("<string>--expected-managed-runtime-launch</string>");
+    expect(xml).toContain("<string>finalized-runtime-proof</string>");
   });
 
   it("passes --env-file to the worker when set", () => {

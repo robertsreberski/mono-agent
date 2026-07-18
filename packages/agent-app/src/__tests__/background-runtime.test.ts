@@ -12,6 +12,7 @@ import {
   ensureManagedBackgroundRuntime as ensureManagedBackgroundRuntimeImpl,
   MANAGED_BACKGROUND_WORKER_ENV,
   sanitizeManagedBackgroundWorkerEnvironment,
+  verifyManagedRuntimeLaunch,
 } from "../background-runtime.js";
 import type { ManagedBackgroundRuntimeDeps, ManagedRuntimeInstallInput } from "../background-runtime.js";
 import type { ProcessIncarnation } from "../process-incarnation.js";
@@ -175,6 +176,100 @@ describe("ensureManagedBackgroundRuntime", () => {
 
     expect(marker.installedAt).toBe("1970-01-01T00:00:10.000Z");
     expect(now).toBe(11_000);
+  });
+
+  it("publishes a path-free launch proof that verifies the exact finalized closure", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+
+    const proofJson = Buffer.from(runtime.launchProof, "base64url").toString("utf8");
+    expect(proofJson).not.toContain(homeDir);
+    await expect(verifyManagedRuntimeLaunch({
+      currentCliPath: runtime.cliPath,
+      launchProof: runtime.launchProof,
+      homeDir,
+    })).resolves.toEqual({ installRoot: runtime.installRoot });
+  });
+
+  it("rejects launch proof reuse after CLI or manifest corruption", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+
+    await writeFile(runtime.cliPath, "console.log('tampered');\n", "utf8");
+    await expect(verifyManagedRuntimeLaunch({
+      currentCliPath: runtime.cliPath,
+      launchProof: runtime.launchProof,
+      homeDir,
+    })).rejects.toThrow(/CLI or package identity/u);
+
+    await writeFile(runtime.cliPath, source.bytes, "utf8");
+    await writeFile(join(runtime.installRoot, ".mono-agent-closure.json"), "{}\n", { mode: 0o600 });
+    await expect(verifyManagedRuntimeLaunch({
+      currentCliPath: runtime.cliPath,
+      launchProof: runtime.launchProof,
+      homeDir,
+    })).rejects.toThrow(/closure manifest fingerprint/u);
+  });
+
+  it("rejects a managed closure root replaced by a symlink after publication", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    const movedRoot = `${runtime.installRoot}.moved`;
+    await rename(runtime.installRoot, movedRoot);
+    await symlink(movedRoot, runtime.installRoot, "dir");
+
+    await expect(verifyManagedRuntimeLaunch({
+      currentCliPath: runtime.cliPath,
+      launchProof: runtime.launchProof,
+      homeDir,
+    })).rejects.toThrow(/not a real owner-private directory/u);
+  });
+
+  it("rejects provisional and mismatched managed runtime launch proofs", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const runtime = await ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    });
+    const markerPath = join(runtime.installRoot, ".mono-agent-runtime.json");
+    const originalMarker = await readFile(markerPath, "utf8");
+    const marker = JSON.parse(originalMarker) as Record<string, unknown>;
+    await writeFile(markerPath, `${JSON.stringify({
+      ...marker,
+      installedAt: "1970-01-01T00:00:00.000Z",
+    }, undefined, 2)}\n`, { mode: 0o600 });
+
+    await expect(verifyManagedRuntimeLaunch({
+      currentCliPath: runtime.cliPath,
+      launchProof: runtime.launchProof,
+      homeDir,
+    })).rejects.toThrow(/provisional or malformed/u);
+
+    await writeFile(markerPath, originalMarker, { mode: 0o600 });
+    const proof = JSON.parse(Buffer.from(runtime.launchProof, "base64url").toString("utf8")) as Record<string, unknown>;
+    const mismatched = Buffer.from(JSON.stringify({ ...proof, markerSha256: "b".repeat(64) }), "utf8").toString("base64url");
+    await expect(verifyManagedRuntimeLaunch({
+      currentCliPath: runtime.cliPath,
+      launchProof: mismatched,
+      homeDir,
+    })).rejects.toThrow(/does not match/u);
   });
 
   it("materializes a real workspace-linked dependency closure without asking npm to parse workspace ranges", async () => {

@@ -18,6 +18,7 @@ import type { SlackAdapterStartOptions } from "@mono-agent/slack-adapter";
 import type { RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
 import { startMonoAgentApp } from "../app.js";
+import { MonoAgentAppController } from "../app-controller.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
 import { loadAppCoreConfig, resolveAppTraceSourceId } from "../app-config.js";
 import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME } from "../adapter-send-tools.js";
@@ -1269,6 +1270,39 @@ describe("startMonoAgentApp", () => {
     expect(app.sandboxStatus.engine).toBe("fake-srt");
     expect(runtimeCalls[0]?.sandboxEngine).toBe(unavailableSandboxEngine);
     await app.stop();
+  });
+
+  it("selects an app-owned SRT engine only for a verified managed runtime", async () => {
+    const configPath = await writeConfig({
+      ...baseConfig(),
+      sandbox: { mode: "native", fallback: "fail-closed" },
+    });
+    const coreConfig = await loadAppCoreConfig({ cwd: dir, configPath, env: {} });
+    const baseInput = {
+      cwd: dir,
+      configPath,
+      configReadPath: configPath,
+      env: {},
+      drivers: [],
+    };
+    const managed = new MonoAgentAppController({
+      ...baseInput,
+      trustedRuntimeReadRoots: ["/managed/active-closure"],
+    });
+    const unmanaged = new MonoAgentAppController({
+      ...baseInput,
+      trustedRuntimeReadRoots: [],
+    });
+    const injected = new MonoAgentAppController({
+      ...baseInput,
+      sandboxEngine: unavailableSandboxEngine,
+      trustedRuntimeReadRoots: ["/managed/active-closure"],
+    });
+
+    expect(managed.sandboxEngineFor(coreConfig)?.id).toBe("srt");
+    expect(managed.sandboxEngineFor(coreConfig)).toBe(managed.sandboxEngineFor(coreConfig));
+    expect(unmanaged.sandboxEngineFor(coreConfig)).toBeUndefined();
+    expect(injected.sandboxEngineFor(coreConfig)).toBe(unavailableSandboxEngine);
   });
 
   it("routes export warnings to lastWarning/lastError and persists them to the trace-source manifest", async () => {

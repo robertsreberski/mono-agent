@@ -200,7 +200,14 @@ export interface SrtSettings {
   readonly filesystem: SrtFilesystemSettings;
 }
 
-export interface SrtSandboxEngineOptions extends ResolveSrtLaunchOptions {}
+export interface SrtSandboxEngineOptions extends ResolveSrtLaunchOptions {
+  /**
+   * Host-owned runtime roots that must remain readable after request-policy
+   * intersection. These roots are always denied for writes and are not widened
+   * to their parent directories.
+   */
+  readonly trustedReadRoots?: readonly string[];
+}
 
 export function createSandboxPolicy(input: SandboxPolicyInput = {}): SandboxPolicy {
   const mode = input.mode ?? "native";
@@ -288,6 +295,7 @@ export function mergeSandboxPolicies(
 }
 
 export function createSrtSandboxEngine(options: SrtSandboxEngineOptions = {}): SandboxEngine {
+  const trustedReadRoots = normalizeTrustedReadRoots(options.trustedReadRoots ?? []);
   // Cache only a successful functional proof. Failed probes are deliberately
   // retried so a user can install/repair SRT without restarting mono-agent.
   let provenLaunch: SrtLaunch | undefined;
@@ -345,7 +353,12 @@ export function createSrtSandboxEngine(options: SrtSandboxEngineOptions = {}): S
         );
       }
       const runtimeReadRoots = await runtimeReadRootsForCommand(spec, cwd);
-      const settings = await writeSrtSettingsFile(policy, runtimeReadRoots, spec.allowLocalBinding === true);
+      const settings = await writeSrtSettingsFile(
+        policy,
+        runtimeReadRoots,
+        spec.allowLocalBinding === true,
+        trustedReadRoots,
+      );
       return {
         ...spec,
         command: launch.command,
@@ -471,6 +484,7 @@ export function srtSettingsForPolicy(
   protectedSettingsPath?: string,
   runtimeReadRoots: readonly string[] = [],
   commandCapabilities: { readonly allowLocalBinding?: boolean } = {},
+  trustedReadOnlyRoots: readonly string[] = [],
 ): SrtSettings {
   if (policy.network.mode === "all") {
     throw new SandboxPolicyError(
@@ -489,11 +503,12 @@ export function srtSettingsForPolicy(
     },
     filesystem: {
       denyRead: ["/"],
-      allowRead: allowReadRootsForPolicy(policy, runtimeReadRoots),
+      allowRead: allowReadRootsForPolicy(policy, [...runtimeReadRoots, ...trustedReadOnlyRoots]),
       allowWrite: removeCoveredRoots(policy.writableRoots.map(canonicalPolicyPath).sort()),
       denyWrite: [
         ...serializeDenyWrite(policy),
         ...(protectedSettingsPath === undefined ? [] : [protectedSettingsPath]),
+        ...trustedReadOnlyRoots,
       ],
     },
   };
@@ -695,6 +710,26 @@ function readPathAliases(path: string): readonly string[] {
   return [...new Set([canonicalPolicyPath(absolute), ...symlinkAncestorsSync(absolute)])];
 }
 
+function normalizeTrustedReadRoots(roots: readonly string[]): readonly string[] {
+  if (!Array.isArray(roots)) {
+    throw new SandboxPolicyError("invalid_sandbox_policy", "trustedReadRoots must be an array.", {
+      field: "trustedReadRoots",
+    });
+  }
+  const normalized = roots.flatMap((root, index) => {
+    if (typeof root !== "string" || root.trim().length === 0 || !isAbsolute(root)) {
+      throw new SandboxPolicyError(
+        "invalid_sandbox_policy",
+        `trustedReadRoots[${index}] must be a non-empty absolute path.`,
+        { field: `trustedReadRoots[${index}]` },
+      );
+    }
+    const absolute = resolve(root);
+    return [absolute, canonicalPolicyPath(absolute)];
+  });
+  return removeCoveredRoots([...new Set(normalized)].sort());
+}
+
 function symlinkAncestorsSync(path: string): readonly string[] {
   if (sep !== "/") return [];
   const links: string[] = [];
@@ -714,6 +749,7 @@ async function writeSrtSettingsFile(
   policy: SandboxPolicy,
   runtimeReadRoots: readonly string[] = [],
   allowLocalBinding = false,
+  trustedReadOnlyRoots: readonly string[] = [],
 ): Promise<{
   readonly path: string;
   readonly cleanup: () => Promise<void>;
@@ -727,6 +763,7 @@ async function writeSrtSettingsFile(
     settingsPath,
     expandedRuntimeReadRoots,
     { allowLocalBinding },
+    trustedReadOnlyRoots,
   ), null, 2)}\n`;
   const noFollow = fsConstants.O_NOFOLLOW ?? 0;
   let handle;

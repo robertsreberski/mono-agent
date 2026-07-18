@@ -179,7 +179,16 @@ digest are bound into the runtime marker and verified on every reuse. The Launch
 `npm create`/npx cache. Existing verified runtime snapshots are reused and
 retained because another agent may still reference them. A loaded job is fully
 booted out and bootstrapped again so rewritten arguments and environment are
-adopted. Launchd enters Node through `/usr/bin/env -i`, so inherited variables
+adopted. During a slow install, the existing healthy worker remains loaded. An
+owner-private per-instance publication barrier makes any KeepAlive respawn wait
+until the replacement closure and plist are committed; dead or PID-reused
+controller ownership is recovered by process incarnation. The replacement
+plist carries a path-free proof of the finalized marker, and the worker
+revalidates its exact canonical CLI, marker, manifest fingerprint, and launch
+boundary before loading config or channels. Only that verified active closure
+is automatically reopened read-only by app-owned SRT; the runtimes parent and
+historical sibling closures remain outside the implicit policy. Launchd enters
+Node through `/usr/bin/env -i`, so inherited variables
 such as `NODE_OPTIONS` cannot execute before the worker's allowlisted environment
 is established. Every foreground worker holds one owner-only lifetime lease for its
 canonical config, so a managed and manual host cannot run together. A per-config

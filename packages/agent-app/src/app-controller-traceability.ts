@@ -123,9 +123,10 @@ export async function refreshSandboxStatus(controller: MonoAgentAppController, r
   try {
     const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
     const coreConfig = await loadAppCoreConfig(input);
+    const sandboxEngine = controller.sandboxEngineFor(coreConfig);
     const state = await resolveSandboxEffectiveState({
       ...(coreConfig.sandbox === undefined ? {} : { policy: coreConfig.sandbox }),
-      ...(controller.sandboxEngine === undefined ? {} : { engine: controller.sandboxEngine }),
+      ...(sandboxEngine === undefined ? {} : { engine: sandboxEngine }),
     });
     const status = sandboxStatusFromState(state);
     controller.sandboxStatusValue = status;

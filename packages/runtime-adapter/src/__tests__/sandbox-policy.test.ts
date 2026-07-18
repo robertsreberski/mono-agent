@@ -1,4 +1,4 @@
-import { access, chmod, lstat, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -634,6 +634,40 @@ describe("srt integration contract", () => {
     await first.cleanup?.();
     await second.cleanup?.();
     await expect(access(first.sandboxSettingsPath as string)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps host-trusted runtime roots readable, exact, and read-only after policy narrowing", async () => {
+    const runtimeParent = await tempDir();
+    const activeRoot = join(runtimeParent, "active-closure");
+    const historicalRoot = join(runtimeParent, "historical-closure");
+    await mkdir(activeRoot);
+    await mkdir(historicalRoot);
+    const engine = createSrtSandboxEngine({
+      command: await fakeSrtExecutable(),
+      trustedReadRoots: [activeRoot],
+    });
+    const narrowed = failClosedSandboxPolicy({
+      root: "/narrow-request",
+      readableRoots: ["/narrow-request"],
+      // Even a broad configured write root must not make the host-owned
+      // closure writable because trusted roots are added to denyWrite.
+      writableRoots: [runtimeParent],
+    });
+
+    const prepared = await engine.prepareCommand({ command: "/bin/echo", args: ["ok"] }, narrowed);
+    try {
+      const settings = JSON.parse(await readFile(prepared.sandboxSettingsPath as string, "utf8")) as {
+        filesystem: { allowRead: string[]; allowWrite: string[]; denyWrite: string[] };
+      };
+      const canonicalActive = await realpath(activeRoot);
+      expect(settings.filesystem.allowRead).toContain(canonicalActive);
+      expect(settings.filesystem.allowRead).not.toContain(await realpath(runtimeParent));
+      expect(settings.filesystem.allowRead).not.toContain(await realpath(historicalRoot));
+      expect(settings.filesystem.allowWrite).not.toContain(canonicalActive);
+      expect(settings.filesystem.denyWrite).toContain(canonicalActive);
+    } finally {
+      await prepared.cleanup?.();
+    }
   });
 
   it("writes the local-binding capability only into the trusted command's one-use settings", async () => {
