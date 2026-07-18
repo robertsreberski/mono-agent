@@ -1,5 +1,5 @@
 import { stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -11,6 +11,7 @@ import {
 
 import { startMonoAgentApp } from "./app.js";
 import type { ExporterStatus, MonoAgentApp, SandboxStatus } from "./app.js";
+import { startVerifiedManagedMonoAgentApp } from "./app-controller.js";
 import {
   describeSensitiveDataExportWarning,
   phoenixAppBaseUrl,
@@ -37,8 +38,11 @@ import {
   materializeBackgroundRuntimeInputs,
 } from "./background-snapshot.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
+import { verifyManagedRuntimeLaunch } from "./background-runtime.js";
+import type { ManagedRuntimeLaunchVerification } from "./background-runtime.js";
 import { formatChannelFactValue } from "./channel-fact-format.js";
 import type { ChannelStatus } from "./channels.js";
+import { loadCliEnvFile } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import type {
@@ -50,7 +54,8 @@ import { readCliConfigSnapshot } from "./first-run-readiness.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { purgeConversationState } from "./sessions.js";
 import { launchdLogPathsForConfig } from "./launchd-logs.js";
-import { deriveLaunchdLabel } from "./launchd.js";
+import { deriveLaunchdLabel, launchdPathsFor } from "./launchd.js";
+import { waitForManagedRuntimePublication } from "./managed-runtime-publication.js";
 import * as ui from "./ui.js";
 
 const DEFAULT_LOG_LINES = 200;
@@ -169,6 +174,40 @@ async function runForeground(
 ): Promise<number> {
   const cwd = process.cwd();
   const configPath = await canonicalBackgroundConfigPath(cwd, args.configPath);
+
+  let managedRuntime: ManagedRuntimeLaunchVerification | undefined;
+  if (managedBackgroundWorker) {
+    try {
+      const label = deriveLaunchdLabel(configPath);
+      const paths = launchdPathsFor(label);
+      await waitForManagedRuntimePublication({
+        label,
+        managedRoot: dirname(paths.logDir),
+      });
+      if (args.expectedBackgroundSnapshot === undefined) {
+        process.stderr.write(ui.errorLine("Managed LaunchAgent worker is missing its approved background snapshot."));
+        return 0;
+      }
+      if (args.expectedManagedRuntimeLaunch === undefined) {
+        process.stderr.write(ui.errorLine("Managed LaunchAgent worker is missing its finalized runtime proof."));
+        return 0;
+      }
+      managedRuntime = await verifyManagedRuntimeLaunch({
+        currentCliPath: fileURLToPath(new URL("./cli.js", import.meta.url)),
+        launchProof: args.expectedManagedRuntimeLaunch,
+      });
+    } catch (error) {
+      process.stderr.write(ui.errorLine(
+        `Managed worker could not verify its finalized runtime: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+      // KeepAlive restarts only unsuccessful exits. A controller must publish a
+      // fresh proven plist before this worker can safely recover.
+      return 0;
+    }
+  }
+  if (managedBackgroundWorker) {
+    loadCliEnvFile(resolve(cwd, args.envFile ?? ".env"));
+  }
   const startupEnvironment = { ...env };
 
   let lease;
@@ -235,14 +274,17 @@ async function runForeground(
       return managedBackgroundWorker ? 0 : 1;
     }
 
-    app = await startMonoAgentApp({
+    const appOptions = {
       cwd,
       configPath,
       ...(runtimeInputs === undefined ? {} : { configReadPath: runtimeInputs.configPath }),
       env: runtimeInputs?.environment ?? startupEnvironment,
       logger: consoleLogger(),
       ...(backgroundSnapshot === undefined ? {} : { backgroundSnapshot }),
-    });
+    };
+    app = managedRuntime === undefined
+      ? await startMonoAgentApp(appOptions)
+      : await startVerifiedManagedMonoAgentApp(appOptions, managedRuntime);
 
     await printAppStatus(app);
     // Block until a shutdown signal. Returning here (the old behavior) let the

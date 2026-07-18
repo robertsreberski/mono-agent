@@ -51,6 +51,8 @@ export interface ParsedCliArgs {
   readonly envFile?: string;
   /** Internal owner-private launchd transport; never a public start option. */
   readonly expectedBackgroundSnapshot?: string;
+  /** Internal finalized-runtime proof; never a public start option. */
+  readonly expectedManagedRuntimeLaunch?: string;
   readonly target?: InstallSkillTarget;
   readonly force: boolean;
   /** start: run the blocking foreground worker instead of backgrounding. */
@@ -187,6 +189,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const positionals: string[] = [];
   let envFile: string | undefined;
   let expectedBackgroundSnapshot: string | undefined;
+  let expectedManagedRuntimeLaunch: string | undefined;
   let target: InstallSkillTarget | undefined;
   let force = false;
   let foreground = false;
@@ -473,6 +476,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--expected-background-snapshot":
         expectedBackgroundSnapshot = requireValue(rest, ++i, flag);
         break;
+      case "--expected-managed-runtime-launch":
+        expectedManagedRuntimeLaunch = requireValue(rest, ++i, flag);
+        break;
       case "--target": {
         const raw = requireValue(rest, ++i, flag);
         if (raw !== "claude" && raw !== "codex" && raw !== "both") {
@@ -627,6 +633,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     positionals,
     ...(envFile === undefined ? {} : { envFile }),
     ...(expectedBackgroundSnapshot === undefined ? {} : { expectedBackgroundSnapshot }),
+    ...(expectedManagedRuntimeLaunch === undefined ? {} : { expectedManagedRuntimeLaunch }),
     ...(target === undefined ? {} : { target }),
     force,
     foreground,

@@ -34,9 +34,10 @@ export async function startMemoryRitualsIfConfigured(controller: MonoAgentAppCon
     return;
   }
 
+  const sandboxEngine = controller.sandboxEngineFor(coreConfig);
   const runtime = controller.runtime ?? createConfiguredAgentRuntime({
     config: coreConfig,
-    ...(controller.sandboxEngine === undefined ? {} : { sandboxEngine: controller.sandboxEngine }),
+    ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
   });
   if (!controller.activeRuntimes.includes(runtime)) {
     controller.activeRuntimes.push(runtime);

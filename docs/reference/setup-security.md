@@ -46,6 +46,26 @@ Guided macOS setup materializes the exact already-resolved CLI dependency closur
 
 A complete source digest plus a relative path/type/mode/content-hash manifest is bound to the runtime marker and rechecked before reuse. Dependency or selected-plugin drift therefore prevents a stale managed closure from being treated as current.
 
+### Publication barrier and active SRT closure
+
+The controller keeps the current healthy LaunchAgent loaded while a replacement
+closure is materialized. Before that work starts it publishes an owner-only,
+per-label barrier under `~/.mono-agent/locks/`. A KeepAlive worker checks the
+barrier before its lifetime lease or config load, waits while the controller's
+PID/incarnation is live, and recovers stale ownership after a crash or PID
+reuse. The controller releases the barrier only after the stopped-window plist
+commit and immediately before bootstrap; pre-switch failures release it so the
+old definition can continue. Successful release and stale-owner recovery remove
+their lock/quarantine artifacts; malformed owner state is retained and fails
+closed for operator inspection rather than being purged automatically.
+
+Each new worker also requires the plist's path-free finalized-runtime proof. It
+checks the canonical private layout, marker and manifest fingerprints, exact CLI
+bytes, and whole-second launch boundary before starting the app. The verified
+install root is then an app-owned read-only SRT root. No config entry is needed,
+and the implicit grant does not include `~/.mono-agent/runtimes/agent-app/`, a
+version/ABI parent, or a historical closure.
+
 ### Clean environment and one lifetime lease
 
 The LaunchAgent enters Node through `/usr/bin/env -i` and restores only the reviewed operational allowlist. Ambient launchd variables such as `NODE_OPTIONS` cannot run before worker sanitization, while the durable dotenv and operational inputs used during readiness remain reproducible at restart.

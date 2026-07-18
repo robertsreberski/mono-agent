@@ -36,6 +36,8 @@ const LOCK_STALE_AFTER_MS = 5 * 60_000;
 const LOCK_POLL_INTERVAL_MS = 200;
 const PROVISIONAL_RUNTIME_INSTALLED_AT = "1970-01-01T00:00:00.000Z";
 const MAX_RUNTIME_MARKER_BYTES = 16 * 1024;
+const MANAGED_RUNTIME_LAUNCH_PROOF_SCHEMA = "mono-agent.managed-runtime-launch.v1";
+const MAX_MANAGED_RUNTIME_LAUNCH_PROOF_BYTES = 2 * 1024;
 
 export interface ManagedBackgroundRuntime {
   readonly cliPath: string;
@@ -44,6 +46,21 @@ export interface ManagedBackgroundRuntime {
   readonly packageVersion: string;
   readonly cliSha256: string;
   readonly nodeAbi: string;
+  /** Opaque, path-free proof consumed only by the managed LaunchAgent worker. */
+  readonly launchProof: string;
+}
+
+export interface ManagedRuntimeLaunchVerification {
+  /** Exact verified closure root; safe to add as an app-owned read-only SRT root. */
+  readonly installRoot: string;
+}
+
+export interface ManagedRuntimeLaunchVerificationInput {
+  readonly currentCliPath: string;
+  readonly launchProof: string;
+  readonly homeDir?: string;
+  readonly now?: () => number;
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 export interface ManagedRuntimeProvenanceVerificationInput {
@@ -324,7 +341,7 @@ export async function ensureManagedBackgroundRuntime(
 
   if (await verifyRuntime(layout, identity, additionalPackages)) {
     await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
-    return runtimeResult(layout, identity, input.nodePath);
+    return await runtimeResult(layout, identity, input.nodePath);
   }
 
   const acquired = await acquireRuntimeLock(layout, identity, additionalPackages, deps);
@@ -333,7 +350,7 @@ export async function ensureManagedBackgroundRuntime(
     // timeout boundary. Verify one last time before reporting the contention.
     if (await verifyRuntime(layout, identity, additionalPackages)) {
       await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
-      return runtimeResult(layout, identity, input.nodePath);
+      return await runtimeResult(layout, identity, input.nodePath);
     }
     throw new Error(`Timed out waiting for the managed runtime installation lock at ${layout.lockDir}.`);
   }
@@ -341,7 +358,7 @@ export async function ensureManagedBackgroundRuntime(
   try {
     if (await verifyRuntime(layout, identity, additionalPackages)) {
       await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
-      return runtimeResult(layout, identity, input.nodePath);
+      return await runtimeResult(layout, identity, input.nodePath);
     }
     await assertSourceClosureUnchanged(packageSource, additionalPackages, sourceClosure, "before staging");
     await rm(layout.stagingDir, { recursive: true, force: true });
@@ -432,9 +449,135 @@ export async function ensureManagedBackgroundRuntime(
       throw new Error("The managed runtime failed verification after atomic promotion.");
     }
     await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
-    return runtimeResult(layout, identity, input.nodePath);
+    return await runtimeResult(layout, identity, input.nodePath);
   } finally {
     await acquired.release().catch(() => undefined);
+  }
+}
+
+/**
+ * Validate the opaque proof carried by a managed LaunchAgent against the exact
+ * CLI that is about to start. This is intentionally lighter than controller
+ * attestation: it rechecks the private layout, marker, CLI, and stored closure
+ * manifest fingerprints without traversing the entire installed dependency
+ * tree on every KeepAlive restart.
+ */
+export async function verifyManagedRuntimeLaunch(
+  input: ManagedRuntimeLaunchVerificationInput,
+): Promise<ManagedRuntimeLaunchVerification> {
+  const proof = decodeManagedRuntimeLaunchProof(input.launchProof);
+  const currentCliPath = resolve(input.currentCliPath);
+  const packageRoot = packageRootForCli(currentCliPath);
+  const installRoot = dirname(dirname(dirname(packageRoot)));
+  const home = resolve(input.homeDir ?? accountHomeDirectory());
+  const initialInstallRoot = await lstat(installRoot, { bigint: true });
+  if (!privateRuntimeDirectory(initialInstallRoot)) {
+    throw new Error("The managed runtime closure root is not a real owner-private directory.");
+  }
+  const markerPath = join(installRoot, ".mono-agent-runtime.json");
+  const initialBytes = await readPrivateRuntimeMarkerBytes(markerPath);
+  if (initialBytes === undefined) throw new Error("The managed runtime marker is unavailable or unsafe.");
+  const markerValue = parseJson(initialBytes, "managed runtime marker");
+  const identity = runtimeIdentityFromMarkerJson(markerValue);
+  if (identity === undefined) throw new Error("The managed runtime marker has an invalid identity.");
+  const marker = runtimeMarkerFromJson(markerValue, identity);
+  if (marker === undefined) throw new Error("The managed runtime marker is provisional or malformed.");
+
+  const layout = runtimeLayout(home, identity, "launch", 0);
+  if (layout.installRoot !== installRoot || layout.cliPath !== currentCliPath) {
+    throw new Error("The managed worker CLI is outside its canonical runtime closure.");
+  }
+  if (!(await verifyPrivateRuntimeAncestors(home, layout.versionAbiDir))) {
+    throw new Error("The managed runtime has an unsafe private ancestry.");
+  }
+  if (sha256(initialBytes) !== proof.markerSha256 || marker.installedAt !== proof.installedAt) {
+    throw new Error("The managed runtime marker does not match its LaunchAgent proof.");
+  }
+  if (!(await verifyInstalledPackage(layout, identity))) {
+    throw new Error("The managed runtime CLI or package identity failed verification.");
+  }
+  if (!(await verifyManagedRuntimeCliFingerprint(layout, identity.cliSha256))) {
+    throw new Error("The managed runtime CLI fingerprint is unstable.");
+  }
+  if (!(await verifyClosureManifestFingerprint(layout, marker.closureManifestSha256))) {
+    throw new Error("The managed runtime closure manifest fingerprint is invalid.");
+  }
+
+  await waitForLaunchBoundary(marker.installedAt, input.now ?? Date.now, input.sleep ?? sleep);
+
+  const finalBytes = await readPrivateRuntimeMarkerBytes(markerPath);
+  if (finalBytes === undefined || sha256(finalBytes) !== proof.markerSha256 || !finalBytes.equals(initialBytes)) {
+    throw new Error("The managed runtime marker changed during launch verification.");
+  }
+  if (!(await verifyManagedRuntimeCliFingerprint(layout, identity.cliSha256))) {
+    throw new Error("The managed runtime CLI changed during launch verification.");
+  }
+  if (!(await verifyClosureManifestFingerprint(layout, marker.closureManifestSha256))) {
+    throw new Error("The managed runtime closure manifest changed during launch verification.");
+  }
+  const finalInstallRoot = await lstat(installRoot, { bigint: true });
+  if (!privateRuntimeDirectory(finalInstallRoot) || !sameSourceStats(initialInstallRoot, finalInstallRoot)) {
+    throw new Error("The managed runtime closure root changed during launch verification.");
+  }
+  return { installRoot };
+}
+
+interface ManagedRuntimeLaunchProof {
+  readonly schema: typeof MANAGED_RUNTIME_LAUNCH_PROOF_SCHEMA;
+  readonly markerSha256: string;
+  readonly installedAt: string;
+}
+
+function encodeManagedRuntimeLaunchProof(proof: ManagedRuntimeLaunchProof): string {
+  return Buffer.from(JSON.stringify(proof), "utf8").toString("base64url");
+}
+
+function decodeManagedRuntimeLaunchProof(encoded: string): ManagedRuntimeLaunchProof {
+  if (
+    typeof encoded !== "string"
+    || encoded.length === 0
+    || encoded.length > MAX_MANAGED_RUNTIME_LAUNCH_PROOF_BYTES * 2
+    || !/^[0-9A-Za-z_-]+$/u.test(encoded)
+  ) {
+    throw new Error("The managed runtime launch proof is malformed.");
+  }
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(encoded, "base64url");
+  } catch {
+    throw new Error("The managed runtime launch proof is malformed.");
+  }
+  if (
+    bytes.length === 0
+    || bytes.length > MAX_MANAGED_RUNTIME_LAUNCH_PROOF_BYTES
+    || bytes.toString("base64url") !== encoded
+  ) {
+    throw new Error("The managed runtime launch proof is malformed.");
+  }
+  const value = parseJson(bytes, "managed runtime launch proof");
+  if (!isRecord(value) || Object.keys(value).length !== 3) {
+    throw new Error("The managed runtime launch proof has an invalid schema.");
+  }
+  const installedAtMs = typeof value.installedAt === "string" ? Date.parse(value.installedAt) : Number.NaN;
+  if (
+    value.schema !== MANAGED_RUNTIME_LAUNCH_PROOF_SCHEMA
+    || typeof value.markerSha256 !== "string"
+    || !/^[0-9a-f]{64}$/u.test(value.markerSha256)
+    || typeof value.installedAt !== "string"
+    || !Number.isFinite(installedAtMs)
+    || new Date(installedAtMs).toISOString() !== value.installedAt
+    || value.installedAt === PROVISIONAL_RUNTIME_INSTALLED_AT
+  ) {
+    throw new Error("The managed runtime launch proof has an invalid schema.");
+  }
+  return value as unknown as ManagedRuntimeLaunchProof;
+}
+
+function parseJson(bytes: Buffer, label: string): unknown {
+  try {
+    return JSON.parse(bytes.toString("utf8")) as unknown;
+  } catch {
+    throw new Error(`The ${label} is not valid JSON.`);
   }
 }
 
@@ -1695,6 +1838,16 @@ async function readRuntimeMarker(
   path: string,
   identity: RuntimeIdentity,
 ): Promise<RuntimeMarker | undefined> {
+  const bytes = await readPrivateRuntimeMarkerBytes(path);
+  if (bytes === undefined) return undefined;
+  try {
+    return runtimeMarkerFromJson(JSON.parse(bytes.toString("utf8")) as unknown, identity);
+  } catch {
+    return undefined;
+  }
+}
+
+async function readPrivateRuntimeMarkerBytes(path: string): Promise<Buffer | undefined> {
   let handle;
   try {
     handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
@@ -1713,7 +1866,7 @@ async function readRuntimeMarker(
     ) {
       return undefined;
     }
-    return runtimeMarkerFromJson(JSON.parse(bytes.toString("utf8")) as unknown, identity);
+    return bytes;
   } catch {
     return undefined;
   } finally {
@@ -1727,6 +1880,14 @@ function privateRuntimeMarkerFile(details: BigIntStats): boolean {
     && !details.isSymbolicLink()
     && details.nlink === 1n
     && details.size <= BigInt(MAX_RUNTIME_MARKER_BYTES)
+    && (details.mode & 0o077n) === 0n
+    && owned;
+}
+
+function privateRuntimeDirectory(details: BigIntStats): boolean {
+  const owned = typeof process.getuid !== "function" || details.uid === BigInt(process.getuid());
+  return details.isDirectory()
+    && !details.isSymbolicLink()
     && (details.mode & 0o077n) === 0n
     && owned;
 }
@@ -1769,6 +1930,34 @@ function runtimeMarkerFromJson(value: unknown, identity: RuntimeIdentity): Runti
     // both writes with indistinguishable timestamp precision.
     && value.installedAt !== PROVISIONAL_RUNTIME_INSTALLED_AT;
   return valid ? value as unknown as RuntimeMarker : undefined;
+}
+
+function runtimeIdentityFromMarkerJson(value: unknown): RuntimeIdentity | undefined {
+  if (!isRecord(value)) return undefined;
+  if (
+    typeof value.packageVersion !== "string"
+    || !isExactVersion(value.packageVersion)
+    || typeof value.cliSha256 !== "string"
+    || !/^[0-9a-f]{64}$/u.test(value.cliSha256)
+    || typeof value.sourceClosureSha256 !== "string"
+    || !/^[0-9a-f]{64}$/u.test(value.sourceClosureSha256)
+    || typeof value.nodeAbi !== "string"
+    || value.nodeAbi.length === 0
+    || typeof value.platform !== "string"
+    || value.platform.length === 0
+    || typeof value.arch !== "string"
+    || value.arch.length === 0
+  ) {
+    return undefined;
+  }
+  return {
+    packageVersion: value.packageVersion,
+    cliSha256: value.cliSha256,
+    sourceClosureSha256: value.sourceClosureSha256,
+    nodeAbi: value.nodeAbi,
+    platform: value.platform as NodeJS.Platform,
+    arch: value.arch,
+  };
 }
 
 async function verifyInstalledPackage(layout: RuntimeLayout, identity: RuntimeIdentity): Promise<boolean> {
@@ -1837,6 +2026,36 @@ async function verifyClosureManifest(
     );
     return sameSourceProofEntry(stored.proof, storedAfter)
       && JSON.stringify(parsed) === JSON.stringify(current);
+  } catch {
+    return false;
+  }
+}
+
+async function verifyClosureManifestFingerprint(
+  layout: RuntimeLayout,
+  expectedSha256: string,
+): Promise<boolean> {
+  try {
+    await assertRegularFile(layout.closureManifestPath, "managed runtime closure manifest");
+    const stored = await fingerprintClosureFile(layout.closureManifestPath, ".mono-agent-closure.json");
+    if (stored.sha256 !== expectedSha256) return false;
+    const parsed = JSON.parse(stored.bytes.toString("utf8")) as Partial<RuntimeClosureManifest>;
+    return parsed.schema === "mono-agent.execution-closure.v1" && Array.isArray(parsed.entries);
+  } catch {
+    return false;
+  }
+}
+
+async function verifyManagedRuntimeCliFingerprint(
+  layout: RuntimeLayout,
+  expectedSha256: string,
+): Promise<boolean> {
+  try {
+    const captured = await fingerprintClosureFile(
+      layout.cliPath,
+      "node_modules/@mono-agent/agent-app/dist/cli.js",
+    );
+    return captured.sha256 === expectedSha256;
   } catch {
     return false;
   }
@@ -2034,13 +2253,21 @@ async function waitForManagedRuntimeLaunchBoundary(
   if (marker === undefined) {
     throw new Error("The managed runtime marker became invalid before launch.");
   }
-  const boundaryMs = Date.parse(marker.installedAt);
+  await waitForLaunchBoundary(marker.installedAt, deps.now, deps.sleep);
+}
+
+async function waitForLaunchBoundary(
+  installedAt: string,
+  now: () => number,
+  sleepFor: (ms: number) => Promise<void>,
+): Promise<void> {
+  const boundaryMs = Date.parse(installedAt);
   const safeStartMs = (Math.floor(boundaryMs / 1_000) + 1) * 1_000;
-  const nowMs = deps.now();
+  const nowMs = now();
   if (safeStartMs - nowMs > 5_000) {
     throw new Error("The managed runtime launch boundary is implausibly far in the future.");
   }
-  if (nowMs < safeStartMs) await deps.sleep(safeStartMs - nowMs);
+  if (nowMs < safeStartMs) await sleepFor(safeStartMs - nowMs);
 }
 
 function privateJsonContents(value: unknown): string {
@@ -2097,11 +2324,19 @@ function ownedPrivately(details: Awaited<ReturnType<typeof lstat>>): boolean {
   return owned && (Number(details.mode) & 0o077) === 0;
 }
 
-function runtimeResult(
+async function runtimeResult(
   layout: RuntimeLayout,
   identity: RuntimeIdentity,
   nodePath: string,
-): ManagedBackgroundRuntime {
+): Promise<ManagedBackgroundRuntime> {
+  const markerBytes = await readPrivateRuntimeMarkerBytes(layout.markerPath);
+  if (markerBytes === undefined) {
+    throw new Error("The managed runtime marker became unsafe before launch proof publication.");
+  }
+  const marker = runtimeMarkerFromJson(parseJson(markerBytes, "managed runtime marker"), identity);
+  if (marker === undefined) {
+    throw new Error("The managed runtime marker became invalid before launch proof publication.");
+  }
   return {
     cliPath: layout.cliPath,
     nodePath: resolve(nodePath),
@@ -2109,7 +2344,16 @@ function runtimeResult(
     packageVersion: identity.packageVersion,
     cliSha256: identity.cliSha256,
     nodeAbi: identity.nodeAbi,
+    launchProof: encodeManagedRuntimeLaunchProof({
+      schema: MANAGED_RUNTIME_LAUNCH_PROOF_SCHEMA,
+      markerSha256: sha256(markerBytes),
+      installedAt: marker.installedAt,
+    }),
   };
+}
+
+async function sleep(milliseconds: number): Promise<void> {
+  await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 }
 
 function requiredNodeAbi(): string {

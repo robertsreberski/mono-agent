@@ -41,6 +41,8 @@ export interface PlistInput {
   readonly envFile?: string;
   /** Secret-free approved input identity, encoded for the internal worker. */
   readonly expectedBackgroundSnapshot: string;
+  /** Path-free finalized managed-runtime proof for the internal worker. */
+  readonly expectedManagedRuntimeLaunch: string;
   readonly stdoutPath: string;
   readonly stderrPath: string;
   /** Deliberately allowlisted, non-secret worker environment. */
@@ -305,6 +307,8 @@ export function buildLaunchdProgramArguments(input: PlistInput): readonly string
     ...(input.envFile === undefined ? [] : ["--env-file", input.envFile]),
     "--expected-background-snapshot",
     input.expectedBackgroundSnapshot,
+    "--expected-managed-runtime-launch",
+    input.expectedManagedRuntimeLaunch,
   ];
   for (const argument of arguments_) assertControlFree(argument, "launchd program argument");
   return arguments_;
