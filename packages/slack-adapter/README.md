@@ -34,7 +34,9 @@ the reaction instead — no configuration needed for the fallback.
 With final-only delivery, the first tool start posts one cumulative, secret-safe
 activity message. Later starts edit it in place, adjacent duplicates collapse as
 `(×N)`, and the final answer replaces it. Answer deltas and reasoning never enter
-that ledger. Proactive deliveries suppress it. An acknowledged `/cancel`
+that ledger. Memory recall uses preview-free `📚 Reading memory`; memory writes
+remain `🧠 Updating memory`, and file reads remain `📖 Reading`. Proactive
+deliveries suppress it. An acknowledged `/cancel`
 best-effort deletes the still-transient ledger and keeps the command's one
 `Cancelled.` acknowledgement.
 

@@ -6,9 +6,11 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { MonoAgentConfig } from "@mono-agent/config";
 import { listTraceSources } from "@mono-agent/observability";
 import * as bujoMemory from "@mono-agent/memory/bujo";
 import type { AgentResponder, ChannelInteractionHub, ChannelInteractionSink } from "@mono-agent/agent-contracts";
+import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 import type {
   TelegramAdapterErrorText,
@@ -56,6 +58,17 @@ function baseConfig(): Record<string, unknown> {
     artifacts: { dir: "./artifacts" },
     traceability: { registryDir: "./trace-sources", sourceId: "app-test", sourceLabel: "App Test" },
   };
+}
+
+function parsedCoreConfig(): MonoAgentConfig {
+  const config = baseConfig();
+  return {
+    ...config,
+    runtime: {
+      ...(config.runtime as Record<string, unknown>),
+      model: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"),
+    },
+  } as unknown as MonoAgentConfig;
 }
 
 interface LifecycleCleanupTestSeam {
@@ -1667,7 +1680,7 @@ describe("startMonoAgentApp", () => {
 
     const running = await driver.start({
       config: { enabled: true, botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
-      coreConfig: baseConfig() as never,
+      coreConfig: parsedCoreConfig(),
       responder,
       cwd: dir,
       onFailure: vi.fn(),
@@ -1847,9 +1860,102 @@ describe("startMonoAgentApp", () => {
     try {
       expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
       expect(captured?.pendingAsks).toBeUndefined();
+      expect(captured?.callbacksEnabled).toBeUndefined();
+      expect(captured?.allowedUpdates).toEqual(["message", "callback_query"]);
+      expect(captured?.runtimeControls).toMatchObject({
+        defaultModel: "pi:openai-codex:gpt-5.5",
+        models: [{ value: "pi:openai-codex:gpt-5.5" }],
+      });
     } finally {
       await app.stop();
     }
+  });
+
+  it("advertises only configured Telegram primary and fallback models with effort options", async () => {
+    let captured: TelegramAdapterStartOptions | undefined;
+    const driver = createTelegramChannelDriver({
+      startAdapter: async (options) => {
+        captured = options;
+        return {
+          stop: async () => undefined,
+          notify: async () => ({ delivered: true }),
+          post: async () => undefined,
+          postStatus: async () => undefined,
+        };
+      },
+    });
+    const core = parsedCoreConfig();
+    const primary = parseMonoRuntimeModelReference("codex:gpt-5.6-terra");
+    const fallback = parseMonoRuntimeModelReference("codex:gpt-5.6-sol");
+
+    const running = await driver.start({
+      config: { enabled: true, botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
+      coreConfig: {
+        ...core,
+        runtime: {
+          ...core.runtime,
+          model: primary,
+          effort: "high",
+          fallbacks: [{ model: fallback }, { model: primary }],
+        },
+      },
+      responder: { respond: async () => ({ text: "" }) },
+      cwd: dir,
+      onFailure: vi.fn(),
+    });
+
+    expect(captured?.runtimeControls?.defaultModel).toBe("codex:gpt-5.6-terra");
+    expect(captured?.runtimeControls?.defaultEffort).toBe("high");
+    expect(captured?.runtimeControls?.models.map((model) => model.value)).toEqual([
+      "codex:gpt-5.6-terra",
+      "codex:gpt-5.6-sol",
+    ]);
+    expect(captured?.runtimeControls?.models[0]?.efforts.map((effort) => effort.value)).toEqual([
+      "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+    ]);
+    await running.stop();
+  });
+
+  it("maps Telegram effort menus to local model reasoning capabilities", async () => {
+    let captured: TelegramAdapterStartOptions | undefined;
+    const driver = createTelegramChannelDriver({
+      startAdapter: async (options) => {
+        captured = options;
+        return {
+          stop: async () => undefined,
+          notify: async () => ({ delivered: true }),
+          post: async () => undefined,
+          postStatus: async () => undefined,
+        };
+      },
+    });
+    const core = parsedCoreConfig();
+    const toggleModel = parseMonoRuntimeModelReference("pi:ollama:qwen3.6:latest");
+    const noReasoningModel = parseMonoRuntimeModelReference("pi:lmstudio:some-new-model");
+
+    const running = await driver.start({
+      config: { enabled: true, botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
+      coreConfig: {
+        ...core,
+        runtime: { ...core.runtime, model: toggleModel, fallbacks: [{ model: noReasoningModel }] },
+        providers: {
+          local: [
+            { id: "ollama", type: "ollama", baseUrl: "http://localhost:11434", enabled: true },
+            { id: "lmstudio", type: "lmstudio", baseUrl: "http://localhost:1234", enabled: true },
+          ],
+        },
+      },
+      responder: { respond: async () => ({ text: "" }) },
+      cwd: dir,
+      onFailure: vi.fn(),
+    });
+
+    expect(captured?.runtimeControls?.models[0]?.efforts).toEqual([
+      { value: "high", label: "Thinking on" },
+      { value: "none", label: "Thinking off" },
+    ]);
+    expect(captured?.runtimeControls?.models[1]?.efforts).toEqual([]);
+    await running.stop();
   });
 
   it("threads scoped request context from config into only the opted project stdio MCP", async () => {
@@ -2098,7 +2204,7 @@ describe("startMonoAgentApp", () => {
         apiRoot: "http://127.0.0.1:8081",
         attachments: { maxBytes: 268_435_456, downloadTimeoutMs: 120_000, maxUploadBytes: 268_435_456 },
       },
-      coreConfig: baseConfig() as never,
+      coreConfig: parsedCoreConfig(),
       responder: { respond: async () => ({ text: "" }) },
       cwd: dir,
       onFailure: vi.fn(),
@@ -2136,7 +2242,7 @@ describe("startMonoAgentApp", () => {
           language: "en",
         },
       },
-      coreConfig: baseConfig() as never,
+      coreConfig: parsedCoreConfig(),
       responder: { respond: async () => ({ text: "" }) },
       cwd: dir,
       onFailure: vi.fn(),
@@ -2182,7 +2288,7 @@ describe("startMonoAgentApp", () => {
 
     const running = await driver.start({
       config: { enabled: true, botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
-      coreConfig: baseConfig() as never,
+      coreConfig: parsedCoreConfig(),
       responder: { respond: async () => ({ text: "" }) },
       cwd: dir,
       onFailure: vi.fn(),
@@ -2232,7 +2338,7 @@ describe("startMonoAgentApp", () => {
 
     const running = await driver.start({
       config: { enabled: true, botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
-      coreConfig: baseConfig() as never,
+      coreConfig: parsedCoreConfig(),
       responder: { respond: async () => ({ text: "" }) },
       cwd: dir,
       onFailure: vi.fn(),
@@ -2257,7 +2363,7 @@ describe("startMonoAgentApp", () => {
 
     const running = await driver.start({
       config: { enabled: true, botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
-      coreConfig: baseConfig() as never,
+      coreConfig: parsedCoreConfig(),
       responder: { async respond() { return { text: "ok" }; } },
       cwd: dir,
       onFailure,
@@ -2316,7 +2422,7 @@ describe("startMonoAgentApp", () => {
         mentionTextAliases: [],
         stripMentionText: false,
       } as never,
-      coreConfig: baseConfig() as never,
+      coreConfig: parsedCoreConfig(),
       responder: { async respond() { return { text: "ok" }; } },
       cwd: dir,
       onFailure,
@@ -2363,7 +2469,7 @@ describe("startMonoAgentApp", () => {
         reconnectStabilityMs: 20000,
         heartbeatTimeoutMs: 120000,
       } as never,
-      coreConfig: baseConfig() as never,
+      coreConfig: parsedCoreConfig(),
       responder: { async respond() { return { text: "ok" }; } },
       cwd: dir,
       onFailure: vi.fn(),

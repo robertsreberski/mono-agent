@@ -122,6 +122,7 @@ const MEMORY_NAMES = new Set([
   "remember",
   "updatememory",
 ]);
+const MEMORY_READ_NAMES = new Set(["memoryrecall"]);
 
 const SENSITIVE_ASSIGNMENT_PATTERN = /\b((?:[A-Za-z][A-Za-z0-9_-]*)?(?:authorization|cookie|api[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|security[-_]?token|password|passwd|secret|private[-_]?key|credential|session[-_]?(?:id|token)|token))\s*[:=]\s*(?:(?:Bearer|Basic)\s+)?(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
 const AUTH_SCHEME_PATTERN = /\b(Bearer|Basic)\s+(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
@@ -186,6 +187,11 @@ function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
   }
   if (IMAGE_NAMES.has(normalized)) {
     return { action: "👁️ Looking at the image", previewFields: ["question", "prompt", "path", "file_path", "name"] };
+  }
+  if (MEMORY_READ_NAMES.has(normalized)) {
+    // A recall query can contain private user context. Keep this status both
+    // semantically distinct from writes and deliberately preview-free.
+    return { action: "📚 Reading memory", previewFields: [] };
   }
   if (MEMORY_NAMES.has(normalized) || normalized.includes("memory")) {
     // Deliberately exclude content/text fields: memory prose can itself be

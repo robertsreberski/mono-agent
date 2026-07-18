@@ -6,11 +6,21 @@ import {
   type ChannelStartInput,
 } from "../channels.js";
 
-/** Minimal ChannelStartInput; the driver reads `config` and `coreConfig.tools`. */
+/** Minimal ChannelStartInput with the parsed runtime contract channel drivers consume. */
 function startInput<T>(config: T): ChannelStartInput<T> {
   return {
     config,
-    coreConfig: { tools: { allowedTools: [], disallowedTools: [] } } as never,
+    coreConfig: {
+      runtime: {
+        model: {
+          sdk: "pi",
+          provider: "openai-codex",
+          model: "gpt-5.5",
+          reference: "pi:openai-codex:gpt-5.5",
+        },
+      },
+      tools: { allowedTools: [], disallowedTools: [] },
+    } as never,
     responder: {} as never,
     cwd: "/tmp",
     onFailure: vi.fn(),

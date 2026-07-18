@@ -41,6 +41,8 @@ describe("formatToolActivityLine", () => {
     ["terminal", { command: "pnpm test" }, "🖥️ Running pnpm test"],
     ["python", { code: "print(42)" }, "🐍 Running code print(42)"],
     ["vision", { question: "identify product" }, "👁️ Looking at the image identify product"],
+    ["MemoryRecall", { query: "private preferences" }, "📚 Reading memory"],
+    ["memory_recall", { query: "private preferences" }, "📚 Reading memory"],
     ["memory_write", { target: "preferences" }, "🧠 Updating memory preferences"],
   ])("maps %s to its stable activity family", (name, args, expected) => {
     expect(formatToolActivityLine(name, args)).toBe(expected);

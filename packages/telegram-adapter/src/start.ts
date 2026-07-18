@@ -14,6 +14,7 @@ import {
   type TelegramNotifyOptions,
   type TelegramNotifyResult,
   type TelegramPendingAsks,
+  type TelegramRuntimeControls,
 } from "./bot.js";
 import type { TelegramCommandConfig, TelegramReactionsConfig } from "./config.js";
 import type { TelegramChatId } from "./types.js";
@@ -41,10 +42,12 @@ export interface TelegramAdapterStartOptions {
    * `request.attachments`; failures skip the attachment without failing the run.
    */
   readonly attachments?: DownloadTelegramAttachmentsOptions;
-  /** Restrict the update types polled from Telegram. Defaults to messages only. */
+  /** Restrict update types polled from Telegram. Runtime controls always add callback_query. */
   readonly allowedUpdates?: readonly string[];
   /** Custom command-menu entries registered via setMyCommands and dispatched as turns. */
   readonly commands?: readonly TelegramCommandConfig[];
+  /** Host-supplied configured primary/fallback catalog for per-chat `/model` and `/effort`. */
+  readonly runtimeControls?: TelegramRuntimeControls;
   /** Per-state lifecycle reactions (👀/👍/👎). Omit to disable. */
   readonly reactions?: TelegramReactionsConfig;
   /** Subscribe to and handle inline-keyboard taps (TelegramAskButtons callbacks). Default off. */
@@ -128,6 +131,7 @@ function toCreateOptions(options: TelegramAdapterStartOptions): CreateTelegramBo
     ...(options.attachments === undefined ? {} : { attachments: options.attachments }),
     ...(options.allowedUpdates === undefined ? {} : { allowedUpdates: options.allowedUpdates }),
     ...(options.commands === undefined ? {} : { commands: options.commands }),
+    ...(options.runtimeControls === undefined ? {} : { runtimeControls: options.runtimeControls }),
     ...(options.reactions === undefined ? {} : { reactions: options.reactions }),
     ...(options.callbacksEnabled === undefined ? {} : { callbacksEnabled: options.callbacksEnabled }),
     ...(options.pendingAsks === undefined ? {} : { pendingAsks: options.pendingAsks }),
