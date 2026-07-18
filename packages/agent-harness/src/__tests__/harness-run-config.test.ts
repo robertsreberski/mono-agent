@@ -126,6 +126,15 @@ describe("requestOverridesModel", () => {
     expect(requestOverridesModel(req({ web: { model: "claude:claude-opus-4-8" } }), defaultModel)).toBe(true);
   });
 
+  it("returns true for a Telegram model override that differs from the default", () => {
+    expect(requestOverridesModel(req({ telegram: { model: "claude:claude-opus-4-8" } }), defaultModel)).toBe(true);
+  });
+
+  it("keeps the shared session for same-model and effort-only Telegram overrides", () => {
+    expect(requestOverridesModel(req({ telegram: { model: "claude:claude-fable-5" } }), defaultModel)).toBe(false);
+    expect(requestOverridesModel(req({ telegram: { effort: "high" } }), defaultModel)).toBe(false);
+  });
+
   it("prefers the web override over its compatibility TUI mirror", () => {
     expect(requestOverridesModel(req({
       web: { model: "claude:claude-fable-5" },

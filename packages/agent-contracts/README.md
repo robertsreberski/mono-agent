@@ -26,7 +26,10 @@ Adapter packages extend the base request with transport metadata while keeping t
 starts in one transient cumulative status. Its shared formatter uses friendly
 tool-family copy, bounded allowlisted previews, and secret redaction; adapters
 can optionally delete a confirmed status during cancellation without risking an
-answer message.
+answer message. Skill disclosure renders the selected skill name as
+`📚 Reading "<skill>"` without exposing its path. Read-only memory recall is
+preview-free as `🧠 Recalling memory`; memory writes and ordinary file reads
+retain their distinct `🧠 Updating memory` and `📖 Reading` families.
 
 ## Public API
 

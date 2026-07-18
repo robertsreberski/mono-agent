@@ -67,6 +67,7 @@ interface ToolActivitySpec {
   readonly action: string;
   readonly actionWithoutPreview?: string;
   readonly previewFields: readonly string[];
+  readonly quotePreview?: boolean;
 }
 
 const WEB_SEARCH_NAMES = new Set([
@@ -88,7 +89,8 @@ const WEB_BROWSE_NAMES = new Set([
   "openurl",
   "fetch",
 ]);
-const READ_NAMES = new Set(["read", "readfile", "readskill"]);
+const READ_NAMES = new Set(["read", "readfile"]);
+const SKILL_READ_NAMES = new Set(["readskill"]);
 const FILE_SEARCH_NAMES = new Set(["glob", "grep", "searchfiles"]);
 const WRITE_NAMES = new Set(["write", "writefile"]);
 const EDIT_NAMES = new Set(["applypatch", "edit", "editfile", "patch"]);
@@ -122,6 +124,7 @@ const MEMORY_NAMES = new Set([
   "remember",
   "updatememory",
 ]);
+const MEMORY_READ_NAMES = new Set(["memoryrecall"]);
 
 const SENSITIVE_ASSIGNMENT_PATTERN = /\b((?:[A-Za-z][A-Za-z0-9_-]*)?(?:authorization|cookie|api[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|security[-_]?token|password|passwd|secret|private[-_]?key|credential|session[-_]?(?:id|token)|token))\s*[:=]\s*(?:(?:Bearer|Basic)\s+)?(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
 const AUTH_SCHEME_PATTERN = /\b(Bearer|Basic)\s+(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
@@ -148,7 +151,7 @@ export function formatToolActivityLine(toolName: string, toolArguments?: unknown
   const preview = previewFromArguments(toolArguments, spec.previewFields);
   return preview === undefined
     ? (spec.actionWithoutPreview ?? spec.action)
-    : `${spec.action} ${preview}`;
+    : `${spec.action} ${spec.quotePreview ? JSON.stringify(preview) : preview}`;
 }
 
 function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
@@ -161,6 +164,9 @@ function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
   }
   if (WEB_BROWSE_NAMES.has(normalized)) {
     return { action: "🌐 Browsing", previewFields: ["url", "href", "uri", "ref_id"] };
+  }
+  if (SKILL_READ_NAMES.has(normalized)) {
+    return { action: "📚 Reading", previewFields: ["name"], quotePreview: true };
   }
   if (READ_NAMES.has(normalized)) {
     return { action: "📖 Reading", previewFields: ["file_path", "path", "name", "skill", "skill_name"] };
@@ -186,6 +192,11 @@ function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
   }
   if (IMAGE_NAMES.has(normalized)) {
     return { action: "👁️ Looking at the image", previewFields: ["question", "prompt", "path", "file_path", "name"] };
+  }
+  if (MEMORY_READ_NAMES.has(normalized)) {
+    // A recall query can contain private user context. Keep this status both
+    // semantically distinct from writes and deliberately preview-free.
+    return { action: "🧠 Recalling memory", previewFields: [] };
   }
   if (MEMORY_NAMES.has(normalized) || normalized.includes("memory")) {
     // Deliberately exclude content/text fields: memory prose can itself be

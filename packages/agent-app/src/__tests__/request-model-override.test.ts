@@ -91,6 +91,15 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     expect(result.runtimeOptions.effort).toBe("low");
   });
 
+  it("applies a Telegram per-chat model + effort override", async () => {
+    const result = await run({ telegram: { model: "claude:claude-opus-4-8", effort: "high" } });
+    expect(result.runtimeOptions.model).toEqual(expect.objectContaining({
+      sdk: "claude",
+      model: "claude-opus-4-8",
+    }));
+    expect(result.runtimeOptions.effort).toBe("high");
+  });
+
   it("prefers web metadata over its TUI compatibility mirror", async () => {
     const result = await run({
       web: { model: "claude:claude-opus-4-8", effort: "high" },

@@ -10,8 +10,8 @@ import type {
 /**
  * Per-request runtime-options extension that applies a per-turn model/effort
  * override carried on webhook (`metadata.webhook`), cron (`metadata.cron`), or
- * web console (`metadata.web`) or interactive TUI (`metadata.tui`) request
- * metadata — an operator can pick a per-session model/effort from either UI
+ * web console (`metadata.web`), interactive TUI (`metadata.tui`), or Telegram
+ * (`metadata.telegram`) request metadata — an operator can pick model/effort
  * just as a trigger can pin one. The
  * adapters carry the override as raw strings; this is the
  * first place with both the model parser and the effort enum, so validation
@@ -379,10 +379,10 @@ function applyLocalProviderBlock(
 }
 
 /**
- * Read model/effort from webhook, cron, web-console, or TUI request metadata.
+ * Read model/effort from webhook, cron, web-console, TUI, or Telegram request metadata.
  * Webhook takes precedence, then cron, then the web block, then its optional TUI
- * compatibility mirror. A turn carrying none of these blocks (e.g. an ordinary
- * chat turn) returns `{}`, leaving only the keyword escalation scan.
+ * compatibility mirror, then Telegram. A turn carrying none of these blocks
+ * returns `{}`, leaving only the keyword escalation scan.
  */
 function readOverride(metadata: Record<string, unknown> | undefined): {
   readonly model?: string;
@@ -399,7 +399,9 @@ function readOverride(metadata: Record<string, unknown> | undefined): {
         ? metadata.web
         : isRecord(metadata.tui)
           ? metadata.tui
-          : undefined;
+          : isRecord(metadata.telegram)
+            ? metadata.telegram
+            : undefined;
   if (source === undefined) {
     return {};
   }
