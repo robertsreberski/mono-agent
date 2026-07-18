@@ -37,6 +37,7 @@ const loadTelegramModule = async (): Promise<TelegramAdapterModule> =>
 const SLACK_SEND_MESSAGE_MAX_CHARS = 40_000;
 /** Keep cancellation responsive even when the loopback bridge is wedged. */
 const ASK_BRIDGE_CLEANUP_TIMEOUT_MS = 1_000;
+type TelegramSendToolName = "TelegramSendMessage" | "TelegramAskButtons" | "TelegramSendFile";
 
 /**
  * Model-visible send tools for explicitly allowed, already-enabled communication adapters.
@@ -917,7 +918,7 @@ function registerTelegramSendTool(
       },
     },
     async (args, extra) => {
-      assertTelegramChatAllowed(settings, args.chat_id);
+      assertTelegramChatAllowed(settings, args.chat_id, "TelegramSendMessage");
       const result: TelegramSentMessage = await client.sendMessage(
         {
           chat_id: args.chat_id,
@@ -1085,7 +1086,7 @@ function registerTelegramAskTool(
       },
     },
     async (args, extra) => {
-      assertTelegramChatAllowed(settings, args.chat_id);
+      assertTelegramChatAllowed(settings, args.chat_id, "TelegramAskButtons");
       const inlineKeyboard = args.options.map((label, index) => [
         { text: label, callback_data: adapter.telegramAskCallbackData(index) },
       ]);
@@ -1191,7 +1192,8 @@ function registerTelegramAskTool(
  * shown inline). Both accept the file as base64 `data` (with a `filename`) OR a
  * workspace `path` (filename derived from the basename), enforce the adapter
  * allowlist, and bound the size to the adapter's inbound cap before uploading via
- * the adapter-owned sender.
+ * the adapter-owned sender. Producing-conversation scope omits `chat_id` from the
+ * schema and derives it from trusted request context instead.
  */
 function registerTelegramSendFileTool(
   server: McpServer,
@@ -1199,25 +1201,35 @@ function registerTelegramSendFileTool(
   client: Pick<TelegramMessageSender, "sendDocument" | "sendPhoto">,
   adapter: TelegramAdapterModule,
 ): void {
+  const producingConversationScope = settings.sendTools?.scope === "producing-conversation";
+  const inputSchema = {
+    kind: z.enum(["document", "photo"]).describe("`document` for any file (downloadable), `photo` for an image shown inline."),
+    ...(producingConversationScope
+      ? {}
+      : {
+          chat_id: z
+            .union([z.string().min(1), z.number().int()])
+            .describe("Telegram chat id from the adapter allowlist."),
+        }),
+    data: z.string().min(1).optional().describe("Base64-encoded file bytes. Provide this or `path`."),
+    path: z.string().min(1).optional().describe("Path to a file to upload (resolved against the agent working dir). Provide this or `data`."),
+    filename: z.string().min(1).optional().describe("Filename to present. Required with `data` for a document; derived from `path` otherwise."),
+    caption: z.string().min(1).optional().describe("Optional caption shown with the file."),
+  };
   server.registerTool(
     "TelegramSendFile",
     {
       title: "Send Telegram file",
-      description:
-        "Upload and send a file to an allowed Telegram chat. Set `kind:\"document\"` to send any file (shown as a downloadable document) or `kind:\"photo\"` to send an image inline. Provide the bytes as base64 `data` (with a `filename` — required for a document), or a workspace `path`. A self-hosted Bot API can stream legacy path uploads; strict run-output paths are always read through a pinned descriptor.",
-      inputSchema: {
-        kind: z.enum(["document", "photo"]).describe("`document` for any file (downloadable), `photo` for an image shown inline."),
-        chat_id: z.union([z.string().min(1), z.number().int()]).describe("Telegram chat id from the adapter allowlist."),
-        data: z.string().min(1).optional().describe("Base64-encoded file bytes. Provide this or `path`."),
-        path: z.string().min(1).optional().describe("Path to a file to upload (resolved against the agent working dir). Provide this or `data`."),
-        filename: z.string().min(1).optional().describe("Filename to present. Required with `data` for a document; derived from `path` otherwise."),
-        caption: z.string().min(1).optional().describe("Optional caption shown with the file."),
-      },
+      description: producingConversationScope
+        ? "Upload and send a file to the Telegram conversation that produced this run. The host binds the destination; provide only the file content or path. Set `kind:\"document\"` to send any file (shown as a downloadable document) or `kind:\"photo\"` to send an image inline. Strict run-output paths are always read through a pinned descriptor."
+        : "Upload and send a file to an allowed Telegram chat. Set `kind:\"document\"` to send any file (shown as a downloadable document) or `kind:\"photo\"` to send an image inline. Provide the bytes as base64 `data` (with a `filename` — required for a document), or a workspace `path`. A self-hosted Bot API can stream legacy path uploads.",
+      inputSchema,
     },
     async (args, extra) => {
       extra.signal.throwIfAborted();
       const kind = args.kind;
-      assertTelegramChatAllowed(settings, args.chat_id);
+      const requestedChatId = "chat_id" in args ? args.chat_id : undefined;
+      const chatId = resolveTelegramSendFileChatId(settings, requestedChatId);
       if ((args.data !== undefined) === (args.path !== undefined)) {
         throw new Error("provide exactly one of `data` (base64) or `path`.");
       }
@@ -1244,17 +1256,14 @@ function registerTelegramSendFileTool(
         try {
           const sent: TelegramSentMessage = await client.sendDocument!(
             {
-              chat_id: args.chat_id,
+              chat_id: chatId,
               document: pathToFileURL(uploadPath).href,
               ...(args.caption === undefined ? {} : { caption: args.caption }),
             },
             { signal: extra.signal },
           );
           const name = basename(uploadPath);
-          return {
-            content: [{ type: "text", text: `Sent ${kind} ${sent.message_id} (${name}) to ${String(sent.chat.id)}.` }],
-            structuredContent: { ok: true, chat_id: sent.chat.id, message_id: sent.message_id, filename: name },
-          };
+          return telegramSendFileResult(producingConversationScope, kind, sent, name);
         } catch (error) {
           // Retry buffered exactly once; rethrow anything that isn't a server-side rejection.
           if ((error as { kind?: string }).kind !== "telegram") {
@@ -1275,7 +1284,7 @@ function registerTelegramSendFileTool(
         kind === "document"
           ? await client.sendDocument!(
               {
-                chat_id: args.chat_id,
+                chat_id: chatId,
                 document: bytes,
                 filename,
                 ...(args.caption === undefined ? {} : { caption: args.caption }),
@@ -1284,19 +1293,58 @@ function registerTelegramSendFileTool(
             )
           : await client.sendPhoto!(
               {
-                chat_id: args.chat_id,
+                chat_id: chatId,
                 photo: bytes,
                 filename,
                 ...(args.caption === undefined ? {} : { caption: args.caption }),
               },
               { signal: extra.signal },
             );
-      return {
-        content: [{ type: "text", text: `Sent ${kind} ${result.message_id} (${filename}) to ${String(result.chat.id)}.` }],
-        structuredContent: { ok: true, chat_id: result.chat.id, message_id: result.message_id, filename },
-      };
+      return telegramSendFileResult(producingConversationScope, kind, result, filename);
     },
   );
+}
+
+function resolveTelegramSendFileChatId(
+  settings: TelegramSendToolSettings,
+  requestedChatId: TelegramChatId | undefined,
+): TelegramChatId {
+  if (settings.sendTools?.scope === "producing-conversation") {
+    const producingChatId = telegramChatIdFromConversation(settings.producingConversationId);
+    if (producingChatId === undefined) {
+      throw new Error("TelegramSendFile: producing Telegram conversation context is unavailable.");
+    }
+    assertTelegramChatAllowed(settings, producingChatId, "TelegramSendFile");
+    return producingChatId;
+  }
+  if (requestedChatId === undefined) {
+    throw new Error("TelegramSendFile: chat_id is required outside producing-conversation scope.");
+  }
+  assertTelegramChatAllowed(settings, requestedChatId, "TelegramSendFile");
+  return requestedChatId;
+}
+
+function telegramSendFileResult(
+  producingConversationScope: boolean,
+  kind: "document" | "photo",
+  sent: TelegramSentMessage,
+  filename: string,
+): {
+  content: Array<{ type: "text"; text: string }>;
+  structuredContent: Record<string, unknown>;
+} {
+  const destination = producingConversationScope
+    ? "the producing Telegram conversation"
+    : String(sent.chat.id);
+  return {
+    content: [{ type: "text", text: `Sent ${kind} ${sent.message_id} (${filename}) to ${destination}.` }],
+    structuredContent: {
+      ok: true,
+      ...(producingConversationScope ? {} : { chat_id: sent.chat.id }),
+      message_id: sent.message_id,
+      filename,
+    },
+  };
 }
 
 /** Resolve the upload bytes + filename from exactly one of base64 `data` or a `path`. */
@@ -1532,21 +1580,25 @@ function assertSlackChannelAllowed(settings: SlackSendToolSettings, channel: str
   throw new Error("SlackSendMessage: channel is not allowed by Slack adapter config.");
 }
 
-function assertTelegramChatAllowed(settings: TelegramSendToolSettings, chatId: TelegramChatId): void {
+function assertTelegramChatAllowed(
+  settings: TelegramSendToolSettings,
+  chatId: TelegramChatId,
+  toolName: TelegramSendToolName,
+): void {
   const normalized = String(chatId);
   if (settings.sendTools?.scope === "producing-conversation") {
     const producingChatId = telegramChatIdFromConversation(settings.producingConversationId);
     if (producingChatId === undefined) {
-      throw new Error("TelegramSendMessage: producing Telegram conversation context is unavailable.");
+      throw new Error(`${toolName}: producing Telegram conversation context is unavailable.`);
     }
     if (normalized !== producingChatId) {
-      throw new Error("TelegramSendMessage: chat_id must match the producing Telegram conversation.");
+      throw new Error(`${toolName}: chat_id must match the producing Telegram conversation.`);
     }
   }
   if (settings.allowAllChats || settings.allowedChatIds.includes(normalized)) {
     return;
   }
-  throw new Error("TelegramSendMessage: chat_id is not allowed by Telegram adapter config.");
+  throw new Error(`${toolName}: chat_id is not allowed by Telegram adapter config.`);
 }
 
 function telegramChatIdFromConversation(conversationId: string | undefined): string | undefined {

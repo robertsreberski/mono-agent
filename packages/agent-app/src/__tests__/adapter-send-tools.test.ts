@@ -1732,6 +1732,12 @@ describe("adapter send MCP tools", () => {
     await withMcpClient(server, async (client) => {
       const tools = await client.listTools();
       expect(tools.tools.map((tool) => tool.name)).toEqual(["TelegramSendFile"]);
+      const schema = tools.tools[0]?.inputSchema as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+      expect(schema.properties).toHaveProperty("chat_id");
+      expect(schema.required).toContain("chat_id");
 
       const result = await client.callTool({
         name: "TelegramSendFile",
@@ -1766,6 +1772,39 @@ describe("adapter send MCP tools", () => {
     expect(sendDocument).not.toHaveBeenCalled();
   });
 
+  it("TelegramSendFile reports its own allowlist error outside strict scope", async () => {
+    const sendDocument = vi.fn();
+    const settings: AdapterSendToolsSettings = {
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds: ["42"],
+        allowAllChats: false,
+        tools: { send: false, ask: false, file: true },
+      },
+    };
+    const server = await createAdapterSendToolsServer(settings, {
+      telegram: { sendMessage: vi.fn(), editMessageText: vi.fn(), sendDocument },
+    });
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "TelegramSendFile",
+        arguments: {
+          kind: "document",
+          chat_id: 999,
+          data: Buffer.from("blocked").toString("base64"),
+          filename: "blocked.txt",
+        },
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual([
+        { type: "text", text: "TelegramSendFile: chat_id is not allowed by Telegram adapter config." },
+      ]);
+    });
+
+    expect(sendDocument).not.toHaveBeenCalled();
+  });
+
   it("TelegramAskButtons rejects a chat outside the adapter allowlist before calling the client", async () => {
     const telegram = { sendMessage: vi.fn(), editMessageText: vi.fn() };
     const settings: AdapterSendToolsSettings = {
@@ -1784,6 +1823,9 @@ describe("adapter send MCP tools", () => {
         arguments: { chat_id: 999, question: "Deploy?", options: ["Yes", "No"] },
       });
       expect(result.isError).toBe(true);
+      expect(result.content).toEqual([
+        { type: "text", text: "TelegramAskButtons: chat_id is not allowed by Telegram adapter config." },
+      ]);
     });
 
     expect(telegram.sendMessage).not.toHaveBeenCalled();
@@ -2527,7 +2569,7 @@ describe("TelegramSendFile path upload", () => {
     expect(Buffer.from(uploaded.document).toString("utf8")).toBe("# Transcript\n\nhello");
   });
 
-  it("binds every strict Telegram tool to the producing chat even when another chat is globally allowed", async () => {
+  it("host-binds strict TelegramSendFile without exposing or accepting a model-owned destination", async () => {
     const telegram = {
       sendMessage: vi.fn(async (params: TelegramSendMessageParams) => ({ message_id: 1, chat: { id: params.chat_id } })),
       editMessageText: vi.fn(),
@@ -2545,22 +2587,117 @@ describe("TelegramSendFile path upload", () => {
     }, { telegram });
 
     await withMcpClient(server, async (client) => {
+      const tools = await client.listTools();
+      const fileTool = tools.tools.find((tool) => tool.name === "TelegramSendFile");
+      const schema = fileTool?.inputSchema as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+      expect(schema.properties).not.toHaveProperty("chat_id");
+      expect(schema.required ?? []).not.toContain("chat_id");
+
       for (const call of [
-        { name: "TelegramSendMessage", arguments: { chat_id: 99, text: "cross-chat" } },
-        { name: "TelegramAskButtons", arguments: { chat_id: 99, question: "cross-chat?", options: ["Yes", "No"], wait: false } },
         {
-          name: "TelegramSendFile",
-          arguments: { kind: "document", chat_id: 99, data: Buffer.from("secret").toString("base64"), filename: "secret.txt" },
+          name: "TelegramSendMessage",
+          errorName: "TelegramSendMessage",
+          arguments: { chat_id: 99, text: "cross-chat" },
+        },
+        {
+          name: "TelegramAskButtons",
+          errorName: "TelegramAskButtons",
+          arguments: { chat_id: 99, question: "cross-chat?", options: ["Yes", "No"], wait: false },
         },
       ]) {
         const result = await client.callTool(call);
         expect(result.isError).toBe(true);
-        expect(JSON.stringify(result.content)).toContain("must match the producing Telegram conversation");
+        expect(JSON.stringify(result.content)).toContain(
+          `${call.errorName}: chat_id must match the producing Telegram conversation`,
+        );
       }
+
+      const hostBound = await client.callTool({
+        name: "TelegramSendFile",
+        arguments: {
+          kind: "document",
+          data: Buffer.from("first").toString("base64"),
+          filename: "first.txt",
+        },
+      });
+      expect(hostBound.content).toEqual([{
+        type: "text",
+        text: "Sent document 2 (first.txt) to the producing Telegram conversation.",
+      }]);
+      expect(hostBound.structuredContent).toEqual({ ok: true, message_id: 2, filename: "first.txt" });
+
+      const attemptedRedirect = await client.callTool({
+        name: "TelegramSendFile",
+        arguments: {
+          kind: "document",
+          chat_id: 99,
+          data: Buffer.from("second").toString("base64"),
+          filename: "second.txt",
+        },
+      });
+      expect(attemptedRedirect.structuredContent).toEqual({ ok: true, message_id: 2, filename: "second.txt" });
     });
 
     expect(telegram.sendMessage).not.toHaveBeenCalled();
-    expect(telegram.sendDocument).not.toHaveBeenCalled();
+    expect(telegram.sendDocument).toHaveBeenCalledTimes(2);
+    expect(telegram.sendDocument.mock.calls.map(([params]) => params.chat_id)).toEqual(["42", "42"]);
+  });
+
+  it.each([
+    {
+      label: "missing producing context",
+      producingConversationId: undefined,
+      allowedChatIds: ["42"],
+      expected: "TelegramSendFile: producing Telegram conversation context is unavailable.",
+    },
+    {
+      label: "non-Telegram producing context",
+      producingConversationId: "slack:C123",
+      allowedChatIds: ["42"],
+      expected: "TelegramSendFile: producing Telegram conversation context is unavailable.",
+    },
+    {
+      label: "producing chat outside the adapter allowlist",
+      producingConversationId: "telegram:99#today",
+      allowedChatIds: ["42"],
+      expected: "TelegramSendFile: chat_id is not allowed by Telegram adapter config.",
+    },
+  ])("fails closed with a file-specific error for $label", async ({
+    producingConversationId,
+    allowedChatIds,
+    expected,
+  }) => {
+    const sendDocument = vi.fn();
+    const server = await createAdapterSendToolsServer({
+      telegram: {
+        botToken: "telegram-token",
+        allowedChatIds,
+        allowAllChats: false,
+        tools: { send: false, ask: false, file: true },
+        sendTools: { scope: "producing-conversation" },
+        ...(producingConversationId === undefined ? {} : { producingConversationId }),
+      },
+    }, {
+      telegram: { sendMessage: vi.fn(), editMessageText: vi.fn(), sendDocument },
+    });
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "TelegramSendFile",
+        arguments: {
+          kind: "document",
+          data: Buffer.from("blocked").toString("base64"),
+          filename: "blocked.txt",
+        },
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual([{ type: "text", text: expected }]);
+    });
+
+    expect(sendDocument).not.toHaveBeenCalled();
   });
 
   it("pins strict path uploads to the current run directory object and returns one generic path error", async () => {
@@ -2596,7 +2733,7 @@ describe("TelegramSendFile path upload", () => {
     await withMcpClient(server, async (client) => {
       const allowed = await client.callTool({
         name: "TelegramSendFile",
-        arguments: { kind: "document", chat_id: 42, path: inside },
+        arguments: { kind: "document", path: inside },
       });
       expect(allowed.structuredContent).toMatchObject({ ok: true, filename: "transcript.md" });
       // Replace a previously regular in-scope candidate with a symlink before
@@ -2607,7 +2744,7 @@ describe("TelegramSendFile path upload", () => {
       for (const path of [outside, missing, escape, hardlinkEscape]) {
         const rejected = await client.callTool({
           name: "TelegramSendFile",
-          arguments: { kind: "document", chat_id: 42, path },
+          arguments: { kind: "document", path },
         });
         expect(rejected.isError).toBe(true);
         errors.push(JSON.stringify(rejected.content));
@@ -2623,7 +2760,7 @@ describe("TelegramSendFile path upload", () => {
       await symlink(attackerRoot, runOutputDir);
       const swappedSymlink = await client.callTool({
         name: "TelegramSendFile",
-        arguments: { kind: "document", chat_id: 42, path: join(runOutputDir, "stolen.md") },
+        arguments: { kind: "document", path: join(runOutputDir, "stolen.md") },
       });
       expect(JSON.stringify(swappedSymlink.content)).toBe(errors[0]);
 
@@ -2632,7 +2769,7 @@ describe("TelegramSendFile path upload", () => {
       await writeFile(join(runOutputDir, "replacement.md"), "replacement", "utf8");
       const swappedDirectory = await client.callTool({
         name: "TelegramSendFile",
-        arguments: { kind: "document", chat_id: 42, path: join(runOutputDir, "replacement.md") },
+        arguments: { kind: "document", path: join(runOutputDir, "replacement.md") },
       });
       expect(JSON.stringify(swappedDirectory.content)).toBe(errors[0]);
     });

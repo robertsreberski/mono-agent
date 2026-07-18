@@ -97,6 +97,11 @@ For an agent shared by multiple Telegram chats, add a stricter per-run boundary:
 
 `scope` binds message, button, and file delivery to the Telegram chat that
 produced the current request, even if another chat is globally allowed.
+For `TelegramSendFile`, that binding is entirely host-owned: strict mode removes
+`chat_id` from the model-facing schema, derives the chat from trusted request
+context, rechecks the adapter allowlist, and omits the raw chat id from the tool
+result. Missing or non-Telegram request context fails closed, and unexpected
+destination input cannot redirect a file.
 `pathScope` binds path uploads to the exact app-created
 `artifacts/outbound/<run-id>` directory object, including rejection of root
 replacement and symlink escapes. The child opens the candidate with no-follow,
