@@ -33,7 +33,7 @@ A Telegram agent that: asks the user for context before it acts (blocking), runs
 - **`tools.mcpCallTimeoutMs` / `tools.mcpCallMaxTotalTimeoutMs`** — inactivity timeout (reset by tool progress) and the hard per-call wall clock; raise the latter for long jobs. See [Env Vars](/config/env-vars/). *(config)*
 - **tool progress → channel status** — an opted stdio MCP `POST`s with a run-scoped progress capability; the destination comes from trusted request context and the status appears in the producing chat. *(config + code in your MCP tool)*
 - **`telegram.apiRoot` + `telegram.attachments`** — point the adapter at a self-hosted Bot API server and raise the download/upload caps (2 GB ceiling). See [Telegram → Self-hosted Bot API server](/channels/telegram/). *(config)*
-- **`TelegramSendFile`** — deliver a generated file; with `apiRoot` set, a `path` upload streams by `file://` with no buffering. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
+- **`TelegramSendFile`** — deliver a generated file. Under the strict configuration below, the host binds the producing Telegram conversation automatically (the agent supplies no `chat_id`) and reads a `path` upload through a pinned descriptor. Non-strict self-hosted uploads can use the `file://` fast path. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
 - **`telegram.bot`** — inbound audio/voice is downloaded and handed to the agent as a saved file path; the adapter chat allowlist is the boundary. See [Telegram](/channels/telegram/). *(config)*
 
 ## Configure
@@ -92,7 +92,7 @@ The self-hosted Bot API server (only needed for attachments over 20 MB) runs loo
 1. A voice note or recording arrives. The adapter downloads it (up to `attachments.maxBytes`, via the self-hosted server for big files) and hands the agent the saved file path.
 2. **Caption-first**: if the caption already gives language/speakers, the agent skips asking. Otherwise it calls **`AskUser`** with one consolidated question and *blocks*. Your next plain-text message resolves the tool call (a 👍 acknowledges it); the agent continues on the same turn with your answer.
 3. The agent calls the long-running `transcribe` tool. That tool `POST`s progress to the bridge ("Transcribing 12:31… 45s elapsed"), which shows as a status message edited in place, and emits MCP progress notifications that keep the call alive well past 120s.
-4. The transcript is written to disk and delivered via **`TelegramSendFile`** — a `path` upload, so with `apiRoot` set the file is sent by `file://` with no buffering.
+4. The transcript is written to the current run-output directory and delivered via **`TelegramSendFile`** with `{ "kind": "document", "path": "…" }`. The model supplies no destination; the host binds the producing Telegram conversation, and strict mode reads the file through a pinned descriptor rather than the self-hosted `file://` fast path.
 
 Writing the progress side of a long tool is a few lines. The host overlays these
 values only for servers named by `tools.mcpRequestContextServers`:
