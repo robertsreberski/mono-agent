@@ -4,6 +4,15 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const mocks = vi.hoisted(() => ({
+  waitForManagedRuntimePublication: vi.fn(async () => undefined),
+}));
+
+vi.mock("../managed-runtime-publication.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../managed-runtime-publication.js")>();
+  return { ...actual, waitForManagedRuntimePublication: mocks.waitForManagedRuntimePublication };
+});
+
 import { describeChannelStatus, loadCliEnvFile, monoAgentVersion, parseCliArgs, renderHelp, runCli, shouldLoadCommandDotenv } from "../cli.js";
 import { MANAGED_BACKGROUND_WORKER_ENV } from "../background-runtime.js";
 import {
@@ -14,6 +23,7 @@ import {
 const tempDirs: string[] = [];
 
 afterEach(async () => {
+  mocks.waitForManagedRuntimePublication.mockClear();
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -177,12 +187,16 @@ describe("parseCliArgs", () => {
       "--foreground",
       "--expected-background-snapshot",
       "encoded-snapshot",
+      "--expected-managed-runtime-launch",
+      "encoded-runtime-proof",
     ])).toMatchObject({
       command: "start",
       foreground: true,
       expectedBackgroundSnapshot: "encoded-snapshot",
+      expectedManagedRuntimeLaunch: "encoded-runtime-proof",
     });
     expect(renderHelp()).not.toContain("--expected-background-snapshot");
+    expect(renderHelp()).not.toContain("--expected-managed-runtime-launch");
   });
 
   it("keeps the scheduled log-maintenance command narrow and out of public help and errors", async () => {
@@ -244,12 +258,32 @@ describe("parseCliArgs", () => {
     expect(ordinary.code).toBe(2);
     expect(ordinary.stderr).toContain("reserved for the managed LaunchAgent worker");
 
+    const ordinaryRuntimeProof = await captureCli(() => runCli([
+      "start",
+      "--foreground",
+      "--expected-managed-runtime-launch",
+      "encoded-runtime-proof",
+    ]));
+    expect(ordinaryRuntimeProof.code).toBe(2);
+    expect(ordinaryRuntimeProof.stderr).toContain("--expected-managed-runtime-launch is reserved");
+
     const previous = process.env[MANAGED_BACKGROUND_WORKER_ENV];
     process.env[MANAGED_BACKGROUND_WORKER_ENV] = "1";
     try {
       const managed = await captureCli(() => runCli(["start", "--foreground"]));
       expect(managed.code).toBe(0);
       expect(managed.stderr).toContain("missing its approved background snapshot");
+
+      process.env[MANAGED_BACKGROUND_WORKER_ENV] = "1";
+      const missingRuntimeProof = await captureCli(() => runCli([
+        "start",
+        "--foreground",
+        "--expected-background-snapshot",
+        "encoded-snapshot",
+      ]));
+      expect(missingRuntimeProof.code).toBe(0);
+      expect(missingRuntimeProof.stderr).toContain("missing its finalized runtime proof");
+      expect(mocks.waitForManagedRuntimePublication).toHaveBeenCalledTimes(2);
     } finally {
       if (previous === undefined) delete process.env[MANAGED_BACKGROUND_WORKER_ENV];
       else process.env[MANAGED_BACKGROUND_WORKER_ENV] = previous;

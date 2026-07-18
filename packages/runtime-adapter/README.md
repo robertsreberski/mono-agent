@@ -217,6 +217,13 @@ use. Generated filesystem policy denies global reads first, then reopens only
 configured roots, reviewed immutable OS paths, and narrowly derived runtime
 dependencies; relative deny-write globs stay anchored to the policy root.
 
+Application hosts can pass `trustedReadRoots` to `createSrtSandboxEngine` for
+host-owned execution state such as the active managed agent-app closure. Those
+roots are canonicalized once, remain readable after request-policy
+intersection, are never widened to their parent directory, and are always
+added to `denyWrite`. This is not a config surface for model- or user-supplied
+paths.
+
 The Node executable that starts a managed or explicit SRT CLI must also be
 single-link, executable without setuid/setgid privilege bits, current-user- or
 root-owned, and not group/world-writable. This is a path-sandbox invariant, not

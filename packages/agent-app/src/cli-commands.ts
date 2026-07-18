@@ -129,9 +129,9 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     process.stderr.write(ui.errorLine("--expected-background-snapshot is reserved for the managed LaunchAgent worker."));
     return 2;
   }
-  if (managedBackgroundWorker && args.expectedBackgroundSnapshot === undefined) {
-    process.stderr.write(ui.errorLine("Managed LaunchAgent worker is missing its approved background snapshot."));
-    return 0;
+  if (args.expectedManagedRuntimeLaunch !== undefined && !managedBackgroundWorker) {
+    process.stderr.write(ui.errorLine("--expected-managed-runtime-launch is reserved for the managed LaunchAgent worker."));
+    return 2;
   }
   if (managedBackgroundWorker) {
     sanitizeManagedBackgroundWorkerEnvironment(process.env);
@@ -174,7 +174,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   // The machine-wide web console is not an agent/config consumer. In
   // particular, its managed `web run` worker must never ingest an arbitrary
   // .env from whichever directory invoked the controller.
-  if (shouldLoadCommandDotenv(args.command)) loadCliEnvFile(envFilePath);
+  // Managed workers must first wait for runtime publication and verify the
+  // finalized closure. Their foreground entrypoint loads dotenv immediately
+  // after that barrier, before snapshot materialization.
+  if (shouldLoadCommandDotenv(args.command) && !managedBackgroundWorker) loadCliEnvFile(envFilePath);
 
   switch (args.command) {
     case "help":

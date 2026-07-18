@@ -37,7 +37,11 @@ import {
 import type { MonoAgentAppController } from "./app-controller.js";
 
 export async function buildResponder(controller: MonoAgentAppController, coreConfig: MonoAgentConfig): Promise<AgentResponder> {
-  const runtime = controller.runtime ?? createConfiguredAgentRuntime(coreConfig);
+  const sandboxEngine = controller.sandboxEngineFor(coreConfig);
+  const runtime = controller.runtime ?? createConfiguredAgentRuntime({
+    config: coreConfig,
+    ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
+  });
   if (!controller.activeRuntimes.includes(runtime)) {
     controller.activeRuntimes.push(runtime);
   }
@@ -125,7 +129,7 @@ export async function buildResponder(controller: MonoAgentAppController, coreCon
     cwd: controller.cwd,
     runtime,
     ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
-    ...(controller.sandboxEngine === undefined ? {} : { sandboxEngine: controller.sandboxEngine }),
+    ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
     ...(memory !== undefined && { memory }),
     ...(controller.interactionBridge === undefined ? {} : { turnHistoryEnricher: controller.interactionBridge }),
     ...(controller.interactionBridge === undefined ? {} : { progressCapabilityIssuer: controller.interactionBridge }),
@@ -198,6 +202,7 @@ export function buildRuntimeForModel(
   coreConfig: MonoAgentConfig,
 ): (model: RuntimeModelReference, executionMode?: string) => MonoRuntimeLike {
   const cache = new Map<string, MonoRuntimeLike>();
+  const sandboxEngine = controller.sandboxEngineFor(coreConfig);
   return (model, executionMode) => {
     const key = `${modelReferenceKey(model)}|${executionMode ?? ""}`;
     const cached = cache.get(key);
@@ -208,7 +213,7 @@ export function buildRuntimeForModel(
       config: coreConfig,
       model,
       ...(executionMode === undefined ? {} : { executionMode }),
-      ...(controller.sandboxEngine === undefined ? {} : { sandboxEngine: controller.sandboxEngine }),
+      ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
     });
     cache.set(key, runtime);
     controller.activeRuntimes.push(runtime);

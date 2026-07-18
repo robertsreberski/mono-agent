@@ -61,11 +61,13 @@ import {
 } from "./background-snapshot.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { resolveConfiguredManagedRuntimePackages } from "./managed-runtime-packages.js";
+import { acquireManagedRuntimePublicationBarrier } from "./managed-runtime-publication.js";
 import {
   processIncarnationFromJson,
 } from "./process-incarnation.js";
 import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incarnation.js";
 import { acquireOwnerPrivateLock, validateOwnerPrivateLockInputs } from "./owner-private-lock.js";
+import type { OwnerPrivateLock } from "./owner-private-lock.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import * as ui from "./ui.js";
 
@@ -113,6 +115,8 @@ export interface InstanceTarget {
   readonly environment: Readonly<Record<string, string>>;
   /** Exact wizard/approval snapshot this launch is allowed to claim ready. */
   readonly expectedSnapshot?: BackgroundSnapshot;
+  /** Opaque proof that the selected managed runtime was finalized and verified. */
+  readonly managedRuntimeLaunchProof?: string;
   /** Guided/configuration handoffs additionally require a usable TUI endpoint. */
   readonly requireTui?: boolean;
 }
@@ -273,6 +277,8 @@ export interface BackgroundDeps {
   ) => Promise<readonly ManagedRuntimeAdditionalPackage[]>;
   /** Fail closed when another lifecycle command owns this config label. */
   readonly acquireLifecycleLock: (target: BackgroundLifecycleTarget) => Promise<(() => Promise<void>) | undefined>;
+  /** Hold KeepAlive respawns until the replacement runtime and plist are committed. */
+  readonly acquireRuntimePublicationBarrier?: (target: BackgroundLifecycleTarget) => Promise<OwnerPrivateLock | undefined>;
   /** Prove a metadata-advertised TUI endpoint is actually reachable. */
   readonly probeTui: (source: TraceSourceListItem) => Promise<boolean>;
   readonly captureSnapshot?: (target: InstanceTarget) => Promise<BackgroundSnapshot>;
@@ -327,6 +333,10 @@ export function defaultBackgroundDeps(): BackgroundDeps {
       env: target.configurationEnvironment,
     }),
     acquireLifecycleLock: acquireFilesystemLifecycleLock,
+    acquireRuntimePublicationBarrier: (target) => acquireManagedRuntimePublicationBarrier({
+      label: target.label,
+      managedRoot: dirname(target.paths.logDir),
+    }),
     probeTui: probeTuiEndpoint,
     stdout: (text) => void process.stdout.write(text),
     stderr: (text) => void process.stderr.write(text),
@@ -748,11 +758,74 @@ async function ensureBackgroundReadyUnlocked(
     deps.stderr(ui.hint("No LaunchAgent changes were made. Retry from the wizard or `mono-agent start`."));
     return { ok: false, action: "start", reason: "snapshot" };
   }
-  const uid = deps.getuid();
   if (!(await snapshotStillMatches(target, deps))) {
     reportSnapshotDrift(target, deps);
     return { ok: false, action: "start", reason: "snapshot" };
   }
+  let publicationBarrier: OwnerPrivateLock | undefined;
+  try {
+    publicationBarrier = await (deps.acquireRuntimePublicationBarrier
+      ?? ((input: BackgroundLifecycleTarget) => acquireManagedRuntimePublicationBarrier({
+        label: input.label,
+        managedRoot: dirname(input.paths.logDir),
+      })))(target);
+  } catch (error) {
+    reportLifecycleException(target, deps, "establish the managed runtime publication barrier", error);
+    return { ok: false, action: "start", reason: "ownership" };
+  }
+  if (publicationBarrier === undefined) {
+    deps.stderr(ui.errorLine(`Another runtime publication is already active for ${target.label}.`));
+    return { ok: false, action: "start", reason: "ownership" };
+  }
+  return await ensureBackgroundReadyWithPublicationBarrier(
+    target,
+    deps,
+    controlPoll,
+    readinessPoll,
+    publicationBarrier,
+  );
+}
+
+async function ensureBackgroundReadyWithPublicationBarrier(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  controlPoll: PollOptions,
+  readinessPoll: PollOptions,
+  publicationBarrier: OwnerPrivateLock,
+): Promise<BackgroundLaunchResult> {
+  let barrierReleased = false;
+  const releaseBarrier = async (): Promise<void> => {
+    if (barrierReleased) return;
+    await publicationBarrier.release();
+    barrierReleased = true;
+  };
+  try {
+    return await ensureBackgroundReadyAfterPublicationBarrier(
+      target,
+      deps,
+      controlPoll,
+      readinessPoll,
+      releaseBarrier,
+    );
+  } finally {
+    if (!barrierReleased) {
+      await releaseBarrier().catch((error: unknown) => {
+        deps.stderr(ui.errorLine(
+          `Could not release runtime publication barrier for ${target.label}: ${error instanceof Error ? error.message : String(error)}`,
+        ));
+      });
+    }
+  }
+}
+
+async function ensureBackgroundReadyAfterPublicationBarrier(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  controlPoll: PollOptions,
+  readinessPoll: PollOptions,
+  releaseBarrier: () => Promise<void>,
+): Promise<BackgroundLaunchResult> {
+  const uid = deps.getuid();
   let launchTarget: InstanceTarget;
   try {
     const additionalPackages = await deps.resolveManagedRuntimePackages?.(target) ?? [];
@@ -765,6 +838,7 @@ async function ensureBackgroundReadyUnlocked(
       ...target,
       cliPath: runtime.cliPath,
       nodePath: runtime.nodePath,
+      managedRuntimeLaunchProof: runtime.launchProof,
     };
   } catch (error) {
     reportLifecycleException(target, deps, "install and verify the durable managed runtime", error);
@@ -836,6 +910,9 @@ async function ensureBackgroundReadyUnlocked(
       await writePlists(launchTarget, deps);
       sinceMs = deps.now();
       prepared = true;
+      // The replacement plist now contains the finalized-runtime proof. Let
+      // launchd respawn only after the stopped-window commit is complete.
+      await releaseBarrier();
     });
   } catch (error) {
     reportLifecycleException(
@@ -898,6 +975,9 @@ async function writePlists(target: InstanceTarget, deps: BackgroundDeps): Promis
   if (target.expectedSnapshot === undefined) {
     throw new Error("A managed LaunchAgent requires an approved background snapshot.");
   }
+  if (target.managedRuntimeLaunchProof === undefined) {
+    throw new Error("A managed LaunchAgent requires a finalized runtime launch proof.");
+  }
   const maintenance = maintenancePathsForTarget(target);
   const mainXml = buildPlistXml({
     label: target.label,
@@ -907,6 +987,7 @@ async function writePlists(target: InstanceTarget, deps: BackgroundDeps): Promis
     cwd: target.cwd,
     ...(target.envFile === undefined ? {} : { envFile: target.envFile }),
     expectedBackgroundSnapshot: encodeBackgroundSnapshot(target.expectedSnapshot),
+    expectedManagedRuntimeLaunch: target.managedRuntimeLaunchProof,
     stdoutPath: target.paths.stdoutPath,
     stderrPath: target.paths.stderrPath,
     environment: target.environment,

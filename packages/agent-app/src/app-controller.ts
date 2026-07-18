@@ -6,6 +6,7 @@ import { createLiveEventBus } from "@mono-agent/agent-contracts";
 import type { AgentResponder, RunEventBus } from "@mono-agent/agent-contracts";
 import type { TraceSourceHandle, TraceSourceMemoryHealth } from "@mono-agent/observability";
 import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import { createSrtSandboxEngine } from "@mono-agent/runtime-adapter";
 import type { SandboxEffectiveState, SandboxEngine } from "@mono-agent/runtime-adapter";
 
 import type { AppTraceDefaults, ResolvedExporter } from "./app-config.js";
@@ -36,6 +37,7 @@ import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import { createSeenNotifyDestinationCache } from "./seen-conversations.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
+import type { ManagedRuntimeLaunchVerification } from "./background-runtime.js";
 import { sandboxStatusFromState } from "./app-controller-utils.js";
 import * as lifecycleOperations from "./app-controller-lifecycle.js";
 import * as traceabilityOperations from "./app-controller-traceability.js";
@@ -157,6 +159,21 @@ export interface MonoAgentApp {
  * config changes take effect on the next restart.
  */
 export async function startMonoAgentApp(options: MonoAgentAppOptions = {}): Promise<MonoAgentApp> {
+  return await startMonoAgentAppInternal(options, []);
+}
+
+/** Internal managed-worker entrypoint; deliberately not re-exported by app.ts. */
+export async function startVerifiedManagedMonoAgentApp(
+  options: MonoAgentAppOptions,
+  verification: ManagedRuntimeLaunchVerification,
+): Promise<MonoAgentApp> {
+  return await startMonoAgentAppInternal(options, [verification.installRoot]);
+}
+
+async function startMonoAgentAppInternal(
+  options: MonoAgentAppOptions,
+  trustedRuntimeReadRoots: readonly string[],
+): Promise<MonoAgentApp> {
   const cwd = resolve(options.cwd ?? process.cwd());
   const configPath = resolve(cwd, options.configPath ?? "mono-agent.config.json");
   const configReadPath = resolve(cwd, options.configReadPath ?? configPath);
@@ -174,6 +191,7 @@ export async function startMonoAgentApp(options: MonoAgentAppOptions = {}): Prom
     ...(options.sandboxEngine === undefined ? {} : { sandboxEngine: options.sandboxEngine }),
     ...(options.traceDefaults === undefined ? {} : { traceDefaults: options.traceDefaults }),
     ...(options.backgroundSnapshot === undefined ? {} : { backgroundSnapshot: options.backgroundSnapshot }),
+    trustedRuntimeReadRoots,
   });
 
   await controller.refreshSandboxStatus("startup");
@@ -197,6 +215,7 @@ interface MonoAgentAppControllerInput {
   readonly sandboxEngine?: SandboxEngine;
   readonly traceDefaults?: AppTraceDefaults;
   readonly backgroundSnapshot?: BackgroundSnapshot;
+  readonly trustedRuntimeReadRoots: readonly string[];
 }
 
 const DEFAULT_SANDBOX_STATUS: SandboxStatus = sandboxStatusFromState({
@@ -225,6 +244,8 @@ export class MonoAgentAppController implements MonoAgentApp {
   readonly sandboxEngine: SandboxEngine | undefined;
   readonly traceDefaults: AppTraceDefaults | undefined;
   readonly backgroundSnapshot: BackgroundSnapshot | undefined;
+  readonly trustedRuntimeReadRoots: readonly string[];
+  private trustedSrtSandboxEngine: SandboxEngine | undefined;
   readonly activeRuntimes: MonoRuntimeLike[] = [];
   readonly statuses = new Map<ChannelId, ChannelStatus>();
   readonly running = new Map<ChannelId, RunningChannel>();
@@ -312,6 +333,7 @@ export class MonoAgentAppController implements MonoAgentApp {
     this.sandboxEngine = input.sandboxEngine;
     this.traceDefaults = input.traceDefaults;
     this.backgroundSnapshot = input.backgroundSnapshot;
+    this.trustedRuntimeReadRoots = [...input.trustedRuntimeReadRoots];
     for (const driver of input.drivers) {
       this.statuses.set(driver.id, {
         kind: "waiting_for_config",
@@ -338,6 +360,15 @@ export class MonoAgentAppController implements MonoAgentApp {
 
   get selectedSkills(): readonly string[] | undefined {
     return this.selectedSkillsValue;
+  }
+
+  sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined {
+    if (this.sandboxEngine !== undefined) return this.sandboxEngine;
+    if (this.trustedRuntimeReadRoots.length === 0 || coreConfig.sandbox?.engine !== "srt") return undefined;
+    this.trustedSrtSandboxEngine ??= createSrtSandboxEngine({
+      trustedReadRoots: this.trustedRuntimeReadRoots,
+    });
+    return this.trustedSrtSandboxEngine;
   }
 
   channelStatus(id: ChannelId): ChannelStatus {
