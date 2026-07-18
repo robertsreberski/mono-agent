@@ -24,7 +24,7 @@ The OpenAI-compatible endpoint always streams token-by-token (SSE), which is wha
 
 ### Transient tool activity
 
-The shared formatter maps common tool families to stable copy: web search/browse, file read/search/write/edit, shell commands, code execution, image inspection, and memory access. `ReadSkill` uses preview-free `📚 Reading`, and read-only `MemoryRecall` uses preview-free `📚 Reading memory`; memory writes use `🧠 Updating memory`, and ordinary file reads use `📖 Reading`. Unknown or MCP-qualified tools use a humanized leaf name. Consecutive identical lines collapse in place as `(×N)`; a different tool starts a new line, so only adjacent duplicates are combined.
+The shared formatter maps common tool families to stable copy: web search/browse, file read/search/write/edit, shell commands, code execution, image inspection, and memory access. `ReadSkill` renders the selected skill as `📚 Reading "<skill>"` without exposing its path, and read-only `MemoryRecall` uses preview-free `🧠 Recalling memory`; memory writes use `🧠 Updating memory`, and ordinary file reads use `📖 Reading`. Unknown or MCP-qualified tools use a humanized leaf name. Consecutive identical lines collapse in place as `(×N)`; a different tool starts a new line, so only adjacent duplicates are combined.
 
 Previews use at most one allowlisted scalar argument and are truncated to 40 Unicode code points after control-character and whitespace normalization. Credential assignments, authorization schemes, URL user information, sensitive query parameters, and known token shapes are redacted. Arbitrary tool arguments are never serialized, getters and proxies are not inspected, and memory content/text is deliberately excluded. Unsafe or missing input falls back to action-only copy.
 

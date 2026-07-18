@@ -24,7 +24,11 @@ describe("formatToolActivityLine", () => {
   it("maps common tools to friendly actions with collapsed, bounded previews", () => {
     expect(formatToolActivityLine("WebSearch", { query: "  exact   product\nretailer  " }))
       .toBe("🌐 Searching the web for exact product retailer");
-    expect(formatToolActivityLine("ReadSkill", { path: "/repo/skills/review/SKILL.md" }))
+    expect(formatToolActivityLine("ReadSkill", {
+      name: "review",
+      path: "/repo/skills/review/SKILL.md",
+    })).toBe('📚 Reading "review"');
+    expect(formatToolActivityLine("ReadSkill", { path: "/repo/skills/private/SKILL.md" }))
       .toBe("📚 Reading");
     expect(formatToolActivityLine("apply_patch", { path: "/repo/src/really-long-file-name-that-keeps-going.ts" }))
       .toBe("✏️ Editing /repo/src/really-long-file-name-that-ke…");
@@ -41,8 +45,8 @@ describe("formatToolActivityLine", () => {
     ["terminal", { command: "pnpm test" }, "🖥️ Running pnpm test"],
     ["python", { code: "print(42)" }, "🐍 Running code print(42)"],
     ["vision", { question: "identify product" }, "👁️ Looking at the image identify product"],
-    ["MemoryRecall", { query: "private preferences" }, "📚 Reading memory"],
-    ["memory_recall", { query: "private preferences" }, "📚 Reading memory"],
+    ["MemoryRecall", { query: "private preferences" }, "🧠 Recalling memory"],
+    ["memory_recall", { query: "private preferences" }, "🧠 Recalling memory"],
     ["memory_write", { target: "preferences" }, "🧠 Updating memory preferences"],
   ])("maps %s to its stable activity family", (name, args, expected) => {
     expect(formatToolActivityLine(name, args)).toBe(expected);

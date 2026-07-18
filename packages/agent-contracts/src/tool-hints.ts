@@ -67,6 +67,7 @@ interface ToolActivitySpec {
   readonly action: string;
   readonly actionWithoutPreview?: string;
   readonly previewFields: readonly string[];
+  readonly quotePreview?: boolean;
 }
 
 const WEB_SEARCH_NAMES = new Set([
@@ -150,7 +151,7 @@ export function formatToolActivityLine(toolName: string, toolArguments?: unknown
   const preview = previewFromArguments(toolArguments, spec.previewFields);
   return preview === undefined
     ? (spec.actionWithoutPreview ?? spec.action)
-    : `${spec.action} ${preview}`;
+    : `${spec.action} ${spec.quotePreview ? JSON.stringify(preview) : preview}`;
 }
 
 function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
@@ -165,7 +166,7 @@ function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
     return { action: "🌐 Browsing", previewFields: ["url", "href", "uri", "ref_id"] };
   }
   if (SKILL_READ_NAMES.has(normalized)) {
-    return { action: "📚 Reading", previewFields: [] };
+    return { action: "📚 Reading", previewFields: ["name"], quotePreview: true };
   }
   if (READ_NAMES.has(normalized)) {
     return { action: "📖 Reading", previewFields: ["file_path", "path", "name", "skill", "skill_name"] };
@@ -195,7 +196,7 @@ function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
   if (MEMORY_READ_NAMES.has(normalized)) {
     // A recall query can contain private user context. Keep this status both
     // semantically distinct from writes and deliberately preview-free.
-    return { action: "📚 Reading memory", previewFields: [] };
+    return { action: "🧠 Recalling memory", previewFields: [] };
   }
   if (MEMORY_NAMES.has(normalized) || normalized.includes("memory")) {
     // Deliberately exclude content/text fields: memory prose can itself be
