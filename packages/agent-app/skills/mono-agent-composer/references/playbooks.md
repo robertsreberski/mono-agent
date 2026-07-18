@@ -31,7 +31,7 @@ Put `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in `.env`; the source config omits the c
 }
 ```
 **Steps:** `ollama pull nomic-embed-text:v1.5 && ollama pull qwen3.6:latest` → `mono-agent init --model claude:claude-sonnet-4-6 --memory bujo` → add telegram + fill embeddings/llm + `writeMode: capture` → `mono-agent validate` (confirm memory liveness + consolidation cadence) → `mono-agent start`.
-**Smoke:** send a fact from the allowed chat, then ask a paraphrased question later; confirm the temporary memory-tool activity is replaced by the final answer, `MemoryRecall` appears in the run JSONL, and the answer uses it.
+**Smoke:** send a fact from the allowed chat, then ask a paraphrased question later; confirm the final answer arrives separately and the temporary memory-tool activity disappears, `MemoryRecall` appears in the run JSONL, and the answer uses it.
 
 ## 2. Slack team bot with MCP tools
 **For:** a DevOps engineer running a shared team bot.

@@ -37,6 +37,7 @@ export function createAgentResponder(options: {
 }): AgentResponder & {
   dispose(): Promise<void>;
   cancel(conversationId: string, reason?: unknown): void;
+  startNewSession(conversationId: string): Promise<void>;
 } {
   if (typeof options.harness?.run !== "function") {
     throw new TypeError("createAgentResponder requires a harness with run().");
@@ -74,6 +75,29 @@ export function createAgentResponder(options: {
         const generation = (cancellationGenerationByBaseConversation.get(serializationKey) ?? 0) + 1;
         cancellationGenerationByBaseConversation.set(serializationKey, generation);
         cancellationReasonByBaseConversation.set(serializationKey, { generation, reason });
+      }
+    },
+    async startNewSession(conversationId: string): Promise<void> {
+      const serializationKey = responseSerializationKey(conversationId, options.rollover);
+      const reason = new Error("Conversation session reset requested by the user.");
+      options.harness.cancel?.(
+        activeBucketByBaseConversation.get(serializationKey) ?? bucket(conversationId),
+        reason,
+      );
+      if (responseTailsByBaseConversation.has(serializationKey)) {
+        const generation = (cancellationGenerationByBaseConversation.get(serializationKey) ?? 0) + 1;
+        cancellationGenerationByBaseConversation.set(serializationKey, generation);
+        cancellationReasonByBaseConversation.set(serializationKey, { generation, reason });
+      }
+      await serializeByKey(responseTailsByBaseConversation, serializationKey, async () => {
+        if (options.harness.resetConversation === undefined) {
+          throw new Error("The configured agent harness does not support conversation reset.");
+        }
+        await options.harness.resetConversation(bucket(conversationId));
+      });
+      if (!responseTailsByBaseConversation.has(serializationKey)) {
+        cancellationGenerationByBaseConversation.delete(serializationKey);
+        cancellationReasonByBaseConversation.delete(serializationKey);
       }
     },
     async deliverVerbatim(

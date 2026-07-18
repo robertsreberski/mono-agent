@@ -55,6 +55,12 @@ export interface ConversationHistoryStore {
   load(conversationId: string): Promise<readonly HistoryMessage[]>;
   append(conversationId: string, messages: readonly HistoryMessage[]): Promise<void>;
   /**
+   * Replace one conversation's canonical history with an empty, fresh provider
+   * epoch. Stores that support interactive session resets implement this
+   * atomically; unrelated conversations are never touched.
+   */
+  reset?(conversationId: string): Promise<void>;
+  /**
    * Optional transactional path used by the harness to validate and fsync a
    * turn before it marks the conversation committed. Stores that omit it keep
    * the legacy append contract; the harness still appends before warming a
@@ -138,6 +144,8 @@ export interface AgentHarness {
   submit?(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
   /** Abort the in-flight turn for a conversation and clear its queued follow-ups. */
   cancel?(conversationId: string, reason?: unknown): void;
+  /** Retire and clear one conversation so its next turn rebuilds startup context. */
+  resetConversation?(conversationId: string): Promise<void>;
   /**
    * Record a message posted VERBATIM into `conversationId` by a channel (native
    * cron/webhook notification) without running a turn: append it to durable

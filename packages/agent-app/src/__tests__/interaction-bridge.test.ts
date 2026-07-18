@@ -30,19 +30,25 @@ async function startBridge(
 function recordingSink(): {
   posts: Array<[string, string]>;
   statuses: Array<[string, string, { key: string; state: string }]>;
+  dismissals: Array<[string, string]>;
   sink: ChannelInteractionSink;
 } {
   const posts: Array<[string, string]> = [];
   const statuses: Array<[string, string, { key: string; state: string }]> = [];
+  const dismissals: Array<[string, string]> = [];
   return {
     posts,
     statuses,
+    dismissals,
     sink: {
       postQuestion: async (conversationId, text) => {
         posts.push([conversationId, text]);
       },
       postStatus: async (conversationId, text, options) => {
         statuses.push([conversationId, text, options]);
+      },
+      dismissQuestion: async (conversationId, messageRef) => {
+        dismissals.push([conversationId, messageRef]);
       },
     },
   };
@@ -74,6 +80,18 @@ async function awaitAnswer(
   );
   expect(response.status).toBe(200);
   return (await response.json()) as { status: string; answer?: string };
+}
+
+async function registerPresentation(
+  handle: InteractionBridgeHandle,
+  askId: string,
+  messageRef: string,
+): Promise<Response> {
+  return await fetch(new URL(`/v1/asks/${askId}/presentation`, handle.url), {
+    method: "PUT",
+    headers: headers(handle),
+    body: JSON.stringify({ messageRef }),
+  });
 }
 
 function startStalledProgressRequest(
@@ -340,9 +358,9 @@ describe("interaction bridge", () => {
     expect(handle.hasPendingAsk("telegram:acknowledged")).toBe(true);
   });
 
-  it("registers a callback-only pending ask without posting through the sink when postQuestion is false", async () => {
+  it("accepts a plain-text custom reply for a buttons ask and dismisses its keyboard", async () => {
     const handle = await startBridge();
-    const { posts, sink } = recordingSink();
+    const { posts, dismissals, sink } = recordingSink();
     handle.registerSink("telegram", sink);
 
     const created = await createAsk(handle, {
@@ -360,9 +378,11 @@ describe("interaction bridge", () => {
     expect(posts).toEqual([]);
     expect(handle.hasPendingAsk("telegram:42")).toBe(true);
 
-    expect(handle.tryResolveAsk("telegram:42", "typed text")).toBe(false);
-    expect(handle.tryResolveAsk("telegram:42", "Approve", "callback")).toBe(true);
-    expect(await awaitAnswer(handle, askId, 1_000)).toEqual({ status: "answered", answer: "Approve" });
+    expect((await registerPresentation(handle, askId, "123")).status).toBe(204);
+    expect(handle.tryResolveAsk("telegram:42", "Ship tomorrow instead")).toBe(true);
+    expect(await awaitAnswer(handle, askId, 1_000)).toEqual({ status: "answered", answer: "Ship tomorrow instead" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(dismissals).toEqual([["telegram:42", "123"]]);
     expect(handle.hasPendingAsk("telegram:42")).toBe(false);
     const history = handle.enrichAssistantHistory({
       runId: "run-buttons",
@@ -374,7 +394,39 @@ describe("interaction bridge", () => {
     expect(history).toContain("- ⟦Approve⟧");
     expect(history).toContain("- ⟦Reject⟧");
     expect(history).toContain("Outcome: answered");
-    expect(history).toContain("Approve");
+    expect(history).toContain("Ship tomorrow instead");
+  });
+
+  it("dismisses buttons when custom text wins the race before the keyboard reference is registered", async () => {
+    const handle = await startBridge();
+    const { dismissals, sink } = recordingSink();
+    handle.registerSink("telegram", sink);
+    const created = await createAsk(handle, {
+      conversationId: "telegram:42",
+      question: "Choose one",
+      options: ["A", "B"],
+      postQuestion: false,
+      answerKind: "callback",
+    });
+    const { askId } = (await created.json()) as { askId: string };
+
+    expect(handle.tryResolveAsk("telegram:42", "Neither")).toBe(true);
+    expect((await registerPresentation(handle, askId, "456")).status).toBe(204);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(dismissals).toEqual([["telegram:42", "456"]]);
+    expect(await awaitAnswer(handle, askId, 1_000)).toEqual({ status: "answered", answer: "Neither" });
+  });
+
+  it("does not let a button callback answer a text-only AskUser prompt", async () => {
+    const handle = await startBridge();
+    handle.registerSink("telegram", recordingSink().sink);
+    const created = await createAsk(handle, { conversationId: "telegram:42", question: "Type a value" });
+    const { askId } = (await created.json()) as { askId: string };
+
+    expect(handle.tryResolveAsk("telegram:42", "button", "callback")).toBe(false);
+    expect(handle.tryResolveAsk("telegram:42", "typed value", "text")).toBe(true);
+    expect(await awaitAnswer(handle, askId, 1_000)).toEqual({ status: "answered", answer: "typed value" });
   });
 
   it("normalizes rollover-bucketed conversation ids so a reply on the base id resolves the ask", async () => {

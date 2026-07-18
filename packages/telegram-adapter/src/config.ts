@@ -427,7 +427,7 @@ function readReactionFlag(value: unknown, field: string): boolean {
   return value;
 }
 
-const RESERVED_TELEGRAM_COMMANDS = new Set(["start", "help", "cancel", "model", "effort"]);
+const RESERVED_TELEGRAM_COMMANDS = new Set(["start", "help", "cancel", "new", "model", "effort"]);
 const TELEGRAM_COMMAND_PATTERN = /^[a-z0-9_]{1,32}$/u;
 
 /**
@@ -474,7 +474,7 @@ function normalizeCommandConfig(entry: unknown, index: number): TelegramCommandC
     );
   }
   if (RESERVED_TELEGRAM_COMMANDS.has(name)) {
-    throw invalidConfig("telegram.commands cannot redefine the built-in start, help, cancel, model, or effort commands.", {
+    throw invalidConfig("telegram.commands cannot redefine the built-in start, help, cancel, new, model, or effort commands.", {
       index,
       command: name,
     });

@@ -24,6 +24,10 @@ export class InMemoryConversationHistoryStore implements ConversationHistoryStor
     const next = [...existing, ...messages].slice(this.maxMessages === 0 ? existing.length + messages.length : -this.maxMessages);
     this.conversations.set(key, next);
   }
+
+  async reset(conversationId: string): Promise<void> {
+    this.conversations.delete(normalizeConversationId(conversationId));
+  }
 }
 
 export function createInMemoryHistoryStore(options: InMemoryHistoryStoreOptions = {}): InMemoryConversationHistoryStore {

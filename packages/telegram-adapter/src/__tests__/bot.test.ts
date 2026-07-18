@@ -496,6 +496,7 @@ describe("createTelegramBot", () => {
       inline_keyboard: [
         [expect.objectContaining({ text: expect.stringContaining("Default"), callback_data: expect.stringMatching(/^ma:m:[a-f0-9]{16}$/u) })],
         [expect.objectContaining({ text: "Fallback", callback_data: expect.stringMatching(/^ma:m:[a-f0-9]{16}$/u) })],
+        [expect.objectContaining({ text: "Cancel", callback_data: "ma:cancel" })],
       ],
     });
     expect(menus[1]?.payload.reply_markup).toMatchObject({
@@ -558,6 +559,12 @@ describe("createTelegramBot", () => {
     const fallbackData = modelRows[1]?.[0]?.callback_data as string;
     expect(fallbackData).not.toContain("gpt-fallback");
     await bot.handleUpdate(callbackUpdate({ data: fallbackData, messageId: 501 }));
+    expect(texts(calls, "editMessageText")).toEqual([
+      "Model changed to Fallback for this chat until /model default or restart.",
+    ]);
+    expect(texts(calls, "sendMessage")).toEqual([
+      "Current model: Primary. Choose a configured model:",
+    ]);
     await bot.handleUpdate(textUpdate("use selection", { updateId: 3 }));
     await bot.handleUpdate(callbackUpdate({ data: "ma:m:forged", messageId: 502, updateId: 4 }));
 
@@ -566,6 +573,84 @@ describe("createTelegramBot", () => {
       calls.filter((call) => call.method === "answerCallbackQuery").at(-1)?.payload.text,
     ).toBe("This menu has expired.");
     expect(requests).toHaveLength(1);
+  });
+
+  it("deletes a runtime menu when Cancel is tapped without changing the selection", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot, calls } = buildTestBot({
+      runtimeControls: RUNTIME_CONTROLS,
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+    });
+
+    await bot.handleUpdate(commandUpdate("/model"));
+    await bot.handleUpdate(callbackUpdate({ data: "ma:cancel", messageId: 501, updateId: 2 }));
+    await bot.handleUpdate(textUpdate("still default", { updateId: 3 }));
+
+    expect(calls.some((call) => call.method === "deleteMessage" && call.payload.message_id === 501)).toBe(true);
+    expect(requests[0]?.metadata.telegram.model).toBeUndefined();
+  });
+
+  it("edits the effort menu into its selection confirmation", async () => {
+    const { bot, calls } = buildTestBot({
+      runtimeControls: RUNTIME_CONTROLS,
+      responder: responderFrom(async () => ({ text: "ok" })),
+    });
+    await bot.handleUpdate(commandUpdate("/effort"));
+    const menu = calls.find((call) => call.method === "sendMessage");
+    const rows = (menu?.payload.reply_markup as {
+      inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+    }).inline_keyboard;
+    const none = rows.flat().find((button) => button.text === "None");
+
+    await bot.handleUpdate(callbackUpdate({ data: none?.callback_data as string, messageId: 503, updateId: 2 }));
+
+    expect(texts(calls, "editMessageText")).toEqual([
+      "Effort changed to None for this chat until /effort default or restart.",
+    ]);
+  });
+
+  it("handles /new as a host-owned per-conversation reset without running a turn", async () => {
+    const startNewSession = vi.fn(async () => undefined);
+    const cancel = vi.fn();
+    const responder = { respond: vi.fn(), cancel } satisfies AgentResponder;
+    const pendingCancel = vi.fn();
+    const { bot, calls } = buildTestBot({
+      responder,
+      startNewSession,
+      pendingAsks: { tryResolve: vi.fn(async () => false), cancel: pendingCancel },
+    });
+
+    await bot.handleUpdate(commandUpdate("/new"));
+
+    expect(startNewSession).toHaveBeenCalledWith("telegram:42");
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(pendingCancel).toHaveBeenCalledWith("telegram:42");
+    expect(responder.respond).not.toHaveBeenCalled();
+    expect(texts(calls, "sendMessage")).toEqual([
+      "Started a new session. Conversation history was cleared; skills and startup context will reload on your next message.",
+    ]);
+  });
+
+  it("does not cancel current work when /new is unsupported", async () => {
+    const cancel = vi.fn();
+    const responder = { respond: vi.fn(), cancel } satisfies AgentResponder;
+    const pendingCancel = vi.fn();
+    const { bot, calls } = buildTestBot({
+      responder,
+      pendingAsks: { tryResolve: vi.fn(async () => false), cancel: pendingCancel },
+    });
+
+    await bot.handleUpdate(commandUpdate("/new"));
+
+    expect(cancel).not.toHaveBeenCalled();
+    expect(pendingCancel).not.toHaveBeenCalled();
+    expect(responder.respond).not.toHaveBeenCalled();
+    expect(texts(calls, "sendMessage")).toEqual([
+      "I could not start a new session. The existing conversation was left available; check the agent logs for details.",
+    ]);
   });
 
   it("uses chat selections for interactive command prompts but not public proactive notify", async () => {
@@ -827,7 +912,7 @@ describe("createTelegramBot", () => {
       chat_id: 42,
       text: "final",
       parse_mode: "MarkdownV2",
-      reply_parameters: { message_id: 10 },
+      reply_parameters: { message_id: 10, allow_sending_without_reply: true },
     });
   });
 
@@ -1169,13 +1254,18 @@ describe("createTelegramBot", () => {
       (call) => call.method === "sendChatAction" && call.payload.action === "typing",
     );
     expect(typing.length).toBeGreaterThanOrEqual(1);
-    expect(texts(calls, "sendMessage")).toEqual(["🌐 Searching the web for mono agent"]);
-    expect(texts(calls, "editMessageText")).toEqual(["the answer"]);
+    expect(texts(calls, "sendMessage")).toEqual([
+      "🌐 Searching the web for mono agent",
+      "the answer",
+    ]);
+    expect(texts(calls, "editMessageText")).toEqual([]);
+    expect(calls.filter((call) => call.method === "deleteMessage").map((call) => call.payload))
+      .toEqual([{ chat_id: 42, message_id: 1000 }]);
     // The raw tool name never leaks into any outbound payload text.
     expect(calls.some((call) => String(call.payload.text).includes("WebSearch"))).toBe(false);
   });
 
-  it("replaces hint-only bot runs with an explicit final placeholder", async () => {
+  it("replaces hint-only bot runs with a separate final placeholder", async () => {
     const { bot, calls } = buildTestBot({
       stream: { editDebounceMs: 0 },
       responder: responderFrom(async (_request, stream) => {
@@ -1186,10 +1276,15 @@ describe("createTelegramBot", () => {
 
     await bot.handleUpdate(textUpdate("clean up todoist"));
 
-    expect(texts(calls, "sendMessage")).toEqual(["🔧 Todoist"]);
-    const finalEdit = calls.filter((call) => call.method === "editMessageText").at(-1);
-    expect(finalEdit?.payload.text).toBe("No response text was returned\\.");
-    expect(finalEdit?.payload.parse_mode).toBe("MarkdownV2");
+    expect(texts(calls, "sendMessage")).toEqual([
+      "🔧 Todoist",
+      "No response text was returned\\.",
+    ]);
+    expect(texts(calls, "editMessageText")).toEqual([]);
+    const finalSend = calls.filter((call) => call.method === "sendMessage").at(-1);
+    expect(finalSend?.payload.parse_mode).toBe("MarkdownV2");
+    expect(calls.filter((call) => call.method === "deleteMessage").map((call) => call.payload))
+      .toEqual([{ chat_id: 42, message_id: 1000 }]);
   });
 
   it("preserves streamed bot answers when the responder returns no text", async () => {
@@ -2113,7 +2208,7 @@ describe("createTelegramBot pending asks and status posts", () => {
     expect(reactionEmojis(calls)).toContain("👍");
   });
 
-  it("does not resolve a callback-only pending ask from plain text or run a deadlocking turn", async () => {
+  it("does not run a deadlocking turn when the pending-ask interceptor declines text", async () => {
     const requests: AgentRequest[] = [];
     const tryResolve = vi.fn(async () => false);
     const hasPending = vi.fn(async () => true);
@@ -2191,6 +2286,17 @@ describe("createTelegramBot pending asks and status posts", () => {
     await controller.post(42, "Who is speaking on the recording?");
 
     expect(texts(calls, "sendMessage")).toEqual(["Who is speaking on the recording?"]);
+  });
+
+  it("removes an inline keyboard without changing the question text", async () => {
+    const { controller, calls } = buildTestBot({
+      responder: responderFrom(async () => ({ text: "turn" })),
+    });
+
+    await controller.dismissInlineKeyboard(42, 88);
+
+    expect(calls.filter((call) => call.method === "editMessageReplyMarkup").map((call) => call.payload))
+      .toEqual([{ chat_id: 42, message_id: 88 }]);
   });
 
   it("edits a keyed status message in place and starts fresh after a terminal state", async () => {

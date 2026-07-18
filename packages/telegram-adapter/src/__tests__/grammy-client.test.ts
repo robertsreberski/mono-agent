@@ -70,6 +70,7 @@ describe("createGrammyTelegramApi", () => {
       text: "hi",
       parse_mode: "MarkdownV2",
       reply_to_message_id: 5,
+      allow_sending_without_reply: true,
       disable_web_page_preview: true,
     });
 
@@ -77,7 +78,7 @@ describe("createGrammyTelegramApi", () => {
     expect(calls[0]?.args[1]).toBe("hi");
     expect(calls[0]?.args[2]).toEqual({
       parse_mode: "MarkdownV2",
-      reply_parameters: { message_id: 5 },
+      reply_parameters: { message_id: 5, allow_sending_without_reply: true },
       link_preview_options: { is_disabled: true },
     });
     expect(message.message_id).toBe(7);

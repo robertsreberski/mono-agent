@@ -45,6 +45,9 @@ export function createSlackPostedReplyHistory(options: SlackPostedReplyHistoryOp
     },
     wrapResponder(responder) {
       const dispose = (responder as AgentResponder & { dispose?: () => Promise<void> }).dispose;
+      const startNewSession = (responder as AgentResponder & {
+        startNewSession?: (conversationId: string) => Promise<void>;
+      }).startNewSession;
       return {
         respond: async (request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> => {
           const scope = postedReplyScope(request);
@@ -56,6 +59,9 @@ export function createSlackPostedReplyHistory(options: SlackPostedReplyHistoryOp
         ...(responder.deliverVerbatim === undefined
           ? {}
           : { deliverVerbatim: responder.deliverVerbatim.bind(responder) }),
+        ...(startNewSession === undefined
+          ? {}
+          : { startNewSession: startNewSession.bind(responder) }),
         ...(dispose === undefined ? {} : { dispose: dispose.bind(responder) }),
       } as AgentResponder;
     },
@@ -86,6 +92,9 @@ function wrapHistoryStore(
       return mergeHistory(canonical, delivery, options.maxMessages);
     },
     append: (conversationId, messages) => store.append(conversationId, messages),
+    ...(store.reset === undefined
+      ? {}
+      : { reset: (conversationId: string) => store.reset!(conversationId) }),
     ...(store.prepareAppend === undefined
       ? {}
       : { prepareAppend: (conversationId: string, messages: readonly HistoryMessage[]) =>
