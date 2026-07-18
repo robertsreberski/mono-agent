@@ -276,6 +276,9 @@ new agent.
   // the ledger. This is built-in behavior (not a JSON field); a custom channel
   // driver can set stream.showHints=false or stream.finalOnly=false. The
   // OpenAI-compatible endpoint still streams tokens.
+  // Telegram also exposes built-in per-chat /model and /effort menus over the
+  // configured runtime primary + fallbacks. This has no telegram JSON field;
+  // selections reset with the matching `default` command or process restart.
   "telegram": {
     "enabled": true,                       // opt-in; defaults to false (off → "disabled")
     // Put MONO_AGENT_TELEGRAM_BOT_TOKEN in .env; do not inline botToken here.

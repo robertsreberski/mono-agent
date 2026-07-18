@@ -1,5 +1,11 @@
 import type { ChannelInteractionAnswerKind } from "@mono-agent/agent-contracts";
+import { EFFORT_LEVELS } from "@mono-agent/config";
 import { describeRunFailureKind } from "@mono-agent/observability";
+import {
+  modelReferenceKey,
+  resolveModelEffortLevels,
+} from "@mono-agent/runtime-adapter";
+import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type {
   TelegramAdapterConfig,
   TelegramAdapterErrorTextInput,
@@ -7,6 +13,8 @@ import type {
   TelegramAdapterStartResult,
   TelegramChatId,
   TelegramTranscriptionConfig,
+  TelegramRuntimeControls,
+  TelegramRuntimeEffortOption,
 } from "@mono-agent/telegram-adapter";
 
 import { isAdapterSendToolAllowed } from "../adapter-send-tools.js";
@@ -14,6 +22,10 @@ import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
 import type { ChannelDriver, ChannelStartInput } from "../channels.js";
+import {
+  configuredRuntimeFallbackModels,
+  configuredRuntimeModels,
+} from "../runtime-routes.js";
 import { unconfiguredChannelView } from "./shared.js";
 
 type TelegramAdapterModule = typeof import("@mono-agent/telegram-adapter");
@@ -189,14 +201,16 @@ function telegramStartOptions(
     allowedTools: input.coreConfig.tools.allowedTools,
     disallowedTools: input.coreConfig.tools.disallowedTools,
   });
+  const runtimeControls = telegramRuntimeControls(input.coreConfig);
   let pollingDegraded = false;
   return {
     botToken: input.config.botToken,
     allowedChatIds: [...input.config.allowedChatIds],
     allowAllChats: input.config.allowAllChats,
     responder: input.responder,
-    allowedUpdates: callbacksEnabled ? ["message", "callback_query"] : ["message"],
+    allowedUpdates: ["message", "callback_query"],
     ...(callbacksEnabled ? { callbacksEnabled: true } : {}),
+    runtimeControls,
     deleteWebhookOnStart: true,
     stream: {
       initialStatusText: "Agent is thinking...",
@@ -207,7 +221,7 @@ function telegramStartOptions(
     },
     messages: {
       welcomeText: "Agent is online. Send a message to run the configured runtime.",
-      helpText: "Send a message to talk to the agent. Use /cancel to stop an in-flight response.",
+      helpText: "Send a message to talk to the agent. Use /model and /effort for this chat, or /cancel to stop an in-flight response.",
       unauthorizedText: "This chat is not allowlisted for this agent.",
       errorText: telegramErrorText,
     },
@@ -248,6 +262,70 @@ function telegramStartOptions(
     ...(overrides.botFactory === undefined ? {} : { botFactory: overrides.botFactory }),
     ...(overrides.runnerFactory === undefined ? {} : { runnerFactory: overrides.runnerFactory }),
   };
+}
+
+function telegramRuntimeControls(
+  coreConfig: ChannelStartInput<TelegramAdapterConfig>["coreConfig"],
+): TelegramRuntimeControls {
+  const refs: RuntimeModelReference[] = [];
+  const seen = new Set<string>();
+  for (const ref of configuredRuntimeModels(coreConfig.runtime)) {
+    const value = modelReferenceKey(ref);
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    refs.push(ref);
+  }
+  const directOpenCodeInFallbacks = configuredRuntimeFallbackModels(coreConfig.runtime)
+    .some((ref) => ref.sdk === "opencode");
+  return {
+    defaultModel: modelReferenceKey(coreConfig.runtime.model),
+    ...(coreConfig.runtime.effort === undefined ? {} : { defaultEffort: coreConfig.runtime.effort }),
+    models: refs.map((ref) => {
+      const value = modelReferenceKey(ref);
+      return {
+        value,
+        label: value,
+        efforts: telegramEffortOptions(
+          ref,
+          coreConfig.providers?.local,
+          ref.sdk === "opencode" || directOpenCodeInFallbacks,
+        ),
+      };
+    }),
+  };
+}
+
+function telegramEffortOptions(
+  ref: RuntimeModelReference,
+  localProviders: Parameters<typeof resolveModelEffortLevels>[1],
+  directOpenCodeInResultingChain: boolean,
+): readonly TelegramRuntimeEffortOption[] {
+  if (directOpenCodeInResultingChain) {
+    return [];
+  }
+  const resolved = resolveModelEffortLevels(ref, localProviders);
+  if (!resolved.reasoning || resolved.reasoningMode === "none") {
+    return [];
+  }
+  if (resolved.reasoningMode === "toggle") {
+    return [
+      { value: "high", label: "Thinking on" },
+      { value: "none", label: "Thinking off" },
+    ];
+  }
+  const allowed = new Set<string>(EFFORT_LEVELS);
+  const values = resolved.effortLevels ?? EFFORT_LEVELS;
+  return [...new Set(values)]
+    .filter((value) => allowed.has(value))
+    .map((value) => ({ value, label: telegramEffortLabel(value) }));
+}
+
+function telegramEffortLabel(value: string): string {
+  if (value === "xhigh") return "Extra high";
+  if (value === "max") return "Maximum";
+  return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
 }
 
 function telegramErrorText(input: TelegramAdapterErrorTextInput): string {

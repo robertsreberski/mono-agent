@@ -67,7 +67,8 @@ export function isCronRequest(request: AgentHarnessRequest): boolean {
  * Whether the request carries a per-turn MODEL override that resolves to a
  * model DIFFERENT from the harness default. The override may be pinned by a
  * trigger (`metadata.webhook`/`metadata.cron`) or picked interactively from the
- * web console (`metadata.web`) or TUI (`metadata.tui`). Only a different model
+ * web console (`metadata.web`), TUI (`metadata.tui`), or Telegram
+ * (`metadata.telegram`). Only a different model
  * forces session isolation — it
  * runs on a different model (often a different runtime), and the provider session
  * is keyed by conversationId + bound to a model, so resuming or persisting it
@@ -96,7 +97,9 @@ export function requestOverridesModel(request: AgentHarnessRequest, defaultModel
         ? metadata.web
         : isRecord(metadata.tui)
           ? metadata.tui
-          : undefined;
+          : isRecord(metadata.telegram)
+            ? metadata.telegram
+            : undefined;
   if (source === undefined || typeof source.model !== "string" || source.model.trim().length === 0) {
     return false;
   }

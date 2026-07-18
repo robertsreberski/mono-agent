@@ -271,6 +271,28 @@ describe("startTelegramAdapter", () => {
     await result.stop();
   });
 
+  it("registers model and effort commands when runtime controls are supplied", async () => {
+    const { bot, calls } = recordingBot();
+
+    const result = await startTelegramAdapter({
+      botToken: "test-token",
+      allowAllChats: true,
+      responder: { respond: vi.fn() } satisfies AgentResponder,
+      runtimeControls: {
+        defaultModel: "codex:gpt-primary",
+        models: [{ value: "codex:gpt-primary", label: "Primary", efforts: [] }],
+      },
+      botFactory: () => bot,
+      runnerFactory: () => new FakeRunner(),
+    });
+
+    const setCommands = calls.find((call) => call.method === "setMyCommands");
+    const registered = setCommands?.payload.commands as Array<{ command: string }>;
+    expect(registered.map((entry) => entry.command)).toEqual(["help", "cancel", "model", "effort"]);
+
+    await result.stop();
+  });
+
   it("skips setMyCommands when no custom commands are configured", async () => {
     const { bot, calls } = recordingBot();
 

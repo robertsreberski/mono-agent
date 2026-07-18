@@ -6,9 +6,9 @@ sidebar:
 
 # Telegram
 
-The Telegram channel connects your agent to a Telegram bot over long polling. This page covers enabling it, the chat allowlist, final-only delivery behaviour, inbound attachment download and optional audio transcription, the environment-variable overrides, and a setup + smoke-test walkthrough.
+The Telegram channel connects your agent to a Telegram bot over long polling. This page covers enabling it, the chat allowlist, built-in per-chat model controls, final-only delivery behaviour, inbound attachment download and optional audio transcription, the environment-variable overrides, and a setup + smoke-test walkthrough.
 
-Coverage: **config** (`telegram.long-polling` and `telegram.transcription` in the [feature registry](/reference/feature-registry/)). The agent talks to a bot you create with BotFather; no inbound port is required.
+Coverage: **config + code** (`telegram.long-polling`, `telegram.interactive`, and `telegram.transcription` in the [feature registry](/reference/feature-registry/)). The agent talks to a bot you create with BotFather; no inbound port is required.
 
 ## Configuration
 
@@ -59,11 +59,45 @@ Every key has a `MONO_AGENT_TELEGRAM_*` override. Env vars win over JSON, which 
 
 ## Interactive features
 
-All of the features below are **opt-in and default off**. With none configured the bot behaves exactly as before (long-poll `message` updates only).
+The per-chat runtime controls below are built in whenever the mono-agent app
+starts Telegram. The remaining command, reaction, ask, file, and quiet-hours
+features are opt-in.
+
+### Runtime model and effort controls (built in)
+
+Use `/model` to open an inline menu containing only the configured
+`runtime.model` and `runtime.fallbacks`; mono-agent performs no local discovery
+and does not accept arbitrary model references. Use `/effort` for the selected
+model's supported effort choices. The equivalent direct forms are:
+
+```text
+/model <configured-model-reference>
+/model default
+/effort <supported-effort>
+/effort default
+```
+
+Selections are in-memory and scoped to one Telegram chat. They remain active
+until reset with the matching `default` command or until the process restarts.
+Changing model preserves the explicit effort when compatible and clears it when
+the new model does not support it. A model with no adjustable reasoning reports
+that directly instead of presenting a misleading effort menu.
+
+The selection applies to ordinary messages, config-driven command prompts, and
+the synthetic-turn fallback for an inline button tap. Public proactive
+cron/webhook notification turns deliberately keep the configured defaults. An
+effort-only or configured-primary selection keeps normal chat session
+continuity. A model different from the configured primary runs each turn as a
+fresh isolated session so provider history from two models cannot be mixed;
+resetting `/model default` restores the shared primary-model session.
+
+This is code coverage, not a `telegram` JSON field. The app always supplies the
+catalog. Programmatic `startTelegramAdapter` callers can opt in by passing
+`runtimeControls` explicitly.
 
 ### Command menu
 
-Register custom slash commands that appear in Telegram's command menu (autocomplete) and run a configured prompt as a turn. Built-in `/start`, `/help`, and `/cancel` are always present and cannot be overridden.
+Register custom slash commands that appear beside the built-ins in Telegram's command menu (autocomplete) and run a configured prompt as a turn. Built-in `/start`, `/help`, `/cancel`, `/model`, and `/effort` cannot be overridden.
 
 ```json
 {
@@ -76,7 +110,7 @@ Register custom slash commands that appear in Telegram's command menu (autocompl
 }
 ```
 
-Each entry needs a `command` (1–32 lowercase letters/digits/underscores) and a `description`. With a `prompt`, tapping the command runs it on that chat through the normal per-chat queue; without a `prompt` it is a menu-only entry that echoes its description. The command list is registered via `setMyCommands` at startup (scoped to private chats); it is skipped entirely when no custom commands are configured.
+Each entry needs a `command` (1–32 lowercase letters/digits/underscores) and a `description`. With a `prompt`, tapping the command runs it on that chat through the normal per-chat queue and current runtime selection; without a `prompt` it is a menu-only entry that echoes its description. The command list is registered via `setMyCommands` at startup (scoped to private chats). The app registers the built-in runtime commands even when no custom commands are configured.
 
 ### Status reactions
 
@@ -116,7 +150,7 @@ The `TelegramAskButtons` app tool lets the agent ask you a structured question w
 { "tools": { "allowedTools": ["TelegramAskButtons"] } }
 ```
 
-The tool takes a `question` and 2–8 option labels, posts an inline keyboard, and **waits for your tap**. The tapped label is returned to the same in-flight tool call, so the agent keeps its mid-turn context. If no pending ask exists for a callback, the tap still falls back to the existing synthetic-turn behavior on the same conversation. Allowing `TelegramAskButtons` is the single switch that also subscribes the bot to `callback_query` updates and wires the tap handler; the chat allowlist still bounds where questions can be sent, and the tap handler re-checks it.
+The tool takes a `question` and 2–8 option labels, posts an inline keyboard, and **waits for your tap**. The tapped label is returned to the same in-flight tool call, so the agent keeps its mid-turn context. If no pending ask exists for a callback, the tap still falls back to the existing synthetic-turn behavior on the same conversation and uses the chat's current runtime selection. The app already subscribes to `callback_query` updates for `/model` and `/effort`; allowing `TelegramAskButtons` additionally wires the ask-button handler. The chat allowlist still bounds where questions can be sent, and the tap handler re-checks it.
 
 ### Sending files
 

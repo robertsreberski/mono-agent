@@ -58,6 +58,26 @@ acknowledgement. Programmatic drivers can set `stream.showHints: false` to keep
 only the ordinary working indicator or `stream.finalOnly: false` for live answer
 edits.
 
+`ReadSkill` renders the selected skill as `📚 Reading "<skill>"` without exposing
+its path. Memory recall remains preview-free as `🧠 Recalling memory`. Memory
+writes remain `🧠 Updating memory`, and ordinary file reads remain `📖 Reading`.
+
+## Per-chat runtime controls
+
+The mono-agent app supplies a display-ready `runtimeControls` catalog to the
+adapter, which adds built-in `/model` and `/effort` menus. Direct programmatic
+callers can opt into the same behavior through `createTelegramBot` or
+`startTelegramAdapter`.
+
+Only the host-supplied configured primary and fallback models are selectable;
+the adapter performs no model discovery and accepts no arbitrary model
+references. A choice is held in memory per chat until `/model default`,
+`/effort default`, or process restart. Changing model clears an explicit effort
+only when the new model does not support it. Interactive messages, configured
+command prompts, and synthetic button-answer turns carry the selection under
+`metadata.telegram`; public proactive `notify` calls intentionally retain the
+configured runtime defaults.
+
 ## Public API
 
 <!-- public-api-inventory:start -->
@@ -131,6 +151,9 @@ TelegramQuietHours
 TelegramReactionsConfig
 TelegramRequestMetadata
 TelegramRequestOptions
+TelegramRuntimeControls
+TelegramRuntimeEffortOption
+TelegramRuntimeModelOption
 TelegramSendDocumentParams
 TelegramSendMessageParams
 TelegramSendOutcome

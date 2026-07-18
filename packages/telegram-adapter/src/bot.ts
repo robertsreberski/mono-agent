@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import { stat, readFile, unlink } from "node:fs/promises";
 import { Agent as HttpAgent } from "node:http";
 import { Agent as HttpsAgent } from "node:https";
@@ -63,6 +64,11 @@ const REACTION_ERROR = "👎";
 // bot cannot grow it unbounded. A double-tap on an old question past this many
 // distinct answered questions would simply re-run (acceptable, very rare).
 const CALLBACK_DEDUPE_MAX = 200;
+const RUNTIME_CALLBACK_PREFIX = "ma:";
+const MODEL_CALLBACK_PREFIX = `${RUNTIME_CALLBACK_PREFIX}m:`;
+const EFFORT_CALLBACK_PREFIX = `${RUNTIME_CALLBACK_PREFIX}e:`;
+const RUNTIME_CALLBACK_TOKEN_LENGTH = 16;
+const TELEGRAM_BUTTON_LABEL_CODE_POINTS = 60;
 
 // grammY's Api client default `timeoutSeconds` is 500 (8m20s overall HTTP
 // timeout). A half-open socket (after a network blip or host sleep) therefore
@@ -206,6 +212,30 @@ export interface TelegramPendingAsks {
   cancel(conversationId: string): void;
 }
 
+/** One effort choice displayed by Telegram's per-chat runtime controls. */
+export interface TelegramRuntimeEffortOption {
+  readonly value: string;
+  readonly label: string;
+}
+
+/** One configured runtime model and the effort choices it supports. */
+export interface TelegramRuntimeModelOption {
+  readonly value: string;
+  readonly label: string;
+  readonly efforts: readonly TelegramRuntimeEffortOption[];
+}
+
+/**
+ * Display-ready model catalog supplied by the host. The adapter deliberately
+ * does not discover models or accept arbitrary references: it only selects from
+ * this configured primary/fallback list.
+ */
+export interface TelegramRuntimeControls {
+  readonly defaultModel: string;
+  readonly defaultEffort?: string;
+  readonly models: readonly TelegramRuntimeModelOption[];
+}
+
 export interface CreateTelegramBotOptions {
   readonly botToken: string;
   readonly responder: AgentResponder;
@@ -218,10 +248,13 @@ export interface CreateTelegramBotOptions {
   readonly allowedUpdates?: readonly string[];
   /**
    * Custom command-menu entries. When non-empty the bot registers them (plus the
-   * built-in help/cancel) via `setMyCommands` at startup and dispatches each
-   * command's `prompt` as a turn. Built-in start/help/cancel cannot be overridden.
+   * available built-ins) via `setMyCommands` at startup and dispatches each
+   * command's `prompt` as a turn. Built-in start/help/cancel/model/effort cannot
+   * be overridden.
    */
   readonly commands?: readonly TelegramCommandConfig[];
+  /** Optional per-chat `/model` and `/effort` controls over a host-supplied catalog. */
+  readonly runtimeControls?: TelegramRuntimeControls;
   /**
    * Per-state lifecycle reactions via `setMessageReaction` (👀 working, 👍 done,
    * 👎 error). Each state can be toggled independently; a disabled terminal state
@@ -233,7 +266,7 @@ export interface CreateTelegramBotOptions {
    * tool. When a pending ask exists, the tap resolves the in-flight tool call;
    * otherwise the existing synthetic-turn fallback runs on the same conversation.
    * When set, `callback_query` is added to the default `allowedUpdates`. Default
-   * off — with it unset the bot never subscribes to callbacks and the handler is not wired.
+   * off for ask buttons; runtime controls independently require callback updates.
    */
   readonly callbacksEnabled?: boolean;
   /**
@@ -347,11 +380,117 @@ export interface TelegramBotController {
 
 type TelegramControlCommand = "start" | "help" | "cancel";
 
+interface TelegramRuntimeSelection {
+  model?: string;
+  effort?: string;
+}
+
+interface TelegramRuntimeControlCatalog {
+  readonly controls: TelegramRuntimeControls;
+  readonly modelByValue: ReadonlyMap<string, TelegramRuntimeModelOption>;
+  readonly modelByToken: ReadonlyMap<string, TelegramRuntimeModelOption>;
+  readonly modelTokenByValue: ReadonlyMap<string, string>;
+  readonly effortByModelToken: ReadonlyMap<string, ReadonlyMap<string, TelegramRuntimeEffortOption>>;
+}
+
+function buildRuntimeControlCatalog(
+  input: TelegramRuntimeControls | undefined,
+): TelegramRuntimeControlCatalog | undefined {
+  if (input === undefined) {
+    return undefined;
+  }
+  const defaultModel = input.defaultModel.trim();
+  if (defaultModel.length === 0) {
+    throw new TypeError("Telegram runtimeControls.defaultModel must be a non-empty string.");
+  }
+  const models: TelegramRuntimeModelOption[] = [];
+  const modelByValue = new Map<string, TelegramRuntimeModelOption>();
+  for (const rawModel of input.models) {
+    const value = rawModel.value.trim();
+    const label = rawModel.label.trim();
+    if (value.length === 0 || label.length === 0) {
+      throw new TypeError("Telegram runtimeControls models require non-empty value and label strings.");
+    }
+    if (modelByValue.has(value)) {
+      throw new TypeError(`Telegram runtimeControls contains duplicate model ${value}.`);
+    }
+    const effortValues = new Set<string>();
+    const efforts = rawModel.efforts.map((rawEffort) => {
+      const effortValue = rawEffort.value.trim();
+      const effortLabel = rawEffort.label.trim();
+      if (effortValue.length === 0 || effortLabel.length === 0) {
+        throw new TypeError("Telegram runtimeControls efforts require non-empty value and label strings.");
+      }
+      if (effortValues.has(effortValue)) {
+        throw new TypeError(`Telegram runtimeControls contains duplicate effort ${effortValue} for ${value}.`);
+      }
+      effortValues.add(effortValue);
+      return { value: effortValue, label: effortLabel };
+    });
+    const model = { value, label, efforts };
+    models.push(model);
+    modelByValue.set(value, model);
+  }
+  if (!modelByValue.has(defaultModel)) {
+    throw new TypeError("Telegram runtimeControls.defaultModel must appear in runtimeControls.models.");
+  }
+
+  const defaultEffort = input.defaultEffort?.trim();
+  if (input.defaultEffort !== undefined && defaultEffort?.length === 0) {
+    throw new TypeError("Telegram runtimeControls.defaultEffort must be non-empty when provided.");
+  }
+  const controls: TelegramRuntimeControls = {
+    defaultModel,
+    ...(defaultEffort === undefined ? {} : { defaultEffort }),
+    models,
+  };
+  const modelByToken = new Map<string, TelegramRuntimeModelOption>();
+  const modelTokenByValue = new Map<string, string>();
+  const effortByModelToken = new Map<string, ReadonlyMap<string, TelegramRuntimeEffortOption>>();
+  // Process-local salt makes buttons from an earlier process stale and prevents
+  // callers from constructing a valid token from a guessed configured ref.
+  const callbackSalt = randomBytes(16);
+  for (const model of models) {
+    const modelToken = runtimeCallbackToken(callbackSalt, `model:${model.value}`);
+    if (modelByToken.has(modelToken)) {
+      throw new TypeError("Telegram runtimeControls model callback token collision.");
+    }
+    modelByToken.set(modelToken, model);
+    modelTokenByValue.set(model.value, modelToken);
+    const efforts = new Map<string, TelegramRuntimeEffortOption>();
+    for (const effort of model.efforts) {
+      const effortToken = runtimeCallbackToken(callbackSalt, `effort:${model.value}:${effort.value}`);
+      if (efforts.has(effortToken)) {
+        throw new TypeError("Telegram runtimeControls effort callback token collision.");
+      }
+      efforts.set(effortToken, effort);
+    }
+    effortByModelToken.set(modelToken, efforts);
+  }
+  return { controls, modelByValue, modelByToken, modelTokenByValue, effortByModelToken };
+}
+
+function runtimeCallbackToken(salt: Uint8Array, value: string): string {
+  return createHash("sha256")
+    .update(salt)
+    .update("\0")
+    .update(value)
+    .digest("hex")
+    .slice(0, RUNTIME_CALLBACK_TOKEN_LENGTH);
+}
+
+function telegramButtonLabel(value: string): string {
+  const points = Array.from(value);
+  return points.length <= TELEGRAM_BUTTON_LABEL_CODE_POINTS
+    ? value
+    : `${points.slice(0, TELEGRAM_BUTTON_LABEL_CODE_POINTS - 1).join("")}…`;
+}
+
 /**
  * Build a grammY bot that routes authorized text messages to an agent responder.
  *
  * grammY owns the transport and (via `@grammyjs/runner`) concurrent polling.
- * Middleware order is: authorization gate → `/start` `/help` `/cancel` commands →
+ * Middleware order is: authorization gate → built-in control commands →
  * agent run handler (`message:text`) → unsupported fallback (other messages).
  *
  * Concurrency is NOT rejected per chat. Every message is handed to the responder,
@@ -371,6 +510,10 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   const messages: Required<TelegramAdapterMessages> = { ...DEFAULT_MESSAGES, ...options.messages };
   const logger = createSecretSafeTelegramLogger(options.logger, [options.botToken]);
   const initialStatusText = options.stream?.initialStatusText ?? DEFAULT_INITIAL_STATUS_TEXT;
+  const runtimeCatalog = buildRuntimeControlCatalog(options.runtimeControls);
+  // Intentionally process-local: selections reset on restart and never alter the
+  // configured host defaults. Each chat gets an independent override record.
+  const runtimeSelections = new Map<string, TelegramRuntimeSelection>();
   // Per-chat set of AbortControllers for in-flight messages. The runtime harness
   // serializes turns per conversation, so we never reject concurrent messages —
   // we only track them so `/cancel` can abort every live turn for the chat.
@@ -528,6 +671,209 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   const isAuthorized = (chatId: TelegramChatId | undefined): boolean =>
     chatId !== undefined && (allowAllChats || allowedChatIds.has(String(chatId)));
 
+  function runtimeSelectionFor(chatId: TelegramChatId): TelegramRuntimeSelection {
+    return runtimeSelections.get(String(chatId)) ?? {};
+  }
+
+  function saveRuntimeSelection(chatId: TelegramChatId, selection: TelegramRuntimeSelection): void {
+    const key = String(chatId);
+    if (selection.model === undefined && selection.effort === undefined) {
+      runtimeSelections.delete(key);
+    } else {
+      runtimeSelections.set(key, selection);
+    }
+  }
+
+  function effectiveRuntimeModel(chatId: TelegramChatId): TelegramRuntimeModelOption | undefined {
+    if (runtimeCatalog === undefined) {
+      return undefined;
+    }
+    const selected = runtimeSelectionFor(chatId).model ?? runtimeCatalog.controls.defaultModel;
+    return runtimeCatalog.modelByValue.get(selected);
+  }
+
+  function selectRuntimeModel(chatId: TelegramChatId, value: string | undefined): boolean {
+    if (runtimeCatalog === undefined) {
+      return false;
+    }
+    const selection = { ...runtimeSelectionFor(chatId) };
+    if (value === undefined || value === runtimeCatalog.controls.defaultModel) {
+      delete selection.model;
+    } else {
+      selection.model = value;
+    }
+    const target = runtimeCatalog.modelByValue.get(
+      selection.model ?? runtimeCatalog.controls.defaultModel,
+    );
+    const effortCleared = selection.effort !== undefined
+      && target?.efforts.some((effort) => effort.value === selection.effort) !== true;
+    if (effortCleared) {
+      delete selection.effort;
+    }
+    saveRuntimeSelection(chatId, selection);
+    return effortCleared;
+  }
+
+  function selectRuntimeEffort(chatId: TelegramChatId, value: string | undefined): void {
+    const selection = { ...runtimeSelectionFor(chatId) };
+    if (value === undefined) {
+      delete selection.effort;
+    } else {
+      selection.effort = value;
+    }
+    saveRuntimeSelection(chatId, selection);
+  }
+
+  function applyRuntimeSelection(
+    chatId: TelegramChatId,
+    telegram: AgentRequest["metadata"]["telegram"],
+  ): void {
+    const selection = runtimeSelections.get(String(chatId));
+    if (selection?.model !== undefined) {
+      telegram.model = selection.model;
+    }
+    if (selection?.effort !== undefined) {
+      telegram.effort = selection.effort;
+    }
+  }
+
+  function modelSelectionConfirmation(chatId: TelegramChatId, effortCleared: boolean): string {
+    const model = effectiveRuntimeModel(chatId);
+    const isDefault = runtimeSelectionFor(chatId).model === undefined;
+    const base = isDefault
+      ? `Model reset to the configured default: ${model?.label ?? "unknown"}.`
+      : `Model set to ${model?.label ?? "unknown"} for this chat until /model default or restart.`;
+    return effortCleared
+      ? `${base} The previous effort selection was reset because this model does not support it.`
+      : base;
+  }
+
+  function effortSelectionConfirmation(chatId: TelegramChatId): string {
+    const selection = runtimeSelectionFor(chatId);
+    if (selection.effort === undefined) {
+      const configured = runtimeCatalog?.controls.defaultEffort;
+      return configured === undefined
+        ? "Effort reset to the configured provider default."
+        : `Effort reset to the configured default: ${configured}.`;
+    }
+    const model = effectiveRuntimeModel(chatId);
+    const effort = model?.efforts.find((candidate) => candidate.value === selection.effort);
+    return `Effort set to ${effort?.label ?? selection.effort} for this chat until /effort default or restart.`;
+  }
+
+  function modelMenuMarkup(chatId: TelegramChatId): {
+    inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
+  } {
+    const catalog = runtimeCatalog as TelegramRuntimeControlCatalog;
+    const selection = runtimeSelectionFor(chatId);
+    const defaultModel = catalog.modelByValue.get(catalog.controls.defaultModel) as TelegramRuntimeModelOption;
+    const rows: Array<Array<{ text: string; callback_data: string }>> = [[{
+      text: telegramButtonLabel(`${selection.model === undefined ? "✓ " : ""}Default · ${defaultModel.label}`),
+      callback_data: `${MODEL_CALLBACK_PREFIX}${catalog.modelTokenByValue.get(defaultModel.value) as string}`,
+    }]];
+    for (const model of catalog.controls.models) {
+      if (model.value === catalog.controls.defaultModel) {
+        continue;
+      }
+      rows.push([{
+        text: telegramButtonLabel(`${selection.model === model.value ? "✓ " : ""}${model.label}`),
+        callback_data: `${MODEL_CALLBACK_PREFIX}${catalog.modelTokenByValue.get(model.value) as string}`,
+      }]);
+    }
+    return { inline_keyboard: rows };
+  }
+
+  function effortMenuMarkup(
+    chatId: TelegramChatId,
+    model: TelegramRuntimeModelOption,
+  ): { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } {
+    const catalog = runtimeCatalog as TelegramRuntimeControlCatalog;
+    const selection = runtimeSelectionFor(chatId);
+    const modelToken = catalog.modelTokenByValue.get(model.value) as string;
+    const configuredDefault = catalog.controls.defaultEffort ?? "provider default";
+    const rows: Array<Array<{ text: string; callback_data: string }>> = [[{
+      text: telegramButtonLabel(`${selection.effort === undefined ? "✓ " : ""}Default · ${configuredDefault}`),
+      callback_data: `${EFFORT_CALLBACK_PREFIX}${modelToken}:d`,
+    }]];
+    const effortTokens = catalog.effortByModelToken.get(modelToken) as ReadonlyMap<string, TelegramRuntimeEffortOption>;
+    for (const [token, effort] of effortTokens) {
+      rows.push([{
+        text: telegramButtonLabel(`${selection.effort === effort.value ? "✓ " : ""}${effort.label}`),
+        callback_data: `${EFFORT_CALLBACK_PREFIX}${modelToken}:${token}`,
+      }]);
+    }
+    return { inline_keyboard: rows };
+  }
+
+  function commandArgument(ctx: Context): string {
+    return typeof ctx.match === "string" ? ctx.match.trim() : "";
+  }
+
+  async function handleModelCommand(ctx: Context): Promise<void> {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined || runtimeCatalog === undefined) {
+      return;
+    }
+    const argument = commandArgument(ctx);
+    if (argument.length === 0) {
+      const current = effectiveRuntimeModel(chatId);
+      await ctx.reply(
+        `Current model: ${current?.label ?? "unknown"}. Choose a configured model:`,
+        { reply_markup: modelMenuMarkup(chatId) },
+      );
+      return;
+    }
+    if (argument.toLowerCase() === "default") {
+      const effortCleared = selectRuntimeModel(chatId, undefined);
+      await ctx.reply(modelSelectionConfirmation(chatId, effortCleared));
+      return;
+    }
+    if (!runtimeCatalog.modelByValue.has(argument)) {
+      await ctx.reply("That model is not available. Use /model to choose from the configured primary and fallbacks.");
+      return;
+    }
+    const effortCleared = selectRuntimeModel(chatId, argument);
+    await ctx.reply(modelSelectionConfirmation(chatId, effortCleared));
+  }
+
+  async function handleEffortCommand(ctx: Context): Promise<void> {
+    const chatId = ctx.chat?.id;
+    if (chatId === undefined || runtimeCatalog === undefined) {
+      return;
+    }
+    const model = effectiveRuntimeModel(chatId);
+    if (model === undefined) {
+      await ctx.reply("Effort controls are unavailable for the current model.");
+      return;
+    }
+    const argument = commandArgument(ctx);
+    if (argument.toLowerCase() === "default") {
+      selectRuntimeEffort(chatId, undefined);
+      await ctx.reply(effortSelectionConfirmation(chatId));
+      return;
+    }
+    if (model.efforts.length === 0) {
+      await ctx.reply(`The current model (${model.label}) does not expose adjustable effort.`);
+      return;
+    }
+    if (argument.length === 0) {
+      await ctx.reply(
+        `Choose effort for ${model.label}:`,
+        { reply_markup: effortMenuMarkup(chatId, model) },
+      );
+      return;
+    }
+    const effort = model.efforts.find((candidate) =>
+      candidate.value === argument || candidate.value === argument.toLowerCase()
+    );
+    if (effort === undefined) {
+      await ctx.reply("That effort is not available for the current model. Use /effort to see its options.");
+      return;
+    }
+    selectRuntimeEffort(chatId, effort.value);
+    await ctx.reply(effortSelectionConfirmation(chatId));
+  }
+
   const reactions = options.reactions;
   /**
    * Set (or clear, when `emoji` is undefined) the bot's reaction on a message.
@@ -581,12 +927,16 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
     await ctx.reply(messages.cancelledText);
   });
+  if (runtimeCatalog !== undefined) {
+    bot.command("model", handleModelCommand);
+    bot.command("effort", handleEffortCommand);
+  }
 
   // Custom config-driven commands. Registered before the catch-all `message`
   // handler so a `/cmd` is dispatched here (and never falls through to the agent
   // as raw text). A command with a `prompt` runs it as a turn through the same
   // per-chat queue as a typed message; a prompt-less command is menu-only and
-  // just echoes its description. Built-in start/help/cancel are reserved (config
+  // just echoes its description. Built-in start/help/cancel/model/effort are reserved (config
   // validation rejects them), so these never shadow a built-in.
   const customCommands = options.commands ?? [];
   for (const command of customCommands) {
@@ -600,18 +950,15 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         await ctx.reply(command.description);
         return;
       }
-      await notify(chatId, prompt);
+      await notifyInteractive(chatId, prompt);
     });
   }
 
-  // Inline-keyboard callbacks (TelegramAskButtons). Subscribed only when enabled (the
-  // default `allowedUpdates` then also includes `callback_query`). The auth gate
-  // above already blocks unauthorized chats; we re-check defensively. On a tap we
-  // resolve the chosen LABEL from the tapped message's own keyboard (so no
-  // cross-process state is needed), answer the callback promptly, strip the
-  // buttons, and prefer resolving a pending bridge ask. If no pending ask exists,
-  // preserve the historical synthetic-turn fallback.
+  // Inline-keyboard callbacks serve runtime menus whenever a host catalog exists,
+  // and TelegramAskButtons when that tool is enabled. The auth gate above already
+  // blocks unauthorized chats; we re-check defensively.
   const callbacksEnabled = options.callbacksEnabled === true;
+  const callbackHandlersEnabled = callbacksEnabled || runtimeCatalog !== undefined;
   const answeredCallbacks = new Set<string>();
   const rememberAnswered = (key: string): void => {
     answeredCallbacks.add(key);
@@ -631,14 +978,92 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       });
     }
   }
-  if (callbacksEnabled) {
+  async function stripCallbackKeyboardQuietly(ctx: Context): Promise<void> {
+    try {
+      await ctx.editMessageReplyMarkup();
+    } catch (error) {
+      logger?.debug?.("Telegram editMessageReplyMarkup failed after callback (best-effort).", {
+        error: errorMessage(error),
+      });
+    }
+  }
+  async function expireRuntimeCallback(ctx: Context): Promise<void> {
+    await answerCallbackQuietly(ctx, "This menu has expired.");
+    await stripCallbackKeyboardQuietly(ctx);
+  }
+  async function handleRuntimeCallback(ctx: Context, chatId: TelegramChatId, data: string): Promise<boolean> {
+    if (!data.startsWith(RUNTIME_CALLBACK_PREFIX)) {
+      return false;
+    }
+    if (runtimeCatalog === undefined) {
+      await expireRuntimeCallback(ctx);
+      return true;
+    }
+    const messageId = ctx.callbackQuery?.message?.message_id;
+    const dedupeKey = `${String(chatId)}:${messageId ?? "?"}`;
+    if (answeredCallbacks.has(dedupeKey)) {
+      await answerCallbackQuietly(ctx, "Already recorded.");
+      return true;
+    }
+
+    if (data.startsWith(MODEL_CALLBACK_PREFIX)) {
+      const token = data.slice(MODEL_CALLBACK_PREFIX.length);
+      const model = runtimeCatalog.modelByToken.get(token);
+      if (token.length === 0 || model === undefined) {
+        await expireRuntimeCallback(ctx);
+        return true;
+      }
+      rememberAnswered(dedupeKey);
+      const effortCleared = selectRuntimeModel(chatId, model.value);
+      await answerCallbackQuietly(ctx, "Model updated.");
+      await stripCallbackKeyboardQuietly(ctx);
+      await ctx.reply(modelSelectionConfirmation(chatId, effortCleared));
+      return true;
+    }
+
+    if (data.startsWith(EFFORT_CALLBACK_PREFIX)) {
+      const parts = data.slice(EFFORT_CALLBACK_PREFIX.length).split(":");
+      const [modelToken, effortToken] = parts;
+      const model = modelToken === undefined ? undefined : runtimeCatalog.modelByToken.get(modelToken);
+      const current = effectiveRuntimeModel(chatId);
+      const effort = modelToken === undefined || effortToken === undefined
+        ? undefined
+        : runtimeCatalog.effortByModelToken.get(modelToken)?.get(effortToken);
+      if (
+        parts.length !== 2
+        || model === undefined
+        || current?.value !== model.value
+        || (effortToken !== "d" && effort === undefined)
+      ) {
+        await expireRuntimeCallback(ctx);
+        return true;
+      }
+      rememberAnswered(dedupeKey);
+      selectRuntimeEffort(chatId, effortToken === "d" ? undefined : effort?.value);
+      await answerCallbackQuietly(ctx, "Effort updated.");
+      await stripCallbackKeyboardQuietly(ctx);
+      await ctx.reply(effortSelectionConfirmation(chatId));
+      return true;
+    }
+
+    await expireRuntimeCallback(ctx);
+    return true;
+  }
+  if (callbackHandlersEnabled) {
     bot.on("callback_query:data", async (ctx) => {
       if (stopped) {
         return;
       }
       const chatId = ctx.chat?.id;
       const data = ctx.callbackQuery.data;
-      if (chatId === undefined || !isAuthorized(chatId) || !isTelegramAskCallbackData(data)) {
+      if (chatId === undefined || !isAuthorized(chatId)) {
+        await answerCallbackQuietly(ctx);
+        return;
+      }
+      if (await handleRuntimeCallback(ctx, chatId, data)) {
+        return;
+      }
+      if (!callbacksEnabled || !isTelegramAskCallbackData(data)) {
         await answerCallbackQuietly(ctx);
         return;
       }
@@ -657,13 +1082,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         return;
       }
       // Strip the keyboard so the question cannot be answered twice (best-effort).
-      try {
-        await ctx.editMessageReplyMarkup();
-      } catch (error) {
-        logger?.debug?.("Telegram editMessageReplyMarkup failed after callback (best-effort).", {
-          error: errorMessage(error),
-        });
-      }
+      await stripCallbackKeyboardQuietly(ctx);
       const conversationId = `telegram:${String(chatId)}`;
       const consumed = await options.pendingAsks?.tryResolve(conversationId, label, "callback");
       if (consumed === true) {
@@ -678,7 +1097,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         question !== undefined && question.trim().length > 0
           ? `Re: "${question.trim()}" — I chose: ${label}`
           : `I chose: ${label}`;
-      await notify(chatId, syntheticText);
+      await notifyInteractive(chatId, syntheticText);
     });
   }
 
@@ -945,6 +1364,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       controller.signal,
       resolvedAttachments,
     );
+    applyRuntimeSelection(chatId, request.metadata.telegram);
     const stream = new TelegramMessageStream(
       buildStreamOptions(chatId, message.message_id, controller.signal),
     );
@@ -1060,12 +1480,21 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     text: string,
     controller: AbortController,
     silent: boolean,
+    includeRuntimeSelection: boolean,
   ): Promise<TelegramNotifyResult> {
     try {
       if (controller.signal.aborted) {
         return { delivered: false, reason: "cancelled" };
       }
       const conversationId = `telegram:${String(chatId)}`;
+      const telegramMetadata: AgentRequest["metadata"]["telegram"] = {
+        updateId: 0,
+        chat: { id: chatId },
+        message: { id: 0 },
+      };
+      if (includeRuntimeSelection) {
+        applyRuntimeSelection(chatId, telegramMetadata);
+      }
       const request: AgentRequest = {
         conversationId,
         replyTo: { conversationId },
@@ -1075,11 +1504,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         text,
         abortSignal: controller.signal,
         metadata: {
-          telegram: {
-            updateId: 0,
-            chat: { id: chatId },
-            message: { id: 0 },
-          },
+          telegram: telegramMetadata,
         },
       };
       const stream = new TelegramMessageStream(buildStreamOptions(chatId, undefined, controller.signal, silent, false));
@@ -1165,10 +1590,11 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
    * chat through the same per-chat admission queue as inbound messages, so it
    * serializes with live traffic on the same conversation.
    */
-  async function notify(
+  async function notifyInternal(
     chatId: TelegramChatId,
     text: string,
     notifyOptions?: TelegramNotifyOptions,
+    includeRuntimeSelection = false,
   ): Promise<TelegramNotifyResult> {
     if (stopped) {
       return { delivered: false, reason: "adapter stopped" };
@@ -1184,7 +1610,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       async () => {
         outcome = notifyOptions?.verbatim === true
           ? await runVerbatimDelivery(chatId, text, controller, silent)
-          : await runProactiveTurn(chatId, text, controller, silent);
+          : await runProactiveTurn(chatId, text, controller, silent, includeRuntimeSelection);
       },
       () => {
         unregisterController(chatId, controller);
@@ -1194,6 +1620,22 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       },
     );
     return outcome;
+  }
+
+  async function notify(
+    chatId: TelegramChatId,
+    text: string,
+    notifyOptions?: TelegramNotifyOptions,
+  ): Promise<TelegramNotifyResult> {
+    // Public cron/webhook notifications intentionally retain configured runtime
+    // defaults instead of inheriting a human's interactive chat selection.
+    return await notifyInternal(chatId, text, notifyOptions, false);
+  }
+
+  async function notifyInteractive(chatId: TelegramChatId, text: string): Promise<TelegramNotifyResult> {
+    // Custom command prompts and AskButtons fallbacks are interactive Telegram
+    // turns even though they have no inbound Message object.
+    return await notifyInternal(chatId, text, undefined, true);
   }
 
   async function handleControlCommand(
@@ -1582,15 +2024,18 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           });
         }
       }
-      // Register the command menu (setMyCommands) when custom commands are
-      // configured: the built-in help/cancel plus each custom command, scoped to
-      // private chats. Best-effort + bounded so a flaky network can't stall boot
-      // (the menu is cosmetic); skipped entirely with no custom commands so an
-      // existing deployment sees no menu it never asked for.
-      if (customCommands.length > 0) {
+      // Register the command menu when custom commands or host-supplied runtime
+      // controls exist. Best-effort + bounded so a flaky network can't stall boot.
+      if (customCommands.length > 0 || runtimeCatalog !== undefined) {
         const menu = [
           { command: "help", description: "How to use this agent" },
           { command: "cancel", description: "Stop the current response" },
+          ...(runtimeCatalog === undefined
+            ? []
+            : [
+                { command: "model", description: "Choose a model for this chat" },
+                { command: "effort", description: "Choose reasoning effort" },
+              ]),
           ...customCommands.map((command) => ({
             command: command.command,
             description: command.description,
@@ -1650,8 +2095,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   };
 
   function defaultRunnerFactory(target: Bot): RunnerHandle {
-    const defaultAllowed = callbacksEnabled ? ["message", "callback_query"] : ["message"];
-    const allowed = [...(options.allowedUpdates ?? defaultAllowed)] as unknown as AllowedUpdates;
+    const defaultAllowed = callbackHandlersEnabled ? ["message", "callback_query"] : ["message"];
+    const configuredAllowed = [...(options.allowedUpdates ?? defaultAllowed)];
+    if (runtimeCatalog !== undefined && !configuredAllowed.includes("callback_query")) {
+      configuredAllowed.push("callback_query");
+    }
+    const allowed = configuredAllowed as unknown as AllowedUpdates;
     return run(target, {
       runner: {
         // Self-retry transient getUpdates errors (network blips) with exponential

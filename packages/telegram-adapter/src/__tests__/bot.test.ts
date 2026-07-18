@@ -18,6 +18,7 @@ import {
   SerialQueue,
   SerialQueueFullError,
   type CreateTelegramBotOptions,
+  type TelegramRuntimeControls,
 } from "../bot.js";
 
 const FAKE_BOT_INFO = {
@@ -35,6 +36,26 @@ const FAKE_BOT_INFO = {
   can_manage_bots: false,
   supports_join_request_queries: false,
 };
+
+const RUNTIME_CONTROLS = {
+  defaultModel: "codex:gpt-primary",
+  defaultEffort: "high",
+  models: [
+    {
+      value: "codex:gpt-primary",
+      label: "Primary",
+      efforts: [
+        { value: "none", label: "None" },
+        { value: "high", label: "High" },
+      ],
+    },
+    {
+      value: "codex:gpt-fallback",
+      label: "Fallback",
+      efforts: [{ value: "low", label: "Low" }],
+    },
+  ],
+} satisfies TelegramRuntimeControls;
 
 interface RecordedCall {
   method: string;
@@ -179,6 +200,7 @@ function commandUpdate(
   command: string,
   options?: { chatId?: number; updateId?: number },
 ): Parameters<Bot["handleUpdate"]>[0] {
+  const commandToken = command.trim().split(/\s/u, 1)[0] ?? command;
   return {
     update_id: options?.updateId ?? 1,
     message: {
@@ -187,7 +209,7 @@ function commandUpdate(
       chat: { id: options?.chatId ?? 42, type: "private" },
       from: { id: 7, is_bot: false, first_name: "Person A", username: "person_a" },
       text: command,
-      entities: [{ type: "bot_command", offset: 0, length: command.length }],
+      entities: [{ type: "bot_command", offset: 0, length: commandToken.length }],
     },
   } as Parameters<Bot["handleUpdate"]>[0];
 }
@@ -461,6 +483,112 @@ describe("createTelegramBot", () => {
     expect(texts(calls, "sendMessage")).toEqual(["What this agent does"]);
   });
 
+  it("opens model and effort menus without running the responder", async () => {
+    const responder = { respond: vi.fn() } satisfies AgentResponder;
+    const { bot, calls } = buildTestBot({ responder, runtimeControls: RUNTIME_CONTROLS });
+
+    await bot.handleUpdate(commandUpdate("/model"));
+    await bot.handleUpdate(commandUpdate("/effort", { updateId: 2 }));
+
+    const menus = calls.filter((call) => call.method === "sendMessage");
+    expect(menus).toHaveLength(2);
+    expect(menus[0]?.payload.reply_markup).toMatchObject({
+      inline_keyboard: [
+        [expect.objectContaining({ text: expect.stringContaining("Default"), callback_data: expect.stringMatching(/^ma:m:[a-f0-9]{16}$/u) })],
+        [expect.objectContaining({ text: "Fallback", callback_data: expect.stringMatching(/^ma:m:[a-f0-9]{16}$/u) })],
+      ],
+    });
+    expect(menus[1]?.payload.reply_markup).toMatchObject({
+      inline_keyboard: expect.arrayContaining([
+        [expect.objectContaining({ callback_data: expect.stringMatching(/^ma:e:[a-f0-9]{16}:/u) })],
+      ]),
+    });
+    expect(responder.respond).not.toHaveBeenCalled();
+  });
+
+  it("keeps model and effort selections per chat, clearing only incompatible effort", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = buildTestBot({
+      runtimeControls: RUNTIME_CONTROLS,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+    });
+
+    await bot.handleUpdate(commandUpdate("/effort high"));
+    await bot.handleUpdate(commandUpdate("/model codex:gpt-fallback", { updateId: 2 }));
+    await bot.handleUpdate(textUpdate("fallback default effort", { updateId: 3 }));
+    await bot.handleUpdate(commandUpdate("/effort low", { updateId: 4 }));
+    await bot.handleUpdate(textUpdate("fallback low effort", { updateId: 5 }));
+    await bot.handleUpdate(textUpdate("other chat", { chatId: 99, updateId: 6 }));
+    await bot.handleUpdate(commandUpdate("/model default", { updateId: 7 }));
+    await bot.handleUpdate(textUpdate("back to defaults", { updateId: 8 }));
+
+    expect(requests).toHaveLength(4);
+    expect(requests[0]?.metadata.telegram).toMatchObject({ model: "codex:gpt-fallback" });
+    expect(requests[0]?.metadata.telegram.effort).toBeUndefined();
+    expect(requests[1]?.metadata.telegram).toMatchObject({
+      model: "codex:gpt-fallback",
+      effort: "low",
+    });
+    expect(requests[2]?.metadata.telegram.model).toBeUndefined();
+    expect(requests[2]?.metadata.telegram.effort).toBeUndefined();
+    expect(requests[3]?.metadata.telegram.model).toBeUndefined();
+    expect(requests[3]?.metadata.telegram.effort).toBeUndefined();
+  });
+
+  it("applies opaque model callbacks and rejects stale or forged runtime callbacks", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot, calls } = buildTestBot({
+      runtimeControls: RUNTIME_CONTROLS,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+    });
+
+    await bot.handleUpdate(commandUpdate("/model"));
+    const modelMenu = calls.find((call) => call.method === "sendMessage");
+    const modelRows = (modelMenu?.payload.reply_markup as {
+      inline_keyboard: Array<Array<{ callback_data: string }>>;
+    }).inline_keyboard;
+    const fallbackData = modelRows[1]?.[0]?.callback_data as string;
+    expect(fallbackData).not.toContain("gpt-fallback");
+    await bot.handleUpdate(callbackUpdate({ data: fallbackData, messageId: 501 }));
+    await bot.handleUpdate(textUpdate("use selection", { updateId: 3 }));
+    await bot.handleUpdate(callbackUpdate({ data: "ma:m:forged", messageId: 502, updateId: 4 }));
+
+    expect(requests[0]?.metadata.telegram.model).toBe("codex:gpt-fallback");
+    expect(
+      calls.filter((call) => call.method === "answerCallbackQuery").at(-1)?.payload.text,
+    ).toBe("This menu has expired.");
+    expect(requests).toHaveLength(1);
+  });
+
+  it("uses chat selections for interactive command prompts but not public proactive notify", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot, controller } = buildTestBot({
+      runtimeControls: RUNTIME_CONTROLS,
+      commands: [{ command: "brief", description: "Morning brief", prompt: "Compose the brief" }],
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+    });
+
+    await bot.handleUpdate(commandUpdate("/model codex:gpt-fallback"));
+    await bot.handleUpdate(commandUpdate("/brief", { updateId: 2 }));
+    await controller.notify(42, "proactive check");
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.metadata.telegram.model).toBe("codex:gpt-fallback");
+    expect(requests[1]?.metadata.telegram.model).toBeUndefined();
+  });
+
   it("reacts 👀 then 👍 around a successful turn when all reactions are enabled", async () => {
     const responder = responderFrom(async () => ({ text: "done" }));
     const { bot, calls } = buildTestBot({
@@ -565,10 +693,12 @@ describe("createTelegramBot", () => {
     const { bot, calls } = buildTestBot({
       responder,
       callbacksEnabled: true,
+      runtimeControls: RUNTIME_CONTROLS,
       pendingAsks: { tryResolve, cancel: vi.fn() },
       stream: { editDebounceMs: 0 },
     });
 
+    await bot.handleUpdate(commandUpdate("/model codex:gpt-fallback"));
     await bot.handleUpdate(callbackUpdate({ data: "ask:0", questionText: "Proceed?" }));
 
     expect(tryResolve).toHaveBeenCalledWith("telegram:42", "Approve", "callback");
@@ -576,6 +706,7 @@ describe("createTelegramBot", () => {
     expect(calls.some((call) => call.method === "editMessageReplyMarkup")).toBe(true);
     expect(requests).toHaveLength(1);
     expect(requests[0]?.conversationId).toBe("telegram:42");
+    expect(requests[0]?.metadata.telegram.model).toBe("codex:gpt-fallback");
     expect(requests[0]?.text).toContain("Approve");
     expect(requests[0]?.text).toContain("Proceed?");
   });

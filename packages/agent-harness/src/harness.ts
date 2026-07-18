@@ -146,7 +146,7 @@ export class MonoAgentHarness implements AgentHarness {
     // Computed before recorder construction so even running/early-failed summaries
     // carry the run's session identity.
     //
-    // A per-trigger MODEL override is isolated, regardless of the opt-in, ONLY
+    // A per-request MODEL override is isolated, regardless of the opt-in, ONLY
     // when it names a model DIFFERENT from the harness default: the turn runs on a
     // different model (often a different runtime) and the provider session is keyed
     // by conversationId + bound to a model, so resuming or persisting it against

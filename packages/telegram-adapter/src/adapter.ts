@@ -141,6 +141,10 @@ export interface AgentRequest extends AgentRequestBase {
 
 export interface TelegramRequestMetadata {
   updateId: number;
+  /** Per-chat model selected through Telegram runtime controls. */
+  model?: string;
+  /** Per-chat effort selected through Telegram runtime controls. */
+  effort?: string;
   chat: {
     id: TelegramChatId;
     type?: string;

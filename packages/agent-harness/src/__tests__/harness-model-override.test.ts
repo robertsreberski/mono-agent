@@ -300,7 +300,19 @@ function effortOnlyCronRequest(conversationId: string) {
   };
 }
 
-describe("AgentHarness per-trigger override session isolation", () => {
+function telegramOverrideRequest(
+  conversationId: string,
+  override: { readonly model?: string; readonly effort?: string },
+) {
+  return {
+    conversationId,
+    userMessage: "telegram turn",
+    abortSignal: new AbortController().signal,
+    metadata: { telegram: { updateId: 1, chat: { id: 42 }, message: { id: 10 }, ...override } },
+  };
+}
+
+describe("AgentHarness per-request override session isolation", () => {
   it("a model-override turn neither resumes nor persists the shared session", async () => {
     const identityPath = await identityFixture();
     const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
@@ -348,6 +360,75 @@ describe("AgentHarness per-trigger override session isolation", () => {
     // the override turn persisted nothing into the shared store.
     await harness.run(request("conv"));
     expect(base.calls[1]?.options.sessionId).toBe("ps-1");
+  });
+
+  it("isolates a different-model Telegram turn from the chat's shared session", async () => {
+    const identityPath = await identityFixture();
+    const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
+    const override = createFakeRuntime();
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: base.runtime,
+      model: defaultModel,
+      executionMode: "sdk",
+      session: continuousSession,
+      runtimeForModel: () => override.runtime,
+      runtimeOptionsForRequest: (input) => {
+        const telegram = (input.request.metadata as {
+          telegram?: { model?: string; effort?: string };
+        } | undefined)?.telegram;
+        return {
+          runtimeOptions: telegram?.model === undefined
+            ? {}
+            : { model: claudeModel, ...(telegram.effort === undefined ? {} : { effort: telegram.effort }) },
+        };
+      },
+    });
+
+    await harness.run(request("telegram:42", "warm chat"));
+    await harness.run(telegramOverrideRequest("telegram:42", {
+      model: claudeModel.reference,
+      effort: "high",
+    }));
+
+    expect(override.calls).toHaveLength(1);
+    expect(override.calls[0]?.options.sessionId).toBeUndefined();
+    expect(override.calls[0]?.options.providerSessionId).toBeUndefined();
+    expect(override.calls[0]?.options.sessionKeepAlive).toBeUndefined();
+    expect(override.calls[0]?.options.effort).toBe("high");
+
+    await harness.run(request("telegram:42", "resume chat"));
+    expect(base.calls[1]?.options.sessionId).toBe("ps-1");
+  });
+
+  it("keeps same-model and effort-only Telegram turns on the shared session", async () => {
+    const identityPath = await identityFixture();
+    const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: base.runtime,
+      model: defaultModel,
+      executionMode: "sdk",
+      session: continuousSession,
+      runtimeOptionsForRequest: (input) => {
+        const telegram = (input.request.metadata as {
+          telegram?: { model?: string; effort?: string };
+        } | undefined)?.telegram;
+        return {
+          runtimeOptions: {
+            ...(telegram?.model === undefined ? {} : { model: defaultModel }),
+            ...(telegram?.effort === undefined ? {} : { effort: telegram.effort }),
+          },
+        };
+      },
+    });
+
+    await harness.run(telegramOverrideRequest("telegram:42", { model: defaultModel.reference }));
+    await harness.run(telegramOverrideRequest("telegram:42", { effort: "high" }));
+
+    expect(base.calls[0]?.options.sessionKeepAlive).toBe(true);
+    expect(base.calls[1]?.options.sessionId).toBe("ps-1");
+    expect(base.calls[1]?.options.effort).toBe("high");
   });
 
   it("fails closed before provider execution when a continuous-session model override was not declared before context assembly", async () => {

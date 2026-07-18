@@ -209,7 +209,7 @@ describe("loadTelegramAdapterConfig", () => {
     ]);
   });
 
-  it("rejects a command that redefines a built-in", async () => {
+  it.each(["cancel", "model", "effort"])("rejects a command that redefines the built-in /%s", async (command) => {
     const path = join(dir, "mono-agent.config.json");
     await writeFile(
       path,
@@ -218,7 +218,7 @@ describe("loadTelegramAdapterConfig", () => {
           enabled: true,
           botToken: "123456:json-token",
           allowAllChats: true,
-          commands: [{ command: "cancel", description: "nope" }],
+          commands: [{ command, description: "nope" }],
         },
       })}\n`,
       "utf8",

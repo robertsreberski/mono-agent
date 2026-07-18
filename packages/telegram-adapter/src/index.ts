@@ -108,6 +108,12 @@ export type {
   TelegramAdapterStartResult,
 } from "./start.js";
 
+export type {
+  TelegramRuntimeControls,
+  TelegramRuntimeEffortOption,
+  TelegramRuntimeModelOption,
+} from "./bot.js";
+
 export {
   isWithinQuietHours,
   loadTelegramAdapterConfig,
