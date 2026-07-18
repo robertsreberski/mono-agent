@@ -23,6 +23,7 @@ class FakeTelegramApi implements TelegramBotApi {
   nextMessageId = 100;
   failSendWith: Error | undefined;
   failEditWith: Error | undefined;
+  failDeleteWith: Error | undefined;
 
   async sendMessage(
     params: TelegramSendMessageParams,
@@ -56,6 +57,9 @@ class FakeTelegramApi implements TelegramBotApi {
 
   async deleteMessage(params: TelegramDeleteMessageParams): Promise<true> {
     this.deleteMessageCalls.push(params);
+    if (this.failDeleteWith !== undefined) {
+      throw this.failDeleteWith;
+    }
     return true;
   }
 
@@ -115,7 +119,7 @@ describe("TelegramMessageStream", () => {
     expect(api.editMessageTextCalls).toHaveLength(1);
   });
 
-  it("replaces a final-only tool ledger with the final Telegram answer", async () => {
+  it("posts a final-only answer separately and deletes the transient tool ledger", async () => {
     const api = new FakeTelegramApi();
     const stream = new TelegramMessageStream({
       api,
@@ -132,16 +136,109 @@ describe("TelegramMessageStream", () => {
     });
     await stream.finish("final answer");
 
-    expect(api.sendMessageCalls).toEqual([{
-      chat_id: 42,
-      text: "🌐 Browsing https://example.test/product",
-    }]);
-    expect(api.editMessageTextCalls).toEqual([{
-      chat_id: 42,
-      message_id: 100,
-      text: "final answer",
-      parse_mode: "MarkdownV2",
-    }]);
+    expect(api.sendMessageCalls).toEqual([
+      {
+        chat_id: 42,
+        text: "🌐 Browsing https://example.test/product",
+      },
+      {
+        chat_id: 42,
+        text: "final answer",
+        parse_mode: "MarkdownV2",
+      },
+    ]);
+    expect(api.editMessageTextCalls).toEqual([]);
+    expect(api.deleteMessageCalls).toEqual([{ chat_id: 42, message_id: 100 }]);
+  });
+
+  it("keeps a separate final answer deliverable when its reply parent was removed", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      replyToMessageId: 9,
+      finalOnly: true,
+      editDebounceMs: 0,
+      formatMarkdown: false,
+    });
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "t1",
+      name: "Read",
+      arguments: { path: "/repo/a.ts" },
+    });
+    await stream.finish("final answer", { format: false });
+
+    expect(api.sendMessageCalls).toEqual([
+      {
+        chat_id: 42,
+        text: "📖 Reading /repo/a.ts",
+        reply_to_message_id: 9,
+      },
+      {
+        chat_id: 42,
+        text: "final answer",
+        reply_to_message_id: 9,
+        allow_sending_without_reply: true,
+      },
+    ]);
+    expect(api.deleteMessageCalls).toEqual([{ chat_id: 42, message_id: 100 }]);
+  });
+
+  it("posts an identical final answer separately when it matches the transient tool ledger", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      finalOnly: true,
+      editDebounceMs: 0,
+      formatMarkdown: false,
+    });
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "t1",
+      name: "Bash",
+      arguments: { command: "echo hello" },
+    });
+    const progress = api.sendMessageCalls[0]?.text as string;
+    await stream.finish(progress, { format: false });
+
+    expect(api.sendMessageCalls.map((call) => call.text)).toEqual([progress, progress]);
+    expect(api.editMessageTextCalls).toEqual([]);
+    expect(api.deleteMessageCalls).toEqual([{ chat_id: 42, message_id: 100 }]);
+  });
+
+  it("does not duplicate a final-only answer when progress deletion fails", async () => {
+    const api = new FakeTelegramApi();
+    const debug = vi.fn();
+    api.failDeleteWith = new Error("delete unavailable");
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      finalOnly: true,
+      editDebounceMs: 0,
+      logger: { debug },
+    });
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "t1",
+      name: "Read",
+      arguments: { path: "/repo/a.ts" },
+    });
+    await expect(stream.finish("final answer")).resolves.toBeUndefined();
+
+    expect(api.sendMessageCalls.map((call) => call.text)).toEqual([
+      "📖 Reading /repo/a.ts",
+      "final answer",
+    ]);
+    expect(api.deleteMessageCalls).toEqual([{ chat_id: 42, message_id: 100 }]);
+    expect(debug).toHaveBeenCalledWith(
+      "Telegram transient progress deletion failed after final delivery (ignored).",
+      { error: "delete unavailable" },
+    );
   });
 
   it("deletes a transient Telegram tool ledger on dismissal", async () => {

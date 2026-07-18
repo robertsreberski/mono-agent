@@ -31,7 +31,7 @@ describe("formatToolActivityLine", () => {
     expect(formatToolActivityLine("ReadSkill", { path: "/repo/skills/private/SKILL.md" }))
       .toBe("📚 Reading");
     expect(formatToolActivityLine("apply_patch", { path: "/repo/src/really-long-file-name-that-keeps-going.ts" }))
-      .toBe("✏️ Editing /repo/src/really-long-file-name-that-ke…");
+      .toBe("✏️ Editing /repo/src/rea…e-name-that-keeps-going.ts");
     expect(formatToolActivityLine("mcp__browser__browser_console", {}))
       .toBe("🔧 Browser console");
   });
@@ -67,6 +67,69 @@ describe("formatToolActivityLine", () => {
     expect(urlLine).toBe("🌐 Browsing https://x.test/?token=[redacted]");
     expect(urlLine).not.toContain("user:pass");
     expect(urlLine).not.toContain("fixture");
+  });
+
+  it.each([
+    ["mysql connect --password hunter2", "hunter2"],
+    ["command with a deliberately long prefix --token abc", "abc"],
+    ["curl to a deliberately long endpoint -u user:pass", "user:pass"],
+    ["deploy with a deliberately long prefix --client-secret hunter2", "hunter2"],
+    ["deploy with a deliberately long prefix --db-password hunter2", "hunter2"],
+    ["mysql --host localhost with-a-long-option -p hunter2", "hunter2"],
+    ["mysqldump --host localhost -phunter2", "hunter2"],
+  ])("redacts command-line credentials before retaining the command ending: %s", (command, secret) => {
+    const line = formatToolActivityLine("Bash", { command });
+
+    expect(line).toContain("[redacted]");
+    expect(line).not.toContain(secret);
+    expect(Array.from(line.slice("🖥️ Running ".length)).length).toBeLessThanOrEqual(40);
+  });
+
+  it.each([
+    ["postgresql://alice:hunter2@db.example/app", "hunter2", "db.example/app"],
+    ["redis://:hunter2@cache.example:6379/0", "hunter2", "example:6379/0"],
+    ["ftp://alice:hunter2@files.example/archive", "hunter2", "example/archive"],
+  ])("redacts URI userinfo before retaining a command suffix: %s", (uri, secret, safeSuffix) => {
+    const line = formatToolActivityLine("Bash", {
+      command: `run a deliberately long synchronization command ${uri}`,
+    });
+
+    expect(line).not.toContain(secret);
+    expect(line).not.toContain("alice");
+    expect(line).not.toContain("@");
+    expect(line).toContain(safeSuffix);
+    expect(Array.from(line.slice("🖥️ Running ".length))).toHaveLength(40);
+  });
+
+  it("does not treat a generic short -p option as a password outside MySQL-family commands", () => {
+    expect(formatToolActivityLine("Bash", { command: "mkdir -p /workspace/output" }))
+      .toBe("🖥️ Running mkdir -p /workspace/output");
+  });
+
+  it("keeps filenames and command endings visible within the existing 40-code-point bound", () => {
+    const path = formatToolActivityLine("Read", {
+      path: "/workspace/demo/personal-agent/.mono-agent/outbound/spec-transcription-20260718.md",
+    });
+    const command = formatToolActivityLine("Bash", {
+      command: "./bin/todoist-upsert --spec .mono-agent/outbound/spec-transcription-20260718.json",
+    });
+
+    expect(path).toBe("📖 Reading /workspace/de…-transcription-20260718.md");
+    expect(command).toBe("🖥️ Running ./bin/todoist-upsert…ption-20260718.json");
+    expect(Array.from(path.slice("📖 Reading ".length))).toHaveLength(40);
+    expect(Array.from(command.slice("🖥️ Running ".length))).toHaveLength(40);
+  });
+
+  it("truncates previews by Unicode code point while retaining redaction", () => {
+    const secret = ["sk", "fixtureCredential0123456789"].join("-");
+    const line = formatToolActivityLine("Bash", {
+      command: `echo 🧠🧠🧠 OPENAI_API_KEY=${secret} then-run-the-important-final-command`,
+    });
+    const preview = line.slice("🖥️ Running ".length);
+
+    expect(Array.from(preview)).toHaveLength(40);
+    expect(line).not.toContain(secret);
+    expect(line).toContain("final-command");
   });
 
   it.each(["TOKEN", "PASSWORD", "COOKIE", "API_KEY"])(

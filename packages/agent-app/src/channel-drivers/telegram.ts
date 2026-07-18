@@ -78,14 +78,31 @@ export function createTelegramChannelDriver(
       const adapter = await loadTelegramModule();
       const startAdapter = overrides.startAdapter ?? adapter.startTelegramAdapter;
       const result = await startAdapter(telegramStartOptions(input, overrides));
-      input.interaction?.registerSink("telegram", {
+      const interactionSink = {
         postQuestion: async (conversationId, text) => {
           await result.post(requireAllowedTelegramChat(conversationId, input), text);
         },
         postStatus: async (conversationId, text, statusOptions) => {
           await result.postStatus(requireAllowedTelegramChat(conversationId, input), text, statusOptions);
         },
-      });
+        dismissQuestion: async (conversationId, messageRef) => {
+          const messageId = Number(messageRef);
+          if (!Number.isSafeInteger(messageId) || messageId <= 0) {
+            throw new Error("invalid Telegram question message reference.");
+          }
+          const chatId = requireAllowedTelegramChat(conversationId, input);
+          await result.dismissInlineKeyboard?.(chatId, messageId);
+        },
+      } satisfies {
+        postQuestion(conversationId: string, text: string): Promise<void>;
+        postStatus(
+          conversationId: string,
+          text: string,
+          options: { readonly key: string; readonly state: "working" | "done" | "failed" },
+        ): Promise<void>;
+        dismissQuestion(conversationId: string, messageRef: string): Promise<void>;
+      };
+      input.interaction?.registerSink("telegram", interactionSink);
       return {
         summary: {},
         stop: () => result.stop(),
@@ -202,6 +219,9 @@ function telegramStartOptions(
     disallowedTools: input.coreConfig.tools.disallowedTools,
   });
   const runtimeControls = telegramRuntimeControls(input.coreConfig);
+  const resetter = input.responder as typeof input.responder & {
+    startNewSession?: (conversationId: string) => Promise<void>;
+  };
   let pollingDegraded = false;
   return {
     botToken: input.config.botToken,
@@ -221,7 +241,7 @@ function telegramStartOptions(
     },
     messages: {
       welcomeText: "Agent is online. Send a message to run the configured runtime.",
-      helpText: "Send a message to talk to the agent. Use /model and /effort for this chat, or /cancel to stop an in-flight response.",
+      helpText: "Send a message to talk to the agent. Use /new for a fresh conversation, /model and /effort for this chat, or /cancel to stop an in-flight response.",
       unauthorizedText: "This chat is not allowlisted for this agent.",
       errorText: telegramErrorText,
     },
@@ -254,6 +274,9 @@ function telegramStartOptions(
             },
           },
         }),
+    ...(resetter.startNewSession === undefined
+      ? {}
+      : { startNewSession: (conversationId: string) => resetter.startNewSession!(conversationId) }),
     ...(input.config.ipFamily === undefined ? {} : { transport: { ipFamily: input.config.ipFamily } }),
     ...(input.config.pollWatchdogMs === undefined ? {} : { pollWatchdogMs: input.config.pollWatchdogMs }),
     ...(input.config.commands === undefined ? {} : { commands: [...input.config.commands] }),

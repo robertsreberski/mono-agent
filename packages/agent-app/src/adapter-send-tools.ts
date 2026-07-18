@@ -630,10 +630,7 @@ async function awaitBridgeAsk(
       await sendAskProgress(extra, Math.round((Date.now() - startedMs) / 1000));
       const status = poll.body.status;
       if (status === "answered" && typeof poll.body.answer === "string") {
-        const answeredText =
-          toolName === "TelegramAskButtons"
-            ? `The user tapped:\n${poll.body.answer}`
-            : `The user answered:\n${poll.body.answer}`;
+        const answeredText = `The user answered:\n${poll.body.answer}`;
         return askToolResult(answeredText, { answered: true, answer: poll.body.answer }, extraStructured);
       }
       if (status === "expired") {
@@ -695,7 +692,7 @@ async function cleanupBridgeAskBestEffort(
 async function askBridgeRequest(
   settings: AskUserToolSettings,
   fetchImpl: typeof fetch,
-  method: "DELETE" | "GET" | "POST",
+  method: "DELETE" | "GET" | "POST" | "PUT",
   path: string,
   body?: Record<string, unknown>,
   signal?: AbortSignal,
@@ -1057,6 +1054,51 @@ async function editExpiredTelegramAskMessage(
   }
 }
 
+/**
+ * Best-effort: remove a keyboard that was sent but could not be registered with
+ * the interaction bridge. Re-editing without reply_markup clears the buttons;
+ * use an independent bounded signal and preserve the primary bridge failure.
+ */
+async function dismissUnregisteredTelegramAskKeyboard(
+  client: Pick<TelegramMessageSender, "editMessageText">,
+  adapter: TelegramAdapterModule,
+  params: {
+    readonly chat_id: TelegramChatId;
+    readonly message_id: number;
+    readonly rawSource: string;
+  },
+): Promise<void> {
+  try {
+    const rendered = adapter.renderTelegramMarkdown(params.rawSource);
+    const signal = AbortSignal.timeout(TELEGRAM_ASK_EXPIRY_EDIT_TIMEOUT_MS);
+    try {
+      await client.editMessageText(
+        {
+          chat_id: params.chat_id,
+          message_id: params.message_id,
+          text: rendered,
+          parse_mode: "MarkdownV2",
+        },
+        { signal },
+      );
+    } catch (error) {
+      if (!isTelegramParseError(error, adapter)) {
+        throw error;
+      }
+      await client.editMessageText(
+        {
+          chat_id: params.chat_id,
+          message_id: params.message_id,
+          text: params.rawSource,
+        },
+        { signal },
+      );
+    }
+  } catch {
+    // Best-effort: keyboard cleanup must not replace the bridge failure.
+  }
+}
+
 function registerTelegramAskTool(
   server: McpServer,
   settings: TelegramSendToolSettings,
@@ -1069,7 +1111,7 @@ function registerTelegramAskTool(
     {
       title: "Ask via Telegram buttons",
       description:
-        "Ask the owner a question in an allowed Telegram chat with tappable inline-keyboard buttons (e.g. a confirmation or a multiple-choice). By default WAITS for their tap (up to the ask timeout) and returns the tapped label; a second concurrent ask in the same chat fails. On a proactive or scheduled turn (cron/heartbeat) set `wait:false`: the buttons are sent and the tool returns immediately, and the tap arrives later as a new message quoting the question.",
+        "Ask the owner a question in an allowed Telegram chat with tappable inline-keyboard buttons (e.g. a confirmation or a multiple-choice). By default WAITS for either a button tap or the owner's next plain-text custom reply (up to the ask timeout) and returns that answer; a second concurrent ask in the same chat fails. On a proactive or scheduled turn (cron/heartbeat) set `wait:false`: the buttons are sent and the tool returns immediately, and the tap arrives later as a new message quoting the question.",
       inputSchema: {
         chat_id: z.union([z.string().min(1), z.number().int()]).describe("Telegram chat id from the adapter allowlist."),
         question: z.string().min(1).describe("The question to show above the buttons."),
@@ -1077,12 +1119,12 @@ function registerTelegramAskTool(
           .array(z.string().min(1).max(100))
           .min(2)
           .max(adapter.TELEGRAM_ASK_MAX_OPTIONS)
-          .describe("Button labels (2–8). The label the user taps is echoed back as a new message."),
+          .describe("Button labels (2–8). A tap returns its label; while waiting, plain text is accepted as a custom answer."),
         note: z.string().min(1).optional().describe("Optional extra context shown beneath the question."),
         wait: z
           .boolean()
           .optional()
-          .describe("Default true: block until the user taps (up to the ask timeout). Set false on proactive/scheduled (cron/heartbeat) turns — send the buttons and return immediately; the tapped answer arrives later as a new message quoting the question."),
+          .describe("Default true: block for a button tap or custom text reply (up to the ask timeout). Set false on proactive/scheduled (cron/heartbeat) turns — send the buttons and return immediately; a tapped answer arrives later as a new message quoting the question."),
       },
     },
     async (args, extra) => {
@@ -1163,6 +1205,41 @@ function registerTelegramAskTool(
       } catch (error) {
         await cleanupBridgeAskBestEffort(bridge, fetchImpl, askId);
         throw error;
+      }
+      const presentation = await (async () => {
+        try {
+          return await askBridgeRequest(
+            bridge,
+            fetchImpl,
+            "PUT",
+            `/v1/asks/${encodeURIComponent(askId)}/presentation`,
+            { messageRef: String(result.message_id) },
+            extra.signal,
+          );
+        } catch (error) {
+          await Promise.all([
+            cleanupBridgeAskBestEffort(bridge, fetchImpl, askId),
+            dismissUnregisteredTelegramAskKeyboard(client, adapter, {
+              chat_id: result.chat.id,
+              message_id: result.message_id,
+              rawSource: source,
+            }),
+          ]);
+          throw error;
+        }
+      })();
+      if (presentation.status !== 204) {
+        await Promise.all([
+          cleanupBridgeAskBestEffort(bridge, fetchImpl, askId),
+          dismissUnregisteredTelegramAskKeyboard(client, adapter, {
+            chat_id: result.chat.id,
+            message_id: result.message_id,
+            rawSource: source,
+          }),
+        ]);
+        throw new Error(
+          `TelegramAskButtons: the interaction bridge rejected the keyboard reference (HTTP ${String(presentation.status)}).`,
+        );
       }
       const askResult = await awaitBridgeAsk(bridge, askId, "TelegramAskButtons", extra, fetchImpl, extra.signal, {
         chat_id: result.chat.id,

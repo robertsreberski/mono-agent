@@ -29,7 +29,9 @@ can optionally delete a confirmed status during cancellation without risking an
 answer message. Skill disclosure renders the selected skill name as
 `📚 Reading "<skill>"` without exposing its path. Read-only memory recall is
 preview-free as `🧠 Recalling memory`; memory writes and ordinary file reads
-retain their distinct `🧠 Updating memory` and `📖 Reading` families.
+retain their distinct `🧠 Updating memory` and `📖 Reading` families. File
+paths use suffix-weighted middle truncation so filenames survive; commands keep
+a balanced prefix and suffix. Redaction still precedes the 40-code-point cap.
 
 ## Public API
 

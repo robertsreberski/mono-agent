@@ -224,7 +224,12 @@ function buildSendOther(params: TelegramSendMessageParams): SendOther {
     other.parse_mode = params.parse_mode as NonNullable<SendOther["parse_mode"]>;
   }
   if (params.reply_to_message_id !== undefined) {
-    other.reply_parameters = { message_id: params.reply_to_message_id };
+    other.reply_parameters = {
+      message_id: params.reply_to_message_id,
+      ...(params.allow_sending_without_reply === undefined
+        ? {}
+        : { allow_sending_without_reply: params.allow_sending_without_reply }),
+    };
   }
   if (params.disable_web_page_preview !== undefined) {
     other.link_preview_options = { is_disabled: params.disable_web_page_preview };

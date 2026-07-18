@@ -575,7 +575,11 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     let useMarkdown = options.final && this.formatMarkdown;
     let renderedText = this.render(normalizedSource, useMarkdown);
 
-    if (renderedText === this.lastFlushedText && useMarkdown === this.lastFlushedMarkdown) {
+    if (
+      renderedText === this.lastFlushedText
+      && useMarkdown === this.lastFlushedMarkdown
+      && options.contentKind === this.lastFlushedContentKind
+    ) {
       return;
     }
 

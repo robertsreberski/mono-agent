@@ -1,6 +1,7 @@
 import type {
   AgentMessageStream as AgentMessageStreamBase,
   AgentStreamEvent,
+  ChannelMessageContentKind,
   ChannelSendOutcome,
   ChannelTransport,
   MessageRef,
@@ -12,6 +13,7 @@ import {
   normalizeTrailing,
   splitTextByCodePoints,
 } from "@mono-agent/agent-contracts";
+import { redactTelegramErrorMessage } from "./log-redaction.js";
 import { TelegramApiError } from "./telegram-error.js";
 import { renderTelegramMarkdown } from "./telegram-markdown.js";
 import type {
@@ -129,6 +131,10 @@ class TelegramChannelTransport implements ChannelTransport {
   private readonly chatId: TelegramChatId;
   private readonly replyToMessageId: number | undefined;
   private readonly silent: boolean;
+  private readonly logger: TelegramMessageStreamLogger | undefined;
+  private readonly abortSignal: AbortSignal | undefined;
+  private transientStatusMessage: MessageRef | undefined;
+  private postFinalAnswerSeparately = false;
 
   constructor(options: {
     api: TelegramMessageSender;
@@ -137,6 +143,8 @@ class TelegramChannelTransport implements ChannelTransport {
     replyToMessageId: number | undefined;
     markdownEnabled: boolean;
     silent: boolean;
+    logger: TelegramMessageStreamLogger | undefined;
+    abortSignal: AbortSignal | undefined;
   }) {
     this.api = options.api;
     this.chatId = options.chatId;
@@ -144,6 +152,17 @@ class TelegramChannelTransport implements ChannelTransport {
     this.replyToMessageId = options.replyToMessageId;
     this.markdownEnabled = options.markdownEnabled;
     this.silent = options.silent;
+    this.logger = options.logger;
+    this.abortSignal = options.abortSignal;
+  }
+
+  /**
+   * Keep a visible tool ledger transient: once finish begins, post the answer as
+   * a new Telegram message and remove the previously posted status message.
+   * Streaming-mode answer edits never use this path.
+   */
+  beginSeparateFinalAnswer(): void {
+    this.postFinalAnswerSeparately = true;
   }
 
   renderMarkdown(text: string): string {
@@ -153,14 +172,35 @@ class TelegramChannelTransport implements ChannelTransport {
     return renderTelegramMarkdown(text);
   }
 
-  async post(text: string, options: { markdown: boolean }): Promise<MessageRef> {
+  async post(
+    text: string,
+    options: { markdown: boolean; contentKind?: ChannelMessageContentKind },
+  ): Promise<MessageRef> {
     const useMarkdown = options.markdown && this.markdownEnabled;
     this.assertWithinLimit(text, useMarkdown);
-    const sent = await this.api.sendMessage(this.buildSendParams(text, useMarkdown));
-    return { id: String(sent.message_id), message_id: sent.message_id };
+    const sent = await this.api.sendMessage(this.buildSendParams(text, useMarkdown, options.contentKind));
+    const ref = { id: String(sent.message_id), message_id: sent.message_id };
+    if (options.contentKind === "status") {
+      this.transientStatusMessage = ref;
+    } else if (options.contentKind === "answer" && this.postFinalAnswerSeparately) {
+      await this.dismissTransientStatus();
+    }
+    return ref;
   }
 
-  async edit(ref: MessageRef, text: string, options: { markdown: boolean }): Promise<void> {
+  async edit(
+    ref: MessageRef,
+    text: string,
+    options: { markdown: boolean; contentKind?: ChannelMessageContentKind },
+  ): Promise<void> {
+    if (
+      options.contentKind === "answer"
+      && this.postFinalAnswerSeparately
+      && this.abortSignal?.aborted !== true
+    ) {
+      await this.post(text, options);
+      return;
+    }
     const useMarkdown = options.markdown && this.markdownEnabled;
     this.assertWithinLimit(text, useMarkdown);
     await this.api.editMessageText(this.buildEditParams(ref, text, useMarkdown));
@@ -174,6 +214,9 @@ class TelegramChannelTransport implements ChannelTransport {
       chat_id: this.chatId,
       message_id: messageIdOf(ref),
     });
+    if (this.transientStatusMessage?.id === ref.id) {
+      this.transientStatusMessage = undefined;
+    }
   }
 
   classifyError(error: unknown): ChannelSendOutcome {
@@ -221,18 +264,45 @@ class TelegramChannelTransport implements ChannelTransport {
     return params;
   }
 
-  private buildSendParams(text: string, useMarkdown: boolean): TelegramSendMessageParams {
+  private buildSendParams(
+    text: string,
+    useMarkdown: boolean,
+    contentKind?: ChannelMessageContentKind,
+  ): TelegramSendMessageParams {
     const params: TelegramSendMessageParams = { chat_id: this.chatId, text };
     if (useMarkdown) {
       params.parse_mode = "MarkdownV2";
     }
     if (this.replyToMessageId !== undefined) {
       params.reply_to_message_id = this.replyToMessageId;
+      if (contentKind === "answer" && this.postFinalAnswerSeparately) {
+        params.allow_sending_without_reply = true;
+      }
     }
     if (this.silent) {
       params.disable_notification = true;
     }
     return params;
+  }
+
+  private async dismissTransientStatus(): Promise<void> {
+    const ref = this.transientStatusMessage;
+    this.transientStatusMessage = undefined;
+    if (ref === undefined || this.api.deleteMessage === undefined) {
+      return;
+    }
+    try {
+      await this.api.deleteMessage({
+        chat_id: this.chatId,
+        message_id: messageIdOf(ref),
+      });
+    } catch (error) {
+      // The answer has already landed. A stale progress bubble is preferable to
+      // retrying the answer and risking a duplicate final response.
+      this.logger?.debug?.("Telegram transient progress deletion failed after final delivery (ignored).", {
+        error: redactTelegramErrorMessage(error),
+      });
+    }
   }
 }
 
@@ -245,14 +315,15 @@ function messageIdOf(ref: MessageRef): number {
  * Thin wrapper over the shared {@link ResilientMessageStream}: builds a Telegram
  * {@link ChannelTransport} and delegates all streaming/finish behavior to the
  * substrate, preserving this adapter's public API and no-labels + activity-hints
- * behavior. The only Telegram-specific lever the wrapper retains is the per-call
- * `finish(text, { format })` toggle, which fixed system copy uses to deliver
- * plain text without MarkdownV2 escaping.
+ * behavior. Telegram additionally keeps final-only tool ledgers transient by
+ * posting the completed answer separately and deleting the ledger. The per-call
+ * `finish(text, { format })` toggle lets fixed system copy bypass MarkdownV2.
  */
 export class TelegramMessageStream implements AgentMessageStream {
   private readonly transport: TelegramChannelTransport;
   private readonly inner: ResilientMessageStream;
   private readonly formatMarkdown: boolean;
+  private readonly finalOnly: boolean;
 
   constructor(options: TelegramMessageStreamOptions) {
     const maxMessageChars = options.maxMessageChars ?? DEFAULT_MAX_MESSAGE_CHARS;
@@ -260,6 +331,7 @@ export class TelegramMessageStream implements AgentMessageStream {
       throw new RangeError("maxMessageChars must be an integer of at least 32.");
     }
     this.formatMarkdown = options.formatMarkdown ?? true;
+    this.finalOnly = options.finalOnly ?? false;
 
     this.transport = new TelegramChannelTransport({
       api: options.api,
@@ -269,6 +341,8 @@ export class TelegramMessageStream implements AgentMessageStream {
       // Streaming begins with the configured formatting; finish() may override it.
       markdownEnabled: this.formatMarkdown,
       silent: options.silent ?? false,
+      logger: options.logger,
+      abortSignal: options.abortSignal,
     });
 
     const innerOptions: ConstructorParameters<typeof ResilientMessageStream>[0] = {
@@ -336,6 +410,9 @@ export class TelegramMessageStream implements AgentMessageStream {
     // transport's markdown gate is toggled for this finish so the answer is not
     // re-rendered as MarkdownV2.
     this.transport.markdownEnabled = this.formatMarkdown && (options?.format ?? true);
+    if (this.finalOnly) {
+      this.transport.beginSeparateFinalAnswer();
+    }
     try {
       await this.inner.finish(finalText);
     } catch (error) {

@@ -59,9 +59,9 @@ Every key has a `MONO_AGENT_TELEGRAM_*` override. Env vars win over JSON, which 
 
 ## Interactive features
 
-The per-chat runtime controls below are built in whenever the mono-agent app
-starts Telegram. The remaining command, reaction, ask, file, and quiet-hours
-features are opt-in.
+The per-chat runtime controls and fresh-session command below are built in
+whenever the mono-agent app starts Telegram. Custom commands, reactions, ask/file
+tools, and quiet hours are opt-in.
 
 ### Runtime model and effort controls (built in)
 
@@ -76,6 +76,9 @@ model's supported effort choices. The equivalent direct forms are:
 /effort <supported-effort>
 /effort default
 ```
+
+Choosing an entry edits the menu into a concise confirmation. Both menus include
+**Cancel**, which deletes the menu and leaves the current selection unchanged.
 
 Selections are in-memory and scoped to one Telegram chat. They remain active
 until reset with the matching `default` command or until the process restarts.
@@ -95,9 +98,22 @@ This is code coverage, not a `telegram` JSON field. The app always supplies the
 catalog. Programmatic `startTelegramAdapter` callers can opt in by passing
 `runtimeControls` explicitly.
 
+### Fresh conversation session (built in)
+
+Use `/new` to cancel current work and start a fresh session for this Telegram
+conversation. Mono-agent retires the chat's warm provider session, atomically
+clears only its canonical conversation history, and clears the skill cache so
+skills and startup context are rebuilt on the next message. Other chats and
+durable memory are untouched. The chat's process-local `/model` and `/effort`
+selection is retained.
+
+This does not restart the agent process. The built-in app supplies the
+host-owned reset callback; standalone adapter users can expose the same command
+with `startNewSession`.
+
 ### Command menu
 
-Register custom slash commands that appear beside the built-ins in Telegram's command menu (autocomplete) and run a configured prompt as a turn. Built-in `/start`, `/help`, `/cancel`, `/model`, and `/effort` cannot be overridden.
+Register custom slash commands that appear beside the built-ins in Telegram's command menu (autocomplete) and run a configured prompt as a turn. Built-in `/start`, `/help`, `/cancel`, `/new`, `/model`, and `/effort` cannot be overridden.
 
 ```json
 {
@@ -150,7 +166,7 @@ The `TelegramAskButtons` app tool lets the agent ask you a structured question w
 { "tools": { "allowedTools": ["TelegramAskButtons"] } }
 ```
 
-The tool takes a `question` and 2–8 option labels, posts an inline keyboard, and **waits for your tap**. The tapped label is returned to the same in-flight tool call, so the agent keeps its mid-turn context. If no pending ask exists for a callback, the tap still falls back to the existing synthetic-turn behavior on the same conversation and uses the chat's current runtime selection. The app already subscribes to `callback_query` updates for `/model` and `/effort`; allowing `TelegramAskButtons` additionally wires the ask-button handler. The chat allowlist still bounds where questions can be sent, and the tap handler re-checks it.
+The tool takes a `question` and 2–8 option labels, posts an inline keyboard, and waits for either a tap **or your next plain-text message as a custom answer**. Either answer returns to the same in-flight tool call, so the agent keeps its mid-turn context; a custom reply also removes the now-obsolete buttons. Slash commands remain commands and are never consumed as answers. If no pending ask exists for a callback, the tap still falls back to the existing synthetic-turn behavior on the same conversation and uses the chat's current runtime selection. The app already subscribes to `callback_query` updates for `/model` and `/effort`; allowing `TelegramAskButtons` additionally wires the ask-button handler. The chat allowlist still bounds where questions can be sent, and the tap handler re-checks it.
 
 ### Sending files
 
@@ -190,7 +206,7 @@ For example, a strict file call contains only the file operation and content:
 
 ## Final-answer delivery and transient tool activity
 
-Telegram does not stream answer tokens. While an inbound run is in flight the bot first shows a `typing…` chat action. If the agent starts a tool, the bot posts one temporary cumulative activity message with a short, redacted preview. Later tool starts edit that message, adjacent identical lines collapse as `(×N)`, and the final answer replaces it. Agent reasoning is never shown. A run with no tools still sends only the final message, and proactive notifications never show the tool ledger.
+Telegram does not stream answer tokens. While an inbound run is in flight the bot first shows a `typing…` chat action. If the agent starts a tool, the bot posts one temporary cumulative activity message with a short, redacted preview. Later tool starts edit that message and adjacent identical lines collapse as `(×N)`. Once the response is finalized, the bot posts it as a new message and then best-effort deletes the activity message; the progress bubble is never converted into the answer. Long paths are middle-truncated so the filename stays visible; long commands retain both their beginning and ending. Agent reasoning is never shown. A run with no tools still sends only the final message, and proactive notifications never show the tool ledger.
 
 An acknowledged `/cancel` best-effort deletes a still-transient activity message and leaves one `Cancelled.` acknowledgement. The adapter will not delete a message after final-answer delivery has been attempted.
 
@@ -307,7 +323,7 @@ The existing `telegram.*` adapter config (token + chat allowlist) remains the de
 
 ## Smoke test
 
-With the agent running, send your bot a direct message (`Hello`) from an allowed chat. You should see the `typing…` indicator, followed by the final answer. A request that uses tools first shows one temporary activity message, which the final answer replaces. If nothing happens:
+With the agent running, send your bot a direct message (`Hello`) from an allowed chat. You should see the `typing…` indicator, followed by the final answer. A request that uses tools first shows one temporary activity message; the final answer arrives separately and the activity message disappears. If nothing happens:
 
 - Confirm the chat ID is in `allowedChatIds` (or set `allowAllChats: true` temporarily) — messages from non-allowlisted chats are ignored.
 - Confirm `enabled: true` and that the start log shows the Telegram channel as active rather than disabled.

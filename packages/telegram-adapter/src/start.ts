@@ -54,6 +54,8 @@ export interface TelegramAdapterStartOptions {
   readonly callbacksEnabled?: boolean;
   /** Pending-ask interceptor for blocking AskUser round-trips (checked pre-admission). */
   readonly pendingAsks?: TelegramPendingAsks;
+  /** Host-owned current-conversation reset used by the built-in `/new` command. */
+  readonly startNewSession?: (conversationId: string) => Promise<void>;
   /** Base URL of a self-hosted Bot API server (API calls + file downloads). Omit for api.telegram.org. */
   readonly apiRoot?: string;
   /** Delete any configured webhook before polling. Defaults to true. */
@@ -95,6 +97,8 @@ export interface TelegramAdapterStartResult {
     text: string,
     options: { readonly key: string; readonly state: "working" | "done" | "failed" },
   ): Promise<void>;
+  /** Remove an inline keyboard from one known message (best-effort). */
+  dismissInlineKeyboard?(chatId: TelegramChatId, messageId: number): Promise<void>;
 }
 
 /**
@@ -116,6 +120,7 @@ export async function startTelegramAdapter(
     notify: (chatId, text, notifyOptions) => controller.notify(chatId, text, notifyOptions),
     post: (chatId, text) => controller.post(chatId, text),
     postStatus: (chatId, text, statusOptions) => controller.postStatus(chatId, text, statusOptions),
+    dismissInlineKeyboard: (chatId, messageId) => controller.dismissInlineKeyboard(chatId, messageId),
   };
 }
 
@@ -135,6 +140,7 @@ function toCreateOptions(options: TelegramAdapterStartOptions): CreateTelegramBo
     ...(options.reactions === undefined ? {} : { reactions: options.reactions }),
     ...(options.callbacksEnabled === undefined ? {} : { callbacksEnabled: options.callbacksEnabled }),
     ...(options.pendingAsks === undefined ? {} : { pendingAsks: options.pendingAsks }),
+    ...(options.startNewSession === undefined ? {} : { startNewSession: options.startNewSession }),
     ...(options.apiRoot === undefined ? {} : { apiRoot: options.apiRoot }),
     ...(options.deleteWebhookOnStart === undefined
       ? {}

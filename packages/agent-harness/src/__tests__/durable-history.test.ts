@@ -33,6 +33,31 @@ afterEach(async () => {
 });
 
 describe("DurableConversationHistoryStore", () => {
+  it("atomically resets one conversation and retires its provider epoch", async () => {
+    const dir = await tempDir();
+    const root = join(dir, "history");
+    const retired: string[] = [];
+    const store = createDurableHistoryStore({
+      root,
+      retireProviderSession: async (providerSessionId) => {
+        retired.push(providerSessionId);
+      },
+    });
+    const turn = await store.beginProviderSessionTurn("telegram:42", "run-before-reset");
+    const prepared = await turn.prepareCommit(
+      [{ role: "user", content: "old context" }],
+      { providerSessionSynced: true },
+    );
+    await prepared.commit();
+    await store.append("telegram:99", [{ role: "assistant", content: "unrelated" }]);
+
+    await store.reset("telegram:42");
+
+    await expect(store.load("telegram:42")).resolves.toEqual([]);
+    await expect(store.load("telegram:99")).resolves.toEqual([{ role: "assistant", content: "unrelated" }]);
+    expect(retired).toContain(turn.providerSessionId);
+  });
+
   it("persists normalized exact conversation ids across store recreation in owner-only files", async () => {
     const dir = await tempDir();
     const root = join(dir, ".mono-agent", "history");
