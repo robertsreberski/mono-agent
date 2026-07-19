@@ -1585,13 +1585,36 @@ async function stopBackgroundUnlocked(
   return 0;
 }
 
-export async function statusBackground(target: InstanceTarget, deps: BackgroundDeps): Promise<number> {
+export interface StatusBackgroundOptions {
+  readonly json?: boolean;
+}
+
+export async function statusBackground(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  options: StatusBackgroundOptions = {},
+): Promise<number> {
   const result = await deps.listTraceSources({ registryDir: target.registryDir, staleAfterMs: target.staleAfterMs });
   const classified = await Promise.all(result.sources.map(async (source) => ({
     source,
     matches: await matchesConfig(source, target.configPath),
   })));
   const current = classified.find((entry) => entry.matches)?.source;
+  // Only surface other instances that are live or crashed — cleanly stopped
+  // manifests linger in the registry and would just be noise.
+  const others = classified
+    .filter((entry) => !entry.matches && entry.source.health !== "stopped")
+    .map((entry) => entry.source);
+
+  if (options.json === true) {
+    const instance = current === undefined ? null : await assembleInstanceStatus(current, target, deps);
+    deps.stdout(`${JSON.stringify({
+      ok: current?.health === "running",
+      instance,
+      others: others.map(assembleOtherInstanceStatus),
+    })}\n`);
+    return current?.health === "running" ? 0 : 1;
+  }
 
   if (current === undefined) {
     deps.stdout(ui.style.dim(`No running mono-agent instance for ${target.configPath}.`) + "\n");
@@ -1601,11 +1624,6 @@ export async function statusBackground(target: InstanceTarget, deps: BackgroundD
     await writeRunsHealthDetail(current, deps);
   }
 
-  // Only surface other instances that are live or crashed — cleanly stopped
-  // manifests linger in the registry and would just be noise.
-  const others = classified
-    .filter((entry) => !entry.matches && entry.source.health !== "stopped")
-    .map((entry) => entry.source);
   if (others.length > 0) {
     deps.stdout("\n" + ui.rule("Other mono-agent instances"));
     for (const source of others) {
@@ -1614,6 +1632,73 @@ export async function statusBackground(target: InstanceTarget, deps: BackgroundD
   }
 
   return current?.health === "running" ? 0 : 1;
+}
+
+/**
+ * The machine-readable instance record for `status --json`. It mirrors the
+ * fields the human `writeInstanceDetail`/`writeRunsHealthDetail` render, reading
+ * only the already-computed trace-source manifest (content-free, safe to publish)
+ * and the same runs-health probe the human path performs — no extra probes.
+ */
+async function assembleInstanceStatus(
+  source: TraceSourceListItem,
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+): Promise<Record<string, unknown>> {
+  const metadata = source.metadata ?? {};
+  const observability = metadata.observability;
+  const sandbox = metadata.sandbox;
+  const session = metadata.session;
+  const channels = metadata.channels;
+  return {
+    sourceId: source.sourceId,
+    label: source.label,
+    launchdLabel: target.label,
+    pid: source.pid ?? null,
+    health: source.health,
+    status: source.status,
+    configPath: target.configPath,
+    startedAt: source.startedAt,
+    updatedAt: source.updatedAt,
+    ...(source.artifactDir === undefined ? {} : { artifactDir: source.artifactDir }),
+    ...(source.transports === undefined ? {} : { transports: source.transports }),
+    logs: { stdout: target.paths.stdoutPath, stderr: target.paths.stderrPath },
+    ...(isPlainRecord(observability) ? { observability } : {}),
+    ...(isPlainRecord(sandbox) ? { sandbox } : {}),
+    ...(isPlainRecord(session) ? { session } : {}),
+    ...(isPlainRecord(channels) ? { channels } : {}),
+    ...(source.memoryHealth === undefined ? {} : { memoryHealth: source.memoryHealth }),
+    runsHealth: await assembleRunsHealthStatus(source, deps),
+  };
+}
+
+async function assembleRunsHealthStatus(
+  source: TraceSourceListItem,
+  deps: BackgroundDeps,
+): Promise<{ readonly totalRuns: number; readonly warnings: readonly string[] } | null> {
+  if (source.artifactDir === undefined || source.artifactDir.trim().length === 0) {
+    return null;
+  }
+  const { totalRuns, warnings } = await deps.listRecordedRuns({
+    artifactDir: source.artifactDir,
+    maxRuns: RUNS_HEALTH_MAX_RUNS,
+    scope: "agent",
+  });
+  return { totalRuns, warnings };
+}
+
+function assembleOtherInstanceStatus(source: TraceSourceListItem): Record<string, unknown> {
+  return {
+    sourceId: source.sourceId,
+    label: source.label,
+    health: source.health,
+    pid: source.pid ?? null,
+    ...(source.configPath === undefined ? {} : { configPath: source.configPath }),
+  };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 export interface LogOptions {
