@@ -7,6 +7,9 @@ import { fileReadError, resolveRequiredPath } from './fs-paths.js';
 import { normalizeInlineText } from './text.js';
 import type { SkillIndexEntry } from './types.js';
 
+const READ_SKILL_GUIDANCE =
+  "When a skill applies, call `ReadSkill` with its name before acting in that domain. Do not use `Read` to open a skill's `SKILL.md`; reserve ordinary file reads for files referenced by the loaded skill.";
+
 export interface LoadedSkillFile {
   readonly entry: SkillIndexEntry;
   readonly markdown: string;
@@ -88,14 +91,19 @@ export async function loadSkillFilesFromDirectory(root: string): Promise<readonl
   }));
 }
 
-export function renderSkillIndex(entries: readonly SkillIndexEntry[]): string {
-  return renderSkillIndexEntries(buildSkillIndex(entries));
+export function renderSkillIndex(
+  entries: readonly SkillIndexEntry[],
+  skillDisclosure?: 'index' | 'full',
+): string {
+  return renderSkillIndexEntries(buildSkillIndex(entries), skillDisclosure);
 }
 
-export function renderSkillIndexEntries(entries: readonly SkillIndexEntry[]): string {
-  return entries
-    .map((entry) => `- **${entry.name}** — ${entry.description}\n  - Main file: \`${entry.mainFile}\``)
-    .join('\n');
+export function renderSkillIndexEntries(
+  entries: readonly SkillIndexEntry[],
+  skillDisclosure?: 'index' | 'full',
+): string {
+  const index = entries.map((entry) => `- **${entry.name}** — ${entry.description}`).join('\n');
+  return skillDisclosure === 'index' ? `${READ_SKILL_GUIDANCE}\n\n${index}` : index;
 }
 
 function normalizeSkillEntry(entry: SkillIndexEntry, index: number): SkillIndexEntry {

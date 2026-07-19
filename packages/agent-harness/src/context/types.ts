@@ -42,6 +42,8 @@ export interface BuildContextInput {
   readonly memory?: ContextBlockInput | readonly ContextBlockInput[];
   readonly history?: readonly HistoryMessage[];
   readonly skills?: readonly SkillIndexEntry[];
+  /** Emits ReadSkill usage guidance when skill bodies are disclosed on demand. */
+  readonly skillDisclosure?: 'index' | 'full';
   readonly skillInstructions?: ContextBlockInput | readonly ContextBlockInput[];
 }
 
@@ -82,5 +84,7 @@ export interface FileContextInput {
   readonly history?: readonly HistoryMessage[];
   readonly skills?: readonly SkillIndexEntry[];
   readonly skillsRoot?: string;
+  /** Emits ReadSkill usage guidance when skill bodies are disclosed on demand. */
+  readonly skillDisclosure?: 'index' | 'full';
   readonly skillInstructions?: ContextBlockInput | readonly ContextBlockInput[];
 }

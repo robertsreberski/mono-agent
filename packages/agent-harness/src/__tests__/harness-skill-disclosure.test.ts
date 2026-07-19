@@ -64,6 +64,8 @@ describe("AgentHarness progressive skill disclosure wiring", () => {
     const options = fake.calls[0]?.options as Record<string, unknown>;
     expect(options.skills).toEqual([{ name: "research" }, { name: "writing" }]);
     expect(options.skillsRoot).toBe(skillsRoot);
+    expect(fake.calls[0]?.prompt).toContain("call `ReadSkill` with its name");
+    expect(fake.calls[0]?.prompt).not.toContain(join(skillsRoot, "research", "SKILL.md"));
   });
 
   it("does not thread skills/skillsRoot when no skillsRoot is configured (legacy behavior)", async () => {
@@ -92,5 +94,6 @@ describe("AgentHarness progressive skill disclosure wiring", () => {
     const options = fake.calls[0]?.options as Record<string, unknown>;
     expect(options.skills).toBeUndefined();
     expect(options.skillsRoot).toBeUndefined();
+    expect(fake.calls[0]?.prompt).not.toContain("call `ReadSkill` with its name");
   });
 });

@@ -112,7 +112,7 @@ describe('buildAgentContext', () => {
     );
   });
 
-  it('renders a sorted skill index with names, descriptions, and main files', () => {
+  it('renders a sorted skill index without exposing main files', () => {
     const context = buildAgentContext({
       identity: 'Identity text',
       userMessage: 'Use a skill if needed.',
@@ -125,9 +125,36 @@ describe('buildAgentContext', () => {
     const skills = context.sections.find((section) => section.id === 'skills');
     expect(context.metadata.skillCount).toBe(2);
     expect(skills?.content).toBe(
-      '- **research** — Find sources\n  - Main file: `/skills/research/SKILL.md`\n- **writing** — Write plans\n  - Main file: `/skills/writing/SKILL.md`',
+      '- **research** — Find sources\n- **writing** — Write plans',
     );
     expect(context.metadata.sources).toEqual(['/skills/research/SKILL.md', '/skills/writing/SKILL.md']);
+  });
+
+  it('instructs the agent to use ReadSkill only for index disclosure', () => {
+    const skills = [
+      { name: 'research', description: 'Find sources', mainFile: '/skills/research/SKILL.md' },
+    ];
+    const indexed = buildAgentContext({
+      identity: 'Identity text',
+      userMessage: 'Use a skill if needed.',
+      skills,
+      skillDisclosure: 'index',
+    });
+    const full = buildAgentContext({
+      identity: 'Identity text',
+      userMessage: 'Use a skill if needed.',
+      skills,
+      skillDisclosure: 'full',
+    });
+
+    expect(indexed.sections.find((section) => section.id === 'skills')?.content).toBe(
+      "When a skill applies, call `ReadSkill` with its name before acting in that domain. Do not use `Read` to open a skill's `SKILL.md`; reserve ordinary file reads for files referenced by the loaded skill.\n\n- **research** — Find sources",
+    );
+    expect(indexed.prompt).not.toContain('/skills/research/SKILL.md');
+    expect(indexed.metadata.sources).toEqual(['/skills/research/SKILL.md']);
+    expect(full.sections.find((section) => section.id === 'skills')?.content).toBe(
+      '- **research** — Find sources',
+    );
   });
 
   it('renders selected skill instructions in a separate section', () => {
@@ -166,7 +193,7 @@ describe('buildAgentContext', () => {
 
     expect(buildSpy).toHaveBeenCalledTimes(1);
     expect(context.sections.find((section) => section.id === 'skills')?.content).toBe(
-      '- **research** — Find sources\n  - Main file: `/skills/research/SKILL.md`\n- **writing** — Write plans\n  - Main file: `/skills/writing/SKILL.md`',
+      '- **research** — Find sources\n- **writing** — Write plans',
     );
   });
 
