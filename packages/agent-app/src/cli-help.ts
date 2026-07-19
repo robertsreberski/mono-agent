@@ -35,7 +35,7 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     command: "init",
     group: "Setup",
     short: "init",
-    summary: "Scaffold a new agent (guided, or --preset/--yes/--auth).",
+    summary: "Scaffold a new agent (guided path runs live probes; --preset/--yes skip).",
     signature: "mono-agent init [--preset <id>] [--with <csv>] [--yes] [--auth] [--dry-run]\n" +
       "                [--name <display-name>] [--model <ref>] [--effort <level>]\n" +
       "                [--fallback <ref> [--fallback-effort <provider-default|level>]]...\n" +

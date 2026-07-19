@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { renderHelpTopic } from "../cli.js";
+import { renderHelp, renderHelpTopic } from "../cli.js";
 import { readinessProbeTimeoutDescription } from "../readiness-probe.js";
 
 /**
@@ -119,6 +119,18 @@ function prominenceFailures(surfaces: DisclosureSurfaces): string[] {
 }
 
 describe("init wall-clock disclosure", () => {
+  it("keeps the guided-probe signal on the default `mono-agent help` summary line for init", () => {
+    // The grouped summary is one line per command; the init line must still warn
+    // that the guided path makes blocking live model calls, so the disclosure
+    // cannot silently vanish from the surface most users see first.
+    const summary = renderHelp();
+    const initSummaryLine = summary
+      .split("\n")
+      .find((line) => line.includes("Scaffold a new agent")) ?? "";
+    expect(initSummaryLine, "the init summary line must exist").not.toBe("");
+    expect(initSummaryLine, "the init summary must keep the live-probe signal").toContain("probes");
+  });
+
   it("pins the disclosure to the first help description and exact README opening paragraphs", () => {
     const help = initHelpText();
     const helpLines = initHelpDescriptionLines(help);
