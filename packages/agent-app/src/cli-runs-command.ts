@@ -26,7 +26,22 @@ export async function runRunsCommand(args: ParsedCliArgs): Promise<number> {
     return 2;
   }
 
+  // Per-mode flag strictness. Parse-time only knows the command is `runs`, so the
+  // subcommand-inappropriate flags are rejected here rather than being silently
+  // dropped (which, for --consumer, would quietly read the wrong artifact folder).
+  // These reject exactly the combinations the pre-consolidation commands could
+  // never produce, so the `audit-runs`/`metrics` forwarding aliases are unaffected.
   if (mode === "audit") {
+    const reportOnly: string[] = [];
+    if (args.groupBy !== undefined) reportOnly.push("--by");
+    if (args.since !== undefined) reportOnly.push("--since");
+    if (args.until !== undefined) reportOnly.push("--until");
+    if (reportOnly.length > 0) {
+      process.stderr.write(ui.errorLine(
+        `${reportOnly.join(", ")} ${reportOnly.length === 1 ? "is" : "are"} only supported for \`mono-agent runs report\`.`,
+      ));
+      return 2;
+    }
     return await runAuditRuns({
       ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
       ...(args.artifactDir === undefined ? {} : { artifactDir: args.artifactDir }),
@@ -35,6 +50,16 @@ export async function runRunsCommand(args: ParsedCliArgs): Promise<number> {
       json: args.json === true,
       includeMemory: args.includeMemory,
     });
+  }
+
+  const auditOnly: string[] = [];
+  if (args.consumerPath !== undefined) auditOnly.push("--consumer");
+  if (args.staleAfterMs !== undefined) auditOnly.push("--stale-after-ms");
+  if (auditOnly.length > 0) {
+    process.stderr.write(ui.errorLine(
+      `${auditOnly.join(", ")} ${auditOnly.length === 1 ? "is" : "are"} only supported for \`mono-agent runs audit\`.`,
+    ));
+    return 2;
   }
 
   return await runMetrics({

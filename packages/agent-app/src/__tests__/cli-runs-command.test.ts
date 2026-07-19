@@ -82,4 +82,22 @@ describe("runRunsCommand", () => {
     expect(mocks.runMetrics).not.toHaveBeenCalled();
     expect(mocks.runAuditRuns).not.toHaveBeenCalled();
   });
+
+  // Per-mode strictness: the flags each engine cannot use are rejected here rather
+  // than silently dropped. --consumer on report is the worst case — dropping it
+  // would quietly read the default artifact folder instead of the requested one.
+  it.each([
+    { argv: ["runs", "report", "--consumer", "/some/agent"], flag: "--consumer", target: "runs audit" },
+    { argv: ["runs", "report", "--stale-after-ms", "5000"], flag: "--stale-after-ms", target: "runs audit" },
+    { argv: ["runs", "audit", "--by", "model"], flag: "--by", target: "runs report" },
+    { argv: ["runs", "audit", "--since", "2026-06-01T00:00:00.000Z"], flag: "--since", target: "runs report" },
+    { argv: ["runs", "audit", "--until", "2026-06-30T00:00:00.000Z"], flag: "--until", target: "runs report" },
+  ])("rejects $flag on the wrong mode with a usage error naming $target and calls no engine", async ({ argv, flag, target }) => {
+    const { code, stderr } = await captureRuns(argv);
+    expect(code).toBe(2);
+    expect(stderr).toContain(flag);
+    expect(stderr).toContain(`only supported for \`mono-agent ${target}\``);
+    expect(mocks.runMetrics).not.toHaveBeenCalled();
+    expect(mocks.runAuditRuns).not.toHaveBeenCalled();
+  });
 });
