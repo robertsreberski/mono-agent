@@ -374,7 +374,7 @@ describe("parseCliArgs", () => {
   });
 
   it("rejects --json on lifecycle/interactive commands with a usage error naming the JSON surfaces", () => {
-    for (const command of ["init", "auth", "start", "stop", "restart", "logs", "tui", "web", "sessions", "backfill"] as const) {
+    for (const command of ["init", "auth", "start", "stop", "restart", "logs", "tui", "web", "backfill"] as const) {
       expect(() => parseCliArgs([command, "--json"])).toThrow(/--json is not supported/u);
     }
     // The error names the supported surfaces so a caller knows where JSON lives.
@@ -525,40 +525,15 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["version"]).command).toBe("version");
   });
 
-  it("parses legacy sessions command flags", () => {
-    const result = parseCliArgs([
-      "sessions",
-      "--host",
-      "0.0.0.0",
-      "--port",
-      "4599",
-      "--no-open",
-      "--allow-non-loopback",
-      "--show-auth-url",
-      "--include-memory",
-      "--config",
-      "./agent.json",
-      "--env-file",
-      "./agent.env",
-    ]);
-    expect(result.command).toBe("sessions");
-    expect(result.host).toBe("0.0.0.0");
-    expect(result.port).toBe(4599);
-    expect(result.open).toBe(false);
-    expect(result.allowNonLoopback).toBe(true);
-    expect(result.showAuthUrl).toBe(true);
-    expect(result.includeMemory).toBe(true);
-    expect(result.configPath).toBe("./agent.json");
-    expect(result.envFile).toBe("./agent.env");
-    expect(() => parseCliArgs(["sessions", "--port", "notaport"])).toThrow(/--port/u);
-    expect(() => parseCliArgs(["web", "--show-auth-url"])).toThrow(/sessions/u);
-  });
-
-  it("parses the sessions --max-runs cap and rejects bad or misplaced uses", () => {
-    expect(parseCliArgs(["sessions", "--max-runs", "500"]).maxRunsPerInstance).toBe(500);
-    expect(() => parseCliArgs(["sessions", "--max-runs", "0"])).toThrow(/--max-runs/u);
-    expect(() => parseCliArgs(["sessions", "--max-runs", "nope"])).toThrow(/--max-runs/u);
-    expect(() => parseCliArgs(["start", "--max-runs", "500"])).toThrow(/only supported for/u);
+  it("rejects the removed `sessions` command with a tui/web pointer", () => {
+    expect(() => parseCliArgs(["sessions"])).toThrow(/`sessions` was removed/u);
+    expect(() => parseCliArgs(["sessions"])).toThrow(/mono-agent tui/u);
+    expect(() => parseCliArgs(["sessions"])).toThrow(/mono-agent web/u);
+    // Its former Session Recorder flags no longer exist on any command.
+    expect(() => parseCliArgs(["web", "--no-open"])).toThrow(/Unknown flag/u);
+    expect(() => parseCliArgs(["web", "--allow-non-loopback"])).toThrow(/Unknown flag/u);
+    expect(() => parseCliArgs(["web", "--show-auth-url"])).toThrow(/Unknown flag/u);
+    expect(() => parseCliArgs(["web", "--max-runs", "500"])).toThrow(/Unknown flag/u);
   });
 
   it("parses the web service namespace and LAN/loopback bind flags", () => {
@@ -585,14 +560,13 @@ describe("parseCliArgs", () => {
       all: true,
       yes: true,
     });
-    expect(() => parseCliArgs(["sessions", "--loopback"])).toThrow(/loopback/u);
+    expect(() => parseCliArgs(["start", "--loopback"])).toThrow(/loopback/u);
     expect(() => parseCliArgs(["web", "run", "--env-file", ".env"])).toThrow(/does not load/u);
     expect(() => parseCliArgs(["web", "--config", "agent.json"])).toThrow(/does not load/u);
   });
 
   it("never loads an invoking folder dotenv for the machine-wide web console", () => {
     expect(shouldLoadCommandDotenv("web")).toBe(false);
-    expect(shouldLoadCommandDotenv("sessions")).toBe(true);
     expect(shouldLoadCommandDotenv("start")).toBe(true);
   });
 
@@ -611,7 +585,8 @@ describe("parseCliArgs", () => {
     expect(renderHelp()).toContain("direct opencode:<provider>:<model>");
     expect(renderHelp()).toContain("hand-authored runtime backend config");
     expect(renderHelp()).toContain("mono-agent web");
-    expect(renderHelp()).toContain("mono-agent sessions");
+    // The removed `sessions` command no longer appears in help.
+    expect(renderHelp()).not.toContain("mono-agent sessions");
     // The merged observability command replaces the separate audit-runs/metrics entries.
     expect(renderHelp()).toContain("mono-agent runs [report|audit]");
     expect(renderHelp()).not.toContain("mono-agent audit-runs [");
@@ -619,9 +594,6 @@ describe("parseCliArgs", () => {
     expect(renderHelp()).not.toContain("--artifact-dir");
     expect(renderHelp()).toContain("live chat with structured");
     expect(renderHelp()).not.toContain("live chat with full");
-    expect(renderHelp()).toContain("--allow-non-loopback");
-    expect(renderHelp()).toContain("MONO_AGENT_WEB_AUTH_TOKEN");
-    expect(renderHelp()).toContain("--show-auth-url");
     expect(renderHelp()).toContain("--include-memory");
     expect(renderHelp()).toContain("web reset --all --yes");
     expect(renderHelp()).toContain("0.0.0.0:5050");

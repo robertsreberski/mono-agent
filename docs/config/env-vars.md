@@ -300,12 +300,6 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | `MONO_AGENT_OPENAI_API_KEY` | `openaiApi.apiKey` | Optional on loopback; required for any enabled non-loopback bind. Clients send it as a bearer (`sk-...`). |
 | `MONO_AGENT_OPENAI_API_MODEL_ID` | `openaiApi.modelId` | Advertised model id. See [../channels/openai-api.md](/channels/openai-api/). |
 
-### Session Recorder CLI
-
-| Env var | JSON key it overrides | Notes |
-| --- | --- | --- |
-| `MONO_AGENT_WEB_AUTH_TOKEN` | — (CLI-only) | Compatibility bearer for `mono-agent sessions` only; the new web console has no login. The recorder honors it on loopback and non-loopback binds, requires it for non-interactive non-loopback startup, and keeps configured values redacted unless `--show-auth-url` is explicitly used in an interactive terminal. Store it in the invocation folder's owner-only `.env` or the file selected by `--env-file`. |
-
 ### Always-on web console CLI
 
 | Env var | JSON key it overrides | Notes |

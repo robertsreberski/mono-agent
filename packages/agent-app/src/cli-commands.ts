@@ -234,22 +234,6 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.yes === true ? { yes: true } : {}),
       });
     }
-    case "sessions": {
-      // Legacy read-only Session Recorder, kept independent from the chat console.
-      const { runSessions } = await import("./sessions-command.js");
-      return await runSessions({
-        configPath: resolve(process.cwd(), args.configPath ?? "mono-agent.config.json"),
-        cwd: process.cwd(),
-        env: process.env,
-        ...(args.host === undefined ? {} : { host: args.host }),
-        ...(args.port === undefined ? {} : { port: args.port }),
-        ...(args.open === undefined ? {} : { open: args.open }),
-        ...(args.allowNonLoopback === undefined ? {} : { allowNonLoopback: args.allowNonLoopback }),
-        ...(args.showAuthUrl === undefined ? {} : { showAuthUrl: args.showAuthUrl }),
-        includeMemory: args.includeMemory,
-        ...(args.maxRunsPerInstance === undefined ? {} : { maxRunsPerInstance: args.maxRunsPerInstance }),
-      });
-    }
     case "install-skill":
       return await runInstallSkill(args);
     case "continuations": {

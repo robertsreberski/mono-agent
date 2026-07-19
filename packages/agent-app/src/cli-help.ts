@@ -134,15 +134,6 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    signature: "mono-agent sessions [--host <addr>] [--port <n>] [--no-open] [--allow-non-loopback]\n" +
-      "                   [--show-auth-url] [--include-memory] [--max-runs <n>]\n" +
-      "                   [--config <path>] [--env-file <path>]",
-    lines: [
-      "Serve the legacy read-only Session Recorder PWA (default 127.0.0.1:4599).",
-      "Its existing flags and MONO_AGENT_WEB_AUTH_TOKEN behavior are preserved.",
-    ],
-  },
-  {
     signature: "mono-agent install-skill [--target claude|codex|both] [--force] [--no-docs-mcp]\n" +
       "                         --project (--check|--update)",
     lines: [
