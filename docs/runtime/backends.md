@@ -174,7 +174,7 @@ metadata breaks inference and validation before the turn reaches that registry.
 }
 ```
 
-Env: `MONO_AGENT_FALLBACKS_JSON`. CLI: repeat `--fallback <ref>` and optionally follow each with `--fallback-effort <provider-default|level>`. Legacy `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain supported with no removal deadline; the legacy CLI `--fallback-models` flag is removed in `v2.0.0`. See [Fallback & failover](/runtime/fallback/) for router behavior and the failover report.
+Env: `MONO_AGENT_FALLBACKS_JSON`. CLI: repeat `--fallback <ref>` and optionally follow each with `--fallback-effort <provider-default|level>`. Legacy `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain supported with no removal deadline; the legacy CLI `--fallback-models` flag was removed. See [Fallback & failover](/runtime/fallback/) for router behavior and the failover report.
 
 ## Related
 

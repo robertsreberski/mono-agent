@@ -19,13 +19,32 @@ documentation together, then remove the completed row from this table.
 
 | Deprecated surface | Replacement | Removal version |
 | --- | --- | --- |
-| `mono-agent recipes list \| show <id>` | `mono-agent presets list \| show <id>` | `v2.0.0` |
-| `mono-agent init --recipe <id>` and `mono-agent validate --recipe <id>` | `--preset <id>` | `v2.0.0` |
-| CLI flag `--fallback-models <csv>` | Repeat `--fallback <ref>` and, when needed, `--fallback-effort <level>` | `v2.0.0` |
+| `mono-agent restart --force` | `mono-agent restart --clear-sessions` (same effect) | `v2.0.0` |
 
-The `--fallback-models` decision covers only the CLI CSV flag. Existing JSON
+`restart --force` is still accepted and behaves identically to
+`--clear-sessions` (clear persisted pi sessions + active conversation history),
+but every invocation prints a deprecation hint. `--force` on `install-skill` and
+`web reset` is a separate, non-deprecated flag.
+
+## Removed surfaces
+
+These surfaces were removed outright (a pre-1.0 curation). The old spelling now
+errors with a pointer to its replacement instead of mapping forward.
+
+| Removed surface | Replacement |
+| --- | --- |
+| `mono-agent recipes list \| show <id>` | `mono-agent presets list \| show <id>` |
+| `mono-agent init --recipe <id>` and `mono-agent validate --recipe <id>` | `--preset <id>` |
+| CLI flag `--fallback-models <csv>` | Repeat `--fallback <ref>` and, when needed, `--fallback-effort <level>` |
+| `memory-bujo` standalone CLI bin | `mono-agent memory <subcommand>` from the agent folder |
+
+The `--fallback-models` removal covers only the CLI CSV flag. Existing JSON
 `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain supported
-compatibility inputs; no removal version for those config forms is set here.
+compatibility inputs; those config forms are unaffected. The retired
+recipe → preset mapping is recorded as static documentation in
+[Presets & capability modules](/reference/presets/#deprecations). The
+`memory-bujo` package still ships the `bin` entry for this release, but it is an
+error-deflector that exits non-zero on every invocation.
 
 ## Permanent compatibility
 

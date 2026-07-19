@@ -14,16 +14,16 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 
 | Command | Purpose | Key flags |
 | --- | --- | --- |
-| `init` | On a TTY with no flags, run the guided readiness path: name the agent, enter its exact `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure exact route efforts/safety, verify every selected route, then on macOS start the background agent and enter a dedicated remote SELF-CONFIG session. Any flag or non-TTY invocation is scaffold-only; off macOS, configuration is manual. | `--name`, `--model`, repeated `--fallback`/`--fallback-effort`, `--route-safety`, legacy `--fallback-models` (removed in `v2.0.0`), `--auth`, `--codex-auth`, `--memory` |
+| `init` | On a TTY with no flags, run the guided readiness path: name the agent, enter its exact `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure exact route efforts/safety, verify every selected route, then on macOS start the background agent and enter a dedicated remote SELF-CONFIG session. Any flag or non-TTY invocation is scaffold-only; off macOS, configuration is manual. | `--name`, `--model`, repeated `--fallback`/`--fallback-effort`, `--route-safety`, `--auth`, `--codex-auth`, `--memory` |
 | `setup` | Alias of `init`. | (same as `init`) |
-| `presets` | List the built-in setup presets or show a preset's generated config, `.env.example`, and checklist. Replaces the deprecated `recipes` alias, which is removed in `v2.0.0`. | `list`, `show <id>` |
+| `presets` | List the built-in setup presets or show a preset's generated config, `.env.example`, and checklist. Replaces the removed `recipes` alias. | `list`, `show <id>` |
 | `auth login` | Run direct Codex browser/device login, Pi OAuth for Anthropic/GitHub Copilot/OpenAI Codex, or the OpenCode-Go API-key flow. OpenCode-Go uses masked TTY input by default; `--api-key-stdin` is the explicit headless input mode. Pi credentials are promoted under an owner-only lock with stale-lock repair only when safely proven. | `<provider\|codex>`, `--pi-auth-path <path>`, `--api-key-stdin`, `--codex-auth browser\|device`, `--config <path>` |
 | `sandbox` | Inspect, install, or functionally prove the pinned SRT runtime. Managed setup is private-cache and macOS-only. | `status`, `setup`, `check` |
 | `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias), including a read-only exact-byte inventory of this config's managed launchd stdout/stderr and retained generations. With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>`, `--json` |
 | `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>` |
 | `memory` | Preview, strictly audit, and safely maintain the configured memory store and its durable completed-turn intake. | `stats`, `today`, `show`, `search`, `top`, `audit`, `inspect`, `retry`, `resolve`, `rebuild`, `rollback`, `adopt-replay`; `--strict`, `--limit`, `--json` |
 | `start` | Start the agent as a background launchd service (or foreground worker). Background start also installs the fixed-policy one-shot log-maintenance LaunchAgent. | `--config <path>`, `--env-file <path>`, `--foreground` / `-f` |
-| `restart` | Restart the background instance for this config (starts it if stopped), maintaining logs only while the old writer is proven down. | `--config <path>`, `--env-file <path>`, `--force` |
+| `restart` | Restart the background instance for this config (starts it if stopped), maintaining logs only while the old writer is proven down. | `--config <path>`, `--env-file <path>`, `--clear-sessions` (`--force` deprecated alias) |
 | `stop` | Stop the background instance, unloading log maintenance first, and remove both LaunchAgent definitions. | `--config <path>`, `--env-file <path>` |
 | `status` | Show this config's instance plus any other running instances. | `--config <path>`, `--env-file <path>` |
 | `logs` | Print (and optionally follow) the background instance's log files. | `--config <path>`, `--env-file <path>`, `--follow` / `-f`, `--lines <n>` |
@@ -110,7 +110,7 @@ Exact background file bytes use keyed commitments under a stable per-config 256-
 | Flag | Effect |
 | --- | --- |
 | `--name <display-name>` | Write public `agent.name`; never used for paths, service ids, sessions, or provider identity. |
-| `--preset <id>` | Seed a blueprint from a saved preset (see [Presets & capability modules](/reference/recipes/)). Skips the wizard. |
+| `--preset <id>` | Seed a blueprint from a saved preset (see [Presets & capability modules](/reference/presets/)). Skips the wizard. |
 | `--with <csv>` | Add channels on top of the preset/default config. Valid values: `telegram`, `slack`, `webhook`, `openaiApi`, `cron`. |
 | `--yes` | Write the default/preset scaffold without prompting. |
 | `--auth` | Opt in to provider setup before writing files: Claude, direct Codex, supported Pi OAuth/OpenCode-Go key flows, and local-provider preflight. Detected credentials are reused unless repair is forced. Ignored by `--dry-run`. |
@@ -118,7 +118,6 @@ Exact background file bytes use keyed commitments under a stable per-config 256-
 | `--model <ref>` | Seed the primary model reference (default `codex:gpt-5.6-terra`). |
 | `--fallback <ref>` | Add one canonical fallback route; repeat without a product-imposed count limit. |
 | `--fallback-effort <provider-default\|level>` | Configure the immediately preceding `--fallback`. |
-| `--fallback-models <csv>` | Deprecated legacy global-effort-inheriting fallback form, removed in `v2.0.0`. Mutually exclusive with `--fallback`. |
 | `--route-safety uniform\|per-route-native` | Select common monotonic or explicit provider-native route contracts. |
 | `--codex-auth browser\|device` | Direct Codex login mode; `device` uses headless device auth. |
 | `--effort <level>` | Write primary `runtime.effort`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`. Reasoning-capable `pi:*` maps `ultra` to LOW; Pi without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged. Mono-agent rejects `ultra` on its Claude SDK route because the pinned SDK public contract ends at `max` (the SDK JavaScript itself forwards the value). The Claude CLI route passes `--effort ultra`, but both tested Claude Code binaries (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort. Direct OpenCode rejects explicit effort. Ranking above `max` only prevents keyword downgrade. |
@@ -137,9 +136,9 @@ mono-agent init --name "Research Companion" \
   --memory bujo
 ```
 
-The generated config matches [the config blueprint](/config/blueprint/). See [Backends](/runtime/backends/) for the model reference grammar, [Fallback](/runtime/fallback/) for the chain, [Capture & recall](/memory/capture-and-recall/) for the memory tiers, and [Presets & capability modules](/reference/recipes/) for the wizard's tools step and the no-tools guardrail.
+The generated config matches [the config blueprint](/config/blueprint/). See [Backends](/runtime/backends/) for the model reference grammar, [Fallback](/runtime/fallback/) for the chain, [Capture & recall](/memory/capture-and-recall/) for the memory tiers, and [Presets & capability modules](/reference/presets/) for the wizard's tools step and the no-tools guardrail.
 
-The deprecated `--recipe <id>` flag works until its `v2.0.0` removal: accepted invocations warn, map a retired recipe id to the preset that replaced it, or error with a pointer to the wizard for fully-retired blueprints. See the canonical [deprecation tracker](/reference/deprecations/) and the detailed [recipe map](/reference/recipes/#deprecations).
+The `--recipe <id>` flag and the `--fallback-models <csv>` flag were removed: `--recipe` now errors with a pointer to `--preset <id>`, and `--fallback-models` errors with a pointer to repeated `--fallback <ref>`. See the canonical [deprecation tracker](/reference/deprecations/) and the static [recipe → preset map](/reference/presets/#deprecations).
 
 ### Secret persistence
 
@@ -186,7 +185,7 @@ mono-agent sandbox check
 
 ## `presets`
 
-Presets are saved wizard answer-sets. `presets list` shows the ids, titles, descriptions, and risk levels; `presets show <id>` prints the generated `mono-agent.config.json`, any `.env.example` placeholders, scaffolded files, and the validation checklist. `mono-agent recipes …` remains as a deprecated alias until its `v2.0.0` removal.
+Presets are saved wizard answer-sets. `presets list` shows the ids, titles, descriptions, and risk levels; `presets show <id>` prints the generated `mono-agent.config.json`, any `.env.example` placeholders, scaffolded files, and the validation checklist. The old `mono-agent recipes …` alias was removed; use `presets`.
 
 ```bash
 mono-agent presets list
@@ -207,7 +206,7 @@ mono-agent validate --consumer ../local-agent-alpha
 
 | Flag | Effect |
 | --- | --- |
-| `--preset <id>` | Also report whether the preset's promised capabilities are live — each expectation is checked against the doctor report. The deprecated `--recipe <id>` alias maps to the replacing preset until its `v2.0.0` removal. |
+| `--preset <id>` | Also report whether the preset's promised capabilities are live — each expectation is checked against the doctor report. The old `--recipe <id>` alias was removed; use `--preset`. |
 | `--consumer <path>` | Validate another agent folder read-only. Relative `--config` and `--env-file` paths resolve inside that folder. |
 | `--config <path>` | Use a non-default config file. With `--consumer`, relative paths are inside the consumer folder. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file. With `--consumer`, relative paths are inside the consumer folder. |
@@ -232,7 +231,7 @@ a pre-existing memory root. For an existing or damaged root, stop the agent, run
 `mono-agent memory rebuild`, then validate again. Embeddings-provider reachability, missing discovered
 models, and missing declared LM Studio credentials remain operational `waiting` conditions.
 
-The **Tools & MCP** section reports the tool policy: allow-all (the default) shows `All tools allowed.` (or `All tools allowed (except: …)` when a `disallowedTools` list is present). On Pi/Claude SDK, an **explicit empty** `tools.allowedTools: []` flags the no-tools trap as `waiting` because the agent could chat but cannot act. Direct Codex/OpenCode and Claude Code CLI reject that unenforceable empty policy as `error` before provider startup. Direct OpenCode also rejects every effective MCP source—`tools.mcpConfigPath`, `memory.recallTool`, hosted Supermemory MCP, and adapter send tools—and index skill disclosure; validation reports those combinations before a run. For a specific allowlist it also flags an unknown tool name with a "did you mean" hint (pi silently drops unknown names) and cross-checks adapter send tools against enabled channels. Under a native sandbox it additionally checks the enabled send tools' HTTP hosts against `sandbox.network`: Slack, Telegram (including a custom `apiRoot`), and the loopback interaction bridge for blocking ask tools. A missing host is `waiting` with the exact allowlist entry to add; an explicitly denied tool creates no endpoint requirement. See [Presets & capability modules](/reference/recipes/#the-tools-step-and-the-no-tools-guardrail) for the full contract.
+The **Tools & MCP** section reports the tool policy: allow-all (the default) shows `All tools allowed.` (or `All tools allowed (except: …)` when a `disallowedTools` list is present). On Pi/Claude SDK, an **explicit empty** `tools.allowedTools: []` flags the no-tools trap as `waiting` because the agent could chat but cannot act. Direct Codex/OpenCode and Claude Code CLI reject that unenforceable empty policy as `error` before provider startup. Direct OpenCode also rejects every effective MCP source—`tools.mcpConfigPath`, `memory.recallTool`, hosted Supermemory MCP, and adapter send tools—and index skill disclosure; validation reports those combinations before a run. For a specific allowlist it also flags an unknown tool name with a "did you mean" hint (pi silently drops unknown names) and cross-checks adapter send tools against enabled channels. Under a native sandbox it additionally checks the enabled send tools' HTTP hosts against `sandbox.network`: Slack, Telegram (including a custom `apiRoot`), and the loopback interaction bridge for blocking ask tools. A missing host is `waiting` with the exact allowlist entry to add; an explicitly denied tool creates no endpoint requirement. See [Presets & capability modules](/reference/presets/#the-tools-step-and-the-no-tools-guardrail) for the full contract.
 
 ### Provider credentials
 
@@ -384,19 +383,20 @@ Restarts the background instance for this config, starting it if stopped. Like `
 | --- | --- |
 | `--config <path>` | Target a non-default config. |
 | `--env-file <path>` | Load the same non-default dotenv file used by the managed worker and preserve it in recovery commands. |
-| `--force` | Stop, then purge the persisted pi-session store and active conversation-history store, then start fresh. |
+| `--clear-sessions` | Stop, then purge the persisted pi-session store and active conversation-history store, then start fresh. |
+| `--force` | Deprecated alias of `--clear-sessions` (same effect); every invocation prints a deprecation hint. |
 
-`--force` clears both continuity paths: resumable provider transcripts under `providers.piNative.piSessionsRoot` and canonical active conversation history under `history/` beside `artifacts.dir`. The next turn therefore neither resumes nor replays pre-reset conversation state. Durable memory under `memory.path` and recorded run artifacts under `artifacts.dir` are untouched. Each missing store is a no-op.
+`--clear-sessions` clears both continuity paths: resumable provider transcripts under `providers.piNative.piSessionsRoot` and canonical active conversation history under `history/` beside `artifacts.dir`. The next turn therefore neither resumes nor replays pre-reset conversation state. Durable memory under `memory.path` and recorded run artifacts under `artifacts.dir` are untouched. Each missing store is a no-op.
 
 ```bash
 mono-agent restart
-mono-agent restart --force   # clears piSessionsRoot + active conversation history
+mono-agent restart --clear-sessions   # clears piSessionsRoot + active conversation history
 ```
 
 `piSessionsRoot` is set via `providers.piNative.piSessionsRoot` (env `MONO_AGENT_PI_SESSIONS_ROOT`), e.g. `.mono-agent/sessions`; leaving it unset keeps sessions in memory.
 
 :::caution
-`--force` permanently deletes saved provider transcripts and active conversation history for this instance. The agent's durable long-term memory and recorded run artifacts are preserved, but the current-chat context cannot be recovered after the reset.
+`--clear-sessions` permanently deletes saved provider transcripts and active conversation history for this instance. The agent's durable long-term memory and recorded run artifacts are preserved, but the current-chat context cannot be recovered after the reset.
 :::
 
 ## `stop`, `status`, `logs`

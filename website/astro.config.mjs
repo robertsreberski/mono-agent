@@ -12,6 +12,11 @@ const site = process.env.VERCEL_PROJECT_PRODUCTION_URL
 export default defineConfig({
   // Served from the Vercel project root (no GitHub Pages base path).
   site,
+  // docs/reference/recipes.md was renamed to docs/reference/presets.md; keep the
+  // old URL working for external bookmarks and deep links.
+  redirects: {
+    '/reference/recipes/': '/reference/presets/',
+  },
   integrations: [
     starlight({
       title: 'mono-agent',
