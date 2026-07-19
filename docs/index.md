@@ -37,7 +37,7 @@ Equivalent env overrides: `MONO_AGENT_MODEL=codex:gpt-5.6-terra` and, for the en
 - **[Memory](/memory/)** — tiered capture/recall, embeddings, consolidation, the entity graph, and validation/CLI.
 - **[Context](/context/)** — identity/soul, skills, and how the system prompt is assembled per turn.
 - **[Tools](/tools/)** — the tool policy (allow/deny), MCP integration, and the native sandbox.
-- **[Observability & operator consoles](/observability/)** — JSONL artifacts and traces, Phoenix/OTLP export and backfill, the CLI, TUI, always-on web console, and Session Recorder.
+- **[Observability & operator consoles](/observability/)** — JSONL artifacts and traces, Phoenix/OTLP export and backfill, the CLI, TUI, and always-on web console.
 - **[Programmatic](/programmatic/)** — the `code`-only escape hatches: composition, approval gates, structured output, multi-agent, A2A consumers, and custom channels.
 - **[Playbooks](/playbooks/)** — end-to-end recipes (Telegram BuJo assistant, Slack MCP bot, local-only Ollama, sandboxed code agent, and more).
 - **[Reference](/reference/)** — the feature matrix and glossary.

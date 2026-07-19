@@ -203,7 +203,7 @@ Opted project stdio MCPs also receive host-owned filesystem context after all MC
 
 ## Channels
 
-Most channels are opt-in via their `enabled` flag (default off). The operator surfaces `tui` and `live` default on so the TUI/web console can chat and `mono-agent sessions` can observe running agents without per-agent edits. The tables below enumerate every channel environment variable. Structured JSON-only fields have no invented environment form and are identified beside the relevant channel; consult [blueprint.md](/config/blueprint/) for the complete per-channel shape.
+Most channels are opt-in via their `enabled` flag (default off). The operator surfaces `tui` and `live` default on so the TUI/web console can chat and operator tooling can observe running agents' run events without per-agent edits. The tables below enumerate every channel environment variable. Structured JSON-only fields have no invented environment form and are identified beside the relevant channel; consult [blueprint.md](/config/blueprint/) for the complete per-channel shape.
 
 ### Telegram
 
@@ -321,12 +321,12 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
-| `MONO_AGENT_LIVE_ENABLED` | `live.enabled` | **Default `true`** — default-on read-only SSE relay for `mono-agent sessions`. |
+| `MONO_AGENT_LIVE_ENABLED` | `live.enabled` | **Default `true`** — default-on read-only run-event SSE relay operator surface. |
 | `MONO_AGENT_LIVE_HOST` | `live.host` | Default `127.0.0.1`. |
 | `MONO_AGENT_LIVE_PORT` | `live.port` | Default `0` (ephemeral; published to the trace-source registry). |
 | `MONO_AGENT_LIVE_BASE_PATH` | `live.basePath` | Default `/live`. |
 | `MONO_AGENT_LIVE_ALLOW_NON_LOOPBACK` | `live.allowNonLoopback` | Required to bind a non-loopback host. |
-| `MONO_AGENT_LIVE_API_KEY` | `live.apiKey` | Optional bearer token for `/v1/info` and `/v1/events`. Put the value in `.env`; inline `live.apiKey` remains accepted for compatibility. `mono-agent sessions` resolves the effective value and only sends it to trusted loopback live URLs. |
+| `MONO_AGENT_LIVE_API_KEY` | `live.apiKey` | Optional bearer token for `/v1/info` and `/v1/events`. Put the value in `.env`; inline `live.apiKey` remains accepted for compatibility. A consumer resolves the effective value and only sends it to trusted loopback live URLs. |
 
 ### A2A
 

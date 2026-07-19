@@ -45,8 +45,16 @@ errors with a pointer to its replacement instead of mapping forward.
 | --- | --- |
 | `mono-agent recipes list \| show <id>` | `mono-agent presets list \| show <id>` |
 | `mono-agent init --recipe <id>` and `mono-agent validate --recipe <id>` | `--preset <id>` |
+| `mono-agent sessions` (Session Recorder launcher) | `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console) |
 | CLI flag `--fallback-models <csv>` | Repeat `--fallback <ref>` and, when needed, `--fallback-effort <level>` |
 | `memory-bujo` standalone CLI bin | `mono-agent memory <subcommand>` from the agent folder |
+
+The `mono-agent sessions` removal covers only the CLI launcher. Running it now
+errors with a `mono-agent tui` / `mono-agent web` pointer. The
+`@mono-agent/session-web` package, the `live` event relay (`live.*` config), and
+`MONO_AGENT_WEB_AUTH_TOKEN` still ship in code; they are simply no longer
+reachable through any CLI command, and their full retirement is a separate later
+dead-code-audited change.
 
 The `--fallback-models` removal covers only the CLI CSV flag. Existing JSON
 `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain supported

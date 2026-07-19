@@ -18,8 +18,9 @@ export interface LiveChannelOverrides {
 }
 
 /**
- * The live event relay is enabled by default on loopback so `mono-agent sessions`
- * can observe a running agent without a per-agent config edit.
+ * The live event relay is enabled by default on loopback so read-only operator
+ * surfaces (the `@mono-agent/session-web` PWA) can observe a running agent
+ * without a per-agent config edit.
  */
 export function createLiveChannelDriver(
   overrides: LiveChannelOverrides = {},

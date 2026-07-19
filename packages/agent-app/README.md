@@ -3,7 +3,7 @@
 Config-first mono-agent host. Reads one `mono-agent.config.json` in a folder,
 builds the configured responder, and starts every configured communication
 channel plus traceability. Ships the
-`mono-agent` CLI (`init`, `auth`, `sandbox`, `validate`, `memory`, `tui`, `web`, `sessions`, `start`) so an agent folder works without
+`mono-agent` CLI (`init`, `auth`, `sandbox`, `validate`, `memory`, `tui`, `web`, `start`) so an agent folder works without
 hand-written composition code.
 
 Setup has two deliberate wall-clock paths: flags or non-TTY input use the fast scaffold-only path (unless explicit `--auth` adds provider setup) and never claim readiness. Bare `mono-agent init` on a TTY makes one real no-tool model call per selected route before committing the scaffold, with timeouts of 90s for each cloud route and 240s for each local route.
@@ -43,8 +43,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
   folders non-destructively.
 - Operate the machine-wide `@mono-agent/web` assistant-ui console through
-  `mono-agent web`, and preserve the read-only `@mono-agent/session-web`
-  recorder under `mono-agent sessions`.
+  `mono-agent web`. The `@mono-agent/session-web` recorder still ships but its
+  `mono-agent sessions` launcher was removed; use `mono-agent tui`
+  (recorded-run replay) or `mono-agent web` (live console).
 
 ## Install / Usage
 

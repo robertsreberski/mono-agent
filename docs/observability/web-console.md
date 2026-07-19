@@ -8,7 +8,7 @@ sidebar:
 
 `mono-agent web` is the browser operator console for every running agent discovered on this computer. It is a separate `@mono-agent/web` application built on assistant-ui's External Store Runtime and native Thread, ThreadList, Message, Composer, Attachment, GroupedParts, and ToolFallback primitives, with the assistant-ui Reasoning disclosure adapted for structured runtime parts. The service owns conversations and in-flight turns, so refreshing or closing a browser tab does not abort work.
 
-This is the chat-first companion to [`mono-agent tui`](/observability/tui/). The previous read-only run browser remains available as [`mono-agent sessions`](#session-recorder-moved-to-sessions).
+This is the chat-first companion to [`mono-agent tui`](/observability/tui/). The former `mono-agent sessions` read-only run browser [was removed](#session-recorder-removed); recorded-run replay now lives in `mono-agent tui`.
 
 ## Start it once
 
@@ -101,27 +101,18 @@ Reset removes the web console's conversations, committed uploads, staged uploads
 
 The first web-console release covers discovery, persistent multi-conversation chat, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a PWA when served from a secure browser context.
 
-Recorded-run replay, source-annotated config inspection, and managed conversational configuration remain in the TUI and Session Recorder for now. Use:
+Recorded-run replay, source-annotated config inspection, and managed conversational configuration remain in the TUI for now. Use:
 
 ```bash
 mono-agent tui
 mono-agent tui --configure
-mono-agent sessions
 ```
 
-## Session Recorder moved to `sessions`
+## Session Recorder removed
 
-`@mono-agent/session-web` remains the read-only Session Recorder. Its command moved from `mono-agent web` to `mono-agent sessions` without changing its flags, authentication behavior, artifact paging, or live-relay aggregation:
+The `mono-agent sessions` command that launched the read-only Session Recorder was removed. Use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console) for operator run inspection.
 
-```bash
-mono-agent sessions
-mono-agent sessions --port 4599 --no-open
-mono-agent sessions --host 0.0.0.0 --allow-non-loopback
-mono-agent sessions --include-memory
-mono-agent sessions --max-runs 500
-```
-
-The recorder retains `MONO_AGENT_WEB_AUTH_TOKEN` for compatibility. That variable belongs to the legacy recorder only; it does not add a login to the new always-on web console.
+`@mono-agent/session-web`, the read-only `live` event relay, and the `MONO_AGENT_WEB_AUTH_TOKEN` compatibility bearer still ship in code but are no longer reachable through any CLI command. Full retirement is a later dead-code-audited change; see the [deprecation tracker](/reference/deprecations/#removed-surfaces).
 
 ## Related
 

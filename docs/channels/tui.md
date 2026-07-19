@@ -11,7 +11,7 @@ This channel serves the loopback NDJSON stream used by the [`mono-agent tui`](/o
 Coverage: `config` (the `tui` section of `mono-agent.config.json`).
 
 :::note
-**This operator surface is ON by default.** `tui` and the read-only `live` event relay are the two default-on channels: both bind loopback with ephemeral ports and need no credentials by default, so the TUI/web console can chat and `mono-agent sessions` can observe runs without a per-agent config edit. Set `"tui": { "enabled": false }` to opt out of the operator endpoint; everything else about the channel lifecycle (status lines, `degraded`/`failed` reporting) matches the other channels.
+**This operator surface is ON by default.** `tui` and the read-only `live` event relay are the two default-on channels: both bind loopback with ephemeral ports and need no credentials by default, so the TUI/web console can chat and operator tooling can observe runs without a per-agent config edit. Set `"tui": { "enabled": false }` to opt out of the operator endpoint; everything else about the channel lifecycle (status lines, `degraded`/`failed` reporting) matches the other channels.
 :::
 
 ## Configuration
@@ -52,7 +52,7 @@ Keep the bearer value in `.env` (or an exported environment variable). `mono-age
 
 ## Live event relay for Session Recorder
 
-The `live` channel is the sibling default-on operator surface consumed by `mono-agent sessions`. It is read-only: it exposes run lifecycle frames over SSE, never accepts turns, and lets the Session Recorder show sub-run updates before the on-disk recorder flushes the final summary.
+The `live` channel is the sibling default-on operator surface: the read-only run-event relay consumed by the `@mono-agent/session-web` PWA and other operator tooling. It exposes run lifecycle frames over SSE, never accepts turns, and lets a consumer show sub-run updates before the on-disk recorder flushes the final summary.
 
 ```json
 {
@@ -68,7 +68,7 @@ The `live` channel is the sibling default-on operator surface consumed by `mono-
 
 | Key | Type | Default | Purpose |
 | --- | --- | --- | --- |
-| `enabled` | boolean | **`true`** | Default-on read-only operator relay for `mono-agent sessions`; set `false` to opt out. |
+| `enabled` | boolean | **`true`** | Default-on read-only run-event operator relay; set `false` to opt out. |
 | `host` | string | `127.0.0.1` | Bind address. Loopback by default. |
 | `port` | integer | `0` | `0` = ephemeral. The bound `baseUrl` is published to the trace-source registry. |
 | `basePath` | string | `/live` | Path prefix for `/v1/events` and `/v1/info`. |
@@ -84,9 +84,9 @@ The `live` channel is the sibling default-on operator surface consumed by `mono-
 | `MONO_AGENT_LIVE_ALLOW_NON_LOOPBACK` | `live.allowNonLoopback` |
 | `MONO_AGENT_LIVE_API_KEY` | `live.apiKey` |
 
-Keep the bearer value in `.env` (or an exported environment variable). `mono-agent sessions` resolves the effective value and sends it only to trusted loopback live URLs.
+Keep the bearer value in `.env` (or an exported environment variable). A consumer resolves the effective value and sends it only to trusted loopback live URLs.
 
-`mono-agent sessions` trusts live relay URLs only when they resolve to loopback, and it only sends a live API key to those trusted URLs. If you deliberately expose `live` beyond loopback, put it behind a trusted network boundary; the stream contains run prompts, tool events, usage, and terminal summaries.
+A consumer trusts live relay URLs only when they resolve to loopback, and it only sends a live API key to those trusted URLs. If you deliberately expose `live` beyond loopback, put it behind a trusted network boundary; the stream contains run prompts, tool events, usage, and terminal summaries.
 
 ## Endpoints & wire protocol
 
