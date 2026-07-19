@@ -43,8 +43,9 @@ The `--fallback-models` removal covers only the CLI CSV flag. Existing JSON
 compatibility inputs; those config forms are unaffected. The retired
 recipe → preset mapping is recorded as static documentation in
 [Presets & capability modules](/reference/presets/#deprecations). The
-`memory-bujo` package still ships the `bin` entry for this release, but it is an
-error-deflector that exits non-zero on every invocation.
+`memory-bujo` bin entry still ships this release, but it is an error-deflector
+that exits non-zero on every invocation; use `mono-agent memory <subcommand>`
+instead.
 
 ## Permanent compatibility
 
