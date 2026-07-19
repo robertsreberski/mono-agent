@@ -8,7 +8,7 @@ sidebar:
 
 This page documents every `mono-agent` command and its flags, verified against the CLI implementation. It also covers the two cross-cutting behaviors you hit on most invocations: automatic `.env` loading and the per-section reports `validate` and `start` print.
 
-Run `mono-agent help` (or bare `mono-agent`, `--help`, `-h`) for a grouped, one-line-per-command summary under the **Setup / Check / Run / Console / Observe / Maintain** headings, with a `[--json]` marker on the commands that accept it. Drill in with `mono-agent help <command>` for that command's full flags and behavior notes, or `mono-agent help notes` for model references, fallback chains, and env-file rules. `mono-agent help <alias>` resolves aliases (`doctor` → `validate`, `setup` → `init`), and a removed command (`recipes`, `sessions`) prints its replacement pointer. An unknown command, an unknown flag, or `help <unknown-topic>` prints the error plus the grouped summary and exits with code `2`.
+Run `mono-agent help` (or bare `mono-agent`, `--help`, `-h`) for a grouped, one-line-per-command summary under the **Setup / Check / Run / Console / Observe / Maintain** headings, with a `[--json]` marker on the commands that accept it. Drill in with `mono-agent help <command>` for that command's full flags and behavior notes, or `mono-agent help notes` for model references, fallback chains, and env-file rules. `mono-agent help <alias>` resolves aliases (`doctor` → `validate`, `setup` → `init`, `metrics`/`audit-runs` → `runs`), and a removed command (`recipes`, `sessions`) prints its replacement pointer. An unknown command or an unknown flag prints the error plus the grouped summary and exits with code `2`; `help <unknown-topic>` prints a stderr usage error listing the valid topics (without the summary) and also exits `2`.
 
 ## Exit codes and `--json`
 
@@ -41,7 +41,7 @@ The read/status commands accept `--json` for scripting: `validate`, `config`, `p
 | `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias), including a read-only exact-byte inventory of this config's managed launchd stdout/stderr and retained generations. With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>`, `--json` |
 | `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>`, `--json` |
 | `memory` | Preview, strictly audit, and safely maintain the configured memory store and its durable completed-turn intake. | `stats`, `today`, `show`, `search`, `top`, `audit`, `inspect`, `retry`, `resolve`, `rebuild`, `rollback`, `adopt-replay`; `--strict`, `--limit`, `--json` |
-| `start` | Start the agent as a background launchd service (or foreground worker). Background start also installs the fixed-policy one-shot log-maintenance LaunchAgent. | `--config <path>`, `--env-file <path>`, `--foreground` / `-f` |
+| `start` | Start the agent as a background launchd service (or foreground worker). Background start also installs the fixed-policy one-shot log-maintenance LaunchAgent. | `--config <path>`, `--env-file <path>`, `--foreground` |
 | `restart` | Restart the background instance for this config (starts it if stopped), maintaining logs only while the old writer is proven down. | `--config <path>`, `--env-file <path>`, `--clear-sessions` (`--force` deprecated alias) |
 | `stop` | Stop the background instance, unloading log maintenance first, and remove both LaunchAgent definitions. | `--config <path>`, `--env-file <path>` |
 | `status` | Show this config's instance plus any other running instances. | `--config <path>`, `--env-file <path>`, `--json` |
@@ -378,7 +378,7 @@ Starts the agent. Without `--foreground`, it registers a background macOS servic
 | --- | --- |
 | `--config <path>` | Use a non-default config file. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file. |
-| `--foreground` / `-f` | Run the blocking foreground worker instead of backgrounding. |
+| `--foreground` | Run the blocking foreground worker instead of backgrounding. (`-f` is logs-only and errors on `start`.) |
 
 The start preflight requires the config **file** to exist (a folder with only env vars is not a configured agent → exit `2`) and runs structural validation with network probes skipped (so probes only yield `waiting`, never `error`); any `error` section refuses the start with exit `1`. `waiting` never blocks.
 
@@ -447,7 +447,7 @@ mono-agent logs --lines 500      # print the last 500 lines and exit
 | `logs` | `--follow` / `-f` | Keep streaming new output (`tail -F`). |
 | `logs` | `--lines <n>` | Number of trailing lines to print (1–100000, default 200). |
 
-For `logs`, `-f` means **follow**; for `start`, `-f` means **foreground**. A `--lines` value outside `1`–`100000` (or non-integer) errors.
+For `logs`, `-f` means **follow**; for `start`, use `--foreground` — `-f` is logs-only and errors on `start`. A `--lines` value outside `1`–`100000` (or non-integer) errors.
 
 `status` prints the same compact **runs health** block for the detached instance after the instance, observability, and channel details. Missing or empty artifact directories show `No runs recorded yet.` and do not change the command's existing exit-code semantics.
 

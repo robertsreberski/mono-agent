@@ -163,10 +163,10 @@ Built-in channels are independent JSON sections: `telegram`, `slack`, `webhook`,
 | `app.cli-no-tools-guardrail` | cli | part of `mono-agent validate` / `doctor`; the tools step of `mono-agent init` | — | [Presets & modules](/reference/presets/#the-tools-step-and-the-no-tools-guardrail) | — |
 | `app.cli-validate` | cli | `mono-agent validate [--consumer] [--config] [--env-file]` | — | [Blueprint](/config/blueprint/) | — |
 | `app.provider-credentials-check` | cli | part of `mono-agent validate`; primary/fallback/memory/enabled static trigger refs; exact Pi built-in model + `providers.piAuthPath`, or custom model/key contract through `providers.local[]` | `MONO_AGENT_PI_AUTH_PATH`, `MONO_AGENT_LOCAL_PROVIDERS_JSON` | [CLI reference](/observability/cli-reference/#provider-credentials) | — |
-| `app.cli-start` | cli | `mono-agent start [--config] [--env-file] [--foreground\|-f]` | — | [Install](/getting-started/install/) | — |
+| `app.cli-start` | cli | `mono-agent start [--config] [--env-file] [--foreground]` | — | [Install](/getting-started/install/) | — |
 | `app.cli-stop` | cli | `mono-agent stop [--config]` | — | [Install](/getting-started/install/) | — |
 | `app.cli-logs` | cli | `mono-agent logs [--config] [--follow\|-f] [--lines <n>]` | — | [CLI reference](/observability/cli-reference/) | — |
-| `app.cli-restart-clean` | cli | `mono-agent restart [--config] [--force]` | — | [CLI reference](/observability/cli-reference/) | — |
+| `app.cli-restart-clean` | cli | `mono-agent restart [--config] [--clear-sessions]` (`--force` deprecated alias) | — | [CLI reference](/observability/cli-reference/) | — |
 | `app.local-conversational-config` | cli + tool | macOS `mono-agent tui --configure` against the managed background agent; persistent marked session and capability map; stable configuration conversation with rotated proposal capability; request-scoped `ProposeAgentConfiguration`; incremental host approval/restart/ready-source swap or rollback/recovery; only quitting exits; `--local` is ordinary chat only | — | [CLI reference](/observability/cli-reference/#tui) | — |
 | `app.managed-project-skills` | cli + config | generated selected skills; `mono-agent install-skill --project --check\|--update` | `MONO_AGENT_SKILLS_ROOT`, `MONO_AGENT_SELECTED_SKILLS`, `MONO_AGENT_SKILL_DISCLOSURE` | [Skills](/context/skills/) | — |
 | `app.docs-mcp-companion` | cli + code | `search_mono_agent_docs({query, limit?, scope?})`; `mono-agent-docs://chunk/{chunkId}` | — | [Documentation MCP companion](/tools/documentation-mcp/) | — |

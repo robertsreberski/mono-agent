@@ -19,9 +19,9 @@ documentation together, then remove the completed row from this table.
 
 | Deprecated surface | Replacement | Removal version |
 | --- | --- | --- |
-| `mono-agent restart --force` | `mono-agent restart --clear-sessions` (same effect) | `v2.0.0` |
-| `mono-agent metrics` | `mono-agent runs` (equivalently `mono-agent runs report`) | `v2.0.0` |
-| `mono-agent audit-runs` | `mono-agent runs audit` | `v2.0.0` |
+| `mono-agent restart --force` | `mono-agent restart --clear-sessions` (same effect) | the next release after `v0.12` |
+| `mono-agent metrics` | `mono-agent runs` (equivalently `mono-agent runs report`) | the next release after `v0.12` |
+| `mono-agent audit-runs` | `mono-agent runs audit` | the next release after `v0.12` |
 
 `restart --force` is still accepted and behaves identically to
 `--clear-sessions` (clear persisted pi sessions + active conversation history),
