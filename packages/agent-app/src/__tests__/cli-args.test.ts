@@ -375,11 +375,12 @@ describe("parseCliArgs", () => {
     });
   });
 
-  it("parses audit-runs flags", () => {
+  it("normalizes the legacy audit-runs alias to `runs audit` and keeps its flags", () => {
     expect(
       parseCliArgs(["audit-runs", "--artifact-dir", "./runs", "--stale-after-ms", "1234", "--include-memory", "--json"]),
     ).toMatchObject({
-      command: "audit-runs",
+      command: "runs",
+      positionals: ["audit"],
       artifactDir: "./runs",
       staleAfterMs: 1234,
       includeMemory: true,
@@ -388,14 +389,15 @@ describe("parseCliArgs", () => {
     expect(
       parseCliArgs(["audit-runs", "--consumer", "../local-agent-alpha", "--config", "agent.config.json"]),
     ).toMatchObject({
-      command: "audit-runs",
+      command: "runs",
+      positionals: ["audit"],
       consumerPath: "../local-agent-alpha",
       configPath: "agent.config.json",
     });
     expect(() => parseCliArgs(["audit-runs", "--stale-after-ms", "0"])).toThrow(/--stale-after-ms/u);
   });
 
-  it("parses metrics flags and rejects invalid grouping dimensions", () => {
+  it("normalizes the legacy metrics alias to `runs report` and rejects invalid grouping dimensions", () => {
     expect(
       parseCliArgs([
         "metrics",
@@ -411,7 +413,8 @@ describe("parseCliArgs", () => {
         "--json",
       ]),
     ).toMatchObject({
-      command: "metrics",
+      command: "runs",
+      positionals: ["report"],
       artifactDir: "./runs",
       since: "2026-06-01T00:00:00.000Z",
       until: "2026-06-30T00:00:00.000Z",
@@ -419,9 +422,35 @@ describe("parseCliArgs", () => {
       includeMemory: true,
       json: true,
     });
-    expect(parseCliArgs(["metrics", "--by", "channel"])).toMatchObject({ command: "metrics", groupBy: "channel" });
-    expect(parseCliArgs(["metrics", "--by", "failureKind"])).toMatchObject({ command: "metrics", groupBy: "failureKind" });
+    expect(parseCliArgs(["metrics", "--by", "channel"])).toMatchObject({ command: "runs", positionals: ["report"], groupBy: "channel" });
+    expect(parseCliArgs(["metrics", "--by", "failureKind"])).toMatchObject({ command: "runs", positionals: ["report"], groupBy: "failureKind" });
     expect(() => parseCliArgs(["metrics", "--by", "status"])).toThrow(/--by/u);
+  });
+
+  it("parses the canonical `runs` command with report/audit modes and the merged flag surface", () => {
+    expect(parseCliArgs(["runs"])).toMatchObject({ command: "runs", positionals: [] });
+    expect(parseCliArgs(["runs", "report", "--by", "channel", "--since", "2026-06-01T00:00:00.000Z", "--json"]))
+      .toMatchObject({
+        command: "runs",
+        positionals: ["report"],
+        groupBy: "channel",
+        since: "2026-06-01T00:00:00.000Z",
+        json: true,
+      });
+    expect(parseCliArgs(["runs", "audit", "--artifacts", "./runs", "--consumer", "../agent", "--stale-after-ms", "500", "--include-memory"]))
+      .toMatchObject({
+        command: "runs",
+        positionals: ["audit"],
+        artifactDir: "./runs",
+        consumerPath: "../agent",
+        staleAfterMs: 500,
+        includeMemory: true,
+      });
+    // A mode positional the parser does not interpret is still forwarded to the dispatcher unchanged.
+    expect(parseCliArgs(["runs", "bogus"])).toMatchObject({ command: "runs", positionals: ["bogus"] });
+    // --consumer / --include-memory now accept `runs`; they still reject unrelated commands.
+    expect(() => parseCliArgs(["start", "--consumer", "../agent"])).toThrow(/--consumer/u);
+    expect(() => parseCliArgs(["start", "--include-memory"])).toThrow(/--include-memory/u);
   });
 
   it("parses validate --consumer and keeps it validate/audit-runs scoped", () => {
@@ -550,6 +579,11 @@ describe("parseCliArgs", () => {
     expect(renderHelp()).toContain("hand-authored runtime backend config");
     expect(renderHelp()).toContain("mono-agent web");
     expect(renderHelp()).toContain("mono-agent sessions");
+    // The merged observability command replaces the separate audit-runs/metrics entries.
+    expect(renderHelp()).toContain("mono-agent runs [report|audit]");
+    expect(renderHelp()).not.toContain("mono-agent audit-runs [");
+    expect(renderHelp()).not.toContain("mono-agent metrics [");
+    expect(renderHelp()).not.toContain("--artifact-dir");
     expect(renderHelp()).toContain("live chat with structured");
     expect(renderHelp()).not.toContain("live chat with full");
     expect(renderHelp()).toContain("--allow-non-loopback");
@@ -669,6 +703,42 @@ describe("removed CLI surfaces", () => {
     expect(fallbacks.code).toBe(0);
     expect(presets.stderr).not.toContain("deprecated");
     expect(fallbacks.stderr).not.toContain("deprecated");
+  });
+});
+
+describe("runs forwarding aliases", () => {
+  it("forwards `metrics` to the runs report engine with a sunset hint", async () => {
+    const dir = await tempDir();
+    const result = await captureCli(() => runCli(["metrics", "--artifacts", dir, "--json"]));
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("`mono-agent metrics` is now `mono-agent runs`");
+    expect(result.stderr).toContain("will be removed in a future release");
+  });
+
+  it("forwards `audit-runs` to the runs audit engine with a sunset hint", async () => {
+    const dir = await tempDir();
+    const result = await captureCli(() => runCli(["audit-runs", "--artifact-dir", dir, "--json"]));
+    expect(result.code).toBe(0);
+    expect(result.stderr).toContain("`mono-agent audit-runs` is now `mono-agent runs audit`");
+    expect(result.stderr).toContain("will be removed in a future release");
+  });
+
+  it("does not emit a deprecation hint for the canonical `runs` spelling", async () => {
+    const dir = await tempDir();
+    const report = await captureCli(() => runCli(["runs", "--artifacts", dir, "--json"]));
+    const audit = await captureCli(() => runCli(["runs", "audit", "--artifact-dir", dir, "--json"]));
+    expect(report.code).toBe(0);
+    expect(audit.code).toBe(0);
+    expect(report.stderr).not.toContain("deprecated");
+    expect(report.stderr).not.toContain("will be removed");
+    expect(audit.stderr).not.toContain("deprecated");
+    expect(audit.stderr).not.toContain("will be removed");
+  });
+
+  it("rejects an unknown `runs` mode through the CLI with the usage-error code", async () => {
+    const bogus = await captureCli(() => runCli(["runs", "bogus"]));
+    expect(bogus.code).toBe(2);
+    expect(bogus.stderr).toContain("Unknown `runs` mode `bogus`");
   });
 });
 

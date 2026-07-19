@@ -169,22 +169,17 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
   },
   {
     signature:
-      "mono-agent audit-runs [--artifact-dir <path> | --consumer <path>]\n" +
-      "                      [--include-memory] [--config <path>] [--env-file <path>] [--stale-after-ms <n>] [--json]",
+      "mono-agent runs [report|audit] [--artifacts <path> | --consumer <path>]\n" +
+      "                [--since <iso>] [--until <iso>] [--by model|channel|failureKind]\n" +
+      "                [--stale-after-ms <n>] [--include-memory] [--json] [--config <path>] [--env-file <path>]",
     lines: [
-      "Read local agent-run summary artifacts without rewriting them. Reports parse",
-      "failures, status and failure-kind histograms, stale running summaries,",
-      "and per-failure-kind rates. --include-memory includes memory-run artifacts.",
-    ],
-  },
-  {
-    signature:
-      "mono-agent metrics [--artifacts <path>] [--since <iso>] [--until <iso>]\n" +
-      "                   [--include-memory] [--by model|channel|failureKind] [--json] [--config <path>] [--env-file <path>]",
-    lines: [
-      "Aggregate local agent-run summaries into status rates, failure-kind rates,",
-      "duration percentiles, and total/per-run cost. Read-only and offline.",
-      "--include-memory includes memory-run artifacts.",
+      "Read-only, offline reporting over local agent-run summary artifacts.",
+      "report (default): status/failure-kind rates, duration percentiles, and",
+      "total/per-run cost, optionally windowed (--since/--until) and grouped (--by).",
+      "audit: artifact integrity — parse failures, status/failure-kind histograms,",
+      "stale running summaries (never rewritten), and per-failure-kind rates.",
+      "--include-memory adds memory-run artifacts. Legacy `audit-runs` and `metrics`",
+      "still forward here (deprecated: `runs audit` / `runs`).",
     ],
   },
   {
