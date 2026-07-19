@@ -639,6 +639,16 @@ describe("parseCliArgs", () => {
     expect(webDetail).toContain("web reset --all --yes");
     expect(webDetail).toContain("0.0.0.0:5050");
 
+    // `start -f` was removed in PR1 (it errors); its help must never teach the
+    // `-f` shorthand. The word-boundary match excludes `--foreground` (whose "f"
+    // is followed by "o", so there is no boundary after "-f").
+    const startDetail = helpTopicText("start");
+    expect(startDetail).toContain("--foreground");
+    expect(startDetail).not.toMatch(/-f\b/u);
+
+    // `presets` help documents the PR3 --json surface its summary marks.
+    expect(helpTopicText("presets")).toContain("--json");
+
     // Aliases resolve to the canonical entry, noting the alias.
     const doctorDetail = helpTopicText("doctor");
     expect(doctorDetail).toContain("`doctor` is an alias of `validate`.");
@@ -646,6 +656,14 @@ describe("parseCliArgs", () => {
     const setupDetail = helpTopicText("setup");
     expect(setupDetail).toContain("`setup` is an alias of `init`.");
     expect(setupDetail).toContain("mono-agent init [--preset");
+
+    // The deprecated `metrics`/`audit-runs` forwarders still resolve to `runs`.
+    const metricsDetail = helpTopicText("metrics");
+    expect(metricsDetail).toContain("`metrics` is an alias of `runs`.");
+    expect(metricsDetail).toContain("mono-agent runs [report|audit]");
+    const auditRunsDetail = helpTopicText("audit-runs");
+    expect(auditRunsDetail).toContain("`audit-runs` is an alias of `runs`.");
+    expect(auditRunsDetail).toContain("mono-agent runs [report|audit]");
 
     // The notes block carries the model-reference guidance.
     const notes = helpTopicText("notes");

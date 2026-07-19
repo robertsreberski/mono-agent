@@ -63,10 +63,11 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     short: "presets list|show <id>",
     summary: "List the built-in setup presets, or show one's config.",
     json: true,
-    signature: "mono-agent presets list | show <id>",
+    signature: "mono-agent presets list | show <id> [--json]",
     lines: [
       "List the built-in setup presets, or show one's generated config,",
       ".env.example, and follow-up checklist.",
+      "Both `list` and `show` accept --json for the machine-readable form.",
     ],
   },
   {
@@ -148,12 +149,12 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     group: "Run",
     short: "start",
     summary: "Start the agent as a background launchd service.",
-    signature: "mono-agent start [--config <path>] [--env-file <path>] [--foreground|-f]",
+    signature: "mono-agent start [--config <path>] [--env-file <path>] [--foreground]",
     lines: [
       "Start the agent as a background macOS service (launchd), print its",
       "instance info, and return. Re-running restarts the running instance.",
       "Refuses to start without a valid mono-agent.config.json in the folder.",
-      "Use --foreground (-f) to run in the blocking foreground instead.",
+      "Use --foreground to run in the blocking foreground instead.",
     ],
   },
   {
@@ -316,6 +317,10 @@ const HELP_GROUPS: readonly { readonly id: HelpGroupId; readonly note?: string }
 const HELP_ALIASES = new Map<string, string>([
   ["doctor", "validate"],
   ["setup", "init"],
+  // Deprecated forwarding aliases: `metrics`/`audit-runs` still run (routing to
+  // `runs report`/`runs audit`), so their help topics resolve to the runs entry.
+  ["metrics", "runs"],
+  ["audit-runs", "runs"],
 ]);
 
 const HELP_NOTES = `Background mode runs the agent under launchd, keeping it alive across logins
