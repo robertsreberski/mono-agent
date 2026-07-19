@@ -319,7 +319,12 @@ describe("parseCliArgs", () => {
       includeMemory: false,
     });
     expect(parseCliArgs(["install-skill"])).toMatchObject({ command: "install-skill", force: false });
+    expect(parseCliArgs(["install-skill", "--no-docs-mcp"])).toMatchObject({
+      command: "install-skill",
+      noDocsMcp: true,
+    });
     expect(() => parseCliArgs(["install-skill", "--target", "browser"])).toThrow(/--target/u);
+    expect(() => parseCliArgs(["validate", "--no-docs-mcp"])).toThrow(/only supported.*install-skill/iu);
   });
 
   it("parses managed project skill checks and updates", () => {

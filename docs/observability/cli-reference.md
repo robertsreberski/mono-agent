@@ -30,7 +30,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `web` | Operate the always-on browser conversation console for every discovered running agent. Bare `web` is read-only status/help. | `start`, `restart`, `stop`, `status`, `logs`, `run`, `reset`; `--host <addr>`, `--loopback`, `--port <n>` |
 | `sessions` | Serve the legacy read-only Session Recorder for discovered agents. | `--host <addr>`, `--port <n>`, `--no-open`, `--allow-non-loopback`, `--show-auth-url`, `--include-memory`, `--max-runs <n>`, `--config <path>`, `--env-file <path>` |
 | `tui` | Open remote discovery/chat, attach to a managed macOS background agent for a dedicated SELF-CONFIG session, or use ordinary in-process local chat. | `--agent`, `--conversation`, `--configure`, `--local` |
-| `install-skill` | Copy the authoring composer to coding harnesses, or check/update managed project-local skills. | `--target claude\|codex\|both`, `--force`, `--project`, `--check`, `--update` |
+| `install-skill` | Copy the authoring composer to coding harnesses and pair its documentation MCP companion, or check/update managed project-local skills. | `--target claude\|codex\|both`, `--force`, `--no-docs-mcp`, `--project`, `--check`, `--update` |
 | `backfill` | Export already-recorded run artifacts to the Phoenix exporter with their historical timestamps. | `--run <id>`, `--all`, `--since <iso>`, `--until <iso>`, `--dry-run`, `--config <path>`, `--env-file <path>` |
 | `audit-runs` | Read local run summaries without rewriting them and report parse/status/failure-kind/stale-running totals. | `--artifact-dir <path>`, `--consumer <path>`, `--stale-after-ms <n>`, `--json`, `--config <path>`, `--env-file <path>` |
 | `metrics` | Aggregate local run summaries into status rates, failure-kind rates, duration percentiles, and cost totals. | `--artifacts <path>`, `--since <iso>`, `--until <iso>`, `--by model\|channel\|failureKind`, `--json`, `--config <path>`, `--env-file <path>` |
@@ -511,12 +511,13 @@ For each browser origin, the recorder mirrors a captured or manually entered tok
 
 ## `install-skill`
 
-Copies the bundled `mono-agent-composer` skill into the agent skill folders (`~/.claude/skills` and/or `~/.agents/skills`). Refuses to overwrite an existing copy unless `--force` is passed.
+Copies the bundled `mono-agent-composer` skill into the harness skill folders (`~/.claude/skills` and/or `~/.agents/skills`). In harness mode it also registers the exact matching `@mono-agent/docs-mcp` version as `mono-agent-docs` by default. The skill and managed MCP updates are one transaction: a failure restores the previous managed state. Refuses to overwrite an existing skill copy unless `--force` is passed; an unknown same-name MCP entry is never overwritten.
 
 | Flag | Effect |
 | --- | --- |
 | `--target claude\|codex\|both` | Where to install (default `both`). Any other value errors. |
 | `--force` | Overwrite an existing installed skill. |
+| `--no-docs-mcp` | Install only the composer skill. Does not remove or change an existing MCP entry. |
 | `--project` | Operate on `skills/mono-agent-configure` and `skills/mono-agent-memory` in the current agent folder. |
 | `--check` | Report version/hash drift without writing. Requires `--project`. |
 | `--update` | Back up and atomically update missing/stale unchanged managed copies. Refuses modified/colliding copies. Requires `--project`. |
@@ -524,11 +525,19 @@ Copies the bundled `mono-agent-composer` skill into the agent skill folders (`~/
 ```bash
 mono-agent install-skill                       # both targets
 mono-agent install-skill --target claude --force
+mono-agent install-skill --target codex --no-docs-mcp
 mono-agent install-skill --project --check
 mono-agent install-skill --project --update
 ```
 
-See [Skills](/context/skills/) for how skills are surfaced to the agent.
+Only installed selected harness CLIs are paired. A missing target gets an exact
+manual command; if none of the selected CLIs is present, the command fails before
+changing the skill. An identical managed entry is idempotent, an older recognized
+entry is upgraded, and `npx` must be on `PATH`. Project mode never changes MCP
+configuration. Start a new harness session after a successful install.
+
+See [Skills](/context/skills/) for how skills are surfaced to the agent and
+[Documentation MCP companion](/tools/documentation-mcp/) for the server contract.
 
 ## `audit-runs`
 

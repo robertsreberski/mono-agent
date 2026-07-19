@@ -32,6 +32,9 @@ importers:
       '@mono-agent/cron-adapter':
         specifier: workspace:0.12.0
         version: link:packages/cron-adapter
+      '@mono-agent/docs-mcp':
+        specifier: workspace:0.12.0
+        version: link:extras/docs-mcp
       '@mono-agent/memory':
         specifier: workspace:0.12.0
         version: link:packages/memory
@@ -108,6 +111,18 @@ importers:
       '@mono-agent/agent-contracts':
         specifier: workspace:0.12.0
         version: link:../../packages/agent-contracts
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
+  extras/docs-mcp:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)
+      '@yarflam/potion-base-8m':
+        specifier: 1.0.4
+        version: 1.0.4
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -1521,6 +1536,10 @@ packages:
       link-preview-js:
         optional: true
 
+  '@yarflam/potion-base-8m@1.0.4':
+    resolution: {integrity: sha512-FnVnvuGhol1v5cH+ij0VkPmJFZotRwsJsvp4TB901S2eg8pKCttL3tIRklG9erbyDGBAfxpBh//TNEW7bxc7lw==, tarball: https://registry.npmjs.org/@yarflam/potion-base-8m/-/potion-base-8m-1.0.4.tgz}
+    engines: {node: '>=18.0.0'}
+
   abort-controller@3.0.0:
     resolution: {integrity: sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg==, tarball: https://registry.npmjs.org/abort-controller/-/abort-controller-3.0.0.tgz}
     engines: {node: '>=6.5'}
@@ -1976,8 +1995,8 @@ packages:
     resolution: {integrity: sha512-ej4AhfhfL2Q2zpMmLo7U1Uv9+PyhIZpgQLGT1F9miIGmiCJIoCgSmczFdrc97mWT4kVY72KA+WnnhJ5pghSvSg==, tarball: https://registry.npmjs.org/hasown/-/hasown-2.0.3.tgz}
     engines: {node: '>= 0.4'}
 
-  hono@4.12.18:
-    resolution: {integrity: sha512-RWzP96k/yv0PQfyXnWjs6zot20TqfpfsNXhOnev8d1InAxubW93L11/oNUc3tQqn2G0bSdAOBpX+2uDFHV7kdQ==, tarball: https://registry.npmjs.org/hono/-/hono-4.12.18.tgz}
+  hono@4.12.25:
+    resolution: {integrity: sha512-2NFaIyNVgJmBs/ecmtGzlmluTFs5cHEWGTdu0t1HBwYzoGXOL5nUQBRMXsXWla5i4KkG//QMzVP88m1+I3fdAQ==, tarball: https://registry.npmjs.org/hono/-/hono-4.12.25.tgz}
     engines: {node: '>=16.9.0'}
 
   hookified@1.15.1:
@@ -3469,9 +3488,9 @@ snapshots:
 
   '@hapi/hoek@9.3.0': {}
 
-  '@hono/node-server@1.19.14(hono@4.12.18)':
+  '@hono/node-server@1.19.14(hono@4.12.25)':
     dependencies:
-      hono: 4.12.18
+      hono: 4.12.25
 
   '@img/colour@1.1.0': {}
 
@@ -3616,7 +3635,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3)':
     dependencies:
-      '@hono/node-server': 1.19.14(hono@4.12.18)
+      '@hono/node-server': 1.19.14(hono@4.12.25)
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
       content-type: 1.0.5
@@ -3626,7 +3645,7 @@ snapshots:
       eventsource-parser: 3.0.8
       express: 5.2.1
       express-rate-limit: 8.5.2(express@5.2.1)
-      hono: 4.12.18
+      hono: 4.12.25
       jose: 6.2.3
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -4062,6 +4081,8 @@ snapshots:
       - bufferutil
       - supports-color
       - utf-8-validate
+
+  '@yarflam/potion-base-8m@1.0.4': {}
 
   abort-controller@3.0.0:
     dependencies:
@@ -4558,7 +4579,7 @@ snapshots:
     dependencies:
       function-bind: 1.1.2
 
-  hono@4.12.18: {}
+  hono@4.12.25: {}
 
   hookified@1.15.1: {}
 

@@ -15,6 +15,7 @@ generic merge ritual.
 | TUI rendering or input | B. TUI via tmux |
 | Web server, API, PWA | C. Web via curl |
 | Readiness worker transport | D. Real worker with local protocol server |
+| Documentation MCP package / stdio boundary | E. Packed documentation MCP |
 | Provider routing or provider-specific behavior | A with the explicitly approved real provider |
 
 Add another scenario only when the diff independently changes another live
@@ -112,6 +113,23 @@ The worker drains its own stdout/stderr and lets only structured messages cross
 `workerData`, so a hang that ends in a `timeout` verdict (rather than a
 `verified`/`provider_failed` result) means the worker never posted back — that
 Worker transport is exactly what this scenario proves and no unit test can.
+
+## E. Packed documentation MCP
+
+Use the package-owned smoke to prove the publish boundary rather than only the
+workspace source. It builds a tarball in a throwaway directory, installs that
+tarball as a clean consumer, launches the installed `mono-agent-docs-mcp` bin
+over real stdio, performs a composer-scoped hybrid query, reads the returned
+chunk resource, prints one JSON evidence line, and removes the directory:
+
+```bash
+pnpm --filter @mono-agent/docs-mcp run build
+pnpm --filter @mono-agent/docs-mcp run smoke
+```
+
+The smoke makes no provider call and does not register an MCP server in Codex,
+Claude Code, or a user config. Success requires `"transport":"packed-stdio"`
+and a `mono-agent-docs://chunk/...` top result in the emitted JSON.
 
 ## Gotchas
 

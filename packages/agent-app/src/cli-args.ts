@@ -93,6 +93,8 @@ export interface ParsedCliArgs {
   readonly check?: boolean;
   /** install-skill --project: safely update unchanged managed copies. */
   readonly update?: boolean;
+  /** install-skill: copy the skill without pairing the version-matched documentation MCP. */
+  readonly noDocsMcp?: boolean;
   /** audit-runs: override the stale-running cutoff interval. */
   readonly staleAfterMs?: number;
   /** audit-runs: print the full machine-readable report. */
@@ -211,6 +213,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let project = false;
   let check = false;
   let update = false;
+  let noDocsMcp = false;
   let staleAfterMs: number | undefined;
   let json = false;
   let strict = false;
@@ -290,6 +293,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--update":
         update = true;
+        break;
+      case "--no-docs-mcp":
+        noDocsMcp = true;
         break;
       case "--stale-after-ms": {
         const raw = requireValue(rest, ++i, flag);
@@ -544,6 +550,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (check && update) {
     throw new Error("Choose either --check or --update for project skills.");
   }
+  if (noDocsMcp && cmd !== "install-skill") {
+    throw new Error("--no-docs-mcp is only supported for `mono-agent install-skill`.");
+  }
 
   if (
     (
@@ -664,6 +673,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(project ? { project } : {}),
     ...(check ? { check } : {}),
     ...(update ? { update } : {}),
+    ...(noDocsMcp ? { noDocsMcp } : {}),
     ...(host === undefined ? {} : { host }),
     ...(port === undefined ? {} : { port }),
     ...(loopback ? { loopback } : {}),
