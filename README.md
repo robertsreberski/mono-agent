@@ -93,11 +93,14 @@ The repo includes a composer skill that walks an agent (in mono-agent itself, Cl
 - Skill: [`packages/agent-app/skills/mono-agent-composer/SKILL.md`](./packages/agent-app/skills/mono-agent-composer/SKILL.md)
 - References: [`packages/agent-app/skills/mono-agent-composer/references/`](./packages/agent-app/skills/mono-agent-composer/references/)
 
-The skill asks discovery questions (runtime + backup models, channels incl. crons and webhooks, skills, MCP, memory strategy incl. semantic search, sandbox, observability), maps each answer to config keys, then runs `mono-agent init` → `validate` → `start` and a channel-matched smoke test. [`docs/reference/feature-registry.md`](./docs/reference/feature-registry.md) is the source of truth mapping every framework feature to its config/CLI/programmatic surface; the skill ships a condensed copy as `references/feature-coverage.md`. The skill ships with `@mono-agent/agent-app`; install it into Claude Code and Codex with:
+The skill asks discovery questions (runtime + backup models, channels incl. crons and webhooks, skills, MCP, memory strategy incl. semantic search, sandbox, observability), maps each answer to config keys, then runs `mono-agent init` → `validate` → `start` and a channel-matched smoke test. [`docs/reference/feature-registry.md`](./docs/reference/feature-registry.md) is the source of truth mapping every framework feature to its config/CLI/programmatic surface; the skill ships a condensed copy as `references/feature-coverage.md`. Its version-matched [`@mono-agent/docs-mcp`](./docs/tools/documentation-mcp.md) companion gives coding harnesses semantic and exact-identifier search over the full public docs plus those authoritative references. The skill ships with `@mono-agent/agent-app`; install and pair it for Claude Code and Codex with:
 
 ```bash
-mono-agent install-skill   # copies into ~/.claude/skills and ~/.agents/skills
+mono-agent install-skill   # copies the skill and pairs mono-agent-docs for available CLIs
 ```
+
+Use `--no-docs-mcp` only for an intentional file-only install. An unmanaged MCP
+entry named `mono-agent-docs` is never overwritten, including with `--force`.
 
 This authoring-oriented composer is not auto-selected inside generated agents. New agents instead select the narrower `mono-agent-configure` and `mono-agent-memory` project skills with index disclosure. Check or safely refresh their managed copies with `mono-agent install-skill --project --check` / `--update`; canonical non-symlink parent checks, an owner lock, compare-and-swap activation, and guarded rollback never write outside the agent or overwrite modified/concurrently edited copies.
 
@@ -118,19 +121,19 @@ Attachments come from the browser device's native file picker, not a browser ove
 
 ## Package Architecture
 
-Package categories are catalog metadata, documentation, and architecture-guard inputs. Core packages live under `packages/<package-name>` and optional **plugin-tier** extras live under `extras/<package-name>`. Both use `@mono-agent/<package-name>` names and both are `publishable: true` (released together on the npm lockstep tag); the extras are marked `tier: "plugin"` and are loaded only through explicit composition or `channels.plugins[]`.
+Package categories are catalog metadata, documentation, and architecture-guard inputs. Core packages live under `packages/<package-name>` and optional **plugin-tier** extras live under `extras/<package-name>`. Both use `@mono-agent/<package-name>` names and both are `publishable: true` (released together on the npm lockstep tag); the extras are marked `tier: "plugin"` and are loaded only through explicit composition, `channels.plugins[]`, an explicitly selected backend, or companion MCP pairing.
 
 See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
 
 Before adding new capability surface area, use the [`Capability ladder`](./docs/reference/capability-ladder.md) to decide whether the work belongs in an existing package, config/skills, a new package, an MCP tool boundary, or a shared core contract.
 
-Current catalog count: 17 core publishable packages plus 4 plugin-tier extras plus 1 unscoped alias (`create-mono-agent`, the `npm create mono-agent` installer that ships `create-mono-agent`/`mono-agent` bins delegating to `@mono-agent/agent-app`).
+Current catalog count: 17 core publishable packages plus 5 plugin-tier extras plus 1 unscoped alias (`create-mono-agent`, the `npm create mono-agent` installer that ships `create-mono-agent`/`mono-agent` bins delegating to `@mono-agent/agent-app`).
 
 | Category | Packages | Allowed workspace dependency categories | Responsibility |
 | --- | --- | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, and fail-closed sandbox policy/process wrapping. |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config` | Package-specific `core` plus `runtime` only for config | Shared responder contracts and settings JSON/env helpers with adapter-neutral core config. |
-| `context` | `@mono-agent/memory`, `@mono-agent/memory-supermemory` (extra) | `core`, `context` | Built-in lite/journal/bujo memory plus the explicitly installed Supermemory plugin. The agent's `MemoryRecall` tool is auto-provisioned in-app from the single `memory` config block. |
+| `context` | `@mono-agent/docs-mcp` (extra), `@mono-agent/memory`, `@mono-agent/memory-supermemory` (extra) | `core`, `context` | Offline documentation retrieval plus built-in lite/journal/bujo memory and the explicitly installed Supermemory plugin. The docs MCP stays outside the core closure and is paired with authoring harnesses; the agent's `MemoryRecall` tool is auto-provisioned in-app from the single `memory` config block. |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-orchestrator` (extra) | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, prompt assembly, selected-skill loading, tool/MCP policy normalization (with a fail-closed no-policy safety net), and bounded collaborator orchestration through runtime-visible tools. |
 | `observability` | `@mono-agent/observability` (`./otel` subpath for Phoenix export) | `core` | JSONL run recorder, local artifact reader, file-backed trace source registry, and subpath-only OTLP trace export. |
 | `communication` | `@mono-agent/a2a-adapter` (extra), `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` (extra) | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. Built-in channel sections cover Telegram, Slack, webhook, OpenAI API, cron, TUI stream, and live relay; A2A and WhatsApp are config-loaded channel plugins. Operator exposes the TUI NDJSON and live SSE loopback endpoints. |
@@ -154,6 +157,7 @@ demos/final-agent (not a workspace package)
   ├─ agent-harness ── agent-contracts, observability, runtime-adapter (owns context assembly, selected skills, tool policy)
   ├─ runtime-adapter ── agent-contracts, @mono-agent/agent-runtime, sandbox policy/types
   ├─ memory (./store, ./search, ./bujo)
+  ├─ docs-mcp ── optional offline semantic documentation companion paired by install-skill
   ├─ memory-supermemory ── optional plugin, lazily resolved only for backend=supermemory
   ├─ config ── agent-contracts, runtime-adapter
   ├─ observability

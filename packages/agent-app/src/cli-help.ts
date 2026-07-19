@@ -143,13 +143,16 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    signature: "mono-agent install-skill [--target claude|codex|both] [--force]\n" +
+    signature: "mono-agent install-skill [--target claude|codex|both] [--force] [--no-docs-mcp]\n" +
       "                         --project (--check|--update)",
     lines: [
       "Copy the bundled mono-agent-composer skill into ~/.claude/skills and",
       "~/.agents/skills (default: both). Refuses to overwrite without --force.",
+      "By default, pair exact-version mono-agent-docs with every available target",
+      "CLI. --no-docs-mcp stays file-only; --force never replaces an unmanaged MCP.",
       "Project mode checks or safely updates the two managed skills generated",
-      "by init; modified copies are never overwritten and updates retain backups.",
+      "by init; modified copies are never overwritten, updates retain backups,",
+      "and user-level MCP configuration is not changed.",
     ],
   },
   {

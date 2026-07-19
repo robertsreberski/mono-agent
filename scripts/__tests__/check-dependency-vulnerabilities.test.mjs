@@ -2057,8 +2057,8 @@ describe("dependency vulnerability gate", () => {
   it("keeps the committed current-tree dispositions structurally valid and bounded", async () => {
     const dispositions = await loadDependencyVulnerabilityDispositions();
     expect(dispositions.minimumSeverity).toBe("high");
-    expect(dispositions.advisories).toHaveLength(4);
-    expect(new Set(dispositions.advisories.map((entry) => `${entry.package}:${entry.id}`)).size).toBe(4);
+    expect(dispositions.advisories).toHaveLength(3);
+    expect(new Set(dispositions.advisories.map((entry) => `${entry.package}:${entry.id}`)).size).toBe(3);
     expect(new Set(dispositions.advisories.map((entry) => entry.expiresAt))).toEqual(new Set([EXPIRES_AT]));
     expect(new Set(dispositions.advisories.map((entry) => entry.owner))).toEqual(new Set(["robertsreberski"]));
   });

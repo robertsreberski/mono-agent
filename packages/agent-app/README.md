@@ -133,6 +133,15 @@ The persistent SELF-CONFIG workflow guidance is managed-skill version `1.2.0`.
 Existing unchanged copies are reported as stale and are never rewritten on TUI
 startup; run `mono-agent install-skill --project --update` explicitly to refresh them.
 
+Harness-mode `mono-agent install-skill` also pairs the exact matching
+`@mono-agent/docs-mcp` version with available selected Codex and Claude Code
+CLIs. That read-only companion gives `mono-agent-composer` offline semantic and
+exact-identifier search over the public docs and its authoritative references.
+Use `--no-docs-mcp` for a skill-only install. Managed MCP and skill changes are
+transactional; an unrelated entry named `mono-agent-docs` is never overwritten,
+including with `--force`. Project `--check` / `--update` mode does not touch
+harness MCP configuration.
+
 In the separate, visibly marked **SELF-CONFIG** session only, the background app injects proposal-only
 `ProposeAgentConfiguration`. The opening message shows a user-led map of identity/knowledge,
 runtime/models, skills/tools/MCP/plugins, memory, channels/APIs/A2A, automation,

@@ -51,6 +51,7 @@ Use this path when the agent needs identity, selected skills, history, and optio
 | Memory substrate (schema, migrations, FTS+vector db, RRF) | `@mono-agent/memory/store` | SQLite storage, BM25 FTS, optional vector index, hybrid recall; re-exports `MemoryStore`/`MemoryBlock`/`MemoryWriteResult` from `@mono-agent/agent-contracts` |
 | Memory engine (all tiers: lite/journal/bujo) | `@mono-agent/memory/bujo` | `BujoMemoryStore` — tier-aware: FTS recall (lite), hybrid recall + static salience (journal), LLM capture/reconcile + entity graph + projection-only scheduled consolidation (bujo) |
 | Embedding providers | `@mono-agent/memory/search` | Exclusive Ollama/LM Studio/OpenAI embedding providers used by the store subpath for vector recall; `agent-app` owns guided typed discovery and the real readiness probe |
+| Composer documentation search | `@mono-agent/docs-mcp` (optional plugin) | Exact-version offline hybrid semantic/BM25 search over canonical docs and composer references through `search_mono_agent_docs`; paired by `mono-agent install-skill`, outside the composed agent's own `mcp.json` |
 | External Supermemory backend | `@mono-agent/memory-supermemory` (optional plugin) | Explicitly installed lockstep package selected by `memory.backend: "supermemory"`; proxies the shared `MemoryStore` / `MemoryRecall` contracts to local or hosted Supermemory for server-side extraction, consolidation, and hybrid recall |
 | Recall tool surface | `@mono-agent/agent-app` (bundled) | Auto-provisions read-only `MemoryRecall` for every configured tier and direct configured responder; automatic/tool recall share the same store and per-turn query cache |
 
@@ -74,6 +75,11 @@ Use `@mono-agent/agent-harness` directly when a host needs custom prompt/runtime
 ## Tools And MCP Join
 
 Use `@mono-agent/agent-harness` for tool/MCP policy normalization. The **config** default is allow-all (`["*"]`); `createToolPolicy` itself does no defaulting, and the harness's no-policy safety net is `failClosedToolPolicy()` (an empty, fail-closed policy):
+
+The `mono-agent-docs` MCP server paired with this authoring skill is a harness
+companion, not an MCP server injected into every composed agent. Add project
+MCP servers to the agent's own `mcp.json`; do not copy the documentation server
+there unless the resulting agent itself must answer mono-agent framework questions.
 
 ```ts
 import { createToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/agent-harness";

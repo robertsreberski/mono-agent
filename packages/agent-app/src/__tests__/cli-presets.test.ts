@@ -153,6 +153,7 @@ describe("init provider setup gate", () => {
       cwd: "/agent",
       auth: true,
       dryRun: false,
+      credentialStates: { "pi:opencode-go": "auth_required" },
       execute: async (plan) => [
         {
           action: plan.actions[0]!,

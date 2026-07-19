@@ -119,7 +119,7 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 | `tui` | Open the operator console and connect to any running agent. |
 | `web` | Manage or run the always-on browser conversation console. |
 | `sessions` | Open the legacy read-only Session Recorder. |
-| `install-skill` | Install a skill into the agent folder. |
+| `install-skill` | Install the authoring composer and its documentation MCP companion, or maintain managed project skills. |
 | `backfill` | Replay historical runs into observability. |
 
 ## Next: scaffold your first agent
