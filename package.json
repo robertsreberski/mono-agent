@@ -55,6 +55,7 @@
     "@mono-agent/agent-orchestrator": "workspace:0.12.0",
     "@mono-agent/config": "workspace:0.12.0",
     "@mono-agent/cron-adapter": "workspace:0.12.0",
+    "@mono-agent/docs-mcp": "workspace:0.12.0",
     "@mono-agent/memory": "workspace:0.12.0",
     "@mono-agent/memory-supermemory": "workspace:0.12.0",
     "@mono-agent/observability": "workspace:0.12.0",

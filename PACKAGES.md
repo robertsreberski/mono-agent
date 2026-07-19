@@ -1,8 +1,8 @@
 # Package Layers
 
-`scripts/package-catalog.mjs` is the source of truth for package category metadata and dependency boundary checks. Core packages live under `packages/<package-name>`; optional **plugin-tier** extras live under `extras/<package-name>` (marked `tier: "plugin"`). Both tiers are `publishable: true` and release together on the npm lockstep tag, but plugin-tier extras are not part of the core `@mono-agent/agent-app` dependency closure — channels load through `channels.plugins[]`, orchestration is a request-scoped runtime extension, and Supermemory resolves only when `memory.backend` explicitly selects the installed plugin. The diagram shows logical layers, not filesystem nesting.
+`scripts/package-catalog.mjs` is the source of truth for package category metadata and dependency boundary checks. Core packages live under `packages/<package-name>`; optional **plugin-tier** extras live under `extras/<package-name>` (marked `tier: "plugin"`). Both tiers are `publishable: true` and release together on the npm lockstep tag, but plugin-tier extras are not part of the core `@mono-agent/agent-app` dependency closure — channels load through `channels.plugins[]`, orchestration is a request-scoped runtime extension, Supermemory resolves only when `memory.backend` explicitly selects the installed plugin, and docs-mcp is paired explicitly as an authoring-harness companion. The diagram shows logical layers, not filesystem nesting.
 
-Current catalog count: 17 core publishable packages plus 4 plugin-tier extras (also publishable, released in the same lockstep) plus 1 unscoped alias (`create-mono-agent`, the `npm create mono-agent` installer whose `create-mono-agent`/`mono-agent` bins delegate to `@mono-agent/agent-app`).
+Current catalog count: 17 core publishable packages plus 5 plugin-tier extras (also publishable, released in the same lockstep) plus 1 unscoped alias (`create-mono-agent`, the `npm create mono-agent` installer whose `create-mono-agent`/`mono-agent` bins delegate to `@mono-agent/agent-app`).
 
 ```mermaid
 flowchart TB
@@ -37,6 +37,7 @@ flowchart TB
   end
 
   subgraph ContextLayer["context"]
+    DocsMcp["@mono-agent/docs-mcp\nextra"]
     Memory["@mono-agent/memory\n./store ./search ./bujo"]
     MemorySupermemory["@mono-agent/memory-supermemory\nextra"]
   end
@@ -71,6 +72,7 @@ flowchart TB
   AgentApp --> Harness
   AgentApp --> Config
   AgentApp --> Memory
+  AgentApp -. install-skill companion .-> DocsMcp
   AgentApp -. optional backend .-> MemorySupermemory
   AgentApp --> Observability
   AgentApp --> RuntimeAdapter
@@ -111,7 +113,7 @@ flowchart TB
 | --- | --- |
 | `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter` |
 | `core` | `@mono-agent/agent-contracts`, `@mono-agent/config` |
-| `context` | `@mono-agent/memory`, `@mono-agent/memory-supermemory` (extra) |
+| `context` | `@mono-agent/docs-mcp` (extra), `@mono-agent/memory`, `@mono-agent/memory-supermemory` (extra) |
 | `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-orchestrator` (extra) |
 | `observability` | `@mono-agent/observability` |
 | `communication` | `@mono-agent/a2a-adapter` (extra), `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` (extra) |

@@ -111,7 +111,10 @@ describe("final agent demo", () => {
       expect(applied.kind).toBe("applied");
 
       await waitFor(() => telegram.starts.length === 1);
-      expect(telegram.starts[0]).toMatchObject({ deleteWebhookOnStart: true, allowedUpdates: ["message"] });
+      expect(telegram.starts[0]).toMatchObject({
+        deleteWebhookOnStart: true,
+        allowedUpdates: ["message", "callback_query"],
+      });
       expect(demo.telegramStatus.kind).toBe("running");
       expect(demo.a2aStatus.kind).toBe("disabled");
       expect(JSON.stringify(demo.telegramStatus)).not.toContain("secret-token");

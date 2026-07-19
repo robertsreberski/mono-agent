@@ -77,11 +77,18 @@ To make the composer available to Claude Code or Codex on your machine, copy it 
 mono-agent install-skill --target both
 ```
 
-`--target` accepts `claude`, `codex`, or `both` (default: `both`). It copies the skill into `~/.claude/skills` and/or `~/.agents/skills`. The command refuses to overwrite an existing destination unless you pass `--force`:
+`--target` accepts `claude`, `codex`, or `both` (default: `both`). It copies the skill into `~/.claude/skills` and/or `~/.agents/skills`. By default it also pairs the matching `@mono-agent/docs-mcp` version with every selected harness CLI that is available, giving the composer semantic and exact-identifier search over its references and the public documentation. The command refuses to overwrite an existing skill destination unless you pass `--force`:
 
 ```bash
 mono-agent install-skill --target claude --force
 ```
+
+Pass `--no-docs-mcp` to install only the skill. That opt-out does not remove an
+existing server entry. Unknown MCP configuration using the reserved
+`mono-agent-docs` name is never overwritten, including under `--force`, and
+project-skill `--check` / `--update` mode never touches harness MCP settings. See
+[Documentation MCP companion](/tools/documentation-mcp/) for the search contract,
+manual registration, and diagnostics.
 
 This is for *authoring* agents from your IDE/CLI — it is unrelated to what a running agent loads at turn time.
 

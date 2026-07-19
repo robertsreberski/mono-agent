@@ -829,6 +829,7 @@ describe("guided init state transitions", () => {
       credentialStates: { "pi:opencode-go": "auth_required" },
       runProviderSetup: true,
     });
+    mocks.detectProviderCredentialStatesOverride = () => ({ "pi:opencode-go": "auth_required" });
     let setupAttempt = 0;
     const sigintListenersBefore = process.listenerCount("SIGINT");
     mocks.executeProviderSetupPlan.mockImplementation(async (

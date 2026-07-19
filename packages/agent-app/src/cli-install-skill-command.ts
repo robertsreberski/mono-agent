@@ -1,7 +1,8 @@
 import process from "node:process";
 
 import type { ParsedCliArgs } from "./cli-args.js";
-import { installComposerSkill } from "./install-skill.js";
+import { installComposerCompanion } from "./docs-mcp-pairing.js";
+import { agentAppPackageVersion } from "./package-version.js";
 import { checkManagedProjectSkills, updateManagedProjectSkills } from "./project-skills.js";
 import * as ui from "./ui.js";
 
@@ -17,6 +18,7 @@ export async function runInstallSkill(args: ParsedCliArgs): Promise<number> {
           process.stdout.write(`${ui.badge("ok")}backup    ${result.backupDir}\n`);
         }
         if (result.updated.length === 0) process.stdout.write(`${ui.badge("ok")}project skills are current\n`);
+        process.stdout.write(`${ui.badge("ok")}docs MCP pairing skipped in project mode\n`);
         return 0;
       }
       const result = await checkManagedProjectSkills(process.cwd());
@@ -27,6 +29,7 @@ export async function runInstallSkill(args: ParsedCliArgs): Promise<number> {
       if (!result.ok && args.check !== true) {
         process.stderr.write(ui.errorLine("Project skills need attention. Run `mono-agent install-skill --project --update`; modified copies require manual reconciliation."));
       }
+      process.stdout.write(`${ui.badge("ok")}docs MCP pairing skipped in project mode\n`);
       return result.ok ? 0 : 1;
     } catch (error) {
       process.stderr.write(ui.errorLine(error instanceof Error ? error.message : String(error)));
@@ -35,9 +38,12 @@ export async function runInstallSkill(args: ParsedCliArgs): Promise<number> {
   }
   let result;
   try {
-    result = await installComposerSkill({
+    const docsMcpVersion = agentAppPackageVersion();
+    result = await installComposerCompanion({
       target: args.target ?? "both",
       force: args.force,
+      pairDocsMcp: args.noDocsMcp !== true,
+      ...(docsMcpVersion === undefined ? {} : { docsMcpVersion }),
     });
   } catch (error) {
     process.stderr.write(ui.errorLine(error instanceof Error ? error.message : String(error)));
@@ -45,6 +51,16 @@ export async function runInstallSkill(args: ParsedCliArgs): Promise<number> {
   }
   for (const path of result.installed) {
     process.stdout.write(`${ui.badge("ok")}${ui.style.green("installed")}  ${path}\n`);
+  }
+  for (const pairing of result.pairings) {
+    if (pairing.state === "skipped-missing") {
+      process.stderr.write(`${ui.badge("waiting")}${pairing.target} CLI is unavailable; pair later with: ${pairing.command}\n`);
+      continue;
+    }
+    process.stdout.write(`${ui.badge("ok")}${pairing.state.padEnd(15)} ${pairing.target}:mono-agent-docs\n`);
+  }
+  if (result.pairings.some((pairing) => pairing.state !== "skipped-missing")) {
+    process.stdout.write(`${ui.badge("ok")}start a new harness session to load mono-agent-docs\n`);
   }
   return 0;
 }

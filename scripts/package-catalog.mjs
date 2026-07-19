@@ -14,7 +14,7 @@ export const PACKAGE_CATEGORIES = [
 // Within that set, `tier` splits them three ways:
 //   - `tier: "plugin"` — optional plugin-tier extras (loaded via `channels.plugins[]`,
 //     as request-scoped runtime extensions, or through an explicitly selected
-//     plugin backend, living under `extras/`);
+//     plugin backend or companion MCP pairing, living under `extras/`);
 //   - `tier: "alias"` — the unscoped `create-mono-agent` npm-init installer whose
 //     `create-mono-agent`/`mono-agent` bins delegate to `@mono-agent/agent-app`;
 //     carries no responsibility of its own and is exempt from the `@mono-agent/`
@@ -100,6 +100,16 @@ export const packageCatalog = [
     responsibility: "Invokes agent responders from cron schedules with skip-overlap execution.",
     allowedDependencyCategories: ["core"],
     publishable: true,
+  },
+  {
+    dir: "docs-mcp",
+    name: "@mono-agent/docs-mcp",
+    path: "extras/docs-mcp",
+    category: "context",
+    responsibility: "Provides offline hybrid semantic and exact-identifier search over version-matched mono-agent documentation through MCP.",
+    allowedDependencyCategories: [],
+    publishable: true,
+    tier: "plugin",
   },
   {
     dir: "memory",

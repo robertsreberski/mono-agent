@@ -1,4 +1,4 @@
-import { cp, stat } from "node:fs/promises";
+import { cp, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,9 +39,7 @@ export async function installComposerSkill(options: InstallSkillOptions): Promis
   const sourceDir = options.sourceDir ?? BUNDLED_SKILL_DIR;
   await assertSkillSource(sourceDir);
 
-  const home = options.homeDir ?? homedir();
-  const targets = options.target === "both" ? (["claude", "codex"] as const) : ([options.target] as const);
-  const destinations = targets.map((target) => join(home, TARGET_HARNESS_DIRS[target], "skills", COMPOSER_SKILL_NAME));
+  const destinations = composerSkillDestinations(options.target, options.homeDir ?? homedir());
 
   if (!options.force) {
     for (const destination of destinations) {
@@ -53,10 +51,19 @@ export async function installComposerSkill(options: InstallSkillOptions): Promis
 
   const installed: string[] = [];
   for (const destination of destinations) {
+    if (options.force) {
+      await rm(destination, { recursive: true, force: true });
+    }
     await cp(sourceDir, destination, { recursive: true, force: true });
     installed.push(destination);
   }
   return { installed };
+}
+
+/** Internal CLI helper; intentionally not re-exported from the package root. */
+export function composerSkillDestinations(target: InstallSkillTarget, homeDir: string): readonly string[] {
+  const targets = target === "both" ? (["claude", "codex"] as const) : ([target] as const);
+  return targets.map((harness) => join(homeDir, TARGET_HARNESS_DIRS[harness], "skills", COMPOSER_SKILL_NAME));
 }
 
 async function assertSkillSource(sourceDir: string): Promise<void> {
