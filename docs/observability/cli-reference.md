@@ -280,7 +280,7 @@ mono-agent config --config ./agents/support.config.json --env-file ./.env.stagin
 
 ## `memory`
 
-Previews the configured memory store from an agent folder without using the standalone `memory-bujo <root>` env workflow. It reads `memory` from `mono-agent.config.json` through the normal app config loader, so relative paths resolve the same way they do for the running agent. Output is human-first by default; pass `--json` for scripts.
+Previews the configured memory store from an agent folder — the config-aware replacement for the removed standalone `memory-bujo <root>` env workflow. It reads `memory` from `mono-agent.config.json` through the normal app config loader, so relative paths resolve the same way they do for the running agent. Output is human-first by default; pass `--json` for scripts.
 
 ```bash
 mono-agent memory stats
