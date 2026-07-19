@@ -31,7 +31,6 @@ import {
   PRESET_CATALOG,
   presetAnswers,
   presetIds,
-  RECIPE_TO_PRESET,
 } from "./wizard/presets.js";
 import type { WizardPreset } from "./wizard/presets.js";
 import * as ui from "./ui.js";
@@ -145,16 +144,6 @@ function resolveValidatePreset(args: ParsedCliArgs): WizardPreset | undefined | 
       process.stderr.write(ui.hint(`Available presets: ${presetIds().join(", ")}. Run \`mono-agent presets list\`.`));
       return "unknown";
     }
-    return preset;
-  }
-  if (args.recipe !== undefined) {
-    const preset = RECIPE_TO_PRESET.get(args.recipe);
-    if (preset === undefined) {
-      process.stderr.write(ui.errorLine(`Recipe \`${args.recipe}\` was retired; validate against a preset instead.`));
-      process.stderr.write(ui.hint(`Available presets: ${presetIds().join(", ")}. Run \`mono-agent presets list\`.`));
-      return "unknown";
-    }
-    process.stderr.write(ui.hint(`Using replacement preset ${preset.id}. See \`mono-agent presets list\`.`));
     return preset;
   }
   return undefined;

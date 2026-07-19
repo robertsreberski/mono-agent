@@ -83,18 +83,11 @@ describe("parseCliArgs preset flags & alias normalization", () => {
     expect(parseCliArgs(["setup", "--preset", "starter"])).toMatchObject({ command: "init", preset: "starter" });
   });
 
-  it("normalizes `recipes` to `presets`", () => {
-    expect(parseCliArgs(["recipes", "show", "starter"])).toMatchObject({
-      command: "presets",
-      positionals: ["show", "starter"],
-    });
-  });
-
-  it("keeps --recipe as a deprecated alias flag", () => {
-    expect(parseCliArgs(["init", "--recipe", "minimal-webhook"])).toMatchObject({
-      command: "init",
-      recipe: "minimal-webhook",
-    });
+  it("rejects the removed `recipes` command and `--recipe` flag", () => {
+    expect(() => parseCliArgs(["recipes", "show", "starter"]))
+      .toThrow(/`recipes` was removed; use `mono-agent presets`/u);
+    expect(() => parseCliArgs(["init", "--recipe", "minimal-webhook"]))
+      .toThrow(/`--recipe` was removed/u);
   });
 });
 
@@ -202,14 +195,13 @@ describe("answersFromCli", () => {
     expect(answers.memory).toBe("memory:lite");
   });
 
-  it("preserves exact --model and --fallback-models refs from non-interactive flags", () => {
+  it("preserves exact --model and canonical --fallback refs from non-interactive flags", () => {
     const answers = answersFromCli({
       model: "pi:ollama:gemma4:31b",
-      fallbackModels: ["codex:gpt-5.6-terra", "pi:lmstudio:qwen/qwen3-8b"],
+      fallbacks: [{ model: "codex:gpt-5.6-terra" }, { model: "pi:lmstudio:qwen/qwen3-8b" }],
     });
 
     expect(answers.model).toBe("pi:ollama:gemma4:31b");
-    expect(answers.fallbackModels).toEqual(["codex:gpt-5.6-terra", "pi:lmstudio:qwen/qwen3-8b"]);
     expect(answers.fallbacks).toEqual([
       { model: "codex:gpt-5.6-terra" },
       { model: "pi:lmstudio:qwen/qwen3-8b" },
@@ -246,7 +238,8 @@ describe("answersFromCli", () => {
 
   it("rejects wizard sentinel values from non-interactive model flags", () => {
     expect(() => answersFromCli({ model: "__other__" })).toThrow("Wizard model sentinel");
-    expect(() => answersFromCli({ fallbackModels: ["__done__", "pi:ollama:gemma4:31b"] })).toThrow("Wizard model sentinel");
+    expect(() => answersFromCli({ fallbacks: [{ model: "__done__" }, { model: "pi:ollama:gemma4:31b" }] }))
+      .toThrow("Wizard model sentinel");
   });
 
   it("defaults to the webhook channel with no preset and no flags", () => {

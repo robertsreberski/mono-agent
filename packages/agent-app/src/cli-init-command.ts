@@ -80,7 +80,7 @@ import type {
 } from "./wizard/answers.js";
 import { answersFromCli, isWithChannel } from "./wizard/from-flags.js";
 import type { WithChannel } from "./wizard/from-flags.js";
-import { findPreset, presetIds, RECIPE_TO_PRESET } from "./wizard/presets.js";
+import { findPreset, presetIds } from "./wizard/presets.js";
 import { runInitWizard, runSetupRepairWizard } from "./wizard/run.js";
 import * as p from "@clack/prompts";
 import * as ui from "./ui.js";
@@ -902,7 +902,6 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
   const answers = answersFromCli({
     ...(args.model === undefined ? {} : { model: args.model }),
     ...(args.name === undefined ? {} : { name: args.name }),
-    ...(args.fallbackModels === undefined ? {} : { fallbackModels: args.fallbackModels }),
     ...(args.fallbacks === undefined ? {} : { fallbacks: args.fallbacks }),
     ...(args.routeSafety === undefined ? {} : { routeSafety: args.routeSafety }),
     ...(args.effort === undefined ? {} : { effort: args.effort }),
@@ -2053,11 +2052,9 @@ function printProviderSetupPlan(plan: ProviderSetupPlan): void {
 }
 
 /**
- * Resolve the preset id for `init`: `--preset` wins, `--recipe` is a deprecated
- * alias removed in v2.0.0 and mapped to the preset that replaced it. Returns
- * the preset id to compose from, `undefined` for the default scaffold, or
- * `"unknown"` after emitting the
- * error/hint (an unknown preset, or a retired recipe with no replacement).
+ * Resolve the preset id for `init`: `--preset` wins. Returns the preset id to
+ * compose from, `undefined` for the default scaffold, or `"unknown"` after
+ * emitting the error/hint for an unknown preset.
  */
 function resolveInitPresetId(args: ParsedCliArgs): string | undefined | "unknown" {
   if (args.preset !== undefined) {
@@ -2067,17 +2064,6 @@ function resolveInitPresetId(args: ParsedCliArgs): string | undefined | "unknown
       process.stderr.write(ui.hint(`Available presets: ${presetIds().join(", ")}. Run \`mono-agent presets list\`.`));
       return "unknown";
     }
-    return preset.id;
-  }
-  if (args.recipe !== undefined) {
-    const preset = RECIPE_TO_PRESET.get(args.recipe);
-    if (preset === undefined) {
-      process.stderr.write(ui.errorLine(`Recipe \`${args.recipe}\` was retired; the wizard composes capabilities directly.`));
-      process.stderr.write(ui.hint(`Use \`mono-agent init --preset <id>\` (${presetIds().join(", ")}), or \`mono-agent init\` for the step-by-step wizard.`));
-      process.stderr.write(ui.hint("See the mono-agent-composer skill and docs/playbooks for capability recipes."));
-      return "unknown";
-    }
-    process.stderr.write(ui.hint(`Using replacement preset ${preset.id}. See \`mono-agent presets list\`.`));
     return preset.id;
   }
   return undefined;

@@ -118,7 +118,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     return 2;
   }
 
-  writeCliDeprecationHints(argv[0], args);
+  writeCliDeprecationHints(args);
 
   // Only the internal launchd foreground shape may honor the managed-worker
   // marker. A hostile/global launchctl environment must not sanitize unrelated
@@ -317,23 +317,10 @@ export function shouldLoadCommandDotenv(command: ParsedCliArgs["command"]): bool
   return command !== "web";
 }
 
-function writeCliDeprecationHints(
-  originalCommand: string | undefined,
-  args: ParsedCliArgs,
-): void {
-  if (originalCommand === "recipes") {
+function writeCliDeprecationHints(args: ParsedCliArgs): void {
+  if (args.command === "restart" && args.force) {
     process.stderr.write(ui.hint(
-      "`mono-agent recipes` is deprecated and will be removed in v2.0.0; use `mono-agent presets`.",
-    ));
-  }
-  if (args.recipe !== undefined) {
-    process.stderr.write(ui.hint(
-      "`--recipe` is deprecated and will be removed in v2.0.0; use `--preset`.",
-    ));
-  }
-  if (args.fallbackModels !== undefined) {
-    process.stderr.write(ui.hint(
-      "`--fallback-models` is deprecated and will be removed in v2.0.0; repeat `--fallback <ref>` instead.",
+      "`restart --force` is deprecated; use `restart --clear-sessions` (same effect).",
     ));
   }
 }
