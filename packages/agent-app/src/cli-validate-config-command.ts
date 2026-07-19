@@ -239,9 +239,32 @@ export function renderPresetShow(preset: WizardPreset): string {
   return out;
 }
 
+/**
+ * The public preset shape for `--json`: only the doc'd catalog fields, never the
+ * internal `answers: Partial<WizardAnswers>` wizard seed. Narrowing here keeps the
+ * machine contract stable if the wizard's internal answer shape changes.
+ */
+export interface PublicPresetSummary {
+  readonly id: string;
+  readonly title: string;
+  readonly description: string;
+  readonly riskLevel: WizardPreset["riskLevel"];
+  readonly playbook?: string;
+}
+
+function publicPresetSummary(preset: WizardPreset): PublicPresetSummary {
+  return {
+    id: preset.id,
+    title: preset.title,
+    description: preset.description,
+    riskLevel: preset.riskLevel,
+    ...(preset.playbook === undefined ? {} : { playbook: preset.playbook }),
+  };
+}
+
 /** The machine-readable `presets show <id>` payload, decoupled from rendering. */
 export function presetShowData(preset: WizardPreset): {
-  readonly preset: WizardPreset;
+  readonly preset: PublicPresetSummary;
   readonly configJson: unknown;
   readonly envExample: string;
   readonly files: readonly string[];
@@ -249,7 +272,7 @@ export function presetShowData(preset: WizardPreset): {
 } {
   const plan = composeWizardPlan(presetAnswers(preset), { dirBasename: "your-agent", skillsRootExists: false });
   return {
-    preset,
+    preset: publicPresetSummary(preset),
     configJson: plan.configJson,
     envExample: plan.envExample ?? "",
     files: plan.files.map((file) => file.path),
@@ -267,7 +290,7 @@ export function runPresets(args: ParsedCliArgs): number {
   const [sub, id] = args.positionals;
   if (sub === undefined || sub === "list") {
     if (json) {
-      process.stdout.write(`${JSON.stringify({ ok: true, presets: PRESET_CATALOG })}\n`);
+      process.stdout.write(`${JSON.stringify({ ok: true, presets: PRESET_CATALOG.map(publicPresetSummary) })}\n`);
       return 0;
     }
     process.stdout.write(renderPresetList());

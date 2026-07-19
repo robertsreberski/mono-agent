@@ -28,6 +28,11 @@ const JSON_CAPABLE_COMMANDS = [
   "continuations",
 ] as const;
 
+// Human-facing list for the rejection message: the two subcommand-gated surfaces
+// are qualified so the error points at the exact invocation that accepts `--json`.
+const JSON_CAPABLE_COMMANDS_DISPLAY =
+  "validate, config, presets, status, sandbox status, install-skill --project --check, runs, memory, continuations";
+
 // Commands removed outright before the KNOWN_COMMANDS gate. Parsing throws with the
 // replacement, and runCli maps that parse error to exit code 2 (usage-error).
 const REMOVED_COMMANDS = new Map<string, string>([
@@ -658,7 +663,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   // web, sessions, backfill) rather than silently ignoring it. `doctor`/`setup`/
   // `audit-runs`/`metrics` already normalized to their canonical `cmd` above.
   if (json && !(JSON_CAPABLE_COMMANDS as readonly string[]).includes(cmd)) {
-    throw new Error(`--json is not supported for \`mono-agent ${cmd}\`; it is available on ${JSON_CAPABLE_COMMANDS.join(", ")}.`);
+    throw new Error(`--json is not supported for \`mono-agent ${cmd}\`; it is available on ${JSON_CAPABLE_COMMANDS_DISPLAY}.`);
   }
   // `install-skill` exposes JSON only for its read-only drift check.
   if (json && cmd === "install-skill" && !(project && check)) {

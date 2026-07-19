@@ -283,6 +283,16 @@ describe("presetShowData", () => {
     expect(Array.isArray(data.files)).toBe(true);
     expect(data.checklist.every((item) => typeof item.sectionId === "string" && typeof item.mustBe === "string")).toBe(true);
   });
+
+  it("projects only the public preset fields, never the internal wizard answers", () => {
+    // telegram-assistant carries a non-empty `answers` in the catalog, so absence
+    // in the projection is a real narrowing, not a vacuous check.
+    const source = findPreset("telegram-assistant")!;
+    expect(Object.keys(source.answers).length).toBeGreaterThan(0);
+    const data = presetShowData(source);
+    expect(Object.keys(data.preset).sort()).toEqual(["description", "id", "playbook", "riskLevel", "title"]);
+    expect("answers" in data.preset).toBe(false);
+  });
 });
 
 describe("runCli presets --json", () => {
@@ -301,11 +311,13 @@ describe("runCli presets --json", () => {
       await expect(runCli(["presets", "list", "--json"])).resolves.toBe(0);
       const out = capture.chunks.join("");
       expect(out).not.toContain(String.fromCharCode(27));
-      const parsed = JSON.parse(out) as { readonly ok: boolean; readonly presets: readonly { readonly id: string }[] };
+      const parsed = JSON.parse(out) as { readonly ok: boolean; readonly presets: readonly Record<string, unknown>[] };
       expect(parsed.ok).toBe(true);
       for (const id of presetIds()) {
         expect(parsed.presets.some((preset) => preset.id === id)).toBe(true);
       }
+      // The internal `answers` wizard shape must never leak into the list contract.
+      expect(parsed.presets.every((preset) => !("answers" in preset))).toBe(true);
     } finally {
       capture.restore();
     }
@@ -317,7 +329,7 @@ describe("runCli presets --json", () => {
       await expect(runCli(["presets", "show", "code-sandbox", "--json"])).resolves.toBe(0);
       const parsed = JSON.parse(capture.chunks.join("")) as {
         readonly ok: boolean;
-        readonly preset: { readonly id: string };
+        readonly preset: Record<string, unknown> & { readonly id: string };
         readonly configJson: { readonly sandbox?: unknown };
         readonly envExample: string;
         readonly files: readonly string[];
@@ -325,6 +337,9 @@ describe("runCli presets --json", () => {
       };
       expect(parsed.ok).toBe(true);
       expect(parsed.preset.id).toBe("code-sandbox");
+      // Only the doc'd public fields are exposed; the wizard `answers` seed is not.
+      expect(Object.keys(parsed.preset).sort()).toEqual(["description", "id", "playbook", "riskLevel", "title"]);
+      expect("answers" in parsed.preset).toBe(false);
       expect(parsed.configJson.sandbox).toBeDefined();
       expect(typeof parsed.envExample).toBe("string");
       expect(Array.isArray(parsed.files)).toBe(true);
