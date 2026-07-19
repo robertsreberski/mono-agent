@@ -112,7 +112,7 @@ mono-agent tui --configure
 
 The `mono-agent sessions` command that launched the read-only Session Recorder was removed. Use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console) for operator run inspection.
 
-`@mono-agent/session-web`, the read-only `live` event relay, and the `MONO_AGENT_WEB_AUTH_TOKEN` compatibility bearer still ship in code but are no longer reachable through any CLI command. Full retirement is a later dead-code-audited change; see the [deprecation tracker](/reference/deprecations/#removed-surfaces).
+`@mono-agent/session-web` and the read-only `live` event relay still ship in code but are no longer reachable through any CLI command. The `MONO_AGENT_WEB_AUTH_TOKEN` bearer is no longer read by any code — its only reader was the removed `sessions` command (the session-web package's programmatic `authToken` option is a separate thing). Full retirement is a later dead-code-audited change; see the [deprecation tracker](/reference/deprecations/#removed-surfaces).
 
 ## Related
 

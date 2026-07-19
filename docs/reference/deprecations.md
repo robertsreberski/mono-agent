@@ -51,10 +51,12 @@ errors with a pointer to its replacement instead of mapping forward.
 
 The `mono-agent sessions` removal covers only the CLI launcher. Running it now
 errors with a `mono-agent tui` / `mono-agent web` pointer. The
-`@mono-agent/session-web` package, the `live` event relay (`live.*` config), and
-`MONO_AGENT_WEB_AUTH_TOKEN` still ship in code; they are simply no longer
-reachable through any CLI command, and their full retirement is a separate later
-dead-code-audited change.
+`@mono-agent/session-web` package and the `live` event relay (`live.*` config)
+still ship in code; they are simply no longer reachable through any CLI command,
+and their full retirement is a separate later dead-code-audited change. The
+`MONO_AGENT_WEB_AUTH_TOKEN` bearer is no longer read by any code — its only
+reader was the removed `sessions` command (the session-web package's
+programmatic `authToken` option is a separate thing).
 
 The `--fallback-models` removal covers only the CLI CSV flag. Existing JSON
 `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain supported

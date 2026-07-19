@@ -511,7 +511,7 @@ State lives owner-private under `~/.mono-agent/web/`. Threads are archived/resto
 
 The `mono-agent sessions` command was removed. Running it now errors with a pointer to its replacements and exits `2`. For operator run inspection use [`mono-agent tui`](#tui) (recorded-run replay) or [`mono-agent web`](#web) (live console).
 
-The `@mono-agent/session-web` package, the read-only `live` event relay (`live.*` config), and the `MONO_AGENT_WEB_AUTH_TOKEN` compatibility bearer still ship in code, but they are no longer reachable through any CLI command. Full retirement is tracked as a later dead-code-audited change; see the [deprecation tracker](/reference/deprecations/#removed-surfaces).
+The `@mono-agent/session-web` package and the read-only `live` event relay (`live.*` config) still ship in code, but they are no longer reachable through any CLI command. The `MONO_AGENT_WEB_AUTH_TOKEN` bearer is no longer read by any code — its only reader was the removed `sessions` command (the session-web package's programmatic `authToken` option is a separate thing). Full retirement is tracked as a later dead-code-audited change; see the [deprecation tracker](/reference/deprecations/#removed-surfaces).
 
 ## `install-skill`
 
