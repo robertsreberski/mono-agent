@@ -239,27 +239,79 @@ export function renderPresetShow(preset: WizardPreset): string {
   return out;
 }
 
+/** The machine-readable `presets show <id>` payload, decoupled from rendering. */
+export function presetShowData(preset: WizardPreset): {
+  readonly preset: WizardPreset;
+  readonly configJson: unknown;
+  readonly envExample: string;
+  readonly files: readonly string[];
+  readonly checklist: readonly { readonly sectionId: string; readonly mustBe: string; readonly note?: string }[];
+} {
+  const plan = composeWizardPlan(presetAnswers(preset), { dirBasename: "your-agent", skillsRootExists: false });
+  return {
+    preset,
+    configJson: plan.configJson,
+    envExample: plan.envExample ?? "",
+    files: plan.files.map((file) => file.path),
+    checklist: plan.validateExpectations.map((expectation) => ({
+      sectionId: expectation.sectionId,
+      mustBe: expectation.mustBe,
+      ...(expectation.note === undefined ? {} : { note: expectation.note }),
+    })),
+  };
+}
+
 /** Dispatch `mono-agent presets list|show <id>`. */
 export function runPresets(args: ParsedCliArgs): number {
+  const json = args.json === true;
   const [sub, id] = args.positionals;
   if (sub === undefined || sub === "list") {
+    if (json) {
+      process.stdout.write(`${JSON.stringify({ ok: true, presets: PRESET_CATALOG })}\n`);
+      return 0;
+    }
     process.stdout.write(renderPresetList());
     return 0;
   }
   if (sub === "show") {
     if (id === undefined) {
+      if (json) {
+        process.stdout.write(`${JSON.stringify({
+          ok: false,
+          error: { code: "missing-preset-id", message: `Usage: mono-agent presets show <id>. Available: ${presetIds().join(", ")}.` },
+        })}\n`);
+        return 2;
+      }
       process.stderr.write(ui.errorLine("Usage: mono-agent presets show <id>."));
       process.stderr.write(ui.hint(`Available: ${presetIds().join(", ")}.`));
       return 2;
     }
     const preset = findPreset(id);
     if (preset === undefined) {
+      if (json) {
+        process.stdout.write(`${JSON.stringify({
+          ok: false,
+          error: { code: "unknown-preset", message: `Unknown preset \`${id}\`. Available: ${presetIds().join(", ")}.` },
+        })}\n`);
+        return 1;
+      }
       process.stderr.write(ui.errorLine(`Unknown preset \`${id}\`.`));
       process.stderr.write(ui.hint(`Available: ${presetIds().join(", ")}. Run \`mono-agent presets list\`.`));
       return 1;
     }
+    if (json) {
+      process.stdout.write(`${JSON.stringify({ ok: true, ...presetShowData(preset) })}\n`);
+      return 0;
+    }
     process.stdout.write(renderPresetShow(preset));
     return 0;
+  }
+  if (json) {
+    process.stdout.write(`${JSON.stringify({
+      ok: false,
+      error: { code: "unknown-subcommand", message: `Unknown presets subcommand \`${sub}\`. Expected list or show.` },
+    })}\n`);
+    return 2;
   }
   process.stderr.write(ui.errorLine(`Unknown presets subcommand \`${sub}\`. Expected list or show.`));
   return 2;
@@ -298,24 +350,48 @@ export function renderConfigView(sections: readonly ConfigViewSection[]): string
  * source (env / json / default) of every value, then the channel summary. Read
  * only — edits go in mono-agent.config.json and take effect on the next restart.
  */
-export async function runConfig(args: ParsedCliArgs): Promise<number> {
+/**
+ * The resolved-config data the `config` command assembles, decoupled from
+ * rendering. `channels` is the source-annotated channel config view; `channelStatus`
+ * is the liveness-off validation verdict per channel; `warnings` is the ANSI-free
+ * config-warning triplet. Every field value is already redacted by
+ * {@link buildMonoAgentConfigView} — the record never carries a raw secret.
+ */
+interface ResolvedConfigView {
+  readonly sections: readonly ConfigViewSection[];
+  readonly channels: readonly ConfigViewSection[];
+  readonly channelStatus: readonly ValidationSection[];
+  readonly warnings: readonly string[];
+}
+
+async function assembleResolvedConfigView(
+  args: ParsedCliArgs,
+): Promise<
+  | { readonly ok: true; readonly view: ResolvedConfigView }
+  | { readonly ok: false; readonly missing: boolean; readonly message: string }
+> {
   const cwd = process.cwd();
   const configPath = resolve(cwd, args.configPath ?? "mono-agent.config.json");
   const env = process.env;
 
-  const jsonResult = await readMonoAgentConfigJson(configPath);
+  let jsonResult;
+  try {
+    jsonResult = await readMonoAgentConfigJson(configPath);
+  } catch (error) {
+    // A present-but-unreadable/malformed config file: surface it as an
+    // operational error so `--json` still emits a clean `{ok:false}` envelope
+    // (previously this threw a raw stack out of the command).
+    if (isAppCoreConfigError(error)) {
+      return { ok: false, missing: false, message: error.message };
+    }
+    throw error;
+  }
   let config;
   try {
     config = await loadAppCoreConfig({ env, cwd, configPath });
   } catch (error) {
     if (isAppCoreConfigError(error)) {
-      process.stderr.write(ui.errorLine(error.message));
-      if (jsonResult.missing) {
-        process.stderr.write(ui.hint(`No mono-agent config found at ${configPath}. Run \`mono-agent init\` to scaffold one.`));
-      } else {
-        process.stderr.write(ui.hint("Fix the config above, then re-run `mono-agent config`."));
-      }
-      return 1;
+      return { ok: false, missing: jsonResult.missing, message: error.message };
     }
     throw error;
   }
@@ -326,27 +402,65 @@ export async function runConfig(args: ParsedCliArgs): Promise<number> {
     env,
   });
   const drivers = await resolveChannelDrivers({ env, cwd, configPath });
-  const channelViews = await collectChannelConfigViews(drivers, { env, cwd, configPath });
+  const channels = await collectChannelConfigViews(drivers, { env, cwd, configPath });
+  const warnings = [
+    ...findUnknownAppConfigWarnings(jsonResult.json),
+    ...findJsonSecretConfigWarnings([...sections, ...channels]),
+    ...findRemovedConfigWarnings({ json: jsonResult.json, env }),
+  ];
+  const report = await validateMonoAgentFolder({ env, cwd, configPath, liveness: false, drivers });
+  const channelStatus = report.sections.filter((section) => section.id.startsWith("channel:"));
+
+  return { ok: true, view: { sections, channels, channelStatus, warnings } };
+}
+
+export async function runConfig(args: ParsedCliArgs): Promise<number> {
+  const cwd = process.cwd();
+  const configPath = resolve(cwd, args.configPath ?? "mono-agent.config.json");
+  const assembled = await assembleResolvedConfigView(args);
+
+  if (!assembled.ok) {
+    if (args.json === true) {
+      process.stdout.write(`${JSON.stringify({
+        ok: false,
+        error: { code: assembled.missing ? "config-missing" : "config-invalid", message: assembled.message },
+      })}\n`);
+      return 1;
+    }
+    process.stderr.write(ui.errorLine(assembled.message));
+    if (assembled.missing) {
+      process.stderr.write(ui.hint(`No mono-agent config found at ${configPath}. Run \`mono-agent init\` to scaffold one.`));
+    } else {
+      process.stderr.write(ui.hint("Fix the config above, then re-run `mono-agent config`."));
+    }
+    return 1;
+  }
+
+  const { sections, channels, channelStatus, warnings } = assembled.view;
+
+  if (args.json === true) {
+    process.stdout.write(`${JSON.stringify({
+      ok: true,
+      config: sections,
+      channels,
+      channelStatus,
+      warnings,
+    })}\n`);
+    return 0;
+  }
 
   process.stdout.write(ui.banner("mono-agent", "resolved config") + "\n");
   process.stdout.write(renderConfigView(sections));
-  if (channelViews.length > 0) {
+  if (channels.length > 0) {
     process.stdout.write("\n" + ui.heading("Channels"));
-    process.stdout.write(renderConfigView(channelViews));
+    process.stdout.write(renderConfigView(channels));
   }
-  for (const warning of [
-    ...findUnknownAppConfigWarnings(jsonResult.json),
-    ...findJsonSecretConfigWarnings([...sections, ...channelViews]),
-    ...findRemovedConfigWarnings({ json: jsonResult.json, env }),
-  ]) {
+  for (const warning of warnings) {
     process.stdout.write(`${ui.style.yellow(warning)}\n`);
   }
-
-  const report = await validateMonoAgentFolder({ env, cwd, configPath, liveness: false, drivers });
-  const channels = report.sections.filter((section) => section.id.startsWith("channel:"));
-  if (channels.length > 0) {
+  if (channelStatus.length > 0) {
     process.stdout.write("\n" + ui.heading("Channel status"));
-    for (const section of channels) {
+    for (const section of channelStatus) {
       process.stdout.write(formatSection(section));
     }
   }
