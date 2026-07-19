@@ -2,16 +2,40 @@ import { createRequire } from "node:module";
 
 import { EFFORT_LEVELS } from "@mono-agent/config";
 
+import { REMOVED_COMMANDS } from "./cli-args.js";
 import { readinessProbeTimeoutDescription } from "./readiness-probe.js";
 import * as ui from "./ui.js";
 
+/** The grouped-summary buckets and their display order. */
+type HelpGroupId = "Setup" | "Check" | "Run" | "Console" | "Observe" | "Maintain";
+
 interface HelpEntry {
+  /** Canonical command key (also the `help <command>` topic). */
+  readonly command: string;
+  /** Which summary-screen bucket this command belongs to. */
+  readonly group: HelpGroupId;
+  /**
+   * Short summary-screen signature: command name plus its primary subcommand
+   * shape only (e.g. `runs [report|audit]`). Full flag signatures live in the
+   * detail view, not on the scannable summary.
+   */
+  readonly short: string;
+  /** One-line description shown beside {@link short} on the summary screen. */
+  readonly summary: string;
+  /** True when a PR3 `--json` surface exists; renders a `[--json]` marker. */
+  readonly json?: boolean;
+  /** Full signature block for the `help <command>` detail view. */
   readonly signature: string;
+  /** Detail lines for the `help <command>` view. */
   readonly lines: readonly string[];
 }
 
 const HELP_COMMANDS: readonly HelpEntry[] = [
   {
+    command: "init",
+    group: "Setup",
+    short: "init",
+    summary: "Scaffold a new agent (guided, or --preset/--yes/--auth).",
     signature: "mono-agent init [--preset <id>] [--with <csv>] [--yes] [--auth] [--dry-run]\n" +
       "                [--name <display-name>] [--model <ref>] [--effort <level>]\n" +
       "                [--fallback <ref> [--fallback-effort <provider-default|level>]]...\n" +
@@ -34,10 +58,11 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    signature: "mono-agent setup",
-    lines: ["Alias of `init`."],
-  },
-  {
+    command: "presets",
+    group: "Setup",
+    short: "presets list|show <id>",
+    summary: "List the built-in setup presets, or show one's config.",
+    json: true,
     signature: "mono-agent presets list | show <id>",
     lines: [
       "List the built-in setup presets, or show one's generated config,",
@@ -45,15 +70,10 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    signature: "mono-agent validate [--preset <id>] [--consumer <path>] [--config <path>] [--env-file <path>] [--json]",
-    lines: [
-      "Load every config section and report what would run, wait, or fail.",
-      "--consumer validates another agent folder read-only, including its .env.",
-      "With --preset, also report whether the preset's capabilities are live.",
-      "`mono-agent doctor` is an alias for this command.",
-    ],
-  },
-  {
+    command: "auth",
+    group: "Setup",
+    short: "auth login <provider>",
+    summary: "Log in to a bundled Pi provider, or direct Codex.",
     signature: "mono-agent auth login <provider|codex> [--pi-auth-path <path>] [--api-key-stdin]\n" +
       "                       [--codex-auth browser|device] [--config <path>]",
     lines: [
@@ -65,21 +85,69 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
+    command: "sandbox",
+    group: "Setup",
+    short: "sandbox status|setup|check",
+    summary: "Inspect, install, or prove the pinned SRT sandbox.",
+    json: true,
     signature: "mono-agent sandbox status | setup | check",
     lines: [
       "Inspect, install, or functionally prove the pinned SRT sandbox runtime.",
       "Managed setup is macOS-only and installs into the user's cache; it never changes PATH,",
       "global npm packages, system packages, or another user's files.",
+      "Only the read-only `sandbox status` accepts --json.",
     ],
   },
   {
-    signature: "mono-agent config [--config <path>] [--env-file <path>]",
+    command: "install-skill",
+    group: "Setup",
+    short: "install-skill",
+    summary: "Install or refresh the composer skill and docs MCP.",
+    json: true,
+    signature: "mono-agent install-skill [--target claude|codex|both] [--force] [--no-docs-mcp]\n" +
+      "                         --project (--check|--update)",
+    lines: [
+      "Copy the bundled mono-agent-composer skill into ~/.claude/skills and",
+      "~/.agents/skills (default: both). Refuses to overwrite without --force.",
+      "By default, pair exact-version mono-agent-docs with every available target",
+      "CLI. --no-docs-mcp stays file-only; --force never replaces an unmanaged MCP.",
+      "Project mode checks or safely updates the two managed skills generated",
+      "by init; modified copies are never overwritten, updates retain backups,",
+      "and user-level MCP configuration is not changed.",
+      "Only the read-only `install-skill --project --check` accepts --json.",
+    ],
+  },
+  {
+    command: "validate",
+    group: "Check",
+    short: "validate",
+    summary: "Load every config section; report what runs, waits, or fails.",
+    json: true,
+    signature: "mono-agent validate [--preset <id>] [--consumer <path>] [--config <path>] [--env-file <path>] [--json]",
+    lines: [
+      "Load every config section and report what would run, wait, or fail.",
+      "--consumer validates another agent folder read-only, including its .env.",
+      "With --preset, also report whether the preset's capabilities are live.",
+      "`mono-agent doctor` is an alias for this command.",
+    ],
+  },
+  {
+    command: "config",
+    group: "Check",
+    short: "config",
+    summary: "Print the resolved config field-by-field with provenance.",
+    json: true,
+    signature: "mono-agent config [--config <path>] [--env-file <path>] [--json]",
     lines: [
       "Print the resolved config field-by-field, tagging each value with where",
       "it came from (env / json / default), plus the channel summary. Read-only.",
     ],
   },
   {
+    command: "start",
+    group: "Run",
+    short: "start",
+    summary: "Start the agent as a background launchd service.",
     signature: "mono-agent start [--config <path>] [--env-file <path>] [--foreground|-f]",
     lines: [
       "Start the agent as a background macOS service (launchd), print its",
@@ -89,6 +157,10 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
+    command: "restart",
+    group: "Run",
+    short: "restart",
+    summary: "Restart this config's instance (starts it if stopped).",
     signature: "mono-agent restart [--config <path>] [--clear-sessions]",
     lines: [
       "Restart the background instance for this config (starts it if stopped).",
@@ -98,18 +170,35 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
+    command: "stop",
+    group: "Run",
+    short: "stop",
+    summary: "Stop the instance and remove its LaunchAgent.",
     signature: "mono-agent stop [--config <path>]",
     lines: ["Stop the background instance and remove its LaunchAgent."],
   },
   {
-    signature: "mono-agent status [--config <path>]",
+    command: "status",
+    group: "Run",
+    short: "status",
+    summary: "Show this config's instance plus other running instances.",
+    json: true,
+    signature: "mono-agent status [--config <path>] [--json]",
     lines: ["Show this config's instance plus any other running instances."],
   },
   {
+    command: "logs",
+    group: "Run",
+    short: "logs",
+    summary: "Print (and optionally follow) the background log files.",
     signature: "mono-agent logs [--config <path>] [--follow|-f] [--lines <n>]",
     lines: ["Print (and optionally follow) the background instance's log files."],
   },
   {
+    command: "tui",
+    group: "Console",
+    short: "tui",
+    summary: "Operator console: live chat, recorded-run replay, config view.",
     signature: "mono-agent tui [--agent <label|sourceId>] [--conversation <id>]\n" +
       "               [--configure | --local]",
     lines: [
@@ -122,6 +211,10 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
+    command: "web",
+    group: "Console",
+    short: "web [start|stop|status|...]",
+    summary: "Always-on assistant-ui console for every local agent.",
     signature: "mono-agent web [start|stop|restart|status|logs|run] [--host <addr>|--loopback] [--port <n>]\n" +
       "               web reset --all --yes",
     lines: [
@@ -134,31 +227,11 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    signature: "mono-agent install-skill [--target claude|codex|both] [--force] [--no-docs-mcp]\n" +
-      "                         --project (--check|--update)",
-    lines: [
-      "Copy the bundled mono-agent-composer skill into ~/.claude/skills and",
-      "~/.agents/skills (default: both). Refuses to overwrite without --force.",
-      "By default, pair exact-version mono-agent-docs with every available target",
-      "CLI. --no-docs-mcp stays file-only; --force never replaces an unmanaged MCP.",
-      "Project mode checks or safely updates the two managed skills generated",
-      "by init; modified copies are never overwritten, updates retain backups,",
-      "and user-level MCP configuration is not changed.",
-    ],
-  },
-  {
-    signature:
-      "mono-agent backfill (--run <id> | --all) [--since <iso>] [--until <iso>]\n" +
-      "                    [--include-memory] [--dry-run] [--config <path>] [--env-file <path>]",
-    lines: [
-      "Export already-recorded agent-run artifacts to the configured Phoenix exporter",
-      "with their historical timestamps. Trace ids are deterministic per run, so",
-      "re-running overwrites rather than duplicating. --dry-run maps and",
-      "serializes without sending. --include-memory adds memory-run artifacts",
-      "for --all; explicit --run can target a memory run directly.",
-    ],
-  },
-  {
+    command: "runs",
+    group: "Observe",
+    short: "runs [report|audit]",
+    summary: "Read-only reporting over local agent-run artifacts.",
+    json: true,
     signature:
       "mono-agent runs [report|audit] [--artifacts <path> | --consumer <path>]\n" +
       "                [--since <iso>] [--until <iso>] [--by model|channel|failureKind]\n" +
@@ -174,6 +247,27 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
+    command: "backfill",
+    group: "Observe",
+    short: "backfill",
+    summary: "Export recorded run artifacts to the Phoenix exporter.",
+    signature:
+      "mono-agent backfill (--run <id> | --all) [--since <iso>] [--until <iso>]\n" +
+      "                    [--include-memory] [--dry-run] [--config <path>] [--env-file <path>]",
+    lines: [
+      "Export already-recorded agent-run artifacts to the configured Phoenix exporter",
+      "with their historical timestamps. Trace ids are deterministic per run, so",
+      "re-running overwrites rather than duplicating. --dry-run maps and",
+      "serializes without sending. --include-memory adds memory-run artifacts",
+      "for --all; explicit --run can target a memory run directly.",
+    ],
+  },
+  {
+    command: "memory",
+    group: "Maintain",
+    short: "memory <subcommand>",
+    summary: "Preview and operate the configured memory store.",
+    json: true,
     signature:
       "mono-agent memory [stats|today|show <date>|search <query>|top|audit|inspect [id]|retry [id]|resolve <id> <reason>|rebuild|rollback|adopt-replay]\n" +
       "mono-agent memory forget prepare --ids-file <file> --reason <slug> --plan <file>\n" +
@@ -191,6 +285,11 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
+    command: "continuations",
+    group: "Maintain",
+    short: "continuations <subcommand>",
+    summary: "Inspect and operate the durable-continuation service.",
+    json: true,
     signature:
       "mono-agent continuations [list [--limit <n>] [--cursor <opaque>]|health|retry <id>|cancel <id>|resolve <id> delivered|not-delivered|dead-lettered [delivery-id]] [--json]",
     lines: [
@@ -200,6 +299,24 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
 ];
+
+const HELP_COMMANDS_BY_KEY = new Map(HELP_COMMANDS.map((entry) => [entry.command, entry]));
+
+/** Display order of the summary-screen groups, with optional heading notes. */
+const HELP_GROUPS: readonly { readonly id: HelpGroupId; readonly note?: string }[] = [
+  { id: "Setup" },
+  { id: "Check" },
+  { id: "Run", note: "(background lifecycle is macOS/launchd; elsewhere use start --foreground)" },
+  { id: "Console" },
+  { id: "Observe" },
+  { id: "Maintain" },
+];
+
+/** `help <alias>` resolves to the canonical command's detail view, noting the alias. */
+const HELP_ALIASES = new Map<string, string>([
+  ["doctor", "validate"],
+  ["setup", "init"],
+]);
 
 const HELP_NOTES = `Background mode runs the agent under launchd, keeping it alive across logins
 (auto-restarting only on crash) until you run stop. Secrets are read from the
@@ -234,22 +351,84 @@ A .env file in the current folder is loaded automatically when present;
 already-exported shell variables take precedence.
 `;
 
-/** Build the colorized help screen (plain text when color is disabled). */
+const HELP_BANNER_SUBTITLE = "config-first agent host";
+
+function helpBanner(): string {
+  return `${ui.banner("mono-agent", HELP_BANNER_SUBTITLE)}\n`;
+}
+
+/**
+ * Build the default grouped help summary: one scannable line per command under
+ * its group heading, with `[--json]` markers on the PR3 JSON surfaces. Also used
+ * by the error paths (unknown command / parse failure) so those stay short.
+ */
 export function renderHelp(): string {
-  let out = ui.banner("mono-agent", "config-first agent host") + "\n";
-  out += ui.heading("Usage");
-  for (const entry of HELP_COMMANDS) {
-    const [first, ...rest] = entry.signature.split("\n");
-    out += `  ${ui.style.bold(ui.style.cyan(first ?? ""))}\n`;
-    for (const cont of rest) {
-      out += `  ${ui.style.cyan(cont)}\n`;
+  const width = HELP_COMMANDS.reduce((max, entry) => Math.max(max, entry.short.length), 0);
+  let out = helpBanner();
+  for (const group of HELP_GROUPS) {
+    let heading = ui.style.bold(ui.style.cyan(group.id));
+    if (group.note !== undefined) {
+      heading += ` ${ui.style.dim(group.note)}`;
     }
-    for (const line of entry.lines) {
-      out += `      ${ui.style.dim(line)}\n`;
+    out += `${heading}\n`;
+    for (const entry of HELP_COMMANDS.filter((candidate) => candidate.group === group.id)) {
+      const shortColumn = ui.style.cyan(entry.short.padEnd(width));
+      const jsonMarker = entry.json === true ? ui.style.dim("  [--json]") : "";
+      out += `  ${shortColumn}  ${entry.summary}${jsonMarker}\n`;
     }
     out += "\n";
   }
-  out += ui.style.dim(HELP_NOTES);
+  out += `${ui.style.dim("Run `mono-agent help <command>` for full flags and behavior notes.")}\n`;
+  out += `${ui.style.dim("Run `mono-agent help notes` for model references, fallback chains, and env-file rules.")}\n`;
+  return out;
+}
+
+/** The outcome of resolving a `help <topic>` request. */
+export type HelpTopicResult =
+  | { readonly ok: true; readonly text: string }
+  | { readonly ok: false; readonly message: string };
+
+/**
+ * Resolve a `help <topic>` request: `notes` prints the notes block, a command
+ * (or its alias) prints that command's detail view, a removed command prints its
+ * replacement pointer, and anything else is a usage error listing valid topics.
+ */
+export function renderHelpTopic(topic: string): HelpTopicResult {
+  if (topic === "notes") {
+    return { ok: true, text: `${helpBanner()}${ui.style.dim(HELP_NOTES)}` };
+  }
+  const removed = REMOVED_COMMANDS.get(topic);
+  if (removed !== undefined) {
+    return { ok: true, text: `${helpBanner()}${ui.style.dim(removed)}\n` };
+  }
+  const canonical = HELP_ALIASES.get(topic) ?? topic;
+  const entry = HELP_COMMANDS_BY_KEY.get(canonical);
+  if (entry === undefined) {
+    return { ok: false, message: unknownHelpTopicMessage(topic) };
+  }
+  const aliasNote = canonical === topic ? undefined : `\`${topic}\` is an alias of \`${canonical}\`.`;
+  return { ok: true, text: renderHelpEntryDetail(entry, aliasNote) };
+}
+
+function unknownHelpTopicMessage(topic: string): string {
+  const topics = [...HELP_COMMANDS.map((entry) => entry.command), "notes"].join(", ");
+  return `Unknown help topic \`${topic}\`. Valid topics: ${topics}.`;
+}
+
+/** Render one command's full signature + behavior notes (the `help <command>` view). */
+function renderHelpEntryDetail(entry: HelpEntry, aliasNote: string | undefined): string {
+  let out = helpBanner();
+  if (aliasNote !== undefined) {
+    out += `${ui.style.dim(aliasNote)}\n`;
+  }
+  const [first, ...rest] = entry.signature.split("\n");
+  out += `  ${ui.style.bold(ui.style.cyan(first ?? ""))}\n`;
+  for (const cont of rest) {
+    out += `  ${ui.style.cyan(cont)}\n`;
+  }
+  for (const line of entry.lines) {
+    out += `      ${ui.style.dim(line)}\n`;
+  }
   return out;
 }
 

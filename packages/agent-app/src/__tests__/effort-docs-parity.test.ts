@@ -5,7 +5,16 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { allConfigReferenceFields } from "../config-reference.js";
-import { renderHelp } from "../cli.js";
+import { renderHelpTopic } from "../cli.js";
+
+/** The `help init` detail view carries the per-route ultra-effort contract. */
+function initHelpText(): string {
+  const result = renderHelpTopic("init");
+  if (!result.ok) {
+    throw new Error(`expected \`help init\` to resolve, got: ${result.message}`);
+  }
+  return result.text;
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -562,7 +571,7 @@ describe("ultra effort documentation parity", () => {
     const surfaces = [
       ...STATIC_CONTRACT_SURFACES.map(readContractSurface),
       [runtimeEffort?.description ?? "", "config reference source"],
-      [renderHelp(), "built CLI help source"],
+      [initHelpText(), "built CLI help source"],
     ] as const;
 
     for (const [surface, label] of surfaces) {

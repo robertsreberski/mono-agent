@@ -35,7 +35,8 @@ const JSON_CAPABLE_COMMANDS_DISPLAY =
 
 // Commands removed outright before the KNOWN_COMMANDS gate. Parsing throws with the
 // replacement, and runCli maps that parse error to exit code 2 (usage-error).
-const REMOVED_COMMANDS = new Map<string, string>([
+// `renderHelpTopic` reuses these so `help <removed>` prints the same pointer.
+export const REMOVED_COMMANDS = new Map<string, string>([
   ["recipes", "`recipes` was removed; use `mono-agent presets`."],
   ["sessions", "`sessions` was removed; use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console)."],
 ]);
@@ -156,8 +157,14 @@ interface CliFallbackArg {
 
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   const [command, ...rest] = argv;
-  if (command === undefined || command === "help" || command === "--help" || command === "-h") {
+  // `--help`/`-h` and a bare invocation render the plain grouped summary (no topic).
+  if (command === undefined || command === "--help" || command === "-h") {
     return { command: "help", positionals: [], force: false, foreground: false, follow: false, all: false, dryRun: false, includeMemory: false };
+  }
+  // `help <topic>` keeps the remaining tokens as positionals so the command
+  // handler can render `help <command>` / `help notes` detail views.
+  if (command === "help") {
+    return { command: "help", positionals: [...rest], force: false, foreground: false, follow: false, all: false, dryRun: false, includeMemory: false };
   }
   if (command === "version" || command === "--version" || command === "-v") {
     return { command: "version", positionals: [], force: false, foreground: false, follow: false, all: false, dryRun: false, includeMemory: false };

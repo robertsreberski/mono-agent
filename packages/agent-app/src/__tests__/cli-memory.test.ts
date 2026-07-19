@@ -19,7 +19,16 @@ import { listTraceSources } from "@mono-agent/observability";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveAppTraceRegistryDir } from "../app-config.js";
-import { parseCliArgs, renderHelp, runCli } from "../cli.js";
+import { parseCliArgs, renderHelp, renderHelpTopic, runCli } from "../cli.js";
+
+/** Resolve a help topic to its rendered detail text. */
+function helpTopicText(topic: string): string {
+  const result = renderHelpTopic(topic);
+  if (!result.ok) {
+    throw new Error(`expected help topic \`${topic}\` to resolve, got: ${result.message}`);
+  }
+  return result.text;
+}
 
 const tempDirs: string[] = [];
 
@@ -37,9 +46,12 @@ describe("parseCliArgs memory", () => {
       json: true,
     });
     expect(() => parseCliArgs(["metrics", "--limit", "3"])).toThrow(/--limit/u);
-    expect(renderHelp()).toContain("mono-agent memory");
-    expect(renderHelp()).toContain("audit");
-    expect(renderHelp()).toContain("adopt-replay");
+    // The grouped summary lists memory once; subcommand detail is in `help memory`.
+    expect(renderHelp()).toContain("memory <subcommand>");
+    const memoryDetail = helpTopicText("memory");
+    expect(memoryDetail).toContain("mono-agent memory");
+    expect(memoryDetail).toContain("audit");
+    expect(memoryDetail).toContain("adopt-replay");
     expect(parseCliArgs(["memory", "audit", "--strict", "--json"])).toMatchObject({ strict: true, json: true });
     expect(() => parseCliArgs(["memory", "inspect", "--strict"])).toThrow(/memory audit/iu);
     expect(parseCliArgs([

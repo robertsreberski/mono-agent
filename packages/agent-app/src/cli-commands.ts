@@ -12,8 +12,8 @@ import { readCliDotenvFile } from "./first-run-readiness.js";
 import { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
 export { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
-import { monoAgentVersion, renderHelp } from "./cli-help.js";
-export { monoAgentVersion, renderHelp } from "./cli-help.js";
+import { monoAgentVersion, renderHelp, renderHelpTopic } from "./cli-help.js";
+export { monoAgentVersion, renderHelp, renderHelpTopic } from "./cli-help.js";
 import { runInstallSkill } from "./cli-install-skill-command.js";
 import { runConfig, runPresets, runValidate } from "./cli-validate-config-command.js";
 export {
@@ -180,9 +180,20 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   if (shouldLoadCommandDotenv(args.command) && !managedBackgroundWorker) loadCliEnvFile(envFilePath);
 
   switch (args.command) {
-    case "help":
-      process.stdout.write(renderHelp());
-      return 0;
+    case "help": {
+      const topic = args.positionals[0];
+      if (topic === undefined) {
+        process.stdout.write(renderHelp());
+        return 0;
+      }
+      const result = renderHelpTopic(topic);
+      if (result.ok) {
+        process.stdout.write(result.text);
+        return 0;
+      }
+      process.stderr.write(ui.errorLine(result.message));
+      return 2;
+    }
     case "version":
       process.stdout.write(`mono-agent ${monoAgentVersion()}\n`);
       return 0;
