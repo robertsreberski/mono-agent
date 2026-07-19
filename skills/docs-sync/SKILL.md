@@ -32,7 +32,7 @@ site.
 
 - `docs/<area>/*.md` (channels, config, runtime, memory, tools, observability, …)
 - `docs/reference/feature-registry.md` — the feature→config map; every new config key lands here
-- `docs/reference/feature-matrix.md`, `docs/reference/recipes.md`
+- `docs/reference/feature-matrix.md`, `docs/reference/presets.md`
 - `docs/playbooks/*` — 16 task-shaped playbooks; extend the closest one
 - Package READMEs — 7 required sections, enforced by `check:architecture`; the
   `## Public API` section must stay in parity with `src/index.ts` (drift checks below)

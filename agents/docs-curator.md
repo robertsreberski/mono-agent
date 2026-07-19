@@ -17,7 +17,7 @@ the published site.
 - The topical page under `docs/<area>/` (channels, config, runtime, memory,
   tools, observability, programmatic, getting-started).
 - `docs/reference/feature-registry.md` — every user-facing config key maps here.
-- `docs/reference/feature-matrix.md` and `docs/reference/recipes.md`.
+- `docs/reference/feature-matrix.md` and `docs/reference/presets.md`.
 - `docs/playbooks/` — extend the closest existing playbook rather than adding
   near-duplicates.
 - Package READMEs (7 arch-enforced sections — keep headings byte-exact) and

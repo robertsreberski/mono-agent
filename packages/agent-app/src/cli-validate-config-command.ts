@@ -132,9 +132,9 @@ export async function runValidate(args: ParsedCliArgs): Promise<number> {
 }
 
 /**
- * Resolve the preset to check `validate` against: `--preset` wins, `--recipe` is a
- * deprecated alias removed in v2.0.0. Returns the preset, `undefined` (no
- * capability check), or `"unknown"` after emitting the error/hint.
+ * Resolve the preset to check `validate` against: `--preset` wins. Returns the
+ * preset, `undefined` (no capability check), or `"unknown"` after emitting the
+ * error/hint.
  */
 function resolveValidatePreset(args: ParsedCliArgs): WizardPreset | undefined | "unknown" {
   if (args.preset !== undefined) {
