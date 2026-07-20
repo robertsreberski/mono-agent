@@ -1,5 +1,45 @@
 # Release notes
 
+## 0.13.0 — Native channel controls and safer operator workflows (2026-07-20)
+
+### Highlights
+
+- Slack and Telegram now provide native model and reasoning-effort selectors
+  derived from the configured primary and fallback models. Slack supports both
+  mention commands and workspace-registered `/<bot-username>-model` and
+  `/<bot-username>-effort` commands, with DM-wide, channel-wide, and
+  thread-local override scopes.
+- Slack now matches Telegram's final-answer delivery: transient, redacted tool
+  activity remains a separate progress message, the completed answer is posted
+  as a fresh message, and the progress message is then removed best-effort.
+- The new `@mono-agent/docs-mcp` companion provides version-matched semantic and
+  exact-identifier search over the bundled mono-agent documentation.
+- The always-on web console gains clearer agent navigation, response status,
+  browser notifications, quoted-reply rendering, and the canonical `/gui`
+  operator route.
+
+### Reliability and security
+
+- Managed runtime startup and restart readiness are faster and stricter, while
+  Pi's SRT launch path enforces the configured all-network sandbox and preserves
+  system DNS resolution.
+- Runtime failover survives re-initialization against loopback MCP endpoints,
+  indexed skills prefer the dedicated `ReadSkill` path, and Slack markdown/tool
+  previews no longer expose internal sentinels or absolute paths.
+- Telegram file delivery remains bound to the originating chat, and its
+  interactive sessions retain durable reply history across control actions.
+
+### Compatibility
+
+- Slack slash commands require the bot `commands` scope plus registered
+  `/<bot-username>-model` and `/<bot-username>-effort` commands. Socket Mode
+  carries both command and menu payloads, so no public request URL is needed.
+- The CLI now uses grouped help and uniform JSON/exit-code contracts; deprecated
+  command shims and the legacy read-only `sessions` command have been removed.
+- All 23 catalog-publishable packages, including the new
+  `@mono-agent/docs-mcp`, move together to 0.13.0. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.12.0 — Always-on web console and resilient agent sessions (2026-07-17)
 
 ### Highlights
