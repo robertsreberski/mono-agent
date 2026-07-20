@@ -25,6 +25,8 @@ export interface SlackAppsConnectionsOpenResult {
 export interface SlackChatPostMessageParams {
   channel: SlackChannelId;
   text: string;
+  /** Optional Block Kit layout; `text` remains the notification/accessibility fallback. */
+  blocks?: readonly unknown[];
   thread_ts?: SlackMessageTs;
   // Slack exposes no bot-controlled notification-suppression parameter here.
   // SlackMessageStreamOptions.silent warns rather than inventing one.
@@ -47,6 +49,8 @@ export interface SlackChatUpdateParams {
   channel: SlackChannelId;
   ts: SlackMessageTs;
   text: string;
+  /** Optional replacement Block Kit layout. Pass `[]` to remove interactive controls. */
+  blocks?: readonly unknown[];
   mrkdwn?: boolean;
 }
 
@@ -257,6 +261,11 @@ export interface SlackBlockAction {
   action_id?: string;
   block_id?: string;
   value?: string;
+  /** Selected static-select option, present for `static_select` actions. */
+  selected_option?: {
+    value?: string;
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 }
 

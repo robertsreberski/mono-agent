@@ -281,9 +281,11 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
 
   // Telegram & Slack deliver only the FINAL answer by default (no streamed
   // interim edits) while showing a working indicator — Telegram a "typing…"
-  // action, Slack a 👀 "seen" reaction. This is built-in behavior (not a JSON
-  // field); restoring live interim streaming needs a custom channel driver with
-  // stream.finalOnly=false. The OpenAI-compatible endpoint still streams tokens.
+  // action, Slack a 👀 "seen" reaction. If tools run, both post the final answer
+  // separately and then best-effort delete their temporary activity message.
+  // This is built-in behavior (not a JSON field); restoring live interim
+  // streaming needs a custom channel driver with stream.finalOnly=false. The
+  // OpenAI-compatible endpoint still streams tokens.
   "telegram": {
     "enabled": true,                       // opt-in; defaults to false (off → "disabled")
     // Put MONO_AGENT_TELEGRAM_BOT_TOKEN in .env; do not inline botToken here.
@@ -293,6 +295,8 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
 
   "slack": {
     "enabled": true,                       // opt-in; defaults to false (off → "disabled")
+    // Built-in @agent /model and /effort Block Kit controls expose the runtime
+    // primary + fallbacks; DM choices span threads, shared-channel choices do not.
     // Put MONO_AGENT_SLACK_BOT_TOKEN and MONO_AGENT_SLACK_APP_TOKEN in .env.
     "allowedChannelIds": ["C0123"],        // or "allowAllChannels": true
     "allowAllChannels": false,

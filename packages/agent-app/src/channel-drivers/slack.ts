@@ -4,9 +4,11 @@ import type {
   SlackAdapterConfig,
   SlackAdapterStartOptions,
   SlackAdapterStartResult,
+  SlackRuntimeControls,
 } from "@mono-agent/slack-adapter";
 
 import { buildChannelConfigView } from "../channel-config-view.js";
+import { buildChannelRuntimeControls } from "../channel-runtime-controls.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
 import type { ChannelDriver, ContinuationChannelSynthesisResult } from "../channels.js";
@@ -104,6 +106,12 @@ export function createSlackChannelDriver(
         stripMentionText: input.config.stripMentionText,
         shortcuts: input.config.shortcuts,
         homeTab: input.config.homeTab,
+        ...(input.coreConfig?.runtime === undefined
+          ? {}
+          : {
+              runtimeControls:
+                buildChannelRuntimeControls(input.coreConfig) satisfies SlackRuntimeControls,
+            }),
         responder: input.responder,
         onConnectionLost: (reason) => input.onDegraded?.(reason),
         onConnectionRestored: () => input.onRecovered?.(),

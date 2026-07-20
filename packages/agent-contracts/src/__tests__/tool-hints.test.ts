@@ -37,14 +37,14 @@ describe("formatToolActivityLine", () => {
   });
 
   it("relativizes workspace paths and collapses the home directory in previews", () => {
-    const options = { workspaceRoot: "/Users/operator/agents/assistant", homeDir: "/Users/operator" };
-    expect(formatToolActivityLine("Read", { file_path: "/Users/operator/agents/assistant/backlog.md" }, options))
+    const options = { workspaceRoot: "/Users/example/agents/assistant", homeDir: "/Users/example" };
+    expect(formatToolActivityLine("Read", { file_path: "/Users/example/agents/assistant/backlog.md" }, options))
       .toBe("📖 Reading backlog.md");
-    expect(formatToolActivityLine("Edit", { path: "/Users/operator/agents/assistant/skills/x/SKILL.md" }, options))
+    expect(formatToolActivityLine("Edit", { path: "/Users/example/agents/assistant/skills/x/SKILL.md" }, options))
       .toBe("✏️ Editing skills/x/SKILL.md");
-    expect(formatToolActivityLine("Read", { file_path: "/Users/operator/other-repo/notes.md" }, options))
+    expect(formatToolActivityLine("Read", { file_path: "/Users/example/other-repo/notes.md" }, options))
       .toBe("📖 Reading ~/other-repo/notes.md");
-    expect(formatToolActivityLine("bash", { command: "cat /Users/operator/agents/assistant/daily/2026-07-20.md" }, options))
+    expect(formatToolActivityLine("bash", { command: "cat /Users/example/agents/assistant/daily/2026-07-20.md" }, options))
       .toBe("🖥️ Running cat daily/2026-07-20.md");
     // Paths outside both roots stay untouched.
     expect(formatToolActivityLine("Read", { file_path: "/etc/hosts" }, options))

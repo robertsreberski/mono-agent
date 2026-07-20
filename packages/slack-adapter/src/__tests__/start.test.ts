@@ -134,6 +134,75 @@ describe("startSlackAdapter", () => {
     expect(sockets[0]?.closed).toBe(true);
   });
 
+  it("routes runtime-control interactions even without shortcuts or App Home buttons", async () => {
+    const api = new FakeSlackApi();
+    const sockets: FakeWebSocket[] = [];
+    const responder = vi.fn(async () => ({ text: "unused" }));
+    const started = await startSlackAdapter(buildOptions({
+      createApi: () => api,
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      responder: { respond: responder },
+      runtimeControls: {
+        defaultModel: "pi:openai:default",
+        models: [
+          { value: "pi:openai:default", label: "Default", efforts: [] },
+          { value: "pi:anthropic:fallback", label: "Fallback", efforts: [] },
+        ],
+      },
+    }));
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0];
+      if (socket === undefined) throw new Error("expected a socket");
+      socket.emitOpen();
+      socket.emitMessage(socketEnvelope("E-model", directMessage("/model")));
+      await vi.waitFor(() => expect(api.postMessageCalls).toHaveLength(1));
+      const blocks = api.postMessageCalls[0]?.blocks as readonly {
+        readonly elements?: readonly {
+          readonly action_id?: string;
+          readonly options?: readonly { readonly text: { readonly text: string }; readonly value: string }[];
+        }[];
+      }[];
+      const option = blocks
+        .flatMap((block) => block.elements ?? [])
+        .find((element) => element.action_id === "mono_agent_runtime_model")
+        ?.options?.find((candidate) => candidate.text.text === "Fallback");
+      if (option === undefined) throw new Error("expected fallback option");
+
+      socket.emitMessage({
+        envelope_id: "I-model",
+        type: "interactive",
+        accepts_response_payload: true,
+        payload: {
+          type: "block_actions",
+          channel: { id: "D1" },
+          message: { ts: "200.000001", thread_ts: "171.000001" },
+          actions: [{
+            action_id: "mono_agent_runtime_model",
+            selected_option: { value: option.value },
+          }],
+        },
+      });
+
+      await vi.waitFor(() => expect(api.updateCalls).toHaveLength(1));
+      expect(api.updateCalls[0]).toMatchObject({
+        channel: "D1",
+        ts: "200.000001",
+        text: "Model changed to Fallback for this DM until /model default or restart.",
+        blocks: [],
+      });
+      expect(socket.sent.map((entry) => JSON.parse(entry))).toContainEqual({ envelope_id: "I-model" });
+      expect(responder).not.toHaveBeenCalled();
+    } finally {
+      await started.stop();
+    }
+  });
+
   it("redacts configured Slack tokens at the composition-root logger boundary", async () => {
     // Build credential-shaped fixtures at runtime so repository secret
     // scanners do not mistake them for committed credentials.

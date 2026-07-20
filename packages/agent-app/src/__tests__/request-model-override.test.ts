@@ -100,6 +100,23 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     expect(result.runtimeOptions.effort).toBe("high");
   });
 
+  it("applies a Slack conversation model + effort override", async () => {
+    const result = await run({ slack: { model: "claude:claude-opus-4-8", effort: "high" } });
+    expect(result.runtimeOptions.model).toEqual(expect.objectContaining({
+      sdk: "claude",
+      model: "claude-opus-4-8",
+    }));
+    expect(result.runtimeOptions.effort).toBe("high");
+  });
+
+  it("preserves existing Telegram precedence when malformed metadata carries both channel blocks", async () => {
+    const result = await run({
+      telegram: { model: "claude:claude-opus-4-8" },
+      slack: { model: "codex:gpt-5.5" },
+    });
+    expect(result.runtimeOptions.model).toEqual(expect.objectContaining({ sdk: "claude" }));
+  });
+
   it("prefers web metadata over its TUI compatibility mirror", async () => {
     const result = await run({
       web: { model: "claude:claude-opus-4-8", effort: "high" },
