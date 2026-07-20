@@ -126,6 +126,41 @@ describe("isRunHistoryToolAllowed", () => {
 });
 
 describe("RunHistory MCP tool", () => {
+  it("accepts a second client initialize on the same per-run endpoint (model failover)", async () => {
+    const artifactDir = await tempDir();
+    const conversationId = "conversation-failover";
+    const extension = await createRunHistoryRuntimeExtension({ artifactDir })({
+      runId: "current-run",
+      request: {
+        conversationId,
+        userMessage: "inspect history",
+        abortSignal: new AbortController().signal,
+      },
+      context: {} as never,
+    });
+    const mcpServers = extension.runtimeOptions?.mcpServers as Record<string, unknown> | undefined;
+    const spec = mcpServers?.[RUN_HISTORY_MCP_SERVER_NAME] as { readonly url: string } | undefined;
+    if (spec === undefined) throw new Error("RunHistory MCP server was not registered.");
+    const first = new Client({ name: "run-history-test", version: "1.0.0" });
+    try {
+      await first.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+    } finally {
+      await first.close().catch(() => undefined);
+    }
+    // A failover attempt builds a fresh client and re-sends `initialize` to the
+    // same still-open per-run endpoint; it must be accepted, not rejected with
+    // "Server already initialized".
+    const second = new Client({ name: "run-history-test", version: "1.0.0" });
+    try {
+      await second.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const result = await second.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: { action: "list" } });
+      expect(result.isError).not.toBe(true);
+    } finally {
+      await second.close().catch(() => undefined);
+      await extension.cleanup?.();
+    }
+  });
+
   it("lists bounded terminal runs from only the exact conversation bucket", async () => {
     const artifactDir = await tempDir();
     const conversationId = "telegram:42#2026-07-12";

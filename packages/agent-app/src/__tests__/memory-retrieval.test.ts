@@ -231,6 +231,35 @@ describe("shared MemoryRecall MCP", () => {
     }
   });
 
+  it("accepts a second client initialize on the same per-run endpoint (model failover)", async () => {
+    const store = fakeStore();
+    const service = new MemoryRetrievalService(store);
+    const extension = await createSharedMemoryRecallRuntimeExtension(service)({ runId: "turn-failover" });
+    const spec = extension.runtimeOptions.mcpServers["mono-agent-memory"] as { url: string };
+    const first = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+    try {
+      await first.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+    } finally {
+      await first.close().catch(() => undefined);
+    }
+    // A failover attempt builds a fresh client and re-sends `initialize` to the
+    // same still-open per-run endpoint; it must be accepted, not rejected with
+    // "Server already initialized".
+    const second = new Client({ name: "memory-retrieval-test", version: "1.0.0" });
+    try {
+      await second.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+      const result = await second.callTool({
+        name: "MemoryRecall",
+        arguments: { query: "deploy pipeline" },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(store.queries).toContain("deploy pipeline");
+    } finally {
+      await second.close().catch(() => undefined);
+      await extension.cleanup();
+    }
+  });
+
   it("keeps graph expansion explicit-only while reusing one raw backend lookup", async () => {
     const store = fakeStore();
     let expansionCalls = 0;
