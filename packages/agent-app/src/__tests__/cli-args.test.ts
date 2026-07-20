@@ -13,7 +13,16 @@ vi.mock("../managed-runtime-publication.js", async (importOriginal) => {
   return { ...actual, waitForManagedRuntimePublication: mocks.waitForManagedRuntimePublication };
 });
 
-import { describeChannelStatus, loadCliEnvFile, monoAgentVersion, parseCliArgs, renderHelp, runCli, shouldLoadCommandDotenv } from "../cli.js";
+import { describeChannelStatus, loadCliEnvFile, monoAgentVersion, parseCliArgs, renderHelp, renderHelpTopic, runCli, shouldLoadCommandDotenv } from "../cli.js";
+
+/** Resolve a help topic to its rendered detail text, failing if it is not a valid topic. */
+function helpTopicText(topic: string): string {
+  const result = renderHelpTopic(topic);
+  if (!result.ok) {
+    throw new Error(`expected help topic \`${topic}\` to resolve, got: ${result.message}`);
+  }
+  return result.text;
+}
 import { MANAGED_BACKGROUND_WORKER_ENV } from "../background-runtime.js";
 import {
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
@@ -374,7 +383,7 @@ describe("parseCliArgs", () => {
   });
 
   it("rejects --json on lifecycle/interactive commands with a usage error naming the JSON surfaces", () => {
-    for (const command of ["init", "auth", "start", "stop", "restart", "logs", "tui", "web", "sessions", "backfill"] as const) {
+    for (const command of ["init", "auth", "start", "stop", "restart", "logs", "tui", "web", "backfill"] as const) {
       expect(() => parseCliArgs([command, "--json"])).toThrow(/--json is not supported/u);
     }
     // The error names the supported surfaces so a caller knows where JSON lives.
@@ -525,40 +534,15 @@ describe("parseCliArgs", () => {
     expect(parseCliArgs(["version"]).command).toBe("version");
   });
 
-  it("parses legacy sessions command flags", () => {
-    const result = parseCliArgs([
-      "sessions",
-      "--host",
-      "0.0.0.0",
-      "--port",
-      "4599",
-      "--no-open",
-      "--allow-non-loopback",
-      "--show-auth-url",
-      "--include-memory",
-      "--config",
-      "./agent.json",
-      "--env-file",
-      "./agent.env",
-    ]);
-    expect(result.command).toBe("sessions");
-    expect(result.host).toBe("0.0.0.0");
-    expect(result.port).toBe(4599);
-    expect(result.open).toBe(false);
-    expect(result.allowNonLoopback).toBe(true);
-    expect(result.showAuthUrl).toBe(true);
-    expect(result.includeMemory).toBe(true);
-    expect(result.configPath).toBe("./agent.json");
-    expect(result.envFile).toBe("./agent.env");
-    expect(() => parseCliArgs(["sessions", "--port", "notaport"])).toThrow(/--port/u);
-    expect(() => parseCliArgs(["web", "--show-auth-url"])).toThrow(/sessions/u);
-  });
-
-  it("parses the sessions --max-runs cap and rejects bad or misplaced uses", () => {
-    expect(parseCliArgs(["sessions", "--max-runs", "500"]).maxRunsPerInstance).toBe(500);
-    expect(() => parseCliArgs(["sessions", "--max-runs", "0"])).toThrow(/--max-runs/u);
-    expect(() => parseCliArgs(["sessions", "--max-runs", "nope"])).toThrow(/--max-runs/u);
-    expect(() => parseCliArgs(["start", "--max-runs", "500"])).toThrow(/only supported for/u);
+  it("rejects the removed `sessions` command with a tui/web pointer", () => {
+    expect(() => parseCliArgs(["sessions"])).toThrow(/`sessions` was removed/u);
+    expect(() => parseCliArgs(["sessions"])).toThrow(/mono-agent tui/u);
+    expect(() => parseCliArgs(["sessions"])).toThrow(/mono-agent web/u);
+    // Its former Session Recorder flags no longer exist on any command.
+    expect(() => parseCliArgs(["web", "--no-open"])).toThrow(/Unknown flag/u);
+    expect(() => parseCliArgs(["web", "--allow-non-loopback"])).toThrow(/Unknown flag/u);
+    expect(() => parseCliArgs(["web", "--show-auth-url"])).toThrow(/Unknown flag/u);
+    expect(() => parseCliArgs(["web", "--max-runs", "500"])).toThrow(/Unknown flag/u);
   });
 
   it("parses the web service namespace and LAN/loopback bind flags", () => {
@@ -585,46 +569,128 @@ describe("parseCliArgs", () => {
       all: true,
       yes: true,
     });
-    expect(() => parseCliArgs(["sessions", "--loopback"])).toThrow(/loopback/u);
+    expect(() => parseCliArgs(["start", "--loopback"])).toThrow(/loopback/u);
     expect(() => parseCliArgs(["web", "run", "--env-file", ".env"])).toThrow(/does not load/u);
     expect(() => parseCliArgs(["web", "--config", "agent.json"])).toThrow(/does not load/u);
   });
 
   it("never loads an invoking folder dotenv for the machine-wide web console", () => {
     expect(shouldLoadCommandDotenv("web")).toBe(false);
-    expect(shouldLoadCommandDotenv("sessions")).toBe(true);
     expect(shouldLoadCommandDotenv("start")).toBe(true);
   });
 
-  it("includes setup, presets, and web in the help screen", () => {
-    expect(renderHelp()).toContain("mono-agent setup");
-    expect(renderHelp()).toContain("mono-agent presets");
-    expect(renderHelp()).toContain("mono-agent init [--preset");
-    expect(renderHelp()).toContain("Effort levels: none, minimal, low, medium, high, xhigh, max, ultra");
-    expect(renderHelp()).toContain("--fallback-effort <provider-default|level>");
-    expect(renderHelp()).not.toContain("--fallback-models");
-    expect(renderHelp()).toContain("mono-agent restart [--config <path>] [--clear-sessions]");
-    expect(renderHelp()).toContain("--force is a deprecated alias of --clear-sessions.");
-    expect(renderHelp()).toContain("mono-agent sandbox status | setup | check");
-    expect(renderHelp()).toContain("Guided Pi authentication");
-    expect(renderHelp()).toContain("Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go");
-    expect(renderHelp()).toContain("direct opencode:<provider>:<model>");
-    expect(renderHelp()).toContain("hand-authored runtime backend config");
-    expect(renderHelp()).toContain("mono-agent web");
-    expect(renderHelp()).toContain("mono-agent sessions");
-    // The merged observability command replaces the separate audit-runs/metrics entries.
-    expect(renderHelp()).toContain("mono-agent runs [report|audit]");
-    expect(renderHelp()).not.toContain("mono-agent audit-runs [");
-    expect(renderHelp()).not.toContain("mono-agent metrics [");
-    expect(renderHelp()).not.toContain("--artifact-dir");
-    expect(renderHelp()).toContain("live chat with structured");
-    expect(renderHelp()).not.toContain("live chat with full");
-    expect(renderHelp()).toContain("--allow-non-loopback");
-    expect(renderHelp()).toContain("MONO_AGENT_WEB_AUTH_TOKEN");
-    expect(renderHelp()).toContain("--show-auth-url");
-    expect(renderHelp()).toContain("--include-memory");
-    expect(renderHelp()).toContain("web reset --all --yes");
-    expect(renderHelp()).toContain("0.0.0.0:5050");
+  it("renders a grouped, scannable summary with every public command once", () => {
+    const help = renderHelp();
+    const lines = help.split("\n");
+
+    // Group headings appear in order; the Run group carries the launchd note.
+    const groupOrder = ["Setup", "Check", "Run", "Console", "Observe", "Maintain"];
+    const headingIndexes = groupOrder.map((group) =>
+      lines.findIndex((line) => line.startsWith(group)),
+    );
+    expect(headingIndexes.every((index) => index >= 0)).toBe(true);
+    expect([...headingIndexes]).toEqual([...headingIndexes].sort((a, b) => a - b));
+    const runHeading = lines.find((line) => line.startsWith("Run")) ?? "";
+    expect(runHeading).toContain("(background lifecycle is macOS/launchd; elsewhere use start --foreground)");
+
+    // Short, one-line-per-command signatures — not the full flag detail.
+    expect(help).toContain("runs [report|audit]");
+    expect(help).toContain("web [start|stop|status|...]");
+    expect(help).toContain("presets list|show <id>");
+    expect(help).not.toContain("mono-agent init [--preset");
+    expect(help).not.toContain("Effort levels:");
+    expect(help).not.toContain("--fallback-effort");
+    expect(help).not.toContain("--artifact-dir");
+    expect(help).not.toContain("web reset --all --yes");
+
+    // Exactly the nine PR3 JSON surfaces carry a [--json] marker.
+    expect(help.split("[--json]").length - 1).toBe(9);
+    const lineFor = (short: string): string => lines.find((line) => line.includes(short)) ?? "";
+    expect(lineFor("runs [report|audit]")).toContain("[--json]");
+    expect(lineFor("memory <subcommand>")).toContain("[--json]");
+    expect(lineFor("web [start|stop|status|...]")).not.toContain("[--json]");
+    expect(lineFor("backfill")).not.toContain("[--json]");
+
+    // The removed `sessions` command never appears in the summary.
+    expect(help).not.toContain("sessions");
+
+    // Footer pointers to the detail and notes views.
+    expect(help).toContain("Run `mono-agent help <command>` for full flags and behavior notes.");
+    expect(help).toContain("Run `mono-agent help notes` for model references, fallback chains, and env-file rules.");
+  });
+
+  it("resolves `help <topic>` to detail views, aliases, notes, removed pointers, and errors", () => {
+    // Command detail preserves the full signature and behavior lines.
+    const initDetail = helpTopicText("init");
+    expect(initDetail).toContain("mono-agent init [--preset");
+    expect(initDetail).toContain("Effort levels: none, minimal, low, medium, high, xhigh, max, ultra");
+    expect(initDetail).toContain("--fallback-effort <provider-default|level>");
+    expect(initDetail).not.toContain("--fallback-models");
+
+    const validateDetail = helpTopicText("validate");
+    expect(validateDetail).toContain("mono-agent validate [--preset <id>]");
+    expect(validateDetail).toContain("`mono-agent doctor` is an alias for this command.");
+
+    const tuiDetail = helpTopicText("tui");
+    expect(tuiDetail).toContain("live chat with structured");
+    expect(tuiDetail).not.toContain("live chat with full");
+
+    const webDetail = helpTopicText("web");
+    expect(webDetail).toContain("web reset --all --yes");
+    expect(webDetail).toContain("0.0.0.0:5050");
+
+    // `start -f` was removed in PR1 (it errors); its help must never teach the
+    // `-f` shorthand. The word-boundary match excludes `--foreground` (whose "f"
+    // is followed by "o", so there is no boundary after "-f").
+    const startDetail = helpTopicText("start");
+    expect(startDetail).toContain("--foreground");
+    expect(startDetail).not.toMatch(/-f\b/u);
+
+    // `presets` help documents the PR3 --json surface its summary marks.
+    expect(helpTopicText("presets")).toContain("--json");
+
+    // Aliases resolve to the canonical entry, noting the alias.
+    const doctorDetail = helpTopicText("doctor");
+    expect(doctorDetail).toContain("`doctor` is an alias of `validate`.");
+    expect(doctorDetail).toContain("mono-agent validate [--preset <id>]");
+    const setupDetail = helpTopicText("setup");
+    expect(setupDetail).toContain("`setup` is an alias of `init`.");
+    expect(setupDetail).toContain("mono-agent init [--preset");
+
+    // The deprecated `metrics`/`audit-runs` forwarders still resolve to `runs`.
+    const metricsDetail = helpTopicText("metrics");
+    expect(metricsDetail).toContain("`metrics` is an alias of `runs`.");
+    expect(metricsDetail).toContain("mono-agent runs [report|audit]");
+    const auditRunsDetail = helpTopicText("audit-runs");
+    expect(auditRunsDetail).toContain("`audit-runs` is an alias of `runs`.");
+    expect(auditRunsDetail).toContain("mono-agent runs [report|audit]");
+
+    // The notes block carries the model-reference guidance.
+    const notes = helpTopicText("notes");
+    expect(notes).toContain("Guided Pi authentication");
+    expect(notes).toContain("Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go");
+    expect(notes).toContain("direct opencode:<provider>:<model>");
+    expect(notes).toContain("hand-authored runtime backend config");
+
+    // Removed commands print their replacement pointer as an informational topic.
+    const recipes = renderHelpTopic("recipes");
+    expect(recipes.ok).toBe(true);
+    if (recipes.ok) expect(recipes.text).toContain("`recipes` was removed; use `mono-agent presets`.");
+    const sessions = renderHelpTopic("sessions");
+    expect(sessions.ok).toBe(true);
+    if (sessions.ok) {
+      expect(sessions.text).toContain("mono-agent tui");
+      expect(sessions.text).toContain("mono-agent web");
+    }
+
+    // An unknown topic is a usage error listing valid topics.
+    const bogus = renderHelpTopic("bogus");
+    expect(bogus.ok).toBe(false);
+    if (!bogus.ok) {
+      expect(bogus.message).toContain("Unknown help topic `bogus`");
+      expect(bogus.message).toContain("init");
+      expect(bogus.message).toContain("notes");
+    }
   });
 
   it("accepts --memory bujo and --memory lite, rejects --memory markdown", () => {
@@ -699,6 +765,32 @@ describe("removed CLI surfaces", () => {
     const unknown = await captureCli(() => runCli(["definitely-not-a-command"]));
     expect(unknown.code).toBe(2);
     expect(unknown.stderr).not.toContain("recipes");
+  });
+
+  it("exits with the usage-error code and a tui/web pointer for the removed sessions command", async () => {
+    const sessions = await captureCli(() => runCli(["sessions"]));
+    expect(sessions.code).toBe(2);
+    expect(sessions.stderr).toContain("`sessions` was removed");
+    expect(sessions.stderr).toContain("mono-agent tui");
+    expect(sessions.stderr).toContain("mono-agent web");
+    // The unknown-command enumeration must no longer advertise `sessions`.
+    const unknown = await captureCli(() => runCli(["definitely-not-a-command"]));
+    expect(unknown.code).toBe(2);
+    expect(unknown.stderr).not.toContain("sessions");
+  });
+
+  it("routes help topics through runCli with the right output stream and exit code", async () => {
+    const summary = await captureCli(() => runCli(["help"]));
+    expect(summary.code).toBe(0);
+    expect(summary.stdout).toContain("Run `mono-agent help <command>` for full flags and behavior notes.");
+
+    const detail = await captureCli(() => runCli(["help", "init"]));
+    expect(detail.code).toBe(0);
+    expect(detail.stdout).toContain("mono-agent init [--preset");
+
+    const bogus = await captureCli(() => runCli(["help", "bogus"]));
+    expect(bogus.code).toBe(2);
+    expect(bogus.stderr).toContain("Unknown help topic `bogus`");
   });
 
   it("exits with the usage-error code for the removed --recipe and --fallback-models flags", async () => {

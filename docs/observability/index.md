@@ -6,7 +6,7 @@ sidebar:
 
 # Observability & CLI
 
-Every mono-agent run gets local JSONL artifacts and can optionally be exported to [Phoenix](/observability/phoenix-and-backfill/) for a semantic trace timeline. The artifacts are the on-disk record after successful recorder boundaries, not a crash-safe in-flight journal. A trace-source registry lets dashboards discover running agents, the `mono-agent` CLI operates the whole lifecycle, and the TUI, always-on web console, and Session Recorder provide complementary operator views. This page maps those surfaces and links the detail pages.
+Every mono-agent run gets local JSONL artifacts and can optionally be exported to [Phoenix](/observability/phoenix-and-backfill/) for a semantic trace timeline. The artifacts are the on-disk record after successful recorder boundaries, not a crash-safe in-flight journal. A trace-source registry lets dashboards discover running agents, the `mono-agent` CLI operates the whole lifecycle, and the TUI and always-on web console provide complementary operator views. This page maps those surfaces and links the detail pages.
 
 ## The surfaces
 
@@ -15,10 +15,10 @@ Every mono-agent run gets local JSONL artifacts and can optionally be exported t
 | JSONL run artifacts | Per-run `run-*.events.jsonl` + `run-*.summary.json`; non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned | config / auto | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Trace-source registry | Heartbeat manifest so dashboards discover live agents | config | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Phoenix exporter + backfill | Best-effort OTLP/HTTP export of run lifecycles; retroactive backfill | config / cli | [Phoenix export & backfill](/observability/phoenix-and-backfill/) |
-| `mono-agent` CLI | init / validate / start / stop / logs / restart / tui / web / sessions / backfill / runs / install-skill | cli | [CLI reference](/observability/cli-reference/) |
+| `mono-agent` CLI | init / validate / start / stop / logs / restart / tui / web / backfill / runs / install-skill | cli | [CLI reference](/observability/cli-reference/) |
 | TUI | Operator console: live chat with thinking/tool/telemetry insight, run replay, config view | cli | [TUI](/observability/tui/) |
 | Web console | Always-on persistent multi-agent conversations, streamed turns, and local-device attachments | cli | [Web console](/observability/web-console/) |
-| Session Recorder | Read-only discovered-agent run lists/details and live sub-run updates | cli | [CLI reference](/observability/cli-reference/#sessions) |
+| Session Recorder (removed) | Launcher command removed — use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console); `@mono-agent/session-web` still ships without a CLI command | cli | [CLI reference](/observability/cli-reference/#sessions) |
 
 ## JSONL run artifacts (always on)
 
@@ -106,36 +106,12 @@ The default bind is `0.0.0.0:5050`, making LAN and tailnet access the normal pat
 
 ## The Session Recorder
 
-`mono-agent sessions` is the existing read-only Session Recorder under its new command name. It discovers every running agent, folds local run artifacts with each agent's default-on `live` relay, and streams updates to the browser.
-
-```bash
-mono-agent sessions
-mono-agent sessions --port 4599 --no-open
-mono-agent sessions --include-memory
-```
-
-Its loopback `127.0.0.1:4599` default, flags, `MONO_AGENT_WEB_AUTH_TOKEN` bearer compatibility, paging, and recorded-run views are unchanged. Bind `0.0.0.0` with `--allow-non-loopback` only when the read-only recorder should be reachable across a trusted network.
-
-A run's detail view includes a **Context (this turn)** section showing what each
-provider call was actually driven with: any recalled long-term memory (with its
-source), the prior conversation messages that were replayed (role-badged), and
-the full compiled system prompt behind a collapsible raw view. When a confirmed
-warm in-process session carried the transcript instead of host-loaded history,
-the section reads *context carried by the provider session*. Cold durable
-reopens report the canonical history loaded for the turn, including an
-authoritative empty history. Recordings made
-before this feature degrade gracefully: they show only the raw compiled-prompt
-fallback, and runs with neither context nor a recorded prompt show no section.
-
-The Session Recorder loads recent runs first and pages the full on-disk history
-on demand via **Load older** — every recorded run stays reachable, because
-cap-eviction of completed runs from the in-memory working set is silent (it no
-longer drops runs from the browser). `--max-runs <n>` (default `200`) bounds that
-in-memory working set and the initial snapshot size; it does not limit how far
-Load older can reach. The browser treats stale `running` summaries as `stalled`,
-shows recorded failure kinds/error text/failover attempts, and uses each
-instance's discovered timezone for single-instance lists and run details.
-Mixed-instance views fall back to the viewer locale/timezone.
+The `mono-agent sessions` command was removed. For operator run inspection use
+`mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). The
+`@mono-agent/session-web` package and the read-only `live` relay still ship in
+code but are no longer reachable through any CLI command; full retirement is a
+later dead-code-audited change. See the [CLI reference](/observability/cli-reference/#sessions)
+and the [deprecation tracker](/reference/deprecations/#removed-surfaces).
 
 ## Related
 

@@ -8,7 +8,7 @@ sidebar:
 
 This page documents every `mono-agent` command and its flags, verified against the CLI implementation. It also covers the two cross-cutting behaviors you hit on most invocations: automatic `.env` loading and the per-section reports `validate` and `start` print.
 
-Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the built-in usage screen. An unknown command or flag prints the error plus the help screen and exits with code `2`.
+Run `mono-agent help` (or bare `mono-agent`, `--help`, `-h`) for a grouped, one-line-per-command summary under the **Setup / Check / Run / Console / Observe / Maintain** headings, with a `[--json]` marker on the commands that accept it. Drill in with `mono-agent help <command>` for that command's full flags and behavior notes, or `mono-agent help notes` for model references, fallback chains, and env-file rules. `mono-agent help <alias>` resolves aliases (`doctor` → `validate`, `setup` → `init`, `metrics`/`audit-runs` → `runs`), and a removed command (`recipes`, `sessions`) prints its replacement pointer. An unknown command or an unknown flag prints the error plus the grouped summary and exits with code `2`; `help <unknown-topic>` prints a stderr usage error listing the valid topics (without the summary) and also exits `2`.
 
 ## Exit codes and `--json`
 
@@ -27,7 +27,7 @@ The read/status commands accept `--json` for scripting: `validate`, `config`, `p
 - Hints, warnings, and deprecation notices go to stderr, never stdout.
 - Secrets are redacted exactly as the human view redacts them; a raw secret value never appears in JSON output.
 
-`--json` is rejected with a usage error (`2`) on the lifecycle/interactive commands (`init`, `auth`, `start`, `stop`, `restart`, `logs`, `tui`, `web`, `sessions`, `backfill`) and on `sandbox setup`/`sandbox check` and `install-skill` without `--project --check`, rather than being silently ignored.
+`--json` is rejected with a usage error (`2`) on the lifecycle/interactive commands (`init`, `auth`, `start`, `stop`, `restart`, `logs`, `tui`, `web`, `backfill`) and on `sandbox setup`/`sandbox check` and `install-skill` without `--project --check`, rather than being silently ignored.
 
 ## Command summary
 
@@ -41,18 +41,18 @@ The read/status commands accept `--json` for scripting: `validate`, `config`, `p
 | `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias), including a read-only exact-byte inventory of this config's managed launchd stdout/stderr and retained generations. With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>`, `--json` |
 | `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>`, `--json` |
 | `memory` | Preview, strictly audit, and safely maintain the configured memory store and its durable completed-turn intake. | `stats`, `today`, `show`, `search`, `top`, `audit`, `inspect`, `retry`, `resolve`, `rebuild`, `rollback`, `adopt-replay`; `--strict`, `--limit`, `--json` |
-| `start` | Start the agent as a background launchd service (or foreground worker). Background start also installs the fixed-policy one-shot log-maintenance LaunchAgent. | `--config <path>`, `--env-file <path>`, `--foreground` / `-f` |
+| `start` | Start the agent as a background launchd service (or foreground worker). Background start also installs the fixed-policy one-shot log-maintenance LaunchAgent. | `--config <path>`, `--env-file <path>`, `--foreground` |
 | `restart` | Restart the background instance for this config (starts it if stopped), maintaining logs only while the old writer is proven down. | `--config <path>`, `--env-file <path>`, `--clear-sessions` (`--force` deprecated alias) |
 | `stop` | Stop the background instance, unloading log maintenance first, and remove both LaunchAgent definitions. | `--config <path>`, `--env-file <path>` |
 | `status` | Show this config's instance plus any other running instances. | `--config <path>`, `--env-file <path>`, `--json` |
 | `logs` | Print (and optionally follow) the background instance's log files. | `--config <path>`, `--env-file <path>`, `--follow` / `-f`, `--lines <n>` |
 | `web` | Operate the always-on browser conversation console for every discovered running agent. Bare `web` is read-only status/help. | `start`, `restart`, `stop`, `status`, `logs`, `run`, `reset`; `--host <addr>`, `--loopback`, `--port <n>` |
-| `sessions` | Serve the legacy read-only Session Recorder for discovered agents. | `--host <addr>`, `--port <n>`, `--no-open`, `--allow-non-loopback`, `--show-auth-url`, `--include-memory`, `--max-runs <n>`, `--config <path>`, `--env-file <path>` |
+| `sessions` (removed) | The Session Recorder launcher was removed; it now errors with a pointer and exits `2`. Use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). | — |
 | `tui` | Open remote discovery/chat, attach to a managed macOS background agent for a dedicated SELF-CONFIG session, or use ordinary in-process local chat. | `--agent`, `--conversation`, `--configure`, `--local` |
 | `install-skill` | Copy the authoring composer to coding harnesses and pair its documentation MCP companion, or check/update managed project-local skills. | `--target claude\|codex\|both`, `--force`, `--no-docs-mcp`, `--project`, `--check`, `--update`, `--json` (with `--project --check`) |
 | `backfill` | Export already-recorded run artifacts to the Phoenix exporter with their historical timestamps. | `--run <id>`, `--all`, `--since <iso>`, `--until <iso>`, `--dry-run`, `--config <path>`, `--env-file <path>` |
 | `runs` | Read-only, offline reporting over local run summaries. `report` (default) aggregates status/failure-kind rates, duration percentiles, and cost totals; `audit` reports parse/status/failure-kind/stale-running totals without rewriting anything. | `report`, `audit`; `--artifacts <path>`, `--consumer <path>`, `--since <iso>`, `--until <iso>`, `--by model\|channel\|failureKind`, `--stale-after-ms <n>`, `--include-memory`, `--json`, `--config <path>`, `--env-file <path>` |
-| `help` | Print the usage screen. | — |
+| `help` | Print the grouped command summary, a single command's detail (`help <command>`), or the notes block (`help notes`). | `<command>`, `notes` |
 
 Every command is `cli` coverage. `start`, `restart`, `stop`, `status`, and `logs` are the background service commands; `start --foreground` is the cross-platform fallback. `stop`, `logs`, and `start --foreground` are real commands (they were absent from older feature listings).
 
@@ -378,7 +378,7 @@ Starts the agent. Without `--foreground`, it registers a background macOS servic
 | --- | --- |
 | `--config <path>` | Use a non-default config file. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file. |
-| `--foreground` / `-f` | Run the blocking foreground worker instead of backgrounding. |
+| `--foreground` | Run the blocking foreground worker instead of backgrounding. (`-f` is logs-only and errors on `start`.) |
 
 The start preflight requires the config **file** to exist (a folder with only env vars is not a configured agent → exit `2`) and runs structural validation with network probes skipped (so probes only yield `waiting`, never `error`); any `error` section refuses the start with exit `1`. `waiting` never blocks.
 
@@ -447,7 +447,7 @@ mono-agent logs --lines 500      # print the last 500 lines and exit
 | `logs` | `--follow` / `-f` | Keep streaming new output (`tail -F`). |
 | `logs` | `--lines <n>` | Number of trailing lines to print (1–100000, default 200). |
 
-For `logs`, `-f` means **follow**; for `start`, `-f` means **foreground**. A `--lines` value outside `1`–`100000` (or non-integer) errors.
+For `logs`, `-f` means **follow**; for `start`, use `--foreground` — `-f` is logs-only and errors on `start`. A `--lines` value outside `1`–`100000` (or non-integer) errors.
 
 `status` prints the same compact **runs health** block for the detached instance after the instance, observability, and channel details. Missing or empty artifact directories show `No runs recorded yet.` and do not change the command's existing exit-code semantics.
 
@@ -509,31 +509,9 @@ State lives owner-private under `~/.mono-agent/web/`. Threads are archived/resto
 
 ## `sessions`
 
-Serves the legacy read-only Session Recorder from any directory. This is the former `mono-agent web` command, moved without changing its defaults, flags, bearer behavior, recorded-run paging, or live-relay aggregation.
+The `mono-agent sessions` command was removed. Running it now errors with a pointer to its replacements and exits `2`. For operator run inspection use [`mono-agent tui`](#tui) (recorded-run replay) or [`mono-agent web`](#web) (live console).
 
-```bash
-mono-agent sessions
-mono-agent sessions --port 4599 --no-open
-mono-agent sessions --host 0.0.0.0 --allow-non-loopback
-mono-agent sessions --include-memory
-mono-agent sessions --max-runs 500
-```
-
-| Flag | Effect |
-| --- | --- |
-| `--host <addr>` | Bind address (default `127.0.0.1`). |
-| `--port <n>` | Bind port (default `4599`). |
-| `--no-open` | Do not launch a browser. |
-| `--allow-non-loopback` | Permit a non-loopback bind; APIs require the recorder bearer. |
-| `--show-auth-url` | On an interactive terminal, reveal a configured token in the printed URL fragment. |
-| `--include-memory` | Include memory-maintenance runs. |
-| `--max-runs <n>` | Bound the per-instance in-memory working set; disk paging still reaches full history. |
-| `--config <path>` | Add the configured trace-source registry to global discovery. |
-| `--env-file <path>` | Load the recorder token and overrides from a non-default dotenv file. |
-
-`MONO_AGENT_WEB_AUTH_TOKEN` remains the Session Recorder's compatibility bearer. It is not used by the new `mono-agent web` console. Non-loopback recorder mode still requires a stable token for non-interactive startup, uses URL fragments only for browser bootstrap, and sends API/SSE credentials in the `Authorization` header.
-
-For each browser origin, the recorder mirrors a captured or manually entered token into current-tab `sessionStorage` as `mono-agent.session-web.authToken` and persistent `localStorage` as `mono-agent.session-web.authToken.persisted`. The persistent copy survives page reloads, tab or browser closes, and browser restarts. On initial page load or after a manual reload, a JSON API 401/403 exposes the authentication form. If the server token changes while the page remains open, a stream 401/403 stays in the reconnecting state and retries with the stored token instead of exposing the form. Reload the page to expose the form; enter the current token and choose **Retry**, or choose **Clear** first to remove both browser-storage copies. Clearing the site's browser storage/site data also removes them; closing the browser alone does not sign out.
+The `@mono-agent/session-web` package and the read-only `live` event relay (`live.*` config) still ship in code, but they are no longer reachable through any CLI command. The `MONO_AGENT_WEB_AUTH_TOKEN` bearer is no longer read by any code — its only reader was the removed `sessions` command (the session-web package's programmatic `authToken` option is a separate thing). Full retirement is tracked as a later dead-code-audited change; see the [deprecation tracker](/reference/deprecations/#removed-surfaces).
 
 ## `install-skill`
 
