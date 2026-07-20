@@ -313,7 +313,7 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | `MONO_AGENT_TUI_ENABLED` | `tui.enabled` | **Default `true`** — default-on loopback operator surface for `mono-agent tui` and `mono-agent web`. |
 | `MONO_AGENT_TUI_HOST` | `tui.host` | Default `127.0.0.1`. |
 | `MONO_AGENT_TUI_PORT` | `tui.port` | Default `0` (ephemeral; published to the trace-source registry). |
-| `MONO_AGENT_TUI_BASE_PATH` | `tui.basePath` | Default `/tui`. |
+| `MONO_AGENT_TUI_BASE_PATH` | `tui.basePath` | Default `/gui`. |
 | `MONO_AGENT_TUI_ALLOW_NON_LOOPBACK` | `tui.allowNonLoopback` | Required to bind a non-loopback host. |
 | `MONO_AGENT_TUI_API_KEY` | `tui.apiKey` | Optional bearer the console must present. Put the value in `.env`; inline `tui.apiKey` remains accepted for compatibility but is not the documented source-config convention. See [../channels/tui.md](/channels/tui/). |
 

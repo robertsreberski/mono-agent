@@ -10,6 +10,8 @@ sidebar:
 
 This is the chat-first companion to [`mono-agent tui`](/observability/tui/). The former `mono-agent sessions` read-only run browser [was removed](#session-recorder-removed); recorded-run replay now lives in `mono-agent tui`.
 
+The web service does not run the terminal UI. Both consoles discover and connect to each agent's `metadata.channels.tui.baseUrl`, whose default path is `/gui`; they merely share the same bidirectional operator protocol. The sibling `/live` endpoint is a different, read-only SSE relay retained for session-recorder and run-event consumers.
+
 ## Start it once
 
 On macOS, install and start the managed service:

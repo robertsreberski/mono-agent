@@ -15,6 +15,7 @@ import {
   resolveAppTraceStaleAfterMs,
 } from "./app-config.js";
 import { formatChannelFactValue } from "./channel-fact-format.js";
+import { formatHumanChannelSections } from "./channel-status-display.js";
 import { hasCompletedManagedStartup } from "./managed-startup.js";
 import {
   bootout,
@@ -827,6 +828,8 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
 ): Promise<BackgroundLaunchResult> {
   const uid = deps.getuid();
   let launchTarget: InstanceTarget;
+  const runtimeStartedAt = deps.now();
+  deps.stdout(ui.hint("Verifying the durable managed runtime…"));
   try {
     const additionalPackages = await deps.resolveManagedRuntimePackages?.(target) ?? [];
     const runtime = await deps.ensureManagedRuntime({
@@ -840,6 +843,10 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
       nodePath: runtime.nodePath,
       managedRuntimeLaunchProof: runtime.launchProof,
     };
+    deps.stdout(ui.hint(
+      `Managed runtime ready (${runtimeVerificationLabel(runtime.verificationMode)}, `
+      + `${formatLifecycleDuration(deps.now() - runtimeStartedAt)}).`,
+    ));
   } catch (error) {
     reportLifecycleException(target, deps, "install and verify the durable managed runtime", error);
     return { ok: false, action: "start", reason: "runtime" };
@@ -873,6 +880,7 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
   }
   let outcome: LaunchOutcome;
   let prepared = false;
+  deps.stdout(ui.hint("Replacing the managed worker…"));
   try {
     let interruptedMaintenance = await deps.readLaunchdLogMaintenanceIntent(launchTarget.paths);
     if (interruptedMaintenance?.phase === "stopping" || interruptedMaintenance?.phase === "restoring") {
@@ -961,6 +969,20 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
   const completedAction = outcome.restarted ? "restarted" as const : "started" as const;
   printInstanceInfo(ready, launchTarget, deps, completedAction);
   return { ok: true, action: completedAction, source: ready };
+}
+
+function runtimeVerificationLabel(mode: ManagedBackgroundRuntime["verificationMode"]): string {
+  switch (mode) {
+    case "fast-reuse": return "warm reuse";
+    case "full-reuse": return "full verification";
+    case "installed": return "installed";
+    case "repaired": return "repaired";
+  }
+}
+
+function formatLifecycleDuration(milliseconds: number): string {
+  const safe = Math.max(0, milliseconds);
+  return safe < 1_000 ? `${Math.round(safe)} ms` : `${(safe / 1_000).toFixed(1)} s`;
 }
 
 async function prepareLaunchdDirectories(target: InstanceTarget, deps: BackgroundDeps): Promise<void> {
@@ -1925,10 +1947,10 @@ function writeInstanceDetail(source: TraceSourceListItem, target: InstanceTarget
       deps.stdout(`  ${line}\n`);
     }
   }
-  const channelLines = formatChannels(source);
-  if (channelLines.length > 0) {
-    deps.stdout(ui.rule("channels"));
-    for (const line of channelLines) {
+  const channelSections = formatChannels(source);
+  for (const section of channelSections) {
+    deps.stdout(ui.rule(section.title));
+    for (const line of section.lines) {
       deps.stdout(`${line}\n`);
     }
   }
@@ -2298,15 +2320,15 @@ function tuiEndpoint(source: TraceSourceListItem): string | undefined {
     : undefined;
 }
 
-function formatChannels(source: TraceSourceListItem): string[] {
+function formatChannels(source: TraceSourceListItem): ReturnType<typeof formatHumanChannelSections> {
   const channels = source.metadata?.channels;
   if (channels === null || typeof channels !== "object") {
     return [];
   }
-  return Object.entries(channels as Record<string, unknown>).map(([id, value]) => {
+  return formatHumanChannelSections(Object.entries(channels as Record<string, unknown>).map(([id, value]) => {
     const { kind, text } = describeChannel(value);
-    return `  ${ui.channelBadge(kind)}${ui.style.bold(id.padEnd(11))} ${text}`;
-  });
+    return { id, kind, text };
+  }));
 }
 
 export function describeChannel(value: unknown): { kind: string; text: string } {
