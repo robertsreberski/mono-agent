@@ -142,7 +142,7 @@ describe("startSlackAdapter", () => {
   });
 
   it("discovers the bot identity and recognizes mention-prefixed runtime commands", async () => {
-    const api = new FakeSlackApi({ ok: true, user_id: "U_MICKEY" });
+    const api = new FakeSlackApi({ ok: true, user: "mickey", user_id: "U_MICKEY" });
     const sockets: FakeWebSocket[] = [];
     const seen: AgentRequest[] = [];
     const started = await startSlackAdapter(buildOptions({
@@ -180,6 +180,127 @@ describe("startSlackAdapter", () => {
       socket.emitMessage(socketEnvelope("E-prompt", directMessage("<@U_MICKEY> keep this mention")));
       await vi.waitFor(() => expect(seen).toHaveLength(1));
       expect(seen[0]?.text).toBe("<@U_MICKEY> keep this mention");
+    } finally {
+      await started.stop();
+    }
+  });
+
+  it("derives bot-namespaced slash commands and applies them channel-wide", async () => {
+    const api = new FakeSlackApi({ ok: true, user: "mickey", user_id: "U_MICKEY" });
+    const sockets: FakeWebSocket[] = [];
+    const seen: AgentRequest[] = [];
+    const started = await startSlackAdapter(buildOptions({
+      createApi: () => api,
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      runtimeControls: {
+        defaultModel: "pi:openai-codex:gpt-default",
+        defaultEffort: "medium",
+        models: [
+          {
+            value: "pi:openai-codex:gpt-default",
+            label: "pi:openai-codex:gpt-default",
+            efforts: [{ value: "medium", label: "Medium" }],
+          },
+          {
+            value: "pi:anthropic:claude-fallback",
+            label: "pi:anthropic:claude-fallback",
+            efforts: [{ value: "high", label: "High" }],
+          },
+        ],
+      },
+      responder: responderFrom(async (request) => {
+        seen.push(request);
+        return { text: "ok" };
+      }),
+    }));
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0];
+      if (socket === undefined) throw new Error("expected a socket");
+      socket.emitOpen();
+
+      socket.emitMessage({
+        envelope_id: "SC-model",
+        type: "slash_commands",
+        payload: {
+          command: "/mickey-model",
+          text: "",
+          channel_id: "C1",
+          user_id: "U1",
+        },
+      });
+      await vi.waitFor(() => expect(api.postMessageCalls).toHaveLength(1));
+      expect(api.postMessageCalls[0]).toMatchObject({
+        channel: "C1",
+        text: "Current model: gpt-default. Choose a configured model:",
+      });
+      expect(api.postMessageCalls[0]?.thread_ts).toBeUndefined();
+      const blocks = api.postMessageCalls[0]?.blocks as readonly {
+        readonly elements?: readonly {
+          readonly action_id?: string;
+          readonly options?: readonly {
+            readonly text: { readonly text: string; readonly emoji: boolean };
+            readonly description?: { readonly text: string; readonly emoji: boolean };
+            readonly value: string;
+          }[];
+        }[];
+      }[];
+      const fallback = blocks
+        .flatMap((block) => block.elements ?? [])
+        .find((element) => element.action_id === "mono_agent_runtime_model")
+        ?.options?.find((option) => option.text.text === "claude-fallback");
+      if (fallback === undefined) throw new Error("expected fallback option");
+      expect(fallback.text.emoji).toBe(false);
+      expect(fallback.description).toEqual({
+        type: "plain_text",
+        text: "pi:anthropic:claude-fallback",
+        emoji: false,
+      });
+
+      socket.emitMessage({
+        envelope_id: "I-model",
+        type: "interactive",
+        payload: {
+          type: "block_actions",
+          channel: { id: "C1" },
+          message: { ts: "200.000001" },
+          actions: [{
+            action_id: "mono_agent_runtime_model",
+            selected_option: { value: fallback.value },
+          }],
+        },
+      });
+      await vi.waitFor(() => expect(api.updateCalls).toHaveLength(1));
+      expect(api.updateCalls[0]?.text).toBe(
+        "Model changed to claude-fallback for this channel until /mickey-model default or restart.",
+      );
+
+      socket.emitMessage({
+        envelope_id: "SC-effort",
+        type: "slash_commands",
+        payload: {
+          command: "/mickey-effort",
+          text: "high",
+          channel_id: "C1",
+          user_id: "U1",
+        },
+      });
+      await vi.waitFor(() => expect(api.postMessageCalls).toHaveLength(2));
+      expect(api.postMessageCalls[1]?.text).toBe(
+        "Effort changed to High for this channel until /mickey-effort default or restart.",
+      );
+
+      socket.emitMessage(socketEnvelope("E-prompt", sharedMention("use the channel choice")));
+      await vi.waitFor(() => expect(seen).toHaveLength(1));
+      expect(seen[0]?.metadata.slack).toMatchObject({
+        model: "pi:anthropic:claude-fallback",
+        effort: "high",
+      });
     } finally {
       await started.stop();
     }
@@ -581,6 +702,24 @@ function directMessage(text: string): SlackEventCallback {
       text,
       ts: "171.000001",
       event_ts: "171.000001",
+    },
+  };
+}
+
+function sharedMention(text: string): SlackEventCallback {
+  return {
+    type: "event_callback",
+    team_id: "T1",
+    api_app_id: "A1",
+    event_id: "Ev-shared",
+    event_time: 172,
+    event: {
+      type: "app_mention",
+      channel: "C1",
+      user: "U1",
+      text,
+      ts: "172.000001",
+      event_ts: "172.000001",
     },
   };
 }

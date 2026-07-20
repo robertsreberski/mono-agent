@@ -14,6 +14,7 @@ export type {
   SlackFile,
   SlackMessageTs,
   SlackRequestOptions,
+  SlackSlashCommandPayload,
   SlackShortcutPayload,
   SlackBlockAction,
   SlackBlockActionsPayload,
@@ -72,6 +73,8 @@ export type {
   SlackRuntimeControls,
   SlackRuntimeEffortOption,
   SlackRuntimeModelOption,
+  SlackRuntimeSlashCommands,
+  SlackSlashCommandHandlingResult,
   SlackShortcutBinding,
   SlackTriggerKind,
 } from "./adapter.js";
@@ -81,6 +84,7 @@ export {
 export type {
   SlackEventCallbackHandler,
   SlackInteractionHandler,
+  SlackSlashCommandHandler,
   SlackSocketModeRunnerBackoffOptions,
   SlackSocketModeRunnerHeartbeatOptions,
   SlackSocketModeRunnerLogger,
