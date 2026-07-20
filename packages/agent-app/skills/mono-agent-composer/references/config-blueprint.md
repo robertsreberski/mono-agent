@@ -290,7 +290,9 @@ new agent.
   "slack": {
     "enabled": true,                       // opt-in; defaults to false (off → "disabled")
     // Built-in @agent /model and /effort Block Kit controls use the same runtime
-    // primary + fallbacks; DM selections span threads, shared-channel state does not.
+    // primary + fallbacks and stay thread-local in shared channels. Register
+    // /<bot-username>-model and /<bot-username>-effort in Slack for channel-wide
+    // picker commands; the adapter derives those names from auth.test.user.
     // Put MONO_AGENT_SLACK_BOT_TOKEN and MONO_AGENT_SLACK_APP_TOKEN in .env.
     "allowedChannelIds": ["C0123"],        // or "allowAllChannels": true
     "allowAllChannels": false,

@@ -1002,6 +1002,91 @@ describe("SlackAdapter", () => {
     expect(requests[1]?.metadata.slack.model).toBeUndefined();
   });
 
+  it("inherits channel-wide slash choices while preserving thread-local overrides", async () => {
+    const api = new FakeSlackApi();
+    const requests: AgentRequest[] = [];
+    const adapter = new SlackAdapter({
+      api,
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+      allowAllChannels: true,
+      runtimeControls: RUNTIME_CONTROLS,
+      runtimeSlashCommands: {
+        model: "/mickey-model",
+        effort: "/mickey-effort",
+      },
+    });
+
+    await expect(adapter.handleSlashCommand({
+      command: "/mickey-model",
+      text: "pi:anthropic:claude-fallback",
+      channel_id: "C123",
+    })).resolves.toMatchObject({
+      kind: "runtime_command",
+      control: "model",
+      channelId: "C123",
+    });
+    await adapter.handleEventCallback(appMention("thread A inherits", {
+      eventId: "Ev-A1",
+      ts: "174.000002",
+      threadTs: "174.000001",
+    }));
+    await adapter.handleEventCallback(appMention("thread B inherits", {
+      eventId: "Ev-B1",
+      ts: "175.000002",
+      threadTs: "175.000001",
+    }));
+
+    await adapter.handleEventCallback(appMention("/model pi:openai:gpt-default", {
+      eventId: "Ev-A-model",
+      ts: "174.000003",
+      threadTs: "174.000001",
+    }));
+    await adapter.handleEventCallback(appMention("thread A override", {
+      eventId: "Ev-A2",
+      ts: "174.000004",
+      threadTs: "174.000001",
+    }));
+    await adapter.handleEventCallback(appMention("thread B still inherits", {
+      eventId: "Ev-B2",
+      ts: "175.000003",
+      threadTs: "175.000001",
+    }));
+
+    await adapter.handleEventCallback(appMention("/model default", {
+      eventId: "Ev-A-reset",
+      ts: "174.000005",
+      threadTs: "174.000001",
+    }));
+    await adapter.handleEventCallback(appMention("thread A inherits again", {
+      eventId: "Ev-A3",
+      ts: "174.000006",
+      threadTs: "174.000001",
+    }));
+
+    await adapter.handleSlashCommand({
+      command: "/mickey-model",
+      text: "default",
+      channel_id: "C123",
+    });
+    await adapter.handleEventCallback(appMention("thread B back to configured default", {
+      eventId: "Ev-B3",
+      ts: "175.000004",
+      threadTs: "175.000001",
+    }));
+
+    expect(requests.map((request) => request.metadata.slack.model)).toEqual([
+      "pi:anthropic:claude-fallback",
+      "pi:anthropic:claude-fallback",
+      "pi:openai:gpt-default",
+      "pi:anthropic:claude-fallback",
+      "pi:anthropic:claude-fallback",
+      undefined,
+    ]);
+  });
+
   it("supports effort arguments and clears an incompatible effort when the model changes", async () => {
     const api = new FakeSlackApi();
     const requests: AgentRequest[] = [];

@@ -8,6 +8,7 @@ import type {
   SlackChatUpdateParams,
   SlackEventCallback,
   SlackInteractivityPayload,
+  SlackSlashCommandPayload,
   SlackSocketModeEnvelope,
   SlackWebApi,
 } from "../types.js";
@@ -150,6 +151,51 @@ describe("SlackSocketModeRunner", () => {
 
     expect(handler.handleEventCallback).not.toHaveBeenCalled();
     expect(JSON.parse(sockets[0]?.sent[0] ?? "{}")).toEqual({ envelope_id: "E-ignore" });
+  });
+
+  it("acknowledges and routes valid slash-command envelopes", async () => {
+    const api = new FakeSlackApi(["wss://slack.test/1"]);
+    const sockets: FakeWebSocket[] = [];
+    const commands: SlackSlashCommandPayload[] = [];
+    const runner = new SlackSocketModeRunner({
+      api,
+      handler: { async handleEventCallback() {
+        return { kind: "ignored", reason: "unsupported_event" };
+      } },
+      onSlashCommand: (payload) => {
+        commands.push(payload);
+      },
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      reconnect: { initialMs: 0, maxMs: 0 },
+    });
+    const controller = new AbortController();
+
+    const started = runner.start({ signal: controller.signal });
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0]?.emitMessage({
+      envelope_id: "E-command",
+      type: "slash_commands",
+      payload: {
+        command: "/mickey-model",
+        text: "default",
+        channel_id: "C1",
+        user_id: "U1",
+      },
+    });
+    await vi.waitFor(() => expect(commands).toHaveLength(1));
+    controller.abort();
+    await started;
+
+    expect(JSON.parse(sockets[0]?.sent[0] ?? "{}")).toEqual({ envelope_id: "E-command" });
+    expect(commands[0]).toMatchObject({
+      command: "/mickey-model",
+      text: "default",
+      channel_id: "C1",
+    });
   });
 
   it("acknowledges interactive envelopes and routes shortcut payloads to onInteraction", async () => {
