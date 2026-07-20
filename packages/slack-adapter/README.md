@@ -55,7 +55,7 @@ controls have two native entry points:
   shared channel this keeps the selection local to that Slack thread.
 - Register `/<bot-username>-model` and `/<bot-username>-effort` as Slack Slash
   Commands. `startSlackAdapter` derives these exact names from `auth.test.user`,
-  so a bot named `mickey` handles `/mickey-model` and `/mickey-effort` without a
+  so a bot named `foo` handles `/foo-model` and `/foo-effort` without a
   mono-agent config field. Slack slash commands do not carry thread context, so
   shared-channel selections made this way apply across the channel. A thread's
   mention-command selection can still override the inherited channel choice.

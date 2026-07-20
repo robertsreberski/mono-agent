@@ -108,8 +108,8 @@ Commands, replacing `<bot-username>` with the lowercase username returned by
 - `/<bot-username>-model [default|<exact-configured-ref>]`
 - `/<bot-username>-effort [default|<supported-value>]`
 
-The adapter derives those exact command names automatically. For `@Mickey`, the
-registered names are `/mickey-model` and `/mickey-effort`; no mono-agent config
+The adapter derives those exact command names automatically. For `@Foo`, the
+registered names are `/foo-model` and `/foo-effort`; no mono-agent config
 field is required. Set `runtimeSlashCommands` only when composing the adapter
 programmatically and overriding the derived names. Slack custom slash commands
 [cannot be invoked in message threads](https://docs.slack.dev/interactivity/implementing-slash-commands/),
@@ -286,7 +286,7 @@ The heartbeat watchdog and reconnect loop work out of the box, but every thresho
 3. **OAuth & Permissions** → add bot token scopes, then install the app to the workspace. The install yields the **bot token** (`xoxb-...`) → this is your `botToken`. Typical scopes: `app_mentions:read`, `chat:write`, `reactions:write` (for the 👀 indicator), and `channels:history` / `groups:history` to read messages in the channels you allow. Add `commands` when exposing model/effort controls in Slack's `/` picker.
 4. **Event Subscriptions** → subscribe to the `app_mention` bot event, plus `message.im` when using direct messages (and, if you want non-mention messages handled in allowed channels, `message.channels`). Add `app_home_opened` when using `slack.homeTab`.
 5. **Interactivity & Shortcuts** → enable interactivity for the built-in model/effort menus, `slack.shortcuts`, or App Home buttons. Create each global/message shortcut with a callback ID matching its configured `callbackId`. Socket Mode carries the interaction payloads; no request URL is needed.
-6. **Slash Commands** → create `/<bot-username>-model` and `/<bot-username>-effort` (for example `/mickey-model` and `/mickey-effort`). Add concise descriptions and usage hints. Socket Mode carries the commands, so leave the Request URL unset; reinstall/reauthorize the app if Slack prompts after adding the `commands` scope.
+6. **Slash Commands** → create `/<bot-username>-model` and `/<bot-username>-effort` (for example `/foo-model` and `/foo-effort`). Add concise descriptions and usage hints. Socket Mode carries the commands, so leave the Request URL unset; reinstall/reauthorize the app if Slack prompts after adding the `commands` scope.
 7. **App Home** → enable the Home Tab when using `slack.homeTab`.
 8. Invite the bot into each channel you list in `allowedChannelIds` (`/invite @your-bot`).
 9. Find the channel IDs for `allowedChannelIds` (channel details → bottom of the About tab, starts with `C`). The bot's own user ID and username are discovered automatically; configure `botUserIds` only for supplemental identities.
