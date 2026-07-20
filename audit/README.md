@@ -49,7 +49,9 @@ Six recurring failure shapes were identified (tested-but-never-wired, docs-drift
 - [scorecard.md](scorecard.md) — full maturity matrix + premise report card
 - [parts/](parts/) — 21 per-territory audits (findings → actions each)
 - [security.md](security.md) · [dead-code-ledger.md](dead-code-ledger.md)
-- [live-instances/](live-instances/) — personal-agent + a8c-fleet deep evaluations
+- [live-instances/](live-instances/) — personal-agent + a8c-fleet deep evaluations *(the a8c fleet
+  was retired 2026-07-20 and replaced by the single-instance `~/agents/a8c-assistant`; its audit is
+  kept as a point-in-time record — see the banner in its file)*
 - [v1-freeze-action-plan.md](v1-freeze-action-plan.md) — the master plan (118 actions, 3 buckets, issue links)
 - [agent-workflow-improvements.md](agent-workflow-improvements.md) — skills + workflow synthesis
 - [_raw/](_raw/) — full provenance: auditor artifacts, verifier verdicts, consolidated tables

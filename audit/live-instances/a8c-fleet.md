@@ -1,5 +1,13 @@
 # Live instance: a8c-agents fleet (orchestrator → broker → 4 specialists → Brain)
 
+> **⚠️ RETIRED 2026-07-20.** This fleet is no longer running. All 9 launchd services were stopped
+> and their plists archived (`~/Library/LaunchAgents/*.retired-a8c-fleet.20260720T071130Z`); the
+> `~/a8c-agents` repo is kept on disk as reference only. It was replaced by a single mono-agent
+> instance at `~/agents/a8c-assistant` (one agent, Slack DM, PARA vault, `a8c` CLI directly — no
+> broker/Brain/specialists), which also reclaimed the fleet's Slack app tokens — the fleet must not
+> be restarted while that agent runs (one Socket Mode consumer per app token). The audit below is
+> preserved unchanged as a point-in-time record.
+
 **Territory:** `~/a8c-agents` — 9 coordinated launchd services (5 model workers + Brain Core + control broker + attention collector + proactive scheduler), 4 bespoke TypeScript packages (`brain-core`, `control-broker`, `attention-collector`, `gws-a8c`), a 3,763-line lifecycle manager (`bin/agents`), and a 7,754-line / ~266-case test suite. Cross-checked by verifier cluster V9 (Part B): every cited byte-count, line number, and log-grep count was independently reproduced, several strengthened by re-checking at a later timestamp. **Zero freeze-blockers** — both the auditor and the verifier mark every actionable row here `Freeze-blocking: n`.
 
 ## 1 Overview & grades

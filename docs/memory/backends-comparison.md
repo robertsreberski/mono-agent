@@ -181,7 +181,7 @@ plugin or MCP boundary rather than sharing a BuJo directory.
 
 The checked-in
 [v1-freeze fleet audit](https://github.com/robertsreberski/mono-agent/blob/main/audit/live-instances/a8c-fleet.md)
-describes `brain-core` as a worked external example: five mono-agent workers route
+describes `brain-core` as a worked external example (the fleet itself was retired 2026-07-20 in favor of a single-instance agent, but the code remains a valid reference): five mono-agent workers route
 durable knowledge through a separate SQLite/FTS5/embeddings service with temporal
 validity, role-scoped access, supersession, retraction, sensitivity floors, and a
 leased approval queue. `brain-core` is deployment-specific evidence, not a package
