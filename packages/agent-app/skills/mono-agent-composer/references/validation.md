@@ -25,6 +25,8 @@ changes permissions. Exit 0 means the folder is structurally valid; fix every
 `[error]`, and treat `[waiting]` as an unresolved selected dependency rather
 than a readiness claim.
 
+All read/status commands accept `--json` for scriptable checks (`validate`, `config`, `presets`, `status`, `sandbox status`, `install-skill --project --check`, `runs report`, `runs audit`, `memory`, `continuations`): each writes exactly one stdout JSON object with a top-level `ok: boolean` — exit `0` when ok, `1` when it ran but failed, `2` for a usage error.
+
 From a separate orchestration folder, validate a downstream consumer without changing cwd:
 
 ```bash

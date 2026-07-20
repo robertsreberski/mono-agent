@@ -45,9 +45,10 @@ describe("runCli audit-runs", () => {
     const before = await readFile(stalePath, "utf8");
 
     const { code, stdout } = await captureCli(() => runCli(["audit-runs", "--artifact-dir", dir, "--stale-after-ms", "1", "--json"]));
-    const report = JSON.parse(stdout) as { readonly totalSummaryFiles: number; readonly parseFailureCount: number; readonly staleRunningCount: number };
+    const report = JSON.parse(stdout) as { readonly ok: boolean; readonly totalSummaryFiles: number; readonly parseFailureCount: number; readonly staleRunningCount: number };
 
     expect(code).toBe(0);
+    expect(report.ok).toBe(true);
     expect(report.totalSummaryFiles).toBe(3);
     expect(report.parseFailureCount).toBe(1);
     expect(report.staleRunningCount).toBe(1);

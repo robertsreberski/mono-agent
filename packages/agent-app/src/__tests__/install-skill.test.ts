@@ -2,8 +2,9 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { runCli } from "../cli.js";
 import { installComposerSkill } from "../install-skill.js";
 
 const tempDirs: string[] = [];
@@ -66,5 +67,36 @@ describe("installComposerSkill", () => {
     await expect(
       installComposerSkill({ target: "both", force: false, homeDir, sourceDir: join(homeDir, "nowhere") }),
     ).rejects.toThrow(/SKILL\.md/u);
+  });
+});
+
+describe("runCli install-skill --project --check --json", () => {
+  it("emits a flat JSON drift envelope with per-skill state and no ANSI", async () => {
+    const projectDir = await tempHome();
+    const previousCwd = process.cwd();
+    const chunks: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+      return true;
+    }) as typeof process.stdout.write);
+    try {
+      process.chdir(projectDir);
+      // An empty project has no managed skills installed, so drift check reports
+      // them missing (ok:false, exit 1) — the cheap induced-failure shape.
+      await expect(runCli(["install-skill", "--project", "--check", "--json"])).resolves.toBe(1);
+      const out = chunks.join("");
+      expect(out).not.toContain(String.fromCharCode(27));
+      const parsed = JSON.parse(out) as {
+        readonly ok: boolean;
+        readonly skills: readonly { readonly name: string; readonly status: string; readonly path: string }[];
+      };
+      expect(parsed.ok).toBe(false);
+      expect(parsed.skills.length).toBeGreaterThan(0);
+      expect(parsed.skills.every((skill) => skill.status === "missing")).toBe(true);
+      expect(parsed.skills.every((skill) => typeof skill.path === "string")).toBe(true);
+    } finally {
+      stdoutSpy.mockRestore();
+      process.chdir(previousCwd);
+    }
   });
 });

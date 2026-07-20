@@ -10,27 +10,46 @@ This page documents every `mono-agent` command and its flags, verified against t
 
 Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the built-in usage screen. An unknown command or flag prints the error plus the help screen and exits with code `2`.
 
+## Exit codes and `--json`
+
+Every command follows one exit-code contract:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Ran and succeeded (the operation completed; a gate passed; `ok` is true). |
+| `1` | Ran but failed — a gate reported errors or an operational error occurred (`ok` is false). |
+| `2` | Usage error — an unknown command/flag, a missing argument, or a flag on a command that does not support it. |
+
+The read/status commands accept `--json` for scripting: `validate`, `config`, `presets`, `status`, `sandbox status`, `install-skill --project --check`, `runs report`, `runs audit`, `memory`, and `continuations`. In `--json` mode:
+
+- stdout is exactly one JSON object with a top-level `ok: boolean` and the command-specific payload fields flat beside it (no `{ok, data}` wrapper), with no ANSI and no human prose.
+- When a command fails but can still emit JSON, the object is `{ "ok": false, "error": { "code", "message" } }`.
+- Hints, warnings, and deprecation notices go to stderr, never stdout.
+- Secrets are redacted exactly as the human view redacts them; a raw secret value never appears in JSON output.
+
+`--json` is rejected with a usage error (`2`) on the lifecycle/interactive commands (`init`, `auth`, `start`, `stop`, `restart`, `logs`, `tui`, `web`, `sessions`, `backfill`) and on `sandbox setup`/`sandbox check` and `install-skill` without `--project --check`, rather than being silently ignored.
+
 ## Command summary
 
 | Command | Purpose | Key flags |
 | --- | --- | --- |
 | `init` | On a TTY with no flags, run the guided readiness path: name the agent, enter its exact `IDENTITY.md` → `## Role`, search the Pi/Codex/Claude catalogs, configure exact route efforts/safety, verify every selected route, then on macOS start the background agent and enter a dedicated remote SELF-CONFIG session. Any flag or non-TTY invocation is scaffold-only; off macOS, configuration is manual. | `--name`, `--model`, repeated `--fallback`/`--fallback-effort`, `--route-safety`, `--auth`, `--codex-auth`, `--memory` |
 | `setup` | Alias of `init`. | (same as `init`) |
-| `presets` | List the built-in setup presets or show a preset's generated config, `.env.example`, and checklist. Replaces the removed `recipes` alias. | `list`, `show <id>` |
+| `presets` | List the built-in setup presets or show a preset's generated config, `.env.example`, and checklist. Replaces the removed `recipes` alias. | `list`, `show <id>`, `--json` |
 | `auth login` | Run direct Codex browser/device login, Pi OAuth for Anthropic/GitHub Copilot/OpenAI Codex, or the OpenCode-Go API-key flow. OpenCode-Go uses masked TTY input by default; `--api-key-stdin` is the explicit headless input mode. Pi credentials are promoted under an owner-only lock with stale-lock repair only when safely proven. | `<provider\|codex>`, `--pi-auth-path <path>`, `--api-key-stdin`, `--codex-auth browser\|device`, `--config <path>` |
-| `sandbox` | Inspect, install, or functionally prove the pinned SRT runtime. Managed setup is private-cache and macOS-only. | `status`, `setup`, `check` |
+| `sandbox` | Inspect, install, or functionally prove the pinned SRT runtime. Managed setup is private-cache and macOS-only. | `status`, `setup`, `check`, `--json` (status only) |
 | `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias), including a read-only exact-byte inventory of this config's managed launchd stdout/stderr and retained generations. With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>`, `--json` |
-| `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>` |
+| `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>`, `--json` |
 | `memory` | Preview, strictly audit, and safely maintain the configured memory store and its durable completed-turn intake. | `stats`, `today`, `show`, `search`, `top`, `audit`, `inspect`, `retry`, `resolve`, `rebuild`, `rollback`, `adopt-replay`; `--strict`, `--limit`, `--json` |
 | `start` | Start the agent as a background launchd service (or foreground worker). Background start also installs the fixed-policy one-shot log-maintenance LaunchAgent. | `--config <path>`, `--env-file <path>`, `--foreground` / `-f` |
 | `restart` | Restart the background instance for this config (starts it if stopped), maintaining logs only while the old writer is proven down. | `--config <path>`, `--env-file <path>`, `--clear-sessions` (`--force` deprecated alias) |
 | `stop` | Stop the background instance, unloading log maintenance first, and remove both LaunchAgent definitions. | `--config <path>`, `--env-file <path>` |
-| `status` | Show this config's instance plus any other running instances. | `--config <path>`, `--env-file <path>` |
+| `status` | Show this config's instance plus any other running instances. | `--config <path>`, `--env-file <path>`, `--json` |
 | `logs` | Print (and optionally follow) the background instance's log files. | `--config <path>`, `--env-file <path>`, `--follow` / `-f`, `--lines <n>` |
 | `web` | Operate the always-on browser conversation console for every discovered running agent. Bare `web` is read-only status/help. | `start`, `restart`, `stop`, `status`, `logs`, `run`, `reset`; `--host <addr>`, `--loopback`, `--port <n>` |
 | `sessions` | Serve the legacy read-only Session Recorder for discovered agents. | `--host <addr>`, `--port <n>`, `--no-open`, `--allow-non-loopback`, `--show-auth-url`, `--include-memory`, `--max-runs <n>`, `--config <path>`, `--env-file <path>` |
 | `tui` | Open remote discovery/chat, attach to a managed macOS background agent for a dedicated SELF-CONFIG session, or use ordinary in-process local chat. | `--agent`, `--conversation`, `--configure`, `--local` |
-| `install-skill` | Copy the authoring composer to coding harnesses and pair its documentation MCP companion, or check/update managed project-local skills. | `--target claude\|codex\|both`, `--force`, `--no-docs-mcp`, `--project`, `--check`, `--update` |
+| `install-skill` | Copy the authoring composer to coding harnesses and pair its documentation MCP companion, or check/update managed project-local skills. | `--target claude\|codex\|both`, `--force`, `--no-docs-mcp`, `--project`, `--check`, `--update`, `--json` (with `--project --check`) |
 | `backfill` | Export already-recorded run artifacts to the Phoenix exporter with their historical timestamps. | `--run <id>`, `--all`, `--since <iso>`, `--until <iso>`, `--dry-run`, `--config <path>`, `--env-file <path>` |
 | `runs` | Read-only, offline reporting over local run summaries. `report` (default) aggregates status/failure-kind rates, duration percentiles, and cost totals; `audit` reports parse/status/failure-kind/stale-running totals without rewriting anything. | `report`, `audit`; `--artifacts <path>`, `--consumer <path>`, `--since <iso>`, `--until <iso>`, `--by model\|channel\|failureKind`, `--stale-after-ms <n>`, `--include-memory`, `--json`, `--config <path>`, `--env-file <path>` |
 | `help` | Print the usage screen. | — |
@@ -182,14 +201,18 @@ mono-agent sandbox check
 
 `setup` is macOS-only and installs pinned SRT dependencies into a private per-user cache without changing `PATH`, global npm packages, or system packages. `status` verifies install integrity (or a compatible external command when no managed path exists). `check` runs deterministic filesystem and localhost/domain enforcement probes. A corrupt managed install never falls back to `PATH`; runtime commands revalidate the managed tree and fail closed.
 
+`sandbox status --json` emits `{ ok, sandbox }`, where `sandbox` mirrors the printed status fields (`state`, `source`, `version`, `installRoot`, `message`, and the resolved `nodePath`/`cliPath` when present). A failed status probe emits `{ ok: false, error: { code: "sandbox_status_failed", message } }` and exits `1`. `setup`/`check` are interactive/side-effecting and do not accept `--json`.
+
 ## `presets`
 
 Presets are saved wizard answer-sets. `presets list` shows the ids, titles, descriptions, and risk levels; `presets show <id>` prints the generated `mono-agent.config.json`, any `.env.example` placeholders, scaffolded files, and the validation checklist. The old `mono-agent recipes …` alias was removed; use `presets`.
 
 ```bash
 mono-agent presets list
-mono-agent presets show telegram-assistant
+mono-agent presets show telegram-assistant --json
 ```
+
+`presets list --json` emits `{ ok, presets }` (each catalog entry's `id`, `title`, `description`, `riskLevel`, and optional `playbook`). `presets show <id> --json` emits `{ ok, preset, configJson, envExample, files, checklist }`, where `configJson` is the generated config as a JSON object (not a string), `files` lists the scaffolded file paths, and `checklist` is the validate-expectation list. An unknown id emits `{ ok: false, error: { code: "unknown-preset", … } }` and exits `1`.
 
 ## `validate`
 
@@ -269,6 +292,7 @@ Prints the resolved configuration read-only: every core section field-by-field, 
 
 ```bash
 mono-agent config
+mono-agent config --json
 mono-agent config --config ./agents/support.config.json --env-file ./.env.staging
 ```
 
@@ -276,6 +300,7 @@ mono-agent config --config ./agents/support.config.json --env-file ./.env.stagin
 | --- | --- |
 | `--config <path>` | Use a non-default config file. |
 | `--env-file <path>` | Load secrets from a non-default dotenv file. |
+| `--json` | Emit `{ ok, config, channels, channelStatus, warnings }` on stdout with no ANSI. `config` is the section-grouped core view, `channels` the per-channel config view, `channelStatus` the liveness-off channel verdicts, and `warnings` the secret-placement/removed-key notes. Secret fields carry `redacted: true` and never the raw value. A missing or malformed config emits `{ ok: false, error: { code: "config-missing" \| "config-invalid", message } }` and exits `1`. |
 
 ## `memory`
 
@@ -405,6 +430,7 @@ These three commands stay ungated, so a broken or misconfigured instance can sti
 ```bash
 mono-agent stop                  # stop and remove the LaunchAgent
 mono-agent status                # this config's instance + other running instances
+mono-agent status --json         # the same record as machine-readable JSON
 mono-agent logs --follow         # stream the log files
 mono-agent logs --lines 500      # print the last 500 lines and exit
 ```
@@ -415,6 +441,7 @@ mono-agent logs --lines 500      # print the last 500 lines and exit
 | `stop` | `--env-file <path>` | Resolve the target with the managed worker's non-default dotenv file. |
 | `status` | `--config <path>` | Target a non-default config. |
 | `status` | `--env-file <path>` | Resolve the target with the managed worker's non-default dotenv file. |
+| `status` | `--json` | Emit `{ ok, instance, others }`. `instance` is `null` when nothing runs for this config, otherwise the record the human view assembles (`pid`, `health`, `configPath`, `logs`, and the persisted `observability`/`sandbox`/`session`/`channels`/`memoryHealth`/`runsHealth` metadata). `ok` is true only when the instance is `running`; with no running instance `ok` is false and the exit code is `1`. |
 | `logs` | `--config <path>` | Target a non-default config. |
 | `logs` | `--env-file <path>` | Resolve the target with the managed worker's non-default dotenv file. |
 | `logs` | `--follow` / `-f` | Keep streaming new output (`tail -F`). |
@@ -520,12 +547,14 @@ Copies the bundled `mono-agent-composer` skill into the harness skill folders (`
 | `--project` | Operate on `skills/mono-agent-configure` and `skills/mono-agent-memory` in the current agent folder. |
 | `--check` | Report version/hash drift without writing. Requires `--project`. |
 | `--update` | Back up and atomically update missing/stale unchanged managed copies. Refuses modified/colliding copies. Requires `--project`. |
+| `--json` | With `--project --check`, emit `{ ok, skills }`, where each entry is `{ name, status, path }` (`status` is `ready` / `missing` / `stale` / `modified` / `collision`). `ok` is true only when every managed skill is `ready`; otherwise the exit code is `1`. Requires `--project --check`. |
 
 ```bash
 mono-agent install-skill                       # both targets
 mono-agent install-skill --target claude --force
 mono-agent install-skill --target codex --no-docs-mcp
 mono-agent install-skill --project --check
+mono-agent install-skill --project --check --json
 mono-agent install-skill --project --update
 ```
 
@@ -564,7 +593,7 @@ Aggregates run summaries into latency, cost, and failure-rate numbers over the w
 | `--until <iso>` | Only summaries whose `startedAt` is at or before this ISO instant. |
 | `--by model\|channel\|failureKind` | Add grouped buckets after the overall totals. |
 | `--include-memory` | Include memory-maintenance summaries in addition to agent runs. |
-| `--json` | Print the full machine-readable metrics report. |
+| `--json` | Print the full machine-readable metrics report as `{ ok: true, …report }`; a read/aggregation error prints `{ ok: false, error: { code: "metrics_failed", message } }` and exits `1`. |
 
 It reports total runs, status counts/rates, failure-kind rates, `durationMs` p50/p90/p99/max, and cost totals. Cost prefers `cost.cumulativeUsd`, then `cost.totalUsd`, then `usage.cost_usd`; malformed or redacted non-numeric values are ignored. Channel grouping is derived from the `conversationId` prefix before `:`, so treat it as best-effort until summaries persist a first-class channel field. See [Artifacts & traces](/observability/artifacts-and-traces/#artifact-metrics) for the full report contract and window semantics.
 
@@ -580,7 +609,7 @@ Audits run summaries for structural integrity. Use it when you need a structural
 | `--env-file <path>` | Load secrets or env overrides from a non-default dotenv file. |
 | `--stale-after-ms <n>` | Override the stale-running cutoff interval. |
 | `--include-memory` | Include memory-maintenance summaries in addition to agent runs. |
-| `--json` | Print the full machine-readable audit report. |
+| `--json` | Print the full machine-readable audit report as `{ ok: true, …report }`; a read/audit error prints `{ ok: false, error: { code: "audit_failed", message } }` and exits `1`. |
 
 It only reads `*.summary.json` files. A malformed summary is reported as a parse failure, and a stale `running` summary is reported without being rewritten. Startup reconciliation is still the only path that changes stale `running` summaries to `interrupted`.
 

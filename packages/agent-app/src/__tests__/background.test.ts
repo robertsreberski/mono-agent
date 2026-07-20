@@ -2120,6 +2120,72 @@ describe("statusBackground", () => {
     expect(stdout).toContain("/work/other/mono-agent.config.json");
   });
 
+  it("emits a flat JSON envelope with the instance record and others in --json mode", async () => {
+    const { runner } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    const current = makeSource(target, {
+      pid: 4321,
+      metadata: {
+        reason: "startup-complete",
+        observability: { endpoint: "http://127.0.0.1:6006/v1/traces", includeSensitiveData: false },
+        channels: { telegram: { kind: "running" } },
+      },
+    });
+    const other = makeSource(target, {
+      configPath: "/work/other/mono-agent.config.json",
+      sourceId: "mono-agent-999999999999",
+      pid: 9999,
+    });
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => [current, other]),
+      listRecordedRuns: async () => ({ totalRuns: 7, runs: [], warnings: [] }),
+    });
+
+    const code = await statusBackground(target, harness.deps, { json: true });
+
+    expect(code).toBe(0);
+    const stdout = harness.out.join("");
+    // stdout is exactly one JSON object with no ANSI escape (ESC) sequences.
+    expect(stdout).not.toContain(String.fromCharCode(27));
+    const parsed = JSON.parse(stdout) as {
+      readonly ok: boolean;
+      readonly instance: {
+        readonly pid: number;
+        readonly health: string;
+        readonly configPath: string;
+        readonly logs: { readonly stdout: string; readonly stderr: string };
+        readonly observability?: { readonly endpoint: string };
+        readonly channels?: Record<string, unknown>;
+        readonly runsHealth: { readonly totalRuns: number } | null;
+      } | null;
+      readonly others: readonly { readonly sourceId: string; readonly configPath?: string }[];
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.instance?.pid).toBe(4321);
+    expect(parsed.instance?.health).toBe("running");
+    expect(parsed.instance?.configPath).toBe(target.configPath);
+    expect(parsed.instance?.logs.stdout).toBe(target.paths.stdoutPath);
+    expect(parsed.instance?.observability?.endpoint).toBe("http://127.0.0.1:6006/v1/traces");
+    expect(parsed.instance?.channels).toMatchObject({ telegram: { kind: "running" } });
+    expect(parsed.instance?.runsHealth?.totalRuns).toBe(7);
+    expect(parsed.others.some((entry) => entry.sourceId === "mono-agent-999999999999")).toBe(true);
+  });
+
+  it("emits ok:false with instance:null and exit 1 when no instance is running in --json mode", async () => {
+    const { runner } = makeRunner({ loaded: false });
+    const target = makeTarget();
+    const harness = makeHarness({ runner, list: listReturning(() => []) });
+
+    const code = await statusBackground(target, harness.deps, { json: true });
+
+    expect(code).toBe(1);
+    const parsed = JSON.parse(harness.out.join("")) as { readonly ok: boolean; readonly instance: unknown; readonly others: readonly unknown[] };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.instance).toBeNull();
+    expect(parsed.others).toEqual([]);
+  });
+
   it.skipIf(process.platform === "win32")("recognizes a legacy trace source recorded through a symlinked config alias", async () => {
     const home = await mkdtemp(join(tmpdir(), "mono-agent-status-alias-"));
     try {
