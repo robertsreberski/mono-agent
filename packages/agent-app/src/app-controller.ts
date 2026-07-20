@@ -174,11 +174,25 @@ async function startMonoAgentAppInternal(
   options: MonoAgentAppOptions,
   trustedRuntimeReadRoots: readonly string[],
 ): Promise<MonoAgentApp> {
+  const startupStartedAt = performance.now();
+  const startupPhases: Record<string, number> = {};
+  const measure = async <T>(phase: string, operation: () => Promise<T>): Promise<T> => {
+    const startedAt = performance.now();
+    try {
+      return await operation();
+    } finally {
+      startupPhases[phase] = roundedMilliseconds(performance.now() - startedAt);
+    }
+  };
   const cwd = resolve(options.cwd ?? process.cwd());
   const configPath = resolve(cwd, options.configPath ?? "mono-agent.config.json");
   const configReadPath = resolve(cwd, options.configReadPath ?? configPath);
   const env = options.env ?? process.env;
-  const drivers = options.drivers ?? await resolveChannelDrivers({ env, cwd, configPath: configReadPath });
+  const drivers = options.drivers ?? await measure(
+    "driverResolution",
+    () => resolveChannelDrivers({ env, cwd, configPath: configReadPath }),
+  );
+  if (options.drivers !== undefined) startupPhases.driverResolution = 0;
 
   const controller = new MonoAgentAppController({
     cwd,
@@ -194,14 +208,30 @@ async function startMonoAgentAppInternal(
     trustedRuntimeReadRoots,
   });
 
-  await controller.refreshSandboxStatus("startup");
-  await controller.startTraceability("startup");
-  await controller.startExporters("startup");
-  await controller.startContinuationServiceIfConfigured("startup");
-  await Promise.all(drivers.map((driver) => controller?.startChannelIfConfigured(driver.id, "startup")));
-  await controller.startMemoryRitualsIfConfigured("startup");
-  await controller.refreshMemoryHealthAfterLifecycle("startup-complete");
+  await measure("sandbox", () => controller.refreshSandboxStatus("startup"));
+  await measure("traceability", () => controller.startTraceability("startup"));
+  await measure("services", async () => {
+    await controller.startExporters("startup");
+    await controller.startContinuationServiceIfConfigured("startup");
+  });
+  await measure(
+    "channels",
+    () => Promise.all(drivers.map((driver) => controller.startChannelIfConfigured(driver.id, "startup"))),
+  );
+  await measure("memoryRituals", () => controller.startMemoryRitualsIfConfigured("startup"));
+  const memoryHealthStartedAt = performance.now();
+  await controller.refreshMemoryHealthAfterLifecycle("startup-complete", () => {
+    startupPhases.memoryHealth = roundedMilliseconds(performance.now() - memoryHealthStartedAt);
+    controller.startupTimingValue = {
+      durationMs: roundedMilliseconds(performance.now() - startupStartedAt),
+      phases: { ...startupPhases },
+    };
+  });
   return controller;
+}
+
+function roundedMilliseconds(value: number): number {
+  return Math.max(0, Math.round(value * 10) / 10);
 }
 
 interface MonoAgentAppControllerInput {
@@ -278,6 +308,10 @@ export class MonoAgentAppController implements MonoAgentApp {
   memoryHealthGeneration = 0;
   /** Durable trace fact published only after the full current lifecycle completes. */
   startupCompleted = false;
+  startupTimingValue: {
+    readonly durationMs: number;
+    readonly phases: Readonly<Record<string, number>>;
+  } | undefined;
   selectedSkillsValue: readonly string[] | undefined;
   sessionMetadataValue: SessionTraceMetadata | undefined;
   /** The exporter the responder threads into agent-host (first configured exporter). */
@@ -467,7 +501,9 @@ export class MonoAgentAppController implements MonoAgentApp {
    * generation-fenced and uses the same health/trace single-flights as timer
    * work; ordinary session and trace events continue to reuse the 30s cache.
    */
-  async refreshMemoryHealthAfterLifecycle(reason: string): Promise<void> { return memory_healthOperations.refreshMemoryHealthAfterLifecycle(this, reason); }
+  async refreshMemoryHealthAfterLifecycle(reason: string, beforePublish?: () => void): Promise<void> {
+    return memory_healthOperations.refreshMemoryHealthAfterLifecycle(this, reason, beforePublish);
+  }
 
   clearMemoryHealthRefreshTimer(): void { return memory_healthOperations.clearMemoryHealthRefreshTimer(this); }
 

@@ -8,6 +8,8 @@ sidebar:
 
 This channel serves the loopback NDJSON stream used by the [`mono-agent tui`](/observability/tui/) and [always-on web console](/observability/web-console/). Unlike the [OpenAI-compatible API](/channels/openai-api/) (which flattens events into Chat Completions chunks), it preserves structured `AgentStreamEvent` kinds — thinking deltas, tool calls with arguments/progress/results/timing, token usage, cost, provider lifecycle and failover, warnings — subject to the serialized event-frame cap described below.
 
+The configuration and registry id remains `tui` for compatibility, but human status output calls this shared endpoint **gui** and its default HTTP path is `/gui`. It does not mean the web service embeds or launches the terminal UI: `mono-agent tui` and `mono-agent web` are two independent clients of the same conversational operator endpoint. The separate `live` channel is read-only SSE run telemetry; it cannot accept a chat turn.
+
 Coverage: `config` (the `tui` section of `mono-agent.config.json`).
 
 :::note
@@ -22,7 +24,7 @@ Coverage: `config` (the `tui` section of `mono-agent.config.json`).
     "enabled": true,
     "host": "127.0.0.1",
     "port": 0,
-    "basePath": "/tui",
+    "basePath": "/gui",
     "allowNonLoopback": false
   }
 }
@@ -33,7 +35,7 @@ Coverage: `config` (the `tui` section of `mono-agent.config.json`).
 | `enabled` | boolean | **`true`** | Deliberate exception to the channels-off convention (see the note above). |
 | `host` | string | `127.0.0.1` | Bind address. Loopback by default. |
 | `port` | integer | `0` | `0` = ephemeral. The bound port is published to the trace-source registry, so nothing needs to be fixed. |
-| `basePath` | string | `/tui` | Path prefix for all endpoints. |
+| `basePath` | string | `/gui` | Path prefix for all endpoints. |
 | `allowNonLoopback` | boolean | `false` | Required guard before binding a non-loopback `host`. |
 | `apiKey` | string | _unset_ | Optional bearer token. Inline config remains accepted for compatibility, but new source configs should omit it and set `MONO_AGENT_TUI_API_KEY` in `.env`; the registry never carries secrets. |
 

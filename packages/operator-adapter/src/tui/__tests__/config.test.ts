@@ -24,7 +24,7 @@ describe("loadTuiAdapterConfig", () => {
       enabled: true,
       host: "127.0.0.1",
       port: 0,
-      basePath: "/tui",
+      basePath: "/gui",
       allowNonLoopback: false,
     });
   });
@@ -38,7 +38,7 @@ describe("loadTuiAdapterConfig", () => {
           enabled: true,
           host: "127.0.0.1",
           port: 4111,
-          basePath: "/operator/tui",
+          basePath: "/operator/gui",
           allowNonLoopback: true,
           apiKey: "json-redacted-value",
         },
@@ -55,7 +55,7 @@ describe("loadTuiAdapterConfig", () => {
       enabled: true,
       host: "127.0.0.1",
       port: 4222,
-      basePath: "/operator/tui",
+      basePath: "/operator/gui",
       allowNonLoopback: true,
       apiKey: "json-redacted-value",
     });
@@ -78,7 +78,7 @@ describe("loadTuiAdapterConfig", () => {
     // "" would pass loading and then fail startTuiAdapter at startup.
     expect((await loadTuiAdapterConfig({ env: { MONO_AGENT_TUI_BASE_PATH: "////" } })).basePath).toBe("/");
     expect((await loadTuiAdapterConfig({ env: { MONO_AGENT_TUI_BASE_PATH: "/" } })).basePath).toBe("/");
-    expect((await loadTuiAdapterConfig({ env: { MONO_AGENT_TUI_BASE_PATH: "/tui///" } })).basePath).toBe("/tui");
+    expect((await loadTuiAdapterConfig({ env: { MONO_AGENT_TUI_BASE_PATH: "/gui///" } })).basePath).toBe("/gui");
   });
 });
 
@@ -88,14 +88,14 @@ describe("redactTuiAdapterConfig", () => {
       enabled: true,
       host: "127.0.0.1",
       port: 0,
-      basePath: "/tui",
+      basePath: "/gui",
       allowNonLoopback: false,
       apiKey: "fixture-redacted-value",
     })).toEqual({
       enabled: true,
       host: "127.0.0.1",
       port: 0,
-      basePath: "/tui",
+      basePath: "/gui",
       allowNonLoopback: false,
       apiKey: { present: true, redacted: true },
     });

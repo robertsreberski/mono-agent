@@ -15,9 +15,9 @@ function turnInput() {
 
 describe("OperatorClient", () => {
   it("parses capabilities/model metadata and rejects untrusted endpoints", async () => {
-    expect(() => new OperatorClient({ baseUrl: "http://192.168.1.5:1234/tui" })).toThrowError(/non-loopback/u);
+    expect(() => new OperatorClient({ baseUrl: "http://192.168.1.5:1234/gui" })).toThrowError(/non-loopback/u);
     const client = new OperatorClient({
-      baseUrl: "http://127.0.0.1:1234/tui",
+      baseUrl: "http://127.0.0.1:1234/gui",
       fetchImpl: (async () => Response.json({
         schema: 1,
         label: "Agent",
@@ -53,7 +53,7 @@ describe("OperatorClient", () => {
 
   it("drops non-positive and non-integral context-window metadata", async () => {
     const client = new OperatorClient({
-      baseUrl: "http://127.0.0.1:1234/tui",
+      baseUrl: "http://127.0.0.1:1234/gui",
       fetchImpl: (async () => Response.json({
         schema: 1,
         modelOptions: {
@@ -80,7 +80,7 @@ describe("OperatorClient", () => {
   it("sends the web client marker/attachments and replays every NDJSON frame", async () => {
     let requestBody: Record<string, unknown> | undefined;
     const client = new OperatorClient({
-      baseUrl: "http://127.0.0.1:1234/tui",
+      baseUrl: "http://127.0.0.1:1234/gui",
       apiKey: "key",
       fetchImpl: (async (_input: string | URL | Request, init?: RequestInit) => {
         requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -110,7 +110,7 @@ describe("OperatorClient", () => {
 
   it("distinguishes cancellation and incomplete streams", async () => {
     const cancelled = new OperatorClient({
-      baseUrl: "http://127.0.0.1:1/tui",
+      baseUrl: "http://127.0.0.1:1/gui",
       fetchImpl: (async () => new Response(`${JSON.stringify({ kind: "error", message: "stop", cancelled: true })}\n`, {
         headers: { "content-type": "application/x-ndjson" },
       })) as typeof fetch,
@@ -119,7 +119,7 @@ describe("OperatorClient", () => {
       .rejects.toMatchObject({ code: "cancelled", cancelled: true });
 
     const incomplete = new OperatorClient({
-      baseUrl: "http://127.0.0.1:1/tui",
+      baseUrl: "http://127.0.0.1:1/gui",
       fetchImpl: (async () => new Response("", { headers: { "content-type": "application/x-ndjson" } })) as typeof fetch,
     });
     await expect(incomplete.turn(turnInput()))
@@ -128,19 +128,19 @@ describe("OperatorClient", () => {
 
   it("rejects schema skew, oversized metadata, and non-NDJSON turn responses", async () => {
     const unsupported = new OperatorClient({
-      baseUrl: "http://127.0.0.1:1/tui",
+      baseUrl: "http://127.0.0.1:1/gui",
       fetchImpl: (async () => Response.json({ schema: 2 })) as typeof fetch,
     });
     await expect(unsupported.info()).rejects.toMatchObject({ code: "unsupported_operator_schema" });
 
     const oversized = new OperatorClient({
-      baseUrl: "http://127.0.0.1:1/tui",
+      baseUrl: "http://127.0.0.1:1/gui",
       fetchImpl: (async () => new Response("x".repeat(1024 * 1024 + 1))) as typeof fetch,
     });
     await expect(oversized.info()).rejects.toMatchObject({ code: "operator_info_too_large" });
 
     const wrongContentType = new OperatorClient({
-      baseUrl: "http://127.0.0.1:1/tui",
+      baseUrl: "http://127.0.0.1:1/gui",
       fetchImpl: (async () => Response.json({ kind: "finish", finalText: "wrong" })) as typeof fetch,
     });
     await expect(wrongContentType.turn(turnInput())).rejects.toMatchObject({ code: "invalid_operator_content_type" });
@@ -148,7 +148,7 @@ describe("OperatorClient", () => {
 
   it("bounds unterminated and terminal NDJSON frames while accepting a final frame without a newline", async () => {
     const unterminated = new OperatorClient({
-      baseUrl: "http://127.0.0.1:1/tui",
+      baseUrl: "http://127.0.0.1:1/gui",
       fetchImpl: (async () => new Response("x".repeat(8 * 1024 * 1024 + 1), {
         headers: { "content-type": "application/x-ndjson" },
       })) as typeof fetch,
@@ -156,7 +156,7 @@ describe("OperatorClient", () => {
     await expect(unterminated.turn(turnInput())).rejects.toMatchObject({ code: "operator_frame_too_large" });
 
     const oversizedFinish = new OperatorClient({
-      baseUrl: "http://127.0.0.1:1/tui",
+      baseUrl: "http://127.0.0.1:1/gui",
       fetchImpl: (async () => new Response(`${JSON.stringify({ kind: "finish", finalText: "x".repeat(8 * 1024 * 1024) })}\n`, {
         headers: { "content-type": "application/x-ndjson" },
       })) as typeof fetch,
@@ -164,7 +164,7 @@ describe("OperatorClient", () => {
     await expect(oversizedFinish.turn(turnInput())).rejects.toMatchObject({ code: "operator_frame_too_large" });
 
     const terminalWithoutNewline = new OperatorClient({
-      baseUrl: "http://127.0.0.1:1/tui",
+      baseUrl: "http://127.0.0.1:1/gui",
       fetchImpl: (async () => new Response(JSON.stringify({ kind: "finish", finalText: "done" }), {
         headers: { "content-type": "application/x-ndjson" },
       })) as typeof fetch,
@@ -175,7 +175,7 @@ describe("OperatorClient", () => {
   it("never follows redirects and reads only a bounded HTTP error prefix", async () => {
     let redirectMode: RequestInit["redirect"];
     const redirected = new OperatorClient({
-      baseUrl: "http://127.0.0.1:1/tui",
+      baseUrl: "http://127.0.0.1:1/gui",
       fetchImpl: (async (_input, init) => {
         redirectMode = init?.redirect;
         return new Response(null, { status: 307, headers: { location: "https://evil.example/steal" } });
@@ -185,7 +185,7 @@ describe("OperatorClient", () => {
     expect(redirectMode).toBe("error");
 
     const hugeError = new OperatorClient({
-      baseUrl: "http://127.0.0.1:1/tui",
+      baseUrl: "http://127.0.0.1:1/gui",
       fetchImpl: (async () => new Response("sensitive".repeat(100_000), { status: 500 })) as typeof fetch,
     });
     const failure: unknown = await hugeError.info().then((): unknown => undefined, (error: unknown) => error);
@@ -196,7 +196,7 @@ describe("OperatorClient", () => {
   it("bounds a hanging cancellation request", async () => {
     let cancelSignal: AbortSignal | undefined;
     const client = new OperatorClient({
-      baseUrl: "http://127.0.0.1:1/tui",
+      baseUrl: "http://127.0.0.1:1/gui",
       fetchImpl: (async (_input, init) => {
         cancelSignal = init?.signal ?? undefined;
         return await new Promise<Response>((_resolvePromise, reject) => {

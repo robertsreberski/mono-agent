@@ -43,9 +43,9 @@ describe("parseArgs", () => {
   });
 
   it("parses remote mode flags", () => {
-    expect(parseArgs(["--url", "http://127.0.0.1:5000/tui", "--api-key", "k"])).toEqual({
+    expect(parseArgs(["--url", "http://127.0.0.1:5000/gui", "--api-key", "k"])).toEqual({
       help: false,
-      url: "http://127.0.0.1:5000/tui",
+      url: "http://127.0.0.1:5000/gui",
       apiKey: "k",
     });
   });

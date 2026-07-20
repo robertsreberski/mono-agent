@@ -22,7 +22,7 @@ export function fakeDiscoveredAgent(overrides: Partial<DiscoveredOperatorAgent> 
       updatedAt: "2026-07-17T09:00:00.000Z",
       warnings: [],
     },
-    baseUrl: "http://127.0.0.1:45123/tui",
+    baseUrl: "http://127.0.0.1:45123/gui",
     ...overrides,
   };
 }

@@ -36,7 +36,7 @@ async function writeManifestIn(
       transports: ["tui"],
       configPath: join(dir, "mono-agent.config.json"),
       metadata: {
-        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/tui" } },
+        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/gui" } },
       },
       ...overrides,
     }),
@@ -58,7 +58,7 @@ describe("discoverInstances", () => {
 
     expect(result.registryDir).toBe(dir);
     expect(result.instances).toHaveLength(1);
-    expect(result.instances[0]?.tuiBaseUrl).toBe("http://127.0.0.1:5151/tui");
+    expect(result.instances[0]?.tuiBaseUrl).toBe("http://127.0.0.1:5151/gui");
     expect(result.instances[0]?.agentDir).toBe(dir);
     expect(result.instances[0]?.source.health).toBe("running");
   });

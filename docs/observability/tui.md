@@ -101,7 +101,7 @@ or via the low-level bin, which also supports direct URLs:
 
 ```bash
 mono-agent-tui --responder ./tui-responder.mjs --config ./mono-agent.config.json
-mono-agent-tui --url http://127.0.0.1:52341/tui [--api-key <key>]
+mono-agent-tui --url http://127.0.0.1:52341/gui [--api-key <key>]
 mono-agent-tui                        # discovery mode, like `mono-agent tui`
 ```
 

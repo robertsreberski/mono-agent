@@ -68,7 +68,7 @@ Connection (exactly one):
                           AgentResponderLike, or exports
                           createResponder(env, cwd, configJson). In-process mode.
   --url <baseUrl>         Connect to a running agent's tui endpoint
-                          (e.g. http://127.0.0.1:52341/tui).
+                          (e.g. http://127.0.0.1:52341/gui).
   (neither)               Discover running agents from the trace-source
                           registry and open on the picker.
 

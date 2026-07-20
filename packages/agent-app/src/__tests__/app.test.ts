@@ -701,6 +701,16 @@ describe("startMonoAgentApp", () => {
       let sources = (await listTraceSources({ registryDir: join(dir, "trace-sources") })).sources;
       expect(sources[0]?.metadata?.reason).toBe("startup-complete");
       expect(sources[0]?.metadata).toHaveProperty("lifecycle.startupCompleted", true);
+      expect(sources[0]?.metadata).toHaveProperty("lifecycle.startupDurationMs", expect.any(Number));
+      expect(sources[0]?.metadata).toHaveProperty("lifecycle.startupPhasesMs", expect.objectContaining({
+        driverResolution: expect.any(Number),
+        sandbox: expect.any(Number),
+        traceability: expect.any(Number),
+        services: expect.any(Number),
+        channels: expect.any(Number),
+        memoryRituals: expect.any(Number),
+        memoryHealth: expect.any(Number),
+      }));
 
       const controller = app as unknown as { refreshTraceSource(reason: string): Promise<void> };
       await controller.refreshTraceSource("memory-health-periodic");
@@ -723,6 +733,7 @@ describe("startMonoAgentApp", () => {
       sources = (await listTraceSources({ registryDir: join(dir, "trace-sources") })).sources;
       expect(sources[0]?.metadata?.reason).toBe("proof-reload:complete");
       expect(sources[0]?.metadata).toHaveProperty("lifecycle.startupCompleted", true);
+      expect(sources[0]?.metadata).not.toHaveProperty("lifecycle.startupDurationMs");
     } finally {
       await app.stop();
     }
@@ -1476,6 +1487,36 @@ describe("startMonoAgentApp", () => {
     expect(starts).toBe(2);
     await app.stop();
     expect(stops).toEqual(["start-1", "start-2"]);
+  });
+
+  it("stops independent channels concurrently", async () => {
+    await writeConfig(baseConfig());
+    const stopStarts: string[] = [];
+    const releases = new Map<string, () => void>();
+    const driver = (id: string): ChannelDriver => ({
+      id: id as never,
+      label: id,
+      loadConfig: async () => ({ enabled: true }),
+      isConfigError: () => false,
+      start: async () => ({
+        summary: {},
+        stop: async () => {
+          stopStarts.push(id);
+          await new Promise<void>((resolve) => releases.set(id, resolve));
+        },
+      }),
+    });
+    const app = await startMonoAgentApp({
+      cwd: dir,
+      env: {},
+      drivers: [driver("first"), driver("second")],
+    });
+
+    const stopping = app.stop();
+    await vi.waitFor(() => expect(stopStarts).toEqual(["first", "second"]));
+    releases.get("first")?.();
+    releases.get("second")?.();
+    await expect(stopping).resolves.toBeUndefined();
   });
 
   it("continues shutdown cleanup when ritual and retention scheduler stops throw", async () => {

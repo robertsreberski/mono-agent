@@ -1,6 +1,6 @@
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 0;
-export const DEFAULT_BASE_PATH = "/tui";
+export const DEFAULT_BASE_PATH = "/gui";
 
 /**
  * Wire schema version surfaced by GET /v1/info so a version-skewed TUI can

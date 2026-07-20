@@ -41,6 +41,7 @@ import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { verifyManagedRuntimeLaunch } from "./background-runtime.js";
 import type { ManagedRuntimeLaunchVerification } from "./background-runtime.js";
 import { formatChannelFactValue } from "./channel-fact-format.js";
+import { formatHumanChannelSections } from "./channel-status-display.js";
 import type { ChannelStatus } from "./channels.js";
 import { loadCliEnvFile } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
@@ -107,6 +108,7 @@ export async function ensureStartable(
     readonly cwd?: string;
     readonly configPath?: string;
     readonly preferAppPluginInstall?: boolean;
+    readonly verifiedRuntimeProvenanceDetail?: string;
   } = {},
 ): Promise<PreflightResult> {
   const cwd = options.cwd ?? process.cwd();
@@ -120,6 +122,9 @@ export async function ensureStartable(
     configPath,
     liveness: false,
     ...(options.preferAppPluginInstall === true ? { preferAppPluginInstall: true } : {}),
+    ...(options.verifiedRuntimeProvenanceDetail === undefined
+      ? {}
+      : { verifiedRuntimeProvenanceDetail: options.verifiedRuntimeProvenanceDetail }),
   });
   if (!report.ok) {
     return { ok: false, code: 1, kind: "validation", report };
@@ -254,13 +259,18 @@ async function runForeground(
     }
 
     const preflightEnvironment = runtimeInputs?.environment ?? startupEnvironment;
-    const pre = await ensureStartable(args, preflightEnvironment, runtimeInputs === undefined
-      ? {}
-      : {
-          cwd,
-          configPath: runtimeInputs.configPath,
-          preferAppPluginInstall: true,
-        });
+    const pre = await ensureStartable(args, preflightEnvironment, {
+      ...(runtimeInputs === undefined
+        ? {}
+        : {
+            cwd,
+            configPath: runtimeInputs.configPath,
+            preferAppPluginInstall: true,
+          }),
+      ...(managedRuntime === undefined
+        ? {}
+        : { verifiedRuntimeProvenanceDetail: managedRuntime.provenanceDetail }),
+    });
     if (!pre.ok) {
       printPreflightFailure(pre);
       return managedBackgroundWorker ? 0 : pre.code;
@@ -485,9 +495,14 @@ export async function printAppStatus(app: MonoAgentApp, options: PrintAppStatusO
   process.stdout.write(`  ${describeExporter(app.exporterStatus, artifactDir)}\n`);
   const channels = [...app.channelStatuses()];
   if (channels.length > 0) {
-    process.stdout.write(ui.rule("channels"));
-    for (const [id, status] of channels) {
-      process.stdout.write(`  ${ui.channelBadge(status.kind)}${ui.style.bold(id.padEnd(11))} ${describeChannelStatus(status)}\n`);
+    const sections = formatHumanChannelSections(channels.map(([id, status]) => ({
+      id,
+      kind: status.kind,
+      text: describeChannelStatus(status),
+    })));
+    for (const section of sections) {
+      process.stdout.write(ui.rule(section.title));
+      for (const line of section.lines) process.stdout.write(`${line}\n`);
     }
   }
   await writeAppRunsHealthDetail(app, options);

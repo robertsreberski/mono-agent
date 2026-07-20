@@ -14,9 +14,9 @@ export async function applyConfigChange(controller: MonoAgentAppController, reas
     // that already entered is generation-fenced and is deliberately not
     // awaited, so config reload cannot hang behind native/filesystem work.
     controller.invalidateMemoryHealthRefresh();
-    for (const driver of controller.drivers) {
-      await controller.stopChannel(driver.id, `${reason}:reload`);
-    }
+    await Promise.all(controller.drivers.map(
+      (driver) => controller.stopChannel(driver.id, `${reason}:reload`),
+    ));
     await controller.stopContinuationService();
     // Tool policy/runtime-family changes must re-evaluate implicit AskUser.
     // Clearing the cached promise also prevents stale bridge env from a Pi
@@ -75,9 +75,7 @@ export async function stop(controller: MonoAgentAppController): Promise<void> {
   // Stop the periodic audit before the first teardown await. Already-entered
   // computation is generation-fenced and must never delay shutdown.
   controller.invalidateMemoryHealthRefresh();
-  for (const driver of controller.drivers) {
-    await controller.stopChannel(driver.id, "stop");
-  }
+  await Promise.all(controller.drivers.map((driver) => controller.stopChannel(driver.id, "stop")));
   await controller.stopContinuationService();
   await controller.stopInteractionBridge();
   controller.stopMemoryRituals();

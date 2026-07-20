@@ -9,13 +9,13 @@ import type { ManagedRuntimeProvenanceVerificationDeps } from "./background-runt
 import { agentAppPackageVersion } from "./package-version.js";
 
 const PACKAGE_NAME = "@mono-agent/agent-app";
-const MARKER_SCHEMA = "mono-agent.managed-runtime.v4";
+const MARKER_SCHEMAS = new Set(["mono-agent.managed-runtime.v4", "mono-agent.managed-runtime.v5"]);
 const PROVISIONAL_INSTALLED_AT = "1970-01-01T00:00:00.000Z";
 const UNMANAGED_DETAIL = "Runtime provenance: dev (unmanaged).";
 const MARKER_MAX_BYTES = 16 * 1024;
 const HASH_PATTERN = /^[0-9a-f]{64}$/u;
 const EXACT_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
-const MARKER_KEYS = [
+const MARKER_COMMON_KEYS = [
   "schema",
   "packageName",
   "closureManifestSha256",
@@ -30,7 +30,7 @@ const MARKER_KEYS = [
 ] as const;
 
 interface RuntimeMarker {
-  readonly schema: typeof MARKER_SCHEMA;
+  readonly schema: "mono-agent.managed-runtime.v4" | "mono-agent.managed-runtime.v5";
   readonly packageName: typeof PACKAGE_NAME;
   readonly closureManifestSha256: string;
   readonly executionProofSha256: string;
@@ -41,6 +41,7 @@ interface RuntimeMarker {
   readonly platform: NodeJS.Platform;
   readonly arch: string;
   readonly installedAt: string;
+  readonly reuseProofSha256?: string;
 }
 
 interface DirectoryProof {
@@ -165,14 +166,17 @@ function managedLayout(packageRoot: string): {
 
 function runtimeMarkerFromJson(value: unknown): RuntimeMarker | undefined {
   const marker = jsonRecord(value);
+  const markerKeys = marker?.schema === "mono-agent.managed-runtime.v5"
+    ? [...MARKER_COMMON_KEYS, "reuseProofSha256"]
+    : MARKER_COMMON_KEYS;
   if (marker === undefined
-    || Object.keys(marker).length !== MARKER_KEYS.length
-    || !MARKER_KEYS.every((key) => Object.hasOwn(marker, key))) {
+    || Object.keys(marker).length !== markerKeys.length
+    || !markerKeys.every((key) => Object.hasOwn(marker, key))) {
     return undefined;
   }
   const installedAtMs = typeof marker.installedAt === "string" ? Date.parse(marker.installedAt) : Number.NaN;
   if (
-    marker.schema !== MARKER_SCHEMA
+    !MARKER_SCHEMAS.has(String(marker.schema))
     || marker.packageName !== PACKAGE_NAME
     || typeof marker.packageVersion !== "string"
     || !EXACT_VERSION_PATTERN.test(marker.packageVersion)
@@ -184,6 +188,8 @@ function runtimeMarkerFromJson(value: unknown): RuntimeMarker | undefined {
     || !HASH_PATTERN.test(marker.closureManifestSha256)
     || typeof marker.executionProofSha256 !== "string"
     || !HASH_PATTERN.test(marker.executionProofSha256)
+    || (marker.schema === "mono-agent.managed-runtime.v5"
+      && (typeof marker.reuseProofSha256 !== "string" || !HASH_PATTERN.test(marker.reuseProofSha256)))
     || typeof marker.nodeAbi !== "string"
     || typeof marker.platform !== "string"
     || typeof marker.arch !== "string"

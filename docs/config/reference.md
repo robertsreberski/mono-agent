@@ -191,7 +191,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `traceability.staleAfterMs` | `integer` | `MONO_AGENT_TRACE_STALE_AFTER_MS` | 30000 | `30000` | Configures staleAfterMs for the traceability section. |
 | `tui.allowNonLoopback` | `boolean` | `MONO_AGENT_TUI_ALLOW_NON_LOOPBACK` | false | `true` | Configures allowNonLoopback for the tui section. |
 | `tui.apiKey` | `string` | `MONO_AGENT_TUI_API_KEY` | unset | `example` | Secret value for tui.apiKey; prefer the env override. |
-| `tui.basePath` | `string` | `MONO_AGENT_TUI_BASE_PATH` | /tui | `/tui` | Configures basePath for the tui section. |
+| `tui.basePath` | `string` | `MONO_AGENT_TUI_BASE_PATH` | /gui | `/gui` | Configures basePath for the tui section. |
 | `tui.enabled` | `boolean` | `MONO_AGENT_TUI_ENABLED` | true | `true` | Enables the tui capability. |
 | `tui.host` | `string` | `MONO_AGENT_TUI_HOST` | 127.0.0.1 | `127.0.0.1` | Configures host for the tui section. |
 | `tui.port` | `integer` | `MONO_AGENT_TUI_PORT` | 0 | `0` | Configures port for the tui section. |

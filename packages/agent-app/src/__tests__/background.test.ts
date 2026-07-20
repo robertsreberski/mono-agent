@@ -309,6 +309,7 @@ function makeHarness(opts: {
       packageVersion: "0.8.0",
       cliSha256: "a".repeat(64),
       nodeAbi: "137",
+      verificationMode: "fast-reuse",
       launchProof: "verified-runtime-launch-proof",
     })),
     ...(opts.resolveManagedRuntimePackages === undefined
@@ -522,7 +523,7 @@ describe("startBackground", () => {
       pid: 9876,
       metadata: {
         reason: "startup-complete",
-        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/tui" } },
+        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/gui" } },
         backgroundSnapshot: approved,
       },
     });
@@ -555,6 +556,7 @@ describe("startBackground", () => {
           packageVersion: "0.8.0",
           cliSha256: "a".repeat(64),
           nodeAbi: "137",
+          verificationMode: "fast-reuse",
           launchProof: "unused-runtime-launch-proof",
         };
       },
@@ -620,6 +622,10 @@ describe("startBackground", () => {
     expect(bootstraps[0]).toContain("com.mono-agent-maintenance.");
     expect(bootstraps[1]).toBe(target.paths.plistPath);
     const stdout = harness.out.join("");
+    expect(stdout).toContain("Verifying the durable managed runtime");
+    expect(stdout).toContain("Managed runtime ready (warm reuse, 0 ms)");
+    expect(stdout).toContain("Replacing the managed worker");
+    expect(stdout).toContain("Waiting for the worker to report ready");
     expect(stdout).toContain("started in the background");
     expect(stdout).toContain("4321");
     expect(stdout).toContain(target.label);
@@ -664,6 +670,7 @@ describe("startBackground", () => {
           packageVersion: "0.8.0",
           cliSha256: "a".repeat(64),
           nodeAbi: "137",
+          verificationMode: "installed",
           launchProof: "deferred-runtime-launch-proof",
         };
       },
@@ -707,6 +714,7 @@ describe("startBackground", () => {
           packageVersion: "0.8.0",
           cliSha256: "a".repeat(64),
           nodeAbi: "137",
+          verificationMode: "full-reuse",
           launchProof: "plugin-runtime-launch-proof",
         };
       },
@@ -1079,7 +1087,7 @@ describe("startBackground", () => {
     const source = makeSource(target, {
       metadata: {
         reason: "startup-complete",
-        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/tui" } },
+        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/gui" } },
       },
     });
     const harness = makeHarness({

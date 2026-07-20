@@ -19,19 +19,19 @@ afterEach(async () => {
 
 describe("operator discovery", () => {
   it("accepts only credential-free loopback HTTP(S) operator URLs", () => {
-    expect(isTrustedOperatorBaseUrl("http://127.0.0.1:4321/tui")).toBe(true);
-    expect(isTrustedOperatorBaseUrl("https://[::1]:4321/tui")).toBe(true);
-    expect(isTrustedOperatorBaseUrl("http://localhost:4321/tui")).toBe(true);
-    expect(isTrustedOperatorBaseUrl("http://192.168.1.4:4321/tui")).toBe(false);
-    expect(isTrustedOperatorBaseUrl("http://user:pass@127.0.0.1:4321/tui")).toBe(false);
+    expect(isTrustedOperatorBaseUrl("http://127.0.0.1:4321/gui")).toBe(true);
+    expect(isTrustedOperatorBaseUrl("https://[::1]:4321/gui")).toBe(true);
+    expect(isTrustedOperatorBaseUrl("http://localhost:4321/gui")).toBe(true);
+    expect(isTrustedOperatorBaseUrl("http://192.168.1.4:4321/gui")).toBe(false);
+    expect(isTrustedOperatorBaseUrl("http://user:pass@127.0.0.1:4321/gui")).toBe(false);
     expect(isTrustedOperatorBaseUrl("file:///tmp/socket")).toBe(false);
   });
 
   it("extracts only running trusted channel metadata", () => {
-    expect(operatorBaseUrlFromMetadata({ channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:1234/tui/" } } }))
-      .toBe("http://127.0.0.1:1234/tui");
-    expect(operatorBaseUrlFromMetadata({ channels: { tui: { kind: "failed", baseUrl: "http://127.0.0.1:1234/tui" } } })).toBeUndefined();
-    expect(operatorBaseUrlFromMetadata({ channels: { tui: { kind: "running", baseUrl: "http://evil.example/tui" } } })).toBeUndefined();
+    expect(operatorBaseUrlFromMetadata({ channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:1234/gui/" } } }))
+      .toBe("http://127.0.0.1:1234/gui");
+    expect(operatorBaseUrlFromMetadata({ channels: { tui: { kind: "failed", baseUrl: "http://127.0.0.1:1234/gui" } } })).toBeUndefined();
+    expect(operatorBaseUrlFromMetadata({ channels: { tui: { kind: "running", baseUrl: "http://evil.example/gui" } } })).toBeUndefined();
   });
 
   it("merges registries, filters stopped agents, and resolves the local API key without exposing it in metadata", async () => {
@@ -50,13 +50,13 @@ describe("operator discovery", () => {
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       configPath,
-      metadata: { channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5555/tui" } } },
+      metadata: { channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5555/gui" } } },
     };
     await writeFile(join(registry, "agent-one.json"), JSON.stringify(manifest));
 
     const found = await discoverOperatorAgents({ registryDirs: [registry], env: {} });
     expect(found).toHaveLength(1);
-    expect(found[0]).toMatchObject({ baseUrl: "http://127.0.0.1:5555/tui", apiKey: "secret", source: { sourceId: "agent-one" } });
+    expect(found[0]).toMatchObject({ baseUrl: "http://127.0.0.1:5555/gui", apiKey: "secret", source: { sourceId: "agent-one" } });
   });
 
   it("resolves the documented per-agent dotenv key from an attested background snapshot", async () => {
@@ -78,7 +78,7 @@ describe("operator discovery", () => {
       updatedAt: new Date().toISOString(),
       configPath,
       metadata: {
-        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5555/tui" } },
+        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5555/gui" } },
         backgroundSnapshot: {
           schema: "mono-agent.background-snapshot.v1",
           configPath,
@@ -115,7 +115,7 @@ describe("operator discovery", () => {
       updatedAt: new Date().toISOString(),
       configPath,
       metadata: {
-        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5555/tui" } },
+        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5555/gui" } },
         backgroundSnapshot: {
           schema: "mono-agent.background-snapshot.v1",
           configPath,

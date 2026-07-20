@@ -36,8 +36,13 @@ const LOCK_STALE_AFTER_MS = 5 * 60_000;
 const LOCK_POLL_INTERVAL_MS = 200;
 const PROVISIONAL_RUNTIME_INSTALLED_AT = "1970-01-01T00:00:00.000Z";
 const MAX_RUNTIME_MARKER_BYTES = 16 * 1024;
+const MAX_RUNTIME_REUSE_PROOF_BYTES = 64 * 1024 * 1024;
+const RUNTIME_REUSE_PROOF_SCHEMA = "mono-agent.managed-runtime-reuse-proof.v1";
+const RUNTIME_REUSE_STAT_CONCURRENCY = 64;
 const MANAGED_RUNTIME_LAUNCH_PROOF_SCHEMA = "mono-agent.managed-runtime-launch.v1";
 const MAX_MANAGED_RUNTIME_LAUNCH_PROOF_BYTES = 2 * 1024;
+
+export type ManagedRuntimeVerificationMode = "fast-reuse" | "full-reuse" | "installed" | "repaired";
 
 export interface ManagedBackgroundRuntime {
   readonly cliPath: string;
@@ -46,6 +51,8 @@ export interface ManagedBackgroundRuntime {
   readonly packageVersion: string;
   readonly cliSha256: string;
   readonly nodeAbi: string;
+  /** How the durable runtime was established for this invocation. */
+  readonly verificationMode: ManagedRuntimeVerificationMode;
   /** Opaque, path-free proof consumed only by the managed LaunchAgent worker. */
   readonly launchProof: string;
 }
@@ -53,6 +60,8 @@ export interface ManagedBackgroundRuntime {
 export interface ManagedRuntimeLaunchVerification {
   /** Exact verified closure root; safe to add as an app-owned read-only SRT root. */
   readonly installRoot: string;
+  /** Operator-facing provenance derived from the same verified marker. */
+  readonly provenanceDetail: string;
 }
 
 export interface ManagedRuntimeLaunchVerificationInput {
@@ -171,18 +180,31 @@ interface RuntimeLayout {
   readonly packageLockPath: string;
   readonly closureManifestPath: string;
   readonly markerPath: string;
+  readonly reuseProofDir: string;
+  readonly reuseProofPath: string;
   readonly lockDir: string;
   readonly stagingDir: string;
   readonly quarantineDir: string;
 }
 
-interface RuntimeMarker extends RuntimeIdentity {
+interface RuntimeMarkerV4 extends RuntimeIdentity {
   readonly schema: "mono-agent.managed-runtime.v4";
   readonly packageName: typeof PACKAGE_NAME;
   readonly closureManifestSha256: string;
   readonly executionProofSha256: string;
   readonly installedAt: string;
 }
+
+interface RuntimeMarkerV5 extends RuntimeIdentity {
+  readonly schema: "mono-agent.managed-runtime.v5";
+  readonly packageName: typeof PACKAGE_NAME;
+  readonly closureManifestSha256: string;
+  readonly executionProofSha256: string;
+  readonly reuseProofSha256: string;
+  readonly installedAt: string;
+}
+
+type RuntimeMarker = RuntimeMarkerV4 | RuntimeMarkerV5;
 
 interface RuntimeClosureManifest {
   readonly schema: "mono-agent.execution-closure.v1";
@@ -226,6 +248,41 @@ interface ExecutionClosureCapture {
   readonly sourceProofSha256: string;
   /** Path-independent post-promotion inode/time proof for the private install root. */
   readonly filesystemProofSha256: string;
+  /** Owner-private stat proof used only to validate a warm source closure. */
+  readonly reuseProof: SourceClosureReuseProof;
+}
+
+interface SourceClosureReuseProof {
+  readonly sourceProofSha256: string;
+  readonly packages: readonly {
+    readonly id: number;
+    readonly sourceRoot: string;
+    readonly entries: readonly SourcePackageProofEntry[];
+  }[];
+  readonly links: readonly {
+    readonly path: string;
+    readonly logicalPath: string;
+    readonly proof: SourcePackageProofEntry;
+  }[];
+}
+
+interface RuntimeClosureReuseProof {
+  readonly rootEntries: readonly string[];
+  readonly entries: readonly {
+    readonly path: string;
+    readonly proof: SourcePackageProofEntry;
+  }[];
+  readonly closureManifestSha256: string;
+  readonly executionProofSha256: string;
+}
+
+interface ManagedRuntimeReuseProof {
+  readonly schema: typeof RUNTIME_REUSE_PROOF_SCHEMA;
+  readonly identity: RuntimeIdentity;
+  readonly packageSource: string;
+  readonly additionalPackages: readonly ManagedRuntimeAdditionalPackage[];
+  readonly source: SourceClosureReuseProof;
+  readonly runtime: RuntimeClosureReuseProof;
 }
 
 interface ExecutionClosureCaptureDeps {
@@ -315,50 +372,97 @@ export async function ensureManagedBackgroundRuntime(
   await assertRegularFile(currentCliPath, "current mono-agent CLI");
   await assertRegularFile(resolve(input.nodePath), "managed runtime Node executable");
   const currentCli = await readFile(currentCliPath);
-  const packageSource = resolve(input.packageSource ?? packageRootForCli(currentCliPath));
-  const sourceDetails = await lstat(packageSource);
+  const packageSourceLexical = resolve(input.packageSource ?? packageRootForCli(currentCliPath));
+  const sourceDetails = await lstat(packageSourceLexical);
   if (!sourceDetails.isDirectory() || sourceDetails.isSymbolicLink()) {
-    throw new Error(`Managed runtime package source ${packageSource} must be a real directory.`);
+    throw new Error(`Managed runtime package source ${packageSourceLexical} must be a real directory.`);
   }
+  const packageSource = await realpath(packageSourceLexical);
   const additionalPackages = await canonicalAdditionalPackages(input.additionalPackages ?? []);
-  const sourceClosure = await captureExecutionClosure(packageSource, additionalPackages);
   const packageVersion = input.packageVersion ?? await packageVersionAt(packageSource);
   if (!isExactVersion(packageVersion)) {
     throw new Error(`Cannot install a durable managed runtime for invalid package version ${JSON.stringify(packageVersion)}.`);
   }
-  const identity: RuntimeIdentity = {
-    packageVersion,
-    cliSha256: sha256(currentCli),
-    sourceClosureSha256: sourceClosure.sourceClosureSha256,
-    nodeAbi: input.nodeAbi ?? requiredNodeAbi(),
-    platform: input.platform ?? process.platform,
-    arch: input.arch ?? process.arch,
-  };
+  const cliSha256 = sha256(currentCli);
+  const nodeAbi = input.nodeAbi ?? requiredNodeAbi();
+  const platform = input.platform ?? process.platform;
+  const arch = input.arch ?? process.arch;
   const home = resolve(input.homeDir ?? accountHomeDirectory());
-  const id = safeSegment(deps.randomId());
-  const layout = runtimeLayout(home, identity, id, deps.now());
-  await ensurePrivateRuntimeAncestors(home, layout.versionAbiDir);
+  const versionAbiDir = runtimeVersionAbiDir(home, packageVersion, nodeAbi, platform, arch);
+  await ensurePrivateRuntimeAncestors(home, versionAbiDir);
 
-  if (await verifyRuntime(layout, identity, additionalPackages)) {
-    await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
-    return await runtimeResult(layout, identity, input.nodePath);
+  const fastRuntime = await findFastReusableRuntime({
+    home,
+    versionAbiDir,
+    packageVersion,
+    cliSha256,
+    nodeAbi,
+    platform,
+    arch,
+    packageSource,
+    additionalPackages,
+  });
+  if (fastRuntime !== undefined) {
+    await waitForManagedRuntimeLaunchBoundary(fastRuntime.layout, fastRuntime.identity, deps);
+    return await runtimeResult(fastRuntime.layout, fastRuntime.identity, input.nodePath, "fast-reuse");
   }
 
-  const acquired = await acquireRuntimeLock(layout, identity, additionalPackages, deps);
+  const sourceClosure = await captureExecutionClosure(packageSource, additionalPackages);
+  const identity: RuntimeIdentity = {
+    packageVersion,
+    cliSha256,
+    sourceClosureSha256: sourceClosure.sourceClosureSha256,
+    nodeAbi,
+    platform,
+    arch,
+  };
+  const id = safeSegment(deps.randomId());
+  const layout = runtimeLayout(home, identity, id, deps.now());
+  const runtimeWasPresent = await pathExists(layout.installRoot);
+  const acquired = await acquireRuntimeLock(
+    layout,
+    identity,
+    additionalPackages,
+    deps,
+    () => verifyRuntimeFast(layout, identity, packageSource, additionalPackages),
+  );
   if (!acquired) {
-    // Another installer may have completed between the final lock poll and the
-    // timeout boundary. Verify one last time before reporting the contention.
+    if (await verifyRuntimeFast(layout, identity, packageSource, additionalPackages)) {
+      await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
+      return await runtimeResult(layout, identity, input.nodePath, "fast-reuse");
+    }
+    // Preserve compatibility with a finalized v4 runtime when another process
+    // released the lock before it could publish the v5 warm proof.
     if (await verifyRuntime(layout, identity, additionalPackages)) {
       await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
-      return await runtimeResult(layout, identity, input.nodePath);
+      return await runtimeResult(layout, identity, input.nodePath, "full-reuse");
     }
     throw new Error(`Timed out waiting for the managed runtime installation lock at ${layout.lockDir}.`);
   }
 
   try {
     if (await verifyRuntime(layout, identity, additionalPackages)) {
+      const marker = await readRuntimeMarker(layout.markerPath, identity);
+      if (marker === undefined) throw new Error("The managed runtime marker changed before warm-proof publication.");
+      const sourceReuseProof = await currentSourceReuseProof(
+        packageSource,
+        additionalPackages,
+        sourceClosure,
+      );
+      await publishRuntimeReuseProof(
+        layout,
+        identity,
+        packageSource,
+        additionalPackages,
+        sourceReuseProof,
+        marker,
+        deps,
+      );
+      if (!(await verifyRuntimeFast(layout, identity, packageSource, additionalPackages))) {
+        throw new Error("The managed runtime warm-reuse proof failed verification after publication.");
+      }
       await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
-      return await runtimeResult(layout, identity, input.nodePath);
+      return await runtimeResult(layout, identity, input.nodePath, "full-reuse");
     }
     await assertSourceClosureUnchanged(packageSource, additionalPackages, sourceClosure, "before staging");
     await rm(layout.stagingDir, { recursive: true, force: true });
@@ -400,7 +504,7 @@ export async function ensureManagedBackgroundRuntime(
       if (stagedExecutionClosure.sourceClosureSha256 !== identity.sourceClosureSha256) {
         throw new Error("The staged managed runtime execution closure does not match its source identity.");
       }
-      const marker: RuntimeMarker = {
+      const marker: RuntimeMarkerV4 = {
         schema: "mono-agent.managed-runtime.v4",
         packageName: PACKAGE_NAME,
         closureManifestSha256,
@@ -435,10 +539,15 @@ export async function ensureManagedBackgroundRuntime(
         if (promotedClosure.sourceClosureSha256 !== identity.sourceClosureSha256) {
           throw new Error("The promoted managed runtime execution closure does not match its source identity.");
         }
-        await writeFinalizedRuntimeMarker(layout.markerPath, {
+        const sourceReuseProof = await currentSourceReuseProof(
+          packageSource,
+          additionalPackages,
+          sourceClosure,
+        );
+        await publishRuntimeReuseProof(layout, identity, packageSource, additionalPackages, sourceReuseProof, {
           ...marker,
           executionProofSha256: promotedClosure.filesystemProofSha256,
-        }, deps);
+        }, deps, true);
       }
     } catch (error) {
       await rm(layout.stagingDir, { recursive: true, force: true }).catch(() => undefined);
@@ -448,8 +557,34 @@ export async function ensureManagedBackgroundRuntime(
     if (!(await verifyRuntime(layout, identity, additionalPackages))) {
       throw new Error("The managed runtime failed verification after atomic promotion.");
     }
+    if (!(await verifyRuntimeFast(layout, identity, packageSource, additionalPackages))) {
+      const marker = await readRuntimeMarker(layout.markerPath, identity);
+      if (marker === undefined) throw new Error("The managed runtime marker changed before warm-proof publication.");
+      const sourceReuseProof = await currentSourceReuseProof(
+        packageSource,
+        additionalPackages,
+        sourceClosure,
+      );
+      await publishRuntimeReuseProof(
+        layout,
+        identity,
+        packageSource,
+        additionalPackages,
+        sourceReuseProof,
+        marker,
+        deps,
+      );
+    }
+    if (!(await verifyRuntimeFast(layout, identity, packageSource, additionalPackages))) {
+      throw new Error("The managed runtime warm-reuse proof failed verification after atomic promotion.");
+    }
     await waitForManagedRuntimeLaunchBoundary(layout, identity, deps);
-    return await runtimeResult(layout, identity, input.nodePath);
+    return await runtimeResult(
+      layout,
+      identity,
+      input.nodePath,
+      runtimeWasPresent ? "repaired" : "installed",
+    );
   } finally {
     await acquired.release().catch(() => undefined);
   }
@@ -519,7 +654,13 @@ export async function verifyManagedRuntimeLaunch(
   if (!privateRuntimeDirectory(finalInstallRoot) || !sameSourceStats(initialInstallRoot, finalInstallRoot)) {
     throw new Error("The managed runtime closure root changed during launch verification.");
   }
-  return { installRoot };
+  const closureId = `${identity.cliSha256}-${identity.sourceClosureSha256}`;
+  return {
+    installRoot,
+    provenanceDetail: `Runtime provenance: managed closure ${closureId} (`
+      + `${PACKAGE_NAME} ${identity.packageVersion}; ${identity.platform}-${identity.arch}; `
+      + `Node ABI ${identity.nodeAbi}; installed ${marker.installedAt}).`,
+  };
 }
 
 interface ManagedRuntimeLaunchProof {
@@ -618,16 +759,8 @@ export async function verifyManagedRuntimeClosureForProvenance(
     const layout = runtimeLayout(home, identity, "provenance", 0);
     if (layout.installRoot !== installRoot || layout.cliPath !== join(packageRoot, "dist", "cli.js")) return false;
     if (!(await verifyPrivateRuntimeAncestors(home, layout.versionAbiDir))) return false;
-    const expectedMarker: RuntimeMarker = {
-      schema: "mono-agent.managed-runtime.v4",
-      packageName: PACKAGE_NAME,
-      closureManifestSha256: input.closureManifestSha256,
-      executionProofSha256: input.executionProofSha256,
-      ...identity,
-      installedAt: input.installedAt,
-    };
     const markerInitial = await verifiedRuntimeMarker(layout, identity);
-    if (markerInitial === undefined || !sameRuntimeMarker(markerInitial, expectedMarker)) return false;
+    if (markerInitial === undefined || !runtimeMarkerMatchesProvenance(markerInitial, input)) return false;
     const additionalPackages = await managedRuntimeAdditionalPackages(layout);
     if (additionalPackages === undefined) return false;
     const closureInitial = await matchingRuntimeClosureCapture(
@@ -661,7 +794,7 @@ export async function verifyManagedRuntimeClosureForProvenance(
     if (
       markerFinal === undefined
       || !sameRuntimeMarker(markerFinal, markerInitial)
-      || !sameRuntimeMarker(markerFinal, expectedMarker)
+      || !runtimeMarkerMatchesProvenance(markerFinal, input)
       || !(await verifyClosureManifest(
         layout,
         markerFinal.closureManifestSha256,
@@ -675,7 +808,7 @@ export async function verifyManagedRuntimeClosureForProvenance(
     const markerAfterManifest = await readRuntimeMarker(layout.markerPath, identity);
     return markerAfterManifest !== undefined
       && sameRuntimeMarker(markerAfterManifest, markerInitial)
-      && sameRuntimeMarker(markerAfterManifest, expectedMarker);
+      && runtimeMarkerMatchesProvenance(markerAfterManifest, input);
   } catch {
     return false;
   }
@@ -1051,6 +1184,15 @@ async function captureExecutionClosure(
     sourceClosureSha256: sha256(Buffer.from(JSON.stringify(stable), "utf8")),
     sourceProofSha256: sha256(Buffer.from(JSON.stringify(proof), "utf8")),
     filesystemProofSha256: sha256(Buffer.from(JSON.stringify(filesystemProof), "utf8")),
+    reuseProof: {
+      sourceProofSha256: sha256(Buffer.from(JSON.stringify(proof), "utf8")),
+      packages: closure.map((node) => ({
+        id: node.id,
+        sourceRoot: node.sourceRoot,
+        entries: requiredMapValue(proofs, node.id, "source package proof"),
+      })),
+      links: [...dependencyProofPaths, ...additionalProofPaths],
+    },
   };
 }
 
@@ -1129,6 +1271,19 @@ async function assertSourceClosureUnchanged(
   ) {
     throw new Error(`The managed runtime package closure changed ${phase}; no staged runtime was promoted.`);
   }
+}
+
+async function currentSourceReuseProof(
+  packageSource: string,
+  additionalPackages: readonly ManagedRuntimeAdditionalPackage[],
+  expected: ExecutionClosureCapture,
+): Promise<SourceClosureReuseProof> {
+  if (await verifySourceReuseProofStats(expected.reuseProof)) return expected.reuseProof;
+  const current = await captureExecutionClosure(packageSource, additionalPackages);
+  if (current.sourceClosureSha256 !== expected.sourceClosureSha256) {
+    throw new Error("The managed runtime source closure changed before warm-proof publication.");
+  }
+  return current.reuseProof;
 }
 
 /**
@@ -1616,8 +1771,13 @@ async function packageVersionAt(packageRoot: string): Promise<string> {
 }
 
 function runtimeLayout(home: string, identity: RuntimeIdentity, id: string, nowMs: number): RuntimeLayout {
-  const platformAbi = `${safeSegment(identity.platform)}-${safeSegment(identity.arch)}-abi-${safeSegment(identity.nodeAbi)}`;
-  const versionAbiDir = join(home, ".mono-agent", "runtimes", "agent-app", identity.packageVersion, platformAbi);
+  const versionAbiDir = runtimeVersionAbiDir(
+    home,
+    identity.packageVersion,
+    identity.nodeAbi,
+    identity.platform,
+    identity.arch,
+  );
   const closureId = `${identity.cliSha256}-${identity.sourceClosureSha256}`;
   const installRoot = join(versionAbiDir, closureId);
   const suffix = `${Math.max(0, Math.floor(nowMs))}-${id}`;
@@ -1629,10 +1789,23 @@ function runtimeLayout(home: string, identity: RuntimeIdentity, id: string, nowM
     packageLockPath: join(installRoot, "package-lock.json"),
     closureManifestPath: join(installRoot, ".mono-agent-closure.json"),
     markerPath: join(installRoot, ".mono-agent-runtime.json"),
+    reuseProofDir: join(versionAbiDir, ".reuse-proofs"),
+    reuseProofPath: join(versionAbiDir, ".reuse-proofs", `${closureId}.json`),
     lockDir: join(versionAbiDir, `.${closureId}.lock`),
     stagingDir: join(versionAbiDir, `.${closureId}.staging-${suffix}`),
     quarantineDir: join(versionAbiDir, "quarantine", `${closureId}-${suffix}`),
   };
+}
+
+function runtimeVersionAbiDir(
+  home: string,
+  packageVersion: string,
+  nodeAbi: string,
+  platform: NodeJS.Platform,
+  arch: string,
+): string {
+  const platformAbi = `${safeSegment(platform)}-${safeSegment(arch)}-abi-${safeSegment(nodeAbi)}`;
+  return join(home, ".mono-agent", "runtimes", "agent-app", packageVersion, platformAbi);
 }
 
 function runtimeLayoutForRoot(layout: RuntimeLayout, root: string): RuntimeLayout {
@@ -1647,11 +1820,651 @@ function runtimeLayoutForRoot(layout: RuntimeLayout, root: string): RuntimeLayou
   };
 }
 
+interface FastRuntimeSearchInput {
+  readonly home: string;
+  readonly versionAbiDir: string;
+  readonly packageVersion: string;
+  readonly cliSha256: string;
+  readonly nodeAbi: string;
+  readonly platform: NodeJS.Platform;
+  readonly arch: string;
+  readonly packageSource: string;
+  readonly additionalPackages: readonly ManagedRuntimeAdditionalPackage[];
+}
+
+async function findFastReusableRuntime(
+  input: FastRuntimeSearchInput,
+): Promise<{ readonly layout: RuntimeLayout; readonly identity: RuntimeIdentity } | undefined> {
+  let entries;
+  try {
+    entries = await readdir(input.versionAbiDir, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+  const prefix = `${input.cliSha256}-`;
+  for (const entry of entries.sort((left, right) => compareCodeUnits(left.name, right.name))) {
+    if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
+    const sourceClosureSha256 = entry.name.slice(prefix.length);
+    if (!/^[0-9a-f]{64}$/u.test(sourceClosureSha256)) continue;
+    const identity: RuntimeIdentity = {
+      packageVersion: input.packageVersion,
+      cliSha256: input.cliSha256,
+      sourceClosureSha256,
+      nodeAbi: input.nodeAbi,
+      platform: input.platform,
+      arch: input.arch,
+    };
+    const layout = runtimeLayout(input.home, identity, "fast-reuse", 0);
+    if (await verifyRuntimeFast(
+      layout,
+      identity,
+      input.packageSource,
+      input.additionalPackages,
+    )) {
+      return { layout, identity };
+    }
+  }
+  return undefined;
+}
+
+async function verifyRuntimeFast(
+  layout: RuntimeLayout,
+  identity: RuntimeIdentity,
+  packageSource: string,
+  additionalPackages: readonly ManagedRuntimeAdditionalPackage[],
+): Promise<boolean> {
+  try {
+    const home = dirname(dirname(dirname(dirname(dirname(layout.versionAbiDir)))));
+    if (!(await verifyPrivateRuntimeAncestors(home, layout.versionAbiDir))) return false;
+    const [initialRoot, initialProofDir] = await Promise.all([
+      lstat(layout.installRoot, { bigint: true }),
+      lstat(layout.reuseProofDir, { bigint: true }),
+    ]);
+    if (!privateRuntimeDirectory(initialRoot) || !privateRuntimeDirectory(initialProofDir)) return false;
+
+    const [markerBytes, proofBytes] = await Promise.all([
+      readPrivateRuntimeMarkerBytes(layout.markerPath),
+      readPrivateRuntimeReuseProofBytes(layout.reuseProofPath),
+    ]);
+    if (markerBytes === undefined || proofBytes === undefined) return false;
+    const marker = runtimeMarkerFromJson(parseJson(markerBytes, "managed runtime marker"), identity);
+    if (
+      marker?.schema !== "mono-agent.managed-runtime.v5"
+      || marker.reuseProofSha256 !== sha256(proofBytes)
+    ) {
+      return false;
+    }
+    const proof = runtimeReuseProofFromJson(
+      parseJson(proofBytes, "managed runtime reuse proof"),
+      identity,
+      packageSource,
+      additionalPackages,
+      marker,
+    );
+    if (proof === undefined) return false;
+
+    const [installed, cliStable, manifestStable] = await Promise.all([
+      verifyInstalledPackage(layout, identity),
+      verifyManagedRuntimeCliFingerprint(layout, identity.cliSha256),
+      verifyClosureManifestFingerprint(layout, marker.closureManifestSha256),
+    ]);
+    if (
+      !installed
+      || !cliStable
+      || !manifestStable
+      || !(await runtimeReuseProofMatchesManifest(layout, proof.runtime))
+    ) {
+      return false;
+    }
+
+    if (!(await verifyReuseProofStats(layout, proof))) return false;
+    if (!(await verifyReuseProofStats(layout, proof))) return false;
+
+    const [markerBytesAfter, proofBytesAfter, finalRoot, finalProofDir] = await Promise.all([
+      readPrivateRuntimeMarkerBytes(layout.markerPath),
+      readPrivateRuntimeReuseProofBytes(layout.reuseProofPath),
+      lstat(layout.installRoot, { bigint: true }),
+      lstat(layout.reuseProofDir, { bigint: true }),
+    ]);
+    return markerBytesAfter !== undefined
+      && proofBytesAfter !== undefined
+      && markerBytesAfter.equals(markerBytes)
+      && proofBytesAfter.equals(proofBytes)
+      && privateRuntimeDirectory(finalRoot)
+      && privateRuntimeDirectory(finalProofDir)
+      && sameSourceStats(initialRoot, finalRoot)
+      && sameSourceStats(initialProofDir, finalProofDir);
+  } catch {
+    return false;
+  }
+}
+
+async function publishRuntimeReuseProof(
+  layout: RuntimeLayout,
+  identity: RuntimeIdentity,
+  packageSource: string,
+  additionalPackages: readonly ManagedRuntimeAdditionalPackage[],
+  source: SourceClosureReuseProof,
+  marker: RuntimeMarker,
+  deps: ManagedBackgroundRuntimeDeps,
+  finalizeLaunchBoundary = false,
+): Promise<void> {
+  if (!(await verifySourceReuseProofStats(source))) {
+    throw new Error("The managed runtime source closure changed before warm-proof publication.");
+  }
+  const runtime = await captureRuntimeClosureReuseProof(layout, marker);
+  const proof: ManagedRuntimeReuseProof = {
+    schema: RUNTIME_REUSE_PROOF_SCHEMA,
+    identity,
+    packageSource,
+    additionalPackages,
+    source,
+    runtime,
+  };
+  const contents = privateJsonContents(proof);
+  const bytes = Buffer.from(contents, "utf8");
+  if (bytes.length > MAX_RUNTIME_REUSE_PROOF_BYTES) {
+    throw new Error("The managed runtime warm-reuse proof exceeds its safe size limit.");
+  }
+  await ensurePrivateReuseProofDirectory(layout.reuseProofDir);
+  await writeFile(layout.reuseProofPath, contents, { encoding: "utf8", mode: 0o600 });
+  await chmod(layout.reuseProofPath, 0o600);
+  const stored = await readPrivateRuntimeReuseProofBytes(layout.reuseProofPath);
+  if (stored === undefined || !stored.equals(bytes)) {
+    throw new Error("The managed runtime warm-reuse proof changed while it was published.");
+  }
+
+  const nextMarker: RuntimeMarkerV5 = {
+    schema: "mono-agent.managed-runtime.v5",
+    packageName: PACKAGE_NAME,
+    packageVersion: identity.packageVersion,
+    cliSha256: identity.cliSha256,
+    sourceClosureSha256: identity.sourceClosureSha256,
+    nodeAbi: identity.nodeAbi,
+    platform: identity.platform,
+    arch: identity.arch,
+    closureManifestSha256: marker.closureManifestSha256,
+    executionProofSha256: marker.executionProofSha256,
+    reuseProofSha256: sha256(bytes),
+    installedAt: marker.installedAt,
+  };
+  if (finalizeLaunchBoundary) {
+    await writeFinalizedRuntimeMarker(layout.markerPath, nextMarker, deps);
+  } else {
+    await writePrivateJson(layout.markerPath, nextMarker);
+  }
+  if (!(await verifySourceReuseProofStats(source))) {
+    throw new Error("The managed runtime source closure changed during warm-proof publication.");
+  }
+}
+
+async function captureRuntimeClosureReuseProof(
+  layout: RuntimeLayout,
+  marker: RuntimeMarker,
+): Promise<RuntimeClosureReuseProof> {
+  const stored = await fingerprintClosureFile(layout.closureManifestPath, ".mono-agent-closure.json");
+  if (stored.sha256 !== marker.closureManifestSha256) {
+    throw new Error("The managed runtime closure manifest changed before warm-proof capture.");
+  }
+  const manifest = runtimeClosureManifestFromJson(parseJson(stored.bytes, "managed runtime closure manifest"));
+  if (manifest === undefined) throw new Error("The managed runtime closure manifest is malformed.");
+  const excludedRootEntries = new Set([".mono-agent-closure.json", ".mono-agent-runtime.json"]);
+  const rootEntries = (await readdir(layout.installRoot))
+    .filter((name) => !excludedRootEntries.has(name))
+    .sort(compareCodeUnits);
+  const entries = await mapWithConcurrency(
+    manifest.entries,
+    RUNTIME_REUSE_STAT_CONCURRENCY,
+    async (entry) => ({
+      path: entry.path,
+      proof: await captureFilesystemPathProof(
+        runtimePathFromPortableRelative(layout.installRoot, entry.path),
+        entry.path,
+      ),
+    }),
+  );
+  const result: RuntimeClosureReuseProof = {
+    rootEntries,
+    entries,
+    closureManifestSha256: marker.closureManifestSha256,
+    executionProofSha256: marker.executionProofSha256,
+  };
+  if (!(await verifyRuntimeReuseProofStats(layout, result))) {
+    throw new Error("The managed runtime closure changed during warm-proof capture.");
+  }
+  return result;
+}
+
+async function verifyReuseProofStats(
+  layout: RuntimeLayout,
+  proof: ManagedRuntimeReuseProof,
+): Promise<boolean> {
+  const [sourceValid, runtimeValid] = await Promise.all([
+    verifySourceReuseProofStats(proof.source),
+    verifyRuntimeReuseProofStats(layout, proof.runtime),
+  ]);
+  return sourceValid && runtimeValid;
+}
+
+async function verifySourceReuseProofStats(proof: SourceClosureReuseProof): Promise<boolean> {
+  try {
+    const targets = [
+      ...proof.packages.flatMap((pkg) => pkg.entries.map((entry) => ({
+        path: entry.path === "."
+          ? pkg.sourceRoot
+          : runtimePathFromPortableRelative(pkg.sourceRoot, entry.path),
+        logicalPath: entry.path,
+        proof: entry,
+      }))),
+      ...proof.links,
+    ];
+    const matches = await mapWithConcurrency(targets, RUNTIME_REUSE_STAT_CONCURRENCY, async (target) => {
+      const current = await captureFilesystemPathProof(target.path, target.logicalPath);
+      return sameSourceProofEntry(target.proof, current);
+    });
+    return matches.every(Boolean);
+  } catch {
+    return false;
+  }
+}
+
+async function verifyRuntimeReuseProofStats(
+  layout: RuntimeLayout,
+  proof: RuntimeClosureReuseProof,
+): Promise<boolean> {
+  try {
+    const excludedRootEntries = new Set([".mono-agent-closure.json", ".mono-agent-runtime.json"]);
+    const rootEntries = (await readdir(layout.installRoot))
+      .filter((name) => !excludedRootEntries.has(name))
+      .sort(compareCodeUnits);
+    if (JSON.stringify(rootEntries) !== JSON.stringify(proof.rootEntries)) return false;
+    const matches = await mapWithConcurrency(proof.entries, RUNTIME_REUSE_STAT_CONCURRENCY, async (entry) => {
+      const current = await captureFilesystemPathProof(
+        runtimePathFromPortableRelative(layout.installRoot, entry.path),
+        entry.path,
+      );
+      return sameSourceProofEntry(entry.proof, current);
+    });
+    return matches.every(Boolean);
+  } catch {
+    return false;
+  }
+}
+
+async function runtimeReuseProofMatchesManifest(
+  layout: RuntimeLayout,
+  proof: RuntimeClosureReuseProof,
+): Promise<boolean> {
+  try {
+    const bytes = await readFile(layout.closureManifestPath);
+    if (sha256(bytes) !== proof.closureManifestSha256) return false;
+    const manifest = runtimeClosureManifestFromJson(parseJson(bytes, "managed runtime closure manifest"));
+    if (manifest === undefined || manifest.entries.length !== proof.entries.length) return false;
+    return manifest.entries.every((entry, index) => {
+      const proven = proof.entries[index];
+      return proven !== undefined
+        && proven.path === entry.path
+        && proven.proof.type === entry.type
+        && fileMode(BigInt(proven.proof.mode)) === entry.mode
+        && (entry.type !== "symlink" || proven.proof.target === entry.target);
+    });
+  } catch {
+    return false;
+  }
+}
+
+async function ensurePrivateReuseProofDirectory(path: string): Promise<void> {
+  await mkdir(path, { recursive: false, mode: 0o700 }).catch((error: unknown) => {
+    if (!isErrno(error, "EEXIST")) throw error;
+  });
+  const details = await lstat(path, { bigint: true });
+  if (!privateRuntimeDirectory(details)) {
+    throw new Error(`Managed runtime reuse-proof directory ${path} must be owner-private.`);
+  }
+  await chmod(path, 0o700);
+}
+
+async function readPrivateRuntimeReuseProofBytes(path: string): Promise<Buffer | undefined> {
+  let handle;
+  try {
+    handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    const before = await handle.stat({ bigint: true });
+    if (!privateRuntimeReuseProofFile(before)) return undefined;
+    const bytes = await handle.readFile();
+    const [after, named] = await Promise.all([
+      handle.stat({ bigint: true }),
+      lstat(path, { bigint: true }),
+    ]);
+    if (
+      !privateRuntimeReuseProofFile(after)
+      || !privateRuntimeReuseProofFile(named)
+      || !sameSourceStats(before, after)
+      || !sameSourceStats(before, named)
+    ) {
+      return undefined;
+    }
+    return bytes;
+  } catch {
+    return undefined;
+  } finally {
+    await handle?.close();
+  }
+}
+
+function privateRuntimeReuseProofFile(details: BigIntStats): boolean {
+  const owned = typeof process.getuid !== "function" || details.uid === BigInt(process.getuid());
+  return details.isFile()
+    && !details.isSymbolicLink()
+    && details.nlink === 1n
+    && details.size <= BigInt(MAX_RUNTIME_REUSE_PROOF_BYTES)
+    && (details.mode & 0o077n) === 0n
+    && owned;
+}
+
+function runtimeReuseProofFromJson(
+  value: unknown,
+  identity: RuntimeIdentity,
+  packageSource: string,
+  additionalPackages: readonly ManagedRuntimeAdditionalPackage[],
+  marker: RuntimeMarkerV5,
+): ManagedRuntimeReuseProof | undefined {
+  if (!hasExactKeys(value, ["schema", "identity", "packageSource", "additionalPackages", "source", "runtime"])) {
+    return undefined;
+  }
+  if (
+    value.schema !== RUNTIME_REUSE_PROOF_SCHEMA
+    || !sameRuntimeIdentityJson(value.identity, identity)
+    || value.packageSource !== packageSource
+    || !Array.isArray(value.additionalPackages)
+    || JSON.stringify(value.additionalPackages) !== JSON.stringify(additionalPackages)
+  ) {
+    return undefined;
+  }
+  const source = sourceClosureReuseProofFromJson(value.source, packageSource);
+  const runtime = runtimeClosureReuseProofFromJson(value.runtime, marker);
+  return source === undefined || runtime === undefined
+    ? undefined
+    : {
+        schema: RUNTIME_REUSE_PROOF_SCHEMA,
+        identity,
+        packageSource,
+        additionalPackages,
+        source,
+        runtime,
+      };
+}
+
+function sourceClosureReuseProofFromJson(
+  value: unknown,
+  packageSource: string,
+): SourceClosureReuseProof | undefined {
+  if (!hasExactKeys(value, ["sourceProofSha256", "packages", "links"])) return undefined;
+  if (
+    typeof value.sourceProofSha256 !== "string"
+    || !/^[0-9a-f]{64}$/u.test(value.sourceProofSha256)
+    || !Array.isArray(value.packages)
+    || !Array.isArray(value.links)
+  ) {
+    return undefined;
+  }
+  const packages: Array<SourceClosureReuseProof["packages"][number]> = [];
+  const roots = new Set<string>();
+  for (const [index, rawPackage] of value.packages.entries()) {
+    if (!hasExactKeys(rawPackage, ["id", "sourceRoot", "entries"])) return undefined;
+    if (
+      rawPackage.id !== index
+      || typeof rawPackage.sourceRoot !== "string"
+      || !isCanonicalAbsolutePath(rawPackage.sourceRoot)
+      || roots.has(rawPackage.sourceRoot)
+      || !Array.isArray(rawPackage.entries)
+    ) {
+      return undefined;
+    }
+    const entries = proofEntriesFromJson(rawPackage.entries, true);
+    if (entries === undefined || entries[0]?.path !== ".") return undefined;
+    roots.add(rawPackage.sourceRoot);
+    packages.push({ id: index, sourceRoot: rawPackage.sourceRoot, entries });
+  }
+  if (packages[0]?.sourceRoot !== packageSource) return undefined;
+
+  const links: Array<SourceClosureReuseProof["links"][number]> = [];
+  const linkPaths = new Set<string>();
+  for (const rawLink of value.links) {
+    if (!hasExactKeys(rawLink, ["path", "logicalPath", "proof"])) return undefined;
+    if (
+      typeof rawLink.path !== "string"
+      || !isCanonicalAbsolutePath(rawLink.path)
+      || linkPaths.has(rawLink.path)
+      || typeof rawLink.logicalPath !== "string"
+      || rawLink.logicalPath.length === 0
+    ) {
+      return undefined;
+    }
+    const proof = sourceProofEntryFromJson(rawLink.proof);
+    if (proof === undefined || proof.path !== rawLink.logicalPath) return undefined;
+    linkPaths.add(rawLink.path);
+    links.push({ path: rawLink.path, logicalPath: rawLink.logicalPath, proof });
+  }
+  return { sourceProofSha256: value.sourceProofSha256, packages, links };
+}
+
+function runtimeClosureReuseProofFromJson(
+  value: unknown,
+  marker: RuntimeMarkerV5,
+): RuntimeClosureReuseProof | undefined {
+  if (!hasExactKeys(value, [
+    "rootEntries",
+    "entries",
+    "closureManifestSha256",
+    "executionProofSha256",
+  ])) return undefined;
+  if (
+    value.closureManifestSha256 !== marker.closureManifestSha256
+    || value.executionProofSha256 !== marker.executionProofSha256
+    || !Array.isArray(value.rootEntries)
+    || !Array.isArray(value.entries)
+  ) {
+    return undefined;
+  }
+  const rootEntries: string[] = [];
+  const rootNames = new Set<string>();
+  for (const name of value.rootEntries) {
+    if (
+      typeof name !== "string"
+      || name.length === 0
+      || name === "."
+      || name === ".."
+      || name.includes("/")
+      || name.includes("\\")
+      || name.includes("\0")
+      || rootNames.has(name)
+      || name === ".mono-agent-closure.json"
+      || name === ".mono-agent-runtime.json"
+    ) {
+      return undefined;
+    }
+    rootNames.add(name);
+    rootEntries.push(name);
+  }
+  if (JSON.stringify(rootEntries) !== JSON.stringify([...rootEntries].sort(compareCodeUnits))) return undefined;
+
+  const entries: Array<RuntimeClosureReuseProof["entries"][number]> = [];
+  const entryPaths = new Set<string>();
+  for (const rawEntry of value.entries) {
+    if (!hasExactKeys(rawEntry, ["path", "proof"])) return undefined;
+    if (
+      typeof rawEntry.path !== "string"
+      || !isSafePortableRelativePath(rawEntry.path)
+      || entryPaths.has(rawEntry.path)
+    ) {
+      return undefined;
+    }
+    const proof = sourceProofEntryFromJson(rawEntry.proof);
+    if (proof === undefined || proof.path !== rawEntry.path) return undefined;
+    entryPaths.add(rawEntry.path);
+    entries.push({ path: rawEntry.path, proof });
+  }
+  return {
+    rootEntries,
+    entries,
+    closureManifestSha256: marker.closureManifestSha256,
+    executionProofSha256: marker.executionProofSha256,
+  };
+}
+
+function runtimeClosureManifestFromJson(value: unknown): RuntimeClosureManifest | undefined {
+  if (!hasExactKeys(value, ["schema", "entries"]) || value.schema !== "mono-agent.execution-closure.v1") {
+    return undefined;
+  }
+  if (!Array.isArray(value.entries)) return undefined;
+  const entries: RuntimeClosureEntry[] = [];
+  const paths = new Set<string>();
+  for (const rawEntry of value.entries) {
+    if (!isRecord(rawEntry) || typeof rawEntry.type !== "string") return undefined;
+    const expectedKeys = rawEntry.type === "file"
+      ? ["path", "type", "mode", "sha256"]
+      : rawEntry.type === "symlink"
+        ? ["path", "type", "mode", "target"]
+        : ["path", "type", "mode"];
+    if (
+      !hasExactKeys(rawEntry, expectedKeys)
+      || typeof rawEntry.path !== "string"
+      || !isSafePortableRelativePath(rawEntry.path)
+      || paths.has(rawEntry.path)
+      || typeof rawEntry.mode !== "string"
+      || !/^0[0-7]{3}$/u.test(rawEntry.mode)
+    ) {
+      return undefined;
+    }
+    if (rawEntry.type === "file") {
+      if (typeof rawEntry.sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(rawEntry.sha256)) return undefined;
+      entries.push({ path: rawEntry.path, type: "file", mode: rawEntry.mode, sha256: rawEntry.sha256 });
+    } else if (rawEntry.type === "symlink") {
+      if (typeof rawEntry.target !== "string" || rawEntry.target.includes("\0")) return undefined;
+      entries.push({ path: rawEntry.path, type: "symlink", mode: rawEntry.mode, target: rawEntry.target });
+    } else if (rawEntry.type === "directory") {
+      entries.push({ path: rawEntry.path, type: "directory", mode: rawEntry.mode });
+    } else {
+      return undefined;
+    }
+    paths.add(rawEntry.path);
+  }
+  return { schema: "mono-agent.execution-closure.v1", entries };
+}
+
+function proofEntriesFromJson(
+  values: readonly unknown[],
+  allowRoot: boolean,
+): readonly SourcePackageProofEntry[] | undefined {
+  const entries: SourcePackageProofEntry[] = [];
+  const paths = new Set<string>();
+  for (const value of values) {
+    const entry = sourceProofEntryFromJson(value);
+    if (
+      entry === undefined
+      || (entry.path !== "." && !isSafePortableRelativePath(entry.path))
+      || (!allowRoot && entry.path === ".")
+      || paths.has(entry.path)
+    ) {
+      return undefined;
+    }
+    paths.add(entry.path);
+    entries.push(entry);
+  }
+  return entries;
+}
+
+function sourceProofEntryFromJson(value: unknown): SourcePackageProofEntry | undefined {
+  if (!isRecord(value)) return undefined;
+  const type = value.type;
+  const expectedKeys = type === "symlink"
+    ? ["path", "type", "dev", "ino", "nlink", "mode", "size", "mtimeNs", "ctimeNs", "target"]
+    : ["path", "type", "dev", "ino", "nlink", "mode", "size", "mtimeNs", "ctimeNs"];
+  if (
+    !hasExactKeys(value, expectedKeys)
+    || typeof value.path !== "string"
+    || (type !== "directory" && type !== "file" && type !== "symlink")
+    || ![value.dev, value.ino, value.nlink, value.mode, value.size, value.mtimeNs, value.ctimeNs]
+      .every((entry) => typeof entry === "string" && /^-?\d+$/u.test(entry))
+    || (type === "symlink" && (typeof value.target !== "string" || value.target.includes("\0")))
+  ) {
+    return undefined;
+  }
+  return value as unknown as SourcePackageProofEntry;
+}
+
+function sameRuntimeIdentityJson(value: unknown, identity: RuntimeIdentity): boolean {
+  return hasExactKeys(value, ["packageVersion", "cliSha256", "sourceClosureSha256", "nodeAbi", "platform", "arch"])
+    && value.packageVersion === identity.packageVersion
+    && value.cliSha256 === identity.cliSha256
+    && value.sourceClosureSha256 === identity.sourceClosureSha256
+    && value.nodeAbi === identity.nodeAbi
+    && value.platform === identity.platform
+    && value.arch === identity.arch;
+}
+
+function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return isRecord(value)
+    && Object.keys(value).length === keys.length
+    && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function isCanonicalAbsolutePath(path: string): boolean {
+  return isAbsolute(path) && resolve(path) === path && !path.includes("\0");
+}
+
+function isSafePortableRelativePath(path: string): boolean {
+  if (path.length === 0 || path === "." || path.includes("\\") || path.includes("\0") || isAbsolute(path)) {
+    return false;
+  }
+  const segments = path.split("/");
+  return segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+
+function runtimePathFromPortableRelative(root: string, path: string): string {
+  if (!isSafePortableRelativePath(path)) {
+    throw new Error(`Managed runtime proof path ${JSON.stringify(path)} is unsafe.`);
+  }
+  const target = join(root, ...path.split("/"));
+  assertPathInsideRoot(root, target, `proof path ${path}`);
+  return target;
+}
+
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  mapper: (value: T, index: number) => Promise<R>,
+): Promise<readonly R[]> {
+  const results = new Array<R>(values.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, concurrency), values.length) }, async () => {
+    for (;;) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= values.length) return;
+      results[index] = await mapper(values[index]!, index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return false;
+    throw error;
+  }
+}
+
 async function acquireRuntimeLock(
   layout: RuntimeLayout,
   identity: RuntimeIdentity,
   additionalPackages: readonly ManagedRuntimeAdditionalPackage[],
   deps: ManagedBackgroundRuntimeDeps,
+  isSatisfied: () => Promise<boolean> = () => verifyRuntime(layout, identity, additionalPackages),
 ): Promise<OwnerPrivateLock | undefined> {
   const incarnation = await (deps.currentProcessIncarnation ?? currentProcessIncarnation)();
   return acquireOwnerPrivateLock({
@@ -1679,7 +2492,7 @@ async function acquireRuntimeLock(
         : undefined;
     },
     invalidOwner: "ownerless",
-    isSatisfied: () => verifyRuntime(layout, identity, additionalPackages),
+    isSatisfied,
     sleep: deps.sleep,
     staleRace: "return",
     beforeStaleRename: async () => {
@@ -1814,7 +2627,26 @@ function sameRuntimeMarker(left: RuntimeMarker, right: RuntimeMarker): boolean {
     && left.nodeAbi === right.nodeAbi
     && left.platform === right.platform
     && left.arch === right.arch
-    && left.installedAt === right.installedAt;
+    && left.installedAt === right.installedAt
+    && (left.schema !== "mono-agent.managed-runtime.v5"
+      || (right.schema === "mono-agent.managed-runtime.v5"
+        && left.reuseProofSha256 === right.reuseProofSha256));
+}
+
+function runtimeMarkerMatchesProvenance(
+  marker: RuntimeMarker,
+  input: ManagedRuntimeProvenanceVerificationInput,
+): boolean {
+  return marker.packageName === PACKAGE_NAME
+    && marker.closureManifestSha256 === input.closureManifestSha256
+    && marker.executionProofSha256 === input.executionProofSha256
+    && marker.packageVersion === input.packageVersion
+    && marker.cliSha256 === input.cliSha256
+    && marker.sourceClosureSha256 === input.sourceClosureSha256
+    && marker.nodeAbi === input.nodeAbi
+    && marker.platform === input.platform
+    && marker.arch === input.arch
+    && marker.installedAt === input.installedAt;
 }
 
 async function verifiedRuntimeMarker(
@@ -1894,7 +2726,7 @@ function privateRuntimeDirectory(details: BigIntStats): boolean {
 
 function runtimeMarkerFromJson(value: unknown, identity: RuntimeIdentity): RuntimeMarker | undefined {
   if (!isRecord(value)) return undefined;
-  const exactKeys = [
+  const commonKeys = [
     "schema",
     "packageName",
     "closureManifestSha256",
@@ -1907,10 +2739,13 @@ function runtimeMarkerFromJson(value: unknown, identity: RuntimeIdentity): Runti
     "arch",
     "installedAt",
   ];
+  const exactKeys = value.schema === "mono-agent.managed-runtime.v5"
+    ? [...commonKeys, "reuseProofSha256"]
+    : commonKeys;
   const installedAtMs = typeof value.installedAt === "string" ? Date.parse(value.installedAt) : Number.NaN;
   const valid = Object.keys(value).length === exactKeys.length
     && exactKeys.every((key) => Object.hasOwn(value, key))
-    && value.schema === "mono-agent.managed-runtime.v4"
+    && (value.schema === "mono-agent.managed-runtime.v4" || value.schema === "mono-agent.managed-runtime.v5")
     && value.packageName === PACKAGE_NAME
     && value.packageVersion === identity.packageVersion
     && value.cliSha256 === identity.cliSha256
@@ -1922,6 +2757,8 @@ function runtimeMarkerFromJson(value: unknown, identity: RuntimeIdentity): Runti
     && /^[0-9a-f]{64}$/u.test(value.closureManifestSha256)
     && typeof value.executionProofSha256 === "string"
     && /^[0-9a-f]{64}$/u.test(value.executionProofSha256)
+    && (value.schema !== "mono-agent.managed-runtime.v5"
+      || (typeof value.reuseProofSha256 === "string" && /^[0-9a-f]{64}$/u.test(value.reuseProofSha256)))
     && typeof value.installedAt === "string"
     && Number.isFinite(installedAtMs)
     && new Date(installedAtMs).toISOString() === value.installedAt
@@ -2249,7 +3086,7 @@ async function waitForManagedRuntimeLaunchBoundary(
   identity: RuntimeIdentity,
   deps: ManagedBackgroundRuntimeDeps,
 ): Promise<void> {
-  const marker = await verifiedRuntimeMarker(layout, identity);
+  const marker = await readRuntimeMarker(layout.markerPath, identity);
   if (marker === undefined) {
     throw new Error("The managed runtime marker became invalid before launch.");
   }
@@ -2328,6 +3165,7 @@ async function runtimeResult(
   layout: RuntimeLayout,
   identity: RuntimeIdentity,
   nodePath: string,
+  verificationMode: ManagedRuntimeVerificationMode,
 ): Promise<ManagedBackgroundRuntime> {
   const markerBytes = await readPrivateRuntimeMarkerBytes(layout.markerPath);
   if (markerBytes === undefined) {
@@ -2344,6 +3182,7 @@ async function runtimeResult(
     packageVersion: identity.packageVersion,
     cliSha256: identity.cliSha256,
     nodeAbi: identity.nodeAbi,
+    verificationMode,
     launchProof: encodeManagedRuntimeLaunchProof({
       schema: MANAGED_RUNTIME_LAUNCH_PROOF_SCHEMA,
       markerSha256: sha256(markerBytes),

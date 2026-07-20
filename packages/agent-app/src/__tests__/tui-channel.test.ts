@@ -17,7 +17,7 @@ const baseConfig: TuiAdapterConfig = {
   enabled: true,
   host: "127.0.0.1",
   port: 0,
-  basePath: "/tui",
+  basePath: "/gui",
   allowNonLoopback: false,
 };
 
@@ -57,9 +57,9 @@ async function startCapturingTui(options: StartOptions = {}): Promise<TuiAdapter
       captured = adapterOptions;
       return Promise.resolve({
         url: "http://127.0.0.1:0",
-        baseUrl: "http://127.0.0.1:0/tui",
-        infoUrl: "http://127.0.0.1:0/tui/v1/info",
-        turnsUrl: "http://127.0.0.1:0/tui/v1/turns",
+        baseUrl: "http://127.0.0.1:0/gui",
+        infoUrl: "http://127.0.0.1:0/gui/v1/info",
+        turnsUrl: "http://127.0.0.1:0/gui/v1/turns",
         host: "127.0.0.1",
         port: 0,
         stop: () => Promise.resolve(),

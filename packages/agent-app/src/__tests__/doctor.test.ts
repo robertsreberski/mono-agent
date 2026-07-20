@@ -312,6 +312,23 @@ describe("validateMonoAgentFolder", () => {
     });
   });
 
+  it("reuses launch-verified managed runtime provenance without a second closure scan", async () => {
+    const configPath = join(dir, "missing.config.json");
+    const verifiedDetail = "Runtime provenance: managed closure verified-by-launch.";
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      drivers: [],
+      liveness: false,
+      allowFilesystemWrites: false,
+      verifiedRuntimeProvenanceDetail: verifiedDetail,
+    });
+
+    expect(sectionById(report, "runtime-provenance").details).toEqual([verifiedDetail]);
+  });
+
   it("reports fixed-port continuation configuration without creating state during read-only validation", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const stateDir = join(dir, ".mono-agent", "continuations");

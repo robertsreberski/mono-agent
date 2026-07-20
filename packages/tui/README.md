@@ -71,7 +71,7 @@ const handle = startMonoAgentTui({ responder, title: "My Agent", conversationId:
 await handle.waitUntilExit();
 
 // Remote client:
-startMonoAgentTui({ connection: { baseUrl: "http://127.0.0.1:52341/tui" } });
+startMonoAgentTui({ connection: { baseUrl: "http://127.0.0.1:52341/gui" } });
 
 // Discovery (agent picker):
 startMonoAgentTui({ discovery: {} });

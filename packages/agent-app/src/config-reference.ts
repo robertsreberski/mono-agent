@@ -1046,7 +1046,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "tui.enabled": true,
     "tui.host": "127.0.0.1",
     "tui.port": 0,
-    "tui.basePath": "/tui",
+    "tui.basePath": "/gui",
     "tui.allowNonLoopback": false,
     "live.enabled": true,
     "live.host": "127.0.0.1",

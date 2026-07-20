@@ -314,7 +314,7 @@ describe("RemoteAgentResponder", () => {
   });
 
   it("fails fast with `unreachable` when no agent is listening", async () => {
-    const client = new RemoteAgentResponder({ baseUrl: "http://127.0.0.1:1/tui" });
+    const client = new RemoteAgentResponder({ baseUrl: "http://127.0.0.1:1/gui" });
 
     await expect(client.info()).rejects.toMatchObject({ code: "unreachable" });
   });
