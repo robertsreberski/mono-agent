@@ -603,6 +603,9 @@ describe("pi MCP tool helpers", () => {
     const tools = getPiBuiltinTools(["Read"], { skillsRoot, skillNames: ["research"] });
     const readSkill = tools.find((tool) => tool.name === "ReadSkill");
     expect(readSkill).toBeTruthy();
+    expect(readSkill.description).toBe(
+      "Load the complete instructions for a named skill. Use ReadSkill instead of Read for SKILL.md files.",
+    );
     // The enum is restricted to the supplied skill names.
     expect(readSkill.parameters.properties.name.enum).toEqual(["research"]);
 

@@ -55,7 +55,9 @@ export function buildAgentContext(input: BuildContextInput): BuiltAgentContext {
   }
 
   if (skills.length > 0) {
-    sections.push(makeSection('skills', 'Skill Index', { content: renderSkillIndexEntries(skills) }));
+    sections.push(makeSection('skills', 'Skill Index', {
+      content: renderSkillIndexEntries(skills, input.skillDisclosure),
+    }));
   }
 
   if (skillInstructions.length > 0) {

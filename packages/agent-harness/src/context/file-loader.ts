@@ -24,6 +24,7 @@ export async function loadContextFromFiles(input: FileContextInput): Promise<Bui
     ...(input.memory === undefined ? {} : { memory: input.memory }),
     ...(input.history === undefined ? {} : { history: input.history }),
     ...(skills.length === 0 ? {} : { skills }),
+    ...(input.skillDisclosure === undefined ? {} : { skillDisclosure: input.skillDisclosure }),
     ...(input.skillInstructions === undefined ? {} : { skillInstructions: input.skillInstructions }),
   };
 
