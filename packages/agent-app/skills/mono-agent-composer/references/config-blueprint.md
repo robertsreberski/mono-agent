@@ -272,9 +272,9 @@ new agent.
 
   // Telegram & Slack do not stream ANSWER tokens by default. They first show a
   // working indicator; inbound tool starts then edit one temporary, redacted
-  // activity ledger. Telegram posts the final separately and deletes its ledger;
-  // Slack replaces its ledger with the final. Proactive turns suppress the
-  // ledger. This is built-in behavior (not a JSON field); a custom channel
+  // activity ledger. Both post the final separately and then best-effort delete
+  // their ledger. Proactive turns suppress the ledger. This is built-in behavior
+  // (not a JSON field); a custom channel
   // driver can set stream.showHints=false or stream.finalOnly=false. The
   // OpenAI-compatible endpoint still streams tokens.
   // Telegram also exposes built-in per-chat /model and /effort menus over the
@@ -289,6 +289,8 @@ new agent.
 
   "slack": {
     "enabled": true,                       // opt-in; defaults to false (off → "disabled")
+    // Built-in @agent /model and /effort Block Kit controls use the same runtime
+    // primary + fallbacks; DM selections span threads, shared-channel state does not.
     // Put MONO_AGENT_SLACK_BOT_TOKEN and MONO_AGENT_SLACK_APP_TOKEN in .env.
     "allowedChannelIds": ["C0123"],        // or "allowAllChannels": true
     "allowAllChannels": false,

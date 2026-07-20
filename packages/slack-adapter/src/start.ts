@@ -9,6 +9,7 @@ import {
   type SlackAttachmentOptions,
   type SlackEventHandlingResult,
   type SlackHomeTabOptions,
+  type SlackRuntimeControls,
   type SlackShortcutBinding,
 } from "./adapter.js";
 import {
@@ -52,6 +53,8 @@ export interface SlackAdapterStartOptions {
   readonly stream?: SlackAdapterStreamOptions;
   readonly messages?: SlackAdapterMessages;
   readonly attachments?: SlackAttachmentOptions;
+  /** Native model/effort choices exposed through message-thread Block Kit menus. */
+  readonly runtimeControls?: SlackRuntimeControls;
   /**
    * Shortcut bindings (callback_id → prompt). When set, the Socket Mode runner
    * routes shortcut payloads to the adapter, which runs the bound prompt as a
@@ -218,6 +221,9 @@ function buildAdapterOptions(
   if (options.attachments !== undefined) {
     adapterOptions.attachments = options.attachments;
   }
+  if (options.runtimeControls !== undefined) {
+    adapterOptions.runtimeControls = options.runtimeControls;
+  }
   if (options.shortcuts !== undefined) {
     adapterOptions.shortcuts = options.shortcuts;
   }
@@ -276,15 +282,16 @@ function buildRunnerOptions(
   if (options.random !== undefined) {
     runnerOptions.random = options.random;
   }
-  // Only subscribe to interactivity when shortcuts or Home-tab buttons are bound,
-  // so the runner's behavior is unchanged for agents that wire none.
+  // Only subscribe to interactivity when a native interactive surface is bound,
+  // so direct programmatic callers that wire none keep the previous runner shape.
   const hasShortcuts = options.shortcuts !== undefined && options.shortcuts.length > 0;
   const hasHomeButtons = options.homeTab?.buttons !== undefined && options.homeTab.buttons.length > 0;
-  if (hasShortcuts || hasHomeButtons) {
+  const hasRuntimeControls = options.runtimeControls !== undefined;
+  if (hasShortcuts || hasHomeButtons || hasRuntimeControls) {
     runnerOptions.onInteraction = async (payload) => {
       try {
         const result = await adapter.handleInteraction(payload);
-        if (result.kind === "triggered") {
+        if (result.kind === "triggered" || result.kind === "runtime_control") {
           logger?.info?.("Slack interaction triggered.", { result });
         } else {
           logger?.debug?.("Slack interaction ignored.", { result });

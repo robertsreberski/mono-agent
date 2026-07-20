@@ -69,6 +69,9 @@ export type {
   SlackNotifyOptions,
   SlackNotifyResult,
   SlackRequestMetadata,
+  SlackRuntimeControls,
+  SlackRuntimeEffortOption,
+  SlackRuntimeModelOption,
   SlackShortcutBinding,
   SlackTriggerKind,
 } from "./adapter.js";

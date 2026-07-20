@@ -11,7 +11,11 @@ import {
   type AgentRequest,
   type AgentResponder,
 } from "../adapter.js";
-import { SlackAdapter, type SlackNotifyOptions } from "../index.js";
+import {
+  SlackAdapter,
+  type SlackNotifyOptions,
+  type SlackRuntimeControls,
+} from "../index.js";
 import { SlackApiError } from "../slack-client.js";
 import type {
   SlackChatPostMessageParams,
@@ -103,6 +107,32 @@ class FakeSlackApi implements SlackWebApi {
     return new Uint8Array();
   }
 }
+
+const RUNTIME_CONTROLS: SlackRuntimeControls = {
+  defaultModel: "pi:openai:gpt-default",
+  defaultEffort: "medium",
+  models: [
+    {
+      value: "pi:openai:gpt-default",
+      label: "Default GPT",
+      efforts: [
+        { value: "low", label: "Low" },
+        { value: "medium", label: "Medium" },
+        { value: "high", label: "High" },
+      ],
+    },
+    {
+      value: "pi:anthropic:claude-fallback",
+      label: "Claude fallback",
+      efforts: [{ value: "high", label: "High" }],
+    },
+    {
+      value: "opencode:provider-owned",
+      label: "OpenCode",
+      efforts: [],
+    },
+  ],
+};
 
 describe("SlackAdapter", () => {
   it("exports the public silent notify options contract", () => {
@@ -758,7 +788,12 @@ describe("SlackAdapter", () => {
   it("handles /start and /help commands with deterministic replies", async () => {
     const api = new FakeSlackApi();
     const responder = { respond: vi.fn() } satisfies AgentResponder;
-    const adapter = new SlackAdapter({ api, responder, allowAllChannels: true });
+    const adapter = new SlackAdapter({
+      api,
+      responder,
+      allowAllChannels: true,
+      runtimeControls: RUNTIME_CONTROLS,
+    });
 
     await expect(adapter.handleEventCallback(directMessage("/start"))).resolves.toMatchObject({
       kind: "handled",
@@ -773,9 +808,270 @@ describe("SlackAdapter", () => {
 
     expect(api.postMessageCalls.map((call) => call.text)).toEqual([
       "Hello! Send me a Slack message and I will pass it to the configured agent.",
-      "Send a Slack DM or mention the app in a channel. Use /cancel in a thread to stop the current response.",
+      "Send a Slack DM or mention the app in a channel. Use /model and /effort to choose the runtime, or /cancel to stop an in-flight response.",
     ]);
     expect(responder.respond).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed runtime-control catalogs at construction", () => {
+    expect(() => new SlackAdapter({
+      api: new FakeSlackApi(),
+      responder: responderFrom(async () => ({ text: "ok" })),
+      allowAllChannels: true,
+      runtimeControls: {
+        defaultModel: "missing",
+        models: [{ value: "configured", label: "Configured", efforts: [] }],
+      },
+    })).toThrow(/defaultModel must appear/u);
+
+    expect(() => new SlackAdapter({
+      api: new FakeSlackApi(),
+      responder: responderFrom(async () => ({ text: "ok" })),
+      allowAllChannels: true,
+      runtimeControls: {
+        defaultModel: "duplicate",
+        models: [
+          { value: "duplicate", label: "First", efforts: [] },
+          { value: "duplicate", label: "Second", efforts: [] },
+        ],
+      },
+    })).toThrow(/duplicate model duplicate/u);
+  });
+
+  it("leaves runtime commands unbound when no runtime catalog is supplied", async () => {
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api: new FakeSlackApi(),
+      allowAllChannels: true,
+      responder: responderFrom(async (request) => {
+        captured = request;
+        return { text: "ordinary response" };
+      }),
+    });
+
+    await expect(adapter.handleEventCallback(directMessage("/model"))).resolves.toMatchObject({
+      kind: "handled",
+      action: "responded",
+    });
+    expect(captured?.text).toBe("/model");
+  });
+
+  it("falls back to exact model arguments when the catalog exceeds Slack's menu limit", async () => {
+    const api = new FakeSlackApi();
+    const requests: AgentRequest[] = [];
+    const runtimeControls = {
+      defaultModel: "model-0",
+      models: Array.from({ length: 101 }, (_, index) => ({
+        value: `model-${index}`,
+        label: `Model ${index}`,
+        efforts: [],
+      })),
+    } satisfies SlackRuntimeControls;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      runtimeControls,
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+    });
+
+    await adapter.handleEventCallback(directMessage("/model", { eventId: "Ev-menu" }));
+    expect(api.postMessageCalls.at(-1)).toMatchObject({
+      text: expect.stringContaining("exceeds Slack's 100-option menu limit"),
+    });
+    expect(api.postMessageCalls.at(-1)?.blocks).toBeUndefined();
+
+    await adapter.handleEventCallback(directMessage("/model model-100", {
+      eventId: "Ev-select",
+      ts: "172.000001",
+    }));
+    await adapter.handleEventCallback(directMessage("use the selected model", {
+      eventId: "Ev-run",
+      ts: "173.000001",
+    }));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.metadata.slack.model).toBe("model-100");
+  });
+
+  it("uses a Block Kit model menu and applies the DM selection to new threads", async () => {
+    const api = new FakeSlackApi();
+    const requests: AgentRequest[] = [];
+    const respond = vi.fn(async (request: AgentRequest) => {
+      requests.push(request);
+      return { text: "ok" };
+    });
+    const responder: AgentResponder = { respond };
+    const adapter = new SlackAdapter({
+      api,
+      responder,
+      allowAllChannels: true,
+      runtimeControls: RUNTIME_CONTROLS,
+    });
+
+    await expect(adapter.handleEventCallback(directMessage("/model"))).resolves.toMatchObject({
+      kind: "handled",
+      action: "command",
+      command: "model",
+    });
+    expect(respond).not.toHaveBeenCalled();
+    const menu = api.postMessageCalls[0];
+    expect(menu?.text).toBe("Current model: Default GPT. Choose a configured model:");
+    const select = staticSelectFrom(menu, "mono_agent_runtime_model");
+    const fallback = select.options.find((option) => option.text.text === "Claude fallback");
+    if (fallback === undefined) throw new Error("expected Claude fallback option");
+    expect(fallback?.value).toMatch(/^[a-f0-9]{16}$/u);
+
+    const interaction = {
+      type: "block_actions" as const,
+      channel: { id: "D123" },
+      message: { ts: "200.000001", thread_ts: "171.000001" },
+      actions: [{
+        action_id: "mono_agent_runtime_model",
+        selected_option: { value: fallback.value },
+      }],
+    };
+    await expect(adapter.handleInteraction(interaction)).resolves.toEqual({
+      kind: "runtime_control",
+      id: "mono_agent_runtime_model",
+      channelId: "D123",
+      control: "model",
+      outcome: "updated",
+    });
+    expect(api.updateCalls.at(-1)).toMatchObject({
+      channel: "D123",
+      ts: "200.000001",
+      text: "Model changed to Claude fallback for this DM until /model default or restart.",
+      blocks: [],
+    });
+    await expect(adapter.handleInteraction(interaction)).resolves.toMatchObject({
+      kind: "runtime_control",
+      outcome: "already_recorded",
+    });
+    expect(api.updateCalls).toHaveLength(1);
+
+    await adapter.handleEventCallback(directMessage("first new thread", {
+      eventId: "Ev-new-1",
+      ts: "181.000001",
+    }));
+    await adapter.handleEventCallback(directMessage("second new thread", {
+      eventId: "Ev-new-2",
+      ts: "182.000001",
+    }));
+
+    expect(requests.map((request) => request.metadata.slack.model)).toEqual([
+      "pi:anthropic:claude-fallback",
+      "pi:anthropic:claude-fallback",
+    ]);
+  });
+
+  it("keeps shared-channel selections isolated to the target thread", async () => {
+    const api = new FakeSlackApi();
+    const requests: AgentRequest[] = [];
+    const adapter = new SlackAdapter({
+      api,
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+      allowAllChannels: true,
+      runtimeControls: RUNTIME_CONTROLS,
+    });
+
+    await adapter.handleEventCallback(appMention("/model pi:anthropic:claude-fallback", {
+      eventId: "Ev-command",
+      ts: "172.000010",
+      threadTs: "172.000001",
+    }));
+    await adapter.handleEventCallback(appMention("thread A", {
+      eventId: "Ev-A",
+      ts: "172.000011",
+      threadTs: "172.000001",
+      user: "UUSER2",
+    }));
+    await adapter.handleEventCallback(appMention("thread B", {
+      eventId: "Ev-B",
+      ts: "173.000011",
+      threadTs: "173.000001",
+    }));
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.metadata.slack.model).toBe("pi:anthropic:claude-fallback");
+    expect(requests[1]?.metadata.slack.model).toBeUndefined();
+  });
+
+  it("supports effort arguments and clears an incompatible effort when the model changes", async () => {
+    const api = new FakeSlackApi();
+    const requests: AgentRequest[] = [];
+    const responder = responderFrom(async (request) => {
+      requests.push(request);
+      return { text: "ok" };
+    });
+    const adapter = new SlackAdapter({
+      api,
+      responder,
+      allowAllChannels: true,
+      runtimeControls: RUNTIME_CONTROLS,
+    });
+
+    await adapter.handleEventCallback(directMessage("/effort high", { eventId: "Ev-effort" }));
+    await adapter.handleEventCallback(directMessage("with effort", {
+      eventId: "Ev-run-1",
+      ts: "180.000001",
+    }));
+    expect(requests.at(-1)?.metadata.slack.effort).toBe("high");
+
+    await adapter.handleEventCallback(directMessage("/model opencode:provider-owned", {
+      eventId: "Ev-model",
+      ts: "181.000001",
+    }));
+    expect(api.postMessageCalls.at(-1)?.text).toContain("previous effort selection was reset");
+    await adapter.handleEventCallback(directMessage("without effort", {
+      eventId: "Ev-run-2",
+      ts: "182.000001",
+    }));
+    expect(requests.at(-1)?.metadata.slack).toMatchObject({ model: "opencode:provider-owned" });
+    expect(requests.at(-1)?.metadata.slack.effort).toBeUndefined();
+  });
+
+  it("expires an effort menu if the effective model changes before selection", async () => {
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      responder: responderFrom(async () => ({ text: "ok" })),
+      allowAllChannels: true,
+      runtimeControls: RUNTIME_CONTROLS,
+    });
+
+    await adapter.handleEventCallback(directMessage("/effort"));
+    const menu = api.postMessageCalls[0];
+    const select = staticSelectFrom(menu, "mono_agent_runtime_effort");
+    const high = select.options.find((option) => option.text.text === "High");
+    if (high === undefined) throw new Error("expected high effort option");
+    await adapter.handleEventCallback(directMessage("/model pi:anthropic:claude-fallback", {
+      eventId: "Ev-model",
+      ts: "172.000001",
+    }));
+
+    await expect(adapter.handleInteraction({
+      type: "block_actions",
+      channel: { id: "D123" },
+      message: { ts: "200.000001", thread_ts: "171.000001" },
+      actions: [{
+        action_id: "mono_agent_runtime_effort",
+        selected_option: { value: high.value },
+      }],
+    })).resolves.toMatchObject({
+      kind: "runtime_control",
+      control: "effort",
+      outcome: "expired",
+    });
+    expect(api.updateCalls.at(-1)).toMatchObject({
+      text: "This effort menu has expired. Run /effort again.",
+      blocks: [],
+    });
   });
 
   it("acknowledges /cancel exactly once when no turn is active", async () => {
@@ -1420,16 +1716,20 @@ describe("SlackAdapter", () => {
       ...api.postMessageCalls.map((call) => call.text),
       ...api.updateCalls.map((call) => call.text),
     ];
-    // The existing 👀 acknowledgement accompanies one transient tool status,
-    // which the final answer replaces in place.
+    // The existing 👀 acknowledgement accompanies one transient tool status;
+    // the final answer posts fresh before that status is deleted.
     expect(api.reactionsAddCalls).toEqual([
       { channel: "D123", timestamp: "171.000001", name: "eyes" },
     ]);
     expect(allText.some((text) => text.includes("Searching the web"))).toBe(true);
     expect(allText.some((text) => text.includes("WebSearch"))).toBe(false);
     expect(allText.some((text) => text.includes("secret reasoning"))).toBe(false);
-    expect(api.postMessageCalls.map((call) => call.text)).toEqual(["🌐 Searching the web"]);
-    expect(api.updateCalls.map((call) => call.text)).toEqual(["final answer"]);
+    expect(api.postMessageCalls.map((call) => call.text)).toEqual([
+      "🌐 Searching the web",
+      "final answer",
+    ]);
+    expect(api.updateCalls).toEqual([]);
+    expect(api.deleteCalls).toEqual([{ channel: "D123", ts: "200.000001" }]);
   });
 
   it("downloads inbound files into request.attachments with base64 data", async () => {
@@ -2383,22 +2683,62 @@ function directMessage(
   };
 }
 
-function appMention(text: string): SlackEventCallback {
+function appMention(
+  text: string,
+  options: {
+    channel?: string;
+    eventId?: string;
+    ts?: string;
+    threadTs?: string;
+    user?: string;
+  } = {},
+): SlackEventCallback {
+  const event: Record<string, unknown> = {
+    type: "app_mention",
+    channel: options.channel ?? "C123",
+    user: options.user ?? "UUSER1",
+    text,
+    ts: options.ts ?? "172.000001",
+    event_ts: options.ts ?? "172.000001",
+  };
+  if (options.threadTs !== undefined) {
+    event.thread_ts = options.threadTs;
+  }
   return {
     type: "event_callback",
     team_id: "T1",
     api_app_id: "A1",
-    event_id: "Ev2",
+    event_id: options.eventId ?? "Ev2",
     event_time: 172,
-    event: {
-      type: "app_mention",
-      channel: "C123",
-      user: "UUSER1",
-      text,
-      ts: "172.000001",
-      event_ts: "172.000001",
-    },
+    event,
   };
+}
+
+function staticSelectFrom(
+  message: SlackChatPostMessageParams | undefined,
+  actionId: string,
+): {
+  readonly options: readonly {
+    readonly text: { readonly text: string };
+    readonly value: string;
+  }[];
+} {
+  const blocks = message?.blocks as readonly {
+    readonly elements?: readonly {
+      readonly action_id?: string;
+      readonly options?: readonly {
+        readonly text: { readonly text: string };
+        readonly value: string;
+      }[];
+    }[];
+  }[] | undefined;
+  const select = blocks
+    ?.flatMap((block) => block.elements ?? [])
+    .find((element) => element.action_id === actionId);
+  if (select?.options === undefined) {
+    throw new Error(`Missing static select ${actionId}.`);
+  }
+  return { options: select.options };
 }
 
 function appHomeOpened(userId: string): SlackEventCallback {

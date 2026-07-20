@@ -8,7 +8,7 @@ Communication adapter.
 
 ## Responsibility
 
-Adapt Slack Socket Mode events into structural agent requests and streamed Slack replies. The package owns Slack-specific credentials, channel allowlists, mention cleanup, config-driven shortcuts and App Home actions, Web API calls, and Socket Mode message handling.
+Adapt Slack Socket Mode events into structural agent requests and streamed Slack replies. The package owns Slack-specific credentials, channel allowlists, mention cleanup, native model/effort controls, config-driven shortcuts and App Home actions, Web API calls, and Socket Mode message handling.
 
 ## Install / Usage
 
@@ -33,14 +33,43 @@ the reaction instead — no configuration needed for the fallback.
 
 With final-only delivery, the first tool start posts one cumulative, secret-safe
 activity message. Later starts edit it in place, adjacent duplicates collapse as
-`(×N)`, and the final answer replaces it. Answer deltas and reasoning never enter
-that ledger. `ReadSkill` renders the selected skill as `📚 Reading "<skill>"`
+`(×N)`. On completion the adapter posts the final answer as a new message, then
+best-effort deletes the activity message. A cleanup failure cannot duplicate or
+lose the final answer, though it can leave the stale activity message behind.
+Answer deltas and reasoning never enter that ledger. `ReadSkill` renders the
+selected skill as `📚 Reading "<skill>"`
 without exposing its path, while memory recall is preview-free as
 `🧠 Recalling memory`. Memory writes remain `🧠 Updating memory`, and ordinary
 file reads remain `📖 Reading`. Proactive
 deliveries suppress it. An acknowledged `/cancel`
 best-effort deletes the still-transient ledger and keeps the command's one
 `Cancelled.` acknowledgement.
+
+## Model and effort controls
+
+The built-in agent app supplies the Slack adapter with the configured primary
+model and fallbacks, so no Slack-specific model list is required. Send the app a
+message containing `@agent /model` or `@agent /effort` to open native Block Kit
+selectors. These are mention-message commands, not workspace-registered Slack
+slash commands; using the app mention or a configured text alias keeps Slack's
+composer from intercepting the leading slash.
+
+The same controls also accept exact arguments:
+
+- `@agent /model default` or `@agent /model <exact-configured-ref>`
+- `@agent /effort default` or `@agent /effort <supported-value>`
+
+In a direct-message channel, a selection applies to every subsequent DM turn,
+including new Slack threads. In public and private shared channels, it applies
+only to the Slack thread where it was chosen; everyone using that thread shares
+the selection. State is process-local and resets on restart. Changing models
+also clears a selected effort when the new model does not support it.
+
+Enable **Interactivity & Shortcuts** in the Slack app so selector actions arrive
+over Socket Mode. A direct programmatic adapter consumer can omit
+`runtimeControls` to leave `/model` and `/effort` unbound, or supply a validated
+catalog through that option. Slack static-select menus support at most 100
+options; a larger catalog remains selectable with the exact-argument form.
 
 ## Silent-delivery limitation
 
@@ -165,6 +194,9 @@ SlackNotifyOptions
 SlackNotifyResult
 SlackRequestMetadata
 SlackRequestOptions
+SlackRuntimeControls
+SlackRuntimeEffortOption
+SlackRuntimeModelOption
 SlackSendOutcome
 SlackShortcutBinding
 SlackShortcutConfig

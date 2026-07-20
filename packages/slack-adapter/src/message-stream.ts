@@ -158,6 +158,9 @@ class SlackChannelTransport implements ChannelTransport {
   private readonly onPosted: SlackPostedMessageListener | undefined;
   private readonly onDeliveryReceipt: SlackDeliveryReceiptListener | undefined;
   private readonly logger: SlackMessageStreamLogger | undefined;
+  private readonly abortSignal: AbortSignal | undefined;
+  private transientStatusMessage: MessageRef | undefined;
+  private postFinalAnswerSeparately = false;
   /**
    * Logical post number for this stream. It advances only after Slack returns a
    * receipt, so a classified retry reuses the same client_msg_id while an
@@ -180,6 +183,7 @@ class SlackChannelTransport implements ChannelTransport {
     onPosted?: SlackPostedMessageListener;
     onDeliveryReceipt?: SlackDeliveryReceiptListener;
     logger?: SlackMessageStreamLogger;
+    abortSignal?: AbortSignal;
   }) {
     this.api = options.api;
     this.channelId = options.channelId;
@@ -192,6 +196,12 @@ class SlackChannelTransport implements ChannelTransport {
     this.onPosted = options.onPosted;
     this.onDeliveryReceipt = options.onDeliveryReceipt;
     this.logger = options.logger;
+    this.abortSignal = options.abortSignal;
+  }
+
+  /** Keep a final-only tool ledger transient and post the completed answer fresh. */
+  beginSeparateFinalAnswer(): void {
+    this.postFinalAnswerSeparately = true;
   }
 
   async indicateActivity(): Promise<void> {
@@ -260,7 +270,13 @@ class SlackChannelTransport implements ChannelTransport {
       contentKind: options.contentKind ?? "answer",
       operation: "post",
     });
-    return slackMessageRef(sent);
+    const ref = slackMessageRef(sent);
+    if (options.contentKind === "status") {
+      this.transientStatusMessage = ref;
+    } else if (options.contentKind === "answer" && this.postFinalAnswerSeparately) {
+      await this.dismissTransientStatus();
+    }
+    return ref;
   }
 
   private warnIfSilentDeliveryIsUnsupported(): void {
@@ -284,6 +300,14 @@ class SlackChannelTransport implements ChannelTransport {
     text: string,
     options: { markdown: boolean; contentKind?: ChannelMessageContentKind },
   ): Promise<void> {
+    if (
+      options.contentKind === "answer"
+      && this.postFinalAnswerSeparately
+      && this.abortSignal?.aborted !== true
+    ) {
+      await this.post(text, options);
+      return;
+    }
     await this.api.chatUpdate({
       channel: this.channelId,
       ts: ref.id,
@@ -303,6 +327,9 @@ class SlackChannelTransport implements ChannelTransport {
       throw new Error("Slack chat.delete is unavailable on this client.");
     }
     await this.api.chatDelete({ channel: this.channelId, ts: ref.id });
+    if (this.transientStatusMessage?.id === ref.id) {
+      this.transientStatusMessage = undefined;
+    }
   }
 
   classifyError(error: unknown): ChannelSendOutcome {
@@ -333,6 +360,23 @@ class SlackChannelTransport implements ChannelTransport {
     }
     return { ...params, thread_ts: this.threadTs } as T;
   }
+
+  private async dismissTransientStatus(): Promise<void> {
+    const ref = this.transientStatusMessage;
+    this.transientStatusMessage = undefined;
+    if (ref === undefined || this.api.chatDelete === undefined) {
+      return;
+    }
+    try {
+      await this.api.chatDelete({ channel: this.channelId, ts: ref.id });
+    } catch (error) {
+      // The answer already landed. Keep it authoritative and never risk a
+      // duplicate final merely because transient cleanup failed.
+      this.logger?.debug?.("Slack transient progress deletion failed after final delivery (ignored).", {
+        error: redactSlackErrorMessage(error),
+      });
+    }
+  }
 }
 
 /** Stable UUID per logical Slack post, including overflow chunks. */
@@ -359,11 +403,14 @@ function slackMessageRef(message: SlackChatPostMessageResult): MessageRef {
  * delivery error.
  */
 export class SlackMessageStream implements AgentMessageStream {
+  private readonly transport: SlackChannelTransport;
   private readonly inner: ResilientMessageStream;
+  private readonly finalOnly: boolean;
 
   constructor(options: SlackMessageStreamOptions) {
     const maxMessageChars = options.maxMessageChars ?? SLACK_MAX_MESSAGE_CHARS;
-    const transport = new SlackChannelTransport({
+    this.finalOnly = options.finalOnly ?? false;
+    this.transport = new SlackChannelTransport({
       api: options.api,
       channelId: options.channelId,
       ...(options.threadTs === undefined ? {} : { threadTs: options.threadTs }),
@@ -375,10 +422,11 @@ export class SlackMessageStream implements AgentMessageStream {
       ...(options.onPosted === undefined ? {} : { onPosted: options.onPosted }),
       ...(options.onDeliveryReceipt === undefined ? {} : { onDeliveryReceipt: options.onDeliveryReceipt }),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
+      ...(options.abortSignal === undefined ? {} : { abortSignal: options.abortSignal }),
     });
 
     this.inner = new ResilientMessageStream({
-      transport,
+      transport: this.transport,
       initialStatusText: options.initialStatusText ?? DEFAULT_INITIAL_STATUS_TEXT,
       maxMessageChars,
       formatMarkdown: true,
@@ -414,6 +462,9 @@ export class SlackMessageStream implements AgentMessageStream {
   }
 
   async finish(finalText?: string): Promise<void> {
+    if (this.finalOnly) {
+      this.transport.beginSeparateFinalAnswer();
+    }
     try {
       await this.inner.finish(finalText);
     } catch (error) {

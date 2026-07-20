@@ -19,6 +19,7 @@ A Slack Socket Mode bot, mention-triggered in allowed channels, with a custom MC
 ## Features used
 
 - `slack.socket-mode` — [Slack channel](/channels/slack/)
+- `runtime.per-trigger-model` — [Slack runtime controls](/channels/slack/#runtime-model-and-effort-controls-built-in)
 - `channel.final-only-delivery` — [Delivery and send tools](/channels/delivery-and-send-tools/)
 - `tool-policy.allowlist` — [Tool policy](/tools/policy/)
 - `tool-policy.mcp-servers` — [MCP servers](/tools/mcp/)
@@ -27,7 +28,7 @@ A Slack Socket Mode bot, mention-triggered in allowed channels, with a custom MC
 
 ## Configuration
 
-The Slack section runs in Socket Mode (effective `botToken` and `appToken` values are required); mentions are detected by `botUserIds` and `mentionTextAliases`, and the bot only responds in `allowedChannelIds`. Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the source config omits credentials. This agent opts into a **specific** tool allowlist instead of the allow-all default, so the built-ins it uses and `SlackSendMessage` are named explicitly; `deployTool` comes from the declared MCP server. `concurrency` bounds in-flight work app-wide.
+The Slack section runs in Socket Mode (effective `botToken` and `appToken` values are required); mentions are detected by `botUserIds` and `mentionTextAliases`, and the bot only responds in `allowedChannelIds`. Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the source config omits credentials. The built-in `@agent /model` and `@agent /effort` controls automatically expose `runtime.model` plus any configured fallbacks, with no extra Slack config. This agent opts into a **specific** tool allowlist instead of the allow-all default, so the built-ins it uses and `SlackSendMessage` are named explicitly; `deployTool` comes from the declared MCP server. `concurrency` bounds in-flight work app-wide.
 
 ```json
 {
@@ -59,17 +60,17 @@ The exact MCP tool name (`deployTool` here) must match the name your server adve
 
 ## Steps
 
-1. Create a Slack app with Socket Mode (app token `connections:write`) and a bot token (`chat:write`).
+1. Create a Slack app with Socket Mode (app token `connections:write`), a bot token (`chat:write`), and **Interactivity & Shortcuts** enabled so runtime selectors can deliver `block_actions` over Socket Mode.
 2. `mono-agent init --model claude:claude-sonnet-4-6`
 3. Write `mcp.json` with the team's stdio MCP server; `deployTool` becomes available from the server declaration (MCP tools aren't gated by `tools.allowedTools`). This playbook keeps a specific allowlist, so it lists `deployTool` for readability, but the entry is not what enables it.
 4. Set a specific `tools.allowedTools` (the built-ins you want plus `SlackSendMessage`) and add the `slack` section; set concurrency bounds (note: per-channel scope). Or drop `tools.allowedTools` entirely to keep the allow-all default.
 5. `mono-agent validate`, then `mono-agent start` (confirm Slack is running with both tokens).
-6. Mention the bot in an allowed channel and confirm a 👀 reaction, then a final reply.
+6. Mention the bot in an allowed channel and confirm a 👀 reaction, then a final reply. If a tool runs, confirm the final reply is a new message and the temporary activity message is removed.
 
 ## Smoke test
 
 :::tip
-Mention `@agent` in the allowed channel; verify the seen reaction, a final answer, the MCP tool firing in the run artifact, and that `SlackSendMessage` can post to the allowed channel (and is rejected for a non-allowed one).
+Mention `@agent` in the allowed channel; verify the seen reaction, a final answer, the MCP tool firing in the run artifact, and that `SlackSendMessage` can post to the allowed channel (and is rejected for a non-allowed one). Send `@agent /model`, choose an option, then verify a normal turn in that thread carries the selected model; a different Slack thread must keep its own selection.
 :::
 
 ## Related
