@@ -29,7 +29,7 @@ The whole block is **config** coverage backed by `@mono-agent/runtime-adapter`. 
 | Key | Type / values | Default | Env var |
 | --- | --- | --- | --- |
 | `sandbox.mode` | `native` (srt-wrapped) \| `off` | `native` | `MONO_AGENT_SANDBOX_MODE` |
-| `sandbox.network.mode` | `none` \| `localhost` \| `allowlist` | `none` | `MONO_AGENT_SANDBOX_NETWORK` |
+| `sandbox.network.mode` | `none` \| `localhost` \| `allowlist` \| `all` | `none` | `MONO_AGENT_SANDBOX_NETWORK` |
 | `sandbox.network.allowlist` | string[] of host suffixes (`*.suffix` wildcards) | `[]` | `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST` |
 | `sandbox.readableRoots` | string[] of paths | `["."]` (workspace) | `MONO_AGENT_SANDBOX_READABLE_ROOTS` |
 | `sandbox.writableRoots` | string[] of paths | `["."]` (workspace) | `MONO_AGENT_SANDBOX_WRITABLE_ROOTS` |
@@ -78,7 +78,7 @@ compatibility path; it does not satisfy the guided managed-install choice.
 
 ## Mode
 
-- **`native`** — every sandboxed command is rewritten to `srt --settings <generated-file> <command> ...`. The generated settings file encodes the network and filesystem policy below. The run-scoped `NodeRepl` child is prepared through this same path, so evaluated JavaScript does not bypass the policy.
+- **`native`** — every sandboxed command is rewritten to `srt --settings <generated-file> <command> ...`. The generated settings file encodes the network and filesystem policy below. The run-scoped `NodeRepl` child is prepared through this same path, so evaluated JavaScript does not bypass the policy. Under `network.mode: "all"` the rewrite instead drives SRT through its library entry (see below) because the SRT CLI always starts domain filtering.
 - **`off`** — commands run unwrapped on the host. Equivalent to omitting the `sandbox` block.
 
 ## Network policy
@@ -90,15 +90,19 @@ compatibility path; it does not satisfy the guided managed-install choice.
 | `none` | No network access (default). |
 | `localhost` | Loopback only. |
 | `allowlist` | Only hosts matching `network.allowlist`. |
-| `all` | Rejected for native SRT because the pinned engine cannot represent it exactly; use `sandbox.mode: "off"` for an explicit unsandboxed posture. |
+| `all` | Unrestricted egress; filesystem scopes and deny-write globs stay fully enforced. |
 
-:::caution[Migration from `network.mode: "all"`]
-SRT 0.0.64 cannot enforce unrestricted networking as a sandbox policy. Existing
-native-sandbox configs that use `"all"` now fail validation instead of receiving
-weaker-than-declared behavior. Change the mode to `none`, `localhost`, or an
-explicit domain `allowlist`. If the real requirement is unrestricted shell
-networking, set `sandbox.mode: "off"` and remove the `network` policy so the
-unsandboxed posture is deliberate and visible.
+:::note[How `all` is enforced]
+The pinned SRT CLI requires a network block in its settings schema and always
+starts its filtering proxy when one is present, so `all` launches SRT through
+its library entry instead: a small runner shipped with mono-agent imports the
+identity-verified SRT tree and initializes it without a domain filter — SRT's
+documented unrestricted-network mode, with every filesystem rule intact and no
+proxy started. This needs a launch that can host the library (the managed macOS
+install or an explicit `node`+`cli.js` pair); a bare external `srt` binary
+fails closed. Before the first `all` command runs, mono-agent proves the embed
+path enforces the filesystem policy *and* that loopback egress genuinely
+succeeds, and pins the library entry's identity like the CLI launch.
 :::
 
 Allowlist entries are matched as host suffixes. A leading `*.` is a wildcard suffix — `*.example.com` matches `api.example.com`. There is **no CIDR and no port syntax**; entries are hostnames/suffixes only. Bare `*`, IPv6 literals (including `::1`), whitespace, paths, and port-bearing entries are rejected. Localhost policy uses the enforceable `localhost`/IPv4 loopback representation.

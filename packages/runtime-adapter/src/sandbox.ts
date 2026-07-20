@@ -1,9 +1,11 @@
 import { execFile } from "node:child_process";
 import { constants as fsConstants, lstatSync, realpathSync } from "node:fs";
 import { access, chmod, lstat, mkdir, mkdtemp, open, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { isIP } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { CodedError } from "@mono-agent/agent-contracts";
@@ -11,8 +13,10 @@ import { CodedError } from "@mono-agent/agent-contracts";
 import {
   ManagedSrtCorruptError,
   type ResolveSrtLaunchOptions,
+  type SrtFileIdentity,
   type SrtLaunch,
   resolveSrtLaunch,
+  resolveTrustedFile,
 } from "./sandbox-managed.js";
 
 const execFileAsync = promisify(execFile);
@@ -196,7 +200,12 @@ export interface SrtFilesystemSettings {
 }
 
 export interface SrtSettings {
-  readonly network: SrtNetworkSettings;
+  /**
+   * Absent under all-network mode: SRT starts its proxy and domain filter
+   * whenever `network.allowedDomains` is defined, so unrestricted networking
+   * with enforced filesystem scopes is spelled by omitting the block.
+   */
+  readonly network?: SrtNetworkSettings;
   readonly filesystem: SrtFilesystemSettings;
 }
 
@@ -226,7 +235,7 @@ export function createSandboxPolicy(input: SandboxPolicyInput = {}): SandboxPoli
   const writableRoots = normalizePathList(input.writableRoots ?? [root], root, "writableRoots");
   const denyWrite = normalizeStringList(input.denyWrite ?? DEFAULT_DENY_WRITE, "denyWrite");
   const tempRoot = normalizePath(input.tempRoot ?? resolve(root, ".mono-agent", "tmp"), "tempRoot");
-  const network = normalizeNetworkPolicy(input.network, mode);
+  const network = normalizeNetworkPolicy(input.network);
 
   return {
     mode,
@@ -301,6 +310,91 @@ export function createSrtSandboxEngine(options: SrtSandboxEngineOptions = {}): S
   let provenLaunch: SrtLaunch | undefined;
   let pinnedLaunch: SrtLaunch | undefined;
   let activeProbe: Promise<boolean> | undefined;
+  // The all-network embed path carries its own enforcement proof: it drives
+  // SRT through its library entry instead of the CLI, so proving the CLI
+  // launch says nothing about it.
+  let provenEmbedEntry: SrtFileIdentity | undefined;
+  let activeEmbedProbe: Promise<void> | undefined;
+
+  async function resolveEmbedEntry(launch: SrtLaunch): Promise<SrtFileIdentity> {
+    const cliPath = launch.prefixArgs.length === 1 ? launch.prefixArgs[0] : undefined;
+    if (cliPath === undefined) {
+      throw new SandboxUnavailableError(
+        "All-network sandboxing drives SRT through its library entry, which only a managed or explicit node+cli SRT launch can host; a bare srt binary cannot.",
+        { engine: "srt", source: launch.source },
+      );
+    }
+    let entry: SrtFileIdentity;
+    try {
+      entry = await resolveTrustedFile(
+        resolve(dirname(cliPath), "index.js"),
+        true,
+        "SRT library entry",
+        launch.installRoot,
+      );
+    } catch (error) {
+      throw new SandboxUnavailableError(
+        `SRT library entry could not be resolved securely: ${errorMessage(error)}`,
+        { engine: "srt" },
+      );
+    }
+    if (provenEmbedEntry !== undefined && !sameFileIdentity(provenEmbedEntry, entry)) {
+      throw new SandboxUnavailableError(
+        "SRT library entry identity or content changed after its enforcement proof.",
+        { engine: "srt" },
+      );
+    }
+    return entry;
+  }
+
+  async function proveEmbedOnce(launch: SrtLaunch, entry: SrtFileIdentity, runnerPath: string): Promise<void> {
+    if (provenEmbedEntry !== undefined && sameFileIdentity(provenEmbedEntry, entry)) {
+      return;
+    }
+    activeEmbedProbe ??= proveSrtEmbedEnforcement(launch, entry, runnerPath)
+      .then(() => {
+        provenEmbedEntry = entry;
+      })
+      .finally(() => {
+        activeEmbedProbe = undefined;
+      });
+    try {
+      await activeEmbedProbe;
+    } catch (error) {
+      throw new SandboxUnavailableError(
+        `SRT library entry failed its all-network enforcement proof: ${errorMessage(error)}`,
+        { engine: "srt" },
+      );
+    }
+  }
+
+  async function prepareEmbedCommand(
+    spec: SandboxCommandSpec,
+    policy: SandboxPolicy,
+    launch: SrtLaunch,
+    cwd: string,
+  ): Promise<PreparedSandboxCommand> {
+    const entry = await resolveEmbedEntry(launch);
+    const runnerPath = srtEmbedRunnerPath();
+    await proveEmbedOnce(launch, entry, runnerPath);
+    const runtimeReadRoots = await runtimeReadRootsForCommand(spec, cwd);
+    const settings = await writeSrtSettingsFile(
+      policy,
+      runtimeReadRoots,
+      spec.allowLocalBinding === true,
+      trustedReadRoots,
+    );
+    return {
+      ...spec,
+      command: launch.command,
+      args: [runnerPath, entry.path, "--settings", settings.path, "--", spec.command, ...(spec.args ?? [])],
+      cwd,
+      sandboxed: true,
+      sandboxSettingsPath: settings.path,
+      cleanup: settings.cleanup,
+    };
+  }
+
   return {
     id: "srt",
     isAvailable(): Promise<boolean> {
@@ -351,6 +445,9 @@ export function createSrtSandboxEngine(options: SrtSandboxEngineOptions = {}): S
             : `SRT could not be resolved securely: ${errorMessage(error)}`,
           { engine: "srt" },
         );
+      }
+      if (policy.network.mode === "all") {
+        return await prepareEmbedCommand(spec, policy, launch, cwd);
       }
       const runtimeReadRoots = await runtimeReadRootsForCommand(spec, cwd);
       const settings = await writeSrtSettingsFile(
@@ -486,12 +583,18 @@ export function srtSettingsForPolicy(
   commandCapabilities: { readonly allowLocalBinding?: boolean } = {},
   trustedReadOnlyRoots: readonly string[] = [],
 ): SrtSettings {
+  const filesystem: SrtFilesystemSettings = {
+    denyRead: ["/"],
+    allowRead: allowReadRootsForPolicy(policy, [...runtimeReadRoots, ...trustedReadOnlyRoots]),
+    allowWrite: removeCoveredRoots(policy.writableRoots.map(canonicalPolicyPath).sort()),
+    denyWrite: [
+      ...serializeDenyWrite(policy),
+      ...(protectedSettingsPath === undefined ? [] : [protectedSettingsPath]),
+      ...trustedReadOnlyRoots,
+    ],
+  };
   if (policy.network.mode === "all") {
-    throw new SandboxPolicyError(
-      "invalid_sandbox_policy",
-      "Sandbox network mode \"all\" cannot be enforced by SRT 0.0.64; choose localhost, allowlist, none, or turn sandbox mode off explicitly.",
-      { field: "network.mode", mode: "all" },
-    );
+    return { filesystem };
   }
   return {
     network: {
@@ -501,16 +604,7 @@ export function srtSettingsForPolicy(
       allowLocalBinding: policy.network.mode === "localhost" || commandCapabilities.allowLocalBinding === true,
       allowAllUnixSockets: false,
     },
-    filesystem: {
-      denyRead: ["/"],
-      allowRead: allowReadRootsForPolicy(policy, [...runtimeReadRoots, ...trustedReadOnlyRoots]),
-      allowWrite: removeCoveredRoots(policy.writableRoots.map(canonicalPolicyPath).sort()),
-      denyWrite: [
-        ...serializeDenyWrite(policy),
-        ...(protectedSettingsPath === undefined ? [] : [protectedSettingsPath]),
-        ...trustedReadOnlyRoots,
-      ],
-    },
+    filesystem,
   };
 }
 
@@ -565,10 +659,7 @@ function normalizeArgs(values: readonly string[]): readonly string[] {
   });
 }
 
-function normalizeNetworkPolicy(
-  input: SandboxNetworkPolicyInput | undefined,
-  sandboxMode: SandboxMode = "native",
-): SandboxNetworkPolicy {
+function normalizeNetworkPolicy(input: SandboxNetworkPolicyInput | undefined): SandboxNetworkPolicy {
   const mode = input?.mode ?? "none";
   if (!SANDBOX_NETWORK_MODES.includes(mode)) {
     throw new SandboxPolicyError("invalid_sandbox_policy", "Invalid sandbox network mode.", { mode });
@@ -579,13 +670,6 @@ function normalizeNetworkPolicy(
     throw new SandboxPolicyError("invalid_sandbox_policy", "allowlist network mode requires at least one domain.", {
       field: "network.allowlist",
     });
-  }
-  if (mode === "all" && sandboxMode !== "off") {
-    throw new SandboxPolicyError(
-      "invalid_sandbox_policy",
-      "Sandbox network mode \"all\" is not a valid enforced SRT policy. Use sandbox mode \"off\" for explicit unsandboxed networking.",
-      { field: "network.mode", mode },
-    );
   }
   for (const [index, domain] of allowlist.entries()) {
     if (!isValidSrtDomainPattern(domain)) {
@@ -1160,6 +1244,115 @@ async function createSettingsDirectoryOutsideWritableRoots(writableRoots: readon
     "No private settings location exists outside the sandbox writable roots; refusing to expose mutable SRT policy.",
     { engine: "srt", writableRoots },
   );
+}
+
+function srtEmbedRunnerPath(): string {
+  return fileURLToPath(new URL("./srt-embed-runner.mjs", import.meta.url));
+}
+
+function sameFileIdentity(expected: SrtFileIdentity, actual: SrtFileIdentity): boolean {
+  return expected.path === actual.path
+    && expected.sha256 === actual.sha256
+    && expected.dev === actual.dev
+    && expected.ino === actual.ino
+    && expected.size === actual.size;
+}
+
+/**
+ * Functional proof for the all-network embed path: the SRT library entry must
+ * still enforce every filesystem rule while a loopback connection — denied
+ * under every CLI-launched policy this engine emits — succeeds, proving the
+ * network side is genuinely unrestricted rather than silently blocked.
+ */
+async function proveSrtEmbedEnforcement(
+  launch: SrtLaunch,
+  entry: SrtFileIdentity,
+  runnerPath: string,
+): Promise<void> {
+  const stagedBase = await mkdtemp(resolve(tmpdir(), "mono-agent-srt-embed-proof-"));
+  const base = await realpath(stagedBase);
+  const workspace = resolve(base, "workspace");
+  const siblingSecret = resolve(base, "sibling-secret.txt");
+  const allowedInput = resolve(workspace, "allowed.txt");
+  const allowedOutput = resolve(workspace, "allowed-output.txt");
+  const deniedOutput = resolve(base, "denied-output.txt");
+  const deniedEnv = resolve(workspace, ".env");
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/plain" });
+    response.end("mono-agent-embed-ok");
+  });
+  let settings: Awaited<ReturnType<typeof writeSrtSettingsFile>> | undefined;
+  try {
+    await mkdir(workspace, { recursive: true });
+    await Promise.all([
+      writeFile(allowedInput, "allowed\n", { mode: 0o600 }),
+      writeFile(siblingSecret, "secret\n", { mode: 0o600 }),
+      writeFile(deniedEnv, "KEEP=true\n", { mode: 0o600 }),
+    ]);
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(0, "127.0.0.1", () => {
+        server.off("error", rejectListen);
+        resolveListen();
+      });
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") {
+      throw new Error("embed proof loopback server did not expose a TCP port");
+    }
+    const policy = createSandboxPolicy({
+      mode: "native",
+      root: workspace,
+      readableRoots: [workspace],
+      writableRoots: [workspace],
+      network: { mode: "all" },
+      fallback: "fail-closed",
+    });
+    settings = await writeSrtSettingsFile(policy, [await realpath(process.execPath)]);
+    const proofScript = [
+      "const fs=require('node:fs');",
+      "const [allowedInput,siblingSecret,allowedOutput,deniedOutput,deniedEnv,settingsPath,port]=process.argv.slice(1);",
+      "if(fs.readFileSync(allowedInput,'utf8').trim()!=='allowed')process.exit(41);",
+      "fs.writeFileSync(allowedOutput,'ok');",
+      "try{fs.readFileSync(siblingSecret);process.exit(42)}catch{}",
+      "try{fs.writeFileSync(deniedOutput,'bad');process.exit(43)}catch{}",
+      "try{fs.writeFileSync(deniedEnv,'bad');process.exit(44)}catch{}",
+      "try{fs.writeFileSync(settingsPath,'{}');process.exit(45)}catch{}",
+      "fetch('http://127.0.0.1:'+port+'/').then((r)=>r.text()).then((t)=>{process.exit(t==='mono-agent-embed-ok'?0:46)},()=>process.exit(47));",
+    ].join("");
+    await execFileAsync(
+      launch.command,
+      [
+        runnerPath,
+        entry.path,
+        "--settings",
+        settings.path,
+        "--",
+        process.execPath,
+        "-e",
+        proofScript,
+        allowedInput,
+        siblingSecret,
+        allowedOutput,
+        deniedOutput,
+        deniedEnv,
+        settings.path,
+        String(address.port),
+      ],
+      { cwd: workspace, timeout: 30_000, maxBuffer: 1_000_000 },
+    );
+    const [output, envContent] = await Promise.all([
+      readFile(allowedOutput, "utf8"),
+      readFile(deniedEnv, "utf8"),
+    ]);
+    if (output !== "ok" || envContent !== "KEEP=true\n") {
+      throw new Error("SRT embed proof did not preserve filesystem restrictions");
+    }
+  } finally {
+    server.close();
+    await settings?.cleanup().catch(() => undefined);
+    await rm(base, { recursive: true, force: true });
+  }
 }
 
 async function proveSrtEnforcement(launch: SrtLaunch): Promise<void> {

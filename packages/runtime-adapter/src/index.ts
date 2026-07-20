@@ -54,7 +54,7 @@ export {
   sandboxRequired,
   srtSettingsForPolicy,
 } from "./sandbox.js";
-export { MANAGED_SRT_TREE_SHA256 } from "./sandbox-managed.js";
+export { MANAGED_SRT_TREE_SHA256, managedSrtInstallRoot } from "./sandbox-managed.js";
 export type {
   PreparedSandboxCommand,
   PrepareSandboxedCommandInput,

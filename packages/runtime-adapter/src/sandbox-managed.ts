@@ -322,7 +322,7 @@ function commandCandidates(command: string, env: NodeJS.ProcessEnv): readonly st
     .flatMap((entry) => extensions.map((extension) => resolve(entry, `${command}${extension}`)));
 }
 
-async function resolveTrustedFile(
+export async function resolveTrustedFile(
   inputPath: string,
   requirePrivate: boolean,
   label: string,

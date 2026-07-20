@@ -193,7 +193,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // non-Pi routes use the explicit provider-native contract instead.
   "sandbox": {
     "mode": "native",                      // native (srt-wrapped) | off
-    "network": { "mode": "none", "allowlist": [] }, // none|localhost|allowlist; *.suffix wildcards
+    "network": { "mode": "none", "allowlist": [] }, // none|localhost|allowlist|all; *.suffix wildcards; all = open egress, filesystem still enforced
     "readableRoots": ["."],                // relative entries resolve against the workspace
     "writableRoots": ["."],
     "denyWrite": [".env", ".env.*", ".git/config", ".git/hooks/**"], // these are the defaults

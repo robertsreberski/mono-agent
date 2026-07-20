@@ -235,7 +235,8 @@ Should Pi-owned runtime commands run inside the native mono-agent sandbox? Direc
 1. No sandbox for the first pass
 2. Native sandbox, no network (fail closed)
 3. Native sandbox with localhost or an explicit network allowlist
-4. Native sandbox with custom filesystem scopes (extra readable/writable roots)
+4. Native sandbox with open network (`all`: filesystem containment only — for agents whose tools need broad egress)
+5. Native sandbox with custom filesystem scopes (extra readable/writable roots)
 ```
 
 Fills: the `sandbox` section — `mode`, `network.mode` (`none`/`localhost`/`allowlist`/`all`), `network.allowlist`, `readableRoots`/`writableRoots` (relative entries resolve against the workspace; default: workspace only), `denyWrite` glob patterns (defaults already deny `.env*`, `.git/config`, `.git/hooks/**`), `fallback` (`fail-closed` recommended; `unsafe-host-process` only with explicit consent plus `unsafeAllowHostProcess: true`).
