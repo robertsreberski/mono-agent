@@ -32,8 +32,7 @@ Run `mono-agent help` (or `mono-agent`, `--help`, `-h`) at any time for the buil
 | `tui` | Open remote discovery/chat, attach to a managed macOS background agent for a dedicated SELF-CONFIG session, or use ordinary in-process local chat. | `--agent`, `--conversation`, `--configure`, `--local` |
 | `install-skill` | Copy the authoring composer to coding harnesses and pair its documentation MCP companion, or check/update managed project-local skills. | `--target claude\|codex\|both`, `--force`, `--no-docs-mcp`, `--project`, `--check`, `--update` |
 | `backfill` | Export already-recorded run artifacts to the Phoenix exporter with their historical timestamps. | `--run <id>`, `--all`, `--since <iso>`, `--until <iso>`, `--dry-run`, `--config <path>`, `--env-file <path>` |
-| `audit-runs` | Read local run summaries without rewriting them and report parse/status/failure-kind/stale-running totals. | `--artifact-dir <path>`, `--consumer <path>`, `--stale-after-ms <n>`, `--json`, `--config <path>`, `--env-file <path>` |
-| `metrics` | Aggregate local run summaries into status rates, failure-kind rates, duration percentiles, and cost totals. | `--artifacts <path>`, `--since <iso>`, `--until <iso>`, `--by model\|channel\|failureKind`, `--json`, `--config <path>`, `--env-file <path>` |
+| `runs` | Read-only, offline reporting over local run summaries. `report` (default) aggregates status/failure-kind rates, duration percentiles, and cost totals; `audit` reports parse/status/failure-kind/stale-running totals without rewriting anything. | `report`, `audit`; `--artifacts <path>`, `--consumer <path>`, `--since <iso>`, `--until <iso>`, `--by model\|channel\|failureKind`, `--stale-after-ms <n>`, `--include-memory`, `--json`, `--config <path>`, `--env-file <path>` |
 | `help` | Print the usage screen. | — |
 
 Every command is `cli` coverage. `start`, `restart`, `stop`, `status`, and `logs` are the background service commands; `start --foreground` is the cross-platform fallback. `stop`, `logs`, and `start --foreground` are real commands (they were absent from older feature listings).
@@ -539,30 +538,22 @@ configuration. Start a new harness session after a successful install.
 See [Skills](/context/skills/) for how skills are surfaced to the agent and
 [Documentation MCP companion](/tools/documentation-mcp/) for the server contract.
 
-## `audit-runs`
+## `runs`
 
-Audits recorded run summary artifacts without exporting, reconciling, or rewriting anything. By default it audits agent runs only, excluding memory-maintenance `mem-*` runs from both the legacy mixed namespace and the `memory/` namespace. Use it when you need a structural inventory of a consumer's local artifact directory: how many summaries parse, which statuses and production failure kinds are present, whether any values are unrecognized, how many `running` summaries are stale, and the per-failure-kind rates.
-
-| Flag | Effect |
-| --- | --- |
-| `--artifact-dir <path>` | Read this artifact directory directly. Wins over config-based resolution. |
-| `--consumer <path>` | Resolve `artifacts.dir` and `traceability.staleAfterMs` relative to this consumer folder. |
-| `--config <path>` | Use a non-default config file when resolving a consumer. |
-| `--env-file <path>` | Load secrets or env overrides from a non-default dotenv file. |
-| `--stale-after-ms <n>` | Override the stale-running cutoff interval. |
-| `--include-memory` | Include memory-maintenance summaries in addition to agent runs. |
-| `--json` | Print the full machine-readable audit report. |
+Read-only, offline reporting over recorded run summary artifacts. Never exports, reconciles, or rewrites anything. The mode positional selects the engine — `report` (the default) aggregates operational metrics; `audit` performs a structural integrity audit. By default both report agent runs only, excluding memory-maintenance `mem-*` runs from both the legacy mixed namespace and the `memory/` namespace; pass `--include-memory` to include them.
 
 ```bash
-mono-agent audit-runs --consumer ~/local-agent-alpha --json
-mono-agent audit-runs --artifact-dir ./.mono-agent/artifacts --stale-after-ms 30000
+mono-agent runs                       # same as `runs report`
+mono-agent runs report --by model --since 2026-06-01T00:00:00Z --json
+mono-agent runs audit --consumer ~/local-agent-alpha --json
+mono-agent runs audit --artifacts ./.mono-agent/artifacts --stale-after-ms 30000
 ```
 
-The command only reads `*.summary.json` files. A malformed summary is reported as a parse failure, and a stale `running` summary is reported without being rewritten. Startup reconciliation is still the only path that changes stale `running` summaries to `interrupted`.
+`audit-runs` and `metrics` are deprecated forwarding spellings: `audit-runs` forwards to `runs audit` and `metrics` forwards to `runs report`, each printing a one-line sunset hint. See [Deprecations](/reference/deprecations/).
 
-## `metrics`
+### `runs report`
 
-Aggregates recorded run summary artifacts without exporting, reconciling, or rewriting anything. By default it reports agent-run metrics only, excluding memory-maintenance `mem-*` runs from both the legacy mixed namespace and the `memory/` namespace. Use it when you need latency, cost, and failure-rate numbers over the whole local corpus or a time window.
+Aggregates run summaries into latency, cost, and failure-rate numbers over the whole local corpus or a time window. Use it when you need operational totals.
 
 | Flag | Effect |
 | --- | --- |
@@ -575,14 +566,23 @@ Aggregates recorded run summary artifacts without exporting, reconciling, or rew
 | `--include-memory` | Include memory-maintenance summaries in addition to agent runs. |
 | `--json` | Print the full machine-readable metrics report. |
 
-```bash
-mono-agent metrics --artifacts ./.mono-agent/artifacts
-mono-agent metrics --by model --since 2026-06-01T00:00:00Z --json
-```
+It reports total runs, status counts/rates, failure-kind rates, `durationMs` p50/p90/p99/max, and cost totals. Cost prefers `cost.cumulativeUsd`, then `cost.totalUsd`, then `usage.cost_usd`; malformed or redacted non-numeric values are ignored. Channel grouping is derived from the `conversationId` prefix before `:`, so treat it as best-effort until summaries persist a first-class channel field. See [Artifacts & traces](/observability/artifacts-and-traces/#artifact-metrics) for the full report contract and window semantics.
 
-The command reports total runs, status counts/rates, failure-kind rates, `durationMs` p50/p90/p99/max, and cost totals. Cost prefers `cost.cumulativeUsd`, then `cost.totalUsd`, then `usage.cost_usd`; malformed or redacted non-numeric values are ignored. Channel grouping is derived from the `conversationId` prefix before `:`, so treat it as best-effort until summaries persist a first-class channel field.
+### `runs audit`
 
-See [Artifacts & traces](/observability/artifacts-and-traces/#artifact-metrics) for the full report contract and window semantics.
+Audits run summaries for structural integrity. Use it when you need a structural inventory of a consumer's local artifact directory: how many summaries parse, which statuses and production failure kinds are present, whether any values are unrecognized, how many `running` summaries are stale, and the per-failure-kind rates.
+
+| Flag | Effect |
+| --- | --- |
+| `--artifacts <path>` | Read this artifact directory directly. Wins over config-based resolution. |
+| `--consumer <path>` | Resolve `artifacts.dir` and `traceability.staleAfterMs` relative to this consumer folder. |
+| `--config <path>` | Use a non-default config file when resolving a consumer. |
+| `--env-file <path>` | Load secrets or env overrides from a non-default dotenv file. |
+| `--stale-after-ms <n>` | Override the stale-running cutoff interval. |
+| `--include-memory` | Include memory-maintenance summaries in addition to agent runs. |
+| `--json` | Print the full machine-readable audit report. |
+
+It only reads `*.summary.json` files. A malformed summary is reported as a parse failure, and a stale `running` summary is reported without being rewritten. Startup reconciliation is still the only path that changes stale `running` summaries to `interrupted`.
 
 ## `backfill`
 

@@ -15,7 +15,7 @@ Every mono-agent run gets local JSONL artifacts and can optionally be exported t
 | JSONL run artifacts | Per-run `run-*.events.jsonl` + `run-*.summary.json`; non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned | config / auto | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Trace-source registry | Heartbeat manifest so dashboards discover live agents | config | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Phoenix exporter + backfill | Best-effort OTLP/HTTP export of run lifecycles; retroactive backfill | config / cli | [Phoenix export & backfill](/observability/phoenix-and-backfill/) |
-| `mono-agent` CLI | init / validate / start / stop / logs / restart / tui / web / sessions / backfill / audit-runs / metrics / install-skill | cli | [CLI reference](/observability/cli-reference/) |
+| `mono-agent` CLI | init / validate / start / stop / logs / restart / tui / web / sessions / backfill / runs / install-skill | cli | [CLI reference](/observability/cli-reference/) |
 | TUI | Operator console: live chat with thinking/tool/telemetry insight, run replay, config view | cli | [TUI](/observability/tui/) |
 | Web console | Always-on persistent multi-agent conversations, streamed turns, and local-device attachments | cli | [Web console](/observability/web-console/) |
 | Session Recorder | Read-only discovered-agent run lists/details and live sub-run updates | cli | [CLI reference](/observability/cli-reference/#sessions) |
@@ -78,7 +78,7 @@ See [Phoenix export & backfill](/observability/phoenix-and-backfill/) for the fu
 
 ## The CLI
 
-`mono-agent` drives the entire agent lifecycle from one config: `init` scaffolds non-destructively, `validate` prints a per-section report (including observability and every channel), `start` launches traceability plus every configured channel (a background launchd service on macOS by default), and `stop` / `logs` / `restart` operate the running instance. `backfill` exports historical runs to Phoenix, while `audit-runs` scans local run summaries read-only and [artifact metrics](/observability/artifacts-and-traces/#artifact-metrics) aggregates local latency, cost, and failure rates.
+`mono-agent` drives the entire agent lifecycle from one config: `init` scaffolds non-destructively, `validate` prints a per-section report (including observability and every channel), `start` launches traceability plus every configured channel (a background launchd service on macOS by default), and `stop` / `logs` / `restart` operate the running instance. `backfill` exports historical runs to Phoenix, while `runs audit` scans local run summaries read-only and `runs report` ([artifact metrics](/observability/artifacts-and-traces/#artifact-metrics)) aggregates local latency, cost, and failure rates.
 
 The full command and flag matrix is in the [CLI reference](/observability/cli-reference/).
 

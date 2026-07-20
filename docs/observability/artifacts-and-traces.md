@@ -93,11 +93,11 @@ Reconciliation repairs status only and can report only data that reached a recor
 
 Failure kinds are an open string set because provider/runtime adapters can surface new values. The display taxonomy currently explains the common operator-facing kinds including `context_limit`, `usage_limit`, `process_death`, `cancelled` and its cancellation variants, `provider_unavailable`, `provider_unavailable_exhausted`, `runtime_error`, `session_not_found`, and `session_busy`; unknown values stay visible and get a generic artifact/log inspection hint. `context_limit` specifically means request input still exceeded the selected model's usable window after bridge recovery; unlike quota/output/max-turn `usage_limit`, it is eligible for configured route fallback.
 
-For a read-only inventory, run `mono-agent audit-runs`. It scans every `*.summary.json` file in the artifact directory, reports malformed summaries, status and failure-kind histograms, unrecognized values, stale `running` summaries, and failure-kind rates. Unlike startup reconciliation, the audit never rewrites `running` summaries; it only flags what the startup reconciler would consider stale.
+For a read-only inventory, run `mono-agent runs audit`. It scans every `*.summary.json` file in the artifact directory, reports malformed summaries, status and failure-kind histograms, unrecognized values, stale `running` summaries, and failure-kind rates. Unlike startup reconciliation, the audit never rewrites `running` summaries; it only flags what the startup reconciler would consider stale.
 
 ```bash
-mono-agent audit-runs --consumer /path/to/agent --json
-mono-agent audit-runs --artifact-dir /path/to/.mono-agent/artifacts --stale-after-ms 30000
+mono-agent runs audit --consumer /path/to/agent --json
+mono-agent runs audit --artifacts /path/to/.mono-agent/artifacts --stale-after-ms 30000
 ```
 
 :::tip
@@ -119,13 +119,13 @@ Start with active conversation history for the current exchange. Use `MemoryReca
 
 ## Artifact metrics
 
-`mono-agent metrics` aggregates recorded run summaries into operational numbers: status rates, failure-kind rates, duration percentiles, and total plus per-run cost. It is offline and read-only. It reads `*.summary.json` files from `artifacts.dir` or an explicit artifact directory; it does not read exporter config, contact Phoenix, reconcile stale runs, or rewrite artifacts. By default it reports agent runs only; pass `--include-memory` to include memory-maintenance `mem-*` runs from the `memory/` namespace and legacy mixed directories.
+`mono-agent runs report` (the default `runs` mode) aggregates recorded run summaries into operational numbers: status rates, failure-kind rates, duration percentiles, and total plus per-run cost. It is offline and read-only. It reads `*.summary.json` files from `artifacts.dir` or an explicit artifact directory; it does not read exporter config, contact Phoenix, reconcile stale runs, or rewrite artifacts. By default it reports agent runs only; pass `--include-memory` to include memory-maintenance `mem-*` runs from the `memory/` namespace and legacy mixed directories.
 
 ```bash
-mono-agent metrics --artifacts ./.mono-agent/artifacts
-mono-agent metrics --since 2026-06-01T00:00:00Z --until 2026-06-24T00:00:00Z
-mono-agent metrics --by model --json
-mono-agent metrics --include-memory --json
+mono-agent runs report --artifacts ./.mono-agent/artifacts
+mono-agent runs report --since 2026-06-01T00:00:00Z --until 2026-06-24T00:00:00Z
+mono-agent runs report --by model --json
+mono-agent runs report --include-memory --json
 ```
 
 | Flag | Effect |
