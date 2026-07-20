@@ -742,7 +742,7 @@ export class SlackAdapter {
       };
     }
 
-    const command = parseCommand(text);
+    const command = parseCommand(this.prepareCommandText(text));
     if (command?.name === "start") {
       await this.api.chatPostMessage({
         channel: event.channelId,
@@ -2257,6 +2257,27 @@ export class SlackAdapter {
     return normalizeSlackMarkdownToMarkdown(stripped);
   }
 
+  private prepareCommandText(text: string): string {
+    let commandText = text.trim();
+    const identityTokens = [
+      ...this.rawBotUserIds.map((botUserId) => `<@${botUserId}>`),
+      ...this.mentionTextAliases.map((alias) => alias.trim()).filter((alias) => alias.length > 0),
+    ];
+    let strippedIdentity = true;
+    while (strippedIdentity) {
+      strippedIdentity = false;
+      for (const identityToken of identityTokens) {
+        const remainder = stripLeadingIdentityToken(commandText, identityToken);
+        if (remainder !== undefined) {
+          commandText = remainder;
+          strippedIdentity = true;
+          break;
+        }
+      }
+    }
+    return commandText;
+  }
+
   private isAuthorized(channelId: SlackChannelId): boolean {
     return this.allowAllChannels || this.allowedChannelIds.has(normalizeIdForMatch(channelId));
   }
@@ -2567,6 +2588,17 @@ function parseCommand(text: string): NormalizedCommand | undefined {
     return undefined;
   }
   return { name: match[1].toLowerCase(), argument: match[2]?.trim() ?? "" };
+}
+
+function stripLeadingIdentityToken(text: string, identityToken: string): string | undefined {
+  if (!text.startsWith(identityToken)) {
+    return undefined;
+  }
+  const nextCharacter = text[identityToken.length];
+  if (nextCharacter !== undefined && nextCharacter !== "/" && !/\s/u.test(nextCharacter)) {
+    return undefined;
+  }
+  return text.slice(identityToken.length).trimStart();
 }
 
 async function finishSafely(

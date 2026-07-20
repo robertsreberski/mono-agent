@@ -28,7 +28,7 @@ A Slack Socket Mode bot, mention-triggered in allowed channels, with a custom MC
 
 ## Configuration
 
-The Slack section runs in Socket Mode (effective `botToken` and `appToken` values are required); mentions are detected by `botUserIds` and `mentionTextAliases`, and the bot only responds in `allowedChannelIds`. Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the source config omits credentials. The built-in `@agent /model` and `@agent /effort` controls automatically expose `runtime.model` plus any configured fallbacks, with no extra Slack config. This agent opts into a **specific** tool allowlist instead of the allow-all default, so the built-ins it uses and `SlackSendMessage` are named explicitly; `deployTool` comes from the declared MCP server. `concurrency` bounds in-flight work app-wide.
+The Slack section runs in Socket Mode (effective `botToken` and `appToken` values are required); Slack's `app_mention` event handles real mentions, the adapter discovers its own bot user ID, and the bot only responds in `allowedChannelIds`. Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the source config omits credentials. The built-in `@agent /model` and `@agent /effort` controls automatically expose `runtime.model` plus any configured fallbacks, with no bot-ID or Slack-specific model config. This agent opts into a **specific** tool allowlist instead of the allow-all default, so the built-ins it uses and `SlackSendMessage` are named explicitly; `deployTool` comes from the declared MCP server. `concurrency` bounds in-flight work app-wide.
 
 ```json
 {
@@ -38,8 +38,7 @@ The Slack section runs in Socket Mode (effective `botToken` and `appToken` value
   "slack": {
     "enabled": true,
     "allowedChannelIds": ["C012345"],
-    "botUserIds": ["U012345"],
-    "mentionTextAliases": ["@agent"]
+    "stripMentionText": true
   },
   "tools": {
     "allowedTools": ["Read", "Grep", "SlackSendMessage", "deployTool"],

@@ -54,6 +54,13 @@ selectors. These are mention-message commands, not workspace-registered Slack
 slash commands; using the app mention or a configured text alias keeps Slack's
 composer from intercepting the leading slash.
 
+`startSlackAdapter` discovers the authenticated bot user ID with `auth.test` and
+merges it with any configured `botUserIds`. A leading self-mention is removed
+for command recognition even when ordinary prompt mention stripping is disabled,
+so `@agent /model` works without copying the app's member ID into config. The
+`stripMentionText` option continues to control whether mentions are removed from
+normal prompts.
+
 The same controls also accept exact arguments:
 
 - `@agent /model default` or `@agent /model <exact-configured-ref>`
