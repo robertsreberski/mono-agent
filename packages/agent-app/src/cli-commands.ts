@@ -2,7 +2,6 @@
 // Internal command implementation; `cli.ts` remains the stable public/bin facade.
 import { basename, resolve } from "node:path";
 import process from "node:process";
-import { runAuditRuns } from "./audit-runs.js";
 import { runBackfill } from "./backfill.js";
 import {
   MANAGED_BACKGROUND_WORKER_ENV,
@@ -53,7 +52,7 @@ export type {
   PreflightResult,
   PrintAppStatusOptions,
 } from "./cli-background-command.js";
-import { runMetrics } from "./metrics.js";
+import { runRunsCommand } from "./cli-runs-command.js";
 import {
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
@@ -118,7 +117,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     return 2;
   }
 
-  writeCliDeprecationHints(args);
+  writeCliDeprecationHints(argv[0], args);
 
   // Only the internal launchd foreground shape may honor the managed-worker
   // marker. A hostile/global launchctl environment must not sanitize unrelated
@@ -274,25 +273,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         dryRun: args.dryRun,
         includeMemory: args.includeMemory,
       });
-    case "audit-runs":
-      return await runAuditRuns({
-        ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
-        ...(args.artifactDir === undefined ? {} : { artifactDir: args.artifactDir }),
-        ...(args.consumerPath === undefined ? {} : { consumerPath: args.consumerPath }),
-        ...(args.staleAfterMs === undefined ? {} : { staleAfterMs: args.staleAfterMs }),
-        json: args.json === true,
-        includeMemory: args.includeMemory,
-      });
-    case "metrics":
-      return await runMetrics({
-        ...(args.configPath === undefined ? {} : { configPath: args.configPath }),
-        ...(args.artifactDir === undefined ? {} : { artifactDir: args.artifactDir }),
-        ...(args.since === undefined ? {} : { since: args.since }),
-        ...(args.until === undefined ? {} : { until: args.until }),
-        ...(args.groupBy === undefined ? {} : { groupBy: args.groupBy }),
-        json: args.json === true,
-        includeMemory: args.includeMemory,
-      });
+    case "runs":
+      return await runRunsCommand(args);
     case "memory": {
       // Lazy import: the memory preview path pulls SQLite/backend clients only on demand.
       const { runMemoryCommand } = await import("./memory-command.js");
@@ -317,10 +299,22 @@ export function shouldLoadCommandDotenv(command: ParsedCliArgs["command"]): bool
   return command !== "web";
 }
 
-function writeCliDeprecationHints(args: ParsedCliArgs): void {
+function writeCliDeprecationHints(originalCommand: string | undefined, args: ParsedCliArgs): void {
   if (args.command === "restart" && args.force) {
     process.stderr.write(ui.hint(
       "`restart --force` is deprecated; use `restart --clear-sessions` (same effect).",
+    ));
+  }
+  // `audit-runs`/`metrics` normalize to `runs` in parseCliArgs, so the sunset
+  // hint has to key off the original argv token rather than args.command.
+  if (originalCommand === "metrics") {
+    process.stderr.write(ui.hint(
+      "`mono-agent metrics` is now `mono-agent runs`; the old spelling will be removed in a future release.",
+    ));
+  }
+  if (originalCommand === "audit-runs") {
+    process.stderr.write(ui.hint(
+      "`mono-agent audit-runs` is now `mono-agent runs audit`; the old spelling will be removed in a future release.",
     ));
   }
 }

@@ -10,7 +10,7 @@ import type { InstallSkillTarget } from "./install-skill.js";
 import { INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND } from "./launchd.js";
 import type { CodexLoginMode } from "./provider-setup.js";
 
-const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "sessions", "install-skill", "backfill", "audit-runs", "metrics", "memory", "continuations"] as const;
+const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "sessions", "install-skill", "backfill", "runs", "audit-runs", "metrics", "memory", "continuations"] as const;
 const KNOWN_COMMANDS = [...PUBLIC_COMMANDS, INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND] as const;
 
 // Commands removed outright before the KNOWN_COMMANDS gate. Parsing throws with the
@@ -19,11 +19,14 @@ const REMOVED_COMMANDS = new Map<string, string>([
   ["recipes", "`recipes` was removed; use `mono-agent presets`."],
 ]);
 
-// `doctor`/`setup` never reach routing: parseCliArgs normalizes them to
-// `validate`/`init`. `help`/`version` are synthetic commands (not in
-// KNOWN_COMMANDS) produced by the `--help`/`-h` and `--version`/`-v` flags before
-// command validation.
-type CliCommand = Exclude<(typeof KNOWN_COMMANDS)[number], "doctor" | "setup"> | "help" | "version";
+// `doctor`/`setup`/`audit-runs`/`metrics` never reach routing: parseCliArgs
+// normalizes them to `validate`/`init`/`runs`. `help`/`version` are synthetic
+// commands (not in KNOWN_COMMANDS) produced by the `--help`/`-h` and
+// `--version`/`-v` flags before command validation.
+type CliCommand =
+  | Exclude<(typeof KNOWN_COMMANDS)[number], "doctor" | "setup" | "audit-runs" | "metrics">
+  | "help"
+  | "version";
 
 export interface ParsedCliArgs {
   readonly command: CliCommand;
@@ -75,13 +78,13 @@ export interface ParsedCliArgs {
   readonly until?: string;
   /** backfill: map + serialize but do not POST. */
   readonly dryRun: boolean;
-  /** audit-runs/metrics/backfill/sessions: include memory-run artifacts. */
+  /** runs/backfill/sessions: include memory-run artifacts. */
   readonly includeMemory: boolean;
-  /** audit-runs: read this artifact directory directly. */
+  /** runs: read this artifact directory directly. */
   readonly artifactDir?: string;
-  /** metrics: group totals by this summary dimension. */
+  /** runs report: group totals by this summary dimension. */
   readonly groupBy?: "model" | "channel" | "failureKind";
-  /** validate/audit-runs: resolve config, env, artifacts, and checks relative to this consumer folder. */
+  /** validate/runs audit: resolve config, env, artifacts, and checks relative to this consumer folder. */
   readonly consumerPath?: string;
   /** tui: connect to this running agent (label or sourceId) directly. */
   readonly agent?: string;
@@ -99,9 +102,9 @@ export interface ParsedCliArgs {
   readonly update?: boolean;
   /** install-skill: copy the skill without pairing the version-matched documentation MCP. */
   readonly noDocsMcp?: boolean;
-  /** audit-runs: override the stale-running cutoff interval. */
+  /** runs audit: override the stale-running cutoff interval. */
   readonly staleAfterMs?: number;
-  /** audit-runs: print the full machine-readable report. */
+  /** runs: print the full machine-readable report. */
   readonly json?: boolean;
   /** memory audit: fail closed on degraded or unknown health. */
   readonly strict?: boolean;
@@ -156,13 +159,24 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   // `doctor`/`setup` are aliases; normalize here so every downstream path
   // (routing, env-file resolution, --consumer) applies unchanged. `doctor` →
   // `validate`, `setup` → `init`. No sunset is set for either.
+  //
+  // `audit-runs`/`metrics` are deprecated forwarding aliases for the merged
+  // `runs` command: `audit-runs` → `runs` with a leading `audit` mode positional,
+  // `metrics` → `runs` with a leading `report` mode positional. The injected mode
+  // is prepended after the flag loop so user-supplied positionals are preserved,
+  // and the dispatcher routes on `positionals[0]`. writeCliDeprecationHints keys
+  // the sunset hint off the original argv token (lost after this normalization).
   const cmd = (
     command === "doctor"
       ? "validate"
       : command === "setup"
         ? "init"
-        : command
+        : command === "audit-runs" || command === "metrics"
+          ? "runs"
+          : command
   ) as CliCommand;
+  const injectedRunsMode =
+    command === "audit-runs" ? "audit" : command === "metrics" ? "report" : undefined;
   if (
     cmd === INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND
     && !(
@@ -536,8 +550,15 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     }
   }
 
-  if (consumerPath !== undefined && cmd !== "validate" && cmd !== "audit-runs") {
-    throw new Error("--consumer is only supported for `mono-agent validate` and `mono-agent audit-runs`.");
+  // Prepend the forwarding-alias mode so `audit-runs`/`metrics` reach the `runs`
+  // dispatcher as `runs audit`/`runs report` without clobbering any positionals a
+  // user typed after the legacy command name.
+  if (injectedRunsMode !== undefined) {
+    positionals.unshift(injectedRunsMode);
+  }
+
+  if (consumerPath !== undefined && cmd !== "validate" && cmd !== "runs") {
+    throw new Error("--consumer is only supported for `mono-agent validate` and `mono-agent runs`.");
   }
   if ((local || configure) && cmd !== "tui") {
     throw new Error("--local and --configure are only supported for `mono-agent tui`.");
@@ -581,8 +602,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (cmd === "web" && (configPath !== undefined || envFile !== undefined)) {
     throw new Error("The machine-wide `mono-agent web` console does not load an agent --config or --env-file; use `mono-agent sessions` for the recorder.");
   }
-  if (includeMemory && cmd !== "audit-runs" && cmd !== "metrics" && cmd !== "backfill" && cmd !== "sessions") {
-    throw new Error("--include-memory is only supported for `mono-agent audit-runs`, `mono-agent metrics`, `mono-agent backfill`, and `mono-agent sessions`.");
+  if (includeMemory && cmd !== "runs" && cmd !== "backfill" && cmd !== "sessions") {
+    throw new Error("--include-memory is only supported for `mono-agent runs`, `mono-agent backfill`, and `mono-agent sessions`.");
   }
   if (limit !== undefined && cmd !== "memory" && cmd !== "continuations") {
     throw new Error("--limit is only supported for `mono-agent memory` and `mono-agent continuations list`.");

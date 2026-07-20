@@ -20,11 +20,21 @@ documentation together, then remove the completed row from this table.
 | Deprecated surface | Replacement | Removal version |
 | --- | --- | --- |
 | `mono-agent restart --force` | `mono-agent restart --clear-sessions` (same effect) | `v2.0.0` |
+| `mono-agent metrics` | `mono-agent runs` (equivalently `mono-agent runs report`) | `v2.0.0` |
+| `mono-agent audit-runs` | `mono-agent runs audit` | `v2.0.0` |
 
 `restart --force` is still accepted and behaves identically to
 `--clear-sessions` (clear persisted pi sessions + active conversation history),
 but every invocation prints a deprecation hint. `--force` on `install-skill` and
 `web reset` is a separate, non-deprecated flag.
+
+`metrics` and `audit-runs` are the pre-consolidation spellings of the merged
+[`runs`](/observability/cli-reference/#runs) command. Both still parse and
+forward unchanged — `metrics` to `runs report`, `audit-runs` to `runs audit`,
+carrying every existing flag — while printing a one-line sunset hint. The
+canonical `runs` spelling takes `--artifacts` as the artifact-directory flag;
+the legacy `audit-runs --artifact-dir` alias keeps parsing but no longer appears
+in `--help`.
 
 ## Removed surfaces
 
