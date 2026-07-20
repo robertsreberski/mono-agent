@@ -123,29 +123,51 @@ export function createRunHistoryRuntimeExtension(
 ): RuntimeOptionsExtension {
   return async ({ request, runId }) => {
     const path = `/mcp/${randomUUID()}`;
-    const mcp = createRunHistoryServer({
-      artifactDir: options.artifactDir,
-      conversationId: request.conversationId,
-      runId,
-    });
-    let transport: WebStandardStreamableHTTPServerTransport | undefined;
+    let port: number | undefined;
     const http = createServer((incoming, response) => {
       if (incoming.url !== path || !isLoopbackHost(incoming.headers.host)) {
         response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
         response.end("Not found");
         return;
       }
-      if (transport === undefined) {
+      if (port === undefined) {
         response.writeHead(503, { "content-type": "text/plain; charset=utf-8" });
         response.end("Run history is starting");
         return;
       }
+      const boundPort = port;
       void (async () => {
         const parsedBody = incoming.method === "POST" ? await readJsonBody(incoming) : undefined;
         const webRequest = nodeRequestAsWebRequest(incoming);
-        const webResponse = await transport?.handleRequest(webRequest, { parsedBody });
-        if (webResponse === undefined) throw new Error("RunHistory MCP transport is unavailable.");
-        await writeWebResponse(response, webResponse);
+        // Stateless server+transport minted per request: the runtime opens a
+        // fresh MCP client (with a new `initialize`) against this same per-run
+        // endpoint on every model-failover attempt, and a long-lived
+        // session-stateful transport rejects that second initialize ("Server
+        // already initialized"), silently dropping the tool for the answering
+        // attempt. The SDK's stateless mode requires a fresh transport per
+        // request, so both are per-request; the underlying artifacts are shared.
+        const requestMcp = createRunHistoryServer({
+          artifactDir: options.artifactDir,
+          conversationId: request.conversationId,
+          runId,
+        });
+        // No sessionIdGenerator: stateless mode (exact-optional forbids an
+        // explicit undefined).
+        const transport = new WebStandardStreamableHTTPServerTransport({
+          enableJsonResponse: true,
+          allowedHosts: [`127.0.0.1:${boundPort}`],
+          enableDnsRebindingProtection: true,
+        });
+        try {
+          // The SDK's Node transport declaration is not exact-optional compatible
+          // with its own base Transport under this repo's compiler settings.
+          await requestMcp.connect(transport as never);
+          const webResponse = await transport.handleRequest(webRequest, { parsedBody });
+          if (webResponse === undefined) throw new Error("RunHistory MCP transport is unavailable.");
+          await writeWebResponse(response, webResponse);
+        } finally {
+          await requestMcp.close().catch(() => undefined);
+        }
       })().catch(() => {
         if (!response.headersSent) response.writeHead(500);
         response.end();
@@ -155,15 +177,7 @@ export function createRunHistoryRuntimeExtension(
     try {
       await listenLoopback(http);
       const address = http.address() as AddressInfo;
-      transport = new WebStandardStreamableHTTPServerTransport({
-        sessionIdGenerator: randomUUID,
-        enableJsonResponse: true,
-        allowedHosts: [`127.0.0.1:${address.port}`],
-        enableDnsRebindingProtection: true,
-      });
-      // The SDK's Node transport declaration is not exact-optional compatible
-      // with its own base Transport under this repo's compiler settings.
-      await mcp.connect(transport as never);
+      port = address.port;
       let closed = false;
       return {
         runtimeOptions: {
@@ -177,12 +191,10 @@ export function createRunHistoryRuntimeExtension(
         cleanup: async () => {
           if (closed) return;
           closed = true;
-          await mcp.close().catch(() => undefined);
           await closeHttpServer(http);
         },
       } satisfies RunHistoryRuntimeExtension;
     } catch (error) {
-      await mcp.close().catch(() => undefined);
       await closeHttpServer(http);
       try {
         options.onUnavailable?.(error);
