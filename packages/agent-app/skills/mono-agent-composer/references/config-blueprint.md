@@ -294,7 +294,7 @@ new agent.
     // Put MONO_AGENT_SLACK_BOT_TOKEN and MONO_AGENT_SLACK_APP_TOKEN in .env.
     "allowedChannelIds": ["C0123"],        // or "allowAllChannels": true
     "allowAllChannels": false,
-    "botUserIds": ["U0BOT"],               // mention detection
+    "botUserIds": ["U0BOT"],               // optional supplemental ID; own ID is auto-discovered
     "mentionTextAliases": ["@agent"],
     "stripMentionText": true,
     "shortcuts": [                         // slack.shortcuts: JSON-only; callbackId matches the Slack app

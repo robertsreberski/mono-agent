@@ -11,7 +11,7 @@ The Slack channel connects your agent to a Slack workspace over **Socket Mode** 
 ## How it works
 
 - **Socket Mode transport.** The adapter opens a WebSocket to Slack using an app-level token, so you do not host a public endpoint. The app-level token must carry the `connections:write` scope.
-- **Mention-triggered.** The agent responds when it is mentioned (a real `@bot` mention matching `botUserIds`, or a text alias from `mentionTextAliases`). Channels must be allowed via `allowedChannelIds` or `allowAllChannels`.
+- **Mention-triggered.** Slack's `app_mention` event routes real app mentions; text aliases from `mentionTextAliases` are optional. At startup the adapter discovers its authenticated bot user ID for self-filtering and native command recognition, then merges any supplemental `botUserIds`. Channels must be allowed via `allowedChannelIds` or `allowAllChannels`.
 - **Final-answer delivery with transient tool activity.** Like Telegram, Slack does not stream answer tokens. It starts with assistant-thread status or a 👀 reaction. When an inbound turn starts tools, one redacted cumulative activity message is edited in place. On completion Slack posts the final answer as a fresh message, then best-effort deletes the activity message; cleanup failure can leave stale activity behind but cannot duplicate or lose the answer. `ReadSkill` renders the selected skill as `📚 Reading "<skill>"` without exposing its path, and memory recall appears as preview-free `🧠 Recalling memory`, distinct from memory writes (`🧠`) and ordinary file reads (`📖`). Adjacent duplicates become `(×N)`; proactive notifications do not show the ledger. An acknowledged `/cancel` best-effort deletes a still-transient ledger and leaves one `Cancelled.` acknowledgement. This is the default (`stream.finalOnly: true`, `stream.showHints: true`); see [Delivery and send tools](/channels/delivery-and-send-tools/).
 - **Native runtime controls.** Mention-message commands open Block Kit selectors for the configured primary/fallback models and model-supported effort values. Direct-message choices apply across new DM threads; shared-channel choices stay inside the Slack thread where they were made. No Slack-specific model config is required. See [Runtime model and effort controls](#runtime-model-and-effort-controls-built-in).
 - **Markdown boundary.** mono-agent treats agent-visible Slack text as standard Markdown. Inbound Slack `mrkdwn` links/lists are normalized before they reach the agent, and outbound final replies plus `SlackSendMessage` text are rendered to Slack `mrkdwn` at delivery time.
@@ -33,8 +33,6 @@ Put the Socket Mode credentials in `.env` as `MONO_AGENT_SLACK_BOT_TOKEN` and `M
     "enabled": true,
     "allowedChannelIds": ["C0123"],
     "allowAllChannels": false,
-    "botUserIds": ["U0BOT"],
-    "mentionTextAliases": ["@agent"],
     "stripMentionText": true
   }
 }
@@ -47,7 +45,7 @@ Put the Socket Mode credentials in `.env` as `MONO_AGENT_SLACK_BOT_TOKEN` and `M
 | `appToken` | string (`xapp-...`) | — | App-level token for Socket Mode (`connections:write`). An effective value is **required** when enabled. Inline config remains compatible; new source configs should use `MONO_AGENT_SLACK_APP_TOKEN` in `.env`. |
 | `allowedChannelIds` | string[] | — | Channel IDs the agent may respond in. Required unless `allowAllChannels` is `true`. |
 | `allowAllChannels` | boolean | `false` | Respond in any channel the bot is in. Alternative to `allowedChannelIds`. |
-| `botUserIds` | string[] | — | The bot's Slack user ID(s), used to detect real `@bot` mentions. |
+| `botUserIds` | string[] | — | Optional supplemental bot user IDs for self-filtering and mention cleanup. The authenticated bot's own user ID is discovered automatically with `auth.test`. |
 | `mentionTextAliases` | string[] | — | Plain-text aliases (e.g. `@agent`) that also trigger a response. |
 | `stripMentionText` | boolean | conditional | Strip the mention/alias text from the prompt before the agent sees it. When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`. |
 | `shortcuts` | object[] | `[]` | JSON-only global/message shortcut bindings that run configured prompts; no environment-variable form. See [Shortcuts](#shortcuts). |
@@ -99,7 +97,11 @@ Replace `@agent` with the real app mention or a configured
 `mentionTextAliases` value. These are mono-agent **message commands**, not Slack
 Slash Commands registered in the workspace. Keeping the mention before the
 slash prevents Slack's composer from treating `/model` or `/effort` as an
-unregistered workspace command. Exact-argument commands work without a menu;
+unregistered workspace command. The adapter discovers its own bot user ID at
+startup and removes that leading self-mention for command parsing, so no
+`botUserIds` or `mentionTextAliases` setting is required for the real app mention.
+This command-only cleanup does not override `stripMentionText` for normal prompts.
+Exact-argument commands work without a menu;
 opening and using a menu requires **Interactivity & Shortcuts** to be enabled.
 Socket Mode carries the resulting `block_actions` payloads, so no public request
 URL is needed.
@@ -266,7 +268,7 @@ The heartbeat watchdog and reconnect loop work out of the box, but every thresho
 5. **Interactivity & Shortcuts** → enable interactivity for the built-in model/effort menus, `slack.shortcuts`, or App Home buttons. Create each global/message shortcut with a callback ID matching its configured `callbackId`. Socket Mode carries the interaction payloads; no request URL is needed.
 6. **App Home** → enable the Home Tab when using `slack.homeTab`.
 7. Invite the bot into each channel you list in `allowedChannelIds` (`/invite @your-bot`).
-8. Find the bot's user ID for `botUserIds` (Slack user profile → "Copy member ID", starts with `U`) and the channel IDs for `allowedChannelIds` (channel details → bottom of the About tab, starts with `C`).
+8. Find the channel IDs for `allowedChannelIds` (channel details → bottom of the About tab, starts with `C`). The bot's own user ID is discovered automatically; configure `botUserIds` only for supplemental identities.
 
 After configuring, validate and start:
 
