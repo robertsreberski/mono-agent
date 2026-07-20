@@ -116,6 +116,50 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("persists quote metadata without exposing its storage telemetry as message content", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const otherThread = store.createThread("agent-one");
+    const first = store.beginTurn({ threadId: thread.id, text: "Source prompt", attachmentIds: [] });
+    store.completeTurn(first.turnId, "A source response");
+    const other = store.beginTurn({ threadId: otherThread.id, text: "Other", attachmentIds: [] });
+    store.completeTurn(other.turnId, "Other response");
+
+    const quoted = store.beginTurn({
+      threadId: thread.id,
+      text: "Please expand on this.",
+      attachmentIds: [],
+      quote: { text: "source response", messageId: first.assistantMessageId },
+    });
+    const userMessage = store.getThreadDetail(thread.id)?.messages.at(-2);
+    expect(quoted.quote).toEqual({
+      text: "source response",
+      messageId: first.assistantMessageId,
+    });
+    expect(userMessage).toMatchObject({
+      quote: { text: "source response", messageId: first.assistantMessageId },
+      parts: [{ type: "text", text: "Please expand on this." }],
+    });
+    expect(() => store.beginTurn({
+      threadId: otherThread.id,
+      text: "Cross-thread quote",
+      attachmentIds: [],
+      quote: { text: "source response", messageId: first.assistantMessageId },
+    })).toThrowError(expect.objectContaining({ code: "invalid_quote" }));
+    store.interruptTurn(quoted.turnId);
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir: join(base, "state") });
+    expect(reopened.getThreadDetail(thread.id)?.messages.at(-2)).toMatchObject({
+      quote: { text: "source response", messageId: first.assistantMessageId },
+      parts: [{ type: "text", text: "Please expand on this." }],
+    });
+    reopened.close();
+  });
+
   it("recovers running turns as interrupted after an unclean restart", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

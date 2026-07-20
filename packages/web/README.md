@@ -46,13 +46,13 @@ Tailscale DNS name); suffix wildcards are intentionally not trusted. When a
 managed agent protects its loopback operator endpoint, discovery reads only
 `MONO_AGENT_TUI_API_KEY` from that agent's attested, owner-owned dotenv file.
 
-On desktop, drag the agent rail's right edge to reveal full agent names. The
-resize separator is keyboard-operable, and its width is remembered by that
-browser so each device can keep an appropriate layout. Pin or unpin an agent
-with its star control in the desktop rail or mobile agent picker. Pins are
-stored by the web service rather than in browser storage, so the same favorites
-appear over localhost, LAN, and Tailscale; pinned agents sort before the
-remaining discovered agents.
+On desktop, the agent rail has fixed compact and expanded layouts selected by
+an explicit expand/collapse control. That choice is remembered by the browser.
+Offline agents are hidden behind a subtle count by default; pinned agents and
+the currently selected agent remain visible even while offline. The same
+filter applies to the desktop rail, mobile picker, and command palette. Pin or
+unpin with the star control; pins live in the web service so favorites stay
+consistent over localhost, LAN, and Tailscale.
 
 The assistant-ui run-settings popover combines searchable model selection with
 the selected model's supported reasoning-effort choices and becomes a
@@ -64,6 +64,19 @@ show `Context —` instead of deriving a percentage from aggregate work. Structu
 reasoning and routine tools share one stream-aware Activity disclosure that
 collapses at every terminal message state without reordering answer parts.
 Typing `/` in an empty composer opens the available command triggers.
+
+Select rendered message text to quote it into the composer. One quote is kept
+with the authored user message and supplied to the operator as Markdown
+blockquote context; it does not rewrite the visible message text. The public
+turn DTO exposes this as `quote: { text, messageId }`, and the source message
+must belong to the same thread.
+
+The header bell explicitly enables browser notifications for successful
+responses that arrive while the console is hidden or unfocused. Notifications
+include a short response preview and open the exact conversation. Permission
+is requested only from the bell, the preference is browser-origin-local, and
+the page/PWA must remain alive: this is not a Web Push subscription and does
+not notify after the application is fully closed.
 
 ## Public API
 
@@ -105,6 +118,7 @@ WebMessage
 WebMessagePart
 WebMessageStatus
 WebModelOption
+WebQuote
 WebRunState
 WebRunStatus
 WebServerHandle
@@ -139,6 +153,8 @@ The browser API is rooted at `/api/v1`:
 - `GET /events` (SSE)
 
 `GET /healthz` is intentionally outside the versioned API for service probes.
+`POST /threads/:id/turns` accepts optional
+`quote: { text, messageId }` metadata in addition to the authored `text`.
 
 ## Dependency Boundary
 

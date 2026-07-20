@@ -10,7 +10,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
-      includeAssets: ["icon.svg", "apple-touch-icon.png", "favicon.ico"],
+      includeAssets: ["icon.svg", "apple-touch-icon.png", "favicon.ico", "notification-sw.js"],
       manifest: {
         name: "mono-agent Console",
         short_name: "mono-agent",
@@ -29,6 +29,7 @@ export default defineConfig({
         ]
       },
       workbox: {
+        importScripts: ["notification-sw.js"],
         globPatterns: ["**/*.{js,css,html,svg,png,ico,woff2}"],
         navigateFallbackDenylist: [/^\/api\//, /^\/healthz$/],
         cleanupOutdatedCaches: true

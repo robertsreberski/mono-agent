@@ -196,4 +196,14 @@ describe("message actions", () => {
     copy.focus();
     expect(copy).toHaveFocus();
   });
+
+  it("renders a persisted quote separately from the authored message", () => {
+    render(<MessageHarness message={{
+      ...userMessage,
+      quote: { text: "The earlier response", messageId: "assistant-source" },
+    }} />);
+
+    expect(screen.getByText("The earlier response")).toBeVisible();
+    expect(screen.getByText("Inspect this workspace.")).toBeVisible();
+  });
 });

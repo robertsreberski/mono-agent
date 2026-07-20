@@ -237,6 +237,27 @@ describe("web HTTP server", () => {
     expect((await json(archived)).thread).toMatchObject({ id: thread.id });
   });
 
+  it("validates the public quote payload before starting a turn", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const created = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    const thread = (await json(created)).thread as { id: string };
+    const response = await fetch(`${baseUrl}/api/v1/threads/${thread.id}/turns`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        text: "Follow up",
+        quote: { text: "", messageId: "message" },
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await json(response)).toMatchObject({ error: { code: "invalid_request" } });
+  });
+
   it("validates and persists agent pins with pinned-first bootstrap ordering", async () => {
     const first = fakeDiscoveredAgent();
     const second = fakeDiscoveredAgent({

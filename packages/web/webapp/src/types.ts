@@ -88,11 +88,17 @@ export interface WebMessage {
   readonly threadId: string;
   readonly turnId?: string;
   readonly role: "user" | "assistant" | "system";
+  readonly quote?: WebQuote;
   readonly parts: readonly MessagePart[];
   readonly attachments: readonly WebAttachment[];
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly status: "running" | "complete" | "failed" | "cancelled" | "interrupted";
+}
+
+export interface WebQuote {
+  readonly text: string;
+  readonly messageId: string;
 }
 
 export interface ThreadDetail {
@@ -133,6 +139,7 @@ export interface WebEvent {
 
 export interface StartTurnInput {
   readonly text?: string;
+  readonly quote?: WebQuote;
   readonly attachmentIds?: readonly string[];
   readonly model?: string;
   readonly effort?: string;

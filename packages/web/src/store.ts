@@ -13,6 +13,7 @@ import {
   type WebMessage,
   type WebMessagePart,
   type WebMessageStatus,
+  type WebQuote,
   type WebRunState,
   type WebThread,
   type WebThreadDetail,
@@ -117,6 +118,7 @@ export interface BeginStoredTurnInput {
   readonly threadId: string;
   readonly text: string;
   readonly attachmentIds: readonly string[];
+  readonly quote?: WebQuote;
   readonly model?: string;
   readonly effort?: string;
 }
@@ -125,6 +127,7 @@ export interface BeginStoredTurnResult {
   readonly turnId: string;
   readonly conversationId: string;
   readonly text: string;
+  readonly quote?: WebQuote;
   readonly userMessageId: string;
   readonly assistantMessageId: string;
   readonly attachments: readonly StoredAttachment[];
@@ -432,6 +435,21 @@ export class WebStore {
     if (input.text.trim().length === 0 && attachments.length === 0) {
       throw new WebConsoleError("empty_turn", "Enter a message or attach at least one file.", 400);
     }
+    if (input.quote !== undefined) {
+      if (input.quote.text.trim().length === 0 || input.quote.messageId.trim().length === 0) {
+        throw new WebConsoleError("invalid_quote", "Quoted text and its source message are required.", 400);
+      }
+      const source = this.database.prepare(
+        "SELECT id FROM messages WHERE id = ? AND thread_id = ?",
+      ).get(input.quote.messageId, input.threadId);
+      if (source === undefined) {
+        throw new WebConsoleError(
+          "invalid_quote",
+          "The quoted message does not belong to this conversation.",
+          400,
+        );
+      }
+    }
 
     const turnId = randomUUID();
     const userMessageId = randomUUID();
@@ -445,7 +463,12 @@ export class WebStore {
         ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, NULL, NULL, NULL)
       `).run(turnId, input.threadId, input.text, input.model ?? null, input.effort ?? null, assistantMessageId, now);
 
-      const userParts: WebMessagePart[] = input.text.length === 0 ? [] : [{ type: "text", text: input.text }];
+      const userParts: WebMessagePart[] = [
+        ...(input.quote === undefined
+          ? []
+          : [{ type: "telemetry" as const, event: QUOTE_TELEMETRY_EVENT, data: input.quote }]),
+        ...(input.text.length === 0 ? [] : [{ type: "text" as const, text: input.text }]),
+      ];
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
         VALUES (?, ?, ?, 'user', ?, ?, ?, 'complete')
@@ -479,6 +502,7 @@ export class WebStore {
       turnId,
       conversationId: `web:${input.threadId}`,
       text: input.text,
+      ...(input.quote === undefined ? {} : { quote: input.quote }),
       userMessageId,
       assistantMessageId,
       attachments: attachments.map((attachment) => this.requireStoredAttachment(attachment.id)),
@@ -760,12 +784,17 @@ export class WebStore {
   private mapMessage(row: MessageRow): WebMessage {
     const attachments = this.database.prepare("SELECT * FROM attachments WHERE message_id = ? ORDER BY created_at, id")
       .all(row.id) as unknown as AttachmentRow[];
+    const storedParts = parseParts(row.parts_json);
+    const quote = quoteFromParts(storedParts);
     return {
       id: row.id,
       threadId: row.thread_id,
       ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
       role: normalizeRole(row.role),
-      parts: parseParts(row.parts_json),
+      ...(quote === undefined ? {} : { quote }),
+      parts: storedParts.filter(
+        (part) => part.type !== "telemetry" || part.event !== QUOTE_TELEMETRY_EVENT,
+      ),
       attachments: attachments.map((attachment) => toWebAttachment(mapStoredAttachment(attachment))),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -1069,7 +1098,33 @@ function parseParts(value: string): WebMessagePart[] {
   if (!Array.isArray(parsed) || !parsed.every(isWebMessagePart)) {
     throw new WebConsoleError("storage_corrupt", "Persisted message parts have an invalid shape.", 500);
   }
+  quoteFromParts(parsed);
   return parsed;
+}
+
+const QUOTE_TELEMETRY_EVENT = "quote";
+
+function quoteFromParts(parts: readonly WebMessagePart[]): WebQuote | undefined {
+  const markers = parts.filter(
+    (part): part is Extract<WebMessagePart, { type: "telemetry" }> =>
+      part.type === "telemetry" && part.event === QUOTE_TELEMETRY_EVENT,
+  );
+  if (markers.length === 0) return undefined;
+  if (markers.length !== 1) {
+    throw new WebConsoleError("storage_corrupt", "Persisted message quote metadata is duplicated.", 500);
+  }
+  const data = markers[0]?.data;
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    throw new WebConsoleError("storage_corrupt", "Persisted message quote metadata has an invalid shape.", 500);
+  }
+  const quote = data as Record<string, unknown>;
+  if (
+    typeof quote.text !== "string" || quote.text.trim().length === 0 ||
+    typeof quote.messageId !== "string" || quote.messageId.trim().length === 0
+  ) {
+    throw new WebConsoleError("storage_corrupt", "Persisted message quote metadata has an invalid shape.", 500);
+  }
+  return { text: quote.text, messageId: quote.messageId };
 }
 
 function isWebMessagePart(value: unknown): value is WebMessagePart {

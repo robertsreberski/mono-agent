@@ -13,6 +13,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 
 import {
   WEB_API_VERSION,
+  WEB_MAX_TURN_TEXT_CHARACTERS,
   type CreateWebThreadInput,
   type CreateWebUploadInput,
   type PatchWebAgentInput,
@@ -519,7 +520,20 @@ function parsePatchThread(value: unknown): PatchWebThreadInput {
 
 function parseTurn(value: unknown): StartWebTurnInput {
   const body = requireRecord(value);
-  const text = body.text === undefined ? undefined : requireString(body.text, "text", 200_000, true);
+  const text = body.text === undefined
+    ? undefined
+    : requireString(body.text, "text", WEB_MAX_TURN_TEXT_CHARACTERS, true);
+  const quoteBody = body.quote === undefined ? undefined : requireRecord(body.quote);
+  const quote = quoteBody === undefined
+    ? undefined
+    : {
+        text: requireString(
+          quoteBody.text,
+          "quote.text",
+          WEB_MAX_TURN_TEXT_CHARACTERS,
+        ),
+        messageId: requireString(quoteBody.messageId, "quote.messageId", 256),
+      };
   const attachmentIds = body.attachmentIds;
   if (attachmentIds !== undefined && (!Array.isArray(attachmentIds) || !attachmentIds.every((id) => typeof id === "string" && id.length > 0))) {
     throw invalidBody("attachmentIds must be an array of ids.");
@@ -528,6 +542,7 @@ function parseTurn(value: unknown): StartWebTurnInput {
   const effort = optionalString(body.effort, "effort", 128);
   return {
     ...(text === undefined ? {} : { text }),
+    ...(quote === undefined ? {} : { quote }),
     ...(attachmentIds === undefined ? {} : { attachmentIds }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),

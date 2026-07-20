@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  agentVisibility,
   effortLevelsForAgentModel,
   GLOBAL_EFFORT_LEVELS,
   preferenceKeyForThread,
@@ -88,6 +89,30 @@ describe("sortAgentsPinnedFirst", () => {
       agent("zulu", { label: "Zulu" }),
       agent("alpha", { label: "alpha" }),
     ]).map((item) => item.sourceId)).toEqual(["alpha", "zulu", "istanbul"]);
+  });
+});
+
+describe("agentVisibility", () => {
+  const agents = [
+    agent("online"),
+    agent("degraded", { status: "degraded" }),
+    agent("pinned-offline", { status: "offline", pinned: true }),
+    agent("selected-offline", { status: "offline" }),
+    agent("hidden-offline", { status: "offline" }),
+  ];
+
+  it("hides only unpinned, unselected agents with exact offline status", () => {
+    expect(agentVisibility(agents, "selected-offline", false)).toEqual({
+      visibleAgents: agents.slice(0, 4),
+      hiddenOfflineAgentCount: 1,
+    });
+  });
+
+  it("restores every agent without changing the hidden-offline count", () => {
+    expect(agentVisibility(agents, "selected-offline", true)).toEqual({
+      visibleAgents: agents,
+      hiddenOfflineAgentCount: 1,
+    });
   });
 });
 

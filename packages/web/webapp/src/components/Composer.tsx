@@ -8,6 +8,7 @@ import {
   type ComposerTriggerCommand,
 } from "./assistant-ui/ComposerTriggerPopover";
 import { Icon } from "./Icon";
+import { ComposerQuotePreview } from "./assistant-ui/Quote";
 
 interface BuildComposerCommandsOptions {
   readonly attachmentCount: number;
@@ -84,6 +85,7 @@ export function Composer() {
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <ComposerPrimitive.Root className="composer-root">
         <ComposerTriggerPopover commands={commands} />
+        <ComposerQuotePreview />
         <ComposerPrimitive.AttachmentDropzone
           className="composer-dropzone"
           disabled={!canUpload}
