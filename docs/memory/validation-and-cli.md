@@ -4,7 +4,7 @@ sidebar:
   order: 5
 ---
 
-This page covers how `mono-agent validate` verifies memory configuration and liveness, how `mono-agent memory` audits and safely repairs the configured backend from an agent folder, and how the standalone `memory-bujo` CLI runs advanced out-of-band maintenance against a memory root. It also explains the `memory.llm` provider choices (`ollama` vs `agent-host`) that the validator inspects.
+This page covers how `mono-agent validate` verifies memory configuration and liveness and how `mono-agent memory` audits and safely repairs the configured backend from an agent folder. It also explains the `memory.llm` provider choices (`ollama` vs `agent-host`) that the validator inspects. The standalone `memory-bujo` binary that used to run out-of-band maintenance against a memory root has been [removed](#memory-bujo-cli--removed) — every maintenance operation now runs config-aware through `mono-agent memory`.
 
 The memory subsystem **never silently downshifts**: invalid tier prerequisites and managed index-identity problems fail validation, while operational provider liveness problems appear explicitly as `waiting` in the Memory section. Run `mono-agent validate` before cutover, after changing the tier/provider/model/dimension, and after loading or pulling any model.
 
@@ -362,16 +362,11 @@ The memory LLM always executes on `memory.llm.model`, and that model is its **so
 `agent-host` memory LLMs are SDK-only for now. CLI-backed refs (e.g. `codex:gpt-5.6-terra`) or an explicit `executionMode: "cli"` are **rejected** at config validation, because those runtimes cannot yet guarantee a no-tools / no-external-actions memory turn.
 :::
 
-## The two memory-LLM timeouts
+## The memory-LLM timeout
 
-There are **two** per-call memory-LLM timeouts. They share the env var name `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` but belong to different binaries and have **different defaults** — a common source of confusion:
+`MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` / `memory.llm.timeoutMs` sets the per-call timeout for the **in-app** memory LLM — each per-turn [capture](/memory/capture-and-recall/#capture--per-turn-intelligent-capture-bujo) call (one extraction + at most one reconcile). Its default is **`60000`** and the value is bounded `1000`–`600000` ms. Raise it when a slow local memory model trips the cap on extraction or reconcile.
 
-| Path | Config / env | Default | Governs |
-| --- | --- | --- | --- |
-| **In-app** (the running agent) | `memory.llm.timeoutMs` (env `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS`) | `60000` | Each per-turn [capture](/memory/capture-and-recall/#capture--per-turn-intelligent-capture-bujo) LLM call (one extraction + at most one reconcile) |
-| **Standalone CLI** | `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` only | `120000` | Advanced `memory-bujo migrate` run by hand (`reflect` is read-only and uses no LLM) |
-
-So in the app, raise `memory.llm.timeoutMs` (config) when a slow local memory model trips the cap on extraction or reconcile — its default is **`60000`**, not the CLI's `120000`. The value is bounded `1000`–`600000` ms.
+There used to be a second default: the removed standalone `memory-bujo` binary read the same env var but defaulted to `120000`. That binary and its `migrate` path are [gone](#memory-bujo-cli--removed), so only the in-app `60000` default remains.
 
 When the in-app memory LLM does exceed its timeout, the run reports it explicitly — `agent-host memory LLM timed out after 60000ms (provider too slow or unavailable)` — rather than the generic `cancelled` it used to surface, so a slow or dead provider is diagnosable from the run record. The provider answer still succeeds, while the already-admitted turn remains pending for durable retry instead of being reported as captured or lost; see [Capture & recall](/memory/capture-and-recall/).
 
@@ -555,62 +550,22 @@ audit as the closed live gate.
 
 If `memory.llm.provider` is `agent-host`, the selected embeddings service is independent: Ollama is needed only for `memory.embeddings.provider: "ollama"`, while LM Studio embeddings use only LM Studio. You do not need an Ollama chat model. If rollback is needed, stop the agent, restore the prior tier/provider/model/dimension if it changed, run `mono-agent memory rollback --json`, validate, start again, and run the strict audit.
 
-## `memory-bujo` CLI — advanced out-of-band maintenance
+## `memory-bujo` CLI — removed
 
-The `memory-bujo` binary runs maintenance directly against a bujo memory root (the positional `<root>` argument). It is available for all tiers for manual runs; the in-app [auto-scheduler](/memory/rituals/) handles routine lightweight consolidation for `bujo` automatically.
+The standalone `memory-bujo` binary has been removed. Its bin now ships only as an error-deflector: any invocation prints a removal error pointing at `mono-agent memory <subcommand>` and exits non-zero. The env-var-driven, `<root>`-positional workflow is gone with the bin; managed configuration comes from `mono-agent.config.json`, and every maintenance operation now runs config-aware from the agent folder.
 
 Coverage: cli.
 
-```bash
-# Rebuild an already-managed root using an explicitly declared tier
-memory-bujo rebuild <root> --tier journal
+| Removed `memory-bujo` command | Replacement |
+| --- | --- |
+| `rebuild <root> --tier <t>` | [`mono-agent memory rebuild`](#safe-index-generations-rebuild-and-rollback) — config-aware; run from the agent folder |
+| `rollback <root> --tier <t>` | [`mono-agent memory rollback`](#safe-index-generations-rebuild-and-rollback) — config-aware; run from the agent folder |
+| `recall <root> "<query>"` | [`mono-agent memory search "<query>"`](#mono-agent-memory--config-aware-preview) |
+| `index <root>` | No manual equivalent needed — the in-app [auto-scheduler](/memory/rituals/) runs indexing automatically while the agent runs |
+| `reflect <root>` | No manual equivalent needed — the in-app [auto-scheduler](/memory/rituals/) runs reflection automatically while the agent runs |
+| `migrate <root>` | Historical v1→v2 migration; no longer applicable |
 
-# Roll back an already-managed root using an explicitly declared tier
-memory-bujo rollback <root> --tier journal
-
-# Recall: hybrid BM25 + vector search (prints matching entries)
-memory-bujo recall <root> "<query>"
-
-# Write the living index.md (counts, top memories, entities)
-memory-bujo index <root>
-
-# Legacy compatibility report: read-only due-state check, no LLM or mutation
-memory-bujo reflect <root>
-
-# Legacy migration: promote/reschedule/cluster/forget (Ollama-only; needs MONO_AGENT_MEMORY_LLM_MODEL)
-MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
-```
-
-| Command | Needs embeddings? | Needs chat LLM? |
-| --- | --- | --- |
-| `rebuild` | required for `journal` / `bujo`; forbidden for `lite` | no |
-| `rollback` | required to declare the retained `journal` / `bujo` identity; no provider request | no |
-| `recall` | only if `MONO_AGENT_MEMORY_EMBEDDINGS_*` set (else FTS-only) | no |
-| `index` | no | no |
-| `reflect` | no | no — read-only compatibility report |
-| `migrate` | no | yes — Ollama-only, `MONO_AGENT_MEMORY_LLM_MODEL` required |
-
-`rebuild` and `rollback` require `--tier <lite|journal|bujo>`. The standalone CLI refuses the first managed activation because it cannot safely infer the configured agent identity or prove that the configured process is stopped; use `mono-agent memory rebuild` for that transition. For subsequent standalone rebuilds, the embeddings environment must match the declared tier and retained generation exactly.
-
-### Semantic recall is opt-in for read-only recall
-
-The standalone CLI reads the **same `MONO_AGENT_MEMORY_*` env vars** as the app. Embeddings remain opt-in for `recall`: set `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` (`ollama` / `lmstudio` / `openai`) to enable semantic recall, or omit it for FTS-only recall. For safe rebuild/rollback, the strict tier decides whether embeddings are forbidden (`lite`) or required (`journal`/`bujo`). LM Studio defaults to `text-embedding-nomic-embed-text-v1.5`; Ollama and OpenAI retain the standalone CLI's legacy `nomic-embed-text:v1.5` default. Set the OpenAI model explicitly when using `text-embedding-3-small`. The standalone dimension defaults to 768 unless `MONO_AGENT_MEMORY_EMBEDDINGS_DIM` supplies the selected model's actual dimension. See [Embeddings](/memory/embeddings/) for the full env list.
-
-### `reflect` compatibility; `migrate` advanced maintenance
-
-Legacy `reflect` is read-only. It reports whether reflection would be due, makes no LLM call,
-and never synthesizes insights, decays salience, or mutates canonical Markdown/the index.
-
-`migrate` remains a durable, explicit advanced-maintenance operation outside guided init. It uses the standalone
-built-in Ollama chat adapter and does **not** route through the agent host, so
-the wizard's Ollama/LM Studio embeddings choice and `memory.llm.provider: "agent-host"` do not apply. Set `MONO_AGENT_MEMORY_LLM_MODEL`; if it
-is unset, `migrate` prints a clear error and exits `2` (no silent fallback).
-`MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint (default
-`http://localhost:11434`), and `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call timeout
-(CLI default `120000` — distinct from the in-app default; see
-[The two memory-LLM timeouts](#the-two-memory-llm-timeouts)); raise it for slow models.
-
-For the in-app runtime you can instead use `memory.llm.provider: "agent-host"` for capture through an SDK model — see the [provider choices](#memoryllm-provider-choices) above and [Consolidation](/memory/rituals/) for the deterministic auto-scheduler the CLI complements.
+The config-aware `mono-agent memory rebuild` / `rollback` read the tier, embeddings provider/model, and dimension from config, so they no longer need a `--tier` flag or a positional `<root>`; see [Safe index generations](#safe-index-generations-rebuild-and-rollback). The removal is recorded in [Deprecations](/reference/deprecations/).
 
 ## Related
 

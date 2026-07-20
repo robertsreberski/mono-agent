@@ -325,46 +325,27 @@ a fresh immutable, source-parity-verified backup with a logical integrity commit
 divergent legacy/current indexes are preserved but not advertised as safe rollback.
 Pre-activation failures leave the current active generation in place. See the [safe generation model](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback) for layout, source accounting, safety gates, and rollback; use the separate [product-v1 cutover checklist](/memory/validation-and-cli/#enable-v1-on-an-existing-agent) for an existing agent.
 
-The lower-level `memory-bujo` binary remains for advanced root-oriented inspection and
-legacy/manual maintenance. `rebuild`/`rollback` require an explicit tier and operate only
-after a config-aware first activation:
+The standalone `memory-bujo` binary that used to offer root-oriented inspection and manual
+maintenance has been removed; any invocation now prints a removal error and exits non-zero. Run
+every maintenance operation config-aware from the agent folder instead:
 
-```bash
-memory-bujo rebuild <root> --tier journal
-memory-bujo rollback <root> --tier journal
+- `rebuild` / `rollback` → `mono-agent memory rebuild` / `mono-agent memory rollback` (they read
+  tier, embeddings provider/model, and dimension from config, so there is no `--tier` flag or
+  positional `<root>`).
+- `recall` → `mono-agent memory search "<query>"`.
+- `index` and `reflect` → no manual equivalent needed; the in-app auto-scheduler runs indexing
+  and reflection automatically while the agent runs.
+- `migrate` → historical v1→v2 migration, no longer applicable.
 
-# Recall: hybrid BM25+vector search (prints matching entries)
-memory-bujo recall <root> "<query>"
+See [Validation & CLI](/memory/validation-and-cli/#memory-bujo-cli--removed) for the full mapping
+and [Deprecations](/reference/deprecations/) for the removal record.
 
-# Write the living index.md (table of contents: counts, top memories, entities)
-memory-bujo index <root>
-
-# Legacy compatibility report: read-only due-state check, no LLM or mutation
-memory-bujo reflect <root>
-
-# Legacy migration: promote/reschedule/cluster/forget (requires MONO_AGENT_MEMORY_LLM_MODEL)
-MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate <root>
-```
-
-The standalone CLI reads the **same embedding/root `MONO_AGENT_MEMORY_*` env vars** as the
-agent (the memory root is the positional `<root>` argument). Embeddings are opt-in for
-read-only `recall`; safe rebuild/rollback instead enforce the declared tier identity
-(`lite` forbids embeddings, while `journal`/`bujo` require them). When enabled, the model
-defaults to `nomic-embed-text:v1.5` (`MONO_AGENT_MEMORY_EMBEDDINGS_MODEL`) and dim to 768
-(`MONO_AGENT_MEMORY_EMBEDDINGS_DIM`). For `migrate`, the standalone CLI uses the built-in
-Ollama chat adapter: `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint for the
-chat model (default `http://localhost:11434`). If `MONO_AGENT_MEMORY_LLM_MODEL` is unset,
-`migrate` prints a clear error and exits 2. Legacy `reflect` is a read-only compatibility
-report and makes no LLM call.
-
-`MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call chat-LLM timeout, but the **default differs
-by binary**: the standalone `memory-bujo migrate` CLI defaults to `120000`, while the
-**in-app** memory LLM (per-turn capture) reads `memory.llm.timeoutMs` — the same env var maps
-to it — and defaults to `60000`. A capture runs one extraction call and at most one reconcile
-call; a timeout is recorded and warned without failing the user's reply. The raw audit survives,
-and the admitted turn remains pending for durable retry rather than being declared captured or
-lost. Raise the timeout for slow models. See
-[Validation & CLI](/memory/validation-and-cli/#the-two-memory-llm-timeouts).
+`MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` sets the per-call chat-LLM timeout for the **in-app** memory
+LLM (per-turn capture): it maps to `memory.llm.timeoutMs` and defaults to `60000`. A capture runs
+one extraction call and at most one reconcile call; a timeout is recorded and warned without
+failing the user's reply. The raw audit survives, and the admitted turn remains pending for
+durable retry rather than being declared captured or lost. Raise the timeout for slow models. See
+[Validation & CLI](/memory/validation-and-cli/#the-memory-llm-timeout).
 
 ## Liveness Check — `mono-agent validate`
 

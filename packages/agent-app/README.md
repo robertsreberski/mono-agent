@@ -353,8 +353,9 @@ a declared but missing variable stays `waiting` and never retries keyless.
 Changing provider, model, or dimension on an existing root requires a stopped,
 config-aware `mono-agent memory rebuild --json`. BuJo uses the selected
 embeddings service independently from its explicit capture LLM (`agent-host` in
-generated configs, or an authored Ollama block). The advanced standalone
-`memory-bujo migrate` command remains Ollama-only and outside guided init.
+generated configs, or an authored Ollama block). The standalone `memory-bujo`
+maintenance CLI has been removed; run every memory operation config-aware through
+`mono-agent memory <subcommand>` from the agent folder.
 `retry` makes dead/delayed intake due for the
 next store start; `resolve` explicitly abandons one item without claiming
 capture succeeded, keeps permanent duplicate protection, and refuses a retained
