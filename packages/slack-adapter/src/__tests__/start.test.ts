@@ -11,19 +11,26 @@ import type {
   SlackChatPostMessageParams,
   SlackChatUpdateParams,
   SlackReactionsAddParams,
+  SlackAuthTestResult,
   SlackEventCallback,
   SlackSocketModeEnvelope,
   SlackWebApi,
 } from "../types.js";
 
 class FakeSlackApi implements SlackWebApi {
+  authTestCalls = 0;
+  authTestFailure: unknown = undefined;
   readonly opened: string[] = [];
   readonly postMessageCalls: SlackChatPostMessageParams[] = [];
   readonly updateCalls: SlackChatUpdateParams[] = [];
   readonly reactionsAddCalls: SlackReactionsAddParams[] = [];
 
+  constructor(private readonly authTestResult: SlackAuthTestResult = { ok: true }) {}
+
   async authTest() {
-    return { ok: true as const };
+    this.authTestCalls += 1;
+    if (this.authTestFailure !== undefined) throw this.authTestFailure;
+    return this.authTestResult;
   }
 
   async appsConnectionsOpen() {
@@ -132,6 +139,88 @@ describe("startSlackAdapter", () => {
 
     // stop() tore the connection down: the socket is closed, no open handles.
     expect(sockets[0]?.closed).toBe(true);
+  });
+
+  it("discovers the bot identity and recognizes mention-prefixed runtime commands", async () => {
+    const api = new FakeSlackApi({ ok: true, user_id: "U_MICKEY" });
+    const sockets: FakeWebSocket[] = [];
+    const seen: AgentRequest[] = [];
+    const started = await startSlackAdapter(buildOptions({
+      createApi: () => api,
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      stripMentionText: false,
+      runtimeControls: {
+        defaultModel: "pi:openai:gpt-default",
+        models: [{ value: "pi:openai:gpt-default", label: "Default GPT", efforts: [] }],
+      },
+      responder: responderFrom(async (request) => {
+        seen.push(request);
+        return { text: "ok" };
+      }),
+    }));
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0];
+      if (socket === undefined) throw new Error("expected a socket");
+      socket.emitOpen();
+
+      socket.emitMessage(socketEnvelope("E-model", directMessage("<@U_MICKEY> /model")));
+      await vi.waitFor(() => expect(api.postMessageCalls).toHaveLength(1));
+      expect(api.authTestCalls).toBe(1);
+      expect(api.postMessageCalls[0]?.text).toBe(
+        "Current model: Default GPT. Choose a configured model:",
+      );
+      expect(seen).toEqual([]);
+
+      socket.emitMessage(socketEnvelope("E-prompt", directMessage("<@U_MICKEY> keep this mention")));
+      await vi.waitFor(() => expect(seen).toHaveLength(1));
+      expect(seen[0]?.text).toBe("<@U_MICKEY> keep this mention");
+    } finally {
+      await started.stop();
+    }
+  });
+
+  it("keeps configured mention identities when bot discovery is unavailable", async () => {
+    const api = new FakeSlackApi();
+    api.authTestFailure = new Error("temporary auth.test failure");
+    const sockets: FakeWebSocket[] = [];
+    const warn = vi.fn();
+    const started = await startSlackAdapter(buildOptions({
+      createApi: () => api,
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      botUserIds: ["U_CONFIGURED"],
+      stripMentionText: false,
+      runtimeControls: {
+        defaultModel: "pi:openai:gpt-default",
+        models: [{ value: "pi:openai:gpt-default", label: "Default GPT", efforts: [] }],
+      },
+      responder: responderFrom(async () => ({ text: "unused" })),
+      logger: { warn },
+    }));
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0];
+      if (socket === undefined) throw new Error("expected a socket");
+      socket.emitOpen();
+      socket.emitMessage(socketEnvelope("E-model", directMessage("<@U_CONFIGURED> /model")));
+      await vi.waitFor(() => expect(api.postMessageCalls).toHaveLength(1));
+      expect(warn).toHaveBeenCalledWith(
+        "Could not discover the Slack bot user ID; continuing with configured mention identities.",
+        { error: "temporary auth.test failure" },
+      );
+    } finally {
+      await started.stop();
+    }
   });
 
   it("routes runtime-control interactions even without shortcuts or App Home buttons", async () => {

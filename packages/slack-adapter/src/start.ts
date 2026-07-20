@@ -142,7 +142,8 @@ export async function startSlackAdapter(
 
   const knownSecrets = [options.botToken, options.appToken] as const;
   const logger = createSecretSafeSlackLogger(options.logger, knownSecrets);
-  const adapter = new SlackAdapter(buildAdapterOptions(api, options, logger));
+  const botUserIds = await resolveBotUserIds(api, options.botUserIds, logger);
+  const adapter = new SlackAdapter(buildAdapterOptions(api, options, logger, botUserIds));
   const runner = new SlackSocketModeRunner(buildRunnerOptions(
     api,
     adapter,
@@ -192,19 +193,18 @@ function buildAdapterOptions(
   api: SlackWebApi,
   options: SlackAdapterStartOptions,
   logger: SlackAdapterStartLogger | undefined,
+  botUserIds: readonly SlackUserId[],
 ): ConstructorParameters<typeof SlackAdapter>[0] {
   const adapterOptions: ConstructorParameters<typeof SlackAdapter>[0] = {
     api,
     responder: options.responder,
+    botUserIds: [...botUserIds],
   };
   if (options.allowedChannelIds !== undefined) {
     adapterOptions.allowedChannelIds = [...options.allowedChannelIds];
   }
   if (options.allowAllChannels !== undefined) {
     adapterOptions.allowAllChannels = options.allowAllChannels;
-  }
-  if (options.botUserIds !== undefined) {
-    adapterOptions.botUserIds = [...options.botUserIds];
   }
   if (options.mentionTextAliases !== undefined) {
     adapterOptions.mentionTextAliases = [...options.mentionTextAliases];
@@ -240,6 +240,33 @@ function buildAdapterOptions(
     adapterOptions.recordPostedMessage = options.recordPostedMessage;
   }
   return adapterOptions;
+}
+
+async function resolveBotUserIds(
+  api: SlackWebApi,
+  configuredBotUserIds: readonly SlackUserId[] | undefined,
+  logger: SlackAdapterStartLogger | undefined,
+): Promise<readonly SlackUserId[]> {
+  const botUserIds = [...(configuredBotUserIds ?? [])];
+  try {
+    const auth = await api.authTest();
+    const discoveredUserId = auth.user_id?.trim();
+    if (discoveredUserId === undefined || discoveredUserId.length === 0) {
+      logger?.warn?.(
+        "Slack auth.test did not return a bot user ID; continuing with configured mention identities.",
+      );
+      return botUserIds;
+    }
+    if (!botUserIds.some((userId) => userId.toLowerCase() === discoveredUserId.toLowerCase())) {
+      botUserIds.push(discoveredUserId);
+    }
+  } catch (error) {
+    logger?.warn?.(
+      "Could not discover the Slack bot user ID; continuing with configured mention identities.",
+      { error: redactSlackErrorMessage(error) },
+    );
+  }
+  return botUserIds;
 }
 
 function buildRunnerOptions(
