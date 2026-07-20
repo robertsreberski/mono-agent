@@ -379,7 +379,7 @@ describe("local configuration transaction", () => {
         restartSnapshots.push(snapshot);
         return {
           ok: true,
-          connection: { baseUrl: "http://127.0.0.1:7001/tui", apiKey: "local-test-key" },
+          connection: { baseUrl: "http://127.0.0.1:7001/gui", apiKey: "local-test-key" },
         };
       },
     });
@@ -391,7 +391,7 @@ describe("local configuration transaction", () => {
       const result = await session.configuration.approve(card!.id);
       expect(result).toMatchObject({
         kind: "applied",
-        connection: { baseUrl: "http://127.0.0.1:7001/tui", apiKey: "local-test-key" },
+        connection: { baseUrl: "http://127.0.0.1:7001/gui", apiKey: "local-test-key" },
       });
       expect(result.message).toContain("background agent restarted successfully");
       expect(result.message).toContain("Self-configuration remains active");
@@ -417,7 +417,7 @@ describe("local configuration transaction", () => {
       env: { TEST_API_KEY: "caller-only-secret-value" },
       restartBackground: async () => ({
         ok: true,
-        connection: { baseUrl: "http://127.0.0.1:7001/tui" },
+        connection: { baseUrl: "http://127.0.0.1:7001/gui" },
       }),
     });
     try {
@@ -448,7 +448,7 @@ describe("local configuration transaction", () => {
         restarts += 1;
         return {
           ok: true,
-          connection: { baseUrl: "http://127.0.0.1:7004/tui", apiKey: "fresh-key" },
+          connection: { baseUrl: "http://127.0.0.1:7004/gui", apiKey: "fresh-key" },
         };
       },
     });
@@ -461,7 +461,7 @@ describe("local configuration transaction", () => {
 
       expect(result).toMatchObject({
         kind: "applied",
-        connection: { baseUrl: "http://127.0.0.1:7004/tui", apiKey: "fresh-key" },
+        connection: { baseUrl: "http://127.0.0.1:7004/gui", apiKey: "fresh-key" },
       });
       expect(result.message).toContain("background agent restarted successfully");
       expect(result.message).toContain("Self-configuration cannot continue safely in this console");
@@ -493,7 +493,7 @@ describe("local configuration transaction", () => {
         restartSnapshots.push(snapshot);
         return restarts === 1
           ? { ok: false, message: "Recovery commands: mono-agent status; mono-agent logs --follow." }
-          : { ok: true, connection: { baseUrl: "http://127.0.0.1:7002/tui" } };
+          : { ok: true, connection: { baseUrl: "http://127.0.0.1:7002/gui" } };
       },
     });
     try {
@@ -504,7 +504,7 @@ describe("local configuration transaction", () => {
       expect(restarts).toBe(2);
       expect(result).toMatchObject({
         kind: "rolled_back",
-        connection: { baseUrl: "http://127.0.0.1:7002/tui" },
+        connection: { baseUrl: "http://127.0.0.1:7002/gui" },
       });
       expect(result.message).toContain("approved files were restored");
       expect(result.message).toContain("previous background agent was restarted");
@@ -528,7 +528,7 @@ describe("local configuration transaction", () => {
       cwd: dir,
       configPath,
       env: {},
-      restartBackground: async () => ({ ok: true, connection: { baseUrl: "http://127.0.0.1:7003/tui" } }),
+      restartBackground: async () => ({ ok: true, connection: { baseUrl: "http://127.0.0.1:7003/gui" } }),
     });
     try {
       const first = session.configuration.sessionId;

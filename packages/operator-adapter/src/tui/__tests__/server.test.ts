@@ -58,7 +58,10 @@ describe("startTuiAdapter", () => {
     });
 
     const info = await (await fetch(running.infoUrl)).json();
+    const legacy = await fetch(`${new URL(running.baseUrl).origin}/tui/v1/info`);
 
+    expect(running.baseUrl).toMatch(/\/gui$/u);
+    expect(legacy.status).toBe(404);
     expect(info).toEqual({
       schema: 1,
       pid: process.pid,

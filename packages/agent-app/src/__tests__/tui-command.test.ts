@@ -53,7 +53,7 @@ function source(overrides: Partial<TraceSourceListItem> = {}): TraceSourceListIt
     metadata: {
       reason: "startup-complete",
       lifecycle: { startupCompleted: true },
-      channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/tui" } },
+      channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/gui" } },
     },
     health: "running",
     warnings: [],
@@ -132,7 +132,7 @@ describe("resolveTuiLaunch", () => {
 
 describe("tuiEndpointOf", () => {
   it("reads a running tui channel's baseUrl and rejects non-running", () => {
-    expect(tuiEndpointOf(source())).toBe("http://127.0.0.1:5151/tui");
+    expect(tuiEndpointOf(source())).toBe("http://127.0.0.1:5151/gui");
     expect(tuiEndpointOf(source({ metadata: { channels: { tui: { kind: "disabled" } } } }))).toBeUndefined();
     expect(tuiEndpointOf(source({ metadata: {} }))).toBeUndefined();
   });
@@ -230,7 +230,7 @@ describe("runTui", () => {
       metadata: {
         reason: "memory-health-periodic",
         lifecycle: { startupCompleted: true },
-        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/tui" } },
+        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/gui" } },
       },
     });
     const other = source({ sourceId: "other", label: "other", configPath: "/other/mono-agent.config.json" });
@@ -256,7 +256,7 @@ describe("runTui", () => {
         return {
           ok: true,
           connection: {
-            baseUrl: "http://127.0.0.1:6161/tui",
+            baseUrl: "http://127.0.0.1:6161/gui",
             ...(apiKey === undefined ? {} : { apiKey }),
           },
         };
@@ -266,7 +266,7 @@ describe("runTui", () => {
         const restarted = await options.restartBackground(backgroundSnapshot());
         expect(restarted).toMatchObject({
           ok: true,
-          connection: { baseUrl: "http://127.0.0.1:6161/tui", apiKey: "durable-worker-key" },
+          connection: { baseUrl: "http://127.0.0.1:6161/gui", apiKey: "durable-worker-key" },
         });
         return {
           configuration: { marker: "remote-controller" },
@@ -289,7 +289,7 @@ describe("runTui", () => {
     expect(disposed).toBe(1);
     expect(started).toHaveLength(1);
     expect(started[0]).toMatchObject({
-      connection: { baseUrl: "http://127.0.0.1:5151/tui", apiKey: "durable-worker-key" },
+      connection: { baseUrl: "http://127.0.0.1:5151/gui", apiKey: "durable-worker-key" },
       configuration: { marker: "remote-controller" },
       instance: { label: "current" },
       conversationId: "tui-current",
@@ -348,7 +348,7 @@ describe("runTui", () => {
         },
         startTui: async (options) => {
           expect(options).toMatchObject({
-            connection: { baseUrl: "http://127.0.0.1:5151/tui" },
+            connection: { baseUrl: "http://127.0.0.1:5151/gui" },
             configuration: { marker: "canonical-controller" },
           });
           return { waitUntilExit: async () => undefined };
@@ -427,7 +427,7 @@ describe("runTui", () => {
     const readinessErrors: string[] = [];
     const stale = source({
       configPath: baseOptions.configPath,
-      metadata: { reason: "startup-complete", channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/tui" } } },
+      metadata: { reason: "startup-complete", channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/gui" } } },
     });
     expect(await runTui({ ...baseOptions, configure: true }, {
       isTty: true,
@@ -459,7 +459,7 @@ describe("runTui", () => {
     expect(configurationEnvironmentLoads).toBe(0);
     expect(started).toHaveLength(1);
     expect(started[0]).toMatchObject({
-      connection: { baseUrl: "http://127.0.0.1:5151/tui" },
+      connection: { baseUrl: "http://127.0.0.1:5151/gui" },
       instance: { label: "agent-a", artifactDir: "/tmp/artifacts" },
       conversationId: "tui-agent-a",
     });

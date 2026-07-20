@@ -193,7 +193,10 @@ describe("ensureManagedBackgroundRuntime", () => {
       currentCliPath: runtime.cliPath,
       launchProof: runtime.launchProof,
       homeDir,
-    })).resolves.toEqual({ installRoot: runtime.installRoot });
+    })).resolves.toEqual({
+      installRoot: runtime.installRoot,
+      provenanceDetail: expect.stringContaining(`Runtime provenance: managed closure ${runtime.cliSha256}-`),
+    });
   });
 
   it("rejects launch proof reuse after CLI or manifest corruption", async () => {
@@ -605,6 +608,7 @@ describe("ensureManagedBackgroundRuntime", () => {
     });
     const after = await lstat(second.cliPath);
     expect(second.installRoot).toBe(first.installRoot);
+    expect(second.verificationMode).toBe("repaired");
     expect(after.ino).not.toBe(before.ino);
   });
 
@@ -840,8 +844,65 @@ describe("ensureManagedBackgroundRuntime", () => {
       homeDir,
     }, deps);
 
-    expect(second).toEqual(first);
+    expect(first.verificationMode).toBe("installed");
+    expect(second).toEqual({ ...first, verificationMode: "fast-reuse" });
     expect(installs).toBe(1);
+  });
+
+  it("upgrades a verified v4 marker once and then uses the warm stat proof", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
+    const first = await ensureManagedBackgroundRuntime(input);
+    const markerPath = join(first.installRoot, ".mono-agent-runtime.json");
+    const marker = JSON.parse(await readFile(markerPath, "utf8")) as Record<string, unknown>;
+    const { reuseProofSha256: _removed, ...v4Marker } = marker;
+    await writeFile(markerPath, `${JSON.stringify({ ...v4Marker, schema: "mono-agent.managed-runtime.v4" }, undefined, 2)}\n`, {
+      mode: 0o600,
+    });
+
+    const upgraded = await ensureManagedBackgroundRuntime(input);
+    const warm = await ensureManagedBackgroundRuntime(input);
+    const upgradedMarker = JSON.parse(await readFile(markerPath, "utf8")) as Record<string, unknown>;
+
+    expect(upgraded.verificationMode).toBe("full-reuse");
+    expect(upgradedMarker.schema).toBe("mono-agent.managed-runtime.v5");
+    expect(upgradedMarker.reuseProofSha256).toMatch(/^[0-9a-f]{64}$/u);
+    expect(warm.verificationMode).toBe("fast-reuse");
+  });
+
+  it("falls back to full verification and republishes a tampered warm proof", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
+    const first = await ensureManagedBackgroundRuntime(input);
+    const proofPath = join(dirname(first.installRoot), ".reuse-proofs", `${basename(first.installRoot)}.json`);
+    await writeFile(proofPath, "{}\n", { mode: 0o600 });
+
+    const recovered = await ensureManagedBackgroundRuntime(input);
+    const warm = await ensureManagedBackgroundRuntime(input);
+
+    expect(recovered.installRoot).toBe(first.installRoot);
+    expect(recovered.verificationMode).toBe("full-reuse");
+    expect(warm.verificationMode).toBe("fast-reuse");
+  });
+
+  it("falls back to content verification after source edit-and-restore, then refreshes the warm proof", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    const input = { currentCliPath: source.cliPath, nodePath: process.execPath, homeDir };
+    const first = await ensureManagedBackgroundRuntime(input);
+    const packageJsonPath = join(source.root, "package.json");
+    const packageJson = await readFile(packageJsonPath, "utf8");
+    await writeFile(packageJsonPath, `${packageJson.trimEnd()} \n`, "utf8");
+    await writeFile(packageJsonPath, packageJson, "utf8");
+
+    const recovered = await ensureManagedBackgroundRuntime(input);
+    const warm = await ensureManagedBackgroundRuntime(input);
+
+    expect(recovered.installRoot).toBe(first.installRoot);
+    expect(recovered.verificationMode).toBe("full-reuse");
+    expect(warm.verificationMode).toBe("fast-reuse");
   });
 
   it("fails closed and removes staging when installed CLI bytes do not match", async () => {

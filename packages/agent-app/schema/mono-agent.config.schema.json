@@ -2279,10 +2279,10 @@
         "basePath": {
           "description": "Configures basePath for the tui section.",
           "examples": [
-            "/tui"
+            "/gui"
           ],
           "type": "string",
-          "default": "/tui"
+          "default": "/gui"
         },
         "allowNonLoopback": {
           "description": "Configures allowNonLoopback for the tui section.",

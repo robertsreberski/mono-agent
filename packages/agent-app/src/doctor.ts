@@ -179,6 +179,12 @@ export interface ValidateMonoAgentFolderOptions extends MonoAgentAppConfigInput 
   readonly sdkAuthStatusExecFile?: SdkAuthStatusExecFile;
   /** Managed workers resolve optional plugins only from their attested app closure. */
   readonly preferAppPluginInstall?: boolean;
+  /**
+   * Internal managed-worker fast path. The launch verifier has already bound
+   * this informational detail to the exact private runtime marker, so doctor
+   * must not repeat the full dependency-tree provenance traversal.
+   */
+  readonly verifiedRuntimeProvenanceDetail?: string;
 }
 
 /**
@@ -205,7 +211,7 @@ export async function validateMonoAgentFolder(
     sections.push({ id: "core", label: "Core config", status: "error", details: [error.message] });
   }
 
-  sections.push(await runtimeProvenanceSection());
+  sections.push(await runtimeProvenanceSection(options.verifiedRuntimeProvenanceDetail));
 
   if (coreConfig !== undefined) {
     const staticTriggerCredentialRefs = await collectStaticTriggerCredentialRefs(drivers, options);
@@ -661,12 +667,12 @@ function applyToolChannelCrossChecks(
   sections[toolsIndex] = { ...current, status, details: [...current.details, ...extraDetails] };
 }
 
-async function runtimeProvenanceSection(): Promise<ValidationSection> {
+async function runtimeProvenanceSection(verifiedDetail?: string): Promise<ValidationSection> {
   return {
     id: "runtime-provenance",
     label: "Runtime provenance",
     status: "ok",
-    details: [await runtimeProvenanceDetail()],
+    details: [verifiedDetail ?? await runtimeProvenanceDetail()],
   };
 }
 

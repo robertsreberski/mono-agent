@@ -419,7 +419,19 @@ export function traceMetadata(controller: MonoAgentAppController, reason: string
   }
   return {
     reason,
-    ...(controller.startupCompleted ? { lifecycle: { startupCompleted: true } } : {}),
+    ...(controller.startupCompleted
+      ? {
+          lifecycle: {
+            startupCompleted: true,
+            ...(controller.startupTimingValue === undefined
+              ? {}
+              : {
+                  startupDurationMs: controller.startupTimingValue.durationMs,
+                  startupPhasesMs: controller.startupTimingValue.phases,
+                }),
+          },
+        }
+      : {}),
     ...(controller.backgroundSnapshot === undefined ? {} : { backgroundSnapshot: controller.backgroundSnapshot }),
     ...(controller.exporterStatusValue.kind === "configured"
       ? {

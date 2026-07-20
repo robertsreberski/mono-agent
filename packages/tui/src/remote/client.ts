@@ -9,7 +9,7 @@ import {
 } from "@mono-agent/agent-contracts";
 
 export interface RemoteAgentResponderOptions {
-  /** The running agent's operator-adapter TUI base URL, e.g. http://127.0.0.1:52341/tui */
+  /** The running agent's operator-adapter TUI base URL, e.g. http://127.0.0.1:52341/gui */
   readonly baseUrl: string;
   readonly apiKey?: string;
   readonly fetchImpl?: typeof fetch;

@@ -141,7 +141,11 @@ export function refreshMemoryHealthOnTimer(controller: MonoAgentAppController): 
   void controller.refreshTraceSource("memory-health-periodic").catch(() => undefined);
 }
 
-export async function refreshMemoryHealthAfterLifecycle(controller: MonoAgentAppController, reason: string): Promise<void> {
+export async function refreshMemoryHealthAfterLifecycle(
+  controller: MonoAgentAppController,
+  reason: string,
+  beforePublish?: () => void,
+): Promise<void> {
   if (controller.stopped) return;
   const generation = controller.memoryHealthGeneration;
   const joinedExistingAudit = controller.memoryHealthRefreshInFlight !== undefined;
@@ -150,6 +154,7 @@ export async function refreshMemoryHealthAfterLifecycle(controller: MonoAgentApp
     await controller.refreshMemoryHealthSnapshot(reason, true);
   }
   if (controller.stopped || generation !== controller.memoryHealthGeneration) return;
+  beforePublish?.();
   controller.startupCompleted = true;
   await controller.refreshTraceSource(reason);
 }
@@ -163,6 +168,7 @@ export function clearMemoryHealthRefreshTimer(controller: MonoAgentAppController
 
 export function invalidateMemoryHealthRefresh(controller: MonoAgentAppController): void {
   controller.startupCompleted = false;
+  controller.startupTimingValue = undefined;
   controller.memoryHealthRefreshLoopActive = false;
   controller.clearMemoryHealthRefreshTimer();
   controller.memoryHealthGeneration += 1;

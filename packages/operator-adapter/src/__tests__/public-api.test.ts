@@ -28,7 +28,7 @@ describe("operator-adapter public API", () => {
     expect(operatorAdapter.redactLiveAdapterConfig).toEqual(expect.any(Function));
     expect(operatorAdapter.TUI_CONFIG_FIELDS.length).toBeGreaterThan(0);
     expect(operatorAdapter.LIVE_CONFIG_FIELDS.length).toBeGreaterThan(0);
-    expect(operatorAdapter.DEFAULT_TUI_BASE_PATH).toBe("/tui");
+    expect(operatorAdapter.DEFAULT_TUI_BASE_PATH).toBe("/gui");
     expect(operatorAdapter.DEFAULT_TUI_HOST).toBe("127.0.0.1");
     expect(operatorAdapter.DEFAULT_TUI_PORT).toBe(0);
     expect(operatorAdapter.DEFAULT_LIVE_BASE_PATH).toBe("/live");

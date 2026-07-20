@@ -31,7 +31,7 @@ Channels are fully independent: enabling one neither requires nor affects anothe
 
 ## Opt-in and the status lifecycle
 
-Most channels default to **off**. The deliberate exceptions are the operator surfaces: the [`tui` operator stream endpoint](/channels/tui/) and the `live` event relay both default to **on** (loopback-only, ephemeral ports, so the TUI/web console can chat and operator tooling can observe runs without a config edit). Set `"tui": {"enabled": false}` or `"live": {"enabled": false}` to opt out. You turn other channels on with `enabled: true` and supply their required settings; external channels also need a `channels.plugins[]` entry naming the package. On `mono-agent start`, the host prints one status line per channel reflecting one of five states:
+Most channels default to **off**. The deliberate exceptions are the operator surfaces: the [`tui` operator stream endpoint](/channels/tui/) and the `live` event relay both default to **on** (loopback-only, ephemeral ports, so the TUI/web console can chat and operator tooling can observe runs without a config edit). Set `"tui": {"enabled": false}` or `"live": {"enabled": false}` to opt out. You turn other channels on with `enabled: true` and supply their required settings; external channels also need a `channels.plugins[]` entry naming the package. Human status output groups communication channels separately from operator transports, labels the stable `tui` id as `gui` (`TUI + Web`), labels `live` as read-only, and folds disabled ids into one compact line. JSON retains the stable ids and full reasons. Active entries reflect one of five states:
 
 | State | Meaning |
 | --- | --- |
