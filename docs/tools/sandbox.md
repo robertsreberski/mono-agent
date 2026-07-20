@@ -103,6 +103,11 @@ install or an explicit `node`+`cli.js` pair); a bare external `srt` binary
 fails closed. Before the first `all` command runs, mono-agent proves the embed
 path enforces the filesystem policy *and* that loopback egress genuinely
 succeeds, and pins the library entry's identity like the CLI launch.
+
+macOS system DNS is reopened explicitly: the runner adds the mDNSResponder
+socket and `/etc`+`/var` symlink-metadata rules to the profile, and the
+settings allow reading `resolv.conf` — the enforcement proof asserts both, so
+name resolution working inside the sandbox is a proven property, not a hope.
 :::
 
 Allowlist entries are matched as host suffixes. A leading `*.` is a wildcard suffix — `*.example.com` matches `api.example.com`. There is **no CIDR and no port syntax**; entries are hostnames/suffixes only. Bare `*`, IPv6 literals (including `::1`), whitespace, paths, and port-bearing entries are rejected. Localhost policy uses the enforceable `localhost`/IPv4 loopback representation.
