@@ -22,7 +22,7 @@ A mono-agent is fully described by a single `mono-agent.config.json` in the agen
 
 ```bash
 mono-agent restart          # apply config edits
-mono-agent restart --force  # apply AND clear provider sessions + active chat history (durable memory kept)
+mono-agent restart --clear-sessions  # apply AND clear provider sessions + active chat history (durable memory kept)
 ```
 
 Because the config is plain JSON, agents can edit their own config and restart themselves. Most capabilities are coverage type **config** — set a key, restart, done. A few are **cli** (run a command), **auto** (default behavior), **code** (only available programmatically — see [Programmatic](/programmatic/)), or **dev** (test-time tooling).

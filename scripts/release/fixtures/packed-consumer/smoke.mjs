@@ -31,7 +31,13 @@ for (const specifier of importSpecifiers) {
 const cliSmokes = [
   { packageName: "@mono-agent/agent-app", binName: "mono-agent", args: ["--help"], statuses: [0] },
   { packageName: "@mono-agent/tui", binName: "mono-agent-tui", args: ["--help"], statuses: [0] },
-  { packageName: "@mono-agent/memory", binName: "memory-bujo", args: [], statuses: [2] },
+  {
+    packageName: "@mono-agent/memory",
+    binName: "memory-bujo",
+    args: [],
+    statuses: [1],
+    stderrIncludes: "was removed",
+  },
   { packageName: "create-mono-agent", binName: "create-mono-agent", args: ["--help"], statuses: [0] },
 ];
 const selectedCliSmokes = cliSmokes.filter((entry) => packageNames.includes(entry.packageName));
@@ -47,6 +53,11 @@ for (const entry of selectedCliSmokes) {
   const { status, stderr } = await runNodeCli(cli, entry.args);
   if (!entry.statuses.includes(status)) {
     throw new Error(`${cli} ${entry.args.join(" ")} exited ${status}: ${stderr}`);
+  }
+  if (entry.stderrIncludes !== undefined && !stderr.includes(entry.stderrIncludes)) {
+    throw new Error(
+      `${cli} ${entry.args.join(" ")} stderr must contain ${JSON.stringify(entry.stderrIncludes)}: ${stderr}`,
+    );
   }
 }
 

@@ -161,28 +161,17 @@ contract. Validate before relying on automated maintenance.
 
 ## Manual / out-of-band runs
 
-The `memory-bujo` CLI still includes the older `reflect` and `migrate` commands for
-compatibility with older stores. They are not auto-scheduled by the app. `reflect` is now
-read-only: it reports whether reflection would be due and performs no decay, insight
-synthesis, or canonical/index mutation. `migrate` remains an explicit, durable advanced
-maintenance operation and uses the standalone Ollama adapter:
+The standalone `memory-bujo` CLI that used to offer manual `reflect`, `migrate`, and `index`
+runs has been removed; any invocation now prints a removal error and exits non-zero. There is no
+longer a manual out-of-band path:
 
-```bash
-# Legacy compatibility report: read-only due-state check, no LLM or mutation
-memory-bujo reflect ./memory
+- `index` and `reflect` — no manual equivalent needed. The in-app
+  [auto-scheduler](#the-in-app-scheduler) runs indexing and reflection automatically while the
+  agent runs.
+- `migrate` — a historical v1→v2 migration that no longer applies.
+- `rebuild` / `rollback` — use the config-aware
+  [`mono-agent memory rebuild` / `rollback`](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback)
+  from the agent folder.
 
-# Legacy migration: promote/reschedule/cluster/forget
-MONO_AGENT_MEMORY_LLM_MODEL=qwen3.6:latest memory-bujo migrate ./memory
-
-# Rewrite the living index.md
-memory-bujo index ./memory
-```
-
-For `migrate`, `MONO_AGENT_MEMORY_LLM_ENDPOINT` overrides the Ollama endpoint (default
-`http://localhost:11434`) and `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` the per-call timeout
-(CLI default `120000` — in-app capture uses `memory.llm.timeoutMs`, default `60000`;
-see [the two memory-LLM timeouts](/memory/validation-and-cli/#the-two-memory-llm-timeouts)).
-If `MONO_AGENT_MEMORY_LLM_MODEL` is unset, `migrate` exits with a clear error. `reflect`
-needs no model. See [Validation & CLI](/memory/validation-and-cli/) for the full subcommand
-reference, and [Embeddings](/memory/embeddings/) for the semantic-recall env vars these
-commands share.
+See [Validation & CLI](/memory/validation-and-cli/#memory-bujo-cli--removed) for the full command
+mapping and [Deprecations](/reference/deprecations/) for the removal record.

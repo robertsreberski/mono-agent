@@ -378,7 +378,9 @@ export async function runBackgroundCommand(
     case "start":
       return await startBackground(target, deps);
     case "restart":
-      return args.force
+      // `--clear-sessions` is the canonical spelling; `--force` is the retained
+      // deprecated alias (see writeCliDeprecationHints).
+      return args.clearSessions === true || args.force
         ? await runForceRestart(target, deps, controllerEnvironment)
         : await restartBackground(target, deps);
     case "stop":

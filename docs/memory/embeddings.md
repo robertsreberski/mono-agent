@@ -174,16 +174,14 @@ Every key has a `MONO_AGENT_MEMORY_EMBEDDINGS_*` override. See
 | `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV` | `memory.embeddings.apiKeyEnv` |
 | `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY` | `memory.embeddings.apiKey` |
 
-For standalone read-only `memory-bujo recall`, embeddings are opt-in: set
-`MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` to enable semantic recall. When enabled, the model
-defaults to `text-embedding-nomic-embed-text-v1.5` for LM Studio and retains the standalone
-CLI's legacy `nomic-embed-text:v1.5` default for Ollama and OpenAI. Set
-`MONO_AGENT_MEMORY_EMBEDDINGS_MODEL=text-embedding-3-small` explicitly when using that OpenAI
-model, and set its matching dimension; the standalone dimension otherwise defaults to `768`.
-Without an embeddings provider, recall is FTS-only. Safe
-`rebuild`/`rollback` are different: they require `--tier`, and the declared identity forbids
-embeddings for Lite or requires the exact model/dimension for Journal/BuJo. Use the config-aware
-`mono-agent memory rebuild` for first activation.
+The standalone `memory-bujo` CLI that read these `MONO_AGENT_MEMORY_EMBEDDINGS_*` variables
+directly against a memory root has been removed. Config-aware recall now runs from the agent
+folder with `mono-agent memory search`, which reads the configured embeddings provider, model,
+and dimension from `mono-agent.config.json`; when local embeddings are unavailable it falls back
+to FTS-only recall instead of pretending semantic search succeeded. Rebuild and rollback are
+likewise config-aware — `mono-agent memory rebuild` / `rollback` — and take their tier and
+embeddings identity from config, so there is no `--tier` flag or standalone env workflow. See
+[Validation & CLI](/memory/validation-and-cli/#memory-bujo-cli--removed).
 
 ## Timeout and circuit-breaker behavior
 

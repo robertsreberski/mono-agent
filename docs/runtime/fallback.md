@@ -60,14 +60,14 @@ mono-agent init \
 
 ## Legacy compatibility
 
-Existing `runtime.fallbackModels`, `MONO_AGENT_FALLBACK_MODELS`, and
-`--fallback-models <csv>` remain supported. Legacy entries retain their historic
-behavior: they inherit the global `runtime.effort`. Do not configure canonical
-and legacy forms together; choose `runtime.fallbacks` for new agents.
+Existing `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain
+supported. Legacy entries retain their historic behavior: they inherit the
+global `runtime.effort`. Do not configure canonical and legacy forms together;
+choose `runtime.fallbacks` for new agents.
 
-The CLI CSV flag `--fallback-models` is deprecated and every accepted invocation warns
-that it will be removed in `v2.0.0`; repeat `--fallback <ref>` instead. That
-deadline does not remove the JSON or environment compatibility inputs. See the
+The CLI CSV flag `--fallback-models` was **removed**; it now errors with a
+pointer to repeat `--fallback <ref>` instead. That removal covers only the CLI
+flag — the JSON and environment compatibility inputs are unaffected. See the
 canonical [deprecation tracker](/reference/deprecations/) for the exact scope.
 
 ```json

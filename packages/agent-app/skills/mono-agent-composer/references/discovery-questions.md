@@ -172,8 +172,9 @@ setup needed.
 
 The embeddings service and capture LLM are independent. Choosing LM Studio embeddings does
 not move capture there; guided config keeps an explicit `agent-host` LLM, while an authored
-Ollama `memory.llm` remains valid. Standalone advanced `memory-bujo migrate` is still
-Ollama-only and outside guided init.
+Ollama `memory.llm` remains valid. The in-app scheduler handles routine BuJo consolidation;
+the standalone `memory-bujo` maintenance CLI was removed (run `mono-agent memory <subcommand>`
+from the agent folder instead).
 
 Write (embeddings + chat model):
 
@@ -220,8 +221,9 @@ Before running mono-agent validate, pull the required models:
 
 Then run `mono-agent validate` — the Memory section confirms the root is writable,
 provider-specific liveness, and the consolidation cadence.
-See `docs/memory/index.md` for the full tier table, config shapes, and CLI subcommands
-(`memory-bujo rebuild|recall|index|reflect|migrate`).
+See `docs/memory/index.md` for the full tier table and config shapes. Memory maintenance
+runs via `mono-agent memory <subcommand>` from the agent folder; the standalone `memory-bujo`
+CLI was removed.
 
 ## 7. Sandbox
 

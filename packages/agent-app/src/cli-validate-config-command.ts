@@ -31,7 +31,6 @@ import {
   PRESET_CATALOG,
   presetAnswers,
   presetIds,
-  RECIPE_TO_PRESET,
 } from "./wizard/presets.js";
 import type { WizardPreset } from "./wizard/presets.js";
 import * as ui from "./ui.js";
@@ -133,9 +132,9 @@ export async function runValidate(args: ParsedCliArgs): Promise<number> {
 }
 
 /**
- * Resolve the preset to check `validate` against: `--preset` wins, `--recipe` is a
- * deprecated alias removed in v2.0.0. Returns the preset, `undefined` (no
- * capability check), or `"unknown"` after emitting the error/hint.
+ * Resolve the preset to check `validate` against: `--preset` wins. Returns the
+ * preset, `undefined` (no capability check), or `"unknown"` after emitting the
+ * error/hint.
  */
 function resolveValidatePreset(args: ParsedCliArgs): WizardPreset | undefined | "unknown" {
   if (args.preset !== undefined) {
@@ -145,16 +144,6 @@ function resolveValidatePreset(args: ParsedCliArgs): WizardPreset | undefined | 
       process.stderr.write(ui.hint(`Available presets: ${presetIds().join(", ")}. Run \`mono-agent presets list\`.`));
       return "unknown";
     }
-    return preset;
-  }
-  if (args.recipe !== undefined) {
-    const preset = RECIPE_TO_PRESET.get(args.recipe);
-    if (preset === undefined) {
-      process.stderr.write(ui.errorLine(`Recipe \`${args.recipe}\` was retired; validate against a preset instead.`));
-      process.stderr.write(ui.hint(`Available presets: ${presetIds().join(", ")}. Run \`mono-agent presets list\`.`));
-      return "unknown";
-    }
-    process.stderr.write(ui.hint(`Using replacement preset ${preset.id}. See \`mono-agent presets list\`.`));
     return preset;
   }
   return undefined;

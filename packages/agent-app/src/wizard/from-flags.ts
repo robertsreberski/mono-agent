@@ -26,7 +26,6 @@ const WITH_CHANNEL_MODULE_ID: Record<WithChannel, string> = {
 export interface AnswersFromCliArgs {
   readonly name?: string;
   readonly model?: string;
-  readonly fallbackModels?: readonly string[];
   readonly fallbacks?: readonly { readonly model: string; readonly effort?: EffortLevel }[];
   readonly routeSafety?: RouteSafetyMode;
   readonly effort?: string;
@@ -46,16 +45,10 @@ export interface AnswersFromCliArgs {
  * The caller resolves an unknown `presetId` and errors before calling this.
  */
 export function answersFromCli(args: AnswersFromCliArgs): WizardAnswers {
-  if (args.fallbacks !== undefined && args.fallbackModels !== undefined) {
-    throw new Error("Use either canonical --fallback entries or legacy --fallback-models, not both.");
-  }
   const basePartial: Partial<WizardAnswers> = args.presetId === undefined
     ? {}
     : findPreset(args.presetId)?.answers ?? {};
   const model = args.model === undefined ? undefined : concreteCliModelRef(args.model);
-  const fallbackModels = args.fallbackModels === undefined
-    ? undefined
-    : args.fallbackModels.map((fallbackModel) => concreteCliModelRef(fallbackModel));
   const fallbacks: readonly WizardFallback[] | undefined = args.fallbacks?.map((fallback) => ({
     model: concreteCliModelRef(fallback.model),
     ...(fallback.effort === undefined ? {} : { effort: fallback.effort }),
@@ -67,7 +60,7 @@ export function answersFromCli(args: AnswersFromCliArgs): WizardAnswers {
   }
 
   const primaryModel = model ?? basePartial.model ?? defaultAnswers().model;
-  const selectedFallbacks = fallbacks ?? fallbackModels?.map((fallbackModel) => ({ model: fallbackModel })) ?? [];
+  const selectedFallbacks = fallbacks ?? [];
   const seen = new Set([primaryModel]);
   for (const fallback of selectedFallbacks) {
     if (seen.has(fallback.model)) {
@@ -90,7 +83,6 @@ export function answersFromCli(args: AnswersFromCliArgs): WizardAnswers {
     ...(name === undefined ? {} : { name }),
     ...(model === undefined ? {} : { model }),
     ...(fallbacks === undefined ? {} : { fallbacks }),
-    ...(fallbackModels === undefined ? {} : { fallbackModels }),
     ...(args.effort === undefined ? {} : { effort: args.effort }),
     ...(args.routeSafety === undefined ? {} : { routeSafety: args.routeSafety }),
     channels: [...channels],

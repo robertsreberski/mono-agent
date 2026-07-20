@@ -12,7 +12,7 @@ Rules:
 Check these surfaces when a user-facing feature changes:
 - The topical docs/<area>/ page.
 - docs/reference/feature-registry.md.
-- docs/reference/feature-matrix.md and docs/reference/recipes.md.
+- docs/reference/feature-matrix.md and docs/reference/presets.md.
 - The closest docs/playbooks/ entry.
 - Package READMEs, root README.md, and PACKAGES.md when the public surface changes.
 - Retired-surface mentions with node scripts/check-consumer-docs-consistency.mjs.

@@ -95,7 +95,7 @@ This history-only copy does not change the message delivered to the user, and it
 
 Use active conversation history first for the current exchange. Use `MemoryRecall` for durable facts that were intentionally captured, and use the read-only [`RunHistory`](/tools/mcp/#runhistory-prior-run-evidence) tool when the exact tool calls, results, warnings, or final output from a prior run are needed.
 
-An ordinary service restart keeps active conversation history. The explicit `mono-agent restart --force` reset clears that history together with provider transcripts, but does not delete `MemoryRecall`'s long-term-memory store or recorded run artifacts.
+An ordinary service restart keeps active conversation history. The explicit `mono-agent restart --clear-sessions` reset clears that history together with provider transcripts, but does not delete `MemoryRecall`'s long-term-memory store or recorded run artifacts.
 
 History records publish by atomic replacement. If a stable record is truncated into invalid JSON, the responder starts that conversation cold and replaces the unreadable record on the next successful turn; unsafe paths and unsupported record shapes still fail closed.
 

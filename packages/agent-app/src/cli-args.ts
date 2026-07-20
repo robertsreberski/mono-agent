@@ -10,30 +10,32 @@ import type { InstallSkillTarget } from "./install-skill.js";
 import { INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND } from "./launchd.js";
 import type { CodexLoginMode } from "./provider-setup.js";
 
-const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "recipes", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "sessions", "install-skill", "backfill", "audit-runs", "metrics", "memory", "continuations"] as const;
+const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "sessions", "install-skill", "backfill", "audit-runs", "metrics", "memory", "continuations"] as const;
 const KNOWN_COMMANDS = [...PUBLIC_COMMANDS, INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND] as const;
 
-// `doctor`/`setup`/`recipes` never reach routing: parseCliArgs normalizes them to
-// `validate`/`init`/`presets`. `help`/`version` are synthetic commands (not in
+// Commands removed outright before the KNOWN_COMMANDS gate. Parsing throws with the
+// replacement, and runCli maps that parse error to exit code 2 (usage-error).
+const REMOVED_COMMANDS = new Map<string, string>([
+  ["recipes", "`recipes` was removed; use `mono-agent presets`."],
+]);
+
+// `doctor`/`setup` never reach routing: parseCliArgs normalizes them to
+// `validate`/`init`. `help`/`version` are synthetic commands (not in
 // KNOWN_COMMANDS) produced by the `--help`/`-h` and `--version`/`-v` flags before
 // command validation.
-type CliCommand = Exclude<(typeof KNOWN_COMMANDS)[number], "doctor" | "setup" | "recipes"> | "help" | "version";
+type CliCommand = Exclude<(typeof KNOWN_COMMANDS)[number], "doctor" | "setup"> | "help" | "version";
 
 export interface ParsedCliArgs {
   readonly command: CliCommand;
   readonly configPath?: string;
   readonly name?: string;
   readonly model?: string;
-  /** @deprecated Removed in v2.0.0; use repeated `--fallback` entries. */
-  readonly fallbackModels?: readonly string[];
   readonly fallbacks?: readonly CliFallbackArg[];
   readonly routeSafety?: RouteSafetyMode;
   readonly effort?: string;
   readonly memory?: "lite" | "journal" | "bujo";
   /** init/validate: build/check against this preset id. */
   readonly preset?: string;
-  /** @deprecated Removed in v2.0.0; use `--preset`. */
-  readonly recipe?: string;
   /** init: additional channels to enable on top of the preset/default config. */
   readonly withChannels?: readonly string[];
   /** init: skip the interactive wizard and write the default/preset scaffold. */
@@ -55,6 +57,8 @@ export interface ParsedCliArgs {
   readonly expectedManagedRuntimeLaunch?: string;
   readonly target?: InstallSkillTarget;
   readonly force: boolean;
+  /** restart: canonical spelling that clears pi sessions + active conversation history. */
+  readonly clearSessions?: boolean;
   /** start: run the blocking foreground worker instead of backgrounding. */
   readonly foreground: boolean;
   /** logs: keep streaming new output (tail -F). */
@@ -142,21 +146,22 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (command === "version" || command === "--version" || command === "-v") {
     return { command: "version", positionals: [], force: false, foreground: false, follow: false, all: false, dryRun: false, includeMemory: false };
   }
+  const removed = REMOVED_COMMANDS.get(command);
+  if (removed !== undefined) {
+    throw new Error(removed);
+  }
   if (!(KNOWN_COMMANDS as readonly string[]).includes(command)) {
     throw new Error(`Unknown command \`${command}\`. Expected ${PUBLIC_COMMANDS.join(", ")}.`);
   }
-  // `doctor`/`setup`/`recipes` are aliases; normalize here so every downstream
-  // path (routing, env-file resolution, --consumer) applies unchanged. `doctor`
-  // → `validate`, `setup` → `init`, `recipes` → `presets`. The deprecated
-  // `recipes` branch is removed in v2.0.0; no sunset is set for the other two.
+  // `doctor`/`setup` are aliases; normalize here so every downstream path
+  // (routing, env-file resolution, --consumer) applies unchanged. `doctor` →
+  // `validate`, `setup` → `init`. No sunset is set for either.
   const cmd = (
     command === "doctor"
       ? "validate"
       : command === "setup"
         ? "init"
-        : command === "recipes"
-          ? "presets"
-          : command
+        : command
   ) as CliCommand;
   if (
     cmd === INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND
@@ -174,14 +179,12 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let configPath: string | undefined;
   let name: string | undefined;
   let model: string | undefined;
-  let fallbackModels: readonly string[] | undefined;
   const fallbacks: CliFallbackArg[] = [];
   let canAssignFallbackEffort = false;
   let routeSafety: RouteSafetyMode | undefined;
   let effort: string | undefined;
   let memory: "lite" | "journal" | "bujo" | undefined;
   let preset: string | undefined;
-  let recipe: string | undefined;
   let withChannels: readonly string[] | undefined;
   let yes = false;
   let auth = false;
@@ -194,6 +197,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let expectedManagedRuntimeLaunch: string | undefined;
   let target: InstallSkillTarget | undefined;
   let force = false;
+  let clearSessions = false;
   let foreground = false;
   let follow = false;
   let lines: number | undefined;
@@ -385,13 +389,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         }
         break;
       case "--fallback-models":
-        // Deprecated CLI spelling removed in v2.0.0. The similarly named JSON
-        // and environment compatibility inputs are separate and remain supported.
-        fallbackModels = requireValue(rest, ++i, flag)
-          .split(",")
-          .map((entry) => entry.trim())
-          .filter((entry) => entry.length > 0);
-        break;
+        // Removed CLI spelling. The similarly named JSON `runtime.fallbackModels`
+        // and `MONO_AGENT_FALLBACK_MODELS` compatibility inputs are separate and
+        // remain supported; only this CLI flag is gone.
+        throw new Error("`--fallback-models` was removed; repeat `--fallback <ref>` instead.");
       case "--fallback": {
         const fallbackModel = requireValue(rest, ++i, flag).trim();
         if (fallbacks.some((entry) => entry.model === fallbackModel)) {
@@ -447,9 +448,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         preset = requireValue(rest, ++i, flag);
         break;
       case "--recipe":
-        // Deprecated init/validate alias removed in v2.0.0.
-        recipe = requireValue(rest, ++i, flag);
-        break;
+        // Removed init/validate alias.
+        throw new Error("`--recipe` was removed; use `--preset <id>`.");
       case "--yes":
         yes = true;
         break;
@@ -496,18 +496,22 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--force":
         force = true;
         break;
+      case "--clear-sessions":
+        clearSessions = true;
+        break;
       case "--foreground":
         foreground = true;
         break;
       case "--follow":
         follow = true;
         break;
-      // `-f` is foreground for start, follow for logs.
+      // `-f` means `--follow` on logs only. Its former `start` meaning
+      // (`--foreground`) is gone: `-f` on anything else is a usage error.
       case "-f":
         if (isLogs) {
           follow = true;
         } else {
-          foreground = true;
+          throw new Error("`-f` means `--follow` on `logs`; use `--foreground` with `start`.");
         }
         break;
       case "--lines": {
@@ -526,7 +530,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         if (flag.startsWith("--")) {
           throw new Error(`Unknown flag \`${flag}\` for \`mono-agent ${command}\`.`);
         }
-        // Non-flag tokens are positional arguments (e.g. `recipes show <id>`).
+        // Non-flag tokens are positional arguments (e.g. `presets show <id>`).
         positionals.push(flag);
         break;
     }
@@ -610,13 +614,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (codexAuthMode !== undefined && cmd !== "init" && cmd !== "auth") {
     throw new Error("--codex-auth is only supported for `mono-agent init` and `mono-agent auth login codex`.");
   }
-  if (fallbackModels !== undefined && fallbacks.length > 0) {
-    throw new Error("Use either legacy --fallback-models or repeated --fallback flags, not both.");
+  if (clearSessions && cmd !== "restart") {
+    throw new Error("--clear-sessions is only supported for `mono-agent restart`.");
   }
-  if (fallbackModels !== undefined && new Set(fallbackModels).size !== fallbackModels.length) {
-    throw new Error("--fallback-models contains a duplicate model reference.");
-  }
-  const selectedFallbackModels = fallbackModels ?? fallbacks.map((fallback) => fallback.model);
+  const selectedFallbackModels = fallbacks.map((fallback) => fallback.model);
   if (model !== undefined && selectedFallbackModels.includes(model)) {
     throw new Error(`Primary --model \`${model}\` cannot also be a fallback.`);
   }
@@ -626,13 +627,11 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(configPath === undefined ? {} : { configPath }),
     ...(name === undefined ? {} : { name }),
     ...(model === undefined ? {} : { model }),
-    ...(fallbackModels === undefined ? {} : { fallbackModels }),
     ...(fallbacks.length === 0 ? {} : { fallbacks }),
     ...(routeSafety === undefined ? {} : { routeSafety }),
     ...(effort === undefined ? {} : { effort }),
     ...(memory === undefined ? {} : { memory }),
     ...(preset === undefined ? {} : { preset }),
-    ...(recipe === undefined ? {} : { recipe }),
     ...(withChannels === undefined ? {} : { withChannels }),
     ...(yes ? { yes } : {}),
     ...(auth ? { auth } : {}),
@@ -645,6 +644,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(expectedManagedRuntimeLaunch === undefined ? {} : { expectedManagedRuntimeLaunch }),
     ...(target === undefined ? {} : { target }),
     force,
+    ...(clearSessions ? { clearSessions } : {}),
     foreground,
     follow,
     ...(lines === undefined ? {} : { lines }),

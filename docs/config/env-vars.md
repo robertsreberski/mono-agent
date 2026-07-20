@@ -127,13 +127,13 @@ See [../runtime/local-providers.md](/runtime/local-providers/) for the local pro
 | `MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED` | `memory.consolidation.enabled` | Scheduled BuJo consolidation; default on. |
 | `MONO_AGENT_MEMORY_CONSOLIDATION_CRON` | `memory.consolidation.cron` | Default `0 */2 * * *`. See [../memory/rituals.md](/memory/rituals/). |
 | `MONO_AGENT_MEMORY_LLM_PROVIDER` | `memory.llm.provider` | `ollama` or `agent-host`. Strictly required for BuJo capture and tier selection; projection-only consolidation itself makes no model call. Missing prerequisites fail instead of downshifting tiers. |
-| `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for capture and legacy manual `migrate`; read-only `reflect` needs no model. |
+| `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline. |
 | `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE` | `memory.llm.executionMode` | `sdk` for `agent-host` refs. |
 | `MONO_AGENT_MEMORY_LLM_ENDPOINT` | `memory.llm.endpoint` | Ollama-only endpoint override. |
-| `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | `memory.llm.timeoutMs` | In-app per-call memory-LLM timeout (`1000`–`600000`, **default `60000`**). The standalone CLI reads the same var but defaults to `120000`; see [the two memory-LLM timeouts](/memory/validation-and-cli/#the-two-memory-llm-timeouts). |
+| `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` | `memory.llm.timeoutMs` | In-app per-call memory-LLM timeout (`1000`–`600000`, **default `60000`**); see [the memory-LLM timeout](/memory/validation-and-cli/#the-memory-llm-timeout). |
 
 :::note
-The standalone `memory-bujo` maintenance CLI reads `MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER` / `_MODEL` / `_DIM` for optional semantic recall and strict-tier rebuild identity, and `MONO_AGENT_MEMORY_LLM_MODEL` / `MONO_AGENT_MEMORY_LLM_ENDPOINT` / `MONO_AGENT_MEMORY_LLM_TIMEOUT_MS` for `migrate`. Read-only `reflect` needs none of the LLM variables. Standalone rebuild/rollback also require `--tier`; first activation uses config-aware `mono-agent memory rebuild`. See [../memory/validation-and-cli.md](/memory/validation-and-cli/).
+The standalone `memory-bujo` maintenance CLI that read these `MONO_AGENT_MEMORY_*` variables directly against a memory root has been removed. All memory maintenance now runs config-aware through `mono-agent memory` from the agent folder, which reads these values from `mono-agent.config.json`. See [../memory/validation-and-cli.md](/memory/validation-and-cli/#memory-bujo-cli--removed).
 :::
 
 :::note

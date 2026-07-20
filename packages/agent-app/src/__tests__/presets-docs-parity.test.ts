@@ -30,7 +30,7 @@ function repoRoot(): string {
 function section(page: string, heading: string): string {
   const start = page.indexOf(`## ${heading}`);
   if (start === -1) {
-    throw new Error(`docs/reference/recipes.md is missing the "## ${heading}" section`);
+    throw new Error(`docs/reference/presets.md is missing the "## ${heading}" section`);
   }
   const rest = page.slice(start + `## ${heading}`.length);
   const next = rest.search(/^## /mu);
@@ -38,17 +38,17 @@ function section(page: string, heading: string): string {
 }
 
 /**
- * docs/reference/recipes.md is the human-facing catalog of the wizard presets and
+ * docs/reference/presets.md is the human-facing catalog of the wizard presets and
  * capability modules. Adding a preset without its row in the Presets table fails
  * here — the same contract the env-vars/feature-registry parity tests enforce.
  */
 describe("presets docs parity", () => {
-  const page = readFileSync(join(repoRoot(), "docs/reference/recipes.md"), "utf8");
+  const page = readFileSync(join(repoRoot(), "docs/reference/presets.md"), "utf8");
   const presetsTable = section(page, "Presets");
 
   it("documents every preset id in the Presets table", () => {
     for (const id of presetIds()) {
-      expect(presetsTable, `docs/reference/recipes.md Presets table is missing preset \`${id}\``).toContain(
+      expect(presetsTable, `docs/reference/presets.md Presets table is missing preset \`${id}\``).toContain(
         `| \`${id}\` |`,
       );
     }
@@ -59,7 +59,7 @@ describe("presets docs parity", () => {
     expect(documented.length).toBeGreaterThan(0);
     const known = new Set(presetIds());
     for (const id of documented) {
-      expect(known, `docs/reference/recipes.md documents unknown preset \`${id}\``).toContain(id);
+      expect(known, `docs/reference/presets.md documents unknown preset \`${id}\``).toContain(id);
     }
   });
 

@@ -6,7 +6,7 @@ Category: `context`
 
 ## Responsibility
 
-Local memory building blocks published as one package with explicit subpaths. `@mono-agent/memory/store` owns the SQLite substrate, schema, FTS5/sqlite-vec hybrid recall, and rebuildable record database. `@mono-agent/memory/search` owns embedding providers and circuit-breaking for that store. `@mono-agent/memory/bujo` owns the Bullet-Journal memory engine: markdown grammar, canonical daily files, tier-aware capture/recall, entity graph and replay projections, reflection, migration, and the `memory-bujo` maintenance CLI.
+Local memory building blocks published as one package with explicit subpaths. `@mono-agent/memory/store` owns the SQLite substrate, schema, FTS5/sqlite-vec hybrid recall, and rebuildable record database. `@mono-agent/memory/search` owns embedding providers and circuit-breaking for that store. `@mono-agent/memory/bujo` owns the Bullet-Journal memory engine: markdown grammar, canonical daily files, tier-aware capture/recall, entity graph and replay projections, reflection, and migration. The standalone `memory-bujo` maintenance CLI that used to wrap this engine has been removed — memory maintenance now runs config-aware through `mono-agent memory <subcommand>` from the agent folder.
 
 The shared `MemoryBlock`, `MemoryStore`, and `MemoryWriteResult` contracts live in `@mono-agent/agent-contracts`. The store subpath re-exports them for local-store consumers, but `@mono-agent/agent-contracts` is the source of truth.
 
@@ -116,11 +116,7 @@ const health = auditBujoMemoryHealth({
 });
 ```
 
-```bash
-memory-bujo recall ./memory "what did we decide about releases?"
-```
-
-Normal index maintenance is config-aware and owned by `@mono-agent/agent-app`:
+Recall and index maintenance are config-aware and owned by `@mono-agent/agent-app`:
 
 ```bash
 mono-agent stop
@@ -132,10 +128,10 @@ mono-agent memory audit --strict --json
 
 The managed generation identity includes tier, embedding provider/model, and
 dimension. Stop and rebuild after changing any of those values; do not reuse or
-relabel vectors from the prior identity. The standalone `memory-bujo migrate`
-command is a separate advanced Ollama-chat-LLM maintenance path outside guided
-init. Other standalone semantic commands can use the configured Ollama,
-LM Studio, or OpenAI embeddings provider.
+relabel vectors from the prior identity. The standalone `memory-bujo` maintenance
+CLI has been removed; run every memory operation config-aware through
+`mono-agent memory <subcommand>` from the agent folder, which resolves the
+configured store, tier, and embeddings provider (Ollama, LM Studio, or OpenAI).
 
 For BuJo, the owner-only `memory.path/.replay-projection-v1.json` is the exact
 canonical authority for replay-owned thread edges, supersession lifecycle and
@@ -164,7 +160,7 @@ future store start. Resolve explicitly records operator abandonment without
 claiming capture succeeded, keeps permanent duplicate protection, and refuses
 recoverable retained semantic plans.
 
-This performs the first managed activation and builds and validates a side-by-side generation. BuJo rebuild fingerprints and preserves the exact replay sidecar as canonical source. A prior index is retained for `mono-agent memory rollback` only as a fresh immutable online-backup generation whose indexed payload exactly matches the current canonical source (Journal may retain its recoverable vector backlog). Its manifest commits the full WAL-visible logical state, including vectors, lifecycle, edges, hashes, graph, FTS, and metadata; same-source/provider rebuilds also compare every retained vector with the newly embedded candidate. The first supported daily-source mutation atomically retires any advertised rollback before changing its source; a BuJo graph/replay-only mutation retires only an advertised BuJo rollback because Lite and Journal do not fingerprint that source domain. A rollback can therefore disappear immediately after normal capture instead of becoming stale. SQLite writer fences cover source snapshotting and the final manifest rename; staged and final manifest bytes/identity are checked through durability confirmation. A source-ahead/stale index is never relabeled as safe; a divergent legacy `memory.db` remains byte-for-byte in place but is not advertised as rollback. The lower-level `memory-bujo rebuild|rollback <root> --tier <lite|journal|bujo>` commands are for already-managed roots; they deliberately refuse to infer tier identity or perform the first activation.
+This performs the first managed activation and builds and validates a side-by-side generation. BuJo rebuild fingerprints and preserves the exact replay sidecar as canonical source. A prior index is retained for `mono-agent memory rollback` only as a fresh immutable online-backup generation whose indexed payload exactly matches the current canonical source (Journal may retain its recoverable vector backlog). Its manifest commits the full WAL-visible logical state, including vectors, lifecycle, edges, hashes, graph, FTS, and metadata; same-source/provider rebuilds also compare every retained vector with the newly embedded candidate. The first supported daily-source mutation atomically retires any advertised rollback before changing its source; a BuJo graph/replay-only mutation retires only an advertised BuJo rollback because Lite and Journal do not fingerprint that source domain. A rollback can therefore disappear immediately after normal capture instead of becoming stale. SQLite writer fences cover source snapshotting and the final manifest rename; staged and final manifest bytes/identity are checked through durability confirmation. A source-ahead/stale index is never relabeled as safe; a divergent legacy `memory.db` remains byte-for-byte in place but is not advertised as rollback. The standalone `memory-bujo` bin that used to expose lower-level `rebuild`/`rollback <root> --tier <lite|journal|bujo>` commands has been removed; the config-aware `mono-agent memory rebuild` / `rollback` handle both first activation and subsequent generations.
 
 Explicit operator-selected BuJo cleanup is exposed through the high-level
 `applyExplicitMemoryForget` / `restoreExplicitMemoryForget` coordinator. It is

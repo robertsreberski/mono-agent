@@ -17,13 +17,12 @@ export interface WizardPreset {
    */
   readonly playbook?: string;
   readonly answers: Partial<WizardAnswers>;
-  /** The recipe ids this preset supersedes, for the Task 4 cutover audit. */
-  readonly replacesRecipes?: readonly string[];
 }
 
 /**
- * The five built-in starter presets, in wizard-presentation order. Each maps to an existing
- * playbook and records the recipes it replaces so the Task 4 cutover stays honest.
+ * The five built-in starter presets, in wizard-presentation order. Each maps to an
+ * existing playbook. The former recipe → preset mapping now lives as a static table
+ * in docs/reference/presets.md (the recipe surface was removed from the CLI).
  */
 export const PRESET_CATALOG: readonly WizardPreset[] = [
   {
@@ -33,7 +32,6 @@ export const PRESET_CATALOG: readonly WizardPreset[] = [
     riskLevel: "low",
     playbook: "webhook-automation-sync-async.md",
     answers: {},
-    replacesRecipes: ["minimal-webhook"],
   },
   {
     id: "telegram-assistant",
@@ -42,7 +40,6 @@ export const PRESET_CATALOG: readonly WizardPreset[] = [
     riskLevel: "medium",
     playbook: "telegram-personal-assistant-bujo.md",
     answers: { channels: ["channel:telegram"], memory: "memory:bujo" },
-    replacesRecipes: ["personal-telegram-bujo"],
   },
   {
     id: "slack-bot",
@@ -51,7 +48,6 @@ export const PRESET_CATALOG: readonly WizardPreset[] = [
     riskLevel: "medium",
     playbook: "slack-team-bot-mcp-tools.md",
     answers: { channels: ["channel:slack"] },
-    replacesRecipes: ["slack-team-bot"],
   },
   {
     id: "local-private",
@@ -65,7 +61,6 @@ export const PRESET_CATALOG: readonly WizardPreset[] = [
       channels: ["channel:webhook"],
       memory: "memory:journal",
     },
-    replacesRecipes: ["local-ollama-private"],
   },
   {
     id: "code-sandbox",
@@ -78,7 +73,6 @@ export const PRESET_CATALOG: readonly WizardPreset[] = [
       channels: ["channel:webhook"],
       sandbox: true,
     },
-    replacesRecipes: ["sandboxed-code-agent"],
   },
 ];
 
@@ -96,16 +90,3 @@ export function presetIds(): readonly string[] {
 export function presetAnswers(preset: WizardPreset): WizardAnswers {
   return defaultAnswers(preset.answers);
 }
-
-/**
- * Former recipe id → the preset that now supersedes it, built from each preset's
- * `replacesRecipes`. Powers the deprecated `--recipe <id>` alias (removed in
- * v2.0.0) on `init`/`validate`:
- * a mapped id resolves to its preset (with a deprecation notice); an unmapped id is
- * treated as a retired recipe.
- */
-export const RECIPE_TO_PRESET: ReadonlyMap<string, WizardPreset> = new Map(
-  PRESET_CATALOG.flatMap((preset) =>
-    (preset.replacesRecipes ?? []).map((recipeId) => [recipeId, preset] as const),
-  ),
-);

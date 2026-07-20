@@ -40,8 +40,10 @@ describe("parseCliArgs", () => {
         "init",
         "--model",
         "claude:claude-sonnet-4-6",
-        "--fallback-models",
-        "pi:ollama:gemma4:31b, codex:gpt-5.6-terra",
+        "--fallback",
+        "pi:ollama:gemma4:31b",
+        "--fallback",
+        "codex:gpt-5.6-terra",
         "--auth",
         "--effort",
         "high",
@@ -51,7 +53,7 @@ describe("parseCliArgs", () => {
     ).toEqual({
       command: "init",
       model: "claude:claude-sonnet-4-6",
-      fallbackModels: ["pi:ollama:gemma4:31b", "codex:gpt-5.6-terra"],
+      fallbacks: [{ model: "pi:ollama:gemma4:31b" }, { model: "codex:gpt-5.6-terra" }],
       auth: true,
       effort: "high",
       memory: "journal",
@@ -63,6 +65,12 @@ describe("parseCliArgs", () => {
       dryRun: false,
       includeMemory: false,
     });
+  });
+
+  it("rejects the removed --recipe and --fallback-models flags with a replacement hint", () => {
+    expect(() => parseCliArgs(["init", "--recipe", "minimal-webhook"])).toThrow(/`--recipe` was removed; use `--preset/u);
+    expect(() => parseCliArgs(["init", "--fallback-models", "codex:gpt-5.6-sol"]))
+      .toThrow(/`--fallback-models` was removed; repeat `--fallback/u);
   });
 
   it("parses canonical named mixed-route init flags with exact per-route effort", () => {
@@ -98,9 +106,6 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["init", "--fallback-effort", "high"])).toThrow(/immediately follow/u);
     expect(() => parseCliArgs(["init", "--fallback", "codex:gpt-5.6-sol", "--fallback", "codex:gpt-5.6-sol"]))
       .toThrow(/Duplicate/u);
-    expect(() => parseCliArgs([
-      "init", "--fallback-models", "codex:gpt-5.6-sol", "--fallback", "claude:claude-sonnet-5",
-    ])).toThrow(/either legacy/u);
     expect(() => parseCliArgs([
       "init", "--model", "codex:gpt-5.6-sol", "--fallback", "codex:gpt-5.6-sol",
     ])).toThrow(/cannot also be a fallback/u);
@@ -175,10 +180,19 @@ describe("parseCliArgs", () => {
     });
   });
 
-  it("parses start --foreground and -f as the blocking worker", () => {
+  it("parses start --foreground and rejects the -f overload with a hint", () => {
     expect(parseCliArgs(["start", "--foreground"])).toMatchObject({ command: "start", foreground: true });
-    expect(parseCliArgs(["start", "-f"])).toMatchObject({ command: "start", foreground: true });
     expect(parseCliArgs(["start"])).toMatchObject({ command: "start", foreground: false });
+    expect(() => parseCliArgs(["start", "-f"]))
+      .toThrow(/`-f` means `--follow` on `logs`; use `--foreground` with `start`/u);
+  });
+
+  it("parses restart --clear-sessions and keeps --force as a deprecated alias", () => {
+    expect(parseCliArgs(["restart", "--clear-sessions"])).toMatchObject({ command: "restart", clearSessions: true });
+    expect(parseCliArgs(["restart", "--force"])).toMatchObject({ command: "restart", force: true });
+    expect(parseCliArgs(["restart"]).clearSessions).toBeUndefined();
+    expect(() => parseCliArgs(["stop", "--clear-sessions"]))
+      .toThrow(/--clear-sessions is only supported for `mono-agent restart`/u);
   });
 
   it("parses the internal managed-worker snapshot transport without advertising it as public help", () => {
@@ -526,7 +540,9 @@ describe("parseCliArgs", () => {
     expect(renderHelp()).toContain("mono-agent init [--preset");
     expect(renderHelp()).toContain("Effort levels: none, minimal, low, medium, high, xhigh, max, ultra");
     expect(renderHelp()).toContain("--fallback-effort <provider-default|level>");
-    expect(renderHelp()).toContain("--fallback-models is deprecated and will be removed in v2.0.0");
+    expect(renderHelp()).not.toContain("--fallback-models");
+    expect(renderHelp()).toContain("mono-agent restart [--config <path>] [--clear-sessions]");
+    expect(renderHelp()).toContain("--force is a deprecated alias of --clear-sessions.");
     expect(renderHelp()).toContain("mono-agent sandbox status | setup | check");
     expect(renderHelp()).toContain("Guided Pi authentication");
     expect(renderHelp()).toContain("Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go");
@@ -607,10 +623,19 @@ describe("monoAgentVersion", () => {
   });
 });
 
-describe("CLI deprecation deadlines", () => {
-  it("announces the v2.0.0 removal target for every legacy CLI surface", async () => {
-    const dir = await tempDir();
+describe("removed CLI surfaces", () => {
+  it("exits with the usage-error code and a replacement hint for the removed recipes command", async () => {
     const recipes = await captureCli(() => runCli(["recipes", "list"]));
+    expect(recipes.code).toBe(2);
+    expect(recipes.stderr).toContain("`recipes` was removed; use `mono-agent presets`.");
+    // The unknown-command enumeration must no longer advertise `recipes`.
+    const unknown = await captureCli(() => runCli(["definitely-not-a-command"]));
+    expect(unknown.code).toBe(2);
+    expect(unknown.stderr).not.toContain("recipes");
+  });
+
+  it("exits with the usage-error code for the removed --recipe and --fallback-models flags", async () => {
+    const dir = await tempDir();
     const recipeFlag = await captureCli(() => withCwd(
       dir,
       () => runCli(["init", "--recipe", "minimal-webhook", "--dry-run"]),
@@ -620,18 +645,16 @@ describe("CLI deprecation deadlines", () => {
       () => runCli(["init", "--fallback-models", "codex:gpt-5.6-sol", "--dry-run"]),
     ));
 
-    expect(recipes.code).toBe(0);
-    expect(recipeFlag.code).toBe(0);
-    expect(fallbackModelsFlag.code).toBe(0);
-    expect(recipes.stderr).toContain(
-      "`mono-agent recipes` is deprecated and will be removed in v2.0.0",
-    );
-    expect(recipeFlag.stderr).toContain(
-      "`--recipe` is deprecated and will be removed in v2.0.0",
-    );
-    expect(fallbackModelsFlag.stderr).toContain(
-      "`--fallback-models` is deprecated and will be removed in v2.0.0",
-    );
+    expect(recipeFlag.code).toBe(2);
+    expect(fallbackModelsFlag.code).toBe(2);
+    expect(recipeFlag.stderr).toContain("`--recipe` was removed; use `--preset");
+    expect(fallbackModelsFlag.stderr).toContain("`--fallback-models` was removed; repeat `--fallback");
+  });
+
+  it("emits a deprecation hint for restart --force pointing at --clear-sessions", async () => {
+    const dir = await tempDir();
+    const forceRestart = await captureCli(() => withCwd(dir, () => runCli(["restart", "--force"])));
+    expect(forceRestart.stderr).toContain("`restart --force` is deprecated; use `restart --clear-sessions`");
   });
 
   it("does not warn for canonical preset and fallback flags", async () => {
@@ -644,8 +667,8 @@ describe("CLI deprecation deadlines", () => {
 
     expect(presets.code).toBe(0);
     expect(fallbacks.code).toBe(0);
-    expect(presets.stderr).not.toContain("will be removed in v2.0.0");
-    expect(fallbacks.stderr).not.toContain("will be removed in v2.0.0");
+    expect(presets.stderr).not.toContain("deprecated");
+    expect(fallbacks.stderr).not.toContain("deprecated");
   });
 });
 

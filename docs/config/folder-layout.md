@@ -85,7 +85,7 @@ The framework creates and writes everything under `.mono-agent/`. You generally 
 | `.mono-agent/trace-sources/` | The traceability registry, when kept folder-local. | `traceability.registryDir` |
 
 :::note
-`mono-agent restart --force` purges persisted pi `sessions/` and active conversation `history/` for a fresh start. It keeps durable memory and recorded run artifacts. See [Sessions & concurrency](/runtime/sessions-concurrency/), [Artifacts & traces](/observability/artifacts-and-traces/), and [Capture & recall](/memory/capture-and-recall/).
+`mono-agent restart --clear-sessions` purges persisted pi `sessions/` and active conversation `history/` for a fresh start. It keeps durable memory and recorded run artifacts. See [Sessions & concurrency](/runtime/sessions-concurrency/), [Artifacts & traces](/observability/artifacts-and-traces/), and [Capture & recall](/memory/capture-and-recall/).
 :::
 
 ## Applying changes

@@ -15,7 +15,7 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     signature: "mono-agent init [--preset <id>] [--with <csv>] [--yes] [--auth] [--dry-run]\n" +
       "                [--name <display-name>] [--model <ref>] [--effort <level>]\n" +
       "                [--fallback <ref> [--fallback-effort <provider-default|level>]]...\n" +
-      "                [--fallback-models <csv>] [--route-safety uniform|per-route-native]\n" +
+      "                [--route-safety uniform|per-route-native]\n" +
       "                [--codex-auth browser|device] [--memory lite|journal|bujo]",
     lines: [
       "Fast scaffold-only path: flags or non-TTY input; without explicit --auth,",
@@ -24,7 +24,6 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       `with timeouts of ${readinessProbeTimeoutDescription()}.`,
       "--preset seeds a blueprint; --with adds channels.",
       `Effort levels: ${EFFORT_LEVELS.join(", ")}; an omitted fallback effort uses that provider's default.`,
-      "--fallback-models is deprecated and will be removed in v2.0.0; repeat --fallback for new scripts.",
       "Reasoning-capable pi:* maps ultra to LOW; Pi without reasoning uses OFF; direct codex:* forwards ultra unchanged.",
       "Mono-agent rejects ultra on its Claude SDK route because the pinned SDK public contract ends at max (the SDK JavaScript itself forwards the value).",
       "The Claude CLI route passes --effort ultra, but both tested Claude Code binaries (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort.",
@@ -90,11 +89,12 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
-    signature: "mono-agent restart [--config <path>] [--force]",
+    signature: "mono-agent restart [--config <path>] [--clear-sessions]",
     lines: [
       "Restart the background instance for this config (starts it if stopped).",
-      "--force clears persisted pi sessions and active conversation history so",
-      "the agent starts fresh. Durable memory and run artifacts are untouched.",
+      "--clear-sessions clears persisted pi sessions and active conversation history",
+      "so the agent starts fresh. Durable memory and run artifacts are untouched.",
+      "--force is a deprecated alias of --clear-sessions.",
     ],
   },
   {
