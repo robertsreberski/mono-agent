@@ -24,6 +24,7 @@ export type ConnectionState = "connecting" | "live" | "reconnecting" | "offline"
 interface ConsoleStoreValue {
   readonly bootstrap: Bootstrap | null;
   readonly agents: readonly AgentSummary[];
+  readonly visibleAgents: readonly AgentSummary[];
   readonly threads: readonly ThreadSummary[];
   readonly visibleThreads: readonly ThreadSummary[];
   readonly selectedAgent: AgentSummary | null;
@@ -37,6 +38,8 @@ interface ConsoleStoreValue {
   readonly actionError: string | null;
   readonly connection: ConnectionState;
   readonly showArchived: boolean;
+  readonly showOfflineAgents: boolean;
+  readonly hiddenOfflineAgentCount: number;
   readonly model: string;
   readonly effort: string;
   readonly modelOptions: readonly string[];
@@ -54,6 +57,7 @@ interface ConsoleStoreValue {
   ) => Promise<void>;
   readonly cancelTurn: () => Promise<void>;
   readonly setShowArchived: (show: boolean) => void;
+  readonly setShowOfflineAgents: (show: boolean) => void;
   readonly setModel: (model: string) => void;
   readonly setEffort: (effort: string) => void;
   readonly retry: () => void;
@@ -94,6 +98,27 @@ export const sortAgentsPinnedFirst = (
   if (leftLabel > rightLabel) return 1;
   return left.sourceId < right.sourceId ? -1 : left.sourceId > right.sourceId ? 1 : 0;
 });
+
+export const agentVisibility = (
+  agents: readonly AgentSummary[],
+  selectedAgentId: string | null,
+  showOfflineAgents: boolean,
+): {
+  readonly visibleAgents: readonly AgentSummary[];
+  readonly hiddenOfflineAgentCount: number;
+} => {
+  const hiddenIds = new Set(agents.flatMap((agent) =>
+    agent.status === "offline" && !agent.pinned && agent.sourceId !== selectedAgentId
+      ? [agent.sourceId]
+      : [],
+  ));
+  return {
+    visibleAgents: showOfflineAgents
+      ? agents
+      : agents.filter((agent) => !hiddenIds.has(agent.sourceId)),
+    hiddenOfflineAgentCount: hiddenIds.size,
+  };
+};
 
 export const readStoredRunPreferences = (): Record<string, StoredRunPreference> => {
   try {
@@ -226,6 +251,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const [actionError, setActionError] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
   const [showArchived, setShowArchived] = useState(false);
+  const [showOfflineAgents, setShowOfflineAgents] = useState(false);
   const [modelByContext, setModelByContext] = useState<Record<string, string>>(() =>
     Object.fromEntries(
       Object.entries(readStoredRunPreferences()).map(([key, value]) => [key, value.model]),
@@ -414,6 +440,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const threads = bootstrap?.threads ?? [];
   const selectedAgent =
     agents.find((agent) => agent.sourceId === selectedAgentId) ?? null;
+  const { visibleAgents, hiddenOfflineAgentCount } = useMemo(
+    () => agentVisibility(agents, selectedAgentId, showOfflineAgents),
+    [agents, selectedAgentId, showOfflineAgents],
+  );
   const selectedThread =
     threads.find((thread) => thread.id === selectedThreadId) ?? detail?.thread ?? null;
   const visibleThreads = useMemo(
@@ -707,6 +737,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     () => ({
       bootstrap,
       agents,
+      visibleAgents,
       threads,
       visibleThreads,
       selectedAgent,
@@ -720,6 +751,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       actionError,
       connection,
       showArchived,
+      showOfflineAgents,
+      hiddenOfflineAgentCount,
       model,
       effort,
       modelOptions,
@@ -734,6 +767,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       sendTurn,
       cancelTurn,
       setShowArchived,
+      setShowOfflineAgents,
       setModel,
       setEffort,
       retry: () => {
@@ -756,6 +790,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       effort,
       effortOptions,
       error,
+      hiddenOfflineAgentCount,
       loadBootstrap,
       loading,
       model,
@@ -772,8 +807,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setAgentPinned,
       setModel,
       showArchived,
+      showOfflineAgents,
       threads,
       unarchiveThread,
+      visibleAgents,
       visibleThreads,
     ],
   );
