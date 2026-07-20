@@ -4,6 +4,7 @@ import { redactSlackErrorMessage } from "./log-redaction.js";
 import type {
   SlackEventCallback,
   SlackInteractivityPayload,
+  SlackSlashCommandPayload,
   SlackSocketModeEnvelope,
   SlackWebApi,
 } from "./types.js";
@@ -20,6 +21,11 @@ export interface SlackEventCallbackHandler {
  */
 export type SlackInteractionHandler = (
   payload: SlackInteractivityPayload,
+) => void | Promise<void>;
+
+/** Handles a workspace-registered slash command after its Socket Mode ack. */
+export type SlackSlashCommandHandler = (
+  payload: SlackSlashCommandPayload,
 ) => void | Promise<void>;
 
 export interface SlackSocketModeRunnerBackoffOptions {
@@ -103,6 +109,8 @@ export interface SlackSocketModeRunnerOptions {
    * shortcut payloads are routed to it after the envelope is acknowledged.
    */
   onInteraction?: SlackInteractionHandler;
+  /** Optional slash-command handler. Envelopes are acknowledged before dispatch. */
+  onSlashCommand?: SlackSlashCommandHandler;
   /**
    * Called once when an established connection drops into the reconnect/backoff loop
    * (a real degradation — `too_many_websockets`, a socket error, a heartbeat timeout,
@@ -211,6 +219,7 @@ export class SlackSocketModeRunner {
     | ((result: SlackEventHandlingResult) => void | Promise<void>)
     | undefined;
   private readonly onInteraction: SlackInteractionHandler | undefined;
+  private readonly onSlashCommand: SlackSlashCommandHandler | undefined;
   private readonly onConnectionLost: ((reason: string) => void) | undefined;
   private readonly onConnectionRestored: (() => void) | undefined;
   private readonly logger: SlackSocketModeRunnerLogger | undefined;
@@ -240,6 +249,7 @@ export class SlackSocketModeRunner {
     this.webSocketFactory = options.webSocketFactory ?? ((url) => new WebSocket(url) as SlackWebSocketLike);
     this.onEventResult = options.onEventResult;
     this.onInteraction = options.onInteraction;
+    this.onSlashCommand = options.onSlashCommand;
     this.onConnectionLost = options.onConnectionLost;
     this.onConnectionRestored = options.onConnectionRestored;
     this.logger = options.logger;
@@ -571,6 +581,18 @@ export class SlackSocketModeRunner {
       return;
     }
 
+    if (envelope.type === "slash_commands") {
+      if (this.onSlashCommand === undefined) {
+        return;
+      }
+      const payload = asSlashCommandPayload(envelope.payload);
+      if (payload === undefined) {
+        return;
+      }
+      await this.onSlashCommand(payload);
+      return;
+    }
+
     if (envelope.type !== "events_api" || !isSlackEventCallback(envelope.payload)) {
       return;
     }
@@ -647,6 +669,18 @@ function asInteractivityPayload(value: unknown): SlackInteractivityPayload | und
     return undefined;
   }
   return value as unknown as SlackInteractivityPayload;
+}
+
+function asSlashCommandPayload(value: unknown): SlackSlashCommandPayload | undefined {
+  if (
+    !isRecord(value)
+    || typeof value.command !== "string"
+    || typeof value.channel_id !== "string"
+    || (value.text !== undefined && typeof value.text !== "string")
+  ) {
+    return undefined;
+  }
+  return value as unknown as SlackSlashCommandPayload;
 }
 
 function isSignalAborted(signal: AbortSignal | undefined): boolean {

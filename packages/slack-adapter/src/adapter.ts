@@ -32,6 +32,7 @@ import type {
   SlackFile,
   SlackInteractivityPayload,
   SlackMessageTs,
+  SlackSlashCommandPayload,
   SlackShortcutPayload,
   SlackUserId,
   SlackWebApi,
@@ -87,6 +88,12 @@ export interface SlackRuntimeControls {
   readonly defaultModel: string;
   readonly defaultEffort?: string;
   readonly models: readonly SlackRuntimeModelOption[];
+}
+
+/** Exact workspace-registered slash command names routed to native runtime controls. */
+export interface SlackRuntimeSlashCommands {
+  readonly model: string;
+  readonly effort: string;
 }
 
 export interface SlackRequestMetadata {
@@ -265,6 +272,25 @@ export type SlackInteractionHandlingResult =
       outcome: "updated" | "cancelled" | "expired" | "already_recorded";
     };
 
+/** Outcome of routing a workspace-registered model/effort slash command. */
+export type SlackSlashCommandHandlingResult =
+  | {
+      kind: "runtime_command";
+      command: string;
+      channelId: SlackChannelId;
+      control: "model" | "effort";
+    }
+  | {
+      kind: "ignored";
+      reason: "malformed" | "unbound";
+      command?: string;
+    }
+  | {
+      kind: "unauthorized";
+      command: string;
+      channelId: SlackChannelId;
+    };
+
 /**
  * A button rendered on the App Home tab. Clicking it runs `prompt` as a proactive
  * turn (same machinery as a shortcut), replying in `channelId` (the Home tab
@@ -305,6 +331,12 @@ export interface SlackAdapterOptions {
   attachments?: SlackAttachmentOptions;
   /** Native `/model` and `/effort` choices. Omit to leave those commands unbound. */
   runtimeControls?: SlackRuntimeControls;
+  /**
+   * Exact workspace-registered slash commands for the native runtime controls.
+   * `startSlackAdapter` derives these from the authenticated bot username (for
+   * example `/mickey-model` and `/mickey-effort`) unless explicitly overridden.
+   */
+  runtimeSlashCommands?: SlackRuntimeSlashCommands;
   /**
    * Shortcut bindings (callback_id → prompt). Invoking a bound shortcut in/for an
    * authorized channel runs its prompt as a proactive turn. Omitted/empty means
@@ -406,7 +438,16 @@ interface SlackRuntimeControlCatalog {
 
 interface SlackRuntimeScope {
   readonly key: string;
-  readonly description: "this DM" | "this thread";
+  readonly description: "this DM" | "this thread" | "this channel";
+  /** Shared-channel thread scopes inherit a channel-wide slash-command choice. */
+  readonly inheritedKey?: string;
+}
+
+interface SlackRuntimeCommandTarget {
+  readonly channelId: SlackChannelId;
+  readonly threadTs?: SlackMessageTs;
+  readonly scope: SlackRuntimeScope;
+  readonly resetCommand: string;
 }
 
 interface SlackRuntimeMenuContext {
@@ -414,6 +455,7 @@ interface SlackRuntimeMenuContext {
   readonly scope: SlackRuntimeScope;
   readonly channelId: SlackChannelId;
   readonly messageTs: SlackMessageTs;
+  readonly resetCommand: string;
   readonly expectedModel?: string;
 }
 
@@ -613,7 +655,9 @@ export class SlackAdapter {
   private readonly homeTabEnabled: boolean;
   private readonly homeTabHeaderText: string | undefined;
   private readonly runtimeCatalog: SlackRuntimeControlCatalog | undefined;
-  /** DM selections are channel-wide; shared-channel selections are thread-local. */
+  /** Exact registered slash command name -> runtime control. */
+  private readonly runtimeSlashCommands: ReadonlyMap<string, "model" | "effort">;
+  /** DM choices are DM-wide; shared-channel choices may be channel-wide or thread-local. */
   private readonly runtimeSelections = new Map<string, SlackRuntimeSelection>();
   /** Active interactive menu contexts, keyed by the bot menu message. */
   private readonly runtimeMenus = new Map<string, SlackRuntimeMenuContext>();
@@ -665,6 +709,7 @@ export class SlackAdapter {
       options.stripMentionText ?? (this.botUserIds.size > 0 || this.mentionTextAliases.length > 0);
     this.streamOptions = options.stream ?? {};
     this.runtimeCatalog = buildSlackRuntimeControlCatalog(options.runtimeControls);
+    this.runtimeSlashCommands = buildSlackRuntimeSlashCommandMap(options.runtimeSlashCommands);
     this.messages = {
       ...DEFAULT_MESSAGES,
       ...(this.runtimeCatalog === undefined ? {} : { helpText: RUNTIME_CONTROL_HELP_TEXT }),
@@ -776,7 +821,10 @@ export class SlackAdapter {
     }
 
     if (this.runtimeCatalog !== undefined && command?.name === "model") {
-      await this.handleRuntimeModelCommand(event, command.argument);
+      await this.handleRuntimeModelCommand(
+        this.runtimeCommandTargetForEvent(event, "model"),
+        command.argument,
+      );
       return {
         kind: "handled",
         eventId: event.eventId,
@@ -788,7 +836,10 @@ export class SlackAdapter {
     }
 
     if (this.runtimeCatalog !== undefined && command?.name === "effort") {
-      await this.handleRuntimeEffortCommand(event, command.argument);
+      await this.handleRuntimeEffortCommand(
+        this.runtimeCommandTargetForEvent(event, "effort"),
+        command.argument,
+      );
       return {
         kind: "handled",
         eventId: event.eventId,
@@ -1026,21 +1077,92 @@ export class SlackAdapter {
     }
   }
 
+  /** Route a workspace-registered runtime-control slash command. */
+  async handleSlashCommand(
+    payload: SlackSlashCommandPayload,
+  ): Promise<SlackSlashCommandHandlingResult> {
+    const command = normalizeSlackSlashCommand(payload.command);
+    const channelId = payload.channel_id.trim();
+    if (command === undefined || channelId.length === 0) {
+      return { kind: "ignored", reason: "malformed" };
+    }
+    const control = this.runtimeSlashCommands.get(command);
+    if (control === undefined || this.runtimeCatalog === undefined) {
+      return { kind: "ignored", reason: "unbound", command };
+    }
+    if (!this.isAuthorized(channelId)) {
+      await this.api.chatPostMessage({ channel: channelId, text: this.messages.unauthorizedText });
+      return { kind: "unauthorized", command, channelId };
+    }
+    const target: SlackRuntimeCommandTarget = {
+      channelId,
+      scope: this.runtimeScopeForSlashCommand(channelId),
+      resetCommand: command,
+    };
+    const argument = payload.text?.trim() ?? "";
+    if (control === "model") {
+      await this.handleRuntimeModelCommand(target, argument);
+    } else {
+      await this.handleRuntimeEffortCommand(target, argument);
+    }
+    return { kind: "runtime_command", command, channelId, control };
+  }
+
   private runtimeScopeFor(event: SlackTextEvent): SlackRuntimeScope {
     if (event.channelType === "im") {
-      return {
-        key: `dm:${normalizeIdForMatch(event.channelId)}`,
-        description: "this DM",
-      };
+      return this.runtimeScopeForSlashCommand(event.channelId);
     }
+    const channelKey = `channel:${normalizeIdForMatch(event.channelId)}`;
     return {
       key: `thread:${normalizeIdForMatch(event.channelId)}:${event.threadTs}`,
       description: "this thread",
+      inheritedKey: channelKey,
     };
   }
 
-  private runtimeSelectionFor(scope: SlackRuntimeScope): SlackRuntimeSelection {
+  private runtimeScopeForSlashCommand(channelId: SlackChannelId): SlackRuntimeScope {
+    const normalized = normalizeIdForMatch(channelId);
+    if (isSlackDirectMessageChannel(channelId)) {
+      return { key: `dm:${normalized}`, description: "this DM" };
+    }
+    return { key: `channel:${normalized}`, description: "this channel" };
+  }
+
+  private runtimeCommandTargetForEvent(
+    event: SlackTextEvent,
+    control: "model" | "effort",
+  ): SlackRuntimeCommandTarget {
+    return {
+      channelId: event.channelId,
+      threadTs: event.threadTs,
+      scope: this.runtimeScopeFor(event),
+      resetCommand: `/${control}`,
+    };
+  }
+
+  private localRuntimeSelectionFor(scope: SlackRuntimeScope): SlackRuntimeSelection {
     return this.runtimeSelections.get(scope.key) ?? {};
+  }
+
+  private inheritedRuntimeSelectionFor(scope: SlackRuntimeScope): SlackRuntimeSelection {
+    return scope.inheritedKey === undefined
+      ? {}
+      : (this.runtimeSelections.get(scope.inheritedKey) ?? {});
+  }
+
+  private runtimeSelectionFor(scope: SlackRuntimeScope): SlackRuntimeSelection {
+    const selection = {
+      ...this.inheritedRuntimeSelectionFor(scope),
+      ...this.localRuntimeSelectionFor(scope),
+    };
+    const catalog = this.runtimeCatalog;
+    if (selection.effort !== undefined && catalog !== undefined) {
+      const model = catalog.modelByValue.get(selection.model ?? catalog.controls.defaultModel);
+      if (model?.efforts.some((effort) => effort.value === selection.effort) !== true) {
+        delete selection.effort;
+      }
+    }
+    return selection;
   }
 
   private saveRuntimeSelection(scope: SlackRuntimeScope, selection: SlackRuntimeSelection): void {
@@ -1060,135 +1182,187 @@ export class SlackAdapter {
     return catalog.modelByValue.get(selected);
   }
 
+  private defaultRuntimeModelFor(scope: SlackRuntimeScope): SlackRuntimeModelOption | undefined {
+    const catalog = this.runtimeCatalog;
+    if (catalog === undefined) {
+      return undefined;
+    }
+    const inherited = this.inheritedRuntimeSelectionFor(scope);
+    return catalog.modelByValue.get(inherited.model ?? catalog.controls.defaultModel);
+  }
+
   private selectRuntimeModel(scope: SlackRuntimeScope, value: string | undefined): boolean {
     const catalog = this.runtimeCatalog;
     if (catalog === undefined) {
       return false;
     }
-    const selection = { ...this.runtimeSelectionFor(scope) };
-    if (value === undefined || value === catalog.controls.defaultModel) {
-      delete selection.model;
+    const before = this.runtimeSelectionFor(scope);
+    const local = { ...this.localRuntimeSelectionFor(scope) };
+    const inheritedModel = this.inheritedRuntimeSelectionFor(scope).model
+      ?? catalog.controls.defaultModel;
+    if (value === undefined || value === inheritedModel) {
+      delete local.model;
     } else {
-      selection.model = value;
+      local.model = value;
     }
-    const target = catalog.modelByValue.get(selection.model ?? catalog.controls.defaultModel);
-    const effortCleared = selection.effort !== undefined
-      && target?.efforts.some((effort) => effort.value === selection.effort) !== true;
-    if (effortCleared) {
-      delete selection.effort;
+    const target = catalog.modelByValue.get(local.model ?? inheritedModel);
+    if (
+      local.effort !== undefined
+      && target?.efforts.some((effort) => effort.value === local.effort) !== true
+    ) {
+      delete local.effort;
     }
-    this.saveRuntimeSelection(scope, selection);
-    return effortCleared;
+    this.saveRuntimeSelection(scope, local);
+    const after = this.runtimeSelectionFor(scope);
+    return before.effort !== undefined && after.effort === undefined;
   }
 
   private selectRuntimeEffort(scope: SlackRuntimeScope, value: string | undefined): void {
-    const selection = { ...this.runtimeSelectionFor(scope) };
-    if (value === undefined) {
-      delete selection.effort;
+    const local = { ...this.localRuntimeSelectionFor(scope) };
+    const inheritedEffort = this.inheritedRuntimeSelectionFor(scope).effort;
+    if (value === undefined || value === inheritedEffort) {
+      delete local.effort;
     } else {
-      selection.effort = value;
+      local.effort = value;
     }
-    this.saveRuntimeSelection(scope, selection);
+    this.saveRuntimeSelection(scope, local);
   }
 
   private applyRuntimeSelection(event: SlackTextEvent, metadata: SlackRequestMetadata): void {
-    const selection = this.runtimeSelections.get(this.runtimeScopeFor(event).key);
-    if (selection?.model !== undefined) {
+    const selection = this.runtimeSelectionFor(this.runtimeScopeFor(event));
+    if (selection.model !== undefined) {
       metadata.model = selection.model;
     }
-    if (selection?.effort !== undefined) {
+    if (selection.effort !== undefined) {
       metadata.effort = selection.effort;
     }
   }
 
-  private modelSelectionConfirmation(scope: SlackRuntimeScope, effortCleared: boolean): string {
+  private modelSelectionConfirmation(
+    scope: SlackRuntimeScope,
+    effortCleared: boolean,
+    resetCommand: string,
+  ): string {
     const model = this.effectiveRuntimeModel(scope);
-    const isDefault = this.runtimeSelectionFor(scope).model === undefined;
-    const base = isDefault
-      ? `Model changed to the configured default: ${model?.label ?? "unknown"}.`
-      : `Model changed to ${model?.label ?? "unknown"} for ${scope.description} until /model default or restart.`;
+    const label = model === undefined ? "unknown" : slackRuntimeModelPresentation(model).label;
+    const local = this.localRuntimeSelectionFor(scope);
+    const inherited = this.inheritedRuntimeSelectionFor(scope);
+    let base: string;
+    if (local.model === undefined && scope.inheritedKey !== undefined && inherited.model !== undefined) {
+      base = `Model reset to the channel selection: ${label} for this thread.`;
+    } else if (local.model === undefined) {
+      base = `Model changed to the configured default: ${label}.`;
+    } else {
+      base = `Model changed to ${label} for ${scope.description} until ${resetCommand} default or restart.`;
+    }
     return effortCleared
       ? `${base} The previous effort selection was reset because this model does not support it.`
       : base;
   }
 
-  private effortSelectionConfirmation(scope: SlackRuntimeScope): string {
+  private effortSelectionConfirmation(scope: SlackRuntimeScope, resetCommand: string): string {
     const selection = this.runtimeSelectionFor(scope);
-    if (selection.effort === undefined) {
+    const local = this.localRuntimeSelectionFor(scope);
+    const inherited = this.inheritedRuntimeSelectionFor(scope);
+    const model = this.effectiveRuntimeModel(scope);
+    const effort = model?.efforts.find((candidate) => candidate.value === selection.effort);
+    if (
+      local.effort === undefined
+      && scope.inheritedKey !== undefined
+      && inherited.effort !== undefined
+      && selection.effort !== undefined
+    ) {
+      return `Effort reset to the channel selection: ${effort?.label ?? inherited.effort} for this thread.`;
+    }
+    if (local.effort === undefined) {
       const configured = this.runtimeCatalog?.controls.defaultEffort;
       return configured === undefined
         ? "Effort changed to the configured provider default."
         : `Effort changed to the configured default: ${configured}.`;
     }
-    const model = this.effectiveRuntimeModel(scope);
-    const effort = model?.efforts.find((candidate) => candidate.value === selection.effort);
-    return `Effort changed to ${effort?.label ?? selection.effort} for ${scope.description} until /effort default or restart.`;
+    return `Effort changed to ${effort?.label ?? selection.effort} for ${scope.description} until ${resetCommand} default or restart.`;
   }
 
-  private async handleRuntimeModelCommand(event: SlackTextEvent, argument: string): Promise<void> {
+  private async handleRuntimeModelCommand(
+    target: SlackRuntimeCommandTarget,
+    argument: string,
+  ): Promise<void> {
     const catalog = this.runtimeCatalog as SlackRuntimeControlCatalog;
-    const scope = this.runtimeScopeFor(event);
+    const { scope } = target;
     if (argument.length === 0) {
       const current = this.effectiveRuntimeModel(scope);
-      const text = `Current model: ${current?.label ?? "unknown"}. Choose a configured model:`;
+      const currentLabel = current === undefined ? "unknown" : slackRuntimeModelPresentation(current).label;
+      const text = `Current model: ${currentLabel}. Choose a configured model:`;
       const blocks = this.modelMenuBlocks(scope, text);
       if (blocks === undefined) {
-        await this.api.chatPostMessage({
-          channel: event.channelId,
-          thread_ts: event.threadTs,
-          text: `${text} This catalog exceeds Slack's 100-option menu limit; use /model <exact-configured-ref>.`,
-        });
+        await this.postRuntimeCommandReply(
+          target,
+          `${text} This catalog exceeds Slack's 100-option menu limit; use ${target.resetCommand} <exact-configured-ref>.`,
+        );
         return;
       }
-      await this.postRuntimeMenu(event, "model", text, blocks);
+      await this.postRuntimeMenu(target, "model", text, blocks);
       return;
     }
     if (argument.toLowerCase() === "default") {
       const effortCleared = this.selectRuntimeModel(scope, undefined);
-      await this.postRuntimeCommandReply(event, this.modelSelectionConfirmation(scope, effortCleared));
+      await this.postRuntimeCommandReply(
+        target,
+        this.modelSelectionConfirmation(scope, effortCleared, target.resetCommand),
+      );
       return;
     }
     if (!catalog.modelByValue.has(argument)) {
       await this.postRuntimeCommandReply(
-        event,
-        "That model is not available. Use /model to choose from the configured primary and fallbacks.",
+        target,
+        `That model is not available. Use ${target.resetCommand} to choose from the configured primary and fallbacks.`,
       );
       return;
     }
     const effortCleared = this.selectRuntimeModel(scope, argument);
-    await this.postRuntimeCommandReply(event, this.modelSelectionConfirmation(scope, effortCleared));
+    await this.postRuntimeCommandReply(
+      target,
+      this.modelSelectionConfirmation(scope, effortCleared, target.resetCommand),
+    );
   }
 
-  private async handleRuntimeEffortCommand(event: SlackTextEvent, argument: string): Promise<void> {
-    const scope = this.runtimeScopeFor(event);
+  private async handleRuntimeEffortCommand(
+    target: SlackRuntimeCommandTarget,
+    argument: string,
+  ): Promise<void> {
+    const { scope } = target;
     const model = this.effectiveRuntimeModel(scope);
     if (model === undefined) {
-      await this.postRuntimeCommandReply(event, "Effort controls are unavailable for the current model.");
+      await this.postRuntimeCommandReply(target, "Effort controls are unavailable for the current model.");
       return;
     }
     if (argument.toLowerCase() === "default") {
       this.selectRuntimeEffort(scope, undefined);
-      await this.postRuntimeCommandReply(event, this.effortSelectionConfirmation(scope));
+      await this.postRuntimeCommandReply(
+        target,
+        this.effortSelectionConfirmation(scope, target.resetCommand),
+      );
       return;
     }
+    const modelLabel = slackRuntimeModelPresentation(model).label;
     if (model.efforts.length === 0) {
       await this.postRuntimeCommandReply(
-        event,
-        `The current model (${model.label}) does not expose adjustable effort.`,
+        target,
+        `The current model (${modelLabel}) does not expose adjustable effort.`,
       );
       return;
     }
     if (argument.length === 0) {
-      const text = `Choose effort for ${model.label}:`;
+      const text = `Choose effort for ${modelLabel}:`;
       const blocks = this.effortMenuBlocks(scope, model, text);
       if (blocks === undefined) {
         await this.postRuntimeCommandReply(
-          event,
-          `${text} This catalog exceeds Slack's 100-option menu limit; use /effort <supported-value>.`,
+          target,
+          `${text} This catalog exceeds Slack's 100-option menu limit; use ${target.resetCommand} <supported-value>.`,
         );
         return;
       }
-      await this.postRuntimeMenu(event, "effort", text, blocks, model.value);
+      await this.postRuntimeMenu(target, "effort", text, blocks, model.value);
       return;
     }
     const effort = model.efforts.find((candidate) =>
@@ -1196,32 +1370,44 @@ export class SlackAdapter {
     );
     if (effort === undefined) {
       await this.postRuntimeCommandReply(
-        event,
-        "That effort is not available for the current model. Use /effort to see its options.",
+        target,
+        `That effort is not available for the current model. Use ${target.resetCommand} to see its options.`,
       );
       return;
     }
     this.selectRuntimeEffort(scope, effort.value);
-    await this.postRuntimeCommandReply(event, this.effortSelectionConfirmation(scope));
+    await this.postRuntimeCommandReply(
+      target,
+      this.effortSelectionConfirmation(scope, target.resetCommand),
+    );
   }
 
   private modelMenuBlocks(scope: SlackRuntimeScope, text: string): readonly unknown[] | undefined {
     const catalog = this.runtimeCatalog as SlackRuntimeControlCatalog;
     const selection = this.runtimeSelectionFor(scope);
-    const defaultModel = catalog.modelByValue.get(catalog.controls.defaultModel) as SlackRuntimeModelOption;
+    const local = this.localRuntimeSelectionFor(scope);
+    const defaultModel = this.defaultRuntimeModelFor(scope) as SlackRuntimeModelOption;
+    const defaultPresentation = slackRuntimeModelPresentation(defaultModel);
+    const defaultPrefix = scope.inheritedKey !== undefined
+      && this.inheritedRuntimeSelectionFor(scope).model !== undefined
+      ? "Channel"
+      : "Default";
     const defaultOption = slackSelectOption(
-      `Default · ${defaultModel.label}`,
+      `${defaultPrefix} · ${defaultPresentation.label}`,
       catalog.modelTokenByValue.get(defaultModel.value) as string,
+      defaultPresentation.description,
     );
     const options = [defaultOption];
-    let initialOption = selection.model === undefined ? defaultOption : undefined;
+    let initialOption = local.model === undefined ? defaultOption : undefined;
     for (const model of catalog.controls.models) {
-      if (model.value === catalog.controls.defaultModel) {
+      if (model.value === defaultModel.value) {
         continue;
       }
+      const presentation = slackRuntimeModelPresentation(model);
       const option = slackSelectOption(
-        model.label,
+        presentation.label,
         catalog.modelTokenByValue.get(model.value) as string,
+        presentation.description,
       );
       options.push(option);
       if (selection.model === model.value) {
@@ -1249,16 +1435,24 @@ export class SlackAdapter {
   ): readonly unknown[] | undefined {
     const catalog = this.runtimeCatalog as SlackRuntimeControlCatalog;
     const selection = this.runtimeSelectionFor(scope);
+    const local = this.localRuntimeSelectionFor(scope);
+    const inherited = this.inheritedRuntimeSelectionFor(scope);
     const modelToken = catalog.modelTokenByValue.get(model.value) as string;
-    const configuredDefault = catalog.controls.defaultEffort ?? "provider default";
-    const defaultOption = slackSelectOption(`Default · ${configuredDefault}`, `${modelToken}:d`);
+    const inheritedEffort = inherited.effort === undefined
+      ? undefined
+      : model.efforts.find((effort) => effort.value === inherited.effort);
+    const defaultPrefix = inheritedEffort === undefined ? "Default" : "Channel";
+    const defaultLabel = inheritedEffort?.label
+      ?? catalog.controls.defaultEffort
+      ?? "provider default";
+    const defaultOption = slackSelectOption(`${defaultPrefix} · ${defaultLabel}`, `${modelToken}:d`);
     const options = [defaultOption];
-    let initialOption = selection.effort === undefined ? defaultOption : undefined;
+    let initialOption = local.effort === undefined ? defaultOption : undefined;
     const efforts = catalog.effortByModelToken.get(modelToken) as ReadonlyMap<string, SlackRuntimeEffortOption>;
     for (const [token, effort] of efforts) {
       const option = slackSelectOption(effort.label, `${modelToken}:${token}`);
       options.push(option);
-      if (selection.effort === effort.value) {
+      if (selection.effort === effort.value && local.effort !== undefined) {
         initialOption = option;
       }
     }
@@ -1276,32 +1470,36 @@ export class SlackAdapter {
     });
   }
 
-  private async postRuntimeCommandReply(event: SlackTextEvent, text: string): Promise<void> {
+  private async postRuntimeCommandReply(
+    target: SlackRuntimeCommandTarget,
+    text: string,
+  ): Promise<void> {
     await this.api.chatPostMessage({
-      channel: event.channelId,
-      thread_ts: event.threadTs,
+      channel: target.channelId,
+      ...(target.threadTs === undefined ? {} : { thread_ts: target.threadTs }),
       text,
     });
   }
 
   private async postRuntimeMenu(
-    event: SlackTextEvent,
+    target: SlackRuntimeCommandTarget,
     control: "model" | "effort",
     text: string,
     blocks: readonly unknown[],
     expectedModel?: string,
   ): Promise<void> {
     const sent = await this.api.chatPostMessage({
-      channel: event.channelId,
-      thread_ts: event.threadTs,
+      channel: target.channelId,
+      ...(target.threadTs === undefined ? {} : { thread_ts: target.threadTs }),
       text,
       blocks,
     });
     this.rememberRuntimeMenu({
       control,
-      scope: this.runtimeScopeFor(event),
+      scope: target.scope,
       channelId: sent.channel,
       messageTs: sent.ts,
+      resetCommand: target.resetCommand,
       ...(expectedModel === undefined ? {} : { expectedModel }),
     });
   }
@@ -1450,7 +1648,7 @@ export class SlackAdapter {
       await this.replaceRuntimeMenuQuietly(
         channelId,
         messageTs,
-        this.modelSelectionConfirmation(context.scope, effortCleared),
+        this.modelSelectionConfirmation(context.scope, effortCleared, context.resetCommand),
       );
       return {
         kind: "runtime_control",
@@ -1483,7 +1681,7 @@ export class SlackAdapter {
     await this.replaceRuntimeMenuQuietly(
       channelId,
       messageTs,
-      this.effortSelectionConfirmation(context.scope),
+      this.effortSelectionConfirmation(context.scope, context.resetCommand),
     );
     return {
       kind: "runtime_control",
@@ -2497,17 +2695,80 @@ function slackRuntimeCallbackToken(salt: Uint8Array, value: string): string {
     .slice(0, RUNTIME_CALLBACK_TOKEN_LENGTH);
 }
 
-function slackSelectOption(label: string, value: string): {
-  readonly text: { readonly type: "plain_text"; readonly text: string; readonly emoji: true };
-  readonly value: string;
+function buildSlackRuntimeSlashCommandMap(
+  input: SlackRuntimeSlashCommands | undefined,
+): ReadonlyMap<string, "model" | "effort"> {
+  const commands = new Map<string, "model" | "effort">();
+  if (input === undefined) {
+    return commands;
+  }
+  for (const control of ["model", "effort"] as const) {
+    const command = normalizeSlackSlashCommand(input[control]);
+    if (command === undefined) {
+      throw new TypeError(
+        `Slack runtimeSlashCommands.${control} must be a slash-prefixed command up to 32 characters.`,
+      );
+    }
+    if (commands.has(command)) {
+      throw new TypeError("Slack runtimeSlashCommands model and effort commands must be distinct.");
+    }
+    commands.set(command, control);
+  }
+  return commands;
+}
+
+function normalizeSlackSlashCommand(value: string): string | undefined {
+  const command = value.trim().toLowerCase();
+  return /^\/[a-z0-9][a-z0-9_-]{0,30}$/u.test(command) ? command : undefined;
+}
+
+function isSlackDirectMessageChannel(channelId: SlackChannelId): boolean {
+  return channelId.trim().toUpperCase().startsWith("D");
+}
+
+function slackRuntimeModelPresentation(model: SlackRuntimeModelOption): {
+  readonly label: string;
+  readonly description?: string;
 } {
+  if (model.label !== model.value) {
+    return { label: model.label, description: model.value };
+  }
+  const segments = model.value.split(":");
+  const label = segments.at(-1) ?? model.value;
+  return segments.length > 1 ? { label, description: model.value } : { label };
+}
+
+interface SlackSelectOption {
+  readonly text: { readonly type: "plain_text"; readonly text: string; readonly emoji: false };
+  readonly value: string;
+  readonly description?: {
+    readonly type: "plain_text";
+    readonly text: string;
+    readonly emoji: false;
+  };
+}
+
+function slackSelectOption(
+  label: string,
+  value: string,
+  description?: string,
+): SlackSelectOption {
   return {
     text: {
       type: "plain_text",
       text: slackTruncateCodePoints(label, SLACK_OPTION_TEXT_MAX_CODE_POINTS),
-      emoji: true,
+      emoji: false,
     },
     value,
+    ...(description === undefined
+      ? {}
+      : {
+          description: {
+            type: "plain_text" as const,
+            text: slackTruncateCodePoints(description, SLACK_OPTION_TEXT_MAX_CODE_POINTS),
+            emoji: false as const,
+          },
+        }),
   };
 }
 
@@ -2517,8 +2778,8 @@ function runtimeMenuBlocks(input: {
   readonly actionId: string;
   readonly cancelActionId: string;
   readonly placeholder: string;
-  readonly options: readonly ReturnType<typeof slackSelectOption>[];
-  readonly initialOption: ReturnType<typeof slackSelectOption> | undefined;
+  readonly options: readonly SlackSelectOption[];
+  readonly initialOption: SlackSelectOption | undefined;
 }): readonly unknown[] {
   const select = {
     type: "static_select",
@@ -2526,7 +2787,7 @@ function runtimeMenuBlocks(input: {
     placeholder: {
       type: "plain_text",
       text: input.placeholder,
-      emoji: true,
+      emoji: false,
     },
     options: input.options,
     ...(input.initialOption === undefined ? {} : { initial_option: input.initialOption }),
@@ -2537,7 +2798,7 @@ function runtimeMenuBlocks(input: {
       text: {
         type: "plain_text",
         text: slackTruncateCodePoints(input.text, 3_000),
-        emoji: true,
+        emoji: false,
       },
     },
     {
@@ -2548,7 +2809,7 @@ function runtimeMenuBlocks(input: {
         {
           type: "button",
           action_id: input.cancelActionId,
-          text: { type: "plain_text", text: "Cancel", emoji: true },
+          text: { type: "plain_text", text: "Cancel", emoji: false },
           value: "cancel",
         },
       ],

@@ -48,11 +48,17 @@ best-effort deletes the still-transient ledger and keeps the command's one
 ## Model and effort controls
 
 The built-in agent app supplies the Slack adapter with the configured primary
-model and fallbacks, so no Slack-specific model list is required. Send the app a
-message containing `@agent /model` or `@agent /effort` to open native Block Kit
-selectors. These are mention-message commands, not workspace-registered Slack
-slash commands; using the app mention or a configured text alias keeps Slack's
-composer from intercepting the leading slash.
+model and fallbacks, so no Slack-specific model list is required. Runtime
+controls have two native entry points:
+
+- Send `@agent /model` or `@agent /effort` as an ordinary mention message. In a
+  shared channel this keeps the selection local to that Slack thread.
+- Register `/<bot-username>-model` and `/<bot-username>-effort` as Slack Slash
+  Commands. `startSlackAdapter` derives these exact names from `auth.test.user`,
+  so a bot named `foo` handles `/foo-model` and `/foo-effort` without a
+  mono-agent config field. Slack slash commands do not carry thread context, so
+  shared-channel selections made this way apply across the channel. A thread's
+  mention-command selection can still override the inherited channel choice.
 
 `startSlackAdapter` discovers the authenticated bot user ID with `auth.test` and
 merges it with any configured `botUserIds`. A leading self-mention is removed
@@ -65,18 +71,29 @@ The same controls also accept exact arguments:
 
 - `@agent /model default` or `@agent /model <exact-configured-ref>`
 - `@agent /effort default` or `@agent /effort <supported-value>`
+- `/<bot-username>-model default` or `/<bot-username>-model <exact-configured-ref>`
+- `/<bot-username>-effort default` or `/<bot-username>-effort <supported-value>`
 
 In a direct-message channel, a selection applies to every subsequent DM turn,
-including new Slack threads. In public and private shared channels, it applies
-only to the Slack thread where it was chosen; everyone using that thread shares
-the selection. State is process-local and resets on restart. Changing models
-also clears a selected effort when the new model does not support it.
+including new Slack threads. In public and private shared channels, slash-command
+choices are channel-wide while mention-command choices are thread-local and take
+precedence. Everyone using the same scope shares its selection. State is
+process-local and resets on restart. Changing models also clears a selected
+effort when the new model does not support it.
+
+Model options use a short model identifier as the title and the exact configured
+reference as descriptive text. Runtime-control plain text explicitly disables
+Slack emoji expansion so colon-delimited references remain literal.
 
 Enable **Interactivity & Shortcuts** in the Slack app so selector actions arrive
-over Socket Mode. A direct programmatic adapter consumer can omit
-`runtimeControls` to leave `/model` and `/effort` unbound, or supply a validated
-catalog through that option. Slack static-select menus support at most 100
-options; a larger catalog remains selectable with the exact-argument form.
+over Socket Mode. To expose commands in Slack's `/` picker, create the two Slash
+Commands in the app configuration, add the `commands` bot scope, and reinstall
+the app if Slack requests authorization; Socket Mode carries their payloads, so
+no Request URL is needed. A direct programmatic adapter consumer can override
+the derived names with `runtimeSlashCommands`, omit `runtimeControls` to leave
+all runtime commands unbound, or supply a validated catalog through that option.
+Slack static-select menus support at most 100 options; a larger catalog remains
+selectable with the exact-argument form.
 
 ## Silent-delivery limitation
 
@@ -204,10 +221,14 @@ SlackRequestOptions
 SlackRuntimeControls
 SlackRuntimeEffortOption
 SlackRuntimeModelOption
+SlackRuntimeSlashCommands
 SlackSendOutcome
 SlackShortcutBinding
 SlackShortcutConfig
 SlackShortcutPayload
+SlackSlashCommandHandler
+SlackSlashCommandHandlingResult
+SlackSlashCommandPayload
 SlackSocketModeEnvelope
 SlackSocketModeRunner
 SlackSocketModeRunnerBackoffOptions

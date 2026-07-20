@@ -230,6 +230,26 @@ export interface SlackSocketModeEnvelope {
 }
 
 /**
+ * A workspace-registered Slack slash command delivered through Socket Mode.
+ * Slash commands do not carry thread context, so runtime-control commands use
+ * a DM-wide or shared-channel-wide selection scope.
+ */
+export interface SlackSlashCommandPayload {
+  command: string;
+  text?: string;
+  channel_id: SlackChannelId;
+  channel_name?: string;
+  user_id?: SlackUserId;
+  user_name?: string;
+  team_id?: string;
+  team_domain?: string;
+  api_app_id?: string;
+  response_url?: string;
+  trigger_id?: string;
+  [key: string]: unknown;
+}
+
+/**
  * A Slack shortcut interactivity payload, delivered over Socket Mode inside a
  * `type: "interactive"` envelope when a user invokes a registered shortcut. A
  * GLOBAL shortcut (the ⚡ menu) is `type: "shortcut"` and carries no channel; a

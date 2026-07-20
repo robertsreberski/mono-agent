@@ -48,8 +48,8 @@ Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the
   "concurrency": { "maxConcurrentRuns": 4, "maxPendingRuns": 8 }
 }
 ```
-**Steps:** create a Slack app (Socket Mode app token + bot token, with Interactivity enabled) → `mono-agent init` (allow-all by default) → write `mcp.json` (the MCP tool becomes available from the server declaration — MCP tools aren't gated by `allowedTools`) → add Slack; the adapter discovers its own bot user ID, and `SlackSendMessage` is auto-available under allow-all or named when using a specific allowlist → `validate` → `start`.
-**Smoke:** mention the bot in an allowed channel; confirm the 👀/assistant status, a fresh final reply followed by removal of the temporary MCP-tool activity message, the tool firing in the artifact, and `SlackSendMessage` posting only to allowed channels. Send `@agent /model`, choose a configured option, and verify it applies only inside that shared-channel thread.
+**Steps:** create a Slack app (Socket Mode app token + bot token, with Interactivity enabled and the `commands` bot scope) → register `/<bot-username>-model` and `/<bot-username>-effort` without a Request URL → `mono-agent init` (allow-all by default) → write `mcp.json` (the MCP tool becomes available from the server declaration — MCP tools aren't gated by `allowedTools`) → add Slack; the adapter discovers its own bot identity, and `SlackSendMessage` is auto-available under allow-all or named when using a specific allowlist → `validate` → `start`.
+**Smoke:** mention the bot in an allowed channel; confirm the 👀/assistant status, a fresh final reply followed by removal of the temporary MCP-tool activity message, the tool firing in the artifact, and `SlackSendMessage` posting only to allowed channels. Run `/<bot-username>-model`, choose a configured option, and verify two threads inherit it; then use `@agent /model` in one thread and verify only that thread overrides the channel choice. Confirm colon-delimited references are literal rather than emoji-expanded.
 
 ## 3. Fully local Ollama agent (no cloud)
 **For:** a privacy-focused user with no cloud budget.

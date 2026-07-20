@@ -10,6 +10,7 @@ import {
   type SlackEventHandlingResult,
   type SlackHomeTabOptions,
   type SlackRuntimeControls,
+  type SlackRuntimeSlashCommands,
   type SlackShortcutBinding,
 } from "./adapter.js";
 import {
@@ -53,8 +54,13 @@ export interface SlackAdapterStartOptions {
   readonly stream?: SlackAdapterStreamOptions;
   readonly messages?: SlackAdapterMessages;
   readonly attachments?: SlackAttachmentOptions;
-  /** Native model/effort choices exposed through message-thread Block Kit menus. */
+  /** Native model/effort choices exposed through message and slash-command Block Kit menus. */
   readonly runtimeControls?: SlackRuntimeControls;
+  /**
+   * Exact registered runtime slash commands. Defaults to
+   * `/<authenticated-bot-username>-model` and `/<authenticated-bot-username>-effort`.
+   */
+  readonly runtimeSlashCommands?: SlackRuntimeSlashCommands;
   /**
    * Shortcut bindings (callback_id → prompt). When set, the Socket Mode runner
    * routes shortcut payloads to the adapter, which runs the bound prompt as a
@@ -142,8 +148,16 @@ export async function startSlackAdapter(
 
   const knownSecrets = [options.botToken, options.appToken] as const;
   const logger = createSecretSafeSlackLogger(options.logger, knownSecrets);
-  const botUserIds = await resolveBotUserIds(api, options.botUserIds, logger);
-  const adapter = new SlackAdapter(buildAdapterOptions(api, options, logger, botUserIds));
+  const identity = await resolveBotIdentity(api, options.botUserIds, logger);
+  const runtimeSlashCommands = options.runtimeSlashCommands
+    ?? deriveSlackRuntimeSlashCommands(identity.botUserName);
+  const adapter = new SlackAdapter(buildAdapterOptions(
+    api,
+    options,
+    logger,
+    identity.botUserIds,
+    runtimeSlashCommands,
+  ));
   const runner = new SlackSocketModeRunner(buildRunnerOptions(
     api,
     adapter,
@@ -194,6 +208,7 @@ function buildAdapterOptions(
   options: SlackAdapterStartOptions,
   logger: SlackAdapterStartLogger | undefined,
   botUserIds: readonly SlackUserId[],
+  runtimeSlashCommands: SlackRuntimeSlashCommands | undefined,
 ): ConstructorParameters<typeof SlackAdapter>[0] {
   const adapterOptions: ConstructorParameters<typeof SlackAdapter>[0] = {
     api,
@@ -224,6 +239,9 @@ function buildAdapterOptions(
   if (options.runtimeControls !== undefined) {
     adapterOptions.runtimeControls = options.runtimeControls;
   }
+  if (runtimeSlashCommands !== undefined) {
+    adapterOptions.runtimeSlashCommands = runtimeSlashCommands;
+  }
   if (options.shortcuts !== undefined) {
     adapterOptions.shortcuts = options.shortcuts;
   }
@@ -242,31 +260,62 @@ function buildAdapterOptions(
   return adapterOptions;
 }
 
-async function resolveBotUserIds(
+interface ResolvedSlackBotIdentity {
+  readonly botUserIds: readonly SlackUserId[];
+  readonly botUserName?: string;
+}
+
+async function resolveBotIdentity(
   api: SlackWebApi,
   configuredBotUserIds: readonly SlackUserId[] | undefined,
   logger: SlackAdapterStartLogger | undefined,
-): Promise<readonly SlackUserId[]> {
+): Promise<ResolvedSlackBotIdentity> {
   const botUserIds = [...(configuredBotUserIds ?? [])];
   try {
     const auth = await api.authTest();
+    const botUserName = auth.user?.trim();
     const discoveredUserId = auth.user_id?.trim();
     if (discoveredUserId === undefined || discoveredUserId.length === 0) {
       logger?.warn?.(
         "Slack auth.test did not return a bot user ID; continuing with configured mention identities.",
       );
-      return botUserIds;
+      return {
+        botUserIds,
+        ...(botUserName === undefined || botUserName.length === 0 ? {} : { botUserName }),
+      };
     }
     if (!botUserIds.some((userId) => userId.toLowerCase() === discoveredUserId.toLowerCase())) {
       botUserIds.push(discoveredUserId);
     }
+    return {
+      botUserIds,
+      ...(botUserName === undefined || botUserName.length === 0 ? {} : { botUserName }),
+    };
   } catch (error) {
     logger?.warn?.(
       "Could not discover the Slack bot user ID; continuing with configured mention identities.",
       { error: redactSlackErrorMessage(error) },
     );
   }
-  return botUserIds;
+  return { botUserIds };
+}
+
+function deriveSlackRuntimeSlashCommands(
+  botUserName: string | undefined,
+): SlackRuntimeSlashCommands | undefined {
+  const prefix = botUserName
+    ?.trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/gu, "-")
+    .replace(/^[-_]+|[-_]+$/gu, "")
+    .slice(0, 24);
+  if (prefix === undefined || prefix.length === 0) {
+    return undefined;
+  }
+  return {
+    model: `/${prefix}-model`,
+    effort: `/${prefix}-effort`,
+  };
 }
 
 function buildRunnerOptions(
@@ -325,6 +374,22 @@ function buildRunnerOptions(
         }
       } catch (error) {
         logger?.error?.("Slack interaction handling failed.", {
+          error: redactSlackErrorMessage(error),
+        });
+      }
+    };
+  }
+  if (hasRuntimeControls) {
+    runnerOptions.onSlashCommand = async (payload) => {
+      try {
+        const result = await adapter.handleSlashCommand(payload);
+        if (result.kind === "runtime_command") {
+          logger?.info?.("Slack runtime slash command handled.", { result });
+        } else {
+          logger?.debug?.("Slack runtime slash command ignored.", { result });
+        }
+      } catch (error) {
+        logger?.error?.("Slack runtime slash command handling failed.", {
           error: redactSlackErrorMessage(error),
         });
       }
