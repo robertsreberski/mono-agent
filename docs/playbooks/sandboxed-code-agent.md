@@ -21,7 +21,7 @@ An agent that can read repos and run shell commands or run-scoped JavaScript ins
 ## Features used
 
 - [`sandbox.mode`](/tools/sandbox/) — native (`srt`-wrapped commands) vs off
-- [`sandbox.network-policy`](/tools/sandbox/) — enforced `none` / `localhost` / `allowlist`
+- [`sandbox.network-policy`](/tools/sandbox/) — enforced `none` / `localhost` / `allowlist` / `all`
 - [`sandbox.filesystem-scopes`](/tools/sandbox/) — readable/writable roots + deny-write globs
 - [`sandbox.fallback`](/tools/sandbox/) — `fail-closed` vs `unsafe-host-process` when `srt` is unavailable
 - [`tool-policy.allow-all`](/tools/policy/) — allow-all tools (`["*"]`); the sandbox, not an allowlist, is what constrains the code tools
