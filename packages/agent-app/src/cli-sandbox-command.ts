@@ -32,9 +32,10 @@ const DEFAULT_SANDBOX_COMMAND_DEPENDENCIES: SandboxCommandDependencies = {
 
 /** App-owned sandbox lifecycle surface; safe to inject in focused CLI tests. */
 export async function runSandboxCommand(
-  args: Pick<ParsedCliArgs, "positionals">,
+  args: Pick<ParsedCliArgs, "positionals" | "json">,
   dependencies: SandboxCommandDependencies = DEFAULT_SANDBOX_COMMAND_DEPENDENCIES,
 ): Promise<number> {
+  const json = args.json === true;
   const [subcommand, ...extra] = args.positionals;
   if ((subcommand !== "status" && subcommand !== "setup" && subcommand !== "check") || extra.length > 0) {
     process.stderr.write(ui.errorLine("[sandbox_usage] Usage: mono-agent sandbox status | setup | check."));
@@ -43,10 +44,19 @@ export async function runSandboxCommand(
 
   if (subcommand === "status") {
     try {
-      printSandboxRuntimeStatus(await dependencies.status());
+      const status = await dependencies.status();
+      if (json) {
+        process.stdout.write(`${JSON.stringify({ ok: true, sandbox: status })}\n`);
+      } else {
+        printSandboxRuntimeStatus(status);
+      }
       return 0;
     } catch (error) {
-      process.stderr.write(ui.errorLine(`[sandbox_status_failed] ${reasonOf(error)}`));
+      if (json) {
+        process.stdout.write(`${JSON.stringify({ ok: false, error: { code: "sandbox_status_failed", message: reasonOf(error) } })}\n`);
+      } else {
+        process.stderr.write(ui.errorLine(`[sandbox_status_failed] ${reasonOf(error)}`));
+      }
       return 1;
     }
   }

@@ -355,6 +355,39 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["install-skill", "--project", "--check", "--update"])).toThrow(/either/u);
   });
 
+  it("accepts --json on the read/status surfaces", () => {
+    for (const argv of [
+      ["validate", "--json"],
+      ["config", "--json"],
+      ["presets", "list", "--json"],
+      ["presets", "show", "starter", "--json"],
+      ["status", "--json"],
+      ["sandbox", "status", "--json"],
+      ["install-skill", "--project", "--check", "--json"],
+      ["runs", "report", "--json"],
+      ["runs", "audit", "--json"],
+      ["memory", "stats", "--json"],
+      ["continuations", "list", "--json"],
+    ] as const) {
+      expect(parseCliArgs([...argv])).toMatchObject({ json: true });
+    }
+  });
+
+  it("rejects --json on lifecycle/interactive commands with a usage error naming the JSON surfaces", () => {
+    for (const command of ["init", "auth", "start", "stop", "restart", "logs", "tui", "web", "sessions", "backfill"] as const) {
+      expect(() => parseCliArgs([command, "--json"])).toThrow(/--json is not supported/u);
+    }
+    // The error names the supported surfaces so a caller knows where JSON lives.
+    expect(() => parseCliArgs(["start", "--json"])).toThrow(/config, presets, status/u);
+  });
+
+  it("gates install-skill/sandbox --json to their read-only subcommands", () => {
+    expect(() => parseCliArgs(["install-skill", "--json"])).toThrow(/install-skill --project --check/u);
+    expect(() => parseCliArgs(["install-skill", "--project", "--json"])).toThrow(/install-skill --project --check/u);
+    expect(() => parseCliArgs(["sandbox", "setup", "--json"])).toThrow(/sandbox status/u);
+    expect(() => parseCliArgs(["sandbox", "check", "--json"])).toThrow(/sandbox status/u);
+  });
+
   it("parses backfill flags (--run/--all/--since/--until/--include-memory/--dry-run)", () => {
     expect(parseCliArgs(["backfill", "--all", "--dry-run"])).toMatchObject({
       command: "backfill",

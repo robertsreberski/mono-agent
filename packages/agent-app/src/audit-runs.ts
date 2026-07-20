@@ -35,11 +35,20 @@ export async function runAuditRuns(args: RunAuditRunsArgs): Promise<number> {
     const staleAfterMs = args.staleAfterMs ?? await resolveAppTraceStaleAfterMs(input);
     report = await auditRecordedRuns(artifactDir, { staleAfterMs, scope: args.includeMemory === true ? "all" : "agent" });
   } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    const message = error instanceof Error ? error.message : String(error);
+    // In `--json` mode keep stdout a single valid envelope; otherwise the plain
+    // stderr message and exit 1 are unchanged.
+    if (args.json === true) {
+      process.stdout.write(`${JSON.stringify({ ok: false, error: { code: "audit_failed", message } }, null, 2)}\n`);
+    } else {
+      process.stderr.write(`${message}\n`);
+    }
     return 1;
   }
 
-  process.stdout.write(args.json === true ? `${JSON.stringify(report, null, 2)}\n` : renderAuditReport(report));
+  // The `runs audit` payload gains the uniform top-level `ok`; the audit report
+  // is spread in beside it (engine computation untouched).
+  process.stdout.write(args.json === true ? `${JSON.stringify({ ok: true, ...report }, null, 2)}\n` : renderAuditReport(report));
   return 0;
 }
 

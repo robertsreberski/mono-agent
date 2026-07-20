@@ -386,7 +386,7 @@ export async function runBackgroundCommand(
     case "stop":
       return await stopBackground(target, deps);
     case "status":
-      return await statusBackground(target, deps);
+      return await statusBackground(target, deps, { json: args.json === true });
     case "logs":
       return await tailLogs(target, deps, { follow: args.follow, lines: args.lines ?? DEFAULT_LOG_LINES });
   }

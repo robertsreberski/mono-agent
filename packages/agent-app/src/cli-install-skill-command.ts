@@ -22,6 +22,14 @@ export async function runInstallSkill(args: ParsedCliArgs): Promise<number> {
         return 0;
       }
       const result = await checkManagedProjectSkills(process.cwd());
+      // `--json` is gated to `--project --check` by the parser; keep stdout pure JSON.
+      if (args.json === true) {
+        process.stdout.write(`${JSON.stringify({
+          ok: result.ok,
+          skills: result.statuses.map((status) => ({ name: status.name, status: status.status, path: status.path })),
+        })}\n`);
+        return result.ok ? 0 : 1;
+      }
       for (const status of result.statuses) {
         const badge = status.status === "ready" ? ui.badge("ok") : ui.badge("error");
         process.stdout.write(`${badge}${status.name}: ${status.status} (${status.path})\n`);
@@ -32,7 +40,12 @@ export async function runInstallSkill(args: ParsedCliArgs): Promise<number> {
       process.stdout.write(`${ui.badge("ok")}docs MCP pairing skipped in project mode\n`);
       return result.ok ? 0 : 1;
     } catch (error) {
-      process.stderr.write(ui.errorLine(error instanceof Error ? error.message : String(error)));
+      const message = error instanceof Error ? error.message : String(error);
+      if (args.json === true) {
+        process.stdout.write(`${JSON.stringify({ ok: false, error: { code: "project-skills-check-failed", message } })}\n`);
+        return 1;
+      }
+      process.stderr.write(ui.errorLine(message));
       return 1;
     }
   }

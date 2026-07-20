@@ -64,6 +64,7 @@ describe("runCli metrics", () => {
     try {
       const result = await captureCli(() => withCwd(cwd, () => withCleanMonoAgentEnv(() => runCli(["metrics", "--by", "model", "--json"]))));
       const report = JSON.parse(result.stdout) as {
+        readonly ok: boolean;
         readonly artifactDir: string;
         readonly overall: {
           readonly totalRuns: number;
@@ -74,6 +75,7 @@ describe("runCli metrics", () => {
       };
 
       expect(result.code).toBe(0);
+      expect(report.ok).toBe(true);
       expect(report.artifactDir).toBe(await realpath(artifacts));
       expect(report.overall.totalRuns).toBe(2);
       expect(report.overall.statusCounts.succeeded).toBe(1);

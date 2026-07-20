@@ -179,6 +179,124 @@ describe("runCli config", () => {
     }
   });
 
+  it("emits a flat JSON envelope with redacted secrets and no ANSI in --json mode", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-app-cli-config-"));
+    const previousCwd = process.cwd();
+    const previousMonoAgentEnv = new Map<string, string>();
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("MONO_AGENT_")) {
+        previousMonoAgentEnv.set(key, process.env[key] ?? "");
+        delete process.env[key];
+      }
+    }
+
+    const chunks: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+      return true;
+    }) as typeof process.stdout.write);
+
+    try {
+      process.chdir(dir);
+      await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+      const configPath = join(dir, "mono-agent.config.json");
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          runtime: { model: "pi:openai-codex:gpt-5.5" },
+          context: { identityPath: "./IDENTITY.md" },
+          memory: {
+            mode: "journal",
+            path: "./memory",
+            embeddings: { provider: "openai", model: "text-embedding-3-small", apiKey: "sk-json-secret" },
+          },
+        }, null, 2),
+      );
+
+      await expect(runCli(["config", "--config", configPath, "--json"])).resolves.toBe(0);
+
+      const out = chunks.join("");
+      // stdout is exactly one JSON object; no ANSI escape sequences.
+      expect(out).not.toMatch(/\u001b\[/u);
+      expect(out).not.toContain("sk-json-secret");
+      const parsed = JSON.parse(out) as {
+        readonly ok: boolean;
+        readonly config: readonly { readonly id: string; readonly fields: readonly { readonly id: string; readonly value: string; readonly redacted?: boolean }[] }[];
+        readonly channels: readonly unknown[];
+        readonly channelStatus: readonly unknown[];
+        readonly warnings: readonly string[];
+      };
+      expect(parsed.ok).toBe(true);
+      expect(Array.isArray(parsed.config)).toBe(true);
+      expect(Array.isArray(parsed.channels)).toBe(true);
+      expect(Array.isArray(parsed.channelStatus)).toBe(true);
+      // The secret warning still travels, but inside the JSON payload, not on stdout prose.
+      expect(parsed.warnings.some((warning) => warning.includes("memory.embeddings.apiKey"))).toBe(true);
+      // The redacted apiKey field never carries the raw secret.
+      const secretField = parsed.config
+        .flatMap((section) => section.fields)
+        .find((field) => field.id === "memory.embeddings.apiKey");
+      expect(secretField?.redacted).toBe(true);
+      expect(secretField?.value).not.toContain("sk-json-secret");
+    } finally {
+      stdoutSpy.mockRestore();
+      process.chdir(previousCwd);
+      for (const key of Object.keys(process.env)) {
+        if (key.startsWith("MONO_AGENT_")) delete process.env[key];
+      }
+      for (const [key, value] of previousMonoAgentEnv) process.env[key] = value;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("emits an ok:false error envelope and exit 1 for a broken config file in --json mode", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-app-cli-config-"));
+    const previousCwd = process.cwd();
+    const previousMonoAgentEnv = new Map<string, string>();
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith("MONO_AGENT_")) {
+        previousMonoAgentEnv.set(key, process.env[key] ?? "");
+        delete process.env[key];
+      }
+    }
+
+    const stdoutChunks: string[] = [];
+    const stderrChunks: string[] = [];
+    const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      stdoutChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+      return true;
+    }) as typeof process.stdout.write);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      stderrChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+      return true;
+    }) as typeof process.stderr.write);
+
+    try {
+      process.chdir(dir);
+      const configPath = join(dir, "mono-agent.config.json");
+      await writeFile(configPath, "{ this is not valid json", "utf8");
+
+      await expect(runCli(["config", "--config", configPath, "--json"])).resolves.toBe(1);
+
+      const out = stdoutChunks.join("");
+      const parsed = JSON.parse(out) as { readonly ok: boolean; readonly error: { readonly code: string; readonly message: string } };
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error.code).toBe("config-invalid");
+      expect(typeof parsed.error.message).toBe("string");
+      // JSON mode keeps stdout pure JSON; no human error prose leaks onto stdout.
+      expect(out).not.toMatch(/\u001b\[/u);
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+      process.chdir(previousCwd);
+      for (const key of Object.keys(process.env)) {
+        if (key.startsWith("MONO_AGENT_")) delete process.env[key];
+      }
+      for (const [key, value] of previousMonoAgentEnv) process.env[key] = value;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("prints unknown key warnings for stale config blocks", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agent-app-cli-config-"));
     const previousCwd = process.cwd();

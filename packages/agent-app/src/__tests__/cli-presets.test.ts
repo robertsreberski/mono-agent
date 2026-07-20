@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { parseCliArgs, renderPresetList, renderPresetShow, resolvePiAuthPathForLogin, runProviderSetupBeforeInit, shouldRunInitWizard } from "../cli.js";
+import { parseCliArgs, presetShowData, renderPresetList, renderPresetShow, resolvePiAuthPathForLogin, runCli, runProviderSetupBeforeInit, shouldRunInitWizard } from "../cli.js";
 import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
 import { initMonoAgentFolder } from "../init.js";
 import { answersFromCli } from "../wizard/from-flags.js";
@@ -272,6 +272,92 @@ describe("renderPresetShow", () => {
     expect(out).toContain(".env.example");
     expect(out).toContain("MONO_AGENT_TELEGRAM_BOT_TOKEN");
     expect(out).not.toMatch(/"telegramToken"\s*:/u);
+  });
+});
+
+describe("presetShowData", () => {
+  it("returns configJson as an object plus env example, files, and checklist", () => {
+    const data = presetShowData(findPreset("code-sandbox")!);
+    expect(typeof data.configJson).toBe("object");
+    expect((data.configJson as { sandbox?: unknown }).sandbox).toBeDefined();
+    expect(Array.isArray(data.files)).toBe(true);
+    expect(data.checklist.every((item) => typeof item.sectionId === "string" && typeof item.mustBe === "string")).toBe(true);
+  });
+
+  it("projects only the public preset fields, never the internal wizard answers", () => {
+    // telegram-assistant carries a non-empty `answers` in the catalog, so absence
+    // in the projection is a real narrowing, not a vacuous check.
+    const source = findPreset("telegram-assistant")!;
+    expect(Object.keys(source.answers).length).toBeGreaterThan(0);
+    const data = presetShowData(source);
+    expect(Object.keys(data.preset).sort()).toEqual(["description", "id", "playbook", "riskLevel", "title"]);
+    expect("answers" in data.preset).toBe(false);
+  });
+});
+
+describe("runCli presets --json", () => {
+  function captureStdout(): { chunks: string[]; restore: () => void } {
+    const chunks: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+      return true;
+    }) as typeof process.stdout.write);
+    return { chunks, restore: () => spy.mockRestore() };
+  }
+
+  it("lists every preset in a flat ok envelope with no ANSI", async () => {
+    const capture = captureStdout();
+    try {
+      await expect(runCli(["presets", "list", "--json"])).resolves.toBe(0);
+      const out = capture.chunks.join("");
+      expect(out).not.toContain(String.fromCharCode(27));
+      const parsed = JSON.parse(out) as { readonly ok: boolean; readonly presets: readonly Record<string, unknown>[] };
+      expect(parsed.ok).toBe(true);
+      for (const id of presetIds()) {
+        expect(parsed.presets.some((preset) => preset.id === id)).toBe(true);
+      }
+      // The internal `answers` wizard shape must never leak into the list contract.
+      expect(parsed.presets.every((preset) => !("answers" in preset))).toBe(true);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("shows a preset with configJson as an object", async () => {
+    const capture = captureStdout();
+    try {
+      await expect(runCli(["presets", "show", "code-sandbox", "--json"])).resolves.toBe(0);
+      const parsed = JSON.parse(capture.chunks.join("")) as {
+        readonly ok: boolean;
+        readonly preset: Record<string, unknown> & { readonly id: string };
+        readonly configJson: { readonly sandbox?: unknown };
+        readonly envExample: string;
+        readonly files: readonly string[];
+        readonly checklist: readonly unknown[];
+      };
+      expect(parsed.ok).toBe(true);
+      expect(parsed.preset.id).toBe("code-sandbox");
+      // Only the doc'd public fields are exposed; the wizard `answers` seed is not.
+      expect(Object.keys(parsed.preset).sort()).toEqual(["description", "id", "playbook", "riskLevel", "title"]);
+      expect("answers" in parsed.preset).toBe(false);
+      expect(parsed.configJson.sandbox).toBeDefined();
+      expect(typeof parsed.envExample).toBe("string");
+      expect(Array.isArray(parsed.files)).toBe(true);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("returns an unknown-preset error envelope with exit 1", async () => {
+    const capture = captureStdout();
+    try {
+      await expect(runCli(["presets", "show", "does-not-exist", "--json"])).resolves.toBe(1);
+      const parsed = JSON.parse(capture.chunks.join("")) as { readonly ok: boolean; readonly error: { readonly code: string } };
+      expect(parsed.ok).toBe(false);
+      expect(parsed.error.code).toBe("unknown-preset");
+    } finally {
+      capture.restore();
+    }
   });
 });
 

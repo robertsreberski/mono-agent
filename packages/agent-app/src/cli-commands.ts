@@ -17,6 +17,7 @@ export { monoAgentVersion, renderHelp } from "./cli-help.js";
 import { runInstallSkill } from "./cli-install-skill-command.js";
 import { runConfig, runPresets, runValidate } from "./cli-validate-config-command.js";
 export {
+  presetShowData,
   renderConfigView,
   renderPresetList,
   renderPresetShow,

@@ -100,4 +100,25 @@ describe("mono-agent sandbox", () => {
     await expect(runSandboxCommand({ positionals: [] }, deps)).resolves.toBe(2);
     expect(stderr).toContain("[sandbox_usage]");
   });
+
+  it("emits a flat JSON status envelope with no ANSI in --json mode", async () => {
+    const deps = dependencies();
+    await expect(runSandboxCommand({ positionals: ["status"], json: true }, deps)).resolves.toBe(0);
+    expect(stdout).not.toContain(String.fromCharCode(27));
+    const parsed = JSON.parse(stdout) as { readonly ok: boolean; readonly sandbox: typeof READY_STATUS };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.sandbox.state).toBe("ready");
+    expect(parsed.sandbox.source).toBe("managed");
+    expect(parsed.sandbox.installRoot).toBe(READY_STATUS.installRoot);
+    expect(stderr).toBe("");
+  });
+
+  it("emits an ok:false error envelope on a status probe failure in --json mode", async () => {
+    const deps = dependencies({ status: vi.fn(async () => { throw new Error("srt cache unreadable"); }) });
+    await expect(runSandboxCommand({ positionals: ["status"], json: true }, deps)).resolves.toBe(1);
+    const parsed = JSON.parse(stdout) as { readonly ok: boolean; readonly error: { readonly code: string; readonly message: string } };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error.code).toBe("sandbox_status_failed");
+    expect(parsed.error.message).toContain("srt cache unreadable");
+  });
 });

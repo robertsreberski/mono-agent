@@ -13,6 +13,26 @@ import type { CodexLoginMode } from "./provider-setup.js";
 const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "sessions", "install-skill", "backfill", "runs", "audit-runs", "metrics", "memory", "continuations"] as const;
 const KNOWN_COMMANDS = [...PUBLIC_COMMANDS, INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND] as const;
 
+// Canonical (post-normalization) commands that emit a `--json` envelope. This is
+// an allowlist so future commands fail closed until they opt in explicitly. The
+// `install-skill`/`sandbox` entries carry an extra subcommand guard below.
+const JSON_CAPABLE_COMMANDS = [
+  "validate",
+  "config",
+  "presets",
+  "status",
+  "sandbox",
+  "install-skill",
+  "runs",
+  "memory",
+  "continuations",
+] as const;
+
+// Human-facing list for the rejection message: the two subcommand-gated surfaces
+// are qualified so the error points at the exact invocation that accepts `--json`.
+const JSON_CAPABLE_COMMANDS_DISPLAY =
+  "validate, config, presets, status, sandbox status, install-skill --project --check, runs, memory, continuations";
+
 // Commands removed outright before the KNOWN_COMMANDS gate. Parsing throws with the
 // replacement, and runCli maps that parse error to exit code 2 (usage-error).
 const REMOVED_COMMANDS = new Map<string, string>([
@@ -637,6 +657,22 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   }
   if (clearSessions && cmd !== "restart") {
     throw new Error("--clear-sessions is only supported for `mono-agent restart`.");
+  }
+  // `--json` is uniform on the read/status surfaces only. Reject it on the
+  // lifecycle/interactive commands (init, auth, start, stop, restart, logs, tui,
+  // web, sessions, backfill) rather than silently ignoring it. `doctor`/`setup`/
+  // `audit-runs`/`metrics` already normalized to their canonical `cmd` above.
+  if (json && !(JSON_CAPABLE_COMMANDS as readonly string[]).includes(cmd)) {
+    throw new Error(`--json is not supported for \`mono-agent ${cmd}\`; it is available on ${JSON_CAPABLE_COMMANDS_DISPLAY}.`);
+  }
+  // `install-skill` exposes JSON only for its read-only drift check.
+  if (json && cmd === "install-skill" && !(project && check)) {
+    throw new Error("--json is only supported for `mono-agent install-skill --project --check`.");
+  }
+  // `sandbox setup`/`sandbox check` are interactive/side-effecting; only the
+  // read-only `sandbox status` emits JSON.
+  if (json && cmd === "sandbox" && (positionals[0] === "setup" || positionals[0] === "check")) {
+    throw new Error("--json is only supported for `mono-agent sandbox status`, not setup or check.");
   }
   const selectedFallbackModels = fallbacks.map((fallback) => fallback.model);
   if (model !== undefined && selectedFallbackModels.includes(model)) {
