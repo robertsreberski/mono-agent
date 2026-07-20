@@ -57,6 +57,19 @@ describe("formatMarkdownForSlack", () => {
       "Use `[raw](value)` and <https://example.com|real>",
     );
   });
+
+  it("restores nested protected segments without leaking sentinel tokens", () => {
+    // A link inside bold nests one protected token inside another token's
+    // payload; ascending-order restore left the inner token unrestored and
+    // leaked U+E000/U+E001 sentinels into delivered Slack messages.
+    expect(formatMarkdownForSlack("**see [x](https://u.example)**")).toBe(
+      "*see <https://u.example|x>*",
+    );
+    expect(
+      formatMarkdownForSlack("**[a](https://a.example)** and __[b](https://b.example)__"),
+    ).toBe("*<https://a.example|a>* and *<https://b.example|b>*");
+    expect(formatMarkdownForSlack("**see [x](https://u.example)**")).not.toMatch(/[]/u);
+  });
 });
 
 describe("normalizeSlackMarkdownToMarkdown", () => {

@@ -236,7 +236,11 @@ function createTokenStore(): {
     },
     restore(text: string): string {
       let restored = text;
-      for (let index = 0; index < tokens.length; index += 1) {
+      // Reverse creation order: a nested construct (a link inside bold) stores
+      // the inner token inside the outer token's payload, so the outer (later)
+      // token must be expanded first or the inner one survives as a leaked
+      // U+E000/U+E001 sentinel in delivered text.
+      for (let index = tokens.length - 1; index >= 0; index -= 1) {
         restored = restored.replaceAll(`${TOKEN_PREFIX}${namespace}:${index}${TOKEN_SUFFIX}`, tokens[index] ?? "");
       }
       return restored;
