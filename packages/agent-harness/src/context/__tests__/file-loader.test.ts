@@ -25,11 +25,27 @@ describe('loadContextFromFiles', () => {
     expect(context.prompt).toContain('You are the fixture context agent.');
     expect(context.prompt).toContain('Use fixture guardrails and verify real outcomes.');
     expect(context.prompt).toContain('- **research** — Find source-grounded evidence before making claims.');
+    expect(context.prompt).not.toContain(join(skillsRoot, 'research', 'SKILL.md'));
+    expect(context.prompt).not.toContain('ReadSkill');
     expect(context.metadata.sources).toEqual([
       join(filesRoot, 'SOUL.md'),
       join(filesRoot, 'IDENTITY.md'),
       join(skillsRoot, 'research', 'SKILL.md'),
     ]);
+  });
+
+  it('forwards index disclosure guidance without exposing discovered skill paths', async () => {
+    const context = await loadContextFromFiles({
+      identityPath: join(filesRoot, 'IDENTITY.md'),
+      skillsRoot,
+      skillDisclosure: 'index',
+      userMessage: 'Load fixture context.',
+    });
+
+    expect(context.prompt).toContain('call `ReadSkill` with its name');
+    expect(context.prompt).toContain('Do not use `Read` to open a skill\'s `SKILL.md`');
+    expect(context.prompt).not.toContain(join(skillsRoot, 'research', 'SKILL.md'));
+    expect(context.metadata.sources).toContain(join(skillsRoot, 'research', 'SKILL.md'));
   });
 
   it('merges explicit skills with skillsRoot discovery, deduping by name (prefers the explicit entry)', async () => {

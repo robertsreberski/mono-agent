@@ -25,6 +25,7 @@ import {
 
 Hosts wire identity/context paths, runtime, model, execution mode, tool policy, sandbox policy, history, memory, skills, and recorder factory explicitly.
 Hosts that need request-scoped runtime setup can provide `runtimeOptionsForRequest`; the harness merges those options into the runtime call, keeps configured sandbox policy monotonic, and runs the returned cleanup after execution.
+With `skillDisclosure: "index"`, the model-facing Skill Index lists names and descriptions without filesystem paths and directs the agent to load applicable instructions through `ReadSkill`; full disclosure does not emit guidance for that tool.
 
 For `append-host-summary` and `capture` write modes, a memory store that implements
 `persistCompletedTurn` receives one awaited, run-idempotent admission before the successful turn

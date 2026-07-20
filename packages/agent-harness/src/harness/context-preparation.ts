@@ -56,6 +56,7 @@ export async function prepareHarnessContext(
         : selectedSkills.index.length > 0
           ? { skills: selectedSkills.index }
           : {}),
+      ...(options.skillDisclosure === undefined ? {} : { skillDisclosure: options.skillDisclosure }),
       ...(selectedSkills.instructions.length === 0 ? {} : { skillInstructions: selectedSkills.instructions }),
     });
     // Progressive skill disclosure (index mode, opt-in): the index is in the

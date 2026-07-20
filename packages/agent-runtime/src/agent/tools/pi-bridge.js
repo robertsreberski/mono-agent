@@ -334,7 +334,7 @@ function readSkillTool(skillNames = [], { skillsRoot, dataDir, skills = [] } = {
   return {
     name: "ReadSkill",
     label: "Read Skill",
-    description: "Load the full instructions for a named skill.",
+    description: "Load the complete instructions for a named skill. Use ReadSkill instead of Read for SKILL.md files.",
     parameters: objectSchema({ name: { type: "string", enum: enumNames } }, ["name"]),
     async execute(_toolCallId, { name }) {
       if (sharedRoot) {

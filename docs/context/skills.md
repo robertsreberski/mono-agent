@@ -46,6 +46,8 @@ The folder convention is part of the standard [agent folder layout](/config/fold
 
 Generated agents use `skillDisclosure: "index"`, so their names/descriptions enter the prompt while the bodies load on demand through `ReadSkill`. `ReadSkill` is shown separately from action-tool allowlists because disabling file/shell/web actions does not disable skill disclosure.
 
+In index mode, the model-facing Skill Index contains names and descriptions but not filesystem paths to each `SKILL.md`. The prompt tells the agent to call `ReadSkill` with the selected name before following that skill; ordinary `Read` remains available for supporting files referenced by the loaded instructions. Skill paths remain in host-side context metadata for diagnostics.
+
 The file `skills/.mono-agent-managed.json` records the installed version and SHA-256 of each managed copy. Check drift without writing, or update only unchanged managed copies:
 
 ```bash
