@@ -74,7 +74,34 @@ try {
 // argv entries may contain any bytes; single-quote each one so the shell
 // re-parse inside SRT's `bash -c` wrapper preserves them verbatim.
 const quoted = command.map((argument) => `'${argument.replaceAll("'", "'\\''")}'`).join(" ");
-const wrapped = await SandboxManager.wrapWithSandbox(quoted);
+let wrapped = await SandboxManager.wrapWithSandbox(quoted);
+
+// macOS system DNS is a local service, not plain sockets: getaddrinfo talks
+// to mDNSResponder over an AF_UNIX socket reached through the /var symlink,
+// and resolver-config readers open /etc/resolv.conf through the /etc and
+// /var symlinks. The unrestricted-network profile allows `network*` but none
+// of that, so name resolution fails with ENOTFOUND while raw IP egress
+// works. Reopen exactly those paths — the resolv.conf file targets travel in
+// the settings' allowRead (SRT's read section; profile-level file allows are
+// overridden by its later deny-read block). The pinned SRT version emits the
+// literal `(allow network*)` marker in this mode; if it is absent the
+// profile is not the one this augmentation was reviewed against, so refuse
+// to run rather than start a sandbox whose network posture silently differs
+// from the declared policy.
+if (process.platform === "darwin") {
+  const marker = "(allow network*)";
+  if (!wrapped.includes(marker)) {
+    fail("SRT did not emit the unrestricted-network profile marker; refusing to launch with an unreviewed profile", 79);
+  }
+  const resolverRules = [
+    marker,
+    "(allow system-socket (socket-domain AF_UNIX))",
+    '(allow file-read-metadata (literal "/etc") (literal "/var"))',
+    '(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))',
+    '(allow network-outbound (remote unix-socket (path-literal "/var/run/mDNSResponder")))',
+  ].join("\n");
+  wrapped = wrapped.replace(marker, resolverRules);
+}
 const child = spawn(wrapped, { shell: true, stdio: "inherit" });
 child.on("exit", (code, signal) => {
   SandboxManager.cleanupAfterCommand();

@@ -594,7 +594,21 @@ export function srtSettingsForPolicy(
     ],
   };
   if (policy.network.mode === "all") {
-    return { filesystem };
+    return {
+      filesystem: {
+        ...filesystem,
+        // With egress open, name resolution must work inside the sandbox.
+        // getaddrinfo runs over mDNSResponder (reopened by the embed runner's
+        // profile rules); res_*/Go-style resolvers read resolv.conf directly.
+        // These must flow through SRT's own read-rule section — profile-level
+        // file allows are overridden by its later deny-read block.
+        allowRead: removeCoveredRoots([
+          ...filesystem.allowRead,
+          "/private/var/run/resolv.conf",
+          "/var/run/resolv.conf",
+        ].sort()),
+      },
+    };
   }
   return {
     network: {
@@ -1318,7 +1332,16 @@ async function proveSrtEmbedEnforcement(
       "try{fs.writeFileSync(deniedOutput,'bad');process.exit(43)}catch{}",
       "try{fs.writeFileSync(deniedEnv,'bad');process.exit(44)}catch{}",
       "try{fs.writeFileSync(settingsPath,'{}');process.exit(45)}catch{}",
-      "fetch('http://127.0.0.1:'+port+'/').then((r)=>r.text()).then((t)=>{process.exit(t==='mono-agent-embed-ok'?0:46)},()=>process.exit(47));",
+      // System DNS must work under the unrestricted profile: resolver config
+      // through the /etc symlink chain and the mDNSResponder socket (both
+      // local and deterministic; no external lookup).
+      "if(process.platform==='darwin'){",
+      "try{fs.readFileSync('/etc/resolv.conf')}catch{process.exit(48)}",
+      "const s=require('node:net').connect('/var/run/mDNSResponder');",
+      "s.on('error',()=>process.exit(49));",
+      "s.on('connect',()=>{s.destroy();run()});",
+      "}else{run()}",
+      "function run(){fetch('http://127.0.0.1:'+port+'/').then((r)=>r.text()).then((t)=>{process.exit(t==='mono-agent-embed-ok'?0:46)},()=>process.exit(47));}",
     ].join("");
     await execFileAsync(
       launch.command,

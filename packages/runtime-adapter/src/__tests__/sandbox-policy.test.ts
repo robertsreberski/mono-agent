@@ -466,7 +466,13 @@ describe("srt integration contract", () => {
     expect(settings).not.toHaveProperty("network");
     expect(settings.filesystem).toMatchObject({
       denyRead: ["/"],
-      allowRead: expect.arrayContaining(["/Users/example/project"]),
+      allowRead: expect.arrayContaining([
+        "/Users/example/project",
+        // System resolver config must be readable when egress is open —
+        // res_*/Go-style resolvers read it directly.
+        "/private/var/run/resolv.conf",
+        "/var/run/resolv.conf",
+      ]),
       allowWrite: ["/Users/example/project"],
     });
     expect(JSON.parse(JSON.stringify(settings))).not.toHaveProperty("network");
@@ -542,12 +548,23 @@ describe("srt integration contract", () => {
           network: { mode: "all" },
         });
         const engine = createSrtSandboxEngine();
+        // The DNS assertions cover the macOS system-resolver paths the embed
+        // profile must reopen: getaddrinfo needs the mDNSResponder unix
+        // socket, and resolver-config readers need /etc/resolv.conf through
+        // its /var symlink chain. Both are local and deterministic — no
+        // external lookup is attempted.
         const script = [
           "const fs=require('node:fs');",
           "const [secretPath,outPath,port]=process.argv.slice(1);",
           "fs.writeFileSync(outPath,'written');",
           "try{fs.readFileSync(secretPath);process.exit(42)}catch{}",
-          "fetch('http://127.0.0.1:'+port+'/').then(r=>r.text()).then(t=>{process.exit(t==='embed-ok'?0:43)},()=>process.exit(44));",
+          "if(process.platform==='darwin'){",
+          "try{fs.readFileSync('/etc/resolv.conf')}catch{process.exit(45)}",
+          "const s=require('node:net').connect('/var/run/mDNSResponder');",
+          "s.on('error',()=>process.exit(46));",
+          "s.on('connect',()=>{s.destroy();run()});",
+          "}else{run()}",
+          "function run(){fetch('http://127.0.0.1:'+port+'/').then(r=>r.text()).then(t=>{process.exit(t==='embed-ok'?0:43)},()=>process.exit(44));}",
         ].join("");
         const prepared = await engine.prepareCommand({
           command: process.execPath,
