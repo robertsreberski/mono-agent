@@ -8,6 +8,7 @@
  * input or invokes getters/proxies.
  */
 
+import { homedir } from "node:os";
 import { types as nodeUtilTypes } from "node:util";
 
 const BUILTIN_HINTS: Readonly<Record<string, string>> = {
@@ -143,16 +144,29 @@ const KNOWN_SECRET_PATTERNS: readonly RegExp[] = [
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/gu,
 ];
 
+export interface ToolActivityLineOptions {
+  /** Agent root used to relativize local paths; defaults to process.cwd(). */
+  readonly workspaceRoot?: string;
+  /** Home directory collapsed to `~`; defaults to os.homedir(). */
+  readonly homeDir?: string;
+}
+
 /**
  * Format one cumulative tool-activity line for a user-visible transient status.
  * A malformed/proxied/accessor-backed argument object produces action-only copy.
+ * Local absolute paths are shown relative to the agent root (or `~`) so the
+ * operator's account/machine layout is not exposed in chat surfaces.
  */
-export function formatToolActivityLine(toolName: string, toolArguments?: unknown): string {
+export function formatToolActivityLine(
+  toolName: string,
+  toolArguments?: unknown,
+  options?: ToolActivityLineOptions,
+): string {
   const rawName = typeof toolName === "string" ? toolName.trim() : "";
   const leaf = toolLeaf(rawName);
   const normalized = leaf.toLowerCase().replace(/[^a-z0-9]+/gu, "");
   const spec = activitySpec(normalized, leaf);
-  const preview = previewFromArguments(toolArguments, spec.previewFields);
+  const preview = previewFromArguments(toolArguments, spec.previewFields, options);
   return preview === undefined
     ? (spec.actionWithoutPreview ?? spec.action)
     : `${spec.action} ${spec.quotePreview ? JSON.stringify(preview) : preview}`;
@@ -234,6 +248,7 @@ function humanizeToolLeaf(leaf: string): string {
 function previewFromArguments(
   toolArguments: unknown,
   previewFields: readonly string[],
+  options?: ToolActivityLineOptions,
 ): string | undefined {
   const record = safePlainRecord(toolArguments);
   if (record === undefined) return undefined;
@@ -241,10 +256,48 @@ function previewFromArguments(
   for (const key of previewFields) {
     const value = safeOwnScalar(record, key);
     if (value === undefined) continue;
-    const preview = sanitizePreview(value, previewTruncationForField(key));
+    const preview = sanitizePreview(value, previewTruncationForField(key), options);
     if (preview !== undefined) return preview;
   }
   return undefined;
+}
+
+/**
+ * Show local paths relative to the agent root (and collapse the operator's
+ * home directory to `~`) before truncation, so transient chat statuses never
+ * expose the full absolute machine layout.
+ */
+function relativizeLocalPaths(value: string, options?: ToolActivityLineOptions): string {
+  let result = value;
+  for (const [root, replacement] of [
+    [normalizeRoot(options?.workspaceRoot ?? safeCwd()), ""],
+    [normalizeRoot(options?.homeDir ?? safeHomedir()), "~/"],
+  ] as const) {
+    if (root === undefined) continue;
+    result = result.replaceAll(`${root}/`, replacement);
+  }
+  return result;
+}
+
+function normalizeRoot(root: string | undefined): string | undefined {
+  if (root === undefined || root === "" || root === "/") return undefined;
+  return root.endsWith("/") ? root.slice(0, -1) : root;
+}
+
+function safeCwd(): string | undefined {
+  try {
+    return process.cwd();
+  } catch {
+    return undefined;
+  }
+}
+
+function safeHomedir(): string | undefined {
+  try {
+    return homedir();
+  } catch {
+    return undefined;
+  }
 }
 
 type PreviewTruncation = "head" | "middle" | "balanced";
@@ -284,12 +337,17 @@ function safeOwnScalar(record: object, key: string): string | undefined {
   return undefined;
 }
 
-function sanitizePreview(value: string, truncation: PreviewTruncation): string | undefined {
+function sanitizePreview(
+  value: string,
+  truncation: PreviewTruncation,
+  options?: ToolActivityLineOptions,
+): string | undefined {
   let sanitized = truncateCodePoints(value, TOOL_PREVIEW_SCAN_CODE_POINTS)
     .replace(/[\p{Cc}\p{Cf}]+/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
   if (sanitized.length === 0) return undefined;
+  sanitized = relativizeLocalPaths(sanitized, options);
 
   sanitized = sanitized
     .replace(URL_USERINFO_PATTERN, "$1")

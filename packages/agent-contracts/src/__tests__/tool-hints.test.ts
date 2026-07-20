@@ -36,6 +36,21 @@ describe("formatToolActivityLine", () => {
       .toBe("🔧 Browser console");
   });
 
+  it("relativizes workspace paths and collapses the home directory in previews", () => {
+    const options = { workspaceRoot: "/Users/operator/agents/assistant", homeDir: "/Users/operator" };
+    expect(formatToolActivityLine("Read", { file_path: "/Users/operator/agents/assistant/backlog.md" }, options))
+      .toBe("📖 Reading backlog.md");
+    expect(formatToolActivityLine("Edit", { path: "/Users/operator/agents/assistant/skills/x/SKILL.md" }, options))
+      .toBe("✏️ Editing skills/x/SKILL.md");
+    expect(formatToolActivityLine("Read", { file_path: "/Users/operator/other-repo/notes.md" }, options))
+      .toBe("📖 Reading ~/other-repo/notes.md");
+    expect(formatToolActivityLine("bash", { command: "cat /Users/operator/agents/assistant/daily/2026-07-20.md" }, options))
+      .toBe("🖥️ Running cat daily/2026-07-20.md");
+    // Paths outside both roots stay untouched.
+    expect(formatToolActivityLine("Read", { file_path: "/etc/hosts" }, options))
+      .toBe("📖 Reading /etc/hosts");
+  });
+
   it.each([
     ["WebFetch", { url: "https://example.test" }, "🌐 Browsing https://example.test"],
     ["Read", { path: "/repo/file.ts" }, "📖 Reading /repo/file.ts"],
