@@ -112,6 +112,27 @@ describe("turn overrides", () => {
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(String(init.body))).toEqual({ text: "hello" });
   });
+
+  it("sends quote metadata without rewriting the authored text", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ thread: {}, turn: { id: "turn", status: "running" } }), {
+        status: 202,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.startTurn("thread", {
+      text: "Follow up",
+      quote: { text: "Selected response", messageId: "source-message" },
+    });
+
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({
+      text: "Follow up",
+      quote: { text: "Selected response", messageId: "source-message" },
+    });
+  });
 });
 
 describe("agent favorites", () => {

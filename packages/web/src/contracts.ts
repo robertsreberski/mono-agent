@@ -9,6 +9,7 @@ export const WEB_MAX_STAGED_UPLOADS = 100;
 export const WEB_MAX_CONCURRENT_UPLOADS = 4;
 export const WEB_MAX_ACTIVE_ATTACHMENT_TURN_BYTES = 64 * 1024 * 1024;
 export const WEB_MAX_QUEUED_ATTACHMENT_TURNS = 32;
+export const WEB_MAX_TURN_TEXT_CHARACTERS = 200_000;
 
 export type WebAgentStatus = "online" | "offline" | "degraded";
 
@@ -101,11 +102,17 @@ export interface WebMessage {
   readonly threadId: string;
   readonly turnId?: string;
   readonly role: "user" | "assistant" | "system";
+  readonly quote?: WebQuote;
   readonly parts: readonly WebMessagePart[];
   readonly attachments: readonly WebAttachment[];
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly status: WebMessageStatus;
+}
+
+export interface WebQuote {
+  readonly text: string;
+  readonly messageId: string;
 }
 
 export interface WebThreadDetail {
@@ -159,6 +166,7 @@ export interface PatchWebThreadInput {
 
 export interface StartWebTurnInput {
   readonly text?: string;
+  readonly quote?: WebQuote;
   readonly attachmentIds?: readonly string[];
   readonly model?: string;
   readonly effort?: string;

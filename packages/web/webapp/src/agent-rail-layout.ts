@@ -1,20 +1,10 @@
-export const AGENT_RAIL_DEFAULT_WIDTH = 72;
-export const AGENT_RAIL_MIN_WIDTH = 72;
-export const AGENT_RAIL_MAX_WIDTH = 288;
-export const AGENT_RAIL_EXPANDED_WIDTH = 160;
-export const AGENT_RAIL_DEFAULT_EXPANDED_WIDTH = 240;
+export const AGENT_RAIL_COLLAPSED_WIDTH = 72;
+export const AGENT_RAIL_EXPANDED_WIDTH = 240;
+export const AGENT_RAIL_LEGACY_EXPANSION_THRESHOLD = 160;
 export const AGENT_RAIL_STORAGE_KEY = "mono-agent.web.agent-rail-width";
 
 type StorageReader = Pick<Storage, "getItem">;
 type StorageWriter = Pick<Storage, "setItem">;
-
-export const clampAgentRailWidth = (width: number): number => {
-  if (!Number.isFinite(width)) return AGENT_RAIL_DEFAULT_WIDTH;
-  return Math.min(
-    AGENT_RAIL_MAX_WIDTH,
-    Math.max(AGENT_RAIL_MIN_WIDTH, Math.round(width)),
-  );
-};
 
 const browserStorage = (): Storage | null => {
   if (typeof window === "undefined") return null;
@@ -25,30 +15,36 @@ const browserStorage = (): Storage | null => {
   }
 };
 
-export const readAgentRailWidth = (
+export const readAgentRailExpanded = (
   storage: StorageReader | null = browserStorage(),
-): number => {
-  if (!storage) return AGENT_RAIL_DEFAULT_WIDTH;
+): boolean => {
+  if (!storage) return false;
   try {
     const stored = storage.getItem(AGENT_RAIL_STORAGE_KEY);
-    if (stored === null || stored.trim() === "") return AGENT_RAIL_DEFAULT_WIDTH;
+    if (stored === null || stored.trim() === "") return false;
     const parsed = Number(stored);
-    return Number.isFinite(parsed) && Number.isInteger(parsed)
-      ? clampAgentRailWidth(parsed)
-      : AGENT_RAIL_DEFAULT_WIDTH;
+    return Number.isFinite(parsed)
+      && Number.isInteger(parsed)
+      && parsed >= AGENT_RAIL_LEGACY_EXPANSION_THRESHOLD;
   } catch {
-    return AGENT_RAIL_DEFAULT_WIDTH;
+    return false;
   }
 };
 
-export const writeAgentRailWidth = (
-  width: number,
+export const writeAgentRailExpanded = (
+  expanded: boolean,
   storage: StorageWriter | null = browserStorage(),
 ): void => {
   if (!storage) return;
   try {
-    storage.setItem(AGENT_RAIL_STORAGE_KEY, String(clampAgentRailWidth(width)));
+    storage.setItem(
+      AGENT_RAIL_STORAGE_KEY,
+      String(expanded ? AGENT_RAIL_EXPANDED_WIDTH : AGENT_RAIL_COLLAPSED_WIDTH),
+    );
   } catch {
     // Browser storage can be unavailable in private or locked-down contexts.
   }
 };
+
+export const agentRailWidth = (expanded: boolean): number =>
+  expanded ? AGENT_RAIL_EXPANDED_WIDTH : AGENT_RAIL_COLLAPSED_WIDTH;

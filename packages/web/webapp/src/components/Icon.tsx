@@ -5,15 +5,20 @@ export type IconName =
   | "archive"
   | "arrow-down"
   | "attach"
+  | "bell"
+  | "bell-off"
   | "check"
   | "chevron"
   | "close"
   | "command"
   | "copy"
+  | "eye"
+  | "eye-off"
   | "file"
   | "menu"
   | "more"
   | "new"
+  | "quote"
   | "restore"
   | "search"
   | "send"
@@ -38,6 +43,17 @@ const paths: Record<IconName, React.ReactNode> = {
   ),
   "arrow-down": <path d="m7 10 5 5 5-5" />,
   attach: <path d="m9 12 5.5-5.5a3 3 0 0 1 4.2 4.2l-7.5 7.5a5 5 0 0 1-7.1-7.1l7.6-7.6M8 15l7.5-7.5" />,
+  bell: (
+    <>
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+      <path d="M10 21h4" />
+    </>
+  ),
+  "bell-off": (
+    <>
+      <path d="m3 3 18 18M8.3 5.1A6 6 0 0 1 18 8c0 2.5.4 4.1 1 5.2M6 8c0 7-3 7-3 9h14M10 21h4" />
+    </>
+  ),
   check: <path d="m5 12 4 4L19 6" />,
   chevron: <path d="m9 18 6-6-6-6" />,
   close: <path d="m6 6 12 12M18 6 6 18" />,
@@ -52,6 +68,17 @@ const paths: Record<IconName, React.ReactNode> = {
       <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" />
     </>
   ),
+  eye: (
+    <>
+      <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z" />
+      <circle cx="12" cy="12" r="2.5" />
+    </>
+  ),
+  "eye-off": (
+    <>
+      <path d="m3 3 18 18M10.6 6.2A9.4 9.4 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-2.1 2.8M6.2 6.2C3.9 7.8 2.5 12 2.5 12s3.5 6 9.5 6c1.2 0 2.3-.2 3.3-.7M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+    </>
+  ),
   file: (
     <>
       <path d="M6 3h8l4 4v14H6z" />
@@ -61,6 +88,12 @@ const paths: Record<IconName, React.ReactNode> = {
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
   more: <path d="M5 12h.01M12 12h.01M19 12h.01" />,
   new: <path d="M12 5v14M5 12h14" />,
+  quote: (
+    <>
+      <path d="M7 10h4v8H5v-6c0-4 2-6 6-7" />
+      <path d="M17 10h4v8h-6v-6c0-4 2-6 6-7" />
+    </>
+  ),
   restore: (
     <>
       <path d="M4 8v5h5" />

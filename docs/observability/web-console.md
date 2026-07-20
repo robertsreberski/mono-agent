@@ -49,17 +49,46 @@ At startup, mono-agent inspects the existing Tailscale Serve configuration. It p
 
 ## Agents, threads, and turns
 
-The left rail lists auto-discovered trace sources and their current health. On desktop, drag its right-edge resize handle to widen the rail and reveal full agent names. The handle is also a focusable keyboard separator: arrow keys resize incrementally, while Home and End select its minimum and maximum widths. The chosen width is a browser-local presentation preference, so a phone, laptop, and different browser profiles can keep different layouts.
+The left rail lists auto-discovered trace sources and their current health. On desktop, its explicit toggle switches between a fixed compact rail and a fixed expanded rail with full agent names. The chosen state is a browser-local presentation preference, so different browser profiles can keep different layouts without a drag-resize target.
 
-Use the star beside an agent to add or remove it from favorites. The same pin control is available in the mobile agent picker. Pin state is persisted in the web service's SQLite settings rather than in browser storage, so favorites stay consistent when the same console is opened through localhost, a LAN address, or Tailscale. Pinned agents sort first; the remaining agents retain the normal discovery ordering.
+Use the star beside an agent to add or remove it from favorites. The same pin control is available in the mobile agent picker. Pin state is persisted in the web service's SQLite settings rather than in browser storage, so favorites stay consistent when the same console is opened through localhost, a LAN address, or Tailscale. Pinned agents sort first and remain visible while offline.
 
-Selecting an agent filters its conversations; each conversation is permanently bound to that source id so a label change or a different agent cannot inherit its history. An offline agent and its threads remain visible, but sending is disabled until that exact source returns.
+Selecting an agent filters its conversations; each conversation is permanently bound to that source id so a label change or a different agent cannot inherit its history. Unpinned offline agents are hidden by default behind a subtle **Show N offline** control shared by the desktop rail, mobile picker, and command palette. Pinned agents and the currently selected agent always remain visible. The filter resets to hidden on a full page load; sending stays disabled until that exact source returns.
 
 Threads use the first prompt as their initial title and can be renamed. They are archived rather than individually deleted, and archived threads can be restored. The console permits one active turn per thread while different threads and agents can run concurrently.
 
 The service, not the browser tab, owns the upstream operator connection. A browser disconnect or reload can therefore reconnect through the event stream while the turn continues. Brief event-stream reconnects do not raise the full reconnect banner; it appears after five seconds, while a browser-offline event is shown immediately. If the web service itself restarts, any turn that was still active is marked interrupted instead of being shown as permanently running.
 
 During a turn the transcript shows streamed markdown, reasoning, tool calls and results, user-facing errors, and the final outcome. Raw runtime, provider, and usage telemetry remains internal; measured token and cost data appears only through the context control. The composer exposes the selected agent's available model and effort controls. Copy, cancel, archive, and unarchive are supported; edit/regenerate/branch/steer and browser-defined client tools are deliberately not enabled.
+
+## Quote message text
+
+Select text rendered in a user or assistant markdown message and choose **Quote** from the floating toolbar. Reasoning, tool payloads, errors, attachments, and an already-rendered quote are not selection targets. The composer keeps one quote at a time, shows a dismissible preview, and clears it when you switch agents or threads.
+
+The quote is persisted with the new user message as `{ text, messageId }`, so it survives reloads and is rendered separately from the authored message. The operator receives a Markdown blockquote followed by the authored text, while the transcript and automatic title keep the exact text the user typed. The service rejects a source message from another thread. A quote alone is not sendable, and the formatted quote plus message must fit the existing 200,000-character turn-text boundary.
+
+Programmatic callers can use the optional `StartWebTurnInput.quote` field:
+
+```ts
+import type { StartWebTurnInput } from "@mono-agent/web";
+
+const input: StartWebTurnInput = {
+  text: "Please expand on this.",
+  quote: { text: "The selected response text", messageId: sourceMessageId },
+};
+
+await fetch(`/api/v1/threads/${threadId}/turns`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify(input),
+});
+```
+
+## Response notifications
+
+Use the header bell to opt into a notification when a successful response arrives while the console is hidden or its window is unfocused. The permission prompt is triggered only by that click. Each notification contains a short response-text preview, is deduplicated by turn, and focuses or opens the exact conversation when selected. Failed, cancelled, and interrupted turns do not notify.
+
+The opt-in is stored per browser origin, so localhost, a LAN hostname, and a Tailscale HTTPS hostname have independent preferences and permissions. Notifications require a secure browser context and an active page or installed PWA. This release does not register Web Push: after the page/PWA is fully closed, there is no background server-to-browser notification delivery.
 
 ## Run controls and context
 
@@ -89,7 +118,7 @@ Older running agents that do not advertise attachment support remain usable for 
 
 ## Local state and reset
 
-The service keeps its owner-private SQLite store, settings, upload stages, and logs under `~/.mono-agent/web/`. Stored messages, attachment metadata, revisions, run state, and pinned agents are local to this computer; they are independent from browser storage and from the agents' provider-side sessions. The desktop agent-rail width is the exception: it is an intentionally browser-local display preference and is removed when that browser's site data is cleared.
+The service keeps its owner-private SQLite store, settings, upload stages, and logs under `~/.mono-agent/web/`. Stored messages, quote metadata, attachment metadata, revisions, run state, and pinned agents are local to this computer; they are independent from browser storage and from the agents' provider-side sessions. The desktop agent-rail expansion state and notification opt-in are intentionally browser-origin-local preferences and are removed when that origin's site data is cleared.
 
 There is no per-message or per-thread destructive delete. To intentionally erase the whole console store, stop the service and use the explicit two-part confirmation:
 
@@ -97,11 +126,11 @@ There is no per-message or per-thread destructive delete. To intentionally erase
 mono-agent web reset --all --yes
 ```
 
-Reset removes the web console's conversations, committed uploads, staged uploads, and server settings, including agent pins. It does not clear browser-local display preferences such as the rail width, and it does not remove an agent's config, durable conversation history, memory, or recorded run artifacts.
+Reset removes the web console's conversations, committed uploads, staged uploads, and server settings, including agent pins. It does not clear browser-local preferences such as rail expansion or notification opt-in, and it does not remove an agent's config, durable conversation history, memory, or recorded run artifacts.
 
 ## Current scope
 
-The first web-console release covers discovery, persistent multi-conversation chat, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a PWA when served from a secure browser context.
+The web console covers discovery, persistent multi-conversation chat, quoting, response notifications while the page/PWA is alive, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a PWA when served from a secure browser context.
 
 Recorded-run replay, source-annotated config inspection, and managed conversational configuration remain in the TUI for now. Use:
 

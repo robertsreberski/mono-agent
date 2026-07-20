@@ -130,6 +130,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
 
     act(() => {
       composer.setText("keep this draft");
+      composer.setQuote({ text: "quoted context", messageId: "source-message" });
       composer.send();
     });
     await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(1));
@@ -144,12 +145,47 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     await waitFor(() =>
       expect(composer.getState().text).toBe("keep this draft\n\nnewer work"),
     );
+    expect(composer.getState().quote).toEqual({
+      text: "quoted context",
+      messageId: "source-message",
+    });
     await waitFor(() => expect(composer.getState().canSend).toBe(true));
     act(() => composer.send());
     await waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(2));
     await Promise.resolve();
     expect(unhandled).not.toHaveBeenCalled();
     window.removeEventListener("unhandledrejection", unhandled);
+  });
+
+  it("submits one quote with the authored text and clears it on a thread switch", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn);
+    const view = await renderRuntime();
+    const composer = view.runtime.thread.composer;
+
+    act(() => {
+      composer.setQuote({ text: "selected response", messageId: "source-message" });
+      composer.setText("Follow up");
+      composer.send();
+    });
+    await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Follow up",
+        quote: { text: "selected response", messageId: "source-message" },
+      }),
+      expect.any(Function),
+    ));
+
+    const otherThread = thread("other", "agent");
+    act(() => composer.setQuote({ text: "do not carry", messageId: "source-message" }));
+    storeMock.current = createStore(sendTurn, {
+      threads: [idleThread, otherThread],
+      visibleThreads: [idleThread, otherThread],
+      selectedThread: otherThread,
+      selectedThreadId: otherThread.id,
+    });
+    view.rerender();
+    await waitFor(() => expect(view.runtime.thread.composer.getState().quote).toBeUndefined());
   });
 
   it("admits only one rapid turn start and preserves the second submission as a draft", async () => {

@@ -98,6 +98,19 @@ describe("convertWebMessage", () => {
     ]);
     expect(converted.status).toEqual({ type: "running" });
   });
+
+  it("maps a persisted quote into assistant-ui message metadata", () => {
+    const converted = convertWebMessage(message({
+      quote: { text: "Quoted response", messageId: "source-message" },
+      parts: [{ type: "text", text: "Follow up" }],
+    }));
+
+    expect(converted.metadata?.custom?.quote).toEqual({
+      text: "Quoted response",
+      messageId: "source-message",
+    });
+    expect(converted.content).toEqual([{ type: "text", text: "Follow up" }]);
+  });
 });
 
 describe("runtime capability gates", () => {

@@ -1,7 +1,5 @@
 import {
   type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
   type RefObject,
   useCallback,
   useEffect,
@@ -10,13 +8,9 @@ import {
   useState,
 } from "react";
 import {
-  AGENT_RAIL_DEFAULT_EXPANDED_WIDTH,
-  AGENT_RAIL_EXPANDED_WIDTH,
-  AGENT_RAIL_MAX_WIDTH,
-  AGENT_RAIL_MIN_WIDTH,
-  clampAgentRailWidth,
-  readAgentRailWidth,
-  writeAgentRailWidth,
+  agentRailWidth,
+  readAgentRailExpanded,
+  writeAgentRailExpanded,
 } from "./agent-rail-layout";
 import { AgentRail, BrandMark, MobileAgentPicker } from "./components/AgentRail";
 import { Chat } from "./components/Chat";
@@ -162,7 +156,17 @@ function CommandPalette({ open, onClose }: { readonly open: boolean; readonly on
           void store.setAgentPinned(agent.sourceId, !agent.pinned).catch(() => undefined);
         },
       },
-      ...store.agents.map((agent) => ({
+      ...(store.hiddenOfflineAgentCount > 0
+        ? [{
+            id: "offline-agents",
+            label: store.showOfflineAgents
+              ? "Hide offline agents"
+              : `Show ${store.hiddenOfflineAgentCount} offline agent${store.hiddenOfflineAgentCount === 1 ? "" : "s"}`,
+            icon: (store.showOfflineAgents ? "eye-off" : "eye") as IconName,
+            run: () => store.setShowOfflineAgents(!store.showOfflineAgents),
+          }]
+        : []),
+      ...store.visibleAgents.map((agent) => ({
         id: `agent:${agent.sourceId}`,
         label: `Switch to ${agent.label}`,
         hint: agent.status,
@@ -265,79 +269,19 @@ export function App() {
   const [threadDrawer, setThreadDrawer] = useState(false);
   const [palette, setPalette] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [agentRailWidth, setAgentRailWidth] = useState(readAgentRailWidth);
+  const [agentRailExpanded, setAgentRailExpanded] = useState(readAgentRailExpanded);
   const agentDrawerRef = useRef<HTMLDivElement>(null);
   const threadDrawerRef = useRef<HTMLDivElement>(null);
-  const agentRailDragRef = useRef<{
-    readonly pointerId: number;
-    readonly startX: number;
-    readonly startWidth: number;
-  } | null>(null);
-
-  const agentRailExpanded = agentRailWidth >= AGENT_RAIL_EXPANDED_WIDTH;
   const appStyle = {
-    "--agent-rail-width": `${agentRailWidth}px`,
+    "--agent-rail-width": `${agentRailWidth(agentRailExpanded)}px`,
   } as CSSProperties;
 
-  const commitAgentRailWidth = useCallback((next: number) => {
-    const normalized = clampAgentRailWidth(next);
-    setAgentRailWidth(normalized);
-    writeAgentRailWidth(normalized);
-  }, []);
-
   const toggleAgentRail = useCallback(() => {
-    commitAgentRailWidth(
-      agentRailWidth >= AGENT_RAIL_EXPANDED_WIDTH
-        ? AGENT_RAIL_MIN_WIDTH
-        : AGENT_RAIL_DEFAULT_EXPANDED_WIDTH,
-    );
-  }, [agentRailWidth, commitAgentRailWidth]);
-
-  const resizeAgentRailFromKey = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    let next: number | undefined;
-    if (event.key === "ArrowLeft") next = agentRailWidth - 16;
-    if (event.key === "ArrowRight") next = agentRailWidth + 16;
-    if (event.key === "Home") next = AGENT_RAIL_MIN_WIDTH;
-    if (event.key === "End") next = AGENT_RAIL_MAX_WIDTH;
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      toggleAgentRail();
-      return;
-    }
-    if (next === undefined) return;
-    event.preventDefault();
-    commitAgentRailWidth(next);
-  }, [agentRailWidth, commitAgentRailWidth, toggleAgentRail]);
-
-  const startAgentRailResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    agentRailDragRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startWidth: agentRailWidth,
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    document.body.classList.add("is-resizing-agent-rail");
-  }, [agentRailWidth]);
-
-  const continueAgentRailResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = agentRailDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    setAgentRailWidth(clampAgentRailWidth(drag.startWidth + event.clientX - drag.startX));
-  }, []);
-
-  const finishAgentRailResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = agentRailDragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    const finalWidth = clampAgentRailWidth(drag.startWidth + event.clientX - drag.startX);
-    agentRailDragRef.current = null;
-    setAgentRailWidth(finalWidth);
-    writeAgentRailWidth(finalWidth);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    document.body.classList.remove("is-resizing-agent-rail");
+    setAgentRailExpanded((current) => {
+      const next = !current;
+      writeAgentRailExpanded(next);
+      return next;
+    });
   }, []);
 
   const closeDrawers = useCallback(() => {
@@ -385,10 +329,6 @@ export function App() {
     }, 6000);
     return () => window.clearTimeout(timer);
   }, [actionError, clearActionError, notice]);
-
-  useEffect(() => () => {
-    document.body.classList.remove("is-resizing-agent-rail");
-  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -445,26 +385,7 @@ export function App() {
   return (
     <div className="app-shell" style={appStyle}>
       <div className="desktop-agent-rail">
-        <AgentRail expanded={agentRailExpanded} />
-        <div
-          className="agent-rail-resize-handle"
-          role="separator"
-          aria-label="Resize agent sidebar"
-          aria-orientation="vertical"
-          aria-valuemin={AGENT_RAIL_MIN_WIDTH}
-          aria-valuemax={AGENT_RAIL_MAX_WIDTH}
-          aria-valuenow={agentRailWidth}
-          aria-valuetext={`${agentRailWidth} pixels, ${agentRailExpanded ? "expanded" : "collapsed"}`}
-          tabIndex={0}
-          title="Resize agents · double-click to toggle"
-          onDoubleClick={toggleAgentRail}
-          onKeyDown={resizeAgentRailFromKey}
-          onPointerDown={startAgentRailResize}
-          onPointerMove={continueAgentRailResize}
-          onPointerUp={finishAgentRailResize}
-          onPointerCancel={finishAgentRailResize}
-          onLostPointerCapture={finishAgentRailResize}
-        />
+        <AgentRail expanded={agentRailExpanded} onToggleExpanded={toggleAgentRail} />
       </div>
       <div className="desktop-thread-sidebar"><ThreadSidebar /></div>
       <Chat onOpenAgents={openAgents} onOpenThreads={openThreads} />

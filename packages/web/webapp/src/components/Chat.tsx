@@ -6,12 +6,14 @@ import {
   useConsoleStore,
 } from "../console-store";
 import { conversationConsoleUsage } from "../usage";
+import { NotificationBell } from "../notifications";
 import { ContextDisplay } from "./assistant-ui/ContextDisplay";
 import {
   ModelSelector,
   type ModelSelectorEffortOption,
   type ModelSelectorOption,
 } from "./assistant-ui/ModelSelector";
+import { SelectionToolbar } from "./assistant-ui/Quote";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
 import { Composer } from "./Composer";
 import { Icon } from "./Icon";
@@ -302,6 +304,7 @@ export function Chat({
         </div>
         <div className="chat-header-actions">
           <ModelControls />
+          <NotificationBell />
           {selectedThread && (
             <button
               type="button"
@@ -322,6 +325,7 @@ export function Chat({
       </header>
       <ConnectionBanner connection={connection} />
       <ThreadPrimitive.Root className="thread-root">
+        <SelectionToolbar />
         <ThreadPrimitive.Viewport className="thread-viewport" autoScroll>
           <div className="message-column">
             <EmptyConversation />

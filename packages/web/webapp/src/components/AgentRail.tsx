@@ -21,17 +21,22 @@ export function BrandMark() {
 
 export function AgentRail({
   expanded = false,
+  onToggleExpanded,
   onSelect,
 }: {
   readonly expanded?: boolean;
+  readonly onToggleExpanded?: () => void;
   readonly onSelect?: () => void;
 }) {
   const {
-    agents,
+    visibleAgents,
     connection,
+    hiddenOfflineAgentCount,
     selectedAgentId,
+    showOfflineAgents,
     selectAgent,
     setAgentPinned,
+    setShowOfflineAgents,
   } = useConsoleStore();
   return (
     <nav className={`agent-rail${expanded ? " is-expanded" : ""}`} aria-label="Agents">
@@ -40,7 +45,7 @@ export function AgentRail({
         <span className="rail-brand-copy">mono-agent</span>
       </div>
       <div className="agent-list" role="list">
-        {agents.map((agent) => {
+        {visibleAgents.map((agent) => {
           const pinned = Boolean(agent.pinned);
           return (
             <div className="agent-item" role="listitem" key={agent.sourceId}>
@@ -74,12 +79,43 @@ export function AgentRail({
             </div>
           );
         })}
-        {agents.length === 0 && (
+        {visibleAgents.length === 0 && (
           <span className="rail-empty" title="No agents discovered">
             <Icon name="agent" size={19} />
           </span>
         )}
+        {hiddenOfflineAgentCount > 0 && (
+          <button
+            type="button"
+            className={`rail-offline-toggle${showOfflineAgents ? " is-active" : ""}`}
+            aria-pressed={showOfflineAgents}
+            aria-label={showOfflineAgents
+              ? "Hide offline agents"
+              : `Show ${hiddenOfflineAgentCount} offline agent${hiddenOfflineAgentCount === 1 ? "" : "s"}`}
+            title={showOfflineAgents ? "Hide offline agents" : `Show ${hiddenOfflineAgentCount} offline`}
+            onClick={() => setShowOfflineAgents(!showOfflineAgents)}
+          >
+            <Icon name={showOfflineAgents ? "eye-off" : "eye"} size={16} />
+            <span className="rail-offline-copy">
+              {showOfflineAgents ? "Hide offline" : `Show ${hiddenOfflineAgentCount} offline`}
+            </span>
+            {!expanded && <span className="rail-offline-count">{hiddenOfflineAgentCount}</span>}
+          </button>
+        )}
       </div>
+      {onToggleExpanded && (
+        <button
+          type="button"
+          className="rail-toggle"
+          aria-expanded={expanded}
+          aria-label={expanded ? "Collapse agent sidebar" : "Expand agent sidebar"}
+          title={expanded ? "Collapse agent sidebar" : "Expand agent sidebar"}
+          onClick={onToggleExpanded}
+        >
+          <Icon name="chevron" size={17} />
+          <span className="rail-toggle-copy">{expanded ? "Collapse" : "Expand"}</span>
+        </button>
+      )}
       <button
         type="button"
         className="rail-command"
@@ -99,7 +135,15 @@ export function AgentRail({
 }
 
 export function MobileAgentPicker({ onSelect }: { readonly onSelect: () => void }) {
-  const { agents, selectedAgentId, selectAgent, setAgentPinned } = useConsoleStore();
+  const {
+    visibleAgents,
+    hiddenOfflineAgentCount,
+    selectedAgentId,
+    showOfflineAgents,
+    selectAgent,
+    setAgentPinned,
+    setShowOfflineAgents,
+  } = useConsoleStore();
   return (
     <aside className="mobile-agent-picker" aria-label="Choose an agent">
       <header>
@@ -110,7 +154,7 @@ export function MobileAgentPicker({ onSelect }: { readonly onSelect: () => void 
         </div>
       </header>
       <div className="mobile-agent-list">
-        {agents.map((agent) => {
+        {visibleAgents.map((agent) => {
           const pinned = Boolean(agent.pinned);
           return (
             <div className="mobile-agent-row" key={agent.sourceId}>
@@ -145,8 +189,23 @@ export function MobileAgentPicker({ onSelect }: { readonly onSelect: () => void 
             </div>
           );
         })}
-        {agents.length === 0 && (
+        {visibleAgents.length === 0 && (
           <p>No agents discovered. Running agents will appear automatically.</p>
+        )}
+        {hiddenOfflineAgentCount > 0 && (
+          <button
+            type="button"
+            className={`mobile-offline-toggle${showOfflineAgents ? " is-active" : ""}`}
+            aria-pressed={showOfflineAgents}
+            onClick={() => setShowOfflineAgents(!showOfflineAgents)}
+          >
+            <Icon name={showOfflineAgents ? "eye-off" : "eye"} size={16} />
+            <span>
+              {showOfflineAgents
+                ? "Hide offline agents"
+                : `Show ${hiddenOfflineAgentCount} offline agent${hiddenOfflineAgentCount === 1 ? "" : "s"}`}
+            </span>
+          </button>
         )}
       </div>
     </aside>

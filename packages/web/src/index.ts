@@ -56,6 +56,7 @@ export type {
   WebMessagePart,
   WebMessageStatus,
   WebModelOption,
+  WebQuote,
   WebRunState,
   WebRunStatus,
   WebThread,

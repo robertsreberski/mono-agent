@@ -1,43 +1,43 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  AGENT_RAIL_DEFAULT_WIDTH,
-  AGENT_RAIL_MAX_WIDTH,
-  AGENT_RAIL_MIN_WIDTH,
+  AGENT_RAIL_COLLAPSED_WIDTH,
+  AGENT_RAIL_EXPANDED_WIDTH,
   AGENT_RAIL_STORAGE_KEY,
-  clampAgentRailWidth,
-  readAgentRailWidth,
-  writeAgentRailWidth,
+  agentRailWidth,
+  readAgentRailExpanded,
+  writeAgentRailExpanded,
 } from "./agent-rail-layout";
 
 describe("agent rail layout preferences", () => {
-  it("clamps and rounds widths to the supported desktop range", () => {
-    expect(clampAgentRailWidth(40)).toBe(AGENT_RAIL_MIN_WIDTH);
-    expect(clampAgentRailWidth(180.6)).toBe(181);
-    expect(clampAgentRailWidth(900)).toBe(AGENT_RAIL_MAX_WIDTH);
-    expect(clampAgentRailWidth(Number.NaN)).toBe(AGENT_RAIL_DEFAULT_WIDTH);
+  it("maps the two layout states to fixed widths", () => {
+    expect(agentRailWidth(false)).toBe(AGENT_RAIL_COLLAPSED_WIDTH);
+    expect(agentRailWidth(true)).toBe(AGENT_RAIL_EXPANDED_WIDTH);
   });
 
-  it("loads a persisted width and rejects malformed storage", () => {
-    expect(readAgentRailWidth({ getItem: () => "204" })).toBe(204);
-    expect(readAgentRailWidth({ getItem: () => "999" })).toBe(AGENT_RAIL_MAX_WIDTH);
-    expect(readAgentRailWidth({ getItem: () => "not-a-width" })).toBe(
-      AGENT_RAIL_DEFAULT_WIDTH,
-    );
-    expect(readAgentRailWidth({ getItem: () => "204.5" })).toBe(
-      AGENT_RAIL_DEFAULT_WIDTH,
-    );
-    expect(readAgentRailWidth({ getItem: () => { throw new Error("denied"); } })).toBe(
-      AGENT_RAIL_DEFAULT_WIDTH,
-    );
+  it("loads the persisted state and migrates legacy resizable widths", () => {
+    expect(readAgentRailExpanded({ getItem: () => "240" })).toBe(true);
+    expect(readAgentRailExpanded({ getItem: () => "204" })).toBe(true);
+    expect(readAgentRailExpanded({ getItem: () => "159" })).toBe(false);
+    expect(readAgentRailExpanded({ getItem: () => "72" })).toBe(false);
+    expect(readAgentRailExpanded({ getItem: () => "not-a-width" })).toBe(false);
+    expect(readAgentRailExpanded({ getItem: () => { throw new Error("denied"); } })).toBe(false);
   });
 
-  it("persists the normalized width without failing when storage is denied", () => {
+  it("persists either fixed width without failing when storage is denied", () => {
     const setItem = vi.fn();
-    writeAgentRailWidth(200.4, { setItem });
-    expect(setItem).toHaveBeenCalledWith(AGENT_RAIL_STORAGE_KEY, "200");
+    writeAgentRailExpanded(true, { setItem });
+    expect(setItem).toHaveBeenLastCalledWith(
+      AGENT_RAIL_STORAGE_KEY,
+      String(AGENT_RAIL_EXPANDED_WIDTH),
+    );
+    writeAgentRailExpanded(false, { setItem });
+    expect(setItem).toHaveBeenLastCalledWith(
+      AGENT_RAIL_STORAGE_KEY,
+      String(AGENT_RAIL_COLLAPSED_WIDTH),
+    );
 
     expect(() =>
-      writeAgentRailWidth(200, { setItem: () => { throw new Error("denied"); } }),
+      writeAgentRailExpanded(true, { setItem: () => { throw new Error("denied"); } }),
     ).not.toThrow();
   });
 });

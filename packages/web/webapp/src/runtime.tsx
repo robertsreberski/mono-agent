@@ -2,6 +2,7 @@ import {
   AssistantRuntimeProvider,
   type AppendMessage,
   type CompleteAttachment,
+  type QuoteInfo,
   type ThreadMessageLike,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
@@ -13,6 +14,7 @@ import type {
   MessagePart,
   WebAttachment,
   WebMessage,
+  WebQuote,
 } from "./types";
 
 export { canSendInConsole, canUploadInConsole } from "./capabilities";
@@ -24,6 +26,7 @@ interface ComposerRecovery {
   readonly id: number;
   readonly text: string;
   readonly attachments: readonly CompleteAttachment[];
+  readonly quote?: WebQuote;
   readonly agentId: string | null;
   readonly threadId: string | null;
 }
@@ -40,6 +43,15 @@ const canRestoreRecovery = (
 ): boolean =>
   recovery.agentId === selection.agentId &&
   recovery.threadId === selection.threadId;
+
+const quoteFromMetadata = (value: unknown): WebQuote | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const quote = value as Partial<QuoteInfo>;
+  return typeof quote.text === "string" && quote.text.trim().length > 0 &&
+    typeof quote.messageId === "string" && quote.messageId.trim().length > 0
+    ? { text: quote.text, messageId: quote.messageId }
+    : undefined;
+};
 
 const jsonValue = (value: unknown): JsonValue => {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
@@ -145,7 +157,11 @@ export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
     attachments:
       message.role === "user" ? message.attachments.map(completeAttachment) : undefined,
     metadata: {
-      custom: { turnId: message.turnId, updatedAt: message.updatedAt },
+      custom: {
+        turnId: message.turnId,
+        updatedAt: message.updatedAt,
+        ...(message.quote === undefined ? {} : { quote: message.quote }),
+      },
     },
   };
 };
@@ -194,6 +210,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     (
       text: string,
       attachments: readonly CompleteAttachment[],
+      quote: WebQuote | undefined,
       context: { readonly agentId: string | null; readonly threadId: string | null },
     ) => {
       attachmentAdapter.retainForRecovery(attachments);
@@ -203,6 +220,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
           id: ++recoveryIdRef.current,
           text,
           attachments,
+          ...(quote === undefined ? {} : { quote }),
           ...context,
         },
       ]);
@@ -220,6 +238,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         .join("\n")
         .trim();
       const attachments: readonly CompleteAttachment[] = message.attachments ?? [];
+      const quote = quoteFromMetadata(message.metadata?.custom?.quote);
       if (!text && attachments.length === 0) return;
 
       const submissionContext = {
@@ -227,7 +246,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         threadId: store.selectedThreadId,
       };
       if (turnStartingRef.current) {
-        queueRecovery(text, attachments, submissionContext);
+        queueRecovery(text, attachments, quote, submissionContext);
         return;
       }
 
@@ -242,6 +261,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
           await store.sendTurn(
             {
               text: text || undefined,
+              quote,
               attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
               model: store.model || undefined,
               effort: store.effort || undefined,
@@ -269,7 +289,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
           // Queue first, then let the post-render recovery effect compare the
           // exact resolved context and either rehydrate or clean it up.
           attachmentAdapter.recoverSend(attachments);
-          queueRecovery(text, attachments, recoveryContext);
+          queueRecovery(text, attachments, quote, recoveryContext);
           // sendTurn owns the visible action error. assistant-ui does not await
           // onNew, so containing the rejection here prevents an unhandled task.
         } finally {
@@ -351,6 +371,17 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     },
   });
 
+  const previousQuoteContext = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      previousQuoteContext.current !== null &&
+      previousQuoteContext.current !== attachmentContext
+    ) {
+      runtime.thread.composer.setQuote(undefined);
+    }
+    previousQuoteContext.current = attachmentContext;
+  }, [attachmentContext, runtime]);
+
   useEffect(() => {
     // Keep queued drafts protected until the admitted request resolves. For a
     // new conversation, sendTurn binds them to the exact created thread before
@@ -370,6 +401,9 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     const current = composer.getState();
     if (recovery.text) {
       composer.setText(mergeComposerText(recovery.text, current.text));
+    }
+    if (recovery.quote && !current.quote) {
+      composer.setQuote(recovery.quote);
     }
     if (recovery.attachments.length > 0 && !selectedCanUpload) {
       // Reconnecting/offline stores deliberately remove the runtime adapter.

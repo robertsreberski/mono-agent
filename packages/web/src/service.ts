@@ -16,6 +16,7 @@ import {
   WEB_MAX_STAGED_UPLOAD_BYTES,
   WEB_MAX_STAGED_UPLOADS,
   WEB_MAX_QUEUED_ATTACHMENT_TURNS,
+  WEB_MAX_TURN_TEXT_CHARACTERS,
   WEB_MAX_TURN_ATTACHMENT_BYTES,
   WEB_STAGED_UPLOAD_TTL_MS,
   type CreateWebUploadInput,
@@ -43,6 +44,15 @@ import { toWebAttachment, WebStore, type StoredAttachment } from "./store.js";
 const DEFAULT_DISCOVERY_INTERVAL_MS = 5_000;
 const DEFAULT_PURGE_INTERVAL_MS = 60 * 60 * 1_000;
 const INFO_TIMEOUT_MS = 2_500;
+
+function formatQuotedTurn(quote: string, text: string): string {
+  const blockquote = quote
+    .trim()
+    .split(/\r?\n/u)
+    .map((line) => `> ${line}`)
+    .join("\n");
+  return `Quoted context:\n${blockquote}\n\n${text}`;
+}
 
 export interface WebServiceLogger {
   debug?(message: string, metadata?: Readonly<Record<string, unknown>>): void;
@@ -180,6 +190,14 @@ export class WebService {
 
   async startTurn(threadId: string, input: StartWebTurnInput): Promise<{ readonly thread: WebThread; readonly turn: WebThread["runState"] }> {
     const text = input.text ?? "";
+    const operatorText = input.quote === undefined ? text : formatQuotedTurn(input.quote.text, text);
+    if (operatorText.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
+      throw new WebConsoleError(
+        "turn_text_too_large",
+        `The message and quote may contain at most ${WEB_MAX_TURN_TEXT_CHARACTERS} characters after formatting.`,
+        413,
+      );
+    }
     const attachmentIds = input.attachmentIds ?? [];
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
@@ -189,9 +207,9 @@ export class WebService {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
     }
     validateModelAndEffort(agent, input.model, input.effort);
-    const started = this.store.beginTurn({ threadId, text, attachmentIds, ...(input.model === undefined ? {} : { model: input.model }), ...(input.effort === undefined ? {} : { effort: input.effort }) });
+    const started = this.store.beginTurn({ threadId, text, attachmentIds, ...(input.quote === undefined ? {} : { quote: input.quote }), ...(input.model === undefined ? {} : { model: input.model }), ...(input.effort === undefined ? {} : { effort: input.effort }) });
     const controller = new AbortController();
-    const completion = this.runTurn(started, connection.client, controller).finally(() => {
+    const completion = this.runTurn(started, connection.client, controller, operatorText).finally(() => {
       this.activeTurns.delete(threadId);
     });
     this.activeTurns.set(threadId, { turnId: started.turnId, controller, client: connection.client, completion });
@@ -339,6 +357,7 @@ export class WebService {
     started: ReturnType<WebStore["beginTurn"]>,
     client: OperatorClient,
     controller: AbortController,
+    operatorText: string,
   ): Promise<void> {
     const coalescer = new StreamFrameCoalescer(
       async (frames) => {
@@ -358,7 +377,7 @@ export class WebService {
       };
       const response = await client.turn({
         conversationId: started.conversationId,
-        text: started.text,
+        text: operatorText,
         attachments,
         signal: controller.signal,
         metadata: {

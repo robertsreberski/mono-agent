@@ -15,6 +15,7 @@ import {
   Reasoning,
 } from "./assistant-ui/Reasoning";
 import { Icon } from "./Icon";
+import { QuoteBlock } from "./assistant-ui/Quote";
 
 const safeJson = (value: unknown): string => {
   try {
@@ -113,7 +114,7 @@ function MessageActions({
 }
 
 function MarkdownText() {
-  return <MarkdownTextPrimitive className="markdown" defer smooth />;
+  return <MarkdownTextPrimitive className="markdown" data-aui-quote-selectable defer smooth />;
 }
 
 function RunningText({ status }: EmptyMessagePartProps) {
@@ -174,6 +175,7 @@ function ErrorPart({ data }: DataMessagePartProps) {
 
 const parts = {
   Text: MarkdownText,
+  Quote: QuoteBlock,
   Empty: RunningText,
   data: {
     by_name: {

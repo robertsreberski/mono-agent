@@ -143,6 +143,37 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("sends a formatted blockquote upstream while preserving the authored message and quote", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({ onTurn(body) { turnBodies.push(body); } }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Source prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    const sourceMessage = service.thread(thread.id).messages.at(-1)!;
+
+    await service.startTurn(thread.id, {
+      text: "Please expand.",
+      quote: { text: "First line\nSecond line", messageId: sourceMessage.id },
+    });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    expect(turnBodies.at(-1)?.text).toBe(
+      "Quoted context:\n> First line\n> Second line\n\nPlease expand.",
+    );
+    expect(service.thread(thread.id).messages.at(-2)).toMatchObject({
+      quote: { text: "First line\nSecond line", messageId: sourceMessage.id },
+      parts: [{ type: "text", text: "Please expand." }],
+    });
+    await expect(service.startTurn(thread.id, {
+      text: "x".repeat(199_990),
+      quote: { text: "First line", messageId: sourceMessage.id },
+    })).rejects.toMatchObject({ code: "turn_text_too_large", status: 413 });
+    expect(turnBodies).toHaveLength(2);
+    await service.stop();
+  });
+
   it("persists an internal stream-storage failure as failed rather than cancelled", async () => {
     const service = await createService();
     const thread = service.createThread("agent-one");
