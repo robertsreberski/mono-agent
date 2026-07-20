@@ -179,7 +179,7 @@ Opted project stdio MCPs also receive host-owned filesystem context after all MC
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_SANDBOX_MODE` | `sandbox.mode` | `native` (srt-wrapped) vs `off`. See [../tools/sandbox.md](/tools/sandbox/). |
-| `MONO_AGENT_SANDBOX_NETWORK` | `sandbox.network.mode` | `none` / `localhost` / `allowlist`. `all` is rejected because pinned SRT cannot enforce it exactly; use `sandbox.mode=off` explicitly instead. |
+| `MONO_AGENT_SANDBOX_NETWORK` | `sandbox.network.mode` | `none` / `localhost` / `allowlist` / `all`. `all` keeps filesystem enforcement while leaving egress open (SRT library-entry launch; managed or explicit node+cli only). |
 | `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST` | `sandbox.network.allowlist` | Domain allowlist. |
 | `MONO_AGENT_SANDBOX_READABLE_ROOTS` | `sandbox.readableRoots` | Readable filesystem roots. |
 | `MONO_AGENT_SANDBOX_WRITABLE_ROOTS` | `sandbox.writableRoots` | Writable filesystem roots. |

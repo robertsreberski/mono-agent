@@ -1,11 +1,16 @@
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
   SandboxUnavailableError,
+  managedSrtInstallRoot,
   createSandboxPolicy,
   createSrtSandboxEngine,
   describeSandboxEffectiveState,
@@ -333,6 +338,19 @@ describe("policy merging", () => {
     });
   });
 
+  it("treats all-network as the weakest mode during merges", () => {
+    const allPolicy = createSandboxPolicy({ root: "/repo", network: { mode: "all" } });
+    const allowlistPolicy = createSandboxPolicy({
+      root: "/repo",
+      network: { mode: "allowlist", allowlist: ["github.com"] },
+    });
+
+    expect(mergeSandboxPolicies(allPolicy, allowlistPolicy)?.network)
+      .toEqual({ mode: "allowlist", allowlist: ["github.com"] });
+    expect(mergeSandboxPolicies(allowlistPolicy, allPolicy)?.network)
+      .toEqual({ mode: "allowlist", allowlist: ["github.com"] });
+  });
+
   it("lets a request tighten filesystem roots but never widen them", () => {
     const configured = createSandboxPolicy({ root: "/repo" });
     const request = createSandboxPolicy({
@@ -348,10 +366,18 @@ describe("policy merging", () => {
 });
 
 describe("network policy URL checks", () => {
-  it("rejects network all and SRT-invalid allowlist patterns at policy creation", () => {
-    expect(() => createSandboxPolicy({ root: "/repo", network: { mode: "all" } })).toThrow(/cannot be enforced|not a valid enforced/u);
+  it("rejects SRT-invalid allowlist patterns at policy creation", () => {
     expect(() => createSandboxPolicy({ root: "/repo", network: { mode: "allowlist", allowlist: ["*"] } })).toThrow(/domain pattern/u);
     expect(() => createSandboxPolicy({ root: "/repo", network: { mode: "allowlist", allowlist: ["::1"] } })).toThrow(/domain pattern/u);
+  });
+
+  it("allows every URL under native all-network mode", () => {
+    const policy = createSandboxPolicy({ root: "/repo", network: { mode: "all" } });
+
+    expect(policy.network).toEqual({ mode: "all", allowlist: [] });
+    expect(networkPolicyAllowsUrl(policy, "https://example.com/")).toBe(true);
+    expect(networkPolicyAllowsUrl(policy, "http://127.0.0.1:8080/health")).toBe(true);
+    expect(networkPolicyAllowsUrl(policy, "https://api.github.com/")).toBe(true);
   });
 
   it("matches bracketed IPv6 loopback hosts under localhost mode", () => {
@@ -421,12 +447,125 @@ describe("srt integration contract", () => {
     expect(filesystem.allowRead).not.toContain(homedir());
   });
 
-  it("allows an explicit all-network posture only when the sandbox is off", () => {
+  it("accepts an all-network posture with the sandbox off or native", () => {
     expect(createSandboxPolicy({ mode: "off", network: { mode: "all" } }).network)
       .toEqual({ mode: "all", allowlist: [] });
-    expect(() => createSandboxPolicy({ mode: "native", network: { mode: "all" } }))
-      .toThrow(/sandbox mode "off"/u);
+    expect(createSandboxPolicy({ mode: "native", network: { mode: "all" } }).network)
+      .toEqual({ mode: "all", allowlist: [] });
   });
+
+  it("omits the network block from srt settings under all-network mode", () => {
+    const policy = createSandboxPolicy({
+      root: "/Users/example/project",
+      network: { mode: "all" },
+    });
+    const settings = srtSettingsForPolicy(policy);
+
+    // An absent network block is SRT's documented unrestricted-network mode:
+    // filesystem rules stay enforced while no proxy or domain filter starts.
+    expect(settings).not.toHaveProperty("network");
+    expect(settings.filesystem).toMatchObject({
+      denyRead: ["/"],
+      allowRead: expect.arrayContaining(["/Users/example/project"]),
+      allowWrite: ["/Users/example/project"],
+    });
+    expect(JSON.parse(JSON.stringify(settings))).not.toHaveProperty("network");
+  });
+
+  it("fails closed for all-network mode when the launch is a bare srt binary", async () => {
+    const engine = createSrtSandboxEngine({ command: await fakeSrtExecutable() });
+    const policy = createSandboxPolicy({ root: "/repo", network: { mode: "all" } });
+
+    await expect(engine.prepareCommand({ command: "/bin/echo", cwd: "/repo" }, policy))
+      .rejects.toThrow(SandboxUnavailableError);
+    await expect(engine.prepareCommand({ command: "/bin/echo", cwd: "/repo" }, policy))
+      .rejects.toThrow(/library entry/u);
+  });
+
+  it("fails closed for all-network mode when the SRT library does not enforce the filesystem policy", { timeout: 60_000 }, async () => {
+    const root = await tempDir();
+    const distDir = join(root, "dist");
+    const workspace = join(root, "workspace");
+    await mkdir(distDir, { recursive: true });
+    await mkdir(workspace, { recursive: true });
+    const cliPath = join(distDir, "cli.js");
+    const entryPath = join(distDir, "index.js");
+    await writeFile(cliPath, "process.exit(0);\n", { mode: 0o600 });
+    // A stub SandboxManager that performs no sandboxing at all: the embed
+    // enforcement proof must detect the missing filesystem boundary.
+    await writeFile(entryPath, [
+      "export const SandboxManager = {",
+      "  async initialize() {},",
+      "  async wrapWithSandbox(command) { return command; },",
+      "  cleanupAfterCommand() {},",
+      "};",
+    ].join("\n"), { mode: 0o600 });
+    const engine = createSrtSandboxEngine({ nodePath: process.execPath, cliPath });
+    const policy = createSandboxPolicy({
+      root: workspace,
+      readableRoots: [workspace],
+      writableRoots: [workspace],
+      network: { mode: "all" },
+    });
+
+    await expect(engine.prepareCommand({ command: "/bin/echo", cwd: workspace }, policy))
+      .rejects.toThrow(SandboxUnavailableError);
+  });
+
+  it.skipIf(process.platform !== "darwin" || !existsSync(managedSrtInstallRoot()))(
+    "enforces filesystem scopes while leaving the network open under all-network mode",
+    { timeout: 240_000 },
+    async () => {
+      const execFileAsync = promisify(execFile);
+      const base = await realpath(await tempDir());
+      const workspace = join(base, "workspace");
+      const secret = join(base, "sibling-secret.txt");
+      await mkdir(workspace, { recursive: true });
+      await writeFile(secret, "secret\n", { mode: 0o600 });
+      const server = createServer((_request, response) => {
+        response.writeHead(200, { "content-type": "text/plain" });
+        response.end("embed-ok");
+      });
+      await new Promise<void>((resolveListen, rejectListen) => {
+        server.once("error", rejectListen);
+        server.listen(0, "127.0.0.1", () => resolveListen());
+      });
+      try {
+        const address = server.address();
+        if (address === null || typeof address === "string") {
+          throw new Error("loopback check server did not expose a TCP port");
+        }
+        const policy = createSandboxPolicy({
+          root: workspace,
+          readableRoots: [workspace],
+          writableRoots: [workspace],
+          network: { mode: "all" },
+        });
+        const engine = createSrtSandboxEngine();
+        const script = [
+          "const fs=require('node:fs');",
+          "const [secretPath,outPath,port]=process.argv.slice(1);",
+          "fs.writeFileSync(outPath,'written');",
+          "try{fs.readFileSync(secretPath);process.exit(42)}catch{}",
+          "fetch('http://127.0.0.1:'+port+'/').then(r=>r.text()).then(t=>{process.exit(t==='embed-ok'?0:43)},()=>process.exit(44));",
+        ].join("");
+        const prepared = await engine.prepareCommand({
+          command: process.execPath,
+          args: ["-e", script, secret, join(workspace, "out.txt"), String(address.port)],
+          cwd: workspace,
+        }, policy);
+        expect(prepared.sandboxed).toBe(true);
+        try {
+          await execFileAsync(prepared.command, [...prepared.args], { cwd: prepared.cwd, timeout: 120_000 });
+        } finally {
+          await prepared.cleanup?.();
+        }
+        expect(await readFile(join(workspace, "out.txt"), "utf8")).toBe("written");
+      } finally {
+        server.close();
+      }
+    },
+  );
 
   it("canonicalizes policy roots so macOS /tmp and /var aliases remain usable", async () => {
     const root = await tempDir();

@@ -129,6 +129,7 @@ isPrivateBaseUrl
 isRuntimeExecutionMode
 isValidMcpServerName
 listMonoRuntimeBackends
+managedSrtInstallRoot
 mergeSandboxPolicies
 modelReferenceKey
 monoRuntimeSupportsSessionResume
