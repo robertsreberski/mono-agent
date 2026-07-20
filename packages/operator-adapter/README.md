@@ -16,7 +16,7 @@ Loopback operator endpoints for local mono-agent surfaces:
   does not fit, becomes a bounded `oversized_event` marker. Other frame kinds are
   unaffected.
 - the live SSE event relay, which streams the host's in-process run-event bus to
-  read-only operator surfaces such as `mono-agent sessions`.
+  read-only operator surfaces such as the `@mono-agent/session-web` PWA.
 
 Both endpoints keep their existing wire contracts, routes, env vars, defaults,
 auth behavior, and error behavior.

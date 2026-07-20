@@ -276,7 +276,7 @@ describe("mono-agent-composer reference parity", () => {
     }
   });
 
-  it("uses exact value-bearing Session Recorder CLI syntax everywhere", () => {
+  it("documents the removed Session Recorder command on every surface", () => {
     const surfaces = [
       [rowWithRegistryId(registry, "session-web.pwa"), "session-web registry row"],
       [rowWithRegistryId(matrix, "session-web.pwa"), "feature matrix row"],
@@ -287,14 +287,13 @@ describe("mono-agent-composer reference parity", () => {
     ] as const;
 
     for (const [page, label] of surfaces) {
-      expect(page, `${label} still routes the recorder through mono-agent web`).toContain("mono-agent sessions");
-      for (const syntax of [
-        "--host <addr>",
-        "--port <n>",
-        "--config <path>",
-        "--env-file <path>",
-      ]) {
-        expect(page, `${label} is missing ${syntax}`).toContain(syntax);
+      expect(page, `${label} must record the sessions removal`).toContain("removed");
+      expect(page, `${label} must point at mono-agent tui`).toContain("mono-agent tui");
+      expect(page, `${label} must point at mono-agent web`).toContain("mono-agent web");
+      for (const removedFlag of ["--show-auth-url", "--max-runs"]) {
+        expect(page, `${label} still advertises removed flag ${removedFlag}`).not.toContain(
+          removedFlag,
+        );
       }
     }
   });
@@ -336,7 +335,7 @@ describe("mono-agent-composer reference parity", () => {
     expect(packageMap).toContain('memory.backend: "supermemory"');
     expect(packageMap).toContain("@mono-agent/session-web");
     expect(packageMap).toContain("@mono-agent/web");
-    expect(packageMap).toContain("mono-agent sessions");
+    expect(packageMap).not.toContain("mono-agent sessions");
   });
 
   it("mirrors native-notify configuration and destination-resolution semantics", () => {

@@ -40,7 +40,10 @@ console.log(server.url);
 await server.stop();
 ```
 
-The `mono-agent sessions` CLI command wraps this with registry resolution + browser open.
+A bundled `mono-agent sessions` CLI launcher previously wrapped this with
+registry resolution and browser open; that command was removed. Use
+`mono-agent tui` or `mono-agent web` for operator run views, and embed this
+server programmatically (as above) when you need the read-only PWA directly.
 Loopback on port `4599` is the default. Startup prints the exact URL to target
 from reverse proxies. A non-loopback bind requires `allowNonLoopback: true`
 and an `authToken`; `/api/*` and `/api/stream` require `Authorization: Bearer
@@ -61,12 +64,17 @@ form; enter the current token and choose **Retry**, or choose **Clear** first to
 remove both browser-storage copies. Clearing the site's browser storage/site
 data also removes them; closing the browser alone does not sign out.
 
-For direct LAN/Tailscale access, the CLI can bind the server itself; Tailscale
-Serve is not a prerequisite:
+For direct LAN/Tailscale access, bind the server to a non-loopback host with the
+`startSessionWebServer` options; Tailscale Serve is not a prerequisite:
 
-```bash
-MONO_AGENT_WEB_AUTH_TOKEN='<strong-stable-token>' \
-  mono-agent sessions --host 0.0.0.0 --allow-non-loopback --no-open
+```ts
+await startSessionWebServer({
+  registryDirs: ["/Users/me/.mono-agent/trace-sources"],
+  host: "0.0.0.0",
+  port: 4599,
+  allowNonLoopback: true,
+  authToken: "<strong-stable-token>",
+});
 ```
 
 Startup advertises concrete loopback, private-LAN, and Tailscale IPv4 URLs, not

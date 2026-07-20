@@ -96,7 +96,7 @@ mono-agent web
 
 On Linux and other supported non-macOS hosts, use the foreground `mono-agent web run` command under your preferred service manager.
 
-It listens on `0.0.0.0:5050` by default for local, LAN, and tailnet use; bare `web` only reports status and exact URLs. There is no application login, so use it only on a trusted LAN/tailnet or pass `--loopback`. See the [web console guide](/observability/web-console/) for persistent threads, attachments, service lifecycle, and the Session Recorder's `mono-agent sessions` command.
+It listens on `0.0.0.0:5050` by default for local, LAN, and tailnet use; bare `web` only reports status and exact URLs. There is no application login, so use it only on a trusted LAN/tailnet or pass `--loopback`. See the [web console guide](/observability/web-console/) for persistent threads, attachments, and service lifecycle.
 
 ## Verify the install
 
@@ -112,13 +112,13 @@ The CLI exposes these commands (more detail in the [CLI Reference](/observabilit
 | Command | Purpose |
 | --- | --- |
 | `init` | Non-destructive scaffold of a config, `IDENTITY.md`, and `.mono-agent/`. A fresh built-in Journal/BuJo selection also gets one empty provider-free managed generation; pre-existing memory roots are never changed. On a TTY with no flags it runs the step-by-step **wizard** (preset or custom; walks you through model, channels, memory, tools, sandbox, observability); any flag or a non-TTY writes the scaffold silently. `setup` is an alias. |
-| `presets` | List the built-in setup presets (`list`) or show a preset's generated config, `.env.example`, and checklist (`show <id>`). Replaces the deprecated `recipes` alias, which remains available until removal in `v2.0.0`. |
+| `presets` | List the built-in setup presets (`list`) or show a preset's generated config, `.env.example`, and checklist (`show <id>`). Replaces the removed `recipes` command. |
 | `validate` | Validate `mono-agent.config.json` and live checks that can be tested safely before starting. |
-| `start` | Start the host for every configured channel (backgrounds on macOS; use `--foreground`/`-f` elsewhere). |
+| `start` | Start the host for every configured channel (backgrounds on macOS; use `--foreground` elsewhere). |
 | `restart` / `stop` / `status` / `logs` | Manage the backgrounded instance (macOS). |
 | `tui` | Open the operator console and connect to any running agent. |
 | `web` | Manage or run the always-on browser conversation console. |
-| `sessions` | Open the legacy read-only Session Recorder. |
+| `sessions` (removed) | Removed — use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). |
 | `install-skill` | Install the authoring composer and its documentation MCP companion, or maintain managed project skills. |
 | `backfill` | Replay historical runs into observability. |
 

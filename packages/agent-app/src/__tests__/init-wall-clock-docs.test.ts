@@ -3,8 +3,21 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { renderHelp } from "../cli.js";
+import { renderHelp, renderHelpTopic } from "../cli.js";
 import { readinessProbeTimeoutDescription } from "../readiness-probe.js";
+
+/**
+ * The init wall-clock disclosure lives in the `help init` detail view (the
+ * grouped `mono-agent help` summary is one scannable line per command). This is
+ * the surface whose disclosure prominence the guardrail below protects.
+ */
+function initHelpText(): string {
+  const result = renderHelpTopic("init");
+  if (!result.ok) {
+    throw new Error(`expected \`help init\` to resolve, got: ${result.message}`);
+  }
+  return result.text;
+}
 
 const PACKAGE_README = readFileSync(
   fileURLToPath(new URL("../../README.md", import.meta.url)),
@@ -41,16 +54,23 @@ function paragraphs(source: string): string[] {
 function initHelpDescriptionLines(help: string): string[] {
   const lines = help.split("\n");
   const initStart = lines.findIndex((line) => line.startsWith("  mono-agent init [--preset"));
-  const setupStart = lines.findIndex(
-    (line, index) => index > initStart && line.startsWith("  mono-agent setup"),
-  );
-  if (initStart < 0 || setupStart <= initStart) {
+  if (initStart < 0) {
     return [];
   }
-  return lines
-    .slice(initStart + 1, setupStart)
-    .filter((line) => /^ {6}\S/u.test(line))
-    .map((line) => line.slice(6));
+  const description: string[] = [];
+  for (let index = initStart + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line === undefined || line.startsWith("  mono-agent ")) {
+      // The next command entry (only present in a multi-entry render) ends the block.
+      break;
+    }
+    // Description lines are dim text indented by exactly six spaces; signature
+    // continuation lines are indented further and are skipped.
+    if (/^ {6}\S/u.test(line)) {
+      description.push(line.slice(6));
+    }
+  }
+  return description;
 }
 
 function packageOpeningParagraphs(source: string): string[] {
@@ -99,8 +119,20 @@ function prominenceFailures(surfaces: DisclosureSurfaces): string[] {
 }
 
 describe("init wall-clock disclosure", () => {
+  it("keeps the guided-probe signal on the default `mono-agent help` summary line for init", () => {
+    // The grouped summary is one line per command; the init line must still warn
+    // that the guided path makes blocking live model calls, so the disclosure
+    // cannot silently vanish from the surface most users see first.
+    const summary = renderHelp();
+    const initSummaryLine = summary
+      .split("\n")
+      .find((line) => line.includes("Scaffold a new agent")) ?? "";
+    expect(initSummaryLine, "the init summary line must exist").not.toBe("");
+    expect(initSummaryLine, "the init summary must keep the live-probe signal").toContain("probes");
+  });
+
   it("pins the disclosure to the first help description and exact README opening paragraphs", () => {
-    const help = renderHelp();
+    const help = initHelpText();
     const helpLines = initHelpDescriptionLines(help);
     const presetStart = helpLines.findIndex((line) => line.startsWith("--preset seeds"));
     const helpDisclosure = helpLines.slice(0, presetStart).join(" ");
@@ -131,7 +163,7 @@ describe("init wall-clock disclosure", () => {
   });
 
   it("fails the reviewer mutation that buries each disclosure behind 20 entries", () => {
-    const help = renderHelp();
+    const help = initHelpText();
     const helpFiller = Array.from(
       { length: 20 },
       (_, index) => `      Deferred init detail ${index + 1}.`,

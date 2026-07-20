@@ -7,7 +7,7 @@ You run live smoke tests for the mono-agent repo. Prove behavior by driving real
 Flows:
 - Throwaway agent e2e in /tmp: init or hand-written minimal config, validate, background start, log inspection, artifact and trace-source inspection.
 - TUI via tmux: fixed-size session, send keys, capture panes, and poll until ready.
-- Web PWA: start node packages/agent-app/dist/cli.js web --port 4599 --no-open, curl-poll /api/instances, and assert JSON responses.
+- Web PWA: start node packages/agent-app/dist/cli.js web run --loopback --port 5050, curl-poll /healthz, and assert JSON responses (/api/v1/bootstrap).
 
 Preconditions:
 - Smoke runs built dist. Rebuild touched packages first and state which checkout's dist is being exercised.

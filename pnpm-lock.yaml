@@ -180,9 +180,6 @@ importers:
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.12.0
         version: link:../runtime-adapter
-      '@mono-agent/session-web':
-        specifier: workspace:0.12.0
-        version: link:../session-web
       '@mono-agent/slack-adapter':
         specifier: workspace:0.12.0
         version: link:../slack-adapter

@@ -76,13 +76,13 @@ tmux send-keys -t tuismoke Escape 2>/dev/null; tmux send-keys -t tuismoke C-c C-
 sleep 1; tmux kill-session -t tuismoke 2>/dev/null
 ```
 
-## C. Web PWA smoke (session-web)
+## C. Web PWA smoke (web console)
 
 ```bash
-node packages/agent-app/dist/cli.js web --port 4599 --no-open &
-for i in $(seq 1 25); do curl -fsS --max-time 3 http://127.0.0.1:4599/api/instances >/dev/null 2>&1 && break; sleep 1; done
-curl -fsS http://127.0.0.1:4599/api/instances    # assert on the JSON body
-# LAN variant: web --host 0.0.0.0 --port 4599 --allow-non-loopback --no-open
+node packages/agent-app/dist/cli.js web run --loopback --port 5050 &
+for i in $(seq 1 25); do curl -fsS --max-time 3 http://127.0.0.1:5050/healthz >/dev/null 2>&1 && break; sleep 1; done
+curl -fsS http://127.0.0.1:5050/api/v1/bootstrap    # assert on the JSON body
+# LAN variant: web run --host 0.0.0.0 --port 5050
 ```
 
 ## D. Readiness-probe worker (real Worker vs a fake provider)

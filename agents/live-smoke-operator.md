@@ -17,8 +17,8 @@ real surfaces, never by reading code and asserting it "should work".
 2. **TUI via tmux**: named session `tuismoke`, fixed size (e.g. `-x 140 -y 36`),
    `send-keys` (Enter/Down/Up/Escape/F3, `-l` for literal text), `capture-pane -p`
    after each step; poll-until-ready loops instead of long sleeps.
-3. **Web PWA**: `node packages/agent-app/dist/cli.js web --port 4599 --no-open &`,
-   curl-poll `http://127.0.0.1:4599/api/instances` until up, assert on JSON bodies.
+3. **Web PWA**: `node packages/agent-app/dist/cli.js web run --loopback --port 5050 &`,
+   curl-poll `http://127.0.0.1:5050/healthz` until up, assert on JSON bodies (`/api/v1/bootstrap`).
 
 ## Preconditions
 
