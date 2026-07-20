@@ -1991,6 +1991,76 @@ describe("startMonoAgentApp", () => {
     await running.stop();
   });
 
+  it("supplies Slack and Telegram with the same configured runtime-control catalog", async () => {
+    let telegramCaptured: TelegramAdapterStartOptions | undefined;
+    let slackCaptured: SlackAdapterStartOptions | undefined;
+    const telegramDriver = createTelegramChannelDriver({
+      startAdapter: async (options) => {
+        telegramCaptured = options;
+        return {
+          stop: async () => undefined,
+          notify: async () => ({ delivered: true }),
+          post: async () => undefined,
+          postStatus: async () => undefined,
+        };
+      },
+    });
+    const slackDriver = createSlackChannelDriver({
+      startAdapter: async (options) => {
+        slackCaptured = options;
+        return {
+          stop: async () => undefined,
+          adapter: { notify: async () => ({ delivered: true }) },
+        } as never;
+      },
+    });
+    const core = parsedCoreConfig();
+    const primary = parseMonoRuntimeModelReference("codex:gpt-5.6-terra");
+    const fallback = parseMonoRuntimeModelReference("codex:gpt-5.6-sol");
+    const coreConfig: MonoAgentConfig = {
+      ...core,
+      runtime: {
+        ...core.runtime,
+        model: primary,
+        effort: "high",
+        fallbacks: [{ model: fallback }, { model: primary }],
+      },
+    };
+
+    const telegram = await telegramDriver.start({
+      config: { enabled: true, botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
+      coreConfig,
+      responder: { respond: async () => ({ text: "" }) },
+      cwd: dir,
+      onFailure: vi.fn(),
+    });
+    const slack = await slackDriver.start({
+      config: {
+        enabled: true,
+        botToken: "xoxb",
+        appToken: "xapp",
+        allowedChannelIds: ["D1"],
+        allowAllChannels: false,
+        botUserIds: [],
+        mentionTextAliases: [],
+        stripMentionText: false,
+      } as never,
+      coreConfig,
+      responder: { respond: async () => ({ text: "" }) },
+      cwd: dir,
+      onFailure: vi.fn(),
+    });
+
+    expect(slackCaptured?.runtimeControls).toEqual(telegramCaptured?.runtimeControls);
+    expect(slackCaptured?.runtimeControls?.models.map((model) => model.value)).toEqual([
+      "codex:gpt-5.6-terra",
+      "codex:gpt-5.6-sol",
+    ]);
+
+    await slack.stop();
+    await telegram.stop();
+  });
+
   it("maps Telegram effort menus to local model reasoning capabilities", async () => {
     let captured: TelegramAdapterStartOptions | undefined;
     const driver = createTelegramChannelDriver({
