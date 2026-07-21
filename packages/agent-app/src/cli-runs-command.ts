@@ -11,9 +11,6 @@ import * as ui from "./ui.js";
  * `runMetrics`, `audit` runs the structural artifact audit via `runAuditRuns`.
  * The engine modules (`metrics.ts`/`audit-runs.ts`) are deliberately untouched —
  * this wrapper only routes and forwards the subcommand-relevant flags.
- *
- * The legacy `audit-runs`/`metrics` spellings normalize to `runs audit`/`runs`
- * in `parseCliArgs`, so their existing invocations arrive here unchanged.
  */
 export async function runRunsCommand(args: ParsedCliArgs): Promise<number> {
   const [mode = "report", ...extra] = args.positionals;
@@ -29,8 +26,7 @@ export async function runRunsCommand(args: ParsedCliArgs): Promise<number> {
   // Per-mode flag strictness. Parse-time only knows the command is `runs`, so the
   // subcommand-inappropriate flags are rejected here rather than being silently
   // dropped (which, for --consumer, would quietly read the wrong artifact folder).
-  // These reject exactly the combinations the pre-consolidation commands could
-  // never produce, so the `audit-runs`/`metrics` forwarding aliases are unaffected.
+  // These reject combinations that do not belong to the selected mode.
   if (mode === "audit") {
     const reportOnly: string[] = [];
     if (args.groupBy !== undefined) reportOnly.push("--by");

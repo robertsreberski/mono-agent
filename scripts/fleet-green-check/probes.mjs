@@ -884,7 +884,7 @@ export function runMemoryAudit(nodePath, cliPath, dir, probeEnvironment, probeAr
 }
 
 export function runMetrics(nodePath, cliPath, dir, probeEnvironment, probeArgs, since, runCommand) {
-  const result = runCommand(nodePath, [cliPath, "metrics", "--since", since, "--json", ...probeArgs], {
+  const result = runCommand(nodePath, [cliPath, "runs", "report", "--since", since, "--json", ...probeArgs], {
     cwd: dir,
     timeout: COMMAND_TIMEOUT_MS.metrics,
     environment: probeEnvironment,

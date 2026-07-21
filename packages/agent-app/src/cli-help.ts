@@ -167,7 +167,6 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "Restart the background instance for this config (starts it if stopped).",
       "--clear-sessions clears persisted pi sessions and active conversation history",
       "so the agent starts fresh. Durable memory and run artifacts are untouched.",
-      "--force is a deprecated alias of --clear-sessions.",
     ],
   },
   {
@@ -243,8 +242,7 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "total/per-run cost, optionally windowed (--since/--until) and grouped (--by).",
       "audit: artifact integrity — parse failures, status/failure-kind histograms,",
       "stale running summaries (never rewritten), and per-failure-kind rates.",
-      "--include-memory adds memory-run artifacts. Legacy `audit-runs` and `metrics`",
-      "still forward here (deprecated: `runs audit` / `runs`).",
+      "--include-memory adds memory-run artifacts.",
     ],
   },
   {
@@ -317,10 +315,6 @@ const HELP_GROUPS: readonly { readonly id: HelpGroupId; readonly note?: string }
 const HELP_ALIASES = new Map<string, string>([
   ["doctor", "validate"],
   ["setup", "init"],
-  // Deprecated forwarding aliases: `metrics`/`audit-runs` still run (routing to
-  // `runs report`/`runs audit`), so their help topics resolve to the runs entry.
-  ["metrics", "runs"],
-  ["audit-runs", "runs"],
 ]);
 
 const HELP_NOTES = `Background mode runs the agent under launchd, keeping it alive across logins
