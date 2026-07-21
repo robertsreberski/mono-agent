@@ -299,6 +299,70 @@ describe("web HTTP server", () => {
     expect(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`)).toMatchObject({ status: 404 });
   });
 
+  it("accepts a live follow-up for the active web turn and exposes its applied status", async () => {
+    const encoder = new TextEncoder();
+    let finishTurn = () => undefined;
+    const liveInputs: Array<{ conversationId: string; body: Record<string, unknown> }> = [];
+    const { baseUrl } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(`${JSON.stringify({ kind: "append", delta: "Working" })}\n`));
+            finishTurn = () => {
+              controller.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+              controller.close();
+            };
+          },
+        }),
+        onLiveInput: async (conversationId, body) => {
+          liveInputs.push({ conversationId, body });
+          return { status: "applied", runId: "run-live" };
+        },
+      }),
+    });
+    const created = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    const thread = (await json(created)).thread as { id: string };
+    const started = await fetch(`${baseUrl}/api/v1/threads/${thread.id}/turns`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "Start the work" }),
+    });
+    expect(started.status).toBe(202);
+
+    const response = await fetch(`${baseUrl}/api/v1/threads/${thread.id}/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "Use the smaller scope" }),
+    });
+    expect(response.status).toBe(202);
+    expect(await json(response)).toMatchObject({
+      disposition: "pending",
+      message: { role: "user", liveInputStatus: "pending" },
+    });
+
+    let detail = await json(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`));
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const messages = detail.messages as Array<{ liveInputStatus?: string }>;
+      if (messages.some((message) => message.liveInputStatus === "applied")) break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+      detail = await json(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`));
+    }
+    expect(detail.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ liveInputStatus: "applied" }),
+    ]));
+    expect(liveInputs).toEqual([{
+      conversationId: `web:${thread.id}`,
+      body: expect.objectContaining({ text: "Use the smaller scope" }),
+    }]);
+    finishTurn();
+  });
+
   it("proxies pending and submitted AskUser state for a web conversation", async () => {
     const submissions: Record<string, unknown>[] = [];
     const snapshot = {

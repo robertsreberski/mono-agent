@@ -361,12 +361,55 @@ export interface AgentMessageStream {
   finish?(finalText?: string): Promise<void>;
 }
 
+/** Maximum characters accepted by the in-flight steering mailbox. */
+export const AGENT_LIVE_INPUT_MAX_CHARACTERS = 8_000;
+
+/** Maximum live messages retained by one active logical turn. */
+export const AGENT_LIVE_INPUT_MAX_MESSAGES = 100;
+
+/** One transport-neutral follow-up offered to the currently running turn. */
+export interface AgentLiveInputRequest {
+  readonly conversationId: string;
+  /** Stable transport message id, used to make duplicate delivery idempotent. */
+  readonly id: string;
+  readonly text: string;
+  /** ISO-8601 transport receipt time, preserved in canonical history. */
+  readonly receivedAt: string;
+}
+
+export type AgentLiveInputUnavailableReason =
+  | "inactive"
+  | "unsupported"
+  | "too_large"
+  | "full"
+  | "invalid";
+
+export type AgentLiveInputSettlement =
+  | { readonly status: "applied"; readonly runId: string }
+  | { readonly status: "requeue"; readonly reason: "unsupported" | "closed" | "failed" }
+  | { readonly status: "discarded"; readonly reason: "cancelled" };
+
+/**
+ * Immediate ownership result for a live follow-up. An accepted offer remains
+ * represented by the caller's reserved normal-turn queue slot until `settled`
+ * says whether that reservation should become a no-op or run normally.
+ */
+export type AgentLiveInputOffer =
+  | { readonly status: "unavailable"; readonly reason: AgentLiveInputUnavailableReason }
+  | { readonly status: "accepted"; readonly settled: Promise<AgentLiveInputSettlement> };
+
 export interface AgentResponder<
   Request extends AgentRequestBase = AgentRequestBase,
   Stream extends AgentMessageStream = AgentMessageStream,
   Response extends AgentResponse = AgentResponse,
 > {
   respond(request: Request, stream: Stream): Promise<Response>;
+  /**
+   * Optional: offer a text follow-up to the active turn without starting a
+   * parallel response. Callers reserve their ordinary queue position first so
+   * an unsupported or end-of-turn race can deterministically requeue it.
+   */
+  offerLiveInput?(request: AgentLiveInputRequest): AgentLiveInputOffer;
   /**
    * Optional: abort the in-flight turn for a conversation and clear any queued
    * follow-ups. Channels call this on an explicit user cancel (e.g. /cancel).

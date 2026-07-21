@@ -78,6 +78,12 @@ const userMessage: WebMessage = {
 };
 
 describe("AssistantMessage grouped parts", () => {
+  it("shows the delivery state for live follow-up user messages", () => {
+    render(<MessageHarness message={{ ...userMessage, liveInputStatus: "applied" }} />);
+
+    expect(screen.getByText("Applied to current run")).toBeVisible();
+  });
+
   it("preserves reasoning, tools, and answer order while keeping telemetry internal", () => {
     render(<MessageHarness message={assistantMessage("complete")} />);
 

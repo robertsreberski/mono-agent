@@ -151,6 +151,85 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("persists live follow-ups on the active turn and marks provider acknowledgement", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({
+      threadId: thread.id,
+      text: "Initial request",
+      attachmentIds: [],
+      model: "provider/default",
+      effort: "high",
+    });
+
+    const reserved = store.reserveLiveInput(thread.id, "Use the second approach");
+    expect(reserved).toMatchObject({
+      offered: true,
+      input: { status: "offered", text: "Use the second approach" },
+      message: { turnId: turn.turnId, liveInputStatus: "pending" },
+    });
+    expect(store.markLiveInputApplied(reserved.input.id)).toMatchObject({
+      id: reserved.message.id,
+      liveInputStatus: "applied",
+    });
+    expect(store.queuedLiveInputThreadIds()).toEqual([]);
+    store.completeTurn(turn.turnId, "Applied");
+
+    const detail = store.getThreadDetail(thread.id);
+    expect(detail?.messages.map((message) => [message.role, message.liveInputStatus])).toEqual([
+      ["user", undefined],
+      ["user", "applied"],
+      ["assistant", undefined],
+    ]);
+    store.close();
+  });
+
+  it("promotes a queued follow-up into the next durable turn", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const reserved = store.reserveLiveInput(thread.id, "Run after the current work");
+    expect(reserved).toMatchObject({ offered: false, message: { liveInputStatus: "queued" } });
+
+    const promoted = store.promoteNextQueuedLiveInput(thread.id);
+    expect(promoted).toMatchObject({ text: "Run after the current work", userMessageId: reserved.message.id });
+    expect(store.getThreadDetail(thread.id)?.messages).toEqual([
+      expect.objectContaining({
+        id: reserved.message.id,
+        role: "user",
+        turnId: promoted?.turnId,
+        parts: [{ type: "text", text: "Run after the current work" }],
+      }),
+      expect.objectContaining({ role: "assistant", status: "running" }),
+    ]);
+    if (promoted !== undefined) store.completeTurn(promoted.turnId, "Done");
+    store.close();
+  });
+
+  it("recovers an unsettled live follow-up as queued after restart", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    store.beginTurn({ threadId: thread.id, text: "Still running", attachmentIds: [] });
+    const live = store.reserveLiveInput(thread.id, "Do not lose this");
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThread(thread.id)?.runState.status).toBe("interrupted");
+    expect(reopened.getThreadDetail(thread.id)?.messages.find((message) => message.id === live.message.id))
+      .toMatchObject({ liveInputStatus: "queued", parts: [{ type: "text", text: "Do not lose this" }] });
+    expect(reopened.queuedLiveInputThreadIds()).toEqual([thread.id]);
+    reopened.close();
+  });
+
   it("persists quote metadata without exposing its storage telemetry as message content", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -384,7 +463,7 @@ describe("WebStore", () => {
     reopened.close();
   });
 
-  it("migrates schema v1 state to trigger markers and the notification ledger", async () => {
+  it("migrates schema v1 state through notification and live-input storage", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -394,6 +473,7 @@ describe("WebStore", () => {
 
     const legacy = new DatabaseSync(databasePath);
     legacy.exec(`
+      DROP TABLE live_inputs;
       DROP TABLE notification_deliveries;
       ALTER TABLE threads DROP COLUMN trigger_kind;
       PRAGMA user_version = 1;
@@ -406,10 +486,12 @@ describe("WebStore", () => {
     const version = inspected.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
     const columns = inspected.prepare("PRAGMA table_info(threads)").all() as unknown as Array<{ name: string }>;
     const ledger = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notification_deliveries'").get();
+    const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     inspected.close();
-    expect(version.user_version).toBe(2);
+    expect(version.user_version).toBe(3);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
+    expect(liveInputs).toBeDefined();
   });
 
   it("rejects a future schema without retaining the failed database handle", async () => {
@@ -421,12 +503,12 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 3");
+    future.exec("PRAGMA user_version = 4");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
     const restored = new DatabaseSync(databasePath);
-    restored.exec("PRAGMA user_version = 2");
+    restored.exec("PRAGMA user_version = 3");
     restored.close();
     const reopened = await WebStore.open({ stateDir });
     reopened.close();

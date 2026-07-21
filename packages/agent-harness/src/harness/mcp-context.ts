@@ -296,7 +296,7 @@ export function buildContinuationOriginContext(input: {
   readonly runId: string;
   readonly capturedAt: string;
   readonly priorHistory: readonly HistoryMessage[];
-  readonly completedTurn: readonly [HistoryMessage, HistoryMessage];
+  readonly completedTurn: readonly HistoryMessage[];
 }): AgentContinuationOriginContext {
   // Preserve exact bytes for the newest bounded host-history projection. An
   // overlarge/invalid older message is omitted as a whole; content is never

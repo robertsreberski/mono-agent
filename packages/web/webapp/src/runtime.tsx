@@ -53,6 +53,16 @@ const quoteFromMetadata = (value: unknown): WebQuote | undefined => {
     : undefined;
 };
 
+const formatLiveInput = (text: string, quote: WebQuote | undefined): string => {
+  if (quote === undefined) return text;
+  const blockquote = quote.text
+    .trim()
+    .split(/\r?\n/u)
+    .map((line) => `> ${line}`)
+    .join("\n");
+  return `Quoted context:\n${blockquote}\n\n${text}`;
+};
+
 const jsonValue = (value: unknown): JsonValue => {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -160,6 +170,7 @@ export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
       custom: {
         turnId: message.turnId,
         updatedAt: message.updatedAt,
+        ...(message.liveInputStatus === undefined ? {} : { liveInputStatus: message.liveInputStatus }),
         ...(message.quote === undefined ? {} : { quote: message.quote }),
       },
     },
@@ -245,6 +256,12 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         agentId: store.selectedAgentId,
         threadId: store.selectedThreadId,
       };
+      if (store.selectedThread?.runState.status === "running" && attachments.length === 0) {
+        void store.sendLiveInput(formatLiveInput(text, quote)).catch(() => {
+          queueRecovery(text, [], quote, submissionContext);
+        });
+        return;
+      }
       if (turnStartingRef.current) {
         queueRecovery(text, attachments, quote, submissionContext);
         return;

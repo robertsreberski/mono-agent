@@ -185,6 +185,85 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("delivers a live follow-up into the active operator run and publishes applied state", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const delivered: Array<{ conversationId: string; body: Record<string, unknown> }> = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) {
+            stream = controller;
+            controller.enqueue(encoder.encode(`${JSON.stringify({ kind: "status", text: "working" })}\n`));
+          },
+        }),
+        onLiveInput(conversationId, body) {
+          delivered.push({ conversationId, body });
+          return { status: "applied", runId: "run-live" };
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Initial task" });
+
+    const receipt = service.submitLiveInput(thread.id, "Also check the edge case");
+    expect(receipt).toMatchObject({ disposition: "pending", message: { liveInputStatus: "pending" } });
+    await waitFor(() => service.thread(thread.id).messages.some(
+      (message) => message.id === receipt.message.id && message.liveInputStatus === "applied",
+    ));
+    expect(delivered).toEqual([{
+      conversationId: `web:${thread.id}`,
+      body: {
+        id: expect.any(String),
+        text: "Also check the edge case",
+        receivedAt: expect.any(String),
+      },
+    }]);
+
+    stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+    stream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    await service.stop();
+  });
+
+  it("queues a follow-up as the next turn when the active operator lacks live input", async () => {
+    const encoder = new TextEncoder();
+    let firstStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    let turnCount = 0;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: false,
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => {
+          turnCount += 1;
+          if (turnCount === 1) {
+            return new ReadableStream<Uint8Array>({
+              start(controller) { firstStream = controller; },
+            });
+          }
+          return `${JSON.stringify({ kind: "finish", finalText: "Follow-up done" })}\n`;
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Initial task" });
+    const receipt = service.submitLiveInput(thread.id, "Run this immediately after");
+    expect(receipt).toMatchObject({ disposition: "queued", message: { liveInputStatus: "queued" } });
+
+    await waitFor(() => firstStream !== undefined);
+    firstStream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Initial done" })}\n`));
+    firstStream?.close();
+    await waitFor(() => turnBodies.length === 2);
+    await waitFor(() => service.thread(thread.id).messages.filter((message) => message.role === "assistant").length === 2
+      && service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(turnBodies.map((body) => body.text)).toEqual(["Initial task", "Run this immediately after"]);
+    expect(service.thread(thread.id).messages.find((message) => message.id === receipt.message.id))
+      .toMatchObject({ role: "user", parts: [{ type: "text", text: "Run this immediately after" }] });
+    await service.stop();
+  });
+
   it("sends a formatted blockquote upstream while preserving the authored message and quote", async () => {
     const turnBodies: Record<string, unknown>[] = [];
     const service = await createService({

@@ -83,7 +83,8 @@ const DORMANT_CLI_CAPABILITIES = {
   supports_mcp: true,
   supports_skills: true,
   supports_builtin_tools: true,
-  supports_live_input: true,
+  // The one-shot CLI bridge cannot add stdin messages after process launch.
+  supports_live_input: false,
   supports_native_subagents: true,
 };
 

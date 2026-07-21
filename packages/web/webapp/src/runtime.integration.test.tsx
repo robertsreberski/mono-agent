@@ -61,6 +61,7 @@ const createStore = (
   archiveThread: vi.fn(),
   unarchiveThread: vi.fn(),
   sendTurn,
+  sendLiveInput: vi.fn().mockResolvedValue(undefined),
   cancelTurn: vi.fn(),
   setShowArchived: vi.fn(),
   setModel: vi.fn(),
@@ -213,6 +214,31 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     });
     expect(sendTurn).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(composer.getState().text).toBe("second"));
+  });
+
+  it("routes text submitted during a running turn to live input instead of starting another turn", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    const sendLiveInput = vi.fn().mockResolvedValue(undefined);
+    const runningThread = thread("thread", "agent", {
+      runState: { id: "turn-running", status: "running" },
+    });
+    storeMock.current = createStore(sendTurn, {
+      threads: [runningThread],
+      visibleThreads: [runningThread],
+      selectedThread: runningThread,
+      sendLiveInput,
+    });
+    const { runtime } = await renderRuntime();
+    const composer = runtime.thread.composer;
+
+    act(() => {
+      composer.setText("Use the smaller scope");
+      composer.send();
+    });
+
+    await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Use the smaller scope"));
+    expect(sendTurn).not.toHaveBeenCalled();
+    expect(composer.getState().text).toBe("");
   });
 
   it("restores an attachment-only rejected turn into its exact created thread without re-uploading", async () => {

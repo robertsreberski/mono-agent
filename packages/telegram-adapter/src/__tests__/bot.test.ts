@@ -7,6 +7,8 @@ import { join } from "node:path";
 import {
   AgentResponseCancelledError,
   isChannelUserCancelReason,
+  type AgentLiveInputRequest,
+  type AgentLiveInputSettlement,
   type ChannelAskSnapshot,
 } from "@mono-agent/agent-contracts";
 import { Bot } from "grammy";
@@ -180,12 +182,12 @@ function err(errorCode: number, description: string): never {
 
 function textUpdate(
   text: string,
-  options?: { chatId?: number; updateId?: number; username?: string },
+  options?: { chatId?: number; messageId?: number; updateId?: number; username?: string },
 ): Parameters<Bot["handleUpdate"]>[0] {
   return {
     update_id: options?.updateId ?? 1,
     message: {
-      message_id: 10,
+      message_id: options?.messageId ?? 10,
       date: 1234,
       chat: { id: options?.chatId ?? 42, type: "private" },
       from: {
@@ -1385,6 +1387,52 @@ describe("createTelegramBot", () => {
     secondFinish.resolve({ text: "done two" });
     await first;
     await second;
+  });
+
+  it("steers the active Telegram run without starting another responder turn", async () => {
+    const active = createDeferred<{ text: string }>();
+    let respondCalls = 0;
+    let offered: AgentLiveInputRequest | undefined;
+    let settle!: (result: AgentLiveInputSettlement) => void;
+    const settled = new Promise<AgentLiveInputSettlement>((resolve) => { settle = resolve; });
+    const { bot, calls } = buildTestBot({
+      reactions: { working: true, done: true, error: true },
+      stream: { editDebounceMs: 0 },
+      responder: {
+        respond: async () => {
+          respondCalls += 1;
+          return active.promise;
+        },
+        offerLiveInput(request) {
+          if (request.text !== "steer now") return { status: "unavailable", reason: "inactive" };
+          offered = request;
+          return { status: "accepted", settled };
+        },
+      },
+    });
+
+    const first = bot.handleUpdate(textUpdate("long task", { messageId: 10 }));
+    await vi.waitFor(() => expect(respondCalls).toBe(1));
+    await bot.handleUpdate(textUpdate("steer now", { updateId: 2, messageId: 11 }));
+    expect(offered).toMatchObject({
+      conversationId: "telegram:42",
+      id: "42:11",
+      text: "steer now",
+    });
+    expect(respondCalls).toBe(1);
+    expect(calls).toContainEqual(expect.objectContaining({
+      method: "setMessageReaction",
+      payload: expect.objectContaining({ chat_id: 42, message_id: 11, reaction: [{ type: "emoji", emoji: "👀" }] }),
+    }));
+
+    settle({ status: "applied", runId: "run-1" });
+    active.resolve({ text: "steered answer" });
+    await first;
+    await vi.waitFor(() => expect(calls.filter(
+      (call) => call.method === "setMessageReaction" && call.payload.message_id === 11,
+    ).at(-1)?.payload.reaction).toEqual([{ type: "emoji", emoji: "👍" }]));
+    expect(respondCalls).toBe(1);
+    expect(texts(calls, "sendMessage")).toContain("steered answer");
   });
 
   it("admits same-chat turns in arrival order: a slow media message is not overtaken by a later text message", async () => {

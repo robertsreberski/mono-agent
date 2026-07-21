@@ -133,6 +133,34 @@ describe("turn overrides", () => {
       quote: { text: "Selected response", messageId: "source-message" },
     });
   });
+
+  it("posts a live follow-up to the encoded thread route", async () => {
+    const receipt = {
+      disposition: "pending" as const,
+      message: {
+        id: "live-message",
+        threadId: "thread/one",
+        role: "user" as const,
+        parts: [{ type: "text" as const, text: "Steer this run" }],
+        attachments: [],
+        createdAt: "2026-07-21T10:00:00.000Z",
+        updatedAt: "2026-07-21T10:00:00.000Z",
+        status: "complete" as const,
+        liveInputStatus: "pending" as const,
+      },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(receipt, { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.liveInput("thread/one", "Steer this run")).resolves.toEqual(receipt);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/threads/thread%2Fone/live-input",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ text: "Steer this run" }),
+      }),
+    );
+  });
 });
 
 describe("AskUser API", () => {

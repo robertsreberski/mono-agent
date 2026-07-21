@@ -1363,60 +1363,79 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
 
   async function steerLiveInput() {
     if (!options.liveInput) return;
-    for await (const message of options.liveInput) {
-      if (turnCompleted) break;
-      if (!threadId || !activeTurnId || !turnReadyResolved) {
-        await Promise.race([
-          turnReady,
-          turnDone,
-          client.closed.then((err) => { throw err; }),
+    const iterator = options.liveInput[Symbol.asyncIterator]();
+    try {
+      while (!turnCompleted) {
+        const next = await Promise.race([
+          iterator.next(),
+          turnDone.then(() => ({ done: true, value: undefined })),
         ]);
-        if (turnCompleted || !turnReadyResolved) break;
-      }
-      const input = userTextInput(formatLiveInputGuidance(message.body, options.prompts));
-      try {
-        const response = await client.request("turn/steer", {
-          threadId,
-          expectedTurnId: activeTurnId,
-          input,
-        });
-        activeTurnId = response?.turnId || activeTurnId;
-      } catch (err) {
-        const providerError = err?.responseError;
-        if (isNoActiveTurnToSteer(providerError || err)) {
+        if (next.done || turnCompleted) break;
+        const message = next.value;
+        if (!threadId || !activeTurnId || !turnReadyResolved) {
           await Promise.race([
             turnReady,
             turnDone,
-            client.closed.then((closedErr) => { throw closedErr; }),
+            client.closed.then((err) => { throw err; }),
           ]);
-          if (turnCompleted) break;
-          try {
-            const response = await client.request("turn/steer", {
-              threadId,
-              expectedTurnId: activeTurnId,
-              input,
-            });
-            activeTurnId = response?.turnId || activeTurnId;
-            continue;
-          } catch (retryErr) {
-            const retryProviderError = retryErr?.responseError
-              ? safeResponseError(retryErr.responseError)
-              : null;
-            emitEvent({
-              type: "runtime_warning",
-              warning_kind: isActiveTurnNotSteerable(retryProviderError) ? "active_turn_not_steerable" : "live_input_rejected",
-              message: safeDiagnostic(codexErrorMessage(retryProviderError || retryErr)),
-            });
-            continue;
-          }
+          if (turnCompleted || !turnReadyResolved) break;
         }
-        emitEvent({
-          type: "runtime_warning",
-          warning_kind: isActiveTurnNotSteerable(providerError) ? "active_turn_not_steerable" : "live_input_rejected",
-          message: safeDiagnostic(codexErrorMessage(
-            providerError ? safeResponseError(providerError) : err,
-          )),
-        });
+        const input = userTextInput(formatLiveInputGuidance(message.body, options.prompts));
+        try {
+          const response = await client.request("turn/steer", {
+            threadId,
+            expectedTurnId: activeTurnId,
+            input,
+          });
+          activeTurnId = response?.turnId || activeTurnId;
+          message.acknowledge?.();
+        } catch (err) {
+          const providerError = err?.responseError;
+          if (isNoActiveTurnToSteer(providerError || err)) {
+            await Promise.race([
+              turnReady,
+              turnDone,
+              client.closed.then((closedErr) => { throw closedErr; }),
+            ]);
+            if (turnCompleted) break;
+            try {
+              const response = await client.request("turn/steer", {
+                threadId,
+                expectedTurnId: activeTurnId,
+                input,
+              });
+              activeTurnId = response?.turnId || activeTurnId;
+              message.acknowledge?.();
+              continue;
+            } catch (retryErr) {
+              message.reject?.(retryErr);
+              const retryProviderError = retryErr?.responseError
+                ? safeResponseError(retryErr.responseError)
+                : null;
+              emitEvent({
+                type: "runtime_warning",
+                warning_kind: isActiveTurnNotSteerable(retryProviderError) ? "active_turn_not_steerable" : "live_input_rejected",
+                message: safeDiagnostic(codexErrorMessage(retryProviderError || retryErr)),
+              });
+              // Preserve FIFO fallback: once one message is rejected, later
+              // entries must not overtake it inside this provider attempt.
+              break;
+            }
+          }
+          message.reject?.(err);
+          emitEvent({
+            type: "runtime_warning",
+            warning_kind: isActiveTurnNotSteerable(providerError) ? "active_turn_not_steerable" : "live_input_rejected",
+            message: safeDiagnostic(codexErrorMessage(
+              providerError ? safeResponseError(providerError) : err,
+            )),
+          });
+          break;
+        }
+      }
+    } finally {
+      if (typeof iterator.return === "function") {
+        try { void Promise.resolve(iterator.return()).catch(() => {}); } catch { /* best-effort */ }
       }
     }
   }
@@ -1656,7 +1675,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       abortRaceCleanup();
     }
     turnCompleted = true;
-    await Promise.race([steerTask, Promise.resolve()]);
+    await steerTask;
 
     const text = texts[texts.length - 1] || "";
     let codexErrorCode = prematureClose ? "codex_app_server_closed" : null;

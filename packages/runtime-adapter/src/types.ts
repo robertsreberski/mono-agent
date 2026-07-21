@@ -159,6 +159,17 @@ export interface RuntimePromptOverrides {
   readonly liveInputGuidance?: (body: string) => string;
 }
 
+/** One live follow-up delivered to a provider bridge. */
+export interface RuntimeLiveInputMessage {
+  readonly body: string;
+  readonly id?: string;
+  readonly receivedAt?: string;
+  /** Called only after the provider's native steering boundary accepts it. */
+  readonly acknowledge?: () => void;
+  /** Per-attempt rejection; a later provider attempt may still replay it. */
+  readonly reject?: (reason?: unknown) => void;
+}
+
 /** Provider transport requested for Pi-native runs. Unsupported providers ignore it. */
 export const PI_TRANSPORTS = ["auto", "sse", "websocket", "websocket-cached"] as const;
 export type PiTransport = (typeof PI_TRANSPORTS)[number];
@@ -186,6 +197,8 @@ export interface RuntimeRunOptions {
   readonly compaction?: RuntimeCompactionPolicy;
   /** Per-run prompt-fragment overrides. */
   readonly prompts?: RuntimePromptOverrides;
+  /** In-flight user guidance consumed by a provider's native steering API. */
+  readonly liveInput?: AsyncIterable<RuntimeLiveInputMessage>;
   // Pi-native provider knobs (optional; ignored by other bridges).
   readonly piTransport?: PiTransport;
   readonly piMaxRetries?: number;

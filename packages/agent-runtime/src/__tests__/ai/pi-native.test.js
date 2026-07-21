@@ -33,9 +33,50 @@ import {
   splitPromptMessages,
 } from "../../ai/providers/pi-native.js";
 import { failureKindForPiError } from "../../ai/providers/pi-native/result-builder.js";
+import { startLiveInput } from "../../ai/providers/pi-native/turn-runner.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 
 const FAUX_MODEL = { api: "faux", provider: "faux", id: "faux-model" };
+
+describe("pi-native live input", () => {
+  it("acknowledges a follow-up only after native harness steering accepts it", async () => {
+    const acknowledge = vi.fn();
+    const reject = vi.fn();
+    const steer = vi.fn(async () => undefined);
+    const warnings = [];
+    const liveInput = (async function* () {
+      yield { body: "Use the new limit", id: "input-1", acknowledge, reject };
+    })();
+    const consumer = startLiveInput({
+      harness: { steer },
+      options: { liveInput },
+      onEvent: (event) => warnings.push(event),
+    });
+
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1));
+    await consumer.stop();
+    expect(steer.mock.calls[0]?.[0]).toContain("Use the new limit");
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(reject).not.toHaveBeenCalled();
+    expect(warnings).toEqual([]);
+  });
+
+  it("stops without waiting for a third-party iterator return that never settles", async () => {
+    const iterator = {
+      next: vi.fn(() => new Promise(() => {})),
+      return: vi.fn(() => new Promise(() => {})),
+    };
+    const consumer = startLiveInput({
+      harness: { steer: vi.fn() },
+      options: { liveInput: { [Symbol.asyncIterator]: () => iterator } },
+      onEvent: vi.fn(),
+    });
+
+    await vi.waitFor(() => expect(iterator.next).toHaveBeenCalledTimes(1));
+    await expect(consumer.stop()).resolves.toBeUndefined();
+    expect(iterator.return).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("splitPromptMessages (pi-native multimodal preservation)", () => {
   it("preserves text + image parts of the final user turn (no JSON stringification)", () => {

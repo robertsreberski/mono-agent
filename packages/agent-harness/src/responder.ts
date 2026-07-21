@@ -1,5 +1,6 @@
 import type { AgentHarness, AgentHarnessFailure, AgentHarnessSessionBoundary } from "./types.js";
 import type {
+  AgentLiveInputRequest,
   AgentMessageStream,
   AgentRequestBase,
   AgentResponder,
@@ -63,6 +64,19 @@ export function createAgentResponder(options: {
     async dispose(): Promise<void> {
       await options.harness.dispose?.();
     },
+    ...(options.harness.offerLiveInput === undefined
+      ? {}
+      : {
+        offerLiveInput(request: AgentLiveInputRequest) {
+          const serializationKey = responseSerializationKey(request.conversationId, options.rollover);
+          const activeBucket = activeBucketByBaseConversation.get(serializationKey);
+          if (activeBucket === undefined) {
+            return { status: "unavailable" as const, reason: "inactive" as const };
+          }
+          return options.harness.offerLiveInput?.({ ...request, conversationId: activeBucket })
+            ?? { status: "unavailable" as const, reason: "unsupported" as const };
+        },
+      }),
     cancel(conversationId: string, reason?: unknown): void {
       const serializationKey = responseSerializationKey(conversationId, options.rollover);
       // Prefer the bucket captured when the active turn started. Recomputing a
