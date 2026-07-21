@@ -170,7 +170,6 @@ This demo is a programmatic host that passes the A2A driver directly so it can i
   "runtime": {
     "model": "pi:openai-codex:gpt-5.5",
     "executionMode": "sdk",
-    "maxTurns": 8,
     "workspace": "."
   },
   "context": {
@@ -331,7 +330,6 @@ pnpm run demo:final
   "runtime": {
     "model": "pi:ollama:qwen3:8b",
     "executionMode": "sdk",
-    "maxTurns": 8,
     "workspace": "."
   },
   "providers": {
