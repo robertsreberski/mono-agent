@@ -8,7 +8,7 @@ import { dirname, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
-import { close, hostForUrl, listen, normalizeHostForBind } from "@mono-agent/agent-contracts";
+import { close, hostForUrl, listen, normalizeHostForBind, type ChannelAskAnswer } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import {
@@ -144,6 +144,28 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     void trackOperation(service.cancelTurn(threadId), activeOperations)
       .then((thread) => res.status(202).json({ cancelled: true, thread }))
       .catch(next);
+  });
+
+  app.get("/api/v1/threads/:id/ask", (req, res, next) => {
+    void trackOperation(service.pendingAsk(pathParam(req.params.id)), activeOperations)
+      .then((ask) => res.status(200).json({ ask: ask ?? null }))
+      .catch(next);
+  });
+
+  app.post("/api/v1/threads/:id/ask", (req, res, next) => {
+    const body = typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : {};
+    if (typeof body.interactionId !== "string" || !Array.isArray(body.answers)) {
+      next(new WebConsoleError("invalid_ask_answer", "interactionId and answers are required.", 400));
+      return;
+    }
+    void trackOperation(
+      service.submitAsk(
+        pathParam(req.params.id),
+        body.interactionId,
+        body.answers as readonly ChannelAskAnswer[],
+      ),
+      activeOperations,
+    ).then((result) => res.status(200).json(result)).catch(next);
   });
 
   app.post("/api/v1/uploads", (req, res, next) => {

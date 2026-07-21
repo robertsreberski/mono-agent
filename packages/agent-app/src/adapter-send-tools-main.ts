@@ -23,7 +23,6 @@ async function main(): Promise<void> {
   const proxy = createAdapterSendProxy(process.env, {
     directLoopbackUrls: [
       settings.telegram?.apiRoot,
-      settings.telegram?.askBridge?.bridgeUrl,
       settings.askUser?.bridgeUrl,
       childConfig.deliveryHistory?.bridgeUrl,
     ].filter((value): value is string => value !== undefined),

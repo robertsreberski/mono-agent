@@ -158,15 +158,29 @@ Deliver proactive notifications (cron/webhook `notify`) silently during a daily 
 
 Only the push notification is suppressed (`disable_notification`); the message still arrives. Live replies to your messages are never silenced.
 
-### Asking you a question (inline keyboards)
+### Asking you questions (inline keyboards)
 
-The `TelegramAskButtons` app tool lets the agent ask you a structured question with tappable buttons — a confirmation, an approval, or a multiple choice — instead of waiting for free-text. Under the **allow-all** tool default it is available once Telegram is enabled; under a **specific** `tools.allowedTools` you add its exact name:
+The channel-agnostic `AskUser` tool renders natively in Telegram. Under the
+**allow-all** tool default it is available automatically; under a **specific**
+`tools.allowedTools` list, add its exact name:
 
 ```json
-{ "tools": { "allowedTools": ["TelegramAskButtons"] } }
+{ "tools": { "allowedTools": ["AskUser"] } }
 ```
 
-The tool takes a `question` and 2–8 option labels, posts an inline keyboard, and waits for either a tap **or your next plain-text message as a custom answer**. Either answer returns to the same in-flight tool call, so the agent keeps its mid-turn context; a custom reply also removes the now-obsolete buttons. Slash commands remain commands and are never consumed as answers. If no pending ask exists for a callback, the tap still falls back to the existing synthetic-turn behavior on the same conversation and uses the chat's current runtime selection. The app already subscribes to `callback_query` updates for `/model` and `/effort`; allowing `TelegramAskButtons` additionally wires the ask-button handler. The chat allowlist still bounds where questions can be sent, and the tap handler re-checks it.
+`AskUser` accepts one to five related questions. Every question has a short
+header, prompt, and two or three proposed answers with descriptions; it may also
+allow multiple selections. Telegram shows the optional long context or draft as
+a separate message, then presents one question at a time. Tap a proposed answer,
+tap **Other** and type below, or—for multi-select—toggle choices and tap **Done**.
+The answer resumes the same in-flight model run. Slash commands remain commands,
+and stale buttons never start a new turn. The chat allowlist remains the
+destination boundary.
+
+For a non-blocking prompt whose later button tap should become a fresh user turn,
+use `TelegramSendMessage.reply_options` with two to eight labels. Those buttons
+are intentionally separate from `AskUser`: they do not pause or resume the
+current model run.
 
 ### Sending files
 
@@ -279,7 +293,7 @@ The hosted `api.telegram.org` caps bot downloads at 20 MB. Telegram's official s
 }
 ```
 
-`apiRoot` is applied to every Bot API call, to file downloads, and to the app send tools (`TelegramSendMessage`/`TelegramAskButtons`/`TelegramSendFile`).
+`apiRoot` is applied to every Bot API call, to file downloads, and to the app send tools (`TelegramSendMessage`/`TelegramSendFile`).
 
 How it behaves with a `--local` server:
 

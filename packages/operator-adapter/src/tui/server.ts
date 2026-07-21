@@ -16,6 +16,8 @@ import {
   type AgentResponse,
   type AgentStreamEvent,
   type AgentStreamWireFrame,
+  type ChannelAskAnswer,
+  type ChannelInteractionHub,
 } from "@mono-agent/agent-contracts";
 import {
   assertSafeBind,
@@ -97,6 +99,8 @@ export interface TuiAdapterOptions {
    * silently serving nothing.
    */
   readonly onServerError?: (reason: string) => void;
+  /** In-process bridge state used by the web console's structured AskUser form. */
+  readonly interaction?: ChannelInteractionHub;
 }
 
 export interface TuiAdapterStartResult {
@@ -140,6 +144,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const turnsPath = `${basePath}/v1/turns`;
   const cancelPath = `${basePath}/v1/conversations/:conversationId/cancel`;
   const verbatimPath = `${basePath}/v1/conversations/:conversationId/verbatim`;
+  const askPath = `${basePath}/v1/conversations/:conversationId/ask`;
 
   app.get(infoPath, (req, res) => {
     if (!authorize(req, res, apiKey)) {
@@ -153,6 +158,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
           capabilities: {
             attachments: true,
             ...(typeof options.responder.deliverVerbatim === "function" ? { historyAppend: true } : {}),
+            ...(options.interaction === undefined ? {} : { askUser: true }),
           },
           ...(info?.label === undefined ? {} : { label: info.label }),
           ...(info?.model === undefined ? {} : { model: info.model }),
@@ -200,6 +206,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       return;
     }
     options.responder.cancel(conversationId, createChannelUserCancelReason("TUI"));
+    options.interaction?.cancelAsks(conversationId);
     res.status(202).json({ cancelled: conversationId });
   });
 
@@ -227,6 +234,44 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     }).then(() => {
       res.status(200).json({ recorded: true, conversationId: body.conversationId });
     }).catch(next);
+  });
+
+  app.get(askPath, (req, res) => {
+    if (!authorize(req, res, apiKey)) return;
+    const conversationId = normalizeOptionalString(
+      typeof req.params.conversationId === "string" ? req.params.conversationId : undefined,
+    );
+    if (conversationId === undefined) {
+      sendJsonError(res, 400, new TuiAdapterError("invalid_request", "conversationId is required."));
+      return;
+    }
+    void Promise.resolve(options.interaction?.getPendingAsk(conversationId))
+      .then((ask) => res.status(200).json({ ask: ask ?? null }))
+      .catch((error: unknown) => sendJsonError(res, 500, error));
+  });
+
+  app.post(askPath, express.json({ limit: "64kb" }), (req, res) => {
+    if (!authorize(req, res, apiKey)) return;
+    const conversationId = normalizeOptionalString(
+      typeof req.params.conversationId === "string" ? req.params.conversationId : undefined,
+    );
+    const body = typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : {};
+    if (
+      conversationId === undefined
+      || typeof body.interactionId !== "string"
+      || !Array.isArray(body.answers)
+      || options.interaction === undefined
+    ) {
+      sendJsonError(res, 400, new TuiAdapterError("invalid_request", "A supported interactionId and answers are required."));
+      return;
+    }
+    void Promise.resolve(options.interaction.submitAskAnswers({
+      conversationId,
+      interactionId: body.interactionId,
+      answers: body.answers as readonly ChannelAskAnswer[],
+    })).then((result) => {
+      res.status(200).json(result);
+    }).catch((error: unknown) => sendJsonError(res, 500, error));
   });
 
   app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {

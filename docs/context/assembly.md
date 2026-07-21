@@ -89,9 +89,20 @@ Coverage: `auto`. History is kept in an **owner-only, disk-backed store**. The d
 
 The configured app stores history under an owner-only `history/` directory next to the configured artifact directory (normally `.mono-agent/history`). Conversation ids are retained inside the records but never used as path components; filenames are SHA-256-derived. The directory is mode `0700`, files are mode `0600`, each serialized message is capped at 64 KiB, and replacements are written atomically and fsynced. Owner-only SQLite lock files serialize same-conversation updates and root-wide retention across processes; dead owners and markerless stages are recovered immediately without an elapsed-time lease. A cold process therefore replays the same bounded history after restart even when no provider session can be resumed.
 
-Completed blocking `AskUser` and `TelegramAskButtons` interactions are also preserved in the assistant-side history copy. The compact interaction transcript records the question, button options when present, the outcome, and the user's typed answer or selected label when present, before the final assistant text. It is explicitly labelled untrusted historical data, normalizes structural line separators, and retains the newest complete entries when bounded. That means a later cold/stateless provider call can replay what happened instead of seeing only the trigger and final response.
+Completed blocking `AskUser` interactions are also preserved in the logical
+producer's assistant-side history copy. The compact interaction transcript
+records every structured question, described option, outcome, selected labels,
+and custom replies before the final assistant text. It is explicitly labelled
+untrusted historical data, normalizes structural line separators, and retains
+the newest complete entries when bounded. That means a later cold/stateless
+provider call can replay what happened instead of seeing only the trigger and
+final response—even when the physical Slack thread, Telegram chat, or web
+conversation differed from the producer conversation.
 
-This history-only copy does not change the message delivered to the user, and it is not added to long-term memory capture. `TelegramAskButtons` with `wait: false` keeps its existing behavior: the tool returns immediately and a later tap becomes a separate synthetic user turn rather than an in-turn interaction transcript.
+This history-only copy does not change the message delivered to the user, and it
+is not added to long-term memory capture. Non-blocking
+`TelegramSendMessage.reply_options` returns immediately; a later tap becomes a
+separate user turn rather than part of the in-turn interaction transcript.
 
 Use active conversation history first for the current exchange. Use `MemoryRecall` for durable facts that were intentionally captured, and use the read-only [`RunHistory`](/tools/mcp/#runhistory-prior-run-evidence) tool when the exact tool calls, results, warnings, or final output from a prior run are needed.
 

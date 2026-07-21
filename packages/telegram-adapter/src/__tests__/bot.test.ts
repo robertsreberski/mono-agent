@@ -7,11 +7,13 @@ import { join } from "node:path";
 import {
   AgentResponseCancelledError,
   isChannelUserCancelReason,
+  type ChannelAskSnapshot,
 } from "@mono-agent/agent-contracts";
 import { Bot } from "grammy";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentRequest, AgentResponder, TelegramAdapterLogger } from "../adapter.js";
+import { telegramAskUserCallbackData } from "../ask-user.js";
 import {
   buildTelegramBotClientOptions,
   createTelegramBot,
@@ -20,6 +22,7 @@ import {
   type CreateTelegramBotOptions,
   type TelegramRuntimeControls,
 } from "../bot.js";
+import { telegramReplyCallbackData } from "../reply-options.js";
 
 const FAKE_BOT_INFO = {
   id: 1,
@@ -225,8 +228,8 @@ function callbackUpdate(options: {
   const chatId = options.chatId ?? 42;
   const messageId = options.messageId ?? 500;
   const buttons = options.buttons ?? [
-    { text: "Approve", callback_data: "ask:0" },
-    { text: "Reject", callback_data: "ask:1" },
+    { text: "Approve", callback_data: telegramReplyCallbackData(0) },
+    { text: "Reject", callback_data: telegramReplyCallbackData(1) },
   ];
   return {
     update_id: options.updateId ?? 1,
@@ -391,6 +394,29 @@ function voiceUpdate(options?: { caption?: string; updateId?: number }): Paramet
 
 function responderFrom(respond: AgentResponder["respond"]): AgentResponder {
   return { respond };
+}
+
+function askSnapshot(multiSelect = false): ChannelAskSnapshot {
+  return {
+    interactionId: "ask-test",
+    message: "Draft reply",
+    questions: [{
+      id: "q0",
+      header: "Delivery",
+      question: "What should I do with this draft?",
+      options: [
+        { id: "q0o0", label: "Send", description: "Send it now." },
+        { id: "q0o1", label: "Skip", description: "Leave it unsent." },
+        { id: "q0o2", label: "Revise", description: "Keep editing it." },
+      ],
+      multiSelect,
+    }],
+    answers: [],
+    activeQuestionIndex: 0,
+    status: "pending",
+    createdAt: "2026-07-21T09:00:00.000Z",
+    expiresAt: "2026-07-21T09:10:00.000Z",
+  };
 }
 
 /** The sequence of reaction emojis applied (undefined = a cleared reaction). */
@@ -620,7 +646,11 @@ describe("createTelegramBot", () => {
     const { bot, calls } = buildTestBot({
       responder,
       startNewSession,
-      pendingAsks: { tryResolve: vi.fn(async () => false), cancel: pendingCancel },
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => undefined),
+        submitAskAnswers: vi.fn(async () => ({ accepted: false, code: "not_found" as const })),
+        cancel: pendingCancel,
+      },
     });
 
     await bot.handleUpdate(commandUpdate("/new"));
@@ -640,7 +670,11 @@ describe("createTelegramBot", () => {
     const pendingCancel = vi.fn();
     const { bot, calls } = buildTestBot({
       responder,
-      pendingAsks: { tryResolve: vi.fn(async () => false), cancel: pendingCancel },
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => undefined),
+        submitAskAnswers: vi.fn(async () => ({ accepted: false, code: "not_found" as const })),
+        cancel: pendingCancel,
+      },
     });
 
     await bot.handleUpdate(commandUpdate("/new"));
@@ -741,116 +775,112 @@ describe("createTelegramBot", () => {
     expect(reactionEmojis(calls)).toEqual(["👍"]);
   });
 
-  it("resolves a pending ask from an inline-keyboard tap instead of running a turn", async () => {
-    const requests: AgentRequest[] = [];
-    const tryResolve = vi.fn(
-      async (_conversationId: string, _answer: string, _answerKind?: "text" | "callback") => true,
-    );
-    const { bot, calls } = buildTestBot({
-      responder: responderFrom(async (request) => {
-        requests.push(request);
-        return { text: "Proceeding" };
-      }),
-      callbacksEnabled: true,
-      pendingAsks: { tryResolve, cancel: vi.fn() },
-      stream: { editDebounceMs: 0 },
-    });
-
-    await bot.handleUpdate(callbackUpdate({ data: "ask:0", questionText: "Proceed?" }));
-
-    expect(tryResolve).toHaveBeenCalledWith("telegram:42", "Approve", "callback");
-    expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(true);
-    expect(calls.some((call) => call.method === "editMessageReplyMarkup")).toBe(true);
-    expect(requests).toHaveLength(0);
-  });
-
-  it("re-runs the chosen inline-keyboard option as a turn when no pending ask exists", async () => {
-    const requests: AgentRequest[] = [];
-    const tryResolve = vi.fn(
-      async (_conversationId: string, _answer: string, _answerKind?: "text" | "callback") => false,
-    );
-    const responder: AgentResponder = {
-      async respond(request) {
-        requests.push(request as AgentRequest);
-        return { text: "Proceeding" };
-      },
-    };
+  it("submits a structured AskUser option without running a new turn", async () => {
+    const snapshot = askSnapshot();
+    const submitAskAnswers = vi.fn(async () => ({ accepted: true, snapshot }));
+    const responder = { respond: vi.fn() } satisfies AgentResponder;
     const { bot, calls } = buildTestBot({
       responder,
-      callbacksEnabled: true,
-      runtimeControls: RUNTIME_CONTROLS,
-      pendingAsks: { tryResolve, cancel: vi.fn() },
-      stream: { editDebounceMs: 0 },
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => snapshot),
+        submitAskAnswers,
+        cancel: vi.fn(),
+      },
     });
 
-    await bot.handleUpdate(commandUpdate("/model codex:gpt-fallback"));
-    await bot.handleUpdate(callbackUpdate({ data: "ask:0", questionText: "Proceed?" }));
+    await bot.handleUpdate(callbackUpdate({
+      data: telegramAskUserCallbackData(snapshot.interactionId, 0, { kind: "option", optionIndex: 0 }),
+    }));
 
-    expect(tryResolve).toHaveBeenCalledWith("telegram:42", "Approve", "callback");
+    expect(submitAskAnswers).toHaveBeenCalledWith({
+      conversationId: "telegram:42",
+      interactionId: snapshot.interactionId,
+      answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }],
+    });
+    expect(responder.respond).not.toHaveBeenCalled();
     expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(true);
-    expect(calls.some((call) => call.method === "editMessageReplyMarkup")).toBe(true);
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.conversationId).toBe("telegram:42");
-    expect(requests[0]?.metadata.telegram.model).toBe("codex:gpt-fallback");
-    expect(requests[0]?.text).toContain("Approve");
-    expect(requests[0]?.text).toContain("Proceed?");
   });
 
-  it("replies busy instead of re-running a callback tap while another ask is pending", async () => {
-    const requests: AgentRequest[] = [];
-    const tryResolve = vi.fn(
-      async (_conversationId: string, _answer: string, _answerKind?: "text" | "callback") => false,
-    );
-    const hasPending = vi.fn(async () => true);
-    const responder: AgentResponder = {
-      async respond(request) {
-        requests.push(request as AgentRequest);
-        return { text: "Proceeding" };
+  it("toggles multi-select AskUser options and submits them on Done", async () => {
+    const snapshot = askSnapshot(true);
+    const submitAskAnswers = vi.fn(async () => ({ accepted: true, snapshot }));
+    const { bot, controller, calls } = buildTestBot({
+      responder: { respond: vi.fn() },
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => snapshot),
+        submitAskAnswers,
+        cancel: vi.fn(),
       },
-    };
+    });
+    await controller.presentAsk(42, snapshot);
+
+    await bot.handleUpdate(callbackUpdate({
+      data: telegramAskUserCallbackData(snapshot.interactionId, 0, { kind: "option", optionIndex: 0 }),
+    }));
+    await bot.handleUpdate(callbackUpdate({
+      data: telegramAskUserCallbackData(snapshot.interactionId, 0, { kind: "option", optionIndex: 2 }),
+      updateId: 2,
+    }));
+    await bot.handleUpdate(callbackUpdate({
+      data: telegramAskUserCallbackData(snapshot.interactionId, 0, { kind: "done" }),
+      updateId: 3,
+    }));
+
+    expect(submitAskAnswers).toHaveBeenCalledWith({
+      conversationId: "telegram:42",
+      interactionId: snapshot.interactionId,
+      answers: [{ questionId: "q0", selectedOptionIds: ["q0o0", "q0o2"] }],
+    });
+    const editedButtons = (calls.filter((call) => call.method === "editMessageText").at(-1)?.payload.reply_markup as {
+      inline_keyboard: Array<Array<{ text: string }>>;
+    }).inline_keyboard.flat().map((button) => button.text);
+    expect(editedButtons).toContain("✓ Send");
+    expect(editedButtons).toContain("✓ Revise");
+  });
+
+  it("acknowledges stale AskUser callbacks without starting a new turn", async () => {
+    const responder = { respond: vi.fn() } satisfies AgentResponder;
     const { bot, calls } = buildTestBot({
       responder,
-      callbacksEnabled: true,
-      pendingAsks: { tryResolve, hasPending, cancel: vi.fn() },
-      stream: { editDebounceMs: 0 },
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => undefined),
+        submitAskAnswers: vi.fn(async () => ({ accepted: false, code: "not_found" as const })),
+        cancel: vi.fn(),
+      },
     });
 
-    await bot.handleUpdate(callbackUpdate({ data: "ask:0", questionText: "Proceed?" }));
+    await bot.handleUpdate(callbackUpdate({
+      data: telegramAskUserCallbackData("ask-stale", 0, { kind: "option", optionIndex: 0 }),
+    }));
 
-    expect(tryResolve).toHaveBeenCalledWith("telegram:42", "Approve", "callback");
-    expect(hasPending).toHaveBeenCalledWith("telegram:42");
-    expect(requests).toHaveLength(0);
-    expect(
-      calls.some(
-        (call) =>
-          call.method === "sendMessage" &&
-          call.payload.text === "I am still working on your previous message. Use /cancel to stop it.",
-      ),
-    ).toBe(true);
+    expect(responder.respond).not.toHaveBeenCalled();
+    expect(calls.find((call) => call.method === "answerCallbackQuery")?.payload.text).toBe(
+      "This question has expired.",
+    );
   });
 
-  it("de-dupes a second tap on the same question", async () => {
+  it("runs non-blocking reply options as a new turn and de-dupes a second tap", async () => {
     let runCount = 0;
     const responder = responderFrom(async () => {
       runCount += 1;
       return { text: "ok" };
     });
-    const { bot } = buildTestBot({ responder, callbacksEnabled: true, stream: { editDebounceMs: 0 } });
+    const { bot, calls } = buildTestBot({ responder, stream: { editDebounceMs: 0 } });
+    const buttons = [
+      { text: "Approve", callback_data: telegramReplyCallbackData(0) },
+      { text: "Reject", callback_data: telegramReplyCallbackData(1) },
+    ];
 
-    await bot.handleUpdate(callbackUpdate({ data: "ask:0", messageId: 500 }));
-    await bot.handleUpdate(callbackUpdate({ data: "ask:1", messageId: 500, updateId: 2 }));
+    await bot.handleUpdate(callbackUpdate({ data: telegramReplyCallbackData(0), messageId: 500, buttons }));
+    await bot.handleUpdate(callbackUpdate({
+      data: telegramReplyCallbackData(1),
+      messageId: 500,
+      updateId: 2,
+      buttons,
+    }));
 
     expect(runCount).toBe(1);
-  });
-
-  it("ignores inline-keyboard callbacks when callbacks are disabled", async () => {
-    const responder = { respond: vi.fn() } satisfies AgentResponder;
-    const { bot, calls } = buildTestBot({ responder });
-
-    await bot.handleUpdate(callbackUpdate({ data: "ask:0" }));
-
-    expect(responder.respond).not.toHaveBeenCalled();
-    expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(false);
+    expect(calls.some((call) => call.method === "editMessageReplyMarkup")).toBe(true);
   });
 
   it("denies unauthorized chats without calling the responder", async () => {
@@ -2189,41 +2219,50 @@ describe("SerialQueue", () => {
 describe("createTelegramBot pending asks and status posts", () => {
   it("consumes a plain text reply as the pending ask's answer instead of running a turn", async () => {
     const requests: AgentRequest[] = [];
-    const tryResolve = vi.fn(
-      async (_conversationId: string, _answer: string, _answerKind?: "text" | "callback") => true,
-    );
+    const snapshot = askSnapshot();
+    const submitAskAnswers = vi.fn(async () => ({ accepted: true, snapshot }));
     const { bot, calls } = buildTestBot({
       responder: responderFrom(async (request) => {
         requests.push(request);
         return { text: "turn" };
       }),
-      pendingAsks: { tryResolve, cancel: vi.fn() },
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => snapshot),
+        submitAskAnswers,
+        cancel: vi.fn(),
+      },
     });
 
     await bot.handleUpdate(textUpdate("Alice and Bob, in Polish"));
 
-    expect(tryResolve).toHaveBeenCalledWith("telegram:42", "Alice and Bob, in Polish", "text");
+    expect(submitAskAnswers).toHaveBeenCalledWith({
+      conversationId: "telegram:42",
+      interactionId: snapshot.interactionId,
+      answers: [{ questionId: "q0", selectedOptionIds: [], customReply: "Alice and Bob, in Polish" }],
+    });
     expect(requests).toHaveLength(0);
-    // Best-effort acknowledgment so the user sees their answer was consumed.
     expect(reactionEmojis(calls)).toContain("👍");
   });
 
-  it("does not run a deadlocking turn when the pending-ask interceptor declines text", async () => {
+  it("does not run a deadlocking turn when a pending AskUser submission is rejected", async () => {
     const requests: AgentRequest[] = [];
-    const tryResolve = vi.fn(async () => false);
-    const hasPending = vi.fn(async () => true);
+    const snapshot = askSnapshot();
+    const submitAskAnswers = vi.fn(async () => ({ accepted: false, code: "stale" as const, snapshot }));
     const { bot, calls } = buildTestBot({
       responder: responderFrom(async (request) => {
         requests.push(request);
         return { text: "turn" };
       }),
-      pendingAsks: { tryResolve, hasPending, cancel: vi.fn() },
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => snapshot),
+        submitAskAnswers,
+        cancel: vi.fn(),
+      },
     });
 
     await bot.handleUpdate(textUpdate("please approve this way"));
 
-    expect(tryResolve).toHaveBeenCalledWith("telegram:42", "please approve this way", "text");
-    expect(hasPending).toHaveBeenCalledWith("telegram:42");
+    expect(submitAskAnswers).toHaveBeenCalledTimes(1);
     expect(requests).toHaveLength(0);
     expect(
       calls.some(
@@ -2241,7 +2280,11 @@ describe("createTelegramBot pending asks and status posts", () => {
         requests.push(request);
         return { text: "turn" };
       }),
-      pendingAsks: { tryResolve: vi.fn(async () => false), cancel: vi.fn() },
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => undefined),
+        submitAskAnswers: vi.fn(async () => ({ accepted: false, code: "not_found" as const })),
+        cancel: vi.fn(),
+      },
     });
 
     await bot.handleUpdate(textUpdate("just a normal message"));
@@ -2251,23 +2294,31 @@ describe("createTelegramBot pending asks and status posts", () => {
   });
 
   it("does not consume media messages or slash commands as ask answers", async () => {
-    const tryResolve = vi.fn(async () => true);
+    const getPendingAsk = vi.fn(async () => askSnapshot());
     const { bot } = buildTestBot({
       responder: responderFrom(async () => ({ text: "turn" })),
-      pendingAsks: { tryResolve, cancel: vi.fn() },
+      pendingAsks: {
+        getPendingAsk,
+        submitAskAnswers: vi.fn(async () => ({ accepted: true, snapshot: askSnapshot() })),
+        cancel: vi.fn(),
+      },
     });
 
     await bot.handleUpdate(voiceUpdate());
     await bot.handleUpdate(textUpdate("/unknowncommand", { updateId: 2 }));
 
-    expect(tryResolve).not.toHaveBeenCalled();
+    expect(getPendingAsk).not.toHaveBeenCalled();
   });
 
   it("cancels the pending ask on /cancel", async () => {
     const cancel = vi.fn();
     const { bot, calls } = buildTestBot({
       responder: responderFrom(async () => ({ text: "turn" })),
-      pendingAsks: { tryResolve: vi.fn(async () => false), cancel },
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => undefined),
+        submitAskAnswers: vi.fn(async () => ({ accepted: false, code: "not_found" as const })),
+        cancel,
+      },
     });
 
     await bot.handleUpdate(commandUpdate("/cancel"));
@@ -2278,25 +2329,17 @@ describe("createTelegramBot pending asks and status posts", () => {
     ]);
   });
 
-  it("posts a free-text question via post()", async () => {
+  it("presents AskUser context and controls, then updates the same message", async () => {
     const { controller, calls } = buildTestBot({
       responder: responderFrom(async () => ({ text: "turn" })),
     });
+    const snapshot = askSnapshot();
 
-    await controller.post(42, "Who is speaking on the recording?");
+    await controller.presentAsk(42, snapshot);
+    await controller.updateAsk(42, { ...snapshot, status: "answered", answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }] });
 
-    expect(texts(calls, "sendMessage")).toEqual(["Who is speaking on the recording?"]);
-  });
-
-  it("removes an inline keyboard without changing the question text", async () => {
-    const { controller, calls } = buildTestBot({
-      responder: responderFrom(async () => ({ text: "turn" })),
-    });
-
-    await controller.dismissInlineKeyboard(42, 88);
-
-    expect(calls.filter((call) => call.method === "editMessageReplyMarkup").map((call) => call.payload))
-      .toEqual([{ chat_id: 42, message_id: 88 }]);
+    expect(texts(calls, "sendMessage")).toEqual(["Draft reply", expect.stringContaining("Delivery · 1/1")]);
+    expect(texts(calls, "editMessageText")).toEqual(["Answer recorded."]);
   });
 
   it("edits a keyed status message in place and starts fresh after a terminal state", async () => {

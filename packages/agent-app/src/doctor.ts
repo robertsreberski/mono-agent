@@ -598,7 +598,7 @@ function hasExactAllowAllToolPolicy(
 /** Adapter send tools each channel owns; an allowed entry needs BOTH the tool AND the enabled channel. */
 const CHANNEL_OWNED_SEND_TOOLS: Record<string, readonly string[]> = {
   slack: ["SlackSendMessage"],
-  telegram: ["TelegramSendMessage", "TelegramAskButtons", "TelegramSendFile"],
+  telegram: ["TelegramSendMessage", "TelegramSendFile"],
 };
 
 /**
@@ -3250,7 +3250,6 @@ async function adapterSendToolNetworkPolicyWarnings(
   });
   const bridgeTools = [
     ...(askUserAllowed ? ["AskUser"] : []),
-    ...(toolNames.includes("TelegramAskButtons") ? ["TelegramAskButtons"] : []),
   ];
   if (bridgeTools.length > 0) {
     const configuredBridgeUrl = input.env.MONO_AGENT_INTERACTION_BRIDGE_URL?.trim();

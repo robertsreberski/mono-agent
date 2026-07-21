@@ -814,9 +814,9 @@ function createFakeRuntime(): {
 /**
  * A fake `startTelegramAdapter` seam. The grammY-backed adapter is no longer
  * driven through a poller; the host now wires the responder + message copy into
- * `startTelegramAdapter(options)` and gets back a `{ stop }`. The fake captures
- * every start's options (so tests can assert the wiring the demo composed) and
- * records start/stop without building a real bot.
+ * `startTelegramAdapter(options)` and gets back the adapter delivery surface.
+ * The fake captures every start's options (so tests can assert the wiring the
+ * demo composed) and records start/stop without building a real bot.
  */
 function createFakeTelegramAdapter(): {
   readonly starts: TelegramAdapterStartOptions[];
@@ -847,6 +847,12 @@ function createFakeTelegramAdapter(): {
         },
         async postStatus() {
           // No-op tool-progress status for the demo's fake adapter.
+        },
+        async presentAsk() {
+          // No-op initial AskUser presentation for the demo's fake adapter.
+        },
+        async updateAsk() {
+          // No-op AskUser state update for the demo's fake adapter.
         },
       };
     },

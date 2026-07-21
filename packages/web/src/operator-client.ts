@@ -2,6 +2,9 @@ import {
   parseAgentStreamFrame,
   type AgentAttachment,
   type AgentStreamWireFrame,
+  type ChannelAskAnswer,
+  type ChannelAskSnapshot,
+  type ChannelAskSubmissionResult,
 } from "@mono-agent/agent-contracts";
 
 import type { WebModelOption } from "./contracts.js";
@@ -29,6 +32,7 @@ export interface OperatorInfo {
   readonly modelOptions?: Readonly<Record<string, WebModelOption>>;
   readonly supportsAttachments: boolean;
   readonly supportsHistoryAppend: boolean;
+  readonly supportsAskUser: boolean;
 }
 
 export interface OperatorTurnInput {
@@ -94,6 +98,7 @@ export class OperatorClient {
       ...(modelOptions === undefined ? {} : { modelOptions }),
       supportsAttachments: capabilities?.attachments === true,
       supportsHistoryAppend: capabilities?.historyAppend === true,
+      supportsAskUser: capabilities?.askUser === true,
     };
   }
 
@@ -163,6 +168,35 @@ export class OperatorClient {
     }).then(async (response) => {
       await response.body?.cancel().catch(() => undefined);
     });
+  }
+
+  async pendingAsk(conversationId: string): Promise<ChannelAskSnapshot | undefined> {
+    const response = await this.request(
+      `${this.baseUrl}/v1/conversations/${encodeURIComponent(conversationId)}/ask`,
+      { headers: this.headers(false) },
+    );
+    const body = record(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_ask_too_large")));
+    return body?.ask === null ? undefined : body?.ask as ChannelAskSnapshot | undefined;
+  }
+
+  async submitAsk(
+    conversationId: string,
+    interactionId: string,
+    answers: readonly ChannelAskAnswer[],
+  ): Promise<ChannelAskSubmissionResult> {
+    const response = await this.request(
+      `${this.baseUrl}/v1/conversations/${encodeURIComponent(conversationId)}/ask`,
+      {
+        method: "POST",
+        headers: this.headers(true),
+        body: JSON.stringify({ interactionId, answers }),
+      },
+    );
+    const body = record(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_ask_too_large")));
+    if (body === undefined || typeof body.accepted !== "boolean") {
+      throw new WebConsoleError("invalid_operator_ask", "The agent returned an invalid AskUser response.", 502);
+    }
+    return body as unknown as ChannelAskSubmissionResult;
   }
 
   private headers(json: boolean): Record<string, string> {

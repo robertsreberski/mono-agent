@@ -18,6 +18,43 @@ export interface ModelOption {
   readonly contextWindow?: number;
 }
 
+export interface AskOption {
+  readonly id: string;
+  readonly label: string;
+  readonly description: string;
+}
+
+export interface AskQuestion {
+  readonly id: string;
+  readonly header: string;
+  readonly question: string;
+  readonly options: readonly AskOption[];
+  readonly multiSelect: boolean;
+}
+
+export interface AskAnswer {
+  readonly questionId: string;
+  readonly selectedOptionIds: readonly string[];
+  readonly customReply?: string;
+}
+
+export interface AskSnapshot {
+  readonly interactionId: string;
+  readonly message?: string;
+  readonly questions: readonly AskQuestion[];
+  readonly answers: readonly AskAnswer[];
+  readonly activeQuestionIndex: number;
+  readonly status: "pending" | "answered" | "expired" | "cancelled";
+  readonly createdAt: string;
+  readonly expiresAt: string;
+}
+
+export interface AskSubmissionResult {
+  readonly accepted: boolean;
+  readonly code?: "not_found" | "stale" | "invalid_answer";
+  readonly snapshot?: AskSnapshot;
+}
+
 export interface AgentSummary {
   readonly sourceId: string;
   readonly label: string;

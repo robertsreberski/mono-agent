@@ -115,7 +115,6 @@ function rowWithRegistryId(page: string, id: string): string {
 function expectInteractionAutoStartContract(page: string, label: string): void {
   for (const anchor of [
     "AskUser",
-    "TelegramAskButtons",
     "interaction",
     "progress.enabled",
     "mcpRequestContextServers",

@@ -275,7 +275,7 @@ per-route form for a new agent.
 **Goal:** one Telegram agent uses `AskUser`, long-running MCP tool progress, a self-hosted Bot API server, and `TelegramSendFile`.
 **Features:** `telegram.long-polling`, `agent-app.adapter-send-tools`, `interaction.ask-user`, `interaction.progress`, `tool-policy.mcp-servers`.
 
-**Bridge startup:** the loopback interaction bridge auto-starts when `AskUser` or `TelegramAskButtons` is allowed, when the `interaction` block or an interaction env override is configured, or when `interaction.progress.enabled` resolves true and `tools.mcpRequestContextServers` names at least one opted project MCP server.
+**Bridge startup:** the loopback interaction bridge auto-starts when `AskUser` is allowed, when the `interaction` block or an interaction env override is configured, or when `interaction.progress.enabled` resolves true and `tools.mcpRequestContextServers` names at least one opted project MCP server. AskUser takes one to five structured questions with two or three described choices each; Telegram presents them sequentially with native buttons, Other/custom reply, and Done for multi-select.
 
 ```json
 {

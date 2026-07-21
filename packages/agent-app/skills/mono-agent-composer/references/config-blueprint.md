@@ -158,7 +158,7 @@ new agent.
   // NodeRepl shares state only inside one run and uses the same sandbox policy
   // as Bash.
 
-  // Human-in-the-loop bridge: blocking AskUser / TelegramAskButtons plus
+  // Human-in-the-loop bridge: structured blocking AskUser plus
   // run-scoped project-MCP progress. It auto-starts when either ask tool is
   // allowed, this block or an interaction env override is configured, or
   // interaction.progress.enabled resolves true while

@@ -69,6 +69,7 @@ export type {
   SlackInteractionHandlingResult,
   SlackNotifyOptions,
   SlackNotifyResult,
+  SlackPendingAsks,
   SlackRequestMetadata,
   SlackRuntimeControls,
   SlackRuntimeEffortOption,

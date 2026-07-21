@@ -251,5 +251,5 @@ export function runtimeRouteContainsDirectOpenCode(config: MonoAgentConfig): boo
 }
 
 export function isInteractionToolName(name: string): boolean {
-  return name === "AskUser" || name === "TelegramAskButtons";
+  return name === "AskUser";
 }

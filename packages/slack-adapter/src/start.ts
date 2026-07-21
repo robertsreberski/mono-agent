@@ -11,6 +11,7 @@ import {
   type SlackHomeTabOptions,
   type SlackRuntimeControls,
   type SlackRuntimeSlashCommands,
+  type SlackPendingAsks,
   type SlackShortcutBinding,
 } from "./adapter.js";
 import {
@@ -78,6 +79,7 @@ export interface SlackAdapterStartOptions {
   readonly resolvePostIndex?: (channelId: string, ts: string) => Promise<string | undefined>;
   /** Record a posted message `(channel, ts) → conversationId` for later reply resolution. */
   readonly recordPostedMessage?: (channelId: string, ts: string, conversationId: string) => void;
+  readonly pendingAsks?: SlackPendingAsks;
 
   /** Reconnect backoff bounds (and jitter/stability/startup-grace/drain tuning) forwarded to the Socket Mode runner. */
   readonly reconnect?: SlackSocketModeRunnerBackoffOptions;
@@ -256,6 +258,9 @@ function buildAdapterOptions(
   }
   if (options.recordPostedMessage !== undefined) {
     adapterOptions.recordPostedMessage = options.recordPostedMessage;
+  }
+  if (options.pendingAsks !== undefined) {
+    adapterOptions.pendingAsks = options.pendingAsks;
   }
   return adapterOptions;
 }

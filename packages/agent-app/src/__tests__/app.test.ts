@@ -9,7 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { listTraceSources } from "@mono-agent/observability";
 import * as bujoMemory from "@mono-agent/memory/bujo";
-import type { AgentResponder, ChannelInteractionHub, ChannelInteractionSink } from "@mono-agent/agent-contracts";
+import type {
+  AgentResponder,
+  ChannelAskSnapshot,
+  ChannelInteractionHub,
+  ChannelInteractionSink,
+} from "@mono-agent/agent-contracts";
 import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 import type {
@@ -1749,7 +1754,13 @@ describe("startMonoAgentApp", () => {
     const driver = createTelegramChannelDriver({
       startAdapter: async (options) => {
         captured = options;
-        return { stop: async () => undefined, notify: async () => ({ delivered: true }), post: async () => undefined, postStatus: async () => undefined };
+        return {
+          stop: async () => undefined,
+          notify: async () => ({ delivered: true }),
+          postStatus: async () => undefined,
+          presentAsk: async () => undefined,
+          updateAsk: async () => undefined,
+        };
       },
     });
 
@@ -1821,8 +1832,9 @@ describe("startMonoAgentApp", () => {
         return {
           stop: async () => undefined,
           notify: async () => ({ delivered: true }),
-          post: async () => undefined,
           postStatus: async () => undefined,
+          presentAsk: async () => undefined,
+          updateAsk: async () => undefined,
         };
       },
     });
@@ -1882,36 +1894,6 @@ describe("startMonoAgentApp", () => {
     }
   });
 
-  it("starts the interaction bridge when TelegramAskButtons is allowed", async () => {
-    await writeConfig({
-      ...baseConfig(),
-      tools: { allowedTools: ["TelegramAskButtons"], disallowedTools: [] },
-      telegram: { enabled: true, botToken: "test-token", allowedChatIds: ["42"] },
-    });
-    let captured: TelegramAdapterStartOptions | undefined;
-    const driver = createTelegramChannelDriver({
-      startAdapter: async (options) => {
-        captured = options;
-        return {
-          stop: async () => undefined,
-          notify: async () => ({ delivered: true }),
-          post: async () => undefined,
-          postStatus: async () => undefined,
-        };
-      },
-    });
-    const env: Record<string, string | undefined> = {};
-
-    const app = await startMonoAgentApp({ cwd: dir, env, drivers: [driver] });
-    try {
-      expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
-      expect(captured?.pendingAsks).toBeDefined();
-      expect(captured?.callbacksEnabled).toBe(true);
-    } finally {
-      await app.stop();
-    }
-  });
-
   it("does not start the interaction bridge when neither AskUser nor an interaction block is configured", async () => {
     await writeConfig({
       ...baseConfig(),
@@ -1924,8 +1906,9 @@ describe("startMonoAgentApp", () => {
         return {
           stop: async () => undefined,
           notify: async () => ({ delivered: true }),
-          post: async () => undefined,
           postStatus: async () => undefined,
+          presentAsk: async () => undefined,
+          updateAsk: async () => undefined,
         };
       },
     });
@@ -1935,7 +1918,6 @@ describe("startMonoAgentApp", () => {
     try {
       expect(env.MONO_AGENT_INTERACTION_BRIDGE_URL).toBeUndefined();
       expect(captured?.pendingAsks).toBeUndefined();
-      expect(captured?.callbacksEnabled).toBeUndefined();
       expect(captured?.allowedUpdates).toEqual(["message", "callback_query"]);
       expect(captured?.runtimeControls).toMatchObject({
         defaultModel: "pi:openai-codex:gpt-5.5",
@@ -1954,8 +1936,9 @@ describe("startMonoAgentApp", () => {
         return {
           stop: async () => undefined,
           notify: async () => ({ delivered: true }),
-          post: async () => undefined,
           postStatus: async () => undefined,
+          presentAsk: async () => undefined,
+          updateAsk: async () => undefined,
         };
       },
     });
@@ -2000,8 +1983,9 @@ describe("startMonoAgentApp", () => {
         return {
           stop: async () => undefined,
           notify: async () => ({ delivered: true }),
-          post: async () => undefined,
           postStatus: async () => undefined,
+          presentAsk: async () => undefined,
+          updateAsk: async () => undefined,
         };
       },
     });
@@ -2069,8 +2053,9 @@ describe("startMonoAgentApp", () => {
         return {
           stop: async () => undefined,
           notify: async () => ({ delivered: true }),
-          post: async () => undefined,
           postStatus: async () => undefined,
+          presentAsk: async () => undefined,
+          updateAsk: async () => undefined,
         };
       },
     });
@@ -2334,8 +2319,9 @@ describe("startMonoAgentApp", () => {
         return {
           stop: async () => undefined,
           notify: async () => ({ delivered: true }),
-          post: async () => undefined,
           postStatus: async () => undefined,
+          presentAsk: async () => undefined,
+          updateAsk: async () => undefined,
         };
       },
     });
@@ -2369,8 +2355,9 @@ describe("startMonoAgentApp", () => {
         return {
           stop: async () => undefined,
           notify: async () => ({ delivered: true }),
-          post: async () => undefined,
           postStatus: async () => undefined,
+          presentAsk: async () => undefined,
+          updateAsk: async () => undefined,
         };
       },
     });
@@ -2407,9 +2394,9 @@ describe("startMonoAgentApp", () => {
 
   it("wires the interaction hub into the Telegram adapter and registers an allowlist-enforcing sink", async () => {
     let captured: TelegramAdapterStartOptions | undefined;
-    const post = vi.fn(async () => undefined);
+    const presentAsk = vi.fn(async () => undefined);
+    const updateAsk = vi.fn(async () => undefined);
     const postStatus = vi.fn(async () => undefined);
-    const dismissInlineKeyboard = vi.fn(async () => undefined);
     const startNewSession = vi.fn(async () => undefined);
     const responder = { respond: async () => ({ text: "" }), startNewSession };
     const driver = createTelegramChannelDriver({
@@ -2418,20 +2405,38 @@ describe("startMonoAgentApp", () => {
         return {
           stop: async () => undefined,
           notify: async () => ({ delivered: true }),
-          post,
+          presentAsk,
+          updateAsk,
           postStatus,
-          dismissInlineKeyboard,
         };
       },
     });
     const sinks = new Map<string, ChannelInteractionSink>();
-    const tryResolveAsk = vi.fn(() => true);
-    const hasPendingAsk = vi.fn(() => true);
+    const snapshot: ChannelAskSnapshot = {
+      interactionId: "ask-test",
+      questions: [{
+        id: "q0",
+        header: "Delivery",
+        question: "Send the draft?",
+        options: [
+          { id: "q0o0", label: "Send", description: "Send it now." },
+          { id: "q0o1", label: "Skip", description: "Leave it unsent." },
+        ],
+        multiSelect: false,
+      }],
+      answers: [],
+      activeQuestionIndex: 0,
+      status: "pending",
+      createdAt: "2026-07-21T09:00:00.000Z",
+      expiresAt: "2026-07-21T09:10:00.000Z",
+    };
+    const getPendingAsk = vi.fn(() => snapshot);
+    const submitAskAnswers = vi.fn(async () => ({ accepted: true, snapshot }));
     const cancelAsks = vi.fn();
     const hub: ChannelInteractionHub = {
       registerSink: (channelId, sink) => sinks.set(channelId, sink),
-      tryResolveAsk,
-      hasPendingAsk,
+      getPendingAsk,
+      submitAskAnswers,
       cancelAsks,
     };
 
@@ -2446,10 +2451,15 @@ describe("startMonoAgentApp", () => {
 
     // The bot receives the pending-ask interceptor bound to the hub…
     expect(captured?.pendingAsks).toBeDefined();
-    await captured?.pendingAsks?.tryResolve("telegram:42", "the answer", "callback");
-    expect(tryResolveAsk).toHaveBeenCalledWith("telegram:42", "the answer", "callback");
-    expect(await captured?.pendingAsks?.hasPending?.("telegram:42")).toBe(true);
-    expect(hasPendingAsk).toHaveBeenCalledWith("telegram:42");
+    expect(await captured?.pendingAsks?.getPendingAsk("telegram:42")).toEqual(snapshot);
+    expect(getPendingAsk).toHaveBeenCalledWith("telegram:42");
+    const submission = {
+      conversationId: "telegram:42",
+      interactionId: snapshot.interactionId,
+      answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }],
+    };
+    await captured?.pendingAsks?.submitAskAnswers(submission);
+    expect(submitAskAnswers).toHaveBeenCalledWith(submission);
     captured?.pendingAsks?.cancel("telegram:42");
     expect(cancelAsks).toHaveBeenCalledWith("telegram:42");
     await captured?.startNewSession?.("telegram:42");
@@ -2458,53 +2468,16 @@ describe("startMonoAgentApp", () => {
     // …and the driver registered a telegram sink that posts through the adapter.
     const sink = sinks.get("telegram");
     expect(sink).toBeDefined();
-    await sink?.postQuestion("telegram:42", "Who is speaking?");
-    expect(post).toHaveBeenCalledWith(42, "Who is speaking?");
+    await sink?.presentAsk("telegram:42", snapshot);
+    expect(presentAsk).toHaveBeenCalledWith(42, snapshot);
+    await sink?.updateAsk("telegram:42", snapshot);
+    expect(updateAsk).toHaveBeenCalledWith(42, snapshot);
     await sink?.postStatus("telegram:42#2026-07-02", "Transcribing…", { key: "job", state: "working" });
     expect(postStatus).toHaveBeenCalledWith(42, "Transcribing…", { key: "job", state: "working" });
-    const telegramSink = sink as ChannelInteractionSink & {
-      dismissQuestion(conversationId: string, messageRef: string): Promise<void>;
-    };
-    await telegramSink.dismissQuestion("telegram:42", "88");
-    expect(dismissInlineKeyboard).toHaveBeenCalledWith(42, 88);
-    await expect(telegramSink.dismissQuestion("telegram:42", "not-a-message-id"))
-      .rejects.toThrow(/invalid Telegram question message reference/iu);
     // Destination boundary: a chat outside the adapter allowlist is refused.
-    await expect(sink?.postQuestion("telegram:999", "nope")).rejects.toThrow(/allowlist/iu);
-    await expect(telegramSink.dismissQuestion("telegram:999", "89")).rejects.toThrow(/allowlist/iu);
+    await expect(sink?.presentAsk("telegram:999", snapshot)).rejects.toThrow(/allowlist/iu);
+    await expect(sink?.updateAsk("telegram:999", snapshot)).rejects.toThrow(/allowlist/iu);
 
-    await running.stop();
-  });
-
-  it("treats an interaction hub without pending-ask introspection as no pending ask", async () => {
-    let captured: TelegramAdapterStartOptions | undefined;
-    const driver = createTelegramChannelDriver({
-      startAdapter: async (options) => {
-        captured = options;
-        return {
-          stop: async () => undefined,
-          notify: async () => ({ delivered: true }),
-          post: async () => undefined,
-          postStatus: async () => undefined,
-        };
-      },
-    });
-    const hub: ChannelInteractionHub = {
-      registerSink: vi.fn(),
-      tryResolveAsk: vi.fn(() => false),
-      cancelAsks: vi.fn(),
-    };
-
-    const running = await driver.start({
-      config: { enabled: true, botToken: "test-token", allowedChatIds: ["42"], allowAllChats: false },
-      coreConfig: parsedCoreConfig(),
-      responder: { respond: async () => ({ text: "" }) },
-      cwd: dir,
-      onFailure: vi.fn(),
-      interaction: hub,
-    });
-
-    expect(await captured?.pendingAsks?.hasPending?.("telegram:42")).toBe(false);
     await running.stop();
   });
 
@@ -2516,7 +2489,13 @@ describe("startMonoAgentApp", () => {
     const driver = createTelegramChannelDriver({
       startAdapter: async (options: TelegramAdapterStartOptions) => {
         captured = options;
-        return { stop: async () => undefined, notify: async () => ({ delivered: true }), post: async () => undefined, postStatus: async () => undefined };
+        return {
+          stop: async () => undefined,
+          notify: async () => ({ delivered: true }),
+          postStatus: async () => undefined,
+          presentAsk: async () => undefined,
+          updateAsk: async () => undefined,
+        };
       },
     });
 
@@ -2684,7 +2663,13 @@ describe("startMonoAgentApp", () => {
     const telegramDriver = createTelegramChannelDriver({
       startAdapter: async (options) => {
         captured = options;
-        return { stop: async () => undefined, notify: async () => ({ delivered: true }), post: async () => undefined, postStatus: async () => undefined };
+        return {
+          stop: async () => undefined,
+          notify: async () => ({ delivered: true }),
+          postStatus: async () => undefined,
+          presentAsk: async () => undefined,
+          updateAsk: async () => undefined,
+        };
       },
     });
     const disposeSpy = vi.fn(async () => {});
@@ -2728,7 +2713,13 @@ describe("startMonoAgentApp", () => {
     const telegramDriver = createTelegramChannelDriver({
       startAdapter: async (options) => {
         captured = options;
-        return { stop: async () => undefined, notify: async () => ({ delivered: true }), post: async () => undefined, postStatus: async () => undefined };
+        return {
+          stop: async () => undefined,
+          notify: async () => ({ delivered: true }),
+          postStatus: async () => undefined,
+          presentAsk: async () => undefined,
+          updateAsk: async () => undefined,
+        };
       },
     });
     const disposeSpy = vi.fn(async () => {});
