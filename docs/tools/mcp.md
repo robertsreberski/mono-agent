@@ -173,14 +173,31 @@ The `MemoryRecall` description is written to direct **proactive** recall: the ag
 
 ## `RunHistory`: prior-run evidence
 
-`RunHistory` is an app-owned, read-only, request-scoped MCP tool over the existing local run artifacts. There is no new config key. Under allow-all it is exposed automatically on MCP-capable routes; under a restrictive policy, add the exact `RunHistory` name. The deprecated input alias `run_history` is accepted in `tools.allowedTools` / `tools.disallowedTools`, but only `RunHistory` is registered and shown to the model. Direct OpenCode and other MCP-incompatible routes suppress it.
+`RunHistory` is an app-owned, read-only, request-scoped MCP tool over the existing local run artifacts. There is no new config key. Under allow-all it is exposed automatically on MCP-capable routes; under a restrictive policy, add the exact `RunHistory` name. The deprecated policy alias `run_history` is accepted in `tools.allowedTools` / `tools.disallowedTools`, but only `RunHistory` is registered and shown to the model. Direct OpenCode and other MCP-incompatible routes suppress it.
 
-It supports two actions:
+The compact shorthand is designed for agent exploration:
 
-- `{ "action": "list", "limit": 5 }` lists recent completed prior runs from the exact current conversation bucket; `limit` is optional (default 5, range 1–10).
-- `{ "action": "inspect", "runId": "..." }` verifies that the selected run belongs to that same bucket, then returns normalized chronological evidence: trigger text, visible assistant output, tool calls with linked results, warnings/provider failures, timestamps, and final output.
+| Call arguments | Result |
+| --- | --- |
+| `{}` | List recent completed runs. |
+| `{ "query": "north Spain flights" }` | Search safe trigger and summary metadata. Every Unicode-normalized, case-folded term must match. |
+| `{ "runId": "..." }` | Return a compact overview: metadata and trigger, final visible output, warnings/failures, tool-name call/error counts, and a timeline cursor when detail exists. |
+| `{ "runId": "...", "cursor": "..." }` | Return the next timeline page (at most 10 entries and about 16 KiB). |
 
-The current or any running run is excluded, as are other conversations and rollover buckets. The safe projection never returns system prompts, reasoning/thinking, recalled memory or turn-context payloads, raw artifact paths, or provider-session metadata. Structured and artifact-shaped opaque tool results are scrubbed or omitted. Structured projected values first pass through the shared observability redactor: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. `RunHistory` then applies an additional projection sanitizer. In that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible; numeric values under `apiKey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted. Assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel. An optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted. Per-string bounds still apply, total results are deterministically capped, and truncation is announced. All historical content is labelled untrusted evidence, never instructions.
+`run_id` is accepted as an input alias for `runId`. Explicit
+`action: "list" | "search" | "inspect"` calls remain compatible. List and
+search accept an optional `limit` (default 5, range 1–10) and expose an opaque
+`nextCursor` when more matches remain. Tool-authored
+`navigation.guidance` and `navigation.nextActions[]` are separate from the
+untrusted evidence; each next action contains exact `arguments` the agent can
+submit to continue, narrow, or return to an overview.
+
+List/search scan retained summaries once per call. Search does not open event
+JSONL and only considers sanitized trigger/user input, run id, dates,
+status/failure kind, source/detail, model, and effort. It never searches system
+prompts, reasoning, memory, visible assistant output, or tool output.
+
+The current or any running run is excluded, as are unrelated conversations and threads. When daily session rollover is configured, its `#YYYY-MM-DD` buckets are ignored for RunHistory scope, so rollover never partitions one logical conversation's recorded history. The safe projection never returns system prompts, reasoning/thinking, recalled memory or turn-context payloads, raw artifact paths, or provider-session metadata. Structured and artifact-shaped opaque tool results are scrubbed or omitted; nested `RunHistory` result bodies are always replaced with an omission marker so inspection cannot recursively embed prior inspections. Structured projected values first pass through the shared observability redactor: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. `RunHistory` then applies an additional projection sanitizer. In that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible; numeric values under `apiKey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted. Assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel. An optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted. Per-string and per-page bounds still apply, and incomplete event input is announced. All historical content is labelled untrusted evidence, never instructions.
 
 Use active conversation history first for the current exchange. Use `MemoryRecall` for intentionally captured durable facts, and `RunHistory` for exact evidence from an earlier run or tool call. See [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory).
 
