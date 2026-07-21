@@ -48,13 +48,17 @@ await live.stop();
 
 ### TUI Endpoints
 
-- `GET {basePath}/v1/info` - `{ schema, pid, label?, model?, effort? }`.
+- `GET {basePath}/v1/info` - `{ schema, pid, capabilities, label?, model?, effort? }`;
+  `capabilities.historyAppend` is advertised additively when supported.
 - `POST {basePath}/v1/turns` - body `{ conversationId, text, metadata? }`;
   responds with chunked `application/x-ndjson` frames
   (`status | append | replace | event | finish | error`). Closing the socket
   aborts the in-flight turn.
 - `POST {basePath}/v1/conversations/:id/cancel` - explicit cancel (202; 501
   when the responder has no `cancel`).
+- `POST {basePath}/v1/conversations/:id/verbatim` - authenticated
+  `{ text, idempotencyKey }` durable-history append with no model turn (200; 501
+  when the responder has no `deliverVerbatim`).
 
 ### Live Endpoints
 

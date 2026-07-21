@@ -6,7 +6,7 @@ sidebar:
 
 # Cron Digest with Native Notify
 
-This playbook wires a timezone-aware cron job to a Telegram or Slack destination. On a schedule, the agent builds a daily digest using shared conversation history, returns the digest as its final answer, and `mono-agent` delivers that final answer **verbatim** through native notification.
+This playbook wires a timezone-aware cron job to Telegram, Slack, or a new web-console conversation. On a schedule, the agent builds a daily digest using shared conversation history, returns the digest as its final answer, and `mono-agent` delivers that final answer **verbatim** through native notification.
 
 :::note
 Opt in with `notify: true` per cron job (the same model is available to webhook endpoints). On a notify turn the harness injects guidance: the agent's final reply is delivered to the destination as-is (no second LLM turn) and recorded to that conversation's history, so a user's reply resumes with it in context. To say nothing, the agent produces empty final text or replies with exactly `NOTHING_TO_REPORT` — then no notification is sent. Defaults stay off: a job without `notify` delivers nothing.
@@ -24,13 +24,13 @@ A timezone-aware cron job that builds a daily digest with shared run history and
 
 - **`cron.scheduled-prompts`** — in-app scheduled prompts; see [Cron](/channels/cron/). *(config)*
 - **`cron.jobs-dir`** — author jobs as `cron/<id>.md` frontmatter files; see [Cron](/channels/cron/). *(config)*
-- **`channel.native-notify`** — `notify: true` delivers the cron final answer verbatim to Telegram or Slack after a successful run; `NOTHING_TO_REPORT` (or empty final text) stays silent. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
+- **`channel.native-notify`** — `notify: true` delivers the cron final answer verbatim to Telegram, Slack, or exact `web:new` after a successful run; `NOTHING_TO_REPORT` (or empty final text) stays silent. See [Delivery and Send Tools](/channels/delivery-and-send-tools/). *(config)*
 - **`slack.socket-mode`** or **`telegram.bot`** — the destination adapter that owns the allowlist. *(config)*
 - **`memory.journal`** — shared run history via `conversationId`; see [Capture and Recall](/memory/capture-and-recall/). *(config)*
 
 ## Configuration
 
-Enable the destination adapter and add the cron job. `conversationId` is the cron run-history thread; `notifyConversationId` is the delivery destination. If `notifyConversationId` is omitted, `mono-agent` only infers a destination when exactly one Telegram/Slack notify destination is available. With 0 or 2+ candidates delivery is skipped with a warning. Artifact-derived candidates use a 30-second in-process cache, measured from scan completion, to avoid rescanning a busy artifact directory for every notification. An artifact committed under a Telegram/Slack conversation id invalidates it at both running-summary and terminal-summary commits; runs using the default synthetic `cron:`/`webhook:` ids do not. Other artifact changes are picked up after cache expiry and the next scan completes. Cron model-exhaustion notices require an explicit `notifyConversationId` and never infer a destination. Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the source config omits credentials.
+Enable the destination adapter and add the cron job. `conversationId` is the cron run-history thread; `notifyConversationId` is the delivery destination. Set it to exact `web:new` to create a separate CRON-marked web conversation for every distinct result; the web service must be running, and web is never inferred. If `notifyConversationId` is omitted, `mono-agent` only infers a destination when exactly one Telegram/Slack notify destination is available. With 0 or 2+ candidates delivery is skipped with a warning. Artifact-derived candidates use a 30-second in-process cache, measured from scan completion, to avoid rescanning a busy artifact directory for every notification. An artifact committed under a Telegram/Slack conversation id invalidates it at both running-summary and terminal-summary commits; runs using the default synthetic `cron:`/`webhook:` ids do not. Other artifact changes are picked up after cache expiry and the next scan completes. Cron model-exhaustion notices require an explicit `notifyConversationId` and never infer a destination. Put `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN` in `.env`; the source config omits credentials.
 
 ```json
 {
@@ -91,7 +91,7 @@ Channel allowlists still apply. A Slack destination must be in `allowedChannelId
 ## Steps
 
 1. `mono-agent init --model claude:claude-sonnet-4-6`
-2. Add the Telegram or Slack destination config and allowlist.
+2. Add the Telegram or Slack destination config and allowlist, or start `mono-agent web` for `web:new`.
 3. Add the cron job with `expression`, `conversationId`, `notify: true`, and optionally `notifyConversationId`.
 4. `mono-agent validate`, then `mono-agent start`.
 5. Trigger a one-off tick or wait for the schedule and confirm the digest appears in the configured destination.
@@ -107,6 +107,7 @@ Run a one-off cron tick; verify the agent's final answer is the digest and it la
 - [Cron](/channels/cron/)
 - [Telegram](/channels/telegram/)
 - [Slack](/channels/slack/)
+- [Web console](/observability/web-console/)
 - [Delivery and Send Tools](/channels/delivery-and-send-tools/)
 - [Capture and Recall](/memory/capture-and-recall/)
 - [Tool Policy](/tools/policy/)

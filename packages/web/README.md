@@ -20,6 +20,10 @@ Category: `operator-surface`
 - Accept browser-selected files through bounded staged uploads and forward the
   exact transport-neutral `AgentAttachment` contract used by Telegram.
 - Serve the assistant-ui PWA and its versioned JSON/SSE API.
+- Accept explicit cron/webhook `web:new` notification delivery through an
+  owner-private, bearer-authenticated loopback ingress; persist one marked,
+  assistant-only conversation per distinct result only after agent history is
+  durably appended.
 
 ## Install / Usage
 
@@ -76,7 +80,15 @@ responses that arrive while the console is hidden or unfocused. Notifications
 include a short response preview and open the exact conversation. Permission
 is requested only from the bell, the preference is browser-origin-local, and
 the page/PWA must remain alive: this is not a Web Push subscription and does
-not notify after the application is fully closed.
+not notify after the application is fully closed. Cron/webhook notification
+threads use the same bell and are marked `CRON` / `WEBHOOK` in the sidebar,
+header, and browser notification title.
+
+An app-managed cron job or webhook endpoint can set `notify: true` with the
+exact destination `notifyConversationId: "web:new"`. Each distinct result gets
+a new thread without changing the selected thread. Delivery is idempotent,
+best-effort, attempted once with a five-second bound, and has no outbox when the
+web service is unavailable. Other `web:*` destinations are not accepted.
 
 ## Public API
 
@@ -92,6 +104,9 @@ CreateWebThreadInput
 CreateWebUploadInput
 DEFAULT_WEB_HOST
 DEFAULT_WEB_PORT
+DeliverWebNotificationInput
+DeliverWebNotificationOptions
+DeliverWebNotificationResult
 DiscoverOperatorAgentsOptions
 DiscoveredOperatorAgent
 PatchWebAgentInput
@@ -118,6 +133,7 @@ WebMessage
 WebMessagePart
 WebMessageStatus
 WebModelOption
+WebNotificationTriggerKind
 WebQuote
 WebRunState
 WebRunStatus
@@ -126,8 +142,10 @@ WebStatePathOptions
 WebStatePaths
 WebThread
 WebThreadDetail
+WebThreadTrigger
 defaultTraceRegistryDir
 defaultWebStateDir
+deliverWebNotification
 discoverOperatorAgents
 isTrustedOperatorBaseUrl
 operatorBaseUrlFromMetadata

@@ -110,6 +110,9 @@ export interface TuiAdapterStartResult {
 }
 
 const MAX_TURN_BODY_BYTES = 96 * 1024 * 1024;
+const MAX_VERBATIM_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_VERBATIM_TEXT_CHARACTERS = 200_000;
+const MAX_VERBATIM_TEXT_BYTES = 1024 * 1024;
 const MAX_WEB_ATTACHMENTS = 10;
 const MAX_WEB_ATTACHMENT_BYTES = 64 * 1024 * 1024;
 const ALLOWED_ATTACHMENT_MIME_TYPES = new Set(
@@ -136,6 +139,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const infoPath = `${basePath}/v1/info`;
   const turnsPath = `${basePath}/v1/turns`;
   const cancelPath = `${basePath}/v1/conversations/:conversationId/cancel`;
+  const verbatimPath = `${basePath}/v1/conversations/:conversationId/verbatim`;
 
   app.get(infoPath, (req, res) => {
     if (!authorize(req, res, apiKey)) {
@@ -146,7 +150,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         res.status(200).json({
           schema: TUI_WIRE_SCHEMA,
           pid: process.pid,
-          capabilities: { attachments: true },
+          capabilities: {
+            attachments: true,
+            ...(typeof options.responder.deliverVerbatim === "function" ? { historyAppend: true } : {}),
+          },
           ...(info?.label === undefined ? {} : { label: info.label }),
           ...(info?.model === undefined ? {} : { model: info.model }),
           ...(info?.effort === undefined ? {} : { effort: info.effort }),
@@ -194,6 +201,32 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     }
     options.responder.cancel(conversationId, createChannelUserCancelReason("TUI"));
     res.status(202).json({ cancelled: conversationId });
+  });
+
+  app.post(verbatimPath, express.json({ limit: MAX_VERBATIM_BODY_BYTES, strict: true }), (req, res, next) => {
+    if (!authorize(req, res, apiKey)) {
+      return;
+    }
+    let body: NormalizedVerbatimBody;
+    try {
+      body = normalizeVerbatimBody(req.params.conversationId, req.body);
+    } catch (error) {
+      next(error);
+      return;
+    }
+    if (typeof options.responder.deliverVerbatim !== "function") {
+      sendJsonError(
+        res,
+        501,
+        new TuiAdapterError("invalid_request", "This responder does not support history append."),
+      );
+      return;
+    }
+    void options.responder.deliverVerbatim(body.conversationId, body.text, {
+      idempotencyKey: body.idempotencyKey,
+    }).then(() => {
+      res.status(200).json({ recorded: true, conversationId: body.conversationId });
+    }).catch(next);
   });
 
   app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
@@ -483,6 +516,39 @@ interface NormalizedTurnBody {
   readonly metadata: Record<string, unknown>;
   readonly client: "tui" | "web";
   readonly attachments?: readonly AgentAttachment[];
+}
+
+interface NormalizedVerbatimBody {
+  readonly conversationId: string;
+  readonly text: string;
+  readonly idempotencyKey: string;
+}
+
+function normalizeVerbatimBody(rawConversationId: string | string[] | undefined, body: unknown): NormalizedVerbatimBody {
+  const conversationId = normalizeOptionalString(
+    typeof rawConversationId === "string" ? rawConversationId : undefined,
+  );
+  if (conversationId === undefined) {
+    throw new TuiAdapterError("invalid_request", "conversationId is required.");
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new TuiAdapterError("invalid_request", "Request body must be a JSON object.");
+  }
+  const record = body as Record<string, unknown>;
+  const text = typeof record.text === "string" ? record.text : undefined;
+  const idempotencyKey = normalizeOptionalString(
+    typeof record.idempotencyKey === "string" ? record.idempotencyKey : undefined,
+  );
+  if (text === undefined || text.trim().length === 0) {
+    throw new TuiAdapterError("invalid_request", "text is required.");
+  }
+  if (text.length > MAX_VERBATIM_TEXT_CHARACTERS || Buffer.byteLength(text, "utf8") > MAX_VERBATIM_TEXT_BYTES) {
+    throw new TuiAdapterError("invalid_request", "text exceeds the history append limit.");
+  }
+  if (idempotencyKey === undefined || idempotencyKey.length > 512) {
+    throw new TuiAdapterError("invalid_request", "idempotencyKey is required and must be at most 512 characters.");
+  }
+  return { conversationId, text, idempotencyKey };
 }
 
 function normalizeTurnBody(body: unknown): NormalizedTurnBody {

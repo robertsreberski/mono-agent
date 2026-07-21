@@ -386,6 +386,63 @@ describe("startTuiAdapter", () => {
     expect(unsupported.status).toBe(501);
   });
 
+  it("advertises and authorizes durable verbatim history append", async () => {
+    const recorded: Array<[string, string, string | undefined]> = [];
+    running = await startTuiAdapter({
+      apiKey: "fixture-secret",
+      responder: {
+        ...scriptedResponder(async () => ({ text: "ok" })),
+        async deliverVerbatim(conversationId, text, options) {
+          recorded.push([conversationId, text, options?.idempotencyKey]);
+        },
+      },
+    });
+
+    const info = await (await fetch(running.infoUrl, {
+      headers: { authorization: "Bearer fixture-secret" },
+    })).json() as { capabilities: Record<string, boolean> };
+    expect(info.capabilities).toEqual({ attachments: true, historyAppend: true });
+
+    const url = `${running.baseUrl}/v1/conversations/web%3Anotification-1/verbatim`;
+    const unauthorized = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "Morning brief", idempotencyKey: "cron:job:one" }),
+    });
+    expect(unauthorized.status).toBe(401);
+
+    const accepted = await fetch(url, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer fixture-secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ text: "Morning brief", idempotencyKey: "cron:job:one" }),
+    });
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toEqual({ recorded: true, conversationId: "web:notification-1" });
+    expect(recorded).toEqual([["web:notification-1", "Morning brief", "cron:job:one"]]);
+  });
+
+  it("validates verbatim history append and reports unsupported responders", async () => {
+    running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })) });
+    const url = `${running.baseUrl}/v1/conversations/web%3Aone/verbatim`;
+
+    const invalid = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "", idempotencyKey: "delivery:one" }),
+    });
+    expect(invalid.status).toBe(400);
+
+    const unsupported = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "hello", idempotencyKey: "delivery:one" }),
+    });
+    expect(unsupported.status).toBe(501);
+  });
+
   it("rejects malformed turn bodies with 400", async () => {
     running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })) });
 

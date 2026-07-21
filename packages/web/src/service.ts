@@ -28,6 +28,7 @@ import {
   type WebEvent,
   type WebEventType,
   type WebModelOption,
+  type WebNotificationTriggerKind,
   type WebThread,
   type WebThreadDetail,
 } from "./contracts.js";
@@ -85,6 +86,18 @@ interface AgentConnection {
   readonly info: OperatorInfo;
 }
 
+export interface DeliverWebNotificationInput {
+  readonly sourceId: string;
+  readonly triggerKind: WebNotificationTriggerKind;
+  readonly deliveryKey: string;
+  readonly text: string;
+}
+
+export interface DeliverWebNotificationResult {
+  readonly thread: WebThread;
+  readonly duplicate: boolean;
+}
+
 export interface WebUploadReservation {
   readonly attachment: StoredAttachment;
   readonly maxBytes: number;
@@ -98,6 +111,7 @@ export class WebService {
   private readonly subscribers = new Set<(event: WebEvent) => boolean | void>();
   private readonly activeTurns = new Map<string, ActiveTurn>();
   private readonly activeUploads = new Map<string, number>();
+  private readonly activeNotifications = new Map<string, Promise<DeliverWebNotificationResult>>();
   private readonly allowlist = new Set(DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST);
   private readonly attachmentTurnBudget: WeightedTurnBudget;
   private connections = new Map<string, AgentConnection>();
@@ -186,6 +200,24 @@ export class WebService {
     const agent = this.store.setAgentPinned(sourceId, patch.pinned);
     this.emit("agents.changed", undefined, { agents: this.store.listAgents() });
     return agent;
+  }
+
+  async deliverNotification(input: DeliverWebNotificationInput): Promise<DeliverWebNotificationResult> {
+    if (this.stopped) {
+      throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
+    }
+    if (this.store.getAgent(input.sourceId) === undefined) await this.refreshAgents();
+    const reservation = this.store.reserveNotification(input);
+    if (reservation.duplicate) return this.store.completeNotification(reservation);
+
+    const activeKey = `${input.sourceId}\0${input.deliveryKey}`;
+    const existing = this.activeNotifications.get(activeKey);
+    if (existing !== undefined) return existing;
+    const delivery = this.deliverNotificationOnce(reservation).finally(() => {
+      this.activeNotifications.delete(activeKey);
+    });
+    this.activeNotifications.set(activeKey, delivery);
+    return delivery;
   }
 
   async startTurn(threadId: string, input: StartWebTurnInput): Promise<{ readonly thread: WebThread; readonly turn: WebThread["runState"] }> {
@@ -337,6 +369,7 @@ export class WebService {
     const pendingPurge = this.purgePromise;
     this.refreshController?.abort(new Error("Web service is stopping."));
     const active = [...this.activeTurns.values()];
+    const activeNotifications = [...this.activeNotifications.values()];
     const trackedIds = new Set(active.map((turn) => turn.turnId));
     for (const turnId of this.store.listActiveTurnIds()) {
       if (!trackedIds.has(turnId)) this.store.interruptTurn(turnId);
@@ -346,6 +379,7 @@ export class WebService {
       turn.controller.abort(new WebTurnCancellation("shutdown", "Web service is stopping."));
     }
     await Promise.allSettled(active.map((turn) => turn.completion));
+    await Promise.allSettled(activeNotifications);
     if (pendingRefresh !== undefined) await pendingRefresh.catch(() => undefined);
     if (pendingPurge !== undefined) await pendingPurge.catch(() => undefined);
     this.subscribers.clear();
@@ -413,6 +447,35 @@ export class WebService {
       releaseAttachmentBudget?.();
       coalescer.close();
     }
+  }
+
+  private async deliverNotificationOnce(
+    reservation: ReturnType<WebStore["reserveNotification"]>,
+  ): Promise<DeliverWebNotificationResult> {
+    let connection = this.connections.get(reservation.sourceId);
+    if (connection === undefined) {
+      await this.refreshAgents();
+      connection = this.connections.get(reservation.sourceId);
+    }
+    if (connection === undefined) {
+      throw new WebConsoleError("agent_offline", "The notification agent is offline.", 409);
+    }
+    if (!connection.info.supportsHistoryAppend) {
+      throw new WebConsoleError(
+        "history_record_unavailable",
+        "The notification agent does not support durable history append.",
+        409,
+      );
+    }
+    await connection.client.recordVerbatim(
+      `web:${reservation.threadId}`,
+      reservation.text,
+      reservation.deliveryKey,
+    );
+    const completed = this.store.completeNotification(reservation);
+    this.emit("threads.changed", completed.thread.id, { thread: completed.thread });
+    this.emit("thread.changed", completed.thread.id, { thread: completed.thread });
+    return completed;
   }
 
   private async toAgentAttachment(attachment: StoredAttachment): Promise<AgentAttachment> {

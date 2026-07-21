@@ -190,6 +190,35 @@ describe("webhook channel driver — native notification delivery", () => {
     expect(deliveredText).not.toContain("Do not call tools");
   });
 
+  it("adds the stable request delivery key for web:new", async () => {
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    const captured = await startCapturingWebhook({
+      ...baseInput,
+      notifyDestination,
+      config: {
+        ...baseInput.config,
+        endpoints: [{
+          name: "daily digest",
+          path: "/digest",
+          mode: "sync",
+          enabled: true,
+          notify: true,
+          notifyConversationId: "web:new",
+        }],
+      },
+    });
+
+    captured.onResult?.(
+      succeededStatus("Webhook digest"),
+      webhookRequest("daily digest", "web:new"),
+    );
+    await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledOnce());
+    expect(notifyDestination).toHaveBeenCalledWith("web:new", "Webhook digest", {
+      verbatim: true,
+      deliveryKey: "webhook:daily%20digest:req-1:success",
+    });
+  });
+
   it("infers a single notify destination when no endpoint destination is configured", async () => {
     const notifyDestination = vi.fn(async () => ({ delivered: true }));
     const listNotifyDestinations = vi.fn(async () => [

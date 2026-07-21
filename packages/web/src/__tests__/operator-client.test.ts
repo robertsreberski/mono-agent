@@ -48,6 +48,7 @@ describe("OperatorClient", () => {
         },
       },
       supportsAttachments: true,
+      supportsHistoryAppend: false,
     });
   });
 
@@ -106,6 +107,31 @@ describe("OperatorClient", () => {
     expect(requestBody?.attachments).toEqual([{ kind: "document", mimeType: "text/plain", data: "aGk=", name: "a.txt", sizeBytes: 2 }]);
     expect(frames).toEqual([{ kind: "status", text: "thinking" }, { kind: "append", delta: "hello" }]);
     expect(result).toEqual({ finalText: "hello", metadata: { runtime: { model: "actual" } } });
+  });
+
+  it("posts authenticated verbatim history with its stable idempotency key", async () => {
+    let request: { url: string; init: RequestInit | undefined } | undefined;
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      apiKey: "secret",
+      fetchImpl: (async (input, init) => {
+        request = { url: String(input), init };
+        return Response.json({ recorded: true });
+      }) as typeof fetch,
+    });
+
+    await client.recordVerbatim("web:notification-1", "Morning brief", "cron:daily:success");
+
+    expect(request?.url).toBe("http://127.0.0.1:1234/gui/v1/conversations/web%3Anotification-1/verbatim");
+    expect(request?.init).toMatchObject({
+      method: "POST",
+      redirect: "error",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ text: "Morning brief", idempotencyKey: "cron:daily:success" }),
+    });
   });
 
   it("distinguishes cancellation and incomplete streams", async () => {

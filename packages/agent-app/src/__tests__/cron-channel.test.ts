@@ -199,6 +199,40 @@ describe("cron channel driver — native notification delivery", () => {
     expect(deliveredText).not.toContain("Do not call tools");
   });
 
+  it("adds stable success and failure delivery keys only for web:new", async () => {
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    const captured = await startCapturingCron({
+      ...baseInput,
+      notifyDestination,
+      config: {
+        jobs: [{
+          id: "daily brief",
+          expression: "* * * * *",
+          timezone: "UTC",
+          prompt: "p",
+          enabled: true,
+          notify: true,
+          notifyConversationId: "web:new",
+        }],
+      },
+    });
+
+    await captured.onResult?.({ ...succeededResult("Morning brief"), jobId: "daily brief" });
+    await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledTimes(1));
+    expect(notifyDestination).toHaveBeenLastCalledWith("web:new", "Morning brief", {
+      verbatim: true,
+      deliveryKey: "cron:daily%20brief:2026-01-01T00:00:00.000Z:success",
+    });
+
+    await captured.onResult?.({ ...failedResult(), jobId: "daily brief" });
+    await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledTimes(2));
+    const failureCall = notifyDestination.mock.calls[1] as unknown as [string, string, unknown];
+    expect(failureCall[2]).toEqual({
+      verbatim: true,
+      deliveryKey: "cron:daily%20brief:2026-01-01T00:00:00.000Z:failure:provider_unavailable_exhausted",
+    });
+  });
+
   it("infers a single notify destination when no destination is configured", async () => {
     const notifyDestination = vi.fn(async () => ({ delivered: true }));
     const listNotifyDestinations = vi.fn(async () => [

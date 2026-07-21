@@ -184,17 +184,17 @@ Allowing a send tool but leaving the adapter disabled or unconfigured means the 
 
 ## Native proactive notification (cron/webhook turns)
 
-For scheduled cron jobs and webhook endpoints, set `notify: true` (optionally `notifyConversationId`) on the job or endpoint. When the run succeeds with non-empty final text, the agent's **final answer is delivered verbatim** to the resolved Telegram/Slack conversation — posted as-is with **no second LLM turn** — and recorded into that conversation's history, so a user's reply resumes with it in context.
+For scheduled cron jobs and webhook endpoints, set `notify: true` (optionally `notifyConversationId`) on the job or endpoint. When the run succeeds with non-empty final text, the agent's **final answer is delivered verbatim** to Telegram, Slack, or the web console — posted as-is with **no second LLM turn** — and recorded into that destination's history, so a user's reply resumes with it in context.
 
 This is AI-native: the operator just writes the cron/webhook prompt, and its final answer reaches the user. On a notify turn the harness **auto-injects guidance** telling the agent that its final reply is delivered verbatim and how to stay silent. The operator and the agent never configure or call an internal notify tool — there is no agent-facing notify tool.
 
 Cron has one failure-side notification path as well: if a `notify: true` cron job fails because **all configured models failed** (`provider_unavailable_exhausted`), the app can send a short one-line error notice to the job's explicit `notifyConversationId`. This notice is verbatim, never starts another model turn, never infers a destination, and is rate-limited per job by `notifyFailureCooldownHours` (default `6` hours).
 
-`conversationId` / `notifyConversationId` is a channel-scoped id such as `telegram:42`, `slack:C123`, or `slack:C123:1718.99` (a Slack thread).
+`conversationId` / `notifyConversationId` is a channel-scoped id such as `telegram:42`, `slack:C123`, or `slack:C123:1718.99` (a Slack thread). The special notify-only destination `web:new` means “create a new web-console conversation”; other `web:*` values are rejected.
 
 ### Destination resolution
 
-- If `notifyConversationId` is set, it is the destination.
+- If `notifyConversationId` is set, it is the destination. Exact `web:new` creates one new assistant-only web conversation per distinct cron result or successful webhook invocation.
 - Otherwise the app infers it **only when exactly one** notify-capable (Telegram/Slack) candidate exists — drawn from seen conversations plus the adapter allowlist.
 - With **0 or 2+** candidates the app skips delivery with a warning rather than guessing.
 - Cron model-exhaustion failure notices are stricter: they require explicit `notifyConversationId` and never use inference.
@@ -210,7 +210,9 @@ synthetic `cron:`/`webhook:` ids do not invalidate it; a trigger configured with
 Telegram/Slack conversation id does. Other artifact-directory changes are picked
 up after cache expiry and the next scan completes.
 
-The owning channel's allowlist is the destination boundary: a delivery to a Telegram/Slack id outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAllChats` / `allowAllChannels`) is refused. WhatsApp is not notify-capable. Delivery is best-effort — a skipped or failed notification does not change the cron job result or the webhook's HTTP response / async stored status.
+The owning channel's allowlist is the destination boundary for Telegram/Slack: a delivery outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAllChats` / `allowAllChannels`) is refused. WhatsApp is not notify-capable. `web:new` is explicit-only and talks to the active local web service through an owner-private loopback ingress. The service records the delivered answer into the generated thread's agent history before exposing the completed thread, marks it **CRON** or **WEBHOOK**, and leaves the currently selected thread unchanged. Duplicate delivery keys return the existing thread; conflicting reuse fails. If the web service is unavailable, delivery is skipped after one five-second attempt—there is no retry or outbox. Delivery remains best-effort: a skipped or failed notification does not change the cron job result or the webhook's HTTP response / async stored status.
+
+When the web console's existing header bell is enabled, a new marked conversation also uses the same response-arrival browser notification path. As with ordinary web responses, the page/PWA must still be alive and hidden or unfocused; this is not background Web Push.
 
 ### Staying silent ("nothing to report")
 
@@ -225,7 +227,7 @@ To send nothing for a tick or request, the agent either produces an **empty fina
 | Agent involvement | None — the app delivers the final answer; no tool call | Agent calls the tool explicitly |
 | Allowlist entry | **Not** a `tools.allowedTools` entry (config-level toggle) | Available under allow-all (the default); a specific `tools.allowedTools` needs the exact tool name |
 | Destination bound | The owning channel's allowlist | The owning channel's allowlist |
-| Channels | Telegram + Slack | Telegram + Slack |
+| Channels | Telegram + Slack + web console (`web:new`) | Telegram + Slack |
 
 ### Fan-out and multi-destination
 
@@ -236,6 +238,7 @@ For a live chat that delegates work and needs one later reply in the same channe
 ## Related pages
 
 - [Telegram](/channels/telegram/) and [Slack](/channels/slack/) — adapter config and allowlists.
+- [Web console](/observability/web-console/) — persistent conversations and browser notification behavior.
 - [OpenAI-compatible endpoint](/channels/openai-api/) — token streaming over SSE.
 - [Cron](/channels/cron/) and [Webhook](/channels/webhook/) — the proactive turns that support native `notify: true` delivery.
 - [Tool policy](/tools/policy/) — `allowedTools` / `disallowedTools` precedence.

@@ -14,6 +14,7 @@ import type {
 import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
 import { reasonOf } from "./app-controller-utils.js";
 import type { ConfigApplyResult, MonoAgentAppController } from "./app-controller.js";
+import { notifyDestination as notifyDestinationForChannel } from "./app-controller-maintenance.js";
 
 export async function startChannel(controller: MonoAgentAppController, driver: ChannelDriver, reason: string): Promise<ChannelStatus> {
   const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
@@ -84,7 +85,8 @@ export async function startChannel(controller: MonoAgentAppController, driver: C
       coreConfig,
       responder,
       cwd: controller.cwd,
-      notifyDestination: (conversationId, text, options) => controller.notifyDestination(conversationId, text, options),
+      notifyDestination: (conversationId, text, options) =>
+        notifyDestinationForChannel(controller, conversationId, text, options, driver.id),
       listNotifyDestinations: () => controller.listNotifyDestinations(),
       postedMessageIndexPath,
       ...(interactionBridge === undefined ? {} : { interaction: interactionBridge }),
