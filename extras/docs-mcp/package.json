@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/docs-mcp",
   "version": "0.13.0",
-  "description": "Offline semantic and lexical search over the version-matched mono-agent documentation and composer references through MCP.",
+  "description": "Offline search and guided reading over version-matched mono-agent documentation and composer references through MCP.",
   "type": "module",
   "license": "GPL-3.0-only",
   "repository": {
@@ -40,6 +40,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@yarflam/potion-base-8m": "1.0.4",
+    "github-slugger": "2.0.0",
     "zod": "^4.4.3"
   },
   "publishConfig": {

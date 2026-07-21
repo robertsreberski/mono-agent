@@ -9,9 +9,9 @@ the default `@mono-agent/agent-app` dependency closure.
 
 ## Responsibility
 
-Provides version-matched, offline semantic and exact-identifier search over the
-canonical mono-agent documentation and the authoritative `mono-agent-composer`
-references through one read-only MCP tool.
+Provides version-matched, offline semantic and exact-identifier search plus
+guided reading over the canonical mono-agent documentation and the authoritative
+`mono-agent-composer` references through one read-only MCP tool.
 
 ## Install / Usage
 
@@ -46,7 +46,16 @@ Every symbol exported by each public code entrypoint is listed below.
 
 ```text
 MONO_AGENT_DOCS_TOOL_NAME
+MonoAgentDocsErrorCode
+MonoAgentDocsErrorResult
+MonoAgentDocsInput
+MonoAgentDocsInternalLink
+MonoAgentDocsNavigation
+MonoAgentDocsNavigationAction
+MonoAgentDocsReadAction
+MonoAgentDocsReadResult
 MonoAgentDocsScope
+MonoAgentDocsSearchAction
 MonoAgentDocsSearchHit
 MonoAgentDocsSearchInput
 MonoAgentDocsSearchResult
@@ -55,20 +64,31 @@ createMonoAgentDocsMcpServer
 
 <!-- public-api-inventory:end -->
 
-The MCP surface is:
+The MCP surface is one action-based tool, `mono_agent_docs`:
 
-- Tool `search_mono_agent_docs`, accepting `query`, optional `limit` (1–8),
-  and optional `scope` (`all`, `composer`, or `docs`). It returns full Markdown
-  excerpts plus structured provenance and resource links.
-- Resource template `mono-agent-docs://chunk/{chunkId}`, returning the exact
-  versioned Markdown chunk selected by search.
+- `{"action":"search","query":"...","limit":5,"scope":"composer"}`
+  returns ranked, section-deduplicated Markdown excerpts of roughly 2–3k
+  characters. Treat them as a map and select a returned `readTarget`.
+- `{"action":"read","target":"<readTarget>"}` expands a search hit, logical
+  corpus path, docs route, canonical docs URL, internal link, or continuation
+  target into an anchored Markdown window up to 10k characters. The response
+  supplies normalized `internalLinks` plus exact non-overlapping
+  `previousTarget` / `nextTarget` actions.
+- Resource template `mono-agent-docs://chunk/{chunkId}` remains available, but
+  now returns the same expanded guided-reading window as `action: "read"`.
+
+Every response uses schema `mono-agent.docs.v2`, identifies the exact docs
+version and corpus digest, and puts concrete follow-up calls in
+`navigation.nextActions`. Unsupported or missing read targets return structured
+`unsupported_target` / `target_not_found` errors with a recovery search action.
 
 ## Dependency Boundary
 
-Depends on the MCP TypeScript SDK, Zod for wire-schema validation, and the
-exact-pinned `@yarflam/potion-base-8m@1.0.4` package. The model and precomputed
-corpus are local; runtime search performs no network calls and writes no state.
-There are no dependencies on other `@mono-agent/*` packages.
+Depends on the MCP TypeScript SDK, Zod for wire-schema validation,
+`github-slugger` for website-compatible heading targets, and the exact-pinned
+`@yarflam/potion-base-8m@1.0.4` package. The model and precomputed corpus are
+local; runtime retrieval performs no network calls and writes no state. There
+are no dependencies on other `@mono-agent/*` packages.
 
 ## What This Package Does Not Own
 

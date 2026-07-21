@@ -7,10 +7,12 @@ sidebar:
 # Documentation MCP companion
 
 `@mono-agent/docs-mcp` gives an AI coding harness one read-only tool for
-searching the version-matched mono-agent documentation and the authoritative
-`mono-agent-composer` references. It returns complete Markdown excerpts, not a
-list of website links, so the composer can answer configuration and capability
-questions from the documented contract instead of searching package source.
+searching **and reading** the version-matched mono-agent documentation and the
+authoritative `mono-agent-composer` references. Search results are useful
+2–3k-character maps; the same tool expands the best result into a guided window
+up to 10k characters, resolves documentation cross-links offline, and supplies
+exact continuation actions. This lets the composer build from the documented
+contract instead of guessing from a small chunk or searching package source.
 
 This is primarily an **authoring-harness companion** for Codex and Claude Code.
 It is not injected into agents created by mono-agent, and it does not change an
@@ -78,20 +80,56 @@ Point `tools.mcpConfigPath` at that file as described in [MCP servers](/tools/mc
 
 ## Tool contract
 
-The server exposes `search_mono_agent_docs`:
+The server exposes one action-based tool, `mono_agent_docs`. Start with search:
+
+```json
+{
+  "action": "search",
+  "query": "How do I configure fallback models?",
+  "scope": "composer",
+  "limit": 5
+}
+```
 
 | Input | Contract |
 | --- | --- |
-| `query` | Required natural-language question or exact config, CLI, environment, or package identifier; 3–500 characters. |
-| `limit` | Optional result count from 1–8; default `5`. |
-| `scope` | `all` (default), `composer`, or `docs`. Use `composer` for configuration and capability questions. |
+| `action` | Required. `search` finds relevant sections; `read` expands a target. |
+| `query` | Search only. Required natural-language question or exact config, CLI, environment, or package identifier; 3–500 characters. |
+| `limit` | Search only. Optional result count from 1–8; default `5`. |
+| `scope` | Search only. `all` (default), `composer`, or `docs`. Use `composer` for configuration and capability questions. |
+| `target` | Read only. Required target returned by search/navigation, logical corpus path, public route, or canonical docs URL. |
 
-Every response reports schema `mono-agent.docs-search.v1`, the documentation
-version, corpus digest, retrieval mode, and ranked results. Each result includes
-its stable chunk id, source, logical path, title, heading path, complete Markdown
-text, and a canonical website URL when the source is public documentation. The
-same excerpt is readable through
-`mono-agent-docs://chunk/{chunkId}` as `text/markdown`.
+Treat search excerpts as a map rather than the complete answer. Each result
+includes source provenance, a Markdown excerpt no larger than 3,000 characters,
+normalized `internalLinks`, and a stable `readTarget`. Expand the best result:
+
+```json
+{
+  "action": "read",
+  "target": "mono-agent-docs://chunk/<chunkId>"
+}
+```
+
+`read` accepts any target returned by the tool, including a chunk URI,
+`previousTarget`, `nextTarget`, logical corpus path such as
+`docs/config/reference.md#runtime`, public route such as `/config/reference/`,
+or canonical docs URL. It returns an anchored Markdown window no larger than
+10,000 characters. Long documents expose exact, non-overlapping previous and
+next targets. Cross-links expose a normalized `readTarget`; follow it with
+another `action: "read"` call rather than trying to interpret the original URL
+or chunk id yourself.
+
+Every response reports schema `mono-agent.docs.v2`, the documentation version,
+corpus digest, and `navigation` with concrete next calls. Unsupported or missing
+targets return structured `unsupported_target` or `target_not_found` errors plus
+a recovery search action. `mono-agent-docs://chunk/{chunkId}` remains a readable
+`text/markdown` resource for MCP clients that prefer resources, but it now
+expands to the same guided window as `action: "read"` rather than replaying the
+small retrieval chunk.
+
+The former `search_mono_agent_docs` name is not an alias. Install the exact
+matching package version and use `mono_agent_docs`; this keeps the model-facing
+contract unambiguous.
 
 The tool declares itself read-only, idempotent, non-destructive, and closed-world.
 
@@ -102,18 +140,23 @@ The published corpus is built from two versioned sources:
 - public pages under `docs/`, excluding internal skill/process material; and
 - the bundled `mono-agent-composer` skill plus its authoritative references.
 
-Markdown is split deterministically by heading and block boundaries. The package
-ships those chunks with precomputed local Potion Base 8M embeddings. At query
-time it combines local semantic similarity with exact-token BM25 ranking through
-reciprocal-rank fusion, retains complete excerpts, removes duplicates, and limits
-one source file from crowding out the rest. Exact identifiers such as
+Markdown is indexed deterministically by heading and block boundaries. The
+package ships small retrieval chunks with precomputed local Potion Base 8M
+embeddings, plus checked normalized documents, GitHub-compatible heading
+anchors, and chunk-to-document offsets for reading. Corpus generation validates
+every internal documentation link. At query time the server combines local
+semantic similarity with exact-token BM25 ranking through reciprocal-rank fusion,
+deduplicates by section, expands ranked hits around their source positions, and
+limits one source file from crowding out the rest. Exact identifiers such as
 `channels.plugins[]`, `MONO_AGENT_MCP_CONFIG_PATH`, and package names therefore
 remain searchable alongside natural-language questions.
 
 No website crawl, provider API, model download, filesystem write, or telemetry is
-performed while the server runs. Corpus metadata, artifact checksums, dimensions,
-and finite vector values are validated before search; corrupt or mismatched
-artifacts fail closed.
+performed while the server runs. Search, reads, cross-link resolution, and
+continuation are all served from the exact-version package. Corpus metadata,
+document/chunk artifact checksums, positions, dimensions, and finite vector
+values are validated before retrieval; corrupt or mismatched artifacts fail
+closed.
 
 ## Diagnostics
 
