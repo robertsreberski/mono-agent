@@ -78,7 +78,6 @@ export function buildFinalDemoDeploymentConfig(
     runtime: {
       model: modelReference,
       executionMode: "sdk",
-      maxTurns: 8,
       workspace: DEPLOY_WORKSPACE_DIR,
       session: { mode: "continuous", idleTimeoutMs: 1_800_000 },
     },

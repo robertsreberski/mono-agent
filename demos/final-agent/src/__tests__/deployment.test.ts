@@ -38,9 +38,9 @@ describe("final demo deployment", () => {
     expect(config.runtime).toMatchObject({
       model: DEFAULT_FINAL_DEMO_DEPLOY_MODEL_REFERENCE,
       executionMode: "sdk",
-      maxTurns: 8,
       workspace: "./.mono-agent/deploy/workspace",
     });
+    expect(config.runtime).not.toHaveProperty("maxTurns");
     expect(config.providers?.local?.[0]).toMatchObject({
       id: "ollama",
       type: "ollama",
