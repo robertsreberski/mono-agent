@@ -352,6 +352,7 @@ export function canonicalWorkerArguments(parsed, managed) {
     parsed.configPath,
     ...(parsed.envFile === undefined ? [] : ["--env-file", parsed.envFile]),
     ...(managed ? ["--expected-background-snapshot", parsed.expectedBackgroundSnapshot] : []),
+    ...(managed ? ["--expected-managed-runtime-launch", parsed.expectedManagedRuntimeLaunch] : []),
   ];
 }
 
@@ -372,6 +373,7 @@ export function parseLaunchdWorkerInvocation(value, managed) {
   let configPath;
   let envFile;
   let expectedBackgroundSnapshot;
+  let expectedManagedRuntimeLaunch;
   for (let index = 0; index < tail.length; index += 1) {
     const flag = tail[index];
     if (flag === "--foreground") {
@@ -387,6 +389,14 @@ export function parseLaunchdWorkerInvocation(value, managed) {
       index += 1;
       continue;
     }
+    if (flag === "--expected-managed-runtime-launch") {
+      const proof = tail[index + 1];
+      if (!managed || expectedManagedRuntimeLaunch !== undefined
+        || typeof proof !== "string" || !/^[A-Za-z0-9_-]+$/u.test(proof)) return null;
+      expectedManagedRuntimeLaunch = proof;
+      index += 1;
+      continue;
+    }
     if (flag !== "--config" && flag !== "--env-file") return null;
     const path = tail[index + 1];
     if (typeof path !== "string" || !isAbsolute(path) || path.includes("\0")) return null;
@@ -399,7 +409,10 @@ export function parseLaunchdWorkerInvocation(value, managed) {
       envFile = path;
     }
   }
-  if (managed && (!foreground || configPath === undefined || expectedBackgroundSnapshot === undefined)) {
+  if (managed && (!foreground
+    || configPath === undefined
+    || expectedBackgroundSnapshot === undefined
+    || expectedManagedRuntimeLaunch === undefined)) {
     return null;
   }
 
@@ -409,6 +422,7 @@ export function parseLaunchdWorkerInvocation(value, managed) {
     configPath,
     envFile,
     expectedBackgroundSnapshot,
+    expectedManagedRuntimeLaunch,
     probeArgs: [
       ...(configPath === undefined ? [] : ["--config", configPath]),
       ...(envFile === undefined ? [] : ["--env-file", envFile]),

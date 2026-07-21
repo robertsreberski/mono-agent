@@ -43,6 +43,26 @@ mono-agent start
 
 Every channel the user asked for must report `running` with its endpoint facts; anything `failed` is a blocker, not a footnote.
 
+On macOS, managed start also installs a no-`KeepAlive` recovery helper that runs
+at login and every five minutes. It safely reconciles an inactive worker, a
+changed keyed snapshot, or a different available controller CLI closure without
+executing mutable source bytes. The existing worker stays live during runtime
+installation; failed recovery preserves the helper and both definitions for the
+next scheduled retry. `mono-agent stop` removes that authority, so an explicitly
+stopped agent is not resurrected.
+
+Confirm the authoritative process boundary with:
+
+```bash
+mono-agent status --json
+```
+
+Treat `ok: true` as proof only because the status command now requires the trace
+PID to be alive and equal launchd's current PID. When launchd has no matching
+live process, cached `running` channels are rendered `stopped`, live endpoint
+facts are omitted, `pid` is `null`, and the command exits 1. Do not interpret an
+old trace manifest by itself as a running consumer.
+
 ## Documentation Validation
 
 To confirm a skills folder is indexable (replace `<skillsRoot>` with the

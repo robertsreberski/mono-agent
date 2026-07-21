@@ -140,7 +140,7 @@ export function channelBadge(kind: string): string {
   if (kind.startsWith("waiting")) {
     return badge("waiting");
   }
-  if (kind === "disabled") {
+  if (kind === "disabled" || kind === "stopped") {
     return badge("disabled");
   }
   if (kind === "degraded") {

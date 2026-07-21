@@ -374,6 +374,8 @@ automatic migration; never use it merely to make a RED audit green. See the
 
 Starts the agent. Without `--foreground`, it registers a background macOS service (launchd) for the config, prints the instance info, and returns; re-running restarts the running instance. Both modes refuse to start unless a valid `mono-agent.config.json` is present in the folder.
 
+Managed start also installs a no-`KeepAlive` recovery helper that runs at login and every five minutes. It authenticates its launchd-owned PID, reconstructs and validates the durable config environment, captures a fresh snapshot, and compares the strictly parsed loaded worker plus verified runtime proof with the original controller CLI's inert version/digest. It never executes mutable checkout bytes. Drift or an inactive worker is reconciled through the managed-runtime installer while an existing healthy worker keeps serving; shared installers may take up to five minutes before waiters time out. Recovery stops only the main job, preserves the running helper, and retains both definitions after failure so the next interval can retry. If the original source path disappeared, the helper may restore a drifted/inactive worker from its own private closure without claiming an upgrade. `stop` removes the helper and both definitions, preventing later resurrection.
+
 | Flag | Effect |
 | --- | --- |
 | `--config <path>` | Use a non-default config file. |
@@ -442,7 +444,7 @@ mono-agent logs --lines 500      # print the last 500 lines and exit
 | `stop` | `--env-file <path>` | Resolve the target with the managed worker's non-default dotenv file. |
 | `status` | `--config <path>` | Target a non-default config. |
 | `status` | `--env-file <path>` | Resolve the target with the managed worker's non-default dotenv file. |
-| `status` | `--json` | Emit `{ ok, instance, others }`. `instance` is `null` when nothing runs for this config, otherwise the record the human view assembles (`pid`, `health`, `configPath`, `logs`, and the persisted `observability`/`sandbox`/`session`/`channels`/`memoryHealth`/`runsHealth` metadata). `ok` is true only when the instance is `running`; with no running instance `ok` is false and the exit code is `1`. |
+| `status` | `--json` | Emit `{ ok, instance, others }`. `instance` is `null` when no trace exists for this config, otherwise the record the human view assembles (`pid`, `health`, `configPath`, `logs`, and the persisted `observability`/`sandbox`/`session`/`channels`/`memoryHealth`/`runsHealth` metadata). A running trace is accepted only when its PID is alive and equals the PID launchd currently owns. Otherwise `ok` is false, exit is `1`, `pid` is `null`, health is `stopped`, cached `running` channels become `{kind:"stopped",reason:"instance is not running"}`, and stale transport/endpoint facts are omitted. |
 | `logs` | `--config <path>` | Target a non-default config. |
 | `logs` | `--env-file <path>` | Resolve the target with the managed worker's non-default dotenv file. |
 | `logs` | `--follow` / `-f` | Keep streaming new output (`tail -F`). |

@@ -21,7 +21,7 @@ import {
   canonicalBackgroundConfigPath,
   defaultBackgroundDeps,
   forceRestartBackground,
-  maintainLaunchdLogs,
+  maintainLaunchdController,
   managedBackgroundEnvironment,
   resolveInstanceTarget,
   restartBackground,
@@ -54,7 +54,6 @@ import type {
 import { readCliConfigSnapshot } from "./first-run-readiness.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { purgeConversationState } from "./sessions.js";
-import { launchdLogPathsForConfig } from "./launchd-logs.js";
 import { deriveLaunchdLabel, launchdPathsFor } from "./launchd.js";
 import { waitForManagedRuntimePublication } from "./managed-runtime-publication.js";
 import * as ui from "./ui.js";
@@ -409,16 +408,97 @@ export async function runLaunchdLogMaintenanceCommand(
 ): Promise<number> {
   const guard = requireDarwin("scheduled log maintenance");
   if (guard !== undefined) return guard;
-  if (args.configPath === undefined) {
-    process.stderr.write(ui.errorLine("Managed launchd log maintenance requires its pinned config path."));
+  if (args.configPath === undefined || args.controllerCliPath === undefined
+    || args.agentCwd === undefined || args.agentPath === undefined) {
+    process.stderr.write(ui.errorLine("Managed launchd recovery requires its pinned config, controller CLI, agent cwd, and worker PATH."));
     return 2;
   }
-  const configPath = await canonicalBackgroundConfigPath(process.cwd(), args.configPath);
-  const paths = await launchdLogPathsForConfig(configPath);
-  return await maintainLaunchdLogs({
-    label: deriveLaunchdLabel(configPath),
-    paths,
-  }, deps);
+  const agentCwd = resolve(args.agentCwd);
+  const configPath = await canonicalBackgroundConfigPath(agentCwd, args.configPath);
+  let controllerEnvironment: Record<string, string | undefined>;
+  try {
+    controllerEnvironment = await loadDurableBackgroundEnvironment({
+      cwd: agentCwd,
+      ...(args.envFile === undefined ? {} : { envFile: args.envFile }),
+      operationalEnvironment: managedBackgroundEnvironment({
+        ...process.env,
+        // The helper itself keeps a closed system PATH. Rehydrate the worker's
+        // original non-secret PATH from its private launchd arguments so a
+        // healthy login pass is stable and recovery preserves tool discovery.
+        PATH: args.agentPath,
+      }),
+    });
+  } catch (error) {
+    process.stderr.write(ui.errorLine(
+      `Scheduled recovery could not reconstruct the managed worker environment: ${error instanceof Error ? error.message : String(error)}`,
+    ));
+    return 1;
+  }
+  const preflight = await ensureStartable(args, controllerEnvironment, { cwd: agentCwd, configPath });
+  if (!preflight.ok) {
+    printPreflightFailure(preflight);
+    return preflight.code;
+  }
+
+  let sourceAvailable: boolean;
+  try {
+    sourceAvailable = await controllerCliAvailable(args.controllerCliPath);
+  } catch (error) {
+    process.stderr.write(ui.errorLine(
+      `Scheduled recovery could not inspect the original controller CLI: ${error instanceof Error ? error.message : String(error)}`,
+    ));
+    return 1;
+  }
+  const controllerCliPath = sourceAvailable
+    ? resolve(args.controllerCliPath)
+    : fileURLToPath(new URL("./cli.js", import.meta.url));
+  let target = await resolveInstanceTarget({
+    args: {
+      configPath,
+      ...(args.envFile === undefined ? {} : { envFile: args.envFile }),
+    },
+    env: controllerEnvironment,
+    cwd: agentCwd,
+    cliPath: controllerCliPath,
+  });
+  target = {
+    ...target,
+    // A fallback recovery installs from the helper closure for this run, but
+    // the durable helper must keep probing the original source. Otherwise one
+    // missing checkout would permanently pin all later recoveries to the old
+    // private closure even after the source reappeared.
+    controllerCliPath: resolve(args.controllerCliPath),
+  };
+  try {
+    target = {
+      ...target,
+      expectedSnapshot: await captureBackgroundSnapshot({
+        cwd: target.cwd,
+        configPath: target.configPath,
+        ...(target.envFile === undefined ? {} : { envFile: target.envFile }),
+        env: controllerEnvironment,
+      }),
+    };
+  } catch (error) {
+    process.stderr.write(ui.errorLine(
+      `Scheduled recovery could not prove the durable background snapshot: ${error instanceof Error ? error.message : String(error)}`,
+    ));
+    return 1;
+  }
+  return await maintainLaunchdController(target, deps, { sourceAvailable });
+}
+
+async function controllerCliAvailable(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    const code = typeof error === "object" && error !== null
+      ? (error as { readonly code?: unknown }).code
+      : undefined;
+    if (code === "ENOENT" || code === "ENOTDIR") return false;
+    throw error;
+  }
 }
 
 /**

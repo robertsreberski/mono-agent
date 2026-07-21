@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 
+export const MANAGED_BACKGROUND_WORKER_ENV = "MONO_AGENT_MANAGED_WORKER";
+
 /**
  * Non-secret host variables that a managed worker may inherit durably.
  *
