@@ -676,6 +676,23 @@ Returns:
 
 `capabilitiesUsed` is the per-call complement to `runtimeCapabilities()`. Tristate fields use `null` to mean "this provider can't tell" — distinct from `false` ("definitely off"). It's also emitted as a `capabilities_resolved` event near the end of the run, so observers can capture it without inspecting the result object.
 
+Successful provider requests may also emit exact context telemetry through
+`onEvent` and `result.events`:
+
+- `context_usage` is one provider-counted request snapshot, never the run's
+  aggregate processed-token total. Pi emits it at each successful assistant
+  `message_end`; Codex uses `thread/tokenUsage/updated.tokenUsage.last`; direct
+  OpenCode requires a completed assistant message with native `tokens.total`.
+  Each event identifies the measured model and includes `contextWindow` only
+  when the provider's own model metadata supplied it. The Claude bridges do not
+  currently emit this event.
+- `context_compaction` is a lifecycle event with a stable `operationId`,
+  `status` (`running`, `succeeded`, `skipped`, or `failed`), `sdk`, `trigger`,
+  `timestamp`, and optional safe reason/model/count fields. Pi drives and emits
+  its own lifecycle; Codex and OpenCode normalize their native notifications and
+  suppress deprecated duplicate notifications. Pi's before/after counts are
+  estimates and explicitly set `tokenCountsExact: false`.
+
 ### Built-in tools
 
 The agent kernel's managed tools are `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `NodeRepl`, `WebFetch`, and `WebSearch`. `NodeRepl({ code })` is backed by one lazily started Node.js REPL child per run. You select them via `allowedTools`. Tool implementations honor:
@@ -851,6 +868,10 @@ correction, while learned evidence may still lower it.
 Runs report `context_compaction_applied: true` (fired), `false` (enabled but not needed),
 or `null` (disabled), plus request-estimate, fixed-overhead, reactive-attempted,
 tokens-after, and reduced diagnostics.
+Every attempt also emits one `context_compaction` start and exactly one terminal
+lifecycle event. A successful retry then emits a new exact `context_usage`
+snapshot, allowing consumers to discard the pre-compaction value rather than
+guessing the resulting occupancy from the compaction estimate.
 Persistent overflow is classified as `context_limit`, allowing the fallback router to
 try the next configured model. The other backends manage their windows per their own behavior.
 (`docs/reference/feature-registry.md` is the source of truth for this row.)

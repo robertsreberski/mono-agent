@@ -11,6 +11,7 @@ allowBuilds:
 # Security floor for transitive Starlight/Astro YAML parsing.
 overrides:
   js-yaml: 4.3.0
+  svgo: 4.0.2
 
 # Pre-approve native/postinstall build scripts so install is non-interactive.
 onlyBuiltDependencies:
