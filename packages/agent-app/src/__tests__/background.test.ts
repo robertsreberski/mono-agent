@@ -14,6 +14,7 @@ import {
   ensureBackgroundReady,
   defaultBackgroundDeps,
   forceRestartBackground,
+  maintainLaunchdController,
   maintainLaunchdLogs,
   managedLaunchdLogMaintenanceEnvironment,
   resolveInstanceTarget,
@@ -25,7 +26,9 @@ import {
 } from "../background.js";
 import type { BackgroundDeps, InstanceTarget } from "../background.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
+import { encodeBackgroundSnapshot } from "../background-snapshot.js";
 import type { LaunchdLogInspection } from "../launchd-logs.js";
+import { buildLaunchdProgramArguments } from "../launchd.js";
 import type { LaunchctlRunner } from "../launchd.js";
 import type { ProcessIncarnation } from "../process-incarnation.js";
 import type { OwnerPrivateLock } from "../owner-private-lock.js";
@@ -117,6 +120,38 @@ function makeSnapshot(target: InstanceTarget, suffix = "approved"): BackgroundSn
   };
 }
 
+function managedLaunchctlPrint(
+  target: InstanceTarget,
+  overrides: {
+    readonly cliPath?: string;
+    readonly launchProof?: string;
+    readonly snapshot?: BackgroundSnapshot;
+    readonly pid?: number;
+  } = {},
+): string {
+  const args = buildLaunchdProgramArguments({
+    label: target.label,
+    nodePath: target.nodePath,
+    cliPath: overrides.cliPath ?? "/home/u/.mono-agent/runtimes/agent-app/old/dist/cli.js",
+    configPath: target.configPath,
+    cwd: target.cwd,
+    ...(target.envFile === undefined ? {} : { envFile: target.envFile }),
+    expectedBackgroundSnapshot: encodeBackgroundSnapshot(overrides.snapshot ?? target.expectedSnapshot!),
+    expectedManagedRuntimeLaunch: overrides.launchProof ?? "old-runtime-proof",
+    stdoutPath: target.paths.stdoutPath,
+    stderrPath: target.paths.stderrPath,
+    environment: target.environment,
+  });
+  return `gui/501/${target.label} = {\n`
+    + `\tpath = ${target.paths.plistPath}\n`
+    + "\tprogram = /usr/bin/env\n"
+    + `\targuments = {\n${args.map((argument) => `\t\t${argument}`).join("\n")}\n\t}\n`
+    + `\tworking directory = ${target.cwd}\n`
+    + `\tstdout path = ${target.paths.stdoutPath}\n`
+    + `\tstderr path = ${target.paths.stderrPath}\n`
+    + `\tpid = ${String(overrides.pid ?? 4321)}\n}\n`;
+}
+
 interface RunnerOptions {
   readonly loaded: boolean;
   readonly initialPid?: number;
@@ -133,6 +168,7 @@ interface RunnerOptions {
   readonly maintenanceLoadsAfterBootstrap?: boolean;
   readonly maintenanceBootoutCode?: number;
   readonly maintenanceBootoutKeepsLoaded?: boolean;
+  readonly mainPrintOutput?: string;
 }
 
 type StatefulRunner = LaunchctlRunner & {
@@ -158,10 +194,15 @@ function makeRunner(opts: RunnerOptions): { runner: StatefulRunner; calls: strin
     calls.push([...args]);
     switch (args[0]) {
       case "print": {
-        const state = stateForLabel(labelFromTarget(args[1]));
+        const label = labelFromTarget(args[1]);
+        const state = stateForLabel(label);
+        const detailed = label === maintenanceLabel ? undefined : opts.mainPrintOutput;
+        const stdout = detailed === undefined
+          ? state.loaded && state.pid !== undefined ? `pid = ${state.pid}\n` : ""
+          : detailed.replace(/^\s*pid\s*=\s*\d+\s*$/mu, `\tpid = ${String(state.pid ?? 0)}`);
         return {
           code: state.loaded ? 0 : 113,
-          stdout: state.loaded && state.pid !== undefined ? `pid = ${state.pid}\n` : "",
+          stdout: state.loaded ? stdout : "",
           stderr: "",
         };
       }
@@ -230,6 +271,7 @@ function makeHarness(opts: {
   list: BackgroundDeps["listTraceSources"];
   listRecordedRuns?: BackgroundDeps["listRecordedRuns"];
   isAlive?: (pid: number) => boolean;
+  currentPid?: () => number;
   inspectLaunchdLogs?: BackgroundDeps["inspectLaunchdLogs"];
   rotateStoppedLaunchdLogs?: BackgroundDeps["rotateStoppedLaunchdLogs"];
   readLaunchdLogMaintenanceIntent?: BackgroundDeps["readLaunchdLogMaintenanceIntent"];
@@ -240,6 +282,8 @@ function makeHarness(opts: {
   clearLaunchdLogMaintenanceIntent?: BackgroundDeps["clearLaunchdLogMaintenanceIntent"];
   verifyLaunchdPlist?: BackgroundDeps["verifyLaunchdPlist"];
   ensureManagedRuntime?: BackgroundDeps["ensureManagedRuntime"];
+  inspectManagedRuntimeSourceIdentity?: BackgroundDeps["inspectManagedRuntimeSourceIdentity"];
+  verifyManagedRuntimeLaunch?: BackgroundDeps["verifyManagedRuntimeLaunch"];
   resolveManagedRuntimePackages?: NonNullable<BackgroundDeps["resolveManagedRuntimePackages"]>;
   acquireLifecycleLock?: BackgroundDeps["acquireLifecycleLock"];
   acquireRuntimePublicationBarrier?: NonNullable<BackgroundDeps["acquireRuntimePublicationBarrier"]>;
@@ -263,6 +307,7 @@ function makeHarness(opts: {
   const deps: BackgroundDeps = {
     runner: opts.runner,
     getuid: () => 501,
+    currentPid: opts.currentPid ?? (() => 9001),
     now: opts.now ?? (() => clock),
     sleep: opts.sleep ?? (async (ms) => {
       clock += ms;
@@ -311,6 +356,16 @@ function makeHarness(opts: {
       nodeAbi: "137",
       verificationMode: "fast-reuse",
       launchProof: "verified-runtime-launch-proof",
+    })),
+    inspectManagedRuntimeSourceIdentity: opts.inspectManagedRuntimeSourceIdentity ?? (async () => ({
+      packageVersion: "0.8.0",
+      cliSha256: "a".repeat(64),
+    })),
+    verifyManagedRuntimeLaunch: opts.verifyManagedRuntimeLaunch ?? (async () => ({
+      installRoot: "/home/u/.mono-agent/runtimes/agent-app/verified",
+      packageVersion: "0.8.0",
+      cliSha256: "a".repeat(64),
+      provenanceDetail: "verified runtime",
     })),
     ...(opts.resolveManagedRuntimePackages === undefined
       ? {}
@@ -616,7 +671,10 @@ describe("startBackground", () => {
     expect(harness.written[1]?.data).toContain("<key>StartInterval</key>");
     expect(harness.written[1]?.data).toContain("<string>/dev/null</string>");
     expect(harness.written[1]?.data).toContain("<string>/home/u/.mono-agent</string>");
-    expect(harness.written[1]?.data).not.toContain("<string>/work/demo</string>");
+    expect(harness.written[1]?.data).toContain("<string>--agent-cwd</string>");
+    expect(harness.written[1]?.data).toContain("<string>/work/demo</string>");
+    expect(harness.written[1]?.data).toContain("<string>--agent-path</string>");
+    expect(harness.written[1]?.data).toContain("<string>/usr/bin:/bin</string>");
     expect(harness.written[1]?.data).not.toContain("--expected-background-snapshot");
     const bootstraps = calls.filter((call) => call[0] === "bootstrap").map((call) => call[2]);
     expect(bootstraps[0]).toContain("com.mono-agent-maintenance.");
@@ -1306,6 +1364,226 @@ describe("LaunchAgent private filesystem boundary", () => {
     } finally {
       await rm(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe("maintainLaunchdController", () => {
+  it("upgrades a drifted worker while the old PID serves and preserves the running helper", async () => {
+    const target = makeTarget({ controllerCliPath: "/checkout/packages/agent-app/dist/cli.js" });
+    const priorSnapshot = makeSnapshot(target, "prior");
+    const { runner, calls } = makeRunner({
+      loaded: true,
+      initialPid: 4321,
+      bootstrapPid: 5432,
+      maintenanceLoaded: true,
+      maintenancePid: 9001,
+      mainPrintOutput: managedLaunchctlPrint(target, { snapshot: priorSnapshot }),
+    });
+    let installedWhileOldWorkerServed = false;
+    const harness = makeHarness({
+      runner,
+      currentPid: () => 9001,
+      list: listReturning(() => calls.some((call) =>
+        call[0] === "bootstrap" && call[2] === target.paths.plistPath)
+        ? [makeSource(target, { pid: 5432 })]
+        : [makeSource(target, { pid: 4321, metadata: { backgroundSnapshot: priorSnapshot } })]),
+      inspectManagedRuntimeSourceIdentity: async () => ({
+        packageVersion: "0.14.0",
+        cliSha256: "b".repeat(64),
+      }),
+      verifyManagedRuntimeLaunch: async () => ({
+        installRoot: "/home/u/.mono-agent/runtimes/agent-app/old",
+        packageVersion: "0.13.0",
+        cliSha256: "a".repeat(64),
+        provenanceDetail: "old runtime",
+      }),
+      ensureManagedRuntime: async (input) => {
+        installedWhileOldWorkerServed = runner.isLoaded(target.label) && runner.isAlive(4321);
+        return {
+          cliPath: "/home/u/.mono-agent/runtimes/agent-app/new/dist/cli.js",
+          nodePath: input.nodePath,
+          installRoot: "/home/u/.mono-agent/runtimes/agent-app/new",
+          packageVersion: "0.14.0",
+          cliSha256: "b".repeat(64),
+          nodeAbi: "137",
+          verificationMode: "installed",
+          launchProof: "new-runtime-proof",
+        };
+      },
+    });
+
+    expect(await maintainLaunchdController(target, harness.deps, {
+      sourceAvailable: true,
+      controlPoll: POLL,
+      readinessPoll: POLL,
+    })).toBe(0);
+    expect(installedWhileOldWorkerServed).toBe(true);
+    expect(harness.written.map(({ path }) => path)).toEqual([
+      target.paths.plistPath,
+      "/home/u/Library/LaunchAgents/com.mono-agent-maintenance.demo-0a1b2c3d.plist",
+    ]);
+    const mutations = calls.filter((call) => call[0] === "bootout" || call[0] === "bootstrap");
+    expect(mutations.some((call) => call.join(" ").includes("com.mono-agent-maintenance"))).toBe(false);
+    expect(runner.isLoaded("com.mono-agent-maintenance.demo-0a1b2c3d")).toBe(true);
+    expect(runner.isLoaded(target.label)).toBe(true);
+    expect(harness.written[1]?.data).toContain("/checkout/packages/agent-app/dist/cli.js");
+  });
+
+  it("keeps both definitions and the helper when recovered worker readiness fails", async () => {
+    const target = makeTarget({ controllerCliPath: "/checkout/packages/agent-app/dist/cli.js" });
+    const { runner, calls } = makeRunner({
+      loaded: true,
+      initialPid: 4321,
+      bootstrapPid: 5432,
+      maintenanceLoaded: true,
+      maintenancePid: 9001,
+      mainPrintOutput: managedLaunchctlPrint(target),
+    });
+    const harness = makeHarness({
+      runner,
+      currentPid: () => 9001,
+      list: listReturning(() => [makeSource(target, { pid: 4321 })]),
+      inspectManagedRuntimeSourceIdentity: async () => ({
+        packageVersion: "0.14.0",
+        cliSha256: "b".repeat(64),
+      }),
+      verifyManagedRuntimeLaunch: async () => ({
+        installRoot: "/home/u/.mono-agent/runtimes/agent-app/old",
+        packageVersion: "0.13.0",
+        cliSha256: "a".repeat(64),
+        provenanceDetail: "old runtime",
+      }),
+    });
+
+    expect(await maintainLaunchdController(target, harness.deps, {
+      sourceAvailable: true,
+      controlPoll: { timeoutMs: 300, intervalMs: 100 },
+      readinessPoll: { timeoutMs: 300, intervalMs: 100 },
+    })).toBe(1);
+    expect(harness.written).toHaveLength(2);
+    expect(harness.removed).toEqual([]);
+    expect(runner.isLoaded("com.mono-agent-maintenance.demo-0a1b2c3d")).toBe(true);
+    expect(runner.isLoaded(target.label)).toBe(false);
+    expect(calls.filter((call) => call[0] === "bootout" && call[1]?.includes(target.label))).toHaveLength(2);
+    expect(harness.err.join(" ")).toContain("scheduled recovery controller remain for retry");
+  });
+
+  it("refuses recovery unless launchd owns the exact helper PID", async () => {
+    const target = makeTarget();
+    const { runner } = makeRunner({
+      loaded: false,
+      maintenanceLoaded: true,
+      maintenancePid: 7777,
+    });
+    let inspected = false;
+    const harness = makeHarness({
+      runner,
+      currentPid: () => 9001,
+      list: listReturning(() => []),
+      inspectManagedRuntimeSourceIdentity: async () => {
+        inspected = true;
+        return { packageVersion: "0.14.0", cliSha256: "b".repeat(64) };
+      },
+    });
+
+    expect(await maintainLaunchdController(target, harness.deps, { sourceAvailable: true })).toBe(1);
+    expect(inspected).toBe(false);
+    expect(harness.err.join(" ")).toContain("authenticate the launchd-owned recovery controller");
+  });
+
+  it("does not downgrade a healthy worker when the original source CLI is unavailable", async () => {
+    const target = makeTarget({
+      cliPath: "/home/u/.mono-agent/runtimes/agent-app/helper/dist/cli.js",
+      controllerCliPath: "/home/u/.mono-agent/runtimes/agent-app/helper/dist/cli.js",
+    });
+    const { runner, calls } = makeRunner({
+      loaded: true,
+      initialPid: 4321,
+      maintenanceLoaded: true,
+      maintenancePid: 9001,
+      mainPrintOutput: managedLaunchctlPrint(target),
+    });
+    let installs = 0;
+    const harness = makeHarness({
+      runner,
+      currentPid: () => 9001,
+      list: listReturning(() => [makeSource(target, { pid: 4321 })]),
+      inspectManagedRuntimeSourceIdentity: async () => ({
+        packageVersion: "0.12.0",
+        cliSha256: "c".repeat(64),
+      }),
+      verifyManagedRuntimeLaunch: async () => ({
+        installRoot: "/home/u/.mono-agent/runtimes/agent-app/current",
+        packageVersion: "0.13.0",
+        cliSha256: "a".repeat(64),
+        provenanceDetail: "current runtime",
+      }),
+      ensureManagedRuntime: async (input) => {
+        installs += 1;
+        return await makeHarness({ runner, list: listReturning(() => []) }).deps.ensureManagedRuntime(input);
+      },
+    });
+
+    expect(await maintainLaunchdController(target, harness.deps, { sourceAvailable: false })).toBe(0);
+    expect(installs).toBe(0);
+    expect(calls.some((call) => call[0] === "bootout" || call[0] === "bootstrap")).toBe(false);
+  });
+
+  it("recovers snapshot drift from the private helper closure when source disappeared", async () => {
+    const helperCli = "/home/u/.mono-agent/runtimes/agent-app/helper/dist/cli.js";
+    const originalControllerCli = "/work/source/packages/agent-app/dist/cli.js";
+    const target = makeTarget({ cliPath: helperCli, controllerCliPath: originalControllerCli });
+    const priorSnapshot = makeSnapshot(target, "prior");
+    const { runner, calls } = makeRunner({
+      loaded: true,
+      initialPid: 4321,
+      bootstrapPid: 5432,
+      maintenanceLoaded: true,
+      maintenancePid: 9001,
+      mainPrintOutput: managedLaunchctlPrint(target, { snapshot: priorSnapshot }),
+    });
+    let installationInput: string | undefined;
+    const harness = makeHarness({
+      runner,
+      currentPid: () => 9001,
+      list: listReturning(() => calls.some((call) =>
+        call[0] === "bootstrap" && call[2] === target.paths.plistPath)
+        ? [makeSource(target, { pid: 5432 })]
+        : [makeSource(target, { pid: 4321, metadata: { backgroundSnapshot: priorSnapshot } })]),
+      inspectManagedRuntimeSourceIdentity: async () => ({
+        packageVersion: "0.12.0",
+        cliSha256: "c".repeat(64),
+      }),
+      verifyManagedRuntimeLaunch: async () => ({
+        installRoot: "/home/u/.mono-agent/runtimes/agent-app/current",
+        packageVersion: "0.13.0",
+        cliSha256: "a".repeat(64),
+        provenanceDetail: "current runtime",
+      }),
+      ensureManagedRuntime: async (input) => {
+        installationInput = input.currentCliPath;
+        return {
+          cliPath: helperCli,
+          nodePath: input.nodePath,
+          installRoot: "/home/u/.mono-agent/runtimes/agent-app/helper",
+          packageVersion: "0.12.0",
+          cliSha256: "c".repeat(64),
+          nodeAbi: "137",
+          verificationMode: "fast-reuse",
+          launchProof: "helper-runtime-proof",
+        };
+      },
+    });
+
+    expect(await maintainLaunchdController(target, harness.deps, {
+      sourceAvailable: false,
+      controlPoll: POLL,
+      readinessPoll: POLL,
+    })).toBe(0);
+    expect(installationInput).toBe(helperCli);
+    expect(harness.err.join(" ")).toContain("without claiming an upgrade");
+    expect(harness.written[1]?.data).toContain(`<string>${originalControllerCli}</string>`);
+    expect(runner.isLoaded(target.label)).toBe(true);
   });
 });
 
@@ -2194,6 +2472,45 @@ describe("statusBackground", () => {
     expect(parsed.others).toEqual([]);
   });
 
+  it("makes launchd authoritative and removes cached live channel facts when the worker is inactive", async () => {
+    const { runner } = makeRunner({ loaded: false });
+    const target = makeTarget();
+    const cached = makeSource(target, {
+      pid: 4321,
+      transports: ["http://127.0.0.1:9999"],
+      metadata: {
+        reason: "startup-complete",
+        channels: {
+          tui: { kind: "running", baseUrl: "http://127.0.0.1:9999" },
+          webhook: { kind: "running", invokeUrls: { event: "http://127.0.0.1:9998/hook" } },
+          slack: { kind: "waiting_for_config", reason: "Missing appToken" },
+        },
+      },
+    });
+    const harness = makeHarness({ runner, list: listReturning(() => [cached]) });
+
+    expect(await statusBackground(target, harness.deps, { json: true })).toBe(1);
+    const parsed = JSON.parse(harness.out.join("")) as {
+      readonly ok: boolean;
+      readonly instance: Record<string, unknown> & {
+        readonly pid: number | null;
+        readonly health: string;
+        readonly channels: Record<string, unknown>;
+      };
+    };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.instance.pid).toBeNull();
+    expect(parsed.instance.health).toBe("stopped");
+    expect(parsed.instance).not.toHaveProperty("transports");
+    expect(parsed.instance.channels).toEqual({
+      tui: { kind: "stopped", reason: "instance is not running" },
+      webhook: { kind: "stopped", reason: "instance is not running" },
+      slack: { kind: "waiting_for_config", reason: "Missing appToken" },
+    });
+    expect(JSON.stringify(parsed)).not.toContain("127.0.0.1:9999");
+    expect(JSON.stringify(parsed)).not.toContain("127.0.0.1:9998");
+  });
+
   it.skipIf(process.platform === "win32")("recognizes a legacy trace source recorded through a symlinked config alias", async () => {
     const home = await mkdtemp(join(tmpdir(), "mono-agent-status-alias-"));
     try {
@@ -2416,7 +2733,7 @@ describe("statusBackground", () => {
     expect(stdout).toContain("Recorded runs: 12 total; showing 5 recent (max 50).");
     expect(stdout).toContain("Last runs: run-live running 5m ago");
     expect(stdout).toContain("Recent status counts: running=1, succeeded=0, failed=2, cancelled=1, interrupted=1.");
-    expect(stdout).toContain("[WARN] Running summaries while process is gone: run-live running 5m ago.");
+    expect(stdout).not.toContain("Running summaries while process is gone");
     expect(stdout).toContain("Usage limit [usage_limit, 1 recent]");
     expect(stdout).toContain("Process death [process_death, 1 recent]");
     expect(stdout).toContain("Cancelled [cancelled, 1 recent]");

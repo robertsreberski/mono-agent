@@ -76,6 +76,12 @@ export interface ParsedCliArgs {
   /** Non-flag arguments (e.g. `presets show <id>`). */
   readonly positionals: readonly string[];
   readonly envFile?: string;
+  /** Internal recovery-controller source CLI; never a public option. */
+  readonly controllerCliPath?: string;
+  /** Internal recovery-controller consumer cwd; never a public option. */
+  readonly agentCwd?: string;
+  /** Internal recovery-controller worker PATH; never a public option. */
+  readonly agentPath?: string;
   /** Internal owner-private launchd transport; never a public start option. */
   readonly expectedBackgroundSnapshot?: string;
   /** Internal finalized-runtime proof; never a public start option. */
@@ -199,14 +205,11 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     command === "audit-runs" ? "audit" : command === "metrics" ? "report" : undefined;
   if (
     cmd === INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND
-    && !(
-      rest.length === 2
-      && rest[0] === "--config"
-      && rest[1] !== undefined
-      && !rest[1].startsWith("--")
-    )
+    && !isInternalLaunchdControllerArguments(rest)
   ) {
-    throw new Error("The internal launchd log maintenance command accepts only --config <path> and requires it.");
+    throw new Error(
+      "The internal launchd recovery command requires its exact config, controller CLI, agent cwd, worker PATH, and optional env-file arguments.",
+    );
   }
   const isLogs = cmd === "logs" || (cmd === "web" && rest[0] === "logs");
 
@@ -227,6 +230,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let codexAuthMode: CodexLoginMode | undefined;
   const positionals: string[] = [];
   let envFile: string | undefined;
+  let controllerCliPath: string | undefined;
+  let agentCwd: string | undefined;
+  let agentPath: string | undefined;
   let expectedBackgroundSnapshot: string | undefined;
   let expectedManagedRuntimeLaunch: string | undefined;
   let target: InstallSkillTarget | undefined;
@@ -491,6 +497,15 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--env-file":
         envFile = requireValue(rest, ++i, flag);
         break;
+      case "--controller-cli":
+        controllerCliPath = requireValue(rest, ++i, flag);
+        break;
+      case "--agent-cwd":
+        agentCwd = requireValue(rest, ++i, flag);
+        break;
+      case "--agent-path":
+        agentPath = requireValue(rest, ++i, flag);
+        break;
       case "--expected-background-snapshot":
         expectedBackgroundSnapshot = requireValue(rest, ++i, flag);
         break;
@@ -626,6 +641,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (json && !(JSON_CAPABLE_COMMANDS as readonly string[]).includes(cmd)) {
     throw new Error(`--json is not supported for \`mono-agent ${cmd}\`; it is available on ${JSON_CAPABLE_COMMANDS_DISPLAY}.`);
   }
+  if ((controllerCliPath !== undefined || agentCwd !== undefined || agentPath !== undefined)
+    && cmd !== INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND) {
+    throw new Error("--controller-cli, --agent-cwd, and --agent-path are reserved for the managed launchd recovery controller.");
+  }
   // `install-skill` exposes JSON only for its read-only drift check.
   if (json && cmd === "install-skill" && !(project && check)) {
     throw new Error("--json is only supported for `mono-agent install-skill --project --check`.");
@@ -658,6 +677,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(codexAuthMode === undefined ? {} : { codexAuthMode }),
     positionals,
     ...(envFile === undefined ? {} : { envFile }),
+    ...(controllerCliPath === undefined ? {} : { controllerCliPath }),
+    ...(agentCwd === undefined ? {} : { agentCwd }),
+    ...(agentPath === undefined ? {} : { agentPath }),
     ...(expectedBackgroundSnapshot === undefined ? {} : { expectedBackgroundSnapshot }),
     ...(expectedManagedRuntimeLaunch === undefined ? {} : { expectedManagedRuntimeLaunch }),
     ...(target === undefined ? {} : { target }),
@@ -696,6 +718,22 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(port === undefined ? {} : { port }),
     ...(loopback ? { loopback } : {}),
   };
+}
+
+function isInternalLaunchdControllerArguments(args: readonly string[]): boolean {
+  const required = ["--config", "--controller-cli", "--agent-cwd", "--agent-path"] as const;
+  let index = 0;
+  for (const flag of required) {
+    if (args[index] !== flag
+      || args[index + 1] === undefined
+      || args[index + 1]!.startsWith("--")) return false;
+    index += 2;
+  }
+  if (index === args.length) return true;
+  return args[index] === "--env-file"
+    && args[index + 1] !== undefined
+    && !args[index + 1]!.startsWith("--")
+    && index + 2 === args.length;
 }
 
 /**

@@ -18,6 +18,7 @@ import {
   launchdMaintenancePathsFor,
   launchdPathsFor,
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
+  parseLaunchdManagedWorkerDefinition,
   parseLaunchdServicePid,
   serviceTarget,
 } from "../launchd.js";
@@ -46,6 +47,9 @@ function maintenanceInput(overrides: Partial<MaintenancePlistInput> = {}): Maint
     cliPath: "/opt/app/dist/cli.js",
     configPath: "/work/demo/mono-agent.config.json",
     cwd: "/work/demo",
+    controllerCliPath: "/checkout/packages/agent-app/dist/cli.js",
+    agentCwd: "/work/demo",
+    agentPath: "/custom/bin:/usr/bin:/bin",
     environment: {
       PATH: "/usr/bin:/bin",
       [MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV]: "1",
@@ -285,11 +289,17 @@ describe("buildLaunchdMaintenancePlistXml", () => {
       "__launchd-log-maintenance",
       "--config",
       "/work/demo/mono-agent.config.json",
+      "--controller-cli",
+      "/checkout/packages/agent-app/dist/cli.js",
+      "--agent-cwd",
+      "/work/demo",
+      "--agent-path",
+      "/custom/bin:/usr/bin:/bin",
     ]);
+    expect(xml).toContain("<key>RunAtLoad</key>\n  <true/>");
     expect(xml).toContain("<key>StartInterval</key>\n  <integer>300</integer>");
     expect(xml).toContain("<key>StandardOutPath</key>\n  <string>/dev/null</string>");
     expect(xml).toContain("<key>StandardErrorPath</key>\n  <string>/dev/null</string>");
-    expect(xml).not.toContain("<key>RunAtLoad</key>");
     expect(xml).not.toContain("<key>KeepAlive</key>");
     expect(xml).not.toContain("--env-file");
     expect(xml).not.toContain("--expected-background-snapshot");
@@ -312,6 +322,53 @@ describe("parseLaunchdServicePid", () => {
     expect(parseLaunchdServicePid("state = waiting\n")).toBeUndefined();
     expect(parseLaunchdServicePid("pid = 0\n")).toBeUndefined();
     expect(parseLaunchdServicePid("note = pid = 999\n")).toBeUndefined();
+  });
+});
+
+describe("parseLaunchdManagedWorkerDefinition", () => {
+  function launchctlPrint(input: PlistInput): string {
+    const args = buildLaunchdProgramArguments(input).map((argument) => `\t\t${argument}`).join("\n");
+    return `gui/501/${input.label} = {\n`
+      + `\tpath = /home/u/Library/LaunchAgents/${input.label}.plist\n`
+      + "\tprogram = /usr/bin/env\n"
+      + `\targuments = {\n${args}\n\t}\n`
+      + `\tworking directory = ${input.cwd}\n`
+      + `\tstdout path = ${input.stdoutPath}\n`
+      + `\tstderr path = ${input.stderrPath}\n`
+      + "\tpid = 4321\n}\n";
+  }
+
+  it("strictly reads the exact loaded managed-worker definition", () => {
+    const input = plistInput({
+      envFile: "/work/demo/.env.production",
+      environment: { MONO_AGENT_MANAGED_WORKER: "1", PATH: "/usr/bin:/bin" },
+    });
+    expect(parseLaunchdManagedWorkerDefinition(launchctlPrint(input))).toEqual({
+      plistPath: `/home/u/Library/LaunchAgents/${input.label}.plist`,
+      nodePath: input.nodePath,
+      cliPath: input.cliPath,
+      configPath: input.configPath,
+      cwd: input.cwd,
+      envFile: input.envFile,
+      expectedBackgroundSnapshot: input.expectedBackgroundSnapshot,
+      expectedManagedRuntimeLaunch: input.expectedManagedRuntimeLaunch,
+      stdoutPath: input.stdoutPath,
+      stderrPath: input.stderrPath,
+      environment: input.environment,
+    });
+  });
+
+  it("rejects loaded definitions missing the runtime proof or carrying an unknown environment", () => {
+    const input = plistInput({
+      environment: { MONO_AGENT_MANAGED_WORKER: "1", PATH: "/usr/bin:/bin" },
+    });
+    const valid = launchctlPrint(input);
+    expect(parseLaunchdManagedWorkerDefinition(
+      valid.replace(/\n\t\t--expected-managed-runtime-launch\n\t\tfinalized-runtime-proof/u, ""),
+    )).toBeUndefined();
+    expect(parseLaunchdManagedWorkerDefinition(
+      valid.replace("\t\tPATH=/usr/bin:/bin", "\t\tPRIVATE_TOKEN=secret\n\t\tPATH=/usr/bin:/bin"),
+    )).toBeUndefined();
   });
 });
 

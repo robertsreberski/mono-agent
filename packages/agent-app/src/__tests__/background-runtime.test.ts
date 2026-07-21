@@ -10,6 +10,7 @@ import {
   attestManagedBackgroundRuntime,
   defaultManagedBackgroundRuntimeDeps,
   ensureManagedBackgroundRuntime as ensureManagedBackgroundRuntimeImpl,
+  inspectManagedRuntimeSourceIdentity,
   MANAGED_BACKGROUND_WORKER_ENV,
   sanitizeManagedBackgroundWorkerEnvironment,
   verifyManagedRuntimeLaunch,
@@ -44,6 +45,14 @@ function incarnation(bootSessionId: string, processStartId: string): ProcessInca
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
+
+it("inspects source version and CLI digest without executing source bytes", async () => {
+  const source = await fixturePackage("1.2.3");
+  await expect(inspectManagedRuntimeSourceIdentity(source.cliPath)).resolves.toEqual({
+    packageVersion: "1.2.3",
+    cliSha256: createHash("sha256").update(source.bytes).digest("hex"),
+  });
 });
 
 async function fixturePackage(version = "9.8.7"): Promise<{ root: string; cliPath: string; bytes: string }> {
@@ -195,6 +204,8 @@ describe("ensureManagedBackgroundRuntime", () => {
       homeDir,
     })).resolves.toEqual({
       installRoot: runtime.installRoot,
+      packageVersion: runtime.packageVersion,
+      cliSha256: runtime.cliSha256,
       provenanceDetail: expect.stringContaining(`Runtime provenance: managed closure ${runtime.cliSha256}-`),
     });
   });
@@ -991,6 +1002,49 @@ describe("ensureManagedBackgroundRuntime", () => {
 
     unblock();
     await expect(first).resolves.toMatchObject({ packageVersion: "9.8.7" });
+  });
+
+  it("coalesces behind a shared installation that takes longer than the former 30 second wait", async () => {
+    const source = await fixturePackage();
+    const homeDir = await homeFixture();
+    let unblock!: () => void;
+    let started!: () => void;
+    const installStarted = new Promise<void>((resolvePromise) => { started = resolvePromise; });
+    const holdInstall = new Promise<void>((resolvePromise) => { unblock = resolvePromise; });
+    const first = ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    }, fakeInstallerDeps(async (input) => {
+      started();
+      await holdInstall;
+      await materializeInstalledPackage(input, await readFile(source.cliPath));
+    }));
+    await installStarted;
+
+    let elapsed = 0;
+    let now = 1_000_000;
+    let secondInstalls = 0;
+    const secondBase = fakeInstallerDeps(async () => { secondInstalls += 1; });
+    const second = ensureManagedBackgroundRuntime({
+      currentCliPath: source.cliPath,
+      nodePath: process.execPath,
+      homeDir,
+    }, {
+      ...secondBase,
+      now: () => now,
+      sleep: async (ms) => {
+        elapsed += ms;
+        now += ms;
+        if (elapsed >= 90_000) unblock();
+        await Promise.resolve();
+      },
+    });
+
+    await expect(first).resolves.toMatchObject({ verificationMode: "installed" });
+    await expect(second).resolves.toMatchObject({ verificationMode: "fast-reuse" });
+    expect(elapsed).toBeGreaterThanOrEqual(90_000);
+    expect(secondInstalls).toBe(0);
   });
 
   it("repairs an install lock whose PID was reused by a different process incarnation", async () => {

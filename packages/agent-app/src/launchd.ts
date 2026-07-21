@@ -1,9 +1,13 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import process from "node:process";
 
 import { accountHomeDirectory } from "./account-home.js";
+import {
+  isBackgroundOperationalEnvName,
+  MANAGED_BACKGROUND_WORKER_ENV,
+} from "./background-environment.js";
 
 /**
  * Thin, side-effect-light helpers around macOS launchd. The `launchctl` runner
@@ -52,9 +56,15 @@ export interface PlistInput {
 export interface MaintenancePlistInput {
   readonly label: string;
   readonly nodePath: string;
+  /** Immutable CLI closure that executes the recovery controller itself. */
   readonly cliPath: string;
   readonly configPath: string;
   readonly cwd: string;
+  /** Original controller CLI used only as managed-runtime installation input. */
+  readonly controllerCliPath: string;
+  readonly agentCwd: string;
+  readonly agentPath: string;
+  readonly envFile?: string;
   /** Deliberately allowlisted, non-secret maintenance environment. */
   readonly environment: Readonly<Record<string, string>>;
   readonly intervalSeconds: number;
@@ -76,6 +86,25 @@ export interface WebPlistInput {
 export interface LaunchdServiceInfo {
   readonly loaded: boolean;
   readonly pid?: number;
+}
+
+export interface LaunchdManagedWorkerDefinition {
+  readonly plistPath: string;
+  readonly nodePath: string;
+  readonly cliPath: string;
+  readonly configPath: string;
+  readonly cwd: string;
+  readonly envFile?: string;
+  readonly expectedBackgroundSnapshot: string;
+  readonly expectedManagedRuntimeLaunch: string;
+  readonly stdoutPath: string;
+  readonly stderrPath: string;
+  readonly environment: Readonly<Record<string, string>>;
+}
+
+export interface LaunchdManagedWorkerInfo extends LaunchdServiceInfo {
+  /** Present only when launchctl exposes the exact current producer shape. */
+  readonly definition?: LaunchdManagedWorkerDefinition;
 }
 
 const LABEL_PREFIX = "com.mono-agent";
@@ -201,7 +230,7 @@ ${argsXml}
 `;
 }
 
-/** Scheduled one-shot rotator definition. It owns no logs and never KeepAlives. */
+/** Scheduled one-shot recovery controller. It owns no logs and never KeepAlives. */
 export function buildLaunchdMaintenancePlistXml(input: MaintenancePlistInput): string {
   if (!Number.isSafeInteger(input.intervalSeconds) || input.intervalSeconds < 1) {
     throw new Error("Launchd maintenance interval must be a positive safe integer.");
@@ -228,6 +257,8 @@ ${argsXml}
   </array>
   <key>WorkingDirectory</key>
   <string>${escapeXml(input.cwd)}</string>
+  <key>RunAtLoad</key>
+  <true/>
   <key>StartInterval</key>
   <integer>${String(input.intervalSeconds)}</integer>
   <key>StandardOutPath</key>
@@ -327,6 +358,13 @@ export function buildLaunchdMaintenanceProgramArguments(
     INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
     "--config",
     input.configPath,
+    "--controller-cli",
+    input.controllerCliPath,
+    "--agent-cwd",
+    input.agentCwd,
+    "--agent-path",
+    input.agentPath,
+    ...(input.envFile === undefined ? [] : ["--env-file", input.envFile]),
   ];
   for (const argument of arguments_) assertControlFree(argument, "launchd maintenance program argument");
   return arguments_;
@@ -436,6 +474,122 @@ export async function launchdServiceInfo(
   if (result.code !== 0) return { loaded: false };
   const pid = parseLaunchdServicePid(result.stdout);
   return pid === undefined ? { loaded: true } : { loaded: true, pid };
+}
+
+/**
+ * Read and strictly parse the definition launchd currently owns. This does not
+ * trust the on-disk plist: launchd can retain an older definition after that
+ * file is replaced, which is exactly the state the recovery controller must
+ * distinguish during upgrades.
+ */
+export async function launchdManagedWorkerInfo(
+  runner: LaunchctlRunner,
+  label: string,
+  uid: number,
+): Promise<LaunchdManagedWorkerInfo> {
+  const result = await runner(["print", serviceTarget(label, uid)]);
+  if (result.code !== 0) return { loaded: false };
+  const pid = parseLaunchdServicePid(result.stdout);
+  const definition = parseLaunchdManagedWorkerDefinition(result.stdout);
+  return {
+    loaded: true,
+    ...(pid === undefined ? {} : { pid }),
+    ...(definition === undefined ? {} : { definition }),
+  };
+}
+
+/** Parse only the exact managed-worker launchctl-print shape emitted here. */
+export function parseLaunchdManagedWorkerDefinition(
+  output: string,
+): LaunchdManagedWorkerDefinition | undefined {
+  const lines = output.endsWith("\n") ? output.slice(0, -1).split("\n") : output.split("\n");
+  const oneValue = (name: string): string | undefined => {
+    const prefix = `\t${name} = `;
+    const matches = lines.filter((line) => line.startsWith(prefix));
+    if (matches.length !== 1) return undefined;
+    const value = matches[0]!.slice(prefix.length);
+    return value.length > 0 && !/[\u0000-\u001f\u007f]/u.test(value) ? value : undefined;
+  };
+  const blockStarts = lines
+    .map((line, index) => line === "\targuments = {" ? index : -1)
+    .filter((index) => index >= 0);
+  if (blockStarts.length !== 1) return undefined;
+  const blockStart = blockStarts[0]!;
+  const blockEnd = lines.indexOf("\t}", blockStart + 1);
+  if (blockEnd <= blockStart + 1) return undefined;
+  const arguments_ = lines.slice(blockStart + 1, blockEnd).map((line) =>
+    line.startsWith("\t\t") ? line.slice(2) : undefined);
+  if (arguments_.some((argument) => argument === undefined
+    || argument.length === 0
+    || /[\u0000-\u001f\u007f]/u.test(argument))) return undefined;
+  const args = arguments_ as string[];
+  if (oneValue("program") !== "/usr/bin/env" || args[0] !== "/usr/bin/env" || args[1] !== "-i") {
+    return undefined;
+  }
+
+  const environment: Record<string, string> = {};
+  const environmentNames: string[] = [];
+  let index = 2;
+  while (index < args.length && /^[A-Za-z_][A-Za-z0-9_]*=/u.test(args[index]!)) {
+    const assignment = args[index]!;
+    const separator = assignment.indexOf("=");
+    const name = assignment.slice(0, separator);
+    if ((!isBackgroundOperationalEnvName(name) && name !== MANAGED_BACKGROUND_WORKER_ENV)
+      || Object.hasOwn(environment, name)) return undefined;
+    environment[name] = assignment.slice(separator + 1);
+    environmentNames.push(name);
+    index += 1;
+  }
+  if (environmentNames.some((name, position) =>
+    position > 0 && compareCodeUnits(environmentNames[position - 1]!, name) > 0)) return undefined;
+  if (environment[MANAGED_BACKGROUND_WORKER_ENV] !== "1" || !environment.PATH) return undefined;
+
+  const nodePath = args[index++];
+  const cliPath = args[index++];
+  if (nodePath === undefined || cliPath === undefined || !isAbsolute(nodePath) || !isAbsolute(cliPath)) {
+    return undefined;
+  }
+  if (args[index++] !== "start" || args[index++] !== "--foreground" || args[index++] !== "--config") {
+    return undefined;
+  }
+  const configPath = args[index++];
+  if (configPath === undefined || !isAbsolute(configPath)) return undefined;
+  let envFile: string | undefined;
+  if (args[index] === "--env-file") {
+    index += 1;
+    envFile = args[index++];
+    if (envFile === undefined || !isAbsolute(envFile)) return undefined;
+  }
+  if (args[index++] !== "--expected-background-snapshot") return undefined;
+  const expectedBackgroundSnapshot = args[index++];
+  if (expectedBackgroundSnapshot === undefined || !/^[A-Za-z0-9_-]+$/u.test(expectedBackgroundSnapshot)) {
+    return undefined;
+  }
+  if (args[index++] !== "--expected-managed-runtime-launch") return undefined;
+  const expectedManagedRuntimeLaunch = args[index++];
+  if (expectedManagedRuntimeLaunch === undefined
+    || !/^[A-Za-z0-9_-]+$/u.test(expectedManagedRuntimeLaunch)
+    || index !== args.length) return undefined;
+
+  const plistPath = oneValue("path");
+  const cwd = oneValue("working directory");
+  const stdoutPath = oneValue("stdout path");
+  const stderrPath = oneValue("stderr path");
+  if (plistPath === undefined || cwd === undefined || stdoutPath === undefined || stderrPath === undefined
+    || ![plistPath, cwd, stdoutPath, stderrPath].every((path) => isAbsolute(path))) return undefined;
+  return {
+    plistPath,
+    nodePath,
+    cliPath,
+    configPath,
+    cwd,
+    ...(envFile === undefined ? {} : { envFile }),
+    expectedBackgroundSnapshot,
+    expectedManagedRuntimeLaunch,
+    stdoutPath,
+    stderrPath,
+    environment,
+  };
 }
 
 /** Parse only launchd's top-level `pid = N` field; never infer a pid from noise. */

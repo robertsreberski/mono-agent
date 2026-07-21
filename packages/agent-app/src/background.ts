@@ -26,12 +26,18 @@ import {
   deriveLaunchdLabel,
   deriveLaunchdMaintenanceLabel,
   isLoaded,
+  launchdManagedWorkerInfo,
   launchdServiceInfo,
   launchdPathsFor,
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
   makeLaunchctlRunner,
 } from "./launchd.js";
-import type { LaunchctlResult, LaunchctlRunner, LaunchdPaths } from "./launchd.js";
+import type {
+  LaunchctlResult,
+  LaunchctlRunner,
+  LaunchdManagedWorkerDefinition,
+  LaunchdPaths,
+} from "./launchd.js";
 import { selectBackgroundOperationalEnvironment } from "./background-environment.js";
 import {
   beginLaunchdLogMaintenanceIntent,
@@ -47,12 +53,16 @@ import {
 import type { LaunchdLogInspection, LaunchdLogMaintenanceIntent } from "./launchd-logs.js";
 import {
   ensureManagedBackgroundRuntime,
+  inspectManagedRuntimeSourceIdentity,
   MANAGED_BACKGROUND_WORKER_ENV,
+  verifyManagedRuntimeLaunch,
 } from "./background-runtime.js";
 import type {
   ManagedBackgroundRuntime,
   ManagedBackgroundRuntimeInput,
   ManagedRuntimeAdditionalPackage,
+  ManagedRuntimeLaunchVerification,
+  ManagedRuntimeSourceIdentity,
 } from "./background-runtime.js";
 import {
   backgroundSnapshotFromMetadata,
@@ -107,6 +117,8 @@ export interface InstanceTarget {
   readonly paths: LaunchdPaths;
   readonly nodePath: string;
   readonly cliPath: string;
+  /** Mutable controller CLI retained only as inert runtime-installation input. */
+  readonly controllerCliPath?: string;
   readonly envFile?: string;
   /**
    * Transient effective config environment reconstructed by the controller.
@@ -188,6 +200,7 @@ export async function resolveInstanceTarget(input: ResolveInstanceTargetInput): 
     paths: launchdPathsFor(label),
     nodePath: process.execPath,
     cliPath: input.cliPath,
+    controllerCliPath: input.cliPath,
     // Bake an explicit --env-file (resolved absolute) into the plist so the
     // launchd worker loads the same env file the launcher did.
     ...(input.args.envFile === undefined ? {} : { envFile: resolve(cwd, input.args.envFile) }),
@@ -230,6 +243,7 @@ export async function canonicalBackgroundConfigPath(
 export interface BackgroundDeps {
   readonly runner: LaunchctlRunner;
   readonly getuid: () => number;
+  readonly currentPid: () => number;
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
   readonly listRecordedRuns: typeof listRecordedRuns;
@@ -272,6 +286,12 @@ export interface BackgroundDeps {
   readonly isAlive: (pid: number) => boolean;
   /** Install/verify an immutable CLI outside npm/npx's disposable cache. */
   readonly ensureManagedRuntime: (input: ManagedBackgroundRuntimeInput) => Promise<ManagedBackgroundRuntime>;
+  /** Inspect mutable source as inert bytes; never execute it. */
+  readonly inspectManagedRuntimeSourceIdentity: (cliPath: string) => Promise<ManagedRuntimeSourceIdentity>;
+  /** Verify the exact private closure and proof persisted in the loaded worker. */
+  readonly verifyManagedRuntimeLaunch: (
+    input: { readonly currentCliPath: string; readonly launchProof: string },
+  ) => Promise<ManagedRuntimeLaunchVerification>;
   /** Resolve config-selected plugin-tier packages before the disposable source can disappear. */
   readonly resolveManagedRuntimePackages?: (
     target: InstanceTarget,
@@ -293,6 +313,7 @@ export function defaultBackgroundDeps(): BackgroundDeps {
   return {
     runner: makeLaunchctlRunner(),
     getuid: () => process.getuid?.() ?? 0,
+    currentPid: () => process.pid,
     now: () => Date.now(),
     sleep: (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
     listRecordedRuns,
@@ -328,6 +349,8 @@ export function defaultBackgroundDeps(): BackgroundDeps {
       }
     },
     ensureManagedRuntime: (input) => ensureManagedBackgroundRuntime(input),
+    inspectManagedRuntimeSourceIdentity,
+    verifyManagedRuntimeLaunch,
     resolveManagedRuntimePackages: (target) => resolveConfiguredManagedRuntimePackages({
       cwd: target.cwd,
       configPath: target.configPath,
@@ -394,6 +417,154 @@ export async function restartBackground(
   poll?: PollOptions,
 ): Promise<number> {
   return (await ensureBackgroundReady(target, deps, poll)).ok ? 0 : 1;
+}
+
+export interface LaunchdControllerOptions {
+  /** False only when the originally installed controller checkout disappeared. */
+  readonly sourceAvailable: boolean;
+  readonly controlPoll?: PollOptions;
+  readonly readinessPoll?: PollOptions;
+}
+
+/**
+ * Private one-shot recovery controller invoked by the maintenance LaunchAgent.
+ * It authenticates the exact helper PID launchd owns, compares the inert source
+ * CLI identity with the strictly parsed loaded worker definition, and repairs
+ * only when the worker, snapshot, definition, or available source closure has
+ * drifted. A healthy worker remains serving while a replacement runtime is
+ * materialized.
+ */
+export async function maintainLaunchdController(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  options: LaunchdControllerOptions,
+): Promise<number> {
+  const helper = maintenancePathsForTarget(target);
+  const uid = deps.getuid();
+  const helperService = await launchdServiceInfo(deps.runner, helper.label, uid);
+  const helperPid = deps.currentPid();
+  if (!helperService.loaded || helperService.pid !== helperPid || !deps.isAlive(helperPid)) {
+    reportMaintenanceFailure(
+      target,
+      deps,
+      "authenticate the launchd-owned recovery controller",
+      new Error(`launchd does not own this helper pid ${helperPid}`),
+    );
+    return 1;
+  }
+
+  const release = await deps.acquireLifecycleLock(target);
+  if (release === undefined) {
+    // A manual lifecycle command owns the label. The helper exits cleanly so
+    // that command can boot it out; StartInterval supplies the next retry.
+    return 0;
+  }
+  let maintainLogsOnly = false;
+  let resultCode = 1;
+  try {
+    const [worker, sources, desiredIdentity] = await Promise.all([
+      launchdManagedWorkerInfo(deps.runner, target.label, uid),
+      findInstances(target, deps),
+      deps.inspectManagedRuntimeSourceIdentity(target.cliPath),
+    ]);
+    let loadedIdentity: ManagedRuntimeLaunchVerification | undefined;
+    if (worker.definition !== undefined) {
+      try {
+        loadedIdentity = await deps.verifyManagedRuntimeLaunch({
+          currentCliPath: worker.definition.cliPath,
+          launchProof: worker.definition.expectedManagedRuntimeLaunch,
+        });
+      } catch {
+        // A malformed/unverified loaded closure is a recovery condition. Do not
+        // trust any identity or execute its advertised CLI.
+      }
+    }
+    const source = worker.pid === undefined
+      ? undefined
+      : sources.find((candidate) => candidate.pid === worker.pid);
+    const durableSnapshotStillMatches = await snapshotStillMatches(target, deps);
+    const workerHealthy = worker.loaded
+      && worker.pid !== undefined
+      && deps.isAlive(worker.pid)
+      && source !== undefined
+      && isReady(source, false)
+      && snapshotMetadataMatches(source, target.expectedSnapshot)
+      && durableSnapshotStillMatches;
+    const definitionMatches = worker.definition !== undefined
+      && managedWorkerDefinitionMatchesTarget(worker.definition, target);
+    const runtimeMatches = loadedIdentity !== undefined
+      && sameManagedRuntimeIdentity(loadedIdentity, desiredIdentity);
+    const needsRecovery = !workerHealthy
+      || !definitionMatches
+      || loadedIdentity === undefined
+      || (options.sourceAvailable && !runtimeMatches);
+    if (!needsRecovery) {
+      maintainLogsOnly = true;
+      resultCode = 0;
+    } else {
+      if (!options.sourceAvailable) {
+        deps.stderr(ui.style.dim(
+          `The original controller CLI is unavailable; recovering ${target.label} from the helper's private closure without claiming an upgrade.`,
+        ) + "\n");
+      }
+      const recovered = await ensureBackgroundReadyUnlocked(
+        target,
+        deps,
+        options.controlPoll ?? DEFAULT_CONTROL_POLL,
+        options.readinessPoll ?? DEFAULT_READINESS_POLL,
+        { preserveMaintenanceService: true, preserveDefinitionsOnFailure: true },
+      );
+      resultCode = recovered.ok ? 0 : 1;
+    }
+  } catch (error) {
+    reportMaintenanceFailure(target, deps, "reconcile the managed worker", error);
+    resultCode = 1;
+  } finally {
+    await release().catch((error: unknown) => {
+      deps.stderr(ui.errorLine(
+        `Could not release lifecycle lock for ${target.label}: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+    });
+  }
+  return maintainLogsOnly
+    ? await maintainLaunchdLogs(target, deps, options.controlPoll ?? DEFAULT_CONTROL_POLL)
+    : resultCode;
+}
+
+function managedWorkerDefinitionMatchesTarget(
+  definition: LaunchdManagedWorkerDefinition,
+  target: InstanceTarget,
+): boolean {
+  return target.expectedSnapshot !== undefined
+    && definition.plistPath === target.paths.plistPath
+    && definition.nodePath === target.nodePath
+    && definition.configPath === target.configPath
+    && definition.cwd === target.cwd
+    && definition.envFile === target.envFile
+    && definition.stdoutPath === target.paths.stdoutPath
+    && definition.stderrPath === target.paths.stderrPath
+    && definition.expectedBackgroundSnapshot === encodeBackgroundSnapshot(target.expectedSnapshot)
+    && sameStringRecord(definition.environment, target.environment);
+}
+
+function sameManagedRuntimeIdentity(
+  loaded: Pick<ManagedRuntimeLaunchVerification, "packageVersion" | "cliSha256">,
+  desired: ManagedRuntimeSourceIdentity,
+): boolean {
+  return loaded.packageVersion === desired.packageVersion && loaded.cliSha256 === desired.cliSha256;
+}
+
+function sameStringRecord(
+  left: Readonly<Record<string, string>>,
+  right: Readonly<Record<string, string>>,
+): boolean {
+  const leftEntries = Object.entries(left).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  const rightEntries = Object.entries(right).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  return leftEntries.length === rightEntries.length
+    && leftEntries.every(([name, value], index) => {
+      const other = rightEntries[index];
+      return other?.[0] === name && other[1] === value;
+    });
 }
 
 /**
@@ -753,6 +924,7 @@ async function ensureBackgroundReadyUnlocked(
   deps: BackgroundDeps,
   controlPoll: PollOptions,
   readinessPoll: PollOptions,
+  options: BackgroundReadyInternalOptions = {},
 ): Promise<BackgroundLaunchResult> {
   if (target.expectedSnapshot === undefined) {
     deps.stderr(ui.errorLine("Refusing to launch a managed worker without an approved background snapshot."));
@@ -784,7 +956,15 @@ async function ensureBackgroundReadyUnlocked(
     controlPoll,
     readinessPoll,
     publicationBarrier,
+    options,
   );
+}
+
+interface BackgroundReadyInternalOptions {
+  /** Recovery helpers cannot boot out and wait for their own launchd process. */
+  readonly preserveMaintenanceService?: boolean;
+  /** Scheduled recovery keeps both definitions so StartInterval can retry. */
+  readonly preserveDefinitionsOnFailure?: boolean;
 }
 
 async function ensureBackgroundReadyWithPublicationBarrier(
@@ -793,6 +973,7 @@ async function ensureBackgroundReadyWithPublicationBarrier(
   controlPoll: PollOptions,
   readinessPoll: PollOptions,
   publicationBarrier: OwnerPrivateLock,
+  options: BackgroundReadyInternalOptions,
 ): Promise<BackgroundLaunchResult> {
   let barrierReleased = false;
   const releaseBarrier = async (): Promise<void> => {
@@ -807,6 +988,7 @@ async function ensureBackgroundReadyWithPublicationBarrier(
       controlPoll,
       readinessPoll,
       releaseBarrier,
+      options,
     );
   } finally {
     if (!barrierReleased) {
@@ -825,6 +1007,7 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
   controlPoll: PollOptions,
   readinessPoll: PollOptions,
   releaseBarrier: () => Promise<void>,
+  options: BackgroundReadyInternalOptions,
 ): Promise<BackgroundLaunchResult> {
   const uid = deps.getuid();
   let launchTarget: InstanceTarget;
@@ -921,7 +1104,7 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
       // The replacement plist now contains the finalized-runtime proof. Let
       // launchd respawn only after the stopped-window commit is complete.
       await releaseBarrier();
-    });
+    }, { preserveMaintenanceService: options.preserveMaintenanceService === true });
   } catch (error) {
     reportLifecycleException(
       launchTarget,
@@ -946,13 +1129,13 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
     });
   } catch (error) {
     reportReadinessException(deps, error);
-    const stopped = await cleanUpUnreadyBackground(launchTarget, deps, controlPoll);
-    reportReadinessCleanup(launchTarget, deps, stopped);
+    const stopped = await cleanUpUnreadyBackground(launchTarget, deps, controlPoll, options);
+    reportReadinessCleanup(launchTarget, deps, stopped, options);
     return { ok: false, action, reason: "readiness" };
   }
   if (ready === undefined) {
     if (!(await snapshotStillMatches(launchTarget, deps))) {
-      const stopped = await stopBackgroundUnlocked(launchTarget, deps, controlPoll);
+      const stopped = await cleanUpUnreadyBackground(launchTarget, deps, controlPoll, options) ? 0 : 1;
       reportSnapshotDrift(launchTarget, deps);
       if (stopped === 0) {
         deps.stderr(ui.style.dim("The drifted LaunchAgent was stopped before returning control.") + "\n");
@@ -962,8 +1145,8 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
       return { ok: false, action, reason: "snapshot" };
     }
     reportTimeout(deps);
-    const stopped = await cleanUpUnreadyBackground(launchTarget, deps, controlPoll);
-    reportReadinessCleanup(launchTarget, deps, stopped);
+    const stopped = await cleanUpUnreadyBackground(launchTarget, deps, controlPoll, options);
+    reportReadinessCleanup(launchTarget, deps, stopped, options);
     return { ok: false, action, reason: "timeout" };
   }
   const completedAction = outcome.restarted ? "restarted" as const : "started" as const;
@@ -1000,6 +1183,10 @@ async function writePlists(target: InstanceTarget, deps: BackgroundDeps): Promis
   if (target.managedRuntimeLaunchProof === undefined) {
     throw new Error("A managed LaunchAgent requires a finalized runtime launch proof.");
   }
+  const agentPath = target.environment.PATH;
+  if (agentPath === undefined || agentPath.length === 0) {
+    throw new Error("A managed LaunchAgent recovery controller requires the durable worker PATH.");
+  }
   const maintenance = maintenancePathsForTarget(target);
   const mainXml = buildPlistXml({
     label: target.label,
@@ -1019,6 +1206,10 @@ async function writePlists(target: InstanceTarget, deps: BackgroundDeps): Promis
     nodePath: target.nodePath,
     cliPath: target.cliPath,
     configPath: target.configPath,
+    controllerCliPath: target.controllerCliPath ?? target.cliPath,
+    agentCwd: target.cwd,
+    agentPath,
+    ...(target.envFile === undefined ? {} : { envFile: target.envFile }),
     // The agent folder may be renamed or removed while its already-running
     // worker still owns log descriptors. Keep the scheduler's cwd in the
     // durable account state tree; its config argument is already absolute.
@@ -1228,6 +1419,7 @@ async function bootstrapOrRestart(
   poll: PollOptions,
   beforeMainBootout: () => Promise<void>,
   whileStopped: (mainStopProven: boolean) => Promise<void>,
+  options: { readonly preserveMaintenanceService?: boolean } = {},
 ): Promise<LaunchOutcome> {
   const maintenance = maintenancePathsForTarget(target);
   const [service, maintenanceService] = await Promise.all([
@@ -1239,16 +1431,18 @@ async function bootstrapOrRestart(
   // Stop the scheduler first. A helper that is already running either holds
   // this lifecycle lock (so the controller could not enter) or is waiting to
   // acquire it; bootout plus PID death prevents a post-stop resurrection.
-  const maintenanceStopped = await unloadLaunchdService(
-    maintenance.label,
-    maintenanceService,
-    uniquePids([maintenanceService.pid]),
-    deps,
-    uid,
-    poll,
-  );
-  if (!maintenanceStopped.ok) {
-    return { ok: false, restarted, failure: maintenanceStopped.failure };
+  if (options.preserveMaintenanceService !== true) {
+    const maintenanceStopped = await unloadLaunchdService(
+      maintenance.label,
+      maintenanceService,
+      uniquePids([maintenanceService.pid]),
+      deps,
+      uid,
+      poll,
+    );
+    if (!maintenanceStopped.ok) {
+      return { ok: false, restarted, failure: maintenanceStopped.failure };
+    }
   }
 
   let mainStopProven = false;
@@ -1273,13 +1467,15 @@ async function bootstrapOrRestart(
       beforeMainBootout,
     );
     if (!mainStopped.ok) {
-      const restoreFailure = await restoreMaintenanceDefinition(
-        maintenanceService.loaded,
-        maintenance,
-        deps,
-        uid,
-        poll,
-      );
+      const restoreFailure = options.preserveMaintenanceService === true
+        ? undefined
+        : await restoreMaintenanceDefinition(
+            maintenanceService.loaded,
+            maintenance,
+            deps,
+            uid,
+            poll,
+          );
       return {
         ok: false,
         restarted: true,
@@ -1296,23 +1492,32 @@ async function bootstrapOrRestart(
 
   await whileStopped(mainStopProven);
 
-  const maintenanceBooted = await bootstrap(deps.runner, maintenance.plistPath, uid);
-  const maintenanceLoaded = await pollUntil(
-    deps,
-    poll,
-    async () => await isLoaded(deps.runner, maintenance.label, uid),
-  );
-  if (!maintenanceLoaded) {
-    return {
-      ok: false,
-      restarted,
-      failure: lifecycleFailure(maintenanceBooted, "scheduled log maintenance did not report loaded"),
-    };
+  if (options.preserveMaintenanceService !== true) {
+    const maintenanceBooted = await bootstrap(deps.runner, maintenance.plistPath, uid);
+    const maintenanceLoaded = await pollUntil(
+      deps,
+      poll,
+      async () => await isLoaded(deps.runner, maintenance.label, uid),
+    );
+    if (!maintenanceLoaded) {
+      return {
+        ok: false,
+        restarted,
+        failure: lifecycleFailure(maintenanceBooted, "scheduled recovery controller did not report loaded"),
+      };
+    }
   }
 
   const booted = await bootstrap(deps.runner, target.paths.plistPath, uid);
   if (booted.code === 0 || (await isLoaded(deps.runner, target.label, uid))) {
     return { ok: true, restarted };
+  }
+  if (options.preserveMaintenanceService === true) {
+    return {
+      ok: false,
+      restarted,
+      failure: lifecycleFailure(booted, "main service did not load; scheduled recovery remains loaded for retry"),
+    };
   }
   const maintenanceServiceAfterFailure = await launchdServiceInfo(deps.runner, maintenance.label, uid);
   const maintenanceRemoval = await unloadLaunchdService(
@@ -1616,12 +1821,24 @@ export async function statusBackground(
   deps: BackgroundDeps,
   options: StatusBackgroundOptions = {},
 ): Promise<number> {
-  const result = await deps.listTraceSources({ registryDir: target.registryDir, staleAfterMs: target.staleAfterMs });
+  const [result, service] = await Promise.all([
+    deps.listTraceSources({ registryDir: target.registryDir, staleAfterMs: target.staleAfterMs }),
+    launchdServiceInfo(deps.runner, target.label, deps.getuid()),
+  ]);
   const classified = await Promise.all(result.sources.map(async (source) => ({
     source,
     matches: await matchesConfig(source, target.configPath),
   })));
-  const current = classified.find((entry) => entry.matches)?.source;
+  const matchingSources = classified.filter((entry) => entry.matches).map((entry) => entry.source);
+  const recorded = service.pid === undefined
+    ? matchingSources[0]
+    : matchingSources.find((source) => source.pid === service.pid) ?? matchingSources[0];
+  const active = service.loaded
+    && service.pid !== undefined
+    && deps.isAlive(service.pid)
+    && recorded?.pid === service.pid
+    && recorded.health === "running";
+  const current = recorded === undefined || active ? recorded : inactiveStatusSource(recorded);
   // Only surface other instances that are live or crashed — cleanly stopped
   // manifests linger in the registry and would just be noise.
   const others = classified
@@ -1631,11 +1848,11 @@ export async function statusBackground(
   if (options.json === true) {
     const instance = current === undefined ? null : await assembleInstanceStatus(current, target, deps);
     deps.stdout(`${JSON.stringify({
-      ok: current?.health === "running",
+      ok: active,
       instance,
       others: others.map(assembleOtherInstanceStatus),
     })}\n`);
-    return current?.health === "running" ? 0 : 1;
+    return active ? 0 : 1;
   }
 
   if (current === undefined) {
@@ -1653,7 +1870,36 @@ export async function statusBackground(
     }
   }
 
-  return current?.health === "running" ? 0 : 1;
+  return active ? 0 : 1;
+}
+
+function inactiveStatusSource(source: TraceSourceListItem): TraceSourceListItem {
+  const {
+    transports: _staleTransports,
+    pid: _stalePid,
+    ...withoutLiveProcessFacts
+  } = source;
+  const metadata = source.metadata;
+  const channels = metadata?.channels;
+  const stoppedChannels = isPlainRecord(channels)
+    ? Object.fromEntries(Object.entries(channels).map(([id, value]) => {
+        if (!isPlainRecord(value) || value.kind !== "running") return [id, value];
+        return [id, { kind: "stopped", reason: "instance is not running" }];
+      }))
+    : undefined;
+  return {
+    ...withoutLiveProcessFacts,
+    health: "stopped",
+    status: "stopped",
+    ...(metadata === undefined
+      ? {}
+      : {
+          metadata: {
+            ...metadata,
+            ...(stoppedChannels === undefined ? {} : { channels: stoppedChannels }),
+          },
+        }),
+  } as TraceSourceListItem;
 }
 
 /**
@@ -1882,8 +2128,31 @@ async function cleanUpUnreadyBackground(
   target: InstanceTarget,
   deps: BackgroundDeps,
   poll: PollOptions,
+  options: BackgroundReadyInternalOptions = {},
 ): Promise<boolean> {
   try {
+    if (options.preserveDefinitionsOnFailure === true) {
+      const uid = deps.getuid();
+      const [service, sources] = await Promise.all([
+        launchdServiceInfo(deps.runner, target.label, uid),
+        findInstances(target, deps),
+      ]);
+      const liveTracePids = uniquePids(sources
+        .filter((source) => source.health !== "stopped"
+          && source.pid !== undefined
+          && deps.isAlive(source.pid))
+        .map((source) => source.pid));
+      if (liveTracePids.some((pid) => pid !== service.pid)) return false;
+      const stopped = await unloadLaunchdService(
+        target.label,
+        service,
+        uniquePids([service.pid, ...liveTracePids]),
+        deps,
+        uid,
+        poll,
+      );
+      return stopped.ok;
+    }
     return await stopBackgroundUnlocked(target, { ...deps, stdout: () => undefined }, poll) === 0;
   } catch (error) {
     deps.stderr(ui.errorLine(
@@ -1893,9 +2162,16 @@ async function cleanUpUnreadyBackground(
   }
 }
 
-function reportReadinessCleanup(target: InstanceTarget, deps: BackgroundDeps, stopped: boolean): void {
+function reportReadinessCleanup(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  stopped: boolean,
+  options: BackgroundReadyInternalOptions = {},
+): void {
   deps.stderr(stopped
-    ? ui.style.dim("The unready LaunchAgent and scheduled maintenance were stopped and their definitions removed before returning control.") + "\n"
+    ? options.preserveDefinitionsOnFailure === true
+      ? ui.style.dim("The unready main LaunchAgent was stopped; both definitions and the scheduled recovery controller remain for retry.") + "\n"
+      : ui.style.dim("The unready LaunchAgent and scheduled maintenance were stopped and their definitions removed before returning control.") + "\n"
     : ui.style.yellow("The unready LaunchAgent could not be proven stopped; a worker or maintenance helper may still be running.") + "\n");
   reportLaunchRecovery(target, deps);
 }
