@@ -107,7 +107,7 @@ describe("channel config view", () => {
     });
 
     expect(sections.map((section) => section.id).sort()).toEqual(
-      ["cron", "live", "openai-api", "slack", "telegram", "tui", "webhook"].sort(),
+      ["cron", "openai-api", "slack", "telegram", "tui", "webhook"].sort(),
     );
   });
 });

@@ -11,7 +11,6 @@ import { writeCaptureIntent } from "../capture-outbox.js";
 import { auditCanonicalGraphParity, type CanonicalGraphParityResult } from "../graph-parity.js";
 import { parseDailyFile } from "../grammar.js";
 import { appendGraphBatch, readGraph } from "../graph.js";
-import { createIdFactory } from "../ids.js";
 import {
   assertNoPendingMigrateDecision,
   forgetExplicitMemories,
@@ -109,7 +108,6 @@ function makeDeps(
     db,
     root,
     llm: fakeLlm([]),
-    nextId: createIdFactory({ clock: () => NOW, random: () => 0 }),
     now: () => NOW,
     canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
     ...overrides,

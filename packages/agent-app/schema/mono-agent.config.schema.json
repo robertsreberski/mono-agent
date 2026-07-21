@@ -637,6 +637,18 @@
               "default": "0 */2 * * *"
             }
           }
+        },
+        "reflection": {
+          "type": "object",
+          "deprecated": true,
+          "additionalProperties": true,
+          "description": "Removed memory.reflection settings are tolerated only to emit a migration warning."
+        },
+        "migration": {
+          "type": "object",
+          "deprecated": true,
+          "additionalProperties": true,
+          "description": "Removed memory.migration settings are tolerated only to emit a migration warning."
         }
       },
       "allOf": [
@@ -1132,14 +1144,41 @@
       "additionalProperties": false,
       "properties": {
         "exporters": {
-          "description": "Configures exporters for the observability section.",
-          "examples": [
-            []
-          ],
           "type": "array",
+          "maxItems": 1,
           "items": {
             "type": "object",
-            "additionalProperties": true
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "phoenix"
+              },
+              "endpoint": {
+                "type": "string"
+              },
+              "headers": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "includeSensitiveData": {
+                "type": "boolean"
+              },
+              "contentPatternRedaction": {
+                "type": "boolean"
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 60000
+              },
+              "projectName": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
           }
         }
       }
@@ -1199,14 +1238,77 @@
           }
         },
         "local": {
-          "description": "Configures local for the providers section.",
-          "examples": [
-            []
-          ],
           "type": "array",
           "items": {
             "type": "object",
-            "additionalProperties": true
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "type"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "type": {
+                "enum": [
+                  "ollama",
+                  "lmstudio",
+                  "openai_compat"
+                ]
+              },
+              "baseUrl": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "trustPublicUrl": {
+                "type": "boolean"
+              },
+              "apiKey": {
+                "type": "string"
+              },
+              "apiKeyEnv": {
+                "type": "string"
+              },
+              "models": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "name"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "alias": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "displayName": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "capabilities": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "pricing": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -1498,20 +1600,10 @@
       "additionalProperties": false,
       "properties": {
         "jobs": {
-          "description": "Inline scheduled jobs. Folder-based cron jobs still merge from cron.dir.",
-          "examples": [
-            [
-              {
-                "id": "daily",
-                "expression": "0 8 * * *",
-                "prompt": "Summarize the overnight queue."
-              }
-            ]
-          ],
           "type": "array",
           "items": {
             "type": "object",
-            "additionalProperties": true,
+            "additionalProperties": false,
             "required": [
               "id",
               "expression",
@@ -1519,44 +1611,53 @@
             ],
             "properties": {
               "id": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "enabled": {
                 "type": "boolean"
               },
               "expression": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "timezone": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "prompt": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "conversationId": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "maxRunMs": {
-                "type": "integer"
+                "type": "integer",
+                "minimum": 1
               },
               "notify": {
                 "type": "boolean"
               },
               "notifyConversationId": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "notifyFailureCooldownHours": {
-                "type": "integer"
+                "type": "integer",
+                "minimum": 1
               },
               "model": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "effort": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               }
             }
-          },
-          "default": []
+          }
         },
         "enabled": {
           "description": "Enables the cron capability.",
@@ -1647,29 +1748,21 @@
       "additionalProperties": false,
       "properties": {
         "endpoints": {
-          "description": "Named webhook endpoints with per-endpoint prompt, model/effort, and maxRunMs overrides.",
-          "examples": [
-            [
-              {
-                "name": "triage",
-                "path": "/webhook/triage",
-                "prompt": "Triage this payload."
-              }
-            ]
-          ],
           "type": "array",
           "items": {
             "type": "object",
-            "additionalProperties": true,
+            "additionalProperties": false,
             "required": [
               "path"
             ],
             "properties": {
               "name": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "path": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "mode": {
                 "enum": [
@@ -1681,19 +1774,23 @@
                 "type": "boolean"
               },
               "prompt": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "notify": {
                 "type": "boolean"
               },
               "notifyConversationId": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "model": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "effort": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               },
               "maxRunMs": {
                 "type": "integer",
@@ -1701,8 +1798,7 @@
                 "maximum": 86400000
               }
             }
-          },
-          "default": []
+          }
         },
         "enabled": {
           "description": "Enables the webhook capability.",
@@ -1831,41 +1927,86 @@
       "additionalProperties": false,
       "properties": {
         "shortcuts": {
-          "description": "JSON-only global/message Slack shortcut bindings; there is no environment-variable form.",
-          "examples": [
-            [
-              {
-                "callbackId": "triage",
-                "prompt": "Prepare the daily support triage checklist.",
-                "channelId": "C0123"
-              }
-            ]
-          ],
           "type": "array",
           "items": {
             "type": "object",
-            "additionalProperties": true
-          },
-          "default": []
+            "additionalProperties": false,
+            "required": [
+              "callbackId",
+              "prompt"
+            ],
+            "properties": {
+              "callbackId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "prompt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "channelId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ackText": {
+                "type": "string",
+                "minLength": 1
+              },
+              "threadReply": {
+                "type": "boolean"
+              }
+            }
+          }
         },
         "homeTab": {
-          "description": "JSON-only Slack App Home configuration; enabled is optional (default false), buttons is optional (default []), and there is no environment-variable form.",
-          "examples": [
-            {
-              "enabled": true,
-              "headerText": "*Quick actions*",
-              "buttons": [
-                {
-                  "actionId": "triage",
-                  "label": "Triage",
-                  "prompt": "Triage today's requests.",
-                  "channelId": "C0123"
-                }
-              ]
-            }
-          ],
           "type": "object",
-          "additionalProperties": true
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "headerText": {
+              "type": "string",
+              "minLength": 1
+            },
+            "buttons": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "actionId",
+                  "label",
+                  "prompt"
+                ],
+                "properties": {
+                  "actionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "label": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "channelId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "ackText": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "threadReply": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
         },
         "enabled": {
           "description": "Enables the slack capability.",
@@ -1996,45 +2137,75 @@
       "additionalProperties": false,
       "properties": {
         "commands": {
-          "description": "Telegram command definitions handled by the Telegram adapter.",
-          "examples": [
-            [
-              {
-                "command": "status",
-                "prompt": "Report current status."
-              }
-            ]
-          ],
           "type": "array",
           "items": {
             "type": "object",
-            "additionalProperties": true
-          },
-          "default": []
+            "additionalProperties": false,
+            "required": [
+              "command",
+              "description"
+            ],
+            "properties": {
+              "command": {
+                "type": "string",
+                "pattern": "^[a-z0-9_]{1,32}$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "prompt": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
         },
         "reactions": {
-          "description": "Telegram lifecycle reactions. The env override is boolean and toggles all states.",
-          "examples": [
+          "oneOf": [
             {
-              "working": true,
-              "done": true,
-              "error": true
+              "type": "boolean"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "working": {
+                  "type": "boolean"
+                },
+                "done": {
+                  "type": "boolean"
+                },
+                "error": {
+                  "type": "boolean"
+                }
+              }
             }
-          ],
-          "type": "object",
-          "additionalProperties": true
+          ]
         },
         "quietHours": {
-          "description": "Quiet-hours rules for Telegram notifications.",
-          "examples": [
-            {
-              "timezone": "Europe/Amsterdam",
-              "start": "22:00",
-              "end": "07:00"
-            }
-          ],
           "type": "object",
-          "additionalProperties": true
+          "additionalProperties": false,
+          "required": [
+            "start",
+            "end",
+            "timezone"
+          ],
+          "properties": {
+            "start": {
+              "type": "string",
+              "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+            },
+            "end": {
+              "type": "string",
+              "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+            },
+            "timezone": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         },
         "sendTools": {
           "type": "object",
@@ -2294,59 +2465,6 @@
         },
         "apiKey": {
           "description": "Secret value for tui.apiKey; prefer the env override.",
-          "examples": [
-            "example"
-          ],
-          "type": "string"
-        }
-      }
-    },
-    "live": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "enabled": {
-          "description": "Enables the live capability.",
-          "examples": [
-            true
-          ],
-          "type": "boolean",
-          "default": true
-        },
-        "host": {
-          "description": "Configures host for the live section.",
-          "examples": [
-            "127.0.0.1"
-          ],
-          "type": "string",
-          "default": "127.0.0.1"
-        },
-        "port": {
-          "description": "Configures port for the live section.",
-          "examples": [
-            0
-          ],
-          "type": "integer",
-          "default": 0
-        },
-        "basePath": {
-          "description": "Configures basePath for the live section.",
-          "examples": [
-            "/live"
-          ],
-          "type": "string",
-          "default": "/live"
-        },
-        "allowNonLoopback": {
-          "description": "Configures allowNonLoopback for the live section.",
-          "examples": [
-            true
-          ],
-          "type": "boolean",
-          "default": false
-        },
-        "apiKey": {
-          "description": "Secret value for live.apiKey; prefer the env override.",
           "examples": [
             "example"
           ],

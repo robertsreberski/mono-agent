@@ -12,8 +12,6 @@ import {
   getBuiltinProviders as getPiBuiltinProviders,
 } from "@earendil-works/pi-ai/providers/all";
 import { validateCronExpression } from "@mono-agent/cron-adapter";
-import { listRecordedRuns } from "@mono-agent/observability";
-import { serializeTraceSpans } from "@mono-agent/observability/otel";
 import {
   classifyContinuationMcpServerTransport,
   isStdioMcpServerSpec,
@@ -46,12 +44,8 @@ import {
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
 import {
-  describeSensitiveDataExportWarning,
   isAppCoreConfigError,
   loadAppCoreConfig,
-  phoenixAppBaseUrl,
-  resolveAppArtifactDir,
-  resolveAppObservabilityExporters,
 } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { adapterSendToolNames, isAdapterSendToolAllowed, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
@@ -59,7 +53,6 @@ import { canonicalToolName, isAllowAllTools, isKnownToolName, isMcpToolName, sug
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ChannelDriver } from "./channels.js";
-import { findUnknownAppConfigWarnings } from "./config-reference.js";
 import { loadContinuationSettings } from "./continuation-config.js";
 import { applyOriginContextGroupCommit } from "./continuation-origin-store.js";
 import { readBoundedOwnerOnlyFile } from "./continuation-store-fs.js";
@@ -94,7 +87,6 @@ import {
   DEFAULT_MEMORY_EMBEDDING_ENDPOINTS,
   probeMemoryEmbeddingSelection,
 } from "./memory-embedding-service.js";
-import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import { piAuthRecoveryCommand } from "./provider-setup.js";
 import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "./pi-auth-store-inspection.js";
 import { checkManagedProjectSkills, managedProjectSkillsExist } from "./project-skills.js";
@@ -108,27 +100,16 @@ import {
   launchdLogPathsForConfig,
 } from "./launchd-logs.js";
 import type { LaunchdLogInspection, LaunchdLogStreamInspection } from "./launchd-logs.js";
+import { exporterSection, runsSection } from "./doctor-observability.js";
+import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor-types.js";
+
+export type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor-types.js";
 
 const execFile = promisify(execFileCallback);
 
 const CONTINUATION_V2_ROLLBACK_GUARD = "UPGRADED-TO-RECORDS-V3";
 const CONTINUATION_V2_ROLLBACK_GUARD_CONTENT =
   "This state directory uses continuation records v3. Older runtimes must not open records-v2.\n";
-
-export type ValidationStatus = "ok" | "waiting" | "disabled" | "error";
-
-export interface ValidationSection {
-  readonly id: string;
-  readonly label: string;
-  readonly status: ValidationStatus;
-  readonly details: readonly string[];
-}
-
-export interface ValidationReport {
-  readonly sections: readonly ValidationSection[];
-  /** True when no section reports an error. Waiting/disabled channels are fine. */
-  readonly ok: boolean;
-}
 
 export interface SdkAuthStatusExecOptions {
   readonly cwd: string;
@@ -219,7 +200,6 @@ export async function validateMonoAgentFolder(
     // Channel secrets (bot tokens, API keys) live outside the core view, so the
     // placement check spans both: core sections + every channel's config view.
     const configWarnings = [
-      ...findUnknownAppConfigWarnings(jsonResult.json),
       ...findJsonSecretConfigWarnings([
         ...buildMonoAgentConfigView({
           redacted: redactMonoAgentConfig(coreConfig),
@@ -277,9 +257,13 @@ export async function validateMonoAgentFolder(
     applyToolChannelCrossChecks(sections, coreConfig.tools.allowedTools, coreConfig.tools.disallowedTools);
   }
 
+  const structurallyValid = sections.every((section) => section.status !== "error");
+  const operationallyReady = structurallyValid && sections.every((section) => section.status !== "waiting");
   return {
     sections,
-    ok: sections.every((section) => section.status !== "error"),
+    structurallyValid,
+    operationallyReady,
+    ok: structurallyValid,
   };
 }
 
@@ -3486,113 +3470,6 @@ function directCodexSandboxPosture(permissionMode: MonoAgentConfig["runtime"]["p
   };
 }
 
-
-async function runsSection(input: MonoAgentAppConfigInput, config: MonoAgentConfig | undefined): Promise<ValidationSection> {
-  const artifactDir = await resolveAppArtifactDir(input);
-  const { totalRuns, runs, warnings } = await listRecordedRuns({ artifactDir, maxRuns: RUNS_HEALTH_MAX_RUNS, scope: "agent" });
-  const display = buildRunsHealthDisplay({ artifactDir, totalRuns, runs, warnings });
-  const retentionDetails = config === undefined
-    ? []
-    : [
-        `Artifact retention: maxAgeDays=${config.artifacts.retention.maxAgeDays}, maxCount=${config.artifacts.retention.maxCount}, dryRun=${config.artifacts.retention.dryRun ? "true" : "false"}.`,
-        `Memory artifact retention: maxAgeDays=${config.artifacts.memoryRetention.maxAgeDays}, maxCount=${config.artifacts.memoryRetention.maxCount}, dryRun=${config.artifacts.memoryRetention.dryRun ? "true" : "false"}.`,
-      ];
-  return { id: "runs", label: "Runs health", status: display.status, details: [...retentionDetails, ...display.details] };
-}
-
-const LOCAL_ARTIFACTS_NOTE = "JSONL artifacts remain local (the exporter is additive; export failures never affect them).";
-
-/**
- * Reports observability exporter state and, uniquely among the validation
- * sections, performs a LIVE reachability probe of the Phoenix endpoint. An
- * invalid exporter shape is a hard `error` (fails the report) so bad config is
- * caught before startup, but an unreachable endpoint is only `waiting` — Phoenix
- * may start after the agent, mirroring the Ollama-unreachable precedent so
- * `validate` still passes. Probe failures are swallowed into a warning.
- */
-async function exporterSection(input: MonoAgentAppConfigInput, liveness: boolean): Promise<ValidationSection> {
-  let exporters;
-  try {
-    exporters = await resolveAppObservabilityExporters(input);
-  } catch (error) {
-    if (!isAppCoreConfigError(error)) {
-      throw error;
-    }
-    return { id: "observability", label: "Observability exporter", status: "error", details: [error.message] };
-  }
-
-  if (exporters.length === 0) {
-    return {
-      id: "observability",
-      label: "Observability exporter",
-      status: "disabled",
-      details: ["No observability exporter configured."],
-    };
-  }
-
-  const exporter = exporters[0]!;
-  const details: string[] = [`Exporter: ${exporter.type} -> ${exporter.endpoint}`];
-  const appUrl = phoenixAppBaseUrl(exporter.endpoint);
-  if (appUrl !== undefined) {
-    details.push(`Phoenix app: ${appUrl}`);
-  }
-  if (exporter.includeSensitiveData) {
-    details.push(describeSensitiveDataExportWarning(exporter.endpoint));
-  }
-
-  // The reachability probe only ever yields `waiting`, so the start preflight
-  // skips it (liveness=false): the exporter shape is valid, and Phoenix may
-  // legitimately come up after the agent.
-  if (!liveness) {
-    details.push(LOCAL_ARTIFACTS_NOTE);
-    return { id: "observability", label: "Observability exporter", status: "ok", details };
-  }
-
-  const probeError = await probeExporterEndpoint(exporter.endpoint);
-  if (probeError !== undefined) {
-    details.push(
-      `[WARN] Phoenix export not confirmed at ${exporter.endpoint} (${probeError}); exports will fail until it accepts OTLP protobuf. This is non-fatal.`,
-    );
-    details.push(LOCAL_ARTIFACTS_NOTE);
-    return { id: "observability", label: "Observability exporter", status: "waiting", details };
-  }
-
-  details.push(LOCAL_ARTIFACTS_NOTE);
-  return { id: "observability", label: "Observability exporter", status: "ok", details };
-}
-
-/**
- * Live export-compatibility probe: POSTs a tiny but VALID empty OTLP protobuf
- * `ExportTraceServiceRequest` (zero spans, so nothing is recorded) with
- * `content-type: application/x-protobuf` — exactly the wire format a real export
- * uses. Returns undefined when the endpoint accepts it (2xx), else an error
- * string. This catches what the old OPTIONS reachability probe missed: a server
- * that is listening but rejects the export (e.g. Phoenix returns 415 for the
- * wrong content type), so `validate` no longer reports `[ok]` for an endpoint
- * that every real export would 415. A throw (refused / DNS / timeout) means
- * nothing is listening. Kept non-fatal upstream (`waiting`, not `error`): Phoenix
- * may start after the agent.
- */
-async function probeExporterEndpoint(endpoint: string): Promise<string | undefined> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => { ctrl.abort(); }, LIVENESS_PROBE_TIMEOUT_MS);
-  try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: { "content-type": "application/x-protobuf" },
-      body: serializeTraceSpans([]),
-      signal: ctrl.signal,
-    });
-    if (!response.ok) {
-      return `HTTP ${response.status}`;
-    }
-    return undefined;
-  } catch (err) {
-    return err instanceof Error ? err.message : String(err);
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 async function channelSection(
   driver: ChannelDriver,

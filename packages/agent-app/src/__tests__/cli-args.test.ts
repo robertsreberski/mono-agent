@@ -498,6 +498,10 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["validate", "--auth"])).toThrow(/--auth/u);
     expect(() => parseCliArgs(["init", "--memory", "vector"])).toThrow(/--memory/u);
     expect(() => parseCliArgs(["init", "--effort", "turbo"])).toThrow(/--effort/u);
+    expect(() => parseCliArgs(["status", "--model", "codex:gpt-5.5"])).toThrow(/--model.*mono-agent init/u);
+    expect(() => parseCliArgs(["presets", "list", "--config", "agent.json"])).toThrow(/--config/u);
+    expect(() => parseCliArgs(["init", "--follow"])).toThrow(/--follow/u);
+    expect(() => parseCliArgs(["web", "status", "--port", "5050"])).toThrow(/web start/u);
   });
 
   it("parses --version, -v, and the bare `version` command", () => {
@@ -671,6 +675,26 @@ describe("parseCliArgs", () => {
 });
 
 describe("runCli validate --json", () => {
+  it("rejects a known-but-unsupported flag before loading dotenv", async () => {
+    const dir = await tempDir();
+    const envPath = join(dir, ".env.invalid-command");
+    await writeFile(envPath, "MONO_AGENT_CLI_SCOPE_SENTINEL=must-not-load\n", "utf8");
+    delete process.env.MONO_AGENT_CLI_SCOPE_SENTINEL;
+
+    try {
+      const result = await captureCli(() => runCli([
+        "status",
+        "--model", "codex:gpt-5.5",
+        "--env-file", envPath,
+      ]));
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("--model is only supported for `mono-agent init`");
+      expect(process.env.MONO_AGENT_CLI_SCOPE_SENTINEL).toBeUndefined();
+    } finally {
+      delete process.env.MONO_AGENT_CLI_SCOPE_SENTINEL;
+    }
+  });
+
   it("emits exactly one plain JSON object and exits according to its ok field", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n", "utf8");

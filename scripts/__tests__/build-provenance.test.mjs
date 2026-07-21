@@ -74,9 +74,6 @@ function createOutputs(root, order = "forward") {
     ["packages/agent-app/dist/cli.js", "#!/usr/bin/env node\n"],
     ["packages/tui/package.json", '{"name":"tui"}\n'],
     ["packages/tui/dist/bin/mono-agent-tui.js", "#!/usr/bin/env node\n"],
-    ["packages/session-web/package.json", '{"name":"session-web"}\n'],
-    ["packages/session-web/dist/index.js", "export const server = true;\n"],
-    ["packages/session-web/webapp/dist/index.html", "<!doctype html>\n"],
     ["packages/web/package.json", '{"name":"web"}\n'],
     ["packages/web/dist/index.js", "export const server = true;\n"],
     ["packages/web/webapp/dist/index.html", "<!doctype html>\n"],
@@ -223,8 +220,6 @@ describe("deterministic output digest", () => {
     for (const ancestor of [
       first,
       join(first, "packages"),
-      join(first, "packages/session-web"),
-      join(first, "packages/session-web/webapp"),
       join(first, "packages/web"),
       join(first, "packages/web/webapp"),
       join(first, "extras"),

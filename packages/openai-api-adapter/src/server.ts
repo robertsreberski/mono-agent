@@ -4,6 +4,8 @@ import { networkInterfaces } from "node:os";
 
 import {
   BufferedMessageStream,
+  BoundedHttpResponseWriter,
+  closeServerBounded,
   isAgentResponseCancelledError,
   type AgentAttachment,
   type AgentMessageStream,
@@ -15,7 +17,6 @@ import {
 import {
   assertSafeBind,
   bearerTokensEqual,
-  close,
   hostForUrl,
   isLoopbackHost,
   isWildcardHost,
@@ -146,7 +147,6 @@ interface ChatCompletionChunkInput {
 }
 
 const OPENAI_OWNED_BY = "host";
-const FORCE_CLOSE_AFTER_MS = 250;
 const UNSUPPORTED_CHAT_REQUEST_FIELDS = [
   "tools",
   "tool_choice",
@@ -319,6 +319,7 @@ export async function startOpenAIApiAdapter(
           requestId,
           model: body.model,
           maxToolPayloadBytes,
+          controller,
           options,
         });
         return;
@@ -439,34 +440,6 @@ function isLanOrTailscaleIpv4(address: string): boolean {
     || (first === 100 && second >= 64 && second <= 127);
 }
 
-async function closeServerBounded(server: ReturnType<typeof createServer>): Promise<void> {
-  const closePromise = close(server);
-  void closePromise.catch(() => undefined);
-  server.closeIdleConnections();
-  let forceTimer: ReturnType<typeof setTimeout> | undefined;
-  const force = new Promise<"forced">((resolvePromise) => {
-    forceTimer = setTimeout(() => {
-      server.closeAllConnections();
-      resolvePromise("forced");
-    }, FORCE_CLOSE_AFTER_MS);
-    forceTimer.unref?.();
-  });
-  const outcome = await Promise.race([closePromise.then(() => "closed" as const), force]);
-  if (outcome === "closed") {
-    if (forceTimer !== undefined) {
-      clearTimeout(forceTimer);
-    }
-    return;
-  }
-  await Promise.race([
-    closePromise.catch(() => undefined),
-    new Promise<void>((resolvePromise) => {
-      const timer = setTimeout(resolvePromise, FORCE_CLOSE_AFTER_MS);
-      timer.unref?.();
-    }),
-  ]);
-}
-
 async function runJsonResponder(input: {
   readonly request: OpenAIApiChatRequest;
   readonly response: Response;
@@ -510,6 +483,7 @@ async function runStreamingResponder(input: {
   readonly requestId: string;
   readonly model: string;
   readonly maxToolPayloadBytes: number;
+  readonly controller: AbortController;
   readonly options: OpenAIApiAdapterOptions;
 }): Promise<void> {
   input.response.writeHead(200, {
@@ -541,10 +515,11 @@ async function runStreamingResponder(input: {
     input.response,
     chunkInput,
     input.maxToolPayloadBytes,
+    (error) => input.controller.abort(error),
   );
-  stream.start();
 
   try {
+    await stream.start();
     await emitUnsupportedSamplingWarning(input.request, stream, input.options.logger);
     const response = await input.options.responder.respond(input.request, stream);
     await stream.finish(response.text);
@@ -555,7 +530,7 @@ async function runStreamingResponder(input: {
       conversationId: input.request.conversationId,
       error: errorToMessage(error),
     });
-    stream.error(errorToMessage(error), cancelled ? "request_cancelled" : "server_error");
+    await stream.error(errorToMessage(error), cancelled ? "request_cancelled" : "server_error").catch(() => undefined);
   }
 }
 
@@ -563,6 +538,7 @@ class SseChatMessageStream implements AgentMessageStream {
   private currentText = "";
   private done = false;
   private started = false;
+  private readonly writer: BoundedHttpResponseWriter;
   private readonly activeTools = new Map<string, {
     readonly name: string;
     readonly arguments?: unknown;
@@ -572,14 +548,17 @@ class SseChatMessageStream implements AgentMessageStream {
     private readonly response: Response,
     private readonly chunkInput: ChatCompletionChunkInput,
     private readonly maxToolPayloadBytes: number,
-  ) {}
+    onWriteFailure: (error: Error) => void,
+  ) {
+    this.writer = new BoundedHttpResponseWriter(response, { onFailure: onWriteFailure });
+  }
 
-  start(): void {
+  async start(): Promise<void> {
     if (this.started) {
       return;
     }
     this.started = true;
-    this.writeChunk({ role: "assistant" }, null);
+    await this.writeChunk({ role: "assistant" }, null);
   }
 
   async status(_text: string): Promise<void> {}
@@ -588,7 +567,7 @@ class SseChatMessageStream implements AgentMessageStream {
     this.assertOpen();
     if (event.type === "assistant_thought") {
       if (event.text.length > 0) {
-        this.writeChunk({ reasoning_content: event.text }, null);
+        await this.writeChunk({ reasoning_content: event.text }, null);
       }
       return;
     }
@@ -604,7 +583,7 @@ class SseChatMessageStream implements AgentMessageStream {
       const name = event.name ?? started?.name ?? "tool";
       const args = event.arguments ?? started?.arguments ?? {};
       this.activeTools.delete(event.id);
-      this.writeToolDetailsChunk({
+      await this.writeToolDetailsChunk({
         id: event.id,
         name,
         arguments: args,
@@ -614,7 +593,7 @@ class SseChatMessageStream implements AgentMessageStream {
       return;
     }
     if (event.type === "runtime_warning") {
-      this.writeChunk({ reasoning_content: `Warning: ${event.message}` }, null);
+      await this.writeChunk({ reasoning_content: `Warning: ${event.message}` }, null);
     }
   }
 
@@ -624,7 +603,7 @@ class SseChatMessageStream implements AgentMessageStream {
       return;
     }
     this.currentText += delta;
-    this.writeChunk({ content: delta }, null);
+    await this.writeChunk({ content: delta }, null);
   }
 
   async replace(text: string): Promise<void> {
@@ -632,7 +611,7 @@ class SseChatMessageStream implements AgentMessageStream {
     const delta = text.startsWith(this.currentText) ? text.slice(this.currentText.length) : text;
     this.currentText = text;
     if (delta.length > 0) {
-      this.writeChunk({ content: delta }, null);
+      await this.writeChunk({ content: delta }, null);
     }
   }
 
@@ -644,8 +623,8 @@ class SseChatMessageStream implements AgentMessageStream {
       await this.finishFinalText(finalText);
     }
     this.done = true;
-    this.writeChunk({}, "stop");
-    this.response.write("data: [DONE]\n\n");
+    await this.writeChunk({}, "stop");
+    await this.writer.write("data: [DONE]\n\n");
     this.response.end();
   }
 
@@ -662,30 +641,33 @@ class SseChatMessageStream implements AgentMessageStream {
     }
   }
 
-  error(message: string, code: "request_cancelled" | "server_error"): void {
+  async error(message: string, code: "request_cancelled" | "server_error"): Promise<void> {
     if (this.done) {
       return;
     }
     this.done = true;
-    this.response.write(`data: ${JSON.stringify({ error: openAIError(message, code) })}\n\n`);
-    this.response.write("data: [DONE]\n\n");
-    this.response.end();
+    try {
+      await this.writer.write(`data: ${JSON.stringify({ error: openAIError(message, code) })}\n\n`);
+      await this.writer.write("data: [DONE]\n\n");
+    } finally {
+      this.response.end();
+    }
   }
 
-  private writeChunk(
+  private async writeChunk(
     delta: Record<string, unknown>,
     finishReason: "stop" | null,
-  ): void {
-    this.response.write(this.serializeChunk(delta, finishReason));
+  ): Promise<void> {
+    await this.writer.write(this.serializeChunk(delta, finishReason));
   }
 
-  private writeToolDetailsChunk(input: OpenWebUIToolDetailsInput): void {
+  private async writeToolDetailsChunk(input: OpenWebUIToolDetailsInput): Promise<void> {
     const frame = boundedOpenWebUIToolDetailsFrame(
       input,
       this.maxToolPayloadBytes,
       (content) => this.serializeChunk({ content }, null),
     );
-    this.response.write(frame);
+    await this.writer.write(frame);
   }
 
   private serializeChunk(

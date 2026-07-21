@@ -4,7 +4,9 @@ import {
   reconcileStaleRunArtifacts,
   registerTraceSource,
 } from "@mono-agent/observability";
+import type { TraceSourceHandle, TraceSourceMemoryHealth } from "@mono-agent/observability";
 import { resolveSandboxEffectiveState } from "@mono-agent/runtime-adapter";
+import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
 import {
   loadAppCoreConfig,
@@ -19,7 +21,7 @@ import {
   resolveTraceTmpdirRoot,
   shouldMirrorTraceSourceGlobally,
 } from "./app-config.js";
-import type { MonoAgentAppConfigInput, ResolvedExporter } from "./app-config.js";
+import type { AppTraceDefaults, MonoAgentAppConfigInput, ResolvedExporter } from "./app-config.js";
 import type { ConfiguredAgentSessionEvent } from "./configured-agent.js";
 import { resolveMemoryRecallSettings } from "./memory-recall.js";
 import type { MemoryRetrievalService } from "./memory-retrieval.js";
@@ -30,10 +32,57 @@ import {
 } from "./app-controller-utils.js";
 import type {
   ExporterStatus,
-  MonoAgentAppController,
   SandboxStatus,
+  SessionTraceMetadata,
   TraceabilityStatus,
-} from "./app-controller.js";
+} from "./app-controller-types.js";
+import type { BackgroundSnapshot } from "./background-snapshot.js";
+import type { ChannelDriver, ChannelId, ChannelStatus, MonoAgentAppLogger } from "./channels.js";
+
+export interface TraceabilityControllerPort {
+  readonly env: Record<string, string | undefined>;
+  readonly cwd: string;
+  readonly configPath: string;
+  readonly configReadPath: string;
+  readonly logger: MonoAgentAppLogger | undefined;
+  readonly traceDefaults: AppTraceDefaults | undefined;
+  readonly backgroundSnapshot: BackgroundSnapshot | undefined;
+  readonly drivers: readonly ChannelDriver[];
+  readonly statuses: Map<ChannelId, ChannelStatus>;
+  readonly processStartMs: number;
+  stopped: boolean;
+  staleRunsReconciled: boolean;
+  traceabilityStatusValue: TraceabilityStatus;
+  exporterStatusValue: ExporterStatus;
+  sandboxStatusValue: SandboxStatus;
+  memoryHealthValue: TraceSourceMemoryHealth;
+  memoryHealthRefreshDue: boolean;
+  memoryHealthGeneration: number;
+  startupCompleted: boolean;
+  startupTimingValue: {
+    readonly durationMs: number;
+    readonly phases: Readonly<Record<string, number>>;
+  } | undefined;
+  selectedSkillsValue: readonly string[] | undefined;
+  sessionMetadataValue: SessionTraceMetadata | undefined;
+  resolvedExporter: ResolvedExporter | undefined;
+  traceSource: TraceSourceHandle | undefined;
+  globalTraceSource: TraceSourceHandle | undefined;
+  traceRefreshInFlight: Promise<void> | undefined;
+  traceRefreshDirty: boolean;
+  traceRefreshLatestReason: string | undefined;
+  activeTransports(): readonly string[];
+  traceMetadata(reason: string): Record<string, unknown>;
+  refreshSelectedSkillsSnapshot(reason: string): Promise<void>;
+  refreshMemoryHealthSnapshot(reason: string, lifecycleForce?: boolean): Promise<TraceSourceMemoryHealth>;
+  startMemoryHealthRefreshLoop(intervalMs: number): void;
+  clearMemoryHealthRefreshTimer(): void;
+  restartArtifactRetentionScheduler(artifactDir: string, reason: string): void;
+  sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined;
+  refreshTraceSource(reason: string): Promise<void>;
+  invalidateMemoryHealthRefresh(): void;
+  rememberSelectedSkills(coreConfig: MonoAgentConfig): void;
+}
 
 const DEFAULT_SANDBOX_STATUS: SandboxStatus = sandboxStatusFromState({
   configured: false,
@@ -49,7 +98,7 @@ const DEFAULT_SANDBOX_STATUS: SandboxStatus = sandboxStatusFromState({
 /** Strict memory audits scan durable state; never run them at sub-second trace-heartbeat cadence. */
 const MIN_MEMORY_HEALTH_REFRESH_INTERVAL_MS = 30_000;
 
-export async function startTraceability(controller: MonoAgentAppController, reason: string): Promise<TraceabilityStatus> {
+export async function startTraceability(controller: TraceabilityControllerPort, reason: string): Promise<TraceabilityStatus> {
   if (controller.stopped) {
     return controller.traceabilityStatusValue;
   }
@@ -119,7 +168,7 @@ export async function startTraceability(controller: MonoAgentAppController, reas
   return controller.traceabilityStatusValue;
 }
 
-export async function refreshSandboxStatus(controller: MonoAgentAppController, reason: string): Promise<SandboxStatus> {
+export async function refreshSandboxStatus(controller: TraceabilityControllerPort, reason: string): Promise<SandboxStatus> {
   try {
     const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
     const coreConfig = await loadAppCoreConfig(input);
@@ -147,7 +196,7 @@ export async function refreshSandboxStatus(controller: MonoAgentAppController, r
   }
 }
 
-export async function reconcileStaleRunsOnce(controller: MonoAgentAppController, artifactDir: string): Promise<void> {
+export async function reconcileStaleRunsOnce(controller: TraceabilityControllerPort, artifactDir: string): Promise<void> {
   if (controller.staleRunsReconciled) {
     return;
   }
@@ -170,7 +219,7 @@ export async function reconcileStaleRunsOnce(controller: MonoAgentAppController,
   }
 }
 
-export async function startExporters(controller: MonoAgentAppController, reason: string): Promise<ExporterStatus> {
+export async function startExporters(controller: TraceabilityControllerPort, reason: string): Promise<ExporterStatus> {
   if (controller.stopped) {
     return controller.exporterStatusValue;
   }
@@ -206,7 +255,7 @@ export async function startExporters(controller: MonoAgentAppController, reason:
   return controller.exporterStatusValue;
 }
 
-export function recordExporterWarning(controller: MonoAgentAppController, warning: { phase: string; message: string }): void {
+export function recordExporterWarning(controller: TraceabilityControllerPort, warning: { phase: string; message: string }): void {
   const current = controller.exporterStatusValue;
   if (current.kind !== "configured") {
     return;
@@ -223,7 +272,7 @@ export function recordExporterWarning(controller: MonoAgentAppController, warnin
   void controller.refreshTraceSource("exporter-warning").catch(() => undefined);
 }
 
-export function refreshTraceSource(controller: MonoAgentAppController, reason: string): Promise<void> {
+export function refreshTraceSource(controller: TraceabilityControllerPort, reason: string): Promise<void> {
   const existing = controller.traceRefreshInFlight;
   if (existing !== undefined) {
     // Keep one bounded replay slot. Concurrent explicit callers share the
@@ -298,7 +347,7 @@ export function refreshTraceSource(controller: MonoAgentAppController, reason: s
   return pending;
 }
 
-export async function observabilityContext(controller: MonoAgentAppController): Promise<{
+export async function observabilityContext(controller: TraceabilityControllerPort): Promise<{
   readonly sourceId?: string;
   readonly sourceLabel?: string;
   readonly configPath?: string;
@@ -312,7 +361,7 @@ export async function observabilityContext(controller: MonoAgentAppController): 
 }
 
 export function reportMemoryRecallStatus(
-  controller: MonoAgentAppController,
+  controller: TraceabilityControllerPort,
   coreConfig: MonoAgentConfig,
   service: MemoryRetrievalService | undefined,
 ): boolean {
@@ -330,7 +379,7 @@ export function reportMemoryRecallStatus(
   return true;
 }
 
-export async function stopTraceSource(controller: MonoAgentAppController, reason: string): Promise<void> {
+export async function stopTraceSource(controller: TraceabilityControllerPort, reason: string): Promise<void> {
   controller.invalidateMemoryHealthRefresh();
   const traceSource = controller.traceSource;
   const globalTraceSource = controller.globalTraceSource;
@@ -361,7 +410,7 @@ export async function stopTraceSource(controller: MonoAgentAppController, reason
   }
 }
 
-export async function refreshSelectedSkillsSnapshot(controller: MonoAgentAppController, reason: string): Promise<void> {
+export async function refreshSelectedSkillsSnapshot(controller: TraceabilityControllerPort, reason: string): Promise<void> {
   try {
     const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
     controller.rememberSelectedSkills(await loadAppCoreConfig(input));
@@ -371,11 +420,11 @@ export async function refreshSelectedSkillsSnapshot(controller: MonoAgentAppCont
   }
 }
 
-export function rememberSelectedSkills(controller: MonoAgentAppController, coreConfig: MonoAgentConfig): void {
+export function rememberSelectedSkills(controller: TraceabilityControllerPort, coreConfig: MonoAgentConfig): void {
   controller.selectedSkillsValue = [...coreConfig.context.selectedSkills];
 }
 
-export function recordSessionEvent(controller: MonoAgentAppController, event: ConfiguredAgentSessionEvent, coreConfig: MonoAgentConfig): void {
+export function recordSessionEvent(controller: TraceabilityControllerPort, event: ConfiguredAgentSessionEvent, coreConfig: MonoAgentConfig): void {
   const now = new Date();
   const nextRolloverAt = coreConfig.runtime.session.rollover === "daily"
     ? nextDailyRolloverAt(now, coreConfig.runtime.session.rolloverTimezone)
@@ -406,7 +455,7 @@ export function recordSessionEvent(controller: MonoAgentAppController, event: Co
   void controller.refreshTraceSource(`session-${event.kind}`).catch(() => undefined);
 }
 
-export function traceMetadata(controller: MonoAgentAppController, reason: string): Record<string, unknown> {
+export function traceMetadata(controller: TraceabilityControllerPort, reason: string): Record<string, unknown> {
   const channels: Record<string, unknown> = {};
   for (const driver of controller.drivers) {
     const status = controller.statuses.get(driver.id);

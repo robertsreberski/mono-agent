@@ -7,11 +7,41 @@ import {
   unknownBujoMemoryHealth,
   unknownNoMemoryHealth,
 } from "./app-controller-utils.js";
-import type { MonoAgentAppController } from "./app-controller.js";
+import type { MonoAgentAppLogger } from "./channels.js";
+import type { TraceSourceHandle } from "@mono-agent/observability";
+
+export interface MemoryHealthControllerPort {
+  readonly env: Record<string, string | undefined>;
+  readonly cwd: string;
+  readonly configReadPath: string;
+  readonly logger: MonoAgentAppLogger | undefined;
+  stopped: boolean;
+  traceSource: TraceSourceHandle | undefined;
+  memoryHealthValue: TraceSourceMemoryHealth;
+  memoryHealthRefreshInFlight: Promise<TraceSourceMemoryHealth> | undefined;
+  memoryHealthRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  memoryHealthRefreshLoopActive: boolean;
+  memoryHealthRefreshIntervalMs: number;
+  memoryHealthLastCompletedAtMs: number | undefined;
+  memoryHealthRefreshDue: boolean;
+  memoryHealthGeneration: number;
+  startupCompleted: boolean;
+  startupTimingValue: {
+    readonly durationMs: number;
+    readonly phases: Readonly<Record<string, number>>;
+  } | undefined;
+  computeMemoryHealth(): Promise<TraceSourceMemoryHealth>;
+  recordMemoryHealthCompletion(generation: number): void;
+  scheduleMemoryHealthRefresh(delayOverrideMs?: number): void;
+  clearMemoryHealthRefreshTimer(): void;
+  refreshMemoryHealthOnTimer(): void;
+  refreshMemoryHealthSnapshot(reason: string, lifecycleForce?: boolean): Promise<TraceSourceMemoryHealth>;
+  refreshTraceSource(reason: string): Promise<void>;
+}
 
 const MIN_MEMORY_HEALTH_REFRESH_INTERVAL_MS = 30_000;
 
-export function refreshMemoryHealthSnapshot(controller: MonoAgentAppController, reason: string, lifecycleForce = false): Promise<TraceSourceMemoryHealth> {
+export function refreshMemoryHealthSnapshot(controller: MemoryHealthControllerPort, reason: string, lifecycleForce = false): Promise<TraceSourceMemoryHealth> {
   if (controller.stopped) {
     return Promise.resolve(controller.memoryHealthValue);
   }
@@ -57,7 +87,7 @@ export function refreshMemoryHealthSnapshot(controller: MonoAgentAppController, 
   return pending;
 }
 
-export async function computeMemoryHealth(controller: MonoAgentAppController): Promise<TraceSourceMemoryHealth> {
+export async function computeMemoryHealth(controller: MemoryHealthControllerPort): Promise<TraceSourceMemoryHealth> {
   let config: MonoAgentConfig;
   try {
     config = await loadAppCoreConfig({ env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath });
@@ -96,13 +126,13 @@ export async function computeMemoryHealth(controller: MonoAgentAppController): P
   }
 }
 
-export function startMemoryHealthRefreshLoop(controller: MonoAgentAppController, intervalMs: number): void {
+export function startMemoryHealthRefreshLoop(controller: MemoryHealthControllerPort, intervalMs: number): void {
   controller.memoryHealthRefreshLoopActive = true;
   controller.memoryHealthRefreshIntervalMs = intervalMs;
   controller.scheduleMemoryHealthRefresh();
 }
 
-export function scheduleMemoryHealthRefresh(controller: MonoAgentAppController, delayOverrideMs?: number): void {
+export function scheduleMemoryHealthRefresh(controller: MemoryHealthControllerPort, delayOverrideMs?: number): void {
   controller.clearMemoryHealthRefreshTimer();
   if (!controller.memoryHealthRefreshLoopActive || controller.stopped || controller.traceSource === undefined) return;
   const elapsed = controller.memoryHealthLastCompletedAtMs === undefined
@@ -116,7 +146,7 @@ export function scheduleMemoryHealthRefresh(controller: MonoAgentAppController, 
   controller.memoryHealthRefreshTimer.unref?.();
 }
 
-export function recordMemoryHealthCompletion(controller: MonoAgentAppController, generation: number): void {
+export function recordMemoryHealthCompletion(controller: MemoryHealthControllerPort, generation: number): void {
   if (controller.stopped || generation !== controller.memoryHealthGeneration) return;
   controller.memoryHealthLastCompletedAtMs = performance.now();
   // Any full audit that was already running when the timer became due
@@ -125,7 +155,7 @@ export function recordMemoryHealthCompletion(controller: MonoAgentAppController,
   controller.scheduleMemoryHealthRefresh(controller.memoryHealthRefreshIntervalMs);
 }
 
-export function refreshMemoryHealthOnTimer(controller: MonoAgentAppController): void {
+export function refreshMemoryHealthOnTimer(controller: MemoryHealthControllerPort): void {
   if (controller.stopped) return;
   if (controller.memoryHealthLastCompletedAtMs !== undefined) {
     const elapsed = performance.now() - controller.memoryHealthLastCompletedAtMs;
@@ -142,7 +172,7 @@ export function refreshMemoryHealthOnTimer(controller: MonoAgentAppController): 
 }
 
 export async function refreshMemoryHealthAfterLifecycle(
-  controller: MonoAgentAppController,
+  controller: MemoryHealthControllerPort,
   reason: string,
   beforePublish?: () => void,
 ): Promise<void> {
@@ -159,14 +189,14 @@ export async function refreshMemoryHealthAfterLifecycle(
   await controller.refreshTraceSource(reason);
 }
 
-export function clearMemoryHealthRefreshTimer(controller: MonoAgentAppController): void {
+export function clearMemoryHealthRefreshTimer(controller: MemoryHealthControllerPort): void {
   if (controller.memoryHealthRefreshTimer !== undefined) {
     clearTimeout(controller.memoryHealthRefreshTimer);
     controller.memoryHealthRefreshTimer = undefined;
   }
 }
 
-export function invalidateMemoryHealthRefresh(controller: MonoAgentAppController): void {
+export function invalidateMemoryHealthRefresh(controller: MemoryHealthControllerPort): void {
   controller.startupCompleted = false;
   controller.startupTimingValue = undefined;
   controller.memoryHealthRefreshLoopActive = false;

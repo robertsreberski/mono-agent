@@ -11,6 +11,5 @@ export type {
   MonoAgentDocsScope,
   MonoAgentDocsSearchAction,
   MonoAgentDocsSearchHit,
-  MonoAgentDocsSearchInput,
   MonoAgentDocsSearchResult,
 } from "./types.js";

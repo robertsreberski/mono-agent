@@ -1,4 +1,4 @@
-import { chmod, writeFile } from "node:fs/promises";
+import { chmod, lstat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -99,6 +99,41 @@ describe("WebStore", () => {
     expect(archived.archivedAt).toMatch(/^\d{4}-/u);
     expect(() => store.beginTurn({ threadId: created.id, text: "no", attachmentIds: [] })).toThrowError(/Unarchive/u);
     expect(store.patchThread(created.id, { archived: false }).sourceId).toBe("agent-one");
+    store.close();
+  });
+
+  it("deletes only archived threads, removes attachment files, and sweeps crash orphans", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    store.selectThread(thread.id);
+    await expect(store.deleteArchivedThread(thread.id)).rejects.toMatchObject({ code: "thread_not_archived" });
+
+    const attachment = store.createUpload({
+      name: "notes.txt",
+      contentType: "text/plain",
+      kind: "document",
+      declaredSize: 5,
+    });
+    const attachmentPath = store.attachmentPath(attachment);
+    await writeFile(attachmentPath, "hello", { mode: 0o600 });
+    store.markUploadComplete(attachment.id, 5);
+    const turn = store.beginTurn({ threadId: thread.id, text: "", attachmentIds: [attachment.id] });
+    store.completeTurn(turn.turnId, "done");
+    store.patchThread(thread.id, { archived: true });
+
+    await expect(store.deleteArchivedThread(thread.id)).resolves.toEqual({ orphanedFiles: 0 });
+    expect(store.getThread(thread.id)).toBeUndefined();
+    expect(store.getStoredAttachment(attachment.id)).toBeUndefined();
+    expect(store.currentThreadId()).toBeUndefined();
+    await expect(lstat(attachmentPath)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const orphan = join(store.paths.uploads, "11111111-1111-4111-8111-111111111111.bin");
+    await writeFile(orphan, "orphan", { mode: 0o600 });
+    await expect(store.purgeUnreferencedAttachmentFiles()).resolves.toBe(1);
+    await expect(lstat(orphan)).rejects.toMatchObject({ code: "ENOENT" });
     store.close();
   });
 

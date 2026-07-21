@@ -190,7 +190,7 @@ const orchestrator = await createConfiguredAgentResponder({
 
 ## 10. Phoenix-observed agent with the TUI
 **For:** an agent builder evaluating runs in a tracing dashboard.
-**Goal:** run locally with the TUI, attempt a best-effort terminal-batched Phoenix export, and retain a key-redacted, capped local JSONL snapshot after terminal persistence. A pre-terminal crash can omit the Phoenix batch and lose RAM-buffered JSONL events.
+**Goal:** run locally with the TUI, attempt a best-effort terminal-batched Phoenix export, and retain a sensitive-key-redacted, credential-scanned, capped local JSONL snapshot after terminal persistence. A pre-terminal crash can omit the Phoenix batch and lose RAM-buffered JSONL events.
 **Features:** `observability.phoenix-exporter`, `observability.jsonl-artifacts`, `observability.trace-registry`, `tui.chat`.
 
 ```json
@@ -202,7 +202,7 @@ const orchestrator = await createConfiguredAgentResponder({
 }
 ```
 **Steps:** start Phoenix (6006) → `init` → add artifacts/traceability/exporter → `validate` (POSTs an empty protobuf) → `start` (prints the Phoenix endpoint) → `mono-agent tui`.
-**Smoke:** complete a TUI prompt; confirm a JSONL artifact AND a Phoenix trace with merged tool spans under the project. Artifact/export strings are capped; non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed.
+**Smoke:** complete a TUI prompt; confirm a JSONL artifact AND a Phoenix trace with merged tool spans under the project. Strings are capped. For local artifacts, non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; retained free text is scanned for a closed set of high-confidence credential shapes. Phoenix applies that scan only when `contentPatternRedaction` is true.
 
 ## 11. Backfill historical runs to Phoenix
 **For:** an ops engineer onboarding observability after the fact.

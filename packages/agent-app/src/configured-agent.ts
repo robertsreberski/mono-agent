@@ -15,7 +15,7 @@ import type {
 import type { ToolPolicyInput } from "@mono-agent/agent-harness";
 import { resolve as resolvePath } from "node:path";
 
-import type { AgentResponder, MemoryStore, RunEventSink } from "@mono-agent/agent-contracts";
+import type { AgentResponder, MemoryStore } from "@mono-agent/agent-contracts";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { LlmComplete } from "@mono-agent/memory/bujo";
@@ -49,7 +49,6 @@ import type {
 } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
-import { createBroadcastRunRecorder } from "./broadcast-recorder.js";
 import { resolveMemoryRecallSettings } from "./memory-recall.js";
 import {
   createSharedMemoryRecallRuntimeExtension,
@@ -141,12 +140,6 @@ export interface ConfiguredAgentHarnessOptions {
   readonly exporterWarn?: (warning: { phase: string; message: string }) => void;
   /** Injection seam (tests); defaults to createPhoenixRunExporter. */
   readonly exporterFactory?: (config: PhoenixExporterConfig) => RunExporter;
-  /**
-   * In-process live run-event bus. When present, every run's start/event/finish
-   * is ALSO published here (best-effort, additive) so a live operator surface can
-   * observe runs mid-flight. Wired by the app from its shared bus.
-   */
-  readonly runEventSink?: RunEventSink;
 }
 
 export interface ConfiguredAgentResponderOptions extends ConfiguredAgentHarnessOptions {}
@@ -183,7 +176,6 @@ interface RecorderCompositionDeps {
   readonly exporterWarn?: ConfiguredAgentHarnessOptions["exporterWarn"];
   readonly exporterFactory?: ConfiguredAgentHarnessOptions["exporterFactory"];
   readonly onRunArtifactCommitted?: RunArtifactCommitHook;
-  readonly runEventSink?: ConfiguredAgentHarnessOptions["runEventSink"];
 }
 
 /**
@@ -222,7 +214,7 @@ function composeRunRecorder(
   }), deps.onRunArtifactCommitted, args);
   const exporterCfg = deps.exporters[0];
   if (exporterCfg === undefined) {
-    return withBroadcast(jsonl, deps, args);
+    return jsonl;
   }
   const exporter = (deps.exporterFactory ?? createPhoenixRunExporter)(exporterCfg);
   const context: RunExportContext = {
@@ -251,12 +243,12 @@ function composeRunRecorder(
     timeoutMs: exporterCfg.timeoutMs ?? 5000,
     ...(deps.exporterWarn === undefined ? {} : { onWarning: deps.exporterWarn }),
   });
-  return withBroadcast(composite, deps, args);
+  return composite;
 }
 
 /**
  * Notify the app at the exact local-artifact boundary. This wrapper sits inside
- * the exporter composite, unlike live broadcast, so slow exporter start/finish
+ * the exporter composite, so slow exporter start/finish
  * work cannot leave artifact-derived caches stale after JSONL has committed.
  */
 function withArtifactCommitHook(
@@ -316,37 +308,12 @@ function withArtifactCommitHook(
   return wrapped;
 }
 
-/**
- * Wrap the composed recorder so runs are ALSO published to the live bus when one
- * is configured. Outermost by design: it observes the authoritative final summary
- * the inner recorder returns. A no-op passthrough when no bus is present.
- */
-function withBroadcast(
-  recorder: RunRecorder,
-  deps: RecorderCompositionDeps,
-  args: { readonly runId: string; readonly conversationId: string; readonly source?: string; readonly sourceDetail?: string },
-): RunRecorder {
-  if (deps.runEventSink === undefined) {
-    return recorder;
-  }
-  return createBroadcastRunRecorder(recorder, deps.runEventSink, {
-    runId: args.runId,
-    conversationId: args.conversationId,
-    sourceId: deps.observabilityContext?.sourceId ?? "",
-    ...(deps.observabilityContext?.sourceLabel === undefined
-      ? {}
-      : { sourceLabel: deps.observabilityContext.sourceLabel }),
-    ...(args.source === undefined ? {} : { source: args.source }),
-    ...(args.sourceDetail === undefined ? {} : { sourceDetail: args.sourceDetail }),
-  });
-}
-
 /** Collect the recorder-composition deps from the host config + harness options. */
 function recorderCompositionDeps(
   config: MonoAgentConfig,
   options: Pick<
     ConfiguredAgentHarnessOptions,
-    "observabilityContext" | "exporterWarn" | "exporterFactory" | "runEventSink"
+    "observabilityContext" | "exporterWarn" | "exporterFactory"
   >,
   internalHooks: ConfiguredAgentInternalHooks = {},
 ): RecorderCompositionDeps {
@@ -368,7 +335,6 @@ function recorderCompositionDeps(
     ...(internalHooks.onRunArtifactCommitted === undefined
       ? {}
       : { onRunArtifactCommitted: internalHooks.onRunArtifactCommitted }),
-    ...(options.runEventSink === undefined ? {} : { runEventSink: options.runEventSink }),
   };
 }
 
@@ -702,7 +668,7 @@ export async function createConfiguredMemory(
      */
     observability?: Pick<
       ConfiguredAgentHarnessOptions,
-      "observabilityContext" | "exporterWarn" | "exporterFactory" | "runEventSink"
+      "observabilityContext" | "exporterWarn" | "exporterFactory"
     >;
   } = {},
 ): Promise<MemoryStore | undefined> {

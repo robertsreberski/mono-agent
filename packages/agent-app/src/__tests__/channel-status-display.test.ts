@@ -9,7 +9,6 @@ describe("formatHumanChannelSections", () => {
       { id: "slack", kind: "disabled", text: "disabled: Slack is disabled." },
       { id: "webhook", kind: "waiting_for_config", text: "waiting_for_config: API key required" },
       { id: "tui", kind: "running", text: "running (baseUrl=http://127.0.0.1:5001/gui)" },
-      { id: "live", kind: "running", text: "running (baseUrl=http://127.0.0.1:5002/live)" },
     ]);
 
     expect(sections.map(({ title }) => title)).toEqual(["channels", "operator"]);
@@ -24,8 +23,6 @@ describe("formatHumanChannelSections", () => {
     const operator = sections[1]?.lines.join("\n") ?? "";
     expect(operator).toContain("gui");
     expect(operator).toContain("TUI + Web; baseUrl=http://127.0.0.1:5001/gui");
-    expect(operator).toContain("live");
-    expect(operator).toContain("read-only events; baseUrl=http://127.0.0.1:5002/live");
     expect(operator).not.toContain("tui");
   });
 
@@ -33,12 +30,11 @@ describe("formatHumanChannelSections", () => {
     const sections = formatHumanChannelSections([
       { id: "discord", kind: "running", text: "running" },
       { id: "tui", kind: "disabled", text: "disabled: off" },
-      { id: "live", kind: "disabled", text: "disabled: off" },
     ]);
 
     expect(sections[0]?.lines.join("\n")).toContain("discord");
     const operator = sections[1]?.lines.join("\n") ?? "";
     expect(operator).toContain("disabled");
-    expect(operator).toContain("gui, live");
+    expect(operator).toContain("gui");
   });
 });

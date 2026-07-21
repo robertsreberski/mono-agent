@@ -721,7 +721,7 @@ describe("check-consumer-docs-consistency", () => {
     }
   });
 
-  it("flags residual absolute observability claims in playbooks, composer references, and session-web source", async () => {
+  it("flags residual absolute observability claims in playbooks, composer references, and operator sources", async () => {
     const repoRoot = await tempRepo();
     await writeRepoDoc(repoRoot, "docs/reference/feature-registry.md", [
       "# Features",
@@ -760,15 +760,6 @@ describe("check-consumer-docs-consistency", () => {
       "# Discovery",
       "Local JSONL artifacts are always written and are the fallback.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/session-web/src/history.ts", [
-      "// a session's steps need the fuller (redacted) payload",
-      "// Full timelines are loaded by readInstanceSession.",
-      "// use {@link readInstanceSession} for full detail.",
-      "// A single run read in full.",
-    ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/session-web/src/aggregator.ts", [
-      "// cached session contains full detail read from the disk artifact",
-    ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/operator-adapter/src/tui/constants.ts", [
       "// Upper bound for one serialized NDJSON frame.",
       "// Oversized events are field-reduced until the encoded frame fits.",
@@ -788,9 +779,6 @@ describe("check-consumer-docs-consistency", () => {
     await writeRepoDoc(repoRoot, "packages/operator-adapter/package.json", JSON.stringify({
       description: "Loopback operator adapters: full-fidelity TUI NDJSON turns and live SSE.",
     }));
-    await writeRepoDoc(repoRoot, "packages/session-web/webapp/src/views/DetailView.tsx", [
-      "<div>Loading full detail</div>",
-    ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/tui/package.json", JSON.stringify({
       description: "live chat with full stream-event insight",
     }));
@@ -815,7 +803,7 @@ describe("check-consumer-docs-consistency", () => {
     const reported = result.issues.join("\n");
 
     expect(result.userDocsChecked).toBe(10);
-    expect(result.artifactContractSourcesChecked).toBe(9);
+    expect(result.artifactContractSourcesChecked).toBe(6);
     expect(reported).toContain("full stream-event insight");
     expect(reported).toContain("guaranteed every-run Phoenix stream");
     expect(reported).toContain("guaranteed every-run Phoenix export");
@@ -826,7 +814,6 @@ describe("check-consumer-docs-consistency", () => {
         "Describe transport and string caps, best-effort export, the start snapshot, " +
         "in-memory buffering, terminal replacement, and crash-loss/reconciliation boundaries instead.",
     );
-    expect(reported).toContain("unbounded session artifact detail");
     expect(reported).toContain("verbatim complete TUI event stream");
     expect(reported).toContain("broad TUI wire-bound claim");
     expect(reported).toContain("non-enforced TUI event reduction threshold");
@@ -843,9 +830,6 @@ describe("check-consumer-docs-consistency", () => {
       "packages/agent-app/skills/mono-agent-composer/references/playbooks.md",
       "packages/agent-app/skills/mono-agent-composer/references/config-blueprint.md",
       "packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md",
-      "packages/session-web/src/history.ts",
-      "packages/session-web/src/aggregator.ts",
-      "packages/session-web/webapp/src/views/DetailView.tsx",
       "packages/agent-app/src/cli-background-command.ts",
       "packages/agent-app/src/cli-help.ts",
       "packages/operator-adapter/package.json",
@@ -886,12 +870,6 @@ describe("check-consumer-docs-consistency", () => {
       "# Tool guard",
       "The guard attempts best-effort persistence; missing or failed sinks leave omitted bytes unavailable.",
     ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/session-web/src/history.ts", [
-      "// Loads only persisted, bounded session detail; omitted data cannot be restored.",
-    ].join("\n"));
-    await writeRepoDoc(repoRoot, "packages/session-web/src/aggregator.ts", [
-      "// Tracks sessions whose persisted, bounded detail has been loaded.",
-    ].join("\n"));
     await writeRepoDoc(repoRoot, "packages/agent-app/src/cli-background-command.ts", [
       "function describeExporter() {",
       "  return \"JSONL artifacts remain local\";",
@@ -906,9 +884,6 @@ describe("check-consumer-docs-consistency", () => {
     await writeRepoDoc(repoRoot, "packages/operator-adapter/package.json", JSON.stringify({
       description: "Loopback operator adapters: structured TUI NDJSON turns and live SSE.",
     }));
-    await writeRepoDoc(repoRoot, "packages/session-web/webapp/src/views/DetailView.tsx", [
-      "<div>Loading persisted detail</div>",
-    ].join("\n"));
     await writeRepoDoc(repoRoot, "docs/channels/tui.md", [
       "# TUI channel",
       "Serialized event frames are capped at 256 KiB after UTF-8 NDJSON encoding. Assistant-thought/tool-call payload fields are reduced, while other oversized variants become bounded markers; non-event frames are unaffected.",

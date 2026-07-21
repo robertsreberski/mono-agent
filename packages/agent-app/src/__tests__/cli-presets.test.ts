@@ -40,7 +40,7 @@ describe("parseCliArgs preset flags & alias normalization", () => {
     expect(shouldRunInitWizard(parseCliArgs(["init", "--auth"]), true, true)).toBe(false);
     expect(shouldRunInitWizard(parseCliArgs(["init", "--env-file", ".env.local"]), true, true)).toBe(false);
     expect(shouldRunInitWizard(parseCliArgs(["init", "--config", "custom.json"]), true, true)).toBe(false);
-    expect(shouldRunInitWizard(parseCliArgs(["init", "--force"]), true, true)).toBe(false);
+    expect(() => parseCliArgs(["init", "--force"])).toThrow(/--force is only supported/u);
     expect(shouldRunInitWizard(parseCliArgs(["init", "unexpected"]), true, true)).toBe(false);
   });
 

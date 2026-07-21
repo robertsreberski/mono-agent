@@ -125,9 +125,5 @@
         "includeSensitiveData": true
       }
     ]
-  },
-  "console": {
-    "enabled": true,
-    "port": 4310
   }
 }

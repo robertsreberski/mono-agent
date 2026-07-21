@@ -31,13 +31,6 @@ for (const specifier of importSpecifiers) {
 const cliSmokes = [
   { packageName: "@mono-agent/agent-app", binName: "mono-agent", args: ["--help"], statuses: [0] },
   { packageName: "@mono-agent/tui", binName: "mono-agent-tui", args: ["--help"], statuses: [0] },
-  {
-    packageName: "@mono-agent/memory",
-    binName: "memory-bujo",
-    args: [],
-    statuses: [1],
-    stderrIncludes: "was removed",
-  },
   { packageName: "create-mono-agent", binName: "create-mono-agent", args: ["--help"], statuses: [0] },
 ];
 const selectedCliSmokes = cliSmokes.filter((entry) => packageNames.includes(entry.packageName));

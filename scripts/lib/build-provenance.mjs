@@ -383,7 +383,6 @@ function outputRoots(repo) {
   }
 
   for (const required of [
-    join(repo, "packages", "session-web", "webapp", "dist"),
     join(repo, "packages", "web", "webapp", "dist"),
     join(repo, "demos", "final-agent", "dist"),
   ]) {

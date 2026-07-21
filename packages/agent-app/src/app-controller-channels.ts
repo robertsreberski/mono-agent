@@ -1,4 +1,5 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
+import type { AgentResponder } from "@mono-agent/agent-contracts";
 
 import {
   isAppCoreConfigError,
@@ -9,14 +10,50 @@ import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type {
   ChannelDriver,
   ChannelId,
+  MonoAgentAppLogger,
+  RunningChannel,
   ChannelStatus,
 } from "./channels.js";
 import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
 import { reasonOf } from "./app-controller-utils.js";
-import type { ConfigApplyResult, MonoAgentAppController } from "./app-controller.js";
+import type { ConfigApplyResult, TraceabilityStatus } from "./app-controller-types.js";
 import { notifyDestination as notifyDestinationForChannel } from "./app-controller-maintenance.js";
+import type { InteractionBridgeHandle } from "./interaction-bridge.js";
+import type { ContinuationServiceHandle } from "./continuation-service.js";
+import type { NotifyDeliveryResult } from "./proactive-notify.js";
+import type { NotifyDestination } from "./notify-destinations.js";
 
-export async function startChannel(controller: MonoAgentAppController, driver: ChannelDriver, reason: string): Promise<ChannelStatus> {
+export interface ChannelsControllerPort {
+  readonly env: Record<string, string | undefined>;
+  readonly cwd: string;
+  readonly configReadPath: string;
+  readonly logger: MonoAgentAppLogger | undefined;
+  readonly drivers: readonly ChannelDriver[];
+  readonly driversById: ReadonlyMap<ChannelId, ChannelDriver>;
+  readonly statuses: Map<ChannelId, ChannelStatus>;
+  readonly running: Map<ChannelId, RunningChannel>;
+  readonly stopped: boolean;
+  readonly traceabilityStatusValue: TraceabilityStatus;
+  setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
+  rememberSelectedSkills(coreConfig: MonoAgentConfig): void;
+  ensureInteractionBridge(coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined>;
+  ensureContinuationService(coreConfig: MonoAgentConfig): Promise<ContinuationServiceHandle | undefined>;
+  buildResponder(coreConfig: MonoAgentConfig): Promise<AgentResponder>;
+  notifyDestination(
+    conversationId: string,
+    text: string,
+    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
+  ): Promise<NotifyDeliveryResult>;
+  listNotifyDestinations(): Promise<readonly NotifyDestination[]>;
+  observabilityContext(): Promise<{
+    readonly sourceId?: string;
+    readonly sourceLabel?: string;
+    readonly configPath?: string;
+  }>;
+  activeTransports(): readonly string[];
+}
+
+export async function startChannel(controller: ChannelsControllerPort, driver: ChannelDriver, reason: string): Promise<ChannelStatus> {
   const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
 
   let config: unknown;
@@ -90,7 +127,6 @@ export async function startChannel(controller: MonoAgentAppController, driver: C
       listNotifyDestinations: () => controller.listNotifyDestinations(),
       postedMessageIndexPath,
       ...(interactionBridge === undefined ? {} : { interaction: interactionBridge }),
-      liveEventBus: controller.liveEventBus,
       ...(controller.logger === undefined ? {} : { logger: controller.logger }),
       onFailure: (failureReason) => {
         controller.running.delete(driver.id);
@@ -149,7 +185,7 @@ export async function startChannel(controller: MonoAgentAppController, driver: C
   }
 }
 
-export async function stopChannel(controller: MonoAgentAppController, id: ChannelId, reason: string): Promise<void> {
+export async function stopChannel(controller: ChannelsControllerPort, id: ChannelId, reason: string): Promise<void> {
   const driver = controller.driversById.get(id);
   const runningChannel = controller.running.get(id);
   if (driver === undefined || runningChannel === undefined) {
@@ -173,12 +209,12 @@ export async function stopChannel(controller: MonoAgentAppController, id: Channe
   }
 }
 
-export function setStatus(controller: MonoAgentAppController, id: ChannelId, status: ChannelStatus): ChannelStatus {
+export function setStatus(controller: ChannelsControllerPort, id: ChannelId, status: ChannelStatus): ChannelStatus {
   controller.statuses.set(id, status);
   return status;
 }
 
-export function applyResult(controller: MonoAgentAppController): ConfigApplyResult {
+export function applyResult(controller: ChannelsControllerPort): ConfigApplyResult {
   const transports = controller.activeTransports();
   const statusEntries = [...controller.statuses.entries()];
   const statuses = statusEntries.map(([, status]) => status);
@@ -197,9 +233,9 @@ export function applyResult(controller: MonoAgentAppController): ConfigApplyResu
   }
 
   // A degraded channel is still serving (transport self-recovering, harness alive),
-  // so it counts as running for the "is anything live?" check.
+  // so it counts as running for the "is anything serving?" check.
   const hasServingChannel = statusEntries.some(
-    ([id, status]) => id !== "live" && (status.kind === "running" || status.kind === "degraded"),
+    ([, status]) => status.kind === "running" || status.kind === "degraded",
   );
   if (!hasServingChannel && statuses.some((status) => status.kind === "waiting_for_config")) {
     return {
@@ -224,7 +260,7 @@ export function applyResult(controller: MonoAgentAppController): ConfigApplyResu
   };
 }
 
-export function activeTransports(controller: MonoAgentAppController): readonly string[] {
+export function activeTransports(controller: ChannelsControllerPort): readonly string[] {
   const transports: string[] = [];
   for (const driver of controller.drivers) {
     const kind = controller.statuses.get(driver.id)?.kind;

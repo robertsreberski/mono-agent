@@ -239,7 +239,6 @@ describe("explicit legacy replay adoption", () => {
         root,
         db,
         llm: fakeLlm([[aging.text, JSON.stringify({ action: "cluster", collection: "adopted" })]]),
-        nextId: () => "unused",
         now: () => migrationNow,
         canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
         hooks: { afterDecisionDurable: () => { throw new Error("crash-after-paid-cluster"); } },

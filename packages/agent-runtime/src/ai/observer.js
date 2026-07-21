@@ -82,10 +82,11 @@ function addObserver(list, observer) {
 //   cache: { hits, misses, hitRatio },          // hitRatio in [0,1]; null if no signal
 //   tools: { callsByName: { ... }, errorsByName: { ... } },
 //   errors: { total, byKind: { ... } },
-//   turns: { count, latencyMsP50, latencyMsP95 },
+//   turns: { count, sampleCount, latencyMsP50, latencyMsP95 },
 //   approvals: { pending, granted, denied },
 // }
-export function createMetricsObserver({ name = "metrics" } = {}) {
+export function createMetricsObserver({ name = "metrics", maxLatencySamples = 2_048 } = {}) {
+  const latencySampleLimit = normalizePositiveInteger(maxLatencySamples, 2_048);
   const state = {
     eventsTotal: 0,
     eventsByType: new Map(),
@@ -99,7 +100,8 @@ export function createMetricsObserver({ name = "metrics" } = {}) {
     errorTotal: 0,
     errorsByKind: new Map(),
     turnLatencies: [],
-    turnStartByModel: new Map(),
+    turnLatencyCount: 0,
+    pendingTurnStarts: [],
     approvalPending: 0,
     approvalGranted: 0,
     approvalDenied: 0,
@@ -167,17 +169,24 @@ export function createMetricsObserver({ name = "metrics" } = {}) {
     }
 
     if (type === "provider_request_started" && event.model) {
-      state.turnStartByModel.set(event.model, (Number.isFinite(event.timestamp) ? event.timestamp : Date.now()));
+      state.pendingTurnStarts.push({
+        key: latencyEventKey(event),
+        model: String(event.model),
+        timestamp: Number.isFinite(event.timestamp) ? event.timestamp : Date.now(),
+      });
+      if (state.pendingTurnStarts.length > latencySampleLimit) state.pendingTurnStarts.shift();
     }
     if (type === "provider_request_completed" && event.model) {
-      const started = state.turnStartByModel.get(event.model);
-      if (started !== undefined) {
-        state.turnLatencies.push(Math.max(0, ((Number.isFinite(event.timestamp) ? event.timestamp : Date.now())) - started));
-        state.turnStartByModel.delete(event.model);
+      const startIndex = matchingStartIndex(state.pendingTurnStarts, event);
+      const started = startIndex === -1 ? undefined : state.pendingTurnStarts.splice(startIndex, 1)[0];
+      const explicitDuration = Number(event.durationMs);
+      if (Number.isFinite(explicitDuration)) recordTurnLatency(Math.max(0, explicitDuration));
+      else if (started !== undefined) {
+        recordTurnLatency(Math.max(0, ((Number.isFinite(event.timestamp) ? event.timestamp : Date.now())) - started.timestamp));
       }
     }
     if (type === "turn_latency" && Number.isFinite(Number(event.durationMs))) {
-      state.turnLatencies.push(Number(event.durationMs));
+      recordTurnLatency(Math.max(0, Number(event.durationMs)));
     }
 
     if (type === "tool_approval_pending") state.approvalPending += 1;
@@ -186,6 +195,12 @@ export function createMetricsObserver({ name = "metrics" } = {}) {
   }
 
   function recordMetric() { /* future hook */ }
+
+  function recordTurnLatency(durationMs) {
+    state.turnLatencyCount += 1;
+    state.turnLatencies.push(durationMs);
+    if (state.turnLatencies.length > latencySampleLimit) state.turnLatencies.shift();
+  }
 
   function snapshot() {
     const cacheTotal = state.cacheHits + state.cacheMisses;
@@ -205,7 +220,7 @@ export function createMetricsObserver({ name = "metrics" } = {}) {
         errorsByName: Object.fromEntries(state.toolErrorsByName),
       },
       errors: { total: state.errorTotal, byKind: Object.fromEntries(state.errorsByKind) },
-      turns: percentilesFor(state.turnLatencies),
+      turns: percentilesFor(state.turnLatencies, state.turnLatencyCount),
       approvals: { pending: state.approvalPending, granted: state.approvalGranted, denied: state.approvalDenied },
     };
   }
@@ -213,14 +228,34 @@ export function createMetricsObserver({ name = "metrics" } = {}) {
   return { name, recordEvent, recordMetric, snapshot };
 }
 
-function percentilesFor(samples) {
+function percentilesFor(samples, count = samples.length) {
   const arr = Array.isArray(samples) ? samples.filter((n) => Number.isFinite(n)).slice().sort((a, b) => a - b) : [];
-  if (!arr.length) return { count: 0, latencyMsP50: null, latencyMsP95: null };
+  if (!arr.length) return { count, sampleCount: 0, latencyMsP50: null, latencyMsP95: null };
   return {
-    count: arr.length,
+    count,
+    sampleCount: arr.length,
     latencyMsP50: percentile(arr, 0.5),
     latencyMsP95: percentile(arr, 0.95),
   };
+}
+
+function latencyEventKey(event) {
+  const requestId = event.requestId ?? event.turnId;
+  return requestId === undefined || requestId === null ? undefined : String(requestId);
+}
+
+function matchingStartIndex(starts, event) {
+  const key = latencyEventKey(event);
+  if (key !== undefined) {
+    const keyedIndex = starts.findIndex((start) => start.key === key);
+    if (keyedIndex !== -1) return keyedIndex;
+  }
+  return starts.findIndex((start) => start.model === String(event.model));
+}
+
+function normalizePositiveInteger(value, fallback) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : fallback;
 }
 
 function percentile(sortedArr, q) {

@@ -131,8 +131,6 @@ export type {
 export { createOllamaLlm } from "./ollama-llm.js";
 
 // Phase 3 rituals
-export { reflect } from "./reflect.js";
-export type { ReflectDeps, ReflectResult } from "./reflect.js";
 export { migrate, previewCanonicalExplicitForgetMemories } from "./migrate.js";
 export type {
   ExplicitForgetPreview,

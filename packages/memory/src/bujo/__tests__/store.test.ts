@@ -136,7 +136,6 @@ describe("BujoMemoryStore — tier derivation", () => {
       db,
       root,
       llm: { id: "paid", complete: async () => JSON.stringify({ action: "promote" }) },
-      nextId: () => "unused",
       now: () => now,
       hooks: { afterDecisionDurable: () => { throw new Error("fault-after-paid-decision"); } },
     })).rejects.toThrow("fault-after-paid-decision");
@@ -295,7 +294,6 @@ describe("BujoMemoryStore — tier derivation", () => {
       db,
       root,
       llm: { id: "paid", complete: async () => JSON.stringify({ action: "promote" }) },
-      nextId: () => "unused",
       now: () => now,
       hooks: { afterDecisionDurable: () => { throw new Error("fault-after-paid-decision"); } },
     })).rejects.toThrow("fault-after-paid-decision");

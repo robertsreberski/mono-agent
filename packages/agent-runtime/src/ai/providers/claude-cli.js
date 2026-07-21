@@ -776,18 +776,6 @@ export async function generateCliResponse(systemPrompt, options = {}) {
   }
 }
 
-export const claudeCodeBackend = {
-  kind: "claude-code",
-  capabilities: { kind: "claude-code", runtime: "cli", ...DORMANT_CLI_CAPABILITIES },
-  execute: generateCliResponse,
-};
-
-export const codexCliBackend = {
-  kind: "codex-cli",
-  capabilities: { kind: "codex-cli", runtime: "cli", ...DORMANT_CLI_CAPABILITIES },
-  execute: generateCliResponse,
-};
-
 // CLI bridge for sdk='claude' agents that opt into execution_mode='cli'.
 // generateCliResponse internally branches on resolved.sdk; the SDK shape
 // from parseModelReference uses 'claude', the CLI builder expects

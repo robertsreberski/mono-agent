@@ -89,7 +89,6 @@ describe("consolidateBujoMemory", () => {
     const recordsBefore = ["OLD", "NEW", "UNIQUE"].map((id) => db.get(id));
     const edgesBefore = db.edges("OLD");
     const validationBefore = db.validationSnapshot();
-    const decay = vi.spyOn(db, "applyDecay");
     const supersede = vi.spyOn(db, "markSuperseded");
     const prepare = vi.spyOn(db, "prepareUpsertVectors");
     providerUnavailable = true;
@@ -99,7 +98,6 @@ describe("consolidateBujoMemory", () => {
     });
 
     expect(embeddingCalls).toBe(callsBefore);
-    expect(decay).not.toHaveBeenCalled();
     expect(supersede).not.toHaveBeenCalled();
     expect(prepare).not.toHaveBeenCalled();
     expect(["OLD", "NEW", "UNIQUE"].map((id) => db.get(id))).toEqual(recordsBefore);
@@ -169,7 +167,6 @@ describe("consolidateBujoMemory", () => {
       db,
       root,
       llm: { id: "migration", complete: async () => JSON.stringify({ action: "promote" }) },
-      nextId: () => "unused",
       now: () => now,
       hooks: { afterDecisionDurable: () => { throw new Error("leave-consolidate-migration-pending"); } },
     })).rejects.toThrow("leave-consolidate-migration-pending");
