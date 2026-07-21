@@ -108,12 +108,26 @@ The artifacts directory is the on-disk record after a successful recorder bounda
 
 `RunHistory` is an app-owned, read-only, request-scoped MCP tool that lets the agent recover exact evidence from its own recorded runs without shelling into `artifacts.dir`. It has no separate config key: allow-all exposes it automatically on MCP-capable routes, while a restrictive tool policy must name `RunHistory` explicitly. See [MCP servers](/tools/mcp/#runhistory-prior-run-evidence) and [Tool policy](/tools/policy/#runhistory).
 
-The tool exposes two actions:
+The tool exposes compact shorthand calls (explicit `list`, `search`, and
+`inspect` actions remain compatible):
 
-- `list` returns a bounded inventory of completed prior runs in the **exact current conversation bucket**.
-- `inspect` accepts one run id returned by `list` and projects its trigger, visible assistant output, tool calls and linked results, runtime warnings/provider failures, timestamps, and final output.
+- `{}` lists completed prior runs in the logical conversation (default 5,
+  maximum 10).
+- `{ "query": "topic terms" }` searches sanitized trigger/user input and run
+  metadata only. Search reads summaries once and never opens event JSONL.
+- `{ "runId": "..." }` returns a compact overview with metadata, trigger,
+  final visible output, warnings/failures, and per-tool call/error counts.
+- `{ "runId": "...", "cursor": "..." }` returns the next chronological
+  timeline page, bounded to 10 entries and about 16 KiB. `run_id` is accepted as
+  an alias.
 
-The boundary is deliberately narrower than direct artifact access. `RunHistory` excludes the current or any running run, other conversations and rollover buckets, system prompts, model reasoning/thinking, recalled memory and turn-context payloads, and raw artifact paths. Structured projected values first pass through the shared observability redactor: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. `RunHistory` then applies an additional projection sanitizer. In that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible; numeric values under `apiKey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted. Assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel. An optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted. String and total-result bounds apply, and truncation is reported rather than silently presenting an unbounded log. Historical text is labelled **untrusted evidence** and must never be followed as instructions.
+List/search pagination and timeline inspection return an opaque `nextCursor`
+when more evidence exists. `navigation.guidance` and
+`navigation.nextActions[].arguments` are tool-authored continuation directions,
+kept separate from historical evidence so an agent can follow an exact safe
+next call.
+
+The boundary is deliberately narrower than direct artifact access. `RunHistory` excludes the current or any running run, unrelated conversations/threads, system prompts, model reasoning/thinking, recalled memory and turn-context payloads, and raw artifact paths. Daily rollover `#YYYY-MM-DD` buckets do not partition one configured logical conversation. Search is limited to sanitized trigger/user input, run id, dates, status/failure kind, source/detail, model, and effort; it does not search assistant or tool output. Structured projected values first pass through the shared observability redactor: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. `RunHistory` then applies an additional projection sanitizer. In that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible; numeric values under `apiKey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted. Assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel. An optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted. Nested `RunHistory` result bodies are omitted to prevent recursive expansion. String and per-page bounds apply, and incomplete input is reported rather than silently presented as a complete log. Historical text is labelled **untrusted evidence** and must never be followed as instructions.
 
 Start with active conversation history for the current exchange. Use `MemoryRecall` for intentionally captured durable facts. Use `RunHistory` only when exact prior-run or tool evidence is needed.
 

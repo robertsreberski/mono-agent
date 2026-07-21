@@ -64,6 +64,12 @@ Warm in-memory sessions are lost on restart. To resume across restarts, use the 
 
 `rolloverNotice` is adapter-local and default-off. It does not enable rollover by itself and does not add a new IPC channel or change provider resume behavior. When daily rollover is already enabled and a base conversation crosses into a new day bucket, the responder streams `New session bucket started: <bucket>.` before the model answer and includes the same prelude in the returned final text for final-only transports.
 
+Daily rollover partitions active conversation/provider history, but it does not
+partition recorded-run exploration: the app-owned `RunHistory` tool strips the
+daily bucket only for its request-scoped authorization match, so completed runs
+from earlier buckets of the same logical conversation remain searchable. Other
+conversations and threads remain inaccessible.
+
 ## Concurrency: admission and execution bounds
 
 `concurrency` bounds how much work is in flight. There are two separate limits, applied at different points in a run:

@@ -27,7 +27,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   options, and outcome in the assistant history copy so cold/stateless provider
   replay does not lose the out-of-band exchange.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
-  evidence from completed prior runs in the current conversation bucket.
+  search and paged evidence from completed prior runs in the logical
+  conversation, independent of daily rollover buckets.
 - Drive each channel through a uniform driver contract with per-channel
   `disabled` / `waiting_for_config` / `running` / `failed` status.
 - Register the host as a traceability source. Config edits are made directly in
@@ -272,12 +273,29 @@ validation/runtime and an incompatible dynamic override is warned and ignored.
 
 `RunHistory` requires no config key. It is automatically available under
 allow-all on MCP-capable routes; a restrictive `tools.allowedTools` must name
-`RunHistory` explicitly (`run_history` remains a deprecated input alias), and
+`RunHistory` explicitly (`run_history` remains a deprecated policy alias), and
 `disallowedTools` can remove it. Direct OpenCode and other MCP-incompatible
-routes suppress it. Its `list` and `inspect` actions can read only completed
-prior runs in the exact current conversation bucket and return bounded,
-normalized evidence. Structured projected values first pass through the shared
-observability redactor: non-numeric values under sensitive-looking object keys
+routes suppress it. The agent-facing shorthand is `{}` to list recent runs,
+`{ "query": "topic terms" }` to search safe trigger and summary metadata,
+`{ "runId": "..." }` for a compact overview, and
+`{ "runId": "...", "cursor": "..." }` for the next timeline page. The
+`run_id` spelling and explicit `action: "list" | "search" | "inspect"` remain
+compatible. List/search defaults to 5 results (maximum 10); timeline pages hold
+at most 10 entries and about 16 KiB. Each result includes tool-authored
+`navigation.guidance` and exact `navigation.nextActions[].arguments` for
+continuing exploration.
+List and search read retained summaries once; search never reads event JSONL
+and matches all normalized terms only against sanitized trigger/user input,
+run id, dates, status/failure kind, source/detail, model, and effort. Daily
+session rollover buckets are treated as one logical conversation when rollover
+is configured, while current/running runs and unrelated conversations or
+threads stay unavailable. Inspect returns metadata, trigger, final visible
+output, warning/failure summaries, and tool-name call/error counts before any
+timeline detail is requested. Timeline continuation is cursor-paged, and nested
+`RunHistory` result bodies are omitted to prevent recursive expansion.
+All returned historical evidence is bounded and normalized. Structured
+projected values first pass through the shared observability redactor:
+non-numeric values under sensitive-looking object keys
 are redacted; numeric values under matched keys are retained; free text is not
 content-scanned or scrubbed. `RunHistory` then applies an additional projection
 sanitizer. In that second pass, numeric values under `credential`, `private_key`,
@@ -286,10 +304,10 @@ and `bearer` can remain visible; numeric values under `apiKey`, `token`,
 Assignment-shaped password or secret prose is content-scanned and replaced with
 the diagnostic or tool-result omission sentinel. An optionally quoted assignment
 value is exempt only when its complete value is exactly `[redacted]`; any prefix
-or suffix is omitted. Results exclude the
-current/running run, other conversations or rollover buckets, system prompts,
-reasoning, recalled memory, turn-context payloads, and raw artifact paths;
-historical text is marked untrusted.
+or suffix is omitted. Results exclude the current/running run, unrelated
+conversations or threads, system prompts, reasoning, recalled memory,
+turn-context payloads, and raw artifact paths; historical text is marked
+untrusted.
 
 For missing context, the agent should use active conversation history first,
 `MemoryRecall` for intentionally captured durable facts, and `RunHistory` for
