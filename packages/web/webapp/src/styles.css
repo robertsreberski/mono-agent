@@ -126,6 +126,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
   height: 100dvh;
   display: grid;
   grid-template-columns: var(--agent-rail-width, 72px) 304px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
   background: var(--surface);
 }
