@@ -9,7 +9,7 @@ A single `mono-agent.config.json` brings the agent's runtime, providers, context
 
 In normal CLI use, relative paths resolve from the agent folder. For fields with a documented environment mapping, precedence is **passed environment > JSON > default**. Config fields may be JSON-only; the generated reference marks fields without a mapping as `--`.
 
-Only `runtime.model` and `context.identityPath` are required. Most other capabilities are opt-in, but `tui` and `live` default on at loopback and interaction can auto-start from the selected tool configuration.
+Only `runtime.model` and `context.identityPath` are required. Most other capabilities are opt-in, but `tui` defaults on at loopback and interaction can auto-start from the selected tool configuration.
 
 This is a **config**-coverage reference. Capabilities that config cannot express need the [programmatic escape hatch](/programmatic/) — see the note at the end.
 
@@ -220,7 +220,8 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   },
 
   // Observability: the recorder writes empty events + a running summary at start,
-  // buffers key-redacted/capped events in RAM, then replaces both files at finish/fail.
+  // buffers sensitive-key-redacted, credential-scanned, capped events in RAM,
+  // then replaces both files at finish/fail.
   // A pre-terminal crash can lose buffered events. `mono-agent status` reads the
   // separate trace-source registry.
   "artifacts": {
@@ -255,7 +256,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   },
 
   // ----- Channels: one section per channel; all independent. Most channels are
-  // ----- opt-in; operator surfaces (`tui`, `live`) default on and can opt out.
+  // ----- opt-in; the `tui` operator surface defaults on and can opt out.
   // ----- A waiting/disabled channel never blocks the others.
 
   "tui": {
@@ -264,14 +265,6 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "port": 0,
     "basePath": "/gui",
     "allowNonLoopback": false              // set MONO_AGENT_TUI_API_KEY in .env when needed
-  },
-
-  "live": {
-    "enabled": true,                       // default-on read-only SSE relay (run-event operator surface)
-    "host": "127.0.0.1",
-    "port": 0,
-    "basePath": "/live",
-    "allowNonLoopback": false              // set MONO_AGENT_LIVE_API_KEY in .env when needed
   },
 
   "webhook": {
@@ -434,7 +427,7 @@ Every top-level section maps to a deep-dive page:
 | `sandbox` | Filesystem/network confinement for runtime commands | [Sandbox](/tools/sandbox/) |
 | `artifacts`, `traceability` | JSONL run summaries + the trace-source registry | [Artifacts & traces](/observability/artifacts-and-traces/) |
 | `observability` | Optional Phoenix (OTLP) exporter | [Phoenix & backfill](/observability/phoenix-and-backfill/) |
-| `tui`, `live` | Default-on loopback operator and event relay endpoints | [TUI and live event relay](/channels/tui/) |
+| `tui` | Default-on loopback operator endpoint | [Operator stream endpoint](/channels/tui/) |
 | `webhook` | HTTP invoke endpoint (sync/async) | [Webhook](/channels/webhook/) |
 | `openaiApi` | OpenAI-compatible `/v1` endpoint (streams tokens) | [OpenAI API](/channels/openai-api/) |
 | `telegram` | Telegram bot channel | [Telegram](/channels/telegram/) |

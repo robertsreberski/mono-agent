@@ -51,6 +51,7 @@ interface ConsoleStoreValue {
   readonly renameThread: (threadId: string, title: string) => Promise<void>;
   readonly archiveThread: (threadId: string) => Promise<void>;
   readonly unarchiveThread: (threadId: string) => Promise<void>;
+  readonly deleteThread: (threadId: string) => Promise<void>;
   readonly sendTurn: (
     input: StartTurnInput,
     onThreadResolved?: (threadId: string) => void,
@@ -621,6 +622,41 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, []);
 
+  const deleteThread = useCallback(async (threadId: string) => {
+    const thread = threads.find((candidate) => candidate.id === threadId);
+    if (!thread) return;
+    try {
+      await api.deleteThread(threadId);
+      const preferenceKey = preferenceKeyForThread(thread.sourceId, threadId);
+      setModelByContext((current) => {
+        const next = { ...current };
+        delete next[preferenceKey];
+        return next;
+      });
+      setEffortByContext((current) => {
+        const next = { ...current };
+        delete next[preferenceKey];
+        return next;
+      });
+      setBootstrap((current) => current
+        ? { ...current, threads: current.threads.filter((item) => item.id !== threadId) }
+        : current);
+      if (selectedThreadRef.current === threadId) {
+        const replacement = visibleThreads.find((item) => item.id !== threadId);
+        selectedThreadRef.current = replacement?.id ?? null;
+        setSelectedThreadId(replacement?.id ?? null);
+        setDetail(null);
+      }
+      if (readPersistedThreadIds()[thread.sourceId] === threadId) {
+        persistThreadId(thread.sourceId, null);
+      }
+      setActionError(null);
+    } catch (deleteError) {
+      setActionError(errorMessage(deleteError));
+      throw deleteError;
+    }
+  }, [threads, visibleThreads]);
+
   const modelOptions = selectedAgent?.models ?? [];
   const preferenceKey = selectedAgentId
     ? preferenceKeyForThread(selectedAgentId, selectedThreadId)
@@ -764,6 +800,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       renameThread,
       archiveThread,
       unarchiveThread,
+      deleteThread,
       sendTurn,
       cancelTurn,
       setShowArchived,
@@ -787,6 +824,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       createThread,
       detail,
       detailLoading,
+      deleteThread,
       effort,
       effortOptions,
       error,

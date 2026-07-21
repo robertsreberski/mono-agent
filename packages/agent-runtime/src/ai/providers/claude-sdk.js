@@ -1051,12 +1051,6 @@ export async function generateClaudeResponse(systemPrompt, options) {
   };
 }
 
-export const claudeSdkBackend = {
-  kind: "claude",
-  capabilities: runtimeCapabilities("claude"),
-  execute: generateClaudeResponse,
-};
-
 export const claudeRuntimeBridge = {
   id: "claude",
   kind: "claude",

@@ -11,7 +11,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
-import type { RunEventFrame, RunEventSink } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
 import type {
@@ -260,39 +259,6 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     }
     const convs = summaries.map((s) => s.conversationId);
     expect(convs).toEqual(["memory:capture:extract"]);
-  });
-
-  it("publishes traced memory LLM runs to the configured live run-event sink", async () => {
-    const dir = await tempDir();
-    const frames: RunEventFrame[] = [];
-    const sink: RunEventSink = { publish: (frame) => { frames.push(frame); } };
-    const store = await createConfiguredMemory(
-      bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
-      {
-        memoryRuntime: createRecordingRuntime(),
-        observability: {
-          observabilityContext: { sourceId: "s1", sourceLabel: "Test" },
-          runEventSink: sink,
-        },
-      },
-    ) as unknown as CapturableStore;
-
-    await store.capture("conv-1", "Morgan prefers agent-host memory LLM calls.");
-    await store.close();
-
-    expect(frames.some((frame) =>
-      frame.t === "run_started" &&
-      frame.sourceId === "s1" &&
-      frame.sourceLabel === "Test" &&
-      frame.source === "memory" &&
-      frame.conversationId.startsWith("memory:")
-    )).toBe(true);
-    expect(frames.some((frame) =>
-      frame.t === "run_finished" &&
-      frame.sourceId === "s1" &&
-      frame.runId.startsWith("mem-") &&
-      typeof frame.summary === "object"
-    )).toBe(true);
   });
 
   it("tags every memory run's summary with source 'memory' and sourceDetail = the operation", async () => {

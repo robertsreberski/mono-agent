@@ -27,13 +27,20 @@ import {
   makeLaunchctlRunner,
 } from "./launchd.js";
 import type { LaunchctlRunner, LaunchdPaths, LaunchdServiceInfo } from "./launchd.js";
+import {
+  rolloverManagedWebLogs,
+  waitForManagedWebLogRollover,
+} from "./managed-web-logs.js";
 import * as ui from "./ui.js";
+
+export { rolloverManagedWebLogs } from "./managed-web-logs.js";
 
 export const DEFAULT_WEB_HOST = "0.0.0.0";
 export const DEFAULT_WEB_PORT = 5050;
 // Deliberately outside `com.mono-agent.*`: fleet discovery reserves that prefix
 // for configured agent instances.
 export const WEB_LAUNCHD_LABEL = "com.mono-agent-web";
+export const MANAGED_WEB_WORKER_ENV = "MONO_AGENT_MANAGED_WEB_WORKER";
 const DEFAULT_LOG_LINES = 200;
 const WEB_SERVICE_SCHEMA = "mono-agent.web-service.v1";
 const TAILSCALE_OWNERSHIP_SCHEMA = "mono-agent.web-tailscale-serve.v1";
@@ -119,6 +126,11 @@ export interface RunWebCommandDeps {
   readonly writePrivateFile?: (path: string, contents: string) => Promise<void>;
   readonly acquireLifecycleLock?: (paths: WebPaths) => Promise<(() => Promise<void>) | undefined>;
   readonly discoverNetworkAddresses?: () => readonly string[];
+  readonly waitForManagedLogRollover?: (
+    paths: WebPaths,
+    signal: AbortSignal,
+  ) => Promise<"rollover" | "unsafe" | "cancelled">;
+  readonly rolloverManagedLogs?: (paths: WebPaths) => Promise<void>;
   readonly homeDir?: string;
 }
 
@@ -307,10 +319,35 @@ async function runWebForeground(options: RunWebCommandOptions, deps: RunWebComma
   }
   printWebUrls(stdout, handle.url, handle.port ?? port, host, deps.discoverNetworkAddresses);
   stdout.write("No app authentication is enabled; network reachability is the access boundary. Press Ctrl-C to stop.\n");
+  const monitorController = new AbortController();
+  const managedLogOutcome = options.env[MANAGED_WEB_WORKER_ENV] === "1"
+    ? (deps.waitForManagedLogRollover ?? waitForManagedWebLogRollover)(paths, monitorController.signal)
+    : new Promise<"cancelled">(() => undefined);
+  let outcome: "shutdown" | "rollover" | "unsafe" | "cancelled" = "shutdown";
   try {
-    await (deps.waitForShutdown ?? waitForShutdownSignal)();
+    outcome = await Promise.race([
+      (deps.waitForShutdown ?? waitForShutdownSignal)().then(() => "shutdown" as const),
+      managedLogOutcome,
+    ]);
   } finally {
+    monitorController.abort();
     await handle.stop();
+  }
+  if (outcome === "unsafe") {
+    stderr.write(ui.errorLine("Managed web log maintenance found an unsafe log path; the worker stopped without changing it."));
+    return 1;
+  }
+  if (outcome === "rollover") {
+    try {
+      await (deps.rolloverManagedLogs ?? rolloverManagedWebLogs)(paths);
+    } catch (error) {
+      stderr.write(ui.errorLine(`Managed web log rollover failed: ${errorMessage(error)}`));
+      return 1;
+    }
+    // KeepAlive restarts only after an unsuccessful exit. The old stdout/stderr
+    // descriptors now point at unlinked retiring files; launchd opens fresh
+    // active paths for the replacement worker.
+    return 75;
   }
   stdout.write("mono-agent web stopped.\n");
   return 0;
@@ -446,6 +483,7 @@ async function startWebBackground(
     const environment = {
       ...selectBackgroundOperationalEnvironment(options.env),
       PATH: defaultPathEnv(options.env),
+      [MANAGED_WEB_WORKER_ENV]: "1",
       ...(options.env.MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR === undefined
         ? {}
         : { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: options.env.MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR }),

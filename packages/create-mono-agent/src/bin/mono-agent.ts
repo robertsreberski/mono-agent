@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 
-import { delegateSignals } from "../delegate.js";
+import { delegatedCliArgs, delegateSignals } from "../delegate.js";
 import { resolveAgentAppCliEntry } from "../resolve-agent-app-cli.js";
 
 /**
@@ -27,5 +27,6 @@ import { resolveAgentAppCliEntry } from "../resolve-agent-app-cli.js";
  * only relay a targeted SIGTERM, and mirror the child's exit code/signal exactly.
  */
 const cliEntry = resolveAgentAppCliEntry();
-const child = spawn(process.execPath, [cliEntry, ...process.argv.slice(2)], { stdio: "inherit" });
+const args = delegatedCliArgs(process.argv[1], process.argv.slice(2));
+const child = spawn(process.execPath, [cliEntry, ...args], { stdio: "inherit" });
 delegateSignals(child, process);

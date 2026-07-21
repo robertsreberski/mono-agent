@@ -422,6 +422,33 @@ describe("startTuiAdapter", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("aborts active turns and bounds repeated shutdown calls", async () => {
+    let enteredResolve: (() => void) | undefined;
+    const entered = new Promise<void>((resolve) => {
+      enteredResolve = resolve;
+    });
+    let requestSignal: AbortSignal | undefined;
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async (request) => {
+        requestSignal = request.abortSignal;
+        enteredResolve?.();
+        return await new Promise<AgentResponse>(() => undefined);
+      }),
+    });
+
+    const response = await postTurn(running.baseUrl, { conversationId: "c", text: "hi" });
+    await entered;
+    const startedAt = Date.now();
+    const firstStop = running.stop();
+    expect(running.stop()).toBe(firstStop);
+    await firstStop;
+
+    expect(requestSignal?.aborted).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
+    await response.body?.cancel();
+    running = undefined;
+  });
+
   it("routes explicit cancel to responder.cancel and 501s when unsupported", async () => {
     const cancelled: Array<[string, unknown]> = [];
     running = await startTuiAdapter({

@@ -123,10 +123,6 @@
       }
     ]
   },
-  "console": {
-    "enabled": true,
-    "port": 4400
-  },
   "webhook": {
     "enabled": true,
     "host": "127.0.0.1",

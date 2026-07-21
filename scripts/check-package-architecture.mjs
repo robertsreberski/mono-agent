@@ -16,6 +16,7 @@ import {
   findPackageReadmeStructureErrors,
   REQUIRED_PACKAGE_README_SECTIONS,
 } from "./lib/package-docs.mjs";
+import { findPackageVerificationErrors } from "./lib/package-verification.mjs";
 
 const root = process.cwd();
 const packageScope = "@mono-agent/";
@@ -96,6 +97,9 @@ for (const catalogEntry of packageCatalog) {
   }
 
   const manifest = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+  if (catalogEntry.publishable === true) {
+    errors.push(...findPackageVerificationErrors({ manifest, packagePath }));
+  }
   const packageName = manifest.name;
   if (packageName !== catalogEntry.name) {
     errors.push(`${packagePath}/package.json has unexpected name ${packageName}.`);
@@ -173,6 +177,58 @@ for (const staleReference of staleReferences) {
     if (text.includes(staleReference)) {
       errors.push(`${relative(root, file)} still references ${staleReference}.`);
     }
+  }
+}
+
+const controllerOperationModules = [
+  "app-controller-channels.ts",
+  "app-controller-continuation.ts",
+  "app-controller-lifecycle.ts",
+  "app-controller-maintenance.ts",
+  "app-controller-memory-health.ts",
+  "app-controller-memory.ts",
+  "app-controller-responder.ts",
+  "app-controller-traceability.ts",
+];
+for (const file of controllerOperationModules) {
+  const relativePath = join("packages", "agent-app", "src", file);
+  const text = readFileSync(join(root, relativePath), "utf8");
+  if (/from\s+["']\.\/app-controller\.js["']/u.test(text)) {
+    errors.push(`${relativePath} must depend on a narrow controller port, not MonoAgentAppController.`);
+  }
+}
+
+const extractedResponsibilityDeclarations = [
+  {
+    file: join("packages", "agent-app", "src", "web-command.ts"),
+    declaration: "function rolloverManagedWebLogs",
+    owner: "managed-web-logs.ts",
+  },
+  {
+    file: join("packages", "agent-app", "src", "background.ts"),
+    declaration: "function maintainLaunchdLogsOperation",
+    owner: "background-log-maintenance.ts",
+  },
+  {
+    file: join("packages", "agent-app", "src", "doctor.ts"),
+    declaration: "function probeExporterEndpoint",
+    owner: "doctor-observability.ts",
+  },
+  {
+    file: join("packages", "slack-adapter", "src", "adapter.ts"),
+    declaration: "function buildSlackRuntimeControlCatalog",
+    owner: "runtime-controls.ts",
+  },
+  {
+    file: join("packages", "memory", "src", "bujo", "rebuild.ts"),
+    declaration: "function acquireSqliteWriterFences",
+    owner: "rebuild-sqlite-safety.ts",
+  },
+];
+for (const rule of extractedResponsibilityDeclarations) {
+  const text = readFileSync(join(root, rule.file), "utf8");
+  if (text.includes(rule.declaration)) {
+    errors.push(`${rule.file} must keep ${rule.declaration} in ${rule.owner}.`);
   }
 }
 

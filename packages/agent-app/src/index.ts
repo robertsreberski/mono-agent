@@ -22,8 +22,6 @@ export type {
   ConfiguredAgentResponderOptions,
   ConfiguredAgentRuntimeOptions,
 } from "./configured-agent.js";
-export { createBroadcastRunRecorder } from "./broadcast-recorder.js";
-export type { BroadcastRunContext } from "./broadcast-recorder.js";
 export {
   createRunHistoryRuntimeExtension,
   createRunHistoryServer,

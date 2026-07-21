@@ -11,7 +11,7 @@ import {
   readCanonicalFileSnapshot,
   writeCanonicalFileAtomic,
 } from "./path-safety.js";
-import type { ReflectDeps } from "./reflect.js";
+import type { LlmComplete } from "./llm.js";
 import { parseDailyFile, serializeDailyFile, type DailyFile } from "./grammar.js";
 import {
   appendGraphBatch,
@@ -37,7 +37,12 @@ import {
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import type { Bullet } from "./types.js";
 
-export interface MigrateDeps extends ReflectDeps {
+export interface MigrateDeps {
+  readonly db: MemoryDb;
+  readonly root: string;
+  readonly llm: LlmComplete;
+  readonly now: () => Date;
+  readonly abortSignal?: AbortSignal;
   readonly canonicalGraphRepairGuard?: CanonicalGraphRepairGuard;
   /** Fault-injection seams used to prove the durable decision boundary. */
   readonly hooks?: {

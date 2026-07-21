@@ -28,11 +28,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "dependencies": {
     "@mono-agent/agent-contracts": "workspace:0.14.0",
-    "ws": "^8.20.1"
+    "ws": "^8.21.1"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1"

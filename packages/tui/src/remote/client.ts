@@ -8,6 +8,8 @@ import {
   type AgentResponse,
 } from "@mono-agent/agent-contracts";
 
+const MAX_REMOTE_FRAME_BYTES = 1024 * 1024;
+
 export interface RemoteAgentResponderOptions {
   /** The running agent's operator-adapter TUI base URL, e.g. http://127.0.0.1:52341/gui */
   readonly baseUrl: string;
@@ -117,10 +119,12 @@ export class RemoteAgentResponder implements AgentResponder {
         buffered += done ? decoder.decode() : decoder.decode(value, { stream: true });
         const lines = buffered.split("\n");
         buffered = lines.pop() ?? "";
+        assertRemoteFrameSize(buffered);
         for (const line of lines) {
           if (line.length === 0) {
             continue;
           }
+          assertRemoteFrameSize(line);
           const frame = parseAgentStreamFrame(line);
           if (frame.kind === "finish") {
             return {
@@ -182,6 +186,14 @@ export class RemoteAgentResponder implements AgentResponder {
     }
     return response;
   }
+}
+
+function assertRemoteFrameSize(frame: string): void {
+  if (Buffer.byteLength(frame, "utf8") <= MAX_REMOTE_FRAME_BYTES) return;
+  throw new RemoteAgentResponderError(
+    `Agent stream frame exceeds the ${String(MAX_REMOTE_FRAME_BYTES)}-byte client limit.`,
+    "frame_too_large",
+  );
 }
 
 /**

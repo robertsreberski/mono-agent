@@ -14,7 +14,7 @@ New here? Read [Getting Started → Quickstart](/getting-started/quickstart/) to
 ## What you get
 
 - **Any backend, one model string** — `runtime.model` defaults to `codex:gpt-5.6-terra` and can select claude (sdk/cli), codex (cli), pi (sdk, 15+ providers), or opencode (cli); e.g. `codex:gpt-5.6-terra`, `codex:gpt-5.6-sol`, `pi:openai-codex:gpt-5.6-sol`, and `pi:opencode-go:kimi-k2.6`.
-- **Many channels, one config** — external transports are opt-in, the loopback TUI/live operator endpoints are opt-out, and every active surface uses the same configured runtime, tools, memory, and context through its own responder/harness.
+- **Many channels, one config** — external transports are opt-in, the loopback TUI operator endpoint is opt-out, and every active surface uses the same configured runtime, tools, memory, and context through its own responder/harness.
 - **Batteries included** — managed Read/Write/Edit/Glob/Grep/Bash/NodeRepl/WebFetch/WebSearch tools, a tool policy, MCP servers, a native sandbox, tiered memory, and observability.
 
 ```json
@@ -47,4 +47,4 @@ Equivalent env overrides: `MONO_AGENT_MODEL=codex:gpt-5.6-terra` and, for the en
 
 Everything that defines a running agent lives in `mono-agent.config.json`, resolved with a strict precedence for fields that expose an environment mapping: **process env > `mono-agent.config.json` > built-in defaults**. Documented `MONO_AGENT_*` overrides let one source config run in different environments without embedding credentials; JSON-only fields remain in the config file.
 
-External channels and optional subsystems are generally **opt-in**: a transport is dormant until you enable it, while the loopback TUI and live relay default on and can be disabled explicitly. Security-sensitive surfaces (sandbox fallback, network policy, send-tool allowlists) **fail closed** by default. A handful of capabilities — approval gates, structured output, live input, custom runtimes/channels — are programmatic escape hatches by design; those are covered under [Programmatic](/programmatic/).
+External channels and optional subsystems are generally **opt-in**: a transport is dormant until you enable it, while the loopback TUI endpoint defaults on and can be disabled explicitly. Security-sensitive surfaces (sandbox fallback, network policy, send-tool allowlists) **fail closed** by default. A handful of capabilities — approval gates, structured output, live input, custom runtimes/channels — are programmatic escape hatches by design; those are covered under [Programmatic](/programmatic/).

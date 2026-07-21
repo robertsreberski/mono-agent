@@ -38,7 +38,6 @@ function baseConfig(): Record<string, unknown> {
     tools: { allowedTools: [], disallowedTools: [] },
     traceability: { registryDir: "./trace-sources", sourceId: "plugin-test" },
     tui: { enabled: false },
-    live: { enabled: false },
   };
 }
 
@@ -103,6 +102,54 @@ describe("channel plugins", () => {
       reason: "A2A provider is disabled.",
     });
     await app.stop();
+  });
+
+  it("reloads plugin-owned config while preserving host-only factory options", async () => {
+    const pluginPath = join(dir, "reloadable-channel-plugin.mjs");
+    await writeFile(
+      pluginPath,
+      `
+export function createChannelDriver(options = {}) {
+  return {
+    id: options.id ?? "reloadable",
+    label: options.label ?? "Reloadable",
+    async loadConfig() {
+      return { value: options.config?.value, injected: options.injected };
+    },
+    isConfigError() {
+      return false;
+    },
+    async start() {
+      return { summary: {}, stop: async () => undefined };
+    },
+  };
+}
+`,
+      "utf8",
+    );
+    const configPath = await writeConfig({
+      ...baseConfig(),
+      channels: { plugins: [{ package: pluginPath, id: "reloadable", config: { value: "before" } }] },
+    });
+    const drivers = await resolveChannelDrivers(
+      { env: {}, cwd: dir, configPath },
+      { pluginFactoryOptions: { [pluginPath]: { injected: "host-only" } } },
+    );
+    const driver = drivers.find((candidate) => candidate.id === "reloadable");
+    expect(driver).toBeDefined();
+    await expect(driver!.loadConfig({ env: {}, cwd: dir, configPath })).resolves.toEqual({
+      value: "before",
+      injected: "host-only",
+    });
+
+    await writeConfig({
+      ...baseConfig(),
+      channels: { plugins: [{ package: pluginPath, id: "reloadable", config: { value: "after" } }] },
+    });
+    await expect(driver!.loadConfig({ env: {}, cwd: dir, configPath })).resolves.toEqual({
+      value: "after",
+      injected: "host-only",
+    });
   });
 
   it("passes the root public agent name through the real config-loaded A2A plugin path", async () => {

@@ -21,10 +21,11 @@ artifacts, and publishes file-backed trace-source manifests for operator
 discovery. Browser-safe subpaths shape timelines and span attributes; the
 optional `./otel` subpath exports runs to Phoenix over OTLP/HTTP.
 
-Redaction is key-based: non-numeric values under sensitive-looking object keys
-are redacted; numeric values under matched keys are retained; free text is not
-content-scanned by default. Export callers can opt into the closed
-`contentPatternRedaction` scan without changing local recorder defaults.
+Local recorder redaction is always on: non-numeric values under sensitive-looking
+object keys are redacted; numeric values under matched keys are retained; retained
+free text is scanned for a closed set of high-confidence credential shapes.
+Phoenix export keeps its separate, default-off `contentPatternRedaction` policy
+for content supplied directly to an exporter.
 
 Numeric values under matched keys are retained. Current matcher limitations remain follow-up work: space-, dot-, slash-, and colon-separated `private`/`api` + `key` spellings are not matched, while substring matching conservatively redacts string values under benign keys such as `credentialType`, `bearerStatus`, and `privateKeyboard`.
 
@@ -95,7 +96,7 @@ stream.
 ### Recorder checkpoints and reads
 
 The JSONL recorder writes an initial `running` snapshot, then schedules a
-checkpoint of the key-redacted event trail after 25 new events or five seconds
+checkpoint of the redacted event trail after 25 new events or five seconds
 from the first uncheckpointed event, whichever comes first. Checkpoints are
 serialized and fire-and-forget: `onEvent` does not await filesystem I/O,
 repeated triggers coalesce behind an in-flight write, and an incremental
@@ -111,7 +112,8 @@ events file before separately replacing the summary. The pair is not one
 transaction, so a death between renames can leave a newer event prefix beside
 the prior summary. There is no append, fsync, or power-loss guarantee.
 
-`.events.jsonl` artifacts contain one key-redacted, bounded event per line from
+`.events.jsonl` artifacts contain one sensitive-key-redacted, credential-scanned,
+bounded event per line from
 the latest successful recorder boundary. `readRecordedRun` keeps the first
 `maxEventsPerRun` events by default. Set `eventSelection: "head-tail"` to split
 the cap between beginning and end while retaining source indexes; head-tail
@@ -135,7 +137,7 @@ Per-source writes are serialized, and terminal stop is final. Old running
 heartbeats become `stale`; stopped and failed sources remain distinguishable.
 
 Stale-run reconciliation repairs summary status from persisted data only. The
-persisted running prefix is key-redacted and may be empty when a process dies
+persisted running prefix is redacted and may be empty when a process dies
 before the first successful checkpoint. Live broadcast is visibility, not disk
 recovery.
 
@@ -157,7 +159,8 @@ payloads. When it is true, non-numeric values under sensitive-looking object
 keys are redacted; numeric values under matched keys are retained; free text is
 not content-scanned by default. The opt-in `contentPatternRedaction: true` scan
 replaces a closed set of high-confidence credential shapes in retained outbound
-text; it is defense in depth, not a general secret detector.
+text; it is defense in depth, not a general secret detector. This outbound
+policy is independent of the local recorder's always-on credential-shape scan.
 
 ## Public API
 

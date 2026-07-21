@@ -243,9 +243,18 @@ describe("final agent demo", () => {
       expect(providers).toHaveLength(1);
       expect(providers[0]?.options.agent.name).toBe("Final Demo A2A");
       const patch = validA2AOnlyConfigPatch();
+      const plugin = patch.channels.plugins[0]!;
       await writeConfig(dir, {
         ...patch,
-        a2a: { ...patch.a2a, agent: { ...patch.a2a.agent, name: "Reloaded Final Demo A2A" } },
+        channels: {
+          plugins: [{
+            ...plugin,
+            config: {
+              ...plugin.config,
+              agent: { ...plugin.config.agent, name: "Reloaded Final Demo A2A" },
+            },
+          }],
+        },
       });
       const applied = await demo.applyConfigChange("test-config-write");
       expect(applied.kind).toBe("applied");
@@ -701,23 +710,28 @@ function validA2AOnlyConfigPatch() {
   const { telegram: _telegram, memory: _memory, ...patch } = validConfigPatch();
   return {
     ...patch,
-    a2a: {
-      provider: {
-        enabled: true,
-        host: "127.0.0.1",
-        port: 0,
-      },
-      agent: {
-        name: "Final Demo A2A",
-        description: "Final demo A2A provider.",
-        version: "0.1.0",
-      },
-      skill: {
-        id: "final-demo",
-        name: "Final Demo",
-        description: "Runs the configured final demo runtime over A2A.",
-        tags: ["agent", "a2a"],
-      },
+    channels: {
+      plugins: [{
+        package: "@mono-agent/a2a-adapter",
+        config: {
+          provider: {
+            enabled: true,
+            host: "127.0.0.1",
+            port: 0,
+          },
+          agent: {
+            name: "Final Demo A2A",
+            description: "Final demo A2A provider.",
+            version: "0.1.0",
+          },
+          skill: {
+            id: "final-demo",
+            name: "Final Demo",
+            description: "Runs the configured final demo runtime over A2A.",
+            tags: ["agent", "a2a"],
+          },
+        },
+      }],
     },
   };
 }

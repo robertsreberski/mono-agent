@@ -9,8 +9,6 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { createCronChannelDriver } from "./channel-drivers/cron.js";
 import type { CronChannelOverrides } from "./channel-drivers/cron.js";
-import { createLiveChannelDriver } from "./channel-drivers/live.js";
-import type { LiveChannelOverrides } from "./channel-drivers/live.js";
 import { createOpenAIApiChannelDriver } from "./channel-drivers/openai-api.js";
 import type { OpenAIApiChannelOverrides } from "./channel-drivers/openai-api.js";
 import { createSlackChannelDriver, slackTargetFromConversation } from "./channel-drivers/slack.js";
@@ -57,13 +55,11 @@ export const BUILTIN_CHANNEL_IDS = [
   "openai-api",
   "cron",
   "tui",
-  "live",
 ] as const;
 export type BuiltinChannelId = (typeof BUILTIN_CHANNEL_IDS)[number];
 
 export {
   createCronChannelDriver,
-  createLiveChannelDriver,
   createOpenAIApiChannelDriver,
   createSlackChannelDriver,
   createTelegramChannelDriver,
@@ -74,7 +70,6 @@ export {
 };
 export type {
   CronChannelOverrides,
-  LiveChannelOverrides,
   OpenAIApiChannelOverrides,
   SlackChannelOverrides,
   TelegramChannelOverrides,
@@ -89,7 +84,8 @@ export interface ChannelDriverOverrides {
   readonly openaiApi?: OpenAIApiChannelOverrides;
   readonly cron?: CronChannelOverrides;
   readonly tui?: TuiChannelOverrides;
-  readonly live?: LiveChannelOverrides;
+  /** Host-only dependency injection keyed by configured plugin package name. */
+  readonly pluginFactoryOptions?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
 }
 
 /** Every built-in channel driver, in startup/status display order. */
@@ -101,7 +97,6 @@ export function defaultChannelDrivers(overrides: ChannelDriverOverrides = {}): r
     createOpenAIApiChannelDriver(overrides.openaiApi),
     createCronChannelDriver(overrides.cron),
     createTuiChannelDriver(overrides.tui),
-    createLiveChannelDriver(overrides.live),
   ] as readonly ChannelDriver[];
 }
 
@@ -110,7 +105,12 @@ export async function resolveChannelDrivers(
   overrides: ChannelDriverOverrides = {},
 ): Promise<readonly ChannelDriver[]> {
   const drivers = [...defaultChannelDrivers(overrides)];
-  const plugins = await resolveConfiguredChannelPlugins(input, { reservedIds: BUILTIN_CHANNEL_IDS });
+  const plugins = await resolveConfiguredChannelPlugins(input, {
+    reservedIds: BUILTIN_CHANNEL_IDS,
+    ...(overrides.pluginFactoryOptions === undefined
+      ? {}
+      : { factoryOptionsByPackage: overrides.pluginFactoryOptions }),
+  });
   for (const plugin of plugins) {
     const existing = drivers.findIndex((driver) => driver.id === plugin.id);
     if (existing >= 0) {

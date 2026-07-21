@@ -342,4 +342,23 @@ describe("RemoteAgentResponder", () => {
       await new Promise((resolve) => server.close(resolve));
     }
   });
+
+  it("rejects an unterminated frame before its receive buffer can grow without bound", async () => {
+    const { createServer } = await import("node:http");
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/x-ndjson" });
+      response.end("x".repeat((1024 * 1024) + 1));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    try {
+      const client = new RemoteAgentResponder({ baseUrl: `http://127.0.0.1:${port}` });
+      await expect(client.respond(request(), collectingStream().stream)).rejects.toMatchObject({
+        code: "frame_too_large",
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
 });

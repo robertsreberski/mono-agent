@@ -26,7 +26,7 @@ const ADAPTER_ENV_PREFIXES = {
   "a2a-adapter": ["MONO_AGENT_A2A_"],
   "cron-adapter": ["MONO_AGENT_CRON_"],
   "openai-api-adapter": ["MONO_AGENT_OPENAI_API_"],
-  "operator-adapter": ["MONO_AGENT_LIVE_", "MONO_AGENT_TUI_"],
+  "operator-adapter": ["MONO_AGENT_TUI_"],
   "slack-adapter": ["MONO_AGENT_SLACK_"],
   "telegram-adapter": ["MONO_AGENT_TELEGRAM_"],
   "webhook-adapter": ["MONO_AGENT_WEBHOOK_"],

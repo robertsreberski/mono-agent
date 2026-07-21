@@ -142,13 +142,11 @@ discoverClaudeSdkModels
 disposeAllProviderSessions
 disposeProviderSession
 executionModeIncompatibilityReason
-findProviderForModel
 generatePiNativeResponse
 inferAllowlistMode
 invalidateProviderSession
 isLikelyContextTermination
 isModelCompatibleWithExecutionMode
-listProviders
 listRuntimeBridges
 normalizeAllowlistMode
 normalizeClaudeSdkCatalog
@@ -311,11 +309,9 @@ discoverClaudeSdkModels
 disposeAllProviderSessions
 disposeProviderSession
 executionModeIncompatibilityReason
-findProviderForModel
 generatePiNativeResponse
 invalidateProviderSession
 isModelCompatibleWithExecutionMode
-listProviders
 listRuntimeBridges
 normalizeClaudeSdkCatalog
 normalizeClaudeSdkModelId
@@ -328,15 +324,6 @@ runtimeCapabilities
 sdkFromModelReference
 syncProviderSession
 toolCompactionAppliedFromWarnings
-```
-
-**`@mono-agent/agent-runtime/ai/backend.js`**
-
-```text
-BACKEND_CAPABILITIES
-backendCapabilities
-backendSupportsSessionResume
-backendUsesExecenvConfig
 ```
 
 **`@mono-agent/agent-runtime/ai/cost.js`**
@@ -388,9 +375,7 @@ formatLiveInputGuidance
 
 ```text
 buildCliCommand
-claudeCodeBackend
 claudeCodeRuntimeBridge
-codexCliBackend
 createThinkingBuffer
 generateCliResponse
 normalizeCliEvent
@@ -414,7 +399,6 @@ normalizeClaudeSdkModelId
 ```text
 claudeEffortOptions
 claudeRuntimeBridge
-claudeSdkBackend
 claudeSdkModelForQuery
 generateClaudeResponse
 toolPayloadLimit
@@ -423,7 +407,6 @@ toolPayloadLimit
 **`@mono-agent/agent-runtime/ai/providers/codex-app.js`**
 
 ```text
-codexAppBackend
 codexAppRuntimeBridge
 createCodexAppServerClient
 generateCodexAppResponse
@@ -784,7 +767,7 @@ console.log(metrics.snapshot());
 //   cache: { hits, misses, hitRatio, readTokensFromEvents },
 //   tools: { callsByName: { Bash: 3, Read: 2 }, errorsByName: { ... } },
 //   errors: { total, byKind: { provider_unavailable: 1 } },
-//   turns: { count, latencyMsP50, latencyMsP95 },
+//   turns: { count, sampleCount, latencyMsP50, latencyMsP95 },
 //   approvals: { pending, granted, denied },
 // }
 ```

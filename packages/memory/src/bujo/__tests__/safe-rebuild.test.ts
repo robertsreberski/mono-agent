@@ -962,7 +962,6 @@ describe("safe memory index rebuild", () => {
       db,
       root,
       llm: { id: "paid", complete: async () => JSON.stringify({ action: "promote" }) },
-      nextId: () => "unused",
       now: () => new Date(NOW),
       hooks: { afterDecisionDurable: () => { throw new Error("fault-after-paid-decision"); } },
     })).rejects.toThrow("fault-after-paid-decision");
@@ -1022,7 +1021,6 @@ describe("safe memory index rebuild", () => {
       db: failingDb,
       root,
       llm: { id: "forget", complete: async () => JSON.stringify({ action: "forget" }) },
-      nextId: () => "unused",
       now: () => new Date(NOW),
       canonicalGraphRepairGuard: assertCanonicalGraphRepairBaseParity,
     })).rejects.toThrow("crash-before-forget-db");

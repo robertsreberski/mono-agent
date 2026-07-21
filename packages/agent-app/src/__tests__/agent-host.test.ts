@@ -14,7 +14,7 @@ import type {
   RunSummary,
   RuntimeEventLike,
 } from "@mono-agent/observability";
-import type { MemoryStore, RunEventFrame, RunEventSink } from "@mono-agent/agent-contracts";
+import type { MemoryStore } from "@mono-agent/agent-contracts";
 import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
@@ -317,50 +317,6 @@ describe("agent host composition helpers", () => {
     expect(options?.allowedTools).not.toEqual(expect.arrayContaining(["Read", "Glob", "Grep", "Bash", "Write", "Edit"]));
   });
 
-  it("publishes run_started, event, and run_finished frames from the normal responder path", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const artifactDir = join(dir, "artifacts");
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    const fake = createFakeRuntime(async (_prompt, options) => {
-      options.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "live event" }] } });
-      return { text: "Final answer" };
-    });
-    const frames: RunEventFrame[] = [];
-    const runEventSink: RunEventSink = {
-      publish: (frame) => {
-        frames.push(frame);
-      },
-    };
-
-    const responder = await createConfiguredAgentResponder({
-      config: monoConfig({ dir, identityPath, artifactDir }),
-      runtime: fake.runtime,
-      createRunId: () => "run-live-broadcast",
-      observabilityContext: { sourceId: "src-1", sourceLabel: "Source One" },
-      runEventSink,
-    });
-
-    await responder.respond(
-      { conversationId: "conversation-live", text: "Broadcast this", abortSignal: new AbortController().signal },
-      { append: async () => {} },
-    );
-
-    expect(frames[0]?.t).toBe("run_started");
-    expect(frames.at(-1)?.t).toBe("run_finished");
-    expect(frames[0]).toMatchObject({
-      sourceId: "src-1",
-      sourceLabel: "Source One",
-      runId: "run-live-broadcast",
-      conversationId: "conversation-live",
-    });
-    const eventFrames = frames.filter((frame) => frame.t === "event");
-    expect(eventFrames.length).toBeGreaterThan(0);
-    expect(eventFrames).toContainEqual(expect.objectContaining({ sourceId: "src-1", runId: "run-live-broadcast" }));
-    expect(JSON.stringify(eventFrames)).toContain("live event");
-    expect(frames.at(-1)).toMatchObject({ sourceId: "src-1", runId: "run-live-broadcast", status: "succeeded" });
-  });
-
   it("invalidates artifact-derived destinations at local commits without awaiting a slow exporter", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -433,12 +389,11 @@ describe("agent host composition helpers", () => {
     expect(responseSettled).toBe(true);
   });
 
-  it("records and exports memory persistence degradation before one terminal live frame", async () => {
+  it("records and exports memory persistence degradation before exporter completion", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
     await writeFile(identityPath, "You are Mono.", "utf8");
-    const frames: RunEventFrame[] = [];
     const exportOrder: string[] = [];
     const exporter: RunExporter = {
       onEvent(event): void { exportOrder.push(`event:${String(event.type)}`); },
@@ -462,7 +417,6 @@ describe("agent host composition helpers", () => {
       createRunId: () => "run-memory-warning-order",
       observabilityContext: { sourceId: "src-warning" },
       exporterFactory: () => exporter,
-      runEventSink: { publish: (frame) => { frames.push(frame); } },
     });
 
     const response = await responder.respond(
@@ -471,48 +425,11 @@ describe("agent host composition helpers", () => {
     );
 
     expect(response.text).toBe("Provider answer survives");
-    const warningFrameIndex = frames.findIndex((frame) =>
-      frame.t === "event" && JSON.stringify(frame.event).includes("memory_persistence_degraded")
-    );
-    const terminalFrameIndexes = frames
-      .map((frame, index) => frame.t === "run_finished" ? index : -1)
-      .filter((index) => index >= 0);
-    expect(warningFrameIndex).toBeGreaterThan(0);
-    expect(terminalFrameIndexes).toHaveLength(1);
-    expect(warningFrameIndex).toBeLessThan(terminalFrameIndexes[0] ?? -1);
-    expect(frames.at(-1)?.t).toBe("run_finished");
-
     const warningExportIndex = exportOrder.indexOf("event:runtime_warning");
     expect(warningExportIndex).toBeGreaterThanOrEqual(0);
     expect(warningExportIndex).toBeLessThan(exportOrder.indexOf("terminal"));
     const eventArtifact = await readFile(join(artifactDir, "run-memory-warning-order.events.jsonl"), "utf8");
     expect(eventArtifact).toContain("memory_persistence_degraded");
-  });
-
-  it("uses the public agent name as the default run source label", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const artifactDir = join(dir, "artifacts");
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    const frames: RunEventFrame[] = [];
-    const base = monoConfig({ dir, identityPath, artifactDir });
-    const responder = await createConfiguredAgentResponder({
-      config: { ...base, agent: { name: "Research Partner" } },
-      runtime: createFakeRuntime(async () => ({ text: "Named answer" })).runtime,
-      createRunId: () => "run-named-agent",
-      observabilityContext: { sourceId: "stable-source-id" },
-      runEventSink: { publish: (frame) => { frames.push(frame); } },
-    });
-
-    await responder.respond(
-      { conversationId: "conversation-named", text: "Hello", abortSignal: new AbortController().signal },
-      { append: async () => {} },
-    );
-
-    expect(frames[0]).toMatchObject({
-      sourceId: "stable-source-id",
-      sourceLabel: "Research Partner",
-    });
   });
 
   it("forwards the request-derived source/sourceDetail into the recorded run summary", async () => {

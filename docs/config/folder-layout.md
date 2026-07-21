@@ -33,7 +33,7 @@ my-agent/
     trace-sources/         # traceability registry (when kept folder-local)
 ```
 
-Only `runtime.model` and `context.identityPath` are required. Most other capabilities are opt-in, but the loopback `tui` and `live` operator endpoints default on. Scaffold a folder with `mono-agent init`, then check it with `mono-agent validate`; see the [CLI reference](/observability/cli-reference/).
+Only `runtime.model` and `context.identityPath` are required. Most other capabilities are opt-in, but the loopback `tui` operator endpoint defaults on. Scaffold a folder with `mono-agent init`, then check it with `mono-agent validate`; see the [CLI reference](/observability/cli-reference/).
 
 ## Author-edited files
 

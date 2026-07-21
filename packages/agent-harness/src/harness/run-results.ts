@@ -151,7 +151,7 @@ export function responseMetadata(
 }
 
 /**
- * Recorder summaries stay complete for local artifacts and session-web, but a
+ * Recorder summaries stay complete for local artifact readers, but a
  * harness response crosses a channel boundary. The compiled system prompt can
  * contain identity and context, so it is never returned to channel callers.
  */

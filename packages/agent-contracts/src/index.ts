@@ -526,13 +526,6 @@ export type {
 } from "./channel.js";
 export { isDeliverableConversation } from "./channel.js";
 export {
-  LIVE_EVENT_SCHEMA,
-  DEFAULT_RUN_EVENT_BUFFER_SIZE,
-  DEFAULT_RUN_EVENT_MAX_FRAME_BYTES,
-  createLiveEventBus,
-} from "./live-events.js";
-export type { RunEventFrame, RunEventSink, RunEventBus, CreateLiveEventBusOptions } from "./live-events.js";
-export {
   encodeJsonEnvValue,
   fieldSpecMappings,
   layerJsonOntoEnv,
@@ -556,14 +549,16 @@ export type {
 } from "./config-loader.js";
 export {
   assertSafeBind,
+  BoundedHttpResponseWriter,
   close,
+  closeServerBounded,
   hostForUrl,
   isLoopbackHost,
   isWildcardHost,
   listen,
   normalizeHostForBind,
 } from "./host-safety.js";
-export type { ListenErrorFactories } from "./host-safety.js";
+export type { BoundedHttpResponseWriterOptions, ListenErrorFactories } from "./host-safety.js";
 export {
   bearerTokensEqual,
   generateBearerToken,

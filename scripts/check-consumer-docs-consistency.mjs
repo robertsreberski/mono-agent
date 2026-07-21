@@ -15,7 +15,6 @@ const userDocRoots = [
   "extras/memory-supermemory/README.md",
   "packages/observability/README.md",
   "packages/operator-adapter/README.md",
-  "packages/session-web/README.md",
   "packages/tui/README.md",
   "packages/agent-app/skills/mono-agent-composer/references",
 ];
@@ -31,9 +30,6 @@ const artifactContractSourcePaths = [
   "packages/tui/src/ui/components/tool-panel.ts",
   "packages/tui/src/ui/views/replay-detail.ts",
   "packages/tui/src/ui/views/replay.ts",
-  "packages/session-web/src/aggregator.ts",
-  "packages/session-web/src/history.ts",
-  "packages/session-web/webapp/src/views/DetailView.tsx",
   "packages/tui/package.json",
   "scripts/package-catalog.mjs",
 ];
@@ -656,7 +652,7 @@ function usage() {
     "Scans repo user docs (AGENTS.md, README.md, PACKAGES.md, docs/**/*.md, relevant package READMEs,",
     "mono-agent-composer references, and demos/**/*.md)",
     "for retired pre-v1 surfaces",
-    "and scans those docs plus TUI/session-web source text for absolute artifact/replay claims",
+    "and scans those docs plus TUI source text for absolute artifact/replay claims",
     "that contradict wire truncation, best-effort export, recorder redaction, or terminal persistence.",
     "Each optional consumer folder should contain README.md and mono-agent.config.json.",
   ].join("\n");

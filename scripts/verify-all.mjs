@@ -296,14 +296,13 @@ export async function runVerifyAll(options = {}) {
 }
 
 export function renderFinalSummary(input) {
+  const verificationOk = input.repoOk && input.alphaOk && input.betaOk;
   return [
     "final summary",
     `repo ${input.repoOk ? "ok" : "fail"}`,
     `local-agent-alpha contract ${input.alphaOk ? "ok" : "fail"}`,
     `local-agent-beta contract ${input.betaOk ? "ok" : "fail"}`,
-    `repo ${input.repoOk ? "green" : "failed"}`,
-    `local-agent-alpha contract ${input.alphaOk ? "green" : "failed"}`,
-    `local-agent-beta contract ${input.betaOk ? "green" : "failed"}`,
+    `verification ${verificationOk ? "green" : "failed"}`,
   ].join("\n") + "\n";
 }
 

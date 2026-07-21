@@ -28,11 +28,11 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "dependencies": {
     "@mono-agent/agent-contracts": "workspace:0.14.0",
-    "@whiskeysockets/baileys": "^7.0.0-rc11"
+    "@whiskeysockets/baileys": "^7.0.0-rc13"
   },
   "publishConfig": {
     "access": "public"

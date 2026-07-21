@@ -674,7 +674,6 @@ export class BujoMemoryStore implements MemoryStore {
         db: this.db,
         root: this.root,
         llm: this.llm,
-        nextId: this.nextId,
         now: this.clock,
         abortSignal,
       });

@@ -2,16 +2,15 @@
 import { resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { createLiveEventBus } from "@mono-agent/agent-contracts";
-import type { AgentResponder, RunEventBus } from "@mono-agent/agent-contracts";
+import type { AgentResponder } from "@mono-agent/agent-contracts";
 import type { TraceSourceHandle, TraceSourceMemoryHealth } from "@mono-agent/observability";
 import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import { createSrtSandboxEngine } from "@mono-agent/runtime-adapter";
-import type { SandboxEffectiveState, SandboxEngine } from "@mono-agent/runtime-adapter";
+import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
 import type { AppTraceDefaults, ResolvedExporter } from "./app-config.js";
 import type { createConfiguredMemory } from "./configured-agent.js";
-import type { ConfiguredAgentSessionEvent, ConfiguredAgentSessionSnapshot } from "./configured-agent.js";
+import type { ConfiguredAgentSessionEvent } from "./configured-agent.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type {
   ChannelDriver,
@@ -47,16 +46,25 @@ import * as maintenanceOperations from "./app-controller-maintenance.js";
 import * as channelsOperations from "./app-controller-channels.js";
 import * as responderOperations from "./app-controller-responder.js";
 import * as memoryOperations from "./app-controller-memory.js";
+import type {
+  ConfigApplyResult,
+  ExporterStatus,
+  SandboxStatus,
+  SessionTraceMetadata,
+  TraceabilityStatus,
+} from "./app-controller-types.js";
+
+export type {
+  ConfigApplyResult,
+  ExporterStatus,
+  SandboxStatus,
+  TraceabilityStatus,
+} from "./app-controller-types.js";
 
 /**
  * Outcome of a live config re-apply (`applyConfigChange`). Consumed by callers
  * that trigger a reload and by demos that surface the result.
  */
-export type ConfigApplyResult =
-  | { readonly kind: "applied"; readonly message: string; readonly transports: readonly string[] }
-  | { readonly kind: "waiting_for_config"; readonly message: string; readonly transports: readonly string[] }
-  | { readonly kind: "failed"; readonly message: string; readonly transports: readonly string[] };
-
 export interface MonoAgentAppOptions {
   readonly env?: Record<string, string | undefined>;
   readonly cwd?: string;
@@ -80,55 +88,12 @@ export interface MonoAgentAppOptions {
   readonly backgroundSnapshot?: BackgroundSnapshot;
 }
 
-export type TraceabilityStatus =
-  | {
-      readonly kind: "running";
-      readonly sourceId: string;
-      readonly registryDir: string;
-      readonly artifactDir: string;
-    }
-  | { readonly kind: "disabled"; readonly reason: string }
-  | { readonly kind: "failed"; readonly reason: string };
-
 /**
  * Best-effort observability exporter status. `configured` does not assert
  * reachability (Phoenix may start later — only `validate` probes); export
  * failures during runs surface as `lastWarning`/`lastError` without changing the
  * run outcome.
  */
-export type ExporterStatus =
-  | {
-      readonly kind: "configured";
-      readonly endpoint: string;
-      readonly includeSensitiveData: boolean;
-      readonly lastWarning?: string;
-      readonly lastError?: string;
-    }
-  | { readonly kind: "disabled"; readonly reason: string }
-  | { readonly kind: "failed"; readonly reason: string };
-
-export interface SandboxStatus extends SandboxEffectiveState {
-  readonly detail: string;
-  readonly warning?: string;
-  readonly resolutionError?: string;
-}
-
-type SessionTraceState = "warm" | "cold";
-
-interface SessionTraceMetadata {
-  readonly currentBucketId: string;
-  readonly state: SessionTraceState;
-  readonly event: ConfiguredAgentSessionEvent["kind"];
-  readonly updatedAt: string;
-  readonly snapshot?: readonly ConfiguredAgentSessionSnapshot[];
-  readonly providerSessionId?: string;
-  readonly createdAt?: number;
-  readonly lastActivityAt?: number;
-  readonly busy?: boolean;
-  readonly reason?: string;
-  readonly nextRolloverAt?: string;
-}
-
 export interface MonoAgentApp {
   readonly configPath: string;
   readonly traceabilityStatus: TraceabilityStatus;
@@ -347,11 +312,6 @@ export class MonoAgentAppController implements MonoAgentApp {
   interactionBridgeStart: Promise<InteractionBridgeHandle | undefined> | undefined;
   continuationService: ContinuationServiceHandle | undefined;
   continuationServiceStart: Promise<ContinuationServiceHandle | undefined> | undefined;
-  // Shared in-process run-event bus: every run's recorder publishes to it (via the
-  // broadcast recorder threaded as `runEventSink`), and the `live` channel relays
-  // it over SSE. One instance for the app's lifetime — cheap, bounded ring buffer,
-  // and it must exist before any responder is built (like the interaction bridge).
-  readonly liveEventBus: RunEventBus = createLiveEventBus();
   /** One bounded scan cache for artifact-derived native-notify destinations. */
   readonly seenNotifyDestinations = createSeenNotifyDestinationCache();
 

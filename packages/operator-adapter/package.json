@@ -1,7 +1,7 @@
 {
   "name": "@mono-agent/operator-adapter",
   "version": "0.14.0",
-  "description": "Loopback operator adapters for mono-agent: structured TUI NDJSON turns and read-only live SSE run-event streams.",
+  "description": "Loopback operator adapter for mono-agent structured TUI and web NDJSON turns.",
   "type": "module",
   "license": "GPL-3.0-only",
   "repository": {
@@ -28,7 +28,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "dependencies": {
     "@mono-agent/agent-contracts": "workspace:0.14.0",

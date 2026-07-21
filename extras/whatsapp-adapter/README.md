@@ -116,6 +116,9 @@ The bundled `WhatsAppEventRunner` derives a queue from each usable, trimmed `rem
    commands/cancellation.
 4. Allowed prompts enter the host-owned structural responder. The message stream
    buffers deltas and sends final answer chunks only when the turn finishes.
+5. Shutdown removes socket listeners, aborts active responder work, gives queued
+   work and the socket one bounded grace period each, and then returns even when
+   a third-party responder or socket ignores cancellation.
 
 ### Package structure
 

@@ -44,7 +44,7 @@ The host runs headless and does not watch the config file. After an edit, either
 
 ### Adding a custom channel driver
 
-`defaultChannelDrivers()` returns the core built-in channel drivers (Telegram, Slack, webhook, OpenAI API, cron, TUI, live) in startup/status order. The CLI-equivalent default uses `resolveChannelDrivers(...)`, which appends external packages declared under `channels.plugins[]` such as WhatsApp or A2A. Spread `defaultChannelDrivers()` and append your own driver for a code-only host — or expose a package-level `createChannelDriver()` and load it from config.
+`defaultChannelDrivers()` returns the core built-in channel drivers (Telegram, Slack, webhook, OpenAI API, cron, and TUI) in startup/status order. The CLI-equivalent default uses `resolveChannelDrivers(...)`, which appends external packages declared under `channels.plugins[]` such as WhatsApp or A2A. Spread `defaultChannelDrivers()` and append your own driver for a code-only host — or expose a package-level `createChannelDriver()` and load it from config.
 
 ```ts
 import { startMonoAgentApp, defaultChannelDrivers } from "@mono-agent/agent-app";

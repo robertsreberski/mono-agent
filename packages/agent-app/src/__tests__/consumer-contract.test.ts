@@ -43,10 +43,6 @@ describe("golden consumer config contracts", () => {
           "status": "ok",
         },
         {
-          "id": "secret-placement",
-          "status": "waiting",
-        },
-        {
           "id": "runtime",
           "status": "ok",
         },
@@ -108,10 +104,6 @@ describe("golden consumer config contracts", () => {
         },
         {
           "id": "channel:tui",
-          "status": "ok",
-        },
-        {
-          "id": "channel:live",
           "status": "ok",
         },
       ]
@@ -135,10 +127,6 @@ describe("golden consumer config contracts", () => {
           "status": "ok",
         },
         {
-          "id": "secret-placement",
-          "status": "waiting",
-        },
-        {
           "id": "runtime",
           "status": "ok",
         },
@@ -200,10 +188,6 @@ describe("golden consumer config contracts", () => {
         },
         {
           "id": "channel:tui",
-          "status": "ok",
-        },
-        {
-          "id": "channel:live",
           "status": "ok",
         },
       ]

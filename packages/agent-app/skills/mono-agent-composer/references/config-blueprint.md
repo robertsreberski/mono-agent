@@ -183,7 +183,8 @@ new agent.
   },
 
   // Observability: the recorder writes empty events + a running summary at start,
-  // buffers key-redacted/capped events in RAM, then replaces both files at finish/fail.
+  // buffers sensitive-key-redacted, credential-scanned, capped events in RAM,
+  // then replaces both files at finish/fail.
   // A pre-terminal crash can lose buffered events. `mono-agent status` reads the
   // separate trace-source registry.
   "artifacts": {
@@ -213,7 +214,7 @@ new agent.
   },
 
   // ----- Channels: one section per channel; all independent. Most channels are
-  // ----- opt-in; operator surfaces (`tui`, `live`) default on and can opt out.
+  // ----- opt-in; the `tui` operator surface defaults on and can opt out.
   // ----- A waiting/disabled channel never blocks the others.
 
   "tui": {
@@ -222,14 +223,6 @@ new agent.
     "port": 0,
     "basePath": "/gui",
     "allowNonLoopback": false              // set MONO_AGENT_TUI_API_KEY in .env when needed
-  },
-
-  "live": {
-    "enabled": true,                       // default-on read-only SSE relay (run-event operator surface)
-    "host": "127.0.0.1",
-    "port": 0,
-    "basePath": "/live",
-    "allowNonLoopback": false              // set MONO_AGENT_LIVE_API_KEY in .env when needed
   },
 
   "webhook": {
@@ -416,7 +409,7 @@ A `.env` file in the folder is loaded automatically (exported shell variables wi
 
 For BuJo capture and the effective `bujo` tier that runs scheduled consolidation, configure `memory.llm`. Use `provider: "ollama"` with a local Ollama chat model string and optional `endpoint`, or `provider: "agent-host"` with `model` as a normal SDK runtime model reference such as `pi:openai-codex:gpt-5.5` and `executionMode: "sdk"`. `endpoint` is Ollama-only, and CLI-backed refs such as `codex:gpt-5.5` are rejected for memory LLMs until runtimes can enforce no external actions. The same values can be supplied via `MONO_AGENT_MEMORY_LLM_PROVIDER`, `MONO_AGENT_MEMORY_LLM_MODEL`, `MONO_AGENT_MEMORY_LLM_EXECUTION_MODE`, and `MONO_AGENT_MEMORY_LLM_ENDPOINT`. Routine BuJo consolidation runs via the in-app scheduler; the standalone `memory-bujo` maintenance CLI was removed (use `mono-agent memory <subcommand>` from the agent folder). `agent-host` LLM capture is an in-app composition path that injects the `LlmComplete` implementation into the BuJo store.
 
-For operator views, run `mono-agent tui` or `mono-agent web` from any directory once the agent is started. Both discover running agents via the trace-source registry. The TUI and assistant-ui web console chat over the default-on `tui` stream endpoint (`"tui": {"enabled": false}` opts out); on macOS, `mono-agent tui --configure` opens a persistent, visibly marked proposal-only SELF-CONFIG conversation against the managed background agent and must not be combined with `--local`. Approval, rejection, and no-change turns continue that session; only quitting exits it. `mono-agent web` is an always-on service namespace, binds `0.0.0.0:5050` by default, and has no app login; use `--loopback` to narrow it. The `mono-agent sessions` Session Recorder command was removed; use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). Its `@mono-agent/session-web` package still ships and reads artifacts plus live updates from the default-on `live` relay (`"live": {"enabled": false}` opts out), but has no CLI launcher. The low-level `mono-agent-tui` bin also supports `--responder <file>` (embedded, an ESM module default-exporting an `AgentResponderLike` or exporting `createResponder(env, cwd, configJson)`) and `--url <baseUrl>` (direct connect).
+For operator views, run `mono-agent tui` or `mono-agent web` from any directory once the agent is started. Both discover running agents via the trace-source registry. The TUI and assistant-ui web console chat over the default-on `tui` stream endpoint (`"tui": {"enabled": false}` opts out); on macOS, `mono-agent tui --configure` opens a persistent, visibly marked proposal-only SELF-CONFIG conversation against the managed background agent and must not be combined with `--local`. Approval, rejection, and no-change turns continue that session; only quitting exits it. `mono-agent web` is an always-on service namespace, binds `0.0.0.0:5050` by default, and has no app login; use `--loopback` to narrow it. The former read-only recorder command, package, and relay were removed; use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). The low-level `mono-agent-tui` bin also supports `--responder <file>` (embedded, an ESM module default-exporting an `AgentResponderLike` or exporting `createResponder(env, cwd, configJson)`) and `--url <baseUrl>` (direct connect).
 
 ## Programmatic Escape Hatch
 

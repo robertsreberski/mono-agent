@@ -1,7 +1,37 @@
-import type { ChannelId, ChannelStatus } from "./channels.js";
-import type { ConfigApplyResult, MonoAgentAppController } from "./app-controller.js";
+import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
+import type { ChannelDriver, ChannelId, ChannelStatus, RunningChannel } from "./channels.js";
+import type { ConfigApplyResult, SandboxStatus, TraceabilityStatus, ExporterStatus } from "./app-controller-types.js";
 
-export async function applyConfigChange(controller: MonoAgentAppController, reason: string): Promise<ConfigApplyResult> {
+export interface LifecycleControllerPort {
+  readonly drivers: readonly ChannelDriver[];
+  readonly driversById: ReadonlyMap<ChannelId, ChannelDriver>;
+  readonly running: Map<ChannelId, RunningChannel>;
+  readonly startsInFlight: Map<ChannelId, Promise<ChannelStatus>>;
+  readonly activeRuntimes: MonoRuntimeLike[];
+  configApplyTail: Promise<void>;
+  stopped: boolean;
+  invalidateMemoryHealthRefresh(): void;
+  stopChannel(id: ChannelId, reason: string): Promise<void>;
+  stopContinuationService(): Promise<void>;
+  stopInteractionBridge(): Promise<void>;
+  stopMemoryRituals(): void;
+  stopArtifactRetentionScheduler(): void;
+  resetSharedMemory(): Promise<void>;
+  stopTraceSource(reason: string): Promise<void>;
+  refreshSandboxStatus(reason: string): Promise<SandboxStatus>;
+  startTraceability(reason: string): Promise<TraceabilityStatus>;
+  startExporters(reason: string): Promise<ExporterStatus>;
+  startContinuationServiceIfConfigured(reason: string): Promise<void>;
+  startChannelIfConfigured(id: ChannelId, reason: string): Promise<ChannelStatus>;
+  startMemoryRitualsIfConfigured(reason: string): Promise<void>;
+  refreshMemoryHealthAfterLifecycle(reason: string, beforePublish?: () => void): Promise<void>;
+  applyResult(): ConfigApplyResult;
+  channelStatus(id: ChannelId): ChannelStatus;
+  refreshTraceSource(reason: string): Promise<void>;
+  startChannel(driver: ChannelDriver, reason: string): Promise<ChannelStatus>;
+}
+
+export async function applyConfigChange(controller: LifecycleControllerPort, reason: string): Promise<ConfigApplyResult> {
   const run = async (): Promise<ConfigApplyResult> => {
     if (controller.stopped) {
       return {
@@ -44,7 +74,7 @@ export async function applyConfigChange(controller: MonoAgentAppController, reas
   return await next;
 }
 
-export async function startChannelIfConfigured(controller: MonoAgentAppController, id: ChannelId, reason: string): Promise<ChannelStatus> {
+export async function startChannelIfConfigured(controller: LifecycleControllerPort, id: ChannelId, reason: string): Promise<ChannelStatus> {
   const driver = controller.driversById.get(id);
   if (driver === undefined || controller.stopped) {
     return controller.channelStatus(id);
@@ -67,7 +97,7 @@ export async function startChannelIfConfigured(controller: MonoAgentAppControlle
   return status;
 }
 
-export async function stop(controller: MonoAgentAppController): Promise<void> {
+export async function stop(controller: LifecycleControllerPort): Promise<void> {
   if (controller.stopped) {
     return;
   }

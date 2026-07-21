@@ -537,17 +537,6 @@ export class MemoryDbMaintenance extends MemoryDbCore {
     return rows.map((r) => this.fromRow(r));
   }
 
-  /**
-   * @deprecated Salience is a static canonical Bullet field in v1.
-   *
-   * Kept as a compatibility no-op so older integrations can upgrade without
-   * allowing a derived SQLite maintenance pass to diverge from canonical
-   * Markdown.
-   */
-  applyDecay(_now: Date, _opts: { halfLifeDays?: number; floor?: number } = {}): { decayed: number } {
-    return { decayed: 0 };
-  }
-
   close(): void {
     this.db.close();
   }

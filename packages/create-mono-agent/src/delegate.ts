@@ -1,4 +1,18 @@
 import type { ChildProcess } from "node:child_process";
+import { basename } from "node:path";
+
+/**
+ * npm's `create-*` convention treats arguments as init options. Keep the
+ * separately exposed `mono-agent` bin byte-for-byte compatible, while a bare
+ * `create-mono-agent` (or one followed directly by flags) enters init.
+ */
+export function delegatedCliArgs(invocationPath: string | undefined, args: readonly string[]): readonly string[] {
+  const invocation = invocationPath === undefined ? "" : basename(invocationPath);
+  if (invocation === "create-mono-agent" && (args.length === 0 || args[0]?.startsWith("-") === true)) {
+    return ["init", ...args];
+  }
+  return args;
+}
 
 /**
  * The subset of `NodeJS.Process` the delegator touches, named so the wiring is

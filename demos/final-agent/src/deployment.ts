@@ -44,27 +44,32 @@ export interface FinalDemoDeploymentFiles {
 }
 
 export type FinalDemoDeploymentConfig = MonoAgentConfigJson & {
-  readonly a2a: {
-    readonly provider: {
-      readonly enabled: true;
-      readonly host: "127.0.0.1";
-      readonly port: number;
-    };
-    readonly agent: {
-      readonly name: string;
-      readonly description: string;
-      readonly version: string;
-    };
-    readonly skill: {
-      readonly id: string;
-      readonly name: string;
-      readonly description: string;
-      readonly tags: readonly string[];
-    };
-    readonly consumer: {
-      readonly remoteAgentUrls: readonly string[];
-      readonly timeoutMs: number;
-    };
+  readonly channels: {
+    readonly plugins: readonly [{
+      readonly package: "@mono-agent/a2a-adapter";
+      readonly config: {
+        readonly provider: {
+          readonly enabled: true;
+          readonly host: "127.0.0.1";
+          readonly port: number;
+        };
+        readonly agent: {
+          readonly name: string;
+          readonly description: string;
+          readonly version: string;
+        };
+        readonly skill: {
+          readonly id: string;
+          readonly name: string;
+          readonly description: string;
+          readonly tags: readonly string[];
+        };
+        readonly consumer: {
+          readonly remoteAgentUrls: readonly string[];
+          readonly timeoutMs: number;
+        };
+      };
+    }];
   };
 };
 
@@ -122,27 +127,32 @@ export function buildFinalDemoDeploymentConfig(
       heartbeatMs: 10_000,
       staleAfterMs: 30_000,
     },
-    a2a: {
-      provider: {
-        enabled: true,
-        host: "127.0.0.1",
-        port: options.a2aPort ?? 0,
-      },
-      agent: {
-        name: "Final Agent Demo (Gemma 4)",
-        description: "Local final demo deployed with Ollama Gemma 4.",
-        version: "0.1.0",
-      },
-      skill: {
-        id: "final-agent-gemma4",
-        name: "Final Agent Demo",
-        description: "Runs the configured final demo runtime over local A2A text requests.",
-        tags: ["agent", "a2a", "gemma4", "ollama"],
-      },
-      consumer: {
-        remoteAgentUrls: [],
-        timeoutMs: 30_000,
-      },
+    channels: {
+      plugins: [{
+        package: "@mono-agent/a2a-adapter",
+        config: {
+          provider: {
+            enabled: true,
+            host: "127.0.0.1",
+            port: options.a2aPort ?? 0,
+          },
+          agent: {
+            name: "Final Agent Demo (Gemma 4)",
+            description: "Local final demo deployed with Ollama Gemma 4.",
+            version: "0.1.0",
+          },
+          skill: {
+            id: "final-agent-gemma4",
+            name: "Final Agent Demo",
+            description: "Runs the configured final demo runtime over local A2A text requests.",
+            tags: ["agent", "a2a", "gemma4", "ollama"],
+          },
+          consumer: {
+            remoteAgentUrls: [],
+            timeoutMs: 30_000,
+          },
+        },
+      }],
     },
   };
 }

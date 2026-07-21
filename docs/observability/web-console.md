@@ -9,7 +9,7 @@ sidebar:
 
 This is the chat-first companion to [`mono-agent tui`](/observability/tui/). The former `mono-agent sessions` read-only run browser [was removed](#session-recorder-removed); recorded-run replay now lives in `mono-agent tui`.
 
-The web service does not run the terminal UI. Both consoles discover and connect to each agent's `metadata.channels.tui.baseUrl`, whose default path is `/gui`; they merely share the same bidirectional operator protocol. The sibling `/live` endpoint is a different, read-only SSE relay retained for session-recorder and run-event consumers.
+The web service does not run the terminal UI. Both consoles discover and connect to each agent's `metadata.channels.tui.baseUrl`, whose default path is `/gui`; they merely share the same bidirectional operator protocol.
 
 ## Start it once
 
@@ -179,7 +179,7 @@ mono-agent tui --configure
 
 The `mono-agent sessions` command that launched the read-only Session Recorder was removed. Use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console) for operator run inspection.
 
-`@mono-agent/session-web` and the read-only `live` event relay still ship in code but are no longer reachable through any CLI command. The `MONO_AGENT_WEB_AUTH_TOKEN` bearer is no longer read by any code — its only reader was the removed `sessions` command (the session-web package's programmatic `authToken` option is a separate thing). Full retirement is a later dead-code-audited change; see the [deprecation tracker](/reference/deprecations/#removed-surfaces).
+`@mono-agent/session-web`, the read-only `live` event relay, and their config/env surface have also been removed. `MONO_AGENT_WEB_AUTH_TOKEN` is no longer read by any code. See the [deprecation tracker](/reference/deprecations/#removed-surfaces).
 
 ## Related
 

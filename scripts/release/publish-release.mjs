@@ -417,29 +417,6 @@ export async function executeFrozenPublish({
   }
 }
 
-function exportSubpaths(exportsMap) {
-  // A missing or string `exports` field exposes only the main entry (".").
-  if (exportsMap === undefined || exportsMap === null || typeof exportsMap === "string") {
-    return ["."];
-  }
-  return Object.keys(exportsMap);
-}
-
-/**
- * Retained as a focused compatibility helper for callers/tests. Full tarball
- * integrity is the stronger guard used by the publisher for existing versions.
- */
-export function describePublishedExportsDrift(localPkg, publishedExports) {
-  const local = exportSubpaths(localPkg.packageJson?.exports);
-  const published = exportSubpaths(publishedExports);
-  const missing = local.filter((subpath) => !published.includes(subpath));
-  if (missing.length === 0) return undefined;
-  return (
-    `${localPkg.name}@${localPkg.version} is already published, but the npm copy is missing export `
-    + `subpath(s) present locally: ${missing.join(", ")}. Bump the release version so dependents resolve them.`
-  );
-}
-
 async function main() {
   const argv = process.argv.slice(2);
   const dryRun = hasArg("--dry-run", argv);

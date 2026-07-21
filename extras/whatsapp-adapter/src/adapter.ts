@@ -1,4 +1,5 @@
 import {
+  AgentResponseCancelledError,
   createChannelUserCancelReason,
   isAgentResponseCancelledError,
   isChannelUserCancelReason,
@@ -192,6 +193,7 @@ export class WhatsAppAdapter {
   private readonly messages: Required<WhatsAppAdapterMessages>;
   private readonly logger: WhatsAppAdapterLogger | undefined;
   private readonly activeRuns = new Map<string, ActiveRun>();
+  private stopping = false;
 
   constructor(options: WhatsAppAdapterOptions) {
     this.socket = options.socket;
@@ -220,6 +222,12 @@ export class WhatsAppAdapter {
   }
 
   async handleMessage(rawMessage: WhatsAppRawMessage): Promise<WhatsAppMessageHandlingResult> {
+    if (this.stopping) {
+      return {
+        kind: "error",
+        error: new AgentResponseCancelledError("WhatsApp adapter is stopping."),
+      };
+    }
     const normalized = normalizeWhatsAppMessage(rawMessage);
     if (normalized.kind === "ignored") {
       return await this.handleIgnoredMessage(normalized);
@@ -304,6 +312,15 @@ export class WhatsAppAdapter {
     }
 
     return await this.respondToMessage(message, trigger, runKey);
+  }
+
+  /** Stop accepting work and signal every active responder invocation. */
+  stop(reason: unknown = new AgentResponseCancelledError("WhatsApp adapter stopped.")): void {
+    if (this.stopping) return;
+    this.stopping = true;
+    for (const active of this.activeRuns.values()) {
+      active.controller.abort(reason);
+    }
   }
 
   private async handleIgnoredMessage(

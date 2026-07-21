@@ -8,7 +8,7 @@ import { dirname, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
-import { close, hostForUrl, listen, normalizeHostForBind, type ChannelAskAnswer } from "@mono-agent/agent-contracts";
+import { closeServerBounded, hostForUrl, listen, normalizeHostForBind, type ChannelAskAnswer } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import {
@@ -31,7 +31,6 @@ import { WebService, type CreateWebServiceOptions } from "./service.js";
 export const DEFAULT_WEB_HOST = "0.0.0.0";
 export const DEFAULT_WEB_PORT = 5050;
 const HEARTBEAT_INTERVAL_MS = 15_000;
-const FORCE_CLOSE_AFTER_MS = 500;
 const MAX_SSE_CLIENTS = 64;
 
 export interface StartWebServerOptions extends CreateWebServiceOptions {
@@ -122,6 +121,12 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     } catch (error) {
       next(error);
     }
+  });
+
+  app.delete("/api/v1/threads/:id", (req, res, next) => {
+    void trackOperation(service.deleteThread(pathParam(req.params.id)), activeOperations)
+      .then(() => res.status(204).end())
+      .catch(next);
   });
 
   app.post("/api/v1/threads/:id/turns", (req, res, next) => {
@@ -278,7 +283,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       }
       for (const closeStream of [...activeStreams]) closeStream();
       try {
-        await closeServerBounded(server);
+        await closeServerBounded(server, 500);
         await Promise.allSettled([...activeOperations]);
       } finally {
         await service.stop();
@@ -306,7 +311,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     };
   } catch (error) {
     await notificationIngress?.stop().catch(() => undefined);
-    if (server.listening) await closeServerBounded(server).catch(() => undefined);
+    if (server.listening) await closeServerBounded(server, 500).catch(() => undefined);
     await service.stop();
     throw error;
   }
@@ -654,19 +659,4 @@ function normalizePort(value: number): number {
 
 function defaultStaticDir(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "../webapp/dist");
-}
-
-async function closeServerBounded(server: ReturnType<typeof createServer>): Promise<void> {
-  const closing = close(server);
-  server.closeIdleConnections();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const forced = new Promise<void>((resolvePromise) => {
-    timer = setTimeout(() => {
-      server.closeAllConnections();
-      resolvePromise();
-    }, FORCE_CLOSE_AFTER_MS);
-    timer.unref();
-  });
-  await Promise.race([closing, forced]);
-  if (timer !== undefined) clearTimeout(timer);
 }

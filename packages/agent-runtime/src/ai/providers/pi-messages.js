@@ -1,13 +1,5 @@
 import { EMPTY_USAGE } from "./pi-models.js";
 
-export function promptTextFromMessages(messages) {
-  if (!Array.isArray(messages) || !messages.length) return "";
-  return messages
-    .filter((message) => message?.role === "user")
-    .map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? ""))
-    .join("\n");
-}
-
 function messageContent(value) {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) {

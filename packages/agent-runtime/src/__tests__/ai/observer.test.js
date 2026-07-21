@@ -103,9 +103,38 @@ describe("createMetricsObserver", () => {
     }
     const snap = obs.snapshot();
     expect(snap.turns.count).toBe(10);
+    expect(snap.turns.sampleCount).toBe(10);
     expect(snap.turns.latencyMsP50).toBeGreaterThan(45);
     expect(snap.turns.latencyMsP50).toBeLessThan(60);
     expect(snap.turns.latencyMsP95).toBeGreaterThan(90);
+  });
+
+  it("uses completion durations when same-model requests overlap", () => {
+    const obs = createMetricsObserver();
+    obs.recordEvent({ type: "provider_request_started", model: "m", timestamp: 0 });
+    obs.recordEvent({ type: "provider_request_started", model: "m", timestamp: 10 });
+    obs.recordEvent({ type: "provider_request_completed", model: "m", timestamp: 30, durationMs: 20 });
+    obs.recordEvent({ type: "provider_request_completed", model: "m", timestamp: 100, durationMs: 100 });
+
+    expect(obs.snapshot().turns).toMatchObject({
+      count: 2,
+      sampleCount: 2,
+      latencyMsP50: 60,
+    });
+  });
+
+  it("bounds retained latency samples while preserving the lifetime count", () => {
+    const obs = createMetricsObserver({ maxLatencySamples: 3 });
+    for (const durationMs of [10, 20, 30, 40, 50]) {
+      obs.recordEvent({ type: "turn_latency", durationMs });
+    }
+
+    expect(obs.snapshot().turns).toEqual({
+      count: 5,
+      sampleCount: 3,
+      latencyMsP50: 40,
+      latencyMsP95: 49,
+    });
   });
 
   it("counts approval lifecycle events", () => {

@@ -179,6 +179,54 @@ describe("startWhatsAppAdapter", () => {
     expect(end).toHaveBeenCalledTimes(1);
   });
 
+  it("aborts active work and bounds hung processing plus socket close", async () => {
+    vi.useFakeTimers();
+    try {
+      const socket = new FakeSocket();
+      const { factory, end } = fakeSocketFactory(socket);
+      end.mockImplementation(async () => await new Promise<void>(() => undefined));
+      let enteredResolve: (() => void) | undefined;
+      const entered = new Promise<void>((resolve) => {
+        enteredResolve = resolve;
+      });
+      let requestSignal: AbortSignal | undefined;
+      const responder: AgentResponder = {
+        async respond(request) {
+          requestSignal = request.abortSignal;
+          enteredResolve?.();
+          return await new Promise<never>(() => undefined);
+        },
+      };
+      const logger = { warn: vi.fn(), error: vi.fn() };
+      const handle = await startWhatsAppAdapter({
+        authDir: "/tmp/whatsapp-auth",
+        config: buildConfig(),
+        responder,
+        logger,
+        createSocket: factory,
+      });
+      socket.ev.emit("messages.upsert", {
+        type: "notify",
+        messages: [textMessage("123@s.whatsapp.net", "wait")],
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await entered;
+
+      const firstStop = handle.stop();
+      expect(handle.stop()).toBe(firstStop);
+      expect(requestSignal?.aborted).toBe(true);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await firstStop;
+
+      expect(end).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledTimes(2);
+      expect(socket.ev.listenerCount("messages.upsert")).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("fails closed when the responder is missing", async () => {
     const socket = new FakeSocket();
     const { factory } = fakeSocketFactory(socket);

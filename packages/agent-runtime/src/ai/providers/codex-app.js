@@ -1784,12 +1784,6 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   }
 }
 
-export const codexAppBackend = {
-  kind: "codex-app",
-  capabilities: CODEX_APP_CAPABILITIES,
-  execute: generateCodexAppResponse,
-};
-
 // CLI bridge for sdk='codex' agents that opt into execution_mode='cli'. The
 // codex `app-server` is more capable than `codex exec` (better event
 // streaming, MCP support), so this is the default CLI path for Codex.

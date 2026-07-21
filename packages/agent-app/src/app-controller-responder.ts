@@ -4,7 +4,7 @@ import { loadToolPolicyFromJsonFileSync } from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import { modelReferenceKey } from "@mono-agent/runtime-adapter";
-import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type { MonoRuntimeLike, RuntimeModelReference, SandboxEngine } from "@mono-agent/runtime-adapter";
 
 import { resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
@@ -13,6 +13,7 @@ import {
   createConfiguredAgentRuntime,
   DEFAULT_HISTORY_MAX_MESSAGES,
 } from "./configured-agent.js";
+import type { ConfiguredAgentSessionEvent, createConfiguredMemory } from "./configured-agent.js";
 import {
   adapterSendToolNames,
   createAdapterSendToolsRuntimeExtension,
@@ -34,9 +35,59 @@ import {
   reasonOf,
   runtimeRouteContainsDirectOpenCode,
 } from "./app-controller-utils.js";
-import type { MonoAgentAppController } from "./app-controller.js";
+import type { MonoAgentAppLogger } from "./channels.js";
+import type { InteractionBridgeHandle } from "./interaction-bridge.js";
+import type { ContinuationServiceHandle } from "./continuation-service.js";
+import type { MemoryRetrievalService } from "./memory-retrieval.js";
+import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
 
-export async function buildResponder(controller: MonoAgentAppController, coreConfig: MonoAgentConfig): Promise<AgentResponder> {
+type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
+
+export interface ResponderControllerPort {
+  readonly cwd: string;
+  readonly configPath: string;
+  readonly configReadPath: string;
+  readonly env: Record<string, string | undefined>;
+  readonly logger: MonoAgentAppLogger | undefined;
+  readonly runtime: MonoRuntimeLike | undefined;
+  readonly activeRuntimes: MonoRuntimeLike[];
+  readonly interactionBridge: InteractionBridgeHandle | undefined;
+  readonly continuationService: ContinuationServiceHandle | undefined;
+  readonly seenNotifyDestinations: SeenNotifyDestinationCache;
+  sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined;
+  memoryStore(coreConfig: MonoAgentConfig): Promise<ConfiguredMemory>;
+  ensureSharedMemoryRetrieval(
+    coreConfig: MonoAgentConfig,
+    store: ConfiguredMemory,
+  ): MemoryRetrievalService | undefined;
+  reportMemoryRecallStatus(coreConfig: MonoAgentConfig, service: MemoryRetrievalService | undefined): boolean;
+  supermemoryMcpRuntimeOptions(coreConfig: MonoAgentConfig): RuntimeOptionsExtension | undefined;
+  adapterSendToolsRuntimeOptions(coreConfig: MonoAgentConfig): Promise<{
+    readonly createExtension?: (
+      targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean,
+    ) => RuntimeOptionsExtension;
+    readonly blockingToolNames: readonly string[];
+  }>;
+  requestModelOverrideRuntimeOptions(
+    coreConfig: MonoAgentConfig,
+    compatibility: { readonly mcpSources: readonly string[]; readonly indexSkillsActive: boolean },
+  ): {
+    readonly extension: RuntimeOptionsExtension;
+    readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
+  };
+  buildRuntimeForModel(
+    coreConfig: MonoAgentConfig,
+  ): (model: RuntimeModelReference, executionMode?: string) => MonoRuntimeLike;
+  observabilityContext(): Promise<{
+    readonly sourceId?: string;
+    readonly sourceLabel?: string;
+    readonly configPath?: string;
+  }>;
+  recordExporterWarning(warning: { readonly phase: string; readonly message: string }): void;
+  recordSessionEvent(event: ConfiguredAgentSessionEvent, coreConfig: MonoAgentConfig): void;
+}
+
+export async function buildResponder(controller: ResponderControllerPort, coreConfig: MonoAgentConfig): Promise<AgentResponder> {
   const sandboxEngine = controller.sandboxEngineFor(coreConfig);
   const runtime = controller.runtime ?? createConfiguredAgentRuntime({
     config: coreConfig,
@@ -155,12 +206,9 @@ export async function buildResponder(controller: MonoAgentAppController, coreCon
     observabilityContext,
     exporterWarn: (warning) => controller.recordExporterWarning(warning),
     onSessionEvent: (event) => controller.recordSessionEvent(event, coreConfig),
-    // Publish every run's start/event/finish to the shared bus so the `live`
-    // channel can relay it. Best-effort + additive (see broadcast recorder).
-    runEventSink: controller.liveEventBus,
   }, {
     wrapHistoryStore: postedReplyHistory.wrapHistoryStore,
-    // Follow the local JSONL source of truth, not outer live/exporter work:
+    // Follow the local JSONL source of truth, not outer exporter work:
     // exporter start/finish may still be pending after the summary commits.
     onRunArtifactCommitted: ({ conversationId }) => {
       if (isNotifyDestinationConversationId(conversationId)) {
@@ -172,7 +220,7 @@ export async function buildResponder(controller: MonoAgentAppController, coreCon
 }
 
 export function requestModelOverrideRuntimeOptions(
-  controller: MonoAgentAppController,
+  controller: ResponderControllerPort,
   coreConfig: MonoAgentConfig,
   compatibility: { readonly mcpSources: readonly string[]; readonly indexSkillsActive: boolean },
 ): {
@@ -201,7 +249,7 @@ export function requestModelOverrideRuntimeOptions(
 }
 
 export function buildRuntimeForModel(
-  controller: MonoAgentAppController,
+  controller: ResponderControllerPort,
   coreConfig: MonoAgentConfig,
 ): (model: RuntimeModelReference, executionMode?: string) => MonoRuntimeLike {
   const cache = new Map<string, MonoRuntimeLike>();
@@ -224,7 +272,7 @@ export function buildRuntimeForModel(
   };
 }
 
-export function supermemoryMcpRuntimeOptions(controller: MonoAgentAppController, coreConfig: MonoAgentConfig): RuntimeOptionsExtension | undefined {
+export function supermemoryMcpRuntimeOptions(controller: ResponderControllerPort, coreConfig: MonoAgentConfig): RuntimeOptionsExtension | undefined {
   const memory = coreConfig.memory;
   if (memory?.backend !== "supermemory" || memory.supermemory?.exposeMcpServer !== true) {
     return undefined;
@@ -247,7 +295,7 @@ export function supermemoryMcpRuntimeOptions(controller: MonoAgentAppController,
   return async () => ({ runtimeOptions: { mcpServers: entry }, cleanup: async () => {} });
 }
 
-export async function adapterSendToolsRuntimeOptions(controller: MonoAgentAppController, coreConfig: MonoAgentConfig): Promise<{
+export async function adapterSendToolsRuntimeOptions(controller: ResponderControllerPort, coreConfig: MonoAgentConfig): Promise<{
   readonly createExtension?: (
     targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean,
   ) => RuntimeOptionsExtension;

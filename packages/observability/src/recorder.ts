@@ -8,7 +8,7 @@ import {
   sweepOrphanedAtomicWriteTemps,
   writeJsonAtomic,
 } from "./artifact-fs.js";
-import { errorFailureKind, errorToJson, redactJsonValue, truncateString } from "./redaction.js";
+import { errorFailureKind, errorToJson, redactJsonValue } from "./redaction.js";
 import { normalizeFailoverHistory } from "./run-export-mapping.js";
 import type { JsonlRunRecorderOptions, RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "./types.js";
 
@@ -16,6 +16,11 @@ import type { JsonlRunRecorderOptions, RunRecorder, RunSummary, RuntimeEventLike
 // (default 4096) that bounds tool/message content — the compiled channel prompt
 // (identity + skills + recalled memory) is large and would otherwise be gutted.
 const SYSTEM_PROMPT_MAX_BYTES = 32_000;
+const ARTIFACT_REDACTION_OPTIONS = Object.freeze({ contentPatternRedaction: true });
+
+function redactArtifactValue<T>(value: T, maxStringBytes: number): T {
+  return redactJsonValue(value, maxStringBytes, ARTIFACT_REDACTION_OPTIONS) as T;
+}
 
 // A run normally emits dozens to low hundreds of events. Scheduling a redacted
 // JSONL snapshot every 25 events bounds the unscheduled crash tail without
@@ -83,14 +88,21 @@ class JsonlRunRecorder implements RunRecorder {
     this.maxStringBytes = options.maxStringBytes ?? DEFAULT_MAX_STRING_BYTES;
     this.userInput =
       typeof options.userInput === "string"
-        ? (redactJsonValue(options.userInput, this.maxStringBytes) as string)
+        ? redactArtifactValue(options.userInput, this.maxStringBytes)
         : undefined;
     this.systemPrompt =
-      typeof options.systemPrompt === "string" ? truncateString(options.systemPrompt, SYSTEM_PROMPT_MAX_BYTES) : undefined;
+      typeof options.systemPrompt === "string"
+        ? redactArtifactValue(options.systemPrompt, SYSTEM_PROMPT_MAX_BYTES)
+        : undefined;
     this.isolated = typeof options.isolated === "boolean" ? options.isolated : undefined;
-    this.source = typeof options.source === "string" && options.source.length > 0 ? options.source : undefined;
+    this.source =
+      typeof options.source === "string" && options.source.length > 0
+        ? redactArtifactValue(options.source, this.maxStringBytes)
+        : undefined;
     this.sourceDetail =
-      typeof options.sourceDetail === "string" && options.sourceDetail.length > 0 ? options.sourceDetail : undefined;
+      typeof options.sourceDetail === "string" && options.sourceDetail.length > 0
+        ? redactArtifactValue(options.sourceDetail, this.maxStringBytes)
+        : undefined;
     this.startedAt = this.clock();
     this.startedAtIso = new Date(this.startedAt).toISOString();
   }
@@ -104,7 +116,7 @@ class JsonlRunRecorder implements RunRecorder {
 
   onEvent(event: RuntimeEventLike): void {
     if (this.terminalPromise !== undefined) return;
-    const redacted = redactJsonValue(event, this.maxStringBytes) as RuntimeEventLike;
+    const redacted = redactArtifactValue(event, this.maxStringBytes);
     const timestamp = redacted.timestamp;
     const hasUsableTimestamp = typeof timestamp === "string" || typeof timestamp === "number";
     this.events.push(
@@ -146,7 +158,7 @@ class JsonlRunRecorder implements RunRecorder {
       const failureKind = errorFailureKind(error);
       return this.buildSummary("failed", failureKind, {
         diagnostics: {
-          error: redactJsonValue(errorToJson(error), this.maxStringBytes),
+          error: redactArtifactValue(errorToJson(error), this.maxStringBytes),
         },
       });
     });
@@ -257,43 +269,62 @@ class JsonlRunRecorder implements RunRecorder {
     // result wins when present; both are bounded by the dedicated prompt cap.
     const systemPrompt =
       typeof result.systemPrompt === "string"
-        ? truncateString(result.systemPrompt, SYSTEM_PROMPT_MAX_BYTES)
+        ? redactArtifactValue(result.systemPrompt, SYSTEM_PROMPT_MAX_BYTES)
         : this.systemPrompt;
     // Underlying provider/runtime message (the "why" behind `failureKind`) and the
     // router's per-attempt failover detail. Both ride on the runtime result but were
     // historically dropped here, leaving a failed trace with only the collapsed kind.
     const error =
       typeof result.error === "string" && result.error.trim().length > 0
-        ? (redactJsonValue(result.error, this.maxStringBytes) as string)
+        ? redactArtifactValue(result.error, this.maxStringBytes)
         : undefined;
-    const failoverHistory = normalizeFailoverHistory(result.failoverHistory);
+    const normalizedFailoverHistory = normalizeFailoverHistory(result.failoverHistory);
+    const failoverHistory = normalizedFailoverHistory === undefined
+      ? undefined
+      : redactArtifactValue(normalizedFailoverHistory, this.maxStringBytes);
     const isolated = typeof result.isolated === "boolean" ? result.isolated : this.isolated;
     const summary: RunSummary = {
       runId: this.runId,
       conversationId: this.conversationId,
       status,
-      ...(failureKind === undefined ? {} : { failureKind }),
+      ...(failureKind === undefined ? {} : { failureKind: redactArtifactValue(failureKind, this.maxStringBytes) }),
       ...(error === undefined ? {} : { error }),
       ...(failoverHistory === undefined ? {} : { failoverHistory }),
       startedAt: this.startedAtIso,
       ...(status === "running" ? {} : { endedAt: nowIso }),
       updatedAt: nowIso,
       durationMs: Math.max(0, now - this.startedAt),
-      ...(result.usage === undefined ? {} : { usage: redactJsonValue(result.usage, this.maxStringBytes) }),
-      ...(result.cost === undefined ? {} : { cost: redactJsonValue(result.cost, this.maxStringBytes) }),
-      ...(typeof result.model === "string" && result.model.length > 0 ? { model: result.model } : {}),
-      ...(result.providerSessionId === undefined ? {} : { providerSessionId: result.providerSessionId }),
+      ...(result.usage === undefined ? {} : { usage: redactArtifactValue(result.usage, this.maxStringBytes) }),
+      ...(result.cost === undefined ? {} : { cost: redactArtifactValue(result.cost, this.maxStringBytes) }),
+      ...(typeof result.model === "string" && result.model.length > 0
+        ? { model: redactArtifactValue(result.model, this.maxStringBytes) }
+        : {}),
+      ...(result.providerSessionId === undefined
+        ? {}
+        : {
+            providerSessionId: typeof result.providerSessionId === "string"
+              ? redactArtifactValue(result.providerSessionId, this.maxStringBytes)
+              : result.providerSessionId,
+          }),
       ...(isolated === undefined ? {} : { isolated }),
       eventCount: this.events.length,
       artifactPaths: this.artifactPaths(),
       ...(this.userInput === undefined ? {} : { userInput: this.userInput }),
       ...(systemPrompt === undefined ? {} : { systemPrompt }),
-      ...(typeof result.effort === "string" ? { effort: result.effort } : {}),
+      ...(typeof result.effort === "string"
+        ? { effort: redactArtifactValue(result.effort, this.maxStringBytes) }
+        : {}),
       ...(this.source === undefined ? {} : { source: this.source }),
       ...(this.sourceDetail === undefined ? {} : { sourceDetail: this.sourceDetail }),
-      ...(result.runtimeWarnings === undefined ? {} : { runtimeWarnings: redactJsonValue(result.runtimeWarnings, this.maxStringBytes) }),
-      ...(result.diagnostics === undefined ? {} : { diagnostics: redactJsonValue(result.diagnostics, this.maxStringBytes) }),
-      ...(result.capabilitiesUsed === undefined ? {} : { capabilitiesUsed: redactJsonValue(result.capabilitiesUsed, this.maxStringBytes) }),
+      ...(result.runtimeWarnings === undefined
+        ? {}
+        : { runtimeWarnings: redactArtifactValue(result.runtimeWarnings, this.maxStringBytes) }),
+      ...(result.diagnostics === undefined
+        ? {}
+        : { diagnostics: redactArtifactValue(result.diagnostics, this.maxStringBytes) }),
+      ...(result.capabilitiesUsed === undefined
+        ? {}
+        : { capabilitiesUsed: redactArtifactValue(result.capabilitiesUsed, this.maxStringBytes) }),
     };
     return summary;
   }

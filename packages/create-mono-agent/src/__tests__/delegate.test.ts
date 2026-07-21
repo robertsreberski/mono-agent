@@ -2,7 +2,7 @@ import type { ChildProcess } from "node:child_process";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { delegateSignals } from "../delegate.js";
+import { delegatedCliArgs, delegateSignals } from "../delegate.js";
 import type { DelegatorProcess } from "../delegate.js";
 
 /** Minimal fake of the spawned child: records `.on` listeners and `.kill` calls. */
@@ -145,5 +145,19 @@ describe("delegateSignals", () => {
     const spy = vi.spyOn(proc, "removeAllListeners");
     proc.emitSignal("SIGINT"); // inert, no throw
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe("delegatedCliArgs", () => {
+  it("starts init for the create bin, including direct init flags", () => {
+    expect(delegatedCliArgs("/tmp/node_modules/.bin/create-mono-agent", [])).toEqual(["init"]);
+    expect(delegatedCliArgs("/tmp/node_modules/.bin/create-mono-agent", ["--preset", "starter", "--yes"]))
+      .toEqual(["init", "--preset", "starter", "--yes"]);
+  });
+
+  it("preserves the mono-agent bin and explicit create subcommands", () => {
+    expect(delegatedCliArgs("/tmp/node_modules/.bin/mono-agent", [])).toEqual([]);
+    expect(delegatedCliArgs("/tmp/node_modules/.bin/create-mono-agent", ["validate", "--json"]))
+      .toEqual(["validate", "--json"]);
   });
 });

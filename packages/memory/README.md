@@ -107,14 +107,10 @@ The normal write and read paths are:
 | --- | --- |
 | `src/store/` | SQLite schema, FTS5/sqlite-vec indexes, graph projection, ranking, and low-level database maintenance. |
 | `src/search/` | Ollama, LM Studio, and OpenAI embedding clients plus the embedding circuit breaker. |
-| `src/bujo/` | Lite/Journal/BuJo tiers, canonical Markdown, durable intake, capture/reconciliation, recall composition, health, rebuild, rollback, and explicit forget/recovery. |
-| `src/bujo/cli.ts` | Compatibility error-deflector for the retired `memory-bujo` command; it prints the `mono-agent memory` replacement and exits nonzero. |
+| `src/bujo/` | Lite/Journal/BuJo tiers, canonical Markdown, durable intake, capture/reconciliation, recall composition, health, rebuild, rollback, and explicit forget/recovery. Rebuild source validation and SQLite writer fencing are isolated in `rebuild-source-validation.ts` and `rebuild-sqlite-safety.ts`. |
 
-For compatibility, `memory-bujo` remains as an executable name so old
-invocations fail with actionable guidance. It is not a maintenance CLI and
-performs no operation.
 Run config-aware maintenance through `mono-agent memory <subcommand>` from the
-agent folder.
+agent folder. The retired `memory-bujo` executable is no longer packaged.
 
 ### Strong completed-turn boundary
 
@@ -222,7 +218,7 @@ future store start. Resolve explicitly records operator abandonment without
 claiming capture succeeded, keeps permanent duplicate protection, and refuses
 recoverable retained semantic plans.
 
-This performs the first managed activation and builds and validates a side-by-side generation. BuJo rebuild fingerprints and preserves the exact replay sidecar as canonical source. A prior index is retained for `mono-agent memory rollback` only as a fresh immutable online-backup generation whose indexed payload exactly matches the current canonical source (Journal may retain its recoverable vector backlog). Its manifest commits the full WAL-visible logical state, including vectors, lifecycle, edges, hashes, graph, FTS, and metadata; same-source/provider rebuilds also compare every retained vector with the newly embedded candidate. The first supported daily-source mutation atomically retires any advertised rollback before changing its source; a BuJo graph/replay-only mutation retires only an advertised BuJo rollback because Lite and Journal do not fingerprint that source domain. A rollback can therefore disappear immediately after normal capture instead of becoming stale. SQLite writer fences cover source snapshotting and the final manifest rename; staged and final manifest bytes/identity are checked through durability confirmation. A source-ahead/stale index is never relabeled as safe; a divergent legacy `memory.db` remains byte-for-byte in place but is not advertised as rollback. The former operational `memory-bujo` bin that exposed lower-level `rebuild`/`rollback <root> --tier <lite|journal|bujo>` commands is now only the nonzero error-deflector described above; config-aware `mono-agent memory rebuild` / `rollback` handle both first activation and subsequent generations.
+This performs the first managed activation and builds and validates a side-by-side generation. BuJo rebuild fingerprints and preserves the exact replay sidecar as canonical source. A prior index is retained for `mono-agent memory rollback` only as a fresh immutable online-backup generation whose indexed payload exactly matches the current canonical source (Journal may retain its recoverable vector backlog). Its manifest commits the full WAL-visible logical state, including vectors, lifecycle, edges, hashes, graph, FTS, and metadata; same-source/provider rebuilds also compare every retained vector with the newly embedded candidate. The first supported daily-source mutation atomically retires any advertised rollback before changing its source; a BuJo graph/replay-only mutation retires only an advertised BuJo rollback because Lite and Journal do not fingerprint that source domain. A rollback can therefore disappear immediately after normal capture instead of becoming stale. SQLite writer fences cover source snapshotting and the final manifest rename; staged and final manifest bytes/identity are checked through durability confirmation. A source-ahead/stale index is never relabeled as safe; a divergent legacy `memory.db` remains byte-for-byte in place but is not advertised as rollback. Config-aware `mono-agent memory rebuild` / `rollback` handle both first activation and subsequent generations.
 
 Explicit operator-selected BuJo cleanup is exposed through the high-level
 `applyExplicitMemoryForget` / `restoreExplicitMemoryForget` coordinator. It is
@@ -383,8 +379,6 @@ MigrateDeps
 MigrateResult
 ReconcileAction
 ReconcileDeps
-ReflectDeps
-ReflectResult
 RestoreExplicitMemoryForgetOptions
 SafeMemoryIndexOptions
 SafeMemoryIndexResult
@@ -420,7 +414,6 @@ readManagedIndexManifest
 rebuildFromMarkdown
 reconcile
 reconcileBatch
-reflect
 resolveActiveMemoryDbPath
 resolveCompletedTurnIntake
 resolveExplicitMemoryForgetRoot

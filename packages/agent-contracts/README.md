@@ -18,8 +18,8 @@ Catalog responsibility: Defines shared structural request/response contracts plu
 
 ## Responsibility
 
-Define the structural request, response, stream, channel-driver, memory, and
-live-event contracts that packages can implement independently. It also owns
+Define the structural request, response, stream, channel-driver, and memory
+contracts that packages can implement independently. It also owns
 small dependency-free helpers for settings JSON, JSON-to-env mapping, safe
 network binding, bearer tokens, attachments, and stream framing.
 
@@ -71,8 +71,8 @@ Primary modules:
 | Turn contracts | `index.ts`, `types.ts` | Requests, responses, attachments, cancellation, and settings value shapes. |
 | Channel lifecycle | `channel.ts` | Driver startup, running handles, status, notifications, and interaction hooks. |
 | Message delivery | `buffered-message-stream.ts`, `resilient-message-stream.ts`, `stream-text.ts` | Collect or safely adapt incremental output. |
-| Process and live transport | `stream-wire.ts`, `live-events.ts` | NDJSON stream frames and bounded run-event broadcast. |
-| Shared safety helpers | `host-safety.ts`, `bearer.ts`, `http-headers.ts`, `config-loader.ts`, `json-source.ts` | Safe binds, tokens, sanitized headers, layered config coercion, and settings files. |
+| Process transport | `stream-wire.ts` | NDJSON stream frames for operator clients. |
+| Shared safety helpers | `host-safety.ts`, `bearer.ts`, `http-headers.ts`, `config-loader.ts`, `json-source.ts` | Safe binds, bounded HTTP shutdown/streaming, tokens, sanitized headers, layered config coercion, and settings files. |
 
 `ChannelId` is intentionally open so third-party drivers can choose an id.
 `isDeliverableConversation` only checks a conversation scheme against the ids a
@@ -100,7 +100,6 @@ a balanced prefix and suffix. Redaction still precedes the 40-code-point cap.
 | Add structured human interaction to a channel | `ChannelInteractionHub`, `ChannelInteractionSink`, `ChannelAskQuestion`, `ChannelAskSnapshot`, `ChannelAskSubmission` |
 | Buffer or harden streamed output | `BufferedMessageStream`, `ResilientMessageStream` |
 | Carry stream events across a process boundary | `AgentStreamWireFrame`, `serializeAgentStreamFrame`, `parseAgentStreamFrame` |
-| Publish bounded live run events | `createLiveEventBus`, `RunEventBus`, `RunEventFrame` |
 | Load adapter settings safely | `readSettingsJson`, `writeSettingsJson`, `layerJsonOntoEnv` |
 | Protect an HTTP listener | `assertSafeBind`, `listen`, `generateBearerToken`, `readAuthorizationBearer` |
 
@@ -130,6 +129,8 @@ AgentResponseCancelledErrorOptions
 AgentResponseMetadata
 AgentStreamEvent
 AgentStreamWireFrame
+BoundedHttpResponseWriter
+BoundedHttpResponseWriterOptions
 BufferedMessageStream
 BufferedMessageStreamOptions
 ChannelAskAnswer
@@ -159,18 +160,14 @@ ChannelTransport
 ChannelUserCancelReason
 CodedError
 ConfigErrorFactory
-CreateLiveEventBusOptions
 DEFAULT_AGENT_ATTACHMENT_MAX_BYTES
 DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST
 DEFAULT_EMPTY_FINAL_TEXT
 DEFAULT_MAX_MESSAGE_CHARS
-DEFAULT_RUN_EVENT_BUFFER_SIZE
-DEFAULT_RUN_EVENT_MAX_FRAME_BYTES
 EnvEncodeKind
 InboundHttpHeaders
 JsonEnvFieldSpec
 JsonEnvMapping
-LIVE_EVENT_SCHEMA
 ListenErrorFactories
 MemoryBlock
 MemoryCompletedTurn
@@ -189,9 +186,6 @@ ResilientAgentMessageStream
 ResilientMessageStream
 ResilientMessageStreamLogger
 ResilientMessageStreamOptions
-RunEventBus
-RunEventFrame
-RunEventSink
 RunningChannel
 SettingsJson
 SettingsJsonError
@@ -205,8 +199,8 @@ assertSafeBind
 bearerTokensEqual
 buildStreamingTailPreview
 close
+closeServerBounded
 createChannelUserCancelReason
-createLiveEventBus
 decodeAgentAttachmentText
 encodeJsonEnvValue
 fieldSpecMappings
