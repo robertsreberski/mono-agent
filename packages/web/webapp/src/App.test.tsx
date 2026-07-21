@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_RAIL_STORAGE_KEY } from "./agent-rail-layout";
+import "./styles.css";
 
 const storeMock = vi.hoisted(() => ({
   loading: false,
@@ -77,5 +78,15 @@ describe("App agent sidebar toggle", () => {
     localStorage.setItem(AGENT_RAIL_STORAGE_KEY, "204");
     render(<App />);
     expect(screen.getByTestId("agent-rail")).toHaveAttribute("data-expanded", "true");
+  });
+});
+
+describe("App viewport layout", () => {
+  it("constrains the grid row so long conversation lists cannot push the composer off-screen", () => {
+    const { container } = render(<App />);
+    const shell = container.querySelector<HTMLElement>(".app-shell");
+
+    expect(shell).not.toBeNull();
+    expect(getComputedStyle(shell!).gridTemplateRows).toBe("minmax(0, 1fr)");
   });
 });
