@@ -117,7 +117,7 @@ describe("known-tools", () => {
     expect(isKnownToolName("Read")).toBe(true);
     expect(isKnownToolName("NodeRepl")).toBe(true);
     expect(isKnownToolName("read")).toBe(false);
-    expect(isKnownToolName("TelegramAskButtons")).toBe(true);
+    expect(isKnownToolName("AskUser")).toBe(true);
     expect(APP_TOOL_NAMES).toEqual(["RunHistory"]);
     expect(isKnownToolName("RunHistory")).toBe(true);
     expect(isKnownToolName("run_history")).toBe(true);

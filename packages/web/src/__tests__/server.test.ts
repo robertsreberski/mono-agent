@@ -296,6 +296,57 @@ describe("web HTTP server", () => {
     expect((await json(archived)).thread).toMatchObject({ id: thread.id });
   });
 
+  it("proxies pending and submitted AskUser state for a web conversation", async () => {
+    const submissions: Record<string, unknown>[] = [];
+    const snapshot = {
+      interactionId: "ask-test",
+      questions: [{
+        id: "q0",
+        header: "Delivery",
+        question: "Send the draft?",
+        options: [
+          { id: "q0o0", label: "Send", description: "Send it now." },
+          { id: "q0o1", label: "Skip", description: "Leave it unsent." },
+        ],
+      }],
+      answers: [],
+      activeQuestionIndex: 0,
+      status: "pending",
+      createdAt: "2026-07-21T09:00:00.000Z",
+      expiresAt: "2026-07-21T09:10:00.000Z",
+    };
+    const { baseUrl } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({
+        supportsAskUser: true,
+        pendingAsk: snapshot,
+        onAskSubmit: (body) => submissions.push(body),
+      }),
+    });
+    const created = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    const thread = (await json(created)).thread as { id: string };
+
+    const pending = await fetch(`${baseUrl}/api/v1/threads/${thread.id}/ask`);
+    expect(await json(pending)).toEqual({ ask: snapshot });
+    const submitted = await fetch(`${baseUrl}/api/v1/threads/${thread.id}/ask`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        interactionId: "ask-test",
+        answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }],
+      }),
+    });
+    expect(await json(submitted)).toMatchObject({ accepted: true, snapshot: { status: "answered" } });
+    expect(submissions).toEqual([{
+      interactionId: "ask-test",
+      answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }],
+    }]);
+  });
+
   it("validates the public quote payload before starting a turn", async () => {
     const { baseUrl } = await start({ host: "127.0.0.1" });
     const created = await fetch(`${baseUrl}/api/v1/threads`, {

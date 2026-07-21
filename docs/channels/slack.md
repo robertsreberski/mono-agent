@@ -140,6 +140,23 @@ catalog and effort values outside the effective model's supported set are
 rejected. If a catalog exceeds Slack's 100-option static-select limit, use the
 exact-argument form instead.
 
+### AskUser buttons and custom replies
+
+The channel-agnostic `AskUser` tool renders as Block Kit in Slack. An optional
+long context or draft is posted first, followed by one active question at a time.
+Each question shows its two or three proposed answers as native buttons plus
+**Other**; multi-select questions let the user toggle choices and press **Done**.
+Choosing **Other** prompts the user to reply in the same thread. Button choices
+and typed replies resume the same in-flight model run, while stale buttons are
+expired without starting a new turn.
+
+`AskUser` accepts up to five related questions in one call. Slack advances the
+same question message sequentially after each answer. The thread remains the
+physical interaction destination even when a scheduled or delegated run uses a
+different logical producer conversation for history. The normal Slack channel
+allowlist applies throughout. See [Delivery and Send Tools](/channels/delivery-and-send-tools/)
+for the strict input contract and timeout behavior.
+
 ### Silent delivery and quiet hours
 
 Slack does not expose a bot-controlled notification-suppression field on

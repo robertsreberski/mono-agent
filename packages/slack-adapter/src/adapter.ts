@@ -1,6 +1,9 @@
 import {
   createChannelUserCancelReason,
   type AgentAttachment,
+  type ChannelAskSnapshot,
+  type ChannelAskSubmission,
+  type ChannelAskSubmissionResult,
   type AgentContinuationTurn,
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
@@ -22,7 +25,7 @@ import {
   type SlackMessageStreamOptions,
 } from "./message-stream.js";
 import { SlackApiError } from "./slack-client.js";
-import { normalizeSlackMarkdownToMarkdown } from "./slack-markdown.js";
+import { formatMarkdownForSlack, normalizeSlackMarkdownToMarkdown } from "./slack-markdown.js";
 import type {
   SlackBlockAction,
   SlackBlockActionsPayload,
@@ -270,6 +273,12 @@ export type SlackInteractionHandlingResult =
       channelId: SlackChannelId;
       control: "model" | "effort";
       outcome: "updated" | "cancelled" | "expired" | "already_recorded";
+    }
+  | {
+      kind: "ask";
+      id: string;
+      channelId: SlackChannelId;
+      outcome: "answered" | "selection_updated" | "custom_requested" | "expired";
     };
 
 /** Outcome of routing a workspace-registered model/effort slash command. */
@@ -365,6 +374,14 @@ export interface SlackAdapterOptions {
    * Fire-and-forget; best-effort.
    */
   recordPostedMessage?: (channelId: string, ts: string, conversationId: string) => void;
+  /** Host-owned structured AskUser state, consumed before message admission. */
+  pendingAsks?: SlackPendingAsks;
+}
+
+export interface SlackPendingAsks {
+  getPendingAsk(conversationId: string): ChannelAskSnapshot | undefined | Promise<ChannelAskSnapshot | undefined>;
+  submitAskAnswers(input: ChannelAskSubmission): ChannelAskSubmissionResult | Promise<ChannelAskSubmissionResult>;
+  cancel(conversationId: string): void;
 }
 
 export type SlackEventIgnoredReason =
@@ -457,6 +474,105 @@ interface SlackRuntimeMenuContext {
   readonly messageTs: SlackMessageTs;
   readonly resetCommand: string;
   readonly expectedModel?: string;
+}
+
+interface SlackAskPresentation {
+  readonly channelId: SlackChannelId;
+  readonly messageTs: SlackMessageTs;
+  readonly threadTs?: SlackMessageTs;
+  activeQuestionIndex: number;
+  readonly selectedOptionIds: Set<string>;
+}
+
+type SlackAskAction =
+  | { readonly kind: "option"; readonly optionIndex: number }
+  | { readonly kind: "other" }
+  | { readonly kind: "done" };
+
+const SLACK_ASK_ACTION_ID = "mono_agent_ask_user";
+
+function slackAskActionValue(interactionId: string, questionIndex: number, action: SlackAskAction): string {
+  const suffix = action.kind === "option" ? `o:${String(action.optionIndex)}` : action.kind === "other" ? "c" : "d";
+  return `au1:${interactionId}:${String(questionIndex)}:${suffix}`;
+}
+
+function parseSlackAskActionValue(value: string): {
+  readonly interactionId: string;
+  readonly questionIndex: number;
+  readonly action: SlackAskAction;
+} | undefined {
+  const match = /^au1:([^:]{1,80}):([0-4]):(c|d|o:([0-2]))$/u.exec(value);
+  if (match === null || match[1] === undefined || match[2] === undefined || match[3] === undefined) return undefined;
+  const interactionId = match[1];
+  const questionIndex = Number(match[2]);
+  if (match[3] === "c") return { interactionId, questionIndex, action: { kind: "other" } };
+  if (match[3] === "d") return { interactionId, questionIndex, action: { kind: "done" } };
+  return { interactionId, questionIndex, action: { kind: "option", optionIndex: Number(match[4]) } };
+}
+
+function renderSlackAsk(snapshot: ChannelAskSnapshot, selectedOptionIds: ReadonlySet<string>): {
+  readonly text: string;
+  readonly blocks: readonly unknown[];
+} {
+  if (snapshot.status !== "pending") {
+    const text = snapshot.status === "answered"
+      ? "Answer recorded."
+      : snapshot.status === "expired"
+        ? "This question expired."
+        : "This question was cancelled.";
+    return { text, blocks: [] };
+  }
+  const question = snapshot.questions[snapshot.activeQuestionIndex];
+  if (question === undefined) return { text: "Answer recorded.", blocks: [] };
+  const text = [
+    `${question.header} · ${String(snapshot.activeQuestionIndex + 1)}/${String(snapshot.questions.length)}`,
+    question.question,
+    ...question.options.map((option, index) => `${String(index + 1)}. ${option.label} — ${option.description}`),
+    question.multiSelect
+      ? "Choose one or more, then select Done. You can also reply in this thread with a custom answer."
+      : "Choose one option, or reply in this thread with a custom answer.",
+  ].join("\n\n");
+  const elements = [
+    ...question.options.map((option, optionIndex) => ({
+      type: "button",
+      text: {
+        type: "plain_text",
+        text: slackTruncateCodePoints(
+          `${selectedOptionIds.has(option.id) ? "✓ " : ""}${option.label}`,
+          SLACK_OPTION_TEXT_MAX_CODE_POINTS,
+        ),
+      },
+      action_id: SLACK_ASK_ACTION_ID,
+      value: slackAskActionValue(snapshot.interactionId, snapshot.activeQuestionIndex, {
+        kind: "option",
+        optionIndex,
+      }),
+    })),
+    {
+      type: "button",
+      text: { type: "plain_text", text: "Other" },
+      action_id: SLACK_ASK_ACTION_ID,
+      value: slackAskActionValue(snapshot.interactionId, snapshot.activeQuestionIndex, { kind: "other" }),
+    },
+    ...(question.multiSelect
+      ? [{
+          type: "button",
+          text: { type: "plain_text", text: "Done" },
+          action_id: SLACK_ASK_ACTION_ID,
+          value: slackAskActionValue(snapshot.interactionId, snapshot.activeQuestionIndex, { kind: "done" }),
+          style: "primary",
+        }]
+      : []),
+  ];
+  return {
+    text,
+    blocks: [
+      { type: "header", text: { type: "plain_text", text: `${question.header} · ${String(snapshot.activeQuestionIndex + 1)}/${String(snapshot.questions.length)}` } },
+      { type: "section", text: { type: "plain_text", text: [question.question, ...question.options.map((option, index) => `${String(index + 1)}. ${option.label} — ${option.description}`)].join("\n\n") } },
+      { type: "context", elements: [{ type: "plain_text", text: question.multiSelect ? "Select one or more, then Done—or reply with a custom answer." : "Select one, or reply with a custom answer." }] },
+      { type: "actions", block_id: `ask_user_${String(snapshot.activeQuestionIndex)}`, elements },
+    ],
+  };
 }
 
 interface SlackTextEvent {
@@ -674,6 +790,8 @@ export class SlackAdapter {
   private readonly recordPostedMessage:
     | ((channelId: string, ts: string, conversationId: string) => void)
     | undefined;
+  private readonly pendingAsks: SlackPendingAsks | undefined;
+  private readonly askPresentations = new Map<string, SlackAskPresentation>();
   /**
    * In-flight abort controllers per thread. The harness serializes runs for a
    * conversation, so several may be queued/active concurrently; /cancel aborts
@@ -736,12 +854,62 @@ export class SlackAdapter {
     this.logger = options.logger;
     this.resolvePostIndex = options.resolvePostIndex;
     this.recordPostedMessage = options.recordPostedMessage;
+    this.pendingAsks = options.pendingAsks;
 
     if (!this.allowAllChannels && this.allowedChannelIds.size === 0) {
       throw new TypeError(
         "SlackAdapter requires allowedChannelIds or allowAllChannels: true.",
       );
     }
+  }
+
+  async presentAsk(
+    channelId: SlackChannelId,
+    threadTs: SlackMessageTs | undefined,
+    snapshot: ChannelAskSnapshot,
+  ): Promise<void> {
+    if (!this.isAuthorized(channelId)) throw new Error("Slack AskUser destination is not authorized.");
+    if (snapshot.message !== undefined) {
+      await this.api.chatPostMessage({
+        channel: channelId,
+        text: formatMarkdownForSlack(snapshot.message),
+        ...(threadTs === undefined ? {} : { thread_ts: threadTs }),
+      });
+    }
+    const rendered = renderSlackAsk(snapshot, new Set());
+    const sent = await this.api.chatPostMessage({
+      channel: channelId,
+      text: rendered.text,
+      blocks: rendered.blocks,
+      ...(threadTs === undefined ? {} : { thread_ts: threadTs }),
+    });
+    this.askPresentations.set(snapshot.interactionId, {
+      channelId: sent.channel,
+      messageTs: sent.ts,
+      ...(threadTs === undefined ? {} : { threadTs }),
+      activeQuestionIndex: snapshot.activeQuestionIndex,
+      selectedOptionIds: new Set(),
+    });
+  }
+
+  async updateAsk(
+    channelId: SlackChannelId,
+    snapshot: ChannelAskSnapshot,
+  ): Promise<void> {
+    const presentation = this.askPresentations.get(snapshot.interactionId);
+    if (presentation === undefined || presentation.channelId !== channelId) return;
+    if (presentation.activeQuestionIndex !== snapshot.activeQuestionIndex) {
+      presentation.activeQuestionIndex = snapshot.activeQuestionIndex;
+      presentation.selectedOptionIds.clear();
+    }
+    const rendered = renderSlackAsk(snapshot, presentation.selectedOptionIds);
+    await this.api.chatUpdate({
+      channel: presentation.channelId,
+      ts: presentation.messageTs,
+      text: rendered.text,
+      blocks: rendered.blocks,
+    });
+    if (snapshot.status !== "pending") this.askPresentations.delete(snapshot.interactionId);
   }
 
   async handleEventCallback(
@@ -856,11 +1024,13 @@ export class SlackAdapter {
     // to the producing conversation (so it loads that history), else the default
     // slack: thread id.
     const conversationId = await this.resolveConversationId(event);
+    const interactionConversationId = `slack:${event.channelId}:${event.threadTs}`;
     if (command?.name === "cancel") {
       const reason = createChannelUserCancelReason("Slack");
       // Clear queued follow-ups and abort every controller for the resolved
       // conversation, including other physical Slack threads aliased to it.
       this.responder.cancel?.(conversationId, reason);
+      this.pendingAsks?.cancel(interactionConversationId);
       const controllers = this.activeControllersByConversation.get(conversationId);
       if (controllers !== undefined) {
         for (const controller of controllers) {
@@ -877,6 +1047,35 @@ export class SlackAdapter {
         eventId: event.eventId,
         channelId: event.channelId,
       };
+    }
+
+    if (command === undefined && event.files.length === 0 && this.pendingAsks !== undefined) {
+      const snapshot = await this.pendingAsks.getPendingAsk(interactionConversationId);
+      const question = snapshot?.questions[snapshot.activeQuestionIndex];
+      if (snapshot !== undefined && question !== undefined) {
+        const selectedOptionIds = question.multiSelect
+          ? [...(this.askPresentations.get(snapshot.interactionId)?.selectedOptionIds ?? [])]
+          : [];
+        const result = await this.pendingAsks.submitAskAnswers({
+          conversationId: interactionConversationId,
+          interactionId: snapshot.interactionId,
+          answers: [{
+            questionId: question.id,
+            selectedOptionIds,
+            customReply: text,
+          }],
+        });
+        if (result.accepted) {
+          return {
+            kind: "handled",
+            eventId: event.eventId,
+            channelId: event.channelId,
+            action: "responded",
+            trigger: event.trigger,
+            metadata: { askUser: true },
+          };
+        }
+      }
     }
 
     // No per-thread "busy" rejection: the harness serializes runs for the
@@ -1750,6 +1949,12 @@ export class SlackAdapter {
         return await this.handleRuntimeBlockAction(payload, runtimeAction, control);
       }
     }
+    const askAction = actions.find((candidate) =>
+      candidate.action_id === SLACK_ASK_ACTION_ID && typeof candidate.value === "string"
+    );
+    if (askAction !== undefined && typeof askAction.value === "string") {
+      return await this.handleAskBlockAction(payload, askAction.value);
+    }
     const action = actions.find(
       (candidate) => typeof candidate.action_id === "string" && this.homeButtons.has(candidate.action_id),
     );
@@ -1763,6 +1968,76 @@ export class SlackAdapter {
     }
     const threadTs = firstNonEmpty(payload.message?.thread_ts, payload.message?.ts);
     return this.runBoundInteraction(actionId, binding, payload.channel?.id, threadTs);
+  }
+
+  private async handleAskBlockAction(
+    payload: SlackBlockActionsPayload,
+    value: string,
+  ): Promise<SlackInteractionHandlingResult> {
+    const parsed = parseSlackAskActionValue(value);
+    const channelId = payload.channel?.id;
+    if (parsed === undefined || channelId === undefined || !this.isAuthorized(channelId) || this.pendingAsks === undefined) {
+      return { kind: "ignored", reason: "unbound", ...(parsed === undefined ? {} : { id: parsed.interactionId }) };
+    }
+    const presentation = this.askPresentations.get(parsed.interactionId);
+    const threadTs = presentation?.threadTs ?? payload.message?.thread_ts;
+    const conversationId = threadTs === undefined ? `slack:${channelId}` : `slack:${channelId}:${threadTs}`;
+    const snapshot = await this.pendingAsks.getPendingAsk(conversationId);
+    if (
+      snapshot === undefined
+      || snapshot.interactionId !== parsed.interactionId
+      || snapshot.activeQuestionIndex !== parsed.questionIndex
+    ) {
+      if (presentation !== undefined) {
+        await this.api.chatUpdate({
+          channel: presentation.channelId,
+          ts: presentation.messageTs,
+          text: "This question expired.",
+          blocks: [],
+        });
+        this.askPresentations.delete(parsed.interactionId);
+      }
+      return { kind: "ask", id: parsed.interactionId, channelId, outcome: "expired" };
+    }
+    const question = snapshot.questions[snapshot.activeQuestionIndex];
+    if (question === undefined) {
+      return { kind: "ask", id: parsed.interactionId, channelId, outcome: "expired" };
+    }
+    if (parsed.action.kind === "other") {
+      await this.api.chatPostMessage({
+        channel: channelId,
+        text: "Reply in this thread with your custom answer.",
+        ...(threadTs === undefined ? {} : { thread_ts: threadTs }),
+      });
+      return { kind: "ask", id: parsed.interactionId, channelId, outcome: "custom_requested" };
+    }
+    if (parsed.action.kind === "option" && question.multiSelect) {
+      const option = question.options[parsed.action.optionIndex];
+      if (option === undefined || presentation === undefined) {
+        return { kind: "ask", id: parsed.interactionId, channelId, outcome: "expired" };
+      }
+      if (presentation.selectedOptionIds.has(option.id)) presentation.selectedOptionIds.delete(option.id);
+      else presentation.selectedOptionIds.add(option.id);
+      await this.updateAsk(channelId, snapshot);
+      return { kind: "ask", id: parsed.interactionId, channelId, outcome: "selection_updated" };
+    }
+    const selectedOptionIds = parsed.action.kind === "option"
+      ? [question.options[parsed.action.optionIndex]?.id].filter((id): id is string => id !== undefined)
+      : [...(presentation?.selectedOptionIds ?? [])];
+    if (selectedOptionIds.length === 0) {
+      return { kind: "ask", id: parsed.interactionId, channelId, outcome: "selection_updated" };
+    }
+    const result = await this.pendingAsks.submitAskAnswers({
+      conversationId,
+      interactionId: snapshot.interactionId,
+      answers: [{ questionId: question.id, selectedOptionIds }],
+    });
+    return {
+      kind: "ask",
+      id: parsed.interactionId,
+      channelId,
+      outcome: result.accepted ? "answered" : "expired",
+    };
   }
 
   /**

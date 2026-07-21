@@ -92,7 +92,7 @@ const channelTelegram: CapabilityModule = {
     };
   },
   envExampleLines: () => ["# Telegram bot token from @BotFather", "MONO_AGENT_TELEGRAM_BOT_TOKEN="],
-  recommendedTools: ["TelegramSendMessage", "TelegramAskButtons"],
+  recommendedTools: ["TelegramSendMessage"],
   validateExpectations: [
     { sectionId: "channel:telegram", mustBe: "ok", note: "Set MONO_AGENT_TELEGRAM_BOT_TOKEN in .env." },
   ],

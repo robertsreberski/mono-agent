@@ -63,6 +63,13 @@ AgentStreamEvent
 AgentStreamWireFrame
 BufferedMessageStream
 BufferedMessageStreamOptions
+ChannelAskAnswer
+ChannelAskOption
+ChannelAskQuestion
+ChannelAskSnapshot
+ChannelAskStatus
+ChannelAskSubmission
+ChannelAskSubmissionResult
 ChannelConfigInput
 ChannelConfigViewField
 ChannelConfigViewFieldSource
@@ -72,7 +79,6 @@ ChannelDeliveryError
 ChannelDriver
 ChannelFailureCertainty
 ChannelId
-ChannelInteractionAnswerKind
 ChannelInteractionHub
 ChannelInteractionSink
 ChannelLogger

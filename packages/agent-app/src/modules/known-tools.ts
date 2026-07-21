@@ -31,7 +31,6 @@ export const APP_TOOL_NAMES = [
 export const ADAPTER_SEND_TOOL_NAMES = [
   "SlackSendMessage",
   "TelegramSendMessage",
-  "TelegramAskButtons",
   "TelegramSendFile",
   "AskUser",
 ] as const;
@@ -49,10 +48,8 @@ export const ADAPTER_SEND_TOOL_NAMES = [
 export const LEGACY_TOOL_ALIASES: Record<string, string> = {
   slack_send_message: "SlackSendMessage",
   telegram_send_message: "TelegramSendMessage",
-  telegram_ask: "TelegramAskButtons",
   telegram_send_document: "TelegramSendFile",
   telegram_send_photo: "TelegramSendFile",
-  ask_user: "AskUser",
   run_history: "RunHistory",
   memory_recall: "MemoryRecall",
   read_skill: "ReadSkill",

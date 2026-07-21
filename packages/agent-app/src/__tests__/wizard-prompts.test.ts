@@ -278,13 +278,10 @@ describe("wizard prompt builders", () => {
     expect(values.slice(BUILTIN_TOOL_NAMES.length)).toEqual([
       "RunHistory",
       "TelegramSendMessage",
-      "TelegramAskButtons",
       "AskUser",
     ]);
-    // Channel send-tool hints name the action and the channel.
-    const ask = options.find((option) => option.value === "TelegramAskButtons");
-    expect(ask?.hint).toContain("Telegram");
-    expect(ask?.hint).toContain("tappable buttons");
+    const ask = options.find((option) => option.value === "AskUser");
+    expect(ask?.hint).toContain("any channel");
     const send = options.find((option) => option.value === "TelegramSendMessage");
     expect(send?.hint).toBe("proactive send (Telegram)");
     expect(options.find((option) => option.value === "RunHistory")?.hint).toContain("prior runs");

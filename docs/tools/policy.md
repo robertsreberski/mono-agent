@@ -91,7 +91,7 @@ Managed built-ins: `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `NodeRepl`, 
 
 ## Adapter send tools
 
-The app can expose MCP tools that send messages back out through an already-enabled channel adapter: `SlackSendMessage`, `TelegramSendMessage`, `TelegramAskButtons` (inline-keyboard question), `TelegramSendFile` (document or photo), and the channel-agnostic `AskUser` (coverage: `config`).
+The app can expose MCP tools that send messages back out through an already-enabled channel adapter: `SlackSendMessage`, `TelegramSendMessage` (optionally with non-blocking reply buttons), `TelegramSendFile` (document or photo), and the channel-agnostic structured `AskUser` (coverage: `config`).
 
 Under **allow-all** these are available automatically once the matching channel is enabled — you do not add them to any list. They only need an explicit `allowedTools` entry when you switch to a hand-picked allowlist: in that case, add the exact tool name **in addition** to valid `slack.*` / `telegram.*` adapter config. Either way, `disallowedTools` can remove them.
 
@@ -143,7 +143,15 @@ The same rules apply through the environment: an **unset** `MONO_AGENT_ALLOWED_T
 
 ## Back-compat: legacy tool names
 
-The tools were renamed to PascalCase, and the old snake_case spellings (`slack_send_message`, `telegram_ask`, `read_skill`, `run_history`, …) remain accepted as **deprecated input aliases** in `allowedTools` / `disallowedTools` under a permanent compatibility decision. There is no scheduled removal: mono-agent cannot rewrite hand-authored policy safely, and an old deny-list entry must never stop matching and silently broaden access. `telegram_send_document` and `telegram_send_photo` both map to the single `TelegramSendFile` tool, so a `disallowedTools` entry for either legacy name denies the whole file tool. The new PascalCase names are the only ones ever registered, emitted, or recommended — update hand-written lists when convenient. See [Presets & modules](/reference/presets/#back-compat-legacy-tool-names) and the canonical [deprecation tracker](/reference/deprecations/).
+Most tools were renamed to PascalCase, and the remaining snake_case send/file,
+skill, memory, and run-history spellings continue as deprecated policy-input
+aliases. Mono-agent cannot safely rewrite hand-authored deny-lists, so those
+entries must not silently stop matching. `telegram_send_document` and
+`telegram_send_photo` both map to the single `TelegramSendFile` tool, so a
+`disallowedTools` entry for either name denies the whole file tool. Canonical
+PascalCase names are the only ones registered, emitted, or recommended. See
+[Presets & modules](/reference/presets/#back-compat-legacy-tool-names) and the
+canonical [deprecation tracker](/reference/deprecations/).
 
 ## Programmatic use
 

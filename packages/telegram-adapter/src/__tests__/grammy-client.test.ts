@@ -104,7 +104,7 @@ describe("createGrammyTelegramApi", () => {
     const { api, calls } = recordingApi({ editMessageText: () => true });
     const client = createGrammyTelegramApi(api);
 
-    const reply_markup = { inline_keyboard: [[{ text: "Yes", callback_data: "ask:0" }]] };
+    const reply_markup = { inline_keyboard: [[{ text: "Yes", callback_data: "reply:v1:0" }]] };
     const result = await client.editMessageText({
       chat_id: 1,
       message_id: 9,

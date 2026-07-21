@@ -31,7 +31,7 @@ describe("OperatorClient", () => {
             contextWindow: 128_000,
           },
         },
-        capabilities: { attachments: true },
+        capabilities: { attachments: true, askUser: true },
       })) as typeof fetch,
     });
     await expect(client.info()).resolves.toEqual({
@@ -49,6 +49,44 @@ describe("OperatorClient", () => {
       },
       supportsAttachments: true,
       supportsHistoryAppend: false,
+      supportsAskUser: true,
+    });
+  });
+
+  it("reads and submits structured AskUser state on the encoded conversation route", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const snapshot = {
+      interactionId: "ask-test",
+      questions: [],
+      answers: [],
+      activeQuestionIndex: 0,
+      status: "pending",
+      createdAt: "2026-07-21T09:00:00.000Z",
+      expiresAt: "2026-07-21T09:10:00.000Z",
+    } as const;
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async (input, init) => {
+        requests.push({ url: String(input), ...(init === undefined ? {} : { init }) });
+        return init?.method === "POST"
+          ? Response.json({ accepted: true, snapshot: { ...snapshot, status: "answered" } })
+          : Response.json({ ask: snapshot });
+      }) as typeof fetch,
+    });
+
+    await expect(client.pendingAsk("web:thread/one")).resolves.toEqual(snapshot);
+    await expect(client.submitAsk("web:thread/one", "ask-test", [{
+      questionId: "q0",
+      selectedOptionIds: ["q0o0"],
+    }])).resolves.toMatchObject({ accepted: true, snapshot: { status: "answered" } });
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "http://127.0.0.1:1234/gui/v1/conversations/web%3Athread%2Fone/ask",
+      "http://127.0.0.1:1234/gui/v1/conversations/web%3Athread%2Fone/ask",
+    ]);
+    expect(JSON.parse(String(requests[1]?.init?.body))).toEqual({
+      interactionId: "ask-test",
+      answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }],
     });
   });
 

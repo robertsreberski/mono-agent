@@ -53,11 +53,17 @@ export {
 } from "@mono-agent/agent-contracts";
 
 export {
-  TELEGRAM_ASK_CALLBACK_PREFIX,
-  TELEGRAM_ASK_MAX_OPTIONS,
-  isTelegramAskCallbackData,
-  telegramAskCallbackData,
-} from "./ask.js";
+  TELEGRAM_REPLY_CALLBACK_PREFIX,
+  TELEGRAM_REPLY_MAX_OPTIONS,
+  isTelegramReplyCallbackData,
+  telegramReplyCallbackData,
+} from "./reply-options.js";
+
+export {
+  parseTelegramAskUserCallbackData,
+  telegramAskUserCallbackData,
+} from "./ask-user.js";
+export type { TelegramAskUserAction, TelegramAskUserCallback } from "./ask-user.js";
 
 export { createTelegramBot } from "./bot.js";
 export type {

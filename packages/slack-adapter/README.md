@@ -95,6 +95,13 @@ all runtime commands unbound, or supply a validated catalog through that option.
 Slack static-select menus support at most 100 options; a larger catalog remains
 selectable with the exact-argument form.
 
+When the host supplies structured `AskUser` state, the adapter posts optional
+context followed by one Block Kit question at a time. Each question has two or
+three option buttons plus **Other**; multi-select adds **Done**. A typed reply in
+the same thread is consumed as the custom answer before normal turn admission,
+so the blocked model run resumes without deadlocking. Stale actions expire and
+the configured Slack channel allowlist remains authoritative.
+
 ## Silent-delivery limitation
 
 Programmatic proactive delivery accepts `silent: true` in both
@@ -216,6 +223,7 @@ SlackMessageStreamOptions
 SlackMessageTs
 SlackNotifyOptions
 SlackNotifyResult
+SlackPendingAsks
 SlackRequestMetadata
 SlackRequestOptions
 SlackRuntimeControls

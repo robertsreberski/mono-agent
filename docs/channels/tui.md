@@ -52,6 +52,24 @@ Coverage: `config` (the `tui` section of `mono-agent.config.json`).
 
 Keep the bearer value in `.env` (or an exported environment variable). `mono-agent tui` resolves the effective value automatically without putting it in the trace-source registry.
 
+## Conversational endpoints
+
+`GET {basePath}/v1/info` advertises transport capabilities. In addition to the
+existing attachment fields, `capabilities.askUser` tells browser clients that
+the agent supports structured pending-question exchange.
+
+- `POST {basePath}/v1/turns` starts a streamed turn.
+- `GET {basePath}/v1/conversations/:id/ask` returns the pending `AskUser`
+  snapshot or `{ "ask": null }`.
+- `POST {basePath}/v1/conversations/:id/ask` submits the snapshot's interaction
+  id and complete answer set, resuming the existing turn.
+- `POST {basePath}/v1/conversations/:id/cancel` cancels the turn and any pending
+  AskUser interaction.
+
+Ask submission is conversation-bound and rejects expired, completed, or
+mismatched interaction ids. The endpoint remains subject to the same loopback,
+non-loopback opt-in, and optional bearer-key policy as streamed turns.
+
 ## Live event relay for Session Recorder
 
 The `live` channel is the sibling default-on operator surface: the read-only run-event relay consumed by the `@mono-agent/session-web` PWA and other operator tooling. It exposes run lifecycle frames over SSE, never accepts turns, and lets a consumer show sub-run updates before the on-disk recorder flushes the final summary.

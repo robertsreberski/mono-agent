@@ -31,6 +31,9 @@ export function operatorFetch(options: {
   readonly turns?: (body: Record<string, unknown>) => string | ReadableStream<Uint8Array>;
   readonly supportsAttachments?: boolean;
   readonly supportsHistoryAppend?: boolean;
+  readonly supportsAskUser?: boolean;
+  readonly pendingAsk?: Record<string, unknown> | null;
+  readonly onAskSubmit?: (body: Record<string, unknown>) => void;
   readonly onTurn?: (body: Record<string, unknown>) => void;
   readonly onVerbatim?: (conversationId: string, body: Record<string, unknown>) => void | Promise<void>;
 } = {}): typeof fetch {
@@ -54,6 +57,7 @@ export function operatorFetch(options: {
         capabilities: {
           attachments: options.supportsAttachments ?? true,
           ...(options.supportsHistoryAppend === true ? { historyAppend: true } : {}),
+          askUser: options.supportsAskUser ?? false,
         },
       });
     }
@@ -80,6 +84,14 @@ export function operatorFetch(options: {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       await options.onVerbatim?.(decodeURIComponent(encodedConversationId), body);
       return Response.json({ recorded: true }, { status: 200 });
+    }
+    if (url.includes("/v1/conversations/") && url.endsWith("/ask")) {
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        options.onAskSubmit?.(body);
+        return Response.json({ accepted: true, snapshot: { ...options.pendingAsk, status: "answered" } });
+      }
+      return Response.json({ ask: options.pendingAsk ?? null });
     }
     return new Response("not found", { status: 404 });
   }) as typeof fetch;

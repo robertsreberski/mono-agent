@@ -689,7 +689,7 @@ describe("AgentHarness", () => {
       turnHistoryEnricher: {
         enrichAssistantHistory(input) {
           return input.runId === "run-ask"
-            ? `[Interaction transcript]\nTool: TelegramAskButtons\nQuestion: Send the complete bank details including BIC and email?\nOptions: Send it | Hold on\nOutcome: answered\nAnswer: Hold on\n\n${input.assistantText}`
+            ? `[Interaction transcript]\nTool: AskUser\nQuestion: Send the complete bank details including BIC and email?\nOptions: Send it | Hold on\nOutcome: answered\nAnswer: Hold on\n\n${input.assistantText}`
             : input.assistantText;
         },
         releaseRun() {},

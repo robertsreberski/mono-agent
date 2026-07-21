@@ -50,7 +50,7 @@ The wizard composes an agent from these modules. Selecting one auto-checks its r
 | Module | What it adds | Recommends tools |
 | --- | --- | --- |
 | `channel:webhook` | HTTP loopback endpoint — the zero-credential smoke channel. | — |
-| `channel:telegram` | Chat with your agent via a Telegram bot (chat-id allowlist). | `TelegramSendMessage`, `TelegramAskButtons` |
+| `channel:telegram` | Chat with your agent via a Telegram bot (chat-id allowlist). | `TelegramSendMessage` |
 | `channel:slack` | Socket-Mode Slack bot scoped to a channel allowlist. | `SlackSendMessage` |
 | `channel:openai-api` | Expose the runtime as an OpenAI-compatible loopback endpoint. | — |
 | `channel:cron` | Run on a five-field schedule (`minute hour day-of-month month day-of-week`, UTC by default). Guided init validates it inline, then scaffolds `cron/digest.md`; seconds and macros such as `@daily` are unsupported. Hashed `H` fields use the stable job `id` as their seed. | — |
@@ -68,7 +68,7 @@ The tools step first frames the three tool families so you know what the decisio
 
 - **Always on** — auto-provisioned and **not** gated by this choice: `MemoryRecall` (when the memory tier enables recall), plus `ReadSkill` and MCP-server tools (`mcp__…`, owned by their servers). These are shown dimmed for clarity, never as a checkbox.
 - **Built-ins** — files (`Read`/`Write`/`Edit`/`Glob`/`Grep`), shell (`Bash`), JavaScript (`NodeRepl`), and web (`WebFetch`/`WebSearch`).
-- **Channel tools** — the send/ask tools that came with the channels you enabled (e.g. `TelegramSendMessage`, `TelegramAskButtons`, `SlackSendMessage`), plus `AskUser` (ask the human, any channel).
+- **Channel tools** — the send tools that came with the channels you enabled (for example `TelegramSendMessage` and `SlackSendMessage`), plus `AskUser` (structured human input on web, Slack, or Telegram).
 
 For Pi and Claude it then asks a single **"Allow all tools? [Yes]"** — the default. Accepting writes `tools.allowedTools: ["*"]` (every built-in available on each route and every enabled channel's send tools; the "Always on" family is unaffected). The wizard spells out that this includes shell/JavaScript execution, file, web, and channel-side effects. If no enforceable sandbox constrains that runtime, it requires a second explicit confirmation before accepting the unsandboxed allow-all surface. Direct `codex:*` skips these questions: normal runs require exact allow-all and use the Codex-native network-off workspace sandbox with unattended escalation denied. Guided readiness rejects manually entered direct `opencode:*` because it cannot prove that advanced backend's credential/permission posture; choose `pi:opencode-go:*`, or use a flagged/non-TTY scaffold and configure OpenCode's native `permissionMode` explicitly.
 
@@ -107,7 +107,12 @@ A preset is not a separate format — `mono-agent presets show <id>` prints the 
 
 ## Back-compat: legacy tool names
 
-The tools were renamed to PascalCase (`SlackSendMessage`, `TelegramAskButtons`, …). If you have **hand-written** explicit `tools.allowedTools` / `tools.disallowedTools` lists from before the rename, the old snake_case names (`slack_send_message`, `telegram_send_message`, `telegram_ask`, `ask_user`, `read_skill`, …) remain accepted as **deprecated input aliases** under a permanent compatibility decision: an old list must keep validating and enforcing correctly, including deny-list entries that prevent access. There is no scheduled removal. The new PascalCase names are the only ones ever registered, emitted, or recommended, so update your lists when convenient. See the canonical [deprecation tracker](/reference/deprecations/) for the rationale.
+Most tools were renamed to PascalCase (`SlackSendMessage`,
+`TelegramSendMessage`, and others). Existing hand-written policy entries for the
+remaining send/file/skill aliases continue to validate so an old deny-list does
+not silently broaden access. Canonical names are the only ones registered,
+emitted, or recommended. See the canonical
+[deprecation tracker](/reference/deprecations/) for the rationale.
 
 One collapse to know about: the two former Telegram file tools (`telegram_send_document` and `telegram_send_photo`) are now a single `TelegramSendFile` (it takes a `kind` param). Both legacy names still map to it, so a `disallowedTools` entry for **either** old name denies the whole file tool. Most operators never touched these lists — under allow-all there is nothing to migrate — but if you deny-list by name, re-check it against the [built-in and adapter tool names](/tools/policy/#built-in-tool-names).
 

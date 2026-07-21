@@ -154,7 +154,7 @@ How the servers reach the underlying runtime depends on the backend:
 
 - **SDK runtimes** — the servers are **inlined** into the runtime options the agent passes to the provider session. The `mcp.json` is read and its `mcpServers` are merged into the request.
 - **Supported CLI runtimes** — mono-agent translates or forwards the server config into the provider-native shape.
-- **Direct OpenCode** — MCP is intentionally unsupported because provider-owned shell tools inherit the server environment. Any configured server, `MemoryRecall`, hosted Supermemory MCP, or real adapter send-tool injection fails validation and the bridge before startup. The host's implicit `RunHistory` and bridge-backed `AskUser` / `TelegramAskButtons` tools are omitted for a direct OpenCode primary/fallback and for an accepted per-trigger direct OpenCode turn; they do not make an otherwise minimal exact-allow-all config unusable. A rejected per-trigger override stays on its base runtime and keeps those tools. Use a Pi runtime, including `pi:opencode-go:*`, when MCP or host-mediated questions are required.
+- **Direct OpenCode** — MCP is intentionally unsupported because provider-owned shell tools inherit the server environment. Any configured server, `MemoryRecall`, hosted Supermemory MCP, or real adapter send-tool injection fails validation and the bridge before startup. The host's implicit `RunHistory` and bridge-backed `AskUser` tools are omitted for a direct OpenCode primary/fallback and for an accepted per-trigger direct OpenCode turn; they do not make an otherwise minimal exact-allow-all config unusable. A rejected per-trigger override stays on its base runtime and keeps those tools. Use a Pi runtime, including `pi:opencode-go:*`, when MCP or host-mediated questions are required.
 
 For supported backends, you author one `mcp.json` and mono-agent does the translation. See [Runtime backends](/runtime/backends/) for the exact capability boundary.
 
@@ -202,7 +202,14 @@ The current or any running run is excluded, as are unrelated conversations and t
 Use active conversation history first for the current exchange. Use `MemoryRecall` for intentionally captured durable facts, and `RunHistory` for exact evidence from an earlier run or tool call. See [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory).
 
 :::note
-The **app-owned adapter send tools** (`SlackSendMessage`, `TelegramSendMessage`, `TelegramAskButtons`, `TelegramSendFile`, `AskUser`) are also delivered as MCP tools but, unlike external MCP tools, they **are** governed by the tool policy. Under allow-all they become available automatically once the matching channel is enabled. On runtimes that enforce specific lists, name them explicitly or deny them normally; direct Codex rejects the restrictive configuration before a run. Valid `slack.*` / `telegram.*` adapter config is required either way. See [Delivery & send tools](/channels/delivery-and-send-tools/).
+The **app-owned adapter tools** (`SlackSendMessage`, `TelegramSendMessage`,
+`TelegramSendFile`, and structured `AskUser`) are also delivered as MCP tools
+but, unlike external MCP tools, they **are** governed by the tool policy. Under
+allow-all they become available automatically when their host prerequisites are
+present. On runtimes that enforce specific lists, name them explicitly or deny
+them normally; direct Codex rejects the restrictive configuration before a run.
+Valid `slack.*` / `telegram.*` adapter config is required for send tools. See
+[Delivery & send tools](/channels/delivery-and-send-tools/).
 :::
 
 For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/policy/). For how `Bash` is confined, see [Sandbox](/tools/sandbox/).

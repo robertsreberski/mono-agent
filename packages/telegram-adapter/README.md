@@ -92,9 +92,12 @@ retires the warm provider session, clears that conversation's canonical history,
 and reloads skills/startup context on the next message; durable memory and the
 chat's model/effort selection remain intact.
 
-When a blocking `TelegramAskButtons` question is pending, the next authorized
-plain-text message is accepted as a custom answer to that same tool call. The
-adapter removes the obsolete inline keyboard; slash commands remain commands.
+When a structured `AskUser` interaction is pending, Telegram renders each
+question with native option buttons plus **Other**; multi-select questions add a
+**Done** button. The next authorized plain-text message is accepted as a custom
+answer to that same tool call, while slash commands remain commands. Separately,
+non-blocking `TelegramSendMessage.reply_options` buttons start a new user turn
+when tapped.
 
 ## Public API
 
@@ -118,9 +121,9 @@ DEFAULT_ATTACHMENT_MIME_ALLOWLIST
 DownloadTelegramAttachmentsOptions
 LoadTelegramAdapterConfigInput
 RedactedTelegramAdapterConfig
-TELEGRAM_ASK_CALLBACK_PREFIX
-TELEGRAM_ASK_MAX_OPTIONS
 TELEGRAM_CONFIG_FIELDS
+TELEGRAM_REPLY_CALLBACK_PREFIX
+TELEGRAM_REPLY_MAX_OPTIONS
 TELEGRAM_TRANSCRIPTION_UNAVAILABLE_NOTE
 TelegramAdapterConfig
 TelegramAdapterConfigError
@@ -137,6 +140,8 @@ TelegramAgentMessageInput
 TelegramApiError
 TelegramApiErrorDetails
 TelegramApiErrorKind
+TelegramAskUserAction
+TelegramAskUserCallback
 TelegramAttachment
 TelegramAttachmentBase
 TelegramAttachmentKind
@@ -196,13 +201,15 @@ createTelegramBot
 createTelegramMessageSender
 decodeAgentAttachmentText
 downloadTelegramAttachments
-isTelegramAskCallbackData
+isTelegramReplyCallbackData
 isWithinQuietHours
 loadTelegramAdapterConfig
+parseTelegramAskUserCallbackData
 redactTelegramAdapterConfig
 renderTelegramMarkdown
 startTelegramAdapter
-telegramAskCallbackData
+telegramAskUserCallbackData
+telegramReplyCallbackData
 ```
 
 <!-- public-api-inventory:end -->

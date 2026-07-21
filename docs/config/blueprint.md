@@ -177,7 +177,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     ]
   },
 
-  // Human-in-the-loop bridge: blocking AskUser / TelegramAskButtons plus tool
+  // Human-in-the-loop bridge: structured blocking AskUser plus tool
   // progress → channel status messages. It auto-starts when either ask tool is
   // allowed, this block or an interaction env override is configured, or
   // interaction.progress.enabled resolves true while

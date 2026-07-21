@@ -1,5 +1,8 @@
 import type {
   AgentSummary,
+  AskAnswer,
+  AskSnapshot,
+  AskSubmissionResult,
   Bootstrap,
   StartTurnInput,
   ThreadDetail,
@@ -101,6 +104,20 @@ export const api = {
       `/api/v1/threads/${encodeURIComponent(threadId)}/cancel`,
       { method: "POST" },
     ),
+
+  pendingAsk: async (threadId: string, signal?: AbortSignal) => {
+    const result = await request<{ ask: AskSnapshot | null }>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/ask`,
+      { signal },
+    );
+    return result.ask ?? undefined;
+  },
+
+  submitAsk: async (threadId: string, interactionId: string, answers: readonly AskAnswer[]) =>
+    request<AskSubmissionResult>(`/api/v1/threads/${encodeURIComponent(threadId)}/ask`, {
+      method: "POST",
+      body: JSON.stringify({ interactionId, answers }),
+    }),
 
   createUpload: async (file: File) => {
     const result = await request<{ attachment: WebAttachment }>("/api/v1/uploads", {

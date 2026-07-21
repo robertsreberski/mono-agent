@@ -1,4 +1,4 @@
-import type { ChannelInteractionAnswerKind } from "@mono-agent/agent-contracts";
+import type { ChannelInteractionSink } from "@mono-agent/agent-contracts";
 import { describeRunFailureKind } from "@mono-agent/observability";
 import type {
   TelegramAdapterConfig,
@@ -10,7 +10,6 @@ import type {
   TelegramRuntimeControls,
 } from "@mono-agent/telegram-adapter";
 
-import { isAdapterSendToolAllowed } from "../adapter-send-tools.js";
 import { buildChannelRuntimeControls } from "../channel-runtime-controls.js";
 import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
@@ -68,29 +67,16 @@ export function createTelegramChannelDriver(
       const adapter = await loadTelegramModule();
       const startAdapter = overrides.startAdapter ?? adapter.startTelegramAdapter;
       const result = await startAdapter(telegramStartOptions(input, overrides));
-      const interactionSink = {
-        postQuestion: async (conversationId, text) => {
-          await result.post(requireAllowedTelegramChat(conversationId, input), text);
+      const interactionSink: ChannelInteractionSink = {
+        presentAsk: async (conversationId, snapshot) => {
+          await result.presentAsk(requireAllowedTelegramChat(conversationId, input), snapshot);
+        },
+        updateAsk: async (conversationId, snapshot) => {
+          await result.updateAsk(requireAllowedTelegramChat(conversationId, input), snapshot);
         },
         postStatus: async (conversationId, text, statusOptions) => {
           await result.postStatus(requireAllowedTelegramChat(conversationId, input), text, statusOptions);
         },
-        dismissQuestion: async (conversationId, messageRef) => {
-          const messageId = Number(messageRef);
-          if (!Number.isSafeInteger(messageId) || messageId <= 0) {
-            throw new Error("invalid Telegram question message reference.");
-          }
-          const chatId = requireAllowedTelegramChat(conversationId, input);
-          await result.dismissInlineKeyboard?.(chatId, messageId);
-        },
-      } satisfies {
-        postQuestion(conversationId: string, text: string): Promise<void>;
-        postStatus(
-          conversationId: string,
-          text: string,
-          options: { readonly key: string; readonly state: "working" | "done" | "failed" },
-        ): Promise<void>;
-        dismissQuestion(conversationId: string, messageRef: string): Promise<void>;
       };
       input.interaction?.registerSink("telegram", interactionSink);
       return {
@@ -204,10 +190,6 @@ function telegramStartOptions(
   input: ChannelStartInput<TelegramAdapterConfig>,
   overrides: TelegramChannelOverrides,
 ): TelegramAdapterStartOptions {
-  const callbacksEnabled = isAdapterSendToolAllowed("TelegramAskButtons", {
-    allowedTools: input.coreConfig.tools.allowedTools,
-    disallowedTools: input.coreConfig.tools.disallowedTools,
-  });
   const runtimeControls: TelegramRuntimeControls = buildChannelRuntimeControls(input.coreConfig);
   const resetter = input.responder as typeof input.responder & {
     startNewSession?: (conversationId: string) => Promise<void>;
@@ -219,7 +201,6 @@ function telegramStartOptions(
     allowAllChats: input.config.allowAllChats,
     responder: input.responder,
     allowedUpdates: ["message", "callback_query"],
-    ...(callbacksEnabled ? { callbacksEnabled: true } : {}),
     runtimeControls,
     deleteWebhookOnStart: true,
     stream: {
@@ -253,12 +234,8 @@ function telegramStartOptions(
       ? {}
       : {
           pendingAsks: {
-            tryResolve: (
-              conversationId: string,
-              answer: string,
-              answerKind?: ChannelInteractionAnswerKind,
-            ) => input.interaction!.tryResolveAsk(conversationId, answer, answerKind),
-            hasPending: (conversationId: string) => input.interaction!.hasPendingAsk?.(conversationId) ?? false,
+            getPendingAsk: (conversationId: string) => input.interaction!.getPendingAsk(conversationId),
+            submitAskAnswers: (submission) => input.interaction!.submitAskAnswers(submission),
             cancel: (conversationId: string) => {
               input.interaction!.cancelAsks(conversationId);
             },

@@ -167,6 +167,13 @@ export function createTuiChannelDriver(
         };
       };
 
+      if (input.interaction !== undefined) {
+        input.interaction.registerSink("web", {
+          presentAsk: async () => undefined,
+          updateAsk: async () => undefined,
+          postStatus: async () => undefined,
+        });
+      }
       const adapter = await adapterFactory({
         host: input.config.host,
         port: input.config.port,
@@ -174,6 +181,7 @@ export function createTuiChannelDriver(
         allowNonLoopback: input.config.allowNonLoopback,
         ...(input.config.apiKey === undefined ? {} : { apiKey: input.config.apiKey }),
         responder: input.responder,
+        ...(input.interaction === undefined ? {} : { interaction: input.interaction }),
         info: buildInfo,
         onServerError: (reason) => input.onFailure(reason),
         ...(input.logger === undefined ? {} : { logger: input.logger }),

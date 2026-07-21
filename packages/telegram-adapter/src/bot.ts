@@ -8,6 +8,9 @@ import {
   createChannelUserCancelReason,
   isAgentResponseCancelledError,
   isChannelUserCancelReason,
+  type ChannelAskSnapshot,
+  type ChannelAskSubmission,
+  type ChannelAskSubmissionResult,
 } from "@mono-agent/agent-contracts";
 import { run, type RunnerHandle, type RunOptions } from "@grammyjs/runner";
 import { Bot, type Context } from "grammy";
@@ -30,7 +33,8 @@ import {
   type TelegramAdapterStreamOptions,
   type TelegramFileDownloader,
 } from "./adapter.js";
-import { isTelegramAskCallbackData } from "./ask.js";
+import { parseTelegramAskUserCallbackData, telegramAskUserCallbackData } from "./ask-user.js";
+import { isTelegramReplyCallbackData } from "./reply-options.js";
 import type { TelegramCommandConfig, TelegramReactionsConfig } from "./config.js";
 import { createGrammyTelegramApi } from "./grammy-client.js";
 import {
@@ -42,7 +46,7 @@ import {
   TelegramMessageStream,
   type TelegramMessageStreamOptions,
 } from "./message-stream.js";
-import type { TelegramChatId, TelegramMessage, TelegramUpdate } from "./types.js";
+import type { TelegramChatId, TelegramMessage, TelegramSendMessageParams, TelegramUpdate } from "./types.js";
 
 type RunnerFetchOptions = NonNullable<NonNullable<RunOptions<Context>["runner"]>["fetch"]>;
 type AllowedUpdates = NonNullable<RunnerFetchOptions["allowed_updates"]>;
@@ -70,6 +74,65 @@ const EFFORT_CALLBACK_PREFIX = `${RUNTIME_CALLBACK_PREFIX}e:`;
 const RUNTIME_CANCEL_CALLBACK = `${RUNTIME_CALLBACK_PREFIX}cancel`;
 const RUNTIME_CALLBACK_TOKEN_LENGTH = 16;
 const TELEGRAM_BUTTON_LABEL_CODE_POINTS = 60;
+
+interface TelegramAskPresentation {
+  readonly chatId: TelegramChatId;
+  readonly messageId: number;
+  activeQuestionIndex: number;
+  readonly selectedOptionIds: Set<string>;
+}
+
+function renderTelegramAsk(
+  snapshot: ChannelAskSnapshot,
+  selectedOptionIds: ReadonlySet<string>,
+): {
+  readonly text: string;
+  readonly replyMarkup?: NonNullable<TelegramSendMessageParams["reply_markup"]>;
+} {
+  if (snapshot.status !== "pending") {
+    const terminal = snapshot.status === "answered"
+      ? "Answer recorded."
+      : snapshot.status === "expired"
+        ? "This question expired."
+        : "This question was cancelled.";
+    return { text: terminal };
+  }
+  const question = snapshot.questions[snapshot.activeQuestionIndex];
+  if (question === undefined) return { text: "Answer recorded." };
+  const lines = [
+    `${question.header} · ${String(snapshot.activeQuestionIndex + 1)}/${String(snapshot.questions.length)}`,
+    "",
+    question.question,
+    "",
+    ...question.options.map((option, index) =>
+      `${String(index + 1)}. ${option.label} — ${option.description}`
+    ),
+    "",
+    question.multiSelect
+      ? "Choose one or more, then tap Done. You can also type a custom reply below."
+      : "Choose one option, or type a custom reply below.",
+  ];
+  const optionRows = question.options.map((option, optionIndex) => [{
+    text: telegramButtonLabel(`${selectedOptionIds.has(option.id) ? "✓ " : ""}${option.label}`),
+    callback_data: telegramAskUserCallbackData(snapshot.interactionId, snapshot.activeQuestionIndex, {
+      kind: "option",
+      optionIndex,
+    }),
+  }]);
+  const finalRow = [
+    {
+      text: "Other",
+      callback_data: telegramAskUserCallbackData(snapshot.interactionId, snapshot.activeQuestionIndex, { kind: "other" }),
+    },
+    ...(question.multiSelect
+      ? [{
+          text: "Done",
+          callback_data: telegramAskUserCallbackData(snapshot.interactionId, snapshot.activeQuestionIndex, { kind: "done" }),
+        }]
+      : []),
+  ];
+  return { text: lines.join("\n"), replyMarkup: { inline_keyboard: [...optionRows, finalRow] } };
+}
 
 // grammY's Api client default `timeoutSeconds` is 500 (8m20s overall HTTP
 // timeout). A half-open socket (after a network blip or host sleep) therefore
@@ -204,12 +267,8 @@ export class SerialQueue {
  * `/cancel` fails it.
  */
 export interface TelegramPendingAsks {
-  tryResolve(
-    conversationId: string,
-    answer: string,
-    answerKind?: "text" | "callback",
-  ): boolean | Promise<boolean>;
-  hasPending?(conversationId: string): boolean | Promise<boolean>;
+  getPendingAsk(conversationId: string): ChannelAskSnapshot | undefined | Promise<ChannelAskSnapshot | undefined>;
+  submitAskAnswers(input: ChannelAskSubmission): ChannelAskSubmissionResult | Promise<ChannelAskSubmissionResult>;
   cancel(conversationId: string): void;
 }
 
@@ -262,14 +321,6 @@ export interface CreateTelegramBotOptions {
    * clears the working reaction instead of leaving it. Best-effort, default off.
    */
   readonly reactions?: TelegramReactionsConfig;
-  /**
-   * Handle inline-keyboard taps (`callback_query`) produced by the `TelegramAskButtons`
-   * tool. When a pending ask exists, the tap resolves the in-flight tool call;
-   * otherwise the existing synthetic-turn fallback runs on the same conversation.
-   * When set, `callback_query` is added to the default `allowedUpdates`. Default
-   * off for ask buttons; runtime controls independently require callback updates.
-   */
-  readonly callbacksEnabled?: boolean;
   /**
    * Quiet window (ms) for aggregating a multi-photo/video album (messages sharing
    * a `media_group_id`) into one request. Defaults to 1000. Set 0 to flush on the
@@ -358,12 +409,6 @@ export interface TelegramBotController {
    */
   notify(chatId: TelegramChatId, text: string, options?: TelegramNotifyOptions): Promise<TelegramNotifyResult>;
   /**
-   * Post a plain message directly (no model turn, no history record). Used by the
-   * interaction bridge for AskUser questions — the question/answer pair reaches
-   * the model as the tool result, so recording it to history would duplicate it.
-   */
-  post(chatId: TelegramChatId, text: string): Promise<void>;
-  /**
    * Post (or edit in place) a short tool-progress status line, keyed per
    * `(chat, key)`. A terminal state (`done`/`failed`) writes the final text and
    * clears the tracking so the next job with the same key starts a new message.
@@ -374,8 +419,9 @@ export interface TelegramBotController {
     text: string,
     options: { readonly key: string; readonly state: "working" | "done" | "failed" },
   ): Promise<void>;
-  /** Remove an inline keyboard from one known message (best-effort). */
-  dismissInlineKeyboard(chatId: TelegramChatId, messageId: number): Promise<void>;
+  /** Present or advance one bridge-owned AskUser interaction. */
+  presentAsk(chatId: TelegramChatId, snapshot: ChannelAskSnapshot): Promise<void>;
+  updateAsk(chatId: TelegramChatId, snapshot: ChannelAskSnapshot): Promise<void>;
   /**
    * Test seam: total in-flight AbortControllers tracked across all chats. Used to
    * assert the over-cap busy path does not leak an eagerly-created controller.
@@ -980,11 +1026,44 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     });
   }
 
-  // Inline-keyboard callbacks serve runtime menus whenever a host catalog exists,
-  // and TelegramAskButtons when that tool is enabled. The auth gate above already
-  // blocks unauthorized chats; we re-check defensively.
-  const callbacksEnabled = options.callbacksEnabled === true;
-  const callbackHandlersEnabled = callbacksEnabled || runtimeCatalog !== undefined;
+  const askPresentations = new Map<string, TelegramAskPresentation>();
+  async function presentAsk(chatId: TelegramChatId, snapshot: ChannelAskSnapshot): Promise<void> {
+    if (snapshot.message !== undefined) {
+      await sender.sendMessage({ chat_id: chatId, text: snapshot.message });
+    }
+    const rendered = renderTelegramAsk(snapshot, new Set());
+    const sent = await sender.sendMessage({
+      chat_id: chatId,
+      text: rendered.text,
+      ...(rendered.replyMarkup === undefined ? {} : { reply_markup: rendered.replyMarkup }),
+    });
+    askPresentations.set(snapshot.interactionId, {
+      chatId,
+      messageId: sent.message_id,
+      activeQuestionIndex: snapshot.activeQuestionIndex,
+      selectedOptionIds: new Set(),
+    });
+  }
+  async function updateAsk(chatId: TelegramChatId, snapshot: ChannelAskSnapshot): Promise<void> {
+    const presentation = askPresentations.get(snapshot.interactionId);
+    if (presentation === undefined || String(presentation.chatId) !== String(chatId)) return;
+    if (presentation.activeQuestionIndex !== snapshot.activeQuestionIndex) {
+      presentation.activeQuestionIndex = snapshot.activeQuestionIndex;
+      presentation.selectedOptionIds.clear();
+    }
+    const rendered = renderTelegramAsk(snapshot, presentation.selectedOptionIds);
+    await sender.editMessageText({
+      chat_id: chatId,
+      message_id: presentation.messageId,
+      text: rendered.text,
+      ...(rendered.replyMarkup === undefined ? {} : { reply_markup: rendered.replyMarkup }),
+    });
+    if (snapshot.status !== "pending") askPresentations.delete(snapshot.interactionId);
+  }
+
+  // Runtime controls, structured AskUser, and non-blocking reply options share
+  // Telegram's callback_query stream. Unknown protocols are acknowledged only.
+  const callbackHandlersEnabled = true;
   const answeredCallbacks = new Set<string>();
   const rememberAnswered = (key: string): void => {
     answeredCallbacks.add(key);
@@ -1115,7 +1194,68 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       if (await handleRuntimeCallback(ctx, chatId, data)) {
         return;
       }
-      if (!callbacksEnabled || !isTelegramAskCallbackData(data)) {
+      const askCallback = parseTelegramAskUserCallbackData(data);
+      if (askCallback !== undefined) {
+        const conversationId = `telegram:${String(chatId)}`;
+        const snapshot = await options.pendingAsks?.getPendingAsk(conversationId);
+        if (
+          snapshot === undefined
+          || snapshot.interactionId !== askCallback.interactionId
+          || snapshot.activeQuestionIndex !== askCallback.questionIndex
+        ) {
+          await answerCallbackQuietly(ctx, "This question has expired.");
+          await stripCallbackKeyboardQuietly(ctx);
+          return;
+        }
+        const question = snapshot.questions[snapshot.activeQuestionIndex];
+        if (question === undefined) {
+          await answerCallbackQuietly(ctx, "This question has expired.");
+          return;
+        }
+        if (askCallback.action.kind === "other") {
+          await answerCallbackQuietly(ctx, "Type your reply below.");
+          await ctx.reply("Type your custom reply below.");
+          return;
+        }
+        const messageId = ctx.callbackQuery.message?.message_id;
+        let presentation = askPresentations.get(snapshot.interactionId);
+        if (presentation === undefined && messageId !== undefined) {
+          presentation = {
+            chatId,
+            messageId,
+            activeQuestionIndex: snapshot.activeQuestionIndex,
+            selectedOptionIds: new Set(),
+          };
+          askPresentations.set(snapshot.interactionId, presentation);
+        }
+        if (askCallback.action.kind === "option" && question.multiSelect) {
+          const option = question.options[askCallback.action.optionIndex];
+          if (option === undefined || presentation === undefined) {
+            await answerCallbackQuietly(ctx, "This option has expired.");
+            return;
+          }
+          if (presentation.selectedOptionIds.has(option.id)) presentation.selectedOptionIds.delete(option.id);
+          else presentation.selectedOptionIds.add(option.id);
+          await updateAsk(chatId, snapshot);
+          await answerCallbackQuietly(ctx, "Selection updated.");
+          return;
+        }
+        const selectedOptionIds = askCallback.action.kind === "option"
+          ? [question.options[askCallback.action.optionIndex]?.id].filter((id): id is string => id !== undefined)
+          : [...(presentation?.selectedOptionIds ?? [])];
+        if (selectedOptionIds.length === 0) {
+          await answerCallbackQuietly(ctx, "Choose at least one option.");
+          return;
+        }
+        const result = await options.pendingAsks?.submitAskAnswers({
+          conversationId,
+          interactionId: snapshot.interactionId,
+          answers: [{ questionId: question.id, selectedOptionIds }],
+        });
+        await answerCallbackQuietly(ctx, result?.accepted === true ? "Answer recorded." : "This question has expired.");
+        return;
+      }
+      if (!isTelegramReplyCallbackData(data)) {
         await answerCallbackQuietly(ctx);
         return;
       }
@@ -1136,14 +1276,6 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       // Strip the keyboard so the question cannot be answered twice (best-effort).
       await stripCallbackKeyboardQuietly(ctx);
       const conversationId = `telegram:${String(chatId)}`;
-      const consumed = await options.pendingAsks?.tryResolve(conversationId, label, "callback");
-      if (consumed === true) {
-        return;
-      }
-      if (await options.pendingAsks?.hasPending?.(conversationId)) {
-        await ctx.reply(messages.busyText);
-        return;
-      }
       const question = ctx.callbackQuery.message?.text;
       const syntheticText =
         question !== undefined && question.trim().length > 0
@@ -1231,11 +1363,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       return;
     }
 
-    // A plain-text reply while an ask is pending is that ask's ANSWER. It must be
-    // consumed BEFORE admission: the asking turn holds this chat's queue slot, so
-    // queueing the reply as a turn would deadlock it behind the very tool call
-    // waiting for it. Media always passes through, and slash-prefixed text is
-    // left to the (unknown-)command path so an ask can never eat a command.
+    // A plain-text reply while AskUser is pending is a custom answer. Consume it
+    // before admission: the asking turn holds this chat's queue slot, so queueing
+    // the reply behind it would deadlock. Slash commands remain commands.
     if (
       options.pendingAsks !== undefined &&
       typeof telegramMessage.text === "string" &&
@@ -1243,13 +1373,26 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       !telegramMessage.text.trimStart().startsWith("/")
     ) {
       const conversationId = `telegram:${String(chatId)}`;
-      const consumed = await options.pendingAsks.tryResolve(conversationId, telegramMessage.text, "text");
-      if (consumed) {
+      const snapshot = await options.pendingAsks.getPendingAsk(conversationId);
+      const question = snapshot?.questions[snapshot.activeQuestionIndex];
+      if (snapshot !== undefined && question !== undefined) {
+        const selectedOptionIds = question.multiSelect
+          ? [...(askPresentations.get(snapshot.interactionId)?.selectedOptionIds ?? [])]
+          : [];
+        const result = await options.pendingAsks.submitAskAnswers({
+          conversationId,
+          interactionId: snapshot.interactionId,
+          answers: [{
+            questionId: question.id,
+            selectedOptionIds,
+            customReply: telegramMessage.text,
+          }],
+        });
+        if (!result.accepted) {
+          await ctx.reply(messages.busyText);
+          return;
+        }
         await applyReaction(chatId, telegramMessage.message_id, "👍");
-        return;
-      }
-      if (await options.pendingAsks.hasPending?.(conversationId)) {
-        await ctx.reply(messages.busyText);
         return;
       }
     }
@@ -2006,9 +2149,6 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
   return {
     bot,
     notify,
-    async post(chatId: TelegramChatId, text: string): Promise<void> {
-      await sender.sendMessage({ chat_id: chatId, text });
-    },
     async postStatus(chatId, text, statusOptions): Promise<void> {
       const key = `${String(chatId)}:${statusOptions.key}`;
       try {
@@ -2031,15 +2171,8 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         }
       }
     },
-    async dismissInlineKeyboard(chatId, messageId): Promise<void> {
-      try {
-        await bot.api.editMessageReplyMarkup(chatId, messageId);
-      } catch (error) {
-        logger?.debug?.("Telegram inline-keyboard dismissal failed (best-effort).", {
-          error: errorMessage(error),
-        });
-      }
-    },
+    presentAsk,
+    updateAsk,
     activeControllerCount(): number {
       let total = 0;
       for (const set of activeControllers.values()) {

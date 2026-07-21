@@ -278,7 +278,7 @@ export async function adapterSendToolsRuntimeOptions(controller: MonoAgentAppCon
   // Forward the posted-message index path so `SlackSendMessage` links each post
   // back to the producing conversation (so a later in-thread reply resumes it).
   const indexPath = resolvePostedMessageIndexPath(await resolveAppArtifactDir(input));
-  const interactionForChild = settings.askUser ?? settings.telegram?.askBridge;
+  const interactionForChild = settings.askUser;
   const runOutputRoot = settings.telegram?.sendTools?.pathScope === "run-output"
     ? resolve(coreConfig.artifacts.dir, "outbound")
     : undefined;

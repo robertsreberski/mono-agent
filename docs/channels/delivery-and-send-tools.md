@@ -62,22 +62,26 @@ Slack's built-in driver uses Slack's 40,000-character platform limit for final r
 mono-agent derives MCP **send tools** from already-enabled chat adapters so the agent can push a message back into a chat from inside a turn:
 
 - `SlackSendMessage` — send through the configured Slack adapter
-- `TelegramSendMessage` — send through the configured Telegram adapter
-- `TelegramAskButtons` — post an inline-keyboard question (2–8 option labels) through the Telegram adapter
+- `TelegramSendMessage` — send through the configured Telegram adapter, optionally with non-blocking `reply_options`
 - `TelegramSendFile` — upload and send a file (`kind:"document"`) or an inline image (`kind:"photo"`) through the Telegram adapter
-- `AskUser` — ask ONE free-text question on the current conversation and **block until the user replies** (channel-agnostic; see below)
+- `AskUser` — ask one to five structured questions on the active interaction destination and **block until the user answers** (channel-agnostic; see below)
 
 Coverage: `config`. Three conditions must hold for a send tool to work:
 
 1. The tool must be **permitted by the policy**. Under allow-all (the default) that is automatic once the channel is enabled — no allowlist entry needed. On runtimes that enforce specific lists, include the exact name or deny it normally. Direct `codex:*` rejects all restrictive normal-run policies before start; it never silently widens them.
 2. The corresponding adapter must have **valid config** — `slack.*` for `SlackSendMessage`, `telegram.*` for the Telegram tools — which supplies the credentials and the destination bounds.
-3. With `sandbox.mode: "native"`, the sandbox network policy must admit the tool's HTTP endpoint: `slack.com`, `api.telegram.org` (or the configured Telegram `apiRoot` host), and the configured loopback interaction-bridge host used by send-history recording, `AskUser`, and `TelegramAskButtons`. `mono-agent validate` names any missing host.
+3. With `sandbox.mode: "native"`, the sandbox network policy must admit the tool's HTTP endpoint: `slack.com`, `api.telegram.org` (or the configured Telegram `apiRoot` host), and the configured loopback interaction-bridge host used by send-history recording and `AskUser`. `mono-agent validate` names any missing host.
 
 ### Telegram interactive send tools
 
-`TelegramAskButtons` and `TelegramSendFile` (added by the Telegram interactivity work) are gated exactly like the plain send tools above: permitted by the policy (automatic under allow-all, or their exact name in a specific `tools.allowedTools`) plus valid `telegram.*` config, with the adapter chat allowlist (`telegram.allowedChatIds` / `telegram.allowAllChats`) remaining the destination boundary.
+`TelegramSendMessage` and `TelegramSendFile` are gated by tool policy plus valid
+`telegram.*` config, with `telegram.allowedChatIds` / `telegram.allowAllChats`
+remaining the destination boundary.
 
-- **`TelegramAskButtons`** posts an inline-keyboard question with **2–8** option labels and, by default, waits for either the user's tap or their next plain-text custom reply. Either answer is returned to the same in-flight tool call, preserving the agent's mid-turn context; a custom reply removes the inline keyboard. Set `wait: false` only when the tool must return immediately; the later tap then arrives as a separate synthetic user turn quoting the question and selected label. If a callback arrives with no pending ask, it uses that same synthetic-turn fallback. Telegram already subscribes to `callback_query` updates for its built-in `/model` and `/effort` menus; allowing `TelegramAskButtons` wires the additional ask-button handler. See [Telegram](/channels/telegram/) for the full interactivity setup.
+- **`TelegramSendMessage.reply_options`** adds two to eight native buttons to a
+  normal outbound message. The send returns immediately; a later tap removes the
+  keyboard and starts a separate user turn that names the original message and
+  selected label. Use `AskUser` instead when the current run must wait.
 - **`TelegramSendFile`** uploads and sends a file (`kind:"document"`) or an inline image (`kind:"photo"`) to an allowed chat. It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path` (filename derived from the path), plus an optional `caption`. Uploads are bounded by the adapter's attachment size cap (~20 MB).
 
 The adapter's own allowlist (`slack.allowedChannelIds` / `slack.allowAllChannels`, `telegram.allowedChatIds` / `telegram.allowAllChats`) **remains the destination boundary**: allowing the tool does not widen where the agent may send. A send to a destination outside the adapter allowlist is refused.
@@ -146,24 +150,50 @@ session already owns the tool call in its provider transcript; after a successfu
 history append, cold replay supplements the aliased producer context with the one
 receipt-matched destination entry, without copying it into producer history.
 
-### `AskUser` — blocking free-text ask (interaction bridge)
+### `AskUser` — blocking structured questions (interaction bridge)
 
-`AskUser` is the free-text blocking ask: the tool call posts a question to the current conversation's chat and **waits for the user's next message**, which is returned as the tool result — so the agent keeps its full mid-turn context. It is channel-agnostic and backed by the app's **interaction bridge**. The loopback registry starts automatically when a configured Slack/Telegram send tool, `AskUser`, or `TelegramAskButtons` is allowed (under the allow-all default, or listed in a specific `tools.allowedTools`), when the `interaction` block or an interaction env override is configured, or when `interaction.progress.enabled` resolves true and `tools.mcpRequestContextServers` names at least one opted project MCP server.
+`AskUser` is the single blocking human-input tool. Its strict input is an
+optional `message` (long context or a draft) plus `questions`: one to five
+objects with `header` (at most 12 characters), `question`, two or three
+`options` (`label` plus `description`), and optional `multiSelect`. It waits for
+answers and resumes the same model run with structured selections and custom
+replies. The app-owned loopback bridge starts automatically when a configured
+Slack/Telegram send tool or `AskUser` is allowed, when the `interaction` block or
+an interaction env override is configured, or when `interaction.progress.enabled`
+resolves true and `tools.mcpRequestContextServers` names an opted project MCP
+server.
 
-- While an ask is pending, the user's next **plain-text** message on that chat is consumed as the ANSWER (acknowledged with a 👍 reaction) and never runs as a turn; media and `/`-commands pass through normally, and `/cancel` fails the pending ask.
-- One pending ask per conversation: consolidate everything into a single question. A second concurrent ask returns an "already pending" result.
+- The web console renders every question in one form and submits all remaining
+  answers atomically. Slack and Telegram render one question at a time with
+  native option buttons, **Other** for a typed reply, and **Done** for
+  multi-select.
+- The interaction destination is host-owned and may differ from the logical
+  producer conversation. This lets an interactive scheduled run show its context
+  and buttons in the Slack thread or Telegram chat that triggered it while its
+  history remains attached to the producing run.
+- While an ask is pending, an eligible plain-text reply on that destination is
+  consumed as the active question's custom answer and never runs as a separate
+  turn. Slash commands remain commands, and `/cancel` cancels the pending ask.
+- One pending ask per physical conversation. A second concurrent ask returns an
+  "already pending" result; consolidate related decisions into one call of up to
+  five questions.
 - On timeout (default 10 min, `interaction.askUser.timeoutMs`) the tool returns without an answer and the user's late reply arrives as a normal next turn. On an app restart pending asks degrade the same way.
 - The wait keeps the MCP call alive via progress notifications (see `tools.mcpCallTimeoutMs` / `tools.mcpCallMaxTotalTimeoutMs`).
 - Opted project MCP children can POST `{key, message, state}` to `/v1/progress` using `MONO_AGENT_INTERACTION_PROGRESS_URL` / `MONO_AGENT_INTERACTION_PROGRESS_TOKEN`. The run-scoped bearer selects the producing conversation server-side, is revalidated after the body is read, and is revoked at cleanup. The bridge master bearer remains app-owned and is blanked in opted project MCP environments.
 
-When a blocking `AskUser` or `TelegramAskButtons` call completes, mono-agent stores its exact question, options, outcome, and answer/selection when present in the assistant history copy committed for that turn. This makes the interaction available to a later cold/stateless replay even though the transport posted the question out of band. The final outward message and long-term memory capture remain unchanged. Non-blocking `TelegramAskButtons` (`wait: false`) is not folded into that in-turn record; its later callback remains a synthetic next turn.
+When a blocking `AskUser` call completes, mono-agent stores its exact questions,
+options, outcome, and answers in the assistant history copy committed for that
+turn. This makes the interaction available to a later cold/stateless replay even
+though the transport presented it out of band. The final outward message and
+long-term memory capture remain unchanged. Non-blocking
+`TelegramSendMessage.reply_options` selections remain separate next turns.
 
 The example assumes `MONO_AGENT_SLACK_BOT_TOKEN`, `MONO_AGENT_SLACK_APP_TOKEN`, and `MONO_AGENT_TELEGRAM_BOT_TOKEN` are set in `.env`; credentials are intentionally absent from the source config.
 
 ```json
 {
   "tools": {
-    "allowedTools": ["Read", "Grep", "SlackSendMessage", "TelegramSendMessage", "TelegramAskButtons"]
+    "allowedTools": ["Read", "Grep", "SlackSendMessage", "TelegramSendMessage", "AskUser"]
   },
   "slack": {
     "enabled": true,

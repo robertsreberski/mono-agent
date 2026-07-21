@@ -1,4 +1,4 @@
-import type { AgentContinuationOriginContext } from "@mono-agent/agent-contracts";
+import type { AgentContinuationOriginContext, ChannelInteractionSink } from "@mono-agent/agent-contracts";
 import { AgentHarnessFailureError } from "@mono-agent/agent-harness";
 import type {
   SlackAdapterConfig,
@@ -118,6 +118,15 @@ export function createSlackChannelDriver(
         ...(Object.keys(reconnect).length === 0 ? {} : { reconnect }),
         ...(Object.keys(heartbeat).length === 0 ? {} : { heartbeat }),
         ...(input.logger === undefined ? {} : { logger: input.logger }),
+        ...(input.interaction === undefined
+          ? {}
+          : {
+              pendingAsks: {
+                getPendingAsk: (conversationId: string) => input.interaction!.getPendingAsk(conversationId),
+                submitAskAnswers: (submission) => input.interaction!.submitAskAnswers(submission),
+                cancel: (conversationId: string) => input.interaction!.cancelAsks(conversationId),
+              },
+            }),
         ...(indexPath === undefined
           ? {}
           : {
@@ -130,6 +139,34 @@ export function createSlackChannelDriver(
         ...(overrides.createApi === undefined ? {} : { createApi: overrides.createApi }),
         ...(overrides.webSocketFactory === undefined ? {} : { webSocketFactory: overrides.webSocketFactory }),
       });
+      const statusMessages = new Map<string, { readonly channelId: string; readonly ts: string }>();
+      const interactionSink: ChannelInteractionSink = {
+        presentAsk: async (conversationId, snapshot) => {
+          const target = requireAllowedSlackTarget(conversationId, input.config);
+          await result.adapter.presentAsk(target.channelId, target.threadTs, snapshot);
+        },
+        updateAsk: async (conversationId, snapshot) => {
+          const target = requireAllowedSlackTarget(conversationId, input.config);
+          await result.adapter.updateAsk(target.channelId, snapshot);
+        },
+        postStatus: async (conversationId, text, statusOptions) => {
+          const target = requireAllowedSlackTarget(conversationId, input.config);
+          const key = `${conversationId}:${statusOptions.key}`;
+          const existing = statusMessages.get(key);
+          if (existing === undefined) {
+            const sent = await result.api.chatPostMessage({
+              channel: target.channelId,
+              text,
+              ...(target.threadTs === undefined ? {} : { thread_ts: target.threadTs }),
+            });
+            statusMessages.set(key, { channelId: sent.channel, ts: sent.ts });
+          } else {
+            await result.api.chatUpdate({ channel: existing.channelId, ts: existing.ts, text });
+          }
+          if (statusOptions.state !== "working") statusMessages.delete(key);
+        },
+      };
+      input.interaction?.registerSink("slack", interactionSink);
       return {
         summary: {},
         stop: () => result.stop(),
@@ -278,4 +315,17 @@ export function slackTargetFromConversation(
     return undefined;
   }
   return { channelId, threadTs };
+}
+
+function requireAllowedSlackTarget(
+  conversationId: string,
+  config: SlackAdapterConfig,
+): { readonly channelId: string; readonly threadTs?: string } {
+  const target = slackTargetFromConversation(conversationId);
+  if (target === undefined) throw new Error(`unparseable Slack destination: ${conversationId}`);
+  const normalized = target.channelId.trim().toLowerCase();
+  if (!config.allowAllChannels && !config.allowedChannelIds.some((id) => id.trim().toLowerCase() === normalized)) {
+    throw new Error("Slack channel is not in the adapter allowlist.");
+  }
+  return target;
 }

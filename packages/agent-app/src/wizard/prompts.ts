@@ -142,7 +142,6 @@ const ADAPTER_SEND_TOOL_SET: ReadonlySet<string> = new Set(ADAPTER_SEND_TOOL_NAM
 const ADAPTER_SEND_TOOL_ACTIONS: Readonly<Record<string, string>> = {
   SlackSendMessage: "proactive send",
   TelegramSendMessage: "proactive send",
-  TelegramAskButtons: "ask via tappable buttons, blocking",
   TelegramSendFile: "send a document or photo",
 };
 

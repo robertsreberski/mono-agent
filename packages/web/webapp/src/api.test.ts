@@ -135,6 +135,32 @@ describe("turn overrides", () => {
   });
 });
 
+describe("AskUser API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("uses one encoded thread route for polling and atomic answer submission", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ ask: { interactionId: "ask-test", status: "pending" } }))
+      .mockResolvedValueOnce(Response.json({ accepted: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.pendingAsk("thread/one")).resolves.toMatchObject({ interactionId: "ask-test" });
+    await expect(api.submitAsk("thread/one", "ask-test", [{
+      questionId: "q0",
+      selectedOptionIds: ["q0o0"],
+    }])).resolves.toEqual({ accepted: true });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/threads/thread%2Fone/ask");
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/v1/threads/thread%2Fone/ask");
+    expect(JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body))).toEqual({
+      interactionId: "ask-test",
+      answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }],
+    });
+  });
+});
+
 describe("agent favorites", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

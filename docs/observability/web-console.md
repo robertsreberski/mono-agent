@@ -65,6 +65,23 @@ The service, not the browser tab, owns the upstream operator connection. A brows
 
 During a turn the transcript shows streamed markdown, reasoning, tool calls and results, user-facing errors, and the final outcome. Raw runtime, provider, and usage telemetry remains internal; measured token and cost data appears only through the context control. The composer exposes the selected agent's available model and effort controls. Copy, cancel, archive, and unarchive are supported; edit/regenerate/branch/steer and browser-defined client tools are deliberately not enabled.
 
+## Structured AskUser forms
+
+When an agent calls the channel-agnostic `AskUser` tool, the web console keeps
+the current turn open and renders every remaining question together in one
+form. Each question shows its short header, prompt, two or three described
+choices, and an **Other** field for a custom reply. Single-select questions use
+radio controls; multi-select questions use checkboxes and may combine proposed
+choices with a custom reply. Submitting the complete form resumes the same
+model run rather than creating a new user turn.
+
+An `AskUser` call may contain one to five questions. The form remains attached
+to the running assistant message across ordinary state refreshes. Cancelling
+the turn cancels its pending question set, and an expired or already-completed
+form cannot submit stale answers. Older agents that do not advertise the
+`askUser` operator capability remain usable, but the console does not poll them
+for pending forms.
+
 ## Quote message text
 
 Select text rendered in a user or assistant markdown message and choose **Quote** from the floating toolbar. Reasoning, tool payloads, errors, attachments, and an already-rendered quote are not selection targets. The composer keeps one quote at a time, shows a dismissible preview, and clears it when you switch agents or threads.
@@ -134,7 +151,7 @@ Reset removes the web console's conversations, notification ledger and stale ing
 
 ## Current scope
 
-The web console covers discovery, persistent multi-conversation chat, marked cron/webhook notification conversations, quoting, response notifications while the page/PWA is alive, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a PWA when served from a secure browser context.
+The web console covers discovery, persistent multi-conversation chat, marked cron/webhook notification conversations, structured `AskUser` forms, quoting, response notifications while the page/PWA is alive, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a PWA when served from a secure browser context.
 
 Recorded-run replay, source-annotated config inspection, and managed conversational configuration remain in the TUI for now. Use:
 
