@@ -1,5 +1,47 @@
 # Release notes
 
+## 0.14.0 — Durable conversations and self-healing agents (2026-07-21)
+
+### Highlights
+
+- `AskUser` is now one adapter-neutral structured interaction across the web
+  console, Slack, and Telegram. It supports one to five questions, described
+  choices, custom replies, and multi-select forms while preserving the logical
+  producer's history and targeting the physical channel conversation.
+- Cron and webhook results can create dedicated, marked web-console
+  conversations through the explicit `web:new` destination. Successful
+  deliveries append durable agent history, preserve the selected thread, and
+  use authenticated, idempotent loopback ingress.
+- `RunHistory` now searches logical conversations across daily rollover
+  buckets, with compact overviews, cursor-paged timelines, and guided follow-up
+  calls that avoid recursive history payloads.
+
+### Reliability and documentation
+
+- Managed macOS LaunchAgents gain an authenticated self-healing controller that
+  checks worker/runtime identity at login and every five minutes, stages safe
+  replacements while the existing worker serves, retries failed recovery, and
+  still respects an explicit stop.
+- `@mono-agent/docs-mcp` now exposes the unified `mono_agent_docs` search/read
+  tool with heading anchors, source offsets, offline link targets, and exact
+  previous/next continuation actions over the version-matched corpus.
+- The final-agent demo no longer imposes a positive turn cap by default;
+  `runtime.maxTurns` remains available as an explicit opt-in. Package READMEs,
+  generated API inventories, link checks, and website accessibility coverage
+  have also been standardized across the publishable set.
+
+### Compatibility
+
+- The documentation MCP's former `search_mono_agent_docs` tool is replaced by
+  `mono_agent_docs` and its v2 response schema; exact-version consumers should
+  update the configured tool name with this release.
+- The scheduled CLI compatibility spellings `restart --force`, `metrics`, and
+  `audit-runs` are removed. Use `restart --clear-sessions`, `runs report`, and
+  `runs audit --artifacts <path>` respectively. The unrelated `--force` flags
+  on `install-skill` and `web reset` remain supported.
+- All 23 catalog-publishable packages move together to 0.14.0. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.13.0 — Native channel controls and safer operator workflows (2026-07-20)
 
 ### Highlights

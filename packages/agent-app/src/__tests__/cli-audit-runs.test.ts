@@ -18,7 +18,7 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-describe("runCli audit-runs", () => {
+describe("runCli runs audit", () => {
   it("prints a JSON audit for an explicit artifact directory without rewriting stale running summaries", async () => {
     const dir = await tempDir();
     await writeSummary(dir, "ok.summary.json", {
@@ -44,7 +44,7 @@ describe("runCli audit-runs", () => {
     const stalePath = join(dir, "stale.summary.json");
     const before = await readFile(stalePath, "utf8");
 
-    const { code, stdout } = await captureCli(() => runCli(["audit-runs", "--artifact-dir", dir, "--stale-after-ms", "1", "--json"]));
+    const { code, stdout } = await captureCli(() => runCli(["runs", "audit", "--artifacts", dir, "--stale-after-ms", "1", "--json"]));
     const report = JSON.parse(stdout) as { readonly ok: boolean; readonly totalSummaryFiles: number; readonly parseFailureCount: number; readonly staleRunningCount: number };
 
     expect(code).toBe(0);
@@ -91,8 +91,8 @@ describe("runCli audit-runs", () => {
       artifactPaths: [],
     });
 
-    const agentOnly = await captureCli(() => runCli(["audit-runs", "--artifact-dir", dir, "--stale-after-ms", "1", "--json"]));
-    const all = await captureCli(() => runCli(["audit-runs", "--artifact-dir", dir, "--stale-after-ms", "1", "--include-memory", "--json"]));
+    const agentOnly = await captureCli(() => runCli(["runs", "audit", "--artifacts", dir, "--stale-after-ms", "1", "--json"]));
+    const all = await captureCli(() => runCli(["runs", "audit", "--artifacts", dir, "--stale-after-ms", "1", "--include-memory", "--json"]));
     const agentReport = JSON.parse(agentOnly.stdout) as { readonly totalSummaryFiles: number; readonly statusHistogram: { readonly succeeded: number; readonly failed: number } };
     const allReport = JSON.parse(all.stdout) as { readonly totalSummaryFiles: number; readonly statusHistogram: { readonly succeeded: number; readonly failed: number } };
 
@@ -134,7 +134,7 @@ describe("runCli audit-runs", () => {
       artifactPaths: [],
     });
 
-    const { code, stdout } = await captureCli(() => withCleanMonoAgentEnv(() => runCli(["audit-runs", "--consumer", consumer, "--json"])));
+    const { code, stdout } = await captureCli(() => withCleanMonoAgentEnv(() => runCli(["runs", "audit", "--consumer", consumer, "--json"])));
     const report = JSON.parse(stdout) as { readonly artifactDir: string; readonly statusHistogram: { readonly succeeded: number } };
 
     expect(code).toBe(0);

@@ -409,7 +409,7 @@ mono-agent config       # resolved config field-by-field, each value tagged env/
 mono-agent validate [--preset <id>] [--consumer <path>]     # per-section report; --preset also checks the preset's capabilities
 mono-agent start        # traceability + every configured channel
 mono-agent restart      # apply config edits (config is JSON-first; restart to re-apply)
-mono-agent restart --clear-sessions  # restart AND purge persisted pi sessions (fresh start; durable memory kept)  [--force is a deprecated alias]
+mono-agent restart --clear-sessions  # restart AND purge persisted pi sessions (fresh start; durable memory kept)
 ```
 
 A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` / `--env-file` paths there. `start` prints the traceability source (Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts) and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason. Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it) and run `mono-agent restart` to apply — there is no live browser re-apply.
