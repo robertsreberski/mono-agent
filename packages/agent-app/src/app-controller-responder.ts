@@ -55,6 +55,9 @@ export async function buildResponder(controller: MonoAgentAppController, coreCon
     && !runtimeRouteContainsDirectOpenCode(coreConfig)
     ? createRunHistoryRuntimeExtension({
         artifactDir: coreConfig.artifacts.dir,
+        ...(coreConfig.runtime.session.rollover === undefined
+          ? {}
+          : { rollover: coreConfig.runtime.session.rollover }),
         onUnavailable: (error) => {
           controller.logger?.warn?.("RunHistory tool endpoint could not start; continuing without prior-run inspection.", {
             reason: reasonOf(error),

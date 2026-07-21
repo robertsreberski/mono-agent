@@ -109,15 +109,15 @@ The adapter's own allowlist (channels/chats it may post to) remains the destinat
 
 ## RunHistory
 
-`RunHistory` is an app-owned, read-only, request-scoped MCP tool for inspecting safe normalized evidence from completed prior runs in the exact current conversation bucket. It has no separate config key:
+`RunHistory` is an app-owned, read-only, request-scoped MCP tool for listing, searching, and cursor-inspecting safe normalized evidence from completed prior runs in the logical current conversation. Configured daily rollover buckets do not partition that scope. It has no separate config key:
 
 - Under allow-all, it is available automatically on MCP-capable routes.
 - Under a specific allowlist, include `RunHistory` explicitly.
 - `disallowedTools` can remove it, with deny still winning.
-- `run_history` is accepted only as a deprecated input alias; the registered/model-facing name is `RunHistory`.
+- `run_history` is accepted only as a deprecated policy alias; the registered/model-facing name is `RunHistory`. Tool input also accepts `run_id` as an alias for `runId`.
 - Direct OpenCode and other MCP-incompatible routes suppress it.
 
-The tool excludes the current/running run, other conversations or rollover buckets, system prompts, reasoning, recalled memory, and raw artifact paths. See [MCP servers](/tools/mcp/#runhistory-prior-run-evidence) for its `list` / `inspect` interface and [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory) for its evidence boundary.
+The tool excludes the current/running run, unrelated conversations or threads, system prompts, reasoning, recalled memory, and raw artifact paths. See [MCP servers](/tools/mcp/#runhistory-prior-run-evidence) for its list/search/overview/timeline interface and [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory) for its evidence boundary.
 
 ## Tools not gated by allowedTools
 
