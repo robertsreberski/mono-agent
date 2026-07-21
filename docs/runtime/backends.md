@@ -121,8 +121,8 @@ injection, and rejects positive `runtime.maxTurns` and explicit `runtime.effort`
 instead of claiming unenforced controls. Structured output, live input, fast
 mode, native subagents, and runtime/index skill metadata likewise fail with a
 typed capability mismatch; full skill disclosure remains prompt-based and works.
-Because `AskUser` and `TelegramAskButtons` are normally host-provided through
-MCP, they are omitted when the configured route contains direct OpenCode. An
+Because `AskUser` is normally host-provided through MCP, it is omitted when the
+configured route contains direct OpenCode. An
 accepted per-trigger direct OpenCode override suppresses only those interaction
 tools for that turn; if the override is rejected by sandbox, tool, MCP, effort,
 turn-cap, or skill constraints, the base model and its interaction tools remain

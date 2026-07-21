@@ -8,6 +8,9 @@ import {
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import { useEffect, useState } from "react";
+import { api } from "../api";
+import { useConsoleStore } from "../console-store";
+import type { AskAnswer, AskSnapshot } from "../types";
 import { UserMessageAttachments } from "./Attachments";
 import {
   ACTIVITY_GROUP_BY,
@@ -129,6 +132,147 @@ function RunningText({ status }: EmptyMessagePartProps) {
   );
 }
 
+function AskUserTool({
+  args,
+  result,
+  status,
+}: Pick<ToolCallMessagePartProps, "args" | "result" | "status">) {
+  const threadId = useConsoleStore().selectedThread?.id;
+  const [snapshot, setSnapshot] = useState<AskSnapshot>();
+  const [selected, setSelected] = useState<Record<string, readonly string[]>>({});
+  const [custom, setCustom] = useState<Record<string, string>>({});
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string>();
+  const input = typeof args === "object" && args !== null ? args as Record<string, unknown> : {};
+
+  useEffect(() => {
+    if (!threadId || status.type !== "running") return;
+    const controller = new AbortController();
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const ask = await api.pendingAsk(threadId, controller.signal);
+        if (ask !== undefined) {
+          setSnapshot(ask);
+          if (ask.status !== "pending") return;
+        }
+      } catch (pollError) {
+        if (controller.signal.aborted) return;
+        setError(pollError instanceof Error ? pollError.message : "Could not load the question.");
+      }
+      if (!controller.signal.aborted) timer = window.setTimeout(poll, 400);
+    };
+    void poll();
+    return () => {
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [status.type, threadId]);
+
+  const remaining = snapshot?.questions.slice(snapshot.activeQuestionIndex) ?? [];
+  const complete = remaining.length > 0 && remaining.every((question) => {
+    const count = (selected[question.id]?.length ?? 0) + ((custom[question.id]?.trim().length ?? 0) > 0 ? 1 : 0);
+    return question.multiSelect ? count > 0 : count === 1;
+  });
+  const submit = async () => {
+    if (!threadId || !snapshot || !complete) return;
+    setSubmitting(true);
+    setError(undefined);
+    const answers: AskAnswer[] = remaining.map((question) => ({
+      questionId: question.id,
+      selectedOptionIds: selected[question.id] ?? [],
+      ...(custom[question.id]?.trim() ? { customReply: custom[question.id]!.trim() } : {}),
+    }));
+    try {
+      const response = await api.submitAsk(threadId, snapshot.interactionId, answers);
+      if (!response.accepted) throw new Error(response.code === "invalid_answer" ? "Please complete every question." : "This question is no longer active.");
+      if (response.snapshot !== undefined) setSnapshot(response.snapshot);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Could not submit the answer.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const terminal = snapshot?.status !== undefined && snapshot.status !== "pending";
+  return (
+    <section className="ask-user-card" aria-label="Question from the agent">
+      <div className="ask-user-heading">
+        <span className={`tool-status${status.type === "running" ? " is-running" : ""}`} />
+        <strong>Input needed</strong>
+      </div>
+      {(snapshot?.message ?? (typeof input.message === "string" ? input.message : undefined)) && (
+        <div className="ask-user-context">{snapshot?.message ?? String(input.message)}</div>
+      )}
+      {snapshot === undefined ? (
+        <p className="ask-user-loading">Preparing the questions…</p>
+      ) : terminal ? (
+        <p className="ask-user-complete">{snapshot.status === "answered" ? "Answers submitted." : `Question ${snapshot.status}.`}</p>
+      ) : (
+        <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+          {snapshot.questions.map((question, questionIndex) => {
+            const prior = snapshot.answers.find((answer) => answer.questionId === question.id);
+            const isPrior = questionIndex < snapshot.activeQuestionIndex && prior !== undefined;
+            const selectedIds = isPrior ? prior.selectedOptionIds : selected[question.id] ?? [];
+            const customReply = isPrior ? prior.customReply ?? "" : custom[question.id] ?? "";
+            return (
+              <fieldset key={question.id} disabled={isPrior || submitting}>
+                <legend><span>{question.header}</span>{question.question}</legend>
+                <div className="ask-user-options">
+                  {question.options.map((option) => {
+                    const checked = selectedIds.includes(option.id);
+                    return (
+                      <label key={option.id} className={`ask-user-option${checked ? " is-selected" : ""}`}>
+                        <input
+                          type={question.multiSelect ? "checkbox" : "radio"}
+                          name={question.id}
+                          checked={checked}
+                          onChange={() => {
+                            setSelected((current) => ({
+                              ...current,
+                              [question.id]: question.multiSelect
+                                ? checked
+                                  ? (current[question.id] ?? []).filter((id) => id !== option.id)
+                                  : [...(current[question.id] ?? []), option.id]
+                                : [option.id],
+                            }));
+                            if (!question.multiSelect) setCustom((current) => ({ ...current, [question.id]: "" }));
+                          }}
+                        />
+                        <span><strong>{option.label}</strong><small>{option.description}</small></span>
+                      </label>
+                    );
+                  })}
+                </div>
+                <label className="ask-user-other">
+                  <span>Custom reply</span>
+                  <textarea
+                    rows={2}
+                    value={customReply}
+                    placeholder="Type another answer…"
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setCustom((current) => ({ ...current, [question.id]: value }));
+                      if (!question.multiSelect && value.trim()) setSelected((current) => ({ ...current, [question.id]: [] }));
+                    }}
+                  />
+                </label>
+              </fieldset>
+            );
+          })}
+          {error && <p className="ask-user-error" role="alert">{error}</p>}
+          <button type="submit" className="ask-user-submit" disabled={!complete || submitting}>
+            {submitting ? "Submitting…" : snapshot.questions.length === 1 ? "Submit answer" : "Submit answers"}
+          </button>
+        </form>
+      )}
+      {snapshot === undefined && status.type !== "running" && result !== undefined && (
+        <pre className="ask-user-result">{safeJson(result)}</pre>
+      )}
+    </section>
+  );
+}
+
 export function ToolFallback({
   toolName,
   args,
@@ -136,6 +280,7 @@ export function ToolFallback({
   isError,
   status,
 }: ToolCallMessagePartProps) {
+  if (toolName === "AskUser") return <AskUserTool args={args} result={result} status={status} />;
   const isRunning = status.type === "running";
   return (
     <details className={`tool-call${isError ? " is-error" : ""}`}>

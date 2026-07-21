@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AgentResponseCancelledError,
   isChannelUserCancelReason,
+  type ChannelAskSnapshot,
 } from "@mono-agent/agent-contracts";
 
 import {
@@ -153,6 +154,81 @@ describe("SlackAdapter", () => {
           responder: responderFrom(async () => ({ text: "ok" })),
         }),
     ).toThrow(/allowedChannelIds/);
+  });
+
+  it("renders AskUser as Block Kit buttons and submits a native selection", async () => {
+    const api = new FakeSlackApi();
+    const snapshot = askSnapshot();
+    const submitAskAnswers = vi.fn(async () => ({ accepted: true, snapshot }));
+    const responder = { respond: vi.fn() } satisfies AgentResponder;
+    const adapter = new SlackAdapter({
+      api,
+      responder,
+      allowAllChannels: true,
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => snapshot),
+        submitAskAnswers,
+        cancel: vi.fn(),
+      },
+    });
+
+    await adapter.presentAsk("D123", "171.000001", snapshot);
+
+    expect(api.postMessageCalls[0]).toMatchObject({
+      channel: "D123",
+      thread_ts: "171.000001",
+      text: "*Draft reply*",
+    });
+    const controls = api.postMessageCalls[1]?.blocks as Array<{
+      elements?: Array<{ action_id?: string; text?: { text?: string }; value?: string }>;
+    }>;
+    const send = controls.flatMap((block) => block.elements ?? [])
+      .find((element) => element.text?.text === "Send");
+    expect(send?.action_id).toBe("mono_agent_ask_user");
+
+    await expect(adapter.handleInteraction({
+      type: "block_actions",
+      channel: { id: "D123" },
+      message: { ts: "200.000001", thread_ts: "171.000001" },
+      actions: [{ action_id: send!.action_id!, value: send!.value! }],
+    })).resolves.toMatchObject({ kind: "ask", outcome: "answered" });
+    expect(submitAskAnswers).toHaveBeenCalledWith({
+      conversationId: "slack:D123:171.000001",
+      interactionId: snapshot.interactionId,
+      answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }],
+    });
+    expect(responder.respond).not.toHaveBeenCalled();
+  });
+
+  it("consumes a threaded custom AskUser reply before normal turn admission", async () => {
+    const api = new FakeSlackApi();
+    const snapshot = askSnapshot();
+    const submitAskAnswers = vi.fn(async () => ({ accepted: true, snapshot }));
+    const responder = { respond: vi.fn() } satisfies AgentResponder;
+    const adapter = new SlackAdapter({
+      api,
+      responder,
+      allowAllChannels: true,
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => snapshot),
+        submitAskAnswers,
+        cancel: vi.fn(),
+      },
+    });
+
+    await expect(adapter.handleEventCallback(directMessage("Rewrite the opening", {
+      ts: "171.000002",
+      threadTs: "171.000001",
+    }))).resolves.toMatchObject({
+      kind: "handled",
+      metadata: { askUser: true },
+    });
+    expect(submitAskAnswers).toHaveBeenCalledWith({
+      conversationId: "slack:D123:171.000001",
+      interactionId: snapshot.interactionId,
+      answers: [{ questionId: "q0", selectedOptionIds: [], customReply: "Rewrite the opening" }],
+    });
+    expect(responder.respond).not.toHaveBeenCalled();
   });
 
   it("notify() runs a proactive turn on the target thread and posts the answer there", async () => {
@@ -2714,6 +2790,29 @@ describe("SlackAdapter posted-message linkage", () => {
 
 function responderFrom(respond: AgentResponder["respond"]): AgentResponder {
   return { respond };
+}
+
+function askSnapshot(): ChannelAskSnapshot {
+  return {
+    interactionId: "ask-test",
+    message: "**Draft reply**",
+    questions: [{
+      id: "q0",
+      header: "Delivery",
+      question: "What should I do with this draft?",
+      options: [
+        { id: "q0o0", label: "Send", description: "Send it now." },
+        { id: "q0o1", label: "Skip", description: "Leave it unsent." },
+        { id: "q0o2", label: "Revise", description: "Keep editing it." },
+      ],
+      multiSelect: false,
+    }],
+    answers: [],
+    activeQuestionIndex: 0,
+    status: "pending",
+    createdAt: "2026-07-21T09:00:00.000Z",
+    expiresAt: "2026-07-21T09:10:00.000Z",
+  };
 }
 
 function slackApiFailure(slackError: string, method = "chat.postMessage"): SlackApiError {

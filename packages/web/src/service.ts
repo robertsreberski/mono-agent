@@ -5,6 +5,9 @@ import {
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
   type AgentAttachment,
   type AgentStreamWireFrame,
+  type ChannelAskAnswer,
+  type ChannelAskSnapshot,
+  type ChannelAskSubmissionResult,
 } from "@mono-agent/agent-contracts";
 import { EFFORT_LEVELS } from "@mono-agent/config";
 
@@ -187,6 +190,29 @@ export class WebService {
     const detail = this.store.getThreadDetail(id);
     if (detail === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     return detail;
+  }
+
+  async pendingAsk(threadId: string): Promise<ChannelAskSnapshot | undefined> {
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    const connection = this.connections.get(thread.sourceId);
+    if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    if (!connection.info.supportsAskUser) return undefined;
+    return await connection.client.pendingAsk(`web:${threadId}`);
+  }
+
+  async submitAsk(
+    threadId: string,
+    interactionId: string,
+    answers: readonly ChannelAskAnswer[],
+  ): Promise<ChannelAskSubmissionResult> {
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    const connection = this.connections.get(thread.sourceId);
+    if (connection === undefined || !connection.info.supportsAskUser) {
+      throw new WebConsoleError("ask_user_unavailable", "This agent does not support interactive questions.", 409);
+    }
+    return await connection.client.submitAsk(`web:${threadId}`, interactionId, answers);
   }
 
   patchThread(id: string, patch: { readonly title?: string; readonly archived?: boolean }): WebThread {

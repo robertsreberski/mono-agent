@@ -23,8 +23,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   composition
   (including canonical `runtime.fallbacks` routes and legacy
   `runtime.fallbackModels` compatibility).
-- Preserve completed blocking `AskUser` / `TelegramAskButtons` question,
-  options, and outcome in the assistant history copy so cold/stateless provider
+- Preserve completed blocking `AskUser` questions, options, and outcomes in the
+  assistant history copy so cold/stateless provider
   replay does not lose the out-of-band exchange.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
   search and paged evidence from completed prior runs in the logical
@@ -311,16 +311,14 @@ untrusted.
 
 For missing context, the agent should use active conversation history first,
 `MemoryRecall` for intentionally captured durable facts, and `RunHistory` for
-exact prior-run/tool evidence. Completed blocking `AskUser` and
-`TelegramAskButtons` exchanges are written into the assistant history copy
-before the final response, explicitly labelled as untrusted historical data and
-bounded by newest whole interactions, without changing the outward message or
-long-term memory capture. `TelegramAskButtons` with `wait: false` continues to produce a
-synthetic next turn when the user taps later.
-
-For blocking `TelegramAskButtons`, the next plain-text Telegram message is also
-a valid custom answer. It resolves the same in-flight tool call and the app asks
-the Telegram sink to remove the inline keyboard. The built-in Telegram `/new`
+exact prior-run/tool evidence. Completed blocking `AskUser` exchanges are
+written into the assistant history copy before the final response, explicitly
+labelled as untrusted historical data and bounded by newest whole interactions,
+without changing the outward message or long-term memory capture. The strict
+tool accepts one to five structured questions, each with two or three described
+options and an optional multi-select mode. Slack and Telegram present the
+questions sequentially with native buttons plus a typed custom reply; the web
+console renders the whole question set as one form. The built-in Telegram `/new`
 command uses the configured responder's host-owned reset surface to clear only
 that conversation and force skill/startup-context reload on its next turn.
 

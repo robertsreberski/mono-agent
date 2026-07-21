@@ -1,4 +1,5 @@
 import type { RunnerHandle } from "@grammyjs/runner";
+import type { ChannelAskSnapshot } from "@mono-agent/agent-contracts";
 import type { Bot } from "grammy";
 
 import type {
@@ -50,8 +51,6 @@ export interface TelegramAdapterStartOptions {
   readonly runtimeControls?: TelegramRuntimeControls;
   /** Per-state lifecycle reactions (👀/👍/👎). Omit to disable. */
   readonly reactions?: TelegramReactionsConfig;
-  /** Subscribe to and handle inline-keyboard taps (TelegramAskButtons callbacks). Default off. */
-  readonly callbacksEnabled?: boolean;
   /** Pending-ask interceptor for blocking AskUser round-trips (checked pre-admission). */
   readonly pendingAsks?: TelegramPendingAsks;
   /** Host-owned current-conversation reset used by the built-in `/new` command. */
@@ -89,16 +88,14 @@ export interface TelegramAdapterStartResult {
    * channel — owns the message.
    */
   notify(chatId: TelegramChatId, text: string, options?: TelegramNotifyOptions): Promise<TelegramNotifyResult>;
-  /** Post a plain message directly (no model turn, no history) — AskUser questions. */
-  post(chatId: TelegramChatId, text: string): Promise<void>;
   /** Post or edit-in-place a keyed tool-progress status line (best-effort). */
   postStatus(
     chatId: TelegramChatId,
     text: string,
     options: { readonly key: string; readonly state: "working" | "done" | "failed" },
   ): Promise<void>;
-  /** Remove an inline keyboard from one known message (best-effort). */
-  dismissInlineKeyboard?(chatId: TelegramChatId, messageId: number): Promise<void>;
+  presentAsk(chatId: TelegramChatId, snapshot: ChannelAskSnapshot): Promise<void>;
+  updateAsk(chatId: TelegramChatId, snapshot: ChannelAskSnapshot): Promise<void>;
 }
 
 /**
@@ -118,9 +115,9 @@ export async function startTelegramAdapter(
   return {
     stop: () => controller.stop(),
     notify: (chatId, text, notifyOptions) => controller.notify(chatId, text, notifyOptions),
-    post: (chatId, text) => controller.post(chatId, text),
     postStatus: (chatId, text, statusOptions) => controller.postStatus(chatId, text, statusOptions),
-    dismissInlineKeyboard: (chatId, messageId) => controller.dismissInlineKeyboard(chatId, messageId),
+    presentAsk: (chatId, snapshot) => controller.presentAsk(chatId, snapshot),
+    updateAsk: (chatId, snapshot) => controller.updateAsk(chatId, snapshot),
   };
 }
 
@@ -138,7 +135,6 @@ function toCreateOptions(options: TelegramAdapterStartOptions): CreateTelegramBo
     ...(options.commands === undefined ? {} : { commands: options.commands }),
     ...(options.runtimeControls === undefined ? {} : { runtimeControls: options.runtimeControls }),
     ...(options.reactions === undefined ? {} : { reactions: options.reactions }),
-    ...(options.callbacksEnabled === undefined ? {} : { callbacksEnabled: options.callbacksEnabled }),
     ...(options.pendingAsks === undefined ? {} : { pendingAsks: options.pendingAsks }),
     ...(options.startNewSession === undefined ? {} : { startNewSession: options.startNewSession }),
     ...(options.apiRoot === undefined ? {} : { apiRoot: options.apiRoot }),

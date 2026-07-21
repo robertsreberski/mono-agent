@@ -17,6 +17,8 @@ Category: `operator-surface`
   `~/.mono-agent/web`.
 - Keep an upstream turn running when a browser reloads or disconnects, and expose
   state invalidations over SSE so any connected browser can catch up.
+- Render a running agent's structured `AskUser` interaction as one complete web
+  form and proxy validated answer submission back to that same model run.
 - Accept browser-selected files through bounded staged uploads and forward the
   exact transport-neutral `AgentAttachment` contract used by Telegram.
 - Serve the assistant-ui PWA and its versioned JSON/SSE API.
@@ -89,6 +91,13 @@ exact destination `notifyConversationId: "web:new"`. Each distinct result gets
 a new thread without changing the selected thread. Delivery is idempotent,
 best-effort, attempted once with a five-second bound, and has no outbox when the
 web service is unavailable. Other `web:*` destinations are not accepted.
+
+When the selected agent advertises `capabilities.askUser`, a running `AskUser`
+tool call appears as one form containing all remaining questions. Each question
+has two or three described choices plus an **Other** custom-reply field;
+multi-select questions accept several choices and custom text. The browser
+submits the form atomically and the agent resumes the existing run. Cancelling
+the turn also cancels its pending form.
 
 ## Public API
 
@@ -167,6 +176,8 @@ The browser API is rooted at `/api/v1`:
 
 - `GET /bootstrap`, `PATCH /agents/:id`, and `GET/PATCH /threads/:id`
 - `POST /threads`, `/threads/:id/turns`, and `/threads/:id/cancel`
+- `GET /threads/:id/ask` and `POST /threads/:id/ask` for the current structured
+  `AskUser` snapshot and atomic answer submission
 - `POST /uploads`, `PUT/GET /uploads/:id/content`, and `DELETE /uploads/:id`
 - `GET /events` (SSE)
 

@@ -35,10 +35,6 @@ export function ensureInteractionBridge(controller: MonoAgentAppController, core
       allowedTools: coreConfig.tools.allowedTools,
       disallowedTools: coreConfig.tools.disallowedTools,
     });
-    const telegramAskAllowed = !directOpenCodeRoute && isAdapterSendToolAllowed("TelegramAskButtons", {
-      allowedTools: coreConfig.tools.allowedTools,
-      disallowedTools: coreConfig.tools.disallowedTools,
-    });
     const adapterSendSettings = await resolveAdapterSendToolsSettings({
       env: controller.env,
       cwd: controller.cwd,
@@ -53,7 +49,7 @@ export function ensureInteractionBridge(controller: MonoAgentAppController, core
       || adapterSendSettings?.telegram?.tools.send === true;
     const scopedProgressNeeded = settings.progressEnabled
       && (coreConfig.tools.mcpRequestContextServers?.length ?? 0) > 0;
-    if (!askUserAllowed && !telegramAskAllowed && !deliveryHistoryNeeded && !scopedProgressNeeded && !settings.configured) {
+    if (!askUserAllowed && !deliveryHistoryNeeded && !scopedProgressNeeded && !settings.configured) {
       return undefined;
     }
     try {

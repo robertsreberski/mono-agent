@@ -141,21 +141,65 @@ export interface RunningChannel {
   }): Promise<NotifyDeliveryResult>;
 }
 
+export interface ChannelAskOption {
+  readonly id: string;
+  readonly label: string;
+  readonly description: string;
+}
+
+export interface ChannelAskQuestion {
+  readonly id: string;
+  readonly header: string;
+  readonly question: string;
+  readonly options: readonly ChannelAskOption[];
+  readonly multiSelect: boolean;
+}
+
+export interface ChannelAskAnswer {
+  readonly questionId: string;
+  readonly selectedOptionIds: readonly string[];
+  readonly customReply?: string;
+}
+
+export type ChannelAskStatus = "pending" | "answered" | "expired" | "cancelled";
+
+/** Complete, adapter-neutral presentation state for one blocking AskUser call. */
+export interface ChannelAskSnapshot {
+  readonly interactionId: string;
+  readonly message?: string;
+  readonly questions: readonly ChannelAskQuestion[];
+  readonly answers: readonly ChannelAskAnswer[];
+  readonly activeQuestionIndex: number;
+  readonly status: ChannelAskStatus;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+}
+
+export interface ChannelAskSubmission {
+  readonly conversationId: string;
+  readonly interactionId: string;
+  readonly answers: readonly ChannelAskAnswer[];
+}
+
+export interface ChannelAskSubmissionResult {
+  readonly accepted: boolean;
+  readonly code?: "not_found" | "stale" | "invalid_answer";
+  readonly snapshot?: ChannelAskSnapshot;
+}
+
 /**
- * Channel-side surface for human-in-the-loop interaction: post a free-text
- * question, or post/edit a short keyed status line. Registered by a channel
- * driver with the host's {@link ChannelInteractionHub} at start.
+ * Channel-side surface for structured human-in-the-loop interaction and keyed
+ * progress. The bridge owns state; adapters render snapshots and return answers.
  */
 export interface ChannelInteractionSink {
-  postQuestion(conversationId: string, text: string): Promise<void>;
+  presentAsk(conversationId: string, snapshot: ChannelAskSnapshot): Promise<void>;
+  updateAsk(conversationId: string, snapshot: ChannelAskSnapshot): Promise<void>;
   postStatus(
     conversationId: string,
     text: string,
     options: { readonly key: string; readonly state: "working" | "done" | "failed" },
   ): Promise<void>;
 }
-
-export type ChannelInteractionAnswerKind = "text" | "callback";
 
 /**
  * Host-owned hub connecting channels to blocking ask-the-user round-trips and
@@ -164,14 +208,10 @@ export type ChannelInteractionAnswerKind = "text" | "callback";
  */
 export interface ChannelInteractionHub {
   registerSink(channelId: string, sink: ChannelInteractionSink): void;
-  /** Resolve the conversation's pending ask with the user's reply; true when consumed. */
-  tryResolveAsk(
-    conversationId: string,
-    answer: string,
-    answerKind?: ChannelInteractionAnswerKind,
-  ): boolean | Promise<boolean>;
-  /** True when the conversation currently has an unresolved ask. */
-  hasPendingAsk?(conversationId: string): boolean | Promise<boolean>;
+  /** Return the conversation's current ask, if any. */
+  getPendingAsk(conversationId: string): ChannelAskSnapshot | undefined | Promise<ChannelAskSnapshot | undefined>;
+  /** Validate and merge one or more complete question answers. */
+  submitAskAnswers(input: ChannelAskSubmission): ChannelAskSubmissionResult | Promise<ChannelAskSubmissionResult>;
   /** Fail the conversation's pending ask (user cancelled). */
   cancelAsks(conversationId: string): void;
 }

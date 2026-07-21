@@ -232,7 +232,7 @@ describe("startTelegramAdapter", () => {
           silent: true,
           retryInterval: "exponential",
           maxRetryTime: 90_000,
-          fetch: { timeout: 30, allowed_updates: ["message"] },
+          fetch: { timeout: 30, allowed_updates: ["message", "callback_query"] },
         },
       });
 

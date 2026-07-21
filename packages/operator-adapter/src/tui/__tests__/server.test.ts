@@ -12,6 +12,8 @@ import {
   type AgentResponder,
   type AgentResponse,
   type AgentStreamWireFrame,
+  type ChannelAskSubmission,
+  type ChannelInteractionHub,
 } from "@mono-agent/agent-contracts";
 
 import { MAX_FRAME_BYTES, startTuiAdapter, type TuiAdapterStartResult } from "../index.js";
@@ -68,6 +70,61 @@ describe("startTuiAdapter", () => {
       capabilities: { attachments: true },
       label: "test-agent",
       model: "claude-fable-5",
+    });
+  });
+
+  it("advertises and serves structured AskUser state through the operator boundary", async () => {
+    const snapshot = {
+      interactionId: "ask-test",
+      questions: [{
+        id: "q0",
+        header: "Delivery",
+        question: "Send the draft?",
+        options: [
+          { id: "q0o0", label: "Send", description: "Send it now." },
+          { id: "q0o1", label: "Skip", description: "Leave it unsent." },
+        ],
+        multiSelect: false,
+      }],
+      answers: [],
+      activeQuestionIndex: 0,
+      status: "pending" as const,
+      createdAt: "2026-07-21T09:00:00.000Z",
+      expiresAt: "2026-07-21T09:10:00.000Z",
+    };
+    let submission: ChannelAskSubmission | undefined;
+    const interaction: ChannelInteractionHub = {
+      registerSink: () => undefined,
+      getPendingAsk: (conversationId) => conversationId === "web:thread/one" ? snapshot : undefined,
+      submitAskAnswers: (input) => {
+        submission = input;
+        return { accepted: true, snapshot: { ...snapshot, status: "answered" } };
+      },
+      cancelAsks: () => undefined,
+    };
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      interaction,
+    });
+
+    await expect((await fetch(running.infoUrl)).json()).resolves.toMatchObject({
+      capabilities: { attachments: true, askUser: true },
+    });
+    const route = `${running.baseUrl}/v1/conversations/${encodeURIComponent("web:thread/one")}/ask`;
+    await expect((await fetch(route)).json()).resolves.toEqual({ ask: snapshot });
+    const response = await fetch(route, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        interactionId: "ask-test",
+        answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }],
+      }),
+    });
+    await expect(response.json()).resolves.toMatchObject({ accepted: true, snapshot: { status: "answered" } });
+    expect(submission).toEqual({
+      conversationId: "web:thread/one",
+      interactionId: "ask-test",
+      answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }],
     });
   });
 
