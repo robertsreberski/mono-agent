@@ -1,4 +1,4 @@
-import { lstat, readdir, writeFile } from "node:fs/promises";
+import { lstat, readFile, readdir, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 
@@ -63,6 +63,65 @@ describe("web HTTP server", () => {
     expect(bootstrap.headers.get("access-control-allow-origin")).toBeNull();
     const body = await bootstrap.json() as { agents: unknown[] };
     expect(body.agents[0]).toMatchObject({ sourceId: "agent-one", status: "online", supportsAttachments: true });
+  });
+
+  it("publishes an owner-private loopback ingress and removes only its live record on stop", async () => {
+    const recorded: unknown[] = [];
+    const { handle, baseUrl } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({
+        supportsHistoryAppend: true,
+        onVerbatim: async (conversationId, body) => void recorded.push({ conversationId, body }),
+      }),
+    });
+    const ingressPath = join(handle.stateDir, "notify-ingress.json");
+    expect((await lstat(ingressPath)).mode & 0o777).toBe(0o600);
+    const ingress = JSON.parse(await readFile(ingressPath, "utf8")) as { url: string; token: string };
+    expect(new URL(ingress.url).hostname).toBe("127.0.0.1");
+
+    const unauthorized = await fetch(ingress.url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sourceId: "agent-one",
+        triggerKind: "cron",
+        deliveryKey: "cron:daily:one:success",
+        text: "Morning brief",
+      }),
+    });
+    expect(unauthorized.status).toBe(401);
+
+    const accepted = await fetch(ingress.url, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${ingress.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sourceId: "agent-one",
+        triggerKind: "cron",
+        deliveryKey: "cron:daily:one:success",
+        text: "Morning brief",
+      }),
+    });
+    expect(accepted.status).toBe(201);
+    const delivered = await json(accepted) as { threadId: string; duplicate: boolean };
+    expect(delivered.duplicate).toBe(false);
+    expect(recorded).toEqual([{
+      conversationId: `web:${delivered.threadId}`,
+      body: { text: "Morning brief", idempotencyKey: "cron:daily:one:success" },
+    }]);
+    const bootstrap = await json(await fetch(`${baseUrl}/api/v1/bootstrap`)) as { threads: unknown[] };
+    expect(bootstrap.threads).toEqual([
+      expect.objectContaining({
+        id: delivered.threadId,
+        title: "Cron notification",
+        trigger: { kind: "cron" },
+      }),
+    ]);
+
+    await handle.stop();
+    await expect(lstat(ingressPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rejects DNS-rebinding hosts and cross-origin mutations while accepting the exact configured hostname", async () => {

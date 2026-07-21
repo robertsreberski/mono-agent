@@ -12,6 +12,11 @@ export const WEB_MAX_QUEUED_ATTACHMENT_TURNS = 32;
 export const WEB_MAX_TURN_TEXT_CHARACTERS = 200_000;
 
 export type WebAgentStatus = "online" | "offline" | "degraded";
+export type WebNotificationTriggerKind = "cron" | "webhook";
+
+export interface WebThreadTrigger {
+  readonly kind: WebNotificationTriggerKind;
+}
 
 export interface WebModelOption {
   readonly effortLevels?: readonly string[];
@@ -62,6 +67,7 @@ export interface WebThread {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly revision: number;
+  readonly trigger?: WebThreadTrigger;
   readonly lastMessagePreview?: string;
   readonly messageCount: number;
   readonly runState: WebRunState;

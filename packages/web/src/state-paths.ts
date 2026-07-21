@@ -24,6 +24,7 @@ export interface WebStatePaths {
   readonly logs: string;
   readonly marker: string;
   readonly leaseDatabase: string;
+  readonly notificationIngress: string;
 }
 
 export interface WebStateLease {
@@ -45,6 +46,7 @@ export function resolveWebStatePaths(options: WebStatePathOptions = {}): WebStat
     logs: resolve(root, "logs"),
     marker: resolve(root, STATE_MARKER),
     leaseDatabase: resolve(root, LEASE_DATABASE),
+    notificationIngress: resolve(root, "notify-ingress.json"),
   };
 }
 
@@ -120,6 +122,7 @@ export async function resetWebState(options: WebStatePathOptions = {}): Promise<
       removeOwnedFile(paths.database),
       removeOwnedFile(`${paths.database}-wal`),
       removeOwnedFile(`${paths.database}-shm`),
+      removeOwnedIngressFile(paths.notificationIngress),
     ]);
     await verifyDirectory(paths.uploads);
     await verifyCanonicalChain(paths.uploads);
@@ -129,6 +132,16 @@ export async function resetWebState(options: WebStatePathOptions = {}): Promise<
   } finally {
     await lease.release();
   }
+}
+
+async function removeOwnedIngressFile(path: string): Promise<void> {
+  const info = await lstat(path).catch(() => undefined);
+  if (info === undefined) return;
+  if (!info.isFile() && !info.isSymbolicLink()) {
+    throw new WebConsoleError("invalid_state_root", `Refusing to remove invalid web ingress data: ${path}`, 409);
+  }
+  verifyOwner(info.uid, path);
+  await unlink(path);
 }
 
 async function removeOwnedFile(path: string): Promise<void> {

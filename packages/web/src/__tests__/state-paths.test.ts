@@ -54,6 +54,7 @@ describe("web state ownership", () => {
     cleanup.push(base);
     const paths = await prepareWebStatePaths({ stateDir: join(base, "state") });
     await writeFile(paths.database, "db", { mode: 0o600 });
+    await writeFile(paths.notificationIngress, "{}", { mode: 0o600 });
     await writeFile(join(paths.uploads, "orphan.bin"), "bytes", { mode: 0o600 });
     await writeFile(join(paths.root, "worker.lock"), "lifecycle", { mode: 0o600 });
 
@@ -62,6 +63,7 @@ describe("web state ownership", () => {
     expect(await readFile(paths.marker, "utf8")).toContain("mono-agent-web-state");
     expect(await readFile(join(paths.root, "worker.lock"), "utf8")).toBe("lifecycle");
     await expect(lstat(paths.database)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(paths.notificationIngress)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readdir(paths.uploads)).toEqual([]);
   });
 

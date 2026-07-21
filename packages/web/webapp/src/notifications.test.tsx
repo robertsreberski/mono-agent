@@ -17,6 +17,7 @@ import {
   NotificationBell,
   NotificationsProvider,
   responseArrivals,
+  responseNotificationTitle,
   responsePreview,
 } from "./notifications";
 
@@ -102,6 +103,14 @@ describe("response notifications", () => {
       ...complete,
       runState: { id: "turn-1", status: "failed" },
     }])).toEqual([]);
+    const notification = {
+      ...complete,
+      id: "notification-one",
+      trigger: { kind: "cron" as const },
+    };
+    expect(responseArrivals(new Map(), [notification])).toEqual([
+      { thread: notification, turnId: "turn-1" },
+    ]);
   });
 
   it("builds a bounded preview from response text only", () => {
@@ -123,6 +132,18 @@ describe("response notifications", () => {
         status: "complete",
       }],
     }, "turn-1")).toMatch(/^Ready .*…$/u);
+  });
+
+  it("marks cron and webhook arrivals in browser notification titles", () => {
+    expect(responseNotificationTitle("Research agent", complete)).toBe("Research agent replied");
+    expect(responseNotificationTitle("Research agent", {
+      ...complete,
+      trigger: { kind: "cron" },
+    })).toBe("Research agent · CRON");
+    expect(responseNotificationTitle("Research agent", {
+      ...complete,
+      trigger: { kind: "webhook" },
+    })).toBe("Research agent · WEBHOOK");
   });
 
   it("shows one service-worker notification when a hidden console receives a response", async () => {

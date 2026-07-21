@@ -22,6 +22,10 @@ import {
   type WebEvent,
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
+import {
+  startWebNotificationIngress,
+  type WebNotificationIngressHandle,
+} from "./notification-ingress.js";
 import { WebService, type CreateWebServiceOptions } from "./service.js";
 
 export const DEFAULT_WEB_HOST = "0.0.0.0";
@@ -64,6 +68,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   server.keepAliveTimeout = 5_000;
   const activeStreams = new Set<() => void>();
   const activeOperations = new Set<Promise<unknown>>();
+  let notificationIngress: WebNotificationIngressHandle | undefined;
   let stopPromise: Promise<void> | undefined;
 
   app.disable("x-powered-by");
@@ -243,6 +248,12 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   const stop = (): Promise<void> => {
     stopPromise ??= (async () => {
+      let ingressFailure: unknown;
+      try {
+        await notificationIngress?.stop();
+      } catch (error) {
+        ingressFailure = error;
+      }
       for (const closeStream of [...activeStreams]) closeStream();
       try {
         await closeServerBounded(server);
@@ -250,6 +261,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       } finally {
         await service.stop();
       }
+      if (ingressFailure !== undefined) throw ingressFailure;
     })();
     return stopPromise;
   };
@@ -259,6 +271,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       listenFailed: (reason) => new WebConsoleError("listen_failed", `Web console failed to listen: ${reason}`, 500),
       noAddress: () => new WebConsoleError("listen_failed", "Web console did not receive a TCP address.", 500),
     });
+    notificationIngress = await startWebNotificationIngress(service, logger);
     const url = `http://${hostForUrl(host)}:${address.port}/`;
     return {
       url,
@@ -270,6 +283,8 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       close: stop,
     };
   } catch (error) {
+    await notificationIngress?.stop().catch(() => undefined);
+    if (server.listening) await closeServerBounded(server).catch(() => undefined);
     await service.stop();
     throw error;
   }

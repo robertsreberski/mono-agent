@@ -294,6 +294,89 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("exposes a marked assistant-only notification only after durable-history completion", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const selected = store.createThread("agent-one");
+    const reservation = store.reserveNotification({
+      sourceId: "agent-one",
+      triggerKind: "cron",
+      deliveryKey: "cron:daily:2026-07-21T09:00:00.000Z:success",
+      text: "Morning brief",
+    });
+
+    expect(store.getThread(reservation.threadId)).toBeUndefined();
+    expect(store.currentThreadId()).toBe(selected.id);
+    const completed = store.completeNotification(reservation);
+    expect(completed).toMatchObject({
+      duplicate: false,
+      thread: {
+        id: reservation.threadId,
+        title: "Cron notification",
+        trigger: { kind: "cron" },
+        messageCount: 1,
+        runState: { status: "complete" },
+      },
+    });
+    expect(store.getThreadDetail(reservation.threadId)?.messages).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        status: "complete",
+        parts: [{ type: "text", text: "Morning brief" }],
+      }),
+    ]);
+    expect(store.currentThreadId()).toBe(selected.id);
+    expect(store.completeNotification(reservation)).toMatchObject({ duplicate: true });
+    expect(() => store.reserveNotification({
+      ...reservation,
+      text: "Conflicting brief",
+    })).toThrowError(expect.objectContaining({ code: "notification_idempotency_conflict" }));
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    reopened.replaceAgents([agent()]);
+    const duplicate = reopened.reserveNotification({
+      sourceId: "agent-one",
+      triggerKind: "cron",
+      deliveryKey: reservation.deliveryKey,
+      text: "Morning brief",
+    });
+    expect(duplicate.duplicate).toBe(true);
+    expect(reopened.completeNotification(duplicate)).toMatchObject({ duplicate: true });
+    reopened.close();
+  });
+
+  it("migrates schema v1 state to trigger markers and the notification ledger", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const initial = await WebStore.open({ stateDir });
+    const databasePath = initial.paths.database;
+    initial.close();
+
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      DROP TABLE notification_deliveries;
+      ALTER TABLE threads DROP COLUMN trigger_kind;
+      PRAGMA user_version = 1;
+    `);
+    legacy.close();
+
+    const migrated = await WebStore.open({ stateDir });
+    migrated.close();
+    const inspected = new DatabaseSync(databasePath);
+    const version = inspected.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+    const columns = inspected.prepare("PRAGMA table_info(threads)").all() as unknown as Array<{ name: string }>;
+    const ledger = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notification_deliveries'").get();
+    inspected.close();
+    expect(version.user_version).toBe(2);
+    expect(columns.map((column) => column.name)).toContain("trigger_kind");
+    expect(ledger).toBeDefined();
+  });
+
   it("rejects a future schema without retaining the failed database handle", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -303,12 +386,12 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 2");
+    future.exec("PRAGMA user_version = 3");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
     const restored = new DatabaseSync(databasePath);
-    restored.exec("PRAGMA user_version = 1");
+    restored.exec("PRAGMA user_version = 2");
     restored.close();
     const reopened = await WebStore.open({ stateDir });
     reopened.close();

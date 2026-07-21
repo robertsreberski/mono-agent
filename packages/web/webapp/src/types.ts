@@ -1,6 +1,7 @@
 export const API_VERSION = 1 as const;
 
 export type AgentStatus = "online" | "offline" | "degraded";
+export type NotificationTriggerKind = "cron" | "webhook";
 export type RunStatus =
   | "idle"
   | "running"
@@ -50,6 +51,7 @@ export interface ThreadSummary {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly revision: number;
+  readonly trigger?: { readonly kind: NotificationTriggerKind };
   readonly lastMessagePreview?: string;
   readonly messageCount: number;
   readonly runState: RunState;

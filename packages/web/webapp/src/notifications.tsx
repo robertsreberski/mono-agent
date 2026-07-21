@@ -58,6 +58,11 @@ export const responsePreview = (detail: ThreadDetail, turnId: string): string | 
   return text.length <= 180 ? text : `${text.slice(0, 179).trimEnd()}…`;
 };
 
+export const responseNotificationTitle = (agentLabel: string, thread: ThreadSummary): string =>
+  thread.trigger === undefined
+    ? `${agentLabel} replied`
+    : `${agentLabel} · ${thread.trigger.kind.toUpperCase()}`;
+
 const supported = (): boolean =>
   window.isSecureContext === true &&
   typeof Notification !== "undefined" &&
@@ -180,13 +185,16 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
           if ((await registration.getNotifications({ tag })).length > 0) return;
           const target = new URL(window.location.href);
           target.searchParams.set("thread", arrival.thread.id);
-          await registration.showNotification(`${agent?.label ?? "mono-agent"} replied`, {
-            body: responsePreview(detail, arrival.turnId) ?? `Response ready in ${arrival.thread.title}.`,
-            tag,
-            icon: "/icon-192.png",
-            badge: "/icon-192.png",
-            data: { threadId: arrival.thread.id, url: target.href },
-          });
+          await registration.showNotification(
+            responseNotificationTitle(agent?.label ?? "mono-agent", arrival.thread),
+            {
+              body: responsePreview(detail, arrival.turnId) ?? `Response ready in ${arrival.thread.title}.`,
+              tag,
+              icon: "/icon-192.png",
+              badge: "/icon-192.png",
+              data: { threadId: arrival.thread.id, url: target.href },
+            },
+          );
         } catch {
           dispatchNotice("The response arrived, but its notification could not be shown.");
         }

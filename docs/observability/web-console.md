@@ -57,6 +57,10 @@ Selecting an agent filters its conversations; each conversation is permanently b
 
 Threads use the first prompt as their initial title and can be renamed. They are archived rather than individually deleted, and archived threads can be restored. The console permits one active turn per thread while different threads and agents can run concurrently.
 
+Cron jobs and webhook endpoints can explicitly target `notifyConversationId: "web:new"` with `notify: true`. Every distinct successful, non-empty result becomes a new assistant-only thread titled **Cron notification** or **Webhook notification** and marked **CRON** or **WEBHOOK** in the sidebar and header. The service appends the verbatim result to the generated thread's agent history before atomically exposing the completed thread, so a later reply continues with that notification in context. The current conversation is not changed and the new result does not steal focus. Cron's rate-limited all-models-failed notice uses the same CRON-marked path.
+
+`web:new` is exact and explicit-only: other `web:*` values are rejected, and the web console never joins Telegram/Slack destination inference. Delivery uses an owner-private `~/.mono-agent/web/notify-ingress.json` record pointing to a bearer-authenticated ephemeral loopback endpoint. Duplicate event keys return the existing thread and conflicting reuse fails. If the web service is stopped or unavailable, the trigger makes one attempt bounded to five seconds and then skips delivery; there is no retry queue or outbox, and the cron/webhook result is unchanged.
+
 The service, not the browser tab, owns the upstream operator connection. A browser disconnect or reload can therefore reconnect through the event stream while the turn continues. Brief event-stream reconnects do not raise the full reconnect banner; it appears after five seconds, while a browser-offline event is shown immediately. If the web service itself restarts, any turn that was still active is marked interrupted instead of being shown as permanently running.
 
 During a turn the transcript shows streamed markdown, reasoning, tool calls and results, user-facing errors, and the final outcome. Raw runtime, provider, and usage telemetry remains internal; measured token and cost data appears only through the context control. The composer exposes the selected agent's available model and effort controls. Copy, cancel, archive, and unarchive are supported; edit/regenerate/branch/steer and browser-defined client tools are deliberately not enabled.
@@ -86,7 +90,7 @@ await fetch(`/api/v1/threads/${threadId}/turns`, {
 
 ## Response notifications
 
-Use the header bell to opt into a notification when a successful response arrives while the console is hidden or its window is unfocused. The permission prompt is triggered only by that click. Each notification contains a short response-text preview, is deduplicated by turn, and focuses or opens the exact conversation when selected. Failed, cancelled, and interrupted turns do not notify.
+Use the header bell to opt into a notification when a successful response arrives while the console is hidden or its window is unfocused. The permission prompt is triggered only by that click. Each notification contains a short response-text preview, is deduplicated by turn, and focuses or opens the exact conversation when selected. Cron/webhook-created threads use this same bell preference and show **CRON** or **WEBHOOK** in the notification title. Failed, cancelled, and interrupted turns do not notify.
 
 The opt-in is stored per browser origin, so localhost, a LAN hostname, and a Tailscale HTTPS hostname have independent preferences and permissions. Notifications require a secure browser context and an active page or installed PWA. This release does not register Web Push: after the page/PWA is fully closed, there is no background server-to-browser notification delivery.
 
@@ -118,7 +122,7 @@ Older running agents that do not advertise attachment support remain usable for 
 
 ## Local state and reset
 
-The service keeps its owner-private SQLite store, settings, upload stages, and logs under `~/.mono-agent/web/`. Stored messages, quote metadata, attachment metadata, revisions, run state, and pinned agents are local to this computer; they are independent from browser storage and from the agents' provider-side sessions. The desktop agent-rail expansion state and notification opt-in are intentionally browser-origin-local preferences and are removed when that origin's site data is cleared.
+The service keeps its owner-private SQLite store, settings, notification idempotency ledger, upload stages, logs, and live notification-ingress record under `~/.mono-agent/web/`. Stored messages, quote metadata, attachment metadata, revisions, run state, and pinned agents are local to this computer; they are independent from browser storage and from the agents' provider-side sessions. The desktop agent-rail expansion state and notification opt-in are intentionally browser-origin-local preferences and are removed when that origin's site data is cleared.
 
 There is no per-message or per-thread destructive delete. To intentionally erase the whole console store, stop the service and use the explicit two-part confirmation:
 
@@ -126,11 +130,11 @@ There is no per-message or per-thread destructive delete. To intentionally erase
 mono-agent web reset --all --yes
 ```
 
-Reset removes the web console's conversations, committed uploads, staged uploads, and server settings, including agent pins. It does not clear browser-local preferences such as rail expansion or notification opt-in, and it does not remove an agent's config, durable conversation history, memory, or recorded run artifacts.
+Reset removes the web console's conversations, notification ledger and stale ingress record, committed uploads, staged uploads, and server settings, including agent pins. It does not clear browser-local preferences such as rail expansion or notification opt-in, and it does not remove an agent's config, durable conversation history, memory, or recorded run artifacts.
 
 ## Current scope
 
-The web console covers discovery, persistent multi-conversation chat, quoting, response notifications while the page/PWA is alive, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a PWA when served from a secure browser context.
+The web console covers discovery, persistent multi-conversation chat, marked cron/webhook notification conversations, quoting, response notifications while the page/PWA is alive, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a PWA when served from a secure browser context.
 
 Recorded-run replay, source-annotated config inspection, and managed conversational configuration remain in the TUI for now. Use:
 

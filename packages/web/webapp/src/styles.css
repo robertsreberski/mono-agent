@@ -303,6 +303,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .thread-trigger { min-width: 0; flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 7px; padding: 10px 8px 10px 12px; text-align: left; background: transparent; border-radius: 10px; cursor: pointer; }
 .thread-title-line { min-width: 0; display: flex; align-items: baseline; gap: 7px; }
 .thread-title { min-width: 0; flex: 1; overflow: hidden; color: var(--text); font-size: 13px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+.trigger-badge { flex: none; padding: 2px 5px; color: var(--accent); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 5px; font-size: 8px; font-weight: 760; line-height: 1.1; text-transform: uppercase; letter-spacing: 0.07em; }
 .thread-title-line time { flex: none; color: var(--text-muted); font-family: var(--font-mono); font-size: 9px; }
 .thread-preview { min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; color: var(--text-muted); font-size: 11.5px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
 .thread-preview-text { min-width: 0; flex: 1; overflow: hidden; font: inherit; line-height: inherit; text-overflow: ellipsis; white-space: nowrap; }
@@ -320,7 +321,9 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .chat-header { min-height: 64px; display: flex; align-items: center; gap: 15px; padding: max(10px, env(safe-area-inset-top)) max(17px, env(safe-area-inset-right)) 10px max(17px, env(safe-area-inset-left)); background: color-mix(in srgb, var(--surface) 94%, transparent); border-bottom: 1px solid var(--line); z-index: 5; }
 .mobile-navigation { display: none; }
 .chat-title-block { min-width: 0; flex: 1; display: flex; align-items: center; gap: 10px; }
+.conversation-title-group { min-width: 0; max-width: min(62vw, 650px); display: flex; align-items: center; gap: 7px; }
 .conversation-title { min-width: 0; max-width: min(52vw, 560px); overflow: hidden; padding: 3px 5px; color: var(--text); background: transparent; border-radius: 6px; font-size: 14px; font-weight: 650; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
+.trigger-badge-header { padding: 3px 6px; font-size: 8.5px; }
 .title-input { min-width: 180px; max-width: min(52vw, 560px); height: 34px; padding: 0 8px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--accent); border-radius: 7px; outline: 0; font-size: 14px; font-weight: 650; }
 .chat-status { display: inline-flex; align-items: center; gap: 5px; flex: none; color: var(--text-muted); font-size: 10px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.07em; }
 .chat-status i { width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); }

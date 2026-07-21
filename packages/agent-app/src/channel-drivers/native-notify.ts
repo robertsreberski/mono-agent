@@ -22,7 +22,7 @@ export async function deliverNativeCronNotification(input: {
   readonly notifyDestination?: (
     conversationId: string,
     text: string,
-    options?: { readonly verbatim?: boolean },
+    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
   ) => Promise<NotifyDeliveryResult>;
   readonly logger?: MonoAgentAppLogger;
 }): Promise<void> {
@@ -48,7 +48,12 @@ export async function deliverNativeCronNotification(input: {
       return;
     }
 
-    const delivery = await input.notifyDestination(destination, text, { verbatim: true });
+    const delivery = await input.notifyDestination(destination, text, {
+      verbatim: true,
+      ...(destination === "web:new"
+        ? { deliveryKey: `cron:${encodeURIComponent(job.id)}:${input.result.scheduledAt}:success` }
+        : {}),
+    });
     if (!delivery.delivered) {
       input.logger?.warn?.("Native cron notification was not delivered.", {
         jobId: job.id,
@@ -90,7 +95,7 @@ export async function deliverNativeWebhookNotification(input: {
   readonly notifyDestination?: (
     conversationId: string,
     text: string,
-    options?: { readonly verbatim?: boolean },
+    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
   ) => Promise<NotifyDeliveryResult>;
   readonly logger?: MonoAgentAppLogger;
 }): Promise<void> {
@@ -115,7 +120,14 @@ export async function deliverNativeWebhookNotification(input: {
       return;
     }
 
-    const delivery = await input.notifyDestination(destination, text, { verbatim: true });
+    const delivery = await input.notifyDestination(destination, text, {
+      verbatim: true,
+      ...(destination === "web:new"
+        ? {
+            deliveryKey: `webhook:${encodeURIComponent(endpoint.name)}:${input.status.requestId}:success`,
+          }
+        : {}),
+    });
     if (!delivery.delivered) {
       input.logger?.warn?.("Native webhook notification was not delivered.", {
         ...source,
