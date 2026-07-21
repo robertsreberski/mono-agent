@@ -1,10 +1,9 @@
 ---
 title: "Memory"
+description: "Choose a memory backend and tier, understand its files and dependencies, and follow the config-first path for capture, recall, and maintenance."
 sidebar:
   order: 0
 ---
-
-# Memory — Operator Guide
 
 This guide covers the three memory tiers available in mono-agent, all backed by the
 same `@mono-agent/memory/store` + `@mono-agent/memory/bujo` substrate. Pick the tier
@@ -200,8 +199,8 @@ runtimes cannot yet guarantee a no-tools/no-external-actions memory turn.
 How the **host** persists each completed turn (independent of the tier's recall):
 
 - `disabled` — never write.
-- `append-host-summary` — fsync a deterministic observation by stable provider run id, then project it without a chat LLM. Lite/Journal put it in the canonical daily log; Journal queues semantic indexing after the lexical commit. BuJo puts it in the separate raw audit and does not promote it to curated recall.
-- `capture` — **bujo only.** Fsync the summary and full capture text by stable provider run id, then project the raw audit and run serialized curation in the background. One contract-explicit, strictly validated extraction call plus at most one strict batch-reconcile call writes canonical facts and precise graph evidence. The extraction prompt spells out the exact field, `0..1` salience, identifier, reference, and relation rules. Reconciliation spells out each exact action shape: `ADD` omits target/text, `NOOP` requires a supplied target id and omits text, and `UPDATE`/`SUPERSEDE` require target plus complete replacement text. The provider-neutral strict parser never fills or coerces an invalid result. A normal stop drains for up to 10 seconds; a timed-out active attempt remains pending for restart. Provider/model failures retry with bounded exponential backoff for more than 24 hours, then remain as a durable dead letter rather than claiming success. Because it needs a chat LLM, `writeMode: "capture"` requires `mode: "bujo"` and fails config validation otherwise.
+- `append-host-summary` — admit a deterministic observation by stable provider run id. The built-in backend fsyncs it, then projects it without a chat LLM: Lite/Journal put it in the canonical daily log, Journal queues semantic indexing after the lexical commit, and BuJo puts it in the separate raw audit. Supermemory instead awaits one run-keyed remote upsert of the summary.
+- `capture` — on the built-in backend, fsync the summary and full capture text by stable provider run id, then project the raw audit and run serialized BuJo curation in the background. One contract-explicit, strictly validated extraction call plus at most one strict batch-reconcile call writes canonical facts and precise graph evidence. The extraction prompt spells out the exact field, `0..1` salience, identifier, reference, and relation rules. Reconciliation spells out each exact action shape: `ADD` omits target/text, `NOOP` requires a supplied target id and omits text, and `UPDATE`/`SUPERSEDE` require target plus complete replacement text. The provider-neutral strict parser never fills or coerces an invalid result. A normal stop drains for up to 10 seconds; a timed-out active attempt remains pending for restart. Provider/model failures retry with bounded exponential backoff for more than 24 hours, then remain as a durable dead letter rather than claiming success. Built-in `capture` requires `mode: "bujo"`; Supermemory accepts it independently of the compatibility mode and awaits a remote upsert before its service performs asynchronous extraction.
 
 The strong built-in write returns only after the owner-only `.capture-intake/pending` record and
 directory entry plus its compact content-free admission commitment are durable. Repeating the same
@@ -251,11 +250,10 @@ ollama pull nomic-embed-text:v1.5
 ollama pull qwen3.6:latest   # or any local chat model you prefer
 ```
 
-Set `MONO_AGENT_MEMORY_LLM_MODEL` to the model name when running the standalone
-`migrate` command manually. Migration remains an Ollama-only, durable advanced-maintenance
-path. Legacy `reflect` is read-only and needs no model: it only reports whether reflection
-would be due. For the app runtime, `memory.llm.provider: "agent-host"` may instead point at
-an SDK runtime model reference such as `pi:openai-codex:gpt-5.6-terra`.
+Set `memory.llm.model` or `MONO_AGENT_MEMORY_LLM_MODEL` to the capture model used by the
+configured app. With `memory.llm.provider: "agent-host"`, that value may be an SDK runtime
+model reference such as `pi:openai-codex:gpt-5.6-terra`. The old standalone `migrate` and
+`reflect` workflows are not part of the current operator surface.
 
 ## Auto-Scheduler (bujo tier)
 
@@ -273,7 +271,7 @@ app and stops cleanly on shutdown.
 
 `mono-agent validate` reports the configured cadence in the Memory section:
 
-```
+```text
 [ok] memory.mode     bujo
 [ok] consolidation   0 */2 * * * (auto)
 ```
@@ -333,9 +331,10 @@ every maintenance operation config-aware from the agent folder instead:
   tier, embeddings provider/model, and dimension from config, so there is no `--tier` flag or
   positional `<root>`).
 - `recall` → `mono-agent memory search "<query>"`.
-- `index` and `reflect` → no manual equivalent needed; the in-app auto-scheduler runs indexing
-  and reflection automatically while the agent runs.
-- `migrate` → historical v1→v2 migration, no longer applicable.
+- `index` and `reflect` → removed with no one-for-one scheduled replacement. The in-app
+  scheduler runs only projection-only `store.consolidate()`; it does not invoke either legacy
+  operation.
+- `migrate` → removed historical v1→v2 workflow with no current CLI replacement.
 
 See [Validation & CLI](/memory/validation-and-cli/#memory-bujo-cli--removed) for the full mapping
 and [Deprecations](/reference/deprecations/) for the removal record.

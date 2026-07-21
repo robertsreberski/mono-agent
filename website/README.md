@@ -5,9 +5,10 @@ The published docs at **<https://mono-agent-docs.vercel.app/>** are an [Astro St
 ## Architecture
 
 - **`../docs/` is the single source of truth.** It is kept in git, browsable on GitHub, and referenced by the `mono-agent-composer` skill. Edit docs there, not here.
-- **`website/` is an isolated app.** It has its own `pnpm-workspace.yaml` so it never enters the root `pnpm -r build` / `pnpm -r test` / `check:architecture` (which stays at 17 core packages for the publishable release lane, plus 5 plugin-tier extras that publish in the same lockstep, plus 1 unscoped alias (`create-mono-agent`) that delegates to `@mono-agent/agent-app`; the root release test lane guards all three counts). Install and build it on its own.
+- **`website/` is an isolated app.** It has its own `pnpm-workspace.yaml`, so it never enters the root `pnpm -r build`, `pnpm -r test`, release graph, or `check:architecture`. The root [package directory](../PACKAGES.md) describes that separate publishable workspace. Install and build the website on its own.
 - **Content is *synced*, not symlinked.** `scripts/sync-content.mjs` mirrors `../docs/**` into `src/content/docs/` (gitignored) before each dev/build. Starlight only applies its Markdown features — callout asides, heading links — to files physically under `src/content/docs`, so a copy is required. The mirror preserves the `docs/` tree exactly, so the "Edit this page" link (`editLink.baseUrl` → `.../edit/main/docs/`) resolves back to the canonical file.
 - **Internal-only folders are excluded** from the published site: `docs/superpowers/` and `docs/skills/` (see `EXCLUDE_TOP` in `sync-content.mjs`).
+- **Accessibility is checked against rendered output.** `scripts/rehype-focusable-tables.mjs` makes Starlight's horizontally scrollable tables keyboard-focusable. `tests/accessibility.spec.ts` then discovers every HTML file in `dist/`, converts it to its preview URL, and audits the page in Chromium with axe. `playwright.config.ts` starts `astro preview` on `127.0.0.1:4329` for the audit.
 
 ## Local development
 
@@ -19,6 +20,9 @@ pnpm run build               # checks asides, syncs, builds, then checks links
 pnpm run check:asides        # reject empty :::type / ::: fence pairs in ../docs
 pnpm run check:links         # validate the built dist/ only
 pnpm run sync                # re-mirror ../docs -> src/content/docs without building
+pnpm run test:unit           # test website Markdown transforms
+pnpm exec playwright install chromium # install the local audit browser once
+pnpm run test:a11y           # serve dist/ and audit every built HTML route
 ```
 
 `scripts/check-starlight-asides.mjs` scans the canonical `../docs/**/*.md`
@@ -27,17 +31,32 @@ sources and fails on an opening `:::type` fence immediately followed by `:::`.
 so it is independent of the Markdown processor) and fails the build on a broken
 internal link.
 
+## Accessibility gate
+
+Run `pnpm run build` before `pnpm run test:a11y`; the test intentionally audits
+the production-shaped HTML in `dist/`, not the Markdown source or development
+server. Playwright starts Astro's preview server at
+`http://127.0.0.1:4329`, then creates one test for every built HTML route.
+
+Each route must have zero axe violations tagged for WCAG 2.0 A/AA, WCAG 2.1
+A/AA, or WCAG 2.2 AA. A failure reports the affected rule, help URL, target,
+and failure summary. This is an automated baseline, not a claim of complete
+WCAG conformance; keyboard navigation, responsive layouts, zoom, and the
+clarity of the prose still need human review when those surfaces change.
+
 ## CI
 
-The repo's `ci.yml` has a dedicated parallel **`website`** job (separate from
-`verify`) that runs `pnpm install --frozen-lockfile && pnpm run build` here on
-every pull request and every push to `main`. That is the same `check:asides` →
-`sync-content` → `astro build` → `check-links` pipeline as above, so an empty
-aside, broken internal link, or Astro build failure turns the **`website`** check
-red. This repo does not use GitHub required-status-check enforcement, so nothing
-blocks a merge automatically — a red **`website`** check must be treated as a
-merge blocker by convention (do not merge over it). That is what keeps the docs
-site from rotting silently.
+The repo's `ci.yml` has a dedicated parallel **`website`** job, separate from
+`verify`, on every pull request and every push to `main`. It installs the website
+dependencies and Chromium, builds the site, and then runs the accessibility
+audit as a separate step. The build still owns the `check:asides` →
+`sync-content` → `astro build` → `check:links` pipeline; the following
+`test:a11y` step owns rendered-page accessibility. Keeping the steps separate
+makes the failing boundary visible in CI.
+
+This repo does not use GitHub required-status-check enforcement, so nothing
+blocks a merge automatically. Treat a red **`website`** check as a merge blocker
+by convention.
 
 ## Version pins — do not bump blindly
 

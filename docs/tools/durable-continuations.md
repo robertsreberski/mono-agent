@@ -1,10 +1,9 @@
 ---
 title: "Durable continuations"
+description: "Let trusted MCP services complete long-running work and deliver one later answer to the originating conversation."
 sidebar:
-  order: 3
+  order: 4
 ---
-
-# Durable continuations
 
 Durable continuations let a trusted MCP service finish work after the originating agent run has returned and deliver one later answer to the original channel conversation. The host, rather than the model, binds the reply destination, persists delivery state, runs one tool-free synthesis turn, and records a receipt only after native delivery succeeds.
 

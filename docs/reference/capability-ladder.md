@@ -1,10 +1,9 @@
 ---
 title: "Capability ladder"
+description: "Choose the lowest-cost extension boundary for new mono-agent capabilities before adding packages or contracts."
 sidebar:
-  order: 4
+  order: 5
 ---
-
-# Capability ladder
 
 Choose the lowest rung that satisfies the capability. Lower rungs keep ownership, runtime surface area, and release blast radius smaller; higher rungs need stronger gates because they create new boundaries for users, hosts, packages, or adapters.
 

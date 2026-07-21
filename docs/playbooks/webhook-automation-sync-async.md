@@ -1,10 +1,9 @@
 ---
 title: "Webhook Automation with Sync + Async Endpoints"
+description: "Configure authenticated synchronous and asynchronous webhook endpoints for automation workflows."
 sidebar:
   order: 5
 ---
-
-# Webhook Automation with Sync + Async Endpoints
 
 This playbook wires the agent into an automation pipeline over HTTP: a fast **sync** endpoint that returns the answer in the response body, and a long-running **async** endpoint that returns `202` plus a status URL you poll until the job completes. It also shows how to run several named endpoints on one shared port, defined inline or as `webhook/*.md` files.
 

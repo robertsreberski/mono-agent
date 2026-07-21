@@ -1,17 +1,16 @@
 ---
 title: "Backends: BuJo vs Supermemory"
+description: "Compare mono-agent's local BuJo memory engine with the optional local or hosted Supermemory backend, including durability, privacy, cost, and setup tradeoffs."
 sidebar:
   order: 0.5
 ---
-
-# Memory backends: BuJo vs Supermemory
 
 mono-agent's memory engine is pluggable. `memory.backend` selects it:
 
 - **BuJo** (`backend: "bujo"`, the default) — the built-in engine
   (`@mono-agent/memory/store` + `@mono-agent/memory/bujo`) across its three tiers
-  (`lite` / `journal` / `bujo`). Fully local: SQLite + markdown notes, optional Ollama
-  embeddings, optional local chat model.
+  (`lite` / `journal` / `bujo`). Persistence is local SQLite + Markdown; Journal
+  and BuJo send text to whichever local or hosted embedding/model providers you configure.
 - **Supermemory** (`backend: "supermemory"`) — an explicitly installed plugin backed by an external memory service
   ([supermemory.ai](https://supermemory.ai)) reached over REST. Runs locally as a single
   OSS binary or against the hosted cloud. It extracts and consolidates memories
@@ -39,14 +38,15 @@ npm install "@mono-agent/memory-supermemory@${APP_VERSION}"
 | Dimension | BuJo (built-in) | Supermemory (external) |
 | --- | --- | --- |
 | Where data lives | Local SQLite + markdown at `memory.path` — yours, human-readable | Supermemory instance (local binary or hosted cloud); its own store |
-| Runs without a network | Yes (fully local) | Yes with the local binary; the cloud is off-machine |
+| Runs without a network | Lite: yes. Journal/BuJo: yes when their configured embedding/chat providers are local | Yes only when the local service and its extraction model are local |
 | Memory extraction | `bujo`: separate raw audit + bounded in-app LLM curation and precise entity graph. `lite`/`journal`: deterministic canonical capture, no chat LLM | Server-side, inside Supermemory — you just POST turns |
 | Dependencies | Configured embeddings (`journal`/`bujo`) + required chat model (`bujo`) | The Supermemory binary + an OpenAI-compatible LLM endpoint for its extractor (Ollama works); embeddings bundled |
 | Recall | Embeddings + FTS, RRF fusion + static salience metadata, no LLM | Hybrid search (`/v4/search`, legacy `/v3` fallback) |
-| Capture latency | Lite/Journal lexical row or BuJo raw audit written synchronously; semantic indexing/curation bounded and async | Ingestion is **async** ("queued") — a just-captured turn isn't instantly searchable |
+| Completed-turn boundary | Awaited owner-private, fsynced run-keyed intake; projection/indexing/curation resumes from it | Awaited run-keyed `/v3/documents` upsert; service extraction/indexing remains asynchronous |
+| Read-after-write | Lite/Journal lexical row or BuJo raw audit follows durable admission; semantic indexing/curation is bounded and async | A successfully admitted turn is not necessarily searchable yet |
 | Maintenance | `bujo`: projection-only consolidation every two hours by default (`index.md`, empty `future-log.md`, duplicate-group count) | Consolidation happens server-side; BuJo scheduled consolidation is a no-op |
 | Cost model | Your tokens for `bujo` capture; embeddings local | Extraction runs on Supermemory's configured LLM endpoint |
-| Privacy / ownership | Fully local, plain-text markdown you can read and `grep` | Local binary keeps data on-machine; the hosted cloud sends it out |
+| Privacy / ownership | Storage is local, plain-text Markdown you can read and `grep`; configured hosted embedding/chat providers still receive their request text | Local binary keeps the adapter REST hop on-machine; hosted cloud receives completed-turn text, recall queries, and returned memory |
 | Setup effort | Pull Ollama models (for `journal`/`bujo`); zero extra services for `lite` | Install the optional mono-agent plugin plus `supermemory-server` (and point it at an LLM) |
 | Lock-in / portability | Open SQLite + markdown; no service | Data lives in Supermemory; no shared index with BuJo |
 | `MemoryRecall` tool | Same tool, same shape | Same tool (proxies Supermemory search behind the same name) |
@@ -83,11 +83,13 @@ and answer-evidence gate, and injects nothing for unsupported attributes or unqu
 current/last-message questions.
 
 ### Latency & read-after-write
-BuJo appends the tier-appropriate lexical observation or raw audit synchronously and runs
-semantic indexing/curation in bounded background queues. Supermemory ingestion is
-**asynchronous** (the API returns `queued`), so a
-fact captured this turn may take seconds to minutes to become searchable — don't rely on
-reading it back within the same turn.
+The built-in store awaits an owner-private, fsynced completed-turn intake before
+terminal reporting, then runs projection, semantic indexing, or curation through
+restartable work. Supermemory also exposes a strong boundary: mono-agent awaits
+the run-keyed `/v3/documents` upsert and reports a failed admission explicitly.
+The service still performs extraction and indexing asynchronously, so a fact
+admitted this turn may take seconds to minutes to become searchable—do not rely
+on reading it back within the same turn.
 
 ### Maintenance & consolidation
 BuJo's `bujo` tier auto-runs projection-only **consolidation** every two hours by default:
@@ -97,9 +99,15 @@ canonical memories. Supermemory performs its own consolidation server-side, so t
 scheduler does not run for the Supermemory backend.
 
 ### Privacy & data ownership
-BuJo keeps everything local in formats you own and can inspect. The Supermemory **local
-binary** is also fully on-machine, but in its own store/format. The Supermemory **hosted
-cloud** sends your memory off-machine — choose the local binary if that matters.
+BuJo keeps storage local in formats you own and can inspect. Journal/BuJo still
+send input text to configured embedding/chat endpoints, so use local providers
+when an offline boundary matters. The Supermemory **local binary** keeps the
+adapter's REST traffic on-machine, but stores data in its own format. The
+Supermemory **hosted cloud** receives the deterministic summary and optional full capture
+text, recall queries, and the memory returned by search. Strong completed-turn metadata
+omits raw run and conversation ids, but that does not make the turn content anonymous.
+When payloads must stay on-machine, use the local service with a local extraction model
+and verify the service's own storage and outbound configuration.
 
 ## Config side by side
 

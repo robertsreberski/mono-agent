@@ -1,10 +1,9 @@
 ---
 title: "Backends & model references"
+description: "Choose among the five runtime bridges and use the canonical model-reference and execution-mode syntax."
 sidebar:
   order: 1
 ---
-
-# Backends & model references
 
 This page documents every runtime backend mono-agent can route a turn to, the model-reference string that selects each one, and the execution mode and provider boundary involved. You pick a backend implicitly by setting one config key — `runtime.model` — to a model reference; the agent-runtime bridge registry resolves the reference (plus `runtime.executionMode`) to a concrete backend.
 
@@ -130,7 +129,7 @@ unchanged.
 The user's native OpenCode DB must
 already have its migration marker (`opencode db migrate --pure`) before first use.
 
-OpenCode is registered as the `opencode-app` bridge in [`packages/agent-runtime/src/ai/runtime/registry.js`](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/src/ai/runtime/registry.js); it self-registers and matches `sdk === "opencode" && executionMode === "cli"`.
+OpenCode is the static `opencode-app` descriptor in [`packages/agent-runtime/src/ai/runtime/registry.js`](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/src/ai/runtime/registry.js). The descriptor matches `sdk === "opencode" && executionMode === "cli"` and lazily imports the bridge only when selected.
 
 ## Execution modes
 

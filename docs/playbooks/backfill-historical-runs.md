@@ -1,10 +1,9 @@
 ---
 title: "Backfill Historical Runs to Phoenix"
+description: "Export existing JSONL run artifacts to Phoenix with original timestamps and idempotent run identities."
 sidebar:
   order: 11
 ---
-
-# Backfill Historical Runs to Phoenix
 
 This playbook retroactively exports run artifacts you already have on disk — `run-*.summary.json` + `run-*.events.jsonl` — into Phoenix, preserving each run's original timestamps and doing so idempotently so re-runs overwrite rather than duplicate.
 

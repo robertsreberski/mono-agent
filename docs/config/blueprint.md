@@ -1,16 +1,21 @@
 ---
-title: "Annotated config file"
+title: "Annotated config blueprint"
+description: "See the major mono-agent.config.json sections together in one annotated, cross-linked example."
 sidebar:
   order: 1
 ---
 
-# Annotated config file
+A single `mono-agent.config.json` brings the agent's runtime, providers, context, memory, tools, sandbox, observability, and channels together. This page shows the major sections in one broad example. Use the [generated config reference](/config/reference/) for the exhaustive field list.
 
-A single `mono-agent.config.json` declares the whole agent: runtime, providers, context, memory, tools, sandbox, observability, and every channel. This page reproduces the complete annotated file so you can copy any section verbatim. Each top-level section links out to its deep-dive page at the bottom.
+In normal CLI use, relative paths resolve from the agent folder. For fields with a documented environment mapping, precedence is **passed environment > JSON > default**. Config fields may be JSON-only; the generated reference marks fields without a mapping as `--`.
 
-Paths are relative to the agent folder. Every field also has a `MONO_AGENT_*` env var that overrides it — precedence is **env > JSON > defaults**. Omit a section to leave that capability off: every section except `runtime.model` and `context.identityPath` is optional.
+Only `runtime.model` and `context.identityPath` are required. Most other capabilities are opt-in, but `tui` and `live` default on at loopback and interaction can auto-start from the selected tool configuration.
 
 This is a **config**-coverage reference. Capabilities that config cannot express need the [programmatic escape hatch](/programmatic/) — see the note at the end.
+
+:::caution
+The annotated block is JSONC so it can contain comments. `mono-agent.config.json` is strict JSON: remove comments and copy only the sections you need.
+:::
 
 ## Folder layout
 
@@ -24,12 +29,14 @@ my-agent/
   .env                     # optional: secrets; auto-loaded by the CLI, never committed
   .mono-agent/
     artifacts/             # JSONL run summaries + events
+    history/               # bounded canonical conversation history
     workspace/             # runtime working directory (if not ".")
     memory/                # built-in memory root (framework-managed)
       daily/               # canonical dated memory notes
       graph.jsonl          # BuJo canonical entity graph
       .replay-projection-v1.json # BuJo exact metadata-only replay authority (0600)
       .index/              # managed generations + manifest/runtime metadata
+    sessions/              # optional durable Pi transcripts when configured
     whatsapp-auth/         # Baileys auth state (WhatsApp channel only)
     trace-sources/         # traceability registry (if kept folder-local)
 ```
@@ -76,12 +83,19 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     },
     "workspace": ".",
     "session": {
-      "mode": "continuous",                // or "per-message"
-      "idleTimeoutMs": 1800000,
-      "rollover": "none",                  // none|daily; daily buckets conversation ids by day
-      "rolloverTimezone": "UTC",           // optional IANA timezone for daily rollover
-      "rolloverNotice": false              // adapter-visible new-bucket notice; default off / unset
+      "mode": "continuous",                // warm provider session per conversation; per-message starts cold
+      "idleTimeoutMs": 1800000,             // warm-session eviction only; durable history is separate
+      "rollover": "none",                  // none|daily; daily appends a date bucket to conversation ids
+      "rolloverTimezone": "UTC",           // optional IANA timezone; system timezone when omitted
+      "rolloverNotice": false,              // adapter-visible notice on a new daily bucket; default off
+      "isolateProactive": false             // true makes scheduled cron turns one-shot; interactive turns unchanged
     }
+  },
+
+  // Harness limits are per enabled channel, not one app-wide pool.
+  "concurrency": {
+    "maxConcurrentRuns": 4,                 // provider calls executing at once
+    "maxPendingRuns": 16                    // admitted runs waiting before provider execution
   },
 
   // Local/self-hosted providers for pi:<provider>:<model> references.
@@ -115,7 +129,8 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "soulPath": "./SOUL.md",
     "skillsRoot": "./skills",
     "selectedSkills": ["research"],        // exact names; no auto-selection
-    "skillMaxBytes": 48000                 // per-skill byte cap (256-1,000,000)
+    "skillMaxBytes": 48000,                // per-skill byte cap (256-1,000,000)
+    "skillDisclosure": "index"             // index = disclose on demand; full = inline selected skill bodies
   },
 
   // Memory strategy. Omit the section for no memory.
@@ -125,6 +140,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   //   bujo    — raw audit + bounded LLM curation + precise entity graph + auto-scheduled
   //             lightweight consolidation; strictly needs embeddings + an app-level memory.llm.
   "memory": {
+    "backend": "bujo",                     // bujo (built in) | supermemory (external package + server)
     "mode": "bujo",                        // lite | journal | bujo
     "path": "./.mono-agent/memory",        // root directory for all tiers
     "writeMode": "capture",                // disabled | append-host-summary | capture (bujo only)
@@ -144,6 +160,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       "timeoutMs": 60000                   // in-app per-call timeout; 1000-600000, default 60000. Raise for slow local models.
       // For agent-host, use: "model": "pi:openai-codex:gpt-5.6-terra", "executionMode": "sdk"; omit endpoint.
     },
+    "recallTool": { "enabled": true },      // read-only MemoryRecall tool; default on when memory is configured
     // Bujo auto-scheduler — override the default or disable it.
     // Consolidation runs in-app; no external cron or launchd needed.
     "consolidation": { "enabled": true, "cron": "0 */2 * * *" } // default: every two hours
@@ -155,6 +172,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "allowedTools": ["*"],                 // omit or ["*"] = all tools; ["Read","Bash"] = just those; [] = none (chat-only)
     "disallowedTools": [],                 // deny wins where supported; overlap is rejected
     "mcpConfigPath": "./mcp.json",         // stdio/sse/http servers; inlined for SDK runtimes
+    "mcpRequestContextServers": ["transcribe"], // trusted stdio servers receiving scoped request/progress context
     "continuationServers": ["work-control"], // trusted stdio or loopback-HTTP async result owners
     "mcpCallTimeoutMs": 120000,            // inactivity cap per MCP call; tool progress resets it
     "mcpCallMaxTotalTimeoutMs": 2700000    // hard per-call wall clock (45 min); progress cannot extend it
@@ -183,8 +201,8 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // interaction.progress.enabled resolves true while
   // tools.mcpRequestContextServers names at least one opted project MCP server.
   "interaction": {
-    "bridge": { "host": "127.0.0.1", "port": 0 }, // 0 = ephemeral; tools get the URL via env
-    "askUser": { "timeoutMs": 600000 },           // max wait per question (10 min)
+    "bridge": { "host": "127.0.0.1", "port": 0 }, // keep loopback; 0 = ephemeral
+    "askUser": { "timeoutMs": 600000 },           // max wait per interaction (10 min)
     "progress": { "enabled": true }
   },
 
@@ -390,9 +408,9 @@ mono-agent restart      # apply config edits (config is JSON-first; restart to r
 mono-agent restart --clear-sessions  # restart AND clear provider sessions + active chat history (durable memory kept)
 ```
 
-Config is JSON-first: edit `mono-agent.config.json` directly (agents can edit it too) and run `mono-agent restart` to apply. There is no live browser re-apply. `start` prints the traceability source (Phoenix when an `observability.exporters` Phoenix entry is configured, otherwise the local JSONL artifacts) and one status line per channel: `running` with its endpoint facts, `waiting_for_config` with the exact missing setting, `disabled`, or `failed` with the reason.
+Edit `mono-agent.config.json` directly and run `mono-agent restart` to apply it through the CLI. The CLI does not watch the file. A programmatic host can explicitly call `app.applyConfigChange(reason)` instead. `start` prints the traceability source, exporter status, and one initial status per channel: `running`, `waiting_for_config`, `disabled`, or `failed`. A running self-recovering transport can later report `degraded`.
 
-A `.env` file in the folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` / `--env-file` paths there. Keep all secrets there or in `MONO_AGENT_*` env vars — never commit real tokens.
+Agent-aware CLI commands load `.env` before config resolution; exported shell variables remain in precedence. Use `--env-file <path>` for an alternate file. `validate --consumer <path>` loads the consumer folder's `.env` by default and resolves relative `--config` and `--env-file` paths there. Keep secrets in an untracked, owner-only dotenv file or exported environment—never in committed config.
 
 :::caution
 For `memory.llm`, CLI-backed refs such as `codex:gpt-5.6-terra` are rejected; use `provider: "ollama"` with a local model string, or `provider: "agent-host"` with an SDK runtime ref like `pi:openai-codex:gpt-5.6-terra` and `executionMode: "sdk"` (omit `endpoint`). See [Capture & recall](/memory/capture-and-recall/).
@@ -406,13 +424,17 @@ Every top-level section maps to a deep-dive page:
 | --- | --- | --- |
 | `agent` | Public display name (never path/service/session identity) | [Identity & soul](/context/identity-and-soul/) |
 | `runtime` | Model, fallback chain, execution mode, effort, sessions | [Backends](/runtime/backends/), [Effort & permissions](/runtime/execution-effort-permissions/), [Fallback](/runtime/fallback/), [Sessions & concurrency](/runtime/sessions-concurrency/) |
+| `concurrency` | Per-channel admission and provider-execution bounds | [Sessions & concurrency](/runtime/sessions-concurrency/) |
 | `providers` | Pi auth, `piNative` bridge tuning, local/self-hosted providers | [Local providers](/runtime/local-providers/) |
 | `context` | Identity, soul, skills selection | [Identity & soul](/context/identity-and-soul/), [Skills](/context/skills/), [Assembly](/context/assembly/) |
-| `memory` | Tier, embeddings, capture LLM, consolidation | [Embeddings](/memory/embeddings/), [Capture & recall](/memory/capture-and-recall/), [Consolidation](/memory/rituals/) |
+| `memory` | Backend, tier, recall, embeddings, capture LLM, consolidation | [Embeddings](/memory/embeddings/), [Capture & recall](/memory/capture-and-recall/), [Consolidation](/memory/rituals/) |
 | `tools` | Allow/deny tool policy, MCP servers | [Tool policy](/tools/policy/), [MCP](/tools/mcp/) |
+| `continuations` | Host-owned durable asynchronous result routing | [Durable continuations](/tools/durable-continuations/) |
+| `interaction` | Ask-the-user and tool-progress bridge | [Delivery & send tools](/channels/delivery-and-send-tools/) |
 | `sandbox` | Filesystem/network confinement for runtime commands | [Sandbox](/tools/sandbox/) |
 | `artifacts`, `traceability` | JSONL run summaries + the trace-source registry | [Artifacts & traces](/observability/artifacts-and-traces/) |
 | `observability` | Optional Phoenix (OTLP) exporter | [Phoenix & backfill](/observability/phoenix-and-backfill/) |
+| `tui`, `live` | Default-on loopback operator and event relay endpoints | [TUI and live event relay](/channels/tui/) |
 | `webhook` | HTTP invoke endpoint (sync/async) | [Webhook](/channels/webhook/) |
 | `openaiApi` | OpenAI-compatible `/v1` endpoint (streams tokens) | [OpenAI API](/channels/openai-api/) |
 | `telegram` | Telegram bot channel | [Telegram](/channels/telegram/) |

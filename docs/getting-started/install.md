@@ -1,10 +1,9 @@
 ---
 title: "Install & Prerequisites"
+description: "Install the mono-agent CLI, confirm runtime prerequisites, or run an unreleased build from source."
 sidebar:
   order: 1
 ---
-
-# Install & Prerequisites
 
 This page covers how to install the `mono-agent` CLI (including the terminal and browser operator consoles), the runtime prerequisites you need, and how to run an unreleased build straight from a clone of the repo.
 
@@ -166,7 +165,7 @@ The `create-mono-agent` installer, `@mono-agent/agent-app`, `@mono-agent/tui`, `
 For reproducible installs or one-shot scaffolds, pin the version explicitly to a published release — use the same version across every `@mono-agent/*` package (pick one from the [published npm versions](https://www.npmjs.com/package/@mono-agent/agent-app?activeTab=versions)):
 
 ```bash
-version=<published-version>
+version='0.13.0' # Replace with the published version you want to install.
 npm i -g "@mono-agent/agent-app@$version" "@mono-agent/tui@$version"
 npm exec --package "@mono-agent/agent-app@$version" -- mono-agent init
 ```

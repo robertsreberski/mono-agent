@@ -1,10 +1,9 @@
 ---
 title: "Interactive Agent with Long Jobs & Large Media"
+description: "Combine long-running MCP work, durable continuations, and large-media delivery in an interactive agent."
 sidebar:
   order: 15
 ---
-
-# Interactive Agent with Long Jobs & Large Media
 
 This playbook shows the capabilities unlocked by two composable framework features and how they fit together in one agent:
 
@@ -15,7 +14,7 @@ This playbook shows the capabilities unlocked by two composable framework featur
 The worked example is a **transcription assistant**: send it a voice note or a long recording, it asks who is speaking and in what language, transcribes via a local WhisperKit server (minutes for a long file), and returns the transcript as a document.
 
 :::note
-`AskUser` and tool progress are powered by the app's **interaction bridge**. The loopback registry starts automatically when `AskUser` is allowed, when the `interaction` block or an interaction env override is configured, or when `interaction.progress.enabled` resolves true and `tools.mcpRequestContextServers` names at least one opted project MCP server. Nothing is exposed off-host. See [Delivery and Send Tools](/channels/delivery-and-send-tools/) and [Telegram](/channels/telegram/).
+`AskUser` and tool progress are powered by the app's **interaction bridge**. The bridge starts automatically when `AskUser` is allowed, when the `interaction` block or an interaction env override is configured, or when `interaction.progress.enabled` resolves true and `tools.mcpRequestContextServers` names at least one opted project MCP server. This playbook explicitly pins `127.0.0.1`; keep that loopback bind because the runtime does not reject non-loopback values. With the shown configuration, nothing is exposed off-host. See [Delivery and Send Tools](/channels/delivery-and-send-tools/) and [Telegram](/channels/telegram/).
 :::
 
 ## Who this is for
@@ -125,7 +124,10 @@ mono-agent start --config ./mono-agent.config.json
 2. **Long job + progress**: for a multi-minute recording, watch the status message update in place; the call must not die at 120s (proof the keep-alive works).
 3. **Large media**: send a recording over 20 MB (needs the self-hosted server). It downloads and transcribes; a plain hosted bot would have skipped it.
 4. **File delivery**: the transcript comes back as an attached `.md` document, not pasted into the chat.
-5. **Timeout path**: let an `AskUser` question sit past `askUser.timeoutMs` — the tool returns gracefully and your later reply arrives as a normal next turn.
+5. **Timeout path**: leave the `AskUser` interaction incomplete past
+   `askUser.timeoutMs` — the tool returns any answers already submitted, marks
+   the remaining questions unanswered, and treats your later reply as a normal
+   next turn.
 
 ## Notes & limits
 

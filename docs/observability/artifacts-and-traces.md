@@ -1,10 +1,9 @@
 ---
 title: "Artifacts, latency & trace registry"
+description: "Understand JSONL recorder checkpoints, bounded reads, stale-run reconciliation, latency events, retention, and trace-source discovery."
 sidebar:
   order: 1
 ---
-
-# Artifacts, latency & trace registry
 
 mono-agent is local-first about observability: every run gets a JSONL event artifact and a summary in a folder on disk, and the host publishes a small heartbeat manifest so the CLI can discover running agents. At `start()`, the recorder performs separate atomic replacements for an empty events file and a `running` summary. It applies key-based redaction and buffers later events with a 4,096-byte default cap per string, schedules incremental `running` snapshots, and writes a final snapshot at `finish()`/`fail()`. Every boundary replaces the events file first and summary second. These temp-file-and-rename writes provide no append, fsync, power-loss durability, or cross-file transaction guarantee. The artifacts are the best-effort on-disk prefix after a successful recorder boundary; the [Phoenix exporter](/observability/phoenix-and-backfill/) is an optional, additive layer on top.
 

@@ -1,10 +1,9 @@
 ---
 title: "A2A (Agent-to-Agent)"
+description: "Configure the A2A provider plugin, its Agent Card and network boundary, and understand where programmatic consumer calls begin."
 sidebar:
   order: 6
 ---
-
-# A2A (Agent-to-Agent)
 
 This page covers the **provider** side of the A2A channel: how mono-agent serves your agent over the [A2A protocol](https://a2a-protocol.org) so other agents can discover and call it. The channel is provided by the external `@mono-agent/a2a-adapter` package and loaded through `channels.plugins[]`. It publishes an Agent Card, accepts messages over JSON-RPC and REST, and streams responses. Calling *remote* A2A agents (the consumer side) is programmatic — see [A2A consumer](/programmatic/a2a-consumer/).
 
@@ -191,7 +190,7 @@ Inbound A2A messages run the same turn pipeline as other channels, so [tool poli
 
 ## Calling remote agents
 
-The provider only serves *your* agent. To have your agent call *other* A2A agents, put consumer settings under the same A2A plugin entry's `config.consumer` and invoke them programmatically with `createA2AConsumerResponder`. This is a **code** path — see [A2A consumer](/programmatic/a2a-consumer/).
+The provider only serves *your* agent. To have your agent call *other* A2A agents, put consumer defaults under the same A2A plugin entry's `config.consumer` and invoke them programmatically with `createA2AConsumerResponder`, `sendA2AMessage`, or `dispatchA2AMessage`. Loading consumer config does not add a tool or autonomously delegate work; this remains a **code** path — see [A2A consumer](/programmatic/a2a-consumer/).
 
 ## Related
 

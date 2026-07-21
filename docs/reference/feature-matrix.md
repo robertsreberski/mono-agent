@@ -1,10 +1,9 @@
 ---
 title: "Feature matrix"
+description: "Scan mono-agent capabilities by coverage type, config key, environment variable, guide, and playbook."
 sidebar:
-  order: 1
+  order: 2
 ---
-
-# Feature matrix
 
 A scannable projection of every mono-agent capability for non-linear readers: each feature id mapped to its coverage type, the config key(s) and env var(s) that reach it, the prose page that explains it, and any playbook that puts it to work.
 

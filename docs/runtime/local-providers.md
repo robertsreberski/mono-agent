@@ -1,5 +1,6 @@
 ---
 title: "Local & self-hosted providers"
+description: "Connect Ollama, LM Studio, and OpenAI-compatible private endpoints through Pi model references."
 sidebar:
   order: 4
 ---
@@ -81,7 +82,7 @@ ollama pull gemma4:31b
 }
 ```
 
-The model `name` must match the exact tag you pulled (including any `:tag` suffix). If a ref resolves to a model Ollama has not pulled, the call fails — run `mono-agent validate` to surface reachability and model checks before starting. See [Validation & CLI](/memory/validation-and-cli/).
+The model `name` must match the exact tag you pulled (including any `:tag` suffix). If a ref resolves to a model Ollama has not pulled, the call fails — run `mono-agent validate` to surface reachability and model checks before starting. See the [`validate` CLI reference](/observability/cli-reference/#validate).
 
 Ollama and LM Studio can power memory embeddings independently of the chat runtime; BuJo capture has its own explicit LLM configuration. Those settings live under `memory.embeddings` / `memory.llm`, not `providers.local`. See [Embeddings](/memory/embeddings/).
 

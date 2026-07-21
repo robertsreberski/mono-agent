@@ -1,5 +1,6 @@
 ---
 title: "Validation & CLI maintenance"
+description: "Validate memory configuration and use the config-aware mono-agent memory commands for inspection, health, recovery, rebuild, rollback, and explicit forget."
 sidebar:
   order: 5
 ---
@@ -281,7 +282,7 @@ For launchd fleet proof, the invoking runtime and durable configuration are part
 
 A healthy bujo report looks like:
 
-```
+```text
 [ok] memory.mode     bujo
 [ok] consolidation   0 */2 * * * (auto)
 ```
@@ -561,9 +562,9 @@ Coverage: cli.
 | `rebuild <root> --tier <t>` | [`mono-agent memory rebuild`](#safe-index-generations-rebuild-and-rollback) — config-aware; run from the agent folder |
 | `rollback <root> --tier <t>` | [`mono-agent memory rollback`](#safe-index-generations-rebuild-and-rollback) — config-aware; run from the agent folder |
 | `recall <root> "<query>"` | [`mono-agent memory search "<query>"`](#mono-agent-memory--config-aware-preview) |
-| `index <root>` | No manual equivalent needed — the in-app [auto-scheduler](/memory/rituals/) runs indexing automatically while the agent runs |
-| `reflect <root>` | No manual equivalent needed — the in-app [auto-scheduler](/memory/rituals/) runs reflection automatically while the agent runs |
-| `migrate <root>` | Historical v1→v2 migration; no longer applicable |
+| `index <root>` | Removed with no one-for-one scheduled replacement; the in-app [scheduler](/memory/rituals/) calls only projection-only `store.consolidate()` |
+| `reflect <root>` | Removed with no one-for-one scheduled replacement; the in-app [scheduler](/memory/rituals/) does not run reflection |
+| `migrate <root>` | Removed historical v1→v2 workflow with no current CLI replacement |
 
 The config-aware `mono-agent memory rebuild` / `rollback` read the tier, embeddings provider/model, and dimension from config, so they no longer need a `--tier` flag or a positional `<root>`; see [Safe index generations](#safe-index-generations-rebuild-and-rollback). The removal is recorded in [Deprecations](/reference/deprecations/).
 

@@ -1,10 +1,9 @@
 ---
 title: "Consolidation"
+description: "Configure and verify BuJo's in-app projection-only consolidation schedule and understand exactly which memory state it does and does not change."
 sidebar:
   order: 3
 ---
-
-# Consolidation
 
 The `bujo` memory tier maintains itself with one scheduled **consolidation** pass that
 runs **in-app** — no external cron, launchd, or sidecar process. Consolidation is a
@@ -109,7 +108,7 @@ but ignored. `mono-agent validate` reports value-free warnings when it sees them
 
 ## Living index files
 
-Consolidation (and the `index` CLI command) maintain markdown files at the root of your
+Projection-only consolidation maintains these markdown files at the root of your
 `memory.path`:
 
 - **`index.md`** — a living table of contents: entry counts, the top/most-relevant
@@ -143,7 +142,7 @@ implicit timer that rewrites memory.
 
 `mono-agent validate` reports the configured cadence in its Memory section:
 
-```
+```text
 [ok] memory.mode     bujo
 [ok] consolidation   0 */2 * * * (auto)
 ```
@@ -165,10 +164,10 @@ The standalone `memory-bujo` CLI that used to offer manual `reflect`, `migrate`,
 runs has been removed; any invocation now prints a removal error and exits non-zero. There is no
 longer a manual out-of-band path:
 
-- `index` and `reflect` — no manual equivalent needed. The in-app
-  [auto-scheduler](#the-in-app-scheduler) runs indexing and reflection automatically while the
-  agent runs.
-- `migrate` — a historical v1→v2 migration that no longer applies.
+- `index` and `reflect` — removed with no one-for-one scheduled replacement. The in-app
+  [scheduler](#the-in-app-scheduler) calls only projection-only `store.consolidate()`; it does
+  not invoke either legacy operation.
+- `migrate` — a removed historical v1→v2 workflow with no current CLI replacement.
 - `rebuild` / `rollback` — use the config-aware
   [`mono-agent memory rebuild` / `rollback`](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback)
   from the agent folder.

@@ -1,12 +1,11 @@
 ---
 title: "Multi-Agent Orchestration (AskCollaborator)"
+description: "Build an orchestrator that delegates to named specialist responders through a bounded MCP tool that defaults to loopback."
 sidebar:
   order: 8
 ---
 
-# Multi-Agent Orchestration (AskCollaborator)
-
-This playbook shows how one orchestrator agent delegates subtasks to named specialist responders (a researcher and a writer) through the loopback `AskCollaborator` MCP tool. The wiring is code-only: you build collaborator responders, create a runtime extension, and attach it to the orchestrator per request.
+This playbook shows how one orchestrator agent delegates subtasks to named specialist responders (a researcher and a writer) through the loopback-by-default `AskCollaborator` MCP tool. The wiring is code-only: you build collaborator responders, create a runtime extension, and attach it to the orchestrator per request.
 
 ## Who this is for
 
@@ -14,11 +13,11 @@ Workflow designers composing specialist agents — you want a single orchestrato
 
 ## Goal
 
-One orchestrator agent delegates subtasks to named collaborator responders (researcher, writer) via the loopback `AskCollaborator` MCP tool.
+One orchestrator agent delegates subtasks to named collaborator responders (researcher, writer) via the loopback-by-default `AskCollaborator` MCP tool.
 
 ## Features used
 
-- [`orchestrator.ask-collaborator`](/programmatic/multi-agent/) — loopback MCP tool delegating to named collaborator responders, with call caps and per-collaborator timeout (coverage: code).
+- [`orchestrator.ask-collaborator`](/programmatic/multi-agent/) — loopback-by-default MCP tool delegating to named collaborator responders, with guarded non-loopback opt-in, call caps, and per-collaborator timeout (coverage: code).
 - [`harness.request-runtime-options`](/programmatic/composition/) — per-request runtime option extensions via `createConfiguredAgentResponder({ runtimeOptionsForRequest })` (coverage: code).
 - [`runtime.custom`](/runtime/backends/) — custom runtime composition that drives the orchestrator (coverage: code).
 
@@ -26,10 +25,12 @@ One orchestrator agent delegates subtasks to named collaborator responders (rese
 
 This capability is **code-only** — there is no `mono-agent.config.json` key for it. You construct the collaborator extension programmatically and pass its run options to the orchestrator's responder. See [programmatic composition](/programmatic/composition/) and [multi-agent](/programmatic/multi-agent/).
 
+After importing `createConfiguredAgentResponder` and
+`createCollaboratorToolRuntimeExtension`, build the config and both collaborator
+responders, then attach the request-scoped extension:
+
 ```ts
-// The extension is request-scoped: create it inside runtimeOptionsForRequest
-// (one ephemeral MCP server per turn) and return its cleanup so the host
-// tears the server down when the turn ends. Do not reuse one across requests.
+// Assume config and both collaborator responders have already been created.
 const orchestrator = await createConfiguredAgentResponder({
   config,
   runtimeOptionsForRequest: async (input) => {
@@ -43,7 +44,10 @@ const orchestrator = await createConfiguredAgentResponder({
       abortSignal: input.request.abortSignal,
       maxCalls: 10,
     });
-    return { runtimeOptions: extension.runtimeOptions, cleanup: extension.cleanup };
+    return {
+      runtimeOptions: extension.runtimeOptions,
+      cleanup: extension.cleanup,
+    };
   },
 });
 ```

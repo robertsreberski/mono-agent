@@ -1,10 +1,9 @@
 ---
 title: "Generated config reference"
+description: "Complete generated reference for mono-agent.config.json fields, environment overrides, defaults, examples, and plugin-channel envelopes."
 sidebar:
   order: 4
 ---
-
-# Generated config reference
 
 This page is generated from the same config field registries that power `mono-agent config`, recipe output, and the JSON Schema. Do not edit this table by hand; run `pnpm run generate:config-reference`.
 
@@ -57,8 +56,8 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `cron.notifyFailureCooldownHours` | `integer` | `MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS` | 6 | `6` | Configures notifyFailureCooldownHours for the cron section. |
 | `cron.prompt` | `string` | `MONO_AGENT_CRON_PROMPT` | unset | `example` | Configures prompt for the cron section. |
 | `cron.timezone` | `string` | `MONO_AGENT_CRON_TIMEZONE` | UTC | `UTC` | Configures timezone for the cron section. |
-| `interaction.askUser.timeoutMs` | `integer` | `MONO_AGENT_ASK_USER_TIMEOUT_MS` | 600000 | `600000` | Maximum wait for one AskUser question. |
-| `interaction.bridge.host` | `string` | `MONO_AGENT_INTERACTION_BRIDGE_HOST` | 127.0.0.1 | `127.0.0.1` | Loopback host for the app-owned AskUser/tool-progress bridge. |
+| `interaction.askUser.timeoutMs` | `integer` | `MONO_AGENT_ASK_USER_TIMEOUT_MS` | 600000 | `600000` | Maximum wait for one AskUser interaction (one to five questions). |
+| `interaction.bridge.host` | `string` | `MONO_AGENT_INTERACTION_BRIDGE_HOST` | 127.0.0.1 | `127.0.0.1` | Bind host for the app-owned AskUser/tool-progress bridge. Defaults to loopback; keep it local because non-loopback values are not rejected. |
 | `interaction.bridge.port` | `integer` | `MONO_AGENT_INTERACTION_BRIDGE_PORT` | 0 | `0` | Bridge port. 0 chooses an ephemeral port. |
 | `interaction.progress.enabled` | `boolean` | `MONO_AGENT_PROGRESS_ENABLED` | true | `true` | Whether tool progress posts are relayed to channel status messages. |
 | `live.allowNonLoopback` | `boolean` | `MONO_AGENT_LIVE_ALLOW_NON_LOOPBACK` | false | `true` | Configures allowNonLoopback for the live section. |

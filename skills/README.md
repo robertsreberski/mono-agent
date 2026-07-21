@@ -12,6 +12,14 @@ They are **NOT runtime skills for mono-agent instances** — those live in each
 agent's own folder (e.g. `~/personal-agent/skills/`) and are selected via
 `context.selectedSkills` in `mono-agent.config.json`.
 
+## File layout
+
+Each directory is one engineering workflow. `SKILL.md` is its authoritative
+instruction surface; `agents/openai.yaml` provides discoverability metadata.
+Supporting scripts, templates, or references stay inside that skill directory
+and should be loaded only when its `SKILL.md` routes the task there. Run
+`pnpm run check:codex-discoverability` after changing a skill or its metadata.
+
 ## Selection rule
 
 Choose one primary skill from the requested outcome. Use a second skill only
@@ -26,6 +34,8 @@ when the request explicitly crosses that boundary. In particular:
 `verify-green` is the shared lane selector. A docs/skills/process diff does not
 build the monorepo. Ordinary code gets focused checks plus one broad CI gate.
 Only high-risk runtime changes add a local full gate and one live smoke.
+
+## Available skills
 
 | Skill | Use when |
 |---|---|

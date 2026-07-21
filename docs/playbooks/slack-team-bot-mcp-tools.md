@@ -1,10 +1,9 @@
 ---
 title: "Slack Team Bot with MCP Tools"
+description: "Configure an allowlisted Slack team bot with an external MCP tool server."
 sidebar:
-  order: 2
+  order: 12
 ---
-
-# Slack Team Bot with MCP Tools
 
 This playbook builds a shared Slack bot that answers when mentioned in allow-listed channels, calls a custom team MCP tool plus `Read`/`Grep`, and can post proactively with `SlackSendMessage`.
 

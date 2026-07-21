@@ -1,16 +1,17 @@
 ---
 title: "Write your own channel adapter"
+description: "Implement the ChannelDriver contract, load a channel package from config, or register a custom transport programmatically."
 sidebar:
   order: 5
 ---
 
-This page covers writing your own channel adapter package, loading it from `mono-agent.config.json` with `channels.plugins[]`, and registering drivers programmatically with `startMonoAgentApp`. It also covers overriding stream and message-text behavior of the core channels (welcome/help/error text, edit debounce, max chars, interim streaming). For built-in and external channel options, see [Channels overview](/channels/).
+Use a custom channel when mono-agent does not ship your transport. You can load a package through `channels.plugins[]` or pass a driver directly to `startMonoAgentApp`. For built-in and bundled plugin options, see [Channels overview](/channels/).
 
 ## When you need a driver
 
-The core drivers (Telegram, Slack, Webhook, OpenAI-compatible API, Cron, TUI, Live) plus the external WhatsApp and A2A packages cover the channels mono-agent ships today. Write a custom `ChannelDriver` when you need a transport that ships nothing — for example an in-house message bus, an SMS gateway, an email poller, or a test harness. A driver is thin: it reuses an adapter's config loader plus its `start` function and adds the wiring the app host would otherwise copy by hand.
+The core drivers cover Telegram, Slack, Webhook, the OpenAI-compatible API, Cron, TUI, and Live. Bundled plugin-tier packages add WhatsApp and A2A. Write a `ChannelDriver` for an in-house message bus, SMS gateway, email poller, or another transport. Keep the driver thin: load config, start the transport, connect it to the responder, and return lifecycle controls.
 
-The driver contract lives in **`@mono-agent/agent-contracts`** — a dependency-free contracts package — so a channel author does not need the host package at all. `@mono-agent/agent-app` re-exports every type below (with the core-config parameter bound to `MonoAgentConfig`), so existing imports keep working.
+The neutral contract lives in `@mono-agent/agent-contracts`, so a channel package does not depend on the app host. `@mono-agent/agent-app` re-exports host-bound aliases for the main driver and lifecycle types, with `MonoAgentConfig` bound as the core config type.
 
 ## Loading a package from config
 
@@ -49,7 +50,13 @@ export interface MyChannelPluginOptions {
   readonly config?: Record<string, unknown>;
 }
 
-export function createChannelDriver(options: MyChannelPluginOptions = {}): ChannelDriver {
+interface MyChannelConfig {
+  readonly enabled: boolean;
+}
+
+export function createChannelDriver(
+  options: MyChannelPluginOptions = {},
+): ChannelDriver<MyChannelConfig> {
   const id = options.id ?? "my-channel";
   const label = options.label ?? "My channel";
   const inlineConfig = options.config ?? {};
@@ -80,7 +87,7 @@ export function createChannelDriver(options: MyChannelPluginOptions = {}): Chann
 }
 ```
 
-Missing packages, malformed exports, invalid plugin entries, and duplicate channel ids are reported as `waiting_for_config` validate/start sections so the rest of the host can still run. Plugin ids must not collide with the core `BUILTIN_CHANNEL_IDS`. Both declared plugin ids and returned `ChannelDriver.id` values are reserved against built-ins.
+Missing packages, malformed exports, invalid plugin entries, and duplicate channel ids are reported as `waiting_for_config` validate/start sections so the rest of the host can still run. Choose an id that does not collide with a built-in or earlier plugin. The host checks both the id declared in config and the id returned by the factory; its reserved built-in id set is internal, not a public export.
 
 ## The ChannelDriver interface
 
@@ -90,6 +97,10 @@ import type {
   ChannelStartInput,
   RunningChannel,
   ChannelConfigInput,
+  ChannelInteractionHub,
+  NotifyDeliveryResult,
+  NotifyDestination,
+  RunEventBus,
 } from "@mono-agent/agent-contracts";
 // or the same names from "@mono-agent/agent-app" (host-bound aliases)
 
@@ -108,7 +119,7 @@ interface ChannelDriver<TConfig = unknown, TCore = unknown> {
 
 | Member | Contract |
 |---|---|
-| `id` | Identifies the channel in `channelStatus(id)` / `channelStatuses()` and its `channel:<id>` validate section. `ChannelId` is **any string** — pick your own (e.g. `"discord"`, `"sms"`); `BUILTIN_CHANNEL_IDS` (from `@mono-agent/agent-app`) lists the ids the CLI drives from config. |
+| `id` | Identifies the channel in `channelStatus(id)` / `channelStatuses()` and its `channel:<id>` validate section. `ChannelId` is any string; choose a unique value such as `"discord"` or `"sms"`. |
 | `label` | Display name shown in status / doctor output. |
 | `loadConfig` | Receives `{ env, cwd, configPath }`. Read your section out of `mono-agent.config.json` (and env). Throw your own typed config error when the config is malformed. |
 | `isConfigError` | Return `true` for your loader's own typed errors. The app treats those as `waiting_for_config` (incomplete) rather than a crash. |
@@ -139,7 +150,18 @@ interface ChannelStartInput<TConfig, TCore = unknown> {
   readonly responder: AgentResponder; // run the agent through this
   readonly cwd: string;
   readonly logger?: ChannelLogger;
-  readonly onFailure: (reason: string) => void; // report a post-start death
+  readonly onFailure: (reason: string) => void; // transport stopped with no recovery
+  readonly onDegraded?: (reason: string) => void; // transport is self-recovering
+  readonly onRecovered?: () => void;              // self-recovery completed
+  readonly notifyDestination?: (
+    conversationId: string,
+    text: string,
+    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
+  ) => Promise<NotifyDeliveryResult>;
+  readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
+  readonly postedMessageIndexPath?: string;
+  readonly interaction?: ChannelInteractionHub;
+  readonly liveEventBus?: RunEventBus;
 }
 
 interface RunningChannel {
@@ -149,11 +171,36 @@ interface RunningChannel {
 }
 ```
 
-`onFailure` is for transports that die **after** a successful `start` — a polling loop that throws, a socket that closes. Calling it flips the channel from `running` to `failed`; otherwise a dead poller would still report as running. The built-in Telegram driver wires its `onPollingError` straight into `onFailure`.
+Use `onFailure` when a transport dies after `start` and has no recovery path. The app marks the channel `failed` and disposes its responder. If the transport owns reconnection, call `onDegraded` while it recovers and `onRecovered` when service resumes; this keeps the responder alive and moves status from `running` to `degraded` and back.
 
 :::note
 Do not set `dispose` yourself — the app attaches responder/harness teardown so warm provider sessions are retired on stop/reload. Your job is to stop the transport in `stop()`.
 :::
+
+The optional fields are host-owned capability seams. Proactive trigger channels
+use `notifyDestination` and `listNotifyDestinations`; thread-aware push channels
+can use `postedMessageIndexPath`; passive observer channels can read
+`liveEventBus`. Most custom transports need none of them.
+
+### Supporting blocking AskUser
+
+`interaction` is present when the host runs its interaction bridge. A channel
+that supports structured `AskUser` round trips must:
+
+1. Register one `ChannelInteractionSink` under its driver id. `presentAsk` and
+   `updateAsk` render the supplied snapshot; `postStatus` renders keyed tool
+   progress.
+2. Before admitting an inbound text or button as a new agent turn, call
+   `getPendingAsk(conversationId)`. If a snapshot exists, translate the input
+   into complete `ChannelAskAnswer` values and call `submitAskAnswers` with the
+   snapshot's exact `interactionId`.
+3. Consume an accepted ask reply instead of calling `responder.respond`, so the
+   blocked run resumes once. Route the transport's user-cancel action through
+   `cancelAsks(conversationId)`.
+
+The hub owns validation, expiry, and state. The adapter owns presentation and
+pre-admission reply interception. If a driver does not register a sink, the
+host does not claim that `AskUser` works on that channel.
 
 ### Minimal example
 
@@ -163,6 +210,7 @@ import {
   defaultChannelDrivers,
   type ChannelDriver,
 } from "@mono-agent/agent-app";
+import { BufferedMessageStream } from "@mono-agent/agent-contracts";
 
 class SmsConfigError extends Error {}
 
@@ -191,11 +239,18 @@ const smsDriver: ChannelDriver<{ enabled: boolean; gatewayUrl?: string }> = {
     const poller = startSmsPoller({
       gatewayUrl: input.config.gatewayUrl,
       onInbound: async (msg) => {
-        const result = await input.responder.respond({
-          conversationId: msg.from,
-          text: msg.body,
-        });
-        await sendSms(msg.from, result.text);
+        const stream = new BufferedMessageStream();
+        const abort = new AbortController();
+        const result = await input.responder.respond(
+          {
+            conversationId: msg.from,
+            text: msg.body,
+            abortSignal: abort.signal,
+          },
+          stream,
+        );
+        const finalText = result.text ?? stream.text;
+        if (finalText.length > 0) await sendSms(msg.from, finalText);
       },
       onError: (err) => input.onFailure(err.message),
     });
@@ -272,7 +327,8 @@ const liveTelegram: ChannelDriver<TelegramAdapterConfig> = {
           `Sorry, that failed: ${error instanceof Error ? error.message : "unknown error"}`,
       },
       onPollingError: (error) =>
-        input.onFailure(error instanceof Error ? error.message : String(error)),
+        input.onDegraded?.(error instanceof Error ? error.message : String(error)),
+      onPollingRecovered: () => input.onRecovered?.(),
       ...(input.logger ? { logger: input.logger } : {}),
     });
     return { summary: {}, stop: () => result.stop() };

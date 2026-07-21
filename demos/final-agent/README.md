@@ -21,6 +21,13 @@ const runtime = createConfiguredAgentRuntime(coreConfig);
 const responder = createConfiguredAgentResponder({ config: coreConfig, runtime });
 ```
 
+### Source map
+
+- `src/configuration.ts` registers config field groups, loads and redacts the effective config, and resolves artifact paths.
+- `src/final-demo.ts` owns adapter startup, independent channel status, responder wiring, and clean shutdown.
+- `src/cli.ts` is the direct demo entrypoint; `src/deploy-cli.ts` owns the Ollama-backed deployment helper.
+- `src/__tests__/` verifies configuration, lifecycle, CLI arguments, and deployment behavior with fixtures rather than product-runtime substitutes.
+
 `src/configuration.ts` is the only demo-local place that registers field groups, loads core plus adapter config, redacts runtime status, and resolves the artifact directory. `src/final-demo.ts` handles lifecycle: start Telegram, A2A, webhook, OpenAI API, and cron independently when config is valid, build the responder, and stop cleanly.
 
 ## Run it

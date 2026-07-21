@@ -1,10 +1,9 @@
 ---
 title: "Always-on web console"
+description: "Run and secure the persistent assistant-ui console for local-agent discovery, threads, attachments, notifications, and live turns."
 sidebar:
   order: 5
 ---
-
-# Always-on web console
 
 `mono-agent web` is the browser operator console for every running agent discovered on this computer. It is a separate `@mono-agent/web` application built on assistant-ui's External Store Runtime and native Thread, ThreadList, Message, Composer, Attachment, GroupedParts, and ToolFallback primitives, with the assistant-ui Reasoning disclosure adapted for structured runtime parts. The service owns conversations and in-flight turns, so refreshing or closing a browser tab does not abort work.
 
@@ -46,6 +45,22 @@ The console intentionally has no application authentication or multi-user accoun
 The server rejects unexpected Host/Origin combinations and does not enable cross-origin API access, but those checks are browser request-integrity controls, not authentication. Plain LAN HTTP is not encrypted. Tailscale transport protects direct tailnet traffic, while Tailscale Serve provides browser-trusted HTTPS when available.
 
 At startup, mono-agent inspects the existing Tailscale Serve configuration. It prefers HTTPS `:443` only when free; otherwise it chooses the first free port in `8443`–`8499`. It never resets or replaces another Serve handler. Ownership is recorded locally, and `web stop` removes only the route this console created. If the first route cannot be created, the local/LAN service stays healthy and status prints the direct URLs plus remediation. If a restart cannot migrate an existing owned route to a changed app port, mono-agent restores the prior worker and exact route and exits nonzero.
+
+## How the service is structured
+
+| Layer | What it owns |
+| --- | --- |
+| Service | Agent discovery, thread/turn lifecycle, attachment admission, notification ingestion, and the upstream operator connection. |
+| SQLite store | Authoritative agents, pins, threads, messages, structured parts, revisions, turns, uploads, and notification idempotency. |
+| `/api/v1` HTTP/SSE | Browser commands and projections. Mutations publish invalidations; browsers refetch current state instead of owning the turn. |
+| Assistant-ui PWA | Responsive thread/message/composer presentation, upload progress, response notifications, and browser-origin preferences. |
+| Notification ingress | Owner-private loopback endpoint recorded under `~/.mono-agent/web/`; `deliverWebNotification` uses its bearer for one bounded cron/webhook delivery. |
+
+The browser never talks directly to a running agent. It talks to this persistent
+service, which keeps the operator stream alive through page reloads and maps
+agent events into durable message parts. The PWA consumes service invalidations
+and reloads authoritative projections, so multiple tabs converge on the same
+SQLite-backed state.
 
 ## Agents, threads, and turns
 

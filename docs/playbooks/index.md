@@ -1,10 +1,9 @@
 ---
 title: "Playbooks"
+description: "Choose an end-to-end recipe for common mono-agent channels, runtimes, memory, tools, and operations."
 sidebar:
   order: 0
 ---
-
-# Playbooks
 
 This section collects end-to-end recipes. Each one walks the same arc — **init → configure → validate → start → smoke** — using only real `mono-agent.config.json` keys and the `mono-agent` CLI, so you can copy a playbook, adapt the placeholders, and have a working agent in minutes.
 
