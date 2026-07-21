@@ -13,6 +13,7 @@ const MAX_INFO_BODY_BYTES = 1024 * 1024;
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 const MAX_NDJSON_FRAME_BYTES = 8 * 1024 * 1024;
 const CANCEL_TIMEOUT_MS = 2_000;
+const HISTORY_APPEND_TIMEOUT_MS = 5_000;
 
 export interface OperatorConnection {
   readonly baseUrl: string;
@@ -27,6 +28,7 @@ export interface OperatorInfo {
   readonly models?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, WebModelOption>>;
   readonly supportsAttachments: boolean;
+  readonly supportsHistoryAppend: boolean;
 }
 
 export interface OperatorTurnInput {
@@ -91,6 +93,7 @@ export class OperatorClient {
       ...(models === undefined ? {} : { models }),
       ...(modelOptions === undefined ? {} : { modelOptions }),
       supportsAttachments: capabilities?.attachments === true,
+      supportsHistoryAppend: capabilities?.historyAppend === true,
     };
   }
 
@@ -146,6 +149,17 @@ export class OperatorClient {
       method: "POST",
       headers: this.headers(false),
       signal: AbortSignal.timeout(CANCEL_TIMEOUT_MS),
+    }).then(async (response) => {
+      await response.body?.cancel().catch(() => undefined);
+    });
+  }
+
+  async recordVerbatim(conversationId: string, text: string, idempotencyKey: string): Promise<void> {
+    await this.request(`${this.baseUrl}/v1/conversations/${encodeURIComponent(conversationId)}/verbatim`, {
+      method: "POST",
+      headers: this.headers(true),
+      signal: AbortSignal.timeout(HISTORY_APPEND_TIMEOUT_MS),
+      body: JSON.stringify({ text, idempotencyKey }),
     }).then(async (response) => {
       await response.body?.cancel().catch(() => undefined);
     });

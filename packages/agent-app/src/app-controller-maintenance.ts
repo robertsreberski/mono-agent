@@ -3,6 +3,7 @@ import {
   DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS,
   DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT,
 } from "@mono-agent/memory/bujo";
+import { deliverWebNotification } from "@mono-agent/web";
 
 import { loadAppCoreConfig, resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
@@ -15,6 +16,7 @@ import { resolveNotifyDestinations } from "./notify-destinations.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import { reasonOf } from "./app-controller-utils.js";
 import type { MonoAgentAppController } from "./app-controller.js";
+import type { ChannelId } from "./channels.js";
 
 export async function startMemoryRitualsIfConfigured(controller: MonoAgentAppController, reason: string): Promise<void> {
   if (controller.stopped) {
@@ -179,7 +181,69 @@ export async function notifyDestination(
   conversationId: string,
   text: string,
   options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
+  sourceChannelId?: ChannelId,
 ): Promise<NotifyDeliveryResult> {
+  if (conversationId === "web:new") {
+    if (sourceChannelId !== "cron" && sourceChannelId !== "webhook") {
+      return {
+        delivered: false,
+        code: "unsupported_web_notification_source",
+        reason: "web:new is available only to cron and webhook notification channels.",
+        retryable: false,
+      };
+    }
+    if (options?.verbatim !== true || options.deliveryKey === undefined) {
+      return {
+        delivered: false,
+        code: "invalid_web_notification",
+        reason: "web:new requires verbatim delivery with a stable delivery key.",
+        retryable: false,
+      };
+    }
+    try {
+      const { sourceId } = await controller.observabilityContext();
+      if (sourceId === undefined) {
+        return {
+          delivered: false,
+          code: "missing_source_id",
+          reason: "The agent has no stable source id for web notification delivery.",
+          retryable: false,
+        };
+      }
+      const delivered = await deliverWebNotification({
+        sourceId,
+        triggerKind: sourceChannelId,
+        deliveryKey: options.deliveryKey,
+        text,
+      });
+      controller.logger?.info?.("Web notification conversation delivered.", {
+        sourceId,
+        triggerKind: sourceChannelId,
+        threadId: delivered.threadId,
+        duplicate: delivered.duplicate,
+      });
+      return { delivered: true, code: delivered.duplicate ? "duplicate" : "delivered" };
+    } catch (error) {
+      const code = typeof error === "object" && error !== null && typeof (error as { code?: unknown }).code === "string"
+        ? (error as { code: string }).code
+        : "web_notification_failed";
+      const reason = reasonOf(error);
+      controller.logger?.warn?.("Web notification conversation was not delivered.", {
+        triggerKind: sourceChannelId,
+        code,
+        reason,
+      });
+      return { delivered: false, code, reason, retryable: false };
+    }
+  }
+  if (conversationId.startsWith("web:")) {
+    return {
+      delivered: false,
+      code: "unsupported_web_destination",
+      reason: "The only supported web notification destination is web:new.",
+      retryable: false,
+    };
+  }
   const result = await routeProactiveNotification({
     conversationId,
     text,

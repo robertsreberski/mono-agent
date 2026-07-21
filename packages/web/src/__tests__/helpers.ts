@@ -30,7 +30,9 @@ export function fakeDiscoveredAgent(overrides: Partial<DiscoveredOperatorAgent> 
 export function operatorFetch(options: {
   readonly turns?: (body: Record<string, unknown>) => string | ReadableStream<Uint8Array>;
   readonly supportsAttachments?: boolean;
+  readonly supportsHistoryAppend?: boolean;
   readonly onTurn?: (body: Record<string, unknown>) => void;
+  readonly onVerbatim?: (conversationId: string, body: Record<string, unknown>) => void | Promise<void>;
 } = {}): typeof fetch {
   return (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -49,7 +51,10 @@ export function operatorFetch(options: {
           },
           "provider/fallback": { effortLevels: ["low", "high"], reasoning: true },
         },
-        capabilities: { attachments: options.supportsAttachments ?? true },
+        capabilities: {
+          attachments: options.supportsAttachments ?? true,
+          ...(options.supportsHistoryAppend === true ? { historyAppend: true } : {}),
+        },
       });
     }
     if (url.endsWith("/v1/turns")) {
@@ -66,6 +71,15 @@ export function operatorFetch(options: {
     }
     if (url.includes("/v1/conversations/") && url.endsWith("/cancel")) {
       return Response.json({ cancelled: true }, { status: 202 });
+    }
+    if (url.includes("/v1/conversations/") && url.endsWith("/verbatim")) {
+      const encodedConversationId = url.slice(
+        url.lastIndexOf("/v1/conversations/") + "/v1/conversations/".length,
+        -"/verbatim".length,
+      );
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      await options.onVerbatim?.(decodeURIComponent(encodedConversationId), body);
+      return Response.json({ recorded: true }, { status: 200 });
     }
     return new Response("not found", { status: 404 });
   }) as typeof fetch;

@@ -18,6 +18,13 @@ export {
 } from "./state-paths.js";
 export type { WebStatePathOptions, WebStatePaths } from "./state-paths.js";
 
+export { deliverWebNotification } from "./notification-client.js";
+export type {
+  DeliverWebNotificationInput,
+  DeliverWebNotificationOptions,
+  DeliverWebNotificationResult,
+} from "./notification-client.js";
+
 export {
   defaultTraceRegistryDir,
   discoverOperatorAgents,
@@ -56,11 +63,13 @@ export type {
   WebMessagePart,
   WebMessageStatus,
   WebModelOption,
+  WebNotificationTriggerKind,
   WebQuote,
   WebRunState,
   WebRunStatus,
   WebThread,
   WebThreadDetail,
+  WebThreadTrigger,
 } from "./contracts.js";
 
 export { WebConsoleError } from "./errors.js";

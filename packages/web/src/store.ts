@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, lstat, readdir, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -13,6 +13,7 @@ import {
   type WebMessage,
   type WebMessagePart,
   type WebMessageStatus,
+  type WebNotificationTriggerKind,
   type WebQuote,
   type WebRunState,
   type WebThread,
@@ -44,9 +45,20 @@ interface ThreadRow {
   created_at: string;
   updated_at: string;
   revision: number;
+  trigger_kind: string | null;
   can_send: number;
   can_upload: number;
   message_count: number;
+}
+
+interface NotificationDeliveryRow {
+  source_id: string;
+  delivery_key: string;
+  thread_id: string;
+  trigger_kind: string;
+  payload_sha256: string;
+  created_at: string;
+  completed_at: string | null;
 }
 
 interface MessageRow {
@@ -132,6 +144,24 @@ export interface BeginStoredTurnResult {
   readonly assistantMessageId: string;
   readonly attachments: readonly StoredAttachment[];
   readonly thread: WebThread;
+}
+
+export interface ReserveWebNotificationInput {
+  readonly sourceId: string;
+  readonly deliveryKey: string;
+  readonly triggerKind: WebNotificationTriggerKind;
+  readonly text: string;
+}
+
+export interface WebNotificationReservation extends ReserveWebNotificationInput {
+  readonly threadId: string;
+  readonly payloadSha256: string;
+  readonly duplicate: boolean;
+}
+
+export interface CompleteWebNotificationResult {
+  readonly thread: WebThread;
+  readonly duplicate: boolean;
 }
 
 export class WebStore {
@@ -241,6 +271,110 @@ export class WebStore {
     const agent = this.getAgent(sourceId);
     if (agent === undefined) throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
     return agent;
+  }
+
+  reserveNotification(input: ReserveWebNotificationInput): WebNotificationReservation {
+    if (this.getAgent(input.sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "The notification agent is no longer available.", 404);
+    }
+    if (input.deliveryKey.length === 0 || input.deliveryKey.length > 1_024) {
+      throw new WebConsoleError("invalid_notification", "Notification deliveryKey must contain 1 to 1024 characters.", 400);
+    }
+    if (input.text.trim().length === 0) {
+      throw new WebConsoleError("invalid_notification", "Notification text cannot be empty.", 400);
+    }
+    const threadId = notificationThreadId(input.sourceId, input.deliveryKey);
+    const payloadSha256 = notificationPayloadSha256(input.triggerKind, input.text);
+    const existing = this.database.prepare(`
+      SELECT * FROM notification_deliveries WHERE source_id = ? AND delivery_key = ?
+    `).get(input.sourceId, input.deliveryKey) as unknown as NotificationDeliveryRow | undefined;
+    if (existing !== undefined) {
+      if (existing.thread_id !== threadId
+        || existing.trigger_kind !== input.triggerKind
+        || existing.payload_sha256 !== payloadSha256) {
+        throw new WebConsoleError(
+          "notification_idempotency_conflict",
+          "The notification delivery key was already used with different content.",
+          409,
+        );
+      }
+      if (existing.completed_at !== null && this.getThread(existing.thread_id) === undefined) {
+        throw new WebConsoleError("storage_corrupt", "A completed notification is missing its conversation.", 500);
+      }
+      return { ...input, threadId, payloadSha256, duplicate: existing.completed_at !== null };
+    }
+    const now = this.now();
+    this.database.prepare(`
+      INSERT INTO notification_deliveries (
+        source_id, delivery_key, thread_id, trigger_kind, payload_sha256, created_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+    `).run(input.sourceId, input.deliveryKey, threadId, input.triggerKind, payloadSha256, now);
+    return { ...input, threadId, payloadSha256, duplicate: false };
+  }
+
+  completeNotification(reservation: WebNotificationReservation): CompleteWebNotificationResult {
+    const existing = this.database.prepare(`
+      SELECT * FROM notification_deliveries WHERE source_id = ? AND delivery_key = ?
+    `).get(reservation.sourceId, reservation.deliveryKey) as unknown as NotificationDeliveryRow | undefined;
+    if (existing === undefined
+      || existing.thread_id !== reservation.threadId
+      || existing.trigger_kind !== reservation.triggerKind
+      || existing.payload_sha256 !== reservation.payloadSha256) {
+      throw new WebConsoleError("notification_reservation_lost", "The notification reservation is no longer valid.", 409);
+    }
+    if (existing.completed_at !== null) {
+      return { thread: this.requireThread(existing.thread_id), duplicate: true };
+    }
+    const now = this.now();
+    const turnId = randomUUID();
+    const assistantMessageId = randomUUID();
+    const title = reservation.triggerKind === "cron" ? "Cron notification" : "Webhook notification";
+    this.transaction(() => {
+      if (this.getThread(reservation.threadId) !== undefined) {
+        throw new WebConsoleError("notification_idempotency_conflict", "The notification conversation already exists.", 409);
+      }
+      this.database.prepare(`
+        INSERT INTO threads (
+          id, source_id, conversation_id, title, title_manual, trigger_kind, archived_at,
+          created_at, updated_at, revision
+        ) VALUES (?, ?, ?, ?, 0, ?, NULL, ?, ?, 1)
+      `).run(
+        reservation.threadId,
+        reservation.sourceId,
+        `web:${reservation.threadId}`,
+        title,
+        reservation.triggerKind,
+        now,
+        now,
+      );
+      this.database.prepare(`
+        INSERT INTO turns (
+          id, thread_id, status, text, model, effort, assistant_message_id,
+          started_at, finished_at, error_code, error_message
+        ) VALUES (?, ?, 'complete', '', NULL, NULL, ?, ?, ?, NULL, NULL)
+      `).run(turnId, reservation.threadId, assistantMessageId, now, now);
+      this.database.prepare(`
+        INSERT INTO messages (
+          id, thread_id, turn_id, role, parts_json, created_at, updated_at, status
+        ) VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'complete')
+      `).run(
+        assistantMessageId,
+        reservation.threadId,
+        turnId,
+        JSON.stringify([{ type: "text", text: reservation.text } satisfies WebMessagePart]),
+        now,
+        now,
+      );
+      this.database.prepare(`
+        INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at)
+        VALUES ('thread', ?, 1, 'notification_created', ?)
+      `).run(reservation.threadId, now);
+      this.database.prepare(`
+        UPDATE notification_deliveries SET completed_at = ?
+        WHERE source_id = ? AND delivery_key = ? AND completed_at IS NULL
+      `).run(now, reservation.sourceId, reservation.deliveryKey);
+    });
+    return { thread: this.requireThread(reservation.threadId), duplicate: false };
   }
 
   createThread(sourceId: string): WebThread {
@@ -591,17 +725,20 @@ export class WebStore {
     try {
       this.database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
       const versionRow = this.database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
-      if (versionRow.user_version > 1) {
+      if (versionRow.user_version > 2) {
         throw new WebConsoleError(
           "unsupported_storage_schema",
-          `Web state schema ${versionRow.user_version} is newer than supported schema 1.`,
+          `Web state schema ${versionRow.user_version} is newer than supported schema 2.`,
           500,
         );
       }
       if (versionRow.user_version < 0) {
         throw new WebConsoleError("storage_corrupt", "Web state schema version is invalid.", 500);
       }
-      this.database.exec(`
+      const migrating = versionRow.user_version < 2;
+      if (migrating) this.database.exec("BEGIN IMMEDIATE");
+      try {
+        this.database.exec(`
       CREATE TABLE IF NOT EXISTS agents (
         source_id TEXT PRIMARY KEY,
         label TEXT NOT NULL,
@@ -621,6 +758,7 @@ export class WebStore {
         conversation_id TEXT NOT NULL UNIQUE,
         title TEXT NOT NULL,
         title_manual INTEGER NOT NULL DEFAULT 0,
+        trigger_kind TEXT CHECK (trigger_kind IN ('cron', 'webhook')),
         archived_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -680,8 +818,30 @@ export class WebStore {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS notification_deliveries (
+        source_id TEXT NOT NULL REFERENCES agents(source_id),
+        delivery_key TEXT NOT NULL,
+        thread_id TEXT NOT NULL UNIQUE,
+        trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('cron', 'webhook')),
+        payload_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        PRIMARY KEY (source_id, delivery_key)
+      );
       `);
-      if (versionRow.user_version === 0) this.database.exec("PRAGMA user_version = 1");
+        if (versionRow.user_version === 1) {
+          const columns = this.database.prepare("PRAGMA table_info(threads)").all() as unknown as Array<{ name: string }>;
+          if (!columns.some((column) => column.name === "trigger_kind")) {
+            this.database.exec(
+              "ALTER TABLE threads ADD COLUMN trigger_kind TEXT CHECK (trigger_kind IN ('cron', 'webhook'))",
+            );
+          }
+        }
+        if (migrating) this.database.exec("PRAGMA user_version = 2; COMMIT");
+      } catch (error) {
+        if (this.database.isTransaction) this.database.exec("ROLLBACK");
+        throw error;
+      }
       this.validateStorage();
     } catch (error) {
       if (error instanceof WebConsoleError) throw error;
@@ -694,7 +854,16 @@ export class WebStore {
     if (check === undefined || !Object.values(check).includes("ok")) {
       throw new WebConsoleError("storage_corrupt", "Web state failed SQLite integrity validation.", 500);
     }
-    const requiredTables = new Set(["agents", "threads", "turns", "messages", "attachments", "revisions", "settings"]);
+    const requiredTables = new Set([
+      "agents",
+      "threads",
+      "turns",
+      "messages",
+      "attachments",
+      "revisions",
+      "settings",
+      "notification_deliveries",
+    ]);
     const tables = this.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as unknown as Array<{ name: string }>;
     for (const table of tables) requiredTables.delete(table.name);
     if (requiredTables.size > 0) {
@@ -773,6 +942,9 @@ export class WebStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       revision: row.revision,
+      ...(row.trigger_kind === "cron" || row.trigger_kind === "webhook"
+        ? { trigger: { kind: row.trigger_kind } }
+        : {}),
       ...(preview === undefined ? {} : { lastMessagePreview: preview }),
       messageCount: row.message_count,
       runState,
@@ -893,7 +1065,7 @@ export class WebStore {
 
 function threadSelectSql(suffix: string): string {
   return `
-    SELECT t.id, t.source_id, t.title, t.archived_at, t.created_at, t.updated_at, t.revision,
+    SELECT t.id, t.source_id, t.title, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
            CASE WHEN a.status = 'online' OR a.status = 'degraded' THEN 1 ELSE 0 END AS can_send,
            CASE WHEN (a.status = 'online' OR a.status = 'degraded') AND a.supports_attachments = 1 THEN 1 ELSE 0 END AS can_upload,
            (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id) AS message_count
@@ -916,6 +1088,24 @@ function agentSelectSql(suffix: string): string {
 
 function agentPinSettingKey(sourceId: string): string {
   return `agent_pin:${sourceId}`;
+}
+
+function notificationThreadId(sourceId: string, deliveryKey: string): string {
+  const digest = createHash("sha256")
+    .update(sourceId)
+    .update("\0")
+    .update(deliveryKey)
+    .digest("hex")
+    .slice(0, 32);
+  return `notification-${digest}`;
+}
+
+function notificationPayloadSha256(kind: WebNotificationTriggerKind, text: string): string {
+  return createHash("sha256")
+    .update(kind)
+    .update("\0")
+    .update(text)
+    .digest("hex");
 }
 
 function mapAgent(row: AgentRow): WebAgentSummary {

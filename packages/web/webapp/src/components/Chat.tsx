@@ -85,37 +85,49 @@ function ConversationTitle() {
     }
   };
 
+  const triggerBadge = selectedThread?.trigger ? (
+    <span className="trigger-badge trigger-badge-header" aria-label={`${selectedThread.trigger.kind} notification`}>
+      {selectedThread.trigger.kind}
+    </span>
+  ) : null;
+
   if (editing && selectedThread) {
     return (
-      <input
-        ref={inputRef}
-        className="title-input"
-        value={title}
-        onChange={(event) => setTitle(event.target.value)}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") event.currentTarget.blur();
-          if (event.key === "Escape") {
-            setTitle(selectedThread.title);
-            setEditing(false);
-          }
-        }}
-        maxLength={120}
-        aria-label="Conversation title"
-      />
+      <div className="conversation-title-group">
+        <input
+          ref={inputRef}
+          className="title-input"
+          value={title}
+          onChange={(event) => setTitle(event.target.value)}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") event.currentTarget.blur();
+            if (event.key === "Escape") {
+              setTitle(selectedThread.title);
+              setEditing(false);
+            }
+          }}
+          maxLength={120}
+          aria-label="Conversation title"
+        />
+        {triggerBadge}
+      </div>
     );
   }
 
   return (
-    <button
-      type="button"
-      className="conversation-title"
-      onClick={() => selectedThread && setEditing(true)}
-      disabled={!selectedThread}
-      title={selectedThread ? "Rename conversation" : undefined}
-    >
-      {selectedThread?.title ?? "New conversation"}
-    </button>
+    <div className="conversation-title-group">
+      <button
+        type="button"
+        className="conversation-title"
+        onClick={() => selectedThread && setEditing(true)}
+        disabled={!selectedThread}
+        title={selectedThread ? "Rename conversation" : undefined}
+      >
+        {selectedThread?.title ?? "New conversation"}
+      </button>
+      {triggerBadge}
+    </div>
   );
 }
 

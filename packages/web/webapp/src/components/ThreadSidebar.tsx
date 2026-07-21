@@ -42,6 +42,11 @@ function ThreadListItem({
           <span className="thread-title">
             <ThreadListItemPrimitive.Title fallback="Untitled conversation" />
           </span>
+          {thread.trigger && (
+            <span className="trigger-badge" aria-label={`${thread.trigger.kind} notification`}>
+              {thread.trigger.kind}
+            </span>
+          )}
           <time dateTime={thread.updatedAt}>{relativeTime(thread.updatedAt)}</time>
         </span>
         <span className="thread-preview">

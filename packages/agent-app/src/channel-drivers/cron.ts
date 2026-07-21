@@ -141,7 +141,7 @@ async function deliverCronModelExhaustionFailureNotice(input: {
   readonly notifyDestination?: (
     conversationId: string,
     text: string,
-    options?: { readonly verbatim?: boolean },
+    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
   ) => Promise<NotifyDeliveryResult>;
   readonly logger?: MonoAgentAppLogger;
 }): Promise<void> {
@@ -174,7 +174,14 @@ async function deliverCronModelExhaustionFailureNotice(input: {
   const destination = job.notifyConversationId;
   const text = buildCronModelExhaustionFailureNotice(job, input.result);
   try {
-    const delivery = await input.notifyDestination(destination, text, { verbatim: true });
+    const delivery = await input.notifyDestination(destination, text, {
+      verbatim: true,
+      ...(destination === "web:new"
+        ? {
+            deliveryKey: `cron:${encodeURIComponent(job.id)}:${input.result.scheduledAt}:failure:${input.result.failureKind}`,
+          }
+        : {}),
+    });
     if (!delivery.delivered) {
       input.logger?.warn?.("Cron failure notice was not delivered.", {
         jobId: job.id,

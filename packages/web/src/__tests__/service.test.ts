@@ -47,6 +47,48 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("records notification history before publishing a marked idempotent thread", async () => {
+    let failHistory = true;
+    const recorded: Array<{ conversationId: string; body: Record<string, unknown> }> = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsHistoryAppend: true,
+        async onVerbatim(conversationId, body) {
+          recorded.push({ conversationId, body });
+          if (failHistory) throw new Error("history unavailable");
+        },
+      }),
+    });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "webhook" as const,
+      deliveryKey: "webhook:digest:req-1:success",
+      text: "Webhook digest",
+    };
+
+    await expect(service.deliverNotification(input)).rejects.toBeDefined();
+    expect((await service.bootstrap()).threads).toEqual([]);
+
+    failHistory = false;
+    const delivered = await service.deliverNotification(input);
+    expect(delivered).toMatchObject({
+      duplicate: false,
+      thread: { title: "Webhook notification", trigger: { kind: "webhook" } },
+    });
+    expect(recorded.at(-1)).toEqual({
+      conversationId: `web:${delivered.thread.id}`,
+      body: { text: "Webhook digest", idempotencyKey: input.deliveryKey },
+    });
+    await expect(service.deliverNotification(input)).resolves.toMatchObject({
+      duplicate: true,
+      thread: { id: delivered.thread.id },
+    });
+    expect(recorded).toHaveLength(2);
+    await expect(service.deliverNotification({ ...input, text: "Changed digest" }))
+      .rejects.toMatchObject({ code: "notification_idempotency_conflict" });
+    await service.stop();
+  });
+
   it("publishes persisted pin changes through bootstrap and agent invalidation events", async () => {
     const service = await createService();
     const events: unknown[] = [];
