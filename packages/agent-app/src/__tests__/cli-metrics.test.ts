@@ -18,7 +18,7 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-describe("runCli metrics", () => {
+describe("runCli runs report", () => {
   it("prints JSON metrics for the configured artifact directory without requiring or contacting exporters", async () => {
     const cwd = await tempDir();
     const artifacts = join(cwd, "artifacts");
@@ -62,7 +62,7 @@ describe("runCli metrics", () => {
     });
 
     try {
-      const result = await captureCli(() => withCwd(cwd, () => withCleanMonoAgentEnv(() => runCli(["metrics", "--by", "model", "--json"]))));
+      const result = await captureCli(() => withCwd(cwd, () => withCleanMonoAgentEnv(() => runCli(["runs", "report", "--by", "model", "--json"]))));
       const report = JSON.parse(result.stdout) as {
         readonly ok: boolean;
         readonly artifactDir: string;
@@ -133,8 +133,8 @@ describe("runCli metrics", () => {
       artifactPaths: [],
     });
 
-    const agentOnly = await captureCli(() => withCwd(cwd, () => withCleanMonoAgentEnv(() => runCli(["metrics", "--json"]))));
-    const all = await captureCli(() => withCwd(cwd, () => withCleanMonoAgentEnv(() => runCli(["metrics", "--include-memory", "--json"]))));
+    const agentOnly = await captureCli(() => withCwd(cwd, () => withCleanMonoAgentEnv(() => runCli(["runs", "report", "--json"]))));
+    const all = await captureCli(() => withCwd(cwd, () => withCleanMonoAgentEnv(() => runCli(["runs", "report", "--include-memory", "--json"]))));
     const agentReport = JSON.parse(agentOnly.stdout) as { readonly overall: { readonly totalRuns: number; readonly statusCounts: { readonly succeeded: number; readonly failed: number } } };
     const allReport = JSON.parse(all.stdout) as { readonly overall: { readonly totalRuns: number; readonly statusCounts: { readonly succeeded: number; readonly failed: number } } };
 

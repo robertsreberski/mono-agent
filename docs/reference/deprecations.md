@@ -16,24 +16,7 @@ documentation together, then remove the completed row from this table.
 
 ## Scheduled removals
 
-| Deprecated surface | Replacement | Removal version |
-| --- | --- | --- |
-| `mono-agent restart --force` | `mono-agent restart --clear-sessions` (same effect) | the next release after `v0.12` |
-| `mono-agent metrics` | `mono-agent runs` (equivalently `mono-agent runs report`) | the next release after `v0.12` |
-| `mono-agent audit-runs` | `mono-agent runs audit` | the next release after `v0.12` |
-
-`restart --force` is still accepted and behaves identically to
-`--clear-sessions` (clear persisted pi sessions + active conversation history),
-but every invocation prints a deprecation hint. `--force` on `install-skill` and
-`web reset` is a separate, non-deprecated flag.
-
-`metrics` and `audit-runs` are the pre-consolidation spellings of the merged
-[`runs`](/observability/cli-reference/#runs) command. Both still parse and
-forward unchanged — `metrics` to `runs report`, `audit-runs` to `runs audit`,
-carrying every existing flag — while printing a one-line sunset hint. The
-canonical `runs` spelling takes `--artifacts` as the artifact-directory flag;
-the legacy `audit-runs --artifact-dir` alias keeps parsing but no longer appears
-in `--help`.
+No deprecated surface currently has a scheduled removal.
 
 ## Removed surfaces
 
@@ -42,11 +25,18 @@ errors with a pointer to its replacement instead of mapping forward.
 
 | Removed surface | Replacement |
 | --- | --- |
+| `mono-agent restart --force` | `mono-agent restart --clear-sessions` (same effect) |
+| `mono-agent metrics` | `mono-agent runs` (equivalently `mono-agent runs report`) |
+| `mono-agent audit-runs` and its `--artifact-dir` flag | `mono-agent runs audit --artifacts <path>` |
 | `mono-agent recipes list \| show <id>` | `mono-agent presets list \| show <id>` |
 | `mono-agent init --recipe <id>` and `mono-agent validate --recipe <id>` | `--preset <id>` |
 | `mono-agent sessions` (Session Recorder launcher) | `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console) |
 | CLI flag `--fallback-models <csv>` | Repeat `--fallback <ref>` and, when needed, `--fallback-effort <level>` |
 | `memory-bujo` standalone CLI bin | `mono-agent memory <subcommand>` from the agent folder |
+
+The three run/lifecycle compatibility spellings were removed in v0.14.0 after
+their scheduled sunset. `--force` on `install-skill` and `web reset` is a
+separate, non-deprecated flag.
 
 The `mono-agent sessions` removal covers only the CLI launcher. Running it now
 errors with a `mono-agent tui` / `mono-agent web` pointer. The

@@ -118,8 +118,6 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     return 2;
   }
 
-  writeCliDeprecationHints(argv[0], args);
-
   // Only the internal launchd foreground shape may honor the managed-worker
   // marker. A hostile/global launchctl environment must not sanitize unrelated
   // commands such as `mono-agent validate` or `mono-agent status`.
@@ -293,26 +291,6 @@ export async function runCli(argv: readonly string[]): Promise<number> {
 
 export function shouldLoadCommandDotenv(command: ParsedCliArgs["command"]): boolean {
   return command !== "web";
-}
-
-function writeCliDeprecationHints(originalCommand: string | undefined, args: ParsedCliArgs): void {
-  if (args.command === "restart" && args.force) {
-    process.stderr.write(ui.hint(
-      "`restart --force` is deprecated; use `restart --clear-sessions` (same effect).",
-    ));
-  }
-  // `audit-runs`/`metrics` normalize to `runs` in parseCliArgs, so the sunset
-  // hint has to key off the original argv token rather than args.command.
-  if (originalCommand === "metrics") {
-    process.stderr.write(ui.hint(
-      "`mono-agent metrics` is now `mono-agent runs`; the old spelling will be removed in a future release.",
-    ));
-  }
-  if (originalCommand === "audit-runs") {
-    process.stderr.write(ui.hint(
-      "`mono-agent audit-runs` is now `mono-agent runs audit`; the old spelling will be removed in a future release.",
-    ));
-  }
 }
 
 function sanitizeManagedLaunchdLogMaintenanceEnvironment(

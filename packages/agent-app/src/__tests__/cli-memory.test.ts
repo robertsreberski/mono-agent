@@ -45,7 +45,7 @@ describe("parseCliArgs memory", () => {
       limit: 3,
       json: true,
     });
-    expect(() => parseCliArgs(["metrics", "--limit", "3"])).toThrow(/--limit/u);
+    expect(() => parseCliArgs(["runs", "--limit", "3"])).toThrow(/--limit/u);
     // The grouped summary lists memory once; subcommand detail is in `help memory`.
     expect(renderHelp()).toContain("memory <subcommand>");
     const memoryDetail = helpTopicText("memory");

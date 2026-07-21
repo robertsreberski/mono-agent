@@ -1312,7 +1312,7 @@ describe("runFleetGreenCheck (orchestration)", () => {
       if (command === NODE && args[0] === "-p") return overrides.runtime ?? { status: 0, stdout: '{"node":"24.15.0","abi":"137"}\n', stderr: "" };
       if (command === NODE && args.includes("validate")) return overrides.validate ?? { status: 0, stdout: '{"ok":true}\n', stderr: "" };
       if (command === NODE && args.includes("memory")) return overrides.memory ?? { status: 0, stdout: `${strictMemoryJson("healthy")}\n`, stderr: "" };
-      if (command === NODE && args.includes("metrics")) return overrides.metrics ?? { status: 0, stdout: metricsJson, stderr: "" };
+      if (command === NODE && args[1] === "runs" && args[2] === "report") return overrides.metrics ?? { status: 0, stdout: metricsJson, stderr: "" };
       if (command === "gh") return overrides.gh ?? { status: 0, stdout: "https://github.com/comment/1\n", stderr: "" };
       return { status: 1, stdout: "", stderr: "unexpected" };
     };
@@ -1578,16 +1578,17 @@ describe("runFleetGreenCheck (orchestration)", () => {
       .filter((c) => c.command === NODE && c.args[0] === CLI)
       .map((c) => c.args[1]);
     expect(cliSubcommands.length).toBeGreaterThan(0);
-    expect(new Set(cliSubcommands)).toEqual(new Set(["validate", "memory", "metrics"]));
+    expect(new Set(cliSubcommands)).toEqual(new Set(["validate", "memory", "runs"]));
     expect(calls.find((c) => c.command === NODE && c.args.includes("validate"))?.args).toEqual([
       CLI, "validate", "--json", "--config", configPath, "--env-file", envFile,
     ]);
     expect(calls.find((c) => c.command === NODE && c.args.includes("memory"))?.args).toEqual([
       CLI, "memory", "audit", "--strict", "--json", "--config", configPath, "--env-file", envFile,
     ]);
-    expect(calls.find((c) => c.command === NODE && c.args.includes("metrics"))?.args).toEqual([
+    expect(calls.find((c) => c.command === NODE && c.args[1] === "runs" && c.args[2] === "report")?.args).toEqual([
       CLI,
-      "metrics",
+      "runs",
+      "report",
       "--since",
       "2026-07-06T12:00:00.000Z",
       "--json",
@@ -1730,7 +1731,7 @@ describe("runFleetGreenCheck (orchestration)", () => {
         if (args.includes("txt")) return fakeExecutableLsof(200);
         return { status: 0, stdout: `p200\nfcwd\nn${secondDir}\n`, stderr: "" };
       }
-      if (command === NODE && args.includes("metrics") && options?.cwd === "/Users/example/agents/orchestrator") {
+      if (command === NODE && args[1] === "runs" && args[2] === "report" && options?.cwd === "/Users/example/agents/orchestrator") {
         firstRowWorkComplete = true;
       }
       if (command === NODE && args[0]?.endsWith("build-provenance-probe.mjs")) {
@@ -2277,7 +2278,7 @@ describe("runFleetGreenCheck (orchestration)", () => {
         }
         return { status: 0, stdout: "", stderr: "" };
       }
-      if (command === NODE && args.includes("metrics") && options?.cwd === secondDir) {
+      if (command === NODE && args[1] === "runs" && args[2] === "report" && options?.cwd === secondDir) {
         const result = base.runCommand(command, args, options);
         secondExpensiveComplete = true;
         events.push("second-expensive-complete");

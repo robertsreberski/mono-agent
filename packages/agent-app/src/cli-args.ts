@@ -10,7 +10,7 @@ import type { InstallSkillTarget } from "./install-skill.js";
 import { INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND } from "./launchd.js";
 import type { CodexLoginMode } from "./provider-setup.js";
 
-const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "runs", "audit-runs", "metrics", "memory", "continuations"] as const;
+const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "runs", "memory", "continuations"] as const;
 const KNOWN_COMMANDS = [...PUBLIC_COMMANDS, INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND] as const;
 
 // Canonical (post-normalization) commands that emit a `--json` envelope. This is
@@ -39,14 +39,16 @@ const JSON_CAPABLE_COMMANDS_DISPLAY =
 export const REMOVED_COMMANDS = new Map<string, string>([
   ["recipes", "`recipes` was removed; use `mono-agent presets`."],
   ["sessions", "`sessions` was removed; use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console)."],
+  ["metrics", "`metrics` was removed; use `mono-agent runs` (or `mono-agent runs report`)."],
+  ["audit-runs", "`audit-runs` was removed; use `mono-agent runs audit`."],
 ]);
 
-// `doctor`/`setup`/`audit-runs`/`metrics` never reach routing: parseCliArgs
-// normalizes them to `validate`/`init`/`runs`. `help`/`version` are synthetic
+// `doctor`/`setup` never reach routing: parseCliArgs normalizes them to
+// `validate`/`init`. `help`/`version` are synthetic
 // commands (not in KNOWN_COMMANDS) produced by the `--help`/`-h` and
 // `--version`/`-v` flags before command validation.
 type CliCommand =
-  | Exclude<(typeof KNOWN_COMMANDS)[number], "doctor" | "setup" | "audit-runs" | "metrics">
+  | Exclude<(typeof KNOWN_COMMANDS)[number], "doctor" | "setup">
   | "help"
   | "version";
 
@@ -185,24 +187,13 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   // `doctor`/`setup` are aliases; normalize here so every downstream path
   // (routing, env-file resolution, --consumer) applies unchanged. `doctor` →
   // `validate`, `setup` → `init`. No sunset is set for either.
-  //
-  // `audit-runs`/`metrics` are deprecated forwarding aliases for the merged
-  // `runs` command: `audit-runs` → `runs` with a leading `audit` mode positional,
-  // `metrics` → `runs` with a leading `report` mode positional. The injected mode
-  // is prepended after the flag loop so user-supplied positionals are preserved,
-  // and the dispatcher routes on `positionals[0]`. writeCliDeprecationHints keys
-  // the sunset hint off the original argv token (lost after this normalization).
   const cmd = (
     command === "doctor"
       ? "validate"
       : command === "setup"
         ? "init"
-        : command === "audit-runs" || command === "metrics"
-          ? "runs"
-          : command
+        : command
   ) as CliCommand;
-  const injectedRunsMode =
-    command === "audit-runs" ? "audit" : command === "metrics" ? "report" : undefined;
   if (
     cmd === INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND
     && !isInternalLaunchdControllerArguments(rest)
@@ -297,8 +288,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         includeMemory = true;
         break;
       case "--artifact-dir":
-        artifactDir = requireValue(rest, ++i, flag);
-        break;
+        throw new Error("`--artifact-dir` was removed; use `--artifacts <path>`.");
       case "--artifacts":
         artifactDir = requireValue(rest, ++i, flag);
         break;
@@ -563,13 +553,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     }
   }
 
-  // Prepend the forwarding-alias mode so `audit-runs`/`metrics` reach the `runs`
-  // dispatcher as `runs audit`/`runs report` without clobbering any positionals a
-  // user typed after the legacy command name.
-  if (injectedRunsMode !== undefined) {
-    positionals.unshift(injectedRunsMode);
-  }
-
   if (consumerPath !== undefined && cmd !== "validate" && cmd !== "runs") {
     throw new Error("--consumer is only supported for `mono-agent validate` and `mono-agent runs`.");
   }
@@ -631,13 +614,16 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (codexAuthMode !== undefined && cmd !== "init" && cmd !== "auth") {
     throw new Error("--codex-auth is only supported for `mono-agent init` and `mono-agent auth login codex`.");
   }
+  if (force && cmd === "restart") {
+    throw new Error("`restart --force` was removed; use `mono-agent restart --clear-sessions`.");
+  }
   if (clearSessions && cmd !== "restart") {
     throw new Error("--clear-sessions is only supported for `mono-agent restart`.");
   }
   // `--json` is uniform on the read/status surfaces only. Reject it on the
   // lifecycle/interactive commands (init, auth, start, stop, restart, logs, tui,
-  // web, backfill) rather than silently ignoring it. `doctor`/`setup`/
-  // `audit-runs`/`metrics` already normalized to their canonical `cmd` above.
+  // web, backfill) rather than silently ignoring it. `doctor`/`setup` already
+  // normalized to their canonical `cmd` above.
   if (json && !(JSON_CAPABLE_COMMANDS as readonly string[]).includes(cmd)) {
     throw new Error(`--json is not supported for \`mono-agent ${cmd}\`; it is available on ${JSON_CAPABLE_COMMANDS_DISPLAY}.`);
   }

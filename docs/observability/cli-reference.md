@@ -7,7 +7,7 @@ sidebar:
 
 This page documents every `mono-agent` command and its flags, verified against the CLI implementation. It also covers the two cross-cutting behaviors you hit on most invocations: automatic `.env` loading and the per-section reports `validate` and `start` print.
 
-Run `mono-agent help` (or bare `mono-agent`, `--help`, `-h`) for a grouped, one-line-per-command summary under the **Setup / Check / Run / Console / Observe / Maintain** headings, with a `[--json]` marker on the commands that accept it. Drill in with `mono-agent help <command>` for that command's full flags and behavior notes, or `mono-agent help notes` for model references, fallback chains, and env-file rules. `mono-agent help <alias>` resolves aliases (`doctor` → `validate`, `setup` → `init`, `metrics`/`audit-runs` → `runs`), and a removed command (`recipes`, `sessions`) prints its replacement pointer. An unknown command or an unknown flag prints the error plus the grouped summary and exits with code `2`; `help <unknown-topic>` prints a stderr usage error listing the valid topics (without the summary) and also exits `2`.
+Run `mono-agent help` (or bare `mono-agent`, `--help`, `-h`) for a grouped, one-line-per-command summary under the **Setup / Check / Run / Console / Observe / Maintain** headings, with a `[--json]` marker on the commands that accept it. Drill in with `mono-agent help <command>` for that command's full flags and behavior notes, or `mono-agent help notes` for model references, fallback chains, and env-file rules. `mono-agent help <alias>` resolves the permanent aliases (`doctor` → `validate`, `setup` → `init`), and a removed command (`recipes`, `sessions`, `metrics`, or `audit-runs`) prints its replacement pointer. An unknown command or an unknown flag prints the error plus the grouped summary and exits with code `2`; `help <unknown-topic>` prints a stderr usage error listing the valid topics (without the summary) and also exits `2`.
 
 ## Exit codes and `--json`
 
@@ -41,7 +41,7 @@ The read/status commands accept `--json` for scripting: `validate`, `config`, `p
 | `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>`, `--json` |
 | `memory` | Preview, strictly audit, and safely maintain the configured memory store and its durable completed-turn intake. | `stats`, `today`, `show`, `search`, `top`, `audit`, `inspect`, `retry`, `resolve`, `rebuild`, `rollback`, `adopt-replay`; `--strict`, `--limit`, `--json` |
 | `start` | Start the agent as a background launchd service (or foreground worker). Background start also installs the fixed-policy one-shot recovery and log-maintenance LaunchAgent. | `--config <path>`, `--env-file <path>`, `--foreground` |
-| `restart` | Restart the background instance for this config (starts it if stopped), maintaining logs only while the old writer is proven down. | `--config <path>`, `--env-file <path>`, `--clear-sessions` (`--force` deprecated alias) |
+| `restart` | Restart the background instance for this config (starts it if stopped), maintaining logs only while the old writer is proven down. | `--config <path>`, `--env-file <path>`, `--clear-sessions` |
 | `stop` | Stop the background instance, unloading log maintenance first, and remove both LaunchAgent definitions. | `--config <path>`, `--env-file <path>` |
 | `status` | Show this config's instance plus any other running instances. | `--config <path>`, `--env-file <path>`, `--json` |
 | `logs` | Print (and optionally follow) the background instance's log files. | `--config <path>`, `--env-file <path>`, `--follow` / `-f`, `--lines <n>` |
@@ -560,7 +560,7 @@ mono-agent runs audit --consumer ~/local-agent-alpha --json
 mono-agent runs audit --artifacts ./.mono-agent/artifacts --stale-after-ms 30000
 ```
 
-`audit-runs` and `metrics` are deprecated forwarding spellings: `audit-runs` forwards to `runs audit` and `metrics` forwards to `runs report`, each printing a one-line sunset hint. See [Deprecations](/reference/deprecations/).
+The removed `audit-runs` and `metrics` spellings now exit with replacement pointers. Use `runs audit` and `runs report` respectively; the canonical artifact-directory flag is `--artifacts`. See [Deprecations](/reference/deprecations/).
 
 ### `runs report`
 

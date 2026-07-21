@@ -387,9 +387,7 @@ export async function runBackgroundCommand(
     case "start":
       return await startBackground(target, deps);
     case "restart":
-      // `--clear-sessions` is the canonical spelling; `--force` is the retained
-      // deprecated alias (see writeCliDeprecationHints).
-      return args.clearSessions === true || args.force
+      return args.clearSessions === true
         ? await runForceRestart(target, deps, controllerEnvironment)
         : await restartBackground(target, deps);
     case "stop":
@@ -502,7 +500,7 @@ async function controllerCliAvailable(path: string): Promise<boolean> {
 }
 
 /**
- * `restart --force`: stop the worker, purge provider transcripts and canonical
+ * `restart --clear-sessions`: stop the worker, purge provider transcripts and canonical
  * active-conversation history, then start fresh. Stopping first guarantees no
  * conversation state is being written during deletion. Durable memory and run
  * artifacts live elsewhere and remain untouched.

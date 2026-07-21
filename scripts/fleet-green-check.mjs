@@ -15,7 +15,7 @@
 //   memory    — exact plist Node + cli.js `memory audit --strict --json`:
 //               healthy passes, in_progress warns, not_configured skips, and
 //               every degraded/unhealthy/unknown/malformed result fails.
-//   runs-24h  — deployed `cli.js metrics --since <24h-ago> --json` (cwd = dir):
+//   runs-24h  — deployed `cli.js runs report --since <24h-ago> --json` (cwd = dir):
 //               surfaces run/failure counts and FAILS on any failure kind other
 //               than a transient provider_unavailable failover (#136's expected
 //               resilience-evidence kind), on an unclassified failure, or when

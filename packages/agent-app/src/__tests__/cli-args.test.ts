@@ -196,9 +196,10 @@ describe("parseCliArgs", () => {
       .toThrow(/`-f` means `--follow` on `logs`; use `--foreground` with `start`/u);
   });
 
-  it("parses restart --clear-sessions and keeps --force as a deprecated alias", () => {
+  it("parses restart --clear-sessions and rejects the removed --force alias", () => {
     expect(parseCliArgs(["restart", "--clear-sessions"])).toMatchObject({ command: "restart", clearSessions: true });
-    expect(parseCliArgs(["restart", "--force"])).toMatchObject({ command: "restart", force: true });
+    expect(() => parseCliArgs(["restart", "--force"]))
+      .toThrow(/`restart --force` was removed; use `mono-agent restart --clear-sessions`/u);
     expect(parseCliArgs(["restart"]).clearSessions).toBeUndefined();
     expect(() => parseCliArgs(["stop", "--clear-sessions"]))
       .toThrow(/--clear-sessions is only supported for `mono-agent restart`/u);
@@ -435,58 +436,6 @@ describe("parseCliArgs", () => {
     });
   });
 
-  it("normalizes the legacy audit-runs alias to `runs audit` and keeps its flags", () => {
-    expect(
-      parseCliArgs(["audit-runs", "--artifact-dir", "./runs", "--stale-after-ms", "1234", "--include-memory", "--json"]),
-    ).toMatchObject({
-      command: "runs",
-      positionals: ["audit"],
-      artifactDir: "./runs",
-      staleAfterMs: 1234,
-      includeMemory: true,
-      json: true,
-    });
-    expect(
-      parseCliArgs(["audit-runs", "--consumer", "../local-agent-alpha", "--config", "agent.config.json"]),
-    ).toMatchObject({
-      command: "runs",
-      positionals: ["audit"],
-      consumerPath: "../local-agent-alpha",
-      configPath: "agent.config.json",
-    });
-    expect(() => parseCliArgs(["audit-runs", "--stale-after-ms", "0"])).toThrow(/--stale-after-ms/u);
-  });
-
-  it("normalizes the legacy metrics alias to `runs report` and rejects invalid grouping dimensions", () => {
-    expect(
-      parseCliArgs([
-        "metrics",
-        "--artifacts",
-        "./runs",
-        "--since",
-        "2026-06-01T00:00:00.000Z",
-        "--until",
-        "2026-06-30T00:00:00.000Z",
-        "--by",
-        "model",
-        "--include-memory",
-        "--json",
-      ]),
-    ).toMatchObject({
-      command: "runs",
-      positionals: ["report"],
-      artifactDir: "./runs",
-      since: "2026-06-01T00:00:00.000Z",
-      until: "2026-06-30T00:00:00.000Z",
-      groupBy: "model",
-      includeMemory: true,
-      json: true,
-    });
-    expect(parseCliArgs(["metrics", "--by", "channel"])).toMatchObject({ command: "runs", positionals: ["report"], groupBy: "channel" });
-    expect(parseCliArgs(["metrics", "--by", "failureKind"])).toMatchObject({ command: "runs", positionals: ["report"], groupBy: "failureKind" });
-    expect(() => parseCliArgs(["metrics", "--by", "status"])).toThrow(/--by/u);
-  });
-
   it("parses the canonical `runs` command with report/audit modes and the merged flag surface", () => {
     expect(parseCliArgs(["runs"])).toMatchObject({ command: "runs", positionals: [] });
     expect(parseCliArgs(["runs", "report", "--by", "channel", "--since", "2026-06-01T00:00:00.000Z", "--json"]))
@@ -506,6 +455,11 @@ describe("parseCliArgs", () => {
         staleAfterMs: 500,
         includeMemory: true,
       });
+    expect(parseCliArgs(["runs", "report", "--by", "failureKind"]))
+      .toMatchObject({ command: "runs", positionals: ["report"], groupBy: "failureKind" });
+    expect(() => parseCliArgs(["runs", "report", "--by", "status"])).toThrow(/--by/u);
+    expect(() => parseCliArgs(["runs", "audit", "--artifact-dir", "./runs"]))
+      .toThrow(/`--artifact-dir` was removed; use `--artifacts/u);
     // A mode positional the parser does not interpret is still forwarded to the dispatcher unchanged.
     expect(parseCliArgs(["runs", "bogus"])).toMatchObject({ command: "runs", positionals: ["bogus"] });
     // --consumer / --include-memory now accept `runs`; they still reject unrelated commands.
@@ -513,7 +467,7 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["start", "--include-memory"])).toThrow(/--include-memory/u);
   });
 
-  it("parses validate --consumer and keeps it validate/audit-runs scoped", () => {
+  it("parses validate --consumer and keeps it validate/runs scoped", () => {
     expect(parseCliArgs(["validate", "--consumer", "../local-agent-alpha"])).toMatchObject({
       command: "validate",
       consumerPath: "../local-agent-alpha",
@@ -675,14 +629,6 @@ describe("parseCliArgs", () => {
     expect(setupDetail).toContain("`setup` is an alias of `init`.");
     expect(setupDetail).toContain("mono-agent init [--preset");
 
-    // The deprecated `metrics`/`audit-runs` forwarders still resolve to `runs`.
-    const metricsDetail = helpTopicText("metrics");
-    expect(metricsDetail).toContain("`metrics` is an alias of `runs`.");
-    expect(metricsDetail).toContain("mono-agent runs [report|audit]");
-    const auditRunsDetail = helpTopicText("audit-runs");
-    expect(auditRunsDetail).toContain("`audit-runs` is an alias of `runs`.");
-    expect(auditRunsDetail).toContain("mono-agent runs [report|audit]");
-
     // The notes block carries the model-reference guidance.
     const notes = helpTopicText("notes");
     expect(notes).toContain("Guided Pi authentication");
@@ -828,10 +774,24 @@ describe("removed CLI surfaces", () => {
     expect(fallbackModelsFlag.stderr).toContain("`--fallback-models` was removed; repeat `--fallback");
   });
 
-  it("emits a deprecation hint for restart --force pointing at --clear-sessions", async () => {
+  it("exits with replacement hints for removed run aliases and restart --force", async () => {
     const dir = await tempDir();
+    const metrics = await captureCli(() => runCli(["metrics", "--json"]));
+    const auditRuns = await captureCli(() => runCli(["audit-runs", "--json"]));
     const forceRestart = await captureCli(() => withCwd(dir, () => runCli(["restart", "--force"])));
-    expect(forceRestart.stderr).toContain("`restart --force` is deprecated; use `restart --clear-sessions`");
+    expect(metrics.code).toBe(2);
+    expect(auditRuns.code).toBe(2);
+    expect(forceRestart.code).toBe(2);
+    expect(metrics.stderr).toContain("`metrics` was removed; use `mono-agent runs`");
+    expect(auditRuns.stderr).toContain("`audit-runs` was removed; use `mono-agent runs audit`");
+    expect(forceRestart.stderr).toContain("`restart --force` was removed; use `mono-agent restart --clear-sessions`");
+
+    const metricsHelp = await captureCli(() => runCli(["help", "metrics"]));
+    const auditRunsHelp = await captureCli(() => runCli(["help", "audit-runs"]));
+    expect(metricsHelp.code).toBe(0);
+    expect(auditRunsHelp.code).toBe(0);
+    expect(metricsHelp.stdout).toContain("`metrics` was removed");
+    expect(auditRunsHelp.stdout).toContain("`audit-runs` was removed");
   });
 
   it("does not warn for canonical preset and fallback flags", async () => {
@@ -849,27 +809,11 @@ describe("removed CLI surfaces", () => {
   });
 });
 
-describe("runs forwarding aliases", () => {
-  it("forwards `metrics` to the runs report engine with a sunset hint", async () => {
-    const dir = await tempDir();
-    const result = await captureCli(() => runCli(["metrics", "--artifacts", dir, "--json"]));
-    expect(result.code).toBe(0);
-    expect(result.stderr).toContain("`mono-agent metrics` is now `mono-agent runs`");
-    expect(result.stderr).toContain("will be removed in a future release");
-  });
-
-  it("forwards `audit-runs` to the runs audit engine with a sunset hint", async () => {
-    const dir = await tempDir();
-    const result = await captureCli(() => runCli(["audit-runs", "--artifact-dir", dir, "--json"]));
-    expect(result.code).toBe(0);
-    expect(result.stderr).toContain("`mono-agent audit-runs` is now `mono-agent runs audit`");
-    expect(result.stderr).toContain("will be removed in a future release");
-  });
-
+describe("runs command", () => {
   it("does not emit a deprecation hint for the canonical `runs` spelling", async () => {
     const dir = await tempDir();
     const report = await captureCli(() => runCli(["runs", "--artifacts", dir, "--json"]));
-    const audit = await captureCli(() => runCli(["runs", "audit", "--artifact-dir", dir, "--json"]));
+    const audit = await captureCli(() => runCli(["runs", "audit", "--artifacts", dir, "--json"]));
     expect(report.code).toBe(0);
     expect(audit.code).toBe(0);
     expect(report.stderr).not.toContain("deprecated");
