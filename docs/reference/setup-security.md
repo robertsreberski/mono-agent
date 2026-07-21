@@ -72,14 +72,45 @@ The LaunchAgent enters Node through `/usr/bin/env -i` and restores only the revi
 
 Every worker must acquire one owner-only canonical per-config lifetime lease. Canonicalization covers HOME variants, symlink-parent and filename-case aliases, and PID reuse. An existing launchd worker therefore cannot be duplicated by a second managed start or a manual foreground start of the same config.
 
-### Bounded launchd logs
+### Recovery controller and bounded launchd logs
 
-The controller installs a separate scheduled one-shot LaunchAgent beside each
-managed worker. It has no `KeepAlive`, sends its own output to `/dev/null`, and
-checks a fixed policy every five minutes: the active stdout/stderr file and each
-of three retained generations may hold at most 5 MiB. It shares the worker's
-per-config lifecycle lock. A maintenance pass first verifies the owner-private
-main plist and read-only log inventory; only when maintenance is necessary does
+The controller installs a separate one-shot LaunchAgent beside each managed
+worker. It runs at login and every five minutes, has no `KeepAlive`, sends its
+own output to `/dev/null`, and shares the worker's per-config lifecycle lock.
+Its private arguments retain the original controller CLI path, agent cwd,
+absolute config path, optional dotenv path, and the worker's non-secret durable
+`PATH`. The helper itself still executes with the closed `/usr/bin:/bin` path;
+the worker path is rehydrated only for validation, snapshotting, and the worker
+definition. Before it can recover anything, the helper proves that its current
+PID is the exact process launchd owns.
+
+Each pass reconstructs the same durable dotenv-plus-operational environment,
+validates the config, and captures a fresh keyed snapshot. It strictly parses
+the main definition launchd currently owns, verifies that definition's private
+runtime proof, and compares its package version and CLI digest with the original
+controller CLI as inert bytes. Mutable checkout code is never executed. When
+that source path has disappeared, an inactive or snapshot-drifted worker can be
+recovered from the helper's already-private closure, but the pass does not claim
+an upgrade or downgrade a healthy newer worker.
+
+A stale snapshot, inactive PID, malformed loaded definition, invalid runtime
+proof, or available newer/different source closure triggers reconciliation. The
+old healthy worker remains loaded while the replacement closure is installed.
+Consumers sharing that closure wait up to five minutes on the existing
+PID/incarnation-aware install lock, so a slow first installation coalesces rather
+than causing the other consumers to fail after 30 seconds. Recovery then stops
+only the main job, commits refreshed worker and helper plists, bootstraps the
+main job, and waits through the normal 60-second readiness proof. The currently
+running helper is preserved. A failed install, commit, bootstrap, or readiness
+check leaves both definitions and the helper available for the next scheduled
+retry; it does not create a `KeepAlive` crash loop. Explicit `mono-agent stop`
+still unloads the helper first and removes both definitions only after PID-death
+proof, so the controller cannot resurrect an intentionally stopped service.
+
+The same helper checks a fixed log policy: the active stdout/stderr file and each
+of three retained generations may hold at most 5 MiB. A log-maintenance pass
+first verifies the owner-private main plist and read-only log inventory; only
+when maintenance is necessary does
 it atomically publish a bounded, owner-only, per-agent `stopping` intent, unload
 the main job, and prove every PID observed through launchd bootout dead. Only
 then does it atomically promote that intent to `stopped`. A pre-proof crash with
@@ -111,6 +142,12 @@ permissions or rotate.
 Before app or channel loading, managed startup freezes the attested config, Identity, optional Soul, and external MCP authority file into private read-only runtime inputs. Trace and status records still identify the canonical operator-facing config path.
 
 Managed readiness waits up to 60 seconds for the worker's durable `metadata.lifecycle.startupCompleted: true` proof. The worker publishes it only after channels, memory rituals, and the final memory-health lifecycle refresh complete. Later trace publications retain the proof while `metadata.reason` records their latest diagnostic reason, so a periodic health refresh cannot close the attach window. Readiness also requires the trace PID to be alive and launchd-owned; the committed config, `.env`, Identity, Soul, MCP authority, and operational-environment fingerprints to agree; configured channels and current memory health not to have failed; and, for configuration, the TUI endpoint to be reachable. Workers from a release that predates the durable proof must restart once before SELF-CONFIG can attach.
+
+`mono-agent status` applies the same process-ownership direction: a cached trace
+is running only when its PID is alive and equals launchd's current PID. Otherwise
+the command removes the stale PID and transport facts, reports stopped health,
+and rewrites cached `running` channels to `stopped: instance is not running`.
+JSON status returns `ok: false` and exit 1 for that inactive state.
 
 Only after those checks does guided init open `mono-agent tui --configure` against that process. A readiness deadline or trace/TUI-probe error preserves the committed files and skips configuration chat, then uses the same ownership-proven stop path to unload the worker and scheduled-maintenance jobs and remove both definitions. If launchd or PID checks cannot prove the stop, the command fails explicitly that a process may still be running and prints exact `start`, `status`, and `logs --follow` recovery commands.
 

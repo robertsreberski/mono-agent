@@ -227,13 +227,25 @@ describe("parseCliArgs", () => {
       INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
       "--config",
       "/work/demo/mono-agent.config.json",
+      "--controller-cli",
+      "/checkout/packages/agent-app/dist/cli.js",
+      "--agent-cwd",
+      "/work/demo",
+      "--agent-path",
+      "/custom/bin:/usr/bin:/bin",
+      "--env-file",
+      "/work/demo/.env.production",
     ])).toMatchObject({
       command: INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
       configPath: "/work/demo/mono-agent.config.json",
+      controllerCliPath: "/checkout/packages/agent-app/dist/cli.js",
+      agentCwd: "/work/demo",
+      agentPath: "/custom/bin:/usr/bin:/bin",
+      envFile: "/work/demo/.env.production",
       positionals: [],
     });
-    expect(() => parseCliArgs([INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND, "--env-file", ".env"]))
-      .toThrow(/accepts only --config/u);
+    expect(() => parseCliArgs([INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND, "--config", "/work/demo/config.json"]))
+      .toThrow(/requires its exact config/u);
     expect(renderHelp()).not.toContain(INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND);
     try {
       parseCliArgs(["not-a-command"]);
@@ -249,6 +261,12 @@ describe("parseCliArgs", () => {
         INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
         "--config",
         "/work/demo/mono-agent.config.json",
+        "--controller-cli",
+        "/checkout/packages/agent-app/dist/cli.js",
+        "--agent-cwd",
+        "/work/demo",
+        "--agent-path",
+        "/custom/bin:/usr/bin:/bin",
       ]));
       expect(unauthorized.code).toBe(2);
       expect(unauthorized.stderr).toContain("reserved for its managed LaunchAgent");

@@ -34,6 +34,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Register the host as a traceability source. Config edits are made directly in
   `mono-agent.config.json`, or proposed through the OS-owner-managed macOS
   configuration TUI; direct edits take effect on the next `mono-agent restart`.
+- Reconcile installed macOS LaunchAgents at login and every five minutes, and
+  make `status` require agreement between the cached trace and launchd's live PID.
 - Resolve and surface any configured `observability.exporters` (the Phoenix
   preset): `start`/`status` report the configured endpoint and a note that JSONL
   artifacts remain local; `validate` performs the live reachability probe. Export
@@ -191,6 +193,8 @@ digest are bound into the runtime marker and verified on every reuse. The Launch
 retained because another agent may still reference them. A loaded job is fully
 booted out and bootstrapped again so rewritten arguments and environment are
 adopted. During a slow install, the existing healthy worker remains loaded. An
+active shared installation may take up to five minutes; concurrent consumers
+wait behind its PID/incarnation-aware lock and reuse the resulting closure. An
 owner-private per-instance publication barrier makes any KeepAlive respawn wait
 until the replacement closure and plist are committed; dead or PID-reused
 controller ownership is recovered by process incarnation. The replacement
@@ -220,7 +224,27 @@ not an attestation of a separately running daemon.
 
 Managed launchd stdout/stderr use a fixed automatic policy: each active file
 and each of three retained generations is capped at 5 MiB. A separate one-shot
-LaunchAgent checks every five minutes. When maintenance is needed it takes the
+LaunchAgent runs at login and every five minutes with no `KeepAlive` and
+`/dev/null` output. It first authenticates its exact launchd-owned PID,
+reconstructs the durable worker environment, validates config, and captures a
+fresh snapshot. It compares the strictly parsed loaded main definition and its
+verified runtime proof with the original controller CLI's inert version/digest;
+it never executes mutable source bytes. If the source disappeared, it can repair
+an inactive or snapshot-drifted worker from its private helper closure without
+claiming an upgrade or downgrading a healthy worker.
+
+The helper executes with a closed system `PATH` while carrying the worker's
+non-secret durable `PATH` as a private argument. Recovery therefore preserves
+the worker's toolchain lookup without letting it shadow the helper's own system
+commands.
+
+When reconciliation is needed, the existing worker stays loaded through runtime
+installation. The helper then stops only the main job, refreshes both plists,
+bootstraps the main job, and waits for the normal 60-second readiness proof. A
+failure preserves the helper and both definitions for the next scheduled retry;
+explicit stop unloads the helper and removes both definitions after PID-death
+proof, so it cannot resurrect a stopped service. When log maintenance is needed,
+the helper takes the
 same per-config lifecycle lock, verifies the existing main plist, proves the
 worker stopped, and commits owner-only bounded tails through per-agent,
 fsynced deterministic stages plus a recoverable journal. A separate per-agent

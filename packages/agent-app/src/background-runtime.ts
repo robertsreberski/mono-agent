@@ -19,7 +19,11 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 
 import { accountHomeDirectory } from "./account-home.js";
-import { isBackgroundOperationalEnvName } from "./background-environment.js";
+import {
+  isBackgroundOperationalEnvName,
+  MANAGED_BACKGROUND_WORKER_ENV,
+} from "./background-environment.js";
+export { MANAGED_BACKGROUND_WORKER_ENV } from "./background-environment.js";
 import {
   currentProcessIncarnation,
   isSameProcessIncarnation as matchesProcessIncarnation,
@@ -30,8 +34,7 @@ import { acquireOwnerPrivateLock } from "./owner-private-lock.js";
 import type { OwnerPrivateLock } from "./owner-private-lock.js";
 
 const PACKAGE_NAME = "@mono-agent/agent-app";
-export const MANAGED_BACKGROUND_WORKER_ENV = "MONO_AGENT_MANAGED_WORKER";
-const LOCK_WAIT_TIMEOUT_MS = 30_000;
+const LOCK_WAIT_TIMEOUT_MS = 5 * 60_000;
 const LOCK_STALE_AFTER_MS = 5 * 60_000;
 const LOCK_POLL_INTERVAL_MS = 200;
 const PROVISIONAL_RUNTIME_INSTALLED_AT = "1970-01-01T00:00:00.000Z";
@@ -62,6 +65,13 @@ export interface ManagedRuntimeLaunchVerification {
   readonly installRoot: string;
   /** Operator-facing provenance derived from the same verified marker. */
   readonly provenanceDetail: string;
+  readonly packageVersion: string;
+  readonly cliSha256: string;
+}
+
+export interface ManagedRuntimeSourceIdentity {
+  readonly packageVersion: string;
+  readonly cliSha256: string;
 }
 
 export interface ManagedRuntimeLaunchVerificationInput {
@@ -591,6 +601,31 @@ export async function ensureManagedBackgroundRuntime(
 }
 
 /**
+ * Inspect the controller CLI as inert installation input. The recovery helper
+ * uses this to decide whether launchd owns an older closure without ever
+ * executing mutable checkout bytes.
+ */
+export async function inspectManagedRuntimeSourceIdentity(
+  currentCliPathInput: string,
+): Promise<ManagedRuntimeSourceIdentity> {
+  const currentCliPath = resolve(currentCliPathInput);
+  await assertRegularFile(currentCliPath, "current mono-agent CLI");
+  const packageSource = packageRootForCli(currentCliPath);
+  const sourceDetails = await lstat(packageSource);
+  if (!sourceDetails.isDirectory() || sourceDetails.isSymbolicLink()) {
+    throw new Error(`Managed runtime package source ${packageSource} must be a real directory.`);
+  }
+  const packageVersion = await packageVersionAt(packageSource);
+  if (!isExactVersion(packageVersion)) {
+    throw new Error(`Cannot inspect a durable managed runtime for invalid package version ${JSON.stringify(packageVersion)}.`);
+  }
+  return {
+    packageVersion,
+    cliSha256: sha256(await readFile(currentCliPath)),
+  };
+}
+
+/**
  * Validate the opaque proof carried by a managed LaunchAgent against the exact
  * CLI that is about to start. This is intentionally lighter than controller
  * attestation: it rechecks the private layout, marker, CLI, and stored closure
@@ -657,6 +692,8 @@ export async function verifyManagedRuntimeLaunch(
   const closureId = `${identity.cliSha256}-${identity.sourceClosureSha256}`;
   return {
     installRoot,
+    packageVersion: identity.packageVersion,
+    cliSha256: identity.cliSha256,
     provenanceDetail: `Runtime provenance: managed closure ${closureId} (`
       + `${PACKAGE_NAME} ${identity.packageVersion}; ${identity.platform}-${identity.arch}; `
       + `Node ABI ${identity.nodeAbi}; installed ${marker.installedAt}).`,

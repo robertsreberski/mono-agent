@@ -520,6 +520,8 @@ describe("parseLaunchdProgramArguments", () => {
     envFile,
     "--expected-background-snapshot",
     "approved_snapshot",
+    "--expected-managed-runtime-launch",
+    "runtime_proof",
   ];
 
   it("retains only the exact absolute config and env-file used by the service", () => {
@@ -532,6 +534,7 @@ describe("parseLaunchdProgramArguments", () => {
       configPath: config,
       envFile,
       expectedBackgroundSnapshot: undefined,
+      expectedManagedRuntimeLaunch: undefined,
       managed: false,
       launchdProgramArguments: programArguments,
       programArguments,
@@ -556,6 +559,7 @@ describe("parseLaunchdProgramArguments", () => {
       configPath: config,
       envFile,
       expectedBackgroundSnapshot: "approved_snapshot",
+      expectedManagedRuntimeLaunch: "runtime_proof",
       managed: true,
       managedEnvironment: {
         HOME: "/Users/example",
@@ -575,11 +579,12 @@ describe("parseLaunchdProgramArguments", () => {
     ["missing PATH", managedArguments("MONO_AGENT_MANAGED_WORKER=1")],
     ["duplicate PATH", managedArguments("MONO_AGENT_MANAGED_WORKER=1", "PATH=/usr/bin:/bin", "PATH=/bin")],
     ["unsorted environment", managedArguments("PATH=/usr/bin:/bin", "MONO_AGENT_MANAGED_WORKER=1")],
-    ["missing approved snapshot", managedArguments("MONO_AGENT_MANAGED_WORKER=1", "PATH=/usr/bin:/bin").slice(0, -2)],
+    ["missing approved snapshot", managedArguments("MONO_AGENT_MANAGED_WORKER=1", "PATH=/usr/bin:/bin").slice(0, -4)],
+    ["missing runtime proof", managedArguments("MONO_AGENT_MANAGED_WORKER=1", "PATH=/usr/bin:/bin").slice(0, -2)],
     ["reordered lifecycle flags", (() => {
       const args = managedArguments("MONO_AGENT_MANAGED_WORKER=1", "PATH=/usr/bin:/bin");
       const worker = args.slice(4);
-      return [...args.slice(0, 4), worker[0], worker[1], "start", "--config", config, "--foreground", "--env-file", envFile, "--expected-background-snapshot", "approved_snapshot"];
+      return [...args.slice(0, 4), worker[0], worker[1], "start", "--config", config, "--foreground", "--env-file", envFile, "--expected-background-snapshot", "approved_snapshot", "--expected-managed-runtime-launch", "runtime_proof"];
     })()],
   ])("rejects a managed wrapper with %s", (_label, args) => {
     expect(parseLaunchdProgramArguments(args)).toBeNull();
@@ -1351,6 +1356,8 @@ describe("runFleetGreenCheck (orchestration)", () => {
       envFile,
       "--expected-background-snapshot",
       "approved_snapshot",
+      "--expected-managed-runtime-launch",
+      "runtime_proof",
     ];
     const managedPlist = JSON.stringify({
       Label: "com.mono-agent.orchestrator-b6ef5dde",
@@ -1454,6 +1461,8 @@ describe("runFleetGreenCheck (orchestration)", () => {
       configPath,
       "--expected-background-snapshot",
       "approved_snapshot",
+      "--expected-managed-runtime-launch",
+      "runtime_proof",
     ];
     const managedPlist = JSON.stringify({
       Label: "com.mono-agent.orchestrator-b6ef5dde",
@@ -2395,6 +2404,7 @@ describe("runFleetGreenCheck (orchestration)", () => {
       "/usr/bin/env", "-i", "HOME=/Users/example", "MONO_AGENT_MANAGED_WORKER=1", `PATH=${launchdPath}`,
       NODE, CLI, "start", "--foreground", "--config", configPath,
       "--expected-background-snapshot", "approved_snapshot",
+      "--expected-managed-runtime-launch", "runtime_proof",
     ];
     const hostilePlist = JSON.stringify({
       Label: "com.mono-agent.orchestrator-b6ef5dde",
