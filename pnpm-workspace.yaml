@@ -17,7 +17,9 @@ minimumReleaseAge: 0
 # Security floors for production transitive ranges. Keep these exact so the
 # advisory gate and every packed consumer resolve the reviewed fixed versions.
 overrides:
+  fast-uri: 3.1.4
   protobufjs: 7.6.5
+  sharp: 0.35.3
   ws: 8.21.1
 
 onlyBuiltDependencies:
