@@ -1236,7 +1236,38 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
     });
     return;
   }
+  if (event.type === "runtime_telemetry" && event.kind === "context_compaction") {
+    upsertContextCompaction(parts, event);
+    return;
+  }
   parts.push({ type: "telemetry", event: event.type, data: event });
+}
+
+function contextCompactionOperationId(value: unknown): string | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const event = value as Record<string, unknown>;
+  if (event.type !== "runtime_telemetry" || event.kind !== "context_compaction") return undefined;
+  const data = event.data;
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
+  const operationId = (data as Record<string, unknown>).operationId;
+  return typeof operationId === "string" && operationId.length > 0 ? operationId : undefined;
+}
+
+function upsertContextCompaction(
+  parts: WebMessagePart[],
+  event: Extract<AgentStreamEvent, { type: "runtime_telemetry" }>,
+): void {
+  const operationId = contextCompactionOperationId(event);
+  const next: WebMessagePart = { type: "telemetry", event: event.type, data: event };
+  if (operationId === undefined) {
+    parts.push(next);
+    return;
+  }
+  const index = parts.findIndex(
+    (part) => part.type === "telemetry" && contextCompactionOperationId(part.data) === operationId,
+  );
+  if (index < 0) parts.push(next);
+  else parts[index] = next;
 }
 
 function existingToolName(parts: readonly WebMessagePart[], id: string): string | undefined {

@@ -33,6 +33,7 @@ import {
   prepareCompaction,
   shouldCompact,
 } from "@earendil-works/pi-agent-core";
+import { randomUUID } from "node:crypto";
 import {
   estimateFixedOverheadTokens,
   isLikelyContextTermination,
@@ -204,6 +205,52 @@ function previewCompactedContext(branchEntries, result) {
   return estimateBuiltContextTokens([...branchEntries, previewEntry]);
 }
 
+function canonicalCompactionTrigger(trigger) {
+  return trigger === "reactive_overflow" ? "overflow" : trigger;
+}
+
+function finiteTokenCount(value) {
+  if (value === null || value === undefined) return undefined;
+  const count = Number(value);
+  return Number.isFinite(count) && count >= 0 ? count : undefined;
+}
+
+/**
+ * @param {((event: any) => void)|undefined} onEvent
+ * @param {{operationId: string, status: string, trigger: string, model?: string, tokensBefore?: number|null, tokensAfter?: number|null, reason?: string, message?: string}} event
+ */
+function emitCompactionEvent(onEvent, {
+  operationId,
+  status,
+  trigger,
+  model,
+  tokensBefore,
+  tokensAfter,
+  reason,
+  message,
+}) {
+  const before = finiteTokenCount(tokensBefore);
+  const after = finiteTokenCount(tokensAfter);
+  try {
+    onEvent?.({
+      type: "context_compaction",
+      operationId,
+      status,
+      sdk: "pi",
+      trigger: canonicalCompactionTrigger(trigger),
+      timestamp: Date.now(),
+      ...(model ? { model } : {}),
+      ...(before === undefined ? {} : { tokensBefore: before }),
+      ...(after === undefined ? {} : { tokensAfter: after }),
+      ...(before === undefined && after === undefined ? {} : { tokenCountsExact: false }),
+      ...(reason ? { reason } : {}),
+      ...(message ? { message } : {}),
+    });
+  } catch {
+    // Observability must never change whether compaction itself succeeds.
+  }
+}
+
 // Run a single guarded compaction. Requires the harness idle (callers
 // waitForIdle first). Never throws — classifies AgentHarnessError into a warning
 // and reports back whether anything was compacted. Fires onCompactionRecorded on
@@ -218,14 +265,22 @@ export async function tryCompact(harness, {
   session,
   policy,
 }) {
-  const adaptivePolicy = resolveAgentCompactionPolicy({}, {
-    contextWindow: typeof harness?.getModel === "function" ? harness.getModel()?.contextWindow : undefined,
+  const operationId = randomUUID();
+  emitCompactionEvent(onEvent, {
+    operationId,
+    status: "running",
+    trigger,
+    model,
   });
-  const effectivePolicy = { ...adaptivePolicy, ...(policy || {}) };
+  let effectivePolicy = policy || {};
   /** @type {null | {kind: string, tokensBefore?: number|null, tokensAfter?: number|null, savings?: number|null, error?: any}} */
   let hookDecision = null;
   let removeHook = null;
   try {
+    const adaptivePolicy = resolveAgentCompactionPolicy({}, {
+      contextWindow: typeof harness?.getModel === "function" ? harness.getModel()?.contextWindow : undefined,
+    });
+    effectivePolicy = { ...adaptivePolicy, ...(policy || {}) };
     if (typeof harness?.on !== "function") {
       throw new Error("Pi AgentHarness does not expose session_before_compact hooks");
     }
@@ -298,14 +353,13 @@ export async function tryCompact(harness, {
     const reduced = measuredTokensBefore === null || tokensAfter === null
       ? null
       : tokensAfter < measuredTokensBefore;
-    onEvent?.({
-      type: "runtime_warning",
-      warning_kind: "context_compaction_applied",
-      source: "pi",
+    emitCompactionEvent(onEvent, {
+      operationId,
+      status: "succeeded",
       trigger,
-      tokens_before: tokensBefore,
-      tokens_after: tokensAfter,
-      reduced,
+      model,
+      tokensBefore,
+      tokensAfter,
     });
     if (reduced === false) {
       runtimeWarnings?.push({
@@ -354,6 +408,15 @@ export async function tryCompact(harness, {
           ? { minimum_savings_tokens: effectivePolicy.compactionMinSavingsTokens }
           : {}),
       });
+      emitCompactionEvent(onEvent, {
+        operationId,
+        status: "skipped",
+        trigger,
+        model,
+        tokensBefore: hookDecision.tokensBefore,
+        tokensAfter: hookDecision.tokensAfter,
+        reason: hookDecision.kind,
+      });
       return {
         applied: false,
         tokensBefore: hookDecision.tokensBefore ?? null,
@@ -368,6 +431,13 @@ export async function tryCompact(harness, {
         source: "pi",
         trigger,
         message: "Nothing to compact",
+      });
+      emitCompactionEvent(onEvent, {
+        operationId,
+        status: "skipped",
+        trigger,
+        model,
+        reason: "nothing_to_compact",
       });
       return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact: true };
     }
@@ -385,6 +455,32 @@ export async function tryCompact(harness, {
           ? "context_compaction_busy"
           : "context_compaction_failed";
     runtimeWarnings?.push({ warning_kind: warningKind, source: "pi", trigger, message });
+    emitCompactionEvent(onEvent, {
+      operationId,
+      status: nothingToCompact ? "skipped" : "failed",
+      trigger,
+      model,
+      reason: nothingToCompact
+        ? "nothing_to_compact"
+        : code === "auth"
+          ? "authentication"
+          : code === "busy"
+            ? "busy"
+            : code === "aborted"
+              ? "cancelled"
+              : "provider_error",
+      ...(nothingToCompact
+        ? {}
+        : {
+          message: code === "auth"
+            ? "Compaction authentication failed."
+            : code === "busy"
+              ? "Context was busy and could not be compacted."
+              : code === "aborted"
+                ? "Compaction was cancelled."
+                : "Compaction failed.",
+        }),
+    });
     return { applied: false, tokensBefore: null, tokensAfter: null, reduced: null, nothingToCompact };
   } finally {
     removeHook?.();

@@ -205,6 +205,8 @@ export function buildTurnHarness(runState, {
   onEvent,
   options,
   toolLimits,
+  sdk,
+  reference,
 }) {
   const harness = new AgentHarness({
     env: new NodeExecutionEnv({ cwd: cwd || process.cwd() }),
@@ -228,7 +230,14 @@ export function buildTurnHarness(runState, {
     : undefined);
   runState.harness = harness;
 
-  harness.subscribe(createStreamSubscriber(runState, { onEvent, options, toolLimits, harness }));
+  harness.subscribe(createStreamSubscriber(runState, {
+    onEvent,
+    options,
+    toolLimits,
+    harness,
+    sdk,
+    model: reference,
+  }));
 
   const abortHandler = () => {
     runState.externalAbort = true;

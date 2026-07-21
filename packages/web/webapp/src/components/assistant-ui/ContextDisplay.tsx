@@ -2,6 +2,7 @@
 
 import { Popover } from "@base-ui/react/popover";
 import type { CSSProperties, ReactNode } from "react";
+import type { ConsoleContextProjection } from "../../usage";
 import { Icon } from "../Icon";
 
 export interface ContextDisplayUsage {
@@ -12,13 +13,8 @@ export interface ContextDisplayUsage {
   readonly reasoning?: number;
 }
 
-export interface ContextDisplayContext extends ContextDisplayUsage {
-  readonly total: number;
-  readonly contextWindow?: number;
-}
-
 export interface ContextDisplayProps {
-  readonly context?: ContextDisplayContext;
+  readonly context: ConsoleContextProjection;
   readonly processed?: ContextDisplayUsage;
   readonly conversationCost?: number;
   readonly className?: string;
@@ -113,20 +109,39 @@ export function ContextDisplay({
   conversationCost,
   className,
 }: ContextDisplayProps) {
-  const totalTokens = tokenCount(context?.total);
+  const usage = context.usage;
+  const totalTokens = tokenCount(usage?.total);
   const cost = knownCost(conversationCost);
-  const windowTokens = knownContextWindow(context?.contextWindow);
-  const percent = context === undefined || windowTokens === undefined
+  const windowTokens = knownContextWindow(usage?.contextWindow);
+  const percent = usage === undefined || windowTokens === undefined
     ? undefined
     : Math.min((totalTokens / windowTokens) * 100, 100);
   const roundedPercent = percent === undefined ? undefined : Math.round(percent);
-  const triggerSummary = context === undefined
-    ? ["unavailable", ...(cost === undefined ? [] : [formatUsd(cost)])].join(", ")
+  const statusLabel = context.status === "updating"
+    ? "Updating"
+    : context.status === "awaiting_measurement"
+      ? "Awaiting"
+      : context.status === "last_measured"
+        ? "Last measured"
+        : undefined;
+  const triggerContext = usage === undefined
+    ? context.status === "updating"
+      ? "updating"
+      : context.status === "awaiting_measurement"
+        ? "awaiting provider measurement"
+        : "unavailable"
     : [
         `${formatTokenCount(totalTokens)} tokens`,
+        ...(statusLabel === undefined ? [] : [statusLabel.toLowerCase()]),
         ...(roundedPercent === undefined ? [] : [`${roundedPercent}%`]),
-        ...(cost === undefined ? [] : [formatUsd(cost)]),
       ].join(", ");
+  const triggerSummary = [triggerContext, ...(cost === undefined ? [] : [formatUsd(cost)])].join(", ");
+  const sectionTitle = context.status === "current"
+    ? "Current context"
+    : context.status === "updating"
+      ? "Latest provider measurement"
+      : "Last measured";
+  const sectionAriaLabel = sectionTitle;
 
   return (
     <Popover.Root>
@@ -138,8 +153,15 @@ export function ContextDisplay({
       >
         <Icon name="spark" size={14} className="context-display-icon" />
         <span className="context-display-trigger-tokens" data-slot="context-display-total">
-          {context === undefined ? "Context —" : `${formatTokenCount(totalTokens)} tokens`}
+          {usage === undefined
+            ? context.status === "updating" ? "Context updating…" : "Context —"
+            : `Context ${formatTokenCount(totalTokens)}`}
         </span>
+        {statusLabel !== undefined && (
+          <span className="context-display-trigger-state" data-state={context.status}>
+            {statusLabel}
+          </span>
+        )}
         {roundedPercent !== undefined && (
           <span className="context-display-trigger-percent" data-slot="context-display-percent">
             {roundedPercent}%
@@ -157,13 +179,22 @@ export function ContextDisplay({
           <Popover.Popup className="context-display-popover">
             <Popover.Title className="context-display-title">Context usage</Popover.Title>
 
-            {context === undefined ? (
+            {usage === undefined ? (
               <p className="context-display-unavailable" data-slot="context-display-unavailable">
-                Exact context usage was not recorded for this conversation.
+                {context.reason ?? "Exact context usage has not been reported for this conversation."}
               </p>
             ) : (
-              <section className="context-display-section" aria-label="Current context">
-                <SectionTitle>Current context</SectionTitle>
+              <section className="context-display-section" aria-label={sectionAriaLabel}>
+                <SectionTitle>{sectionTitle}</SectionTitle>
+                {context.reason !== undefined && context.status !== "current" && (
+                  <p className="context-display-state-note">{context.reason}</p>
+                )}
+                {(context.measuredModel ?? usage.model) !== undefined && (
+                  <p className="context-display-model">
+                    <span>Measured model</span>
+                    <code>{context.measuredModel ?? usage.model}</code>
+                  </p>
+                )}
                 {windowTokens !== undefined && percent !== undefined && roundedPercent !== undefined && (
                   <div className="context-display-window" data-slot="context-display-window">
                     <div className="context-display-window-summary">
@@ -183,7 +214,7 @@ export function ContextDisplay({
                     </div>
                   </div>
                 )}
-                <Breakdown usage={context} total={totalTokens} />
+                <Breakdown usage={usage} total={totalTokens} />
               </section>
             )}
 

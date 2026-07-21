@@ -5,7 +5,7 @@ import {
   effortLevelsForAgentModel,
   useConsoleStore,
 } from "../console-store";
-import { conversationConsoleUsage } from "../usage";
+import { conversationConsoleUsage, type ConsoleUsage } from "../usage";
 import { NotificationBell } from "../notifications";
 import { ContextDisplay } from "./assistant-ui/ContextDisplay";
 import {
@@ -145,7 +145,23 @@ export function ModelControls() {
   } = useConsoleStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const disabled = selectedThread?.runState.status === "running";
-  const usage = useMemo(() => conversationConsoleUsage(detail), [detail]);
+  const effectiveModel = model || selectedAgent?.defaultModel;
+  const usage = useMemo<ConsoleUsage | null>(() => {
+    const projected = conversationConsoleUsage(detail, { selectedModel: effectiveModel });
+    if (projected !== null) return projected;
+    if (selectedThread === null) return null;
+    return {
+      context: selectedThread.runState.status === "running"
+        ? {
+            status: "updating",
+            reason: "The conversation is loading while the current turn updates context.",
+          }
+        : {
+            status: "unavailable",
+            reason: "Context measurements are loading for this conversation.",
+          },
+    };
+  }, [detail, effectiveModel, selectedThread]);
 
   useEffect(() => {
     const openSettings = () => setSettingsOpen(true);

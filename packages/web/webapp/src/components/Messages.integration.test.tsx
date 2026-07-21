@@ -59,6 +59,23 @@ const assistantMessage = (
     },
     {
       type: "telemetry",
+      event: "runtime_telemetry",
+      data: {
+        type: "runtime_telemetry",
+        kind: "context_compaction",
+        data: {
+          operationId: "compact-1",
+          status: "succeeded",
+          sdk: "pi",
+          trigger: "proactive",
+          tokensBefore: 80_000,
+          tokensAfter: 20_000,
+          tokenCountsExact: false,
+        },
+      },
+    },
+    {
+      type: "telemetry",
       event: "usage_update",
       data: { tokens: { input: 120, output: 30 }, cumulativeUsd: 0.002 },
     },
@@ -88,12 +105,52 @@ describe("AssistantMessage grouped parts", () => {
     fireEvent.click(screen.getByRole("button", { name: "Activity" }));
     expect(screen.getByText("Inspect the real state.")).toBeVisible();
     expect(screen.getByText("inspect_workspace")).toBeVisible();
+    expect(screen.getByRole("status", {
+      name: "Context compacted, proactive, ~80k → ~20k tokens",
+    })).toBeVisible();
     expect(screen.queryByText("Telemetry")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Token usage and cost")).not.toBeInTheDocument();
     expect(screen.getByText("The workspace is ready.")).toBeVisible();
     expect(screen.getByRole("button", { name: "Copy response" }).parentElement).toHaveClass(
       "is-persistent",
     );
+  });
+
+  it("updates a live compaction row in place and marks a dangling row interrupted", async () => {
+    const compaction = (status: "running" | "succeeded") => ({
+      type: "telemetry" as const,
+      event: "runtime_telemetry",
+      data: {
+        type: "runtime_telemetry",
+        kind: "context_compaction",
+        data: { operationId: "compact-live", status, sdk: "codex", trigger: "automatic" },
+      },
+    });
+    const runningMessage: WebMessage = {
+      ...assistantMessage("running"),
+      parts: [compaction("running")],
+    };
+    const { rerender } = render(<MessageHarness message={runningMessage} />);
+
+    expect(screen.getByRole("status", { name: "Compacting context" })).toBeVisible();
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+
+    rerender(<MessageHarness message={{
+      ...runningMessage,
+      updatedAt: "2026-07-17T10:00:01.000Z",
+      parts: [compaction("succeeded")],
+    }} />);
+    expect(await screen.findByRole("status", { name: "Context compacted" })).toBeVisible();
+    expect(screen.queryByRole("status", { name: "Compacting context" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+
+    rerender(<MessageHarness message={{
+      ...runningMessage,
+      status: "interrupted",
+      updatedAt: "2026-07-17T10:00:02.000Z",
+    }} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Activity" }));
+    expect(await screen.findByRole("status", { name: "Context compaction interrupted" })).toBeVisible();
   });
 
   it("keeps activity open while completed tool entries arrive in a running message", async () => {

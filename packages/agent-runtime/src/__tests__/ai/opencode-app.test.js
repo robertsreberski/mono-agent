@@ -11,7 +11,14 @@ import {
 
 // Build a fake OpenCode client whose event stream yields `events` then ends,
 // and whose session.prompt resolves with the given final message/parts.
-function fakeOpencode({ events = [], promptParts = [], info = {}, sessionId = "sess-1", permissionReply } = {}) {
+function fakeOpencode({
+  events = [],
+  promptParts = [],
+  info = {},
+  sessionId = "sess-1",
+  permissionReply,
+  providers = [],
+} = {}) {
   const close = vi.fn();
   const sessionCreate = vi.fn().mockResolvedValue({ data: { id: sessionId } });
   const sessionPrompt = vi.fn().mockResolvedValue({ data: { info, parts: promptParts } });
@@ -25,6 +32,7 @@ function fakeOpencode({ events = [], promptParts = [], info = {}, sessionId = "s
     session: { create: sessionCreate, prompt: sessionPrompt, abort: sessionAbort },
     event: { subscribe },
     permission: { reply: permissionReply || vi.fn().mockResolvedValue({ data: true }) },
+    provider: { list: vi.fn().mockResolvedValue({ data: { all: providers, default: {}, connected: [] } }) },
   };
   createIsolatedOpencode.mockResolvedValue({ client, server: { url: "http://127.0.0.1:0", close } });
   return { client, close, sessionCreate, sessionPrompt, sessionAbort, subscribe };
@@ -208,6 +216,150 @@ describe("opencode-app bridge", () => {
     expect(result.usage).toMatchObject({ input_tokens: 10, output_tokens: 5, cache_read_tokens: 2 });
     expect(result.usage.cost_usd).toBe(0.0021);
     expect(harness.close).toHaveBeenCalled();
+  });
+
+  it("emits one exact completed-message context snapshot with the native model window", async () => {
+    const exactInfo = {
+      ...baseInfo,
+      providerID: "p",
+      modelID: "m",
+      finish: "stop",
+      time: { completed: 1_750_000_000_000 },
+      tokens: {
+        total: 925,
+        input: 800,
+        output: 125,
+        reasoning: 75,
+        cache: { read: 300, write: 20 },
+      },
+    };
+    const harness = fakeOpencode({
+      events: [messageUpdated(exactInfo), idle()],
+      promptParts: [{ type: "text", text: "done" }],
+      info: exactInfo,
+      providers: [{
+        id: "p",
+        models: { m: { id: "m", providerID: "p", limit: { context: 200_000 } } },
+      }],
+    });
+
+    const result = await opencodeAppRuntimeBridge.execute("SYSTEM", {
+      model: { sdk: "opencode", provider: "p", model: "m", reference: "opencode:p:m" },
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    expect(harness.client.provider.list).toHaveBeenCalledWith({});
+    expect(result.events.filter((event) => event.type === "context_usage")).toEqual([
+      {
+        type: "context_usage",
+        sdk: "opencode",
+        model: "opencode:p:m",
+        timestamp: 1_750_000_000_000,
+        measurementId: "assistant-1",
+        contextWindow: 200_000,
+        tokens: {
+          input: 500,
+          cachedInput: 300,
+          cacheCreation: 20,
+          output: 125,
+          reasoning: 75,
+          total: 925,
+        },
+      },
+    ]);
+  });
+
+  it("normalizes one OpenCode compaction lifecycle and ignores its legacy duplicate", async () => {
+    const secretSummary = "private compaction summary";
+    fakeOpencode({
+      events: [
+        {
+          type: "session.next.compaction.started",
+          properties: { sessionID: "sess-1", messageID: "compact-1", summary: secretSummary },
+        },
+        {
+          type: "session.next.compaction.ended",
+          properties: { sessionID: "sess-1", messageID: "compact-1", summary: secretSummary },
+        },
+        { type: "session.compacted", id: "legacy-1", properties: { sessionID: "sess-1" } },
+        idle(),
+      ],
+      info: baseInfo,
+    });
+
+    const result = await opencodeAppRuntimeBridge.execute("SYSTEM", {
+      model: { sdk: "opencode", provider: "p", model: "m", reference: "opencode:p:m" },
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    const events = result.events.filter((event) => event.type === "context_compaction");
+    expect(events).toEqual([
+      expect.objectContaining({
+        operationId: "opencode:sess-1:compact-1",
+        status: "running",
+        sdk: "opencode",
+      }),
+      expect.objectContaining({
+        operationId: "opencode:sess-1:compact-1",
+        status: "succeeded",
+        sdk: "opencode",
+      }),
+    ]);
+    expect(JSON.stringify(events)).not.toContain(secretSummary);
+  });
+
+  it("preserves distinct compactions from OpenCode's legacy event stream", async () => {
+    fakeOpencode({
+      events: [
+        { type: "session.compacted", id: "legacy-1", properties: { sessionID: "sess-1" } },
+        { type: "session.compacted", id: "legacy-2", properties: { sessionID: "sess-1" } },
+        idle(),
+      ],
+      info: baseInfo,
+    });
+
+    const result = await opencodeAppRuntimeBridge.execute("SYSTEM", {
+      model: { sdk: "opencode", provider: "p", model: "m", reference: "opencode:p:m" },
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    expect(result.events.filter((event) => event.type === "context_compaction")).toEqual([
+      expect.objectContaining({
+        operationId: "opencode:sess-1:legacy:legacy-1",
+        status: "succeeded",
+        sdk: "opencode",
+      }),
+      expect.objectContaining({
+        operationId: "opencode:sess-1:legacy:legacy-2",
+        status: "succeeded",
+        sdk: "opencode",
+      }),
+    ]);
+  });
+
+  it("closes a dangling OpenCode compaction as failed when the session becomes idle", async () => {
+    fakeOpencode({
+      events: [
+        {
+          type: "session.next.compaction.started",
+          properties: { sessionID: "sess-1", messageID: "compact-incomplete" },
+        },
+        idle(),
+      ],
+      info: baseInfo,
+    });
+
+    const result = await opencodeAppRuntimeBridge.execute("SYSTEM", {
+      model: { sdk: "opencode", provider: "p", model: "m", reference: "opencode:p:m" },
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    const events = result.events.filter((event) => event.type === "context_compaction");
+    expect(events.map(({ status }) => status)).toEqual(["running", "failed"]);
+    expect(events[1]).toMatchObject({
+      operationId: events[0].operationId,
+      reason: "incomplete",
+    });
   });
 
   it("streams v2 text and reasoning deltas and does not duplicate final assistant text", async () => {

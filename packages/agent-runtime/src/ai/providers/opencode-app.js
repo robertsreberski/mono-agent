@@ -319,6 +319,57 @@ function usageFromInfo(info) {
   };
 }
 
+async function opencodeContextWindows(client, directoryParams) {
+  try {
+    if (typeof client?.provider?.list !== "function") return new Map();
+    const listed = unwrap(await client.provider.list(directoryParams));
+    const providers = Array.isArray(listed?.all) ? listed.all : [];
+    const windows = new Map();
+    for (const provider of providers) {
+      const models = provider?.models && typeof provider.models === "object"
+        ? Object.values(provider.models)
+        : [];
+      for (const model of models) {
+        const providerID = model?.providerID || provider?.id;
+        const modelID = model?.id;
+        const contextWindow = Number(model?.limit?.context) || 0;
+        if (providerID && modelID && contextWindow > 0) {
+          windows.set(`${providerID}:${modelID}`, contextWindow);
+        }
+      }
+    }
+    return windows;
+  } catch {
+    return new Map();
+  }
+}
+
+function contextUsageFromInfo(info, contextWindows, fallbackProviderID, fallbackModelID) {
+  if (info?.role !== "assistant" || info.error) return null;
+  const total = num(info?.tokens?.total);
+  if (total === null || total <= 0) return null;
+  const providerID = info.providerID || fallbackProviderID;
+  const modelID = info.modelID || fallbackModelID;
+  const input = num(info.tokens?.input) || 0;
+  const output = num(info.tokens?.output) || 0;
+  const reasoning = num(info.tokens?.reasoning) || 0;
+  const cachedInput = num(info.tokens?.cache?.read) || 0;
+  const cacheCreation = num(info.tokens?.cache?.write) || 0;
+  const contextWindow = contextWindows.get(`${providerID}:${modelID}`);
+  return {
+    model: `opencode:${providerID}:${modelID}`,
+    tokens: {
+      input: Math.max(0, input - cachedInput),
+      cachedInput,
+      cacheCreation,
+      output,
+      reasoning,
+      total,
+    },
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+  };
+}
+
 function aggregateAssistantInfos(infos) {
   const entries = [...infos];
   const totals = {
@@ -587,11 +638,71 @@ async function generateOpencodeAppResponse(systemPrompt, options = {}) {
   const textDeltaPartIds = new Set();
   const reasoningDeltaPartIds = new Set();
   const assistantInfos = new Map();
-  const recordAssistantInfo = (info, fallbackKey) => {
+  const contextUsageSignatures = new Map();
+  const compactionStatuses = new Map();
+  const activeCompactions = new Map();
+  const seenLegacyCompactionIds = new Set();
+  let nativeCompactionSeen = false;
+  let legacyCompactionMode = false;
+  let contextWindows = new Map();
+
+  /**
+   * @param {{operationId: string, status: string, trigger?: string, timestamp?: number, reason?: string, message?: string}} event
+   */
+  const emitCompaction = ({ operationId, status, trigger = "automatic", timestamp, reason, message }) => {
+    const previous = compactionStatuses.get(operationId);
+    if (previous === status || previous === "succeeded" || previous === "failed" || previous === "skipped") return;
+    compactionStatuses.set(operationId, status);
+    if (status === "running") activeCompactions.set(operationId, { trigger });
+    else activeCompactions.delete(operationId);
+    emit({
+      type: "context_compaction",
+      operationId,
+      status,
+      sdk: "opencode",
+      trigger,
+      timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
+      model: reference,
+      ...(reason ? { reason } : {}),
+      ...(message ? { message } : {}),
+    });
+  };
+
+  const finalizeOpenCompactions = (reason, message) => {
+    for (const [operationId, active] of [...activeCompactions]) {
+      emitCompaction({
+        operationId,
+        status: "failed",
+        trigger: active.trigger,
+        reason,
+        message,
+      });
+    }
+  };
+
+  const recordAssistantInfo = (info, fallbackKey, { terminal = false } = {}) => {
     if (info?.role !== "assistant") return;
     const key = typeof info.id === "string" && info.id.length > 0 ? info.id : fallbackKey;
     assistantInfos.set(key, info);
     usage = aggregateAssistantInfos(assistantInfos.values()).usage;
+    const completed = terminal
+      || Number.isFinite(info?.time?.completed)
+      || (typeof info?.finish === "string" && info.finish.length > 0);
+    if (!completed) return;
+    const contextUsage = contextUsageFromInfo(info, contextWindows, providerID, modelID);
+    if (!contextUsage) return;
+    const signature = JSON.stringify([contextUsage.model, contextUsage.contextWindow, contextUsage.tokens]);
+    if (contextUsageSignatures.get(key) === signature) return;
+    contextUsageSignatures.set(key, signature);
+    emit({
+      type: "context_usage",
+      sdk: "opencode",
+      model: contextUsage.model,
+      timestamp: Number.isFinite(info?.time?.completed) ? info.time.completed : Date.now(),
+      measurementId: key,
+      ...(contextUsage.contextWindow === undefined ? {} : { contextWindow: contextUsage.contextWindow }),
+      tokens: contextUsage.tokens,
+    });
   };
 
   const abortHandler = () => {
@@ -618,6 +729,7 @@ async function generateOpencodeAppResponse(systemPrompt, options = {}) {
     client = opencode.client;
     server = opencode.server;
     options.abortSignal?.addEventListener?.("abort", abortHandler, { once: true });
+    contextWindows = await opencodeContextWindows(client, directoryParams);
 
     if (!sessionId) {
       const created = unwrap(await client.session.create(directoryParams));
@@ -758,6 +870,47 @@ async function generateOpencodeAppResponse(systemPrompt, options = {}) {
           recordAssistantInfo(info, "event-anonymous");
           return;
         }
+        case "session.next.compaction.started": {
+          if (props.sessionID && props.sessionID !== sessionId) return;
+          nativeCompactionSeen = true;
+          if (legacyCompactionMode) return;
+          const operationId = `opencode:${sessionId}:${props.messageID || event.id || "compaction"}`;
+          emitCompaction({
+            operationId,
+            status: "running",
+            trigger: props.reason === "manual" ? "manual" : "automatic",
+            timestamp: props.timestamp,
+          });
+          return;
+        }
+        case "session.next.compaction.ended": {
+          if (props.sessionID && props.sessionID !== sessionId) return;
+          nativeCompactionSeen = true;
+          if (legacyCompactionMode) return;
+          const operationId = `opencode:${sessionId}:${props.messageID || event.id || "compaction"}`;
+          emitCompaction({
+            operationId,
+            status: "succeeded",
+            trigger: props.reason === "manual" ? "manual" : "automatic",
+            timestamp: props.timestamp,
+          });
+          return;
+        }
+        case "session.compacted": {
+          if (props.sessionID && props.sessionID !== sessionId) return;
+          if (nativeCompactionSeen) return;
+          legacyCompactionMode = true;
+          const legacyId = typeof event.id === "string" && event.id.length > 0
+            ? event.id
+            : randomUUID();
+          if (seenLegacyCompactionIds.has(legacyId)) return;
+          seenLegacyCompactionIds.add(legacyId);
+          emitCompaction({
+            operationId: `opencode:${sessionId}:legacy:${legacyId}`,
+            status: "succeeded",
+          });
+          return;
+        }
         case "permission.asked":
           await respondToPermission(props);
           return;
@@ -765,10 +918,14 @@ async function generateOpencodeAppResponse(systemPrompt, options = {}) {
           if (props.sessionID && props.sessionID !== sessionId) return;
           errorMessage = safeOpenCodeErrorMessage(props.error, "OpenCode session error.");
           failureKind = mapErrorFailureKind(props.error);
+          finalizeOpenCompactions("provider_error", "Compaction was interrupted by a provider error.");
           pumpDone = true;
           return;
         case "session.idle":
-          if (props.sessionID === sessionId) pumpDone = true;
+          if (props.sessionID === sessionId) {
+            finalizeOpenCompactions("incomplete", "Compaction ended without a completion event.");
+            pumpDone = true;
+          }
           return;
         default:
           return;
@@ -815,7 +972,7 @@ async function generateOpencodeAppResponse(systemPrompt, options = {}) {
     }
 
     const info = promptResult?.info || {};
-    recordAssistantInfo(info, "prompt-final");
+    recordAssistantInfo(info, "prompt-final", { terminal: true });
     if (info.error && !errorMessage) {
       errorMessage = safeOpenCodeErrorMessage(info.error, "OpenCode turn failed.");
       failureKind = mapErrorFailureKind(info.error);
@@ -882,6 +1039,10 @@ async function generateOpencodeAppResponse(systemPrompt, options = {}) {
       }),
     };
   } catch (err) {
+    finalizeOpenCompactions(
+      options.abortSignal?.aborted ? "cancelled" : "provider_error",
+      options.abortSignal?.aborted ? "Compaction was interrupted." : "Compaction was interrupted by a provider error.",
+    );
     const partialAggregate = aggregateAssistantInfos(assistantInfos.values());
     const partialUsage = partialAggregate.usage ?? usage;
     const partialCost = partialAggregate.reportedCost !== null
@@ -929,6 +1090,10 @@ async function generateOpencodeAppResponse(systemPrompt, options = {}) {
       }),
     };
   } finally {
+    finalizeOpenCompactions(
+      options.abortSignal?.aborted ? "cancelled" : "incomplete",
+      options.abortSignal?.aborted ? "Compaction was interrupted." : "Compaction ended without a completion event.",
+    );
     options.abortSignal?.removeEventListener?.("abort", abortHandler);
     try { await server?.close?.(); } catch { /* best effort */ }
   }

@@ -33,7 +33,7 @@ export function usageFromMessages(messages = []) {
 }
 
 /**
- * Normalize the final provider request's usage into an exact context snapshot.
+ * Normalize one provider request's usage into an exact context snapshot.
  * Unlike usageFromMessages(), this deliberately does not aggregate earlier
  * requests in the run: the last assistant usage is the same provider-counted
  * value Pi's compaction logic trusts, so it can decrease after compaction.
@@ -74,15 +74,13 @@ export function failureKindForPiError(message, diagnostics, { maxTurnsHit = fals
 
 /**
  * Emit the per-run cache / cost / provider-completed events.
- * @param {{onEvent: (event: any) => void, resolved: any, reference: string, usage: {input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}, contextUsage?: {input: number, output: number, cacheRead: number, cacheCreation: number, total: number}|null, contextWindow?: number, estimatedCost: number, start: number, externalAbort: boolean}} params
+ * @param {{onEvent: (event: any) => void, resolved: any, reference: string, usage: {input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}, estimatedCost: number, start: number, externalAbort: boolean}} params
  */
 export function emitUsageCostEvents({
   onEvent,
   resolved,
   reference,
   usage,
-  contextUsage,
-  contextWindow,
   estimatedCost,
   start,
   externalAbort,
@@ -105,16 +103,6 @@ export function emitUsageCostEvents({
       cacheCreationTokens: Number(usage.cacheWrite) || 0,
     },
   });
-  if (contextUsage) {
-    const effectiveContextWindow = Number(contextWindow) || 0;
-    onEvent({
-      type: "context_usage",
-      sdk: resolved.sdk,
-      model: reference,
-      ...(effectiveContextWindow > 0 ? { contextWindow: effectiveContextWindow } : {}),
-      tokens: contextUsage,
-    });
-  }
   onEvent({
     type: "provider_request_completed",
     sdk: resolved.sdk,

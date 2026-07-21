@@ -190,10 +190,22 @@ describe("tryCompact", () => {
     });
     expect(res).toMatchObject({ applied: true, reduced: true, nothingToCompact: false });
     expect(res.tokensAfter).toBeGreaterThan(0);
+    expect(events).toHaveLength(2);
     expect(events[0]).toMatchObject({
-      warning_kind: "context_compaction_applied",
+      type: "context_compaction",
+      status: "running",
+      sdk: "pi",
       trigger: "proactive",
-      reduced: true,
+      model: "pi:faux:m",
+    });
+    expect(events[1]).toMatchObject({
+      type: "context_compaction",
+      operationId: events[0].operationId,
+      status: "succeeded",
+      sdk: "pi",
+      trigger: "proactive",
+      model: "pi:faux:m",
+      tokenCountsExact: false,
     });
     expect(recorded[0]).toMatchObject({ trigger: "proactive", provider_kind: "pi", status: "succeeded" });
     expect(fixture.persistedCount()).toBe(1);
@@ -202,12 +214,13 @@ describe("tryCompact", () => {
 
   it("cancels a non-reducing compaction before it is persisted", async () => {
     const warnings = [];
+    const events = [];
     const fixture = hookHarness({ sourceMessages: [userMessage("unchanged")] });
     const res = await tryCompact(
       fixture.harness,
       {
         trigger: "reactive_overflow",
-        onEvent: () => {},
+        onEvent: (event) => events.push(event),
         runtimeWarnings: warnings,
         session: fixture.session,
         policy: { keepRecentTokens: 4_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 0 },
@@ -221,6 +234,13 @@ describe("tryCompact", () => {
     expect(fixture.persistedCount()).toBe(0);
     expect(fixture.handlerCount()).toBe(0);
     expect(fixture.messages).toHaveLength(1);
+    expect(events.map(({ status }) => status)).toEqual(["running", "skipped"]);
+    expect(events[1]).toMatchObject({
+      operationId: events[0].operationId,
+      trigger: "overflow",
+      reason: "not_reducible",
+      tokenCountsExact: false,
+    });
   });
 
   it("skips a proactive compaction below the configured minimum savings", async () => {
@@ -259,20 +279,42 @@ describe("tryCompact", () => {
 
   it("maps auth/busy/other error codes to distinct warning kinds", async () => {
     const kinds = [];
+    const lifecycles = [];
     for (const [code, kind] of [
       ["auth", "context_compaction_auth_failed"],
       ["busy", "context_compaction_busy"],
       ["other", "context_compaction_failed"],
     ]) {
       const warnings = [];
+      const events = [];
       const fixture = hookHarness({ compactError: Object.assign(new Error("x"), { code }) });
-      await tryCompact(fixture.harness, { trigger: "reactive_overflow", onEvent: () => {}, runtimeWarnings: warnings });
+      await tryCompact(fixture.harness, {
+        trigger: "reactive_overflow",
+        onEvent: (event) => events.push(event),
+        runtimeWarnings: warnings,
+      });
       kinds.push(warnings[0].warning_kind);
+      lifecycles.push(events);
     }
     expect(kinds).toEqual([
       "context_compaction_auth_failed",
       "context_compaction_busy",
       "context_compaction_failed",
+    ]);
+    expect(lifecycles.map((events) => events.map(({ status }) => status))).toEqual([
+      ["running", "failed"],
+      ["running", "failed"],
+      ["running", "failed"],
+    ]);
+    expect(lifecycles.map((events) => events[1].operationId === events[0].operationId)).toEqual([
+      true,
+      true,
+      true,
+    ]);
+    expect(lifecycles.map((events) => events[1].reason)).toEqual([
+      "authentication",
+      "busy",
+      "provider_error",
     ]);
   });
 

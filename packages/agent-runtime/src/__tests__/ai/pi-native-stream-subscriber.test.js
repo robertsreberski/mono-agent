@@ -17,7 +17,11 @@ function freshRunState() {
 
 function harnessDouble() {
   const calls = { aborts: 0 };
-  return { calls, abort: () => { calls.aborts += 1; } };
+  return {
+    calls,
+    abort: () => { calls.aborts += 1; },
+    getModel: () => ({ contextWindow: 128_000 }),
+  };
 }
 
 function driver(overrides = {}) {
@@ -29,6 +33,8 @@ function driver(overrides = {}) {
     options: { cwd: "/repo", maxTurns: overrides.maxTurns },
     toolLimits: {},
     harness,
+    sdk: "pi",
+    model: "pi:faux:m",
   });
   return { runState, emitted, harness, handler };
 }
@@ -66,6 +72,58 @@ describe("createStreamSubscriber — text/thinking dedup", () => {
       .filter((e) => e.type === "assistant" && e.message.content[0].type === "thinking")
       .map((e) => e.message.content[0].text);
     expect(thinkingTexts).toEqual(["hm", "fresh"]);
+  });
+});
+
+describe("createStreamSubscriber — exact context snapshots", () => {
+  const completedAssistant = (overrides = {}) => ({
+    id: "assistant-1",
+    role: "assistant",
+    content: [{ type: "text", text: "done" }],
+    stopReason: "stop",
+    usage: {
+      input: 120,
+      output: 15,
+      cacheRead: 30,
+      cacheWrite: 5,
+      totalTokens: 170,
+    },
+    ...overrides,
+  });
+
+  it("emits the provider-counted request snapshot when each assistant message ends", () => {
+    const { emitted, handler } = driver();
+
+    handler({ type: "message_end", message: completedAssistant() });
+    handler({
+      type: "message_end",
+      message: completedAssistant({
+        id: "assistant-2",
+        usage: { input: 60, output: 8, cacheRead: 10, cacheWrite: 2, totalTokens: 80 },
+      }),
+    });
+
+    expect(emitted.filter((event) => event.type === "context_usage")).toEqual([
+      expect.objectContaining({
+        sdk: "pi",
+        model: "pi:faux:m",
+        measurementId: "assistant-1",
+        contextWindow: 128_000,
+        tokens: { input: 120, output: 15, cacheRead: 30, cacheCreation: 5, total: 170 },
+      }),
+      expect.objectContaining({
+        measurementId: "assistant-2",
+        tokens: { input: 60, output: 8, cacheRead: 10, cacheCreation: 2, total: 80 },
+      }),
+    ]);
+  });
+
+  it.each(["error", "aborted"])("does not report a %s assistant message as exact context", (stopReason) => {
+    const { emitted, handler } = driver();
+
+    handler({ type: "message_end", message: completedAssistant({ stopReason }) });
+
+    expect(emitted.some((event) => event.type === "context_usage")).toBe(false);
   });
 });
 

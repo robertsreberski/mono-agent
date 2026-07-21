@@ -626,6 +626,24 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
         tokens: { input: 100, output: 20, cacheRead: 800, cacheCreation: 5, total: 925 },
       },
     });
+    expect(streamEventFromRuntimeEvent({
+      type: "context_compaction",
+      operationId: "compact-1",
+      status: "running",
+      sdk: "pi",
+      trigger: "proactive",
+      timestamp: 1_750_000_000_000,
+    })).toEqual({
+      type: "runtime_telemetry",
+      kind: "context_compaction",
+      data: {
+        operationId: "compact-1",
+        status: "running",
+        sdk: "pi",
+        trigger: "proactive",
+        timestamp: 1_750_000_000_000,
+      },
+    });
   });
 
   it("wraps run_config as runtime_telemetry with effort/model intact", () => {

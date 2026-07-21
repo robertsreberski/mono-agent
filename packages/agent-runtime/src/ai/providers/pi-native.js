@@ -52,7 +52,6 @@ import {
   buildErrorDetails,
   buildErrorResult,
   buildSuccessResult,
-  contextUsageFromAssistantMessage,
   emitCapabilitiesResolved,
   emitUsageCostEvents,
   usageFromMessages,
@@ -453,6 +452,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       onEvent,
       options,
       toolLimits,
+      sdk: resolved.sdk,
+      reference,
     });
 
     // Seed prior transcript (everything before the trailing user turn) into the
@@ -614,10 +615,6 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       resolved,
       reference,
       usage,
-      contextUsage: runState.externalAbort || runState.maxTurnsHit || runError
-        ? null
-        : contextUsageFromAssistantMessage(lastAssistant),
-      contextWindow: runState.compaction.policy?.contextWindow,
       estimatedCost,
       start,
       externalAbort: runState.externalAbort,

@@ -33,11 +33,16 @@ export const REASONING_GROUP_BY = groupPartByType({
   reasoning: ["group-reasoning"] as const,
 });
 
-export const ACTIVITY_GROUP_BY = groupPartByType({
+const ACTIVITY_GROUP_BY_TYPE = groupPartByType({
   reasoning: ["group-activity"] as const,
   "tool-call": ["group-activity"] as const,
   "standalone-tool-call": [] as const,
 });
+
+export const ACTIVITY_GROUP_BY: typeof ACTIVITY_GROUP_BY_TYPE = (part, context) =>
+  part.type === "data" && part.name === "context-compaction"
+    ? ["group-activity"] as const
+    : ACTIVITY_GROUP_BY_TYPE(part, context);
 
 export interface ReasoningRootProps extends Omit<
   Collapsible.Root.Props,

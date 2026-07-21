@@ -949,6 +949,121 @@ describe("codex-app persistent sessions", () => {
     expect(factory).toHaveBeenCalledTimes(1);
   });
 
+  it("emits exact last-request context usage and records the model Codex actually used", async () => {
+    const factory = stubClientFactory({ threadId: "thread-context-usage" });
+    factory.turnPlan.push("manual");
+    const emitted = [];
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, {
+      onEvent: (event) => emitted.push(event),
+    }));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.notify("model/rerouted", {
+      fromModel: "gpt-5.1-codex",
+      toModel: "gpt-5.2-codex",
+    });
+    client.notify("thread/tokenUsage/updated", {
+      threadId: "thread-context-usage",
+      turnId: "turn-1",
+      tokenUsage: {
+        total: {
+          totalTokens: 99_999,
+          inputTokens: 90_000,
+          cachedInputTokens: 80_000,
+          outputTokens: 9_999,
+          reasoningOutputTokens: 5_000,
+        },
+        last: {
+          totalTokens: 925,
+          inputTokens: 800,
+          cachedInputTokens: 300,
+          outputTokens: 125,
+          reasoningOutputTokens: 75,
+        },
+        modelContextWindow: 372_000,
+      },
+    });
+    client.finishTurn();
+    await pending;
+
+    expect(emitted.filter((event) => event.type === "context_usage")).toEqual([
+      expect.objectContaining({
+        sdk: "codex",
+        model: "codex:gpt-5.2-codex",
+        measurementId: "turn-1",
+        contextWindow: 372_000,
+        tokens: {
+          input: 500,
+          cachedInput: 300,
+          output: 125,
+          reasoning: 75,
+          total: 925,
+        },
+      }),
+    ]);
+  });
+
+  it("normalizes one Codex compaction lifecycle and ignores the deprecated duplicate", async () => {
+    const factory = stubClientFactory({ threadId: "thread-compaction" });
+    factory.turnPlan.push("manual");
+    const pending = generateCodexAppResponse("SYS", runOptions(factory));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+    const common = { threadId: "thread-compaction", turnId: "turn-1" };
+
+    client.notify("item/started", {
+      ...common,
+      item: { id: "compact-1", type: "contextCompaction" },
+    });
+    client.notify("thread/compacted", common);
+    client.notify("item/completed", {
+      ...common,
+      item: { id: "compact-1", type: "contextCompaction" },
+    });
+    client.finishTurn();
+    const result = await pending;
+
+    const events = result.events.filter((event) => event.type === "context_compaction");
+    expect(events).toEqual([
+      expect.objectContaining({
+        operationId: "codex:compact-1",
+        status: "running",
+        sdk: "codex",
+        trigger: "automatic",
+      }),
+      expect.objectContaining({
+        operationId: "codex:compact-1",
+        status: "succeeded",
+        sdk: "codex",
+        trigger: "automatic",
+      }),
+    ]);
+  });
+
+  it("closes a dangling Codex compaction as failed when the turn terminates", async () => {
+    const factory = stubClientFactory({ threadId: "thread-compaction-failed" });
+    factory.turnPlan.push("manual");
+    const pending = generateCodexAppResponse("SYS", runOptions(factory));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.notify("item/started", {
+      threadId: "thread-compaction-failed",
+      turnId: "turn-1",
+      item: { id: "compact-failed", type: "contextCompaction" },
+    });
+    client.finishTurn({ status: "failed", text: "" });
+    const result = await pending;
+
+    const events = result.events.filter((event) => event.type === "context_compaction");
+    expect(events.map(({ status }) => status)).toEqual(["running", "failed"]);
+    expect(events[1]).toMatchObject({
+      operationId: events[0].operationId,
+      reason: "incomplete",
+    });
+  });
+
   it("disposeProviderSession (runtime disposeSession surface) closes the live client", async () => {
     const factory = stubClientFactory({ threadId: "thread-dispose" });
     await generateCodexAppResponse("SYS", runOptions(factory, { sessionKeepAlive: true }));
