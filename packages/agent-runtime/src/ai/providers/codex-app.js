@@ -1048,6 +1048,27 @@ function usageFromTokenUsage(tokenUsage) {
   };
 }
 
+function contextUsageFromTokenUsage(tokenUsage) {
+  const last = tokenUsage?.last;
+  const total = Number(last?.totalTokens);
+  if (!last || !Number.isFinite(total) || total <= 0) return null;
+  const input = Number(last.inputTokens) || 0;
+  const cachedInput = Number(last.cachedInputTokens) || 0;
+  const output = Number(last.outputTokens) || 0;
+  const reasoning = Number(last.reasoningOutputTokens) || 0;
+  const contextWindow = Number(tokenUsage?.modelContextWindow) || 0;
+  return {
+    tokens: {
+      input: Math.max(0, input - cachedInput),
+      cachedInput,
+      output,
+      reasoning,
+      total,
+    },
+    ...(contextWindow > 0 ? { contextWindow } : {}),
+  };
+}
+
 const noopNotificationHandler = () => {};
 
 async function closeCodexClient(client) {
@@ -1076,6 +1097,7 @@ const codexLiveness = createSessionLiveness(codexSessions);
 export async function generateCodexAppResponse(systemPrompt, options = {}) {
   const start = Date.now();
   const resolved = options.model;
+  const requestedReference = resolved?.reference || `codex:${resolved?.model || ""}`;
   // Resolve every credential-bearing value before the app-server client is
   // constructed. The same set protects transport errors and provider events,
   // including MCP servers whose custom env/header names are not recognizable
@@ -1105,8 +1127,13 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   const events = [];
   const texts = [];
   const agentTextByItem = new Map();
+  const compactionStatuses = new Map();
+  const activeCompactions = new Map();
+  const nativeCompactionTurnKeys = new Set();
+  const legacyCompactionTurnKeys = new Set();
   let threadId = null;
   let activeTurnId = null;
+  let actualModel = resolved?.model || null;
   let turnCompleted = false;
   let errorMessage = null;
   let failureKind = null;
@@ -1146,6 +1173,77 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     const safeEvent = redactCodexPayload(event, sensitiveValues);
     events.push(safeEvent);
     options.onEvent?.(safeEvent);
+  }
+
+  const compactionTurnKey = (params = {}) => `${params.threadId || threadId || "thread"}:${params.turnId || activeTurnId || "turn"}`;
+
+  /**
+   * @param {{operationId: string, status: string, turnKey?: string, reason?: string, message?: string}} event
+   */
+  function emitCompaction({
+    operationId,
+    status,
+    turnKey,
+    reason,
+    message,
+  }) {
+    const previous = compactionStatuses.get(operationId);
+    if (previous === status || previous === "succeeded" || previous === "failed" || previous === "skipped") return;
+    compactionStatuses.set(operationId, status);
+    if (status === "running") activeCompactions.set(operationId, { turnKey: turnKey || compactionTurnKey() });
+    else activeCompactions.delete(operationId);
+    emitEvent({
+      type: "context_compaction",
+      operationId,
+      status,
+      sdk: "codex",
+      trigger: "automatic",
+      timestamp: Date.now(),
+      model: actualModel ? `codex:${actualModel}` : requestedReference,
+      ...(reason ? { reason } : {}),
+      ...(message ? { message } : {}),
+    });
+  }
+
+  function finalizeOpenCompactions(reason, message) {
+    for (const [operationId, active] of [...activeCompactions]) {
+      emitCompaction({
+        operationId,
+        status: "failed",
+        turnKey: active.turnKey,
+        reason,
+        message,
+      });
+    }
+  }
+
+  function handleContextCompactionItem(method, params) {
+    const item = params.item;
+    const turnKey = compactionTurnKey(params);
+    nativeCompactionTurnKeys.add(turnKey);
+    if (legacyCompactionTurnKeys.has(turnKey)) return;
+    const operationId = `codex:${item.id}`;
+    emitCompaction({
+      operationId,
+      status: method === "item/started" ? "running" : "succeeded",
+      turnKey,
+    });
+  }
+
+  function handleLegacyCompaction(params) {
+    const turnKey = compactionTurnKey(params);
+    const active = [...activeCompactions].find(([, value]) => value.turnKey === turnKey);
+    if (active) {
+      emitCompaction({ operationId: active[0], status: "succeeded", turnKey });
+      return;
+    }
+    if (nativeCompactionTurnKeys.has(turnKey) || legacyCompactionTurnKeys.has(turnKey)) return;
+    legacyCompactionTurnKeys.add(turnKey);
+    emitCompaction({
+      operationId: `codex:${turnKey}:legacy`,
+      status: "succeeded",
+      turnKey,
+    });
   }
 
   function handleAgentText(text) {
@@ -1229,6 +1327,13 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         errorMessage = safeDiagnostic(params.turn?.error?.message || params.turn?.error || "Codex turn failed");
         failureKind = "provider_unavailable";
       }
+      if (activeCompactions.size > 0) {
+        const cancelled = params.turn?.status === "cancelled" || params.turn?.status === "interrupted";
+        finalizeOpenCompactions(
+          cancelled ? "cancelled" : "incomplete",
+          cancelled ? "Compaction was interrupted." : "Compaction ended without a completion event.",
+        );
+      }
       const safeTurn = params.turn?.error === undefined
         ? params.turn
         : { ...params.turn, error: safeResponseError(params.turn.error) };
@@ -1238,6 +1343,27 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     }
     if (method === "thread/tokenUsage/updated") {
       usage = usageFromTokenUsage(params.tokenUsage);
+      const contextUsage = contextUsageFromTokenUsage(params.tokenUsage);
+      if (contextUsage) {
+        emitEvent({
+          type: "context_usage",
+          sdk: "codex",
+          model: actualModel ? `codex:${actualModel}` : requestedReference,
+          timestamp: Date.now(),
+          ...(typeof params.turnId === "string" && params.turnId.length > 0
+            ? { measurementId: params.turnId }
+            : {}),
+          ...contextUsage,
+        });
+      }
+      return;
+    }
+    if (method === "model/rerouted") {
+      if (typeof params.toModel === "string" && params.toModel.trim().length > 0) actualModel = params.toModel;
+      return;
+    }
+    if (method === "thread/compacted") {
+      handleLegacyCompaction(params);
       return;
     }
     if (method === "item/agentMessage/delta") {
@@ -1258,6 +1384,10 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       return;
     }
     if (method === "item/started" || method === "item/completed") {
+      if (params.item?.type === "contextCompaction") {
+        handleContextCompactionItem(method, params);
+        return;
+      }
       const raw = mapThreadItem(method, params.item);
       if (params.item?.type === "agentMessage") {
         const text = params.item.text || agentTextByItem.get(params.item.id) || "";
@@ -1683,7 +1813,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       });
     }
     const hadPartialProgress = events.length > 0 || texts.length > 0;
-    const reference = `codex:${resolved.model}`;
+    const reference = requestedReference;
     const inputTokens = usage?.input_tokens ?? usage?.inputTokens ?? 0;
     const outputTokens = usage?.output_tokens ?? usage?.outputTokens ?? 0;
     const cachedTokens = usage?.cache_read_tokens ?? usage?.cachedInputTokens ?? 0;
@@ -1774,6 +1904,13 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       }),
     };
   } finally {
+    if (activeCompactions.size > 0) {
+      const cancelled = !!options.abortSignal?.aborted;
+      finalizeOpenCompactions(
+        cancelled ? "cancelled" : "incomplete",
+        cancelled ? "Compaction was interrupted." : "Compaction ended without a completion event.",
+      );
+    }
     options.abortSignal?.removeEventListener?.("abort", abortHandler);
     if (resumeEntry) {
       resumeEntry.busy = false;

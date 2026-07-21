@@ -216,6 +216,6 @@ describe("ModelControls", () => {
     fireEvent.click(trigger);
     const popover = await screen.findByRole("dialog", { name: "Context usage" });
     expect(within(popover).queryByRole("progressbar")).not.toBeInTheDocument();
-    expect(within(popover).getByText("Exact context usage was not recorded for this conversation.")).toBeVisible();
+    expect(within(popover).getByText("Exact context usage has not been reported for this conversation.")).toBeVisible();
   });
 });

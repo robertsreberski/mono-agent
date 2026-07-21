@@ -306,8 +306,83 @@ export function ToolFallback({
   );
 }
 
+type CompactionDisplayStatus = "running" | "succeeded" | "skipped" | "failed" | "interrupted";
+
+const finiteCount = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+
+const compactTokenCount = (tokens: number): string => {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/u, "")}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1).replace(/\.0$/u, "")}k`;
+  return String(Math.round(tokens));
+};
+
+const compactionPayload = (value: unknown): Record<string, unknown> => {
+  let current = value;
+  let best: Record<string, unknown> = {};
+  const seen = new Set<object>();
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (current === null || typeof current !== "object" || Array.isArray(current) || seen.has(current)) break;
+    seen.add(current);
+    const record = current as Record<string, unknown>;
+    if (typeof record.status === "string") best = record;
+    current = record.data;
+  }
+  return best;
+};
+
+function ContextCompactionPart({ data, status: messageStatus }: DataMessagePartProps) {
+  const payload = compactionPayload(data);
+  const reported = ["running", "succeeded", "skipped", "failed"].includes(String(payload.status))
+    ? payload.status as Exclude<CompactionDisplayStatus, "interrupted">
+    : "failed";
+  const status: CompactionDisplayStatus = reported === "running" && messageStatus.type !== "running"
+    ? "interrupted"
+    : reported;
+  const label = {
+    running: "Compacting context…",
+    succeeded: "Context compacted",
+    skipped: "Context compaction skipped",
+    failed: "Context compaction failed",
+    interrupted: "Context compaction interrupted",
+  }[status];
+  const trigger = typeof payload.trigger === "string" ? payload.trigger : undefined;
+  const triggerLabel = trigger === "overflow"
+    ? "after overflow"
+    : trigger === "proactive"
+      ? "proactive"
+      : trigger === "manual"
+        ? "manual"
+        : undefined;
+  const before = finiteCount(payload.tokensBefore);
+  const after = finiteCount(payload.tokensAfter);
+  const approximate = payload.tokenCountsExact !== true;
+  const formatMeasuredCount = (tokens: number) => `${approximate ? "~" : ""}${compactTokenCount(tokens)}`;
+  const counts = before !== undefined && after !== undefined
+    ? `${formatMeasuredCount(before)} → ${formatMeasuredCount(after)} tokens`
+    : before !== undefined
+      ? `${formatMeasuredCount(before)} tokens before`
+      : after !== undefined
+        ? `${formatMeasuredCount(after)} tokens after`
+        : undefined;
+
+  return (
+    <div
+      className={`context-compaction-row is-${status}`}
+      role="status"
+      aria-label={[label.replace("…", ""), triggerLabel, counts].filter(Boolean).join(", ")}
+    >
+      <span className="context-compaction-status" aria-hidden="true" />
+      <span className="context-compaction-label">{label}</span>
+      {triggerLabel !== undefined && <span className="context-compaction-trigger">{triggerLabel}</span>}
+      {counts !== undefined && <span className="context-compaction-counts">{counts}</span>}
+    </div>
+  );
+}
+
 // Runtime/provider telemetry remains attached to the message so the context
-// display can summarize it, but transport diagnostics are not transcript UI.
+// display can summarize it. Compaction alone is promoted into Activity; other
+// transport diagnostics remain out of the transcript UI.
 function ErrorPart({ data }: DataMessagePartProps) {
   const payload = data as { code?: unknown; message?: unknown };
   return (
@@ -324,6 +399,7 @@ const parts = {
   Empty: RunningText,
   data: {
     by_name: {
+      "context-compaction": ContextCompactionPart,
       error: ErrorPart,
     },
   },
@@ -351,6 +427,7 @@ function AssistantParts() {
             return part.toolUI ?? <ToolFallback {...part} />;
           case "data":
             if (part.name === "telemetry") return null;
+            if (part.name === "context-compaction") return <ContextCompactionPart {...part} />;
             if (part.name === "error") return <ErrorPart {...part} />;
             return part.dataRendererUI;
           case "indicator":
