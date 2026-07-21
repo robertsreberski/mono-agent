@@ -146,13 +146,13 @@ const ADAPTER_SEND_TOOL_ACTIONS: Readonly<Record<string, string>> = {
 };
 
 /**
- * The channel-agnostic interaction tool. Always offered (even for a restricted agent)
- * because it asks the human through whichever channel is live and waits for the reply.
+ * The channel-agnostic interaction tool. Always offered (even for a restricted
+ * agent), but its built-in presentation sinks are web, Slack, and Telegram.
  */
 const ASK_USER_OPTION: WizardSelectOption = {
   value: "AskUser",
   label: "AskUser",
-  hint: "ask the human and wait for a typed reply (any channel)",
+  hint: "ask structured questions and wait (web, Slack, or Telegram)",
 };
 
 /**

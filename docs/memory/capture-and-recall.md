@@ -1,5 +1,6 @@
 ---
 title: "Write modes, capture & recall"
+description: "Understand completed-turn admission, write modes, automatic context recall, and the MemoryRecall tool across built-in and external memory backends."
 sidebar:
   order: 2
 ---
@@ -12,11 +13,11 @@ For tier selection (lite / journal / bujo) and embeddings setup, start at the [M
 
 `memory.writeMode` controls how the **host runtime** persists each completed turn. It is independent of the tier's recall capability. Coverage: **config** (env: `MONO_AGENT_MEMORY_WRITE_MODE`).
 
-| Mode | What it does | Tiers | LLM |
+| Mode | What it does | Backend / tiers | LLM |
 |------|--------------|-------|-----|
-| `disabled` | Never persist turns. Recall still works over whatever is already on disk. | all | no |
-| `append-host-summary` | Durably admit one deterministic host observation by provider run id, then project it to the Lite/Journal canonical daily log or BuJo immutable raw audit. | all (lite/journal/bujo) | no |
-| `capture` | **bujo only.** Durably admit the host summary and full capture text by provider run id, then curate facts and graph evidence in the background. | bujo | yes (chat model) |
+| `disabled` | Never persist turns. Recall still works over existing backend state. | all | no |
+| `append-host-summary` | Admit one deterministic host observation by provider run id. The built-in backend fsyncs and projects it; Supermemory awaits a remote upsert. | built-in Lite/Journal/BuJo; Supermemory | built-in: no; Supermemory: service-owned |
+| `capture` | Admit the host summary plus full approved capture text by provider run id. Built-in BuJo curates in the background; Supermemory sends it for server-side extraction. | built-in BuJo; Supermemory | BuJo: configured chat model; Supermemory: service-owned |
 
 The host deliberately skips memory writes for two low-signal successful turns, in every write mode: final answers equal to `NOTHING_TO_REPORT` (the cron/webhook no-op sentinel) and tiny explicit test/ping probes such as `test` / `test ok`. Short contextual acknowledgements are not skipped by this default.
 
@@ -193,7 +194,11 @@ Key properties:
 - **Crash-idempotent semantic commit.** Run-derived fact ids, a retained semantic plan, and the exact replay projection make a post-commit/pre-receipt replay converge without another model call, duplicate fact, or unattested lifecycle/edge.
 - **Associations are precise.** Each curated fact carries only the entity IDs explicitly extracted for that fact; the implementation never creates a turn-wide memory/entity Cartesian product.
 
-Because it uses a chat LLM, `writeMode: "capture"` **requires `mode: "bujo"`** and fails config validation otherwise — there is no silent fallback or tier downshift.
+On the built-in backend, this path uses a chat LLM, so `writeMode: "capture"`
+**requires `mode: "bujo"`** and fails config validation otherwise—there is no
+silent fallback or tier downshift. The external Supermemory backend accepts
+`capture` independently of the compatibility `mode` value because extraction is
+owned by the service.
 
 ```json
 {
@@ -295,7 +300,7 @@ See [Tool policy](/tools/policy/) and [MCP tools](/tools/mcp/) for how MCP-provi
 
 | Env var | Config key | Notes |
 |---------|-----------|-------|
-| `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture` (`capture` requires `mode: bujo`) |
+| `MONO_AGENT_MEMORY_WRITE_MODE` | `memory.writeMode` | `disabled` / `append-host-summary` / `capture`; built-in `capture` requires `mode: bujo`, while Supermemory extraction is service-owned |
 | `MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED` | `memory.recallTool.enabled` | Auto-provisioned `MemoryRecall`; default on for every configured tier |
 | `MONO_AGENT_MEMORY_MODE` | `memory.mode` | `lite` / `journal` / `bujo` |
 | `MONO_AGENT_MEMORY_LLM_MODEL` | `memory.llm.model` | Chat model for the capture pipeline |

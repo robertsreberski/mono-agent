@@ -1,10 +1,9 @@
 ---
 title: "Multi-Model Fallback Chain"
+description: "Configure ordered model fallbacks and verify how mono-agent advances across unavailable routes."
 sidebar:
   order: 13
 ---
-
-# Multi-Model Fallback Chain
 
 This playbook builds an ordered cloud-to-local fallback chain with exact effort
 and explicit provider safety. Failover is visible in results and traces; no model

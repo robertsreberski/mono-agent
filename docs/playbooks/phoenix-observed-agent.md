@@ -1,10 +1,9 @@
 ---
 title: "Phoenix-Observed Agent with TUI"
+description: "Capture agent traces in Phoenix while driving turns through the terminal operator console."
 sidebar:
   order: 10
 ---
-
-# Phoenix-Observed Agent with TUI
 
 This playbook configures best-effort, terminal-batched export to a [Phoenix](https://phoenix.arize.com/) tracing dashboard as OpenInference semantic spans. After a successful terminal recorder boundary, a separate key-redacted, capped JSONL snapshot remains local. Neither path is crash-safe: process death before that boundary can omit the Phoenix batch and lose RAM-buffered JSONL events. You drive the agent from the terminal TUI and inspect successfully exported prompts as AGENT / LLM / TOOL spans.
 

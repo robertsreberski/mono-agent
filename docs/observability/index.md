@@ -1,10 +1,9 @@
 ---
 title: "Observability & CLI"
+description: "Map mono-agent's local run artifacts, trace-source registry, Phoenix export, lifecycle CLI, terminal console, and always-on web console."
 sidebar:
   order: 0
 ---
-
-# Observability & CLI
 
 Every mono-agent run gets local JSONL artifacts and can optionally be exported to [Phoenix](/observability/phoenix-and-backfill/) for a semantic trace timeline. The artifacts are the on-disk record after successful recorder boundaries, not a crash-safe in-flight journal. A trace-source registry lets dashboards discover running agents, the `mono-agent` CLI operates the whole lifecycle, and the TUI and always-on web console provide complementary operator views. This page maps those surfaces and links the detail pages.
 
@@ -22,7 +21,7 @@ Every mono-agent run gets local JSONL artifacts and can optionally be exported t
 
 ## JSONL run artifacts (always on)
 
-Run artifacts are created for every run regardless of whether any exporter is configured. At `start()`, the recorder performs separate atomic replacements for an empty events file and a `running` summary, then buffers events in memory with a 4,096-byte default cap per string. Non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free-text content is not scanned or scrubbed. Prompts, replies, tool prose, error text, and the compiled system prompt therefore remain private operator data. Terminal `finish()`/`fail()` uses separate atomic replacements for that bounded events snapshot first and the summary second. These writes provide no append, checkpoint, fsync, or cross-file transaction guarantee, so a crash can lose buffered events and stale-run reconciliation can report only persisted data. The artifacts also carry the metrics other tools build on: per-run usage/cost/cache (`observability.cost-tracking`), per-turn `provider_bridge_latency`, per-tool `tool_timing` (`execution_ms`), and `mcp_call_duration_ms` on MCP results — letting you separate model-reasoning time from tool/MCP time.
+Run artifacts are created for every run regardless of whether any exporter is configured. At `start()`, the recorder separately replaces an empty events file and a `running` summary. It applies a 4,096-byte default cap per string, then schedules best-effort `running` checkpoints after 25 new events or five seconds from the first uncheckpointed event. Non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free-text content is not scanned or scrubbed. Prompts, replies, tool prose, error text, and the compiled system prompt therefore remain private operator data. Terminal `finish()`/`fail()` queues behind any scheduled checkpoint and separately replaces the complete bounded events snapshot first and the summary second. These writes provide no append, fsync, power-loss, or cross-file transaction guarantee. A crash can retain the last successful prefix while losing the unscheduled or failed-write tail, and stale-run reconciliation can report only persisted data. The artifacts also carry the metrics other tools build on: per-run usage/cost/cache (`observability.cost-tracking`), per-turn `provider_bridge_latency`, per-tool `tool_timing` (`execution_ms`), and `mcp_call_duration_ms` on MCP results — letting you separate model-reasoning time from tool/MCP time.
 
 ```json
 {

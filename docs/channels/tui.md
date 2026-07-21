@@ -1,10 +1,9 @@
 ---
 title: "Operator stream endpoint"
+description: "Configure the separate conversational NDJSON and read-only live SSE operator lanes used by local mono-agent consoles."
 sidebar:
-  order: 8
+  order: 9
 ---
-
-# Operator stream endpoint
 
 This channel serves the loopback NDJSON stream used by the [`mono-agent tui`](/observability/tui/) and [always-on web console](/observability/web-console/). Unlike the [OpenAI-compatible API](/channels/openai-api/) (which flattens events into Chat Completions chunks), it preserves structured `AgentStreamEvent` kinds — thinking deltas, tool calls with arguments/progress/results/timing, token usage, cost, provider lifecycle and failover, warnings — subject to the serialized event-frame cap described below.
 
@@ -62,7 +61,7 @@ the agent supports structured pending-question exchange.
 - `GET {basePath}/v1/conversations/:id/ask` returns the pending `AskUser`
   snapshot or `{ "ask": null }`.
 - `POST {basePath}/v1/conversations/:id/ask` submits the snapshot's interaction
-  id and complete answer set, resuming the existing turn.
+  id plus one or more consecutive complete answers, resuming the existing turn.
 - `POST {basePath}/v1/conversations/:id/cancel` cancels the turn and any pending
   AskUser interaction.
 
@@ -113,7 +112,7 @@ A consumer trusts live relay URLs only when they resolve to loopback, and it onl
 | Endpoint | Purpose |
 | --- | --- |
 | `GET {basePath}/v1/info` | `{ schema, pid, capabilities:{attachments:true,historyAppend?:true}, label?, model?, models?, modelOptions?, effort? }` — identity, additive attachment/verbatim-history support, model choices, and wire-schema version for skew detection. `effort` is the statically configured reasoning-effort level; per-run overrides arrive via the `run_config` runtime_telemetry event instead. |
-| `POST {basePath}/v1/turns` | Body `{ conversationId, text, attachments?, metadata? }`. Responds with chunked `application/x-ndjson`, one frame per stream callback: `status`, `append`, `replace`, `event` (any `AgentStreamEvent`), then a terminal `finish` (final text + response metadata) or `error` (`cancelled` flagged). Attachment-only turns are accepted when advertised by `/v1/info`. Closing the socket aborts the in-flight turn. |
+| `POST {basePath}/v1/turns` | Body `{ conversationId, text, attachments?, metadata? }`. Responds with chunked `application/x-ndjson`, one frame per stream callback: `status`, `append`, `replace`, `event` (any `AgentStreamEvent`), then a terminal `finish` (final text + response metadata) or `error` (`cancelled` flagged). Attachment-only turns are accepted when advertised by `/v1/info`. A web client's `metadata.web.model` / `effort` values are preserved and mirrored into the shared `metadata.tui` request-override lane. Closing the socket aborts the in-flight turn. |
 | `POST {basePath}/v1/conversations/:id/cancel` | Explicit cancel (`202`; `501` if the responder has no cancel). |
 | `POST {basePath}/v1/conversations/:id/verbatim` | Authenticated body `{ text, idempotencyKey }`. Appends an already-delivered assistant message to durable history without a model turn (`200`; `501` if the responder has no history-append surface). Used by the web console's host-owned notification path. |
 
@@ -124,7 +123,7 @@ How the endpoint is discovered: the running channel's summary (`baseUrl`) is fol
 ## Concurrency & security
 
 - A console conversation uses its own `conversationId`, so it runs concurrently with every other channel; reusing an existing id (e.g. a Telegram conversation's) is possible and queues behind that conversation's in-flight turn.
-- Managed macOS configuration uses a separate opaque configuration conversation id and never reuses the ordinary chat id. The proposal-only extension is scoped to that request; after the proposal/review outcome, the console moves to a fresh ordinary conversation while the background endpoint stays authoritative.
+- Managed macOS configuration uses a separate opaque configuration conversation id and never reuses the ordinary chat id. The request-scoped proposal extension rotates after each proposal/review or no-change outcome while the console remains visibly in SELF-CONFIG; it never turns a follow-up into ordinary chat.
 - Loopback-only by default; binding further requires `allowNonLoopback` **and** should always pair with `apiKey`. Remember this endpoint streams tool arguments and results: the event-frame cap reduces oversized payloads but is not a redaction boundary, so this remains an operator surface by design.
 
 ## Related

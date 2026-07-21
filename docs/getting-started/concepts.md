@@ -1,21 +1,23 @@
 ---
 title: "Core Concepts"
+description: "Understand mono-agent's config-first model, runtime boundaries, channels, tools, context, and optional services."
 sidebar:
   order: 3
 ---
 
-# Core Concepts
-
-This page defines the mental model behind mono-agent: one config file, one responder, many channels, and explicit runtime boundaries. The config tool surface defaults open; sandboxing and channel allowlists are the separate controls that constrain side effects, and guided init reconfirms allow-all when no sandbox is selected. Read it once and the rest of the docs will line up.
+This page defines the mental model behind mono-agent: one config file, one agent definition, per-channel responders, and explicit runtime boundaries. The config tool surface defaults open; sandboxing and channel allowlists are the separate controls that constrain side effects, and guided init reconfirms allow-all when no sandbox is selected. Read it once and the rest of the docs will line up.
 
 ## Config-first
 
-A mono-agent is fully described by a single `mono-agent.config.json` in the agent folder. There is no admin UI and no live re-apply: you (or an agent) edit the JSON, then run `mono-agent restart` to load the new config.
+A mono-agent is fully described by a single `mono-agent.config.json` in the agent folder. The CLI does not watch that file: you (or an agent) edit the JSON, then run `mono-agent restart` to load the new config. An embedded app can instead call `app.applyConfigChange(reason)` explicitly to rebuild the current services and reconfigure its already-resolved drivers from the edited config; adding or removing a plugin package still requires a process restart.
 
 ```json
 {
   "runtime": {
     "model": "codex:gpt-5.6-terra"
+  },
+  "context": {
+    "identityPath": "./IDENTITY.md"
   }
 }
 ```
@@ -25,13 +27,13 @@ mono-agent restart          # apply config edits
 mono-agent restart --clear-sessions  # apply AND clear provider sessions + active chat history (durable memory kept)
 ```
 
-Because the config is plain JSON, agents can edit their own config and restart themselves. Most capabilities are coverage type **config** — set a key, restart, done. A few are **cli** (run a command), **auto** (default behavior), **code** (only available programmatically — see [Programmatic](/programmatic/)), or **dev** (test-time tooling).
+Because the config is plain JSON, agents can edit their own config and restart themselves. Most capabilities are coverage type **config** — set a key, then restart the CLI host or explicitly re-apply an embedded app. A few are **cli** (run a command), **auto** (default behavior), **code** (only available programmatically — see [Programmatic](/programmatic/)), or **dev** (test-time tooling).
 
 The full annotated config lives in [Configuration → Blueprint](/config/blueprint/), and folder conventions in [Folder Layout](/config/folder-layout/).
 
-## One responder, many channels
+## One agent definition, per-channel responders
 
-There is exactly one agent responder — the thing that turns an incoming prompt into a reply using your `runtime` model, tools, context, and memory. Channels are independent transports that feed prompts into that same responder and deliver its output:
+Each active channel gets its own configured responder and runtime harness — the components that turn an incoming prompt into a reply using the configured model, tools, context, and memory. Those responders are built from the same resolved agent config and share app-owned resources such as the configured memory store, but each harness has its own admission, session, and lifecycle boundary. Channels feed prompts into their own responder and deliver its output:
 
 | Channel | Section | Transport |
 | --- | --- | --- |
@@ -43,11 +45,11 @@ There is exactly one agent responder — the thing that turns an incoming prompt
 | A2A | `channels.plugins[]` (`@mono-agent/a2a-adapter`) | Agent-to-Agent provider |
 | Cron | `cron` | scheduled prompts |
 
-Each channel is its own JSON section and runs independently — one failing or waiting on config never blocks the others. See [Channels](/channels/) for per-channel setup.
+Each channel is its own JSON section and runs independently — one failing or waiting on config never blocks the others. This per-channel harness boundary is also why configured concurrency limits apply per channel rather than globally. See [Channels](/channels/) for per-channel setup.
 
-## Opt-in `enabled` and the five channel statuses
+## Channel defaults and the five statuses
 
-Every channel is **off by default**. You turn one on with its `enabled` flag. Put credentials such as `MONO_AGENT_TELEGRAM_BOT_TOKEN` in `.env`; the source-config example omits them:
+Communication channels are **off by default** and turn on with their `enabled` flag. The loopback `tui` operator endpoint and read-only `live` relay are deliberate exceptions: both default on with ephemeral ports and opt out with `enabled: false`. Put credentials such as `MONO_AGENT_TELEGRAM_BOT_TOKEN` in `.env`; the source-config example omits them:
 
 ```json
 {
@@ -62,7 +64,7 @@ When you run `mono-agent start`, each channel prints exactly one status line:
 
 | Status | Meaning |
 | --- | --- |
-| `disabled` | `enabled` is false (or unset). The channel does nothing. |
+| `disabled` | The resolved `enabled` value is false. For most channels omission resolves false; `tui` and `live` require an explicit false because they default on. |
 | `waiting_for_config` | Enabled but a required setting is missing. The start line names the exact missing field. |
 | `running` | Enabled and configured; the line shows its endpoint facts. |
 | `degraded` | Was running, but the live transport hit a transient failure (e.g. the Telegram poller crashed on a network switch / `ENETUNREACH`). The channel owns its own recovery, so the responder/harness stays alive and keeps serving while the transport restarts; the line shows `degraded: <reason>` with a warning badge. It flips back to `running` once the restarted transport stays up. |
@@ -101,7 +103,7 @@ Channels and tools also enforce their own destination allowlists (e.g. `telegram
 
 ## Configuration precedence: env > JSON > defaults
 
-Every config key has a matching `MONO_AGENT_*` environment variable. Resolution order, everywhere:
+Fields with a documented `MONO_AGENT_*` environment mapping use this resolution order; JSON-only fields stay in `mono-agent.config.json`:
 
 1. **Process environment** (`MONO_AGENT_*`) — highest priority.
 2. **`mono-agent.config.json`** — the JSON value.

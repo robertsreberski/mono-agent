@@ -79,6 +79,9 @@ jobs:
       - name: Check getting-started version pins
         run: pnpm run check:getting-started-version-pins
 
+      - name: Check documentation quality
+        run: pnpm run check:docs
+
       - name: Validate release package graph
         run: pnpm run release:validate -- --tag "${{ steps.release-smoke.outputs.tag }}"
 
@@ -87,6 +90,9 @@ jobs:
 
       - name: Build packages and demos
         run: pnpm run build
+
+      - name: Typecheck marked documentation snippets
+        run: pnpm run check:doc-snippets
 
       - name: Check agent-runtime deep imports
         run: pnpm run check:deep-imports
@@ -116,9 +122,9 @@ jobs:
     timeout-minutes: 20
 
     # website/ is an isolated pnpm workspace (own lockfile) that renders ../docs.
-    # Gate its full pipeline — check-asides -> sync-content -> astro build ->
-    # check-links — so the docs site cannot rot silently. Runs in parallel with
-    # `verify`; keep it out of that job so verify's wall time stays flat.
+    # Gate its build and rendered accessibility independently from the package
+    # verification lane. Runs in parallel with `verify` so its browser setup
+    # does not lengthen the package matrix.
     defaults:
       run:
         working-directory: website
@@ -138,5 +144,14 @@ jobs:
       - name: Install website dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Test website transforms
+        run: pnpm run test:unit
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
       - name: Build docs site (check-asides -> sync-content -> astro build -> check-links)
         run: pnpm run build
+
+      - name: Audit every built page for accessibility
+        run: pnpm run test:a11y

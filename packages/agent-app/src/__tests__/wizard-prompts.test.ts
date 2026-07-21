@@ -281,7 +281,7 @@ describe("wizard prompt builders", () => {
       "AskUser",
     ]);
     const ask = options.find((option) => option.value === "AskUser");
-    expect(ask?.hint).toContain("any channel");
+    expect(ask?.hint).toContain("web, Slack, or Telegram");
     const send = options.find((option) => option.value === "TelegramSendMessage");
     expect(send?.hint).toBe("proactive send (Telegram)");
     expect(options.find((option) => option.value === "RunHistory")?.hint).toContain("prior runs");
@@ -291,7 +291,7 @@ describe("wizard prompt builders", () => {
     const options = toolMultiselectOptions([]);
     expect(options.map((option) => option.value)).toEqual([...BUILTIN_TOOL_NAMES, ...APP_TOOL_NAMES, "AskUser"]);
     const ask = options.find((option) => option.value === "AskUser");
-    expect(ask?.hint).toContain("any channel");
+    expect(ask?.hint).toContain("web, Slack, or Telegram");
   });
 
   it("presetSelectOptions ends with the __custom__ escape hatch", () => {

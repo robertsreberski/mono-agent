@@ -1,10 +1,9 @@
 ---
 title: "Tool policy"
+description: "Allow or deny built-in and app-owned tools while keeping external MCP server boundaries explicit."
 sidebar:
   order: 1
 ---
-
-# Tool policy
 
 The tool policy decides which tools an agent may call — built-in tools (Read, Bash, …) and policy-gated app-owned MCP tools such as `RunHistory` and adapter send tools. It is **allow-all by default**: an agent with no `tools` block gets every policy-gated tool, and you subtract from there. You declare it under `tools.allowedTools` / `tools.disallowedTools` (coverage: `config`), with deny always winning and overlaps rejected up front. External MCP-server tools use server declaration as their boundary instead.
 
@@ -91,7 +90,7 @@ Managed built-ins: `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `NodeRepl`, 
 
 ## Adapter send tools
 
-The app can expose MCP tools that send messages back out through an already-enabled channel adapter: `SlackSendMessage`, `TelegramSendMessage` (optionally with non-blocking reply buttons), `TelegramSendFile` (document or photo), and the channel-agnostic structured `AskUser` (coverage: `config`).
+The app can expose MCP tools that send messages back out through an already-enabled channel adapter: `SlackSendMessage`, `TelegramSendMessage` (optionally with non-blocking reply buttons), `TelegramSendFile` (document or photo), and one structured `AskUser` tool across web, Slack, and Telegram (coverage: `config`).
 
 Under **allow-all** these are available automatically once the matching channel is enabled — you do not add them to any list. They only need an explicit `allowedTools` entry when you switch to a hand-picked allowlist: in that case, add the exact tool name **in addition** to valid `slack.*` / `telegram.*` adapter config. Either way, `disallowedTools` can remove them.
 

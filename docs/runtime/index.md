@@ -1,12 +1,11 @@
 ---
 title: "Runtime & Providers"
+description: "Understand runtime selection, provider configuration, sessions, tools, and safety controls."
 sidebar:
   order: 0
 ---
 
-# Runtime & Providers
-
-The runtime layer is what actually drives a model: which backend executes a turn, how reasoning effort and tool permissions are set, how failures fall back to backup models, how local providers are wired in, how provider sessions and concurrency are bounded, and which built-in tools (and their auto-guards) ship out of the box. Everything here is configured under `runtime`, `providers`, and `concurrency` in `mono-agent.config.json` and mirrored by `MONO_AGENT_*` environment variables.
+The runtime layer is what actually drives a model: which backend executes a turn, how reasoning effort and tool permissions are set, how failures fall back to backup models, how local providers are wired in, how provider sessions and concurrency are bounded, and which built-in tools (and their auto-guards) ship out of the box. The config-first controls live under `runtime`, `providers`, and `concurrency` in `mono-agent.config.json`, with the documented `MONO_AGENT_*` environment overrides. Custom runtimes, interactive approval callbacks, live input, and orchestration remain programmatic surfaces.
 
 ## At a glance
 

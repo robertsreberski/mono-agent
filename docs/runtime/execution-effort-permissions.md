@@ -1,10 +1,9 @@
 ---
 title: "Execution mode, effort & permissions"
+description: "Configure SDK or CLI execution, reasoning effort, permission posture, turn limits, and workspace scope."
 sidebar:
   order: 2
 ---
-
-# Execution mode, effort & permissions
 
 This page covers the `runtime.*` knobs that shape *how* a run executes once a backend is selected: whether the model runs through an in-process SDK or a CLI subprocess, how much reasoning effort it spends, how tool permissions are posed, and how many turns a run may take. All of these are `config` coverage (set in `mono-agent.config.json`) with a matching `MONO_AGENT_*` environment override. For *which* backend each model string maps to, see [Backends](/runtime/backends/).
 

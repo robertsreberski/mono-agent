@@ -1,10 +1,9 @@
 ---
 title: "Identity & soul"
+description: "Configure an agent's required identity, optional public name, and optional soul guardrails."
 sidebar:
   order: 1
 ---
-
-# Identity & soul
 
 Three separate surfaces describe an agent: the optional public `agent.name`, a **required identity** markdown document that declares role and boundaries, and an optional **soul** document that carries voice and guardrails. The public name is display metadata; the markdown files are what shape prompt behavior.
 
@@ -106,7 +105,7 @@ Use the soul for cross-cutting behavior that is not tied to any one task: how to
 
 The assembled prompt places the soul first, then the identity:
 
-```
+```text
 ## Core Guardrails
 <contents of soulPath, or the built-in default soul>
 

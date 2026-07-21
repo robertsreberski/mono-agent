@@ -38,9 +38,13 @@ A new package is rung 3 of 5. Confirm the lower rungs don't satisfy the need:
 }
 ```
 
-3. **README** — must contain these byte-exact section headings:
-   `## Category`, `## Responsibility`, `## Install / Usage`, `## Public API`,
-   `## Dependency Boundary`, `## What This Package Does Not Own`, `## Verification`.
+3. **README** — must contain these byte-exact section headings, once and in
+   this order: `## Category`, `## Responsibility`, `## Install / Usage`,
+   `## Architecture`, `## Public API`, `## Dependency Boundary`,
+   `## What This Package Does Not Own`, `## Related Documentation`, and
+   `## Verification`. Under Architecture add `### Data flow` and
+   `### Package structure`; under Public API add a hand-authored
+   `### Start here` before the generated inventory markers.
 4. **Tests** — focused tests under `src/__tests__/`; behavior lives with tests
    from the first commit.
 5. **Root wiring** — add to root `package.json` devDependencies as
@@ -49,6 +53,9 @@ A new package is rung 3 of 5. Confirm the lower rungs don't satisfy the need:
 ## Gate
 
 ```bash
+pnpm run generate:package-docs
+pnpm run generate:package-docs # must report 0 files updated
+pnpm run check:docs
 pnpm run check:architecture
 pnpm run release:validate -- --tag v<version>
 pnpm --filter @mono-agent/<name> run build && pnpm --filter @mono-agent/<name> test
@@ -63,8 +70,9 @@ section, adapter-neutrality violation in agent-contracts.
 - One clear responsibility, focused public API, no hidden cross-package coupling.
 - Dependencies only on categories in `allowedDependencyCategories`; if you need
   more, that's a design smell — re-read the ladder before widening.
-- User-facing packages need docs: `PACKAGES.md`, feature-registry entry, maybe a
-  playbook (hand off to the `docs-sync` skill).
+- User-facing packages need docs: run `generate:package-docs` for `PACKAGES.md`
+  and the website directory, then add the feature-registry entry and, when
+  useful, extend a playbook (hand off to the `docs-sync` skill).
 
 ## Adapter & channel checks (when the package is a channel driver)
 

@@ -1,10 +1,9 @@
 ---
 title: "Documentation MCP companion"
+description: "Install, register, inspect, and diagnose the version-matched offline documentation MCP companion for Codex, Claude Code, or an explicit agent runtime."
 sidebar:
   order: 3
 ---
-
-# Documentation MCP companion
 
 `@mono-agent/docs-mcp` gives an AI coding harness one read-only tool for
 searching **and reading** the version-matched mono-agent documentation and the
@@ -57,6 +56,10 @@ MONO_AGENT_VERSION="${MONO_AGENT_VERSION#mono-agent }"
 codex mcp add mono-agent-docs -- npx -y "@mono-agent/docs-mcp@$MONO_AGENT_VERSION"
 claude mcp add --scope user mono-agent-docs -- npx -y "@mono-agent/docs-mcp@$MONO_AGENT_VERSION"
 ```
+
+These registrations intentionally end at the package name. With no arguments,
+the executable is the long-running stdio MCP subprocess. Do not register
+`--check` or `--version`; those are terminating commands for a human shell.
 
 The exact version matters: the package contains a prebuilt documentation corpus,
 so pairing different versions can give the composer contracts that do not match
@@ -119,13 +122,14 @@ next targets. Cross-links expose a normalized `readTarget`; follow it with
 another `action: "read"` call rather than trying to interpret the original URL
 or chunk id yourself.
 
-Every response reports schema `mono-agent.docs.v2`, the documentation version,
-corpus digest, and `navigation` with concrete next calls. Unsupported or missing
-targets return structured `unsupported_target` or `target_not_found` errors plus
-a recovery search action. `mono-agent-docs://chunk/{chunkId}` remains a readable
-`text/markdown` resource for MCP clients that prefer resources, but it now
-expands to the same guided window as `action: "read"` rather than replaying the
-small retrieval chunk.
+Every tool response reports schema `mono-agent.docs.v2`, the documentation
+version, corpus digest, and `navigation` with concrete next calls. Unsupported
+or missing targets return structured `unsupported_target` or
+`target_not_found` errors plus a recovery search action.
+`mono-agent-docs://chunk/{chunkId}` remains a readable `text/markdown` resource
+for MCP clients that prefer resources. It renders the same expanded guided
+window as `action: "read"` rather than replaying the small retrieval chunk, but
+does not wrap that Markdown in the tool-response schema.
 
 The former `search_mono_agent_docs` name is not an alias. Install the exact
 matching package version and use `mono_agent_docs`; this keeps the model-facing
@@ -158,6 +162,29 @@ document/chunk artifact checksums, positions, dimensions, and finite vector
 values are validated before retrieval; corrupt or mismatched artifacts fail
 closed.
 
+## Package architecture
+
+The authoring and runtime paths are deliberately separate:
+
+```text
+package build  -> docs + composer references -> chunks + local embeddings -> corpus
+search action  -> validate corpus -> semantic/BM25 fusion -> excerpts + read targets
+read action    -> validate corpus -> resolve target -> anchored window + navigation
+chunk resource -> validate corpus -> resolve chunk -> anchored Markdown window
+```
+
+The build pipeline lives in `scripts/generate-corpus.mjs`; it is the only stage
+that reads repository documentation and writes corpus artifacts. At runtime,
+`src/corpus.ts` validates and loads those packaged artifacts, `src/search.ts`
+ranks search results locally, `src/reader.ts` resolves supported targets and
+builds expanded windows, links, continuations, and recovery actions, and
+`src/server.ts` dispatches the search/read actions plus the resource template.
+
+Programmatic hosts may call `createMonoAgentDocsMcpServer()`. The factory returns
+an unconnected MCP SDK server, so the host must attach and own its transport.
+The `mono-agent-docs-mcp` executable adds the ready-made stdio transport and is
+the normal subprocess used by Codex, Claude Code, or `tools.mcpConfigPath`.
+
 ## Diagnostics
 
 Run the published executable directly when checking an installation:
@@ -170,6 +197,7 @@ npx -y "@mono-agent/docs-mcp@$MONO_AGENT_VERSION" --check
 ```
 
 `--version` prints the package, docs, corpus, and embedding-model identities as
-JSON. `--check` validates the bundled corpus and performs a representative
-composer-scoped search. With no flag, stdout is reserved for MCP stdio protocol
-messages; startup or validation failures are written to stderr and exit nonzero.
+JSON. `--check` is a human diagnostic: it validates the bundled corpus, performs
+a representative composer-scoped search, prints JSON, and exits. With no flag,
+stdout is reserved for MCP stdio protocol messages; startup or validation
+failures are written to stderr and exit nonzero.

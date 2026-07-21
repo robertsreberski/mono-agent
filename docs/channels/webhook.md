@@ -1,10 +1,9 @@
 ---
 title: "Webhook"
+description: "Expose loopback-safe sync or async webhook endpoints, track request status, and configure prompts, notifications, model overrides, and watchdogs."
 sidebar:
   order: 4
 ---
-
-# Webhook
 
 The webhook channel turns your agent into an HTTP endpoint: `POST` a JSON body with `text`, and the agent runs a turn. It is the zero-credential channel `mono-agent init` enables by default — a loopback smoke test you can `curl` immediately, and the integration point for automations, scripts, and other services. Coverage: **config** (`webhook` section), plus env overrides.
 
@@ -25,26 +24,31 @@ The webhook channel turns your agent into an HTTP endpoint: `POST` a JSON body w
 ```
 
 ```bash
-curl -s http://127.0.0.1:<port>/webhook/invoke \
+PORT=3000 # Replace 3000 with the port printed at startup.
+curl -s "http://127.0.0.1:${PORT}/webhook/invoke" \
   -H 'content-type: application/json' \
   -d '{"text": "Summarize today’s standup notes."}'
 ```
 
 The actual bound host/port (when `port: 0`) is printed in the start log. In **sync** mode the agent's answer is returned in the response body.
 
+`mono-agent init` chooses and writes `enabled: true` for this starter endpoint.
+That scaffold choice is distinct from the loader default: if `enabled` is
+omitted from a hand-written config, the webhook channel remains off.
+
 ## Configuration
 
 | Key | Type | Default | Notes |
 |-----|------|---------|-------|
-| `enabled` | boolean | `true` | Channel on/off. Enabled by `init`. |
+| `enabled` | boolean | `false` | Channel on/off. `mono-agent init` explicitly scaffolds `true`. |
 | `host` | string | `127.0.0.1` | Bind address. Loopback-only unless `allowNonLoopback` is `true`. |
 | `port` | integer | `0` | `0` picks a free port (printed at startup). `1`–`65535` to pin one. |
 | `path` | string | `/webhook/invoke` | POST path for the default (single) endpoint. |
 | `defaultMode` | `sync` \| `async` | `sync` | Response mode when a request does not override it. |
 | `allowNonLoopback` | boolean | `false` | Required to bind a non-loopback `host`. See warning below. |
 | `apiKey` | string | — | Optional static bearer token on loopback; required for a non-loopback bind. Prefer `MONO_AGENT_WEBHOOK_API_KEY` over committed JSON. Protects invoke and status routes. |
-| `retentionMs` | integer | `300000` | How long async run statuses are retained (min 1, max 86_400_000). |
-| `maxStoredRequests` | integer | `100` | Max async statuses kept before pruning (min 1, max 10_000). Async only. |
+| `retentionMs` | integer | `300000` | How long completed/request statuses are retained (min 1, max 86_400_000). |
+| `maxStoredRequests` | integer | `100` | Maximum status entries kept before oldest-first pruning (min 1, max 10_000). |
 | `maxRunMs` | integer | `1200000` | Adapter-level wall-clock fallback per run (20 min). `endpoints[].maxRunMs` wins; `0` disables. Min 0, max 86_400_000. See [Run watchdog](#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve). |
 | `endpoints[].maxRunMs` | integer | inherited | Per-endpoint watchdog override. `0` disables only that endpoint; otherwise min 1, max 86_400_000. |
 | `prompt` | string | — | Pre-instructions prepended to the request text (see [Prompts](#endpoint-prompts)). |
@@ -84,19 +88,42 @@ The request returns immediately with **HTTP 202** and a `statusUrl`. Poll that U
 
 ```bash
 # kick off
-curl -s http://127.0.0.1:<port>/webhook/invoke \
+PORT=3000 # Replace 3000 with the port printed at startup.
+curl -s "http://127.0.0.1:${PORT}/webhook/invoke" \
   -H 'content-type: application/json' \
-  -H "authorization: Bearer $MONO_AGENT_WEBHOOK_API_KEY" \
+  -H "authorization: Bearer ${MONO_AGENT_WEBHOOK_API_KEY}" \
   -d '{"text": "Research and draft the weekly report.", "mode": "async"}'
 # → 202 { "status": "accepted", "requestId": "...", "statusUrl": "/webhook/requests/..." }
 
 # poll
-curl -s http://127.0.0.1:<port>/webhook/requests/<requestId> \
-  -H "authorization: Bearer $MONO_AGENT_WEBHOOK_API_KEY"
+REQUEST_ID='replace-with-request-id'
+curl -s "http://127.0.0.1:${PORT}/webhook/requests/${REQUEST_ID}" \
+  -H "authorization: Bearer ${MONO_AGENT_WEBHOOK_API_KEY}"
 # → { "status": "succeeded", "text": "..." }
 ```
 
 Async statuses are kept in memory subject to `retentionMs` and `maxStoredRequests`; a status URL polled after expiry returns `not_found`. If a turn is already running and the runtime cannot accept another, a request returns **HTTP 409** (`status: "busy"`) — that transient state is not stored or replayed via the status URL.
+
+### HTTP status contract
+
+| Route outcome | HTTP status | JSON `status` | Status-store behavior |
+| --- | ---: | --- | --- |
+| Async invocation admitted | `202` | `accepted` | A corresponding `running` entry is stored. |
+| Stored status lookup | `200` | `running`, `succeeded`, `failed`, or `cancelled` | Retained until pruning or process restart. |
+| Sync success | `200` | `succeeded` | Stored. |
+| Sync cancellation | `499` | `cancelled` | Stored. |
+| Sync failure | `500` | `failed` | Stored. |
+| Same endpoint + conversation already active | `409` | `busy` | Never stored. |
+| Unknown or expired request id | `404` | `not_found` | No entry exists. |
+| Missing or invalid configured bearer | `401` | `unauthorized` | Never parsed or stored. |
+| Invalid JSON/request shape | `400` | `failed` | Never admitted or stored. |
+| Adapter stopping before admission | `503` | `failed` | Never admitted or stored. |
+
+The status map is adapter-owned, bounded process memory; it is not durable and
+is cleared by restart. Conversation history has a different owner. The adapter
+forwards the exact `conversationId` to its responder, and the config-first
+agent-app responder applies the host's durable history/session policy. A custom
+responder may provide another policy or no persistence at all.
 
 Harness response metadata is an external boundary. `metadata.summary` may include normal run status, model, usage, and failure information, but never the compiled `systemPrompt`. The harness removes it on success and early-failure paths, and the webhook adapter sanitizes untrusted custom responders again for sync responses, async storage/status reads, and result callbacks. Private local recorder artifacts may retain the prompt for operator inspection; it is not serialized onto webhook surfaces.
 

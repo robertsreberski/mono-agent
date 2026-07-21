@@ -1,10 +1,9 @@
 ---
 title: "Getting Started"
+description: "Follow the path from installing mono-agent to creating, validating, and understanding your first agent."
 sidebar:
   order: 0
 ---
-
-# Getting Started
 
 This section takes you from an empty folder to a readiness-proven agent. Bare `mono-agent init` on a TTY names the agent, searches the provider catalogs, and runs a real no-tool check for every selected route before the strict full **Agent ready** gate; flag/non-TTY init creates a scaffold only. mono-agent remains config-first: one `mono-agent.config.json`, driven by the CLI.
 

@@ -1,10 +1,9 @@
 ---
 title: "Slack"
+description: "Connect an allowlisted Slack workspace over Socket Mode, configure native controls and actions, and understand final-only delivery and reconnect behavior."
 sidebar:
   order: 2
 ---
-
-# Slack
 
 The Slack channel connects your agent to a Slack workspace over **Socket Mode** (no public inbound URL required). It is mention-triggered, provides native model/effort selectors, shows a 👀 "seen" reaction or assistant status while it works, and keeps any temporary tool-activity message separate from the final reply. Coverage: **config + code** (`slack.socket-mode`, `slack.shortcuts`, `slack.app-home`, and `runtime.per-trigger-model`).
 
@@ -295,6 +294,26 @@ The heartbeat watchdog and reconnect loop work out of the box, but every thresho
 | `slack.reconnectStabilityMs` | `MONO_AGENT_SLACK_RECONNECT_STABILITY_MS` |
 | `slack.reconnectStartupGraceMs` | `MONO_AGENT_SLACK_RECONNECT_STARTUP_GRACE_MS` |
 | `slack.drainDeadlineMs` | `MONO_AGENT_SLACK_DRAIN_DEADLINE_MS` |
+
+## Programmatic composition
+
+Use the highest abstraction that fits the host:
+
+1. The config-first `@mono-agent/agent-app` driver is the normal product path.
+   It loads `slack.*`, supplies runtime controls and history hooks, and reports
+   channel lifecycle state.
+2. `startSlackAdapter(options)` is the normal standalone path. It creates the
+   Web API client, discovers the bot identity with `auth.test`, constructs the
+   event adapter and Socket Mode runner, starts reconnection, and returns one
+   async `stop()`.
+3. Compose `SlackWebApiClient`, `SlackAdapter`, and `SlackSocketModeRunner`
+   separately only when a custom host needs to own those lifecycle seams.
+4. Use `SlackMessageStream` or the Markdown helpers alone only for delivery or
+   boundary conversion; they do not open Socket Mode or admit events.
+
+See the
+[`@mono-agent/slack-adapter` package guide](https://github.com/robertsreberski/mono-agent/tree/main/packages/slack-adapter)
+for a standalone example and its source-module map.
 
 ## Slack app setup
 

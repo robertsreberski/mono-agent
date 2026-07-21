@@ -2,8 +2,10 @@
 // callback that can approve, deny, or "always approve" (session-scoped
 // allowlist). Adapted from zeroclaw's ApprovalManager pattern.
 //
-// Hosts opt in by passing `onToolApprovalRequest` to createRuntime. When the
-// callback is not supplied, the gate falls back to per-tier defaults:
+// Runtime bridges opt in by passing `onToolApprovalRequest`; the Claude SDK and
+// Pi bridges do not install this manager when that callback is absent. A host
+// that calls `createApprovalManager` directly without a callback gets these
+// low-level per-tier defaults:
 //   low risk    → auto-approve
 //   medium risk → auto-approve (no host means "don't pause")
 //   high risk   → deny (fail closed)

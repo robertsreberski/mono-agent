@@ -1,10 +1,9 @@
 ---
 title: "Fully Local Ollama Agent (No Cloud)"
+description: "Run mono-agent against a local Ollama model without cloud model traffic."
 sidebar:
   order: 3
 ---
-
-# Fully Local Ollama Agent (No Cloud)
 
 This playbook builds an agent that runs entirely on a local [Ollama](https://ollama.com) provider through the Pi SDK runtime, with journal memory backed by local embeddings and a sandbox that blocks all non-localhost network traffic. No cloud API keys, no outbound calls.
 

@@ -1,10 +1,9 @@
 ---
 title: "OpenAI-Compatible Endpoint for Open WebUI"
+description: "Expose mono-agent through its OpenAI-compatible API and connect an Open WebUI client."
 sidebar:
   order: 4
 ---
-
-# OpenAI-Compatible Endpoint for Open WebUI
 
 This playbook exposes a mono-agent agent as an OpenAI-compatible `/v1` endpoint so [Open WebUI](https://github.com/open-webui/open-webui) (or any OpenAI client) can list the model, stream responses token-by-token over SSE, and keep multi-turn conversation state per chat.
 

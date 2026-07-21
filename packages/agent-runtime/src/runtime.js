@@ -8,10 +8,10 @@
 // method that resolves the right provider bridge based on `options.model` +
 // `options.executionMode`.
 //
-// The built-in bridges (claude-sdk, claude-cli, pi-native, codex-app,
-// opencode-app) register themselves on import via the runtime registry. Hosts
-// that need
-// finer control can keep using the named exports (resolveRuntimeBridge,
+// The runtime registry contains a static table for the five built-in bridges
+// (claude-sdk, claude-cli, pi-native, codex-app, opencode-app) and lazily imports
+// the matching implementation only when a run selects it. Hosts that need finer
+// control can keep using the named exports (resolveRuntimeBridge,
 // generateClaudeResponse, etc.) directly.
 //
 // Return shape from `.run()`:

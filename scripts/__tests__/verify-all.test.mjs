@@ -82,9 +82,11 @@ describe("verify-all", () => {
       "check:codex-discoverability",
       "check:consumer-docs-consistency",
       "check:getting-started-version-pins",
+      "check:docs",
       "release:validate",
       "check:architecture",
       "build",
+      "check:doc-snippets",
       "check:deep-imports",
       "verify:consumers",
       "release:pack",
@@ -168,9 +170,11 @@ describe("verify-all", () => {
       "check:codex-discoverability",
       "check:consumer-docs-consistency",
       "check:getting-started-version-pins",
+      "check:docs",
       "release:validate",
       "check:architecture",
       "build",
+      "check:doc-snippets",
       "check:deep-imports",
       "verify:consumers",
     ]);
@@ -629,6 +633,10 @@ describe("verify-all", () => {
       "      - name: Check getting-started version pins",
       "        run: pnpm run check:getting-started-version-pins",
     ].join("\n");
+    const docsQuality = [
+      "      - name: Check documentation quality",
+      "        run: pnpm run check:docs",
+    ].join("\n");
     const mutations = [
       replaceExactly(
         source,
@@ -642,8 +650,8 @@ describe("verify-all", () => {
       ),
       replaceExactly(
         source,
-        `${releaseTag}\n\n${gettingStartedPins}\n\n${releaseValidate}`,
-        `${gettingStartedPins}\n\n${releaseValidate}\n\n${releaseTag}`,
+        `${releaseTag}\n\n${gettingStartedPins}\n\n${docsQuality}\n\n${releaseValidate}`,
+        `${gettingStartedPins}\n\n${docsQuality}\n\n${releaseValidate}\n\n${releaseTag}`,
       ),
     ];
 
@@ -1065,6 +1073,11 @@ const CI_RUN_STEP_CONTRACTS = Object.freeze([
     command: "pnpm",
     args: ["run", "check:getting-started-version-pins"],
   }),
+  gateRunContract("pnpm run check:docs", {
+    label: "check:docs",
+    command: "pnpm",
+    args: ["run", "check:docs"],
+  }),
   setupRunContract("release-tag derivation", literalScript([
       "set -euo pipefail",
       "VERSION=\"$(node -e \"process.stdout.write(require('./packages/agent-app/package.json').version)\")\"",
@@ -1084,6 +1097,11 @@ const CI_RUN_STEP_CONTRACTS = Object.freeze([
     label: "build",
     command: "pnpm",
     args: ["run", "build"],
+  }),
+  gateRunContract("pnpm run check:doc-snippets", {
+    label: "check:doc-snippets",
+    command: "pnpm",
+    args: ["run", "check:doc-snippets"],
   }),
   gateRunContract("pnpm run check:deep-imports", {
     label: "check:deep-imports",

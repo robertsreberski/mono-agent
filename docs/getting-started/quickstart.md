@@ -1,10 +1,9 @@
 ---
 title: "Your First Agent"
+description: "Create, validate, start, and shape a first mono-agent through the guided setup flow."
 sidebar:
   order: 2
 ---
-
-# Your First Agent
 
 This page walks the macOS happy path: complete the guided `mono-agent init` wizard, let it start the durable background agent, and use the dedicated SELF-CONFIG conversation to explore capabilities and shape the agent's workflow. A real model reply still requires provider credentials or a configured local provider.
 
@@ -208,12 +207,13 @@ On macOS, `mono-agent start` backgrounds the agent with launchd and returns. On 
 Send a request to the printed webhook path. The default endpoint path is `/webhook/invoke` and the default mode is `sync`, so the HTTP response carries the agent's reply directly:
 
 ```bash
-curl -s http://127.0.0.1:<PORT>/webhook/invoke \
+PORT=3000 # Replace 3000 with the printed port.
+curl -s "http://127.0.0.1:${PORT}/webhook/invoke" \
   -H 'content-type: application/json' \
   -d '{"text": "Say hello and tell me what you are."}'
 ```
 
-Replace `<PORT>` with the port from the `start` output. A response means the runtime, model, identity, and webhook channel are all wired correctly — you have a working agent. Without valid provider credentials or a reachable local provider, the webhook request should fail honestly rather than returning a fake model reply.
+Replace `3000` with the port from the `start` output. A response means the runtime, model, identity, and webhook channel are all wired correctly — you have a working agent. Without valid provider credentials or a reachable local provider, the webhook request should fail honestly rather than returning a fake model reply.
 
 :::note
 Time-to-first-validated-folder is usually under a minute when Node is installed and the CLI package or source build is already available: `mkdir`, `init`, and `validate` are local filesystem/config checks. Time-to-first-reply is not a fixed promise; it depends on provider auth, network latency, model availability, and whether dependencies need to be installed or built first.

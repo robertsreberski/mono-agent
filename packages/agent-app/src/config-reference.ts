@@ -72,7 +72,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     defaultLabel: "127.0.0.1",
     defaultValue: "127.0.0.1",
     example: "127.0.0.1",
-    description: "Loopback host for the app-owned AskUser/tool-progress bridge.",
+    description: "Bind host for the app-owned AskUser/tool-progress bridge. Defaults to loopback; keep it local because non-loopback values are not rejected.",
   },
   {
     jsonPath: "interaction.bridge.port",
@@ -90,7 +90,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     defaultLabel: "600000",
     defaultValue: 600_000,
     example: 600_000,
-    description: "Maximum wait for one AskUser question.",
+    description: "Maximum wait for one AskUser interaction (one to five questions).",
   },
   {
     jsonPath: "interaction.progress.enabled",
@@ -609,11 +609,10 @@ export function buildGeneratedConfigReferenceMarkdown(): string {
     .join("\n");
   return `---
 title: "Generated config reference"
+description: "Complete generated reference for mono-agent.config.json fields, environment overrides, defaults, examples, and plugin-channel envelopes."
 sidebar:
   order: 4
 ---
-
-# Generated config reference
 
 This page is generated from the same config field registries that power \`mono-agent config\`, recipe output, and the JSON Schema. Do not edit this table by hand; run \`pnpm run generate:config-reference\`.
 

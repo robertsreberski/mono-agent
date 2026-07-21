@@ -33,9 +33,11 @@ site.
 - `docs/<area>/*.md` (channels, config, runtime, memory, tools, observability, …)
 - `docs/reference/feature-registry.md` — the feature→config map; every new config key lands here
 - `docs/reference/feature-matrix.md`, `docs/reference/presets.md`
-- `docs/playbooks/*` — 16 task-shaped playbooks; extend the closest one
-- Package READMEs — 7 required sections, enforced by `check:architecture`; the
-  `## Public API` section must stay in parity with `src/index.ts` (drift checks below)
+- `docs/playbooks/*` — task-shaped playbooks; extend the closest one
+- Package READMEs — 9 required sections in a fixed order, enforced by
+  `check:architecture`; `## Architecture` includes data flow and package
+  structure, while `## Public API` starts with a curated entry-point map and
+  keeps its generated inventory in parity with the real export map
 - Root `README.md`, `PACKAGES.md`
 - `demos/*/IDENTITY.example.md`, `demos/*/SOUL.example.md`, and any other
   `demos/*/*.example.md` — copy-paste seed templates that actively break a fresh
@@ -83,6 +85,20 @@ This check caught the observability README drift, stale `*FieldGroup` names,
 the missing `toCronJobs` export, the phantom `AgentMessageStreamResult`, and the
 agent-runtime deep-subpath count drift.
 
+**Catalog metadata and package navigation are generated.** After changing a
+catalog entry, workspace dependency, or package README, refresh metadata,
+`PACKAGES.md`, and the website package directory twice:
+
+```bash
+pnpm run generate:package-docs
+pnpm run generate:package-docs # must report 0 files updated
+pnpm run check:docs
+pnpm run check:architecture
+```
+
+Do not edit content inside `package-metadata`, `package-dependency-graph`, or
+`package-directory` markers by hand.
+
 **Rename ⇒ grep the old name across docs.** When a PR renames/removes an exported
 symbol, grep the old name before closing the pass — README samples and docs prose
 don't move with the code:
@@ -129,6 +145,7 @@ does not build it:
 pnpm -C website install                    # first time or after dep changes
 pnpm -C website run check:asides           # canonical docs: no empty Starlight asides
 pnpm -C website build                      # check-asides + sync-content + astro build + check-links
+pnpm -C website run test:a11y              # Playwright + axe over every built HTML route
 node website/scripts/sync-content.mjs      # sync only
 node website/scripts/check-links.mjs       # link check only (needs dist/)
 pnpm -C website preview -- --port 4329     # manual review
@@ -151,12 +168,15 @@ pnpm -C website preview -- --port 4329     # manual review
   `ln -sfn <main-repo>/website/node_modules website/node_modules`.
 - Starlight only applies markdown features to files physically under
   `src/content/docs` — that's why sync copies instead of loading `../docs`.
-- Keep README section headings byte-exact (`## Category`, `## Responsibility`,
-  `## Install / Usage`, `## Public API`, `## Dependency Boundary`,
-  `## What This Package Does Not Own`, `## Verification`) or the arch gate fails.
+- Keep the nine README section headings and order byte-exact: `## Category`,
+  `## Responsibility`, `## Install / Usage`, `## Architecture`,
+  `## Public API`, `## Dependency Boundary`,
+  `## What This Package Does Not Own`, `## Related Documentation`, and
+  `## Verification`.
 - `website/scripts/check-starlight-asides.mjs` rejects an opening Starlight
   aside fence immediately followed by its closing fence; the website build and
-  CI job both run it before syncing canonical docs. Fenced `ts` code blocks in
-  `docs/playbooks/**` and `docs/programmatic/**` remain a known blind spot: they
-  are **not** type-checked against the packages they demo, so verify those
-  snippets against real package types by hand until a dedicated gate lands.
+  CI job both run it before syncing canonical docs.
+- Mark runnable TypeScript examples with `<!-- doc-test:typescript -->`
+  immediately before their fence. `pnpm run check:doc-snippets` typechecks only
+  those complete examples after the package build; leave illustrative fragments
+  unmarked and describe their omitted context.

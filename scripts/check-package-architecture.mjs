@@ -11,18 +11,15 @@ import {
 } from "./package-catalog.mjs";
 import { findAdapterNeutralityErrors } from "./lib/adapter-neutrality.mjs";
 import { findPackagePublicApiDocErrors } from "./lib/public-api-docs.mjs";
+import {
+  findPackageDocGenerationErrors,
+  findPackageReadmeStructureErrors,
+  REQUIRED_PACKAGE_README_SECTIONS,
+} from "./lib/package-docs.mjs";
 
 const root = process.cwd();
 const packageScope = "@mono-agent/";
-const requiredReadmeSections = [
-  "## Category",
-  "## Responsibility",
-  "## Install / Usage",
-  "## Public API",
-  "## Dependency Boundary",
-  "## What This Package Does Not Own",
-  "## Verification",
-];
+const requiredReadmeSections = REQUIRED_PACKAGE_README_SECTIONS.map((section) => `## ${section}`);
 
 const errors = [];
 const catalogByName = packageByName();
@@ -181,6 +178,8 @@ for (const staleReference of staleReferences) {
 
 errors.push(...findAdapterNeutralityErrors({ root, channelIds: SHIPPED_CHANNEL_IDS }));
 errors.push(...findPackagePublicApiDocErrors({ root, catalog: packageCatalog }));
+errors.push(...findPackageDocGenerationErrors({ root, catalog: packageCatalog }));
+errors.push(...findPackageReadmeStructureErrors({ root, catalog: packageCatalog }));
 
 if (errors.length > 0) {
   console.error("Package architecture check failed:");

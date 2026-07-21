@@ -1,10 +1,9 @@
 ---
 title: "Sandbox"
+description: "Constrain Pi-owned commands with filesystem and network policy and control unavailable-engine fallback behavior."
 sidebar:
-  order: 3
+  order: 5
 ---
-
-# Sandbox
 
 For Pi-native agents, the sandbox confines mono-agent-owned commands by wrapping them with `srt` (the native sandbox runtime) and a generated settings file: a filesystem scope (readable/writable roots, deny-write globs), a network policy, and a fallback for when the sandbox engine is unavailable. This includes both `Bash` commands and the child process behind `NodeRepl`. This page covers the `sandbox` config block, the matching `MONO_AGENT_SANDBOX_*` env vars, and the monotonic merge that lets request-scoped policies tighten — but never widen — the configured baseline.
 
@@ -123,7 +122,7 @@ Loopback is never implicit in `allowlist` mode. Enabled app-owned ask tools need
 }
 ```
 
-```
+```bash
 MONO_AGENT_SANDBOX_NETWORK=allowlist
 MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST=*.githubusercontent.com,registry.npmjs.org
 ```

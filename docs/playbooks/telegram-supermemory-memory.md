@@ -1,10 +1,9 @@
 ---
 title: "Personal Telegram Assistant with Supermemory"
+description: "Build a private Telegram assistant with hosted Supermemory capture and recall."
 sidebar:
   order: 2
 ---
-
-# Personal Telegram Assistant with Supermemory
 
 This playbook wires a private Telegram bot to an **external [Supermemory](https://supermemory.ai) instance** instead of mono-agent's built-in BuJo engine. Supermemory does memory extraction and consolidation server-side, so you do not need a separate memory chat LLM or local embeddings — the agent just posts each turn and recalls relevant memories over REST.
 

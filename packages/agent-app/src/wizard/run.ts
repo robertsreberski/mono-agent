@@ -1257,13 +1257,13 @@ function channelSendTools(channels: readonly string[]): string[] {
  *   2. Built-ins — file/shell/web tools.
  *   3. App tools — safe host capabilities such as bounded run inspection.
  *   4. Channel tools — the send/ask tools that came with the channels you enabled,
- *      plus AskUser (ask the human, any channel).
+ *      plus AskUser (structured questions in web, Slack, or Telegram).
  */
 function toolSituationFraming(draft: DraftAnswers, alwaysOn: readonly string[]): string {
   const sends = channelSendTools(draft.channels);
   const channelLine = sends.length > 0
-    ? `Channel tools (from the channels you enabled): ${sends.join(", ")}, plus AskUser (ask the human, any channel).`
-    : "Channel tools: AskUser (ask the human, any channel).";
+    ? `Channel tools (from the channels you enabled): ${sends.join(", ")}, plus AskUser (structured questions in web, Slack, or Telegram).`
+    : "Channel tools: AskUser (structured questions in web, Slack, or Telegram).";
   return [
     alwaysOn.length > 0
       ? `Always on (auto-provisioned, not affected by this choice): ${alwaysOnDisplay(alwaysOn).join(", ")}.`

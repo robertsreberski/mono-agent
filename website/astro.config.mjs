@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import { rehypeFocusableTables } from './scripts/rehype-focusable-tables.mjs';
 
 // Canonical URL: auto-filled from Vercel's production domain at build time (enables
 // the sitemap + canonical tags on deploys); left undefined locally.
@@ -12,6 +13,11 @@ const site = process.env.VERCEL_PROJECT_PRODUCTION_URL
 export default defineConfig({
   // Served from the Vercel project root (no GitHub Pages base path).
   site,
+  // Starlight makes wide tables horizontally scrollable. Put those regions in
+  // the keyboard tab order so keyboard users can reach and scroll them too.
+  markdown: {
+    rehypePlugins: [rehypeFocusableTables],
+  },
   // docs/reference/recipes.md was renamed to docs/reference/presets.md; keep the
   // old URL working for external bookmarks and deep links.
   redirects: {
