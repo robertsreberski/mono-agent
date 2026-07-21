@@ -469,7 +469,18 @@ type SlackAskAction =
   | { readonly kind: "other" }
   | { readonly kind: "done" };
 
-const SLACK_ASK_ACTION_ID = "mono_agent_ask_user";
+const SLACK_ASK_ACTION_ID_PREFIX = "mono_agent_ask_user";
+
+function slackAskActionId(action: SlackAskAction): string {
+  if (action.kind === "option") return `${SLACK_ASK_ACTION_ID_PREFIX}_option_${String(action.optionIndex)}`;
+  return `${SLACK_ASK_ACTION_ID_PREFIX}_${action.kind}`;
+}
+
+function isSlackAskActionId(value: string): boolean {
+  return value === `${SLACK_ASK_ACTION_ID_PREFIX}_other`
+    || value === `${SLACK_ASK_ACTION_ID_PREFIX}_done`
+    || /^mono_agent_ask_user_option_[0-2]$/u.test(value);
+}
 
 function slackAskActionValue(interactionId: string, questionIndex: number, action: SlackAskAction): string {
   const suffix = action.kind === "option" ? `o:${String(action.optionIndex)}` : action.kind === "other" ? "c" : "d";
@@ -522,7 +533,7 @@ function renderSlackAsk(snapshot: ChannelAskSnapshot, selectedOptionIds: Readonl
           SLACK_OPTION_TEXT_MAX_CODE_POINTS,
         ),
       },
-      action_id: SLACK_ASK_ACTION_ID,
+      action_id: slackAskActionId({ kind: "option", optionIndex }),
       value: slackAskActionValue(snapshot.interactionId, snapshot.activeQuestionIndex, {
         kind: "option",
         optionIndex,
@@ -531,14 +542,14 @@ function renderSlackAsk(snapshot: ChannelAskSnapshot, selectedOptionIds: Readonl
     {
       type: "button",
       text: { type: "plain_text", text: "Other" },
-      action_id: SLACK_ASK_ACTION_ID,
+      action_id: slackAskActionId({ kind: "other" }),
       value: slackAskActionValue(snapshot.interactionId, snapshot.activeQuestionIndex, { kind: "other" }),
     },
     ...(question.multiSelect
       ? [{
           type: "button",
           text: { type: "plain_text", text: "Done" },
-          action_id: SLACK_ASK_ACTION_ID,
+          action_id: slackAskActionId({ kind: "done" }),
           value: slackAskActionValue(snapshot.interactionId, snapshot.activeQuestionIndex, { kind: "done" }),
           style: "primary",
         }]
@@ -550,7 +561,7 @@ function renderSlackAsk(snapshot: ChannelAskSnapshot, selectedOptionIds: Readonl
       { type: "header", text: { type: "plain_text", text: `${question.header} · ${String(snapshot.activeQuestionIndex + 1)}/${String(snapshot.questions.length)}` } },
       { type: "section", text: { type: "plain_text", text: [question.question, ...question.options.map((option, index) => `${String(index + 1)}. ${option.label} — ${option.description}`)].join("\n\n") } },
       { type: "context", elements: [{ type: "plain_text", text: question.multiSelect ? "Select one or more, then Done—or reply with a custom answer." : "Select one, or reply with a custom answer." }] },
-      { type: "actions", block_id: `ask_user_${String(snapshot.activeQuestionIndex)}`, elements },
+      { type: "actions", elements },
     ],
   };
 }
@@ -1923,10 +1934,13 @@ export class SlackAdapter {
       }
     }
     const askAction = actions.find((candidate) =>
-      candidate.action_id === SLACK_ASK_ACTION_ID && typeof candidate.value === "string"
+      typeof candidate.action_id === "string" && isSlackAskActionId(candidate.action_id)
     );
-    if (askAction !== undefined && typeof askAction.value === "string") {
-      return await this.handleAskBlockAction(payload, askAction.value);
+    if (askAction !== undefined) {
+      if (typeof askAction.action_id !== "string" || typeof askAction.value !== "string") {
+        return { kind: "ignored", reason: "unbound" };
+      }
+      return await this.handleAskBlockAction(payload, askAction.action_id, askAction.value);
     }
     const action = actions.find(
       (candidate) => typeof candidate.action_id === "string" && this.homeButtons.has(candidate.action_id),
@@ -1945,11 +1959,18 @@ export class SlackAdapter {
 
   private async handleAskBlockAction(
     payload: SlackBlockActionsPayload,
+    actionId: string,
     value: string,
   ): Promise<SlackInteractionHandlingResult> {
     const parsed = parseSlackAskActionValue(value);
     const channelId = payload.channel?.id;
-    if (parsed === undefined || channelId === undefined || !this.isAuthorized(channelId) || this.pendingAsks === undefined) {
+    if (
+      parsed === undefined
+      || slackAskActionId(parsed.action) !== actionId
+      || channelId === undefined
+      || !this.isAuthorized(channelId)
+      || this.pendingAsks === undefined
+    ) {
       return { kind: "ignored", reason: "unbound", ...(parsed === undefined ? {} : { id: parsed.interactionId }) };
     }
     const presentation = this.askPresentations.get(parsed.interactionId);

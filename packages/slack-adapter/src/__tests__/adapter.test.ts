@@ -180,11 +180,31 @@ describe("SlackAdapter", () => {
       text: "*Draft reply*",
     });
     const controls = api.postMessageCalls[1]?.blocks as Array<{
+      type?: string;
+      block_id?: string;
       elements?: Array<{ action_id?: string; text?: { text?: string }; value?: string }>;
     }>;
-    const send = controls.flatMap((block) => block.elements ?? [])
+    const actionBlock = controls.find((block) => block.type === "actions");
+    const buttons = actionBlock?.elements ?? [];
+    expect(buttons.map((button) => button.action_id)).toEqual([
+      "mono_agent_ask_user_option_0",
+      "mono_agent_ask_user_option_1",
+      "mono_agent_ask_user_option_2",
+      "mono_agent_ask_user_other",
+    ]);
+    expect(new Set(buttons.map((button) => button.action_id)).size).toBe(buttons.length);
+    expect(actionBlock).not.toHaveProperty("block_id");
+    const send = buttons
       .find((element) => element.text?.text === "Send");
-    expect(send?.action_id).toBe("mono_agent_ask_user");
+    expect(send?.action_id).toBe("mono_agent_ask_user_option_0");
+
+    await expect(adapter.handleInteraction({
+      type: "block_actions",
+      channel: { id: "D123" },
+      message: { ts: "200.000001", thread_ts: "171.000001" },
+      actions: [{ action_id: "mono_agent_ask_user_other", value: send!.value! }],
+    })).resolves.toEqual({ kind: "ignored", reason: "unbound", id: snapshot.interactionId });
+    expect(submitAskAnswers).not.toHaveBeenCalled();
 
     await expect(adapter.handleInteraction({
       type: "block_actions",
@@ -198,6 +218,72 @@ describe("SlackAdapter", () => {
       answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }],
     });
     expect(responder.respond).not.toHaveBeenCalled();
+  });
+
+  it("routes unique Other and multi-select Done AskUser actions", async () => {
+    const api = new FakeSlackApi();
+    const base = askSnapshot();
+    const question = base.questions[0]!;
+    const snapshot: ChannelAskSnapshot = {
+      ...base,
+      questions: [{ ...question, multiSelect: true }],
+    };
+    const submitAskAnswers = vi.fn(async () => ({ accepted: true, snapshot }));
+    const adapter = new SlackAdapter({
+      api,
+      responder: { respond: vi.fn() },
+      allowAllChannels: true,
+      pendingAsks: {
+        getPendingAsk: vi.fn(async () => snapshot),
+        submitAskAnswers,
+        cancel: vi.fn(),
+      },
+    });
+
+    await adapter.presentAsk("D123", "171.000001", snapshot);
+
+    const controls = api.postMessageCalls[1]?.blocks as Array<{
+      type?: string;
+      elements?: Array<{ action_id?: string; text?: { text?: string }; value?: string }>;
+    }>;
+    const buttons = controls.find((block) => block.type === "actions")?.elements ?? [];
+    expect(buttons.map((button) => button.action_id)).toEqual([
+      "mono_agent_ask_user_option_0",
+      "mono_agent_ask_user_option_1",
+      "mono_agent_ask_user_option_2",
+      "mono_agent_ask_user_other",
+      "mono_agent_ask_user_done",
+    ]);
+
+    const other = buttons.find((button) => button.action_id === "mono_agent_ask_user_other")!;
+    await expect(adapter.handleInteraction({
+      type: "block_actions",
+      channel: { id: "D123" },
+      message: { ts: "200.000001", thread_ts: "171.000001" },
+      actions: [{ action_id: other.action_id!, value: other.value! }],
+    })).resolves.toMatchObject({ kind: "ask", outcome: "custom_requested" });
+    expect(api.postMessageCalls.at(-1)?.text).toBe("Reply in this thread with your custom answer.");
+
+    const send = buttons.find((button) => button.action_id === "mono_agent_ask_user_option_0")!;
+    await expect(adapter.handleInteraction({
+      type: "block_actions",
+      channel: { id: "D123" },
+      message: { ts: "200.000001", thread_ts: "171.000001" },
+      actions: [{ action_id: send.action_id!, value: send.value! }],
+    })).resolves.toMatchObject({ kind: "ask", outcome: "selection_updated" });
+
+    const done = buttons.find((button) => button.action_id === "mono_agent_ask_user_done")!;
+    await expect(adapter.handleInteraction({
+      type: "block_actions",
+      channel: { id: "D123" },
+      message: { ts: "200.000001", thread_ts: "171.000001" },
+      actions: [{ action_id: done.action_id!, value: done.value! }],
+    })).resolves.toMatchObject({ kind: "ask", outcome: "answered" });
+    expect(submitAskAnswers).toHaveBeenCalledWith({
+      conversationId: "slack:D123:171.000001",
+      interactionId: snapshot.interactionId,
+      answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }],
+    });
   });
 
   it("consumes a threaded custom AskUser reply before normal turn admission", async () => {
