@@ -355,49 +355,49 @@ Replace `@mono-agent/agent-runtime` with the package under test.
 
 ```mermaid
 flowchart TB
-  Host["Host composition layer\n`demos/final-agent`"]
+  Host["Host composition layer<br/>demos/final-agent"]
 
   subgraph Surfaces["Operator-surface choices"]
-    Tui["`@mono-agent/tui`\nTerminal chat + read-only config"]
+    Tui["@mono-agent/tui<br/>Terminal chat + read-only config"]
   end
 
   subgraph Communication["Communication adapter choices"]
-    A2A["`@mono-agent/a2a-adapter`\nextra plugin: Agent Card discovery + text tasks"]
-    Cron["`@mono-agent/cron-adapter`\nScheduled invocations"]
-    OpenAIApi["`@mono-agent/openai-api-adapter`\nOpenAI Chat Completions"]
-    Slack["`@mono-agent/slack-adapter`\nSocket Mode + Web API"]
-    Telegram["`@mono-agent/telegram-adapter`\nBot API + long polling"]
-    Webhook["`@mono-agent/webhook-adapter`\nHTTP sync/async invocation"]
-    WhatsApp["`@mono-agent/whatsapp-adapter`\nextra plugin: Baileys socket + group trigger policy"]
+    A2A["@mono-agent/a2a-adapter<br/>extra plugin: Agent Card discovery + text tasks"]
+    Cron["@mono-agent/cron-adapter<br/>Scheduled invocations"]
+    OpenAIApi["@mono-agent/openai-api-adapter<br/>OpenAI Chat Completions"]
+    Slack["@mono-agent/slack-adapter<br/>Socket Mode + Web API"]
+    Telegram["@mono-agent/telegram-adapter<br/>Bot API + long polling"]
+    Webhook["@mono-agent/webhook-adapter<br/>HTTP sync/async invocation"]
+    WhatsApp["@mono-agent/whatsapp-adapter<br/>extra plugin: Baileys socket + group trigger policy"]
   end
 
   subgraph Core["Core contracts and config"]
-    Contracts["`@mono-agent/agent-contracts`\nrequest/response/stream/settings helpers"]
-    Config["`@mono-agent/config`\ncore runtime/context settings"]
+    Contracts["@mono-agent/agent-contracts<br/>request/response/stream/settings helpers"]
+    Config["@mono-agent/config<br/>core runtime/context settings"]
   end
 
   subgraph PromptContext["Context layer"]
-    Memory["`@mono-agent/memory`\n./store SQLite, ./search embeddings, ./bujo engine"]
-    MemorySupermemory["`@mono-agent/memory-supermemory`\nextra plugin: Supermemory-backed store"]
+    Memory["@mono-agent/memory<br/>./store SQLite, ./search embeddings, ./bujo engine"]
+    MemorySupermemory["@mono-agent/memory-supermemory<br/>extra plugin: Supermemory-backed store"]
   end
 
   subgraph AppLayer["App layer"]
-    AgentApp["`@mono-agent/agent-app`\nconfig to channels + responder"]
+    AgentApp["@mono-agent/agent-app<br/>config to channels + responder"]
   end
 
   subgraph Execution["Execution layer"]
-    Harness["`@mono-agent/agent-harness`\nrequest to runtime run\ncontext + skills + tool policy"]
-    Orchestrator["`@mono-agent/agent-orchestrator`\nextra: collaborator MCP tool"]
-    Observability["`@mono-agent/observability`\nJSONL events + summaries + trace registry"]
+    Harness["@mono-agent/agent-harness<br/>request to runtime run<br/>context + skills + tool policy"]
+    Orchestrator["@mono-agent/agent-orchestrator<br/>extra: collaborator MCP tool"]
+    Observability["@mono-agent/observability<br/>JSONL events + summaries + trace registry"]
   end
 
   subgraph Runtime["Runtime backend choices"]
-    RuntimeAdapter["`@mono-agent/runtime-adapter`\nmodel refs + sandbox policy"]
-    AgentRuntime["`@mono-agent/agent-runtime`\nprovider/CLI implementation"]
-    ClaudeSdk["Claude SDK\n`claude:<model>` + `sdk`"]
-    ClaudeCli["Claude Code CLI\n`claude:<model>` + `cli`"]
-    CodexCli["Codex app CLI\n`codex:<model>` + `cli`"]
-    PiSdk["Pi SDK providers\n`pi:<provider>:<model>` + `sdk`"]
+    RuntimeAdapter["@mono-agent/runtime-adapter<br/>model refs + sandbox policy"]
+    AgentRuntime["@mono-agent/agent-runtime<br/>provider/CLI implementation"]
+    ClaudeSdk["Claude SDK<br/>claude:&lt;model&gt; + sdk"]
+    ClaudeCli["Claude Code CLI<br/>claude:&lt;model&gt; + cli"]
+    CodexCli["Codex app CLI<br/>codex:&lt;model&gt; + cli"]
+    PiSdk["Pi SDK providers<br/>pi:&lt;provider&gt;:&lt;model&gt; + sdk"]
   end
 
   Host -. optional .-> Tui
