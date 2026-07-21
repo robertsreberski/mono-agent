@@ -511,14 +511,15 @@ describe("startTuiAdapter", () => {
   });
 
   it("advertises live input and holds the request until the active run settles it", async () => {
-    let offered: AgentLiveInputRequest | undefined;
+    let markOffered!: (request: AgentLiveInputRequest) => void;
+    const offered = new Promise<AgentLiveInputRequest>((resolve) => { markOffered = resolve; });
     let settle!: (value: AgentLiveInputSettlement) => void;
     const settled = new Promise<AgentLiveInputSettlement>((resolve) => { settle = resolve; });
     running = await startTuiAdapter({
       responder: {
         ...scriptedResponder(async () => ({ text: "ok" })),
         offerLiveInput(request) {
-          offered = request;
+          markOffered(request);
           return { status: "accepted", settled };
         },
       },
@@ -535,8 +536,7 @@ describe("startTuiAdapter", () => {
         receivedAt: "2026-07-21T09:00:00.000Z",
       }),
     });
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(offered).toEqual({
+    await expect(offered).resolves.toEqual({
       conversationId: "web:thread-1",
       id: "input-1",
       text: "Use the latest requirements",
