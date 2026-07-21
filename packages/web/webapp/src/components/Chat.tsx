@@ -272,6 +272,7 @@ export function Chat({
     detailLoading,
     archiveThread,
     unarchiveThread,
+    deleteThread,
   } = useConsoleStore();
   const runStatus = selectedThread?.runState.status;
   const runNeedsAttention =
@@ -331,6 +332,20 @@ export function Chat({
               }}
             >
               <Icon name={selectedThread.archivedAt ? "restore" : "archive"} size={17} />
+            </button>
+          )}
+          {selectedThread?.archivedAt && (
+            <button
+              type="button"
+              className="icon-button header-delete"
+              aria-label="Permanently delete conversation"
+              title="Permanently delete conversation"
+              onClick={() => {
+                if (!window.confirm("Permanently delete this conversation and its attachments? This cannot be undone.")) return;
+                void deleteThread(selectedThread.id).catch(() => undefined);
+              }}
+            >
+              <Icon name="trash" size={17} />
             </button>
           )}
         </div>

@@ -162,8 +162,10 @@ pnpm -C website preview -- --port 4329     # manual review
 
 ## Gotchas
 
-- Pin `astro@^5.18` + `@astrojs/starlight@^0.37` — starlight 0.38+ requires
-  Astro 6 and breaks asides. Do not "helpfully" upgrade.
+- Keep `website/package.json` and `website/astro.config.mjs` in lockstep: Astro 7
+  custom rehype plugins use `unified`, and current Starlight sidebar groups wrap
+  `autogenerate` entries in `items`. Do not upgrade either dependency without
+  rerunning both the website build and accessibility suite.
 - In a worktree, website node_modules are absent: `pnpm -C website install` or
   `ln -sfn <main-repo>/website/node_modules website/node_modules`.
 - Starlight only applies markdown features to files physically under

@@ -10,6 +10,11 @@ const SHARED_REDACTION_CONTRACT = [
   "numeric values under matched keys are retained;",
   "free text is not content-scanned",
 ].join(" ");
+const RECORDER_REDACTION_CONTRACT = [
+  "non-numeric values under sensitive-looking object keys are redacted;",
+  "numeric values under matched keys are retained;",
+  "retained free text is scanned for a closed set of high-confidence credential shapes",
+].join(" ");
 const RUN_HISTORY_SECOND_PASS_CONTRACT = [
   "`runhistory` then applies an additional projection sanitizer.",
   "in that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible;",
@@ -130,21 +135,27 @@ function functionDoc(relativePath: string, functionName: string): string {
 }
 
 describe("observability redaction docs parity", () => {
-  it("keeps canonical and composer summary surfaces explicit about numeric retention", () => {
-    const surfaces = [
+  it("distinguishes always-scanned local artifacts from the opt-in exporter scan", () => {
+    const recorderSurfaces = [
       ["docs/runtime/tools-and-guards.md", "Each run collects per-turn usage"],
       ["docs/observability/index.md", "| JSONL run artifacts |"],
-      ["docs/observability/phoenix-and-backfill.md", "| `includeSensitiveData` |"],
       ["docs/playbooks/phoenix-observed-agent.md", "- [`observability.jsonl-artifacts`]"],
-      ["docs/playbooks/phoenix-observed-agent.md", "With `includeSensitiveData: false`"],
       ["docs/reference/feature-registry.md", "| `observability.jsonl-artifacts` |"],
-      ["docs/reference/feature-registry.md", "| `observability.phoenix-exporter` |"],
       ["packages/agent-app/skills/mono-agent-composer/references/feature-coverage.md", "| JSONL run artifacts"],
       ["packages/agent-app/skills/mono-agent-composer/references/playbooks.md", "**Smoke:** complete a TUI prompt"],
       ["packages/agent-app/skills/mono-agent-composer/references/validation.md", "| Observability |"],
     ] as const;
 
-    for (const [relativePath, anchor] of surfaces) {
+    for (const [relativePath, anchor] of recorderSurfaces) {
+      expect(lineContaining(relativePath, anchor), `${relativePath}: ${anchor}`).toContain(RECORDER_REDACTION_CONTRACT);
+    }
+
+    const exporterSurfaces = [
+      ["docs/observability/phoenix-and-backfill.md", "| `includeSensitiveData` |"],
+      ["docs/playbooks/phoenix-observed-agent.md", "With `includeSensitiveData: false`"],
+      ["docs/reference/feature-registry.md", "| `observability.phoenix-exporter` |"],
+    ] as const;
+    for (const [relativePath, anchor] of exporterSurfaces) {
       expect(lineContaining(relativePath, anchor), `${relativePath}: ${anchor}`).toContain(SHARED_REDACTION_CONTRACT);
     }
   });
@@ -179,7 +190,7 @@ describe("observability redaction docs parity", () => {
     }
   });
 
-  it("keeps recorder-boundary summaries explicit that redaction is key-based", () => {
+  it("keeps recorder-boundary summaries explicit about both persisted redaction passes", () => {
     const surfaces = [
       ["README.md", "Local JSONL artifacts are the completed-run fallback"],
       ["docs/observability/artifacts-and-traces.md", "mono-agent is local-first about observability"],
@@ -188,11 +199,11 @@ describe("observability redaction docs parity", () => {
       ["docs/playbooks/phoenix-observed-agent.md", "This playbook configures best-effort"],
       ["docs/playbooks/phoenix-observed-agent.md", "The exporters array can also be supplied"],
       ["docs/channels/tui.md", "Frames are defined in `@mono-agent/agent-contracts`"],
-      ["docs/config/blueprint.md", "buffers key-redacted/capped events"],
+      ["docs/config/blueprint.md", "buffers sensitive-key-redacted"],
       ["docs/observability/tui.md", "Remote event frames are capped"],
       ["docs/observability/tui.md", "| replay | `f3` |"],
       ["docs/reference/feature-registry.md", "| `tui.chat` |"],
-      ["packages/agent-app/skills/mono-agent-composer/references/config-blueprint.md", "buffers key-redacted/capped events"],
+      ["packages/agent-app/skills/mono-agent-composer/references/config-blueprint.md", "buffers sensitive-key-redacted"],
       ["packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md", "Fills: `artifacts.dir`"],
       ["packages/agent-app/skills/mono-agent-composer/references/package-map.md", "- `@mono-agent/tui`"],
       ["packages/agent-app/skills/mono-agent-composer/references/package-map.md", "Traceability is local-first"],
@@ -201,25 +212,29 @@ describe("observability redaction docs parity", () => {
     ] as const;
 
     for (const [relativePath, anchor] of surfaces) {
-      expect(lineContaining(relativePath, anchor), `${relativePath}: ${anchor}`).toMatch(
-        /\bkey-(?:based|redacted)\b/u,
-      );
+      const surface = lineContaining(relativePath, anchor);
+      expect(surface, `${relativePath}: ${anchor}`).toContain("key");
+      expect(surface, `${relativePath}: ${anchor}`).toContain("redact");
+      expect(surface, `${relativePath}: ${anchor}`).toMatch(/credential-(?:shape|scanned)|credential shapes/u);
     }
-    expect(paragraphContaining(
+    const staleRunContract = paragraphContaining(
       "packages/observability/README.md",
       "Stale-run reconciliation repairs summary status",
-    )).toMatch(/\bkey-(?:based|redacted)\b/u);
+    );
+    expect(staleRunContract).toContain("redacted");
+    expect(normalized(readRepoFile("packages/observability/README.md"))).toContain("always-on credential-shape scan");
   });
 
   it("keeps public replay and payload boundaries explicit about shared redaction semantics", () => {
-    const surfaces = [
-      lineContaining("packages/tui/README.md", "| replay | Recorded runs"),
+    expect(lineContaining("packages/tui/README.md", "| replay | Recorded runs"))
+      .toContain(RECORDER_REDACTION_CONTRACT);
+
+    const exporterSurfaces = [
       interfaceFieldDoc("packages/observability/src/run-export-mapping.ts", "EventSpanMapping", "payload"),
-      typeFieldDoc("packages/agent-contracts/src/live-events.ts", "RunEventFrame", "event"),
       functionDoc("packages/observability/src/run-export-mapping.ts", "toContentString"),
     ];
 
-    for (const surface of surfaces) {
+    for (const surface of exporterSurfaces) {
       expect(surface).toContain(SHARED_REDACTION_CONTRACT);
     }
 
@@ -276,28 +291,45 @@ describe("observability redaction docs parity", () => {
     expect(implementationDocs).not.toMatch(/absent for backfill|backfill lacks it|not recorded in artifacts/iu);
   });
 
-  it("keeps every published bare-prose field explicit about bounds without claiming content scrubbing", () => {
-    const fields = [
+  it("documents recorder scanning separately from legacy-reader and display behavior", () => {
+    const persistedFields = [
       ["packages/observability/src/types.ts", "RunSummary", "error"],
       ["packages/observability/src/types.ts", "RunSummary", "userInput"],
       ["packages/observability/src/types.ts", "RunSummary", "systemPrompt"],
       ["packages/observability/src/types.ts", "JsonlRunRecorderOptions", "userInput"],
       ["packages/observability/src/types.ts", "JsonlRunRecorderOptions", "systemPrompt"],
+    ] as const;
+    for (const [relativePath, interfaceName, fieldName] of persistedFields) {
+      const doc = interfaceFieldDoc(relativePath, interfaceName, fieldName);
+      expect(doc, `${interfaceName}.${fieldName}`).toContain("retained free text");
+      expect(doc, `${interfaceName}.${fieldName}`).toMatch(/\b(?:bounded|capped)\b/u);
+      expect(doc, `${interfaceName}.${fieldName}`).toContain("content-scanned");
+      expect(doc, `${interfaceName}.${fieldName}`).toContain("high-confidence credential shapes");
+    }
+
+    const legacyReaderFields = [
       ["packages/observability/src/types.ts", "RecordedRunListItem", "error"],
       ["packages/observability/src/types.ts", "RecordedRunListItem", "userInput"],
       ["packages/observability/src/types.ts", "RecordedRunListItem", "systemPrompt"],
+    ] as const;
+    for (const [relativePath, interfaceName, fieldName] of legacyReaderFields) {
+      const doc = interfaceFieldDoc(relativePath, interfaceName, fieldName);
+      expect(doc, `${interfaceName}.${fieldName}`).toContain("retained free text");
+      expect(doc, `${interfaceName}.${fieldName}`).toContain("re-bounded");
+      expect(doc, `${interfaceName}.${fieldName}`).toContain("does not retroactively scan legacy artifacts");
+    }
+
+    const displayFields = [
       ["packages/observability/src/session-mapping.ts", "Session", "instr"],
       ["packages/observability/src/session-mapping.ts", "Session", "sysPrompt"],
       ["packages/observability/src/session-mapping.ts", "Session", "error"],
-      ["packages/session-web/webapp/src/lib/types.ts", "Session", "sysPrompt"],
     ] as const;
 
-    for (const [relativePath, interfaceName, fieldName] of fields) {
+    for (const [relativePath, interfaceName, fieldName] of displayFields) {
       const doc = interfaceFieldDoc(relativePath, interfaceName, fieldName);
       expect(doc, `${interfaceName}.${fieldName}`).toContain("retained free text");
       expect(doc, `${interfaceName}.${fieldName}`).toMatch(/\b(?:bounded|capped|re-bounded)\b/u);
       expect(doc, `${interfaceName}.${fieldName}`).toContain("not content-scanned or scrubbed");
-      expect(doc, `${interfaceName}.${fieldName}`).not.toMatch(/\bredacted\s*(?:\+|and|into)\b/u);
     }
 
     const liveExportInput = interfaceFieldDoc(

@@ -1,5 +1,6 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
+import { unified } from '@astrojs/markdown-remark';
 import starlight from '@astrojs/starlight';
 import { rehypeFocusableTables } from './scripts/rehype-focusable-tables.mjs';
 
@@ -16,7 +17,7 @@ export default defineConfig({
   // Starlight makes wide tables horizontally scrollable. Put those regions in
   // the keyboard tab order so keyboard users can reach and scroll them too.
   markdown: {
-    rehypePlugins: [rehypeFocusableTables],
+    processor: unified({ rehypePlugins: [rehypeFocusableTables] }),
   },
   // docs/reference/recipes.md was renamed to docs/reference/presets.md; keep the
   // old URL working for external bookmarks and deep links.
@@ -44,17 +45,17 @@ export default defineConfig({
       },
       // Curated section order, mirroring the old just-the-docs nav_order.
       sidebar: [
-        { label: 'Getting Started', autogenerate: { directory: 'getting-started' } },
-        { label: 'Configuration', autogenerate: { directory: 'config' } },
-        { label: 'Runtime & Providers', autogenerate: { directory: 'runtime' } },
-        { label: 'Channels', autogenerate: { directory: 'channels' } },
-        { label: 'Memory', autogenerate: { directory: 'memory' } },
-        { label: 'Context & Skills', autogenerate: { directory: 'context' } },
-        { label: 'Tools, MCP & Sandbox', autogenerate: { directory: 'tools' } },
-        { label: 'Observability & CLI', autogenerate: { directory: 'observability' } },
-        { label: 'Programmatic', autogenerate: { directory: 'programmatic' } },
-        { label: 'Playbooks', autogenerate: { directory: 'playbooks' } },
-        { label: 'Reference', autogenerate: { directory: 'reference' } },
+        { label: 'Getting Started', items: [{ autogenerate: { directory: 'getting-started' } }] },
+        { label: 'Configuration', items: [{ autogenerate: { directory: 'config' } }] },
+        { label: 'Runtime & Providers', items: [{ autogenerate: { directory: 'runtime' } }] },
+        { label: 'Channels', items: [{ autogenerate: { directory: 'channels' } }] },
+        { label: 'Memory', items: [{ autogenerate: { directory: 'memory' } }] },
+        { label: 'Context & Skills', items: [{ autogenerate: { directory: 'context' } }] },
+        { label: 'Tools, MCP & Sandbox', items: [{ autogenerate: { directory: 'tools' } }] },
+        { label: 'Observability & CLI', items: [{ autogenerate: { directory: 'observability' } }] },
+        { label: 'Programmatic', items: [{ autogenerate: { directory: 'programmatic' } }] },
+        { label: 'Playbooks', items: [{ autogenerate: { directory: 'playbooks' } }] },
+        { label: 'Reference', items: [{ autogenerate: { directory: 'reference' } }] },
       ],
     }),
   ],

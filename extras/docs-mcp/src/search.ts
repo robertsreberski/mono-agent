@@ -6,7 +6,7 @@ import { MonoAgentDocsReader } from "./reader.js";
 import type {
   MonoAgentDocsErrorResult,
   MonoAgentDocsReadResult,
-  MonoAgentDocsSearchInput,
+  MonoAgentDocsSearchAction,
   MonoAgentDocsSearchResult,
 } from "./types.js";
 
@@ -50,7 +50,7 @@ export class MonoAgentDocsSearchIndex {
     return this.#reader.read(target);
   }
 
-  async search(input: MonoAgentDocsSearchInput): Promise<MonoAgentDocsSearchResult> {
+  async search(input: Omit<MonoAgentDocsSearchAction, "action">): Promise<MonoAgentDocsSearchResult> {
     const query = input.query.trim();
     if (query.length < 3 || query.length > 500) {
       throw new Error("Documentation search query must contain between 3 and 500 characters.");

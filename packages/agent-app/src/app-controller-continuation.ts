@@ -25,9 +25,43 @@ import {
   runtimeRouteContainsDirectOpenCode,
 } from "./app-controller-utils.js";
 import type { ContinuationRunningChannel } from "./app-controller-utils.js";
-import type { MonoAgentAppController } from "./app-controller.js";
+import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
+import type { NotifyDeliveryResult } from "./proactive-notify.js";
 
-export function ensureInteractionBridge(controller: MonoAgentAppController, coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined> {
+export interface ContinuationControllerPort {
+  readonly cwd: string;
+  readonly configReadPath: string;
+  readonly env: Record<string, string | undefined>;
+  readonly logger: MonoAgentAppLogger | undefined;
+  readonly running: Map<ChannelId, RunningChannel>;
+  readonly stopped: boolean;
+  interactionBridge: InteractionBridgeHandle | undefined;
+  interactionBridgeStart: Promise<InteractionBridgeHandle | undefined> | undefined;
+  continuationService: ContinuationServiceHandle | undefined;
+  continuationServiceStart: Promise<ContinuationServiceHandle | undefined> | undefined;
+  continuationSynthesisAvailability(input: ContinuationSynthesisInput):
+    | { readonly ready: true }
+    | { readonly ready: false; readonly code: string; readonly reason: string; readonly retryAfterMs: number };
+  synthesizeContinuation(input: ContinuationSynthesisInput): Promise<{ readonly text: string; readonly actionable?: boolean }>;
+  deliverContinuation(
+    conversationId: string,
+    text: string,
+    deliveryKey: string,
+  ): Promise<ContinuationNativeDeliveryResult>;
+  recordContinuationHistory(
+    conversationId: string,
+    text: string,
+    deliveryKey: string,
+  ): Promise<ContinuationHistoryRecordResult>;
+  ensureContinuationService(coreConfig: MonoAgentConfig): Promise<ContinuationServiceHandle | undefined>;
+  notifyDestination(
+    conversationId: string,
+    text: string,
+    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
+  ): Promise<NotifyDeliveryResult>;
+}
+
+export function ensureInteractionBridge(controller: ContinuationControllerPort, coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined> {
   controller.interactionBridgeStart ??= (async () => {
     const directOpenCodeRoute = runtimeRouteContainsDirectOpenCode(coreConfig);
     const settings = await loadInteractionSettings({ env: controller.env, configPath: controller.configReadPath });
@@ -78,14 +112,14 @@ export function ensureInteractionBridge(controller: MonoAgentAppController, core
   return controller.interactionBridgeStart;
 }
 
-export async function stopInteractionBridge(controller: MonoAgentAppController): Promise<void> {
+export async function stopInteractionBridge(controller: ContinuationControllerPort): Promise<void> {
   const bridge = controller.interactionBridge;
   controller.interactionBridge = undefined;
   controller.interactionBridgeStart = undefined;
   await bridge?.stop().catch(() => undefined);
 }
 
-export function ensureContinuationService(controller: MonoAgentAppController, coreConfig: MonoAgentConfig): Promise<ContinuationServiceHandle | undefined> {
+export function ensureContinuationService(controller: ContinuationControllerPort, coreConfig: MonoAgentConfig): Promise<ContinuationServiceHandle | undefined> {
   controller.continuationServiceStart ??= (async () => {
     const settings = await loadContinuationSettings({ cwd: controller.cwd, configPath: controller.configReadPath, env: controller.env });
     const needed = settings.configured || (coreConfig.tools.continuationServers?.length ?? 0) > 0;
@@ -130,7 +164,7 @@ export function ensureContinuationService(controller: MonoAgentAppController, co
   return controller.continuationServiceStart;
 }
 
-export async function startContinuationServiceIfConfigured(controller: MonoAgentAppController, reason: string): Promise<void> {
+export async function startContinuationServiceIfConfigured(controller: ContinuationControllerPort, reason: string): Promise<void> {
   if (controller.stopped) return;
   let coreConfig: MonoAgentConfig;
   try {
@@ -146,19 +180,19 @@ export async function startContinuationServiceIfConfigured(controller: MonoAgent
   controller.logger?.debug?.("Continuation service configuration evaluated.", { reason });
 }
 
-export async function stopContinuationService(controller: MonoAgentAppController): Promise<void> {
+export async function stopContinuationService(controller: ContinuationControllerPort): Promise<void> {
   const service = controller.continuationService;
   controller.continuationService = undefined;
   controller.continuationServiceStart = undefined;
   await service?.stop().catch(() => undefined);
 }
 
-export function requireContinuationService(controller: MonoAgentAppController): ContinuationServiceHandle {
+export function requireContinuationService(controller: ContinuationControllerPort): ContinuationServiceHandle {
   if (controller.continuationService === undefined) throw new Error("Durable continuation service is not running.");
   return controller.continuationService;
 }
 
-export async function synthesizeContinuation(controller: MonoAgentAppController, input: ContinuationSynthesisInput): Promise<{ readonly text: string; readonly actionable?: boolean }> {
+export async function synthesizeContinuation(controller: ContinuationControllerPort, input: ContinuationSynthesisInput): Promise<{ readonly text: string; readonly actionable?: boolean }> {
   const conversationId = input.replyToConversationId ?? normalizeContinuationOrigin(input.originConversationId);
   const channelId = channelIdForConversation(conversationId);
   const channel = channelId === undefined ? undefined : controller.running.get(channelId) as ContinuationRunningChannel | undefined;
@@ -193,7 +227,7 @@ export async function synthesizeContinuation(controller: MonoAgentAppController,
   return { text, ...(actionable === undefined ? {} : { actionable }) };
 }
 
-export function continuationSynthesisAvailability(controller: MonoAgentAppController, input: ContinuationSynthesisInput):
+export function continuationSynthesisAvailability(controller: ContinuationControllerPort, input: ContinuationSynthesisInput):
   | { readonly ready: true }
   | { readonly ready: false; readonly code: string; readonly reason: string; readonly retryAfterMs: number } {
   const conversationId = input.replyToConversationId ?? normalizeContinuationOrigin(input.originConversationId);
@@ -209,7 +243,7 @@ export function continuationSynthesisAvailability(controller: MonoAgentAppContro
 }
 
 export async function deliverContinuation(
-  controller: MonoAgentAppController,
+  controller: ContinuationControllerPort,
   conversationId: string,
   text: string,
   deliveryKey: string,
@@ -235,7 +269,7 @@ export async function deliverContinuation(
 }
 
 export async function recordContinuationHistory(
-  controller: MonoAgentAppController,
+  controller: ContinuationControllerPort,
   conversationId: string,
   text: string,
   deliveryKey: string,

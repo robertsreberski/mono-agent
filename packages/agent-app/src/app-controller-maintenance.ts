@@ -1,4 +1,5 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
+import type { MonoRuntimeLike, SandboxEngine } from "@mono-agent/runtime-adapter";
 import {
   DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS,
   DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT,
@@ -8,17 +9,55 @@ import { deliverWebNotification } from "@mono-agent/web";
 import { loadAppCoreConfig, resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { createConfiguredAgentRuntime } from "./configured-agent.js";
+import type { createConfiguredMemory } from "./configured-agent.js";
 import { routeProactiveNotification } from "./proactive-notify.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import { startMemoryRituals } from "./memory-rituals.js";
+import type { RunningRituals } from "./memory-rituals.js";
 import { startArtifactRetentionScheduler } from "./artifact-retention.js";
+import type { RunningArtifactRetentionScheduler } from "./artifact-retention.js";
 import { resolveNotifyDestinations } from "./notify-destinations.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import { reasonOf } from "./app-controller-utils.js";
-import type { MonoAgentAppController } from "./app-controller.js";
-import type { ChannelId } from "./channels.js";
+import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
+import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
 
-export async function startMemoryRitualsIfConfigured(controller: MonoAgentAppController, reason: string): Promise<void> {
+type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
+
+interface NotifyControllerPort {
+  readonly logger: MonoAgentAppLogger | undefined;
+  readonly running: Map<ChannelId, RunningChannel>;
+  observabilityContext(): Promise<{
+    readonly sourceId?: string;
+    readonly sourceLabel?: string;
+    readonly configPath?: string;
+  }>;
+}
+
+interface DestinationsControllerPort {
+  readonly env: Record<string, string | undefined>;
+  readonly cwd: string;
+  readonly configReadPath: string;
+  readonly logger: MonoAgentAppLogger | undefined;
+  readonly running: Map<ChannelId, RunningChannel>;
+  readonly seenNotifyDestinations: SeenNotifyDestinationCache;
+}
+
+export interface MaintenanceControllerPort extends NotifyControllerPort, DestinationsControllerPort {
+  readonly runtime: MonoRuntimeLike | undefined;
+  readonly activeRuntimes: MonoRuntimeLike[];
+  stopped: boolean;
+  memoryRituals: RunningRituals | undefined;
+  artifactRetentionScheduler: RunningArtifactRetentionScheduler | undefined;
+  artifactRetentionGeneration: number;
+  rememberSelectedSkills(coreConfig: MonoAgentConfig): void;
+  sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined;
+  memoryStore(coreConfig: MonoAgentConfig): Promise<ConfiguredMemory>;
+  stopArtifactRetentionScheduler(): void;
+  reconcileStaleRunsOnce(artifactDir: string): Promise<void>;
+}
+
+export async function startMemoryRitualsIfConfigured(controller: MaintenanceControllerPort, reason: string): Promise<void> {
   if (controller.stopped) {
     return;
   }
@@ -88,7 +127,7 @@ export async function startMemoryRitualsIfConfigured(controller: MonoAgentAppCon
   controller.logger?.info?.("Memory consolidation scheduler started.", { reason, mode: "bujo" });
 }
 
-export function stopMemoryRituals(controller: MonoAgentAppController): void {
+export function stopMemoryRituals(controller: MaintenanceControllerPort): void {
   const rituals = controller.memoryRituals;
   if (rituals === undefined) {
     return;
@@ -105,7 +144,7 @@ export function stopMemoryRituals(controller: MonoAgentAppController): void {
   controller.logger?.info?.("Memory consolidation scheduler stopped.");
 }
 
-export function restartArtifactRetentionScheduler(controller: MonoAgentAppController, artifactDir: string, reason: string): void {
+export function restartArtifactRetentionScheduler(controller: MaintenanceControllerPort, artifactDir: string, reason: string): void {
   controller.stopArtifactRetentionScheduler();
   const generation = ++controller.artifactRetentionGeneration;
   void (async () => {
@@ -158,7 +197,7 @@ export function restartArtifactRetentionScheduler(controller: MonoAgentAppContro
   })();
 }
 
-export function stopArtifactRetentionScheduler(controller: MonoAgentAppController): void {
+export function stopArtifactRetentionScheduler(controller: MaintenanceControllerPort): void {
   controller.artifactRetentionGeneration += 1;
   const scheduler = controller.artifactRetentionScheduler;
   if (scheduler === undefined) {
@@ -177,7 +216,7 @@ export function stopArtifactRetentionScheduler(controller: MonoAgentAppControlle
 }
 
 export async function notifyDestination(
-  controller: MonoAgentAppController,
+  controller: NotifyControllerPort,
   conversationId: string,
   text: string,
   options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
@@ -260,7 +299,7 @@ export async function notifyDestination(
   return result;
 }
 
-export async function listNotifyDestinations(controller: MonoAgentAppController): Promise<readonly NotifyDestination[]> {
+export async function listNotifyDestinations(controller: DestinationsControllerPort): Promise<readonly NotifyDestination[]> {
   const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
   const artifactDir = await resolveAppArtifactDir(input);
   const seenDestinations = await controller.seenNotifyDestinations.list(artifactDir);

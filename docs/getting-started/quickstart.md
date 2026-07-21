@@ -7,6 +7,20 @@ sidebar:
 
 This page walks the macOS happy path: complete the guided `mono-agent init` wizard, let it start the durable background agent, and use the dedicated SELF-CONFIG conversation to explore capabilities and shape the agent's workflow. A real model reply still requires provider credentials or a configured local provider.
 
+## The shortest working path
+
+If Node.js and a model provider are already ready, start here:
+
+```bash
+npm i -g create-mono-agent
+mkdir my-agent && cd my-agent
+mono-agent init
+mono-agent status      # guided macOS init starts the agent
+# Otherwise: mono-agent start --foreground
+```
+
+The wizard reviews the files before writing, proves each selected runtime route, validates the committed folder, and opens `[SELF-CONFIG]` on macOS. If you use flags, non-TTY input, Linux, or another platform, init creates the scaffold without claiming readiness; run `mono-agent validate`, then `mono-agent start --foreground` yourself. The rest of this page explains those branches and their safety contracts.
+
 ## Prerequisites
 
 You need Node.js installed, the `mono-agent` CLI available, and credentials for whatever model you choose. The quickest path is the `npm create mono-agent@latest` installer (equivalently `npx create-mono-agent`) with no global install, or `npm i -g create-mono-agent` for the persistent command. The CLI itself ships in `@mono-agent/agent-app`, so installing or invoking that scoped package is equivalent.

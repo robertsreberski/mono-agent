@@ -1,7 +1,7 @@
 # @mono-agent/operator-adapter
 
-Serve the two local operator protocols used by mono-agent consoles: a
-bidirectional NDJSON turn endpoint and a read-only SSE run-event relay.
+Serve the local bidirectional NDJSON operator protocol used by mono-agent's
+terminal and browser consoles.
 
 ## Category
 
@@ -10,28 +10,21 @@ bidirectional NDJSON turn endpoint and a read-only SSE run-event relay.
 
 Category: `communication`
 Tier: `core`
-Catalog responsibility: Exposes local operator endpoints: structured TUI NDJSON turns and read-only live SSE run-event streams.
+Catalog responsibility: Exposes the structured local TUI NDJSON endpoint used by the terminal and browser operator consoles.
 
 <!-- package-metadata:end -->
 
 ## Responsibility
 
-This communication package exposes host-provided responders and run-event buses
-over deliberately separate HTTP lanes:
-
-- the `tui` lane accepts turns from `mono-agent tui` and `mono-agent web` and
-  preserves structured `AgentStreamEvent` frames; and
-- the `live` lane replays and streams `RunEventFrame` telemetry to read-only
-  consumers such as `@mono-agent/session-web`.
-
-Both lanes default to loopback, use independent config and bearer keys, and
-refuse non-loopback binds unless the host explicitly opts in.
+This communication package exposes a host-provided responder over the `tui`
+HTTP lane. It accepts turns from `mono-agent tui` and `mono-agent web` while
+preserving structured `AgentStreamEvent` frames. The endpoint defaults to
+loopback and refuses a non-loopback bind unless the host explicitly opts in.
 
 ## Install / Usage
 
 `@mono-agent/agent-app` already includes this package. In a config-first agent,
-the two operator lanes are enabled by default and can be narrowed or disabled
-independently:
+the operator endpoint is enabled by default and can be narrowed or disabled:
 
 ```json
 {
@@ -40,12 +33,6 @@ independently:
     "host": "127.0.0.1",
     "port": 0,
     "basePath": "/gui"
-  },
-  "live": {
-    "enabled": true,
-    "host": "127.0.0.1",
-    "port": 0,
-    "basePath": "/live"
   }
 }
 ```
@@ -57,26 +44,18 @@ pnpm add @mono-agent/operator-adapter
 ```
 
 ```ts
-import {
-  createLiveEventBus,
-  startLiveAdapter,
-  startTuiAdapter,
-} from "@mono-agent/operator-adapter";
+import { startTuiAdapter } from "@mono-agent/operator-adapter";
 
 const tui = await startTuiAdapter({
   responder,
   info: { label: "personal-agent", model: "claude-fable-5" },
 });
 
-const bus = createLiveEventBus();
-const live = await startLiveAdapter({ bus, host: "127.0.0.1", port: 0 });
-
 await tui.stop();
-await live.stop();
 ```
 
 Keep bearer values out of source config when possible. Set
-`MONO_AGENT_TUI_API_KEY` and `MONO_AGENT_LIVE_API_KEY` in the agent's `.env`.
+`MONO_AGENT_TUI_API_KEY` in the agent's `.env`.
 
 ### Conversational endpoints
 
@@ -104,12 +83,6 @@ Keep bearer values out of source config when possible. Set
   `{ text, idempotencyKey }` durable-history append with no model turn (200; 501
   when the responder has no `deliverVerbatim`).
 
-### Read-only live endpoints
-
-- `GET {basePath}/v1/info` - `{ schema, pid, label? }`.
-- `GET {basePath}/v1/events` - `text/event-stream` replaying recent
-  `RunEventFrame` values and streaming future frames.
-
 Event NDJSON lines are capped at 256 KiB. Oversized thought and tool payloads
 are reduced and remeasured; an event that still cannot fit becomes a bounded
 `oversized_event` marker. That size guard is not a redaction boundary.
@@ -122,9 +95,6 @@ are reduced and remeasured; an event that still cannot fit becomes a bounded
    returned conversational base URL through its trace-source metadata.
 2. A TUI or web client reads `/v1/info`, submits a turn, and consumes structured
    NDJSON frames until `finish` or `error`; disconnecting aborts that request.
-3. Independently, the host publishes run frames to `createLiveEventBus`.
-4. `startLiveAdapter` exposes the bus's bounded replay plus future frames as
-   authenticated SSE without any turn-driving route.
 
 ### Package structure
 
@@ -132,9 +102,7 @@ are reduced and remeasured; an event that still cannot fit becomes a bounded
 | --- | --- |
 | [`tui/server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/tui/server.ts) | Conversational info, turn, cancel, pending/submitted `AskUser`, history-append, attachment, and NDJSON framing routes. |
 | [`tui/config.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/tui/config.ts) | `tui.*` JSON/env layering, validation, and secret redaction. |
-| [`live/server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/live/server.ts) | Read-only info and SSE event-relay routes. |
-| [`live/config.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/live/config.ts) | `live.*` JSON/env layering, validation, and secret redaction. |
-| [`index.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/index.ts) | Supported public package surface for both lanes. |
+| [`index.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/index.ts) | Supported public package surface for the operator endpoint. |
 
 ## Public API
 
@@ -145,9 +113,6 @@ are reduced and remeasured; an event that still cannot fit becomes a bounded
 | `startTuiAdapter` | Expose a structural responder over the conversational operator protocol. |
 | `TuiAdapterInfo` | Advertise identity, model choices, model-specific effort support, and context windows. |
 | `loadTuiAdapterConfig` / `TUI_CONFIG_FIELDS` | Reuse the config-first host's `tui.*` validation and provenance metadata. |
-| `createLiveEventBus` | Create the bounded in-process publisher/replay bus for run frames. |
-| `startLiveAdapter` | Serve that bus over the read-only live SSE protocol. |
-| `loadLiveAdapterConfig` / `LIVE_CONFIG_FIELDS` | Reuse `live.*` config validation and provenance metadata. |
 
 <!-- public-api-inventory:start -->
 <!-- Generated by scripts/generate-public-api-docs.mjs. Do not edit by hand. -->
@@ -157,32 +122,12 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/operator-adapter`**
 
 ```text
-CreateLiveEventBusOptions
-DEFAULT_LIVE_BASE_PATH
-DEFAULT_LIVE_HOST
-DEFAULT_LIVE_PORT
 DEFAULT_TUI_BASE_PATH
 DEFAULT_TUI_HOST
 DEFAULT_TUI_PORT
-LIVE_ADAPTER_INFO_SCHEMA
-LIVE_CONFIG_FIELDS
-LIVE_EVENT_SCHEMA
-LIVE_HEARTBEAT_INTERVAL_MS
-LiveAdapterConfig
-LiveAdapterError
-LiveAdapterErrorCode
-LiveAdapterErrorDetails
-LiveAdapterHandle
-LiveAdapterLogger
-LiveAdapterOptions
-LoadLiveAdapterConfigInput
 LoadTuiAdapterConfigInput
 MAX_FRAME_BYTES
-RedactedLiveAdapterConfig
 RedactedTuiAdapterConfig
-RunEventBus
-RunEventFrame
-RunEventSink
 TUI_CONFIG_FIELDS
 TUI_WIRE_SCHEMA
 TuiAdapterConfig
@@ -193,12 +138,8 @@ TuiAdapterInfo
 TuiAdapterLogger
 TuiAdapterOptions
 TuiAdapterStartResult
-createLiveEventBus
-loadLiveAdapterConfig
 loadTuiAdapterConfig
-redactLiveAdapterConfig
 redactTuiAdapterConfig
-startLiveAdapter
 startTuiAdapter
 ```
 
@@ -209,15 +150,14 @@ startTuiAdapter
 This adapter depends on Express plus shared `@mono-agent/agent-contracts`
 primitives. It must not depend on the agent harness, runtime adapter, operator
 surfaces, memory, observability, other communication adapters, or host/demo
-code. Hosts compose it with structural responders and an optional run-event bus.
+code. Hosts compose it with structural responders.
 
 ## What This Package Does Not Own
 
 It does not build prompts, run models, persist conversations, discover running
-agents, render operator UIs, interpret live events, implement replay/config
-views, or own TLS/public deployment policy. Both servers bind loopback-only by
-default; exposing either endpoint beyond loopback is a host decision guarded by
-`allowNonLoopback`.
+agents, render operator UIs, implement replay/config views, or own TLS/public
+deployment policy. The server binds loopback-only by default; exposing it beyond
+loopback is a host decision guarded by `allowNonLoopback`.
 
 ## Related Documentation
 

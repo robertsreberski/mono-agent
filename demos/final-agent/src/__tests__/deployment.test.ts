@@ -59,7 +59,10 @@ describe("final demo deployment", () => {
         json_mode: true,
       },
     });
-    expect(config.a2a?.provider).toMatchObject({
+    expect(config.channels.plugins[0]).toMatchObject({
+      package: "@mono-agent/a2a-adapter",
+    });
+    expect(config.channels.plugins[0].config.provider).toMatchObject({
       enabled: true,
       host: "127.0.0.1",
       port: 0,

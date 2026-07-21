@@ -261,6 +261,7 @@ The request lifecycle is:
 | [`config.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/config.ts) | Config/env loading and validation. |
 | [`start.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/start.ts) | Recommended programmatic composition root. |
 | [`adapter.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/adapter.ts) | Authorization, event normalization, structured-ask presentation and pre-admission replies, commands, shortcuts, App Home, and admission. |
+| [`runtime-controls.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/runtime-controls.ts) | Validated model/effort catalogs, callback tokens, menu blocks, and slash-command routing helpers. |
 | [`socket-mode-runner.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/socket-mode-runner.ts) | Socket Mode acknowledgements, heartbeat, degradation, and reconnect lifecycle. |
 | [`slack-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/slack-client.ts) | Typed Slack Web API boundary and private-file downloads. |
 | [`message-stream.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/message-stream.ts) | Final-only delivery, transient status, retry classification, and message limits. |

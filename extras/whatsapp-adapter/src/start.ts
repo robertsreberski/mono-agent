@@ -1,3 +1,5 @@
+import { AgentResponseCancelledError } from "@mono-agent/agent-contracts";
+
 import {
   WhatsAppAdapter,
   type AgentResponder,
@@ -19,6 +21,8 @@ import {
   type WhatsAppConnectionUpdate,
   type WhatsAppEventRunnerLogger,
 } from "./event-runner.js";
+
+const SHUTDOWN_GRACE_MS = 1_000;
 
 /**
  * Factory seam used to construct the WhatsApp socket. Defaults to the real
@@ -121,21 +125,58 @@ export async function startWhatsAppAdapter(
 
   runner.start();
 
-  let stopped = false;
+  let stopPromise: Promise<void> | undefined;
   return {
     adapter,
     runner,
     socket,
-    async stop() {
-      if (stopped) {
-        return;
-      }
-      stopped = true;
-      runner.stop();
-      await runner.idle();
-      await closeSocket(socket, options.logger);
+    stop() {
+      stopPromise ??= (async () => {
+        runner.stop();
+        adapter.stop(new AgentResponseCancelledError("WhatsApp adapter stopped."));
+        const drained = await settleWithin(runner.idle(), SHUTDOWN_GRACE_MS, options.logger, "message processing");
+        if (!drained) {
+          options.logger?.warn?.("WhatsApp shutdown stopped waiting for message processing.");
+        }
+        const socketClosed = await settleWithin(
+          closeSocket(socket, options.logger),
+          SHUTDOWN_GRACE_MS,
+          options.logger,
+          "socket close",
+        );
+        if (!socketClosed) {
+          options.logger?.warn?.("WhatsApp shutdown stopped waiting for the socket to close.");
+        }
+      })();
+      return stopPromise;
     },
   };
+}
+
+async function settleWithin(
+  operation: Promise<void>,
+  timeoutMs: number,
+  logger: WhatsAppAdapterStartLogger | undefined,
+  label: string,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = operation.then(
+    () => true,
+    (error: unknown) => {
+      logger?.error?.(`WhatsApp ${label} failed during shutdown.`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return true;
+    },
+  );
+  const timedOut = new Promise<false>((resolvePromise) => {
+    timer = setTimeout(() => resolvePromise(false), timeoutMs);
+  });
+  try {
+    return await Promise.race([settled, timedOut]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function resolveTriggerOptions(config: WhatsAppAdapterConfig): WhatsAppTriggerOptions {

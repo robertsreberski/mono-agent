@@ -9,9 +9,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   allConfigReferenceFields,
+  assertKnownAppConfigKeys,
   buildGeneratedConfigReferenceMarkdown,
   buildMonoAgentConfigSchema,
-  findUnknownAppConfigWarnings,
+  findUnknownAppConfigPaths,
   MONO_AGENT_CONFIG_SCHEMA_URL,
   schemaForField,
 } from "../config-reference.js";
@@ -151,8 +152,8 @@ function repoRoot(): string {
 }
 
 describe("config reference", () => {
-  it("warns for unknown top-level and nested keys without blocking known sections", () => {
-    const warnings = findUnknownAppConfigWarnings({
+  it("rejects unknown top-level and nested keys from the generated schema", () => {
+    const json = {
       $schema: MONO_AGENT_CONFIG_SCHEMA_URL,
       runtime: {
         model: "codex:gpt-5.5",
@@ -185,14 +186,46 @@ describe("config reference", () => {
         },
         retryForever: true,
       },
-    });
+    };
 
-    expect(warnings).toEqual([
-      "[WARN] Unknown config key runtime.session.idleMs in mono-agent.config.json - it is ignored.",
-      "[WARN] Unknown config key traceability.heartBeatMs in mono-agent.config.json - it is ignored.",
-      "[WARN] Unknown config key console in mono-agent.config.json - it is ignored.",
-      "[WARN] Unknown config key continuations.retryForever in mono-agent.config.json - it is ignored.",
+    expect(findUnknownAppConfigPaths(json)).toEqual([
+      "console",
+      "continuations.retryForever",
+      "runtime.session.idleMs",
+      "traceability.heartBeatMs",
+      "webhook.endpoints[0].extraPluginOwnedShape",
     ]);
+    expect(() => assertKnownAppConfigKeys(json)).toThrow(
+      /unknown keys: console, continuations\.retryForever, runtime\.session\.idleMs, traceability\.heartBeatMs, webhook\.endpoints\[0\]\.extraPluginOwnedShape/u,
+    );
+  });
+
+  it("keeps only explicitly plugin-owned and extensible maps open", () => {
+    expect(findUnknownAppConfigPaths({
+      runtime: { model: "codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      channels: {
+        plugins: [{ package: "@mono-agent/a2a-adapter", config: { nested: { pluginOwned: true } } }],
+      },
+      providers: {
+        local: [{
+          id: "local",
+          type: "openai_compat",
+          models: [{ name: "model", capabilities: { vendor_extension: true } }],
+        }],
+      },
+      observability: {
+        exporters: [{ type: "phoenix", headers: { "x-vendor-token": "secret" } }],
+      },
+      memory: { reflection: { removedLegacyShape: true } },
+    })).toEqual([]);
+
+    expect(findUnknownAppConfigPaths({
+      runtime: { model: "codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      cron: { jobs: [{ id: "daily", expression: "0 8 * * *", prompt: "Run", retryForever: true }] },
+      channels: { plugins: [{ package: "pkg", typo: true, config: {} }] },
+    })).toEqual(["channels.plugins[0].typo", "cron.jobs[0].retryForever"]);
   });
 
   it("keeps the committed schema generated from the current registry", () => {

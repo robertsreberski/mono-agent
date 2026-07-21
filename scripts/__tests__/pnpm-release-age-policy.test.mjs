@@ -57,10 +57,7 @@ describe("pnpm release-age policy", () => {
   });
 
   it("keeps root-built isolated webapps on the explicit disabled policy", async () => {
-    for (const relativePath of [
-      "packages/session-web/webapp/pnpm-workspace.yaml",
-      "packages/web/webapp/pnpm-workspace.yaml",
-    ]) {
+    for (const relativePath of ["packages/web/webapp/pnpm-workspace.yaml"]) {
       const directory = dirname(join(repoRoot, relativePath));
       const source = await readFile(join(directory, "pnpm-workspace.yaml"), "utf8");
 
@@ -433,7 +430,8 @@ describe("pnpm release-age policy", () => {
       expect(directGuard).toBeLessThan(workflow.indexOf("run: pnpm "));
       expect(workflow).not.toContain("run: pnpm run check:pnpm-policy");
     }
-    const websiteJob = ci.split("\n  website:")[1];
+    const websiteJob = /\n  website:(?<body>[\s\S]*?)(?=\n  [a-z][a-z0-9-]*:|\s*$)/u.exec(ci)?.groups?.body;
+    expect(websiteJob).toBeDefined();
     expect(websiteJob).not.toContain("scripts/pnpm-release-age-policy.mjs");
     expect(verifyAll).toContain('{ label: "check:pnpm-policy"');
   });

@@ -1,8 +1,7 @@
+import { resolve } from "node:path";
+
 import {
-  createCronChannelDriver,
-  createOpenAIApiChannelDriver,
-  createTelegramChannelDriver,
-  createWebhookChannelDriver,
+  resolveChannelDrivers,
   startMonoAgentApp,
 } from "@mono-agent/agent-app";
 import type {
@@ -15,16 +14,28 @@ import type {
   TraceabilityStatus as AppTraceabilityStatus,
 } from "@mono-agent/agent-app";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { createA2AChannelDriver } from "@mono-agent/a2a-adapter";
-import type { A2AProviderOptions, A2AProviderStartResult } from "@mono-agent/a2a-adapter";
-import type { CronAdapterOptions, CronAdapterStartResult } from "@mono-agent/cron-adapter";
-import type { OpenAIApiAdapterOptions, OpenAIApiAdapterStartResult } from "@mono-agent/openai-api-adapter";
+import type {
+  A2AAdapterConfig,
+  A2AProviderOptions,
+  A2AProviderStartResult,
+} from "@mono-agent/a2a-adapter";
+import type { CronAdapterConfig, CronAdapterOptions, CronAdapterStartResult } from "@mono-agent/cron-adapter";
+import type {
+  OpenAIApiAdapterConfig,
+  OpenAIApiAdapterOptions,
+  OpenAIApiAdapterStartResult,
+} from "@mono-agent/openai-api-adapter";
 import type { MonoRuntimeLike } from "@mono-agent/runtime-adapter";
 import type {
+  TelegramAdapterConfig,
   TelegramAdapterStartOptions,
   TelegramAdapterStartResult,
 } from "@mono-agent/telegram-adapter";
-import type { WebhookAdapterOptions, WebhookAdapterStartResult } from "@mono-agent/webhook-adapter";
+import type {
+  WebhookAdapterConfig,
+  WebhookAdapterOptions,
+  WebhookAdapterStartResult,
+} from "@mono-agent/webhook-adapter";
 
 import {
   FINAL_DEMO_TRACE_DEFAULTS,
@@ -133,43 +144,65 @@ export interface FinalAgentDemo {
 }
 
 export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): Promise<FinalAgentDemo> {
+  const cwd = resolve(options.cwd ?? process.cwd());
+  const configPath = resolve(cwd, options.configPath ?? "mono-agent.config.json");
+  const env = options.env ?? process.env;
+  const resolvedDrivers = await resolveChannelDrivers(
+    { env, cwd, configPath },
+    {
+      ...(options.telegramStartAdapter === undefined
+        ? {}
+        : { telegram: { startAdapter: options.telegramStartAdapter } }),
+      ...(options.webhookAdapterFactory === undefined
+        ? {}
+        : { webhook: { adapterFactory: options.webhookAdapterFactory } }),
+      ...(options.openAIApiAdapterFactory === undefined
+        ? {}
+        : { openaiApi: { adapterFactory: options.openAIApiAdapterFactory } }),
+      ...(options.cronAdapterFactory === undefined
+        ? {}
+        : { cron: { adapterFactory: options.cronAdapterFactory } }),
+      ...(options.a2aProviderFactory === undefined
+        ? {}
+        : {
+            pluginFactoryOptions: {
+              "@mono-agent/a2a-adapter": { providerFactory: options.a2aProviderFactory },
+            },
+          }),
+    },
+  );
+  const a2aDriver = resolvedDrivers.find((driver) => driver.id === "a2a");
   const drivers: readonly ChannelDriver[] = [
     withRedactedDemoConfig(
-      createTelegramChannelDriver(
-        options.telegramStartAdapter === undefined ? {} : { startAdapter: options.telegramStartAdapter },
-      ),
+      requiredDriver<TelegramAdapterConfig>(resolvedDrivers, "telegram"),
       (config, coreConfig) => redactFinalAgentDemoConfig({ coreConfig, telegramConfig: config }),
     ),
+    ...(a2aDriver === undefined
+      ? []
+      : [
+          withRedactedDemoConfig(
+            a2aDriver as ChannelDriver<A2AAdapterConfig>,
+            (config, coreConfig) => redactFinalAgentDemoConfig({ coreConfig, a2aConfig: config }),
+          ),
+        ]),
     withRedactedDemoConfig(
-      createA2AChannelDriver(
-        options.a2aProviderFactory === undefined ? {} : { providerFactory: options.a2aProviderFactory },
-      ),
-      (config, coreConfig) => redactFinalAgentDemoConfig({ coreConfig, a2aConfig: config }),
-    ),
-    withRedactedDemoConfig(
-      createWebhookChannelDriver(
-        options.webhookAdapterFactory === undefined ? {} : { adapterFactory: options.webhookAdapterFactory },
-      ),
+      requiredDriver<WebhookAdapterConfig>(resolvedDrivers, "webhook"),
       (config, coreConfig) => redactFinalAgentDemoConfig({ coreConfig, webhookConfig: config }),
     ),
     withRedactedDemoConfig(
-      createOpenAIApiChannelDriver(
-        options.openAIApiAdapterFactory === undefined ? {} : { adapterFactory: options.openAIApiAdapterFactory },
-      ),
+      requiredDriver<OpenAIApiAdapterConfig>(resolvedDrivers, "openai-api"),
       (config, coreConfig) => redactFinalAgentDemoConfig({ coreConfig, openAIApiConfig: config }),
     ),
     withRedactedDemoConfig(
-      createCronChannelDriver(
-        options.cronAdapterFactory === undefined ? {} : { adapterFactory: options.cronAdapterFactory },
-      ),
+      requiredDriver<CronAdapterConfig>(resolvedDrivers, "cron"),
       (config, coreConfig) => redactFinalAgentDemoConfig({ coreConfig, cronConfig: config }),
     ),
   ];
 
   const app = await startMonoAgentApp({
-    ...(options.env === undefined ? {} : { env: options.env }),
-    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-    ...(options.configPath === undefined ? {} : { configPath: options.configPath }),
+    env,
+    cwd,
+    configPath,
     ...(options.logger === undefined ? {} : { logger: options.logger }),
     ...(options.runtime === undefined ? {} : { runtime: options.runtime }),
     drivers,
@@ -177,6 +210,14 @@ export async function startFinalAgentDemo(options: FinalAgentDemoOptions = {}): 
   });
 
   return new FinalAgentDemoFacade(app);
+}
+
+function requiredDriver<TConfig>(drivers: readonly ChannelDriver[], id: string): ChannelDriver<TConfig> {
+  const driver = drivers.find((candidate) => candidate.id === id);
+  if (driver === undefined) {
+    throw new Error(`Expected built-in channel driver "${id}" to be registered.`);
+  }
+  return driver as ChannelDriver<TConfig>;
 }
 
 /**

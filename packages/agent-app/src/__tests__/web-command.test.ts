@@ -9,7 +9,9 @@ import {
   DEFAULT_WEB_HOST,
   DEFAULT_WEB_PORT,
   ensureTailscaleServe,
+  MANAGED_WEB_WORKER_ENV,
   removeOwnedTailscaleServe,
+  rolloverManagedWebLogs,
   runWebCommand,
   tailscaleProxyTarget,
   webHealthcheck,
@@ -17,6 +19,7 @@ import {
   WEB_LAUNCHD_LABEL,
 } from "../web-command.js";
 import type { CommandRunner } from "../web-command.js";
+import { LAUNCHD_LOG_MAX_BYTES } from "../launchd-logs.js";
 
 let dir: string | undefined;
 
@@ -146,6 +149,58 @@ describe("runWebCommand", () => {
     }));
     expect(startServer.mock.calls[0]?.[0]).not.toHaveProperty("authToken");
     expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it("stops with a restart exit when a managed worker requests log rollover", async () => {
+    const home = await testHome();
+    const registryDir = join(home, "registry");
+    await mkdir(registryDir, { mode: 0o700 });
+    const stop = vi.fn(async () => undefined);
+    const rolloverManagedLogs = vi.fn(async () => undefined);
+
+    await expect(runWebCommand(
+      {
+        positionals: ["run"],
+        env: {
+          MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: registryDir,
+          [MANAGED_WEB_WORKER_ENV]: "1",
+        },
+      },
+      {
+        homeDir: home,
+        prepareState,
+        startServer: async () => ({ url: "http://127.0.0.1:5050/", stop }),
+        waitForShutdown: async () => await new Promise<void>(() => undefined),
+        waitForManagedLogRollover: async () => "rollover",
+        rolloverManagedLogs,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    )).resolves.toBe(75);
+
+    expect(stop).toHaveBeenCalledOnce();
+    expect(rolloverManagedLogs).toHaveBeenCalledOnce();
+  });
+
+  it("retains a bounded tail and fixed generations for managed web logs", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
+    await writeFile(
+      paths.launchd.stdoutPath,
+      Buffer.concat([Buffer.alloc(128, "a"), Buffer.alloc(LAUNCHD_LOG_MAX_BYTES, "b")]),
+      { mode: 0o600 },
+    );
+    await writeFile(`${paths.launchd.stdoutPath}.1`, "older-one", { mode: 0o600 });
+    await writeFile(`${paths.launchd.stdoutPath}.2`, "older-two", { mode: 0o600 });
+
+    await rolloverManagedWebLogs(paths);
+
+    await expect(stat(paths.launchd.stdoutPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(`${paths.launchd.stdoutPath}.1`)).size).toBe(LAUNCHD_LOG_MAX_BYTES);
+    expect(await readFile(`${paths.launchd.stdoutPath}.1`, "utf8")).toMatch(/^b+$/u);
+    expect(await readFile(`${paths.launchd.stdoutPath}.2`, "utf8")).toBe("older-one");
+    expect(await readFile(`${paths.launchd.stdoutPath}.3`, "utf8")).toBe("older-two");
   });
 
   it("maps --loopback to 127.0.0.1 and rejects combining it with --host", async () => {

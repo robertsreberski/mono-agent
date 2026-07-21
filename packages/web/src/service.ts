@@ -222,6 +222,21 @@ export class WebService {
     return thread;
   }
 
+  async deleteThread(id: string): Promise<void> {
+    if (this.activeTurns.has(id)) {
+      throw new WebConsoleError("turn_active", "Cancel the active turn before deleting this conversation.", 409);
+    }
+    const result = await this.store.deleteArchivedThread(id);
+    if (result.orphanedFiles > 0) {
+      this.options.logger?.warn?.("Deleted a web conversation with attachment files deferred to orphan cleanup.", {
+        threadId: id,
+        count: result.orphanedFiles,
+      });
+    }
+    this.emit("thread.changed", id, { threadId: id, removed: true });
+    this.emit("threads.changed", id);
+  }
+
   patchAgent(sourceId: string, patch: PatchWebAgentInput): WebAgentSummary {
     const agent = this.store.setAgentPinned(sourceId, patch.pinned);
     this.emit("agents.changed", undefined, { agents: this.store.listAgents() });
@@ -608,8 +623,9 @@ export class WebService {
     const before = new Date((this.options.clock?.() ?? new Date()).getTime() - WEB_STAGED_UPLOAD_TTL_MS).toISOString();
     const partialCount = await this.store.purgePartialUploadFiles(before);
     const count = await this.store.purgeStagedAttachments(before);
-    if (count > 0 || partialCount > 0) {
-      this.options.logger?.info?.("Purged orphaned web uploads.", { count, partialCount });
+    const unreferencedCount = await this.store.purgeUnreferencedAttachmentFiles();
+    if (count > 0 || partialCount > 0 || unreferencedCount > 0) {
+      this.options.logger?.info?.("Purged orphaned web uploads.", { count, partialCount, unreferencedCount });
     }
   }
 

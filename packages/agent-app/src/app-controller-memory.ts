@@ -1,11 +1,34 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
+import type { ChannelLogger } from "@mono-agent/agent-contracts";
 
 import { createConfiguredMemory } from "./configured-agent.js";
 import { isSharedRecallStore, MemoryRetrievalService } from "./memory-retrieval.js";
-import type { MonoAgentAppController } from "./app-controller.js";
+import type { BackgroundSnapshot } from "./background-snapshot.js";
+
+type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
+
+export interface MemoryControllerPort {
+  readonly cwd: string;
+  readonly logger: ChannelLogger | undefined;
+  readonly backgroundSnapshot: BackgroundSnapshot | undefined;
+  sharedMemory: ConfiguredMemory;
+  sharedMemoryRetrieval: MemoryRetrievalService | undefined;
+  sharedMemoryBuilt: boolean;
+  sharedMemoryBuild: Promise<ConfiguredMemory> | undefined;
+  observabilityContext(): Promise<{
+    readonly sourceId?: string;
+    readonly sourceLabel?: string;
+    readonly configPath?: string;
+  }>;
+  recordExporterWarning(warning: { readonly phase: string; readonly message: string }): void;
+  ensureSharedMemoryRetrieval(
+    coreConfig: MonoAgentConfig,
+    store: ConfiguredMemory,
+  ): MemoryRetrievalService | undefined;
+}
 
 export async function memoryStore(
-  controller: MonoAgentAppController,
+  controller: MemoryControllerPort,
   coreConfig: MonoAgentConfig,
 ): Promise<Awaited<ReturnType<typeof createConfiguredMemory>>> {
   if (controller.sharedMemoryBuilt) {
@@ -33,7 +56,6 @@ export async function memoryStore(
     const observability = {
       observabilityContext,
       exporterWarn: (warning: { readonly phase: string; readonly message: string }) => controller.recordExporterWarning(warning),
-      runEventSink: controller.liveEventBus,
     };
     controller.sharedMemory = await createConfiguredMemory(coreConfig, {
       cwd: controller.cwd,
@@ -55,7 +77,7 @@ export async function memoryStore(
   }
 }
 
-export async function resetSharedMemory(controller: MonoAgentAppController): Promise<void> {
+export async function resetSharedMemory(controller: MemoryControllerPort): Promise<void> {
   const mem = controller.sharedMemory as
     | { flush?: () => Promise<void>; close?: () => Promise<void> | void }
     | undefined;
@@ -73,14 +95,14 @@ export async function resetSharedMemory(controller: MonoAgentAppController): Pro
   }
 }
 
-export function __setSharedMemoryForTest(controller: MonoAgentAppController, store: Awaited<ReturnType<typeof createConfiguredMemory>>): void {
+export function __setSharedMemoryForTest(controller: MemoryControllerPort, store: ConfiguredMemory): void {
   controller.sharedMemory = store;
   controller.sharedMemoryRetrieval = undefined;
   controller.sharedMemoryBuilt = true;
 }
 
 export function ensureSharedMemoryRetrieval(
-  controller: MonoAgentAppController,
+  controller: MemoryControllerPort,
   coreConfig: MonoAgentConfig,
   store: Awaited<ReturnType<typeof createConfiguredMemory>>,
 ): MemoryRetrievalService | undefined {

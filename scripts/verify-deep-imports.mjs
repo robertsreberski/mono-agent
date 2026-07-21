@@ -82,17 +82,6 @@ export function mappedEntries(repoRoot) {
     });
 }
 
-/**
- * Read the mapped subpath specifiers from agent-runtime's package.json exports.
- * Kept for back-compat (callers/tests that only need the specifier list);
- * `mappedEntries` is the fuller shape used to also verify the `types` condition.
- * @param {string} repoRoot
- * @returns {string[]}
- */
-export function mappedSpecifiers(repoRoot) {
-  return mappedEntries(repoRoot).map((entry) => entry.specifier);
-}
-
 function sink() {
   const lines = [];
   return { write: (text) => lines.push(text), get text() { return lines.join(""); } };

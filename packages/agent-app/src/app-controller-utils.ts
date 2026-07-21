@@ -16,7 +16,7 @@ import {
 } from "@mono-agent/runtime-adapter";
 import type { SandboxEffectiveState } from "@mono-agent/runtime-adapter";
 
-import type { SandboxStatus } from "./app-controller.js";
+import type { SandboxStatus } from "./app-controller-types.js";
 import type {
   ContinuationChannelSynthesisResult,
   RunningChannel,

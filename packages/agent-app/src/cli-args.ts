@@ -640,6 +640,51 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (json && cmd === "sandbox" && (positionals[0] === "setup" || positionals[0] === "check")) {
     throw new Error("--json is only supported for `mono-agent sandbox status`, not setup or check.");
   }
+  assertFlagCommand(configPath !== undefined, "--config", cmd, [
+    "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs", "tui",
+    "runs", "backfill", "memory", "continuations", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+  ]);
+  assertFlagCommand(envFile !== undefined, "--env-file", cmd, [
+    "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs", "tui",
+    "runs", "backfill", "memory", "continuations", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+  ]);
+  assertFlagCommand(name !== undefined, "--name", cmd, ["init"]);
+  assertFlagCommand(model !== undefined, "--model", cmd, ["init"]);
+  assertFlagCommand(fallbacks.length > 0, "--fallback", cmd, ["init"]);
+  assertFlagCommand(routeSafety !== undefined, "--route-safety", cmd, ["init"]);
+  assertFlagCommand(effort !== undefined, "--effort", cmd, ["init"]);
+  assertFlagCommand(memory !== undefined, "--memory", cmd, ["init"]);
+  assertFlagCommand(preset !== undefined, "--preset", cmd, ["init", "validate"]);
+  assertFlagCommand(withChannels !== undefined, "--with", cmd, ["init"]);
+  assertFlagCommand(yes, "--yes", cmd, ["init", "web"]);
+  assertFlagCommand(dryRun, "--dry-run", cmd, ["init", "backfill"]);
+  assertFlagCommand(run !== undefined, "--run", cmd, ["backfill"]);
+  assertFlagCommand(all, "--all", cmd, ["backfill", "web"]);
+  assertFlagCommand(since !== undefined, "--since", cmd, ["runs", "backfill"]);
+  assertFlagCommand(until !== undefined, "--until", cmd, ["runs", "backfill"]);
+  assertFlagCommand(artifactDir !== undefined, "--artifacts", cmd, ["runs"]);
+  assertFlagCommand(groupBy !== undefined, "--by", cmd, ["runs"]);
+  assertFlagCommand(staleAfterMs !== undefined, "--stale-after-ms", cmd, ["runs"]);
+  assertFlagCommand(agent !== undefined, "--agent", cmd, ["tui"]);
+  assertFlagCommand(conversation !== undefined, "--conversation", cmd, ["tui"]);
+  assertFlagCommand(target !== undefined, "--target", cmd, ["install-skill"]);
+  assertFlagCommand(force, "--force", cmd, ["install-skill", "restart"]);
+  assertFlagCommand(foreground, "--foreground", cmd, ["start"]);
+  assertFlagCommand(follow, "--follow", cmd, ["logs", "web"]);
+  assertFlagCommand(lines !== undefined, "--lines", cmd, ["logs", "web"]);
+
+  if (cmd === "web") {
+    const action = positionals[0];
+    if ((host !== undefined || port !== undefined || loopback) && action !== "start" && action !== "restart" && action !== "run") {
+      throw new Error("--host, --port, and --loopback are only supported for `mono-agent web start`, `web restart`, or `web run`.");
+    }
+    if ((follow || lines !== undefined) && action !== "logs") {
+      throw new Error("--follow and --lines are only supported for `mono-agent web logs`.");
+    }
+    if ((all || yes) && action !== "reset") {
+      throw new Error("--all and --yes are only supported for `mono-agent web reset`.");
+    }
+  }
   const selectedFallbackModels = fallbacks.map((fallback) => fallback.model);
   if (model !== undefined && selectedFallbackModels.includes(model)) {
     throw new Error(`Primary --model \`${model}\` cannot also be a fallback.`);
@@ -704,6 +749,18 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(port === undefined ? {} : { port }),
     ...(loopback ? { loopback } : {}),
   };
+}
+
+function assertFlagCommand(
+  present: boolean,
+  flag: string,
+  command: CliCommand,
+  allowed: readonly CliCommand[],
+): void {
+  if (present && !allowed.includes(command)) {
+    const targets = allowed.map((entry) => `\`mono-agent ${entry}\``).join(" or ");
+    throw new Error(`${flag} is only supported for ${targets}.`);
+  }
 }
 
 function isInternalLaunchdControllerArguments(args: readonly string[]): boolean {

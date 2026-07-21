@@ -553,7 +553,7 @@ If `memory.llm.provider` is `agent-host`, the selected embeddings service is ind
 
 ## `memory-bujo` CLI — removed
 
-The standalone `memory-bujo` binary has been removed. Its bin now ships only as an error-deflector: any invocation prints a removal error pointing at `mono-agent memory <subcommand>` and exits non-zero. The env-var-driven, `<root>`-positional workflow is gone with the bin; managed configuration comes from `mono-agent.config.json`, and every maintenance operation now runs config-aware from the agent folder.
+The standalone `memory-bujo` binary and its compatibility error-deflector have been removed. The env-var-driven, `<root>`-positional workflow is gone with the bin; managed configuration comes from `mono-agent.config.json`, and every maintenance operation now runs config-aware from the agent folder.
 
 Coverage: cli.
 

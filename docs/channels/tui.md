@@ -1,18 +1,18 @@
 ---
 title: "Operator stream endpoint"
-description: "Configure the separate conversational NDJSON and read-only live SSE operator lanes used by local mono-agent consoles."
+description: "Configure the conversational NDJSON operator endpoint used by local mono-agent consoles."
 sidebar:
   order: 9
 ---
 
 This channel serves the loopback NDJSON stream used by the [`mono-agent tui`](/observability/tui/) and [always-on web console](/observability/web-console/). Unlike the [OpenAI-compatible API](/channels/openai-api/) (which flattens events into Chat Completions chunks), it preserves structured `AgentStreamEvent` kinds — thinking deltas, tool calls with arguments/progress/results/timing, token usage, cost, provider lifecycle and failover, warnings — subject to the serialized event-frame cap described below.
 
-The configuration and registry id remains `tui` for compatibility, but human status output calls this shared endpoint **gui** and its default HTTP path is `/gui`. It does not mean the web service embeds or launches the terminal UI: `mono-agent tui` and `mono-agent web` are two independent clients of the same conversational operator endpoint. The separate `live` channel is read-only SSE run telemetry; it cannot accept a chat turn.
+The configuration and registry id remains `tui` for compatibility, but human status output calls this shared endpoint **gui** and its default HTTP path is `/gui`. It does not mean the web service embeds or launches the terminal UI: `mono-agent tui` and `mono-agent web` are two independent clients of the same conversational operator endpoint.
 
 Coverage: `config` (the `tui` section of `mono-agent.config.json`).
 
 :::note
-**This operator surface is ON by default.** `tui` and the read-only `live` event relay are the two default-on channels: both bind loopback with ephemeral ports and need no credentials by default, so the TUI/web console can chat and operator tooling can observe runs without a per-agent config edit. Set `"tui": { "enabled": false }` to opt out of the operator endpoint; everything else about the channel lifecycle (status lines, `degraded`/`failed` reporting) matches the other channels.
+**This operator surface is ON by default.** It binds loopback with an ephemeral port and needs no credentials by default, so the TUI/web console can chat without a per-agent config edit. Set `"tui": { "enabled": false }` to opt out; everything else about the channel lifecycle (status lines, `degraded`/`failed` reporting) matches the other channels.
 :::
 
 ## Configuration
@@ -69,44 +69,6 @@ Ask submission is conversation-bound and rejects expired, completed, or
 mismatched interaction ids. The endpoint remains subject to the same loopback,
 non-loopback opt-in, and optional bearer-key policy as streamed turns.
 
-## Live event relay for Session Recorder
-
-The `live` channel is the sibling default-on operator surface: the read-only run-event relay consumed by the `@mono-agent/session-web` PWA and other operator tooling. It exposes run lifecycle frames over SSE, never accepts turns, and lets a consumer show sub-run updates before the on-disk recorder flushes the final summary.
-
-```json
-{
-  "live": {
-    "enabled": true,
-    "host": "127.0.0.1",
-    "port": 0,
-    "basePath": "/live",
-    "allowNonLoopback": false
-  }
-}
-```
-
-| Key | Type | Default | Purpose |
-| --- | --- | --- | --- |
-| `enabled` | boolean | **`true`** | Default-on read-only run-event operator relay; set `false` to opt out. |
-| `host` | string | `127.0.0.1` | Bind address. Loopback by default. |
-| `port` | integer | `0` | `0` = ephemeral. The bound `baseUrl` is published to the trace-source registry. |
-| `basePath` | string | `/live` | Path prefix for `/v1/events` and `/v1/info`. |
-| `allowNonLoopback` | boolean | `false` | Required guard before binding a non-loopback `host`. |
-| `apiKey` | string | _unset_ | Optional bearer token. Inline config remains accepted for compatibility, but new source configs should omit it and set `MONO_AGENT_LIVE_API_KEY` in `.env`; the registry never carries secrets. |
-
-| Env var | Maps to |
-| --- | --- |
-| `MONO_AGENT_LIVE_ENABLED` | `live.enabled` |
-| `MONO_AGENT_LIVE_HOST` | `live.host` |
-| `MONO_AGENT_LIVE_PORT` | `live.port` |
-| `MONO_AGENT_LIVE_BASE_PATH` | `live.basePath` |
-| `MONO_AGENT_LIVE_ALLOW_NON_LOOPBACK` | `live.allowNonLoopback` |
-| `MONO_AGENT_LIVE_API_KEY` | `live.apiKey` |
-
-Keep the bearer value in `.env` (or an exported environment variable). A consumer resolves the effective value and sends it only to trusted loopback live URLs.
-
-A consumer trusts live relay URLs only when they resolve to loopback, and it only sends a live API key to those trusted URLs. If you deliberately expose `live` beyond loopback, put it behind a trusted network boundary; the stream contains run prompts, tool events, usage, and terminal summaries.
-
 ## Endpoints & wire protocol
 
 | Endpoint | Purpose |
@@ -116,7 +78,7 @@ A consumer trusts live relay URLs only when they resolve to loopback, and it onl
 | `POST {basePath}/v1/conversations/:id/cancel` | Explicit cancel (`202`; `501` if the responder has no cancel). |
 | `POST {basePath}/v1/conversations/:id/verbatim` | Authenticated body `{ text, idempotencyKey }`. Appends an already-delivered assistant message to durable history without a model turn (`200`; `501` if the responder has no history-append surface). Used by the web console's host-owned notification path. |
 
-Frames are defined in `@mono-agent/agent-contracts` (`stream-wire`); parsing is tolerant in both directions, so version-skewed console/agent pairs keep talking (unknown frame kinds and event types pass through). A serialized event frame is capped at 256 KiB for its complete UTF-8 NDJSON line, including the newline. Above that cap, `assistant_thought` and `tool_call_started`/`tool_call_progress`/`tool_call_completed` payload fields are reduced, marked truncated, and remeasured. Any other oversized event variant — including `runtime_warning` or `runtime_telemetry` — and any reducible event whose minimal form still does not fit because of metadata or invariant fields becomes a small `oversized_event` marker instead. Other frame kinds do not use this cap. Replay does not restore the omitted tail: the JSONL recorder separately applies key-based redaction and caps each event string at 4,096 bytes by default, buffers events in RAM, and replaces the events file only at terminal `finish()`/`fail()`. A crash before that boundary can therefore leave no in-flight events to replay. The tool-bloat guard may separately save oversized tool-result blocks under `tool-output/` when its persistence callback succeeds; those files are not the run's JSONL event stream and do not recover arbitrary streamed payloads. See the [artifact write-boundary contract](/observability/artifacts-and-traces/).
+Frames are defined in `@mono-agent/agent-contracts` (`stream-wire`); parsing is tolerant in both directions, so version-skewed console/agent pairs keep talking (unknown frame kinds and event types pass through). A serialized event frame is capped at 256 KiB for its complete UTF-8 NDJSON line, including the newline. Above that cap, `assistant_thought` and `tool_call_started`/`tool_call_progress`/`tool_call_completed` payload fields are reduced, marked truncated, and remeasured. Any other oversized event variant — including `runtime_warning` or `runtime_telemetry` — and any reducible event whose minimal form still does not fit because of metadata or invariant fields becomes a small `oversized_event` marker instead. Other frame kinds do not use this cap. Replay does not restore the omitted tail: the JSONL recorder separately applies sensitive-key redaction, scans retained free text for high-confidence credential shapes, and caps each event string at 4,096 bytes by default. It buffers events in RAM and replaces the events file only at terminal `finish()`/`fail()`. A crash before that boundary can therefore leave no in-flight events to replay. The tool-bloat guard may separately save oversized tool-result blocks under `tool-output/` when its persistence callback succeeds; those files are not the run's JSONL event stream and do not recover arbitrary streamed payloads. See the [artifact write-boundary contract](/observability/artifacts-and-traces/).
 
 How the endpoint is discovered: the running channel's summary (`baseUrl`) is folded into the agent's trace-source manifest at `metadata.channels.tui.baseUrl`, which `mono-agent tui` reads from the registry.
 

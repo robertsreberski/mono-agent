@@ -165,7 +165,6 @@ describe("captureTurn", () => {
       db,
       root,
       llm: { id: "paid-migration", complete: async () => JSON.stringify({ action: "promote" }) },
-      nextId: () => "unused",
       now: () => migrationNow,
       hooks: { afterDecisionDurable: () => { throw new Error("leave-capture-migration-pending"); } },
     })).rejects.toThrow("leave-capture-migration-pending");

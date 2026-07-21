@@ -93,6 +93,14 @@ export const api = {
     return result.thread;
   },
 
+  deleteThread: async (threadId: string) => {
+    const response = await fetch(`/api/v1/threads/${encodeURIComponent(threadId)}`, {
+      method: "DELETE",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) throw await readError(response);
+  },
+
   startTurn: async (threadId: string, input: StartTurnInput) =>
     request<{ thread: ThreadSummary; turn: { id: string; status: string } }>(
       `/api/v1/threads/${encodeURIComponent(threadId)}/turns`,

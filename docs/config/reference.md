@@ -60,12 +60,6 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `interaction.bridge.host` | `string` | `MONO_AGENT_INTERACTION_BRIDGE_HOST` | 127.0.0.1 | `127.0.0.1` | Bind host for the app-owned AskUser/tool-progress bridge. Defaults to loopback; keep it local because non-loopback values are not rejected. |
 | `interaction.bridge.port` | `integer` | `MONO_AGENT_INTERACTION_BRIDGE_PORT` | 0 | `0` | Bridge port. 0 chooses an ephemeral port. |
 | `interaction.progress.enabled` | `boolean` | `MONO_AGENT_PROGRESS_ENABLED` | true | `true` | Whether tool progress posts are relayed to channel status messages. |
-| `live.allowNonLoopback` | `boolean` | `MONO_AGENT_LIVE_ALLOW_NON_LOOPBACK` | false | `true` | Configures allowNonLoopback for the live section. |
-| `live.apiKey` | `string` | `MONO_AGENT_LIVE_API_KEY` | unset | `example` | Secret value for live.apiKey; prefer the env override. |
-| `live.basePath` | `string` | `MONO_AGENT_LIVE_BASE_PATH` | /live | `/live` | Configures basePath for the live section. |
-| `live.enabled` | `boolean` | `MONO_AGENT_LIVE_ENABLED` | true | `true` | Enables the live capability. |
-| `live.host` | `string` | `MONO_AGENT_LIVE_HOST` | 127.0.0.1 | `127.0.0.1` | Configures host for the live section. |
-| `live.port` | `integer` | `MONO_AGENT_LIVE_PORT` | 0 | `0` | Configures port for the live section. |
 | `memory.backend` | `string` | `MONO_AGENT_MEMORY_BACKEND` | bujo | `bujo` | Configures backend for the memory section. |
 | `memory.consolidation.cron` | `string` | `MONO_AGENT_MEMORY_CONSOLIDATION_CRON` | 0 */2 * * * | `0 */2 * * *` | Configures consolidation.cron for the memory section. |
 | `memory.consolidation.enabled` | `boolean` | `MONO_AGENT_MEMORY_CONSOLIDATION_ENABLED` | true | `true` | Enables the memory capability. |

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { mappedEntries, mappedSpecifiers, runVerifyDeepImports } from "../verify-deep-imports.mjs";
+import { mappedEntries, runVerifyDeepImports } from "../verify-deep-imports.mjs";
 
 function sink() {
   const lines = [];
@@ -12,7 +12,7 @@ const repoRoot = new URL("../..", import.meta.url).pathname;
 
 describe("verify-deep-imports", () => {
   it("derives specifiers from the exports map, without wildcards, including the core deep paths", () => {
-    const specifiers = mappedSpecifiers(repoRoot);
+    const specifiers = mappedEntries(repoRoot).map((entry) => entry.specifier);
     expect(specifiers).toContain("@mono-agent/agent-runtime");
     expect(specifiers).toContain("@mono-agent/agent-runtime/ai");
     expect(specifiers).toContain("@mono-agent/agent-runtime/agent");

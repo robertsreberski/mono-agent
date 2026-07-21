@@ -11,13 +11,12 @@ Every mono-agent run gets local JSONL artifacts and can optionally be exported t
 
 | Surface | What it is | Coverage | Page |
 | --- | --- | --- | --- |
-| JSONL run artifacts | Per-run `run-*.events.jsonl` + `run-*.summary.json`; non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned | config / auto | [Run artifacts & traces](/observability/artifacts-and-traces/) |
+| JSONL run artifacts | Per-run `run-*.events.jsonl` + `run-*.summary.json`; non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; retained free text is scanned for a closed set of high-confidence credential shapes | config / auto | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Trace-source registry | Heartbeat manifest so dashboards discover live agents | config | [Run artifacts & traces](/observability/artifacts-and-traces/) |
 | Phoenix exporter + backfill | Best-effort OTLP/HTTP export of run lifecycles; retroactive backfill | config / cli | [Phoenix export & backfill](/observability/phoenix-and-backfill/) |
 | `mono-agent` CLI | init / validate / start / stop / logs / restart / tui / web / backfill / runs / install-skill | cli | [CLI reference](/observability/cli-reference/) |
 | TUI | Operator console: live chat with thinking/tool/telemetry insight, run replay, config view | cli | [TUI](/observability/tui/) |
 | Web console | Always-on persistent multi-agent conversations, streamed turns, and local-device attachments | cli | [Web console](/observability/web-console/) |
-| Session Recorder (removed) | Launcher command removed — use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console); `@mono-agent/session-web` still ships without a CLI command | cli | [CLI reference](/observability/cli-reference/#sessions) |
 
 ## JSONL run artifacts (always on)
 
@@ -102,15 +101,6 @@ mono-agent web               # read-only status + exact URLs
 ```
 
 The default bind is `0.0.0.0:5050`, making LAN and tailnet access the normal path; `--loopback` narrows it to this computer. There is no application login, so network reachability is authority to operate the agents. Keep the service on a trusted LAN/tailnet and do not expose it publicly. See the [web console guide](/observability/web-console/) for lifecycle, Tailscale HTTPS, security, conversations, archive/reset behavior, and attachments.
-
-## The Session Recorder
-
-The `mono-agent sessions` command was removed. For operator run inspection use
-`mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). The
-`@mono-agent/session-web` package and the read-only `live` relay still ship in
-code but are no longer reachable through any CLI command; full retirement is a
-later dead-code-audited change. See the [CLI reference](/observability/cli-reference/#sessions)
-and the [deprecation tracker](/reference/deprecations/#removed-surfaces).
 
 ## Related
 

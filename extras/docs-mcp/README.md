@@ -143,7 +143,6 @@ MonoAgentDocsReadResult
 MonoAgentDocsScope
 MonoAgentDocsSearchAction
 MonoAgentDocsSearchHit
-MonoAgentDocsSearchInput
 MonoAgentDocsSearchResult
 createMonoAgentDocsMcpServer
 ```

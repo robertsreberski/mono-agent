@@ -93,7 +93,7 @@ describe("consumer docs/config consistency checker", () => {
 function successSummaryPattern(consumerCount: number): RegExp {
   return new RegExp(
     "^Repo/consumer docs/config consistency passed for [1-9]\\d* repo doc file\\(s\\) " +
-      "and 14 artifact-contract source file\\(s\\) " +
+      "and 11 artifact-contract source file\\(s\\) " +
       `and ${consumerCount} consumer folder\\(s\\)\\.\\n$`,
     "u",
   );

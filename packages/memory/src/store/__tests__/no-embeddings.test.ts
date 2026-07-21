@@ -4,7 +4,7 @@
  * - upsert writes memories + FTS rows
  * - recall returns keyword matches (no throw)
  * - findSimilar returns []
- * - applyDecay remains a compatibility no-op; dueItems / upsertEntity+getEntity still work
+ * - dueItems / upsertEntity+getEntity still work
  */
 import { describe, expect, it } from "vitest";
 
@@ -85,18 +85,6 @@ describe("no-embeddings (FTS-only) path", () => {
 
     const similar = await db.findSimilar("alpha");
     expect(similar).toEqual([]);
-    db.close();
-  });
-
-  it("applyDecay remains a no-op without embeddings", async () => {
-    const db = openMemoryDb({ path: ":memory:" });
-    await db.upsert(
-      record({ id: "a1", text: "alpha note", salience: 0.9, createdAt: "2025-01-01T00:00:00.000Z" }),
-    );
-    const before = db.get("a1");
-    const now = new Date("2026-06-16T08:00:00.000Z");
-    expect(db.applyDecay(now)).toEqual({ decayed: 0 });
-    expect(db.get("a1")).toEqual(before);
     db.close();
   });
 

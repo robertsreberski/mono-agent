@@ -39,10 +39,6 @@
       "types": "./types/ai/cost.d.ts",
       "default": "./src/ai/cost.js"
     },
-    "./ai/backend.js": {
-      "types": "./types/ai/backend.d.ts",
-      "default": "./src/ai/backend.js"
-    },
     "./ai/runtime/model-refs.js": {
       "types": "./types/ai/runtime/model-refs.d.ts",
       "default": "./src/ai/runtime/model-refs.js"
@@ -124,8 +120,9 @@
   "types": "./types/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.types.json",
+    "typecheck": "tsc -p tsconfig.types.json --noEmit",
     "prepack": "pnpm run build",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "files": [
     "src/**/*.js",

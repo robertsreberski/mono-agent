@@ -17,7 +17,6 @@ import {
 import { collectChannelConfigViews } from "./channel-config-view.js";
 import { resolveChannelDrivers } from "./channels.js";
 import type { ParsedCliArgs } from "./cli-args.js";
-import { findUnknownAppConfigWarnings } from "./config-reference.js";
 import { validateMonoAgentFolder } from "./doctor.js";
 import type {
   ValidationReport,
@@ -99,6 +98,8 @@ export async function runValidate(args: ParsedCliArgs): Promise<number> {
     if (args.json === true) {
       process.stdout.write(`${JSON.stringify({
         ok: report.ok,
+        structurallyValid: report.structurallyValid,
+        operationallyReady: report.operationallyReady,
         sections: report.sections,
         preset: presetResult,
       })}\n`);
@@ -109,7 +110,12 @@ export async function runValidate(args: ParsedCliArgs): Promise<number> {
     }
     process.stdout.write(renderPlanCompleteness(plan.validateExpectations, `Preset: ${preset.id}`, report));
   } else if (args.json === true) {
-    process.stdout.write(`${JSON.stringify({ ok: report.ok, sections: report.sections })}\n`);
+    process.stdout.write(`${JSON.stringify({
+      ok: report.ok,
+      structurallyValid: report.structurallyValid,
+      operationallyReady: report.operationallyReady,
+      sections: report.sections,
+    })}\n`);
     return report.ok ? 0 : 1;
   } else {
     for (const section of report.sections) {
@@ -117,18 +123,17 @@ export async function runValidate(args: ParsedCliArgs): Promise<number> {
     }
   }
 
-  const hasWaitingSections = report.sections.some((section) => section.status === "waiting");
   process.stdout.write(
-    report.ok
-      ? hasWaitingSections
-        ? `\n${ui.style.yellow("⚠ Config is structurally valid, but needs attention before start.")}\n${ui.style.dim("Review the waiting sections above, then re-run mono-agent validate.")}\n`
+    report.structurallyValid
+      ? !report.operationallyReady
+        ? `\n${ui.style.yellow("⚠ Config is structurally valid, but not operationally ready.")}\n${ui.style.dim("Review the waiting sections above, then re-run mono-agent validate.")}\n`
         : `\n${ui.style.green("✓ Config is ready to start.")}\n${ui.style.dim("Run `mono-agent config` for the full field-by-field view.")}\n`
       : `\n${ui.hint("Fix the errors above, then re-run mono-agent validate.")}`,
   );
   process.stdout.write(
     ui.style.dim("Core sections activate by presence; channels need `enabled: true` — see docs/config (How sections activate).\n"),
   );
-  return report.ok ? 0 : 1;
+  return report.structurallyValid ? 0 : 1;
 }
 
 /**
@@ -427,7 +432,6 @@ async function assembleResolvedConfigView(
   const drivers = await resolveChannelDrivers({ env, cwd, configPath });
   const channels = await collectChannelConfigViews(drivers, { env, cwd, configPath });
   const warnings = [
-    ...findUnknownAppConfigWarnings(jsonResult.json),
     ...findJsonSecretConfigWarnings([...sections, ...channels]),
     ...findRemovedConfigWarnings({ json: jsonResult.json, env }),
   ];

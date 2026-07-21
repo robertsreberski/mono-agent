@@ -56,9 +56,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
   folders non-destructively.
 - Operate the machine-wide `@mono-agent/web` assistant-ui console through
-  `mono-agent web`. The `@mono-agent/session-web` recorder still ships but its
-  `mono-agent sessions` launcher was removed; use `mono-agent tui`
-  (recorded-run replay) or `mono-agent web` (live console).
+  `mono-agent web`; use `mono-agent tui` for bounded recorded-run replay.
 
 ## Install / Usage
 
@@ -490,11 +488,11 @@ path:
 
 | Area | Modules | Purpose |
 | --- | --- | --- |
-| Stable host facade | `app.ts`, `app-controller*.ts` | Startup, status, reload, channel lifecycle, traceability, and teardown. |
+| Stable host facade | `app.ts`, `app-controller.ts`, `app-controller-*.ts`, `app-controller-types.ts` | Startup state plus narrow operation ports for status, reload, channel lifecycle, traceability, and teardown. |
 | Configured agent | `configured-agent.ts`, `app-controller-responder.ts` | Runtime, harness, memory, history, tools, and recorder composition. |
 | Channel integration | `channels.ts`, `channel-drivers/` | Built-in drivers plus config-loaded plugin resolution. |
 | Interaction and send tools | `interaction-bridge.ts`, `adapter-send-tools*.ts` | Structured `AskUser` state, channel sinks, progress, adapter-send tools, and bounded interaction-history projection. |
-| Operator CLI | `cli*.ts`, `init.ts`, `doctor.ts`, `background*.ts` | Setup, validation, managed service lifecycle, and diagnostics. |
+| Operator CLI | `cli*.ts`, `init.ts`, `doctor.ts`, `doctor-observability.ts`, `background*.ts`, `managed-web-logs.ts` | Setup, focused validation sections, managed service/log lifecycle, and diagnostics. |
 | Host services | `run-history.ts`, `continuation*.ts`, `memory-*.ts` | Bounded prior-run evidence, durable continuations, and memory operations. |
 
 ## Public API
@@ -519,7 +517,6 @@ Every symbol exported by each public code entrypoint is listed below.
 
 ```text
 AppTraceDefaults
-BroadcastRunContext
 COMPOSER_SKILL_NAME
 CONTINUATION_CLAIM_TOKEN_ENV
 CONTINUATION_CLAIM_TOKEN_HEADER
@@ -630,7 +627,6 @@ consumerContractNames
 consumerContractRunSummaryStatuses
 continuationDigest
 continuationOperatorToken
-createBroadcastRunRecorder
 createConfiguredAgentHarness
 createConfiguredAgentResponder
 createConfiguredAgentRuntime

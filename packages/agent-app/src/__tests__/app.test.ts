@@ -1639,32 +1639,6 @@ describe("startMonoAgentApp", () => {
     },
   );
 
-  it("does not report an apply as serving when only the passive live channel is running", async () => {
-    await writeConfig({ ...baseConfig() });
-    const liveDriver: ChannelDriver = {
-      id: "live",
-      label: "Live",
-      loadConfig: async () => ({}),
-      isConfigError: () => false,
-      start: async () => ({ summary: { baseUrl: "http://127.0.0.1:9999/live" }, stop: async () => undefined }),
-    };
-    const webhookDriver: ChannelDriver = {
-      id: "webhook",
-      label: "Webhook",
-      loadConfig: async () => ({}),
-      isConfigError: () => false,
-      waitingReason: () => "Webhook is missing an endpoint.",
-      start: async () => ({ summary: {}, stop: async () => undefined }),
-    };
-
-    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [liveDriver, webhookDriver] });
-    const result = await app.applyConfigChange("live-only");
-
-    expect(result.kind).toBe("waiting_for_config");
-    expect(result.transports).toEqual(["live"]);
-    await app.stop();
-  });
-
   it("disposes the channel responder (not just the transport) on reload and stop", async () => {
     const configPath = await writeConfig({ ...baseConfig(), webhook: { enabled: true, port: 0 } });
     const webhookFactory = vi.fn(async () => ({

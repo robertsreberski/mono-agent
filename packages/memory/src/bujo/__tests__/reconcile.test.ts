@@ -1073,7 +1073,6 @@ describe("reconcileBatch", () => {
       db,
       root,
       llm: { id: "paid-migration", complete: async () => JSON.stringify({ action: "promote" }) },
-      nextId: () => "unused",
       now: () => migrationNow,
       hooks: { afterDecisionDurable: () => { throw new Error("leave-paid-migration-pending"); } },
     })).rejects.toThrow("leave-paid-migration-pending");
@@ -1106,7 +1105,6 @@ describe("reconcileBatch", () => {
       db,
       root,
       llm: { id: "paid-migration", complete: async () => JSON.stringify({ action: "promote" }) },
-      nextId: () => "unused",
       now: () => migrationNow,
       hooks: { afterDecisionDurable: () => { throw new Error("leave-dual-migration-pending"); } },
     })).rejects.toThrow("leave-dual-migration-pending");

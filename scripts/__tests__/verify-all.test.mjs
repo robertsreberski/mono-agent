@@ -26,7 +26,7 @@ const CI_SETUP_NODE_STEP = [
 const CI_ACTION_SEQUENCE = `${CI_CHECKOUT_STEP}\n\n${CI_SETUP_NODE_STEP}`;
 
 describe("verify-all", () => {
-  it("runs the repo gate in order, then ends with the exact green verdict lines", async () => {
+  it("runs the repo gate in order, then ends with one exact green verdict", async () => {
     const stdout = sink();
     const execution = [];
     const result = await runVerifyAll({
@@ -97,9 +97,11 @@ describe("verify-all", () => {
       "git diff --check",
     ]);
     expect(stdout.text.endsWith([
-      "repo green",
-      "local-agent-alpha contract green",
-      "local-agent-beta contract green",
+      "final summary",
+      "repo ok",
+      "local-agent-alpha contract ok",
+      "local-agent-beta contract ok",
+      "verification green",
       "",
     ].join("\n"))).toBe(true);
   });
@@ -131,6 +133,7 @@ describe("verify-all", () => {
     expect(stdout.text).toContain("repo fail");
     expect(stdout.text).toContain("local-agent-alpha contract fail");
     expect(stdout.text).toContain("local-agent-beta contract fail");
+    expect(stdout.text).toContain("verification failed");
   });
 
   it("fails fast before release and test commands when a consumer verdict is not green", async () => {
@@ -184,9 +187,7 @@ describe("verify-all", () => {
       "repo fail",
       "local-agent-alpha contract ok",
       "local-agent-beta contract fail",
-      "repo failed",
-      "local-agent-alpha contract green",
-      "local-agent-beta contract failed",
+      "verification failed",
       "",
     ].join("\n"));
   });
@@ -218,6 +219,28 @@ describe("verify-all", () => {
 
   it("keeps every CI matrix leg at the exact documented semantic delta from verify-all", () => {
     expectCiParity(readCiWorkflow());
+  });
+
+  it("requires a PR release dry run and publishes one aggregate CI verdict", () => {
+    const workflow = parseDocument(readCiWorkflow(), { uniqueKeys: true }).toJS();
+    const releaseDryRun = workflow.jobs["release-dry-run"];
+    const verdict = workflow.jobs.verdict;
+
+    expect(releaseDryRun.name).toBe("Release dry run");
+    expect(releaseDryRun.if).toBe("github.event_name == 'pull_request'");
+    expect(releaseDryRun.needs).toBe("verify");
+    expect(releaseDryRun.steps.some((step) =>
+      typeof step.run === "string"
+      && step.run.includes("pnpm run release:publish -- --dry-run --tag \"$TAG\""),
+    )).toBe(true);
+
+    expect(verdict.name).toBe("Required verdict");
+    expect(verdict.if).toBe("always()");
+    expect(verdict.needs).toEqual(["verify", "website", "release-dry-run"]);
+    expect(verdict.steps).toHaveLength(1);
+    expect(verdict.steps[0].run).toContain("CI VERDICT: GREEN");
+    expect(verdict.steps[0].run).toContain("CI VERDICT: FAILED");
+    expect(Object.values(workflow.jobs).filter((job) => job.name === "Required verdict")).toHaveLength(1);
   });
 
   it("rejects deleting, moving, or changing the pnpm policy gate", () => {
@@ -870,9 +893,15 @@ function parseCiVerifyJob(source) {
   assertExactMapFields(rootFields, ["name", "on", "permissions", "concurrency", "jobs"], "CI workflow");
   const jobs = requireMapField(rootFields, "jobs", "ci.yml root");
   const jobFields = readYamlMap(jobs, "ci.yml jobs");
-  assertExactMapFields(jobFields, ["verify", "website"], "CI workflow jobs");
+  assertExactMapFields(
+    jobFields,
+    ["verify", "website", "release-dry-run", "verdict"],
+    "CI workflow jobs",
+  );
   const verifyJob = requireMapField(jobFields, "verify", "ci.yml jobs");
   requireYamlMap(jobFields.get("website"), "ci.yml website job");
+  requireYamlMap(jobFields.get("release-dry-run"), "ci.yml release-dry-run job");
+  requireYamlMap(jobFields.get("verdict"), "ci.yml verdict job");
 
   const verifyFields = readYamlMap(verifyJob, "CI verify job");
   assertExactMapFields(

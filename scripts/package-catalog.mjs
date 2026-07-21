@@ -159,8 +159,8 @@ export const packageCatalog = [
     dir: "operator-adapter",
     name: "@mono-agent/operator-adapter",
     category: "communication",
-    channelIds: ["tui", "live"],
-    responsibility: "Exposes local operator endpoints: structured TUI NDJSON turns and read-only live SSE run-event streams.",
+    channelIds: ["tui"],
+    responsibility: "Exposes the structured local TUI NDJSON endpoint used by the terminal and browser operator consoles.",
     allowedDependencyCategories: ["core"],
     publishable: true,
   },
@@ -188,14 +188,6 @@ export const packageCatalog = [
     channelIds: ["telegram"],
     responsibility: "Adapts Telegram updates to structural agent requests and streamed replies.",
     allowedDependencyCategories: ["core"],
-    publishable: true,
-  },
-  {
-    dir: "session-web",
-    name: "@mono-agent/session-web",
-    category: "operator-surface",
-    responsibility: "Maintains the legacy read-only Session Recorder PWA for programmatic embedders, combining discovered agents' recorded and live runs while retirement remains pending.",
-    allowedDependencyCategories: ["core", "observability"],
     publishable: true,
   },
   {
@@ -249,14 +241,6 @@ export function packageByName() {
   return new Map(packageCatalog.map((entry) => [entry.name, entry]));
 }
 
-export function packageByDir() {
-  return new Map(packageCatalog.map((entry) => [entry.dir, entry]));
-}
-
 export function packageRelativePath(entry) {
   return entry.path ?? `packages/${entry.dir}`;
-}
-
-export function packageByPath() {
-  return new Map(packageCatalog.map((entry) => [packageRelativePath(entry), entry]));
 }

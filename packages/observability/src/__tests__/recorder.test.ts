@@ -190,6 +190,49 @@ describe("JsonlRunRecorder", () => {
     expect(summaryJson).toContain('"isolated": true');
   });
 
+  it("content-scans high-confidence credential shapes before any run content reaches disk", async () => {
+    const dir = await tempDir();
+    const credential = `sk-${"A".repeat(48)}`;
+    const recorder = createJsonlRunRecorder({
+      runId: "run:credential-scan",
+      conversationId: "tui:credential-scan",
+      artifactDir: dir,
+      userInput: `user ${credential}`,
+      systemPrompt: `option system ${credential}`,
+      source: `source ${credential}`,
+      sourceDetail: `detail ${credential}`,
+    });
+
+    recorder.onEvent({ type: "assistant", text: `event ${credential}` });
+    const summary = await recorder.finish({
+      systemPrompt: `result system ${credential}`,
+      error: `provider ${credential}`,
+      failureKind: `failure ${credential}`,
+      failoverHistory: [{ requestId: credential }],
+      usage: { note: `usage ${credential}` },
+      cost: { note: `cost ${credential}` },
+      model: `model ${credential}`,
+      providerSessionId: credential,
+      effort: `effort ${credential}`,
+      runtimeWarnings: [`warning ${credential}`],
+      diagnostics: { detail: `diagnostic ${credential}` },
+      capabilitiesUsed: [`capability ${credential}`],
+    });
+
+    const persisted = `${await readFile(summary.artifactPaths[0]!, "utf8")}\n${await readFile(summary.artifactPaths[1]!, "utf8")}`;
+    expect(persisted).not.toContain(credential);
+    expect(persisted).toContain("[redacted]");
+    expect(JSON.stringify(summary)).not.toContain(credential);
+    expect(summary).toMatchObject({
+      userInput: "user [redacted]",
+      systemPrompt: "result system [redacted]",
+      error: "provider [redacted]",
+      providerSessionId: "[redacted]",
+      source: "source [redacted]",
+      sourceDetail: "detail [redacted]",
+    });
+  });
+
   it("caps oversized event strings at the 4,096-byte recorder default before terminal JSONL persistence", async () => {
     const dir = await tempDir();
     const tailSentinel = "TAIL-MUST-NOT-REACH-JSONL";

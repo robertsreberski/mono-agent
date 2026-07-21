@@ -297,7 +297,7 @@ describe("runCli config", () => {
     }
   });
 
-  it("prints unknown key warnings for stale config blocks", async () => {
+  it("rejects unknown keys instead of silently ignoring stale config blocks", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agent-app-cli-config-"));
     const previousCwd = process.cwd();
     const previousMonoAgentEnv = new Map<string, string>();
@@ -309,10 +309,15 @@ describe("runCli config", () => {
     }
 
     const chunks: string[] = [];
+    const errorChunks: string[] = [];
     const stdoutSpy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
       chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
       return true;
     }) as typeof process.stdout.write);
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      errorChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+      return true;
+    }) as typeof process.stderr.write);
 
     try {
       process.chdir(dir);
@@ -332,15 +337,16 @@ describe("runCli config", () => {
         }, null, 2),
       );
 
-      await expect(runCli(["config", "--config", configPath])).resolves.toBe(0);
+      await expect(runCli(["config", "--config", configPath])).resolves.toBe(1);
 
       const out = chunks.join("");
-      expect(out).toContain("[WARN] Unknown config key console in mono-agent.config.json");
-      expect(out).toContain("[WARN] Unknown config key traceability.heartBeatMs in mono-agent.config.json");
-      expect(out).toContain("Heartbeat (ms)");
-      expect(out).toContain("(same as default)");
+      const errors = errorChunks.join("");
+      expect(out).toBe("");
+      expect(errors).toContain("unknown keys: console, traceability.heartBeatMs");
+      expect(errors).toContain("unknown keys are not ignored");
     } finally {
       stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
       process.chdir(previousCwd);
       for (const key of Object.keys(process.env)) {
         if (key.startsWith("MONO_AGENT_")) {

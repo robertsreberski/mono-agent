@@ -30,6 +30,7 @@ import {
 } from "@a2a-js/sdk";
 import {
   AgentResponseCancelledError,
+  closeServerBounded,
   isAgentResponseCancelledError,
   type AgentMessageStream,
   type AgentRequestBase,
@@ -39,7 +40,6 @@ import {
 import {
   assertSafeBind,
   bearerTokensEqual,
-  close,
   hostForUrl,
   isLoopbackHost,
   listen,
@@ -182,6 +182,7 @@ export async function startA2AProvider(
     new DefaultExecutionEventBusManager(),
   );
   let requestHandler: A2ARequestHandler = guardUnsupportedA2AIdempotency(baseRequestHandler);
+  let stopPromise: Promise<void> | undefined;
   if (options.idempotency !== undefined) {
     try {
       requestHandler = await createIdempotentA2ARequestHandler({
@@ -191,7 +192,8 @@ export async function startA2AProvider(
         ...(options.logger === undefined ? {} : { logger: options.logger }),
       });
     } catch (error) {
-      await close(server).catch(() => undefined);
+      executor.stop("A2A provider initialization failed.");
+      await closeServerBounded(server).catch(() => undefined);
       throw error;
     }
   }
@@ -237,8 +239,12 @@ export async function startA2AProvider(
     host,
     port: boundPort,
     agentCard,
-    async stop() {
-      await close(server);
+    stop() {
+      stopPromise ??= (async () => {
+        executor.stop("A2A provider stopped.");
+        await closeServerBounded(server);
+      })();
+      return stopPromise;
     },
   };
 }
@@ -248,6 +254,7 @@ class MonoA2AExecutor implements AgentExecutor {
   private readonly sourceUrl: string | undefined;
   private readonly logger: A2AProviderLogger | undefined;
   private readonly activeRuns = new Map<string, ActiveRun>();
+  private stopping = false;
 
   constructor(
     responder: AgentResponder<A2AAgentRequest, AgentMessageStream, AgentResponse>,
@@ -279,6 +286,13 @@ class MonoA2AExecutor implements AgentExecutor {
       history: [requestContext.userMessage],
       statusText: "Task submitted.",
     })));
+
+    if (this.stopping) {
+      controller.abort(new AgentResponseCancelledError("A2A provider is stopping."));
+      publishCanceled(active, "Task canceled because the provider is stopping.");
+      this.activeRuns.delete(requestContext.taskId);
+      return;
+    }
 
     try {
       const normalized = textFromMessage(requestContext.userMessage);
@@ -369,8 +383,20 @@ class MonoA2AExecutor implements AgentExecutor {
       eventBus.finished();
       return;
     }
-    active.controller.abort(new AgentResponseCancelledError("A2A task cancellation requested."));
-    publishCanceled(active, "Task cancellation requested by user.");
+    if (!active.cancellationPublished) {
+      active.controller.abort(new AgentResponseCancelledError("A2A task cancellation requested."));
+      publishCanceled(active, "Task cancellation requested by user.");
+    }
+  }
+
+  stop(reason: string): void {
+    if (this.stopping) return;
+    this.stopping = true;
+    for (const active of this.activeRuns.values()) {
+      if (active.cancellationPublished) continue;
+      active.controller.abort(new AgentResponseCancelledError(reason));
+      publishCanceled(active, reason);
+    }
   }
 }
 

@@ -32,7 +32,7 @@
     "build": "tsc -p tsconfig.build.json",
     "smoke": "node scripts/smoke.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "dependencies": {
     "@mono-agent/agent-contracts": "workspace:0.14.0"

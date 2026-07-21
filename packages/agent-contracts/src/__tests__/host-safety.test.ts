@@ -1,14 +1,30 @@
-import { describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
+import type { ServerResponse } from "node:http";
+
+import { describe, expect, it, vi } from "vitest";
 
 import {
   assertSafeBind,
   bearerTokensEqual,
+  BoundedHttpResponseWriter,
   hostForUrl,
   isLoopbackHost,
   isWildcardHost,
   normalizeHostForBind,
   readAuthorizationBearer,
 } from "../index.js";
+
+class StubServerResponse extends EventEmitter {
+  destroyed = false;
+  writableEnded = false;
+  readonly frames: string[] = [];
+  writable = false;
+
+  write(frame: string): boolean {
+    this.frames.push(frame);
+    return this.writable;
+  }
+}
 
 describe("isLoopbackHost", () => {
   it("recognizes exact loopback forms including mapped IPv6", () => {
@@ -107,5 +123,38 @@ describe("readAuthorizationBearer", () => {
     expect(readAuthorizationBearer("Basic xyz")).toBeUndefined();
     expect(readAuthorizationBearer(undefined)).toBeUndefined();
     expect(readAuthorizationBearer("Bearer   ")).toBeUndefined();
+  });
+});
+
+describe("BoundedHttpResponseWriter", () => {
+  it("serializes writes until a backpressured response drains", async () => {
+    const response = new StubServerResponse();
+    const writer = new BoundedHttpResponseWriter(response as unknown as ServerResponse);
+
+    const first = writer.write("first");
+    const second = writer.write("second");
+    await Promise.resolve();
+    expect(response.frames).toEqual(["first"]);
+
+    response.writable = true;
+    response.emit("drain");
+    await Promise.all([first, second]);
+    expect(response.frames).toEqual(["first", "second"]);
+  });
+
+  it("rejects a queue that exceeds its byte budget and reports failure once", async () => {
+    const response = new StubServerResponse();
+    const onFailure = vi.fn();
+    const writer = new BoundedHttpResponseWriter(response as unknown as ServerResponse, {
+      maxPendingBytes: 5,
+      onFailure,
+    });
+
+    const first = writer.write("1234");
+    await expect(writer.write("67")).rejects.toThrow("5-byte pending-write limit");
+    await expect(writer.write("8")).rejects.toThrow("5-byte pending-write limit");
+    expect(onFailure).toHaveBeenCalledTimes(1);
+
+    await expect(first).rejects.toThrow("5-byte pending-write limit");
   });
 });

@@ -26,7 +26,7 @@ A minimal valid config has exactly two fields:
 }
 ```
 
-`runtime.model` selects the backend (`claude:*`, `codex:*`, `pi:<provider>:<model>`, or `opencode:*`). `context.identityPath` points at the identity markdown. All other fields are optional, but omission does not always mean disabled: the loopback `tui` and `live` operator endpoints default on, and the interaction bridge can auto-start when its tools are available.
+`runtime.model` selects the backend (`claude:*`, `codex:*`, `pi:<provider>:<model>`, or `opencode:*`). `context.identityPath` points at the identity markdown. All other fields are optional, but omission does not always mean disabled: the loopback `tui` operator endpoint defaults on, and the interaction bridge can auto-start when its tools are available.
 
 ## How configuration is loaded
 
@@ -76,10 +76,10 @@ Each top-level key maps to one capability area. All are optional except the two 
 | `artifacts`, `traceability`, `observability` | JSONL run artifacts, trace registry, Phoenix exporter | [Observability](/observability/) |
 | `telegram`, `slack` | Built-in chat channels (opt-in via `enabled`) | [Channels](/channels/) |
 | `webhook`, `openaiApi`, `cron` | Built-in HTTP, OpenAI-compatible, and scheduled channels | [Channels](/channels/) |
-| `tui`, `live` | Default-on loopback operator and event-stream endpoints | [TUI and live event relay](/channels/tui/) |
+| `tui` | Default-on loopback operator endpoint | [Operator stream endpoint](/channels/tui/) |
 | `channels.plugins[]` | External channel packages such as WhatsApp and A2A | [Write your own channel adapter](/programmatic/custom-channels/) |
 
-Channels start independently. For most channels, omission or `enabled: false` reports `disabled`; the default-on `tui` and `live` endpoints report `disabled` only when explicitly opted out. An enabled channel that lacks required settings reports `waiting_for_config`. A self-recovering transport can temporarily report `degraded` without stopping healthy channels.
+Channels start independently. For most channels, omission or `enabled: false` reports `disabled`; the default-on `tui` endpoint reports `disabled` only when explicitly opted out. An enabled channel that lacks required settings reports `waiting_for_config`. A self-recovering transport can temporarily report `degraded` without stopping healthy channels.
 
 ## How sections activate
 
@@ -87,7 +87,7 @@ Activation depends on the surface:
 
 - **Core behavior is configured by its block.** `memory`, `sandbox`, `concurrency`, and `observability` take effect when configured. Some supporting blocks, such as `providers`, only matter when another selection uses them.
 - **Most external channels are opt-in.** `telegram`, `slack`, `webhook`, and `openaiApi` require `enabled: true`. Cron runs only enabled jobs. Plugin channels require a `channels.plugins[]` entry and follow the plugin's own config contract.
-- **Operator endpoints are opt-out.** `tui` and `live` default to enabled on loopback; set their `enabled` field to `false` to remove them.
+- **The operator endpoint is opt-out.** `tui` defaults to enabled on loopback; set its `enabled` field to `false` to remove it.
 - **Host bridges have their own gates.** `continuations` uses its `enabled` flag. Interaction may auto-start from allowed ask tools, explicit interaction settings, or configured progress delivery.
 
 If a channel section seems ignored, check `enabled` first — `mono-agent validate` reports it as `disabled` rather than `waiting`.

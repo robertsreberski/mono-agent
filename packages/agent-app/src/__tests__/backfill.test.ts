@@ -218,7 +218,8 @@ describe("backfill mapping integration", () => {
     await recorder.finish({});
     const persisted = (await readRunArtifacts(artifactDir, "run-long-redacted")).summary.userInput;
     if (typeof persisted !== "string") throw new Error("recorder did not persist userInput");
-    expect(persisted).toContain(fixture);
+    expect(persisted).not.toContain(fixture);
+    expect(persisted).toContain("[redacted]");
     expect(persisted.match(/…\[truncated/gu)).toHaveLength(1);
 
     const postedBodies: Uint8Array[] = [];

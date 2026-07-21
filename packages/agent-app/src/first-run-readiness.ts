@@ -671,7 +671,7 @@ export function evaluateFirstRunConfigurationReadiness(options: {
   return { ready: reasons.length === 0, reasons };
 }
 
-/** A readiness claim is stricter than ValidationReport.ok (which permits waiting). */
+/** A first-run claim also requires exact live route proofs beyond generic operational readiness. */
 export function evaluateFirstRunReadiness(options: {
   readonly plan: WizardPlan;
   readonly report: ValidationReport;

@@ -20,8 +20,9 @@ No deprecated surface currently has a scheduled removal.
 
 ## Removed surfaces
 
-These surfaces were removed outright (a pre-1.0 curation). The old spelling now
-errors with a pointer to its replacement instead of mapping forward.
+These surfaces were removed outright as part of pre-1.0 curation. CLI spellings
+that still have a useful replacement fail with an explicit pointer; package and
+programmatic surfaces are simply no longer exported.
 
 | Removed surface | Replacement |
 | --- | --- |
@@ -31,30 +32,29 @@ errors with a pointer to its replacement instead of mapping forward.
 | `mono-agent recipes list \| show <id>` | `mono-agent presets list \| show <id>` |
 | `mono-agent init --recipe <id>` and `mono-agent validate --recipe <id>` | `--preset <id>` |
 | `mono-agent sessions` (Session Recorder launcher) | `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console) |
+| `@mono-agent/session-web`, `live.*` config/env, and the read-only live-event relay APIs | `mono-agent tui` for recorded-run replay or `mono-agent web` for live conversations |
 | CLI flag `--fallback-models <csv>` | Repeat `--fallback <ref>` and, when needed, `--fallback-effort <level>` |
 | `memory-bujo` standalone CLI bin | `mono-agent memory <subcommand>` from the agent folder |
+| Runtime compatibility exports `./ai/backend.js`, `./ai/registry.js`, `findProviderForModel`, `listProviders`, and backend capability/provider constants | `resolveRuntimeBridge` and `listRuntimeBridges` |
+| Memory helpers `reflect`, `ReflectDeps`, `ReflectResult`, and no-op `applyDecay` | Supported capture, consolidate, reconcile, and store APIs |
 
 The three run/lifecycle compatibility spellings were removed in v0.14.0 after
 their scheduled sunset. `--force` on `install-skill` and `web reset` is a
 separate, non-deprecated flag.
 
-The `mono-agent sessions` removal covers only the CLI launcher. Running it now
-errors with a `mono-agent tui` / `mono-agent web` pointer. The
-`@mono-agent/session-web` package and the `live` event relay (`live.*` config)
-still ship in code; they are simply no longer reachable through any CLI command,
-and their full retirement is a separate later dead-code-audited change. The
-`MONO_AGENT_WEB_AUTH_TOKEN` bearer is no longer read by any code — its only
-reader was the removed `sessions` command (the session-web package's
-programmatic `authToken` option is a separate thing).
+The Session Recorder package, its read-only event relay, and the `live.*`
+configuration/env surface were removed together after repository-wide
+reachability checks found no supported caller. Unknown `live` config now fails
+strict validation instead of being ignored. `MONO_AGENT_WEB_AUTH_TOKEN` is no
+longer read by any code; its only reader was the removed `sessions` command.
 
 The `--fallback-models` removal covers only the CLI CSV flag. Existing JSON
 `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` remain supported
 compatibility inputs; those config forms are unaffected. The retired
 recipe → preset mapping is recorded as static documentation in
 [Presets & capability modules](/reference/presets/#deprecations). The
-`memory-bujo` bin entry still ships this release, but it is an error-deflector
-that exits non-zero on every invocation; use `mono-agent memory <subcommand>`
-instead.
+`memory-bujo` bin entry and its error-deflector were removed; use
+`mono-agent memory <subcommand>` instead.
 
 ## Permanent compatibility
 

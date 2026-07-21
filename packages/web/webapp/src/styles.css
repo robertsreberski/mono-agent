@@ -409,6 +409,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .context-display-breakdown-row dd { color: var(--text-soft); font-family: var(--font-mono); }
 .context-display-breakdown-total, .context-display-breakdown-cost { padding-top: 6px; color: var(--text); border-top: 1px solid var(--line); font-weight: 700; }
 .header-archive { width: 36px; height: 36px; }
+.header-delete { width: 36px; height: 36px; color: var(--danger); }
 .header-notifications { width: 36px; height: 36px; }
 .header-notifications.is-enabled { color: var(--accent); background: var(--accent-soft); }
 .connection-banner { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 7px 16px; color: var(--warning); background: color-mix(in srgb, var(--warning) 9%, var(--surface)); border-bottom: 1px solid color-mix(in srgb, var(--warning) 25%, var(--line)); font-size: 11px; text-align: center; z-index: 4; }

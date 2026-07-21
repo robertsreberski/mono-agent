@@ -5,8 +5,12 @@
  * loopback predicate had been re-implemented (weaker) in several places and the
  * safe-bind guard was missing entirely in others.
  */
-import type { Server } from "node:http";
+import type { Server, ServerResponse } from "node:http";
 import { isIP, type AddressInfo } from "node:net";
+
+const DEFAULT_FORCE_CLOSE_AFTER_MS = 250;
+const DEFAULT_MAX_PENDING_RESPONSE_BYTES = 1024 * 1024;
+const DEFAULT_RESPONSE_DRAIN_TIMEOUT_MS = 5_000;
 
 /**
  * True only when the host is an exact loopback literal (or the exact conventional
@@ -140,4 +144,152 @@ export function close(server: Server): Promise<void> {
       rejectPromise(error);
     });
   });
+}
+
+/**
+ * Close an HTTP server without letting keep-alive or stuck request sockets make
+ * adapter shutdown unbounded. Active sockets get one grace period before they
+ * are force-closed, followed by one final bounded wait for Node's callback.
+ */
+export async function closeServerBounded(
+  server: Server,
+  forceCloseAfterMs = DEFAULT_FORCE_CLOSE_AFTER_MS,
+): Promise<void> {
+  const timeoutMs = positiveInteger(forceCloseAfterMs, DEFAULT_FORCE_CLOSE_AFTER_MS);
+  const closePromise = close(server);
+  void closePromise.catch(() => undefined);
+  server.closeIdleConnections();
+  let forceTimer: ReturnType<typeof setTimeout> | undefined;
+  const force = new Promise<"forced">((resolvePromise) => {
+    forceTimer = setTimeout(() => {
+      server.closeAllConnections();
+      resolvePromise("forced");
+    }, timeoutMs);
+    forceTimer.unref?.();
+  });
+  const outcome = await Promise.race([closePromise.then(() => "closed" as const), force]);
+  if (outcome === "closed") {
+    if (forceTimer !== undefined) clearTimeout(forceTimer);
+    return;
+  }
+  await Promise.race([
+    closePromise.catch(() => undefined),
+    new Promise<void>((resolvePromise) => {
+      const timer = setTimeout(resolvePromise, timeoutMs);
+      timer.unref?.();
+    }),
+  ]);
+}
+
+export interface BoundedHttpResponseWriterOptions {
+  /** Total UTF-8 bytes callers may queue while the socket is backpressured. */
+  readonly maxPendingBytes?: number;
+  /** Maximum time a single write may wait for the response's `drain` event. */
+  readonly drainTimeoutMs?: number;
+  /** Called once when the writer becomes unusable so the owning request can abort. */
+  readonly onFailure?: (error: Error) => void;
+}
+
+/**
+ * Serialize response writes and honor Node's writable backpressure signal.
+ * This keeps fast model streams from growing the process heap behind a slow or
+ * disconnected HTTP client.
+ */
+export class BoundedHttpResponseWriter {
+  private readonly maxPendingBytes: number;
+  private readonly drainTimeoutMs: number;
+  private readonly onFailure: ((error: Error) => void) | undefined;
+  private pendingBytes = 0;
+  private tail: Promise<void> = Promise.resolve();
+  private failure: Error | undefined;
+
+  constructor(
+    private readonly response: ServerResponse,
+    options: BoundedHttpResponseWriterOptions = {},
+  ) {
+    this.maxPendingBytes = positiveInteger(options.maxPendingBytes, DEFAULT_MAX_PENDING_RESPONSE_BYTES);
+    this.drainTimeoutMs = positiveInteger(options.drainTimeoutMs, DEFAULT_RESPONSE_DRAIN_TIMEOUT_MS);
+    this.onFailure = options.onFailure;
+  }
+
+  write(frame: string): Promise<void> {
+    if (this.failure !== undefined) return Promise.reject(this.failure);
+    const frameBytes = Buffer.byteLength(frame, "utf8");
+    if (this.pendingBytes + frameBytes > this.maxPendingBytes) {
+      const error = new Error(`HTTP response stream exceeded its ${this.maxPendingBytes}-byte pending-write limit.`);
+      this.fail(error);
+      return Promise.reject(error);
+    }
+    this.pendingBytes += frameBytes;
+    const operation = this.tail.then(async () => {
+      if (this.failure !== undefined) throw this.failure;
+      await this.writeFrame(frame);
+    });
+    this.tail = operation.catch(() => undefined);
+    return operation.finally(() => {
+      this.pendingBytes -= frameBytes;
+    });
+  }
+
+  private async writeFrame(frame: string): Promise<void> {
+    if (this.response.destroyed || this.response.writableEnded) {
+      const error = new Error("HTTP response stream closed before the pending frame was written.");
+      this.fail(error);
+      throw error;
+    }
+    try {
+      if (this.response.write(frame)) return;
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      this.fail(error);
+      throw error;
+    }
+    try {
+      await waitForDrain(this.response, this.drainTimeoutMs);
+    } catch (cause) {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      this.fail(error);
+      throw error;
+    }
+  }
+
+  private fail(error: Error): void {
+    if (this.failure !== undefined) return;
+    this.failure = error;
+    this.onFailure?.(error);
+  }
+}
+
+function waitForDrain(response: ServerResponse, timeoutMs: number): Promise<void> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      response.off("drain", onDrain);
+      response.off("close", onClose);
+      response.off("error", onError);
+    };
+    const onDrain = (): void => {
+      cleanup();
+      resolvePromise();
+    };
+    const onClose = (): void => {
+      cleanup();
+      rejectPromise(new Error("HTTP response stream closed while waiting for writable capacity."));
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      rejectPromise(error);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      rejectPromise(new Error(`HTTP response stream did not drain within ${timeoutMs}ms.`));
+    }, timeoutMs);
+    response.once("drain", onDrain);
+    response.once("close", onClose);
+    response.once("error", onError);
+  });
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : fallback;
 }

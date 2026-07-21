@@ -106,8 +106,8 @@ export interface RunSummary {
   readonly failureKind?: string;
   /**
    * Underlying provider/runtime error message for a failed run. Retained free
-   * text: bounded at recorder/reader boundaries, but not content-scanned or
-   * scrubbed.
+   * text: bounded at recorder/reader boundaries and content-scanned by the
+   * recorder for a closed set of high-confidence credential shapes.
    * `failureKind` is the taxonomy label ("provider_unavailable_exhausted"); this is
    * the human-readable "why" (the actual provider message), persisted so the trace
    * shows it instead of only the collapsed kind.
@@ -134,8 +134,8 @@ export interface RunSummary {
   readonly capabilitiesUsed?: unknown;
   /**
    * The user's prompt for this run, persisted so backfill can show it as input.
-   * Retained free text: bounded at recorder/reader boundaries, but not
-   * content-scanned or scrubbed.
+   * Retained free text: bounded at recorder/reader boundaries and content-scanned
+   * by the recorder for a closed set of high-confidence credential shapes.
    */
   readonly userInput?: string;
   /** Model id this run used; surfaced as `llm.model_name` on the exported span. */
@@ -144,8 +144,8 @@ export interface RunSummary {
    * System instructions for this run (the memory maintenance prompt for memory
    * runs, the compiled identity+skills+memory prompt for channel runs), persisted
    * as retained free text so the trace shows what the model was instructed to do.
-   * It is capped by the dedicated recorder limit, but not content-scanned or
-   * scrubbed.
+   * It is capped by the dedicated recorder limit and content-scanned by the
+   * recorder for a closed set of high-confidence credential shapes.
    */
   readonly systemPrompt?: string;
   /** Resolved reasoning-effort level the run executed with (e.g. "low", "high"). */
@@ -257,15 +257,16 @@ export interface JsonlRunRecorderOptions {
   readonly isolated?: boolean;
   /**
    * The user's prompt; persisted as retained free text into the summary as
-   * `userInput`. It is bounded by `maxStringBytes`, but not content-scanned or
-   * scrubbed.
+   * `userInput`. It is bounded by `maxStringBytes` and content-scanned for a
+   * closed set of high-confidence credential shapes.
    */
   readonly userInput?: string;
   /**
    * System instructions for this run; persisted as retained free text, capped to
    * a dedicated larger limit than `maxStringBytes`, into the summary as
-   * `systemPrompt`. The prompt is not content-scanned or scrubbed. Used by the
-   * memory path, which supplies its constant prompt at recorder-creation time.
+   * `systemPrompt`. The prompt is content-scanned for a closed set of
+   * high-confidence credential shapes. Used by the memory path, which supplies
+   * its constant prompt at recorder-creation time.
    */
   readonly systemPrompt?: string;
   /**
@@ -291,7 +292,9 @@ export interface RecordedRunListItem {
   readonly failureKind?: string;
   /**
    * Underlying provider/runtime error message for a failed run. Retained free
-   * text: re-bounded by the reader, but not content-scanned or scrubbed.
+   * text: re-bounded by the reader. Current recorder artifacts were content-scanned
+   * for high-confidence credential shapes; the reader does not retroactively scan
+   * legacy artifacts.
    */
   readonly error?: string;
   /** Per-attempt provider failover detail when the fallback router exhausted its chain. */
@@ -317,14 +320,16 @@ export interface RecordedRunListItem {
   readonly sourceDetail?: string;
   /**
    * The user's prompt for this run, persisted so backfill/replay can show it as
-   * input. Retained free text: re-bounded by the reader, but not content-scanned
-   * or scrubbed.
+   * input. Retained free text is re-bounded by the reader. Current recorder
+   * artifacts were content-scanned for high-confidence credential shapes; the
+   * reader does not retroactively scan legacy artifacts.
    */
   readonly userInput?: string;
   /**
    * System instructions for this run, surfaced so replay can show what the model
-   * was instructed with. Retained free text: re-bounded by the reader, but not
-   * content-scanned or scrubbed.
+   * was instructed with. Retained free text is re-bounded by the reader. Current
+   * recorder artifacts were content-scanned for high-confidence credential
+   * shapes; the reader does not retroactively scan legacy artifacts.
    */
   readonly systemPrompt?: string;
   /** Summary artifact filename under the artifact dir, when the list item came from disk. */

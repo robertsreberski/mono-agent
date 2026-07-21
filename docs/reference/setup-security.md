@@ -7,6 +7,12 @@ sidebar:
 
 This is the canonical reference for the low-level trust boundaries behind guided `mono-agent init`, durable secret setup, and the managed macOS background process. The [README Quickstart](https://github.com/robertsreberski/mono-agent#quickstart-an-agent-folder-from-one-config-file) intentionally keeps only the runnable path; this page records the security and operating-system details that path relies on.
 
+## Operator endpoint exposure
+
+The always-on web console deliberately remains a single-owner surface without application authentication and binds `0.0.0.0:5050` by default. That v1 tradeoff makes it usable across a trusted LAN or tailnet, but anyone who can reach the listener has owner-equivalent access to retained conversations and discovered agents. Use `mono-agent web start --loopback` when other devices must not reach it, and never publish the port directly to the internet. Host/Origin validation is a browser request-integrity guard, not an identity boundary; plain LAN HTTP is also unencrypted. The [web console guide](/observability/web-console/#security-boundary-trusted-network-no-login) carries the operational details.
+
+Webhook and OpenAI-compatible API listeners stay loopback-only unless explicit non-loopback opt-in is paired with a bearer key. A2A also defaults to loopback; public A2A deployments should require a bearer and terminate TLS at a reverse proxy. The repository-level [security policy](https://github.com/robertsreberski/mono-agent/blob/main/SECURITY.md) records vulnerability reporting and the manual local-secret cleanup checklist.
+
 ## Readiness is stronger than credential detection
 
 The wizard keeps model discovery, credential detection, and verified readiness separate. After the explicit creation review, it makes one disposable no-tool call for every selected runtime route, in order, with a 90-second cloud or 240-second local deadline per route. A detected Codex or Claude login, or a credential in the Pi auth store, can skip a redundant login prompt but does not make a route ready. Provider failure, timeout, empty output, or any tool action fails that route.

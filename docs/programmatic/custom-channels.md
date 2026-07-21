@@ -100,7 +100,6 @@ import type {
   ChannelInteractionHub,
   NotifyDeliveryResult,
   NotifyDestination,
-  RunEventBus,
 } from "@mono-agent/agent-contracts";
 // or the same names from "@mono-agent/agent-app" (host-bound aliases)
 
@@ -161,7 +160,6 @@ interface ChannelStartInput<TConfig, TCore = unknown> {
   readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;
   readonly postedMessageIndexPath?: string;
   readonly interaction?: ChannelInteractionHub;
-  readonly liveEventBus?: RunEventBus;
 }
 
 interface RunningChannel {
@@ -179,8 +177,7 @@ Do not set `dispose` yourself — the app attaches responder/harness teardown so
 
 The optional fields are host-owned capability seams. Proactive trigger channels
 use `notifyDestination` and `listNotifyDestinations`; thread-aware push channels
-can use `postedMessageIndexPath`; passive observer channels can read
-`liveEventBus`. Most custom transports need none of them.
+can use `postedMessageIndexPath`. Most custom transports need none of them.
 
 ### Supporting blocking AskUser
 
@@ -335,7 +332,7 @@ const liveTelegram: ChannelDriver<TelegramAdapterConfig> = {
   },
 };
 
-// Run the built-ins except the default Telegram driver, plus the live one.
+// Run the built-ins except the default Telegram driver, plus this replacement.
 const builtins = defaultChannelDrivers().filter((d) => d.id !== "telegram");
 await startMonoAgentApp({ drivers: [...builtins, liveTelegram] });
 ```

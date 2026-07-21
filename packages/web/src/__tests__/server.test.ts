@@ -294,6 +294,9 @@ describe("web HTTP server", () => {
       method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ archived: true }),
     });
     expect((await json(archived)).thread).toMatchObject({ id: thread.id });
+    const deleted = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, { method: "DELETE" });
+    expect(deleted.status).toBe(204);
+    expect(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`)).toMatchObject({ status: 404 });
   });
 
   it("proxies pending and submitted AskUser state for a web conversation", async () => {

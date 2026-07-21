@@ -443,6 +443,42 @@ describe("A2A adapter contract", () => {
     }
   });
 
+  it("aborts active responder work and bounds repeated provider shutdown", async () => {
+    let requestSignal: AbortSignal | undefined;
+    const responder: AgentResponder = {
+      async respond(request) {
+        requestSignal = request.abortSignal;
+        return await new Promise(() => undefined);
+      },
+    };
+    const provider = await startA2AProvider({
+      host: "127.0.0.1",
+      port: 0,
+      responder,
+      agent: {
+        name: "Stopping Mono",
+        description: "Stops boundedly",
+        version: "0.1.0",
+      },
+      skill: {
+        id: "stop",
+        name: "Stop",
+        description: "Bounded shutdown",
+        tags: ["stop"],
+      },
+    });
+
+    const consumer = await createA2AConsumer({ agentUrl: provider.agentCardUrl });
+    await consumer.sendMessage({ text: "wait", returnImmediately: true });
+    const startedAt = Date.now();
+    const firstStop = provider.stop();
+    expect(provider.stop()).toBe(firstStop);
+    await firstStop;
+
+    expect(requestSignal?.aborted).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
+  });
+
   it("returns typed failures for empty remote output", async () => {
     const provider = await startA2AProvider({
       host: "127.0.0.1",

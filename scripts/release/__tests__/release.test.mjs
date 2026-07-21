@@ -25,7 +25,6 @@ import {
   assertCurrentBuildProvenance,
   assertReleaseGitState,
   computeTarballIntegrity,
-  describePublishedExportsDrift,
   executeFrozenPublish,
   freezeReleaseTarballs,
   publicNpmEnvironment,
@@ -412,10 +411,8 @@ describe("release pack validation", () => {
     }
   });
 
-  test.each([
-    ["session-web", "@mono-agent/session-web"],
-    ["web", "@mono-agent/web"],
-  ])("requires %s to include its built PWA assets", (_label, packageName) => {
+  test("requires web to include its built PWA assets", () => {
+    const packageName = "@mono-agent/web";
     const webPackage = packageRecord({ name: packageName });
     const packDestination = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-pack-test-"));
     try {
@@ -550,41 +547,6 @@ describe("current launch manifest", () => {
     expect(workflow).toContain("npm install --global npm@11.12.1");
     expect(workflow).toContain("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}");
     expect(workflow).toContain("pnpm run release:publish -- --tag \"$GITHUB_REF_NAME\"");
-  });
-});
-
-describe("published exports drift guard", () => {
-  const local = {
-    name: "@mono-agent/observability",
-    version: "0.3.0",
-    packageJson: {
-      exports: { ".": {}, "./event-timeline": {}, "./run-export": {} },
-    },
-  };
-
-  test("flags a skipped package that adds a subpath the npm copy lacks", () => {
-    // The exact incident: local adds ./run-export, npm 0.3.0 only has . and ./event-timeline.
-    const published = { ".": {}, "./event-timeline": {} };
-    const reason = describePublishedExportsDrift(local, published);
-    expect(reason).toMatch(/run-export/u);
-    expect(reason).toMatch(/bump the release version/iu);
-  });
-
-  test("passes when the published export map already exposes every local subpath", () => {
-    const published = { ".": {}, "./event-timeline": {}, "./run-export": {} };
-    expect(describePublishedExportsDrift(local, published)).toBeUndefined();
-  });
-
-  test("passes when the published map is a superset of local subpaths", () => {
-    const published = { ".": {}, "./event-timeline": {}, "./run-export": {}, "./extra": {} };
-    expect(describePublishedExportsDrift(local, published)).toBeUndefined();
-  });
-
-  test("treats a missing/undefined exports field as the main entry only", () => {
-    const mainOnly = { name: "@mono-agent/x", version: "0.3.0", packageJson: {} };
-    expect(describePublishedExportsDrift(mainOnly, undefined)).toBeUndefined();
-    // Local exposes only ".", published has more -> still fine.
-    expect(describePublishedExportsDrift(mainOnly, { ".": {}, "./sub": {} })).toBeUndefined();
   });
 });
 

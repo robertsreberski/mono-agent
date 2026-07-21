@@ -18,9 +18,6 @@ export interface MonoAgentDocsReadAction {
 
 export type MonoAgentDocsInput = MonoAgentDocsSearchAction | MonoAgentDocsReadAction;
 
-/** @deprecated Use MonoAgentDocsSearchAction. */
-export type MonoAgentDocsSearchInput = Omit<MonoAgentDocsSearchAction, "action">;
-
 export interface MonoAgentDocsInternalLink {
   readonly label: string;
   readonly href: string;

@@ -102,7 +102,9 @@ function report(
     status,
     details: annotations[id]?.details ?? [],
   }));
-  return { sections, ok: sections.every((section) => section.status !== "error") };
+  const structurallyValid = sections.every((section) => section.status !== "error");
+  const operationallyReady = structurallyValid && sections.every((section) => section.status !== "waiting");
+  return { sections, structurallyValid, operationallyReady, ok: structurallyValid };
 }
 
 describe("first-run environment", () => {

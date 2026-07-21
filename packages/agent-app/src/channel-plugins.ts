@@ -2,8 +2,6 @@ import { readSettingsJson } from "@mono-agent/agent-contracts";
 import type { ChannelConfigViewSection, SettingsJson, SettingsJsonValue } from "@mono-agent/agent-contracts";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
-import { isChannelConfigured } from "./channel-gate.js";
-import type { ChannelGateSpec } from "./channel-gate.js";
 import type { ChannelDriver } from "./channels.js";
 
 export type ChannelPluginConfigErrorCode =
@@ -56,6 +54,8 @@ type ParsedChannelPluginEntry = ChannelPluginEntry | InvalidChannelPluginEntry;
 
 export interface ResolveConfiguredChannelPluginsOptions {
   readonly reservedIds?: Iterable<string>;
+  /** Host-only dependency injection keyed by plugin package name. */
+  readonly factoryOptionsByPackage?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
 }
 
 interface ChannelPluginFactoryInput {
@@ -66,16 +66,6 @@ interface ChannelPluginFactoryInput {
 }
 
 type ChannelPluginFactory = (input?: ChannelPluginFactoryInput) => unknown | Promise<unknown>;
-
-interface ExternalPackageChannelDriverOptions {
-  readonly packageName: string;
-  readonly id: string;
-  readonly label: string;
-  readonly gate: ChannelGateSpec;
-  readonly unconfiguredConfig: unknown;
-  readonly unconfiguredDisabledReason: string;
-  readonly factoryOptions?: Record<string, unknown>;
-}
 
 export async function resolveConfiguredChannelPlugins(
   input: MonoAgentAppConfigInput,
@@ -88,14 +78,25 @@ export async function resolveConfiguredChannelPlugins(
   const acceptedIds = new Set(reserved);
   const drivers: ChannelDriver[] = [];
   for (const [index, entry] of checkedEntries.entries()) {
-    const driver = await resolveChannelPlugin(entry);
+    const factoryOptions = "message" in entry
+      ? undefined
+      : options.factoryOptionsByPackage?.[entry.packageName];
+    const driver = await resolveChannelPlugin(entry, factoryOptions);
     const collisionTarget = returnedChannelPluginIdCollisionTarget(driver.id, acceptedIds, reserved);
     if (collisionTarget !== undefined) {
       drivers.push(createReturnedIdCollisionDriver(entry, index, driver.id, collisionTarget, acceptedIds));
       continue;
     }
     acceptedIds.add(driver.id);
-    drivers.push(driver);
+    drivers.push(
+      "message" in entry
+        ? driver
+        : createReloadingChannelPluginDriver({
+            entry,
+            driver,
+            ...(factoryOptions === undefined ? {} : { factoryOptions }),
+          }),
+    );
   }
   return drivers;
 }
@@ -109,65 +110,6 @@ export async function configuredChannelPluginPackageNames(
     const packageName = pluginEntryPackageName(entry);
     return packageName === undefined ? [] : [packageName];
   }))].sort((left, right) => left.localeCompare(right));
-}
-
-export function createExternalPackageChannelDriver(
-  options: ExternalPackageChannelDriverOptions,
-): ChannelDriver {
-  let driver: ChannelDriver | undefined;
-  let loading: Promise<ChannelDriver> | undefined;
-
-  const loadDriver = async (): Promise<ChannelDriver> => {
-    loading ??= loadChannelPluginDriver({
-      packageName: options.packageName,
-      id: options.id,
-      label: options.label,
-      ...(options.factoryOptions === undefined ? {} : { factoryOptions: options.factoryOptions }),
-    });
-    try {
-      driver = await loading;
-      return driver;
-    } catch (error) {
-      loading = undefined;
-      throw error;
-    }
-  };
-
-  return {
-    id: options.id,
-    label: options.label,
-    async configView(input) {
-      if (!(await isChannelConfigured(input, options.gate))) {
-        return { id: options.id, label: options.label, status: "disabled", fields: [] };
-      }
-      const resolved = await loadDriver();
-      return await fallbackConfigView(resolved, input);
-    },
-    async loadConfig(input) {
-      if (!(await isChannelConfigured(input, options.gate))) {
-        return options.unconfiguredConfig;
-      }
-      return await (await loadDriver()).loadConfig(input);
-    },
-    isConfigError(error) {
-      return error instanceof ChannelPluginConfigError || driver?.isConfigError(error) === true;
-    },
-    disabledReason(config) {
-      if (config === options.unconfiguredConfig) {
-        return options.unconfiguredDisabledReason;
-      }
-      return driver?.disabledReason?.(config);
-    },
-    waitingReason(config) {
-      return driver?.waitingReason?.(config);
-    },
-    configIssues(config) {
-      return driver?.configIssues?.(config) ?? [];
-    },
-    async start(input) {
-      return await (await loadDriver()).start(input);
-    },
-  };
 }
 
 async function readConfiguredChannelPluginEntries(
@@ -352,7 +294,10 @@ function pluginEntryPackageName(entry: ParsedChannelPluginEntry): string | undef
   return "packageName" in entry ? entry.packageName : undefined;
 }
 
-async function resolveChannelPlugin(entry: ParsedChannelPluginEntry): Promise<ChannelDriver> {
+async function resolveChannelPlugin(
+  entry: ParsedChannelPluginEntry,
+  factoryOptions?: Readonly<Record<string, unknown>>,
+): Promise<ChannelDriver> {
   if ("message" in entry) {
     return createUnavailablePluginDriver(entry.id, entry.label, entry.message, {
       ...(entry.packageName === undefined ? {} : { packageName: entry.packageName }),
@@ -361,7 +306,7 @@ async function resolveChannelPlugin(entry: ParsedChannelPluginEntry): Promise<Ch
     });
   }
   try {
-    return await loadChannelPluginDriver(entry);
+    return await loadChannelPluginDriver({ ...entry, ...(factoryOptions === undefined ? {} : { factoryOptions }) });
   } catch (error) {
     const id = entry.id ?? channelIdFromPackageName(entry.packageName);
     const label = entry.label ?? labelFromChannelId(id);
@@ -377,7 +322,81 @@ async function resolveChannelPlugin(entry: ParsedChannelPluginEntry): Promise<Ch
   }
 }
 
-async function loadChannelPluginDriver(input: ChannelPluginEntry & { readonly factoryOptions?: Record<string, unknown> }): Promise<ChannelDriver> {
+interface ReloadingChannelPluginDriverOptions {
+  readonly entry: ChannelPluginEntry;
+  readonly driver: ChannelDriver;
+  readonly factoryOptions?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Plugin membership is resolved once at process startup, but plugin-owned
+ * config must follow the same live-reload contract as built-in channels. The
+ * wrapper recreates the plugin driver from the current entry before each
+ * config load/view while preserving its startup identity.
+ */
+function createReloadingChannelPluginDriver(
+  options: ReloadingChannelPluginDriverOptions,
+): ChannelDriver {
+  const packageName = options.entry.packageName;
+  const id = options.driver.id;
+  const label = options.driver.label;
+  let current = options.driver;
+
+  const reload = async (input: MonoAgentAppConfigInput): Promise<ChannelDriver> => {
+    const entries = await readConfiguredChannelPluginEntries(input.configPath);
+    const entry = entries.find((candidate) =>
+      pluginEntryPackageName(candidate) === packageName && pluginEntryId(candidate) === id
+    );
+    if (entry === undefined) {
+      throw new ChannelPluginConfigError(
+        "invalid_plugin_config",
+        `Channel plugin ${packageName} (${id}) was removed or changed. Restart mono-agent so channel membership can be rebuilt.`,
+        { packageName, pluginId: id },
+      );
+    }
+
+    const next = await resolveChannelPlugin(entry, options.factoryOptions);
+    if (next.id !== id) {
+      throw new ChannelPluginConfigError(
+        "invalid_plugin_config",
+        `Channel plugin ${packageName} changed its channel id from "${id}" to "${next.id}". Restart mono-agent so channel membership can be rebuilt.`,
+        { packageName, pluginId: id },
+      );
+    }
+    current = next;
+    return current;
+  };
+
+  return {
+    id,
+    label,
+    async configView(input) {
+      return await fallbackConfigView(await reload(input), input);
+    },
+    async loadConfig(input) {
+      return await (await reload(input)).loadConfig(input);
+    },
+    isConfigError(error) {
+      return error instanceof ChannelPluginConfigError || current.isConfigError(error);
+    },
+    disabledReason(config) {
+      return current.disabledReason?.(config);
+    },
+    waitingReason(config) {
+      return current.waitingReason?.(config);
+    },
+    configIssues(config) {
+      return current.configIssues?.(config) ?? [];
+    },
+    async start(input) {
+      return await current.start(input);
+    },
+  };
+}
+
+async function loadChannelPluginDriver(
+  input: ChannelPluginEntry & { readonly factoryOptions?: Readonly<Record<string, unknown>> },
+): Promise<ChannelDriver> {
   let mod: unknown;
   try {
     mod = await import(input.packageName);

@@ -452,6 +452,29 @@ export class WebStore {
     return { ...this.requireThread(id), sourceId: current.sourceId };
   }
 
+  async deleteArchivedThread(id: string): Promise<{ readonly orphanedFiles: number }> {
+    const thread = this.requireThread(id);
+    if (thread.archivedAt === null) {
+      throw new WebConsoleError("thread_not_archived", "Archive the conversation before deleting it.", 409);
+    }
+    const attachments = this.database.prepare("SELECT * FROM attachments WHERE thread_id = ?")
+      .all(id) as unknown as AttachmentRow[];
+    this.transaction(() => {
+      this.database.prepare("DELETE FROM notification_deliveries WHERE thread_id = ?").run(id);
+      this.database.prepare("DELETE FROM revisions WHERE entity_kind = 'thread' AND entity_id = ?").run(id);
+      this.database.prepare("DELETE FROM threads WHERE id = ?").run(id);
+      this.database.prepare("DELETE FROM settings WHERE key = 'current_thread_id' AND value = ?").run(id);
+    });
+
+    let orphanedFiles = 0;
+    for (const row of attachments) {
+      await unlink(this.attachmentPath(mapStoredAttachment(row))).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") orphanedFiles += 1;
+      });
+    }
+    return { orphanedFiles };
+  }
+
   createUpload(input: CreateStoredUploadInput): StoredAttachment {
     const id = randomUUID();
     const now = this.now();
@@ -531,6 +554,24 @@ export class WebStore {
       const info = await lstat(path);
       if (!info.isFile() || info.isSymbolicLink()) continue;
       if (before !== undefined && info.mtime.toISOString() >= before) continue;
+      await unlink(path);
+      removed += 1;
+    }
+    return removed;
+  }
+
+  async purgeUnreferencedAttachmentFiles(): Promise<number> {
+    const referenced = new Set(
+      (this.database.prepare("SELECT storage_name FROM attachments").all() as unknown as Array<{ storage_name: string }>)
+        .map((row) => row.storage_name),
+    );
+    const entries = await readdir(this.paths.uploads, { withFileTypes: true });
+    let removed = 0;
+    for (const entry of entries) {
+      if (!/^[0-9a-f-]{36}\.bin$/iu.test(entry.name) || referenced.has(entry.name)) continue;
+      const path = resolve(this.paths.uploads, entry.name);
+      const info = await lstat(path);
+      if (!info.isFile() || info.isSymbolicLink()) continue;
       await unlink(path);
       removed += 1;
     }

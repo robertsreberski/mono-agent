@@ -6,6 +6,8 @@ This repository is a config-first pnpm workspace of reusable npm packages under 
 
 Full documentation and end-to-end playbooks: **<https://mono-agent-docs.vercel.app/>** (authored as markdown under [`docs/`](./docs/), built with Astro Starlight in [`website/`](./website/) and deployed on Vercel — see [`website/README.md`](./website/README.md) for the build/sync/deploy workflow and version-pin notes). Start with the [package directory](https://mono-agent-docs.vercel.app/reference/packages/) when you need to find the owner of a capability. [`docs/reference/feature-registry.md`](./docs/reference/feature-registry.md) remains the canonical feature reference, and [`docs/playbooks/`](./docs/playbooks/) holds copy-paste recipes for every channel and memory tier.
 
+Maintainers should begin with [`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`CONTRIBUTING.md`](./CONTRIBUTING.md). Security boundaries, vulnerability reporting, and the manual local-secret cleanup checklist live in [`SECURITY.md`](./SECURITY.md).
+
 ## Quickstart: An Agent Folder From One Config File
 
 Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — can become a running agent from one `mono-agent.config.json`. You need Node.js 22.19.0 or newer and credentials for the model you choose.
@@ -155,12 +157,10 @@ Static manifest dependencies (abridged; see PACKAGES.md for every edge)
 
 agent-harness ── agent-contracts + runtime-adapter + observability
 tui / web ── agent-contracts + config + observability
-session-web ── agent-contracts + observability
 
 Runtime-only composition (not manifest dependency edges)
 
 tui / web ── HTTP operator protocol ──> operator-adapter
-session-web ── live SSE + recorded artifacts ──> operator-adapter / observability
 agent-app ── channels.plugins[] ──> a2a-adapter / whatsapp-adapter
 agent-app ── selected memory backend ──> memory-supermemory
 custom host ── request-scoped extension ──> agent-orchestrator
@@ -222,7 +222,7 @@ This is local-first. It is not a LangSmith dependency, database, or cloud collec
 
 Phoenix is the recommended trace viewer for local development. When an `observability.exporters` entry (currently the `phoenix` preset) is configured, the host additively exports each run lifecycle to Phoenix's OTLP HTTP traces endpoint as binary protobuf (`application/x-protobuf`) via `@mono-agent/observability/otel`. Spans use OpenInference semantics (AGENT/LLM/TOOL/CHAIN kinds with input/output) and land in a named project (`projectName`, defaulting to the trace source label/id). Export is best-effort and bounded by a timeout — it never changes the run outcome and never suppresses JSONL writes. Raw prompts, reasoning, and tool I/O are metadata-only by default (`includeSensitiveData: false`). Setting `includeSensitiveData: true` exports those payloads: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned by default. Set `contentPatternRedaction: true` to replace a closed set of high-confidence OpenAI, GitHub, AWS, and Slack credential shapes in retained outbound text. Strings are capped, and the scan remains defense in depth rather than a substitute for trusting the collector.
 
-Local JSONL artifacts are the completed-run fallback only after the terminal write succeeds; before then the on-disk record is only the start snapshot. At `start()`, the recorder independently replaces an empty events file and a `running` summary, then buffers later events in RAM after key-based redaction and a 4,096-byte default cap per string. Terminal `finish()`/`fail()` independently replaces that bounded events snapshot first and the summary second. A crash before terminal persistence can lose buffered events, and stale reconciliation can report only the data already on disk; the artifacts are not an in-flight, full-payload, or crash-safe source of truth.
+Local JSONL artifacts are the completed-run fallback only after the terminal write succeeds; before then the on-disk record is only the start snapshot. At `start()`, the recorder independently replaces an empty events file and a `running` summary, then buffers later events in RAM after sensitive-key redaction, a closed high-confidence credential-shape scan, and a 4,096-byte default cap per string. Terminal `finish()`/`fail()` independently replaces that bounded events snapshot first and the summary second. A crash before terminal persistence can lose buffered events, and stale reconciliation can report only the data already on disk; the artifacts are not an in-flight, full-payload, or crash-safe source of truth.
 
 `mono-agent start`, `mono-agent status`, and `mono-agent validate` report the configured exporter endpoint (validate POSTs an empty protobuf to confirm Phoenix will accept exports, not just that the port is open). Use `mono-agent backfill --all` to retroactively export already-recorded runs with their historical timestamps; deterministic per-run ids make re-exports idempotent.
 

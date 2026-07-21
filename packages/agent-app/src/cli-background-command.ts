@@ -125,7 +125,7 @@ export async function ensureStartable(
       ? {}
       : { verifiedRuntimeProvenanceDetail: options.verifiedRuntimeProvenanceDetail }),
   });
-  if (!report.ok) {
+  if (!report.structurallyValid) {
     return { ok: false, code: 1, kind: "validation", report };
   }
   return { ok: true };

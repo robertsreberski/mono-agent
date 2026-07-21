@@ -8,6 +8,7 @@ import {
   MEMORY_LLM_PROVIDERS,
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
+  MonoAgentConfigError,
   ROUTE_SAFETY_MODES,
 } from "@mono-agent/config";
 import type { ConfigViewFieldId, MonoAgentConfigJson } from "@mono-agent/config";
@@ -19,7 +20,7 @@ import {
 } from "@mono-agent/runtime-adapter";
 import { CRON_CONFIG_FIELDS } from "@mono-agent/cron-adapter";
 import { OPENAI_API_CONFIG_FIELDS } from "@mono-agent/openai-api-adapter";
-import { LIVE_CONFIG_FIELDS, TUI_CONFIG_FIELDS } from "@mono-agent/operator-adapter";
+import { TUI_CONFIG_FIELDS } from "@mono-agent/operator-adapter";
 import { SLACK_CONFIG_FIELDS } from "@mono-agent/slack-adapter";
 import { TELEGRAM_CONFIG_FIELDS } from "@mono-agent/telegram-adapter";
 import { WEBHOOK_CONFIG_FIELDS } from "@mono-agent/webhook-adapter";
@@ -46,7 +47,6 @@ const CHANNEL_FIELD_GROUPS: readonly (readonly JsonEnvFieldSpec[])[] = [
   OPENAI_API_CONFIG_FIELDS,
   CRON_CONFIG_FIELDS,
   TUI_CONFIG_FIELDS,
-  LIVE_CONFIG_FIELDS,
 ];
 
 const CHANNEL_FIELDS: readonly ConfigReferenceField[] = CHANNEL_FIELD_GROUPS.flatMap((fields) =>
@@ -386,6 +386,8 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
   setRequired(root, ["context"], ["identityPath"]);
   setMemoryTierSchema(root);
   setContinuationSchema(root);
+  setStructuredAppSchemas(root);
+  setRemovedConfigSchemas(root);
   setSchemaPath(root, ["channels", "plugins"], {
     type: "array",
     description: "External channel plugins loaded by package name.",
@@ -413,6 +415,195 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
       ...root,
     },
   };
+}
+
+/**
+ * Complex app-owned config is modeled here instead of left as an open object.
+ * This keeps editor completion, generated docs, and the runtime unknown-key
+ * check on the same schema. Only plugin-owned payloads and explicitly
+ * extensible capability/pricing/header maps remain open.
+ */
+function setStructuredAppSchemas(root: Record<string, JsonSchema>): void {
+  setSchemaPath(root, ["observability", "exporters"], {
+    type: "array",
+    maxItems: 1,
+    items: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        type: { const: "phoenix" },
+        endpoint: { type: "string" },
+        headers: { type: "object", additionalProperties: { type: "string", minLength: 1 } },
+        includeSensitiveData: { type: "boolean" },
+        contentPatternRedaction: { type: "boolean" },
+        timeoutMs: { type: "integer", minimum: 1, maximum: 60_000 },
+        projectName: { type: "string", minLength: 1 },
+      },
+    },
+  });
+  setSchemaPath(root, ["providers", "local"], {
+    type: "array",
+    items: {
+      type: "object",
+      additionalProperties: false,
+      required: ["id", "type"],
+      properties: {
+        id: { type: "string", minLength: 1 },
+        type: { enum: ["ollama", "lmstudio", "openai_compat"] },
+        baseUrl: { type: "string" },
+        enabled: { type: "boolean" },
+        trustPublicUrl: { type: "boolean" },
+        apiKey: { type: "string" },
+        apiKeyEnv: { type: "string" },
+        models: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["name"],
+            properties: {
+              name: { type: "string", minLength: 1 },
+              alias: { type: "string", minLength: 1 },
+              displayName: { type: "string", minLength: 1 },
+              enabled: { type: "boolean" },
+              capabilities: { type: "object", additionalProperties: true },
+              pricing: { type: "object", additionalProperties: true },
+            },
+          },
+        },
+      },
+    },
+  });
+  setSchemaPath(root, ["cron", "jobs"], {
+    type: "array",
+    items: cronJobSchema(),
+  });
+  setSchemaPath(root, ["webhook", "endpoints"], {
+    type: "array",
+    items: webhookEndpointSchema(),
+  });
+  setSchemaPath(root, ["slack", "shortcuts"], {
+    type: "array",
+    items: slackActionSchema("callbackId", false),
+  });
+  setSchemaPath(root, ["slack", "homeTab"], {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      enabled: { type: "boolean" },
+      headerText: { type: "string", minLength: 1 },
+      buttons: {
+        type: "array",
+        items: slackActionSchema("actionId", true),
+      },
+    },
+  });
+  setSchemaPath(root, ["telegram", "commands"], {
+    type: "array",
+    items: {
+      type: "object",
+      additionalProperties: false,
+      required: ["command", "description"],
+      properties: {
+        command: { type: "string", pattern: "^[a-z0-9_]{1,32}$" },
+        description: { type: "string", minLength: 1, maxLength: 256 },
+        prompt: { type: "string", minLength: 1 },
+      },
+    },
+  });
+  setSchemaPath(root, ["telegram", "reactions"], {
+    oneOf: [
+      { type: "boolean" },
+      {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          working: { type: "boolean" },
+          done: { type: "boolean" },
+          error: { type: "boolean" },
+        },
+      },
+    ],
+  });
+  setSchemaPath(root, ["telegram", "quietHours"], {
+    type: "object",
+    additionalProperties: false,
+    required: ["start", "end", "timezone"],
+    properties: {
+      start: { type: "string", pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" },
+      end: { type: "string", pattern: "^([01]\\d|2[0-3]):[0-5]\\d$" },
+      timezone: { type: "string", minLength: 1 },
+    },
+  });
+}
+
+function cronJobSchema(): JsonSchema {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["id", "expression", "prompt"],
+    properties: {
+      id: { type: "string", minLength: 1 },
+      enabled: { type: "boolean" },
+      expression: { type: "string", minLength: 1 },
+      timezone: { type: "string", minLength: 1 },
+      prompt: { type: "string", minLength: 1 },
+      conversationId: { type: "string", minLength: 1 },
+      maxRunMs: { type: "integer", minimum: 1 },
+      notify: { type: "boolean" },
+      notifyConversationId: { type: "string", minLength: 1 },
+      notifyFailureCooldownHours: { type: "integer", minimum: 1 },
+      model: { type: "string", minLength: 1 },
+      effort: { type: "string", minLength: 1 },
+    },
+  };
+}
+
+function webhookEndpointSchema(): JsonSchema {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["path"],
+    properties: {
+      name: { type: "string", minLength: 1 },
+      path: { type: "string", minLength: 1 },
+      mode: { enum: ["sync", "async"] },
+      enabled: { type: "boolean" },
+      prompt: { type: "string", minLength: 1 },
+      notify: { type: "boolean" },
+      notifyConversationId: { type: "string", minLength: 1 },
+      model: { type: "string", minLength: 1 },
+      effort: { type: "string", minLength: 1 },
+      maxRunMs: { type: "integer", minimum: 0, maximum: 86_400_000 },
+    },
+  };
+}
+
+function slackActionSchema(idKey: "callbackId" | "actionId", requireLabel: boolean): JsonSchema {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: [idKey, ...(requireLabel ? ["label"] : []), "prompt"],
+    properties: {
+      [idKey]: { type: "string", minLength: 1 },
+      ...(requireLabel ? { label: { type: "string", minLength: 1 } } : {}),
+      prompt: { type: "string", minLength: 1 },
+      channelId: { type: "string", minLength: 1 },
+      ackText: { type: "string", minLength: 1 },
+      threadReply: { type: "boolean" },
+    },
+  };
+}
+
+function setRemovedConfigSchemas(root: Record<string, JsonSchema>): void {
+  for (const key of ["reflection", "migration"] as const) {
+    setSchemaPath(root, ["memory", key], {
+      type: "object",
+      deprecated: true,
+      additionalProperties: true,
+      description: `Removed memory.${key} settings are tolerated only to emit a migration warning.`,
+    });
+  }
 }
 
 function setContinuationSchema(root: Record<string, JsonSchema>): void {
@@ -628,80 +819,71 @@ ${rows}
 `;
 }
 
-export function findUnknownAppConfigWarnings(json: object): readonly string[] {
-  return findUnknownJsonKeyWarnings(json, {
-    knownPaths: [
-      ...allConfigReferenceFields().map((field) => field.jsonPath),
-      "channels.plugins",
-      // Removed-but-tolerated keys are reported by findRemovedConfigWarnings.
-      "memory.reflection",
-      "memory.migration",
-    ],
-    permissivePaths: [
-      "channels.plugins",
-      "providers.local",
-      "memory.reflection",
-      "memory.migration",
-      "observability.exporters",
-      "cron.jobs",
-      "webhook.endpoints",
-      "slack.shortcuts",
-      "slack.homeTab",
-      "telegram.commands",
-      "telegram.reactions",
-      "telegram.quietHours",
-      "continuations.namedRoutes",
-    ],
+/** Return raw JSON paths that the generated schema would reject as unknown. */
+export function findUnknownAppConfigPaths(json: object): readonly string[] {
+  return [...unknownPathsForSchema(json, buildMonoAgentConfigSchema(), "")].sort();
+}
+
+/** Fail before config values are flattened so misspelled settings cannot be ignored. */
+export function assertKnownAppConfigKeys(json: object): void {
+  const paths = findUnknownAppConfigPaths(json);
+  if (paths.length === 0) {
+    return;
+  }
+  const message = `mono-agent.config.json contains unknown ${paths.length === 1 ? "key" : "keys"}: ${paths.join(", ")}. Remove or correct ${paths.length === 1 ? "it" : "them"}; unknown keys are not ignored.`;
+  throw new MonoAgentConfigError("invalid_json", message, {
+    path: paths[0],
+    paths,
+    reason: message,
   });
 }
 
-function findUnknownJsonKeyWarnings(
-  json: object,
-  options: {
-    readonly knownPaths: readonly string[];
-    readonly permissivePaths: readonly string[];
-  },
-): readonly string[] {
-  const known = new Set(options.knownPaths);
-  const containers = new Set<string>();
-  for (const path of options.knownPaths) {
-    const parts = path.split(".");
-    for (let i = 1; i < parts.length; i += 1) {
-      containers.add(parts.slice(0, i).join("."));
+function unknownPathsForSchema(value: unknown, schema: JsonSchema, path: string): ReadonlySet<string> {
+  const alternatives = Array.isArray(schema.oneOf) ? schema.oneOf.filter(isPlainObject) : [];
+  if (alternatives.length > 0) {
+    const results = alternatives.map((candidate) => unknownPathsForSchema(value, candidate, path));
+    if (results.length === 0) {
+      return new Set();
     }
+    return new Set([...results[0]!].filter((entry) => results.every((result) => result.has(entry))));
   }
-  const permissive = new Set(options.permissivePaths);
-  const warnings: string[] = [];
-  walkObject(json as Record<string, unknown>, "");
-  return warnings;
 
-  function walkObject(record: Record<string, unknown>, prefix: string): void {
-    for (const [key, value] of Object.entries(record)) {
-      const path = prefix.length === 0 ? key : `${prefix}.${key}`;
-      if (path === "$schema") {
-        continue;
-      }
-      if (isUnderPermissivePath(path, permissive)) {
-        continue;
-      }
-      if (!known.has(path) && !containers.has(path)) {
-        warnings.push(`[WARN] Unknown config key ${path} in mono-agent.config.json - it is ignored.`);
-        continue;
-      }
-      if (isPlainObject(value)) {
-        walkObject(value, path);
-      }
+  if (Array.isArray(value)) {
+    const items = isPlainObject(schema.items) ? schema.items : undefined;
+    if (items === undefined) {
+      return new Set();
+    }
+    const paths = new Set<string>();
+    value.forEach((entry, index) => {
+      addAll(paths, unknownPathsForSchema(entry, items, `${path}[${index}]`));
+    });
+    return paths;
+  }
+  if (!isPlainObject(value)) {
+    return new Set();
+  }
+
+  const properties = isPlainObject(schema.properties) ? schema.properties : {};
+  const additional = schema.additionalProperties;
+  const paths = new Set<string>();
+  for (const [key, entry] of Object.entries(value)) {
+    const entryPath = path.length === 0 ? key : `${path}.${key}`;
+    const propertySchema = properties[key];
+    if (isPlainObject(propertySchema)) {
+      addAll(paths, unknownPathsForSchema(entry, propertySchema, entryPath));
+    } else if (additional === false) {
+      paths.add(entryPath);
+    } else if (isPlainObject(additional)) {
+      addAll(paths, unknownPathsForSchema(entry, additional, entryPath));
     }
   }
+  return paths;
 }
 
-function isUnderPermissivePath(path: string, permissive: ReadonlySet<string>): boolean {
-  for (const prefix of permissive) {
-    if (path === prefix || path.startsWith(`${prefix}.`)) {
-      return true;
-    }
+function addAll(target: Set<string>, source: ReadonlySet<string>): void {
+  for (const value of source) {
+    target.add(value);
   }
-  return false;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -1047,11 +1229,6 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "tui.port": 0,
     "tui.basePath": "/gui",
     "tui.allowNonLoopback": false,
-    "live.enabled": true,
-    "live.host": "127.0.0.1",
-    "live.port": 0,
-    "live.basePath": "/live",
-    "live.allowNonLoopback": false,
   };
   return defaults[id];
 }

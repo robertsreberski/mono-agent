@@ -11,7 +11,7 @@ export interface HumanChannelSection {
   readonly lines: readonly string[];
 }
 
-const OPERATOR_CHANNEL_IDS = new Set(["tui", "live"]);
+const OPERATOR_CHANNEL_IDS = new Set(["tui"]);
 
 /**
  * Keep transport ids stable in config/JSON while giving humans the product
@@ -51,11 +51,7 @@ function displayChannelId(id: string): string {
 }
 
 function describeOperatorPurpose(entry: HumanChannelStatus): string {
-  const purpose = entry.id === "tui"
-    ? "TUI + Web"
-    : entry.id === "live"
-      ? "read-only events"
-      : undefined;
+  const purpose = entry.id === "tui" ? "TUI + Web" : undefined;
   if (purpose === undefined || entry.kind !== "running") return entry.text;
   if (entry.text === "running") return `running (${purpose})`;
   if (entry.text.startsWith("running (") && entry.text.endsWith(")")) {

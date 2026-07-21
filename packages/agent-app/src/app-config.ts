@@ -11,6 +11,7 @@ import {
 import type { MonoAgentConfig, ObservabilityExporterConfig } from "@mono-agent/config";
 
 import { accountHomeDirectory } from "./account-home.js";
+import { assertKnownAppConfigKeys } from "./config-reference.js";
 
 // The structural shape moved to @mono-agent/agent-contracts (ChannelConfigInput)
 // so channel drivers can be authored against the neutral contract; this alias
@@ -18,6 +19,8 @@ import { accountHomeDirectory } from "./account-home.js";
 export type MonoAgentAppConfigInput = ChannelConfigInput;
 
 export async function loadAppCoreConfig(input: MonoAgentAppConfigInput): Promise<MonoAgentConfig> {
+  const { json } = await readMonoAgentConfigJson(input.configPath);
+  assertKnownAppConfigKeys(json);
   return await loadMonoAgentConfigWithSources({
     env: input.env,
     cwd: input.cwd,

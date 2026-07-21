@@ -237,7 +237,7 @@ the actual bound address/port plus idempotent `stop()` and `close()` methods.
 
 The browser API is rooted at `/api/v1`:
 
-- `GET /bootstrap`, `PATCH /agents/:id`, and `GET/PATCH /threads/:id`
+- `GET /bootstrap`, `PATCH /agents/:id`, and `GET/PATCH/DELETE /threads/:id`
 - `POST /threads`, `/threads/:id/turns`, and `/threads/:id/cancel`
 - `GET /threads/:id/ask` and `POST /threads/:id/ask` for the current structured
   `AskUser` snapshot and atomic answer submission
@@ -247,6 +247,10 @@ The browser API is rooted at `/api/v1`:
 `GET /healthz` is intentionally outside the versioned API for service probes.
 `POST /threads/:id/turns` accepts optional
 `quote: { text, messageId }` metadata in addition to the authored `text`.
+Permanent deletion is limited to archived, inactive conversations. It removes
+database descendants transactionally and deletes committed attachment files;
+startup and scheduled cleanup remove any file orphaned by a crash or transient
+filesystem failure after the database commit.
 
 ## Dependency Boundary
 
@@ -265,8 +269,7 @@ import a communication adapter or another operator surface.
 - Agent runtime/provider execution or conversation history inside an agent.
 - The operator-adapter HTTP server published by each agent.
 - CLI background-process, launchd, or conflict-safe Tailscale Serve lifecycle.
-- Recorded-run replay, which belongs to `@mono-agent/tui`; the legacy read-only
-  Session Recorder remains a separate package pending retirement.
+- Recorded-run replay, which belongs to `@mono-agent/tui`.
 - Authentication. Network reachability is the intentional security boundary.
 - Host filesystem browsing: attachments come only from the browser device's
   native file picker.

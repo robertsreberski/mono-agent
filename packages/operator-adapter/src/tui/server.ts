@@ -4,7 +4,9 @@ import { createServer } from "node:http";
 import {
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
+  BoundedHttpResponseWriter,
   agentAttachmentKindFromMimeType,
+  closeServerBounded,
   createChannelUserCancelReason,
   decodeAgentAttachmentText,
   isAgentResponseCancelledError,
@@ -22,7 +24,6 @@ import {
 import {
   assertSafeBind,
   bearerTokensEqual,
-  close,
   hostForUrl,
   isLoopbackHost,
   listen,
@@ -140,6 +141,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
 
   const app = express();
   const server = createServer(app);
+  const activeTurns = new Set<AbortController>();
+  let stopping = false;
+  let stopPromise: Promise<void> | undefined;
   const infoPath = `${basePath}/v1/info`;
   const turnsPath = `${basePath}/v1/turns`;
   const cancelPath = `${basePath}/v1/conversations/:conversationId/cancel`;
@@ -300,7 +304,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   });
 
   async function closeRejectedServer(): Promise<void> {
-    await close(server);
+    stopping = true;
+    for (const controller of activeTurns) controller.abort(new Error("TUI adapter rejected its actual bound address."));
+    await closeServerBounded(server);
+    activeTurns.clear();
   }
 
   const boundNonLoopback = !isLoopbackHost(address.address);
@@ -322,6 +329,8 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   async function handleTurn(req: Request, res: Response): Promise<void> {
     const body = normalizeTurnBody(req.body);
     const controller = new AbortController();
+    activeTurns.add(controller);
+    if (stopping) controller.abort(new Error("TUI adapter is stopping."));
     const requestId = randomUUID();
     const request: AgentRequestBase = {
       conversationId: body.conversationId,
@@ -345,10 +354,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       }
     });
 
-    const stream = new NdjsonMessageStream(res);
+    const stream = new NdjsonMessageStream(res, (error) => controller.abort(error));
     try {
       const response: AgentResponse = await options.responder.respond(request, stream);
-      stream.writeFrame({
+      await stream.writeFrame({
         kind: "finish",
         ...(response.text === undefined ? {} : { finalText: response.text }),
         ...(response.metadata === undefined ? {} : { metadata: response.metadata }),
@@ -356,13 +365,14 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     } catch (error) {
       const cancelled = isAgentResponseCancelledError(error) || controller.signal.aborted;
       const code = codeOf(error);
-      stream.writeFrame({
+      await stream.writeFrame({
         kind: "error",
         message: errorToMessage(error),
         ...(code === undefined ? {} : { code }),
         cancelled,
-      });
+      }).catch(() => undefined);
     } finally {
+      activeTurns.delete(controller);
       res.end();
     }
   }
@@ -374,23 +384,33 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     turnsUrl: `${url}${turnsPath}`,
     host,
     port: boundPort,
-    async stop() {
-      await close(server);
+    stop() {
+      stopPromise ??= (async () => {
+        stopping = true;
+        for (const controller of activeTurns) controller.abort(new Error("TUI adapter stopped."));
+        await closeServerBounded(server);
+        activeTurns.clear();
+      })();
+      return stopPromise;
     },
   };
 }
 
 /**
- * Serializes each AgentMessageStream callback as one NDJSON frame. Writes are
- * fire-and-forget: a slow TUI must never stall the harness, so backpressure is
- * absorbed by the socket buffer. Oversized event frames are reduced or replaced
- * with a marker to meet the exported UTF-8 byte cap; non-event frames retain
- * their existing behavior.
+ * Serializes each AgentMessageStream callback as one NDJSON frame. Writes honor
+ * the response's backpressure signal and carry a bounded pending-byte budget,
+ * so a slow client cannot grow the process heap without limit. Oversized event
+ * frames are reduced or replaced with a marker to meet the exported UTF-8 byte
+ * cap; non-event frames retain their existing behavior.
  */
 class NdjsonMessageStream implements AgentMessageStream {
-  constructor(private readonly res: Response) {}
+  private readonly writer: BoundedHttpResponseWriter;
 
-  writeFrame(frame: AgentStreamWireFrame): void {
+  constructor(private readonly res: Response, onWriteFailure: (error: Error) => void) {
+    this.writer = new BoundedHttpResponseWriter(res, { onFailure: onWriteFailure });
+  }
+
+  async writeFrame(frame: AgentStreamWireFrame): Promise<void> {
     if (this.res.writableEnded) {
       return;
     }
@@ -398,23 +418,23 @@ class NdjsonMessageStream implements AgentMessageStream {
     if (Buffer.byteLength(line, "utf8") > MAX_FRAME_BYTES && frame.kind === "event") {
       line = serializeCappedEventFrame(frame.event, line);
     }
-    this.res.write(line);
+    await this.writer.write(line);
   }
 
   async status(text: string): Promise<void> {
-    this.writeFrame({ kind: "status", text });
+    await this.writeFrame({ kind: "status", text });
   }
 
   async append(delta: string): Promise<void> {
-    this.writeFrame({ kind: "append", delta });
+    await this.writeFrame({ kind: "append", delta });
   }
 
   async replace(text: string): Promise<void> {
-    this.writeFrame({ kind: "replace", text });
+    await this.writeFrame({ kind: "replace", text });
   }
 
   async event(event: AgentStreamEvent): Promise<void> {
-    this.writeFrame({ kind: "event", event });
+    await this.writeFrame({ kind: "event", event });
   }
 
   async finish(): Promise<void> {

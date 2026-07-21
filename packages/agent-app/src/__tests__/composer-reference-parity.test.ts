@@ -275,25 +275,17 @@ describe("mono-agent-composer reference parity", () => {
     }
   });
 
-  it("documents the removed Session Recorder command on every surface", () => {
-    const surfaces = [
-      [rowWithRegistryId(registry, "session-web.pwa"), "session-web registry row"],
-      [rowWithRegistryId(matrix, "session-web.pwa"), "feature matrix row"],
-      [
-        between(coverage, "Session Recorder web PWA", "Setup presets"),
-        "composer feature coverage",
-      ],
-    ] as const;
-
-    for (const [page, label] of surfaces) {
-      expect(page, `${label} must record the sessions removal`).toContain("removed");
-      expect(page, `${label} must point at mono-agent tui`).toContain("mono-agent tui");
-      expect(page, `${label} must point at mono-agent web`).toContain("mono-agent web");
-      for (const removedFlag of ["--show-auth-url", "--max-runs"]) {
-        expect(page, `${label} still advertises removed flag ${removedFlag}`).not.toContain(
-          removedFlag,
-        );
-      }
+  it("keeps retired Session Recorder surfaces out of active references", () => {
+    for (const [page, label] of [
+      [registry, "feature registry"],
+      [matrix, "feature matrix"],
+      [coverage, "composer feature coverage"],
+      [packageMap, "composer package map"],
+      [blueprint, "composer config blueprint"],
+    ] as const) {
+      expect(page, `${label} still advertises session-web`).not.toContain("@mono-agent/session-web");
+      expect(page, `${label} still advertises live config`).not.toContain('"live"');
+      expect(page, `${label} still advertises the live feature id`).not.toContain("live.event-relay");
     }
   });
 
@@ -304,7 +296,7 @@ describe("mono-agent-composer reference parity", () => {
     expect(cliWeb).toContain("--all --yes");
     expect(cliWeb).not.toContain("--include-memory");
     expect(packageMap).toContain("@mono-agent/web");
-    expect(packageMap).toContain("@mono-agent/session-web");
+    expect(packageMap).not.toContain("@mono-agent/session-web");
   });
 
   it("keeps the annotated config blueprint complete for audited config keys", () => {
@@ -332,8 +324,8 @@ describe("mono-agent-composer reference parity", () => {
   it("maps the optional memory backend and browser surface to their owning packages", () => {
     expect(packageMap).toContain("@mono-agent/memory-supermemory");
     expect(packageMap).toContain('memory.backend: "supermemory"');
-    expect(packageMap).toContain("@mono-agent/session-web");
     expect(packageMap).toContain("@mono-agent/web");
+    expect(packageMap).not.toContain("@mono-agent/session-web");
     expect(packageMap).not.toContain("mono-agent sessions");
   });
 

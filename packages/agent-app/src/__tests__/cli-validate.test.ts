@@ -155,7 +155,7 @@ describe("runCli validate --consumer", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("Provider credentials");
     expect(result.stdout).toContain(expectedDetail);
-    expect(result.stdout).toContain("Config is structurally valid, but needs attention before start.");
+    expect(result.stdout).toContain("Config is structurally valid, but not operationally ready.");
     expect(result.stdout).not.toContain("Config is ready to start.");
   });
 
@@ -180,7 +180,7 @@ describe("runCli validate --consumer", () => {
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("Config warnings");
     expect(result.stdout).toContain("memory.embeddings.apiKey is a secret read from mono-agent.config.json");
-    expect(result.stdout).toContain("Config is structurally valid, but needs attention before start.");
+    expect(result.stdout).toContain("Config is structurally valid, but not operationally ready.");
     expect(result.stdout).not.toContain("Config is ready to start.");
   });
 
@@ -206,6 +206,8 @@ describe("runCli validate --consumer", () => {
     expect(result.stderr).toBe("");
     const report = JSON.parse(result.stdout) as {
       readonly ok: boolean;
+      readonly structurallyValid: boolean;
+      readonly operationallyReady: boolean;
       readonly sections: readonly {
         readonly id: string;
         readonly status: string;
@@ -214,6 +216,8 @@ describe("runCli validate --consumer", () => {
     };
     const memory = report.sections.find((section) => section.id === "memory");
     expect(report.ok).toBe(true);
+    expect(report.structurallyValid).toBe(true);
+    expect(report.operationallyReady).toBe(false);
     expect(memory?.status).toBe("waiting");
     expect(memory?.details.join("\n")).toContain(`Supermemory is not reachable at ${baseUrl}`);
     expect(memory?.details.join("\n")).toContain("memory.supermemory.baseUrl");

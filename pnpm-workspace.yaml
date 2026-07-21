@@ -14,6 +14,12 @@ allowBuilds:
 # Keep minimumReleaseAgeExclude absent while minimumReleaseAge remains 0.
 minimumReleaseAge: 0
 
+# Security floors for production transitive ranges. Keep these exact so the
+# advisory gate and every packed consumer resolve the reviewed fixed versions.
+overrides:
+  protobufjs: 7.6.5
+  ws: 8.21.1
+
 onlyBuiltDependencies:
   - better-sqlite3
   - sqlite-vec
