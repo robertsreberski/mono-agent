@@ -91,6 +91,22 @@ const jsonText = (value: unknown): string => {
   }
 };
 
+const isContextCompactionPart = (part: Extract<MessagePart, { type: "telemetry" }>): boolean => {
+  if (part.event === "context_compaction") return true;
+  let current = part.data;
+  const seen = new Set<object>();
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (current === null || typeof current !== "object" || Array.isArray(current) || seen.has(current)) {
+      return false;
+    }
+    seen.add(current);
+    const record = current as Record<string, unknown>;
+    if (record.kind === "context_compaction" || record.type === "context_compaction") return true;
+    current = record.data;
+  }
+  return false;
+};
+
 const convertPart = (
   part: MessagePart,
 ): Exclude<ThreadMessageLike["content"], string>[number] | null => {
@@ -110,10 +126,13 @@ const convertPart = (
         isError: part.status === "failed",
       };
     case "telemetry":
-      // Telemetry remains persisted in WebMessage/store state for chrome such
-      // as ContextDisplay. Keeping it out of assistant-ui content prevents
-      // hidden data parts from splitting adjacent reasoning/tool activity.
-      return null;
+      // Most telemetry remains store-only for chrome such as ContextDisplay.
+      // Compaction is user-visible activity, so expose that one canonical kind
+      // as a named data part that can join reasoning/tools without leaking raw
+      // provider diagnostics into the transcript.
+      return isContextCompactionPart(part)
+        ? { type: "data-context-compaction", data: jsonObject(part.data) }
+        : null;
     case "error":
       return { type: "data-error", data: { code: part.code, message: part.message } };
   }

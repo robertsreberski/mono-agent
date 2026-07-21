@@ -99,6 +99,46 @@ describe("convertWebMessage", () => {
     expect(converted.status).toEqual({ type: "running" });
   });
 
+  it("exposes only canonical compaction telemetry as a named assistant-ui data part", () => {
+    const converted = convertWebMessage(message({
+      role: "assistant",
+      status: "running",
+      parts: [
+        { type: "telemetry", event: "usage_update", data: { tokens: { input: 10 } } },
+        {
+          type: "telemetry",
+          event: "runtime_telemetry",
+          data: {
+            type: "runtime_telemetry",
+            kind: "context_compaction",
+            data: {
+              operationId: "compact-1",
+              status: "running",
+              sdk: "pi",
+              trigger: "proactive",
+            },
+          },
+        },
+      ],
+    }));
+
+    expect(converted.content).toEqual([
+      {
+        type: "data-context-compaction",
+        data: {
+          type: "runtime_telemetry",
+          kind: "context_compaction",
+          data: {
+            operationId: "compact-1",
+            status: "running",
+            sdk: "pi",
+            trigger: "proactive",
+          },
+        },
+      },
+    ]);
+  });
+
   it("maps a persisted quote into assistant-ui message metadata", () => {
     const converted = convertWebMessage(message({
       quote: { text: "Quoted response", messageId: "source-message" },

@@ -380,6 +380,80 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("updates a compaction lifecycle in place while keeping distinct operations", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "compact", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      {
+        kind: "event",
+        event: {
+          type: "runtime_telemetry",
+          kind: "context_compaction",
+          data: { operationId: "compact-1", status: "running", sdk: "pi", trigger: "proactive" },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "runtime_telemetry",
+          kind: "context_compaction",
+          data: {
+            operationId: "compact-1",
+            status: "succeeded",
+            sdk: "pi",
+            trigger: "proactive",
+            tokensBefore: 80_000,
+            tokensAfter: 20_000,
+            tokenCountsExact: false,
+          },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "runtime_telemetry",
+          kind: "context_compaction",
+          data: { operationId: "compact-2", status: "skipped", sdk: "pi", trigger: "manual" },
+        },
+      },
+    ]);
+
+    const assistant = store.getThreadDetail(thread.id)?.messages.at(-1);
+    expect(assistant?.parts).toEqual([
+      {
+        type: "telemetry",
+        event: "runtime_telemetry",
+        data: {
+          type: "runtime_telemetry",
+          kind: "context_compaction",
+          data: {
+            operationId: "compact-1",
+            status: "succeeded",
+            sdk: "pi",
+            trigger: "proactive",
+            tokensBefore: 80_000,
+            tokensAfter: 20_000,
+            tokenCountsExact: false,
+          },
+        },
+      },
+      {
+        type: "telemetry",
+        event: "runtime_telemetry",
+        data: {
+          type: "runtime_telemetry",
+          kind: "context_compaction",
+          data: { operationId: "compact-2", status: "skipped", sdk: "pi", trigger: "manual" },
+        },
+      },
+    ]);
+    store.close();
+  });
+
   it("reconciles a divergent replace frame across interleaved text without dropping tools", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

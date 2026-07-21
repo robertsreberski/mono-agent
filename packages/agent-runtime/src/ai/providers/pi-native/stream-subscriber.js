@@ -13,6 +13,7 @@ import {
   jsonSerializable,
   streamContentKey,
 } from "../pi-events.js";
+import { contextUsageFromAssistantMessage } from "./result-builder.js";
 
 function toolResultFileChange(result) {
   const fileChange = result?.details?.file_change;
@@ -41,10 +42,10 @@ function toolResultFileChange(result) {
  * abort; it is already constructed when this is wired (subscribe follows the
  * AgentHarness constructor).
  * @param {StreamSubscriberState} runState
- * @param {{onEvent: (event: any) => void, options: any, toolLimits: any, harness: any}} deps
+ * @param {{onEvent: (event: any) => void, options: any, toolLimits: any, harness: any, sdk: string, model: string}} deps
  * @returns {(event: any) => void}
  */
-export function createStreamSubscriber(runState, { onEvent, options, toolLimits, harness }) {
+export function createStreamSubscriber(runState, { onEvent, options, toolLimits, harness, sdk, model }) {
   return (event) => {
     if (event.type === "message_update") {
       const streamEvent = event.assistantMessageEvent;
@@ -68,6 +69,23 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
           runState.assistantThinking.push(streamEvent.content);
           onEvent({ type: "assistant", message: { content: [{ type: "thinking", text: streamEvent.content }] } });
         }
+      }
+    } else if (event.type === "message_end") {
+      const contextUsage = contextUsageFromAssistantMessage(event.message);
+      if (contextUsage) {
+        const contextWindow = Number(harness?.getModel?.()?.contextWindow) || 0;
+        const measurementId = typeof event.message?.id === "string" && event.message.id.trim().length > 0
+          ? event.message.id
+          : undefined;
+        onEvent({
+          type: "context_usage",
+          sdk,
+          model,
+          timestamp: Date.now(),
+          ...(measurementId === undefined ? {} : { measurementId }),
+          ...(contextWindow > 0 ? { contextWindow } : {}),
+          tokens: contextUsage,
+        });
       }
     } else if (event.type === "tool_execution_start") {
       if (event.toolName) runState.lastToolName = event.toolName;

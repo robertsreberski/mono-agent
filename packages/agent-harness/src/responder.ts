@@ -289,6 +289,7 @@ const RUNTIME_TELEMETRY_KINDS = new Set([
   "cache_hit",
   "cache_miss",
   "capabilities_resolved",
+  "context_compaction",
   "context_usage",
   "provider_bridge_latency",
   "run_config",
