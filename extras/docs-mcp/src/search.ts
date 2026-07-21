@@ -2,9 +2,10 @@ import { embed } from "@yarflam/potion-base-8m";
 
 import { loadDocsCorpus } from "./corpus.js";
 import type { DocsCorpus, DocsCorpusChunk } from "./corpus.js";
+import { MonoAgentDocsReader } from "./reader.js";
 import type {
-  MonoAgentDocsScope,
-  MonoAgentDocsSearchHit,
+  MonoAgentDocsErrorResult,
+  MonoAgentDocsReadResult,
   MonoAgentDocsSearchInput,
   MonoAgentDocsSearchResult,
 } from "./types.js";
@@ -23,12 +24,14 @@ interface LexicalDocument {
 
 export class MonoAgentDocsSearchIndex {
   readonly #corpus: DocsCorpus;
+  readonly #reader: MonoAgentDocsReader;
   readonly #lexicalDocuments: readonly LexicalDocument[];
   readonly #documentFrequency: ReadonlyMap<string, number>;
   readonly #averageDocumentLength: number;
 
   constructor(corpus: DocsCorpus) {
     this.#corpus = corpus;
+    this.#reader = new MonoAgentDocsReader(corpus);
     this.#lexicalDocuments = corpus.chunks.map((chunk) => lexicalDocument(chunk.embeddingText));
     this.#documentFrequency = documentFrequency(this.#lexicalDocuments);
     this.#averageDocumentLength = this.#lexicalDocuments.reduce((sum, document) => sum + document.length, 0)
@@ -41,6 +44,10 @@ export class MonoAgentDocsSearchIndex {
 
   getChunk(chunkId: string): DocsCorpusChunk | undefined {
     return this.#corpus.chunksById.get(chunkId);
+  }
+
+  read(target: string): MonoAgentDocsReadResult | MonoAgentDocsErrorResult {
+    return this.#reader.read(target);
   }
 
   async search(input: MonoAgentDocsSearchInput): Promise<MonoAgentDocsSearchResult> {
@@ -96,39 +103,45 @@ export class MonoAgentDocsSearchIndex {
       };
     }).sort(rankScores);
 
-    const results: MonoAgentDocsSearchHit[] = [];
+    const results: MonoAgentDocsSearchResult["results"][number][] = [];
     const normalizedTexts = new Set<string>();
+    const sections = new Set<string>();
     const hitsPerPath = new Map<string, number>();
     for (const { index } of fused) {
       const chunk = this.#corpus.chunks[index]!;
       const normalizedText = chunk.text.replace(/\s+/gu, " ").trim().toLowerCase();
-      if (normalizedTexts.has(normalizedText) || (hitsPerPath.get(chunk.path) ?? 0) >= 2) {
+      const section = `${chunk.documentId}:${chunk.anchor ?? "overview"}`;
+      if (normalizedTexts.has(normalizedText) || sections.has(section) || (hitsPerPath.get(chunk.path) ?? 0) >= 2) {
         continue;
       }
       normalizedTexts.add(normalizedText);
+      sections.add(section);
       hitsPerPath.set(chunk.path, (hitsPerPath.get(chunk.path) ?? 0) + 1);
-      results.push({
-        rank: results.length + 1,
-        chunkId: chunk.id,
-        uri: `mono-agent-docs://chunk/${chunk.id}`,
-        source: chunk.source,
-        path: chunk.path,
-        title: chunk.title,
-        headingPath: chunk.headingPath,
-        ...(chunk.canonicalUrl === undefined ? {} : { canonicalUrl: chunk.canonicalUrl }),
-        text: chunk.text,
-      });
+      results.push(this.#reader.searchHit(chunk, results.length + 1));
       if (results.length >= limit) {
         break;
       }
     }
 
     return {
-      schema: "mono-agent.docs-search.v1",
+      schema: "mono-agent.docs.v2",
+      action: "search",
       docsVersion: this.#corpus.manifest.docsVersion,
       corpusDigest: this.#corpus.manifest.corpusDigest,
       retrievalMode: "hybrid",
+      query,
+      scope,
       results,
+      navigation: {
+        guidance: results.length === 0
+          ? "No version-matched excerpt was found. Search again with a mono-agent package, config key, command, or capability name."
+          : "Treat these excerpts as a map, not the complete answer. Read the best readTarget for a larger anchored window, then follow internalLinks or previous/next actions as needed.",
+        nextActions: results.slice(0, 3).map((result) => ({
+          kind: "read" as const,
+          description: `Expand result ${result.rank} from ${result.path}.`,
+          arguments: { action: "read" as const, target: result.readTarget },
+        })),
+      },
     };
   }
 }

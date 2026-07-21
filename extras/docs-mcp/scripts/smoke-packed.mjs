@@ -55,8 +55,9 @@ try {
   await client.connect(transport);
 
   const response = await client.callTool({
-    name: "search_mono_agent_docs",
+    name: "mono_agent_docs",
     arguments: {
+      action: "search",
       query: "Which config field loads channel plugin packages?",
       scope: "composer",
       limit: 3,
@@ -64,13 +65,36 @@ try {
   });
   assert.notEqual(response.isError, true, "Packed MCP search returned a tool error.");
   const structured = response.structuredContent;
-  assert.equal(structured?.schema, "mono-agent.docs-search.v1");
+  assert.equal(structured?.schema, "mono-agent.docs.v2");
+  assert.equal(structured?.action, "search");
   assert.equal(structured?.retrievalMode, "hybrid");
   assert.ok(Array.isArray(structured?.results) && structured.results.length === 3, "Expected three packed-corpus results.");
   const first = structured.results[0];
-  assert.ok(typeof first === "object" && first !== null && "uri" in first && typeof first.uri === "string");
-  const resource = await client.readResource({ uri: first.uri });
-  assert.ok(resource.contents.some((content) => "text" in content && content.text.includes("Source:")), "Packed chunk resource was not readable.");
+  assert.ok(typeof first === "object" && first !== null && "readTarget" in first && typeof first.readTarget === "string");
+  assert.ok("markdown" in first && typeof first.markdown === "string" && first.markdown.length > 1_200 && first.markdown.length <= 3_000);
+  assert.ok(Array.isArray(structured.navigation?.nextActions) && structured.navigation.nextActions.length > 0);
+
+  const read = await client.callTool({
+    name: "mono_agent_docs",
+    arguments: { action: "read", target: first.readTarget },
+  });
+  assert.notEqual(read.isError, true, "Packed MCP read returned a tool error.");
+  assert.equal(read.structuredContent?.schema, "mono-agent.docs.v2");
+  assert.equal(read.structuredContent?.action, "read");
+  assert.ok(
+    typeof read.structuredContent?.markdown === "string"
+      && read.structuredContent.markdown.length > first.markdown.length
+      && read.structuredContent.markdown.length <= 10_000,
+    "Packed MCP read did not expand the search excerpt.",
+  );
+
+  const resource = await client.readResource({ uri: first.readTarget });
+  assert.ok(
+    resource.contents.some((content) => "text" in content
+      && content.text.includes("Source:")
+      && content.text.length > first.markdown.length),
+    "Packed chunk resource was not expanded and readable.",
+  );
 
   process.stdout.write(`${JSON.stringify({
     ok: true,
@@ -78,7 +102,7 @@ try {
     transport: "packed-stdio",
     docsVersion: structured.docsVersion,
     corpusDigest: structured.corpusDigest,
-    topResult: first.uri,
+    topResult: first.readTarget,
   })}\n`);
 } finally {
   if (client !== undefined) await client.close().catch(() => undefined);

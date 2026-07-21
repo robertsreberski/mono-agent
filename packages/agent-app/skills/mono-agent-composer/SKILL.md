@@ -9,7 +9,7 @@ Construct a working mono-agent in the user's current folder — empty or already
 
 ## Authoritative Sources — Search, Then References, Never Package Source
 
-When the `search_mono_agent_docs` MCP tool is available, use it **before** opening files or following website links. Its version-matched offline corpus contains the canonical public documentation plus the `references/*.md` bundled beside this skill. For "can it do X?", "what is the key for Y?", and "how is Z configured?", search with `scope: "composer"`; returned composer chunks have the same authority as the bundled references. Use `scope: "all"` for broader conceptual or troubleshooting questions. Results include complete Markdown excerpts, so links are provenance rather than a required second retrieval step.
+When the `mono_agent_docs` MCP tool is available, use it **before** opening files or following website links. Its version-matched offline corpus contains the canonical public documentation plus the `references/*.md` bundled beside this skill. Start with `{"action":"search","query":"...","scope":"composer"}` for "can it do X?", "what is the key for Y?", and "how is Z configured?"; use `scope: "all"` for broader conceptual or troubleshooting questions. Search excerpts are a map, not the complete answer: call `{"action":"read","target":"<readTarget>"}` on the best result, follow the returned `internalLinks` with `action: "read"`, and use exact `previousTarget` / `nextTarget` actions when a long section continues. Composer-scoped content has the same authority as the bundled references.
 
 The bundled `references/*.md` remain the source of truth and the fallback when the MCP tool is unavailable. They are maintained in lockstep with the framework and are **complete for configuration and capabilities**. If the tool's `docsVersion` differs from the installed `mono-agent` version, use search for general context but verify version-specific config and CLI details against these local references. Reformulate a weak search once before falling back; never compensate by grepping package source.
 
@@ -17,13 +17,13 @@ Do **not** read or grep the `@mono-agent` TypeScript/package source — `package
 
 - `references/feature-coverage.md` is the **exhaustive** map of every feature to a `config` key, `cli` flag, `auto` behavior, or `code`-only escape hatch. If a capability is listed `config`/`cli`, use that key/flag verbatim. If it is **not in the table, or is marked `code`**, it is not reachable through `mono-agent.config.json` — say so plainly and name the escape hatch. Absence from the table means "not configurable," never "go check the source."
 - The real exception: if the user is **modifying the framework itself** (changing `@mono-agent` package code), that is framework development, not composing an agent — outside this skill. Only then is reading `packages/*/src` correct.
-- The published docs site (<https://mono-agent-docs.vercel.app/>) is the human-facing companion. Do not browse it just to discover links: `search_mono_agent_docs` returns the indexed content directly, and the bundled references work offline when the tool is absent.
+- The published docs site (<https://mono-agent-docs.vercel.app/>) is the human-facing companion. Do not browse it just to discover links: `mono_agent_docs` searches, expands, and resolves internal links offline, and the bundled references work when the tool is absent.
 
 **Red flags — STOP, you are about to grep source you should not:**
 
 | Thought | Reality |
 | --- | --- |
-| "Let me browse the docs navigation until I find the right page." | Search `search_mono_agent_docs`; it returns the matching excerpts directly. |
+| "Let me browse the docs navigation until I find the right page." | Search with `mono_agent_docs`, read the best `readTarget`, then follow its structured `internalLinks`. |
 | "Let me verify the key name against the source." | The references give the exact key. Trust them; don't re-derive from source. |
 | "The references might be incomplete — I'll double-check `packages/.../src`." | `feature-coverage.md` is exhaustive for config/CLI. Not in it = not configurable. |
 | "I'll confirm the docs and source agree." | You are composing an agent, not auditing the framework. The references are the contract. |
@@ -31,7 +31,7 @@ Do **not** read or grep the `@mono-agent` TypeScript/package source — `package
 
 ## Operating Rules
 
-- Answer capability/config questions from `search_mono_agent_docs` with `scope: "composer"`, falling back to the bundled `references/*.md` (authoritative and complete) — never grep or read the `@mono-agent` package source to compose an agent. See "Authoritative Sources" above.
+- Answer capability/config questions through `mono_agent_docs`: search with `scope: "composer"`, read the best target, and continue through structured links/windows as needed. Fall back to the bundled `references/*.md` (authoritative and complete) — never grep or read the `@mono-agent` package source to compose an agent. See "Authoritative Sources" above.
 
 - The deliverable is a folder that works: `mono-agent.config.json` + `IDENTITY.md` (+ optional `skills/`, `mcp.json`), validated and started — not a tutorial.
 - Start by discovering the intended agent product, not by naming packages.
@@ -105,7 +105,7 @@ Config-first covers one responder served over any combination of the seven chann
 - `references/package-map.md` — which package owns what, for programmatic composition and troubleshooting.
 - `references/validation.md` — validation commands and per-channel smoke tests; read before claiming the agent works.
 
-`search_mono_agent_docs` is the primary discovery interface when present; its composer-scoped results are built from these same versioned references. The bundled `references/*` files remain authoritative and self-sufficient when the tool is absent or version-mismatched, so use them rather than package source or a remote site. The published documentation site at <https://mono-agent-docs.vercel.app/> is the human-facing companion, not an AI retrieval dependency.
+`mono_agent_docs` is the primary discovery and reading interface when present; its composer-scoped results are built from these same versioned references. Always progress from `action: "search"` to `action: "read"` before concluding from a short hit, and use the response's exact navigation actions rather than inventing chunk or page locations. The bundled `references/*` files remain authoritative and self-sufficient when the tool is absent or version-mismatched, so use them rather than package source or a remote site. The published documentation site at <https://mono-agent-docs.vercel.app/> is the human-facing companion, not an AI retrieval dependency.
 
 ## Done Criteria
 
