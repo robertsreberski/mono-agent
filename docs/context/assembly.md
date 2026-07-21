@@ -1,10 +1,9 @@
 ---
 title: "Context assembly"
+description: "See how mono-agent orders identity, session guidance, history, skills, memory recall, and the current request."
 sidebar:
   order: 3
 ---
-
-# Context assembly
 
 For a fresh/stateless turn, mono-agent builds one prompt from several ordered sections — core guardrails, identity, a session block, conversation history, the skill index, selected skill instructions, and finally the current user message. Warm or durable provider resumes use the history placement described below. Recalled long-term memory is **not** one of these system-prompt sections; it is appended to the current user message instead (see [Memory recall](#memory-recall) below). This page documents that order, how history is sized, and the truncation/bloat guards that keep prompts bounded. Assembly is mostly `auto`: you configure the inputs (identity, soul, skills, memory) and the framework assembles them.
 
@@ -89,15 +88,18 @@ Coverage: `auto`. History is kept in an **owner-only, disk-backed store**. The d
 
 The configured app stores history under an owner-only `history/` directory next to the configured artifact directory (normally `.mono-agent/history`). Conversation ids are retained inside the records but never used as path components; filenames are SHA-256-derived. The directory is mode `0700`, files are mode `0600`, each serialized message is capped at 64 KiB, and replacements are written atomically and fsynced. Owner-only SQLite lock files serialize same-conversation updates and root-wide retention across processes; dead owners and markerless stages are recovered immediately without an elapsed-time lease. A cold process therefore replays the same bounded history after restart even when no provider session can be resumed.
 
-Completed blocking `AskUser` interactions are also preserved in the logical
-producer's assistant-side history copy. The compact interaction transcript
-records every structured question, described option, outcome, selected labels,
-and custom replies before the final assistant text. It is explicitly labelled
-untrusted historical data, normalizes structural line separators, and retains
-the newest complete entries when bounded. That means a later cold/stateless
-provider call can replay what happened instead of seeing only the trigger and
-final response—even when the physical Slack thread, Telegram chat, or web
-conversation differed from the producer conversation.
+Answered or expired blocking `AskUser` interactions are also preserved in the
+logical producer's assistant-side history copy; cancelled interactions are not
+journaled. The compact transcript records the structured questions, outcome,
+selected labels, and custom replies before the final assistant text, with
+described options when the bound permits. It is explicitly labelled untrusted
+historical data and normalizes structural line separators. Retention keeps the
+newest whole interactions; if the newest valid entry is oversized, only its
+option descriptions are omitted so its questions, outcome, and answers remain
+whole. A later cold/stateless provider call can therefore replay what happened
+instead of seeing only the trigger and final response—even when the physical
+Slack thread, Telegram chat, or web conversation differed from the producer
+conversation.
 
 This history-only copy does not change the message delivered to the user, and it
 is not added to long-term memory capture. Non-blocking

@@ -1,10 +1,9 @@
 ---
 title: "Worklab shared kernel decision"
+description: "Record why mono-agent and Worklab share agent-runtime as a kernel while remaining separate products."
 sidebar:
   order: 60
 ---
-
-# Worklab shared kernel decision
 
 Mono-agent and Worklab should share one runtime kernel: `@mono-agent/agent-runtime`.
 Worklab should consume the published runtime package instead of carrying a

@@ -1,10 +1,10 @@
-# Agent Framework Packages
+# mono-agent
 
 This repository is a config-first pnpm workspace of reusable npm packages under the `@mono-agent` scope. The framework is built around `@mono-agent/agent-runtime` as the single shipped runtime implementation layer, while sandboxing, communication adapters, skills, memory, observability, and operator surfaces stay modular. `@mono-agent/agent-app` composes them from one shareable config file so an agent can be built, validated, and moved as configuration instead of host glue.
 
 ## Documentation
 
-Full documentation and end-to-end playbooks: **<https://mono-agent-docs.vercel.app/>** (authored as markdown under [`docs/`](./docs/), built with Astro Starlight in [`website/`](./website/) and deployed on Vercel — see [`website/README.md`](./website/README.md) for the build/sync/deploy workflow and version-pin notes). [`docs/reference/feature-registry.md`](./docs/reference/feature-registry.md) remains the canonical feature reference, and [`docs/playbooks/`](./docs/playbooks/) holds copy-paste recipes for every channel and memory tier.
+Full documentation and end-to-end playbooks: **<https://mono-agent-docs.vercel.app/>** (authored as markdown under [`docs/`](./docs/), built with Astro Starlight in [`website/`](./website/) and deployed on Vercel — see [`website/README.md`](./website/README.md) for the build/sync/deploy workflow and version-pin notes). Start with the [package directory](https://mono-agent-docs.vercel.app/reference/packages/) when you need to find the owner of a capability. [`docs/reference/feature-registry.md`](./docs/reference/feature-registry.md) remains the canonical feature reference, and [`docs/playbooks/`](./docs/playbooks/) holds copy-paste recipes for every channel and memory tier.
 
 ## Quickstart: An Agent Folder From One Config File
 
@@ -60,10 +60,11 @@ mono-agent start --foreground     # Linux and other platforms
 
 ### 4. Send the first request
 
-In Terminal 2, replace `<PORT>` with the port from the printed invoke URL:
+In Terminal 2, set `PORT` to the port from the printed invoke URL:
 
 ```bash
-curl -s http://127.0.0.1:<PORT>/webhook/invoke \
+PORT=3000 # Replace 3000 with the printed port.
+curl -s "http://127.0.0.1:${PORT}/webhook/invoke" \
   -H 'content-type: application/json' \
   -d '{"text": "Say hello and tell me what you are."}'
 ```
@@ -123,48 +124,47 @@ Attachments come from the browser device's native file picker, not a browser ove
 
 Package categories are catalog metadata, documentation, and architecture-guard inputs. Core packages live under `packages/<package-name>` and optional **plugin-tier** extras live under `extras/<package-name>`. Both use `@mono-agent/<package-name>` names and both are `publishable: true` (released together on the npm lockstep tag); the extras are marked `tier: "plugin"` and are loaded only through explicit composition, `channels.plugins[]`, an explicitly selected backend, or companion MCP pairing.
 
-See [`PACKAGES.md`](./PACKAGES.md) for the current Mermaid package/layer map.
+See the generated [`PACKAGES.md`](./PACKAGES.md) dependency graph and directory for the exact current package set, static workspace edges, npm pages, and authoritative package READMEs. The same directory is published in the [website reference](https://mono-agent-docs.vercel.app/reference/packages/).
 
 Before adding new capability surface area, use the [`Capability ladder`](./docs/reference/capability-ladder.md) to decide whether the work belongs in an existing package, config/skills, a new package, an MCP tool boundary, or a shared core contract.
 
-Current catalog count: 17 core publishable packages plus 5 plugin-tier extras plus 1 unscoped alias (`create-mono-agent`, the `npm create mono-agent` installer that ships `create-mono-agent`/`mono-agent` bins delegating to `@mono-agent/agent-app`).
+The catalog groups packages by ownership boundary:
 
-| Category | Packages | Allowed workspace dependency categories | Responsibility |
-| --- | --- | --- | --- |
-| `runtime` | `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter` | `core`, `runtime` where needed | Provider/CLI runtime bridges, typed runtime facade, and fail-closed sandbox policy/process wrapping. |
-| `core` | `@mono-agent/agent-contracts`, `@mono-agent/config` | Package-specific `core` plus `runtime` only for config | Shared responder contracts and settings JSON/env helpers with adapter-neutral core config. |
-| `context` | `@mono-agent/docs-mcp` (extra), `@mono-agent/memory`, `@mono-agent/memory-supermemory` (extra) | `core`, `context` | Offline documentation retrieval plus built-in lite/journal/bujo memory and the explicitly installed Supermemory plugin. The docs MCP stays outside the core closure and is paired with authoring harnesses; the agent's `MemoryRecall` tool is auto-provisioned in-app from the single `memory` config block. |
-| `execution` | `@mono-agent/agent-harness`, `@mono-agent/agent-orchestrator` (extra) | Package-specific `core`, `context`, `runtime`, `observability`, and execution helpers | Request execution, prompt assembly, selected-skill loading, tool/MCP policy normalization (with a fail-closed no-policy safety net), and bounded collaborator orchestration through runtime-visible tools. |
-| `observability` | `@mono-agent/observability` (`./otel` subpath for Phoenix export) | `core` | JSONL run recorder, local artifact reader, file-backed trace source registry, and subpath-only OTLP trace export. |
-| `communication` | `@mono-agent/a2a-adapter` (extra), `@mono-agent/cron-adapter`, `@mono-agent/openai-api-adapter`, `@mono-agent/operator-adapter`, `@mono-agent/slack-adapter`, `@mono-agent/telegram-adapter`, `@mono-agent/webhook-adapter`, `@mono-agent/whatsapp-adapter` (extra) | `core` | Transport and invocation adapters that accept shared structural responders and own adapter-specific safety/config. Built-in channel sections cover Telegram, Slack, webhook, OpenAI API, cron, TUI stream, and live relay; A2A and WhatsApp are config-loaded channel plugins. Operator exposes the TUI NDJSON and live SSE loopback endpoints. |
-| `operator-surface` | `@mono-agent/session-web`, `@mono-agent/tui`, `@mono-agent/web` | `core`, `observability` | Local operator surfaces: the read-only recorder, terminal console, and always-on browser conversation console. They discover registered sources but do not own agent runtime hosting or communication transport. |
-| `app` | `@mono-agent/agent-app`, `create-mono-agent` (unscoped `alias` tier) | `app` | Config-first host: loads `mono-agent.config.json`, builds the responder, drives every configured channel plus traceability, and ships the `mono-agent` CLI (`init`/`validate`/`start`). The only publishable package allowed to compose communication adapters. `create-mono-agent` is the unscoped `npm create mono-agent` installer whose `create-mono-agent`/`mono-agent` bins delegate to it (the bare `mono-agent` npm name is blocked as too similar to an unrelated `monoagent`). |
-| `host-demo` | `demos/final-agent` | All packages by explicit host composition | Non-publishable proof of composition. `demos/final-agent` is now a thin facade over `@mono-agent/agent-app`. |
+- `app` composes the config-first host and CLI.
+- `communication` owns channel-specific ingress, delivery, authentication, and transport policy.
+- `execution` assembles one request and optional collaborator tools.
+- `runtime` owns provider bridges and the sandboxed runtime facade.
+- `core` defines adapter-neutral contracts and configuration.
+- `context` owns optional memory and documentation retrieval.
+- `observability` records and reads run artifacts and exports traces.
+- `operator-surface` presents local terminal and browser experiences without hosting the agent runtime.
 
 ## Dependency Direction
 
 ```text
-demos/final-agent (not a workspace package)
-  ├─ agent-app ── all of the below; config-first host + mono-agent CLI + configured runtime/responder/memory composition
-  ├─ a2a-adapter ── agent-contracts, @a2a-js/sdk, express
-  ├─ cron-adapter ── agent-contracts, cron-parser
-  ├─ openai-api-adapter ── agent-contracts, express
-  ├─ operator-adapter ── agent-contracts, express
-  ├─ slack-adapter ── agent-contracts, ws
-  ├─ telegram-adapter ── agent-contracts
-  ├─ webhook-adapter ── agent-contracts, express
-  ├─ whatsapp-adapter ── agent-contracts, baileys
-  ├─ agent-harness ── agent-contracts, observability, runtime-adapter (owns context assembly, selected skills, tool policy)
-  ├─ runtime-adapter ── agent-contracts, @mono-agent/agent-runtime, sandbox policy/types
-  ├─ memory (./store, ./search, ./bujo)
-  ├─ docs-mcp ── optional offline semantic documentation companion paired by install-skill
-  ├─ memory-supermemory ── optional plugin, lazily resolved only for backend=supermemory
-  ├─ config ── agent-contracts, runtime-adapter
-  ├─ observability
-  ├─ session-web ── agent-contracts, observability
-  ├─ tui ── config
-  ├─ web ── agent-contracts, config, observability
-  └─ core leaf packages as needed
+Static manifest dependencies (abridged; see PACKAGES.md for every edge)
+
+@mono-agent/agent-app
+  ├─ config + agent-contracts
+  ├─ agent-harness
+  ├─ runtime-adapter ── agent-runtime
+  ├─ memory + observability
+  ├─ built-in channel adapters
+  ├─ operator-adapter
+  └─ tui + web
+
+agent-harness ── agent-contracts + runtime-adapter + observability
+tui / web ── agent-contracts + config + observability
+session-web ── agent-contracts + observability
+
+Runtime-only composition (not manifest dependency edges)
+
+tui / web ── HTTP operator protocol ──> operator-adapter
+session-web ── live SSE + recorded artifacts ──> operator-adapter / observability
+agent-app ── channels.plugins[] ──> a2a-adapter / whatsapp-adapter
+agent-app ── selected memory backend ──> memory-supermemory
+custom host ── request-scoped extension ──> agent-orchestrator
+authoring harness ── explicit MCP companion ──> docs-mcp
 ```
 
 Rules for future packages:
@@ -331,10 +331,12 @@ git diff --check
 For package-level work:
 
 ```bash
-pnpm --filter @mono-agent/<package> run build
-pnpm --filter @mono-agent/<package> run typecheck
-pnpm --filter @mono-agent/<package> run test
+pnpm --filter @mono-agent/agent-runtime run build
+pnpm --filter @mono-agent/agent-runtime run typecheck
+pnpm --filter @mono-agent/agent-runtime run test
 ```
+
+Replace `@mono-agent/agent-runtime` with the package under test.
 
 ## Safety Model
 
@@ -348,6 +350,8 @@ pnpm --filter @mono-agent/<package> run test
 - Fixtures and fake runtimes are for tests only, not product-runtime substitutes.
 
 ## Layered Workflow
+
+**Diagram summary:** The app composes adapter-neutral config, request execution, runtime bridges, optional context and observability, communication adapters, and operator surfaces; arrows show the intended high-level dependency direction.
 
 ```mermaid
 flowchart TB

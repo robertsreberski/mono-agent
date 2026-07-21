@@ -1,10 +1,9 @@
 ---
 title: "Setup security and managed runtime"
+description: "Review guided setup trust boundaries, durable secret handling, readiness proofs, and managed processes."
 sidebar:
-  order: 6
+  order: 7
 ---
-
-# Setup security and managed runtime
 
 This is the canonical reference for the low-level trust boundaries behind guided `mono-agent init`, durable secret setup, and the managed macOS background process. The [README Quickstart](https://github.com/robertsreberski/mono-agent#quickstart-an-agent-folder-from-one-config-file) intentionally keeps only the runnable path; this page records the security and operating-system details that path relies on.
 

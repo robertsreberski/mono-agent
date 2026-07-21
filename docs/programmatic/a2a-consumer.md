@@ -1,10 +1,9 @@
 ---
 title: "A2A consumer"
+description: "Discover remote Agent Cards and invoke A2A agents through the plugin's programmatic consumer APIs."
 sidebar:
   order: 4
 ---
-
-# A2A consumer
 
 This page covers calling a remote [A2A](https://a2a-protocol.org/) agent from your own mono-agent: discovering its Agent Card, sending messages, and wiring a remote agent in as a responder. The settings live under the A2A plugin entry's `config.consumer`, but **invocation is code-only** — there is no channel that auto-dials remote agents for you. For the inbound (provider) side that exposes *your* agent over A2A, see [A2A channel](/channels/a2a/).
 

@@ -1,10 +1,9 @@
 ---
 title: "Deprecations & compatibility decisions"
+description: "Track scheduled removals and intentionally permanent compatibility behavior across mono-agent releases."
 sidebar:
-  order: 7
+  order: 8
 ---
-
-# Deprecations & compatibility decisions
 
 This page is the canonical removal tracker for deprecated mono-agent surfaces.
 Every scheduled removal names the first version where the old spelling stops

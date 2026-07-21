@@ -1,12 +1,11 @@
 ---
 title: "Channels"
+description: "Compare the built-in and plugin channel adapters that receive turns and deliver mono-agent replies."
 sidebar:
   order: 0
 ---
 
-# Channels
-
-Channels are how a mono-agent receives input and delivers replies. Core channels use independent JSON sections in `mono-agent.config.json`; external channel packages are declared under `channels.plugins[]` and return the same `ChannelDriver` shape. Each channel is opt-in via its own `enabled` flag and composed into the running host by `@mono-agent/agent-app`. This page explains the shared lifecycle, how to pick a channel, and links to every per-channel guide. Coverage: **config** unless a feature is noted otherwise.
+Channels are how a mono-agent receives input and delivers replies. Core channels use independent JSON sections in `mono-agent.config.json`; external channel packages are declared under `channels.plugins[]` and return the same `ChannelDriver` shape. Most channels opt in through their own `enabled` flag; the loopback `tui` and `live` operator surfaces default on and can be disabled explicitly. `@mono-agent/agent-app` composes the resolved drivers into the running host. This page explains the shared lifecycle, how to pick a channel, and links to every per-channel guide. Coverage: **config** unless a feature is noted otherwise.
 
 ## Core channels
 
@@ -35,7 +34,7 @@ Most channels default to **off**. The deliberate exceptions are the operator sur
 
 | State | Meaning |
 | --- | --- |
-| `disabled` | `enabled` is false (or unset). The channel is inert. |
+| `disabled` | The resolved `enabled` value is false. Omission resolves false for most channels, but `tui` and `live` default true and require an explicit false to reach this state. |
 | `waiting_for_config` | `enabled: true` but a required setting is missing — the line names the exact missing field. |
 | `running` | Ready and listening; the line includes endpoint facts (host/port/path, or the bot it connected as). |
 | `degraded` | Was running but the live transport connection dropped on a transient failure (e.g. a Telegram poll crash on a network switch, or a Slack Socket Mode disconnect); the responder/harness is kept alive and the adapter is reconnecting, so the channel keeps serving. Rendered `degraded: <reason>` with a warning badge. Non-fatal and self-recovering — it returns to `running` automatically once the transport stays up, unlike `failed`. |
@@ -53,12 +52,12 @@ Most channels default to **off**. The deliberate exceptions are the operator sur
 Put `MONO_AGENT_TELEGRAM_BOT_TOKEN=...` in the agent's `.env`; source-config examples omit credentials even though inline fields remain accepted for compatibility.
 
 :::tip
-Run `mono-agent validate` for a per-section report before starting, and `mono-agent status` to read the live state. Config is JSON-first — edit `mono-agent.config.json` (agents can edit it too) and `mono-agent restart` to apply; there is no live re-apply.
+Run `mono-agent validate` for a per-section report before starting, and `mono-agent status` to read the live state. Config is JSON-first. The CLI does not watch `mono-agent.config.json`, so run `mono-agent restart` after an edit. An embedded app can instead call `app.applyConfigChange(reason)` explicitly; adding or removing a plugin package still requires a restart because the driver set is resolved at startup.
 :::
 
 ## Environment variables
 
-Every field can also be set with a `MONO_AGENT_<CHANNEL>_*` environment variable, which is convenient for secrets you do not want in the JSON file. A `.env` in the agent folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. Per-channel env var names are listed in each channel's guide. See [Environment variables](/config/env-vars/) for the full mapping.
+Fields with a documented mapping can also be set with a `MONO_AGENT_<CHANNEL>_*` environment variable, which is especially useful for secrets you do not want in the JSON file. Some fields are JSON-only. A `.env` in the agent folder is loaded automatically (exported shell variables win); use `--env-file <path>` for an alternate file. Per-channel env var names are listed in each channel's guide. See [Environment variables](/config/env-vars/) for the complete mapping.
 
 ```bash
 export MONO_AGENT_TELEGRAM_ENABLED=true
@@ -74,6 +73,7 @@ Pick by who or what is on the other end:
 | A human chatting interactively | [Telegram](/channels/telegram/), [Slack](/channels/slack/), or [WhatsApp](/channels/whatsapp/) | Conversational adapters with allowlists, working indicators, and final-answer delivery; WhatsApp is loaded as an external plugin |
 | Programmatic / pipeline invocation | [Webhook](/channels/webhook/) or [A2A](/channels/a2a/) | Webhook for plain HTTP POST (sync or async polling); A2A for agent-to-agent calls with Agent Card discovery and is loaded as an external plugin |
 | A chat UI (e.g. Open WebUI) | [OpenAI-compatible API](/channels/openai-api/) | Exposes `/v1/models` + `/v1/chat/completions` with token-by-token SSE streaming |
+| A first-party operator console | [Terminal console](/observability/tui/) or [web console](/observability/web-console/) | Connects through the loopback operator endpoint while keeping transport details out of user-facing chat |
 | Scheduled / unattended runs | [Cron](/channels/cron/) | Timezone-aware five-field jobs that invoke the responder on a schedule |
 
 You can enable any combination — for example Telegram for your own use plus a webhook for automation and cron for a daily digest.

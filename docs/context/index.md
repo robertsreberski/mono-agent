@@ -1,10 +1,9 @@
 ---
 title: "Context & Skills"
+description: "Configure identity, soul, conversation history, and explicitly selected skills for every agent turn."
 sidebar:
   order: 0
 ---
-
-# Context & Skills
 
 This section covers how mono-agent assembles the prompt for every turn: a required **identity** document, an optional **soul** document, the running **conversation history**, and any explicitly **selected skills**. All of it is declared in the `context` block of `mono-agent.config.json` and is coverage type **config** (with a few `auto` and `code` escape hatches noted below).
 
@@ -35,7 +34,8 @@ Identity is the only required piece of `context` — `context.identityPath` is t
     "soulPath": "./SOUL.md",
     "skillsRoot": "./skills",
     "selectedSkills": ["research"],
-    "skillMaxBytes": 48000
+    "skillMaxBytes": 48000,
+    "skillDisclosure": "index"
   }
 }
 ```
@@ -49,6 +49,7 @@ Every field has a matching `MONO_AGENT_*` env var that overrides the JSON (env >
 | `context.skillsRoot` | `MONO_AGENT_SKILLS_ROOT` | `./skills` |
 | `context.selectedSkills` | `MONO_AGENT_SELECTED_SKILLS` | none selected |
 | `context.skillMaxBytes` | `MONO_AGENT_SKILL_MAX_BYTES` | `48000` |
+| `context.skillDisclosure` | `MONO_AGENT_SKILL_DISCLOSURE` | `full` |
 
 Paths are resolved relative to the agent folder. `mono-agent init` scaffolds an `IDENTITY.md` for you; see [Folder Layout](/config/folder-layout/).
 

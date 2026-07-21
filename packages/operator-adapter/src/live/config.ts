@@ -36,9 +36,9 @@ export interface LoadLiveAdapterConfigInput {
 /**
  * Like the TUI endpoint (and unlike every chat channel, default OFF), the live
  * event relay is ON by default: it is a read-only operator surface, binds
- * loopback-only on an ephemeral port, and needs no credentials — so
- * `mono-agent web` can observe any running agent without a per-agent config edit.
- * Set `"live": { "enabled": false }` to opt out.
+ * loopback-only on an ephemeral port, and needs no credentials — so read-only
+ * consumers such as `@mono-agent/session-web` can observe any running agent
+ * without a per-agent config edit. Set `"live": { "enabled": false }` to opt out.
  */
 const DEFAULT_ENABLED = true;
 
@@ -83,8 +83,9 @@ export function redactLiveAdapterConfig(config: LiveAdapterConfig): RedactedLive
 /**
  * The `live` section's field registry: the single source of truth for JSON→env
  * layering and the app's config provenance view. The `live.apiKey` id doubles as
- * a cross-package contract — `mono-agent web` resolves a running agent's key by
- * reading this field from the agent's config file (the registry carries no secrets).
+ * a cross-package contract — `@mono-agent/session-web` resolves a running
+ * agent's key by reading this field from the agent's config file (the registry
+ * carries no secrets).
  */
 export const LIVE_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "live.enabled", env: "MONO_AGENT_LIVE_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },

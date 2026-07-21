@@ -1,5 +1,7 @@
 # mono-agent v1-freeze audit — 2026-07-15
 
+> **Historical snapshot:** This audit records the repository and live instances as they existed on 2026-07-15. Its package counts, grades, blockers, and operational state are evidence for that review, not current framework documentation. Use the root [README](../README.md), [package directory](../PACKAGES.md), and [published documentation](https://mono-agent-docs.vercel.app/) for the current system.
+
 **Verdict: CONDITIONALLY FREEZE-READY.** The premise is delivered and the code is genuinely mature — 141 adversarially-verified findings across 126k LOC and two live deployments produced **zero correctness catastrophes and exactly two freeze blockers**, neither of them code: a license-coherence decision (AUD-001) and the never-restarted 7-day fleet-green window (AUD-002). Land those two, sweep the 59-item pre-freeze hygiene bucket, close epic #119, tag v1, freeze with confidence.
 
 Audited at **v0.11.2, HEAD `5f27a0ec`**. Process: 24 Sonnet auditors → 10 Opus adversarial verifiers (every cited line re-opened, every dead-code claim grep-proven, freeze-blockers two-key confirmed) → coverage-critic attestation (**PASS, 100% of territories**) → this synthesis. Method details: [00-methodology.md](00-methodology.md).

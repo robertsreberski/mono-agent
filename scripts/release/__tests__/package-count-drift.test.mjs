@@ -50,57 +50,21 @@ const releaseLockstepPackageCountReferences = [
 const guardedPackageCountReferences = [
   ...releaseLockstepPackageCountReferences,
   {
-    filePath: "website/README.md",
-    description: "the isolated app architecture note (core count)",
-    pattern: /stays at (?<count>\d+) core packages/u,
-    tier: "core",
-  },
-  {
-    filePath: "website/README.md",
-    description: "the isolated app architecture note (plugin-tier count)",
-    pattern: /plus (?<count>\d+) plugin-tier extras/u,
-    tier: "plugin",
-  },
-  {
-    filePath: "website/README.md",
-    description: "the isolated app architecture note (unscoped alias count)",
-    pattern: /plus (?<count>\d+) unscoped alias/u,
-    tier: "alias",
-  },
-  {
     filePath: "PACKAGES.md",
-    description: "the catalog count prose (core count)",
-    pattern: /(?<count>\d+) core publishable packages/u,
+    description: "the generated catalog summary (core count)",
+    pattern: /Current catalog: (?<count>\d+) core-tier packages/u,
     tier: "core",
   },
   {
     filePath: "PACKAGES.md",
-    description: "the catalog count prose (plugin-tier count)",
-    pattern: /plus (?<count>\d+) plugin-tier extras/u,
+    description: "the generated catalog summary (plugin-tier count)",
+    pattern: /core-tier packages, (?<count>\d+) plugin-tier extras/u,
     tier: "plugin",
   },
   {
     filePath: "PACKAGES.md",
-    description: "the catalog count prose (unscoped alias count)",
-    pattern: /plus (?<count>\d+) unscoped alias/u,
-    tier: "alias",
-  },
-  {
-    filePath: "README.md",
-    description: "the package architecture catalog count (core count)",
-    pattern: /(?<count>\d+) core publishable packages/u,
-    tier: "core",
-  },
-  {
-    filePath: "README.md",
-    description: "the package architecture catalog count (plugin-tier count)",
-    pattern: /plus (?<count>\d+) plugin-tier extras/u,
-    tier: "plugin",
-  },
-  {
-    filePath: "README.md",
-    description: "the package architecture catalog count (unscoped alias count)",
-    pattern: /plus (?<count>\d+) unscoped alias/u,
+    description: "the generated catalog summary (unscoped alias count)",
+    pattern: /plugin-tier extras, and (?<count>\d+) unscoped alias/u,
     tier: "alias",
   },
 ];

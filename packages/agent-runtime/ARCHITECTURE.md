@@ -24,6 +24,11 @@ a plain-data/plain-function seam the host wires up, not an import.
 
 ## Package Boundary
 
+**Diagram summary:** A host constructs `createRuntime()` or `createRouterRuntime()`.
+The runtime selects one of five provider bridges while sharing observability,
+failure normalization, and capability-specific agent-kernel services. It returns
+a provider-neutral result for the host to interpret.
+
 ```mermaid
 flowchart TB
   HostApp["Host app<br/>API / coordinator / worker / UI / DB"] --> CoreAI["host runtime composition"]
@@ -39,6 +44,7 @@ flowchart TB
   Registry --> ClaudeCLI["Claude Code CLI bridge"]
   Registry --> PiSDK["Pi SDK bridge<br/>OpenAI, Codex, Gemini, OpenRouter,<br/>Ollama, custom providers"]
   Registry --> CodexApp["Codex app-server CLI bridge"]
+  Registry --> OpenCodeApp["OpenCode app-server CLI bridge"]
 
   AgentKernel --> Builtins["Read / Write / Edit / Glob / Grep / Bash<br/>NodeRepl / WebFetch / WebSearch"]
   AgentKernel --> MCP["MCP stdio / SSE / HTTP tools"]
@@ -49,6 +55,7 @@ flowchart TB
   ClaudeCLI --> Providers
   PiSDK --> Providers
   CodexApp --> Providers
+  OpenCodeApp --> Providers
 
   Runtime --> Result["RuntimeResult<br/>text, structuredResult, events,<br/>usage, diagnostics, failureKind"]
   Result --> CoreAI
@@ -61,16 +68,24 @@ and pre-resolved settings into the runtime instead.
 
 ## Runtime Selection
 
+**Diagram summary:** Hosts may use `parseRuntimeModelReference()` to turn a
+canonical string into the object required by `run()`. The static registry then
+matches that object plus execution mode and lazily imports Claude SDK, Claude
+Code CLI, Pi SDK, Codex app-server, or OpenCode app-server code. Capability
+descriptors are available without loading those provider implementations.
+
 ```mermaid
 flowchart LR
-  ModelRef["options.model<br/>claude:* / pi:*:* / codex:*"] --> Parse["parseRuntimeModelReference()"]
-  Parse --> Mode["options.executionMode<br/>sdk or cli"]
+  AuthoredRef["authored model string"] --> Parse["parseRuntimeModelReference()"]
+  Parse --> ModelRef["options.model<br/>parsed RuntimeModelRef"]
+  ModelRef --> Mode["options.executionMode<br/>sdk or cli"]
   Mode --> Resolve["resolveRuntimeBridge()"]
 
   Resolve -->|sdk=claude + sdk mode| ClaudeSDK["claude bridge<br/>@anthropic-ai/claude-agent-sdk"]
   Resolve -->|sdk=claude + cli mode| ClaudeCLI["claude-code bridge<br/>claude binary"]
   Resolve -->|sdk=pi| PiSDK["pi bridge<br/>@earendil-works/pi-agent-core"]
   Resolve -->|sdk=codex + cli mode| CodexApp["codex-app bridge<br/>codex app-server"]
+  Resolve -->|sdk=opencode + cli mode| OpenCodeApp["opencode-app bridge<br/>isolated OpenCode server"]
 
   Resolve --> Caps["runtimeCapabilities()<br/>static backend features"]
   Caps --> Used["capabilitiesUsed<br/>per-call observed features"]
@@ -82,12 +97,21 @@ Canonical active model references are:
   `executionMode`
 - `pi:<providerId>:<modelName>` for Pi SDK providers
 - `codex:<modelId>` for Codex app-server CLI
+- `opencode:<providerId>:<modelName>` for the isolated OpenCode app-server CLI
+
+`createRuntime().run()` expects this already-parsed object; it does not parse a
+string implicitly.
 
 Legacy aliases are canonicalized at host ingress when needed. The strict parser
 keeps the package boundary honest by rejecting reserved runtime IDs such as
 `openai:*`, `vercel:*`, and `claude-code:*`.
 
 ## Run Lifecycle
+
+**Diagram summary:** The host calls `run()`, the runtime lazily loads one bridge,
+and that bridge talks to its SDK or subprocess. Supported tool calls pass through
+the shared kernel, provider events are normalized, and the host receives a result
+that it must validate for its domain.
 
 ```mermaid
 sequenceDiagram
@@ -105,15 +129,19 @@ sequenceDiagram
   Runtime->>Observer: create hub from host + call observers
   Runtime->>Bridge: execute(systemPrompt, normalized options)
 
-  Bridge->>Kernel: prepare tools, MCP, approvals, limits
-  Kernel-->>Bridge: provider-specific tool surface
+  opt bridge supports managed or MCP tool dispatch
+    Bridge->>Kernel: prepare tools, MCP, approvals, limits
+    Kernel-->>Bridge: provider-specific tool surface
+  end
   Bridge->>Provider: send prompt, messages, tools, schema, settings
 
   loop streaming events
     Provider-->>Bridge: assistant/tool/result/provider events
     Bridge->>Observer: normalized runtime events
-    Bridge->>Kernel: execute built-in/MCP tools as needed
-    Kernel-->>Bridge: tool results or tool errors
+    opt provider requests host-dispatched tools
+      Bridge->>Kernel: execute built-in/MCP tools
+      Kernel-->>Bridge: tool results or tool errors
+    end
   end
 
   Bridge-->>Runtime: RuntimeResult
@@ -122,11 +150,19 @@ sequenceDiagram
   Host->>Host: validate/parse host-specific contract
 ```
 
-The package forwards provider structured output as `structuredResult`, but it
-does not validate that output against a host domain schema. Hosts own that
-validation and any state-machine side effects.
+Claude SDK, Claude CLI, and Pi SDK can return provider-captured output as
+`structuredResult`. Codex app-server receives the schema but returns its output
+as text for the host to parse; direct OpenCode rejects the option. The package
+does not validate any captured output against a host domain schema. Hosts own
+that validation and all state-machine side effects.
 
 ## Main Subsystems
+
+**Diagram summary:** The public barrels lead to the runtime factory, fallback
+router, AI registry, and agent-kernel helpers. The registry owns five lazy
+provider loaders. Shared agent modules own tools, context, approvals,
+compaction, transcript snapshots, and result-size guards; shared AI modules own
+failure, cost, observation, and capability metadata.
 
 ```mermaid
 flowchart TB
@@ -142,6 +178,7 @@ flowchart TB
   Providers --> ClaudeCode["claude-cli.js"]
   Providers --> Pi["pi-native.js<br/>pi-models/messages/events"]
   Providers --> Codex["codex-app.js"]
+  Providers --> OpenCode["opencode-app.js<br/>opencode-server.js"]
 
   AgentExports --> Tools["agent/tools/*"]
   Tools --> ToolContext["shared/tool-context.js<br/>per-instance ToolContext<br/>workspace, repoRoot, rg, sandbox, brand"]
@@ -164,8 +201,9 @@ Key responsibilities by subsystem:
 - `runtime.js`: binds host callbacks once, builds a per-instance `ToolContext`
   (`agent/tools/shared/tool-context.js`) threaded to every bridge call via
   `options.toolContext`, and routes each call to the resolved bridge.
-- `ai/runtime/registry.js`: maps model reference plus execution mode to one of
-  the built-in provider bridges.
+- `ai/runtime/registry.js`: keeps the five static bridge descriptors, exposes
+  their metadata for introspection, and lazily imports the one whose model
+  reference plus execution mode matches a run.
 - `ai/runtime/router.js`: retries across an ordered fallback chain on retryable
   provider failures, carrying a transcript-tail resume snapshot forward.
 - `ai/providers/*`: owns provider-specific request shapes, event conversion,
@@ -198,6 +236,11 @@ Key responsibilities by subsystem:
   retryability decisions into stable failure kinds.
 
 ## Host Responsibilities
+
+**Diagram summary:** The host injects pricing, Pi credentials, artifact and
+compaction persistence, tool-approval decisions, runtime branding, and allowed
+filesystem roots. The runtime returns raw normalized data; the host owns domain
+validation, durable state, and UI effects.
 
 ```mermaid
 flowchart LR
@@ -265,22 +308,21 @@ compaction fired), `false` (enabled but not needed), or `null` (disabled via
 
 | Provider | Warm session | Resume across turns | Survives process restart |
 |---|---|---|---|
-| **pi** | Yes (pi `AgentHarness` + JSONL session repo) | session repo | **Yes** (only one) |
+| **pi** | Yes (pi `AgentHarness` + JSONL session repo) | session repo | Yes only with `piSessionsRoot` and the durable history/session transaction contract |
 | **claude-sdk** | No persistent process (stream closes at turn end) | `queryOptions.resume` | No (Anthropic-side id) |
 | **claude-cli** | No — respawns `claude --resume` per turn (re-inits MCP) | `--resume` replay | No |
 | **codex-app** | Live subprocess thread (dies with the subprocess) | next turn on the thread, else replay | No |
+| **opencode-app** | No — every run uses an isolated server and private database | Unsupported | No |
 
-claude-cli and codex only *approximate* a warm session (resume/replay), so do
-not assume warm-session latency wins there. Recall (memory embeddings) is bounded
-by a timeout + circuit breaker and degrades to empty (with a `memory_degraded`
-warning) rather than blocking or failing a turn; selected skills are mtime-cached
-across turns.
+Claude CLI and Codex only *approximate* a warm session (resume/replay), so do
+not assume warm-session latency wins there. Direct OpenCode is intentionally
+stateless across runs.
 
 ## Essential Takeaway
 
 Think of `@mono-agent/agent-runtime` as the portable agent process engine
 underneath a host app. The host decides what a task means, which agent should
 run, how state changes, and how results are persisted. The runtime decides how
-to talk to Claude, Pi, and Codex execution surfaces; how tools are exposed; how
-provider failures are normalized; and how enough telemetry is returned for a
-host to make reliable orchestration decisions.
+to talk to Claude, Pi, Codex, and OpenCode execution surfaces; how tools are
+exposed; how provider failures are normalized; and how enough telemetry is
+returned for a host to make reliable orchestration decisions.

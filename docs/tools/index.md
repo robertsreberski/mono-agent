@@ -1,10 +1,9 @@
 ---
 title: "Tools, MCP & Sandbox"
+description: "Configure tool policy, MCP servers, durable continuations, documentation lookup, and runtime sandboxing."
 sidebar:
   order: 0
 ---
-
-# Tools, MCP & Sandbox
 
 This section covers how an agent's tool surface is controlled in mono-agent: the **tool policy** (`@mono-agent/agent-harness`) that allow/deny-lists built-in and adapter tools, the **MCP servers** you attach to extend that surface, and the **native sandbox** (`@mono-agent/runtime-adapter`) that confines what tools like `Bash`, `NodeRepl`, `Write`, and `Edit` may touch on disk and over the network.
 

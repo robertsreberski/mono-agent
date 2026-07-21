@@ -265,7 +265,7 @@ describe("mono-agent-composer reference parity", () => {
         "delivery reference",
       ],
       [
-        between(interactivePlaybook, "# Interactive Agent", "## Who this is for"),
+        between(interactivePlaybook, "This playbook shows", "## Who this is for"),
         "interactive playbook introduction",
       ],
     ] as const;

@@ -1,5 +1,6 @@
 ---
 title: "Sessions, concurrency & Pi-native tuning"
+description: "Distinguish session boundaries, configure queueing and concurrency, and manage durable Pi transcripts."
 sidebar:
   order: 5
 ---
@@ -8,7 +9,7 @@ This page covers how the runtime keeps provider sessions warm per conversation, 
 
 ## The five "session" meanings
 
-Mono-agent uses "session" for four related but different boundaries:
+Mono-agent uses "session" for five related but different boundaries:
 
 | Meaning | What owns it | What it controls | What resets it |
 | --- | --- | --- | --- |

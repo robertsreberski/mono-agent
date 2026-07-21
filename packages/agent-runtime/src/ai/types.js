@@ -133,7 +133,7 @@
  * @property {string} [providerSessionId]                 Provider-owned resume id for resumable bridges.
  * @property {boolean} [sessionKeepAlive]                 Keep resumable provider state alive after the turn.
  * @property {number} [sessionIdleTimeoutMs]              Idle TTL for resumable provider state.
- * @property {boolean} [liveInput]                        Whether this run expects a live/streaming input channel.
+ * @property {AsyncIterable<{body: string, id?: string}>} [liveInput] Stream of in-flight user messages for steering an active run.
  * @property {ReadonlyArray<*>} [observers]               Per-call observers (see RuntimeObserver) merged with host-level (createRuntime) observers.
  * @property {(event: RuntimeEvent) => void} [onEvent]
  * @property {ReadonlyArray<Object>} [messages]

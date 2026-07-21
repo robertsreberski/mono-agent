@@ -1,10 +1,9 @@
 ---
 title: "Glossary"
+description: "Look up the framework, configuration, runtime, channel, memory, and observability terms used in these docs."
 sidebar:
-  order: 2
+  order: 3
 ---
-
-# Glossary
 
 Definitions of the core terms used throughout the mono-agent docs and config. Each entry is one to three sentences; most link to the page that covers the concept in depth. Where a term maps to a config key, the exact key and `MONO_AGENT_*` env var are shown.
 

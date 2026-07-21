@@ -1,10 +1,9 @@
 ---
 title: "Personal Telegram Assistant with BuJo Memory"
+description: "Build a private Telegram assistant backed by file-based bullet-journal memory."
 sidebar:
   order: 1
 ---
-
-# Personal Telegram Assistant with BuJo Memory
 
 This playbook wires a private Telegram bot to mono-agent's BuJo tiered memory so it captures every conversation turn, consolidates the store automatically, and recalls past notes semantically. It is a complete config-first recipe: pull the local models, init, fill in the Telegram and memory sections, validate, and start.
 

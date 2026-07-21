@@ -1,12 +1,13 @@
 ---
 title: "Phoenix export & backfill"
+description: "Configure metadata-first Phoenix OTLP export, understand span mapping and privacy controls, and backfill already-recorded runs."
 sidebar:
   order: 2
 ---
 
 This page covers the Phoenix OTLP exporter — an additive, best-effort export of every run lifecycle to [Arize Phoenix](https://phoenix.arize.com/) as semantic OpenInference spans — and the `mono-agent backfill` command that retroactively exports already-recorded run artifacts. Both reuse the same OTLP mapping, so live traces and backfilled traces are identical in Phoenix.
 
-Phoenix export never changes a run's outcome and never suppresses the local JSONL artifacts. Those artifacts become the completed-run record only after terminal persistence: `start()` independently replaces an empty events file and a `running` summary, later events stay buffered in RAM after key-based redaction and a 4,096-byte default cap per string, and terminal `finish()`/`fail()` independently replaces that bounded events snapshot first and the summary second. A crash before that terminal boundary can lose buffered events, while stale reconciliation can report only persisted data. See [Artifacts & traces](/observability/artifacts-and-traces/) for the complete write-boundary contract that exporter and backfill readers follow.
+Phoenix export never changes a run's outcome and never suppresses the local JSONL artifacts. The key-based local recorder replaces an empty events file and a `running` summary at `start()`, then schedules best-effort `running` checkpoints after 25 new events or five seconds from the first uncheckpointed event. Event strings use a 4,096-byte default cap. Terminal `finish()`/`fail()` queues behind scheduled checkpoints and separately replaces the complete bounded events snapshot first and the summary second. A crash can retain the last successful prefix while losing an unscheduled or failed-write tail; stale reconciliation and backfill can report only persisted data. See [Artifacts & traces](/observability/artifacts-and-traces/) for the complete write-boundary contract that exporter and backfill readers follow.
 
 ## What the exporter does
 
@@ -137,5 +138,5 @@ Because per-run span ids are deterministic, re-running `backfill` over the same 
 
 - [Phoenix-observed agent](/playbooks/phoenix-observed-agent/) — end-to-end playbook: stand up Phoenix, configure the exporter, and read the resulting traces.
 - [Backfill historical runs](/playbooks/backfill-historical-runs/) — playbook for retroactively exporting recorded artifacts.
-- [Artifacts & traces](/observability/artifacts-and-traces/) — the terminally persisted JSONL run record and trace registry the exporter reads from, including the start snapshot, RAM-buffering, independent terminal-replacement, and crash-loss boundaries.
+- [Artifacts & traces](/observability/artifacts-and-traces/) — the checkpointed JSONL run prefix and trace registry the exporter reads from, including start, incremental, terminal, and crash-loss boundaries.
 - [CLI reference](/observability/cli-reference/) — `validate`, `start`, `status`, and `backfill`.

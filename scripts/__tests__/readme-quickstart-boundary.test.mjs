@@ -34,7 +34,8 @@ describe("root README Quickstart boundary", () => {
       "mono-agent init",
       "mono-agent validate",
       "mono-agent start",
-      "curl -s http://127.0.0.1:<PORT>/webhook/invoke",
+      "PORT=3000",
+      'curl -s "http://127.0.0.1:${PORT}/webhook/invoke"',
     ];
 
     let cursor = -1;

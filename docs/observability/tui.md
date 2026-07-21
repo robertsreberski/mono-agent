@@ -1,10 +1,9 @@
 ---
 title: "Terminal UI (mono-agent tui)"
+description: "Use the terminal console for structured live chat, recorded-run replay, config inspection, and host-approved self-configuration."
 sidebar:
   order: 4
 ---
-
-# Terminal UI (mono-agent tui)
 
 `mono-agent tui` is the operator console: a live chat with structured insight into the agent's thinking process — streamed reasoning, tool calls with arguments/progress/results/timing, token usage, cost, provider lifecycle and failover — plus a recorded-run replay browser and a read-only, source-annotated view of the resolved config. It normally connects to the authoritative running agent; `--local` remains an ordinary in-process chat escape hatch, never a configuration host. It ships in `@mono-agent/tui`, built on pi-tui differential rendering. Coverage: `cli` (+ the `tui` config section for remote endpoints).
 
@@ -65,7 +64,22 @@ Remote event frames are capped at 256 KiB after UTF-8 NDJSON serialization, incl
 | `enter` | Submit message · open selection. |
 | `ctrl+c` twice | Quit. |
 
-The input editor autocompletes slash commands: `/help`, `/agents`, `/replay`, `/config`, `/configure`, `/cancel`, `/thinking`, `/quit`. In a configured console, `/configure` reports that SELF-CONFIG is already active; it does not restart the guide. `/quit` closes the console; it does not stop the background agent.
+The input editor autocompletes slash commands:
+
+- `/model [ref|default]` applies or clears a session-scoped model override. Bare
+  `/model` opens the agent's advertised model list. A different model starts
+  each turn with a fresh provider session.
+- `/effort [level|default]` applies or clears a session-scoped effort override.
+  Bare `/effort` opens options supported by the effective model.
+- `/new [label]` inserts a visual break in the transcript. It does not change
+  the conversation id or clear durable agent history.
+- `/exit` is an alias of `/quit`: both close only this console and leave the
+  background agent running.
+- `/help`, `/agents`, `/replay`, `/config`, `/configure`, `/cancel`, and
+  `/thinking` expose the remaining navigation and turn controls.
+
+In a configured console, `/configure` reports that SELF-CONFIG is already
+active; it does not restart the guide.
 
 ## Managed conversational configuration
 
@@ -74,6 +88,13 @@ The input editor autocompletes slash commands: `/help`, `/agents`, `/replay`, `/
 > Dedicated self-configuration session: map the agent's identity/knowledge, runtime/models, skills/tools/MCP/plugins, memory, channels/APIs/A2A, automation, security, observability/operations, and acceptance criteria. Build the chosen workflow by conversation. Do not enter secrets. Nothing changes until the host shows a separate approval. Approval, rejection, done, and no changes keep SELF-CONFIG active. Only /quit, /exit, or ctrl+c twice exits this session; the background agent keeps running.
 
 The configuration conversation id stays stable for the life of the console, including across verified restarts. A proposal-free turn, `done`, or `no changes` reports that no files changed and rearms SELF-CONFIG with a fresh opaque proposal capability. Rejection reports **Proposal rejected; no files changed. Self-configuration remains active.** Every non-command message stays configuration-marked. `/quit` closes only the console, while the background process and its channels continue running.
+
+The ownership boundary is intentionally narrow: `@mono-agent/tui` renders the
+marked conversation, review card, and controller state, but
+`@mono-agent/agent-app` supplies that controller and owns attestation,
+validation, approval consequences, atomic writes, restart/readiness, and
+rollback. The terminal package cannot grant those powers to an embedded
+responder or an ordinary `--local` session.
 
 Before granting configuration authority, the host matches the registry record to one live launchd PID, the exact config/dotenv/Identity/Soul/MCP-authority/operational-environment snapshot, and a reachable TUI endpoint. The request-scoped `ProposeAgentConfiguration` tool exists only in that marked conversation. The background responder replaces ordinary action tools and configured MCP servers with `ReadSkill`, `MemoryRecall`, and the inert proposal server. Pure direct-Codex chains use native read-only plan mode; mixed chains retain the finite proposal surface so an incompatible route cannot widen it. Direct OpenCode cannot receive this MCP capability: a direct-OpenCode primary uses a configured proposal-capable fallback, while a direct-OpenCode fallback makes the mode refuse with remediation. The proposal records one RFC 6902 config patch and optional replacement for the `## Role` body in the identity file resolved from `context.identityPath`; the model cannot write files. The host accepts only public name, effort/turn/session UX, selected project skills/disclosure, memory size/MemoryRecall enablement, and semantic tool-policy tightening. It rejects stale, secret-bearing, environment-shadowed (including JSON Patch source paths), path-bearing, authority/network/provider, unknown-field, terminal-control, and bidi-control candidates before validation and a separate approve/reject card. Long Role bodies are paged while the decision controls remain visible. Memory tiers/capture, secrets, runtime/model/provider posture, external MCP/plugins, channels or proactive jobs, exporters/endpoints, and sandbox/network policy are handed to explicit guided flows.
 

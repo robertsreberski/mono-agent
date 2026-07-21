@@ -1,10 +1,9 @@
 ---
 title: "MCP servers"
+description: "Attach external Model Context Protocol servers and understand their configuration and policy boundary."
 sidebar:
   order: 2
 ---
-
-# MCP servers
 
 This page covers how mono-agent attaches [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers to your agent through `tools.mcpConfigPath`, how the path is resolved and forwarded to the runtime, and the one rule that surprises people: **external MCP-server tools are not gated by `tools.allowedTools`**. App-owned MCP tools can define a narrower policy boundary; `RunHistory` and the adapter send tools do. Coverage type: `config`.
 

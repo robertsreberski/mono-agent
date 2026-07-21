@@ -1,10 +1,9 @@
 ---
 title: "Sandboxed Code Agent (Loopback Only, Deny .env)"
+description: "Constrain a local code agent to loopback networking and protect dotenv secrets from writes."
 sidebar:
   order: 9
 ---
-
-# Sandboxed Code Agent (Loopback Only, Deny .env)
 
 This playbook builds a code-reading assistant that can run `Bash` and `NodeRepl` inside the native `srt` sandbox with loopback-only network access and protected secrets, while recalling prior context from local journal memory. Every capability here is `config`-driven — no code required.
 

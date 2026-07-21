@@ -123,7 +123,7 @@ export const RESERVED_RUNTIME_KINDS = [...RESERVED_RUNTIME_IDS];
 //   sdk='claude'   → CLI (claude binary) or SDK (Anthropic)
 //   sdk='codex'    → CLI only (codex app-server)
 //   sdk='opencode' → CLI only (opencode server via @opencode-ai/sdk)
-//   sdk='pi'       → SDK only (pi-sdk handles openai-codex and other providers)
+//   sdk='pi'       → SDK only (the pi-native bridge handles openai-codex and other providers)
 
 // Returns null when the combo is fine; otherwise a short reason string the
 // UI / API can show.

@@ -1,10 +1,9 @@
 ---
 title: "Delivery, streaming & send tools"
+description: "Compare per-channel delivery semantics and configure app-owned send tools and proactive notifications."
 sidebar:
   order: 8
 ---
-
-# Delivery, streaming & send tools
 
 This page explains how mono-agent delivers answers across channels (final-only vs. token streaming), which delivery and message-text knobs are config vs. code-only, how the app-owned MCP send tools (`SlackSendMessage`, `TelegramSendMessage`) let the agent push messages back through an already-configured chat adapter, and how native proactive delivery works for cron/webhook turns.
 
@@ -16,11 +15,14 @@ Each channel decides how a turn's output reaches the user. The two chat adapters
 |---|---|---|---|
 | Telegram | Final answer only (`stream.finalOnly: true`) | "typing…" chat action, then one transient tool-activity message when tools run | `code` |
 | Slack | Final answer only (`stream.finalOnly: true`) | 👀/assistant status, then one transient tool-activity message when tools run | `code` |
-| OpenAI-compatible (`/v1/chat/completions`) | Token-by-token SSE streaming | n/a (SSE deltas) | `config` |
+| OpenAI-compatible (`/v1/chat/completions`) | One JSON completion by default; token SSE when the request sets `stream: true` | n/a | `config` |
 
 Telegram and Slack default to delivering **only the final answer** — answer tokens are not streamed into the chat. An inbound turn starts with the channel's lightweight working indicator. If the agent starts a tool, one temporary message exposes a cumulative, user-safe activity ledger such as `🌐 Browsing https://example.com` or `🖥️ Running pnpm test`. Later tool starts edit that same message. At completion, both adapters post the answer as a fresh message and then best-effort delete the ledger. Reasoning and answer deltas never overwrite the ledger while work is in progress. This is built-in adapter behavior, not a JSON field you set in `mono-agent.config.json`.
 
-The OpenAI-compatible endpoint always streams token-by-token (SSE), which is what clients like Open WebUI expect. See [OpenAI-compatible endpoint](/channels/openai-api/).
+The OpenAI-compatible endpoint follows each request's `stream` field. `true`
+returns token-by-token SSE deltas and `[DONE]`; `false` or omission waits for one
+JSON completion. Clients such as Open WebUI can select the streaming form. See
+[OpenAI-compatible endpoint](/channels/openai-api/).
 
 ### Transient tool activity
 
@@ -64,13 +66,13 @@ mono-agent derives MCP **send tools** from already-enabled chat adapters so the 
 - `SlackSendMessage` — send through the configured Slack adapter
 - `TelegramSendMessage` — send through the configured Telegram adapter, optionally with non-blocking `reply_options`
 - `TelegramSendFile` — upload and send a file (`kind:"document"`) or an inline image (`kind:"photo"`) through the Telegram adapter
-- `AskUser` — ask one to five structured questions on the active interaction destination and **block until the user answers** (channel-agnostic; see below)
+- `AskUser` — ask one to five structured questions on the active interaction destination and **block until the user answers** (one tool across web, Slack, and Telegram; see below)
 
 Coverage: `config`. Three conditions must hold for a send tool to work:
 
 1. The tool must be **permitted by the policy**. Under allow-all (the default) that is automatic once the channel is enabled — no allowlist entry needed. On runtimes that enforce specific lists, include the exact name or deny it normally. Direct `codex:*` rejects all restrictive normal-run policies before start; it never silently widens them.
 2. The corresponding adapter must have **valid config** — `slack.*` for `SlackSendMessage`, `telegram.*` for the Telegram tools — which supplies the credentials and the destination bounds.
-3. With `sandbox.mode: "native"`, the sandbox network policy must admit the tool's HTTP endpoint: `slack.com`, `api.telegram.org` (or the configured Telegram `apiRoot` host), and the configured loopback interaction-bridge host used by send-history recording and `AskUser`. `mono-agent validate` names any missing host.
+3. With `sandbox.mode: "native"`, the sandbox network policy must admit the tool's HTTP endpoint: `slack.com`, `api.telegram.org` (or the configured Telegram `apiRoot` host), and the configured interaction-bridge host used by send-history recording and `AskUser`. `mono-agent validate` names any missing host.
 
 ### Telegram interactive send tools
 
@@ -157,11 +159,16 @@ optional `message` (long context or a draft) plus `questions`: one to five
 objects with `header` (at most 12 characters), `question`, two or three
 `options` (`label` plus `description`), and optional `multiSelect`. It waits for
 answers and resumes the same model run with structured selections and custom
-replies. The app-owned loopback bridge starts automatically when a configured
+replies. The app-owned bridge defaults to loopback and starts automatically when a configured
 Slack/Telegram send tool or `AskUser` is allowed, when the `interaction` block or
 an interaction env override is configured, or when `interaction.progress.enabled`
 resolves true and `tools.mcpRequestContextServers` names an opted project MCP
 server.
+
+Keep `interaction.bridge.host` on `127.0.0.1` or another loopback address. The
+runtime currently accepts non-loopback values, which can expose the
+bearer-protected internal bridge off-host; the bearer is a capability, not a
+substitute for a local bind boundary.
 
 - The web console renders every question in one form and submits all remaining
   answers atomically. Slack and Telegram render one question at a time with
@@ -177,16 +184,24 @@ server.
 - One pending ask per physical conversation. A second concurrent ask returns an
   "already pending" result; consolidate related decisions into one call of up to
   five questions.
-- On timeout (default 10 min, `interaction.askUser.timeoutMs`) the tool returns without an answer and the user's late reply arrives as a normal next turn. On an app restart pending asks degrade the same way.
+- One timeout covers the whole interaction (default 10 min,
+  `interaction.askUser.timeoutMs`). The tool returns any answers already
+  submitted, identifies the remaining questions as unanswered, and treats a
+  later reply as a normal next turn. With no submitted answers, it reports that
+  the user did not answer. On an app restart pending asks degrade the same way.
 - The wait keeps the MCP call alive via progress notifications (see `tools.mcpCallTimeoutMs` / `tools.mcpCallMaxTotalTimeoutMs`).
 - Opted project MCP children can POST `{key, message, state}` to `/v1/progress` using `MONO_AGENT_INTERACTION_PROGRESS_URL` / `MONO_AGENT_INTERACTION_PROGRESS_TOKEN`. The run-scoped bearer selects the producing conversation server-side, is revalidated after the body is read, and is revoked at cleanup. The bridge master bearer remains app-owned and is blanked in opted project MCP environments.
 
-When a blocking `AskUser` call completes, mono-agent stores its exact questions,
-options, outcome, and answers in the assistant history copy committed for that
-turn. This makes the interaction available to a later cold/stateless replay even
-though the transport presented it out of band. The final outward message and
-long-term memory capture remain unchanged. Non-blocking
-`TelegramSendMessage.reply_options` selections remain separate next turns.
+When a blocking `AskUser` call is answered or expires, mono-agent stores its
+questions, outcome, and submitted answers in the assistant history copy
+committed for that turn; cancelled asks are not journaled. Described options are
+included when the transcript bound permits. For an oversized newest valid
+entry, option descriptions may be omitted so its questions, outcome, and
+answers remain whole. This makes the interaction available to a later
+cold/stateless replay even though the transport presented it out of band. The
+final outward message and long-term memory capture remain unchanged.
+Non-blocking `TelegramSendMessage.reply_options` selections remain separate
+next turns.
 
 The example assumes `MONO_AGENT_SLACK_BOT_TOKEN`, `MONO_AGENT_SLACK_APP_TOKEN`, and `MONO_AGENT_TELEGRAM_BOT_TOKEN` are set in `.env`; credentials are intentionally absent from the source config.
 

@@ -1,12 +1,11 @@
 ---
 title: "Reference"
+description: "Find canonical capability, terminology, compatibility, security, preset, and architecture references."
 sidebar:
   order: 0
 ---
 
-# Reference
-
-Canonical lookup material for mono-agent: the capability ladder for deciding where new capability work belongs, a scannable capability matrix, a glossary of terms used throughout the docs, the long-form feature registry, and the setup-security contracts intentionally kept out of the runnable Quickstart.
+Canonical lookup material for mono-agent: the package directory and capability ladder for finding the right ownership boundary, a scannable capability matrix, a glossary of terms used throughout the docs, the long-form feature registry, and the setup-security contracts intentionally kept out of the runnable Quickstart.
 
 Use this section when you need to confirm an exact config key, env var, or coverage type rather than learn a workflow — for end-to-end recipes see the [playbooks](/playbooks/).
 
@@ -14,6 +13,7 @@ Use this section when you need to confirm an exact config key, env var, or cover
 
 | Page | What it gives you |
 | --- | --- |
+| [Package directory](/reference/packages/) | Every published package, its ownership tier and responsibility, and links to npm and the authoritative package README. |
 | [Capability ladder](/reference/capability-ladder/) | Where new capability work belongs before changing package boundaries or shared contracts. |
 | [Feature matrix](/reference/feature-matrix/) | Compact, scannable table of capabilities mapped to their primary config key, env var, and coverage type. |
 | [Glossary](/reference/glossary/) | Definitions of terms (channel, soul, consolidation, recall, A2A, fallback chain, sandbox, etc.) used across the docs. |
@@ -28,7 +28,7 @@ Every capability in the matrix and registry is tagged with how it is reached. Th
 
 | Code | Meaning |
 | --- | --- |
-| `config` | Declarable in `mono-agent.config.json` (an env var override is always available). |
+| `config` | Declarable in `mono-agent.config.json`; an env override exists only where the generated reference documents one. |
 | `cli` | Reached through a `mono-agent` CLI flag or command. |
 | `auto` | Always active when the app runs; needs no declaration. |
 | `code` | Available only programmatically — see [Programmatic](/programmatic/). |
@@ -40,7 +40,7 @@ If a capability is marked `code` only, it cannot be turned on through `mono-agen
 
 ## How to read a config example
 
-Reference examples use real keys from the [config blueprint](/config/blueprint/). A capability declared in config almost always has a matching `MONO_AGENT_*` environment override; the [env vars](/config/env-vars/) page lists the override for each key.
+Reference examples use real keys from the [config blueprint](/config/blueprint/). A config field has a matching `MONO_AGENT_*` environment override only when the [generated config reference](/config/reference/) names one; the [environment-variable reference](/config/env-vars/) explains those supported mappings by domain.
 
 ```json
 {
@@ -53,5 +53,5 @@ The example above sets the primary model; the equivalent override is `MONO_AGENT
 ## Keeping the registry current
 
 :::tip
-When a package adds a capability, add a row to [feature-registry.md](/reference/feature-registry/) (its coverage code, the config key/env var, and the CLI command if any), then mirror the summary into the [feature matrix](/reference/feature-matrix/). The registry is the upstream source; the matrix is its scannable projection.
+When a package adds a capability, add a row to the [feature registry](/reference/feature-registry/) (its coverage code, the config key/env var, and the CLI command if any), then mirror the summary into the [feature matrix](/reference/feature-matrix/). The registry is the upstream source; the matrix is its scannable projection.
 :::

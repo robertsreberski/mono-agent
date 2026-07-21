@@ -1,10 +1,9 @@
 ---
 title: "Composition & custom runtimes"
+description: "Choose the full app, configured responder, custom runtime, or lower-level harness for a programmatic host."
 sidebar:
   order: 1
 ---
-
-# Composition & custom runtimes
 
 This page covers the three programmatic entry points that the `mono-agent` CLI itself is built on — `startMonoAgentApp` (full host with channels), `createConfiguredAgentResponder` (bare responder, no transports), and the lower-level `@mono-agent/agent-harness` — plus how to inject a custom runtime, add a channel driver, and scope runtime options per request. Reach for these only when `mono-agent.config.json` cannot express your host; the config covers nearly everything (see [feature coverage](/reference/feature-matrix/)). This whole surface is **code**-coverage: it is not reachable from config or the CLI.
 
@@ -13,7 +12,7 @@ This page covers the three programmatic entry points that the `mono-agent` CLI i
 | Entry point | Package | You get | Use when |
 | --- | --- | --- | --- |
 | `startMonoAgentApp` | `@mono-agent/agent-app` | Config load + responder + every configured channel + traceability + exporters | You want a CLI-equivalent host, optionally with extra channel drivers or a shared runtime |
-| `createConfiguredAgentResponder` | `@mono-agent/agent-app` | A bare `AgentResponder` built from `MonoAgentConfig` (no transports) | You embed the responder in your own server, test harness, or custom transport |
+| `createConfiguredAgentResponder` | `@mono-agent/agent-app` | A transport-free `AgentResponder` with config-driven runtime, harness, memory, per-run JSONL recording, and configured exporters | You embed the responder in your own server, test harness, or custom transport |
 | `createAgentHarness` / `createAgentResponder` | `@mono-agent/agent-harness` | Full manual control of identity, skills, memory, history, recorder, runtime | Config-driven composition is not enough and you assemble every dependency yourself |
 
 The layering is strict: `agent-app` owns config-driven composition and delegates turn execution to `agent-harness`. Drop down only one level at a time. See [package map](/programmatic/) and the [programmatic index](/programmatic/) for the broader package set.
@@ -41,7 +40,7 @@ await app.stop();
 | `runtime` | `MonoRuntimeLike` | built from config | Inject a shared/custom runtime (see below) |
 | `logger` | `MonoAgentAppLogger` | console-backed | Structured host logging |
 
-The host runs headless: config changes take effect on the next restart, not live.
+The host runs headless and does not watch the config file. After an edit, either restart the host or call `app.applyConfigChange(reason)` explicitly to stop and rebuild its current services and driver set. Adding or removing a plugin package still requires a restart because external drivers are resolved at startup.
 
 ### Adding a custom channel driver
 
@@ -61,7 +60,7 @@ For building the driver itself, see [Write your own channel adapter](/programmat
 
 ## The bare responder: `createConfiguredAgentResponder`
 
-When you do not want any built-in transport — you are embedding the agent in your own HTTP server, queue worker, or test — combine `@mono-agent/config` with `@mono-agent/agent-app`. `createConfiguredAgentResponder` turns a loaded `MonoAgentConfig` into a ready `AgentResponder`. It is **async** (as is `createConfiguredAgentHarness`/`createConfiguredMemory`): memory backends are imported lazily, so a config without a `memory` section never loads the SQLite/BuJo stack and a Supermemory config never loads it either.
+When you do not want any built-in transport — you are embedding the agent in your own HTTP server, queue worker, or test — combine `@mono-agent/config` with `@mono-agent/agent-app`. `createConfiguredAgentResponder` turns a loaded `MonoAgentConfig` into a ready `AgentResponder`. It starts no channel, trace-registry, service, retention, or consolidation-scheduler lifecycle, but each turn still uses the configured JSONL recorder and per-run exporters. It is **async** (as is `createConfiguredAgentHarness`/`createConfiguredMemory`): memory backends are imported lazily, so a config without a `memory` section never loads the SQLite/BuJo stack and a Supermemory config never loads it either.
 
 ```ts
 import { loadMonoAgentConfigWithSources } from "@mono-agent/config";

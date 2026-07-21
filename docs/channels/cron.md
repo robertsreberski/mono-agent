@@ -1,10 +1,9 @@
 ---
 title: "Cron"
+description: "Schedule timezone-aware agent turns, author jobs in config or Markdown, and deliver successful results without an external cron daemon."
 sidebar:
   order: 7
 ---
-
-# Cron
 
 The cron channel fires scheduled prompts at the agent's responder on a timezone-aware five-field schedule. Jobs run on an **in-app scheduler** — no system `cron`, `crontab`, or `launchd` is involved, so the agent just needs to be running. Jobs can be declared inline in config and/or as one `*.md` file per job in a folder; the two sources merge. Coverage: `config`.
 
@@ -92,11 +91,22 @@ A model-override tick runs **ephemerally**: it does not resume or persist a shar
 
 | Variable | Maps to | Notes |
 | --- | --- | --- |
+| `MONO_AGENT_CRON_ENABLED` | `cron.enabled` | Enables the legacy single-job form; default `false`. |
 | `MONO_AGENT_CRON_DIR` | `cron.dir` | Folder of per-job `*.md` files; default `cron/`. |
 | `MONO_AGENT_CRON_JOBS_JSON` | `cron.jobs[]` | Full JSON array of jobs. |
+| `MONO_AGENT_CRON_EXPRESSION` | `cron.expression` | Single-job five-field expression. |
+| `MONO_AGENT_CRON_TIMEZONE` | `cron.timezone` | Single-job timezone; default `UTC`. |
+| `MONO_AGENT_CRON_PROMPT` | `cron.prompt` | Single-job prompt. |
+| `MONO_AGENT_CRON_CONVERSATION_ID` | `cron.conversationId` | Optional stable history/session key. |
+| `MONO_AGENT_CRON_NOTIFY` | `cron.notify` | Enables native delivery for the single job. |
+| `MONO_AGENT_CRON_NOTIFY_CONVERSATION_ID` | `cron.notifyConversationId` | Explicit single-job delivery destination. |
 | `MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS` | `cron.notifyFailureCooldownHours` | Single-job cooldown, in hours, for model-exhaustion failure notices; default `6`. |
-| `MONO_AGENT_CRON_*` | `cron.jobs[]` | Single-job field overrides (`id`, `expression`, `timezone`, `prompt`, `conversationId`, `notify`, `notifyConversationId`, `notifyFailureCooldownHours`, `model`, `effort`). |
+| `MONO_AGENT_CRON_MODEL` | `cron.model` | Optional single-job model override. |
+| `MONO_AGENT_CRON_EFFORT` | `cron.effort` | Optional single-job reasoning-effort override. |
 
+The single-job environment form always uses the job id `default`; there is no
+`MONO_AGENT_CRON_ID`. Use `cron.jobs[]`, `MONO_AGENT_CRON_JOBS_JSON`, or a
+Markdown job filename/frontmatter `id` when the id must be chosen explicitly.
 See [Environment variables](/config/env-vars/) for the full precedence rules.
 
 ## Markdown job files

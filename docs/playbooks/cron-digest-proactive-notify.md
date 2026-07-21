@@ -1,10 +1,9 @@
 ---
 title: "Cron Digest with Native Notify"
+description: "Schedule a digest and deliver its final answer through native Telegram, Slack, or web notifications."
 sidebar:
   order: 6
 ---
-
-# Cron Digest with Native Notify
 
 This playbook wires a timezone-aware cron job to Telegram, Slack, or a new web-console conversation. On a schedule, the agent builds a daily digest using shared conversation history, returns the digest as its final answer, and `mono-agent` delivers that final answer **verbatim** through native notification.
 

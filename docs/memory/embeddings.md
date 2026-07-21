@@ -1,10 +1,9 @@
 ---
 title: "Embeddings"
+description: "Configure Ollama, LM Studio, or OpenAI embeddings for Journal and BuJo semantic recall, including validation, timeouts, and circuit breaking."
 sidebar:
   order: 1
 ---
-
-# Embeddings
 
 The `memory.embeddings` block configures the vector embedding provider used for semantic
 recall. It is a **shared prerequisite** for both the `journal` and `bujo` memory tiers — it
@@ -13,11 +12,11 @@ keys, the three providers (Ollama, LM Studio, and OpenAI), the matching `MONO_AG
 env vars, and the timeout / circuit-breaker behavior.
 
 For the tier model (lite / journal / bujo) and where this block fits, see
-[../memory.md](/memory/). For how recall actually uses these embeddings at runtime, see
-[capture-and-recall.md](/memory/capture-and-recall/).
+[the memory overview](/memory/). For how recall actually uses these embeddings at runtime, see
+[memory capture and recall](/memory/capture-and-recall/).
 
 Coverage: **config**. The standalone maintenance CLI can also enable embeddings via env vars
-(see [validation-and-cli.md](/memory/validation-and-cli/)).
+(see [memory validation and CLI operations](/memory/validation-and-cli/)).
 
 ## When you need it
 
@@ -163,7 +162,7 @@ OpenAI-compatible gateway.
 ## Environment variables
 
 Every key has a `MONO_AGENT_MEMORY_EMBEDDINGS_*` override. See
-[../config/env-vars.md](/config/env-vars/).
+[the environment-variable reference](/config/env-vars/).
 
 | Env var | Config key |
 | --- | --- |
@@ -185,8 +184,9 @@ embeddings identity from config, so there is no `--tier` flag or standalone env 
 
 ## Timeout and circuit-breaker behavior
 
-Each embedding request has a request timeout of **30 s** (default). Embedding calls are also
-wrapped in a circuit breaker so a slow or failing embedding service cannot stall recall:
+In a config-first host, each embedding request has a **10 s** timeout by default.
+Embedding calls are also wrapped in a circuit breaker so a slow or failing embedding service
+cannot stall recall:
 
 - A timeout (`AbortError`) or structurally identified network `TypeError` is reported as
   `MemorySearchError` with code `embedding_request_failed`, retaining the original error as
@@ -200,10 +200,19 @@ wrapped in a circuit breaker so a slow or failing embedding service cannot stall
 - A successful trial closes the breaker; a failed trial re-opens it for a fresh cooldown.
 
 :::note
-These timeout and breaker thresholds are not exposed as config keys — they are code-level
-defaults in `@mono-agent/memory/search`. If you embed the provider programmatically you can
-tune them via `createEmbeddingProvider` / `createCircuitBreakerEmbeddingProvider`; see
-[../programmatic/index.md](/programmatic/).
+The config-first defaults and overrides are:
+
+| Config key | Default | Environment override |
+| --- | --- | --- |
+| `memory.embeddings.timeoutMs` | `10000` | `MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS` |
+| `memory.embeddings.circuitBreaker.failureThreshold` | `3` | `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD` |
+| `memory.embeddings.circuitBreaker.cooldownMs` | `30000` | `MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS` |
+
+The low-level `@mono-agent/memory/search` provider constructor retains its own 30-second
+timeout when called directly without `timeoutMs`; the configured app always supplies the
+resolved 10-second default. Programmatic callers can tune the same values through
+`createEmbeddingProvider` and `createCircuitBreakerEmbeddingProvider`; see the
+[programmatic API overview](/programmatic/).
 :::
 
 ## Validation
@@ -212,9 +221,9 @@ tune them via `createEmbeddingProvider` / `createCircuitBreakerEmbeddingProvider
 capability metadata and the real `/api/embed` response. LM Studio checks the typed
 `/api/v1/models` entry and real `/v1/embeddings` response. Both require the returned vector
 dimension to equal config. OpenAI keeps its credential/config validation and is not offered
-as the guided local-memory choice. See [validation-and-cli.md](/memory/validation-and-cli/).
+as the guided local-memory choice. See [memory validation and CLI operations](/memory/validation-and-cli/).
 
 Changing the configured provider, model, or dimension changes the managed index identity.
 Stop the agent, edit config, run `mono-agent memory rebuild --json`, validate, then restart;
 never relabel an existing generation by hand. See the safe rebuild procedure in
-[validation-and-cli.md](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback).
+[safe index-generation rebuild and rollback](/memory/validation-and-cli/#safe-index-generations-rebuild-and-rollback).

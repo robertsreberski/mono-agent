@@ -1,10 +1,9 @@
 ---
 title: "Fully Local LM Studio Agent (No Cloud)"
+description: "Run mono-agent against a local LM Studio endpoint without cloud model traffic."
 sidebar:
   order: 14
 ---
-
-# Fully Local LM Studio Agent (No Cloud)
 
 This playbook builds an agent that runs entirely on a local [LM Studio](https://lmstudio.ai) provider through the Pi SDK runtime, with lite-tier (FTS-only) memory and no outbound network. No cloud API keys, no outbound calls, no second local tool required. An optional upgrade to journal-tier semantic recall — using LM Studio's own embeddings endpoint, still no second tool — is documented at the end.
 

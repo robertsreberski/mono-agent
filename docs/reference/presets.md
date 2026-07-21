@@ -1,10 +1,9 @@
 ---
 title: "Presets & capability modules"
+description: "Understand guided setup capability modules, built-in presets, creation review, and validation commands."
 sidebar:
-  order: 5
+  order: 6
 ---
-
-# Presets & capability modules
 
 `mono-agent init` builds an agent by composing **capability modules** — a channel here, a memory tier there, an optional sandbox — and walking you through the settings that matter. On a TTY, bare `init` asks for the public agent name, provides searchable Pi/Codex/Claude primary and fallback catalogs, and proves every selected route before it calls the agent ready. Escape goes back; Ctrl-C asks before exiting. With `--yes` or any flag (or without a TTY) it writes a scaffold only and never makes a readiness claim.
 

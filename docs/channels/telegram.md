@@ -1,10 +1,9 @@
 ---
 title: "Telegram"
+description: "Run an allowlisted Telegram bot over long polling, including commands, attachments, optional transcription, resilient polling, and proactive delivery."
 sidebar:
   order: 1
 ---
-
-# Telegram
 
 The Telegram channel connects your agent to a Telegram bot over long polling. This page covers enabling it, the chat allowlist, built-in per-chat model controls, final-only delivery behaviour, inbound attachment download and optional audio transcription, the environment-variable overrides, and a setup + smoke-test walkthrough.
 
@@ -29,9 +28,18 @@ Add a `telegram` block to your `mono-agent.config.json`. The channel is opt-in: 
 | `enabled` | boolean | `false` | Opt-in switch. Off → channel is disabled. |
 | `botToken` | string | — | Bot token issued by [BotFather](https://t.me/BotFather). An effective value is required when enabled. Inline config remains accepted for compatibility; new source configs should set `MONO_AGENT_TELEGRAM_BOT_TOKEN` in `.env`. |
 | `allowedChatIds` | string[] | — | Chat IDs (as strings) permitted to talk to the agent. |
-| `allowAllChats` | boolean | `false` | When `true`, accept any chat. Mutually exclusive with a populated `allowedChatIds`. |
+| `allowAllChats` | boolean | `false` | When `true`, accept any chat; a simultaneous allowlist is retained but no longer restrictive. |
+| `apiRoot` | HTTP(S) URL | Telegram hosted API | Self-hosted Bot API root used for Bot API calls and downloads. |
+| `attachments.maxBytes` | number | `20971520` | Inbound decoded-byte cap. |
+| `attachments.downloadTimeoutMs` | number | `30000` | Per-file download timeout on the URL path. |
+| `attachments.maxUploadBytes` | number | `20971520` | Upload cap for `TelegramSendFile`. |
 | `pollWatchdogMs` | number | `120000` | Poll-liveness watchdog window. Force-restarts the long-poll runner when no `getUpdates` resolves within the window. On by default; `0` disables. Min `0`, max `3600000`. See [Polling resilience](#polling-resilience-auto-recovery). |
 | `transport.ipFamily` | `4` \| `6` | — | Opt-in: pin the Bot API HTTP client to IPv4 (`4`) or IPv6 (`6`). Omit for dual-stack. Workaround for a broken IPv6 route to `api.telegram.org`. |
+| `commands` | object[] | `[]` | JSON-only custom command-menu entries. |
+| `reactions` | boolean or object | off | Lifecycle reactions; object form is JSON-only. |
+| `quietHours` | object | — | JSON-only silent-notification window for proactive delivery. |
+| `sendTools` | object | — | JSON-only request/path restrictions for app-owned Telegram tools. |
+| `transcription` | object | — | Optional speech-to-text settings; see [Transcription](#transcription). |
 
 Provide **either** an `allowedChatIds` allowlist **or** `allowAllChats: true`. Leaving both unset means no chat is authorized.
 
@@ -41,7 +49,10 @@ Provide **either** an `allowedChatIds` allowlist **or** `allowAllChats: true`. L
 
 ### Environment variables
 
-Every key has a `MONO_AGENT_TELEGRAM_*` override. Env vars win over JSON, which keeps the bot token out of the committed config — see [Environment Variables](/config/env-vars/).
+The following scalar fields have `MONO_AGENT_TELEGRAM_*` overrides. Env vars
+win over JSON, which keeps the bot token out of committed config. Structured
+`commands`, `quietHours`, `sendTools`, and object-form `reactions` are JSON-only.
+See [Environment Variables](/config/env-vars/).
 
 | Env var | Maps to |
 | --- | --- |
@@ -49,13 +60,50 @@ Every key has a `MONO_AGENT_TELEGRAM_*` override. Env vars win over JSON, which 
 | `MONO_AGENT_TELEGRAM_BOT_TOKEN` | `telegram.botToken` |
 | `MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS` | `telegram.allowedChatIds` (comma-separated) |
 | `MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS` | `telegram.allowAllChats` |
-| `MONO_AGENT_TELEGRAM_REACTIONS` | `telegram.reactions` |
-| `MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS` | `telegram.pollWatchdogMs` (top-level) |
-| `MONO_AGENT_TELEGRAM_IP_FAMILY` | `telegram.transport.ipFamily` (nested under `telegram.transport`) |
+| `MONO_AGENT_TELEGRAM_API_ROOT` | `telegram.apiRoot` |
+| `MONO_AGENT_TELEGRAM_ATTACHMENT_MAX_BYTES` | `telegram.attachments.maxBytes` |
+| `MONO_AGENT_TELEGRAM_ATTACHMENT_DOWNLOAD_TIMEOUT_MS` | `telegram.attachments.downloadTimeoutMs` |
+| `MONO_AGENT_TELEGRAM_UPLOAD_MAX_BYTES` | `telegram.attachments.maxUploadBytes` |
+| `MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS` | `telegram.pollWatchdogMs` |
+| `MONO_AGENT_TELEGRAM_IP_FAMILY` | `telegram.transport.ipFamily` |
+| `MONO_AGENT_TELEGRAM_REACTIONS` | `telegram.reactions` (all states on/off) |
 | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_ENDPOINT` | `telegram.transcription.endpoint` |
 | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_MODEL` | `telegram.transcription.model` |
 | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_LANGUAGE` | `telegram.transcription.language` |
 | `MONO_AGENT_TELEGRAM_TRANSCRIPTION_TIMEOUT_MS` | `telegram.transcription.timeoutMs` |
+
+## Setup
+
+1. Message [@BotFather](https://t.me/BotFather) on Telegram and run `/newbot`.
+   Follow the prompts to name the bot and copy its token.
+2. Put the token in the agent folder's `.env`:
+
+   ```dotenv
+   MONO_AGENT_TELEGRAM_BOT_TOKEN=123456789:replace-me
+   ```
+
+3. Send the bot a message, then call
+   `https://api.telegram.org/bot<TOKEN>/getUpdates`. Copy
+   `result[].message.chat.id` into `allowedChatIds` as a string.
+4. Set `telegram.enabled` to `true`, then validate and start:
+
+   ```bash
+   mono-agent validate
+   mono-agent start
+   ```
+
+### Smoke test
+
+Send `Hello` from an allowed chat. You should see the `typing…` indicator and
+then the final answer. A turn that uses tools first shows one temporary activity
+message; the final answer arrives separately and the activity message disappears.
+If nothing happens:
+
+- Confirm the chat id is in `allowedChatIds` (or temporarily enable
+  `allowAllChats`).
+- Confirm the channel is enabled and startup reports Telegram as active.
+- Check that only one process is polling the bot token; Telegram permits one
+  long-polling consumer per token.
 
 ## Interactive features
 
@@ -234,7 +282,7 @@ The OpenAI-compatible [`/v1/chat/completions` endpoint](/channels/openai-api/) s
 
 The long-poll runner self-heals across transient network failures — a network blip, a host sleep, or a wifi switch — so the bot no longer goes silent until a full process restart. This is on by default and mirrors the Slack [heartbeat watchdog](/channels/slack/).
 
-**Fast failure detection.** The Bot API client HTTP timeout is capped at **50s** (down from grammY's 500s default) and the `getUpdates` long-poll is bounded at **30s**, so a half-open or stalled socket fails fast instead of hanging for minutes. The runner self-retries transient `getUpdates` errors (e.g. `ETIMEDOUT`, `EADDRNOTAVAIL`) with exponential backoff for ~15s before giving up.
+**Fast failure detection.** The Bot API client HTTP timeout is capped at **50s** (down from grammY's 500s default) and the `getUpdates` long-poll is bounded at **30s**, so a half-open or stalled socket fails fast instead of hanging for minutes. The runner self-retries transient `getUpdates` errors (e.g. `ETIMEDOUT`, `EADDRNOTAVAIL`) with exponential backoff for up to **90 seconds** before giving up to the outer restart monitor.
 
 **Auto-restart on crash.** On a genuine runner crash (e.g. `ENETUNREACH` after a network switch) an auto-restart monitor recreates the runner with exponential backoff — **500ms** doubling up to a **30s** cap. A runner that stays up for a 30s stability window resets the backoff. A clean, deliberate stop is never auto-restarted.
 
@@ -251,6 +299,12 @@ The long-poll runner self-heals across transient network failures — a network 
 Inbound Telegram media (photos, documents, voice, video) is fetched via the Bot API and inlined into `request.attachments`, so the agent receives the bytes alongside the text. A multi-photo/video album arrives as several messages sharing a media group and is aggregated into one request. A download that fails is skipped without failing the run.
 
 Download tuning — byte cap and timeout — is configurable via `telegram.attachments.{maxBytes,downloadTimeoutMs}` (defaults: 20 MiB / 30 s); the MIME allowlist remains **code-only** (`DownloadTelegramAttachmentsOptions`). See [Custom Channels](/programmatic/custom-channels/).
+
+Programmatic callers should prefer the shared
+`DEFAULT_AGENT_ATTACHMENT_MAX_BYTES` and
+`DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST` exports. The shorter
+`DEFAULT_ATTACHMENT_MAX_BYTES` and `DEFAULT_ATTACHMENT_MIME_ALLOWLIST` names are
+Telegram compatibility aliases with identical values.
 
 ## Transcription
 
@@ -316,32 +370,6 @@ When the Telegram adapter is enabled the agent can send Telegram messages on its
 ```
 
 The existing `telegram.*` adapter config (token + chat allowlist) remains the destination boundary — the tool can only send where the adapter is already permitted. This powers proactive/async delivery; see [Delivery and Send Tools](/channels/delivery-and-send-tools/) and [Tool Policy](/tools/policy/).
-
-## Setup
-
-1. Message [@BotFather](https://t.me/BotFather) on Telegram and run `/newbot`. Follow the prompts to name the bot and get its token (`123456789:AA...`).
-2. Put the token in your config or, preferably, in the environment:
-
-   ```bash
-   export MONO_AGENT_TELEGRAM_BOT_TOKEN="123456789:AA..."
-   ```
-
-3. Find the chat ID(s) you want to allow. Send your bot a message, then open `https://api.telegram.org/bot<TOKEN>/getUpdates` and read `result[].message.chat.id`. Add it to `allowedChatIds`.
-4. Set `telegram.enabled` to `true`.
-5. Validate and start:
-
-   ```bash
-   mono-agent validate
-   mono-agent start
-   ```
-
-## Smoke test
-
-With the agent running, send your bot a direct message (`Hello`) from an allowed chat. You should see the `typing…` indicator, followed by the final answer. A request that uses tools first shows one temporary activity message; the final answer arrives separately and the activity message disappears. If nothing happens:
-
-- Confirm the chat ID is in `allowedChatIds` (or set `allowAllChats: true` temporarily) — messages from non-allowlisted chats are ignored.
-- Confirm `enabled: true` and that the start log shows the Telegram channel as active rather than disabled.
-- Check that only one process is polling the bot; Telegram allows a single long-polling consumer per token.
 
 ## Related
 

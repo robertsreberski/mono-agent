@@ -1,10 +1,9 @@
 ---
 title: "Fallback models & failover"
+description: "Configure ordered provider fallback routes, route safety, retry behavior, and readiness checks."
 sidebar:
   order: 3
 ---
-
-# Fallback models & failover
 
 `runtime.fallbacks` is the canonical ordered list of backup routes. Each entry
 selects a model and, optionally, its exact reasoning effort. The list is not

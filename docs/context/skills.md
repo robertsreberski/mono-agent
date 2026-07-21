@@ -1,10 +1,9 @@
 ---
 title: "Selected skills"
+description: "Load explicit SKILL.md instruction sets into agent context with ordered selection and byte limits."
 sidebar:
   order: 2
 ---
-
-# Selected skills
 
 mono-agent loads skills the way it loads identity and soul: explicitly. You name the skills you want, and each is read from `<skillsRoot>/<name>/SKILL.md` and folded into the assembled context. There is **no auto-selection, ranking, or fuzzy matching** — the set you list is the set the agent gets, in order. This page covers `context.skillsRoot`, `context.selectedSkills`, the per-skill byte cap, and how the bundled `mono-agent-composer` skill itself is installed or reused.
 

@@ -1,12 +1,11 @@
 ---
 title: "Built-in tools & auto-guards"
+description: "Understand mono-agent's built-in tools and automatic protections for tool output, usage telemetry, context compaction, retries, and parallelism."
 sidebar:
   order: 6
 ---
 
-# Built-in tools & auto-guards
-
-This page covers mono-agent's managed built-ins (Read, Write, Edit, Glob, Grep, Bash, NodeRepl, WebFetch, WebSearch) and the runtime guards that protect each turn: the tool-output bloat guard, per-run usage/cost tracking, provider-delegated context compaction, and WebFetch's in-tool retry. It also notes which behaviors you configure versus which run automatically.
+This page covers mono-agent's managed built-ins (Read, Write, Edit, Glob, Grep, Bash, NodeRepl, WebFetch, WebSearch) and the runtime guards that protect each turn: the tool-output bloat guard, per-run usage/cost tracking, bridge-driven Pi context compaction, and WebFetch's in-tool retry. It also notes which behaviors you configure versus which run automatically.
 
 ## Built-in tools
 
@@ -71,11 +70,11 @@ Env: `MONO_AGENT_ARTIFACT_DIR`.
 
 ## Usage & cost tracking (auto)
 
-Each run collects per-turn usage, cost, and cache metrics as events for its JSONL artifact. Pi catalog estimates delegate to Pi's native cost calculation, including request-wide pricing tiers and cache-write rates. Tool telemetry uses key-pattern redaction for sensitive-key fields: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. The recorder applies a 4,096-byte default cap per string, buffers events in memory, and atomically replaces the bounded events snapshot at the terminal boundary; it does not append or checkpoint events during the run, so a crash can lose buffered data. This is automatic (coverage: `auto`) — it rides on the same `artifacts.dir` and needs no separate flag. See [Artifacts & traces](/observability/artifacts-and-traces/) for the complete write-boundary and stale-reconciliation contract.
+Each run collects per-turn usage, cost, and cache metrics as events for its JSONL artifact. Pi catalog estimates delegate to Pi's native cost calculation, including request-wide pricing tiers and cache-write rates. Tool telemetry uses key-pattern redaction for sensitive-key fields: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. The recorder applies a 4,096-byte default cap per string, writes an empty start snapshot, schedules best-effort `running` checkpoints after 25 new events or five seconds from the first uncheckpointed event, and queues the terminal snapshot after any scheduled checkpoint. It replaces the events and summary files separately rather than appending or fsyncing a journal, so a crash can preserve the last successful prefix while losing the unscheduled or failed-write tail. This is automatic (coverage: `auto`) — it rides on the same `artifacts.dir` and needs no separate flag. See [Artifacts & traces](/observability/artifacts-and-traces/) for the complete write-boundary and stale-reconciliation contract.
 
 Related per-turn timing also lands in the JSONL: a `provider_bridge_latency` event separates provider/tool/IO time from harness overhead, and per-tool `tool_timing` events carry `execution_ms`. See [Artifacts & traces](/observability/artifacts-and-traces/) and the [CLI reference](/observability/cli-reference/) for reading these, and [Phoenix & backfill](/observability/phoenix-and-backfill/) to export them as spans.
 
-## Context compaction (provider-delegated, configurable)
+## Context compaction (Pi bridge-driven, configurable)
 
 Compaction is delegated to the active provider bridge rather than hand-rolled in the runtime. On the pi-native bridge, the bridge drives `AgentHarness.compact()`:
 

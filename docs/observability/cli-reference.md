@@ -1,10 +1,9 @@
 ---
 title: "CLI command reference"
+description: "Reference every mono-agent command, flag, exit code, environment-loading rule, and lifecycle or observability report."
 sidebar:
   order: 3
 ---
-
-# CLI command reference
 
 This page documents every `mono-agent` command and its flags, verified against the CLI implementation. It also covers the two cross-cutting behaviors you hit on most invocations: automatic `.env` loading and the per-section reports `validate` and `start` print.
 
@@ -41,7 +40,7 @@ The read/status commands accept `--json` for scripting: `validate`, `config`, `p
 | `validate` | Load every config section and report what would run, wait, or fail (`doctor` is an alias), including a read-only exact-byte inventory of this config's managed launchd stdout/stderr and retained generations. With `--preset <id>`, also report whether the preset's promised capabilities are live. | `--preset <id>`, `--consumer <path>`, `--config <path>`, `--env-file <path>`, `--json` |
 | `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>`, `--json` |
 | `memory` | Preview, strictly audit, and safely maintain the configured memory store and its durable completed-turn intake. | `stats`, `today`, `show`, `search`, `top`, `audit`, `inspect`, `retry`, `resolve`, `rebuild`, `rollback`, `adopt-replay`; `--strict`, `--limit`, `--json` |
-| `start` | Start the agent as a background launchd service (or foreground worker). Background start also installs the fixed-policy one-shot log-maintenance LaunchAgent. | `--config <path>`, `--env-file <path>`, `--foreground` |
+| `start` | Start the agent as a background launchd service (or foreground worker). Background start also installs the fixed-policy one-shot recovery and log-maintenance LaunchAgent. | `--config <path>`, `--env-file <path>`, `--foreground` |
 | `restart` | Restart the background instance for this config (starts it if stopped), maintaining logs only while the old writer is proven down. | `--config <path>`, `--env-file <path>`, `--clear-sessions` (`--force` deprecated alias) |
 | `stop` | Stop the background instance, unloading log maintenance first, and remove both LaunchAgent definitions. | `--config <path>`, `--env-file <path>` |
 | `status` | Show this config's instance plus any other running instances. | `--config <path>`, `--env-file <path>`, `--json` |
@@ -253,7 +252,7 @@ a pre-existing memory root. For an existing or damaged root, stop the agent, run
 `mono-agent memory rebuild`, then validate again. Embeddings-provider reachability, missing discovered
 models, and missing declared LM Studio credentials remain operational `waiting` conditions.
 
-The **Tools & MCP** section reports the tool policy: allow-all (the default) shows `All tools allowed.` (or `All tools allowed (except: …)` when a `disallowedTools` list is present). On Pi/Claude SDK, an **explicit empty** `tools.allowedTools: []` flags the no-tools trap as `waiting` because the agent could chat but cannot act. Direct Codex/OpenCode and Claude Code CLI reject that unenforceable empty policy as `error` before provider startup. Direct OpenCode also rejects every effective MCP source—`tools.mcpConfigPath`, `memory.recallTool`, hosted Supermemory MCP, and adapter send tools—and index skill disclosure; validation reports those combinations before a run. For a specific allowlist it also flags an unknown tool name with a "did you mean" hint (pi silently drops unknown names) and cross-checks adapter send tools against enabled channels. Under a native sandbox it additionally checks the enabled send tools' HTTP hosts against `sandbox.network`: Slack, Telegram (including a custom `apiRoot`), and the loopback interaction bridge for blocking ask tools. A missing host is `waiting` with the exact allowlist entry to add; an explicitly denied tool creates no endpoint requirement. See [Presets & capability modules](/reference/presets/#the-tools-step-and-the-no-tools-guardrail) for the full contract.
+The **Tools & MCP** section reports the tool policy: allow-all (the default) shows `All tools allowed.` (or `All tools allowed (except: …)` when a `disallowedTools` list is present). On Pi/Claude SDK, an **explicit empty** `tools.allowedTools: []` flags the no-tools trap as `waiting` because the agent could chat but cannot act. Direct Codex/OpenCode and Claude Code CLI reject that unenforceable empty policy as `error` before provider startup. Direct OpenCode also rejects every effective MCP source—`tools.mcpConfigPath`, `memory.recallTool`, hosted Supermemory MCP, and adapter send tools—and index skill disclosure; validation reports those combinations before a run. For a specific allowlist it also flags an unknown tool name with a "did you mean" hint (pi silently drops unknown names) and cross-checks adapter send tools against enabled channels. Under a native sandbox it additionally checks the enabled send tools' HTTP hosts against `sandbox.network`: Slack, Telegram (including a custom `apiRoot`), and the configured interaction bridge for blocking ask tools. Keep that bridge on its default loopback host; non-loopback values are not rejected. A missing host is `waiting` with the exact allowlist entry to add; an explicitly denied tool creates no endpoint requirement. See [Presets & capability modules](/reference/presets/#the-tools-step-and-the-no-tools-guardrail) for the full contract.
 
 ### Provider credentials
 

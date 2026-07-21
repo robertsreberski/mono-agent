@@ -1,5 +1,6 @@
 ---
 title: "Memory quality benchmark"
+description: "Run and interpret mono-agent's disposable memory retrieval, capture-efficiency, graph-recall, and optional real-provider benchmark suites."
 sidebar:
   order: 6
 ---

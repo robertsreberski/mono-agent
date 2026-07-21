@@ -1,15 +1,15 @@
 # `@mono-agent/agent-runtime` — Migration Guide
 
-Breaking and behavioral changes for consumers upgrading **from `0.3.x`** (the
-`feat/runtime-live-sessions` line). The public entry points are unchanged —
-`createRuntime` / `createMonoRuntime`, the run-options contract, and provider
-session support (`sessionId` in, `provider_session_id` out, `disposeSession` /
-`disposeAllSessions`) all keep their shapes. The changes below affect the **Pi
-runtime bridge, a few run options, durable-session semantics, the fallback
-router, and some diagnostics**.
+Breaking and behavioral changes for consumers upgrading from `0.3.x` to the
+current `0.13.x` contract. `createRuntime()` remains the package entry point;
+`createMonoRuntime()` remains the typed facade in
+`@mono-agent/runtime-adapter`. Provider-session input/output uses
+`providerSessionId`, with `disposeSession()` and `disposeAllSessions()` retained.
 
-If you only use the Claude SDK / Claude CLI / Codex backends and do not touch Pi
-or durable sessions, this is a no-op upgrade.
+Review every section that matches your usage. The package now has an explicit
+exports map, a five-bridge lazy registry, typed policy objects, stricter sandbox
+behavior, and revised provider-session semantics even when Pi is not your
+primary route.
 
 ---
 
@@ -23,13 +23,14 @@ registry resolves `pi` → the native bridge unconditionally; there is no
 - **Public runtime API** (`createRuntime`, model reference `"pi:<provider>:<model>"`)
   is unchanged — `pi:openai:gpt-5.5` etc. still work.
 - **Deep imports** of `@mono-agent/agent-runtime/ai/providers/pi-sdk.js` **no
-  longer resolve**: the deprecated compatibility shim was removed and, with the
-  Phase-6 explicit `exports` map (no `./ai/*` / `./agent/*` wildcards), that
-  subpath is not exported. **Action:** import `generatePiNativeResponse` /
-  `piNativeRuntimeBridge` from `./ai`, and
-  `isContextLimitError` / `normalizePiErrorMessage` from `./ai/providers/pi-errors.js`
-  (or reach for the public runtime registry). The `pi*Backend` aliases are gone —
-  all Pi routes through the one native bridge.
+  longer resolve**: the compatibility shim was removed and the explicit exports
+  map has no provider wildcard. **Action:** import
+  `generatePiNativeResponse` / `piNativeRuntimeBridge` from
+  `@mono-agent/agent-runtime/ai`, or select Pi through the public runtime
+  registry. `pi-errors.js` is internal and is not an exported replacement; use
+  the normalized `RuntimeResult.failureKind` or the public failure helpers at
+  `@mono-agent/agent-runtime/ai/failure.js`. The `pi*Backend` aliases are gone —
+  all Pi routes through the native bridge.
 
 ## 2. Removed run options: `piReasoningSummary`, `piCodexTransport`
 
@@ -37,10 +38,9 @@ These were Pi-bridge knobs the native path does not consume.
 
 - `piReasoningSummary` is **no longer read** and was removed from the run-options
   type. Pi-native derives reasoning from `effort` (`thinkingLevel`); the
-  codex/claude CLIs emit reasoning summaries on their own. **Action:** stop
-  passing `piReasoningSummary` — it was already a no-op on the native path; remove
-  it from your call sites. (Host config `runtime.reasoningSummary` still validates
-  for back-compat but is not wired to a runtime option.)
+  Codex and Claude CLI bridges emit their own reasoning events. **Action:**
+  remove `piReasoningSummary` from call sites. The former
+  `runtime.reasoningSummary` config field has also been removed.
 - `piCodexTransport` was doc-only and is removed. No replacement is needed.
 
 ## 3. Pi context compaction: bridge-driven via AgentHarness.compact()
@@ -67,15 +67,15 @@ These were Pi-bridge knobs the native path does not consume.
 
 ## 4. Durable Pi session resume: create-on-miss semantics
 
-When a run supplies a `sessionId` **and** durable storage is configured
-(`piSessionsRoot`), Pi-native now **creates the session with that id if no
-on-disk JSONL exists** (create-on-miss), instead of returning
+When a run supplies a `providerSessionId` (or the legacy `sessionId` alias) **and**
+durable storage is configured (`piSessionsRoot`), Pi-native now **creates the
+session with that id if no on-disk JSONL exists** (create-on-miss), instead of returning
 `session_not_found`. An existing JSONL is reopened and resumed as before.
 
 This makes a **stable, conversation-derived session id resume across process
 restarts** (the on-disk transcript is the durable history; the in-memory
 conversation→session map is no longer required to resume). **Action:** if you
-passed an arbitrary `sessionId` to a durable run expecting a hard
+passed an arbitrary `providerSessionId` to a durable run expecting a hard
 `session_not_found` on first use, note it now succeeds by creating that session.
 The in-memory (non-durable) resume path still fast-fails `session_not_found` on a
 miss.
@@ -155,9 +155,7 @@ and that group's legacy `settings` keys are ignored; an absent typed object lets
 its group's `settings` keys through as a fallback. Consuming **any** legacy
 `settings` key emits exactly one `runtime_warning` with
 **`warning_kind: "deprecated_settings_option"`** per run (listing the consumed
-keys). Passing no `settings` — or an empty/irrelevant bag — never warns, so a host
-that never passed `settings` is byte-for-byte unchanged (mono-agent hosts do not
-pass it, so this is a no-op there).
+keys). Passing no `settings` — or an empty/irrelevant bag — never warns.
 
 `resolveAgentCompactionPolicy(settings, model)` stays exported (the canonical
 clamp/mapper both paths route through), and `@mono-agent/runtime-adapter` exposes
@@ -241,18 +239,18 @@ The package exposes **22 named deep `.js` subpaths**:
 
 **Action:** if you deep-import a subpath not in this list, switch to the closest
 supported one, a barrel (`./ai` / `./agent`), or the public runtime registry.
-`pi-sdk.js` is gone and remains intentionally unexported (section 1). Worklab
-ports should import `generatePiNativeResponse` from `@mono-agent/agent-runtime/ai`
-instead of adding a `pi-sdk.js` compatibility subpath.
+`pi-sdk.js` is gone and remains intentionally unexported (section 1). Import
+`generatePiNativeResponse` from `@mono-agent/agent-runtime/ai` instead of adding
+a compatibility subpath.
 
 ---
 
 ## Version
 
-These changes ship in the first `agent-runtime` release after `0.3.0` on the
-`feat/runtime-live-sessions` line (a minor/major bump; see the release tag). The
-paired `@mono-agent/runtime-adapter` drops the `piReasoningSummary` field from its
-run-options type in lockstep.
+This guide describes the published `0.13.x` package contract. Keep
+`@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, and other
+`@mono-agent/*` packages on the same lockstep version when upgrading. The paired
+runtime adapter no longer exposes `piReasoningSummary` in its run-options type.
 
 ---
 

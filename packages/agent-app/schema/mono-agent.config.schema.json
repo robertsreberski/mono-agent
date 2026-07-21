@@ -1220,7 +1220,7 @@
           "additionalProperties": false,
           "properties": {
             "host": {
-              "description": "Loopback host for the app-owned AskUser/tool-progress bridge.",
+              "description": "Bind host for the app-owned AskUser/tool-progress bridge. Defaults to loopback; keep it local because non-loopback values are not rejected.",
               "examples": [
                 "127.0.0.1"
               ],
@@ -1242,7 +1242,7 @@
           "additionalProperties": false,
           "properties": {
             "timeoutMs": {
-              "description": "Maximum wait for one AskUser question.",
+              "description": "Maximum wait for one AskUser interaction (one to five questions).",
               "examples": [
                 600000
               ],
