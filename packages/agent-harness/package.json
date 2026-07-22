@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/agent-harness",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Composable agent request-to-runtime harness.",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -31,9 +31,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.14.0",
-    "@mono-agent/observability": "workspace:0.14.0",
-    "@mono-agent/runtime-adapter": "workspace:0.14.0"
+    "@mono-agent/agent-contracts": "workspace:0.15.0",
+    "@mono-agent/observability": "workspace:0.15.0",
+    "@mono-agent/runtime-adapter": "workspace:0.15.0"
   },
   "publishConfig": {
     "access": "public"

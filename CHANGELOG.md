@@ -1,5 +1,46 @@
 # Release notes
 
+## 0.15.0 — Live steering and precise runtime activity (2026-07-22)
+
+### Highlights
+
+- Plain-text follow-ups sent while an agent is working can now steer the active
+  turn from Slack, Telegram, and the web console. The adapter-neutral live-input
+  contract carries provider acknowledgement through Claude SDK, Codex
+  app-server, and Pi runs, while unsupported providers and end-of-turn races
+  queue the message as the next ordinary turn instead of losing it.
+- The web console persists live follow-ups and their pending, applied, queued,
+  or cancelled state in its owner-private SQLite store. Applied guidance is
+  committed to canonical conversation history and memory, so reloads, restarts,
+  and later turns preserve what changed the answer.
+- Pi, Codex app-server, and OpenCode app-server now publish exact provider-native
+  context measurements and normalized compaction lifecycles. The web console
+  renders measured usage and one update-in-place compaction activity row without
+  exposing provider summaries.
+
+### Reliability and security
+
+- The v1 closeout removes the retired `session-web` / live-relay vertical and
+  other proven-dead compatibility APIs, narrows controller, lifecycle, doctor,
+  memory, and Slack ownership boundaries, and makes config validation and the
+  final CI verdict explicit.
+- Runtime shutdown/backpressure, managed web logs, orphan cleanup, artifact
+  credential scanning, dependency audits, and packed-package verification are
+  now bounded and executable repository gates.
+- Slack AskUser cards use unique Block Kit action identifiers, and long web
+  conversation lists remain independently scrollable so the composer stays
+  visible at desktop and mobile viewport sizes.
+
+### Compatibility
+
+- Existing Slack, Telegram, and web configurations require no migration for
+  live steering. Attachments continue through the ordinary queued-turn path;
+  each live follow-up is bounded to 8,000 characters.
+- The retired `@mono-agent/session-web` package is no longer part of the
+  publishable catalog. All 22 remaining catalog-publishable packages move
+  together to 0.15.0; keep every `@mono-agent/*` package and
+  `create-mono-agent` on the same exact version.
+
 ## 0.14.0 — Durable conversations and self-healing agents (2026-07-21)
 
 ### Highlights
