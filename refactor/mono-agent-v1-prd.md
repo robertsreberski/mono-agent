@@ -30,7 +30,7 @@ The existing system has sound modular building blocks, but the application layer
 - current waiting states can let missing selected capabilities validate successfully;
 - the macOS service copies a managed runtime closure instead of launching the project's pinned installation.
 
-The result is more code and a larger contribution surface than the framework's actual job requires. The v1 design reduces the ownership boundary while preserving production behavior.
+The result is more code and a larger contribution surface than the framework's actual job requires. Measured at this PRD's revision, agent-app alone is roughly 66,000 handwritten source lines before tests — about a third of the repository. The v1 design reduces the ownership boundary while preserving production behavior, and section 5.1 makes the reduction a measured release criterion rather than an aspiration.
 
 ## 3. Product frame
 
@@ -116,8 +116,34 @@ Their jobs are:
 | Duplicate delivery | Zero Telegram/Slack concurrent-consumer incidents | Zero through stable cutover |
 | Memory continuity | Copy-based audit and recall parity | Canonical store audit and rollback proof |
 | Feature ledger | Every row assigned | Every row migrated or outcome-preserving retirement approved |
+| Complexity budget | Baseline recorded and tracked from G0 | Every budget in 5.1 met |
 
 Stable v1 is not permitted while any ledger row is unassigned, unverified, or marked as an ambiguous follow-up.
+
+### 5.1 Complexity budget
+
+This refactor must shrink the maintained system, not restate it in more packages. Moving code is not reduction; only deletion is. The baseline, measured on the v0 source at this PRD's revision (handwritten TypeScript, excluding tests, dist, and generated files):
+
+- total handwritten source: about 189,000 lines across 22 packages;
+- agent-app alone: about 66,000 lines, plus about 59,000 lines of tests;
+- the coordination layer v1 replaces (agent-app, agent-harness, agent-contracts, runtime-adapter): about 82,500 lines;
+- parallel configuration machinery restating schema facts (config views and env maps, persisted/resolved type pairs, the handwritten config reference, wizard and capability modules, field registries across 21 files): more than 8,000 lines;
+- the managed service closure copier: about 3,300 lines;
+- duplicate operator wire clients in web and tui: about 700 lines plus their decoding logic.
+
+Budget gates, tracked by a machine-generated report from G0 onward:
+
+| Budget | Gate |
+| --- | --- |
+| core + plugin-sdk + cli combined handwritten source | At most 30,000 lines — under 40 percent of the 82,500-line layer they replace; exceeding it requires a reviewed PRD amendment |
+| Config representations per field | Exactly one, the schema; the parallel machinery above is deleted, not wrapped |
+| Operator wire-contract implementations | Exactly one |
+| Extension seams | One plugin contract plus the named host ports |
+| Publishable package count | At most the 28 recorded in section 11; a 29th requires a reviewed PRD amendment |
+| Net handwritten source at G8 | Below the G0 baseline; stable release is blocked while the v1 tree plus surviving v0 code exceeds it |
+| Minimal scaffold production dependency closure | Measured at V1-107 and may not grow afterward without a reviewed amendment |
+
+Generated artifacts — types, JSON Schema, documentation pages, and fixtures emitted from schemas — are excluded from the budgets but must regenerate reproducibly in CI. A generated file that needs hand-editing counts as handwritten. Shared compliance and fixture suites must replace duplicated per-integration tests that cover the same behavior, not stack on top of them.
 
 ## 6. Delivery method and governance
 
@@ -129,6 +155,11 @@ The work uses a stage-gated strangler migration with vertical slices:
 - Each slice lands in an isolated worktree and focused PR.
 - Architecture, configuration/security, memory migration, and production cutover changes require an adversarial review pass before merge; routine slices use the normal review loop.
 - Production writes, service replacement, npm publication, and canonical memory cutover require explicit maintainer approval.
+
+Two rules keep the migration from growing the system it is meant to shrink:
+
+- Paired deletion. Every v1 mechanism names the v0 code it replaces and the gate at which that code is deleted, and the parity ledger records the pairing. A slice that only adds code is rejected unless it is one of the named greenfield surfaces (the plugin SDK, the operator protocol), each of which exists to unlock recorded deletions.
+- One implementation. The repository holds exactly one implementation of each capability throughout the migration. Strangler coexistence means dual entry points over one implementation — a legacy export beside the definePlugin export until the legacy export is deleted — never a forked copy of an integration. Production consumers stay on frozen published v0 releases, with a maintenance branch for critical fixes, while the source tree converts in place.
 
 No implementation wave may solve unrelated feature requests. Newly discovered behavior is added to the parity ledger before it is changed.
 
@@ -646,6 +677,8 @@ Additional v1 packages required to separate current app-owned behavior:
 
 The final package set may contain more publishable packages than v0. The lean-core requirement is about the ownership and dependency closure of a selected application, not minimizing repository package count at the expense of mixed responsibilities. The inverse also holds: micro-packages are avoided. Implementations that share one filesystem discipline and add no external dependencies — history, run recording, presence, the continuation store — ship as selectable contributions of one state package rather than four packages, each of which would otherwise carry its own catalog entry, README gate, release ceremony, and documentation surface.
 
+The recorded v1 set is exactly 28 publishable packages: 14 retained or renamed, 4 runtime plugins from the agent-runtime split, and 10 new, while 8 v0 package names dissolve through retirement or splits. Per-package ceremony (responsibility docs, public API inventories) is generated from owned metadata under DEV-002, so a package's maintenance cost is its source, not its paperwork. A 29th package requires a reviewed PRD amendment under the section 5.1 budget.
+
 ## 12. Public CLI disposition
 
 All 20 current public command names are accounted for:
@@ -970,7 +1003,7 @@ During consumer migration, the v0 and v1 definitions use distinct labels. Only o
 | ID | Work item | Depends on | Acceptance and evidence |
 | --- | --- | --- | --- |
 | V1-001 | Ratify ownership and dependency ADR | PRD approval | Core/plugin/product responsibilities and forbidden edges are explicit; architecture reviewer approves |
-| V1-002 | Freeze the package, command, config, and feature baselines | V1-001 | Inventories regenerate from the existing package catalog, drift tests, and CLI registry, covering 22 packages, 20 commands, 14 capability modules, five bridges, public APIs, and current product tests |
+| V1-002 | Freeze the package, command, config, and feature baselines | V1-001 | Inventories regenerate from the existing package catalog, drift tests, and CLI registry, covering 22 packages, 20 commands, 14 capability modules, five bridges, public APIs, and current product tests, plus the machine-generated 5.1 complexity baseline (handwritten-source line counts per package and layer) |
 | V1-003 | Create the capability disposition tracker | V1-002 | Every requirement in section 13 has an owner, target package, test, and status; no miscellaneous bucket |
 | V1-004 | Capture golden consumer manifests | V1-002 | Personal Agent and A8C Assistant selected features, config, service, and memory requirements are recorded without secrets |
 | V1-005 | Extend the existing architecture checker with v1 budget gates | V1-001 | CI rejects forbidden core dependencies, concrete integration imports, unowned config registries, and third-party plugin catalog requirements, building on check:architecture and the package catalog rather than a parallel tool |
@@ -1078,7 +1111,7 @@ Consumer work uses clean branches/worktrees and never overwrites unrelated dirty
 | V1-802 | Run stable release candidate | V1-801 | Full local gate, package packing, clean consumers, all runtime smokes, both golden consumers, and release workflow pass |
 | V1-803 | Publish 1.0 stable | V1-802 | Independently versioned stable packages are registry-verified under latest |
 | V1-804 | Deprecate replaced v0 packages | V1-803 | npm deprecation points to migration docs; versions remain available; no consumer still depends on a removed package |
-| V1-805 | Remove v0 implementation and docs | V1-803 plus 30-day rollback window | Old code is proved unused, stable consumers remain healthy, and dead-code/architecture/docs gates pass |
+| V1-805 | Remove v0 implementation and docs | V1-803 plus 30-day rollback window | Old code is proved unused, stable consumers remain healthy, dead-code/architecture/docs gates pass, and the 5.1 complexity report shows net handwritten source below the G0 baseline |
 | V1-806 | Complete post-launch review | V1-803 | Incidents, delivery metrics, contributor feedback, and follow-up decisions are recorded without reopening v1 scope silently |
 
 ## 18. Work-item execution contract
@@ -1087,6 +1120,7 @@ Every implementation story must state:
 
 - one bounded outcome;
 - owning package and allowed file boundaries;
+- the v0 code it replaces and the gate at which that code is deleted, or an explicit greenfield justification;
 - source-of-truth requirements and linked ledger IDs;
 - dependencies and required built artifacts;
 - allowed tools and environments;
@@ -1417,6 +1451,7 @@ Rollback preserves diagnostic evidence, stops v1, restores the disabled v0 defin
 | Dirty consumer checkouts are overwritten | Migration begins in existing working directory | Dedicated worktree/branch, explicit diff review, no stash/reset | Consumer owner |
 | Lockstep releases couple unrelated packages | A fix in one plugin forces a full release train | Acceptable: the existing pipeline releases all packages in one verified pass; revisit independent versioning only if this becomes a measured bottleneck | Release owner |
 | Long migration drifts from v0 fixes | New feature/fix lands only in v0 | Freeze policy and ledger update required for accepted fixes | Product owner |
+| Rewrite ends larger than v0 | Code moves without deletions; shared suites stack on old tests; forked copies linger | Paired-deletion rule, one-implementation rule, CI-tracked 5.1 budget report, stable blocked on net reduction | Product owner |
 | Service simplification loses security guarantees | Project-local launch lacks old closure proof | Lockfile/install/Node/config provenance and validate-before-restart | Service owner |
 | Third-party plugin compromises host | Untrusted package installed | Explicit trust boundary, direct dependency, normal npm review; no false isolation claim | Project operator |
 
@@ -1502,6 +1537,7 @@ A gate is done only when every required child item is done and the gate evidence
 - Plugin kinds are runtime, channel, memory, tool, and extension; everything else is a narrow host port, and one package may ship several port implementations.
 - Continuation coordination is core-owned behind a store port; durable local operational state consolidates into state-local.
 - Fail closed applies to configuration, authentication, and structural errors; transport-level failures degrade with bounded recovery and honest health.
+- The refactor is budgeted to shrink: paired deletions, the one-implementation rule, and the section 5.1 complexity budget are release criteria, and stable v1 is blocked while net handwritten source exceeds the v0 baseline.
 - The operator model is one shared protocol, client, and view-model package consumed by native TUI and web renderers; deeper controller unification is a post-v1 direction, not a release gate.
 - Personal Agent and A8C Assistant are the golden production consumers.
 - Memory is the only migrated durable user state.
