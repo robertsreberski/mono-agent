@@ -69,6 +69,11 @@ the agent supports structured pending-question exchange and
   `{ id, text, receivedAt }` follow-up to the active run and waits for its
   `applied`, `requeue`, or `discarded` settlement.
 
+An `applied` settlement is also visible on the still-open turn stream as one
+completed synthetic tool lifecycle named `↪️ Steered: “<safe preview>”`, with
+result `Applied to current run`. The full guidance text is not repeated in the
+event metadata or tool arguments. Other settlements emit no such lifecycle.
+
 Ask submission is conversation-bound and rejects expired, completed, or
 mismatched interaction ids. The endpoint remains subject to the same loopback,
 non-loopback opt-in, and optional bearer-key policy as streamed turns.

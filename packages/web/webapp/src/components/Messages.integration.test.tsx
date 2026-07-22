@@ -101,6 +101,29 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.getByText("Applied to current run")).toBeVisible();
   });
 
+  it("renders an applied live follow-up as a completed Steered tool activity", () => {
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [
+        {
+          type: "tool-call",
+          toolCallId: "live-input:follow-up-1",
+          toolName: "↪️ Steered: “Use the API instead”",
+          result: "Applied to current run",
+          status: "complete",
+        },
+        { type: "text", text: "Done." },
+      ],
+    }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    const toolName = screen.getByText("↪️ Steered: “Use the API instead”");
+    expect(toolName).toBeVisible();
+    expect(screen.getByText("done")).toBeVisible();
+    fireEvent.click(toolName.closest("summary")!);
+    expect(screen.getByText('"Applied to current run"')).toBeVisible();
+  });
+
   it("preserves reasoning, tools, and answer order while keeping telemetry internal", () => {
     render(<MessageHarness message={assistantMessage("complete")} />);
 

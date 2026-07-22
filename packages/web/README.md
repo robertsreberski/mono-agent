@@ -113,6 +113,11 @@ turn path, and cancelling the active turn also cancels its pending or queued
 live follow-ups. Live follow-ups are capped at 8,000 characters and 100
 unsettled messages per thread.
 
+Once the provider applies a follow-up, the assistant's Activity disclosure also
+receives one completed `↪️ Steered: “<safe preview>”` tool row with result
+`Applied to current run`. The original follow-up remains the full human message;
+the synthetic activity carries only a one-line, redacted, 40-code-point preview.
+
 The header bell explicitly enables browser notifications for successful
 responses that arrive while the console is hidden or unfocused. Notifications
 include a short response preview and open the exact conversation. Permission

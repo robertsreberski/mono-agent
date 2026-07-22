@@ -19,7 +19,7 @@ Every framework capability and how a composed agent reaches it. This table is th
 | Tool-output bloat guard, cost tracking | auto | built into every run | — |
 | Context handling / auto-compaction | config + provider | `runtime.compaction.*` (matching `MONO_AGENT_COMPACTION_*`) controls adaptive Pi compaction. Omitted budgets derive from the active model window; reactive recovery re-prompts exactly once only after a verified reduction, and persistent `context_limit` advances to a configured fallback | `runtime.context-compaction` |
 | Structured output (JSON schema) | code | harness `runtimeOptions.outputSchema` | — |
-| Live input steering | auto + code | built into ordinary Slack, Telegram, and web-console turns; custom hosts use `runtimeOptions.liveInput` | — |
+| Live input steering | auto + code | built into ordinary Slack, Telegram, and web-console turns, including completed safe-preview `Steered` activity after provider acknowledgement; custom hosts use `runtimeOptions.liveInput` | — |
 | Tool approval gates (risk tiers, timeouts, always-allow) | code | `createMonoRuntime({ onToolApprovalRequest, ... })` — needs a host UI | — |
 | Fully custom runtime | code | `startMonoAgentApp({ runtime })` | — |
 

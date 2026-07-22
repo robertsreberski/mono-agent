@@ -41,6 +41,8 @@ import { runtimeCapabilities } from "./capabilities.js";
 import { buildTranscriptTailSnapshot, renderResumeSnapshot } from "../../agent/transcript.js";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 import { resolveRuntimeBrand } from "../../runtime-brand.js";
+import { createObserverHub } from "../observer.js";
+import { instrumentLiveInputAppliedEvents } from "./live-input-events.js";
 
 /**
  * @typedef {import('../types.js').RuntimeModelRef} RuntimeModelRef
@@ -127,6 +129,22 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
      * @returns {Promise<RuntimeResult>}
      */
     async run(systemPrompt, options = {}) {
+      const liveInputHub = options.liveInput === undefined
+        ? undefined
+        : createObserverHub({
+            observers: [
+              ...(Array.isArray(host.observers) ? host.observers : []),
+              ...(Array.isArray(options.observers) ? options.observers : []),
+            ],
+            onEvent: options.onEvent,
+          });
+      if (options.liveInput !== undefined && liveInputHub !== undefined) {
+        options = {
+          ...options,
+          liveInput: instrumentLiveInputAppliedEvents(options.liveInput, liveInputHub.emit),
+        };
+      }
+      try {
       /** @type {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null|undefined), retryableSubkind?: (string|null|undefined), requirements?: (Object<string,*>|null), routeSafety?: import('../types.js').RuntimeRouteSafetyMode, safetyContract?: import('../types.js').RuntimeRouteSafetyContract}>} */
       const failoverHistory = [];
       /** @type {RuntimeResult|null} */
@@ -374,6 +392,9 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
         failoverHistory,
         routeSafetyHistory,
       };
+      } finally {
+        await liveInputHub?.flush();
+      }
     },
     chain: () => entries.slice(),
     configureTools(next = {}) {

@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { formatToolActivityLine, toolHintFor } from "../tool-hints.js";
+import {
+  formatLiveInputActivityLine,
+  formatToolActivityLine,
+  toolHintFor,
+} from "../tool-hints.js";
 
 describe("toolHintFor", () => {
   it("maps built-in tools to friendly hints", () => {
@@ -177,5 +181,29 @@ describe("formatToolActivityLine", () => {
       action: "append preference",
       content: "private user profile",
     })).toBe("🧠 Updating memory append preference");
+  });
+});
+
+describe("formatLiveInputActivityLine", () => {
+  it("renders a one-line steering preview with the shared secret redaction", () => {
+    expect(formatLiveInputActivityLine("  Use TOKEN=fixture\nthen continue  "))
+      .toBe("↪️ Steered: “Use TOKEN=[redacted] then continue”");
+  });
+
+  it("collapses local paths and caps the preview at 40 Unicode code points", () => {
+    const line = formatLiveInputActivityLine(
+      `Review /Users/example/agent/${"🧠".repeat(50)}/result.md`,
+      { workspaceRoot: "/Users/example/agent", homeDir: "/Users/example" },
+    );
+    const prefix = "↪️ Steered: “";
+    const preview = line.slice(prefix.length, -1);
+
+    expect(line).not.toContain("/Users/example");
+    expect(Array.from(preview)).toHaveLength(40);
+    expect(preview.endsWith("…")).toBe(true);
+  });
+
+  it("uses a stable label when no safe preview remains", () => {
+    expect(formatLiveInputActivityLine("\n\t")).toBe("↪️ Steered");
   });
 });

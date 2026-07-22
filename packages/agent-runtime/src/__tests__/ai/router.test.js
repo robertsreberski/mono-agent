@@ -86,6 +86,69 @@ describe("createRouterRuntime — fallback on retryable", () => {
     ]);
   });
 
+  it("reuses one instrumented live-input stream across failover without duplicate applied events", async () => {
+    const acknowledge = vi.fn();
+    const events = [];
+    executeMock
+      .mockImplementationOnce(async (_systemPrompt, options) => {
+        const next = await options.liveInput[Symbol.asyncIterator]().next();
+        next.value.acknowledge();
+        return {
+          text: null,
+          error: "Connection error.",
+          failureKind: "provider_unavailable",
+          events: [],
+          cancelled: false,
+        };
+      })
+      .mockImplementationOnce(async (_systemPrompt, options) => {
+        const replay = await options.liveInput[Symbol.asyncIterator]().next();
+        replay.value.acknowledge();
+        return { text: "recovered", events: [], failureKind: null };
+      });
+    const liveInput = {
+      [Symbol.asyncIterator]() {
+        let delivered = false;
+        return {
+          async next() {
+            if (delivered) return { done: true, value: undefined };
+            delivered = true;
+            return {
+              done: false,
+              value: {
+                body: "guide",
+                id: "follow-up-1",
+                receivedAt: "2026-07-22T08:30:00.000Z",
+                acknowledge,
+              },
+            };
+          },
+        };
+      },
+    };
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "claude", model: "claude-opus-4-7" },
+        { sdk: "claude", model: "claude-sonnet-4-6" },
+      ],
+    });
+
+    const result = await router.run("sys", {
+      messages: [],
+      liveInput,
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(result.text).toBe("recovered");
+    expect(acknowledge).toHaveBeenCalledTimes(2);
+    expect(events.filter((event) => event.type === "live_input_applied")).toEqual([{
+      type: "live_input_applied",
+      inputId: "follow-up-1",
+      receivedAt: "2026-07-22T08:30:00.000Z",
+    }]);
+    expect(executeMock.mock.calls[0][1].liveInput).toBe(executeMock.mock.calls[1][1].liveInput);
+  });
+
   it("falls back on pi 0.80's terse 'Connection error.' (live-smoke regression)", async () => {
     // pi 0.80's bridge collapses a connection-refused/unreachable provider down
     // to this bare string with no cause text — see ai/failure.js's

@@ -72,7 +72,10 @@ With `skillDisclosure: "index"`, the model-facing Skill Index lists names and de
 Its bounded mailbox delivers follow-ups only when the selected backend supports
 native steering. The provider acknowledges each message only after its native
 steering boundary accepts it; applied follow-ups are then recorded as ordered
-user history and included in memory persistence. Unsupported, failed, or
+user history and included in memory persistence. The responder correlates that
+acknowledgement to the pending human message and emits one completed synthetic
+tool lifecycle named `↪️ Steered: “<safe preview>”`; the full follow-up remains
+only the human message. Unsupported, failed, or
 end-of-turn races settle as `requeue`, allowing Slack, Telegram, and the web
 console to run the reserved message as the next normal turn instead of losing it.
 
@@ -107,7 +110,7 @@ The harness is the request-to-runtime composition boundary:
 | `src/harness.ts` / `src/harness/` | Turn orchestration, validation, runtime invocation, persistence, and cleanup |
 | `src/context/` / `src/skills/` | Deterministic context assembly and selected-skill loading |
 | `src/tool-policy/` | Tool and MCP normalization with a fail-closed default |
-| `src/responder.ts` | Structural request/stream adapter plus cancellation and session rollover |
+| `src/responder.ts` | Structural request/stream adapter, applied-live-input activity correlation, cancellation, and session rollover |
 | `src/live-input.ts` | Bounded idempotent mailbox, provider acknowledgement, failover replay, and settlement |
 | `src/live-session.ts` / `src/sessions.ts` | Queue-after-turn coordination and provider-session lifecycle |
 | `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history |

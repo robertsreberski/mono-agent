@@ -528,7 +528,7 @@ export {
   normalizeTrailing,
   splitTextByCodePoints,
 } from "./stream-text.js";
-export { toolHintFor } from "./tool-hints.js";
+export { formatLiveInputActivityLine, toolHintFor } from "./tool-hints.js";
 export {
   ResilientMessageStream,
   ChannelDeliveryError,

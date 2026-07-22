@@ -85,6 +85,43 @@ describe("createRuntime", () => {
     );
   });
 
+  it("emits one metadata-only live_input_applied event after a bridge acknowledges guidance", async () => {
+    const acknowledge = vi.fn();
+    const events = [];
+    executeMock.mockImplementationOnce(async (_systemPrompt, options) => {
+      const next = await options.liveInput[Symbol.asyncIterator]().next();
+      next.value.acknowledge();
+      next.value.acknowledge();
+      return { text: "ok", events: [] };
+    });
+    const runtime = createRuntime();
+    const liveInput = {
+      async *[Symbol.asyncIterator]() {
+        yield {
+          body: "Do not expose this full guidance",
+          id: "follow-up-1",
+          receivedAt: "2026-07-22T08:30:00.000Z",
+          acknowledge,
+        };
+      },
+    };
+
+    await runtime.run("sys", {
+      model: { sdk: "claude", model: "x" },
+      liveInput,
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(acknowledge).toHaveBeenCalledTimes(2);
+    expect(events).toEqual([{
+      type: "live_input_applied",
+      inputId: "follow-up-1",
+      receivedAt: "2026-07-22T08:30:00.000Z",
+    }]);
+    expect(events[0]).not.toHaveProperty("body");
+    expect(events[0]).not.toHaveProperty("text");
+  });
+
   it("run() forwards host defaults under per-call options to bridge.execute", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     const resolveCustomPricing = () => null;
