@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 
 import {
+  AGENT_LIVE_INPUT_MAX_CHARACTERS,
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
   BoundedHttpResponseWriter,
@@ -13,6 +14,7 @@ import {
   serializeAgentStreamFrame,
   type AgentAttachment,
   type AgentMessageStream,
+  type AgentLiveInputOffer,
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
@@ -118,6 +120,7 @@ const MAX_TURN_BODY_BYTES = 96 * 1024 * 1024;
 const MAX_VERBATIM_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_VERBATIM_TEXT_CHARACTERS = 200_000;
 const MAX_VERBATIM_TEXT_BYTES = 1024 * 1024;
+const MAX_LIVE_INPUT_BODY_BYTES = 32 * 1024;
 const MAX_WEB_ATTACHMENTS = 10;
 const MAX_WEB_ATTACHMENT_BYTES = 64 * 1024 * 1024;
 const ALLOWED_ATTACHMENT_MIME_TYPES = new Set(
@@ -148,6 +151,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const turnsPath = `${basePath}/v1/turns`;
   const cancelPath = `${basePath}/v1/conversations/:conversationId/cancel`;
   const verbatimPath = `${basePath}/v1/conversations/:conversationId/verbatim`;
+  const liveInputPath = `${basePath}/v1/conversations/:conversationId/live-input`;
   const askPath = `${basePath}/v1/conversations/:conversationId/ask`;
 
   app.get(infoPath, (req, res) => {
@@ -161,6 +165,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
           pid: process.pid,
           capabilities: {
             attachments: true,
+            ...(typeof options.responder.offerLiveInput === "function" ? { liveInput: true } : {}),
             ...(typeof options.responder.deliverVerbatim === "function" ? { historyAppend: true } : {}),
             ...(options.interaction === undefined ? {} : { askUser: true }),
           },
@@ -237,6 +242,55 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       idempotencyKey: body.idempotencyKey,
     }).then(() => {
       res.status(200).json({ recorded: true, conversationId: body.conversationId });
+    }).catch(next);
+  });
+
+  app.post(liveInputPath, express.json({ limit: MAX_LIVE_INPUT_BODY_BYTES, strict: true }), (req, res, next) => {
+    if (!authorize(req, res, apiKey)) return;
+    const conversationId = normalizeOptionalString(
+      typeof req.params.conversationId === "string" ? req.params.conversationId : undefined,
+    );
+    const body = typeof req.body === "object" && req.body !== null
+      ? req.body as Record<string, unknown>
+      : {};
+    if (
+      conversationId === undefined
+      || typeof body.id !== "string"
+      || body.id.trim().length === 0
+      || typeof body.text !== "string"
+      || body.text.trim().length === 0
+      || body.text.length > AGENT_LIVE_INPUT_MAX_CHARACTERS
+      || typeof body.receivedAt !== "string"
+      || Number.isNaN(Date.parse(body.receivedAt))
+    ) {
+      next(new TuiAdapterError(
+        "invalid_request",
+        `Live input requires id, receivedAt, and 1-${String(AGENT_LIVE_INPUT_MAX_CHARACTERS)} text characters.`,
+      ));
+      return;
+    }
+    if (typeof options.responder.offerLiveInput !== "function") {
+      res.status(200).json({ status: "unavailable", reason: "unsupported" });
+      return;
+    }
+    let offer: AgentLiveInputOffer;
+    try {
+      offer = options.responder.offerLiveInput({
+        conversationId,
+        id: body.id,
+        text: body.text,
+        receivedAt: body.receivedAt,
+      });
+    } catch (error) {
+      next(error);
+      return;
+    }
+    if (offer.status === "unavailable") {
+      res.status(200).json(offer);
+      return;
+    }
+    void offer.settled.then((settlement) => {
+      res.status(200).json(settlement);
     }).catch(next);
   });
 

@@ -1,4 +1,5 @@
 import type { RuntimeEventLike } from "@mono-agent/observability";
+import type { AgentLiveInputOffer, AgentLiveInputRequest } from "@mono-agent/agent-contracts";
 import {
   monoRuntimeSupportsSessionResume,
   type RuntimeExecutionMode,
@@ -9,6 +10,8 @@ import type { BuiltAgentContext } from "./context/index.js";
 import { NoopRunRecorder } from "./recorder.js";
 import { createLiveSessionManager } from "./live-session.js";
 import type { LiveSessionManager, LiveSessionRunLifecycle } from "./live-session.js";
+import { createLiveInputMailbox } from "./live-input.js";
+import type { LiveInputMailbox } from "./live-input.js";
 import { createSemaphore } from "./semaphore.js";
 import type { Semaphore } from "./semaphore.js";
 import { createRuntimeSessionStore } from "./sessions.js";
@@ -73,6 +76,7 @@ export class MonoAgentHarness implements AgentHarness {
   private readonly options: AgentHarnessOptions;
   private readonly sessionStore: RuntimeSessionStore | undefined;
   private readonly liveSessionManager: LiveSessionManager | undefined;
+  private readonly activeLiveInputs = new Map<string, LiveInputMailbox>();
   private readonly skillsCache: SkillsCache;
   private readonly runLimiter: Semaphore | undefined;
   // Admission bound (maxPendingRuns): a cheap synchronous counter of runs that
@@ -124,7 +128,13 @@ export class MonoAgentHarness implements AgentHarness {
     return this.run(request);
   }
 
+  offerLiveInput(request: AgentLiveInputRequest): AgentLiveInputOffer {
+    return this.activeLiveInputs.get(request.conversationId)?.offer(request)
+      ?? { status: "unavailable", reason: "inactive" };
+  }
+
   cancel(conversationId: string, reason?: unknown): void {
+    this.activeLiveInputs.get(conversationId)?.cancel();
     this.liveSessionManager?.cancel(conversationId, reason);
   }
 
@@ -177,6 +187,8 @@ export class MonoAgentHarness implements AgentHarness {
     const modelOverrideIsolated = requestOverridesModel(request, this.options.model);
     const continuationIsolated = request.continuation !== undefined;
     const isolated = proactiveIsolated || modelOverrideIsolated || continuationIsolated;
+    let liveInputMailbox: LiveInputMailbox | undefined;
+    let liveInputCloseReason: "closed" | "failed" = "failed";
     const recorder = this.options.recorderFactory?.({
       runId,
       conversationId: request.conversationId,
@@ -217,6 +229,12 @@ export class MonoAgentHarness implements AgentHarness {
         const summary = await safeRecorderFail(recorder, error);
         return { metadata: responseMetadata(runId, request, undefined, summary), failure };
       }
+    }
+    liveInputMailbox = isolated || this.activeLiveInputs.has(request.conversationId)
+      ? undefined
+      : createLiveInputMailbox(runId);
+    if (liveInputMailbox !== undefined) {
+      this.activeLiveInputs.set(request.conversationId, liveInputMailbox);
     }
     const sessionRecord = !isolated && this.sessionsEnabled() ? this.sessionStore?.acquire(request.conversationId) : undefined;
     let context: BuiltAgentContext | undefined;
@@ -414,6 +432,7 @@ export class MonoAgentHarness implements AgentHarness {
           prepared.historyAsMessages,
           attachmentContext,
           continuationCapabilities,
+          liveInputMailbox,
           () => noteProviderStart(resumeSessionId),
         );
         noteProviderResultSession(runtimeResult.providerSessionId);
@@ -471,6 +490,7 @@ export class MonoAgentHarness implements AgentHarness {
           prepared.historyAsMessages,
           attachmentContext,
           continuationCapabilities,
+          liveInputMailbox,
           () => noteProviderStart(undefined),
         );
         noteProviderResultSession(runtimeResult.providerSessionId);
@@ -611,6 +631,7 @@ export class MonoAgentHarness implements AgentHarness {
         completedTurn = await buildSuccessfulTurn(this.options,
           request.conversationId,
           persistText,
+          liveInputMailbox?.applied() ?? [],
           text,
           runId,
         );
@@ -753,7 +774,7 @@ export class MonoAgentHarness implements AgentHarness {
       if (completedTurn !== undefined) {
         await persistSuccessfulMemory(this.options,
           request.conversationId,
-          persistText,
+          completedTurn.userMemoryText,
           text,
           { runId, ...(runSource.source === undefined ? {} : { source: runSource.source }), emit },
         );
@@ -777,6 +798,7 @@ export class MonoAgentHarness implements AgentHarness {
         }));
       }
       continuationOriginSettled = true;
+      liveInputCloseReason = "closed";
       return {
         text,
         metadata: responseMetadata(runId, request, context, summary, runtimeResult),
@@ -829,6 +851,12 @@ export class MonoAgentHarness implements AgentHarness {
       } catch {
         // Interaction-journal cleanup is best-effort and must not change the turn outcome.
       }
+      if (liveInputMailbox !== undefined) {
+        liveInputMailbox.close(liveInputCloseReason);
+        if (this.activeLiveInputs.get(request.conversationId) === liveInputMailbox) {
+          this.activeLiveInputs.delete(request.conversationId);
+        }
+      }
       // Release the admission-pending slot if the run never reached its provider
       // call (e.g. a throw in applyAttachments/prepareContext, or an aborted
       // admission). No-op when onProviderStart already released it.
@@ -855,6 +883,8 @@ export class MonoAgentHarness implements AgentHarness {
     // store's onEvict disposes each provider session individually).
     // runtime.disposeAllSessions is intentionally NOT called here: the provider
     // registries are process-global and other harnesses may share them.
+    for (const mailbox of this.activeLiveInputs.values()) mailbox.cancel();
+    this.activeLiveInputs.clear();
     await this.liveSessionManager?.dispose();
     await this.sessionStore?.disposeAll();
   }

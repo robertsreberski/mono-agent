@@ -433,6 +433,9 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .message { position: relative; width: 100%; margin-bottom: 28px; user-select: none; }
 .message-user { display: flex; flex-direction: column; align-items: flex-end; }
 .message-user-content { max-width: min(78%, 650px); padding: 11px 15px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 16px 16px 4px 16px; }
+.live-input-status { margin: 5px 3px 0; color: var(--text-muted); font-size: 9.5px; letter-spacing: .01em; }
+.live-input-status.is-applied { color: var(--accent); }
+.live-input-status.is-cancelled { color: var(--danger); }
 .message-assistant { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: start; gap: 11px; }
 .assistant-mark { width: 28px; height: 28px; display: grid; place-items: center; margin-top: -2px; color: var(--accent); background: var(--accent-soft); border-radius: 9px; }
 .assistant-content { min-width: 0; padding-right: 36px; }
@@ -572,6 +575,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .composer-tools { min-width: 0; display: flex; align-items: center; gap: 5px; }
 .composer-tool { width: 32px; height: 32px; }
 .composer-hint { overflow: hidden; color: var(--text-muted); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.composer-actions { display: flex; align-items: center; gap: 6px; }
 .composer-trigger-popover { position: absolute; left: 9px; bottom: calc(100% + 9px); width: min(320px, calc(100vw - 24px)); padding: 5px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: var(--shadow-lg); z-index: 12; }
 .composer-trigger-list { max-height: min(310px, 48dvh); overflow-y: auto; overscroll-behavior: contain; }
 .composer-trigger-item { width: 100%; min-height: 49px; display: flex; align-items: center; gap: 10px; padding: 6px 8px; color: var(--text-soft); background: transparent; border-radius: 9px; cursor: pointer; outline: 0; text-align: left; }

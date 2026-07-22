@@ -1,6 +1,8 @@
 export { createAgentHarness, AgentHarnessError } from "./harness.js";
 export { createLiveSessionManager } from "./live-session.js";
 export type { LiveSessionManager, LiveSessionManagerOptions, LiveSessionRunLifecycle } from "./live-session.js";
+export { createLiveInputMailbox } from "./live-input.js";
+export type { AppliedLiveInput, LiveInputMailbox } from "./live-input.js";
 export { createInMemoryHistoryStore } from "./history.js";
 export { createDurableHistoryStore, DurableConversationHistoryStore } from "./durable-history.js";
 export type { DurableHistoryStoreOptions, DurableHistoryStoreStats } from "./durable-history.js";

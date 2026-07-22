@@ -3,6 +3,7 @@ import type { RuntimeEventLike } from "@mono-agent/observability";
 
 import type { HistoryMessage } from "../context/index.js";
 import type { AgentHarnessOptions } from "../types.js";
+import type { AppliedLiveInput } from "../live-input.js";
 import { compactOneLine } from "./value-utils.js";
 
 const MEMORY_PERSISTENCE_WARNING = "Memory persistence was not confirmed after the provider answer; the provider response was preserved.";
@@ -11,11 +12,13 @@ export async function buildSuccessfulTurn(
   options: AgentHarnessOptions,
   conversationId: string,
   userMessage: string,
+  liveInputs: readonly AppliedLiveInput[],
   assistantText: string,
   runId: string,
 ): Promise<{
   readonly capturedAt: string;
-  readonly messages: readonly [HistoryMessage, HistoryMessage];
+  readonly messages: readonly HistoryMessage[];
+  readonly userMemoryText: string;
 }> {
     const capturedAt = options.now?.().toISOString() ?? new Date().toISOString();
     let assistantHistoryText = assistantText;
@@ -31,11 +34,26 @@ export async function buildSuccessfulTurn(
     }
     return {
       capturedAt,
+      userMemoryText: composeUserMemoryText(userMessage, liveInputs),
       messages: [
         { role: "user", content: userMessage, timestamp: capturedAt, runId },
+        ...liveInputs.map((input) => ({
+          role: "user" as const,
+          content: input.text,
+          timestamp: input.receivedAt,
+          runId,
+        })),
         { role: "assistant", content: assistantHistoryText, timestamp: capturedAt, runId },
       ],
     };
+}
+
+function composeUserMemoryText(initial: string, liveInputs: readonly AppliedLiveInput[]): string {
+  if (liveInputs.length === 0) return initial;
+  return [
+    initial,
+    ...liveInputs.map((input, index) => `Live follow-up ${index + 1}:\n${input.text}`),
+  ].join("\n\n");
 }
 
 /**

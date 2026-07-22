@@ -16,7 +16,7 @@ Mono-agent uses "session" for five related but different boundaries:
 | `runtime.session` config block | Agent config / env | Whether turns try to reuse a warm provider session and how long idle warmth lasts | Changing config, setting `mode: "per-message"`, or disabling resume support |
 | Provider session | Runtime backend / provider bridge | Warm runtime continuity: provider-side context, provider session id, busy state, and idle eviction | Idle eviction, stale/busy resume retry, provider session rotation, cancelled successful turn, harness disposal, or process restart when only in-memory |
 | Durable Pi transcript | Pi-native JSONL store plus the canonical history record's random provider epoch and transcript revision | Crash-safe cross-restart and cross-process resume for Pi-native provider sessions | `mono-agent restart --clear-sessions`, deleting either store, a dirty fence or legacy/missing history record, host-only history append, failed provider sync, or leaving `piSessionsRoot` unset |
-| Web console thread | `mono-agent web` / `@mono-agent/web` | Persistent source-bound browser conversation, its messages/attachments, and at most one active turn; different threads can run concurrently | Archive only hides it; `mono-agent web reset --all --yes` removes the entire stopped console store. Browser disconnect does not end its active turn; service restart marks that turn interrupted |
+| Web console thread | `mono-agent web` / `@mono-agent/web` | Persistent source-bound browser conversation, its messages/attachments/live follow-ups, and at most one active turn; different threads can run concurrently | Archive only hides it; `mono-agent web reset --all --yes` removes the entire stopped console store. Browser disconnect does not end its active turn; service restart marks that turn interrupted and requeues uncertain live input |
 
 Boundary rules:
 
@@ -32,7 +32,7 @@ Boundary rules:
 | Detached status read | Nothing | All runtime/session state | No runtime event; status reads the latest published config + store snapshot |
 | `mono-agent restart --clear-sessions` / explicit purge | Durable Pi transcripts under `piSessionsRoot` and canonical active conversation history beside `artifacts.dir` | Durable memory under `memory.path` and recorded run artifacts | Restart/status output only |
 | Browser disconnect or reload | Only that SSE/browser connection | Web service turn, source-bound thread, messages, committed attachments, provider/harness work | Reconnect receives current state and subsequent events |
-| Web service restart | Any web-owned active upstream connection | Terminal messages, archived/active threads, committed attachments, agent memory/history, recorded runs | Active web turn is projected as `interrupted` |
+| Web service restart | Any web-owned active upstream connection | Terminal messages, archived/active threads, committed attachments, queued live follow-ups, agent memory/history, recorded runs | Active web turn is projected as `interrupted`; pending live offers become queued normal turns |
 | `mono-agent web reset --all --yes` | Entire stopped web-console SQLite/settings/upload state | Agent configs, provider/harness history, memory, and recorded-run artifacts | CLI confirmation/result only |
 
 ## Provider sessions
@@ -92,9 +92,16 @@ conversations and threads remain inaccessible.
 
 Env vars: `MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS`, `MONO_AGENT_CONCURRENCY_MAX_PENDING_RUNS`.
 
-These bounds cover the harness run path (which begins at `responder.respond`). Channel adapters (Slack/Telegram) do per-conversation admission and attachment downloads *before* that boundary, so cross-conversation transport download IO is not covered here — per-file byte caps and timeouts apply to that instead. Adapter queues are drained and aborted on `/cancel` and stop.
+These bounds cover the harness run path (which begins at `responder.respond`). Channel adapters (Slack/Telegram) do per-conversation admission and attachment downloads *before* that boundary, so cross-conversation transport download IO is not covered here — per-file byte caps and timeouts apply to that instead. A plain-text same-conversation follow-up can be applied inside the active provider run; its reserved adapter queue slot is released after acknowledgement or becomes the next normal turn on an unsupported/failed/end-of-turn race. Adapter queues are drained and aborted on `/cancel` and stop.
 
-The web console separately admits only one active turn per thread. Because each thread has its own permanent conversation id, distinct web threads and distinct agents can execute concurrently subject to the selected agent's ordinary harness limits. Closing the browser does not free a harness slot or cancel that turn; use the visible cancel action when cancellation is intended.
+The web console separately admits only one active turn per thread. Text-only
+submissions during that turn use live provider steering when supported and a
+durable next-turn queue otherwise; they never create parallel responses in the
+same thread. Because each thread has its own permanent conversation id, distinct
+web threads and distinct agents can execute concurrently subject to the selected
+agent's ordinary harness limits. Closing the browser does not free a harness
+slot or cancel that turn; use the visible cancel action when cancellation is
+intended.
 
 ### Per-channel scope gotcha
 

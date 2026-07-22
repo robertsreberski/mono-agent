@@ -30,6 +30,7 @@ import {
   type WebBootstrap,
   type WebEvent,
   type WebEventType,
+  type WebLiveInputReceipt,
   type WebModelOption,
   type WebNotificationTriggerKind,
   type WebThread,
@@ -84,6 +85,12 @@ interface ActiveTurn {
   readonly completion: Promise<void>;
 }
 
+interface ActiveLiveInput {
+  readonly threadId: string;
+  readonly controller: AbortController;
+  readonly completion: Promise<void>;
+}
+
 interface AgentConnection {
   readonly client: OperatorClient;
   readonly info: OperatorInfo;
@@ -113,6 +120,8 @@ export class WebService {
   private readonly lease: WebStateLease;
   private readonly subscribers = new Set<(event: WebEvent) => boolean | void>();
   private readonly activeTurns = new Map<string, ActiveTurn>();
+  private readonly activeLiveInputs = new Map<string, ActiveLiveInput>();
+  private readonly drainingLiveInputThreads = new Set<string>();
   private readonly activeUploads = new Map<string, number>();
   private readonly activeNotifications = new Map<string, Promise<DeliverWebNotificationResult>>();
   private readonly allowlist = new Set(DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST);
@@ -281,20 +290,63 @@ export class WebService {
     }
     validateModelAndEffort(agent, input.model, input.effort);
     const started = this.store.beginTurn({ threadId, text, attachmentIds, ...(input.quote === undefined ? {} : { quote: input.quote }), ...(input.model === undefined ? {} : { model: input.model }), ...(input.effort === undefined ? {} : { effort: input.effort }) });
-    const controller = new AbortController();
-    const completion = this.runTurn(started, connection.client, controller, operatorText).finally(() => {
-      this.activeTurns.delete(threadId);
-    });
-    this.activeTurns.set(threadId, { turnId: started.turnId, controller, client: connection.client, completion });
+    this.launchTurn(started, connection.client, operatorText);
     this.emit("turn.changed", threadId, { turn: started.thread.runState });
     this.emit("threads.changed", threadId);
     return { thread: started.thread, turn: started.thread.runState };
+  }
+
+  submitLiveInput(threadId: string, text: string): WebLiveInputReceipt {
+    if (this.stopped) {
+      throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
+    }
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    const connection = this.connections.get(thread.sourceId);
+    const active = this.activeTurns.get(threadId);
+    const reserved = this.store.reserveLiveInput(threadId, text);
+    this.emit("message.changed", threadId, { messageId: reserved.message.id, updatedAt: reserved.message.updatedAt });
+    this.emit("threads.changed", threadId);
+
+    if (!reserved.offered || active === undefined || connection === undefined || !connection.info.supportsLiveInput) {
+      const queued = reserved.offered ? this.store.queueLiveInput(reserved.input.id) ?? reserved.message : reserved.message;
+      this.emit("message.changed", threadId, { messageId: queued.id, updatedAt: queued.updatedAt });
+      void this.drainQueuedLiveInputs(threadId);
+      return { message: queued, disposition: "queued" };
+    }
+
+    const controller = new AbortController();
+    const completion = this.deliverLiveInput(
+      reserved.input.id,
+      threadId,
+      active.client,
+      controller,
+      {
+        conversationId: `web:${threadId}`,
+        id: reserved.input.id,
+        text: reserved.input.text,
+        receivedAt: reserved.input.createdAt,
+      },
+    ).finally(() => {
+      this.activeLiveInputs.delete(reserved.input.id);
+    });
+    this.activeLiveInputs.set(reserved.input.id, { threadId, controller, completion });
+    return { message: reserved.message, disposition: "pending" };
   }
 
   async cancelTurn(threadId: string): Promise<WebThread> {
     const active = this.activeTurns.get(threadId);
     const stored = this.store.activeTurn(threadId);
     if (stored === undefined) throw new WebConsoleError("no_active_turn", "This conversation has no active turn.", 409);
+    const liveInputs = [...this.activeLiveInputs.entries()]
+      .filter(([, input]) => input.threadId === threadId);
+    const cancelledInputs = this.store.cancelLiveInputs(threadId);
+    for (const message of cancelledInputs) {
+      this.emit("message.changed", threadId, { messageId: message.id, updatedAt: message.updatedAt });
+    }
+    for (const [, input] of liveInputs) {
+      input.controller.abort(new WebTurnCancellation("user", "Live input cancelled from the web console."));
+    }
     if (active !== undefined) {
       void active.client.cancel(stored.conversationId).catch((error: unknown) => {
         this.options.logger?.debug?.("Web turn cancel request failed.", { error: errorMessage(error) });
@@ -410,6 +462,7 @@ export class WebService {
     const pendingPurge = this.purgePromise;
     this.refreshController?.abort(new Error("Web service is stopping."));
     const active = [...this.activeTurns.values()];
+    const activeLiveInputs = [...this.activeLiveInputs.entries()];
     const activeNotifications = [...this.activeNotifications.values()];
     const trackedIds = new Set(active.map((turn) => turn.turnId));
     for (const turnId of this.store.listActiveTurnIds()) {
@@ -419,7 +472,12 @@ export class WebService {
       this.store.interruptTurn(turn.turnId);
       turn.controller.abort(new WebTurnCancellation("shutdown", "Web service is stopping."));
     }
+    for (const [id, input] of activeLiveInputs) {
+      this.store.queueLiveInput(id);
+      input.controller.abort(new WebTurnCancellation("shutdown", "Web service is stopping."));
+    }
     await Promise.allSettled(active.map((turn) => turn.completion));
+    await Promise.allSettled(activeLiveInputs.map(([, input]) => input.completion));
     await Promise.allSettled(activeNotifications);
     if (pendingRefresh !== undefined) await pendingRefresh.catch(() => undefined);
     if (pendingPurge !== undefined) await pendingPurge.catch(() => undefined);
@@ -487,6 +545,82 @@ export class WebService {
     } finally {
       releaseAttachmentBudget?.();
       coalescer.close();
+    }
+  }
+
+  private launchTurn(
+    started: ReturnType<WebStore["beginTurn"]>,
+    client: OperatorClient,
+    operatorText: string,
+  ): void {
+    const threadId = started.thread.id;
+    const controller = new AbortController();
+    const completion = this.runTurn(started, client, controller, operatorText).finally(() => {
+      const active = this.activeTurns.get(threadId);
+      if (active?.turnId === started.turnId) this.activeTurns.delete(threadId);
+      if (!this.stopped) void this.drainQueuedLiveInputs(threadId);
+    });
+    this.activeTurns.set(threadId, { turnId: started.turnId, controller, client, completion });
+  }
+
+  private async deliverLiveInput(
+    id: string,
+    threadId: string,
+    client: OperatorClient,
+    controller: AbortController,
+    input: Omit<Parameters<OperatorClient["liveInput"]>[0], "signal">,
+  ): Promise<void> {
+    let queued = false;
+    let changedMessage: ReturnType<WebStore["markLiveInputApplied"]>;
+    try {
+      const result = await client.liveInput({ ...input, signal: controller.signal });
+      if (result.status === "applied") {
+        changedMessage = this.store.markLiveInputApplied(id);
+      } else if (result.status === "discarded") {
+        changedMessage = this.store.cancelLiveInput(id);
+      } else {
+        changedMessage = this.store.queueLiveInput(id);
+        queued = changedMessage !== undefined;
+      }
+    } catch (error) {
+      changedMessage = this.store.queueLiveInput(id);
+      queued = changedMessage !== undefined;
+      if (!controller.signal.aborted) {
+        this.options.logger?.debug?.("Web live-input delivery failed; queued as a turn.", {
+          threadId,
+          error: errorMessage(error),
+        });
+      }
+    }
+    if (changedMessage !== undefined) {
+      this.emit("message.changed", threadId, {
+        messageId: changedMessage.id,
+        updatedAt: changedMessage.updatedAt,
+      });
+    }
+    this.emit("threads.changed", threadId);
+    if (queued && !this.stopped) await this.drainQueuedLiveInputs(threadId);
+  }
+
+  private async drainQueuedLiveInputs(threadId: string): Promise<void> {
+    if (this.stopped || this.activeTurns.has(threadId) || this.drainingLiveInputThreads.has(threadId)) return;
+    this.drainingLiveInputThreads.add(threadId);
+    try {
+      const thread = this.store.getThread(threadId);
+      if (thread === undefined || thread.archivedAt !== null || !thread.canSend) return;
+      const connection = this.connections.get(thread.sourceId);
+      if (connection === undefined) return;
+      const started = this.store.promoteNextQueuedLiveInput(threadId);
+      if (started === undefined) return;
+      this.launchTurn(started, connection.client, started.text);
+      this.emit("message.changed", threadId, {
+        messageId: started.assistantMessageId,
+        updatedAt: started.thread.updatedAt,
+      });
+      this.emit("turn.changed", threadId, { turn: started.thread.runState });
+      this.emit("threads.changed", threadId);
+    } finally {
+      this.drainingLiveInputThreads.delete(threadId);
     }
   }
 
@@ -588,6 +722,9 @@ export class WebService {
     this.store.replaceAgents(summaries);
     this.emit("agents.changed", undefined, { agents: this.store.listAgents() });
     this.emit("threads.changed");
+    for (const threadId of this.store.queuedLiveInputThreadIds()) {
+      void this.drainQueuedLiveInputs(threadId);
+    }
   }
 
   private startTimers(): void {

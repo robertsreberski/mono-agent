@@ -105,7 +105,11 @@ The [Feature Registry](/reference/feature-registry/) tags each capability so you
 | `dev` | Development/test tooling, not part of a running agent |
 
 :::tip
-A handful of capabilities are `code`-only — for example structured output schemas, tool approval gates, live input steering, and custom runtimes/channels. These are not expressible in JSON; reach them through `startMonoAgentApp` / `createConfiguredAgentResponder`. See [Programmatic Composition](/programmatic/).
+A handful of capabilities are `code`-only — for example structured output
+schemas, tool approval gates, and custom runtimes/channels. Direct runtime live
+input is also a code API, while the managed Slack, Telegram, and web-console
+hosts expose it automatically on capable backends. See [Programmatic
+Composition](/programmatic/) and [Live input steering](/programmatic/approval-and-structured-output/#live-input-steering).
 :::
 
 ## Validate before you run

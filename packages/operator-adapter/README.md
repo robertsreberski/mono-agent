@@ -60,8 +60,9 @@ Keep bearer values out of source config when possible. Set
 ### Conversational endpoints
 
 - `GET {basePath}/v1/info` returns the wire `schema`, process id, and attachment
-  capability. `capabilities.historyAppend` and `capabilities.askUser` are
-  advertised additively when their routes are supported. The response also
+  capability. `capabilities.liveInput`, `capabilities.historyAppend`, and
+  `capabilities.askUser` are advertised additively when their routes are
+  supported. The response also
   includes `label`, default `model`, default `effort`, candidate `models`, and
   per-model `modelOptions` when the host supplies them. `info` may be a function
   so local-model choices can refresh without restarting the endpoint.
@@ -79,6 +80,10 @@ Keep bearer values out of source config when possible. Set
   the same turn resumes after all questions are answered.
 - `POST {basePath}/v1/conversations/:id/cancel` - explicit cancel (202; 501
   when the responder has no `cancel`); pending AskUser state is cancelled too.
+- `POST {basePath}/v1/conversations/:id/live-input` - offer bounded
+  `{ id, text, receivedAt }` guidance to the active turn. The response waits for
+  `applied`, `requeue`, or `discarded`; inactive/unsupported offers return
+  `unavailable` without inventing success.
 - `POST {basePath}/v1/conversations/:id/verbatim` - authenticated
   `{ text, idempotencyKey }` durable-history append with no model turn (200; 501
   when the responder has no `deliverVerbatim`).
@@ -93,14 +98,15 @@ are reduced and remeasured; an event that still cannot fit becomes a bounded
 
 1. The host passes an `AgentResponder` to `startTuiAdapter` and publishes the
    returned conversational base URL through its trace-source metadata.
-2. A TUI or web client reads `/v1/info`, submits a turn, and consumes structured
-   NDJSON frames until `finish` or `error`; disconnecting aborts that request.
+2. A TUI or web client reads `/v1/info`, submits a turn, consumes structured
+   NDJSON frames until `finish` or `error`, and may offer live input while that
+   turn is active; disconnecting the turn stream aborts the request.
 
 ### Package structure
 
 | Source module | Responsibility |
 | --- | --- |
-| [`tui/server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/tui/server.ts) | Conversational info, turn, cancel, pending/submitted `AskUser`, history-append, attachment, and NDJSON framing routes. |
+| [`tui/server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/tui/server.ts) | Conversational info, turn, live-input, cancel, pending/submitted `AskUser`, history-append, attachment, and NDJSON framing routes. |
 | [`tui/config.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/tui/config.ts) | `tui.*` JSON/env layering, validation, and secret redaction. |
 | [`index.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/index.ts) | Supported public package surface for the operator endpoint. |
 

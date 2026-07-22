@@ -8,7 +8,14 @@ import { dirname, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
-import { closeServerBounded, hostForUrl, listen, normalizeHostForBind, type ChannelAskAnswer } from "@mono-agent/agent-contracts";
+import {
+  AGENT_LIVE_INPUT_MAX_CHARACTERS,
+  closeServerBounded,
+  hostForUrl,
+  listen,
+  normalizeHostForBind,
+  type ChannelAskAnswer,
+} from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import {
@@ -18,6 +25,7 @@ import {
   type CreateWebUploadInput,
   type PatchWebAgentInput,
   type PatchWebThreadInput,
+  type StartWebLiveInputInput,
   type StartWebTurnInput,
   type WebEvent,
 } from "./contracts.js";
@@ -142,6 +150,15 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     void trackOperation(service.startTurn(threadId, input), activeOperations)
       .then((started) => res.status(202).json(started))
       .catch(next);
+  });
+
+  app.post("/api/v1/threads/:id/live-input", (req, res, next) => {
+    try {
+      const input = parseLiveInput(req.body);
+      res.status(202).json(service.submitLiveInput(pathParam(req.params.id), input.text));
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/v1/threads/:id/cancel", (req, res, next) => {
@@ -588,6 +605,13 @@ function parseTurn(value: unknown): StartWebTurnInput {
     ...(attachmentIds === undefined ? {} : { attachmentIds }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
+  };
+}
+
+function parseLiveInput(value: unknown): StartWebLiveInputInput {
+  const body = requireRecord(value);
+  return {
+    text: requireString(body.text, "text", AGENT_LIVE_INPUT_MAX_CHARACTERS),
   };
 }
 

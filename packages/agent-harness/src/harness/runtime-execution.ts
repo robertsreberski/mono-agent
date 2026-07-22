@@ -1,7 +1,9 @@
 import type { RunRecorder, RuntimeEventLike } from "@mono-agent/observability";
 import {
   modelReferenceKey,
+  monoRuntimeSupportsLiveInput,
   sandboxPolicyToRuntimeOptions,
+  type RuntimeExecutionMode,
   type RuntimeMessage,
   type RuntimeResult,
   type RuntimeRunOptions,
@@ -16,6 +18,7 @@ import type {
   AgentHarnessRequest,
   AgentHarnessRuntimeOptionsExtension,
 } from "../types.js";
+import type { LiveInputMailbox } from "../live-input.js";
 import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "../tool-policy/index.js";
 import type { AttachmentRequestContext } from "./attachments.js";
 import { AgentHarnessError } from "./error.js";
@@ -47,6 +50,7 @@ export async function runHarnessRuntime(
   historyAsMessages: boolean,
   attachmentContext: AttachmentRequestContext,
   continuationCapabilities: AgentHarnessContinuationClaimCapability[],
+  liveInputMailbox?: LiveInputMailbox,
   onProviderStart?: () => void,
 ): Promise<RuntimeResult> {
     const hostOnEvent = request.onEvent;
@@ -235,6 +239,21 @@ export async function runHarnessRuntime(
         : executionModeForOverride(overrideModel, options.executionMode);
       const overrideEffort = typeof merged.effort === "string" ? merged.effort : undefined;
       const effectiveEffort = overrideEffort ?? options.effort;
+      const useManagedLiveInput = liveInputMailbox !== undefined && merged.liveInput === undefined;
+      let supportsLiveInput = false;
+      if (liveInputMailbox !== undefined) {
+        if (useManagedLiveInput) {
+          try {
+            supportsLiveInput = monoRuntimeSupportsLiveInput(
+              effectiveModel,
+              effectiveExecutionMode as RuntimeExecutionMode | undefined,
+            );
+          } catch {
+            supportsLiveInput = false;
+          }
+        }
+        if (!useManagedLiveInput || !supportsLiveInput) liveInputMailbox.markUnsupported();
+      }
       // When the override names a DIFFERENT model, run it on a runtime built for
       // that model (override as the fallback-chain primary, configured backups
       // after) so failover is preserved. Falls back to the shared runtime when no
@@ -261,6 +280,9 @@ export async function runHarnessRuntime(
           currentUserMessage,
         ],
         abortSignal: request.abortSignal,
+        ...(useManagedLiveInput && supportsLiveInput && liveInputMailbox !== undefined
+          ? { liveInput: liveInputMailbox }
+          : {}),
         ...(effectiveExecutionMode === undefined ? {} : { executionMode: effectiveExecutionMode }),
         ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
         ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),

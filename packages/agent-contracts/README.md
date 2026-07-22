@@ -18,8 +18,8 @@ Catalog responsibility: Defines shared structural request/response contracts plu
 
 ## Responsibility
 
-Define the structural request, response, stream, channel-driver, and memory
-contracts that packages can implement independently. It also owns
+Define the structural request, response, stream, in-flight follow-up,
+channel-driver, and memory contracts that packages can implement independently. It also owns
 small dependency-free helpers for settings JSON, JSON-to-env mapping, safe
 network binding, bearer tokens, attachments, and stream framing.
 
@@ -47,6 +47,12 @@ An adapter extends `AgentRequestBase` with transport metadata, supplies an
 returned `AgentResponse` is the terminal result; stream callbacks carry visible
 text and structured progress while the request is running.
 
+Responders may also implement `offerLiveInput()`. An adapter can then offer one
+plain-text follow-up to the active conversation without starting a parallel
+turn. The immediate result says whether the active run accepted ownership; the
+settlement later reports `applied`, `requeue`, or `discarded`, so the adapter can
+preserve its ordinary queue position across provider and end-of-turn races.
+
 ## Architecture
 
 ### Data flow
@@ -56,9 +62,11 @@ The core turn boundary is deliberately structural:
 1. A channel normalizes transport input into an `AgentRequestBase`, including a
    required `AbortSignal`.
 2. The host calls `AgentResponder.respond(request, stream)`.
-3. The responder sends deltas, replacement text, status, and telemetry through
+3. While that response is active, the adapter may offer bounded live input and
+   retain normal-turn admission until the offer settles.
+4. The responder sends deltas, replacement text, status, and telemetry through
    `AgentMessageStream` and returns an `AgentResponse` when the turn settles.
-4. A `ChannelDriver` combines config loading and the responder with a transport,
+5. A `ChannelDriver` combines config loading and the responder with a transport,
    returns a `RunningChannel`, and reports `ChannelStatus` transitions to the
    host.
 
@@ -68,7 +76,7 @@ Primary modules:
 
 | Area | Modules | Purpose |
 | --- | --- | --- |
-| Turn contracts | `index.ts`, `types.ts` | Requests, responses, attachments, cancellation, and settings value shapes. |
+| Turn contracts | `index.ts`, `types.ts` | Requests, responses, attachments, live-input ownership/settlement, cancellation, and settings value shapes. |
 | Channel lifecycle | `channel.ts` | Driver startup, running handles, status, notifications, and interaction hooks. |
 | Message delivery | `buffered-message-stream.ts`, `resilient-message-stream.ts`, `stream-text.ts` | Collect or safely adapt incremental output. |
 | Process transport | `stream-wire.ts` | NDJSON stream frames for operator clients. |
@@ -96,6 +104,7 @@ a balanced prefix and suffix. Redaction still precedes the 40-code-point cap.
 | Need | Primary API |
 | --- | --- |
 | Implement or call an agent turn | `AgentRequestBase`, `AgentResponder`, `AgentMessageStream`, `AgentResponse` |
+| Offer a follow-up to an active turn | `AgentLiveInputRequest`, `AgentLiveInputOffer`, `AgentLiveInputSettlement` |
 | Implement a channel plugin | `ChannelDriver`, `ChannelStartInput`, `RunningChannel`, `ChannelStatus` |
 | Add structured human interaction to a channel | `ChannelInteractionHub`, `ChannelInteractionSink`, `ChannelAskQuestion`, `ChannelAskSnapshot`, `ChannelAskSubmission` |
 | Buffer or harden streamed output | `BufferedMessageStream`, `ResilientMessageStream` |
@@ -114,10 +123,16 @@ Every symbol exported by each public code entrypoint is listed below.
 AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_BYTES
 AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGES
 AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGE_BYTES
+AGENT_LIVE_INPUT_MAX_CHARACTERS
+AGENT_LIVE_INPUT_MAX_MESSAGES
 AgentAttachment
 AgentContinuationContextMessage
 AgentContinuationOriginContext
 AgentContinuationTurn
+AgentLiveInputOffer
+AgentLiveInputRequest
+AgentLiveInputSettlement
+AgentLiveInputUnavailableReason
 AgentMessageStream
 AgentReplyTarget
 AgentRequestBase

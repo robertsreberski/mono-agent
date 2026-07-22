@@ -50,6 +50,33 @@ describe("OperatorClient", () => {
       supportsAttachments: true,
       supportsHistoryAppend: false,
       supportsAskUser: true,
+      supportsLiveInput: false,
+    });
+  });
+
+  it("posts live input to the encoded conversation and validates its settlement", async () => {
+    let request: { url: string; body: unknown } | undefined;
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async (input, init) => {
+        request = { url: String(input), body: JSON.parse(String(init?.body)) };
+        return Response.json({ status: "applied", runId: "run-7" });
+      }) as typeof fetch,
+    });
+
+    await expect(client.liveInput({
+      conversationId: "web:thread/one",
+      id: "input-1",
+      text: "Use the new constraint",
+      receivedAt: "2026-07-21T09:00:00.000Z",
+    })).resolves.toEqual({ status: "applied", runId: "run-7" });
+    expect(request).toEqual({
+      url: "http://127.0.0.1:1234/gui/v1/conversations/web%3Athread%2Fone/live-input",
+      body: {
+        id: "input-1",
+        text: "Use the new constraint",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+      },
     });
   });
 

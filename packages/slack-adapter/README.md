@@ -96,9 +96,11 @@ Choose the highest useful abstraction:
 2. `startSlackAdapter` is the normal programmatic entrypoint. It builds the Web
    API client, discovers the authenticated bot identity, constructs the event
    adapter and Socket Mode runner, starts reconnection, and returns one `stop()`.
-3. Advanced hosts can compose `SlackWebApiClient`, `SlackAdapter`, and
+3. Eligible text sent during a same-conversation run enters the responder's
+   acknowledged live-input path while retaining a normal-turn fallback slot.
+4. Advanced hosts can compose `SlackWebApiClient`, `SlackAdapter`, and
    `SlackSocketModeRunner` separately when they need custom transport lifecycle.
-4. `SlackMessageStream` and the Markdown functions are the lowest delivery and
+5. `SlackMessageStream` and the Markdown functions are the lowest delivery and
    formatting layer; they do not receive or admit Slack events themselves.
 
 ### Activity indicator and transient tool ledger
@@ -125,6 +127,16 @@ file reads remain `📖 Reading`. Proactive
 deliveries suppress it. An acknowledged `/cancel`
 best-effort deletes the still-transient ledger and keeps the command's one
 `Cancelled.` acknowledgement.
+
+### Live follow-up steering
+
+When the responder exposes live input, another plain-text message in the same
+Slack conversation while a turn is running is offered to that active provider
+run and acknowledged with 👀. Commands, pending `AskUser` replies, and messages
+with files retain their existing paths. The adapter reserves the follow-up's
+ordinary queue position before offering it: if the provider is unsupported, the
+run ends first, or delivery fails, the exact message runs next as a normal turn.
+Applied guidance does not create a second assistant response.
 
 ### Model and effort controls
 
@@ -248,7 +260,8 @@ The request lifecycle is:
    wires the adapter to the Socket Mode runner, and starts the reconnect loop.
 3. `socket-mode-runner.ts` acknowledges envelopes and routes events,
    interactivity, and slash commands; `adapter.ts` authorizes and normalizes them
-   into structural agent requests with per-conversation admission.
+   into structural agent requests with per-conversation admission and live-input
+   fallback reservation.
 4. The host responder emits standard stream events. `message-stream.ts` converts
    them into Slack posts/updates/deletes, while `slack-markdown.ts` translates
    standard Markdown at the transport boundary.

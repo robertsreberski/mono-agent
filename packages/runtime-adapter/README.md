@@ -61,8 +61,9 @@ provider kernel:
 1. Model helpers parse and validate a canonical reference and execution mode.
 2. `createMonoRuntime()` injects the mono-agent sandbox implementation exactly
    once, then constructs either one runtime or an ordered fallback router.
-3. `MonoRuntimeLike` exposes `run()`, tool reconfiguration, and bounded provider
-   session lifecycle methods to `agent-harness`.
+3. `MonoRuntimeLike` exposes `run()`, acknowledged live-input messages, tool
+   reconfiguration, and bounded provider session lifecycle methods to
+   `agent-harness`.
 4. Local-provider and MCP helpers translate host config into provider-neutral
    runtime options without importing channel or application code.
 
@@ -71,7 +72,7 @@ provider kernel:
 | Source file | Responsibility |
 | --- | --- |
 | `src/runtime-adapter.ts` | Model parsing, backend descriptors, facade construction, and fallback routing |
-| `src/types.ts` | Structural runtime, result, event, approval, and session contracts |
+| `src/types.ts` | Structural runtime, result, event, live-input, approval, and session contracts |
 | `src/sandbox*.ts` | Sandbox policy, managed SRT integrity, and command wrapping |
 | `src/local-providers.ts` | Ollama, LM Studio, and OpenAI-compatible provider validation/discovery |
 | `src/mcp-servers.ts` / `src/runtime-policies.ts` | MCP normalization and legacy-policy migration |
@@ -84,7 +85,7 @@ provider kernel:
 | --- | --- |
 | `createMonoRuntime()` | Construct the typed runtime facade and inject mono-agent's sandbox implementation |
 | `parseMonoRuntimeModelReference()` | Parse and validate a canonical model string |
-| `listMonoRuntimeBackends()` / `describeMonoRuntimeSupport()` | Present backend capabilities and compatibility without starting a provider |
+| `listMonoRuntimeBackends()` / `describeMonoRuntimeSupport()` / `monoRuntimeSupportsLiveInput()` | Present backend capabilities and compatibility without starting a provider |
 | `createSandboxPolicy()` / `failClosedSandboxPolicy()` | Build explicit filesystem and network policy data |
 | `discoverLocalProviderModels()` / `runtimeOptionsForLocalProvider()` | Validate and project a configured local Pi provider |
 | `parseMcpServers()` | Normalize HTTP, SSE, and stdio MCP server definitions |
@@ -146,6 +147,7 @@ RuntimeAdapterErrorDetails
 RuntimeCompactionPolicy
 RuntimeEventLike
 RuntimeExecutionMode
+RuntimeLiveInputMessage
 RuntimeMessage
 RuntimeModelReference
 RuntimePolicies
@@ -198,6 +200,7 @@ listMonoRuntimeBackends
 managedSrtInstallRoot
 mergeSandboxPolicies
 modelReferenceKey
+monoRuntimeSupportsLiveInput
 monoRuntimeSupportsSessionResume
 networkPolicyAllowsUrl
 parseMcpServers

@@ -68,6 +68,14 @@ Hosts wire identity/context paths, runtime, model, execution mode, tool policy, 
 Hosts that need request-scoped runtime setup can provide `runtimeOptionsForRequest`; the harness merges those options into the runtime call, keeps configured sandbox policy monotonic, and runs the returned cleanup after execution.
 With `skillDisclosure: "index"`, the model-facing Skill Index lists names and descriptions without filesystem paths and directs the agent to load applicable instructions through `ReadSkill`; full disclosure does not emit guidance for that tool.
 
+`createAgentResponder()` exposes `offerLiveInput()` for an ordinary active turn.
+Its bounded mailbox delivers follow-ups only when the selected backend supports
+native steering. The provider acknowledges each message only after its native
+steering boundary accepts it; applied follow-ups are then recorded as ordered
+user history and included in memory persistence. Unsupported, failed, or
+end-of-turn races settle as `requeue`, allowing Slack, Telegram, and the web
+console to run the reserved message as the next normal turn instead of losing it.
+
 For `append-host-summary` and `capture` write modes, a memory store that implements
 `persistCompletedTurn` receives one awaited, run-idempotent admission before the successful turn
 returns. The provider answer remains successful if admission rejects; the harness emits
@@ -84,7 +92,8 @@ The harness is the request-to-runtime composition boundary:
    bound.
 2. Persist attachments, load identity/SOUL and selected skills, recall memory,
    and assemble canonical history into runtime messages.
-3. Merge fail-closed tool policy and request-scoped runtime options, then invoke
+3. Merge fail-closed tool policy and request-scoped runtime options, attach the
+   active conversation's live-input mailbox on capable backends, then invoke
    `MonoRuntimeLike.run()` under the provider-run concurrency bound.
 4. Normalize runtime results into explicit success/failure responses while
    streaming structural events to the communication adapter.
@@ -99,6 +108,7 @@ The harness is the request-to-runtime composition boundary:
 | `src/context/` / `src/skills/` | Deterministic context assembly and selected-skill loading |
 | `src/tool-policy/` | Tool and MCP normalization with a fail-closed default |
 | `src/responder.ts` | Structural request/stream adapter plus cancellation and session rollover |
+| `src/live-input.ts` | Bounded idempotent mailbox, provider acknowledgement, failover replay, and settlement |
 | `src/live-session.ts` / `src/sessions.ts` | Queue-after-turn coordination and provider-session lifecycle |
 | `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history |
 
@@ -110,6 +120,7 @@ The harness is the request-to-runtime composition boundary:
 | --- | --- |
 | `createAgentHarness()` | Compose context, runtime, history, memory, policy, recording, and session behavior for one host |
 | `createAgentResponder()` | Expose a harness through the shared `AgentResponder` request/stream contract |
+| `createLiveInputMailbox()` | Build the provider-facing mailbox used to settle active-turn follow-ups without loss |
 | `createToolPolicy()` / `failClosedToolPolicy()` | Declare exactly which built-in and MCP tools may reach the runtime |
 | `createDurableHistoryStore()` | Persist canonical conversation history and coordinate durable provider-session retirement |
 | `createLiveSessionManager()` | Serialize same-conversation follow-ups while allowing different conversations to run concurrently |
@@ -150,6 +161,7 @@ AgentHarnessSessionOptions
 AgentHarnessSessionSnapshot
 AgentHarnessTurnHistoryEnricher
 AgentSessionMode
+AppliedLiveInput
 BuildContextInput
 BuiltAgentContext
 ContextBlockInput
@@ -171,6 +183,7 @@ ExternalRunSummary
 FileContextInput
 HistoryMessage
 InMemoryHistoryStoreOptions
+LiveInputMailbox
 LiveSessionManager
 LiveSessionManagerOptions
 LiveSessionRunLifecycle
@@ -207,6 +220,7 @@ createAgentHarness
 createAgentResponder
 createDurableHistoryStore
 createInMemoryHistoryStore
+createLiveInputMailbox
 createLiveSessionManager
 createRuntimeSessionStore
 createSkillsCache

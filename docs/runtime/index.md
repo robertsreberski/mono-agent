@@ -5,7 +5,7 @@ sidebar:
   order: 0
 ---
 
-The runtime layer is what actually drives a model: which backend executes a turn, how reasoning effort and tool permissions are set, how failures fall back to backup models, how local providers are wired in, how provider sessions and concurrency are bounded, and which built-in tools (and their auto-guards) ship out of the box. The config-first controls live under `runtime`, `providers`, and `concurrency` in `mono-agent.config.json`, with the documented `MONO_AGENT_*` environment overrides. Custom runtimes, interactive approval callbacks, live input, and orchestration remain programmatic surfaces.
+The runtime layer is what actually drives a model: which backend executes a turn, how reasoning effort and tool permissions are set, how failures fall back to backup models, how local providers are wired in, how provider sessions and concurrency are bounded, and which built-in tools (and their auto-guards) ship out of the box. The config-first controls live under `runtime`, `providers`, and `concurrency` in `mono-agent.config.json`, with the documented `MONO_AGENT_*` environment overrides. Custom runtimes, interactive approval callbacks, direct live-input queues, and orchestration remain programmatic surfaces; managed Slack, Telegram, and web-console turns supply their own live-input queue automatically.
 
 ## At a glance
 

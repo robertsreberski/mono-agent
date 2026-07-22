@@ -703,6 +703,37 @@ describe("codex-app persistent sessions", () => {
     expect(returned).toBe(true);
   });
 
+  it("acknowledges live input only after turn/steer accepts it", async () => {
+    const factory = stubClientFactory({ threadId: "thread-live-input" });
+    factory.turnPlan.push("manual");
+    let releaseInput = () => {};
+    const inputReady = new Promise((resolve) => { releaseInput = resolve; });
+    const acknowledge = vi.fn();
+    const reject = vi.fn();
+    const liveInput = (async function* () {
+      await inputReady;
+      yield { body: "Use the stricter constraint", id: "live-1", acknowledge, reject };
+    })();
+
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, { liveInput }));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    releaseInput();
+    await vi.waitFor(() => expect(
+      factory.clients[0]?.requests.some((request) => request.method === "turn/steer"),
+    ).toBe(true));
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(reject).not.toHaveBeenCalled();
+    const steer = factory.clients[0]?.requests.find((request) => request.method === "turn/steer");
+    expect(steer?.params).toMatchObject({
+      threadId: "thread-live-input",
+      expectedTurnId: "turn-1",
+      input: [{ type: "text", text: expect.stringContaining("Use the stricter constraint") }],
+    });
+
+    factory.clients[0]?.finishTurn();
+    await expect(pending).resolves.toMatchObject({ error: null, text: "hello" });
+  });
+
   it("runs the dedicated no-tool probe read-only and interrupts the first tool action", async () => {
     const factory = stubClientFactory({ threadId: "thread-no-tools" });
     factory.turnPlan.push("manual");

@@ -29,7 +29,14 @@ const builtinBridgeSpecs = {
     id: "claude-code",
     supports: (ref, options) => ref?.sdk === "claude" && options?.executionMode === "cli",
     // The claude CLI resumes prior sessions via `--resume <sessionId>`.
-    capabilities: () => ({ kind: "claude-code", runtime: "cli", ...COMMON_CAPABILITIES, supports_session_resume: true }),
+    capabilities: () => ({
+      kind: "claude-code",
+      runtime: "cli",
+      ...COMMON_CAPABILITIES,
+      supports_session_resume: true,
+      // The one-shot CLI bridge has no bidirectional stdin steering channel.
+      supports_live_input: false,
+    }),
     load: async () => (await import("../providers/claude-cli.js")).claudeCodeRuntimeBridge,
   },
   "codex-app": {

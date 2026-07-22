@@ -628,13 +628,17 @@ Per-call options (a non-exhaustive selection):
 | `maxTurns` | `number` | Hard cap on agent turns. |
 | `outputSchema` | `JSONSchema` | Requests structured JSON on capable bridges; see “Structured output” below for bridge-specific return behavior. |
 | `abortSignal` | `AbortSignal` | Cancel the run. |
-| `liveInput` | `AsyncIterable<{ body: string; id?: string }>` | Stream of in-flight user messages for steering on capable bridges. |
+| `liveInput` | `AsyncIterable<{ body: string; id?: string; receivedAt?: string; acknowledge?: () => void; reject?: (error?: unknown) => void }>` | Stream of in-flight user messages for steering on capable bridges. A bridge acknowledges only after its native steering boundary accepts the message; per-attempt rejection permits router replay. |
 | `onEvent` | `(event) => void` | Fired for every event the provider emits (assistant text, tool calls/results, runtime warnings, structured output). |
 | `runId` | `string` | Tag this run for downstream callbacks (e.g. `onCompactionRecorded`). |
 | `providerSessionId` | `string` | Resume a prior provider session. |
 | `runArtifactDir` | `string` | Used by some providers as the Playwright MCP filename target. |
 | `codexAppServerCommand` | `string` | Override the Codex CLI binary. |
 | `codexAppServerArgs` | `string[]` | Override the Codex CLI arguments. |
+
+Live input is native on the Claude SDK, Codex app-server, and Pi bridges. The
+one-shot Claude CLI and direct OpenCode bridges advertise it as unsupported so
+routers skip them when a direct runtime call requires steering.
 
 Returns:
 

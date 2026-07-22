@@ -151,6 +151,15 @@ describe("convertWebMessage", () => {
     });
     expect(converted.content).toEqual([{ type: "text", text: "Follow up" }]);
   });
+
+  it("exposes live follow-up delivery state as message metadata", () => {
+    const converted = convertWebMessage(message({
+      liveInputStatus: "queued",
+      parts: [{ type: "text", text: "Use the smaller scope" }],
+    }));
+
+    expect(converted.metadata?.custom?.liveInputStatus).toBe("queued");
+  });
 });
 
 describe("runtime capability gates", () => {

@@ -4,6 +4,7 @@ import type {
   AskSnapshot,
   AskSubmissionResult,
   Bootstrap,
+  LiveInputReceipt,
   StartTurnInput,
   ThreadDetail,
   ThreadSummary,
@@ -105,6 +106,12 @@ export const api = {
     request<{ thread: ThreadSummary; turn: { id: string; status: string } }>(
       `/api/v1/threads/${encodeURIComponent(threadId)}/turns`,
       { method: "POST", body: JSON.stringify(input) },
+    ),
+
+  liveInput: async (threadId: string, text: string) =>
+    request<LiveInputReceipt>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/live-input`,
+      { method: "POST", body: JSON.stringify({ text }) },
     ),
 
   cancelTurn: async (threadId: string) =>

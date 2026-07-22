@@ -3,11 +3,17 @@ import { chmod, lstat, readdir, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import type { AgentStreamEvent, AgentStreamWireFrame } from "@mono-agent/agent-contracts";
+import {
+  AGENT_LIVE_INPUT_MAX_CHARACTERS,
+  type AgentStreamEvent,
+  type AgentStreamWireFrame,
+} from "@mono-agent/agent-contracts";
 
 import {
   WEB_MAX_FILES_PER_TURN,
+  WEB_MAX_LIVE_INPUTS_PER_THREAD,
   WEB_MAX_TURN_ATTACHMENT_BYTES,
+  WEB_MAX_TURN_TEXT_CHARACTERS,
   type WebAgentSummary,
   type WebAttachment,
   type WebMessage,
@@ -85,6 +91,19 @@ interface TurnRow {
   error_message: string | null;
 }
 
+interface LiveInputRow {
+  id: string;
+  thread_id: string;
+  message_id: string;
+  active_turn_id: string | null;
+  text: string;
+  model: string | null;
+  effort: string | null;
+  status: "offered" | "queued";
+  created_at: string;
+  updated_at: string;
+}
+
 export interface StoredAttachment {
   readonly id: string;
   readonly threadId?: string;
@@ -146,6 +165,22 @@ export interface BeginStoredTurnResult {
   readonly thread: WebThread;
 }
 
+export interface StoredLiveInput {
+  readonly id: string;
+  readonly threadId: string;
+  readonly messageId: string;
+  readonly text: string;
+  readonly status: "offered" | "queued";
+  readonly createdAt: string;
+}
+
+export interface ReserveStoredLiveInputResult {
+  readonly input: StoredLiveInput;
+  readonly message: WebMessage;
+  readonly thread: WebThread;
+  readonly offered: boolean;
+}
+
 export interface ReserveWebNotificationInput {
   readonly sourceId: string;
   readonly deliveryKey: string;
@@ -200,6 +235,7 @@ export class WebStore {
         chmod(`${paths.database}-shm`, 0o600).catch(ignoreMissing),
       ]);
       store.recoverInterruptedTurns();
+      store.recoverLiveInputs();
       return store;
     } catch (error) {
       store.close();
@@ -411,7 +447,17 @@ export class WebStore {
   getThreadDetail(id: string): WebThreadDetail | undefined {
     const thread = this.getThread(id);
     if (thread === undefined) return undefined;
-    const rows = this.database.prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at, rowid").all(id) as unknown as MessageRow[];
+    const rows = this.database.prepare(`
+      SELECT m.* FROM messages m
+      LEFT JOIN turns t ON t.id = m.turn_id
+      WHERE m.thread_id = ?
+      ORDER BY COALESCE(t.started_at, m.created_at),
+        CASE WHEN m.turn_id IS NOT NULL AND m.role = 'user' THEN 0
+             WHEN m.turn_id IS NOT NULL AND m.role = 'system' THEN 1
+             WHEN m.turn_id IS NOT NULL THEN 2
+             ELSE 3 END,
+        m.created_at, m.rowid
+    `).all(id) as unknown as MessageRow[];
     return { thread, messages: rows.map((row) => this.mapMessage(row)) };
   }
 
@@ -685,6 +731,206 @@ export class WebStore {
     };
   }
 
+  reserveLiveInput(threadId: string, text: string): ReserveStoredLiveInputResult {
+    const thread = this.requireThread(threadId);
+    if (thread.archivedAt !== null) {
+      throw new WebConsoleError("thread_archived", "Unarchive this conversation before sending another message.", 409);
+    }
+    if (!thread.canSend) {
+      throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
+    }
+    if (text.trim().length === 0) {
+      throw new WebConsoleError("empty_turn", "Enter a message.", 400);
+    }
+    if (text.length > AGENT_LIVE_INPUT_MAX_CHARACTERS) {
+      throw new WebConsoleError(
+        "turn_text_too_large",
+        `A live follow-up may contain at most ${AGENT_LIVE_INPUT_MAX_CHARACTERS} characters.`,
+        413,
+      );
+    }
+    const usage = this.database.prepare(
+      "SELECT COUNT(*) AS count FROM live_inputs WHERE thread_id = ?",
+    ).get(threadId) as unknown as { count: number };
+    if (usage.count >= WEB_MAX_LIVE_INPUTS_PER_THREAD) {
+      throw new WebConsoleError("live_input_queue_full", "Too many follow-up messages are waiting.", 429);
+    }
+    const active = this.database.prepare(
+      "SELECT id, model, effort FROM turns WHERE thread_id = ? AND status = 'running'",
+    ).get(threadId) as unknown as Pick<TurnRow, "id" | "model" | "effort"> | undefined;
+    const id = randomUUID();
+    const messageId = randomUUID();
+    const now = this.now();
+    const status = active === undefined ? "queued" : "offered";
+    const parts: WebMessagePart[] = [
+      liveInputTelemetry(status === "offered" ? "pending" : "queued"),
+      { type: "text", text },
+    ];
+    this.transaction(() => {
+      this.database.prepare(`
+        INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, ?, 'user', ?, ?, ?, 'complete')
+      `).run(messageId, threadId, active?.id ?? null, JSON.stringify(parts), now, now);
+      this.database.prepare(`
+        INSERT INTO live_inputs (
+          id, thread_id, message_id, active_turn_id, text, model, effort, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        threadId,
+        messageId,
+        active?.id ?? null,
+        text,
+        active?.model ?? null,
+        active?.effort ?? null,
+        status,
+        now,
+        now,
+      );
+      const title = deriveAutomaticTitle(text, []);
+      this.database.prepare(`
+        UPDATE threads
+        SET title = CASE WHEN title_manual = 0 AND title = 'New conversation' THEN ? ELSE title END,
+            updated_at = ?, revision = revision + 1
+        WHERE id = ?
+      `).run(title, now, threadId);
+      this.recordThreadRevision(threadId, "live_input_received", now);
+      this.setSetting("current_thread_id", threadId);
+    });
+    const stored = this.requireLiveInput(id);
+    return {
+      input: mapLiveInput(stored),
+      message: this.requireMessage(messageId),
+      thread: this.requireThread(threadId),
+      offered: status === "offered",
+    };
+  }
+
+  markLiveInputApplied(id: string): WebMessage | undefined {
+    const row = this.getLiveInput(id);
+    if (row === undefined) return undefined;
+    const message = this.requireMessage(row.message_id);
+    const now = this.now();
+    this.transaction(() => {
+      this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(withLiveInputStatus(message.parts, "applied")), now, row.message_id);
+      this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(id);
+      this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+        .run(now, row.thread_id);
+      this.recordThreadRevision(row.thread_id, "live_input_applied", now);
+    });
+    return this.requireMessage(row.message_id);
+  }
+
+  queueLiveInput(id: string): WebMessage | undefined {
+    const row = this.getLiveInput(id);
+    if (row === undefined) return undefined;
+    const message = this.requireMessage(row.message_id);
+    const now = this.now();
+    this.transaction(() => {
+      this.database.prepare(`
+        UPDATE live_inputs SET status = 'queued', active_turn_id = NULL, updated_at = ? WHERE id = ?
+      `).run(now, id);
+      this.database.prepare("UPDATE messages SET turn_id = NULL, parts_json = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(withLiveInputStatus(message.parts, "queued")), now, row.message_id);
+      this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+        .run(now, row.thread_id);
+      this.recordThreadRevision(row.thread_id, "live_input_queued", now);
+    });
+    return this.requireMessage(row.message_id);
+  }
+
+  cancelLiveInput(id: string): WebMessage | undefined {
+    const row = this.getLiveInput(id);
+    if (row === undefined) return undefined;
+    const message = this.requireMessage(row.message_id);
+    const now = this.now();
+    this.transaction(() => {
+      this.database.prepare("UPDATE messages SET turn_id = NULL, parts_json = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(withLiveInputStatus(message.parts, "cancelled")), now, row.message_id);
+      this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(id);
+      this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+        .run(now, row.thread_id);
+      this.recordThreadRevision(row.thread_id, "live_input_cancelled", now);
+    });
+    return this.requireMessage(row.message_id);
+  }
+
+  cancelLiveInputs(threadId: string): WebMessage[] {
+    const rows = this.database.prepare(
+      "SELECT * FROM live_inputs WHERE thread_id = ? ORDER BY created_at, rowid",
+    ).all(threadId) as unknown as LiveInputRow[];
+    if (rows.length === 0) return [];
+    const now = this.now();
+    this.transaction(() => {
+      const update = this.database.prepare(
+        "UPDATE messages SET turn_id = NULL, parts_json = ?, updated_at = ? WHERE id = ?",
+      );
+      for (const row of rows) {
+        const message = this.requireMessage(row.message_id);
+        update.run(JSON.stringify(withLiveInputStatus(message.parts, "cancelled")), now, row.message_id);
+      }
+      this.database.prepare("DELETE FROM live_inputs WHERE thread_id = ?").run(threadId);
+      this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+        .run(now, threadId);
+      this.recordThreadRevision(threadId, "live_inputs_cancelled", now);
+    });
+    return rows.map((row) => this.requireMessage(row.message_id));
+  }
+
+  queuedLiveInputThreadIds(): string[] {
+    return (this.database.prepare(`
+      SELECT thread_id FROM live_inputs WHERE status = 'queued'
+      GROUP BY thread_id ORDER BY MIN(created_at), thread_id
+    `).all() as unknown as Array<{ thread_id: string }>).map((row) => row.thread_id);
+  }
+
+  promoteNextQueuedLiveInput(threadId: string): BeginStoredTurnResult | undefined {
+    const active = this.database.prepare(
+      "SELECT id FROM turns WHERE thread_id = ? AND status = 'running'",
+    ).get(threadId);
+    if (active !== undefined) return undefined;
+    const row = this.database.prepare(`
+      SELECT * FROM live_inputs
+      WHERE thread_id = ? AND status = 'queued'
+      ORDER BY created_at, rowid LIMIT 1
+    `).get(threadId) as unknown as LiveInputRow | undefined;
+    if (row === undefined) return undefined;
+    const thread = this.requireThread(threadId);
+    if (!thread.canSend || thread.archivedAt !== null) return undefined;
+    const turnId = randomUUID();
+    const assistantMessageId = randomUUID();
+    const now = this.now();
+    const userMessage = this.requireMessage(row.message_id);
+    this.transaction(() => {
+      this.database.prepare(`
+        INSERT INTO turns (
+          id, thread_id, status, text, model, effort, assistant_message_id,
+          started_at, finished_at, error_code, error_message
+        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, NULL, NULL, NULL)
+      `).run(turnId, threadId, row.text, row.model, row.effort, assistantMessageId, now);
+      this.database.prepare("UPDATE messages SET turn_id = ?, parts_json = ?, updated_at = ? WHERE id = ?")
+        .run(turnId, JSON.stringify(withoutLiveInputTelemetry(userMessage.parts)), now, row.message_id);
+      this.database.prepare(`
+        INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, ?, 'assistant', '[]', ?, ?, 'running')
+      `).run(assistantMessageId, threadId, turnId, now, now);
+      this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(row.id);
+      this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+        .run(now, threadId);
+      this.recordThreadRevision(threadId, "turn_started", now);
+    });
+    return {
+      turnId,
+      conversationId: `web:${threadId}`,
+      text: row.text,
+      userMessageId: row.message_id,
+      assistantMessageId,
+      attachments: [],
+      thread: this.requireThread(threadId),
+    };
+  }
+
   applyStreamFrame(turnId: string, frame: AgentStreamWireFrame): WebMessage {
     return this.applyStreamFrames(turnId, [frame]);
   }
@@ -766,17 +1012,17 @@ export class WebStore {
     try {
       this.database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
       const versionRow = this.database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
-      if (versionRow.user_version > 2) {
+      if (versionRow.user_version > 3) {
         throw new WebConsoleError(
           "unsupported_storage_schema",
-          `Web state schema ${versionRow.user_version} is newer than supported schema 2.`,
+          `Web state schema ${versionRow.user_version} is newer than supported schema 3.`,
           500,
         );
       }
       if (versionRow.user_version < 0) {
         throw new WebConsoleError("storage_corrupt", "Web state schema version is invalid.", 500);
       }
-      const migrating = versionRow.user_version < 2;
+      const migrating = versionRow.user_version < 3;
       if (migrating) this.database.exec("BEGIN IMMEDIATE");
       try {
         this.database.exec(`
@@ -831,6 +1077,20 @@ export class WebStore {
         status TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS messages_by_thread ON messages(thread_id, created_at);
+      CREATE TABLE IF NOT EXISTS live_inputs (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+        active_turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+        text TEXT NOT NULL,
+        model TEXT,
+        effort TEXT,
+        status TEXT NOT NULL CHECK (status IN ('offered', 'queued')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS live_inputs_by_thread
+        ON live_inputs(thread_id, status, created_at);
       CREATE TABLE IF NOT EXISTS attachments (
         id TEXT PRIMARY KEY,
         thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE,
@@ -878,7 +1138,7 @@ export class WebStore {
             );
           }
         }
-        if (migrating) this.database.exec("PRAGMA user_version = 2; COMMIT");
+        if (migrating) this.database.exec("PRAGMA user_version = 3; COMMIT");
       } catch (error) {
         if (this.database.isTransaction) this.database.exec("ROLLBACK");
         throw error;
@@ -900,6 +1160,7 @@ export class WebStore {
       "threads",
       "turns",
       "messages",
+      "live_inputs",
       "attachments",
       "revisions",
       "settings",
@@ -925,6 +1186,41 @@ export class WebStore {
     for (const turnId of active) {
       this.interruptTurn(turnId, "The web service restarted before this turn completed.");
     }
+  }
+
+  private recoverLiveInputs(): void {
+    const rows = this.database.prepare(
+      "SELECT * FROM live_inputs WHERE status = 'offered' ORDER BY created_at, rowid",
+    ).all() as unknown as LiveInputRow[];
+    if (rows.length === 0) return;
+    const now = this.now();
+    const threadIds = new Set(rows.map((row) => row.thread_id));
+    this.transaction(() => {
+      const updateInput = this.database.prepare(`
+        UPDATE live_inputs SET status = 'queued', active_turn_id = NULL, updated_at = ? WHERE id = ?
+      `);
+      const updateMessage = this.database.prepare(
+        "UPDATE messages SET turn_id = NULL, parts_json = ?, updated_at = ? WHERE id = ?",
+      );
+      for (const row of rows) {
+        const persisted = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?")
+          .get(row.message_id) as unknown as { parts_json: string } | undefined;
+        if (persisted === undefined) {
+          throw new WebConsoleError("storage_corrupt", `Live input ${row.id} has no message.`, 500);
+        }
+        updateInput.run(now, row.id);
+        updateMessage.run(
+          JSON.stringify(withLiveInputStatus(parseParts(persisted.parts_json), "queued")),
+          now,
+          row.message_id,
+        );
+      }
+      for (const threadId of threadIds) {
+        this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+          .run(now, threadId);
+        this.recordThreadRevision(threadId, "live_inputs_recovered", now);
+      }
+    });
   }
 
   private finishTurn(
@@ -999,6 +1295,7 @@ export class WebStore {
       .all(row.id) as unknown as AttachmentRow[];
     const storedParts = parseParts(row.parts_json);
     const quote = quoteFromParts(storedParts);
+    const liveInputStatus = liveInputStatusFromParts(storedParts);
     return {
       id: row.id,
       threadId: row.thread_id,
@@ -1006,12 +1303,14 @@ export class WebStore {
       role: normalizeRole(row.role),
       ...(quote === undefined ? {} : { quote }),
       parts: storedParts.filter(
-        (part) => part.type !== "telemetry" || part.event !== QUOTE_TELEMETRY_EVENT,
+        (part) => part.type !== "telemetry"
+          || (part.event !== QUOTE_TELEMETRY_EVENT && part.event !== LIVE_INPUT_TELEMETRY_EVENT),
       ),
       attachments: attachments.map((attachment) => toWebAttachment(mapStoredAttachment(attachment))),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       status: normalizeMessageStatus(row.status),
+      ...(liveInputStatus === undefined ? {} : { liveInputStatus }),
     };
   }
 
@@ -1068,6 +1367,17 @@ export class WebStore {
     const row = this.database.prepare("SELECT * FROM messages WHERE id = ?").get(id) as unknown as MessageRow | undefined;
     if (row === undefined) throw new WebConsoleError("message_not_found", "Message not found.", 404);
     return this.mapMessage(row);
+  }
+
+  private getLiveInput(id: string): LiveInputRow | undefined {
+    return this.database.prepare("SELECT * FROM live_inputs WHERE id = ?")
+      .get(id) as unknown as LiveInputRow | undefined;
+  }
+
+  private requireLiveInput(id: string): LiveInputRow {
+    const row = this.getLiveInput(id);
+    if (row === undefined) throw new WebConsoleError("live_input_not_found", "Live input not found.", 404);
+    return row;
   }
 
   private requireStoredAttachment(id: string): StoredAttachment {
@@ -1183,6 +1493,17 @@ function mapStoredAttachment(row: AttachmentRow): StoredAttachment {
     storageName: row.storage_name,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function mapLiveInput(row: LiveInputRow): StoredLiveInput {
+  return {
+    id: row.id,
+    threadId: row.thread_id,
+    messageId: row.message_id,
+    text: row.text,
+    status: row.status,
+    createdAt: row.created_at,
   };
 }
 
@@ -1365,6 +1686,46 @@ function parseParts(value: string): WebMessagePart[] {
 }
 
 const QUOTE_TELEMETRY_EVENT = "quote";
+const LIVE_INPUT_TELEMETRY_EVENT = "live_input";
+
+type WebLiveInputStatus = NonNullable<WebMessage["liveInputStatus"]>;
+
+function liveInputTelemetry(status: WebLiveInputStatus): WebMessagePart {
+  return { type: "telemetry", event: LIVE_INPUT_TELEMETRY_EVENT, data: { status } };
+}
+
+function withoutLiveInputTelemetry(parts: readonly WebMessagePart[]): WebMessagePart[] {
+  return parts.filter(
+    (part) => part.type !== "telemetry" || part.event !== LIVE_INPUT_TELEMETRY_EVENT,
+  );
+}
+
+function withLiveInputStatus(
+  parts: readonly WebMessagePart[],
+  status: WebLiveInputStatus,
+): WebMessagePart[] {
+  return [liveInputTelemetry(status), ...withoutLiveInputTelemetry(parts)];
+}
+
+function liveInputStatusFromParts(parts: readonly WebMessagePart[]): WebLiveInputStatus | undefined {
+  const markers = parts.filter(
+    (part): part is Extract<WebMessagePart, { type: "telemetry" }> =>
+      part.type === "telemetry" && part.event === LIVE_INPUT_TELEMETRY_EVENT,
+  );
+  if (markers.length === 0) return undefined;
+  if (markers.length !== 1) {
+    throw new WebConsoleError("storage_corrupt", "Persisted live-input metadata is duplicated.", 500);
+  }
+  const data = markers[0]?.data;
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    throw new WebConsoleError("storage_corrupt", "Persisted live-input metadata is invalid.", 500);
+  }
+  const status = (data as Record<string, unknown>).status;
+  if (status !== "pending" && status !== "applied" && status !== "queued" && status !== "cancelled") {
+    throw new WebConsoleError("storage_corrupt", "Persisted live-input status is invalid.", 500);
+  }
+  return status;
+}
 
 function quoteFromParts(parts: readonly WebMessagePart[]): WebQuote | undefined {
   const markers = parts.filter(

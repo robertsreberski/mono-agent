@@ -5,7 +5,11 @@ sidebar:
   order: 2
 ---
 
-This page covers three programmatic runtime capabilities that have no `mono-agent.config.json` knobs and are wired entirely in host code: human-in-the-loop tool approval, structured output on capable bridges, and live in-flight input steering. All three are **code-only** — they require building on the runtime directly via [composition](/programmatic/composition/) rather than the `mono-agent` CLI.
+This page covers three runtime capabilities that have no `mono-agent.config.json`
+knobs: human-in-the-loop tool approval, structured output on capable bridges,
+and live in-flight input steering. The direct runtime APIs are **code-only**.
+The managed Slack, Telegram, and web-console hosts additionally expose live
+steering automatically when the selected backend supports it.
 
 The closest config-level lever is `runtime.permissionMode`, the declarative tool-permission posture for CLI backends. It is unrelated to the callback-driven approval gates below, but it is the right tool when you want a static posture rather than an interactive prompt — see [Execution effort & permissions](/runtime/execution-effort-permissions/) and [Tool policy](/tools/policy/).
 
@@ -150,12 +154,15 @@ For per-request schemas in a hosted responder, set `outputSchema` from `runtimeO
 
 ## Live input steering
 
-`RuntimeRunOptions.liveInput` accepts an
-`AsyncIterable<{ body: string; id?: string }>` that injects additional user
-messages while a turn is running — useful for "stop, also do X" steering from a
-host UI without cancelling and restarting the turn.
+`RuntimeRunOptions.liveInput` accepts an async iterable of
+`RuntimeLiveInputMessage` values that inject additional user messages while a
+turn is running — useful for "stop, also do X" guidance from a host UI without
+cancelling and restarting the turn. An optional `acknowledge()` callback runs
+only after the provider's native steering boundary accepts the message;
+`reject(error)` reports a per-attempt failure so a router can replay it on a
+later capable route.
 
-`code` — coverage type. See `runtime.live-input` in the [feature registry](/reference/feature-registry/).
+`auto + code` — coverage type. See `runtime.live-input` in the [feature registry](/reference/feature-registry/).
 
 <!-- doc-test:typescript -->
 
@@ -163,10 +170,15 @@ host UI without cancelling and restarting the turn.
 import {
   createMonoRuntime,
   parseMonoRuntimeModelReference,
+  type RuntimeLiveInputMessage,
 } from "@mono-agent/runtime-adapter";
 
-async function* steeringMessages(): AsyncIterable<{ body: string; id?: string }> {
-  yield { id: "steer-1", body: "Also list any unresolved questions." };
+async function* steeringMessages(): AsyncIterable<RuntimeLiveInputMessage> {
+  yield {
+    id: "steer-1",
+    body: "Also list any unresolved questions.",
+    acknowledge: () => console.log("Applied to the active run."),
+  };
 }
 
 const runtime = createMonoRuntime();
@@ -178,11 +190,20 @@ const result = await runtime.run("You are a careful analyst.", {
 });
 ```
 
-The generator above demonstrates the wire shape. A real host usually backs the
-async iterable with a queue that its UI can push to during the run. Combine it
-with the per-request options hook so steering is available exactly on the turns
-that need it. A bridge that cannot represent live input fails capability checks
-instead of silently dropping the stream.
+The generator above demonstrates the provider-facing shape. A custom host
+usually backs the iterable with a queue that its UI can push to during the run.
+A direct runtime call fails capability checks when its bridge cannot represent
+live input instead of silently dropping the stream. Claude SDK, Codex app-server,
+and Pi support it; the one-shot Claude CLI and direct OpenCode bridges do not.
+
+The standard agent responder owns that queue for ordinary interactive turns.
+Slack and Telegram reserve the incoming message's normal per-conversation queue
+position before offering it; the web console persists the same fallback in
+SQLite. If the selected backend is unsupported, delivery fails, or the active
+turn closes first, the message becomes the next normal turn. Once acknowledged,
+it is appended to canonical history in arrival order and included in memory
+persistence. Explicit cancellation discards unsettled guidance. Attachments,
+commands, and `AskUser` answers retain their existing non-steering paths.
 
 ## Related
 

@@ -120,6 +120,21 @@ function MarkdownText() {
   return <MarkdownTextPrimitive className="markdown" data-aui-quote-selectable defer smooth />;
 }
 
+function LiveInputStatus() {
+  const status = useAuiState((state) => state.message.metadata.custom?.liveInputStatus);
+  if (status !== "pending" && status !== "applied" && status !== "queued" && status !== "cancelled") {
+    return null;
+  }
+  const label = status === "pending"
+    ? "Steering current run…"
+    : status === "applied"
+      ? "Applied to current run"
+      : status === "queued"
+        ? "Queued as next turn"
+        : "Cancelled";
+  return <span className={`live-input-status is-${status}`} role="status">{label}</span>;
+}
+
 function RunningText({ status }: EmptyMessagePartProps) {
   const role = useAuiState((state) => state.message.role);
   if (role !== "assistant" || status.type !== "running") return null;
@@ -447,6 +462,7 @@ export function UserMessage() {
         <UserMessageAttachments />
         <MessagePrimitive.Parts components={parts} />
       </div>
+      <LiveInputStatus />
       <MessageActions label="Copy message" />
     </MessagePrimitive.Root>
   );

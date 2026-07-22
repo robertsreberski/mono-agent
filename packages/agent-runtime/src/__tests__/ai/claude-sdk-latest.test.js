@@ -48,6 +48,40 @@ function options(overrides = {}) {
 beforeEach(() => queryMock.mockReset());
 
 describe("Claude Agent SDK 0.3 effort and query contract", () => {
+  it("acknowledges live input when the SDK prompt iterator accepts the user message", async () => {
+    const acknowledge = vi.fn();
+    const reject = vi.fn();
+    const prompts = [];
+    const close = vi.fn();
+    queryMock.mockImplementation((input) => {
+      if (!input) return undefined;
+      const { prompt } = input;
+      const stream = (async function* () {
+        for await (const message of prompt) {
+          prompts.push(message);
+          if (prompts.length === 2) break;
+        }
+        yield resultEvent();
+      })();
+      stream.close = close;
+      return stream;
+    });
+    const liveInput = (async function* () {
+      yield { body: "Use the new limit", id: "input-1", acknowledge, reject };
+    })();
+
+    await expect(generateClaudeResponse("system", options({ liveInput }))).resolves.toMatchObject({ text: "done" });
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toMatchObject({
+      type: "user",
+      uuid: "input-1",
+      message: { role: "user", content: expect.stringContaining("Use the new limit") },
+    });
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(reject).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves authored [1m] ids and recognizes Opus 4.8 for explicit 1m selection", () => {
     expect(claudeSdkModelForQuery("claude-opus-4-8[1m]", undefined)).toBe("claude-opus-4-8[1m]");
     expect(claudeSdkModelForQuery("claude-opus-4-8", "1m")).toBe("claude-opus-4-8[1m]");

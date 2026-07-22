@@ -563,7 +563,18 @@ function createClaudeCanUseTool(approvalManager, modelName) {
 async function* livePromptMessages({ initialPrompt, liveInput, sessionId, prompts }) {
   yield makeSdkUserMessage(initialPrompt, sessionId);
   for await (const message of liveInput) {
-    yield makeSdkUserMessage(formatLiveInputGuidance(message.body, prompts), sessionId, message.id || randomUUID());
+    try {
+      const sdkMessage = makeSdkUserMessage(
+        formatLiveInputGuidance(message.body, prompts),
+        sessionId,
+        message.id || randomUUID(),
+      );
+      message.acknowledge?.();
+      yield sdkMessage;
+    } catch (err) {
+      message.reject?.(err);
+      throw err;
+    }
   }
 }
 

@@ -1,3 +1,5 @@
+import { AGENT_LIVE_INPUT_MAX_MESSAGES } from "@mono-agent/agent-contracts";
+
 /** Version of the browser-facing JSON and SSE contract. */
 export const WEB_API_VERSION = 1 as const;
 
@@ -10,6 +12,7 @@ export const WEB_MAX_CONCURRENT_UPLOADS = 4;
 export const WEB_MAX_ACTIVE_ATTACHMENT_TURN_BYTES = 64 * 1024 * 1024;
 export const WEB_MAX_QUEUED_ATTACHMENT_TURNS = 32;
 export const WEB_MAX_TURN_TEXT_CHARACTERS = 200_000;
+export const WEB_MAX_LIVE_INPUTS_PER_THREAD = AGENT_LIVE_INPUT_MAX_MESSAGES;
 
 export type WebAgentStatus = "online" | "offline" | "degraded";
 export type WebNotificationTriggerKind = "cron" | "webhook";
@@ -114,6 +117,7 @@ export interface WebMessage {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly status: WebMessageStatus;
+  readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled";
 }
 
 export interface WebQuote {
@@ -176,6 +180,15 @@ export interface StartWebTurnInput {
   readonly attachmentIds?: readonly string[];
   readonly model?: string;
   readonly effort?: string;
+}
+
+export interface StartWebLiveInputInput {
+  readonly text: string;
+}
+
+export interface WebLiveInputReceipt {
+  readonly message: WebMessage;
+  readonly disposition: "pending" | "queued";
 }
 
 export interface CreateWebUploadInput {

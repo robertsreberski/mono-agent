@@ -142,6 +142,17 @@ Long file paths keep both their leading location and trailing filename; long
 commands keep a balanced prefix and suffix. Every preview remains capped at 40
 Unicode code points after secret redaction.
 
+### Live follow-up steering
+
+When the responder exposes live input, another plain-text message in the same
+Telegram chat while a turn is running is offered to that active provider run.
+With reactions enabled it moves from the configured working reaction to the
+done reaction after provider acknowledgement. Commands, pending `AskUser`
+replies, and messages with attachments keep their existing behavior. The
+adapter reserves the normal per-chat queue position first, so an unsupported
+provider, failed delivery, or end-of-turn race runs the exact message next as a
+normal turn. Applied guidance does not create a second assistant response.
+
 ### Per-chat runtime controls
 
 The mono-agent app supplies a display-ready `runtimeControls` catalog to the
@@ -186,7 +197,8 @@ The request lifecycle is:
    quiet hours, and transcription settings.
 2. `start.ts` converts the high-level options into a bot controller and starts
    it. `bot.ts` owns grammY polling, command/callback dispatch, per-chat queues,
-   cancellation, degradation recovery, and proactive notification.
+   live-input fallback reservation, cancellation, degradation recovery, and
+   proactive notification.
 3. `adapter.ts` normalizes Telegram updates and downloaded media into the shared
    responder request. `transcription.ts` optionally enriches supported audio.
 4. The host responder returns normal stream events. `message-stream.ts` renders

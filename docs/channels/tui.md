@@ -55,7 +55,8 @@ Keep the bearer value in `.env` (or an exported environment variable). `mono-age
 
 `GET {basePath}/v1/info` advertises transport capabilities. In addition to the
 existing attachment fields, `capabilities.askUser` tells browser clients that
-the agent supports structured pending-question exchange.
+the agent supports structured pending-question exchange and
+`capabilities.liveInput` advertises active-turn follow-up settlement.
 
 - `POST {basePath}/v1/turns` starts a streamed turn.
 - `GET {basePath}/v1/conversations/:id/ask` returns the pending `AskUser`
@@ -64,6 +65,9 @@ the agent supports structured pending-question exchange.
   id plus one or more consecutive complete answers, resuming the existing turn.
 - `POST {basePath}/v1/conversations/:id/cancel` cancels the turn and any pending
   AskUser interaction.
+- `POST {basePath}/v1/conversations/:id/live-input` offers one bounded
+  `{ id, text, receivedAt }` follow-up to the active run and waits for its
+  `applied`, `requeue`, or `discarded` settlement.
 
 Ask submission is conversation-bound and rejects expired, completed, or
 mismatched interaction ids. The endpoint remains subject to the same loopback,
@@ -73,8 +77,9 @@ non-loopback opt-in, and optional bearer-key policy as streamed turns.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET {basePath}/v1/info` | `{ schema, pid, capabilities:{attachments:true,historyAppend?:true}, label?, model?, models?, modelOptions?, effort? }` — identity, additive attachment/verbatim-history support, model choices, and wire-schema version for skew detection. `effort` is the statically configured reasoning-effort level; per-run overrides arrive via the `run_config` runtime_telemetry event instead. |
+| `GET {basePath}/v1/info` | `{ schema, pid, capabilities:{attachments:true,liveInput?:true,historyAppend?:true,askUser?:true}, label?, model?, models?, modelOptions?, effort? }` — identity, additive transport support, model choices, and wire-schema version for skew detection. `effort` is the statically configured reasoning-effort level; per-run overrides arrive via the `run_config` runtime_telemetry event instead. |
 | `POST {basePath}/v1/turns` | Body `{ conversationId, text, attachments?, metadata? }`. Responds with chunked `application/x-ndjson`, one frame per stream callback: `status`, `append`, `replace`, `event` (any `AgentStreamEvent`), then a terminal `finish` (final text + response metadata) or `error` (`cancelled` flagged). Attachment-only turns are accepted when advertised by `/v1/info`. A web client's `metadata.web.model` / `effort` values are preserved and mirrored into the shared `metadata.tui` request-override lane. Closing the socket aborts the in-flight turn. |
+| `POST {basePath}/v1/conversations/:id/live-input` | Authenticated body `{ id, text, receivedAt }`, with text capped at 8,000 characters. Returns `unavailable` immediately when there is no compatible active responder, otherwise holds the request until the offer settles as `applied`, `requeue`, or `discarded`. |
 | `POST {basePath}/v1/conversations/:id/cancel` | Explicit cancel (`202`; `501` if the responder has no cancel). |
 | `POST {basePath}/v1/conversations/:id/verbatim` | Authenticated body `{ text, idempotencyKey }`. Appends an already-delivered assistant message to durable history without a model turn (`200`; `501` if the responder has no history-append surface). Used by the web console's host-owned notification path. |
 

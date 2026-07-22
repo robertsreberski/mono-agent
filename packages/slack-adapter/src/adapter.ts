@@ -675,6 +675,18 @@ export class SerialQueue {
   get idle(): boolean {
     return this.depth === 0;
   }
+
+  get full(): boolean {
+    return this.depth >= this.maxDepth;
+  }
+}
+
+function createDeferred<T>(): { readonly promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function isSerialQueueFullError(error: unknown): error is SerialQueueFullError {
@@ -1078,6 +1090,92 @@ export class SlackAdapter {
     if (queue === undefined) {
       queue = new SerialQueue();
       this.admissionQueues.set(conversationId, queue);
+    }
+    if (
+      command === undefined
+      && event.files.length === 0
+      && this.responder.offerLiveInput !== undefined
+      && !queue.full
+    ) {
+      const decision = createDeferred<"run" | "skip">();
+      const reserved = queue.run(async () => {
+        const next = await decision.promise;
+        if (next === "run") {
+          return await this.respondToEvent(event, text, runKey, controller, conversationId);
+        }
+        this.unregisterController(runKey, conversationId, controller);
+        return {
+          kind: "handled" as const,
+          eventId: event.eventId,
+          channelId: event.channelId,
+          action: "responded" as const,
+          trigger: event.trigger,
+          metadata: { liveInput: true },
+        };
+      });
+      let offer;
+      try {
+        offer = this.responder.offerLiveInput({
+          conversationId,
+          id: event.eventId,
+          text,
+          receivedAt: new Date((event.eventTime ?? Math.floor(Date.now() / 1_000)) * 1_000).toISOString(),
+        });
+      } catch (error) {
+        this.logger?.debug?.("Slack live-input offer failed; running as a queued turn.", {
+          error: redactSlackErrorMessage(error),
+        });
+        decision.resolve("run");
+        try {
+          return await reserved;
+        } finally {
+          if (queue.idle && this.admissionQueues.get(conversationId) === queue) {
+            this.admissionQueues.delete(conversationId);
+          }
+        }
+      }
+      if (offer.status === "accepted") {
+        void offer.settled.then(
+          (settlement) => decision.resolve(settlement.status === "requeue" ? "run" : "skip"),
+          () => decision.resolve("run"),
+        );
+        if (this.api.reactionsAdd !== undefined) {
+          await this.api.reactionsAdd({
+            channel: event.channelId,
+            timestamp: event.messageTs,
+            name: "eyes",
+          }).catch((error: unknown) => {
+            this.logger?.debug?.("Slack live-input acknowledgement reaction failed.", {
+              error: redactSlackErrorMessage(error),
+            });
+          });
+        }
+        void reserved.catch((error: unknown) => {
+          this.logger?.error?.("Slack deferred live-input fallback failed.", {
+            error: redactSlackErrorMessage(error),
+          });
+        }).finally(() => {
+          if (queue.idle && this.admissionQueues.get(conversationId) === queue) {
+            this.admissionQueues.delete(conversationId);
+          }
+        });
+        return {
+          kind: "handled",
+          eventId: event.eventId,
+          channelId: event.channelId,
+          action: "responded",
+          trigger: event.trigger,
+          metadata: { liveInput: true },
+        };
+      }
+      decision.resolve("run");
+      try {
+        return await reserved;
+      } finally {
+        if (queue.idle && this.admissionQueues.get(conversationId) === queue) {
+          this.admissionQueues.delete(conversationId);
+        }
+      }
     }
     try {
       return await queue.run(() => this.respondToEvent(event, text, runKey, controller, conversationId));
