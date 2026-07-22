@@ -1,6 +1,6 @@
 # Mono-Agent v1: Smaller by Design
 
-Status: Proposed (revision 8 — parity-complete ledger, licensing, and lean grants)
+Status: Proposed (revision 9 — execution-ready)
 Target release: 1.0 beta, followed by 1.0 stable
 Last updated: 2026-07-22
 Primary audience: maintainers, contributors, and individual agent builders
@@ -14,7 +14,7 @@ There is no generic `plugins` registry, no hidden built-in-name-to-package mappi
 
 Config-first does not mean mega-config-first. TUI, web, service-macos, docs-mcp, and create-mono-agent have independent ownership and lifecycle. They are installed explicitly and use their own small configuration, if they need configuration at all. TUI and web consume one shared operator protocol exposed by an explicitly selected operator endpoint inside the agent. service-macos is only macOS boot integration; the agent remains usable in foreground or under another supervisor when it is absent.
 
-The product of this refactor is a smaller system. The provisional v0 baseline is approximately 189,000 handwritten production-source lines across 22 publishable packages; agent-app alone holds approximately 66,000. Stable v1 ships at most 130,000 lines, at least 31% below the normalized G0 baseline, with core + module-sdk + cli capped at 15,000 lines. These are machine-tracked release gates.
+The product of this refactor is a smaller system. The provisional v0 baseline is approximately 182,000–189,000 handwritten production-source lines depending on classification (measured 182,118 on 2026-07-22; exact at G0) across 22 publishable packages; agent-app alone holds approximately 66,000. Stable v1 ships at most 130,000 lines — the binding number, an expected reduction of roughly 30%, with the exact percentage recorded against the normalized G0 baseline rather than gated — and core + module-sdk + cli are capped at 15,000 lines. These are machine-tracked release gates.
 
 Package count is not a success metric. The current v1 roster remains 25 publishable packages because runtimes, communication transports, durable stores, operator products, and host integration have genuinely different ownership and failure boundaries. Architecture gates protect narrow responsibilities and selected dependency closure; they never combine unrelated concerns merely to reduce a count.
 
@@ -217,19 +217,32 @@ Each row lands one v1 implementation and deletes or retires the named v0 machine
 
 ## 4. Complexity and maintainability budget
 
-The approximately 189,000-line figure is provisional until G0 commits `scripts/v1-complexity-report.mjs` and baseline report #1. The report operates only on Git-tracked files and emits the included-file manifest, classification, line count, and digest. Every executable source file is production, test, generated, vendored, or excluded-with-reason; an unclassified source file fails the gate-exit report rather than every CI run, so budget honesty is machine-tracked without per-PR friction.
+The baseline figure (182,118 measured on 2026-07-22 excluding handwritten declaration files; approximately 189,000 in the original estimate) is provisional until G0 commits `scripts/v1-complexity-report.mjs` and baseline report #1. The report operates only on Git-tracked files and emits the included-file manifest, classification, line count, and digest. Every executable source file is production, test, generated, vendored, or excluded-with-reason; an unclassified source file fails the gate-exit report rather than every CI run, so budget honesty is machine-tracked without per-PR friction.
 
 Production and test source are reported separately. Reducing tests never satisfies the production budget. Generated files are excluded only when their generator and reproducibility check are recorded.
 
 | Budget | Gate |
 | --- | --- |
 | Kernel: core + module-sdk + cli | ≤15,000 production-source lines |
-| Repository production source at G8 | ≤130,000 and at least 31% below normalized baseline |
+| Repository production source at G8 | ≤130,000 (binding); reduction vs the normalized G0 baseline recorded, expected ≈30% |
 | Package responsibilities | One coherent ownership and lifecycle boundary per package; count reported, not gated |
 | Config representations per field | One authoritative schema field; generated projections are not parallel representations |
 | Operator implementations | One shared wire client and domain state; renderer presentation remains local |
 | Native modules | Minimal no-memory scaffold has zero; memory-local alone may retain better-sqlite3 and sqlite-vec through stable |
 | Minimal scaffold closure | Measured at first G1 vertical slice and ratcheted |
+
+Indicative ring allocation, derived from the section 3.3 targets and measured v0 sizes. These are planning figures for steering, not gates; complexity reports replace them with per-package actuals:
+
+| Ring | Packages | Planning allocation |
+| --- | --- | --- |
+| Kernel | core, module-sdk, cli | ≤15,000 (gate) |
+| Runtime modules | runtime-pi, runtime-claude, runtime-codex, runtime-opencode | ~12,000 |
+| Channel modules | six channels | ~18,000 |
+| Trigger and durable modules | trigger-cron, memory-local, state-local, continuations, exporter-otlp, sandbox-srt | ~17,000 |
+| Operator layer | operator, tui, web | ~18,000 |
+| Products and companions | create-mono-agent, service-macos, docs-mcp | ~6,500 |
+
+The allocations sum to roughly 87,000; the 130,000 ceiling exists as honest slack, not a target. About one sixth of shipped code is kernel, and the remainder sits behind replaceable module seams or independent product boundaries. The minimal-agent closure (kernel + runtime-pi + channel-webhook) is expected near 22,000 lines with zero native modules.
 
 The report also tracks public exports, dependency edges, cycles, config fields, selected-package closure, and duplicated protocol/config implementations. Rules are paired deletion, one implementation, and boundary before budget. A line target never justifies mixed lifecycles, weaker reliability, deleted required tests, or compressed unreadable code.
 
@@ -1133,13 +1146,15 @@ Immediate rollback triggers: duplicate Telegram/Slack consumption, missing or du
 | G5 — durable capabilities | state-local, continuations, memory-local BuJo-only, exporter-otlp, sandbox-srt; old state/memory/observability deleted | Durable review; memory rehearsal; continuation corpus/week; exporter/sandbox proofs |
 | G6 — products/release | create-mono-agent; service-macos separate product; docs-mcp; generated docs; lockstep beta; migration guide | Packed minimal/Personal/multi-runtime scaffolds; all packages accounted; service and docs product smokes |
 | G7 — production beta | Publish beta; migrate Personal Agent, then A8C orchestrator | Consumer matrices, audits, rollback, exact single consumer, 24-hour soak each |
-| G8 — stable | Ledger green; source ≤130k and ≥31% below baseline; kernel ≤15k; stable publish | Exact-SHA reports; packed consumer install; section 2.6 OSS checklist green; post-launch dispositions |
+| G8 — stable | Ledger green; source ≤130k with recorded reduction vs baseline; kernel ≤15k; stable publish | Exact-SHA reports; packed consumer install; section 2.6 OSS checklist green; post-launch dispositions |
 
 Gates merge in order. Work inside a gate may run concurrently only where the task graph permits.
 
 ## 11. Execution task graph
 
 Every implementation PR names task and requirement ids, includes paired deletion, and gives every external review finding a fixed/follow-up/rejected disposition. A task is complete only when proof is committed.
+
+Execution conventions: development begins with the three G0 PRs in order — the ADR (V1-001), the classifier and baseline report (V1-002), and the requirement manifest (V1-003). One task per PR unless a row explicitly pairs deliverables; branches name their task (for example `v1/g1-v1-013`). A PR that discovers scope this document missed amends the PRD in the same review rather than absorbing it silently. After the G0 ADR merges, architecture questions cite the ADR and this section tracks execution only.
 
 | ID | Gate | Depends on | Deliverable and paired deletion | Required proof |
 | --- | --- | --- | --- | --- |
@@ -1214,7 +1229,7 @@ Every implementation PR names task and requirement ids, includes paired deletion
 | service-macos becomes agent lifecycle owner | Separate product config and APIs; core runner works without it; no turn/channel/memory semantics in service |
 | Doctor/status shrink breaks scripts | Exit codes/JSON frozen; check inventory prevents silent drops |
 | Memory simplification drops integrity behavior | Atomic ledger and real-store rehearsal; lite/journal are explicit cuts |
-| Rewrite grows or becomes less legible | Paired deletion, one implementation, reproducible ≤130k/31% and kernel gates |
+| Rewrite grows or becomes less legible | Paired deletion, one implementation, reproducible ≤130k and kernel gates with recorded reduction |
 | Twenty-five packages feel hard to explore | Generated responsibility/dependency/config/API maps and role-based contributor paths |
 
 ### 12.2 Non-goals and cuts
