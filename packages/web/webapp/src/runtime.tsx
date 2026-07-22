@@ -2,6 +2,7 @@ import {
   AssistantRuntimeProvider,
   type AppendMessage,
   type CompleteAttachment,
+  type ExternalThreadQueueAdapter,
   type QuoteInfo,
   type ThreadMessageLike,
   useExternalStoreRuntime,
@@ -391,15 +392,32 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     store.selectedAgent,
     store.selectedThread,
   );
+  const isRunning = store.selectedThread?.runState.status === "running";
+  const runningSubmissionQueue = useMemo<ExternalThreadQueueAdapter | undefined>(
+    () => isRunning
+      ? {
+          // The web service owns persisted live-input and fallback queue state.
+          // This bridge advertises that capability to assistant-ui so its native
+          // Send primitive and Enter handling remain usable during a run.
+          items: [],
+          enqueue: (message) => { void onNew(message); },
+          steer: () => undefined,
+          remove: () => undefined,
+          clear: () => undefined,
+        }
+      : undefined,
+    [isRunning, onNew],
+  );
 
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: store.detail?.messages ?? [],
     convertMessage: convertWebMessage,
     isLoading: store.detailLoading,
-    isRunning: store.selectedThread?.runState.status === "running",
+    isRunning,
     isSendDisabled: !selectedCanSend || turnStarting,
     onNew,
     onCancel: store.cancelTurn,
+    queue: runningSubmissionQueue,
     unstable_capabilities: { copy: true },
     adapters: {
       threadList,

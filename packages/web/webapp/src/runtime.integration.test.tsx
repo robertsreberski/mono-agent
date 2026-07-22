@@ -1,6 +1,6 @@
 import type { AssistantRuntime } from "@assistant-ui/react";
 import { useAssistantRuntime } from "@assistant-ui/react";
-import { act, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StartTurnInput } from "./types";
@@ -21,6 +21,7 @@ vi.mock("./api", () => ({
 }));
 
 import { api, uploadContent } from "./api";
+import { Composer } from "./components/Composer";
 import { WebRuntimeProvider } from "./runtime";
 
 const onlineAgent = agent("agent");
@@ -94,6 +95,24 @@ const renderRuntime = async () => {
       return runtime;
     },
     rerender: () => view.rerender(runtimeTree(onReady)),
+  };
+};
+
+const renderComposerRuntime = async () => {
+  let runtime: AssistantRuntime | undefined;
+  const onReady = (value: AssistantRuntime) => { runtime = value; };
+  render(
+    <WebRuntimeProvider>
+      <RuntimeCapture onReady={onReady} />
+      <Composer />
+    </WebRuntimeProvider>,
+  );
+  await waitFor(() => expect(runtime).toBeDefined());
+  return {
+    get runtime() {
+      if (!runtime) throw new Error("Runtime is not ready.");
+      return runtime;
+    },
   };
 };
 
@@ -239,6 +258,58 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Use the smaller scope"));
     expect(sendTurn).not.toHaveBeenCalled();
     expect(composer.getState().text).toBe("");
+  });
+
+  it("keeps the rendered send button active for a live follow-up", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    const sendLiveInput = vi.fn().mockResolvedValue(undefined);
+    const runningThread = thread("thread", "agent", {
+      runState: { id: "turn-running", status: "running" },
+    });
+    storeMock.current = createStore(sendTurn, {
+      threads: [runningThread],
+      visibleThreads: [runningThread],
+      selectedThread: runningThread,
+      sendLiveInput,
+    });
+    const { runtime } = await renderComposerRuntime();
+    const input = screen.getByRole("textbox", { name: "Message" });
+    const send = screen.getByRole("button", { name: "Send live follow-up" });
+
+    expect(send).toBeDisabled();
+    fireEvent.change(input, { target: { value: "Use the actual button" } });
+    await waitFor(() => expect(send).toBeEnabled());
+    fireEvent.click(send);
+
+    await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Use the actual button"));
+    expect(sendTurn).not.toHaveBeenCalled();
+    expect(runtime.thread.composer.getState().text).toBe("");
+  });
+
+  it("submits a live follow-up from Enter while preserving Shift+Enter", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    const sendLiveInput = vi.fn().mockResolvedValue(undefined);
+    const runningThread = thread("thread", "agent", {
+      runState: { id: "turn-running", status: "running" },
+    });
+    storeMock.current = createStore(sendTurn, {
+      threads: [runningThread],
+      visibleThreads: [runningThread],
+      selectedThread: runningThread,
+      sendLiveInput,
+    });
+    const { runtime } = await renderComposerRuntime();
+    const input = screen.getByRole("textbox", { name: "Message" });
+
+    fireEvent.change(input, { target: { value: "Use Enter" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter", shiftKey: true });
+    expect(sendLiveInput).not.toHaveBeenCalled();
+    expect(runtime.thread.composer.getState().text).toBe("Use Enter");
+
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+    await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Use Enter"));
+    expect(sendTurn).not.toHaveBeenCalled();
+    expect(runtime.thread.composer.getState().text).toBe("");
   });
 
   it("restores an attachment-only rejected turn into its exact created thread without re-uploading", async () => {
