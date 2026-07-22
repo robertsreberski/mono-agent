@@ -102,6 +102,48 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("projects synthetic steering events as one completed Steered tool row", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
+
+    store.applyStreamFrames(turn.turnId, [
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_started",
+          id: "live-input:follow-up-1",
+          name: "↪️ Steered: “Use the API instead”",
+          metadata: { liveInput: true, synthetic: true },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "live-input:follow-up-1",
+          name: "↪️ Steered: “Use the API instead”",
+          content: "Applied to current run",
+          metadata: { liveInput: true, synthetic: true },
+        },
+      },
+    ]);
+    const detail = store.completeTurn(turn.turnId, "done");
+    const tool = detail.messages.at(-1)?.parts.find((part) => part.type === "tool-call");
+
+    expect(tool).toEqual({
+      type: "tool-call",
+      toolCallId: "live-input:follow-up-1",
+      toolName: "↪️ Steered: “Use the API instead”",
+      result: "Applied to current run",
+      status: "complete",
+    });
+    store.close();
+  });
+
   it("deletes only archived threads, removes attachment files, and sweeps crash orphans", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

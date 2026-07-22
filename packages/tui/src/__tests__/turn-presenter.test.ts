@@ -82,6 +82,28 @@ describe("TurnPresenter", () => {
     expect(status()).toContain("$0.012");
   });
 
+  it("renders applied live input as a completed Steered tool panel", async () => {
+    const { presenter, rendered } = setup();
+
+    await presenter.event({
+      type: "tool_call_started",
+      id: "live-input:follow-up-1",
+      name: "↪️ Steered: “Use the API instead”",
+      metadata: { liveInput: true, synthetic: true },
+    });
+    await presenter.event({
+      type: "tool_call_completed",
+      id: "live-input:follow-up-1",
+      name: "↪️ Steered: “Use the API instead”",
+      content: "Applied to current run",
+      metadata: { liveInput: true, synthetic: true },
+    });
+
+    expect(rendered()).toContain("✓ ↪️ Steered: “Use the API instead”");
+    expect(rendered()).toContain("Applied to current run");
+    expect(rendered()).not.toContain("◐ ↪️ Steered");
+  });
+
   it("does not promise artifact recovery when a streamed tool payload was truncated", async () => {
     const { presenter, rendered } = setup();
     await presenter.event({ type: "tool_call_started", id: "t1", name: "read_file" });

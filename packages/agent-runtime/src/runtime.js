@@ -40,6 +40,7 @@ import {
 import { createToolContext, updateToolContext } from "./agent/tools/shared/tool-context.js";
 import { resolveRuntimeBrand } from "./runtime-brand.js";
 import { retireDurableNativeSession } from "./ai/providers/pi-native/session-lifecycle.js";
+import { instrumentLiveInputAppliedEvents } from "./ai/runtime/live-input-events.js";
 
 /**
  * @typedef {import('./ai/types.js').AgentRuntimeHostOptions} AgentRuntimeHostOptions
@@ -159,6 +160,7 @@ export function createRuntime(host = {}) {
         observers: [...hostObservers, ...callObservers],
         onEvent: options.onEvent,
       });
+      const liveInput = instrumentLiveInputAppliedEvents(options.liveInput, hub.emit);
       const prompts = resolvePrompts(host.prompts, options.prompts);
       const result = await bridge.execute(systemPrompt, {
         ...hostDefaults,
@@ -172,6 +174,7 @@ export function createRuntime(host = {}) {
         toolContext,
         observerHub: hub,
         onEvent: hub.emit,
+        ...(liveInput === undefined ? {} : { liveInput }),
         // Merged AFTER the spreads so the per-field run>host>default precedence
         // wins over either bag's whole-object `prompts`.
         ...(prompts === undefined ? {} : { prompts }),

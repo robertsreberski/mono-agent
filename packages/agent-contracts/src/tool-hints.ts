@@ -172,6 +172,20 @@ export function formatToolActivityLine(
     : `${spec.action} ${spec.quotePreview ? JSON.stringify(preview) : preview}`;
 }
 
+/**
+ * Format one applied live-input activity line for every structured stream.
+ * The original follow-up remains a human message; this helper exposes only a
+ * one-line, secret-redacted preview capped at the same 40-code-point boundary
+ * used by transient tool activity.
+ */
+export function formatLiveInputActivityLine(
+  text: string,
+  options?: ToolActivityLineOptions,
+): string {
+  const preview = sanitizePreview(text, "head", options);
+  return preview === undefined ? "↪️ Steered" : `↪️ Steered: “${preview}”`;
+}
+
 function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
   if (WEB_SEARCH_NAMES.has(normalized)) {
     return {

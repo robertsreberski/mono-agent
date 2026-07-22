@@ -37,7 +37,7 @@ Chat runs under its own `conversationId` (default `tui-<sourceId>`), so it never
 | Element | Content |
 | --- | --- |
 | Thinking cells | The model's reasoning, streamed live. Collapsed to a one-line summary by default; `ctrl+t` expands/collapses all. |
-| Tool panels | One per tool call: name + argument preview while pending, a live tail of partial output as the tool runs, then the result preview and execution time (green success / red error). |
+| Tool panels | One per tool call: name + argument preview while pending, a live tail of partial output as the tool runs, then the result preview and execution time (green success / red error). Applied live guidance appears as a completed `↪️ Steered` panel with `Applied to current run`. |
 | Answer | The assistant's reply as streamed markdown. |
 | Notices | Runtime warnings and provider failover (`failover gpt-5.6-terra → kimi`) inline in the transcript. |
 | Status bar | Instance label · model · live token usage (`↑input ↓output (cache …)`) · cumulative cost · provider state · hints. |

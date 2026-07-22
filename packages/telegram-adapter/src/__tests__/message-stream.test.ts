@@ -20,6 +20,7 @@ class FakeTelegramApi implements TelegramBotApi {
   readonly sendMessageCalls: TelegramSendMessageParams[] = [];
   readonly editMessageTextCalls: TelegramEditMessageTextParams[] = [];
   readonly deleteMessageCalls: TelegramDeleteMessageParams[] = [];
+  readonly writeOperations: string[] = [];
   nextMessageId = 100;
   failSendWith: Error | undefined;
   failEditWith: Error | undefined;
@@ -29,6 +30,7 @@ class FakeTelegramApi implements TelegramBotApi {
     params: TelegramSendMessageParams,
   ): Promise<TelegramSentMessage> {
     this.sendMessageCalls.push(params);
+    this.writeOperations.push(`send:${params.text}`);
     if (this.failSendWith !== undefined) {
       throw this.failSendWith;
     }
@@ -44,6 +46,7 @@ class FakeTelegramApi implements TelegramBotApi {
     params: TelegramEditMessageTextParams,
   ): Promise<TelegramSentMessage | true> {
     this.editMessageTextCalls.push(params);
+    this.writeOperations.push(`edit:${params.text}`);
     if (this.failEditWith !== undefined) {
       throw this.failEditWith;
     }
@@ -57,6 +60,7 @@ class FakeTelegramApi implements TelegramBotApi {
 
   async deleteMessage(params: TelegramDeleteMessageParams): Promise<true> {
     this.deleteMessageCalls.push(params);
+    this.writeOperations.push(`delete:${params.message_id}`);
     if (this.failDeleteWith !== undefined) {
       throw this.failDeleteWith;
     }
@@ -149,6 +153,39 @@ describe("TelegramMessageStream", () => {
     ]);
     expect(api.editMessageTextCalls).toEqual([]);
     expect(api.deleteMessageCalls).toEqual([{ chat_id: 42, message_id: 100 }]);
+  });
+
+  it("moves the Telegram tool ledger behind an applied live follow-up, then keeps final delivery fresh", async () => {
+    const api = new FakeTelegramApi();
+    const stream = new TelegramMessageStream({
+      api,
+      chatId: 42,
+      finalOnly: true,
+      editDebounceMs: 0,
+    });
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "t1",
+      name: "Read",
+      arguments: { path: "/repo/a.ts" },
+    });
+    await stream.event({
+      type: "tool_call_started",
+      id: "live-input:follow-up-1",
+      name: "↪️ Steered: “Use the API instead”",
+      metadata: { liveInput: true, synthetic: true },
+    });
+    await stream.finish("final answer");
+
+    expect(api.writeOperations).toEqual([
+      "send:📖 Reading /repo/a.ts",
+      "delete:100",
+      "send:📖 Reading /repo/a.ts\n↪️ Steered: “Use the API instead”",
+      "send:final answer",
+      "delete:101",
+    ]);
+    expect(api.editMessageTextCalls).toEqual([]);
   });
 
   it("keeps a separate final answer deliverable when its reply parent was removed", async () => {

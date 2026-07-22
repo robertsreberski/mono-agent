@@ -17,7 +17,7 @@ Each channel decides how a turn's output reaches the user. The two chat adapters
 | Slack | Final answer only (`stream.finalOnly: true`) | 👀/assistant status, then one transient tool-activity message when tools run | `code` |
 | OpenAI-compatible (`/v1/chat/completions`) | One JSON completion by default; token SSE when the request sets `stream: true` | n/a | `config` |
 
-Telegram and Slack default to delivering **only the final answer** — answer tokens are not streamed into the chat. An inbound turn starts with the channel's lightweight working indicator. If the agent starts a tool, one temporary message exposes a cumulative, user-safe activity ledger such as `🌐 Browsing https://example.com` or `🖥️ Running pnpm test`. Later tool starts edit that same message. At completion, both adapters post the answer as a fresh message and then best-effort delete the ledger. Reasoning and answer deltas never overwrite the ledger while work is in progress. This is built-in adapter behavior, not a JSON field you set in `mono-agent.config.json`.
+Telegram and Slack default to delivering **only the final answer** — answer tokens are not streamed into the chat. An inbound turn starts with the channel's lightweight working indicator. If the agent starts a tool, one temporary message exposes a cumulative, user-safe activity ledger such as `🌐 Browsing https://example.com` or `🖥️ Running pnpm test`. Later tool starts edit that same message. Provider-applied live guidance adds `↪️ Steered: “<safe preview>”`. At completion, both adapters post the answer as a fresh message and then best-effort delete the ledger. Reasoning and answer deltas never overwrite the ledger while work is in progress. This is built-in adapter behavior, not a JSON field you set in `mono-agent.config.json`.
 
 The OpenAI-compatible endpoint follows each request's `stream` field. `true`
 returns token-by-token SSE deltas and `[DONE]`; `false` or omission waits for one
@@ -30,7 +30,13 @@ The shared formatter maps common tool families to stable copy: web search/browse
 
 Previews use at most one allowlisted scalar argument and are truncated to 40 Unicode code points after control-character and whitespace normalization. File paths use middle truncation weighted toward the suffix so the filename remains visible; commands and scripts retain a balanced prefix and suffix; other previews retain their beginning. Credential assignments, authorization schemes, URL user information, sensitive query parameters, and known token shapes are redacted before truncation. Arbitrary tool arguments are never serialized, getters and proxies are not inspected, and memory content/text is deliberately excluded. Unsafe or missing input falls back to action-only copy.
 
-The transient message is limited to interactive inbound Slack and Telegram turns. Native proactive notifications do not post it. Setting the code-only `stream.showHints: false` preserves final-answer-only delivery with the ordinary working indicator. On normal Telegram or Slack completion the answer lands first and progress deletion is best-effort, so a deletion failure cannot duplicate or lose the answer (but can leave the stale activity message behind). On an acknowledged `/cancel`, the adapter best-effort deletes a still-transient activity message and keeps the single `Cancelled.` acknowledgement; it never deletes a message that contains an answer.
+Applied live input uses the same normalization and redaction boundary. Its
+completed synthetic tool lifecycle contains only the safe preview and
+`Applied to current run`; the full follow-up remains the human message and is
+never copied into tool arguments or event metadata. Requeue, cancellation,
+unsupported providers, and end-of-turn races do not emit a `Steered` activity.
+
+The transient message is limited to interactive inbound Slack and Telegram turns. Native proactive notifications do not post it. Setting the code-only `stream.showHints: false` preserves final-answer-only delivery with the ordinary working indicator. When guidance is applied, the adapter best-effort deletes a confirmed ledger and reposts the same cumulative content after the human follow-up, making it the newest bot message. If deletion fails, it edits in place. On normal completion the answer lands first and progress deletion is best-effort, so a deletion failure cannot duplicate or lose the answer (but can leave the stale activity message behind). On an acknowledged `/cancel`, the adapter best-effort deletes a still-transient activity message and keeps the single `Cancelled.` acknowledgement; it never deletes a message that contains an answer.
 
 ## Switching Telegram/Slack to live interim streaming
 
