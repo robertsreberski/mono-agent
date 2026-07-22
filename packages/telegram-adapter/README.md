@@ -142,6 +142,12 @@ Long file paths keep both their leading location and trailing filename; long
 commands keep a balanced prefix and suffix. Every preview remains capped at 40
 Unicode code points after secret redaction.
 
+Applied live guidance adds a completed `↪️ Steered: “<safe preview>”` entry. If
+a confirmed ledger already exists, Telegram best-effort deletes and reposts the
+same cumulative ledger so it becomes the newest bot message after the human
+follow-up. A failed delete edits the existing ledger in place; neither path can
+block or replace the final answer.
+
 ### Live follow-up steering
 
 When the responder exposes live input, another plain-text message in the same
@@ -151,7 +157,9 @@ done reaction after provider acknowledgement. Commands, pending `AskUser`
 replies, and messages with attachments keep their existing behavior. The
 adapter reserves the normal per-chat queue position first, so an unsupported
 provider, failed delivery, or end-of-turn race runs the exact message next as a
-normal turn. Applied guidance does not create a second assistant response.
+normal turn. Applied guidance does not create a second assistant response;
+provider acknowledgement adds the completed `↪️ Steered` activity described
+above.
 
 ### Per-chat runtime controls
 

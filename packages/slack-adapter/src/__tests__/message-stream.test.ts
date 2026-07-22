@@ -214,6 +214,40 @@ describe("SlackMessageStream", () => {
     ]);
   });
 
+  it("moves the Slack tool ledger behind an applied live follow-up, then keeps final delivery fresh", async () => {
+    const api = new FakeSlackApi();
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C1",
+      threadTs: "171.000001",
+      finalOnly: true,
+      editDebounceMs: 0,
+    });
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "t1",
+      name: "Read",
+      arguments: { path: "/repo/a.ts" },
+    });
+    await stream.event({
+      type: "tool_call_started",
+      id: "live-input:follow-up-1",
+      name: "↪️ Steered: “Use the API instead”",
+      metadata: { liveInput: true, synthetic: true },
+    });
+    await stream.finish("final answer");
+
+    expect(api.writeOperations).toEqual([
+      "post:📖 Reading /repo/a.ts",
+      "delete:100.000001",
+      "post:📖 Reading /repo/a.ts\n↪️ Steered: “Use the API instead”",
+      "post:final answer",
+      "delete:101.000001",
+    ]);
+    expect(api.updateCalls).toEqual([]);
+  });
+
   it("keeps a confirmed fresh final when transient-ledger deletion fails", async () => {
     const api = new FakeSlackApi();
     const debug = vi.fn();

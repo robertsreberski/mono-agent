@@ -308,8 +308,15 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
           return;
         }
 
-        await this.awaitInFlightEdit();
-        this.appendToolActivity(formatToolActivityLine(event.name, event.arguments));
+        const liveInputActivity = isLiveInputActivity(event);
+        if (liveInputActivity) {
+          await this.relocateTransientForLiveInput();
+        } else {
+          await this.awaitInFlightEdit();
+        }
+        this.appendToolActivity(
+          liveInputActivity ? event.name : formatToolActivityLine(event.name, event.arguments),
+        );
         const hadMessage = this.sentMessage !== undefined;
         try {
           await this.ensureMessage();
@@ -366,7 +373,10 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
       if (!this.showHints || this.hasAnswerText) {
         return;
       }
-      this.statusText = normalizeTrailing(toolHintFor(event.name), EMPTY_FINAL_TEXT);
+      this.statusText = normalizeTrailing(
+        isLiveInputActivity(event) ? event.name : toolHintFor(event.name),
+        EMPTY_FINAL_TEXT,
+      );
       const hadMessage = this.sentMessage !== undefined;
       await this.ensureMessage();
       if (hadMessage) {
@@ -774,6 +784,49 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
       .join("\n");
   }
 
+  /**
+   * Move a confirmed final-only status behind the human follow-up that just
+   * steered the run. Deletion is best-effort: an ambiguous/failed delete keeps
+   * the existing reference so the cumulative ledger is edited in place and the
+   * final answer remains deliverable.
+   */
+  private async relocateTransientForLiveInput(): Promise<void> {
+    this.cancelScheduledEdit();
+    await this.awaitInFlightEdit();
+
+    if (this.sentMessage === undefined && this.sendMessagePromise !== undefined) {
+      try {
+        this.sentMessage = await this.sendMessagePromise;
+      } catch {
+        // The status never landed. ensureMessage() below will post the current
+        // cumulative ledger after the live-input entry is appended.
+        this.sendMessagePromise = undefined;
+      }
+    }
+    if (
+      this.sentMessage === undefined
+      || this.transport.delete === undefined
+      || this.lastFlushedContentKind !== "status"
+      || this.answerDeliveryAttempted
+    ) {
+      return;
+    }
+
+    try {
+      await this.transport.delete(this.sentMessage);
+      this.sentMessage = undefined;
+      this.sendMessagePromise = undefined;
+      this.lastFlushedText = undefined;
+      this.lastFlushedMarkdown = false;
+      this.lastFlushedContentKind = undefined;
+    } catch (error) {
+      this.logger?.debug?.(
+        "Resilient stream live-input activity relocation failed (editing in place).",
+        { error: errorMessage(error) },
+      );
+    }
+  }
+
   private async performDismissTransient(): Promise<void> {
     this.finished = true;
     this.cancelScheduledEdit();
@@ -886,4 +939,10 @@ function deliveryDisposition(
 ): ChannelDeliveryDisposition {
   if (sawUnknownFailure || outcome === undefined) return "unknown";
   return outcome.kind === "retry" ? "retryable" : "permanent";
+}
+
+function isLiveInputActivity(
+  event: Extract<AgentStreamEvent, { type: "tool_call_started" }>,
+): boolean {
+  return event.metadata?.liveInput === true && event.metadata.synthetic === true;
 }

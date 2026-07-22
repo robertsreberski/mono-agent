@@ -92,6 +92,13 @@ message displays one of four delivery states:
   the active turn finishes first;
 - **Cancelled** when the active turn is explicitly cancelled before settlement.
 
+After the provider accepts the follow-up, the assistant's Activity disclosure
+also shows one completed `↪️ Steered: “<safe preview>”` tool row with result
+`Applied to current run`. This synthetic row carries only a one-line,
+secret-redacted, path-collapsed preview capped at 40 Unicode code points; the
+full follow-up stays in its human message. Queued, unavailable, and cancelled
+guidance does not create the row.
+
 Queued guidance starts automatically as a normal turn after the current turn
 settles. Pending delivery and queue state live in the service's owner-private
 SQLite store rather than the browser tab. A web-service restart converts any

@@ -7,7 +7,15 @@ import type {
   AgentResponse,
   AgentStreamEvent,
 } from "@mono-agent/agent-contracts";
-import { AgentResponseCancelledError } from "@mono-agent/agent-contracts";
+import {
+  AgentResponseCancelledError,
+  formatLiveInputActivityLine,
+} from "@mono-agent/agent-contracts";
+
+interface PendingLiveInputActivity {
+  readonly text: string;
+  readonly receivedAt: string;
+}
 
 export class AgentHarnessFailureError extends Error {
   readonly failure: AgentHarnessFailure;
@@ -59,9 +67,11 @@ export function createAgentResponder(options: {
   const cancellationGenerationByBaseConversation = new Map<string, number>();
   const cancellationReasonByBaseConversation = new Map<string, { generation: number; reason?: unknown }>();
   const activeBucketByBaseConversation = new Map<string, string>();
+  const pendingLiveInputByBaseConversation = new Map<string, Map<string, PendingLiveInputActivity>>();
 
   return {
     async dispose(): Promise<void> {
+      pendingLiveInputByBaseConversation.clear();
       await options.harness.dispose?.();
     },
     ...(options.harness.offerLiveInput === undefined
@@ -73,8 +83,34 @@ export function createAgentResponder(options: {
           if (activeBucket === undefined) {
             return { status: "unavailable" as const, reason: "inactive" as const };
           }
-          return options.harness.offerLiveInput?.({ ...request, conversationId: activeBucket })
+          const offer = options.harness.offerLiveInput?.({ ...request, conversationId: activeBucket })
             ?? { status: "unavailable" as const, reason: "unsupported" as const };
+          if (offer.status === "accepted") {
+            let pending = pendingLiveInputByBaseConversation.get(serializationKey);
+            if (pending === undefined) {
+              pending = new Map();
+              pendingLiveInputByBaseConversation.set(serializationKey, pending);
+            }
+            const activity = pending.get(request.id) ?? {
+              text: request.text,
+              receivedAt: request.receivedAt,
+            };
+            pending.set(request.id, activity);
+            const remove = (): void => {
+              const current = pendingLiveInputByBaseConversation.get(serializationKey);
+              if (current?.get(request.id) !== activity) return;
+              current.delete(request.id);
+              if (current.size === 0) pendingLiveInputByBaseConversation.delete(serializationKey);
+            };
+            void offer.settled.then((settlement) => {
+              // An applied settlement and the runtime acknowledgement event
+              // describe the same provider boundary. Keep the preview until
+              // that event is correlated; all non-applied outcomes can be
+              // discarded immediately.
+              if (settlement.status !== "applied") remove();
+            }, remove);
+          }
+          return offer;
         },
       }),
     cancel(conversationId: string, reason?: unknown): void {
@@ -151,11 +187,12 @@ export function createAgentResponder(options: {
               : bucket(request.conversationId);
             activeBucketByBaseConversation.set(serializationKey, activeBucket);
             try {
-              return await respondOnce(request, stream, activeBucket);
+              return await respondOnce(request, stream, activeBucket, serializationKey);
             } finally {
               if (activeBucketByBaseConversation.get(serializationKey) === activeBucket) {
                 activeBucketByBaseConversation.delete(serializationKey);
               }
+              pendingLiveInputByBaseConversation.delete(serializationKey);
             }
           },
         );
@@ -172,6 +209,7 @@ export function createAgentResponder(options: {
     request: AgentRequestBase,
     stream: AgentMessageStream,
     bucketed: string,
+    serializationKey: string,
   ): Promise<AgentResponse> {
     const runtimeEventStream = createRuntimeEventStream(stream);
     const boundary = request.continuation === undefined ? rolloverBoundaryForRequest({
@@ -190,6 +228,7 @@ export function createAgentResponder(options: {
     // Per-turn scratch: tool_timing arrives strictly before its tool_result and
     // is folded into that tool_call_completed rather than emitted on its own.
     const eventContext: StreamEventContext = { toolTimings: new Map() };
+    const emittedLiveInputIds = new Set<string>();
     const response = await invoke({
       conversationId: bucketed,
       userMessage: request.text,
@@ -200,6 +239,17 @@ export function createAgentResponder(options: {
       ...(request.continuation === undefined ? {} : { continuation: request.continuation }),
       ...(boundary === undefined ? {} : { sessionBoundary: boundary }),
       onEvent: (event) => {
+        const liveInputEvents = liveInputActivityFromRuntimeEvent(
+          event,
+          pendingLiveInputByBaseConversation.get(serializationKey),
+          emittedLiveInputIds,
+        );
+        if (liveInputEvents !== undefined) {
+          for (const streamEvent of liveInputEvents) {
+            runtimeEventStream.enqueueEvent(streamEvent);
+          }
+          return;
+        }
         const streamEvent = streamEventFromRuntimeEvent(event, eventContext);
         if (streamEvent !== undefined) {
           runtimeEventStream.enqueueEvent(streamEvent);
@@ -227,6 +277,41 @@ export function createAgentResponder(options: {
       metadata: { ...response.metadata },
     };
   }
+}
+
+function liveInputActivityFromRuntimeEvent(
+  event: unknown,
+  pending: ReadonlyMap<string, PendingLiveInputActivity> | undefined,
+  emittedInputIds: Set<string>,
+): readonly [
+  Extract<AgentStreamEvent, { type: "tool_call_started" }>,
+  Extract<AgentStreamEvent, { type: "tool_call_completed" }>,
+] | undefined {
+  if (!isRecord(event) || event.type !== "live_input_applied") return undefined;
+  const inputId = stringField(event, "inputId");
+  if (inputId === undefined || emittedInputIds.has(inputId)) return undefined;
+  emittedInputIds.add(inputId);
+
+  const activity = pending?.get(inputId);
+  const receivedAt = stringField(event, "receivedAt") ?? activity?.receivedAt;
+  const name = formatLiveInputActivityLine(activity?.text ?? "");
+  const id = `live-input:${inputId}`;
+  const metadata = {
+    liveInput: true,
+    synthetic: true,
+    inputId,
+    ...(receivedAt === undefined ? {} : { receivedAt }),
+  };
+  return [
+    { type: "tool_call_started", id, name, metadata },
+    {
+      type: "tool_call_completed",
+      id,
+      name,
+      content: "Applied to current run",
+      metadata,
+    },
+  ];
 }
 
 export function assistantTextFromRuntimeEvent(event: unknown): string {

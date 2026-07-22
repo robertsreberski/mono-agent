@@ -78,7 +78,7 @@ Primary modules:
 | --- | --- | --- |
 | Turn contracts | `index.ts`, `types.ts` | Requests, responses, attachments, live-input ownership/settlement, cancellation, and settings value shapes. |
 | Channel lifecycle | `channel.ts` | Driver startup, running handles, status, notifications, and interaction hooks. |
-| Message delivery | `buffered-message-stream.ts`, `resilient-message-stream.ts`, `stream-text.ts` | Collect or safely adapt incremental output. |
+| Message delivery | `buffered-message-stream.ts`, `resilient-message-stream.ts`, `stream-text.ts`, `tool-hints.ts` | Collect or safely adapt incremental output and format bounded activity copy. |
 | Process transport | `stream-wire.ts` | NDJSON stream frames for operator clients. |
 | Shared safety helpers | `host-safety.ts`, `bearer.ts`, `http-headers.ts`, `config-loader.ts`, `json-source.ts` | Safe binds, bounded HTTP shutdown/streaming, tokens, sanitized headers, layered config coercion, and settings files. |
 
@@ -96,6 +96,12 @@ preview-free as `🧠 Recalling memory`; memory writes and ordinary file reads
 retain their distinct `🧠 Updating memory` and `📖 Reading` families. File
 paths use suffix-weighted middle truncation so filenames survive; commands keep
 a balanced prefix and suffix. Redaction still precedes the 40-code-point cap.
+Applied live guidance uses the same boundary through
+`formatLiveInputActivityLine()`, producing `↪️ Steered: “…”` without exposing the
+full follow-up as tool arguments or metadata. In final-only streams, a marked
+steering activity relocates a confirmed transient ledger behind the user's new
+message when the transport supports deletion; deletion failure falls back to
+editing in place and never changes final-answer delivery.
 
 ## Public API
 
@@ -108,6 +114,7 @@ a balanced prefix and suffix. Redaction still precedes the 40-code-point cap.
 | Implement a channel plugin | `ChannelDriver`, `ChannelStartInput`, `RunningChannel`, `ChannelStatus` |
 | Add structured human interaction to a channel | `ChannelInteractionHub`, `ChannelInteractionSink`, `ChannelAskQuestion`, `ChannelAskSnapshot`, `ChannelAskSubmission` |
 | Buffer or harden streamed output | `BufferedMessageStream`, `ResilientMessageStream` |
+| Format safe applied-steering activity | `formatLiveInputActivityLine` |
 | Carry stream events across a process boundary | `AgentStreamWireFrame`, `serializeAgentStreamFrame`, `parseAgentStreamFrame` |
 | Load adapter settings safely | `readSettingsJson`, `writeSettingsJson`, `layerJsonOntoEnv` |
 | Protect an HTTP listener | `assertSafeBind`, `listen`, `generateBearerToken`, `readAuthorizationBearer` |
@@ -219,6 +226,7 @@ createChannelUserCancelReason
 decodeAgentAttachmentText
 encodeJsonEnvValue
 fieldSpecMappings
+formatLiveInputActivityLine
 frameFeedingMessageStream
 generateBearerToken
 hostForUrl

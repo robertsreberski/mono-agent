@@ -117,12 +117,15 @@ Send another plain-text message in the same Telegram chat while the agent is
 working to guide that active run. Applied guidance becomes part of that run and
 does not create a second response. With lifecycle reactions enabled, the new
 message moves from the configured working reaction to the done reaction after
-the provider accepts it.
+the provider accepts it. Provider acknowledgement also adds a completed
+`↪️ Steered: “<safe preview>”` activity. If a confirmed cumulative activity
+message exists, Telegram best-effort deletes and reposts it after the human
+follow-up; delete failure edits it in place.
 
 The adapter reserves the message's ordinary per-chat queue position before
 offering it. If the selected provider cannot steer, delivery fails, or the
 active turn finishes first, the exact message runs next as a normal turn rather
-than being lost. Commands, pending `AskUser` replies, and messages with
+than being lost, and no `Steered` activity is emitted. Commands, pending `AskUser` replies, and messages with
 attachments retain their existing paths. See [Live input
 steering](/programmatic/approval-and-structured-output/#live-input-steering).
 
@@ -283,7 +286,7 @@ For example, a strict file call contains only the file operation and content:
 
 ## Final-answer delivery and transient tool activity
 
-Telegram does not stream answer tokens. While an inbound run is in flight the bot first shows a `typing…` chat action. If the agent starts a tool, the bot posts one temporary cumulative activity message with a short, redacted preview. Later tool starts edit that message and adjacent identical lines collapse as `(×N)`. Once the response is finalized, the bot posts it as a new message and then best-effort deletes the activity message; the progress bubble is never converted into the answer. Long paths are middle-truncated so the filename stays visible; long commands retain both their beginning and ending. Agent reasoning is never shown. A run with no tools still sends only the final message, and proactive notifications never show the tool ledger.
+Telegram does not stream answer tokens. While an inbound run is in flight the bot first shows a `typing…` chat action. If the agent starts a tool, the bot posts one temporary cumulative activity message with a short, redacted preview. Later tool starts edit that message and adjacent identical lines collapse as `(×N)`. Applied live guidance uses the same preview boundary for its completed `↪️ Steered` line. Once the response is finalized, the bot posts it as a new message and then best-effort deletes the activity message; the progress bubble is never converted into the answer. Long paths are middle-truncated so the filename stays visible; long commands retain both their beginning and ending. Agent reasoning is never shown. A run with no tools or applied guidance still sends only the final message, and proactive notifications never show the tool ledger.
 
 An acknowledged `/cancel` best-effort deletes a still-transient activity message and leaves one `Cancelled.` acknowledgement. The adapter will not delete a message after final-answer delivery has been attempted.
 

@@ -46,7 +46,7 @@ Env precedence everywhere: process env > `mono-agent.config.json` > built-in def
 | `runtime.cost-tracking` | auto | (recorded in JSONL artifacts) | — | [Artifacts & traces](/observability/artifacts-and-traces/) | — |
 | `runtime.builtin-tools` | config | `tools.allowedTools`, `tools.disallowedTools` | `MONO_AGENT_ALLOWED_TOOLS`, `MONO_AGENT_DISALLOWED_TOOLS` | [Tools & guards](/runtime/tools-and-guards/) | — |
 | `runtime.structured-output` | code | `runtimeOptions.outputSchema` (capable backends; direct OpenCode rejects) | — | [Approval & structured output](/programmatic/approval-and-structured-output/) | — |
-| `runtime.live-input` | auto + code | Slack/Telegram/web active-turn steering; custom `runtimeOptions.liveInput` (capable backends; direct OpenCode and Claude CLI fall back or reject) | — | [Approval & structured output](/programmatic/approval-and-structured-output/#live-input-steering) | — |
+| `runtime.live-input` | auto + code | Slack/Telegram/web active-turn steering plus completed safe-preview `Steered` activity after provider acknowledgement; custom `runtimeOptions.liveInput` (capable backends; direct OpenCode and Claude CLI fall back or reject) | — | [Approval & structured output](/programmatic/approval-and-structured-output/#live-input-steering) | — |
 | `runtime.approval-gates` | code | `createMonoRuntime({ onToolApprovalRequest, ... })` (config posture: `runtime.permissionMode`) | `MONO_AGENT_PERMISSION_MODE` | [Approval & structured output](/programmatic/approval-and-structured-output/) | — |
 | `runtime.custom` | code | `startMonoAgentApp({ runtime })` | — | [Composition](/programmatic/composition/) | — |
 

@@ -128,6 +128,12 @@ deliveries suppress it. An acknowledged `/cancel`
 best-effort deletes the still-transient ledger and keeps the command's one
 `Cancelled.` acknowledgement.
 
+Applied live guidance adds a completed `↪️ Steered: “<safe preview>”` entry. If
+a confirmed ledger already exists, Slack best-effort deletes and reposts the
+same cumulative ledger so it becomes the newest bot message after the human
+follow-up. A failed delete edits the existing ledger in place; neither path can
+block or replace the final answer.
+
 ### Live follow-up steering
 
 When the responder exposes live input, another plain-text message in the same
@@ -136,7 +142,8 @@ run and acknowledged with 👀. Commands, pending `AskUser` replies, and message
 with files retain their existing paths. The adapter reserves the follow-up's
 ordinary queue position before offering it: if the provider is unsupported, the
 run ends first, or delivery fails, the exact message runs next as a normal turn.
-Applied guidance does not create a second assistant response.
+Applied guidance does not create a second assistant response. Provider
+acknowledgement adds the completed `↪️ Steered` activity described above.
 
 ### Model and effort controls
 

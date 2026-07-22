@@ -628,8 +628,8 @@ Per-call options (a non-exhaustive selection):
 | `maxTurns` | `number` | Hard cap on agent turns. |
 | `outputSchema` | `JSONSchema` | Requests structured JSON on capable bridges; see “Structured output” below for bridge-specific return behavior. |
 | `abortSignal` | `AbortSignal` | Cancel the run. |
-| `liveInput` | `AsyncIterable<{ body: string; id?: string; receivedAt?: string; acknowledge?: () => void; reject?: (error?: unknown) => void }>` | Stream of in-flight user messages for steering on capable bridges. A bridge acknowledges only after its native steering boundary accepts the message; per-attempt rejection permits router replay. |
-| `onEvent` | `(event) => void` | Fired for every event the provider emits (assistant text, tool calls/results, runtime warnings, structured output). |
+| `liveInput` | `AsyncIterable<{ body: string; id?: string; receivedAt?: string; acknowledge?: () => void; reject?: (error?: unknown) => void }>` | Stream of in-flight user messages for steering on capable bridges. A bridge acknowledges only after its native steering boundary accepts the message; per-attempt rejection permits router replay. Acknowledgement emits metadata-only `live_input_applied` telemetry. |
+| `onEvent` | `(event) => void` | Fired for every runtime event (assistant text, tool calls/results, applied live input, runtime warnings, structured output). |
 | `runId` | `string` | Tag this run for downstream callbacks (e.g. `onCompactionRecorded`). |
 | `providerSessionId` | `string` | Resume a prior provider session. |
 | `runArtifactDir` | `string` | Used by some providers as the Playwright MCP filename target. |
@@ -639,6 +639,11 @@ Per-call options (a non-exhaustive selection):
 Live input is native on the Claude SDK, Codex app-server, and Pi bridges. The
 one-shot Claude CLI and direct OpenCode bridges advertise it as unsupported so
 routers skip them when a direct runtime call requires steering.
+After a native bridge invokes `acknowledge()`, the runtime emits exactly one
+`{ type: "live_input_applied", inputId, receivedAt? }` event for that logical
+run. It deliberately omits the guidance body. A fallback router reuses the same
+instrumented input stream, so replay or duplicate acknowledgement cannot emit a
+second applied event.
 
 Returns:
 

@@ -240,6 +240,91 @@ describe("ResilientMessageStream", () => {
       .not.toContain("hidden draft");
   });
 
+  it("finalOnly mode: relocates the cumulative ledger after applied live guidance", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "t1",
+      name: "Read",
+      arguments: { path: "/repo/a.ts" },
+    });
+    await stream.event({
+      type: "tool_call_started",
+      id: "live-input:follow-up-1",
+      name: "↪️ Steered: “Use the API instead”",
+      metadata: { liveInput: true, synthetic: true },
+    });
+
+    expect(transport.calls).toEqual([
+      { op: "post", text: "📖 Reading /repo/a.ts", markdown: false },
+      { op: "delete", ref: { id: "m1" } },
+      {
+        op: "post",
+        text: "📖 Reading /repo/a.ts\n↪️ Steered: “Use the API instead”",
+        markdown: false,
+      },
+    ]);
+  });
+
+  it("finalOnly mode: edits the existing ledger when relocation deletion fails", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const debug = vi.fn();
+    transport.delete = async (ref: MessageRef) => {
+      transport.calls.push({ op: "delete", ref });
+      throw new Error("delete failed");
+    };
+    const stream = new ResilientMessageStream({
+      transport,
+      editDebounceMs: 0,
+      sleep: noSleep,
+      finalOnly: true,
+      showHints: true,
+      logger: { debug },
+    });
+
+    await stream.event({ type: "tool_call_started", id: "t1", name: "Read", arguments: { path: "a.ts" } });
+    await stream.event({
+      type: "tool_call_started",
+      id: "live-input:follow-up-1",
+      name: "↪️ Steered: “Keep the current approach”",
+      metadata: { liveInput: true, synthetic: true },
+    });
+    await stream.finish("final answer");
+
+    expect(transport.calls.slice(0, 3)).toEqual([
+      { op: "post", text: "📖 Reading a.ts", markdown: false },
+      { op: "delete", ref: { id: "m1" } },
+      {
+        op: "edit",
+        ref: { id: "m1" },
+        text: "📖 Reading a.ts\n↪️ Steered: “Keep the current approach”",
+        markdown: false,
+      },
+    ]);
+    expect(debug).toHaveBeenCalledWith(
+      "Resilient stream live-input activity relocation failed (editing in place).",
+      { error: "delete failed" },
+    );
+  });
+
+  it("streaming mode uses the explicit steering label instead of a generic tool hint", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: false, showHints: true });
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "live-input:follow-up-1",
+      name: "↪️ Steered: “Focus on tests”",
+      metadata: { liveInput: true, synthetic: true },
+    });
+
+    expect(transport.calls).toEqual([
+      { op: "post", text: "↪️ Steered: “Focus on tests”", markdown: false },
+    ]);
+  });
+
   it("finalOnly mode: showHints false preserves the previous answer-only behavior", async () => {
     const transport = new FakeTransport();
     const stream = makeStream(transport, { finalOnly: true, showHints: false });

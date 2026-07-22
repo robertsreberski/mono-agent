@@ -72,6 +72,121 @@ describe("createAgentResponder", () => {
     expect(offered).toBeUndefined();
   });
 
+  it("emits one completed synthetic Steered tool activity only after live input is applied", async () => {
+    let activeRequest: AgentHarnessRequest | undefined;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    let finishRun!: () => void;
+    const finished = new Promise<void>((resolve) => { finishRun = resolve; });
+    let settle!: (value: { status: "applied"; runId: string }) => void;
+    const settled = new Promise<{ status: "applied"; runId: string }>((resolve) => { settle = resolve; });
+    const harness: AgentHarness = {
+      async run(request) {
+        activeRequest = request;
+        markStarted();
+        await finished;
+        return okResponse(request.conversationId);
+      },
+      offerLiveInput() {
+        return { status: "accepted", settled };
+      },
+    };
+    const events: AgentStreamEvent[] = [];
+    const responder = createAgentResponder({ harness });
+    const response = responder.respond(baseRequest(), {
+      append: async () => {},
+      event: async (event) => { events.push(event); },
+    });
+    await started;
+
+    const offer = responder.offerLiveInput?.({
+      conversationId: "c1",
+      id: "follow-up-1",
+      text: "Use TOKEN=fixture then test the fallback",
+      receivedAt: "2026-07-22T08:30:00.000Z",
+    });
+    expect(offer?.status).toBe("accepted");
+    settle({ status: "applied", runId: "run-1" });
+    await settled;
+    await Promise.resolve();
+    activeRequest?.onEvent?.({
+      type: "live_input_applied",
+      inputId: "follow-up-1",
+      receivedAt: "2026-07-22T08:30:00.000Z",
+    });
+    activeRequest?.onEvent?.({
+      type: "live_input_applied",
+      inputId: "follow-up-1",
+      receivedAt: "2026-07-22T08:30:00.000Z",
+    });
+    finishRun();
+    await response;
+
+    const metadata = {
+      liveInput: true,
+      synthetic: true,
+      inputId: "follow-up-1",
+      receivedAt: "2026-07-22T08:30:00.000Z",
+    };
+    expect(events).toEqual([
+      {
+        type: "tool_call_started",
+        id: "live-input:follow-up-1",
+        name: "↪️ Steered: “Use TOKEN=[redacted] then test the fall…”",
+        metadata,
+      },
+      {
+        type: "tool_call_completed",
+        id: "live-input:follow-up-1",
+        name: "↪️ Steered: “Use TOKEN=[redacted] then test the fall…”",
+        content: "Applied to current run",
+        metadata,
+      },
+    ]);
+  });
+
+  it("does not emit steering activity for a requeued live-input offer", async () => {
+    let activeRequest: AgentHarnessRequest | undefined;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    let finishRun!: () => void;
+    const finished = new Promise<void>((resolve) => { finishRun = resolve; });
+    let settle!: (value: { status: "requeue"; reason: "closed" }) => void;
+    const settled = new Promise<{ status: "requeue"; reason: "closed" }>((resolve) => { settle = resolve; });
+    const harness: AgentHarness = {
+      async run(request) {
+        activeRequest = request;
+        markStarted();
+        await finished;
+        return okResponse(request.conversationId);
+      },
+      offerLiveInput() {
+        return { status: "accepted", settled };
+      },
+    };
+    const events: AgentStreamEvent[] = [];
+    const responder = createAgentResponder({ harness });
+    const response = responder.respond(baseRequest(), {
+      append: async () => {},
+      event: async (event) => { events.push(event); },
+    });
+    await started;
+
+    responder.offerLiveInput?.({
+      conversationId: "c1",
+      id: "follow-up-2",
+      text: "Run this next instead",
+      receivedAt: "2026-07-22T08:31:00.000Z",
+    });
+    settle({ status: "requeue", reason: "closed" });
+    await settled;
+    finishRun();
+    await response;
+
+    expect(activeRequest).toBeDefined();
+    expect(events).toEqual([]);
+  });
+
   it("routes respond() through harness.submit when available (queue-after-turn)", async () => {
     const calls: string[] = [];
     const harness: AgentHarness = {

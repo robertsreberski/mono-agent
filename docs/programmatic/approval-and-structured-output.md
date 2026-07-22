@@ -196,6 +196,17 @@ A direct runtime call fails capability checks when its bridge cannot represent
 live input instead of silently dropping the stream. Claude SDK, Codex app-server,
 and Pi support it; the one-shot Claude CLI and direct OpenCode bridges do not.
 
+After a capable bridge calls `acknowledge()`, the runtime publishes exactly one
+metadata-only `live_input_applied` event containing `inputId` and optional
+`receivedAt`. It never copies the guidance body into that event, and router
+replay or duplicate acknowledgement cannot publish it twice. The standard
+responder correlates the id to its pending human message and projects a normal
+completed tool lifecycle named `↪️ Steered: “<safe preview>”`, with result
+`Applied to current run`. The preview is one line, secret-redacted, path-collapsed,
+and capped at 40 Unicode code points; the full text remains the human message.
+Every structured stream therefore receives the same applied-steering activity
+without adding a new channel-specific event type.
+
 The standard agent responder owns that queue for ordinary interactive turns.
 Slack and Telegram reserve the incoming message's normal per-conversation queue
 position before offering it; the web console persists the same fallback in
