@@ -3,6 +3,7 @@ import {
   layerJsonOntoEnv,
   normalizeOptionalString,
   readBoolean,
+  readChoice,
   readCsv,
   readInteger,
   readJsonSection,
@@ -18,6 +19,10 @@ import type {
 } from "@mono-agent/agent-contracts";
 
 import type { TelegramTranscriptionConfig } from "./transcription.js";
+
+export type TelegramGroupTriggerMode = "any" | "mention";
+
+const TELEGRAM_GROUP_TRIGGER_MODES = ["any", "mention"] as const satisfies readonly TelegramGroupTriggerMode[];
 
 /**
  * A daily window during which proactive notifications (cron/webhook deliveries)
@@ -76,6 +81,10 @@ export interface TelegramAdapterConfig {
   readonly botToken: string;
   readonly allowedChatIds: readonly string[];
   readonly allowAllChats: boolean;
+  /** Group-message trigger rule. Omit for backward-compatible `any`. */
+  readonly groupMode?: TelegramGroupTriggerMode;
+  /** Remove the bot's native @mention from responder text. Defaults to true. */
+  readonly stripMentionText?: boolean;
   /**
    * Base URL of a self-hosted Bot API server (e.g. `http://127.0.0.1:8081`).
    * Omit for the hosted `https://api.telegram.org`. A `--local` server returns
@@ -108,6 +117,8 @@ export interface RedactedTelegramAdapterConfig {
   readonly botToken: RedactedSecretValue;
   readonly allowedChatIds: { readonly count: number };
   readonly allowAllChats: boolean;
+  readonly groupMode: TelegramGroupTriggerMode;
+  readonly stripMentionText: boolean;
   readonly apiRoot?: string;
   readonly attachments?: TelegramAttachmentsConfig;
   readonly ipFamily?: 4 | 6;
@@ -182,6 +193,19 @@ export async function loadTelegramAdapterConfig(
     false,
     invalidConfig,
   );
+  const groupMode = readChoice(
+    env.MONO_AGENT_TELEGRAM_GROUP_MODE,
+    "MONO_AGENT_TELEGRAM_GROUP_MODE",
+    TELEGRAM_GROUP_TRIGGER_MODES,
+    "any",
+    invalidConfig,
+  );
+  const stripMentionText = readBoolean(
+    env.MONO_AGENT_TELEGRAM_STRIP_MENTION_TEXT,
+    "MONO_AGENT_TELEGRAM_STRIP_MENTION_TEXT",
+    true,
+    invalidConfig,
+  );
 
   // A disabled channel never validates its credentials: the status surface reads
   // it as "disabled", not "waiting for config". Only an enabled channel demands
@@ -192,6 +216,8 @@ export async function loadTelegramAdapterConfig(
       botToken: "",
       allowedChatIds,
       allowAllChats,
+      groupMode,
+      stripMentionText,
     };
   }
 
@@ -230,6 +256,8 @@ export async function loadTelegramAdapterConfig(
     botToken,
     allowedChatIds,
     allowAllChats,
+    groupMode,
+    stripMentionText,
     ...(apiRoot === undefined ? {} : { apiRoot }),
     ...(attachments === undefined ? {} : { attachments }),
     ...(ipFamily === undefined ? {} : { ipFamily }),
@@ -609,6 +637,8 @@ export function redactTelegramAdapterConfig(
     botToken: redactedSecret(config.botToken),
     allowedChatIds: { count: config.allowedChatIds.length },
     allowAllChats: config.allowAllChats,
+    groupMode: config.groupMode ?? "any",
+    stripMentionText: config.stripMentionText ?? true,
     ...(config.apiRoot === undefined ? {} : { apiRoot: config.apiRoot }),
     ...(config.attachments === undefined ? {} : { attachments: config.attachments }),
     ...(config.ipFamily === undefined ? {} : { ipFamily: config.ipFamily }),
@@ -633,6 +663,8 @@ export const TELEGRAM_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "telegram.botToken", env: "MONO_AGENT_TELEGRAM_BOT_TOKEN", secret: true, fromJson: (s) => s.botToken },
   { id: "telegram.allowedChatIds", env: "MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS", kind: "csv", fromJson: (s) => s.allowedChatIds },
   { id: "telegram.allowAllChats", env: "MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS", kind: "boolean", fromJson: (s) => s.allowAllChats },
+  { id: "telegram.groupMode", env: "MONO_AGENT_TELEGRAM_GROUP_MODE", fromJson: (s) => s.groupMode },
+  { id: "telegram.stripMentionText", env: "MONO_AGENT_TELEGRAM_STRIP_MENTION_TEXT", kind: "boolean", fromJson: (s) => s.stripMentionText },
   { id: "telegram.transport.ipFamily", env: "MONO_AGENT_TELEGRAM_IP_FAMILY", kind: "integer", fromJson: (s) => readRecord(s.transport).ipFamily },
   { id: "telegram.pollWatchdogMs", env: "MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS", kind: "integer", fromJson: (s) => s.pollWatchdogMs },
   { id: "telegram.apiRoot", env: "MONO_AGENT_TELEGRAM_API_ROOT", fromJson: (s) => s.apiRoot },

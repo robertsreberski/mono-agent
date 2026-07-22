@@ -50,6 +50,13 @@ channel reports `disabled`. Once enabled, a missing token or missing
 `allowedChatIds`/`allowAllChats` authorization becomes a real
 `waiting_for_config` reason.
 
+For an allowlisted group where the bot should stay quiet unless addressed, set
+`telegram.groupMode` to `"mention"`. Native @mentions of the bot and replies to
+its messages start turns; ordinary group conversation is ignored before agent
+admission. Direct chats and slash commands are unchanged. The bot must receive
+group updates (for example, by being a group administrator); the adapter owns
+the local trigger filter. `telegram.stripMentionText` defaults to `true`.
+
 ### Programmatic use
 
 Install the package directly only when composing a custom host:
@@ -79,6 +86,7 @@ const responder: AgentResponder = {
 const telegram = await startTelegramAdapter({
   botToken,
   allowedChatIds: ["123456789"],
+  groupMode: "mention",
   responder,
 });
 
@@ -305,7 +313,9 @@ TelegramEditMessageTextParams
 TelegramFileDownloader
 TelegramFileReference
 TelegramGetUpdatesParams
+TelegramGroupTriggerMode
 TelegramMessage
+TelegramMessageEntity
 TelegramMessageSender
 TelegramMessageStream
 TelegramMessageStreamLogger

@@ -995,6 +995,8 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.enum = SANDBOX_FALLBACKS;
   } else if (field.jsonPath === "providers.piNative.transport") {
     schema.enum = PI_TRANSPORTS;
+  } else if (field.jsonPath === "telegram.groupMode") {
+    schema.enum = ["any", "mention"];
   } else if (field.jsonPath === "telegram.sendTools.scope") {
     schema.enum = ["producing-conversation"];
   } else if (field.jsonPath === "telegram.sendTools.pathScope") {
@@ -1203,6 +1205,8 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "providers.piNative.transport": "auto",
     "telegram.enabled": false,
     "telegram.allowAllChats": false,
+    "telegram.groupMode": "any",
+    "telegram.stripMentionText": true,
     "slack.enabled": false,
     "slack.allowAllChannels": false,
     "webhook.enabled": false,
@@ -1264,6 +1268,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "providers.piAuthPath": "~/.pi/agent/auth.json",
     "providers.piNative.transport": "sse",
     "telegram.botToken": "env:MONO_AGENT_TELEGRAM_BOT_TOKEN",
+    "telegram.groupMode": "mention",
     "slack.botToken": "env:MONO_AGENT_SLACK_BOT_TOKEN",
     "slack.appToken": "env:MONO_AGENT_SLACK_APP_TOKEN",
     "slack.stripMentionText": false,
@@ -1296,6 +1301,12 @@ function descriptionFor(id: string): string {
   const name = id.split(".").slice(1).join(".");
   if (id === "slack.stripMentionText") {
     return "When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`.";
+  }
+  if (id === "telegram.groupMode") {
+    return "Group-message trigger rule: `any` runs every allowed group message; `mention` runs only native @mentions of the bot and replies to its messages. Direct chats and commands are unaffected.";
+  }
+  if (id === "telegram.stripMentionText") {
+    return "Removes matching native @mentions from responder text in `mention` mode; replies without a mention are unchanged.";
   }
   const compactionDescriptions: Record<string, string> = {
     "runtime.compaction.enabled": "Enables adaptive proactive compaction and one-shot reactive overflow recovery.",
