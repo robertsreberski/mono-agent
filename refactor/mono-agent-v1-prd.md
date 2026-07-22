@@ -12,7 +12,7 @@ Mono-agent will become a production-grade, config-first wrapper around independe
 
 This is a clean public break from the v0 package graph and configuration model. It is not a feature-reduction project. Stable v1 is blocked until every current package, public CLI workflow, runtime bridge, communication channel, persistence behavior, operational control, and operator experience has a recorded v1 destination and passing verification. A capability may be retired only when its user outcome is preserved elsewhere and the disposition is explicit.
 
-The v1 distribution remains one pnpm monorepo, but packages release independently. A generated project owns an ordinary package.json and lockfile and installs only its selected runtime and plugins. The global entry point may help create or locate a project, but execution always resolves through that project's direct dependencies and project-local CLI.
+The v1 distribution remains one pnpm monorepo releasing first-party packages in lockstep through the existing release pipeline. A generated project owns an ordinary package.json and lockfile and installs only its selected runtime and plugins. The global entry point may help create or locate a project, but execution always resolves through that project's direct dependencies and project-local CLI.
 
 The first production proof is the migration of Personal Agent and A8C Assistant. They will run project-local pinned installations, preserve their existing memory, and migrate sequentially so Telegram and Slack never have duplicate consumers.
 
@@ -21,7 +21,7 @@ The first production proof is the migration of Personal Agent and A8C Assistant.
 The existing system has sound modular building blocks, but the application layer has accumulated too many responsibilities:
 
 - agent-app composes runtimes, the harness, channels, memory, history, observability, setup, authentication, macOS services, configuration proposals, and operator products;
-- the core app statically depends on most concrete integrations even when a project does not use them;
+- agent-app's install closure contains most concrete integrations even when a project does not use them; runtime loading is already lazy, but installation weight, ownership, and review surface are not;
 - the runtime package groups five bridges under one release and ownership surface;
 - configuration is represented in parallel persisted types, resolved types, environment mappings, field registries, setup modules, config views, handwritten references, and generated documentation;
 - setup and diagnostics centrally know provider and adapter details;
@@ -46,7 +46,7 @@ Their jobs are:
 - validate the complete setup before starting it;
 - run the agent reliably as a foreground process or managed local service;
 - inspect, chat with, configure, and recover the agent through consistent operator interfaces;
-- upgrade individual components without an all-packages lockstep release;
+- upgrade the platform in one coherent step and third-party plugins on their own cadence;
 - understand failures without reading framework internals.
 
 Secondary user: an open-source contributor or integration author.
@@ -82,13 +82,15 @@ Their jobs are:
 - Pixel-identical TUI and web rendering.
 - A Windows or Linux service manager in v1; foreground execution remains portable and the first service product is macOS-only.
 - Hot reloading of plugins or configuration; changes apply after validation and restart.
+- Independent per-package semantic versioning; first-party packages keep the proven lockstep release through v1, and third-party compatibility is governed by the plugin SDK apiVersion and peer ranges.
+- A rewrite of TUI or web rendering and presentation state beyond adopting the shared operator protocol, client, and view models.
 
 ## 4. Product principles
 
 1. Config first. A normal user composes an agent without writing host code.
 2. Smallest sufficient ownership. Core owns coordination; integrations own integration behavior.
 3. Explicit selection. Installed or configured capabilities are never inferred from global state.
-4. Fail closed. Missing, incompatible, or unsafe selected capabilities are errors, not successful waiting states.
+4. Fail closed on configuration. Missing, incompatible, or unsafe selected capabilities are validation and start errors, not successful waiting states. Transient transport loss on a correctly configured capability is visible degradation with bounded recovery, never silent success and never a reason to take down an otherwise healthy agent.
 5. One schema owner. A field is declared once and every other representation is generated.
 6. Runtime plurality. Cross-runtime routing is a platform feature, while provider behavior remains plugin-owned.
 7. Native renderers, shared application. Operator behavior is shared; terminal and browser presentation remain native.
@@ -108,7 +110,7 @@ Their jobs are:
 | Config definitions | No duplicated field registry in new v1 path | Old parallel config machinery removed |
 | Third-party plugin path | Example plugin loads without core edit | Packaged compliance example passes from a clean project |
 | Minimal scaffold | Contains only selected runtime and plugins | Verified under npm and pnpm from packed artifacts |
-| Operator architecture | TUI and web consume shared controller/state | Shared contract suite and renderer parity suite pass |
+| Operator architecture | TUI and web consume the shared operator protocol, client, and view models | No renderer re-implements the wire contract; shared fixture suite passes in both |
 | Personal Agent | Full selected stack on beta | 24-hour healthy soak and stable adoption |
 | A8C Assistant | Full selected stack on beta | 24-hour healthy soak including business hours |
 | Duplicate delivery | Zero Telegram/Slack concurrent-consumer incidents | Zero through stable cutover |
@@ -125,7 +127,7 @@ The work uses a stage-gated strangler migration with vertical slices:
 - Each implementation slice must run end to end through config, plugin loading, execution, health, and user-facing verification.
 - Horizontal framework work is allowed only when it independently reduces a named risk or enables the next vertical slice.
 - Each slice lands in an isolated worktree and focused PR.
-- Architecture, configuration/security, memory migration, and production cutover require an independent reviewer.
+- Architecture, configuration/security, memory migration, and production cutover changes require an adversarial review pass before merge; routine slices use the normal review loop.
 - Production writes, service replacement, npm publication, and canonical memory cutover require explicit maintainer approval.
 
 No implementation wave may solve unrelated feature requests. Newly discovered behavior is added to the parity ledger before it is changed.
@@ -143,24 +145,22 @@ Plugins:
 
 - runtimes;
 - communication channels;
-- memory and history;
-- recording and export;
-- local discovery;
-- sandboxing;
-- continuations;
+- memory;
 - tools and MCP capabilities;
+- durable local state (history, run recording, presence, continuation store);
+- export;
+- sandboxing;
 - plugin-owned diagnostics and CLI extensions.
 
 Products:
 
-- @mono-agent/cli;
+- @mono-agent/cli (including managed project-skill maintenance);
 - create-mono-agent;
 - @mono-agent/operator;
 - @mono-agent/tui;
 - @mono-agent/web;
 - @mono-agent/service-macos;
 - @mono-agent/self-config;
-- @mono-agent/skills-manager;
 - @mono-agent/docs-mcp.
 
 Physical workspace layout remains flat under the existing packages and extras rules. Tier and dependency rules live in the package catalog; this project does not spend a migration wave moving directories for appearance.
@@ -197,6 +197,7 @@ The architecture checker must reject:
 - live-input admission and settlement;
 - runtime route selection and fallback;
 - adapter-neutral tool, approval, MCP, and sandbox policy negotiation;
+- continuation coordination (claims, leases, synthesis, delivery, operator maintenance) behind a narrow store port, optional and configuration-gated;
 - structured event flow;
 - health aggregation;
 - foreground lifecycle and graceful shutdown.
@@ -216,22 +217,20 @@ Core does not own:
 
 ### 7.4 Plugin responsibility
 
-Each plugin has one primary kind:
+Each plugin declares one primary kind: runtime, channel, memory, tool, or extension.
 
-- runtime;
-- channel;
-- memory;
-- history;
-- recorder;
-- exporter;
-- discovery;
-- sandbox;
-- tool;
-- mcp;
-- continuation;
-- diagnostic.
+The first four are full stable contracts with compliance suites and documentation at 1.0. An extension plugin contributes implementations of narrow host ports instead of a bespoke first-class contract:
 
-A plugin may also expose diagnostics and namespaced CLI commands that operate only on its own data and lifecycle. Those adjuncts do not change its primary ownership.
+- history store;
+- run recorder;
+- event exporter;
+- discovery registry;
+- sandbox engine;
+- continuation store.
+
+This replaces twelve first-class plugin kinds with four stable contracts plus a set of narrow ports. Recorders, exporters, discovery, and diagnostics are structurally event observers and lifecycle services; freezing a bespoke contract for each at 1.0 would multiply the SDK surface without user benefit. One package may ship several port implementations when they share one storage discipline; the port interface, not the package boundary, is the contract.
+
+A plugin of any kind may also expose diagnostics and namespaced CLI commands that operate only on its own data and lifecycle. Those adjuncts do not change its primary ownership.
 
 Plugins execute as trusted in-process project dependencies. The loader does not claim to isolate malicious plugin code. The documentation and validation output must state this trust boundary.
 
@@ -252,7 +251,7 @@ PluginManifest contains:
 - id: stable package-level identifier;
 - apiVersion: exactly 1 for v1;
 - version: package version;
-- kind: one primary plugin kind;
+- kind: runtime, channel, memory, tool, or extension;
 - requires: optional capability requirements, not package-manager installation requests;
 - description: one responsibility statement.
 
@@ -340,7 +339,7 @@ Channel plugins:
 - own reconnect behavior after a successful initial start;
 - stop idempotently.
 
-Initial failure of an enabled channel is a start failure. A transport that becomes unavailable later may report degraded while it performs bounded recovery. It may not report healthy while disconnected.
+Configuration, authentication, and structural failures of an enabled channel are validation or start failures. A transport-level failure at start (network unreachable, provider outage) is visible degradation with bounded recovery — the same contract that governs a transport that becomes unavailable later — so one provider outage cannot take down an otherwise healthy multi-channel agent or put a managed service into a crash loop. This preserves the current production behavior in which channel adapters self-recover with bounded backoff while the rest of the agent keeps serving. A channel may not report healthy while disconnected, and its degraded state is visible in health output from the first failed attempt.
 
 ### 8.5 State and durability contracts
 
@@ -349,8 +348,8 @@ Core coordinates state but does not select a storage format.
 - History plugins persist canonical conversation turns and provider-session linkage.
 - Recorder plugins persist structured run evidence and summaries.
 - Memory plugins own recall, capture, completed-turn admission, audit, rebuild, and maintenance behavior.
-- Discovery plugins publish and query local agent presence and health.
-- Continuation plugins own durable claims, leases, results, delivery state, and operator maintenance.
+- Discovery contributions publish and query local agent presence and health.
+- Continuation state persists through the continuation store port. Continuation coordination itself (claims, leases, synthesis, delivery, operator maintenance) is core-owned: it requires host-wide authority over turns, channels, and history that the plugin context deliberately does not grant, so modeling it as a plugin would contradict the plugin contract.
 
 Every durable plugin must document:
 
@@ -511,61 +510,27 @@ Generated schema metadata records the selected plugin package names and versions
 
 ### 10.1 Goal
 
-TUI and web become renderers of one headless operator application rather than separate applications that happen to call the same endpoint.
+TUI and web stop maintaining private copies of the operator wire contract and shared semantics. Today web re-implements the NDJSON protocol without even depending on the operator package, so the two surfaces can silently drift; that is the defect v1 removes.
 
 @mono-agent/operator owns:
 
-- protocol schemas;
-- transport-neutral client;
+- versioned protocol schemas;
+- one transport-neutral client;
 - discovery interface;
-- controller and state machine;
-- actions and events;
-- agent, conversation, message, turn, activity, AskUser, attachment, config, replay, and health view models;
 - capability negotiation;
+- shared view-model types and decoding for agents, conversations, messages, turns, activities, AskUser, attachments, config, replay, and health;
 - persistence ports;
-- deterministic reducers and contract fixtures.
+- golden event fixtures that every consumer must pass.
 
 It has no React, assistant-ui, pi-tui, Express, SQLite, browser, or terminal dependency.
 
-### 10.2 Public operator interfaces
+v1 deliberately does not mandate a shared controller or reducer layer. Renderer-local presentation state stays renderer-owned; consolidating it further is a post-v1 direction to apply opportunistically where it pays for itself, not a stable-release gate. Rewriting two working, production-hardened surfaces onto one state machine in the same program that re-platforms every package is unnecessary coupled risk.
 
-The stable application surface includes:
+### 10.2 Public operator surface
 
-- OperatorTransport;
-- OperatorDirectory;
-- OperatorStore;
-- OperatorClient;
-- OperatorController;
-- OperatorState;
-- OperatorAction;
-- OperatorEvent;
-- OperatorCapabilities;
-- OperatorAgent;
-- OperatorConversation;
-- OperatorMessage;
-- OperatorTurn;
-- OperatorActivity;
-- OperatorAsk;
-- OperatorAttachment;
-- OperatorConfigView;
-- OperatorReplayView.
+The protocol and shared view models cover the complete current action surface of both renderers: agent discovery, selection, and pinning; conversation lifecycle; sending turns; live-input send and settlement; cancellation; AskUser answers; model and effort overrides; attachments; quoting; config, replay, and health views; self-configuration entry; and renderer exit without stopping the agent.
 
-The action vocabulary includes:
-
-- refresh and select agent;
-- pin or unpin agent;
-- create, rename, archive, unarchive, and delete conversation;
-- select conversation;
-- send turn;
-- send or settle live input;
-- cancel turn;
-- answer AskUser;
-- set or clear model and effort override;
-- stage, attach, inspect, and remove attachment;
-- quote or clear quote;
-- open config, replay, or health view;
-- request self-configuration;
-- exit a renderer without stopping the agent.
+Exact interface names and shapes are an implementation concern recorded in the operator package's public API inventory, not fixed in this PRD.
 
 ### 10.3 Agent-side operator channel
 
@@ -605,7 +570,7 @@ The protocol keeps bounded frame sizes, aborts a turn on client disconnect unles
 - a durable SQLite implementation of OperatorStore;
 - web host/origin and LAN/Tailscale safety.
 
-Both must use the shared controller, reducers, DTOs, capability checks, remote client, and golden event fixtures. They may not maintain independent model/effort, AskUser, live-input, activity, or turn-state logic.
+Both must use the shared protocol schemas, client, view-model types, capability checks, and golden event fixtures. They may not re-implement the wire contract, event decoding, or capability negotiation, and shared semantics — model/effort option parsing, AskUser payload handling, live-input settlement meaning — must come from the shared package even where presentation differs.
 
 Both renderers support:
 
@@ -631,7 +596,7 @@ Platform-only behavior remains adapter-owned. Browser notifications do not need 
 
 @mono-agent/self-config owns the optional proposal tool, low-risk patch allowlist, review model, atomic config/Role transaction, restart, readiness proof, and rollback. The shared operator renders its state but cannot acquire mutation authority on its own.
 
-@mono-agent/discovery-local owns the owner-private local presence registry and heartbeat records. Observability exporters no longer own agent discovery.
+The owner-private local presence registry and heartbeat records live in @mono-agent/state-local's discovery contribution. Observability exporters no longer own agent discovery.
 
 @mono-agent/service-macos owns launchd lifecycle and makes readiness decisions using core health plus local discovery. Neither renderer owns service mutation.
 
@@ -642,9 +607,9 @@ Every entry in the current package catalog has a destination:
 | Current package | Disposition | v1 owner and preserved outcome |
 | --- | --- | --- |
 | @mono-agent/a2a-adapter | Replace package name | @mono-agent/channel-a2a preserves provider Agent Card, inbound A2A tasks, remote discovery/consumption, authentication, streaming, and shutdown |
-| @mono-agent/agent-app | Retire | Composition moves to core; user commands to CLI/products; setup to scaffolder; service lifecycle to service-macos; self-config to self-config |
+| @mono-agent/agent-app | Retire | Composition moves to core; user commands to CLI/products; setup to scaffolder; service lifecycle to service-macos; self-config to self-config; continuation coordination to core with its store behind the state-local port |
 | @mono-agent/agent-contracts | Retire | Adapter-neutral host contracts move to plugin-sdk; operator protocol and view contracts move to operator |
-| @mono-agent/agent-harness | Retire | Turn/session coordination moves to core; history persistence to history-jsonl; provider session operations to runtime plugins |
+| @mono-agent/agent-harness | Retire | Turn/session coordination moves to core; history persistence to state-local; provider session operations to runtime plugins |
 | @mono-agent/agent-orchestrator | Replace package name | @mono-agent/tool-orchestrator preserves request-scoped collaborator exposure through bounded MCP tools |
 | @mono-agent/agent-runtime | Split | runtime-pi, runtime-claude, runtime-codex, and runtime-opencode preserve all five bridges |
 | @mono-agent/config | Retire | Core envelope schema moves to core; integration config moves to each plugin; schema helpers move to plugin-sdk |
@@ -653,7 +618,7 @@ Every entry in the current package catalog has a destination:
 | @mono-agent/memory | Replace package name | @mono-agent/memory-local preserves SQLite substrate, lite, journal, BuJo, embeddings, capture, consolidation, and maintenance |
 | @mono-agent/memory-supermemory | Retain as plugin | Preserves remote recall/capture, completed-turn admission, MCP exposure, and health |
 | create-mono-agent | Retain as product | Becomes the selected-stack scaffolder and project-local CLI bootstrap |
-| @mono-agent/observability | Split | recorder-jsonl owns run evidence; exporter-otlp owns Phoenix/OTLP; discovery-local owns presence; history-jsonl owns durable conversation history |
+| @mono-agent/observability | Split | state-local owns run evidence, durable conversation history, and presence; exporter-otlp owns Phoenix/OTLP |
 | @mono-agent/openai-api-adapter | Replace package name | @mono-agent/channel-openai-api preserves model discovery and Chat Completions compatibility |
 | @mono-agent/operator-adapter | Split and rename | channel-operator owns the agent endpoint; operator owns protocol, client, state, and view models |
 | @mono-agent/runtime-adapter | Retire | Neutral runtime contract/routing moves to SDK/core; provider logic to runtime plugins; SRT to sandbox-srt |
@@ -668,22 +633,18 @@ Additional v1 packages required to separate current app-owned behavior:
 
 | New package | Responsibility |
 | --- | --- |
-| @mono-agent/core | Operational kernel |
-| @mono-agent/plugin-sdk | Plugin authoring and neutral contribution contracts |
-| @mono-agent/cli | Project-local command router and core commands |
-| @mono-agent/operator | Headless operator application |
-| @mono-agent/channel-operator | Agent-side operator protocol |
-| @mono-agent/history-jsonl | Canonical durable conversation history and provider-session linkage |
-| @mono-agent/recorder-jsonl | Run events, summaries, retention, audit, report, and backfill source |
+| @mono-agent/core | Operational kernel, including continuation coordination behind a store port |
+| @mono-agent/plugin-sdk | Plugin authoring, neutral contribution contracts, and host-port interfaces |
+| @mono-agent/cli | Project-local command router, core commands, and managed project-skill maintenance |
+| @mono-agent/operator | Shared operator protocol, client, capability negotiation, and view models |
+| @mono-agent/channel-operator | Agent-side operator protocol endpoint |
+| @mono-agent/state-local | Durable local operational state as individually selectable contributions: canonical conversation history with provider-session linkage; run events, summaries, retention, audit, report, and backfill source; agent presence, health, and endpoint registry; continuation store |
 | @mono-agent/exporter-otlp | Best-effort OTLP export, including Phoenix |
-| @mono-agent/discovery-local | Local agent presence, health, and endpoint registry |
 | @mono-agent/sandbox-srt | SRT discovery, integrity, policy compilation, and command preparation |
-| @mono-agent/continuations | Durable continuation claims, processing, delivery, and operator maintenance |
 | @mono-agent/service-macos | Project-local launchd installation, control, recovery, and logs |
 | @mono-agent/self-config | Proposal-only conversational configuration transaction |
-| @mono-agent/skills-manager | Managed project skills and documentation companion pairing |
 
-The final package set may contain more publishable packages than v0. The lean-core requirement is about the ownership and dependency closure of a selected application, not minimizing repository package count at the expense of mixed responsibilities.
+The final package set may contain more publishable packages than v0. The lean-core requirement is about the ownership and dependency closure of a selected application, not minimizing repository package count at the expense of mixed responsibilities. The inverse also holds: micro-packages are avoided. Implementations that share one filesystem discipline and add no external dependencies — history, run recording, presence, the continuation store — ship as selectable contributions of one state package rather than four packages, each of which would otherwise carry its own catalog entry, README gate, release ceremony, and documentation surface.
 
 ## 12. Public CLI disposition
 
@@ -695,22 +656,22 @@ All 20 current public command names are accounted for:
 | setup | No canonical alias | Migration docs point to init; no separate setup engine |
 | validate | mono-agent validate | Strict structural readiness with non-zero failure |
 | doctor | mono-agent doctor | Validate plus bounded live diagnostics; no longer only an alias |
-| auth | Runtime namespaced commands | Provider-owned login, key intake, account inspection, and redacted status |
-| sandbox | sandbox-srt namespaced commands | Effective policy, engine integrity, status, and safe remediation |
+| auth | mono-agent auth, routed to runtime plugins | The top-level verb remains; provider-owned login, key intake, account inspection, and redacted status are discovered from installed runtime plugins |
+| sandbox | mono-agent sandbox, routed to sandbox-srt | The top-level verb remains; effective policy, engine integrity, status, and safe remediation come from the installed sandbox plugin |
 | config | mono-agent config | explain, schema, and validation helpers; never a second mutation system |
 | presets | Scaffolder templates | Templates select packages and seed schema-owned values; no duplicate recipe registry |
 | start | mono-agent start | Foreground by default unless a selected service product handles background lifecycle |
 | restart | Service command when installed | Validate before replacement and prove new readiness |
 | stop | Service command when installed | Prove manager unload and process death |
 | status | Core and service status | Report project version, process, config, plugins, channels, memory, and health honestly |
-| logs | Service/recorder command | Bounded logs with follow and explicit source |
+| logs | Service/state-local command | Bounded logs with follow and explicit source |
 | tui | @mono-agent/tui extension | Open the shared operator application in a terminal renderer |
 | web | @mono-agent/web extension | Manage or report the persistent web renderer/service |
-| install-skill | @mono-agent/skills-manager extension | Check/update managed copies transactionally and pair docs MCP explicitly |
-| backfill | recorder/exporter extension | Select, map, dry-run, and export recorded runs |
-| runs | recorder-jsonl extension | List, inspect, audit, summarize, and report runs |
+| install-skill | @mono-agent/cli | Check/update managed copies transactionally and pair docs MCP explicitly |
+| backfill | state-local/exporter-otlp extension | Select, map, dry-run, and export recorded runs |
+| runs | state-local extension | List, inspect, audit, summarize, and report runs |
 | memory | Selected memory extension | Health, preview, audit, rebuild, intake, retry, resolve, and backend-specific maintenance |
-| continuations | continuations extension | List, inspect, retry, cancel, resolve unknown, and report health |
+| continuations | core command over the state-local store | List, inspect, retry, cancel, resolve unknown, and report health |
 
 Plugin and product commands are namespaced contributions discovered from direct project dependencies. The CLI must reject command collisions and must not hardcode provider, channel, memory-backend, exporter, or renderer implementation details.
 
@@ -723,15 +684,15 @@ The following ledger is normative. Each requirement needs focused tests and must
 | ID | Requirement | v1 owner | Verification |
 | --- | --- | --- | --- |
 | CORE-001 | Build system context from instructions, identity, optional Soul, prior history, memory, selected skills, request metadata, and attachments in deterministic order | core | Golden context fixtures and size-bound tests |
-| CORE-002 | Load selected project skills with index or full disclosure, byte limits, caching, and separate ReadSkill policy | core and skills-manager | Unit tests plus project-skill smoke |
+| CORE-002 | Load selected project skills with index or full disclosure, byte limits, caching, and separate ReadSkill policy | core and cli | Unit tests plus project-skill smoke |
 | CORE-003 | Normalize inbound request, reply stream, structured events, AskUser, attachments, reply destination, and cancellation | plugin-sdk and core | Contract suite used by every channel |
 | CORE-004 | Enforce allowed/disallowed tools, MCP selection, request-scoped MCP additions, timeouts, and authoritative overrides without privilege widening | core | Policy intersection and adversarial tests |
 | CORE-005 | Preserve max concurrent runs, bounded pending runs, fair admission, cancellation, and backpressure | core | Deterministic concurrency tests |
-| CORE-006 | Preserve continuous and per-message sessions, idle expiry, daily rollover, timezone, notices, proactive isolation, and cold history replay | core, history-jsonl, runtimes | Session matrix tests |
-| CORE-007 | Commit canonical history only after successful settlement and preserve completed AskUser evidence | core and history-jsonl | Crash/duplicate/AskUser history tests |
+| CORE-006 | Preserve continuous and per-message sessions, idle expiry, daily rollover, timezone, notices, proactive isolation, and cold history replay | core, state-local, runtimes | Session matrix tests |
+| CORE-007 | Commit canonical history only after successful settlement and preserve completed AskUser evidence | core and state-local | Crash/duplicate/AskUser history tests |
 | CORE-008 | Accept live guidance only through acknowledged runtime capability and retain a normal-turn fallback without dropping text | core and runtimes | Race and settlement tests |
 | CORE-009 | Route proactive results to the exact authorized destination, support verbatim delivery, suppress NOTHING_TO_REPORT, and report non-delivery without changing trigger success | core and channel plugins | Cron/webhook delivery tests |
-| CORE-010 | Expose request-scoped RunHistory over completed runs with bounded, redacted, paged output | recorder-jsonl tool contribution | Search/pagination/redaction tests |
+| CORE-010 | Expose request-scoped RunHistory over completed runs with bounded, redacted, paged output | state-local tool contribution | Search/pagination/redaction tests |
 | CORE-011 | Support programmatic one-shot and long-lived host use without the CLI | core | Packed TypeScript consumer |
 | CORE-012 | Preserve effort keyword escalation and request-level model/effort overrides without mutating configured defaults | core and runtime plugins | Route override tests |
 | CORE-013 | Let channel plugins contribute explicitly selected outbound send tools while preserving destination allowlists, tool policy, and safe non-exposure by default | channel plugins and core | Tool registration, authorization, and default-deny tests |
@@ -816,16 +777,16 @@ The following ledger is normative. Each requirement needs focused tests and must
 
 | ID | Requirement | v1 owner | Verification |
 | --- | --- | --- | --- |
-| STATE-001 | Persist canonical conversation history atomically with duplicate protection and provider-session metadata | history-jsonl | Crash and replay tests |
-| STATE-002 | Persist bounded run events, summaries, checkpoints, source manifests, usage, cost, failures, and lifecycle metadata | recorder-jsonl | Recorder checkpoint tests |
-| STATE-003 | Preserve run list/read/search/report/audit, stale-running classification, retention, and memory-run separation | recorder-jsonl | CLI fixtures |
-| STATE-004 | Preserve backfill selection, dry-run, mapping, time filters, and best-effort OTLP/Phoenix export | recorder-jsonl and exporter-otlp | Export fake server tests |
-| STATE-005 | Publish owner-private agent presence, endpoints, process identity, startup proof, and health with stale detection | discovery-local | Process/heartbeat tests |
-| STATE-006 | Preserve seen-conversation and posted-message/reply indexes where required for delivery idempotency, moving each store to the owning channel or history plugin | channel plugins and history-jsonl | Compaction/idempotency tests |
-| CONT-001 | Preserve continuation claim capabilities, origin binding, modes, deadlines, size limits, and safe captured text | continuations | Capability and limit tests |
-| CONT-002 | Preserve durable leases, worker recovery, retries, cancellation, dead letters, and unknown-delivery resolution | continuations | Crash/restart suite |
-| CONT-003 | Preserve pinned or detached origin context, synthesis preflight, native delivery, history recording, and safe unavailable text | continuations | End-to-end fake runtime/channel suite |
-| CONT-004 | Preserve operator list/status/health/retry/cancel/resolve commands without exposing operator tokens | continuations | CLI/API redaction tests |
+| STATE-001 | Persist canonical conversation history atomically with duplicate protection and provider-session metadata | state-local | Crash and replay tests |
+| STATE-002 | Persist bounded run events, summaries, checkpoints, source manifests, usage, cost, failures, and lifecycle metadata | state-local | Recorder checkpoint tests |
+| STATE-003 | Preserve run list/read/search/report/audit, stale-running classification, retention, and memory-run separation | state-local | CLI fixtures |
+| STATE-004 | Preserve backfill selection, dry-run, mapping, time filters, and best-effort OTLP/Phoenix export | state-local and exporter-otlp | Export fake server tests |
+| STATE-005 | Publish owner-private agent presence, endpoints, process identity, startup proof, and health with stale detection | state-local | Process/heartbeat tests |
+| STATE-006 | Preserve seen-conversation and posted-message/reply indexes where required for delivery idempotency, moving each store to the owning channel or state plugin | channel plugins and state-local | Compaction/idempotency tests |
+| CONT-001 | Preserve continuation claim capabilities, origin binding, modes, deadlines, size limits, and safe captured text | core and state-local | Capability and limit tests |
+| CONT-002 | Preserve durable leases, worker recovery, retries, cancellation, dead letters, and unknown-delivery resolution | core and state-local | Crash/restart suite |
+| CONT-003 | Preserve pinned or detached origin context, synthesis preflight, native delivery, history recording, and safe unavailable text | core and state-local | End-to-end fake runtime/channel suite |
+| CONT-004 | Preserve operator list/status/health/retry/cancel/resolve commands without exposing operator tokens | core and state-local | CLI/API redaction tests |
 
 ### 13.8 Security, sandbox, and operations
 
@@ -848,16 +809,16 @@ The following ledger is normative. Each requirement needs focused tests and must
 
 | ID | Requirement | v1 owner | Verification |
 | --- | --- | --- | --- |
-| UI-001 | Drive TUI and web through the same controller, reducers, actions, view models, and protocol client | operator | Dependency gate and golden state tests |
+| UI-001 | Drive every TUI and web wire interaction, capability decision, and event decode through the shared operator protocol, client, and view models | operator | Dependency gate and golden fixture tests |
 | UI-002 | Preserve structured answers, reasoning, tools, warnings, compaction, usage, cost, failure, and failover presentation | operator and renderers | Shared event fixture snapshots |
-| UI-003 | Preserve agent discovery, pin/offline behavior, multiple conversations, model/effort controls, cancel, live input, AskUser, quote, attachments, config, replay, and health | operator and renderers | Renderer parity matrix |
+| UI-003 | Preserve agent discovery, pin/offline behavior, multiple conversations, model/effort controls, cancel, live input, AskUser, quote, attachments, config, replay, and health | operator and renderers | Capability checklist per renderer |
 | UI-004 | Preserve durable web threads, messages, revisions, parts, turns, uploads, active-turn survival, invalidation, cleanup, and deletion rules | web OperatorStore adapter | SQLite migration/crash tests |
 | UI-005 | Preserve explicit browser notifications and marked cron/webhook conversations with idempotent delivery | web | Browser/service tests |
 | UI-006 | Preserve terminal navigation, reasoning toggle, slash commands, self-config boundary, and safe exit without stopping the agent | tui | Terminal state tests |
 | SETUP-001 | Generate only selected dependencies, exact package versions, lockfile, config, schema, instructions, skill selection, env example, and capability files | create-mono-agent | Clean npm/pnpm scaffold tests |
 | SETUP-002 | Preserve interactive provider discovery/auth/readiness with bounded real no-tool route checks and honest scaffold-only noninteractive behavior | scaffolder and runtime plugins | Wizard/preflight tests |
 | SETUP-003 | Preserve secure transactional dotenv and project file creation, review before commit, cancellation, recovery, and no fake readiness | scaffolder | Filesystem/TTY tests |
-| SETUP-004 | Preserve managed project-skill drift check/update, backups, compare-and-swap activation, and explicit Docs MCP pairing | skills-manager and docs-mcp | Transaction tests |
+| SETUP-004 | Preserve managed project-skill drift check/update, backups, compare-and-swap activation, and explicit Docs MCP pairing | cli and docs-mcp | Transaction tests |
 | SETUP-005 | Preserve proposal-only self-config, narrow patch allowlist, full review, approval/rejection, atomic write, restart, readiness, and rollback | self-config and operator | Transaction and authority tests |
 | DEV-001 | Let an external plugin compile, validate, test, pack, install, and run without a mono-agent core/catalog edit | plugin-sdk | Clean external example |
 | DEV-002 | Generate package responsibility, architecture, public API, config, and verification docs from owned metadata | repository tooling | Generation drift gates |
@@ -875,7 +836,7 @@ A project installs runtime-pi, runtime-codex, and runtime-claude. Its primary ro
 
 ### 14.3 Shared operator behavior
 
-The same recorded operator event fixture is fed to TUI and web. Both show the same ordered messages, tool lifecycle, reasoning disclosure, usage, compaction, warnings, AskUser, and terminal state. Their layouts differ, but their controller state and available actions are identical. A renderer-specific notification or keybinding never changes shared conversation state.
+The same recorded operator event fixture is fed to TUI and web. Both decode it through the shared client into the same ordered messages, tool lifecycle, reasoning disclosure, usage, compaction, warnings, AskUser, and terminal state, and both offer the same available actions under the same negotiated capabilities. Their layouts and presentation state differ, but neither re-derives the wire contract. A renderer-specific notification or keybinding never changes shared conversation state.
 
 ### 14.4 Third-party plugin
 
@@ -970,16 +931,11 @@ The service definition records absolute, validated paths to:
 - the selected config;
 - stdout and stderr logs.
 
-The installation marker records:
+The installation marker records enough to detect drift honestly, and no more:
 
-- Node version and ABI;
-- CLI package name and version;
-- plugin package names and versions;
-- package.json digest;
-- lockfile digest;
-- resolved installation digest or equivalent package-manager proof;
-- config digest;
-- service definition digest.
+- Node version;
+- CLI and plugin package names and versions;
+- digests of package.json, the lockfile, the config, and the service definition.
 
 The service manager never installs dependencies. An operator updates package.json and the lockfile through the package manager, runs validate, then requests restart.
 
@@ -1014,10 +970,10 @@ During consumer migration, the v0 and v1 definitions use distinct labels. Only o
 | ID | Work item | Depends on | Acceptance and evidence |
 | --- | --- | --- | --- |
 | V1-001 | Ratify ownership and dependency ADR | PRD approval | Core/plugin/product responsibilities and forbidden edges are explicit; architecture reviewer approves |
-| V1-002 | Freeze the package, command, config, and feature baselines | V1-001 | Machine-derived inventories cover 22 packages, 20 commands, 14 capability modules, five bridges, public APIs, and current product tests |
+| V1-002 | Freeze the package, command, config, and feature baselines | V1-001 | Inventories regenerate from the existing package catalog, drift tests, and CLI registry, covering 22 packages, 20 commands, 14 capability modules, five bridges, public APIs, and current product tests |
 | V1-003 | Create the capability disposition tracker | V1-002 | Every requirement in section 13 has an owner, target package, test, and status; no miscellaneous bucket |
 | V1-004 | Capture golden consumer manifests | V1-002 | Personal Agent and A8C Assistant selected features, config, service, and memory requirements are recorded without secrets |
-| V1-005 | Add architectural budget gates | V1-001 | CI rejects forbidden core dependencies, concrete integration imports, unowned config registries, and third-party plugin catalog requirements |
+| V1-005 | Extend the existing architecture checker with v1 budget gates | V1-001 | CI rejects forbidden core dependencies, concrete integration imports, unowned config registries, and third-party plugin catalog requirements, building on check:architecture and the package catalog rather than a parallel tool |
 
 G0 exits only after the ADR and all baseline ledgers are reviewed. New v0 features are frozen except critical fixes; every accepted fix must update the v1 ledger.
 
@@ -1033,20 +989,20 @@ G0 exits only after the ADR and all baseline ledgers are reviewed. New v0 featur
 | V1-106 | Build external hello plugin example | V1-101, V1-103 | Separate fixture package installs and runs without editing core or the package catalog |
 | V1-107 | Deliver first real vertical slice | V1-104, V1-105 | One selected runtime and channel-webhook execute config to response, health, shutdown, and packed clean-project smoke |
 
-G1 proves the architecture before broad extraction. The initial real runtime may be Pi because both production consumers depend on it, but fake-runtime tests remain the authoritative core tests.
+G1 proves the architecture before broad extraction. The initial real runtime may be Pi because both production consumers depend on it, but fake-runtime tests remain the authoritative core tests. The SDK channel contract is an evolution of the proven channels.plugins ChannelDriver seam that already loads the extras packages in production, not a from-scratch invention.
 
-### Gate G2: unified operator
+### Gate G2: shared operator foundation
 
 | ID | Work item | Depends on | Acceptance and evidence |
 | --- | --- | --- | --- |
 | V1-201 | Define operator protocol and view models | G1 | Versioned schemas cover every current TUI/web action and capability |
-| V1-202 | Implement operator client/controller/reducers | V1-201 | Deterministic state tests cover streaming, reconnect, live input, AskUser, attachments, quotes, replay, config, and health |
+| V1-202 | Implement operator client, capability negotiation, and view-model decoding | V1-201 | Deterministic tests cover streaming, reconnect, live input, AskUser, attachments, quotes, replay, config, and health against golden fixtures |
 | V1-203 | Implement channel-operator | V1-201, V1-202 | Agent endpoint passes protocol, security, frame-bound, abort, and capability tests |
-| V1-204 | Port TUI renderer | V1-202, V1-203 | No independent remote client or turn reducer remains; terminal behavior passes shared fixtures |
-| V1-205 | Port web service and renderer | V1-202, V1-203 | Web persistence and browser adapters implement operator ports; active-turn recovery and current UX pass |
-| V1-206 | Add renderer parity gate | V1-204, V1-205 | Identical fixtures create equivalent shared state and available actions in both products |
+| V1-204 | Move TUI onto the shared client | V1-202, V1-203 | No independent wire client, event decoder, or capability logic remains; terminal behavior passes shared fixtures |
+| V1-205 | Move web onto the shared client | V1-202, V1-203 | Web consumes the shared client and view models instead of re-implementing the wire contract; durable SQLite store, active-turn recovery, and current UX preserved |
+| V1-206 | Add shared-fixture gate | V1-204, V1-205 | Identical fixtures decode to equivalent shared view models in both products; a capability checklist confirms every behavior in 10.4 remains present |
 
-G2 blocks if either product retains separate AskUser, model/effort, live-input, activity, or turn-state business logic.
+G2 blocks if either product re-implements the wire contract, event decoding, or capability negotiation. It does not require merging renderer-local presentation state.
 
 ### Gate G3: runtime parity
 
@@ -1080,11 +1036,11 @@ G4 requires all current channels to be installable independently. No channel may
 | --- | --- | --- | --- |
 | V1-501 | Migrate memory-local without format change | G1, G3 | MEM-001 through MEM-009 pass existing-format and maintenance suites |
 | V1-502 | Migrate memory-supermemory | G1, G3 | MEM-010 and shared memory compliance pass |
-| V1-503 | Extract history-jsonl and recorder-jsonl | G1 | STATE-001 through STATE-004 pass crash, retention, replay, audit, and export fixtures |
-| V1-504 | Extract discovery-local and exporter-otlp | V1-503 | Presence/readiness no longer depends on exporter selection; live Phoenix probe passes |
+| V1-503 | Extract state-local history and recorder contributions | G1 | STATE-001 through STATE-004 pass crash, retention, replay, audit, and export fixtures |
+| V1-504 | Extract the state-local discovery contribution and exporter-otlp | V1-503 | Presence/readiness no longer depends on exporter selection; live Phoenix probe passes |
 | V1-505 | Extract sandbox-srt | G1, G3 | SBOX and related security requirements pass, including fail-closed integrity cases |
-| V1-506 | Extract continuations | G1, G4, V1-503 | CONT-001 through CONT-004 pass restart, delivery, and operator maintenance tests |
-| V1-507 | Extract skills manager, Docs MCP, and orchestrator | G1, G3 | Existing managed-skill, companion, and bounded collaborator behavior passes |
+| V1-506 | Move continuation coordination into core behind the state-local store port | G1, G4, V1-503 | CONT-001 through CONT-004 pass restart, delivery, and operator maintenance tests |
+| V1-507 | Move managed skills into cli; migrate Docs MCP and tool-orchestrator | G1, G3 | Existing managed-skill, companion, and bounded collaborator behavior passes |
 | V1-508 | Extract self-config | G2, V1-504, V1-505 | Proposal authority, review, transaction, service restart, readiness, and rollback tests pass |
 
 G5 includes a durable-state review. Every new store must have documented purge/reset, retention, audit, and recovery.
@@ -1095,7 +1051,7 @@ G5 includes a durable-state review. Every new store must have documented purge/r
 | --- | --- | --- | --- |
 | V1-601 | Rebuild create-mono-agent | G3, G4, G5 | Selected-stack npm and pnpm scaffolds install only chosen dependencies and validate from packed artifacts |
 | V1-602 | Deliver service-macos | G1, V1-504 | Project-local launch, provenance, drift, recovery, logs, restart, stop, and rollback pass live macOS smoke |
-| V1-603 | Split package releases | G1 | Changesets-style affected-package versioning, apiVersion compatibility, beta tags, provenance, packing, and registry verification pass |
+| V1-603 | Adapt the lockstep release pipeline to the v1 package set | G1 | Existing release validate/pack/consumer/publish/verify stages cover the v1 packages; plugin-sdk apiVersion and peer ranges are checked for third-party compatibility; beta tags, provenance, packing, and registry verification pass |
 | V1-604 | Rebuild contributor and user docs | V1-601, V1-603 | Start-here, config, plugin authoring, products, migration, security, and package docs are generated or ownership-linked |
 | V1-605 | Produce v0-to-v1 migration guide | G4, G5, V1-601 | Every v0 config field, command, package, and persisted state has explicit guidance |
 
@@ -1239,7 +1195,7 @@ One golden fixture corpus covers:
 - self-config review and restart transition;
 - cron/webhook notification thread.
 
-The fixture drives operator reducer tests and both renderer adapters. Differences are allowed only for documented platform presentation.
+The fixture drives operator client and view-model tests and both renderer adapters. Differences are allowed only for documented platform presentation.
 
 ### 19.5 Persistence and recovery
 
@@ -1327,8 +1283,8 @@ Consumer evidence records:
 
 ### 20.1 Reliability
 
-- Enabled integrations fail initial start when they cannot initialize.
-- Long-lived transports may recover from degraded state under bounded plugin policy.
+- Enabled integrations fail validation and start on configuration, authentication, and structural errors.
+- Transport-level start failures and later transport loss degrade with bounded recovery under the channel contract (8.4) and are never reported as healthy while disconnected.
 - Core stops accepting new work before draining on shutdown.
 - A failed exporter never changes the run result, but its health and drop count remain visible.
 - A failed memory write remains visible and may affect health according to the selected memory contract; it is not reported as successful.
@@ -1356,9 +1312,8 @@ Consumer evidence records:
 
 ### 21.1 Versioning
 
-- Adopt affected-package releases using Changesets or an equivalent checked-in changeset workflow.
-- Every package owns its version.
-- Plugin SDK compatibility is governed by manifest apiVersion and package peer range.
+- First-party packages keep the existing lockstep version and release pipeline through v1; independent per-package versioning is deferred until ecosystem demand justifies its operational cost.
+- Plugin SDK compatibility is governed by manifest apiVersion and package peer range, which is what third-party plugins depend on regardless of first-party release cadence.
 - Official beta packages publish as 1.0.0-beta.N under next.
 - Consumers pin exact beta and stable versions; lockfiles are mandatory.
 - Stable packages publish under latest only after G8 evidence.
@@ -1372,7 +1327,7 @@ Beta starts with:
 - all four runtime families;
 - channel plugins required by both production consumers;
 - memory-local;
-- history/recording/discovery;
+- state-local (history, recording, discovery, continuation store);
 - OTLP exporter;
 - sandbox-srt;
 - operator, channel-operator, TUI, web;
@@ -1399,7 +1354,7 @@ Shadow phase:
 
 Cutover:
 
-- announce maintenance locally;
+- announce maintenance locally and schedule the window at a session rollover boundary so no continuous-session context is lost mid-day;
 - stop and prove death of v0;
 - final memory audit and backup;
 - enable Telegram and schedules only in v1;
@@ -1454,13 +1409,13 @@ Rollback preserves diagnostic evidence, stops v1, restores the disabled v0 defin
 | Config remains duplicated | New registry, view mapping, or wizard fragment repeats schema | Schema-only lint/generation gate | Config/core maintainers |
 | Schema metadata cannot express setup | Plugin needs OAuth or dynamic discovery | Keep field metadata declarative; use plugin-owned setup command | Plugin owner |
 | Plugin version skew breaks projects | apiVersion/peer incompatibility or mismatched contracts | Exact consumer pins, peer checks, compatibility matrix, packed tests | Release owner |
-| UI unification creates a lowest-common-denominator UX | Renderer-specific behavior leaks into controller or shared behavior is omitted | Shared semantic state plus platform adapters and parity matrix | Operator owner |
+| UI unification creates a lowest-common-denominator UX | Renderer-specific behavior forced into shared code or shared behavior omitted | Share protocol, client, and view models only; presentation stays renderer-owned; capability checklist guards feature presence | Operator owner |
 | Web durable behavior is lost during extraction | Refresh/restart interrupts active turns or data cleanup changes | Port existing SQLite behavior first; no schema redesign in extraction PR | Web owner |
 | Runtime extraction changes provider semantics | Output/events/session/fallback differs | Golden bridge fixtures and live smoke before deleting old bridge | Runtime owner |
 | Memory corruption during cutover | Audit mismatch, format mutation, missing recall | Frozen format, owner-only backup, copy rehearsal, old-reader proof | Memory owner |
 | Duplicate external delivery | Two pollers/socket consumers or reused delivery key | Sequential cutover, distinct labels, process-death proof, idempotency tests | Deployment owner |
 | Dirty consumer checkouts are overwritten | Migration begins in existing working directory | Dedicated worktree/branch, explicit diff review, no stash/reset | Consumer owner |
-| Independent releases increase operational work | Partial publish or wrong peer range | Changeset validation, provenance, registry verify, coherent beta set | Release owner |
+| Lockstep releases couple unrelated packages | A fix in one plugin forces a full release train | Acceptable: the existing pipeline releases all packages in one verified pass; revisit independent versioning only if this becomes a measured bottleneck | Release owner |
 | Long migration drifts from v0 fixes | New feature/fix lands only in v0 | Freeze policy and ledger update required for accepted fixes | Product owner |
 | Service simplification loses security guarantees | Project-local launch lacks old closure proof | Lockfile/install/Node/config provenance and validate-before-restart | Service owner |
 | Third-party plugin compromises host | Untrusted package installed | Explicit trust boundary, direct dependency, normal npm review; no false isolation claim | Project operator |
@@ -1543,8 +1498,11 @@ A gate is done only when every required child item is done and the gate evidence
 - The canonical config is strict JSON with explicit use references and a generated $schema.
 - Non-secret settings live in JSON; environment use is explicit and never an override layer.
 - Physical workspace layout stays flat.
-- Packages release independently.
-- The operator model is one headless application with native TUI and web renderers.
+- First-party packages release in lockstep; third-party compatibility is governed by the plugin SDK apiVersion and peer ranges.
+- Plugin kinds are runtime, channel, memory, tool, and extension; everything else is a narrow host port, and one package may ship several port implementations.
+- Continuation coordination is core-owned behind a store port; durable local operational state consolidates into state-local.
+- Fail closed applies to configuration, authentication, and structural errors; transport-level failures degrade with bounded recovery and honest health.
+- The operator model is one shared protocol, client, and view-model package consumed by native TUI and web renderers; deeper controller unification is a post-v1 direction, not a release gate.
 - Personal Agent and A8C Assistant are the golden production consumers.
 - Memory is the only migrated durable user state.
 - The first managed-service product is macOS launchd and launches the project-local installation.
