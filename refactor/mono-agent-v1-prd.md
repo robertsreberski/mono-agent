@@ -1,6 +1,6 @@
 # Mono-Agent v1: Smaller by Design
 
-Status: Proposed (revision 7 — explicit typed modules and scoped products)
+Status: Proposed (revision 8 — parity-complete ledger, licensing, and lean grants)
 Target release: 1.0 beta, followed by 1.0 stable
 Last updated: 2026-07-22
 Primary audience: maintainers, contributors, and individual agent builders
@@ -18,7 +18,7 @@ The product of this refactor is a smaller system. The provisional v0 baseline is
 
 Package count is not a success metric. The current v1 roster remains 25 publishable packages because runtimes, communication transports, durable stores, operator products, and host integration have genuinely different ownership and failure boundaries. Architecture gates protect narrow responsibilities and selected dependency closure; they never combine unrelated concerns merely to reduce a count.
 
-The v1 distribution remains one pnpm monorepo releasing first-party packages in lockstep. An agent project owns an ordinary `package.json` and lockfile. Configuration selects only already-installed packages and never turns a JSON edit into remote code installation.
+The v1 distribution remains one pnpm monorepo releasing first-party packages in lockstep. An agent project owns an ordinary `package.json` and lockfile. Configuration selects only already-installed packages and never turns a JSON edit into remote code installation. Distribution is open source with a deliberate license split: implementations are GPL-3.0-only while the `module-sdk` and `operator` extension surfaces are Apache-2.0, so third-party modules and renderers may carry any license (section 2.6).
 
 Stable v1 must prove all of the following:
 
@@ -28,7 +28,8 @@ Stable v1 must prove all of the following:
 - one project-owned MCP integration works without a core change, first-party catalog edit, or custom mono-agent module;
 - Pi and Claude SDK can coexist, with routing expressed as explicit `runtime` and runtime-owned `model` fields;
 - TUI and web produce equivalent operator domain state and available actions from shared fixtures while retaining platform-native presentation;
-- the sanitized Personal Agent fixture preserves the current runtime policy, BuJo memory, channels, cron, MCP request context, state, and Phoenix export without selecting products in its agent config;
+- the sanitized Personal Agent fixture preserves the current runtime policy, local providers, BuJo memory, channels, cron, project MCP wiring, state, and Phoenix export without selecting products in its agent config;
+- the section 2.6 open-source distribution checklist passes: package licenses match the declared split, notices and governance files exist, and the community-module discovery page is generated;
 - Personal Agent and the A8C orchestrator pass their capability matrices, rollback rehearsals, exact single-consumer proofs, and 24-hour soaks.
 
 ## 2. Normative product decisions
@@ -64,7 +65,7 @@ Agent configuration has typed slots, not a generic plugin plane:
 | `observability.exporters` | zero or more | map key | required `$use` |
 | `policy.sandbox` | off or one implementation | slot itself | required `$use` when active |
 
-The map key answers “which configured instance?” and `$use` answers “which code implements it?”. They are intentionally separate. This permits two instances of one module, stable cross-references, and implementation replacement without renaming routes or jobs.
+The map key answers “which configured instance?” and `$use` answers “which code implements it?”. They are intentionally separate. This permits two instances of one module, stable cross-references, and implementation replacement without renaming routes or jobs. Singleton slots (`memory`, `state`, `continuations`, `policy.sandbox`) have no second identity to learn: the slot name itself is the stable id.
 
 Presence means selected. There is no repetitive `enabled: true` and no nested generic `config` wrapper. A selected module validates its remaining inline fields. `$use` is a literal package identity, never an alias, environment reference, local path, or inferred mapping.
 
@@ -83,7 +84,7 @@ Project authors should not create a mono-agent module for ordinary integrations:
 | Desired capability | Lowest correct boundary |
 | --- | --- |
 | The model calls a project or domain tool | MCP server in `.mcp.json` |
-| A model tool must enqueue or control work in this agent host | MCP plus an explicit request-scoped host-capability grant |
+| A model tool must deliver a result after its originating turn | MCP plus an explicit `continuation.claim` grant and the continuations module |
 | The model needs instructions for an existing CLI or MCP | Skill |
 | Work should run on a schedule | Trigger module plus Markdown job |
 | An external system pushes a request into the agent | Existing webhook channel |
@@ -92,9 +93,9 @@ Project authors should not create a mono-agent module for ordinary integrations:
 | Automatic runtime, channel, memory, state, trigger, exporter, continuation, or sandbox semantics must be replaced | Narrow typed module package |
 | A new user interface is needed | Product consuming the operator protocol |
 
-An stdio MCP child may be started and stopped by the configured harness. A remote MCP server owns its own process lifecycle. Mono-agent does not turn MCP into a generic daemon manager.
+A stdio MCP child may be started and stopped by the configured harness. A remote MCP server owns its own process lifecycle. Mono-agent does not turn MCP into a generic daemon manager.
 
-Model-visible tool names and orchestration UX remain MCP-owned even when the tool needs privileged host work. Core may grant a named trusted local stdio MCP a short-lived capability such as child-run spawn/observe/cancel or continuation claim. The grant is explicit in agent config, bound to the originating request, narrowed by policy and limits, and unavailable to every other MCP server.
+Model-visible tool names and orchestration UX remain MCP-owned even when the tool needs privileged host work. v1 defines exactly one grantable host capability — `continuation.claim` (section 5.6). The grant is explicit in agent config, bound to the originating request, and unavailable to every other MCP server. The broader child-run capability family is deliberately deferred; section 12.3 records its design.
 
 ### 2.4 Product boundaries
 
@@ -118,9 +119,29 @@ The following do not exist in first-party v1:
 - the generic orchestrator extra;
 - historical backfill/resend;
 - a generic plugin registry, tool-plugin kind, extension-plugin kind, package self-registration, or single-file path plugin;
+- request-scoped child-run host capabilities (`request.context`, `request.progress`, `agent.run.spawn/observe/cancel`) — designed but deferred, with the design recorded in section 12.3;
+- the v0 second persona file (`context.soulPath`) — identity remains a single instructions file;
+- user-facing compaction tuning knobs — compaction policy is runtime-owned;
+- the `append-host-summary` memory write mode — `capture` and disabled remain;
 - one mega-config selecting agents, products, companions, and deployment.
 
-Revival paths are recorded in section 12.3. A cut is a product decision, not a claim that every historical surface was unused.
+Revival paths are recorded in section 12.3. A cut is a product decision, not a claim that every historical surface was unused; the three new field-level cuts above are additionally evidenced by zero fleet configs setting them.
+
+Three surfaces are retained by explicit product decision despite having no selected consumer in the section 6 fixtures: `runtime-codex` and `runtime-opencode`, because independently executing multiple native runtimes is the product's differentiating showcase, and pi-provider access to the same model families does not exercise native app-server sessions, approvals, or cancellation; and `sandbox-srt`, the first-party implementation proving the `policy.sandbox` slot. All three pass the same capability matrices and live smokes as consumer-backed modules (G3, G5). Every other retention in the deletion ledger is held to the consumer-evidence test.
+
+### 2.6 Licensing and open-source distribution
+
+v1 is distributed as a public open-source project, and the license layout is part of the architecture because it decides who can build on which seam:
+
+- `module-sdk` and `operator` are Apache-2.0. They are the two public extension surfaces — typed module contracts and the renderer protocol/client — so a third-party module or renderer that imports them may carry any license.
+- Every other first-party package — core, cli, all first-party modules, and all products — is GPL-3.0-only. Forks and modifications of those packages remain GPL-3.0-only.
+- Third-party typed modules and renderers choose their own license.
+
+Mechanically, every publishable package carries its own `LICENSE` file and a manifest `license` field matching this split, and the release pipeline generates a third-party notice inventory for runtime dependencies (the pi packages are ordinary MIT npm dependencies, not vendored code). The repository keeps `CONTRIBUTING.md` and `SECURITY.md` and adds `CODE_OF_CONDUCT.md` plus a short `GOVERNANCE.md` naming the maintainer decision model.
+
+Third-party module discovery is deliberate but is not a marketplace: modules advertise the `mono-agent-module` npm keyword and their capability kind, and canonical documentation generates a community-modules page listing modules whose maintainers attest the public compliance suite passes. Listing is documentation, never endorsement, and never affects loading — installation remains an explicit `package.json` edit.
+
+The G8 "OSS" exit is this checklist verified at the candidate SHA: license files and manifest fields match the declared split; the generated third-party notices are current; `CODE_OF_CONDUCT.md` and `GOVERNANCE.md` exist; the community-modules page and capability ladder are published. The Apache-2.0 licensing of `module-sdk` and `operator` is ratified in the G0 ADR alongside the architecture itself.
 
 ## 3. Deletion ledger
 
@@ -154,7 +175,7 @@ G0 replaces provisional counts with exact source and test counts. Removed CLI su
 
 ### 3.3 Phase B paired replacement and deletion
 
-Each row lands one v1 implementation and deletes or retires the named v0 machinery in the same gate. A temporary compatibility entry point may call the converted implementation; a forked copy is forbidden.
+Each row lands one v1 implementation and deletes or retires the named v0 machinery in the same gate. A temporary compatibility entry point may call the converted implementation; a forked copy is forbidden. "Now" figures are bundle totals grouping related files across packages, not single-file clusters; G0's classifier replaces them with exact reproducible counts.
 
 | Machinery | Now | Planning target | Gate | Preserved outcome or explicit cut |
 | --- | --- | --- | --- | --- |
@@ -173,13 +194,13 @@ Each row lands one v1 implementation and deletes or retires the named v0 machine
 | Threading/idempotency indexes | ~2,062 | Per-channel state helper | G4 | Delivery idempotency remains |
 | Channel composition glue | 4,420 | ≤800 lifecycle in core/module-sdk | G4 | Per-channel health, steering, config, and degradation remain |
 | App controller | 4,435 | ≤1,200 host loop in core | G1 | Load → validate → initialize → serve → drain → stop |
-| Config package | 4,854 | ≤1,500 | G1 | One agent envelope plus one schema per selected typed module |
+| Config package | 4,854 | ≤1,500 absorbed into core (counted in the kernel gate) | G1 | One agent envelope plus one schema per selected typed module |
 | Repeated atomic-write and HTTP bootstraps | ~2,200 | secure-fs and HTTP helpers in module-sdk | G1–G4 | Express remains only in web; security semantics stay compatible |
 | Harness orchestration, responder, context, sessions | ~7,000 | ~3,000 in core | G1–G3 | Turn/session coordination remains core |
 
 ## 4. Complexity and maintainability budget
 
-The approximately 189,000-line figure is provisional until G0 commits `scripts/v1-complexity-report.mjs` and baseline report #1. The report operates only on Git-tracked files and emits the included-file manifest, classification, line count, and digest. Every executable source file is production, test, generated, vendored, or excluded-with-reason; an unclassified source file fails CI.
+The approximately 189,000-line figure is provisional until G0 commits `scripts/v1-complexity-report.mjs` and baseline report #1. The report operates only on Git-tracked files and emits the included-file manifest, classification, line count, and digest. Every executable source file is production, test, generated, vendored, or excluded-with-reason; an unclassified source file fails the gate-exit report rather than every CI run, so budget honesty is machine-tracked without per-PR friction.
 
 Production and test source are reported separately. Reducing tests never satisfies the production budget. Generated files are excluded only when their generator and reproducibility check are recorded.
 
@@ -237,16 +258,10 @@ Core does not own provider SDKs/auth, transport mechanics, memory algorithms, st
 
 ### 5.3 Typed module contract
 
-module-sdk exports focused definitions rather than `definePlugin`:
+module-sdk exports focused definitions rather than `definePlugin`, and slots are open or reserved:
 
-    defineRuntimeModule(...)
-    defineChannelModule(...)
-    defineMemoryModule(...)
-    defineStateModule(...)
-    defineTriggerModule(...)
-    defineContinuationModule(...)
-    defineExporterModule(...)
-    defineSandboxModule(...)
+- Open slots — runtime, channel, and memory — have public factories (`defineRuntimeModule`, `defineChannelModule`, `defineMemoryModule`), published compliance suites, and third-party replacement support at v1. Each is justified by at least two real implementations or a demonstrated replacement demand.
+- Reserved slots — state, trigger, continuations, exporter, and sandbox — use the same `$use` selection shape and are internally typed identically, but their contracts stay internal to the monorepo until a second real implementation is admitted. The public factory and compliance suite for a reserved slot ship with that promotion, post-1.0 at the earliest. This keeps the kernel small without ossifying the config format.
 
 Every package manifest declares exact package identity, version, `apiVersion: 1`, one capability kind, one-line responsibility, executable schema, optional bounded diagnostics, and optional namespaced maintenance/auth commands. A package cannot receive undeclared host capabilities or return contributions outside its kind.
 
@@ -256,7 +271,7 @@ The selected config's inline fields are validated by the selected module schema.
 
 Multiple runtime/channel/trigger/exporter instances may select the same package. Singleton slots select at most one implementation. state-local may coherently own transcript, run recorder, presence, and delivery-idempotency because they share one local durability discipline. Continuations and OTLP remain separate because their state machines, failures, and operations differ.
 
-Third-party typed modules are supported at these real seams. They must be installed direct dependencies and pass the relevant compliance contract; no first-party catalog edit is required. Project-local domain behavior should still use MCP instead of creating a module.
+Third-party typed modules are supported at the open seams — runtime, channel, and memory. They must be installed direct dependencies and pass the relevant compliance contract; no first-party catalog edit is required. Project-local domain behavior should still use MCP instead of creating a module.
 
 ### 5.4 Runtime routing and authentication
 
@@ -270,41 +285,35 @@ Third-party typed modules are supported at these real seams. They must be instal
 Core understands only the runtime instance id and passes the model identifier to that module for validation. There is no universal provider field:
 
 - runtime-pi validates `<provider>:<model>`, for example `openai-codex:gpt-5.6-sol`;
+- runtime-pi additionally accepts user-defined OpenAI-compatible local providers (Ollama, LM Studio) whose models then route as ordinary provider-qualified identifiers;
 - runtime-claude SDK validates a native model id, for example `claude-opus-4-8`;
 - runtime-codex and runtime-opencode validate their own native identifiers.
 
 Authentication, OAuth/API-key resolution, model discovery, native sessions, stream retry, and runtime-specific options remain runtime-owned. A project may configure Pi, Claude SDK, Codex, and OpenCode together.
 
-Fallback is an attempt boundary, not migration of one runtime's private session object. The neutral transcript supplies canonical settled history to the next eligible runtime. Capability negotiation rejects a route that cannot satisfy required MCP, tool, attachment, approval, or sandbox policy. A fallback never widens permissions and never blindly repeats a committed non-idempotent effect.
+Fallback is an attempt boundary, not migration of one runtime's private session object. The neutral transcript supplies canonical settled history to the next eligible runtime. Capability negotiation rejects a route that cannot satisfy required MCP, tool, attachment, approval, structured-output, or sandbox policy. A fallback never widens permissions and never blindly repeats a committed non-idempotent effect.
 
 Runtime-neutral history commits user-visible input, settled output, AskUser evidence, verbatim appends, selected route, and provider-session linkage only after settlement. Provider-native sessions are optimization and execution state, never the only user-visible history.
 
 ### 5.5 Channel and trigger contracts
 
-Channels validate/redact their config; emit normalized inbound requests; manage reply streams; declare attachment, live-input, AskUser, proactive, and runtime-control capabilities; enforce allowlists/auth; expose bounded health; and stop idempotently.
+Channels validate/redact their config; emit normalized inbound requests; manage reply streams; declare attachment, live-input, AskUser, proactive, and runtime-control capabilities; enforce allowlists/auth; expose bounded health; and stop idempotently. A channel advertising proactive capability may also contribute model-visible send tools — message and file delivery bound to its configured instance and recorded in destination history — exposed under normal tool policy.
 
 Configuration, authentication, and structural failures fail closed. Transport failure is visible degradation with bounded recovery and does not crash an otherwise healthy agent. A degraded channel never reports healthy.
 
-Triggers initiate runs but are not communication channels. trigger-cron owns job discovery, schedule/watchdog/overlap policy, and delivery intent. Delivery itself uses an explicitly referenced proactive channel instance. Markdown remains the canonical prompt/job body.
+Triggers initiate runs but are not communication channels. trigger-cron owns job discovery, schedule/watchdog/overlap policy, and delivery intent. Delivery itself uses an explicitly referenced proactive channel instance — including the operator channel, whose proactive deliveries open a new operator conversation persisted by attached products such as web. Markdown remains the canonical prompt/job body.
 
 ### 5.6 Privileged MCP host capabilities
 
-An MCP remains the model-visible extension boundary for tools such as `Agent`, `AgentStatus`, and `AgentCancel`. It must not shell out to a human CLI or import core internals to create child runs.
+Model-visible tool names and orchestration UX remain MCP-owned even when a tool needs privileged host work. An MCP must not shell out to a human CLI or import core internals to reach host behavior.
 
-Agent config may grant a named trusted local stdio MCP a bounded subset of host capabilities:
+v1 defines exactly one grantable host capability:
 
-- `request.context` — read-only origin identity and conversation/run metadata;
-- `request.progress` — bounded progress publication for the originating request;
-- `agent.run.spawn` — admit one child run through normal core routing and policy;
-- `agent.run.observe` — observe only child runs created under the current origin grant;
-- `agent.run.cancel` — cancel only those child runs;
-- `continuation.claim` — create a durable claim only when the continuations module is selected.
+- `continuation.claim` — create a durable continuation claim (section 5.7), grantable only when the continuations module is selected.
 
-Grants are request-scoped capability URLs/tokens injected only into explicitly named local stdio children. They are never included in the model prompt, tool result, transcript, logs, artifacts, or remote MCP environment. Unlisted MCPs receive no host capability. Remote MCP capability delegation is outside v1.
+Grants are request-scoped capability URLs/tokens injected only into explicitly named trusted local stdio children. They are never included in the model prompt, tool result, transcript, logs, artifacts, or remote MCP environment; they are bound to the originating request and expire with it. Unlisted MCPs receive no host capability. Remote MCP capability delegation is outside v1. This grant transport has a live v0 analog — the continuation claim URL/token headers the orchestrator already consumes — so v1 is extracting a proven mechanism, not inventing one.
 
-Child-run admission enforces maximum depth, children per run, concurrent children, duration, runtime allowlist, and output bounds. Child tools, approvals, filesystem, network, and sandbox policy inherit from the parent and may only narrow. Parent cancellation cascades by default. Detaching beyond the parent turn requires both `continuation.claim` and an active continuations module.
-
-Core records parent/child identity, selected route, settlement, cancellation, and bounded result. The MCP owns decomposition, prompting, aggregation, and its model-visible tool schema. A child run is ephemeral work inside one host; a durable independently operated agent has its own agent config and is contacted through A2A or operator.
+The broader child-run capability family — request context/progress publication and `agent.run.spawn/observe/cancel` for Agent-style subagent tools — is deliberately deferred: it has no current consumer, and specifying it ahead of one fails the same evidence test this PRD applies to deletions. Section 12.3 records the deferred design so a post-1.0 amendment can admit it through this same grant transport without a new mechanism. Until then an ephemeral child run is not a v1 concept; a durable independently operated agent has its own agent config and is contacted through A2A or operator.
 
 ### 5.7 Continuation coordination
 
@@ -336,7 +345,7 @@ Changing `$use` never fetches code. Installing/removing a package changes `packa
 
 Canonical file: `mono-agent.config.json` — strict JSON, `configVersion: 1`, unknown fields rejected, paths relative to the config file. `$schema` points to the exact composed schema generated for the locked dependency graph.
 
-JSON is authoritative. Environment values never override fields implicitly. An explicit `{"$env":"NAME"}` may occupy only a schema-approved scalar. Missing referenced values are errors; secret fields reject inline literals. Process environment wins over an explicitly supplied protected env file. Explain output reports the environment variable name but never its value.
+JSON is authoritative. Environment values never override fields implicitly. An explicit `{"$env":"NAME"}` may occupy only a schema-approved scalar position, including an element of an array whose schema marks its items env-eligible. Missing referenced values are errors; secret fields reject inline literals. Process environment wins over an explicitly supplied protected env file. Explain output reports the environment variable name but never its value.
 
 There is no interpolation, inheritance, profile overlay, implicit alias, self-registration, hot reload, or local path module. Alternate profiles are separate config files.
 
@@ -425,7 +434,13 @@ This is the full agent-process config, not a maximal first-party showcase. It pr
       },
       "retry": {
         "maxDelayMs": 30000
-      }
+      },
+      "localProviders": [
+        {
+          "id": "ollama",
+          "baseUrl": "http://127.0.0.1:11434"
+        }
+      ]
     }
   },
   "routing": {
@@ -490,15 +505,7 @@ This is the full agent-process config, not a maximal first-party showcase. It pr
       "maxBytes": 96000
     },
     "mcp": {
-      "configPath": "./.mcp.json",
-      "servers": {
-        "transcribe": {
-          "grants": [
-            "request.context",
-            "request.progress"
-          ]
-        }
-      }
+      "configPath": "./.mcp.json"
     }
   },
   "memory": {
@@ -642,7 +649,7 @@ This is the full agent-process config, not a maximal first-party showcase. It pr
 }
 ```
 
-The fixture intentionally omits continuations, Slack, A2A, native sandboxing, TUI, web, docs-mcp, and service-macos because the live Personal Agent agent process does not select those capabilities.
+The fixture intentionally omits continuations, host-capability grants, Slack, A2A, native sandboxing, TUI, web, docs-mcp, and service-macos because the live Personal Agent agent process does not select those capabilities. It intentionally includes the local Ollama provider because the live config registers one.
 
 ### 6.4 Multi-runtime addition
 
@@ -703,18 +710,18 @@ The agent config references the standard MCP file; it does not copy custom serve
         "./tools/transcribe-mcp/dist/mcp-server.js"
       ]
     },
-    "agent-control": {
+    "deep-research": {
       "type": "stdio",
       "command": "node",
       "args": [
-        "./tools/agent-control-mcp.js"
+        "./tools/deep-research-mcp.js"
       ]
     }
   }
 }
 ```
 
-The framework has no package knowledge of the tools these servers expose. Skills explain their use. A normal MCP needs no host grant. A privileged model-facing Agent tool receives only explicitly authorized host capabilities:
+The framework has no package knowledge of the tools these servers expose. Skills explain their use. A normal MCP needs no host grant. An MCP whose work may outlive its originating turn receives the only grantable v1 host capability, and the agent must select `@mono-agent/continuations`:
 
 ```json
 {
@@ -722,22 +729,9 @@ The framework has no package knowledge of the tools these servers expose. Skills
     "mcp": {
       "configPath": "./.mcp.json",
       "servers": {
-        "agent-control": {
+        "deep-research": {
           "grants": [
-            "request.context",
-            "agent.run.spawn",
-            "agent.run.observe",
-            "agent.run.cancel"
-          ],
-          "limits": {
-            "maxDepth": 2,
-            "maxChildrenPerRun": 4,
-            "maxConcurrentChildren": 2,
-            "maxRunMs": 1800000
-          },
-          "runtimeAllowlist": [
-            "pi",
-            "claude-sdk"
+            "continuation.claim"
           ]
         }
       }
@@ -746,7 +740,7 @@ The framework has no package knowledge of the tools these servers expose. Skills
 }
 ```
 
-The Agent MCP can expose `Agent`, `AgentStatus`, and `AgentCancel` without becoming a mono-agent module. If work may outlive the parent turn, this server additionally requires `continuation.claim` and the agent must select `@mono-agent/continuations`.
+The server claims a continuation before its turn settles and submits the result later through the claim URL; delivery, synthesis, and receipts follow section 5.7. Agent-style subagent tools (`Agent`, `AgentStatus`, `AgentCancel`) belong to the deferred child-run capability family recorded in section 12.3.
 
 A scheduled job references stable runtime and channel instance ids:
 
@@ -820,7 +814,7 @@ TUI needs no persistent product config for the common case; it discovers an agen
 
 One executable schema per core section or selected typed module is the only handwritten definition. Types, validation, defaults, composed JSON Schema, editor completion, redaction, explain output, setup prompts, and reference docs derive from it.
 
-Runtime routes reference configured `runtimes` only. Memory capture routes use the same `{ runtime, model }` shape. Trigger notification references configured proactive channels only. MCP grant entries reference servers present in `.mcp.json`; privileged grants require trusted local stdio transport and their limits are schema-required. Continuations reference explicitly granted MCP server names and proactive channel instances only. Wrong-kind, missing, incompatible, over-broad, and cyclic references fail with both source paths.
+Runtime routes reference configured `runtimes` only. Memory capture routes use the same `{ runtime, model }` shape. Trigger notification references configured proactive channels only. MCP grant entries reference servers present in `.mcp.json`; the only grantable capability is `continuation.claim`, which requires trusted local stdio transport and a selected continuations module. Continuations reference explicitly granted MCP server names and proactive channel instances only. Wrong-kind, missing, incompatible, over-broad, and cyclic references fail with both source paths.
 
 The CLI discovers optional diagnostics/auth/maintenance commands only from modules explicitly named by `$use`. It never scans dependencies or a first-party catalog. Runtime and lifecycle commands remain optional frontends over public APIs; programmatic consumers can load, validate, run, inspect, and reconcile the relevant product without spawning a human CLI.
 
@@ -834,7 +828,7 @@ The wire remains HTTP routes plus NDJSON turn streaming with disconnect-aborts-t
 
 Given the same fixture stream and capabilities, TUI and web produce equivalent conversation/turn state, AskUser state, and available actions. Renderers retain layout, navigation, widgets, terminal/browser integration, and platform persistence.
 
-The shared contract covers discovery/selection/pinning, conversations, turns, live input, cancellation, AskUser, model/effort overrides, attachments, quoting, config/replay/health views, and renderer exit without stopping the agent. Web keeps its durable SQLite store, uploads, active-turn survival, and notifications. TUI keeps pi-tui rendering and terminal UX.
+The shared contract covers discovery/selection/pinning, conversations, turns, live input, cancellation, AskUser, model/effort overrides, attachments, quoting, config/replay/health views, per-turn context-window usage with compaction and provider-session eviction telemetry, proactive delivery into new operator conversations, and renderer exit without stopping the agent. Web keeps its durable SQLite store, uploads, active-turn survival, and notifications. TUI keeps pi-tui rendering and terminal UX.
 
 Products are installed and launched independently. service-macos may start agent and web as separately declared services, but it never infers web from agent config.
 
@@ -853,6 +847,8 @@ Products are installed and launched independently. service-macos may start agent
 | Companion MCPs (1) | docs-mcp |
 
 The 16 runtime/channel/trigger/durable packages are agent-selectable typed modules. TUI, web, service-macos, docs-mcp, and create-mono-agent are not agent modules. operator is a shared library. Core, module-sdk, and CLI arrive through dependencies rather than synthetic config entries.
+
+Against the 22-package v0 baseline the roster is a net +3, and each increase is named rather than waved off: one runtime package became four because multi-runtime execution is the differentiating showcase (section 2.5); the operator layer split into operator and channel-operator so renderers and the agent endpoint stop sharing one package; and module-sdk, create-mono-agent, service-macos, and docs-mcp isolate lifecycles v0 mixed inside agent-app. Every increase is an ownership boundary, not new behavior; the line budget in section 4, not the package count, is the size metric.
 
 Retired v0 names: agent-app, agent-contracts, agent-harness, agent-runtime, config, observability, runtime-adapter, operator-adapter, channel-cron, plugin-sdk, plus Phase A deletions. Package count is reported but not gated. Package READMEs and public API maps derive from owned metadata.
 
@@ -897,11 +893,11 @@ docs-mcp is an optional delivery form of canonical docs, not their source of tru
 Contributor paths are intentionally different:
 
 - add a domain integration by publishing or checking in an MCP server and a skill;
-- add a runtime/channel/memory/state/trigger/continuation/exporter/sandbox implementation only when replacing that framework semantic, using the matching module-sdk factory and compliance suite;
+- add a runtime, channel, or memory implementation only when replacing that framework semantic, using the matching module-sdk factory and public compliance suite (reserved slots accept third-party implementations only after their section 5.3 promotion);
 - add a renderer by consuming operator;
 - add a host integration as a separate product over the runner contract.
 
-First-party additions update package-catalog metadata and standard package docs. Third-party typed modules need no first-party catalog edit, but must be installed direct dependencies and satisfy the public compliance contract.
+First-party additions update package-catalog metadata and standard package docs. Third-party typed modules need no first-party catalog edit, but must be installed direct dependencies and satisfy the public compliance contract. They are discovered through the `mono-agent-module` npm keyword and the generated community-modules page (section 2.6).
 
 ## 8. Atomic requirement and parity ledger
 
@@ -913,20 +909,23 @@ G0 creates `refactor/v1-requirements.json` before product deletion. It is the ma
 - for a kept row, named proof assertions and automated/live/migration evidence type;
 - for a cut row, deletion decision and archive/revival location.
 
-One test may exercise several requirements only when it emits a distinct result for every id. A kept behavior without proof fails CI. A proof naming a cut or unknown id fails CI. Operational cutover rows may use captured live evidence; normal code behavior requires automated proof.
+The ledger is a reviewed disposition checklist, not a bespoke test-to-requirement CI framework. CI enforces only that the ledger parses, ids are unique and stable, and every row is `kept` or `cut`. Each kept row names its proof — a test path, captured live evidence, or migration artifact — and the owning gate's exit review verifies those named proofs. Operational cutover rows may use captured live evidence; normal code behavior requires automated proof.
 
 The inventory below is a discovery seed, not the final atomic row count.
 
 **Core host**
 
-- deterministic identity/instruction/skill composition, disclosure, and byte limits;
+- deterministic identity/instruction/skill composition, disclosure, and byte limits (the v0 second persona file `soulPath` is a cut row: no fleet config sets it);
 - request/reply/AskUser/attachment normalization;
 - MCP and tool policy intersection without privilege widening;
 - concurrency, pending admission, cancellation, backpressure, and settlement;
+- per-run turn ceiling (`maxTurns`) with honest rejection where a runtime cannot enforce it;
+- oversized tool-output offloading into run artifacts with bounded inline summaries;
 - continuous/per-message sessions, idle expiry, rollover timezone, and proactive isolation;
 - live-input acknowledgement and normal-turn fallback;
 - proactive exact-destination delivery, verbatim mode, and NOTHING_TO_REPORT suppression;
 - request-level runtime/model/effort overrides;
+- message-text effort keyword escalation (`think`/`extra think`/`ultra think`) with escalation-only strict-rank semantics;
 - programmatic embedding without CLI.
 
 **Agent configuration and module loading**
@@ -943,27 +942,28 @@ The inventory below is a discovery seed, not the final atomic row count.
 
 **Runtime routing**
 
-- Pi execution including provider-qualified model ids, OAuth/API-key resolution, tool steering, native sessions, stream retry, and compaction linkage;
+- Pi execution including provider-qualified model ids, OAuth/API-key resolution, tool steering, native tools including the Node REPL, native sessions, stream retry, and compaction linkage (user-facing compaction tuning knobs are a cut row: policy is runtime-owned and no fleet config tunes it);
+- user-defined OpenAI-compatible local providers on runtime-pi (the live Personal Agent registers a local Ollama endpoint);
 - Claude SDK and Claude CLI modes with native model ids;
 - Codex app-server and OpenCode app-server with stable-version guard;
 - ordered same-runtime and cross-runtime fallback using explicit `{ runtime, model }` entries;
 - runtime-owned model validation and auth;
-- capability eligibility and permission monotonicity;
+- capability eligibility (including structured-output schemas) and permission monotonicity;
 - canonical transcript replay without private-session migration;
 - no replay of committed non-idempotent effects;
 - typed provider/runtime failures with causes and no secret leakage.
 
 **Channel shared compliance**
 
-Every channel proves normalization, allowlist/auth, advertised AskUser/live-input/proactive/verbatim behavior, delivery idempotency, bounded health, visible degradation, idempotent stop, and redaction independently.
+Every channel proves normalization, allowlist/auth, advertised AskUser/live-input/proactive/verbatim behavior, instance-bound model-visible send tools where advertised, delivery idempotency, bounded health, visible degradation, idempotent stop, and redaction independently.
 
 **Telegram**
 
-Polling, media, voice transcription, adversarial filenames, in-place activity, steering, runtime controls, commands, quiet hours, exact chat authorization, and final delivery.
+Polling, media, voice transcription, adversarial filenames, in-place activity, steering, runtime controls, commands, quiet hours, status reactions, non-blocking tappable reply options distinct from blocking AskUser, model-invoked message and file sending, exact chat authorization, and final delivery.
 
 **Slack**
 
-One Socket Mode consumer, thread/conversation identity, assistant status with reaction fallback, transient tool ledger, shortcuts, App Home, runtime controls, and honest final-only/silent-delivery limits.
+One Socket Mode consumer, thread/conversation identity, assistant status with reaction fallback, transient tool ledger, shortcuts, App Home, runtime controls, model-invoked message sending, and honest final-only/silent-delivery limits.
 
 **Webhook**
 
@@ -986,17 +986,19 @@ Agent Card, provider endpoint, bearer auth, production-record-compatible idempot
 - protocol and frame bounds, disconnect cancellation, capability advertisement, and owner-private discovery;
 - every TUI/web wire interaction uses the shared client;
 - fixture-equivalent domain state and actions;
+- per-turn context-window usage, compaction, and provider-session eviction telemetry;
+- proactive trigger delivery into a new operator conversation persisted by attached products;
 - independent product startup/config and no agent-config product registry;
 - TUI conversations, model/effort, cancel, live input, AskUser, quote, attachments, config, replay, health;
 - web durability, uploads, notifications, active-turn survival, invalidation, deletion, browser auth, host/origin safety.
 
 **Memory**
 
-SQLite identity, migrations, ownership, corruption reporting, BuJo recall with/without embeddings, vector + FTS, dimensions, breaker/fallback, completed-turn capture idempotency, runtime-backed capture, consolidation, strict audit, preview, backup, rebuild, forget, and intake retry. Lite and journal are cut rows.
+SQLite identity, migrations, ownership, corruption reporting, BuJo recall with/without embeddings, vector + FTS, dimensions, breaker/fallback, completed-turn capture idempotency, runtime-backed capture, consolidation, strict audit, preview, backup, rebuild, forget, and intake retry. Lite, journal, and the `append-host-summary` write mode are cut rows (fleet configs use only `capture` and disabled).
 
 **State**
 
-Atomic canonical transcript, duplicate protection, provider-session linkage, verbatim append, AskUser evidence, run summaries/events, retention, stale-run classification, memory-run separation, owner-private discovery/presence, and channel delivery-idempotency indexes.
+Atomic canonical transcript, duplicate protection, provider-session linkage, verbatim append, AskUser evidence, run summaries/events, retention, stale-run classification, memory-run separation, owner-private discovery/presence with the optional machine-wide discovery mirror, a rollover-independent cursor-paged run-history model tool, and channel delivery-idempotency indexes.
 
 **Continuations**
 
@@ -1004,7 +1006,7 @@ Claim capability, origin binding, deadlines/bounds, durable leases, retry, cance
 
 **Observability**
 
-Structured event bounds/redaction, OTLP/Phoenix mapping, project/session mapping, pressure, flush/shutdown, include-sensitive warning, and visible degradation.
+Structured event bounds/redaction, OTLP/Phoenix mapping, project/session mapping, pressure, flush/shutdown, include-sensitive warning, opt-in content-pattern credential scanning of retained free text, and visible degradation.
 
 **Security and sandbox**
 
@@ -1013,12 +1015,9 @@ No inline secrets in secret fields; redaction in logs/errors/health/explain/docs
 **MCP-first project extension**
 
 - named standard MCP config loading;
-- per-server request-context and host-capability grants only for named trusted local stdio servers;
+- `continuation.claim` grants only for named trusted local stdio servers, with no token exposure to the model;
 - custom MCP without mono-agent package/catalog changes;
-- Agent-style MCP spawn/observe/cancel with origin binding, scoped credentials, depth/concurrency/runtime/duration limits, and parent cancellation;
-- child policy and sandbox inheritance that may narrow but never widen;
 - durable detached completion only through an explicit continuation claim;
-- ephemeral child run versus independently configured durable agent distinction;
 - skills as the instruction boundary;
 - remote MCP process independence;
 - no generic core process supervision.
@@ -1040,7 +1039,7 @@ No inline secrets in secret fields; redaction in logs/errors/health/explain/docs
 - minimal, Personal Agent, and multi-runtime fixtures round-trip;
 - runtime-owned auth discovery with bounded checks and honest noninteractive behavior;
 - schema-derived docs and explain;
-- one external typed-module fixture loads without a core/catalog edit;
+- one external open-slot module (channel or memory) fixture loads without a core/catalog edit;
 - one custom MCP fixture works without module-sdk;
 - package docs derive from metadata;
 - lockstep API/peer compatibility and packed-consumer verification.
@@ -1109,14 +1108,14 @@ Immediate rollback triggers: duplicate Telegram/Slack consumption, missing or du
 | G0 — commitment | ADR ratifies typed modules, scoped products, cuts, migration, budgets; exact classifier/baseline and atomic ledger | Reviewed ADR; manifest/digest/count reproducible; every behavior kept or cut |
 | G0.25 — archive/detach | Final v0 release, archive tag, maintenance branch; local CLI and consumers pinned off main | Exact versions, processes, configs, channel ownership, memory/continuation health |
 | G0.5 — deletion-first v0 | WhatsApp, Supermemory, orchestrator extra, self-config, backfill, unused dependency removed | Focused + broad CI green; no SELF-CONFIG; complexity delta |
-| G1 — config-first skeleton | module-sdk typed contracts; strict slot schema; direct-dependency loader; core host/API and scoped MCP grants; thin CLI; minimal Pi + webhook; schema scaffolder; old config/controller/wizard machinery deleted | Packed clean-project turn; no-side-effect import/load; exact closure; explain/schema tests; external typed-module and Agent MCP fixtures |
+| G1 — config-first skeleton | module-sdk typed contracts; strict slot schema; direct-dependency loader; core host/API and scoped MCP grants; thin CLI; minimal Pi + webhook; schema scaffolder; old config/controller/wizard machinery deleted | Packed clean-project turn; no-side-effect import/load; exact closure; explain/schema tests; external open-slot module and continuation-claim MCP fixtures |
 | G2 — operator products | operator client/directory/domain fixtures; channel-operator; TUI/web standalone products | Fixture parity; no second decoder/action reducer; independent product lifecycle smokes |
 | G3 — runtimes/history | Canonical transcript; four runtimes; structured runtime/model routing; Pi-native sessions/compaction; old drivers deleted | One live smoke/family; same/cross-runtime fallback; settlement/history |
 | G4 — channels/triggers | Six channels plus trigger-cron; shared security/compliance; old glue/index duplication deleted | Atomic rows; Telegram/Slack/A2A/OpenAI smokes; clock-controlled cron |
 | G5 — durable capabilities | state-local, continuations, memory-local BuJo-only, exporter-otlp, sandbox-srt; old state/memory/observability deleted | Durable review; memory rehearsal; continuation corpus/week; exporter/sandbox proofs |
 | G6 — products/release | create-mono-agent; service-macos separate product; docs-mcp; generated docs; lockstep beta; migration guide | Packed minimal/Personal/multi-runtime scaffolds; all packages accounted; service and docs product smokes |
 | G7 — production beta | Publish beta; migrate Personal Agent, then A8C orchestrator | Consumer matrices, audits, rollback, exact single consumer, 24-hour soak each |
-| G8 — stable | Ledger green; source ≤130k and ≥31% below baseline; kernel ≤15k; stable publish | Exact-SHA reports; packed consumer install; post-launch dispositions |
+| G8 — stable | Ledger green; source ≤130k and ≥31% below baseline; kernel ≤15k; stable publish | Exact-SHA reports; packed consumer install; section 2.6 OSS checklist green; post-launch dispositions |
 
 Gates merge in order. Work inside a gate may run concurrently only where the task graph permits.
 
@@ -1131,25 +1130,22 @@ Every implementation PR names task and requirement ids, includes paired deletion
 | V1-003 | G0 | V1-001 | Build atomic requirement manifest | Zero unclassified behaviors; deterministic ledger |
 | V1-004 | G0.25 | V1-002, V1-003 | Cut final v0 and archive/maintenance refs | Registry install and tag/SHA/version match |
 | V1-005 | G0.25 | V1-004 | Pin local CLI and main-linked consumers to v0-final | Resolution/process/config/state proof |
-| V1-006 | G0.5 | V1-005 | Remove WhatsApp, Supermemory, orchestrator extra, unused dependency | Focused tests, architecture/docs, delta |
-| V1-007 | G0.5 | V1-005 | Remove self-config, transactions, `tui --configure`, UI affordances | Negative tests and guidance |
-| V1-008 | G0.5 | V1-005 | Remove backfill/export mapping, retain live export | Negative tests and archive guidance |
-| V1-009 | G0.5 | V1-006, V1-007, V1-008 | Certify lean v0 base | Focused lanes + broad CI; ledger/delta |
-| V1-010 | G1 | V1-009 | Create module-sdk/core/cli skeletons and category rules | Catalog, dependency, API, pack checks |
-| V1-011 | G1 | V1-010 | Implement eight typed module definitions, manifests, schemas, diagnostics/commands, compliance kits | Type tests, import-side-effect instrumentation, one fixture/kind |
+| V1-006 | G0.5 | V1-005 | One deletion wave: remove WhatsApp, Supermemory, orchestrator extra, self-config with transactions and `tui --configure` UI affordances, backfill/export mapping (retaining live export), and the unused dependency | Focused tests, negative tests with guidance, architecture/docs, complexity delta |
+| V1-009 | G0.5 | V1-006 | Certify lean v0 base | Focused lanes + broad CI; ledger/delta |
+| V1-010 | G1 | V1-009 | Create module-sdk/core/cli skeletons, category rules, and the section 2.6 license split in package manifests | Catalog, dependency, API, license, pack checks |
+| V1-011 | G1 | V1-010 | Implement typed contracts for all eight slots — public factories and compliance kits for the three open slots, internal contracts for reserved slots — with manifests, schemas, diagnostics/commands | Type tests, import-side-effect instrumentation, one fixture per open kind |
 | V1-012 | G1 | V1-011 | Implement strict agent/runtimes/routing/context/capability/policy schema with `$use`, inline leaf config, references, provenance | Minimal/Personal/multi-runtime fixtures; error/redaction tests |
 | V1-013 | G1 | V1-011, V1-012 | Implement exact direct-dependency/lockfile module loader; reject aliases, paths, scans, wrong kinds | Resolution/digest/dependency negatives; no lifecycle/install side effects |
 | V1-014 | G1 | V1-011 | Implement secure-fs and shared HTTP lifecycle helpers | Adversarial filesystem/HTTP contracts |
-| V1-015 | G1 | V1-011, V1-012, V1-013 | Implement host lifecycle, bounds, settlement, health, shutdown, and request-scoped MCP grants including child-run spawn/observe/cancel | Lifecycle/crash/backpressure plus grant isolation, recursion, cancellation, policy-monotonicity tests |
+| V1-015 | G1 | V1-011, V1-012, V1-013 | Implement host lifecycle, bounds, settlement, health, shutdown, and the request-scoped `continuation.claim` grant hook | Lifecycle/crash/backpressure plus grant isolation and token-scoping tests |
 | V1-016 | G1 | V1-012, V1-015 | Implement load/validate/create/inspect APIs and thin CLI validate/schema/explain/diagnostic routing | Programmatic/CLI parity; exit/JSON compatibility; read-only load |
 | V1-017 | G1 | V1-012, V1-016 | Land schema-derived minimal and selected-stack scaffolds; delete presets/wizard/config reference | Packed snapshots, exact closure, names-only secret example, transactional failure |
 | V1-018 | G1 | V1-011, V1-016 | Convert doctor inventory to core + selected-module diagnostics; delete old orchestration | Every v0 check mapped or cut |
-| V1-019 | G1 | V1-013, V1-015 | Complete real Pi + webhook vertical slice and project Agent MCP fixture; delete app-controller/config glue | Packed clean-project turn, bounded child-run result, and minimal closure |
-| V1-020 | G2 | V1-011 | Extract operator protocol and one NDJSON client | Golden wire/frame/disconnect tests |
-| V1-021 | G2 | V1-020 | Implement turn/stream/AskUser/capability/directory domain state | Deterministic reducer/action fixtures |
+| V1-019 | G1 | V1-013, V1-015 | Complete real Pi + webhook vertical slice and project MCP fixture; delete app-controller/config glue | Packed clean-project turn and minimal closure |
+| V1-020 | G2 | V1-011 | Extract operator protocol, one NDJSON client, and turn/stream/AskUser/capability/directory domain state | Golden wire/frame/disconnect tests; deterministic reducer/action fixtures |
 | V1-022 | G2 | V1-015, V1-020 | Extract channel-operator typed module | Protocol compliance and disconnect abort |
-| V1-023 | G2 | V1-021, V1-022 | Migrate TUI as standalone operator product; delete local interpretations/config-mode UI | TUI parity and interactive smoke |
-| V1-024 | G2 | V1-021, V1-022 | Migrate web as standalone operator product with separate config and durable ownership | Web parity, restart/upload/notification/auth smoke |
+| V1-023 | G2 | V1-020, V1-022 | Migrate TUI as standalone operator product; delete local interpretations/config-mode UI | TUI parity and interactive smoke |
+| V1-024 | G2 | V1-020, V1-022 | Migrate web as standalone operator product with separate config and durable ownership | Web parity, restart/upload/notification/auth smoke |
 | V1-025 | G3 | V1-015 | Extract canonical neutral transcript into state-local | Settlement, duplicate, replay, AskUser, corruption |
 | V1-026 | G3 | V1-019, V1-025 | Finish runtime-pi with upstream sessions/compaction; delete hand-rolled drivers | Pi live smoke and linkage |
 | V1-027 | G3 | V1-015, V1-025 | Extract Claude SDK and CLI modes | Mode-specific live smokes/failures |
@@ -1176,7 +1172,7 @@ Every implementation PR names task and requirement ids, includes paired deletion
 | V1-048 | G6 | V1-023, V1-024, V1-030, V1-038, V1-041, V1-042, V1-043, V1-044, V1-045, V1-046, V1-047 | Adapt lockstep beta and packed-consumer verification | Minimal/Personal/multi-runtime installs; all 25 packages mapped; foreground/service/product proofs |
 | V1-049 | G7 | V1-048 | Rehearse and cut over Personal Agent exclusively | Consumer matrix, memory/state audit, rollback, 24-hour soak |
 | V1-050 | G7 | V1-049 | Rehearse and cut over A8C orchestrator exclusively | Continuation reconciliation, Slack/A2A, rollback, 24-hour soak |
-| V1-051 | G8 | V1-050 | Close ledger, complexity, security, docs, OSS, reviews | Full gate at candidate SHA |
+| V1-051 | G8 | V1-050 | Close ledger, complexity, security, docs, the section 2.6 OSS checklist, reviews | Full gate at candidate SHA |
 | V1-052 | G8 | V1-051 | Publish stable, announce v0 deprecation, observe 30-day window | Registry verification, consumer install, post-launch report |
 
 ## 12. Risks, non-goals, revival, and maintenance
@@ -1186,11 +1182,12 @@ Every implementation PR names task and requirement ids, includes paired deletion
 | Risk | Mitigation |
 | --- | --- |
 | Explicit `$use` feels verbose | It appears only at real replaceable seams; exact implementation is reviewable and no alias magic exists |
-| module-sdk grows into a generic plugin framework | Exactly eight typed factories, no generic lifecycle hook/tool/extension kind, architecture and 15k kernel gates |
+| module-sdk grows into a generic plugin framework | Three public factories at open slots, reserved-slot contracts internal until an admitted second implementation, no generic lifecycle hook/tool/extension kind, architecture and 15k kernel gates |
 | Agent config becomes a mega-config | Products, MCP definitions, job bodies, skills, and host ops have separate authoritative surfaces |
 | Product behavior becomes hidden after leaving agent config | Product package and product-specific config are explicit; package presence never activates anything |
 | Custom MCP is abused as a daemon manager | Decision ladder and lifecycle docs distinguish stdio tools, remote services, collectors, and watchdogs |
-| Privileged Agent MCP creates recursive work or escalates policy | Per-server grants, origin-scoped credentials, hard depth/concurrency/runtime bounds, parent cancellation, and narrow-only child policy |
+| Continuation claim tokens leak or outlive their origin | Request-scoped capability URL/token bound to origin and deadline, never in prompt/transcript/logs; the child-run grant family is deferred entirely (section 12.3) |
+| Copyleft uncertainty deters third-party modules | Apache-2.0 module-sdk and operator, with the split stated per package in section 2.6 |
 | Runtime mixing loses continuity | Canonical transcript plus explicit route capability checks; private sessions never cross runtimes |
 | Cross-runtime fallback duplicates side effects | Settlement and idempotency evidence; no blind retry after committed non-idempotent effects |
 | Continuation extraction loses active work | `per-record-v3`, cross-open corpus, week rehearsal, unresolved claims block cutover |
@@ -1212,6 +1209,7 @@ Non-goals:
 - hosted marketplace;
 - generic plugin registry, path plugins, package self-registration, or dynamic package installation;
 - remote MCP receipt of privileged host capabilities in v1;
+- child-run host-capability grants (request context/progress, spawn/observe/cancel) in v1;
 - a core-owned model-visible Agent/subagent tool;
 - a universal provider abstraction across runtimes;
 - one configuration file for agent and every product;
@@ -1235,6 +1233,8 @@ The exact `archive/v0-final-full` source map supports:
 - conversational self-configuration only as a separate reviewed product;
 - historical resend as a standalone operations tool;
 - alternative memory algorithms as separate memory modules, never modes mixed into memory-local.
+
+Separately from archive revival, the deferred child-run capability plane is recorded here as future design: `request.context` (read-only origin identity and run metadata), `request.progress` (bounded progress publication), and `agent.run.spawn/observe/cancel` with maximum depth, children per run, concurrency, duration, runtime allowlist, output bounds, narrow-only child policy and sandbox inheritance, and parent-cancellation cascade. A post-1.0 amendment admits it only when a real consuming MCP exists, reusing the section 5.6 grant transport unchanged.
 
 Revival must use the capability ladder, public contracts, compliance suites, security rules, and budgets. It does not restore code to core.
 
