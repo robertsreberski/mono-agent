@@ -20,6 +20,23 @@ Package count is not a success metric. The current v1 roster remains 25 publisha
 
 The v1 distribution remains one pnpm monorepo releasing first-party packages in lockstep. An agent project owns an ordinary `package.json` and lockfile. Configuration selects only already-installed packages and never turns a JSON edit into remote code installation. Distribution is open source with a deliberate license split: implementations are GPL-3.0-only while the `module-sdk` and `operator` extension surfaces are Apache-2.0, so third-party modules and renderers may carry any license (section 2.6).
 
+### 1.1 The one-page mental model
+
+A mono-agent project is an ordinary directory, and understanding any agent means answering three questions in order:
+
+1. **What code exists here?** `package.json` and the lockfile answer completely. Installing or removing a dependency is the only way code enters or leaves; no config edit, no download, no discovery.
+2. **What does this agent use?** `mono-agent.config.json` answers completely. Presence means selected; absence means off. Every replaceable choice names its implementation at the point of use — the map key is the instance's stable name, `$use` is the exact installed package.
+3. **Who owns everything else?** The scope table in section 2.1: model tools live in `.mcp.json`, instructions in `skills/`, schedules in `cron/*.md`, and each product (TUI, web, service-macos, docs-mcp) has its own small config. Nothing outside a file's scope can be caused by that file.
+
+Two rules follow, and they are the contract this architecture defends:
+
+- **Reading rule** — every behavior of a running agent traces to one visible line in one of those files. If no line selects it, the behavior does not exist. There is nothing to discover that the files do not say.
+- **Writing rule** — behavior changes in exactly this order: install (`package.json`), select (config), restart. No step happens implicitly, and no later step can occur without the earlier one.
+
+When extending, ask "what is my thing?" before "how do I hook in": a tool is an MCP server; know-how is a skill; a schedule is a Markdown job; deferred completion is a continuation claim; a new user interface is an operator product; only a replacement for a framework semantic is a typed module. The full ladder is section 2.3.
+
+Hold this page and the rest of the document is elaboration; the architecture's job — and its gates' job — is to keep this page true.
+
 Stable v1 must prove all of the following:
 
 - a minimal Pi + webhook agent installs no unselected channel, UI, memory, exporter, service, or native module and completes one real turn;
@@ -880,6 +897,7 @@ The CLI hardcodes no provider, channel, memory backend, product, or platform beh
 
 Canonical documentation provides:
 
+- the one-page mental model (section 1.1) as the documentation landing page;
 - one minimal quickstart;
 - the sanitized Personal Agent fixture;
 - one focused multi-runtime example;
