@@ -61,8 +61,8 @@ export const buildComposerCommands = ({
 export function Composer() {
   const store = useConsoleStore();
   const { connection, selectedAgent, selectedThread } = store;
-  const canUpload = canUploadInConsole(connection, selectedAgent, selectedThread);
   const isRunning = useAuiState((state) => state.thread.isRunning);
+  const canUpload = !isRunning && canUploadInConsole(connection, selectedAgent, selectedThread);
   const canSend = useAuiState((state) => state.composer.canSend);
   const attachmentCount = useAuiState((state) => state.composer.attachments.length);
   const commands = useMemo(() => buildComposerCommands({
@@ -96,7 +96,9 @@ export function Composer() {
             <ComposerPrimitive.Input
               id="composer-input"
               className="composer-input"
-              placeholder={statusText ?? `Message ${selectedAgent?.label ?? "an agent"}…`}
+              placeholder={statusText ?? (isRunning
+                ? `Steer ${selectedAgent?.label ?? "the agent"} while it works…`
+                : `Message ${selectedAgent?.label ?? "an agent"}…`)}
               aria-label="Message"
               rows={1}
               addAttachmentOnPaste={canUpload}
@@ -120,23 +122,24 @@ export function Composer() {
                 </ComposerPrimitive.AddAttachment>
               )}
               <span className="composer-hint">
-                {statusText ?? "Enter to send · / for commands"}
+                {statusText ?? (isRunning ? "Enter to steer this run" : "Enter to send · / for commands")}
               </span>
             </div>
-            {isRunning ? (
-              <ComposerPrimitive.Cancel className="composer-stop" aria-label="Stop response">
-                <Icon name="stop" size={14} />
-                <span>Stop</span>
-              </ComposerPrimitive.Cancel>
-            ) : (
+            <div className="composer-actions">
               <ComposerPrimitive.Send
                 className="composer-send"
-                aria-label="Send message"
+                aria-label={isRunning ? "Send live follow-up" : "Send message"}
                 disabled={!canSend}
               >
                 <Icon name="send" size={16} />
               </ComposerPrimitive.Send>
-            )}
+              {isRunning && (
+                <ComposerPrimitive.Cancel className="composer-stop" aria-label="Stop response">
+                  <Icon name="stop" size={14} />
+                  <span>Stop</span>
+                </ComposerPrimitive.Cancel>
+              )}
+            </div>
           </div>
         </ComposerPrimitive.AttachmentDropzone>
       </ComposerPrimitive.Root>

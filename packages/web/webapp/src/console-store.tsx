@@ -56,6 +56,7 @@ interface ConsoleStoreValue {
     input: StartTurnInput,
     onThreadResolved?: (threadId: string) => void,
   ) => Promise<void>;
+  readonly sendLiveInput: (text: string) => Promise<void>;
   readonly cancelTurn: () => Promise<void>;
   readonly setShowArchived: (show: boolean) => void;
   readonly setShowOfflineAgents: (show: boolean) => void;
@@ -769,6 +770,28 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [queueRefresh, selectedThreadId]);
 
+  const sendLiveInput = useCallback(async (text: string) => {
+    if (!selectedThreadId) throw new Error("Select a conversation before sending a follow-up.");
+    try {
+      const receipt = await api.liveInput(selectedThreadId, text);
+      setDetail((current) => {
+        if (current?.thread.id !== selectedThreadId) return current;
+        const exists = current.messages.some((message) => message.id === receipt.message.id);
+        return {
+          ...current,
+          messages: exists
+            ? current.messages.map((message) => message.id === receipt.message.id ? receipt.message : message)
+            : [...current.messages, receipt.message],
+        };
+      });
+      setActionError(null);
+      queueRefresh();
+    } catch (liveInputError) {
+      setActionError(errorMessage(liveInputError));
+      throw liveInputError;
+    }
+  }, [queueRefresh, selectedThreadId]);
+
   const value = useMemo<ConsoleStoreValue>(
     () => ({
       bootstrap,
@@ -802,6 +825,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       unarchiveThread,
       deleteThread,
       sendTurn,
+      sendLiveInput,
       cancelTurn,
       setShowArchived,
       setShowOfflineAgents,
@@ -841,6 +865,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       selectedThread,
       selectedThreadId,
       sendTurn,
+      sendLiveInput,
       setEffort,
       setAgentPinned,
       setModel,

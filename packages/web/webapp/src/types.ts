@@ -133,6 +133,7 @@ export interface WebMessage {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly status: "running" | "complete" | "failed" | "cancelled" | "interrupted";
+  readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled";
 }
 
 export interface WebQuote {
@@ -182,6 +183,11 @@ export interface StartTurnInput {
   readonly attachmentIds?: readonly string[];
   readonly model?: string;
   readonly effort?: string;
+}
+
+export interface LiveInputReceipt {
+  readonly message: WebMessage;
+  readonly disposition: "pending" | "queued";
 }
 
 export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {

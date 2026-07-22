@@ -111,6 +111,21 @@ The per-chat runtime controls and fresh-session command below are built in
 whenever the mono-agent app starts Telegram. Custom commands, reactions, ask/file
 tools, and quiet hours are opt-in.
 
+### Live follow-up steering (built in)
+
+Send another plain-text message in the same Telegram chat while the agent is
+working to guide that active run. Applied guidance becomes part of that run and
+does not create a second response. With lifecycle reactions enabled, the new
+message moves from the configured working reaction to the done reaction after
+the provider accepts it.
+
+The adapter reserves the message's ordinary per-chat queue position before
+offering it. If the selected provider cannot steer, delivery fails, or the
+active turn finishes first, the exact message runs next as a normal turn rather
+than being lost. Commands, pending `AskUser` replies, and messages with
+attachments retain their existing paths. See [Live input
+steering](/programmatic/approval-and-structured-output/#live-input-steering).
+
 ### Runtime model and effort controls (built in)
 
 Use `/model` to open an inline menu containing only the configured

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   createChannelUserCancelReason,
   isAgentResponseCancelledError,
+  type AgentLiveInputRequest,
   type AgentMessageStream,
   type AgentStreamEvent,
 } from "@mono-agent/agent-contracts";
@@ -26,6 +27,51 @@ function baseRequest(conversationId = "c1") {
 }
 
 describe("createAgentResponder", () => {
+  it("maps live input onto the exact active daily bucket and closes the mapping after the turn", async () => {
+    let start!: () => void;
+    const started = new Promise<void>((resolve) => { start = resolve; });
+    let finish!: (response: AgentHarnessResponse) => void;
+    const finished = new Promise<AgentHarnessResponse>((resolve) => { finish = resolve; });
+    let offered: AgentLiveInputRequest | undefined;
+    const harness: AgentHarness = {
+      async run() {
+        start();
+        return finished;
+      },
+      offerLiveInput(request) {
+        offered = request;
+        return { status: "unavailable", reason: "inactive" };
+      },
+    };
+    const responder = createAgentResponder({
+      harness,
+      rollover: "daily",
+      rolloverTimezone: "UTC",
+      now: () => new Date("2026-07-21T23:59:59.000Z"),
+    });
+    const response = responder.respond(baseRequest("telegram:42"), noopStream());
+    await started;
+
+    expect(responder.offerLiveInput?.({
+      conversationId: "telegram:42",
+      id: "input-1",
+      text: "Follow up",
+      receivedAt: "2026-07-21T23:59:59.500Z",
+    })).toEqual({ status: "unavailable", reason: "inactive" });
+    expect(offered?.conversationId).toBe("telegram:42#2026-07-21");
+
+    finish(okResponse("telegram:42#2026-07-21"));
+    await response;
+    offered = undefined;
+    expect(responder.offerLiveInput?.({
+      conversationId: "telegram:42",
+      id: "input-2",
+      text: "Too late",
+      receivedAt: "2026-07-22T00:00:01.000Z",
+    })).toEqual({ status: "unavailable", reason: "inactive" });
+    expect(offered).toBeUndefined();
+  });
+
   it("routes respond() through harness.submit when available (queue-after-turn)", async () => {
     const calls: string[] = [];
     const harness: AgentHarness = {

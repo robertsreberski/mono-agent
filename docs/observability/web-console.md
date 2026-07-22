@@ -51,7 +51,7 @@ At startup, mono-agent inspects the existing Tailscale Serve configuration. It p
 | Layer | What it owns |
 | --- | --- |
 | Service | Agent discovery, thread/turn lifecycle, attachment admission, notification ingestion, and the upstream operator connection. |
-| SQLite store | Authoritative agents, pins, threads, messages, structured parts, revisions, turns, uploads, and notification idempotency. |
+| SQLite store | Authoritative agents, pins, threads, messages, structured parts, revisions, turns, live-input fallback state, uploads, and notification idempotency. |
 | `/api/v1` HTTP/SSE | Browser commands and projections. Mutations publish invalidations; browsers refetch current state instead of owning the turn. |
 | Assistant-ui PWA | Responsive thread/message/composer presentation, upload progress, response notifications, and browser-origin preferences. |
 | Notification ingress | Owner-private loopback endpoint recorded under `~/.mono-agent/web/`; `deliverWebNotification` uses its bearer for one bounded cron/webhook delivery. |
@@ -78,8 +78,28 @@ Cron jobs and webhook endpoints can explicitly target `notifyConversationId: "we
 
 The service, not the browser tab, owns the upstream operator connection. A browser disconnect or reload can therefore reconnect through the event stream while the turn continues. Brief event-stream reconnects do not raise the full reconnect banner; it appears after five seconds, while a browser-offline event is shown immediately. If the web service itself restarts, any turn that was still active is marked interrupted instead of being shown as permanently running.
 
-During a turn the transcript shows streamed markdown, reasoning, tool calls and results, context-compaction lifecycle rows, user-facing errors, and the final outcome. Other raw runtime, provider, and usage telemetry remains internal; measured token and cost data appears only through the context control. The composer exposes the selected agent's available model and effort controls. Copy, cancel, archive, and unarchive are supported; edit/regenerate/branch/steer and browser-defined client tools are deliberately not enabled.
+During a turn the transcript shows streamed markdown, reasoning, tool calls and results, context-compaction lifecycle rows, user-facing errors, and the final outcome. Other raw runtime, provider, and usage telemetry remains internal; measured token and cost data appears only through the context control. The composer exposes the selected agent's available model and effort controls. Copy, cancel, archive, unarchive, and steering a running turn are supported; edit/regenerate/branch and browser-defined client tools are deliberately not enabled.
 
+### Steer a running turn
+
+The composer remains sendable while a response is running. A text-only send is
+persisted immediately and offered to the active provider as live guidance. The
+message displays one of four delivery states:
+
+- **Steering current run…** while the provider settlement is pending;
+- **Applied to current run** after the provider accepts it;
+- **Queued as next turn** when the provider is unsupported, delivery fails, or
+  the active turn finishes first;
+- **Cancelled** when the active turn is explicitly cancelled before settlement.
+
+Queued guidance starts automatically as a normal turn after the current turn
+settles. Pending delivery and queue state live in the service's owner-private
+SQLite store rather than the browser tab. A web-service restart converts any
+uncertain pending offer to queued and drains it after agent discovery, so it is
+not silently lost. Each live follow-up is limited to 8,000 characters, with at
+most 100 unsettled entries per thread. Attachments keep the ordinary turn path.
+If a quote is present, the browser flattens its Markdown blockquote context into
+the live guidance before persistence and delivery.
 ## Structured AskUser forms
 
 When an agent calls the channel-agnostic `AskUser` tool, the web console keeps

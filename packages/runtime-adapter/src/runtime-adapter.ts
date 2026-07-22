@@ -103,6 +103,13 @@ export function monoRuntimeSupportsSessionResume(
   return runtimeBackendForModel(model, executionMode).capabilities.supports_session_resume === true;
 }
 
+export function monoRuntimeSupportsLiveInput(
+  model: RuntimeModelReference,
+  executionMode?: RuntimeExecutionMode,
+): boolean {
+  return runtimeBackendForModel(model, executionMode).capabilities.supports_live_input === true;
+}
+
 export function describeMonoRuntimeSupport(
   model: RuntimeModelReference,
   executionMode?: RuntimeExecutionMode,

@@ -117,6 +117,86 @@ function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => 
 }
 
 describe("AgentHarness", () => {
+  it("feeds live follow-ups into the active runtime and commits them into durable history", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    let runtimeStarted!: () => void;
+    const started = new Promise<void>((resolve) => { runtimeStarted = resolve; });
+    const seen: string[] = [];
+    const fake = createFakeRuntime(async (_prompt, options) => {
+      runtimeStarted();
+      const iterator = options.liveInput?.[Symbol.asyncIterator]();
+      if (iterator === undefined) throw new Error("Expected live input for the Pi runtime.");
+      const next = await iterator.next();
+      if (next.done) throw new Error("Live input closed before delivery.");
+      seen.push(next.value.body);
+      next.value.acknowledge?.();
+      return { text: "Updated answer" };
+    });
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      historyStore,
+      createRunId: () => "run-live",
+    });
+    const running = harness.run({
+      conversationId: "telegram:42",
+      userMessage: "Initial request",
+      abortSignal: new AbortController().signal,
+    });
+    await started;
+
+    const offered = harness.offerLiveInput?.({
+      conversationId: "telegram:42",
+      id: "input-1",
+      text: "Use the new constraint",
+      receivedAt: "2026-07-21T09:00:00.000Z",
+    });
+    expect(offered?.status).toBe("accepted");
+    await expect(running).resolves.toMatchObject({ text: "Updated answer" });
+    if (offered?.status === "accepted") {
+      await expect(offered.settled).resolves.toEqual({ status: "applied", runId: "run-live" });
+    }
+    expect(seen).toEqual(["Use the new constraint"]);
+    expect(await historyStore.load("telegram:42")).toMatchObject([
+      { role: "user", content: "Initial request", runId: "run-live" },
+      { role: "user", content: "Use the new constraint", timestamp: "2026-07-21T09:00:00.000Z", runId: "run-live" },
+      { role: "assistant", content: "Updated answer", runId: "run-live" },
+    ]);
+  });
+
+  it("preserves an explicit request runtime live-input source", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const explicitLiveInput = {
+      async *[Symbol.asyncIterator]() {
+        yield { id: "custom-1", body: "Custom host guidance" };
+      },
+    };
+    const fake = createFakeRuntime(async (_prompt, options) => {
+      expect(options.liveInput).toBe(explicitLiveInput);
+      return { text: "Done" };
+    });
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      runtimeOptionsForRequest: () => ({ runtimeOptions: { liveInput: explicitLiveInput } }),
+    });
+
+    await expect(harness.run({
+      conversationId: "custom:live-input",
+      userMessage: "Initial request",
+      abortSignal: new AbortController().signal,
+    })).resolves.toMatchObject({ text: "Done" });
+  });
+
   it("keeps the compiled system prompt in recorded summaries but never returns it to channel callers", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

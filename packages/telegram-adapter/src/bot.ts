@@ -258,6 +258,10 @@ export class SerialQueue {
   get idle(): boolean {
     return this.depth === 0;
   }
+
+  get full(): boolean {
+    return this.depth >= this.maxDepth;
+  }
 }
 
 /**
@@ -1405,6 +1409,92 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     // Register the controller before admission so /cancel can abort this message
     // even while it is still parked behind an earlier same-chat run.
     const controller = registerController(chatId);
+    const queueKey = String(chatId);
+    let queue = admissionQueues.get(queueKey);
+    if (queue === undefined) {
+      queue = new SerialQueue();
+      admissionQueues.set(queueKey, queue);
+    }
+    if (
+      input.attachments.length === 0
+      && typeof telegramMessage.text === "string"
+      && telegramMessage.text.trim().length > 0
+      && options.responder.offerLiveInput !== undefined
+      && !queue.full
+    ) {
+      const decision = createDeferred<"run" | "applied" | "discarded">();
+      const reserved = queue.run(async () => {
+        const next = await decision.promise;
+        if (next === "run") {
+          await runAgentTurn(ctx, telegramMessage, input, controller);
+          return;
+        }
+        if (reactions !== undefined) {
+          if (next === "applied" && reactions.done) {
+            await applyReaction(chatId, telegramMessage.message_id, REACTION_DONE);
+          } else if (reactions.working) {
+            await applyReaction(chatId, telegramMessage.message_id, undefined);
+          }
+        }
+        unregisterController(chatId, controller);
+      });
+      let offer;
+      try {
+        offer = options.responder.offerLiveInput({
+          conversationId: `telegram:${String(chatId)}`,
+          id: `${String(chatId)}:${String(telegramMessage.message_id)}`,
+          text: telegramMessage.text,
+          receivedAt: new Date((telegramMessage.date ?? Math.floor(Date.now() / 1_000)) * 1_000).toISOString(),
+        });
+      } catch (error) {
+        logger?.debug?.("Telegram live-input offer failed; running as a queued turn.", {
+          error: errorMessage(error),
+        });
+        decision.resolve("run");
+        try {
+          await reserved;
+        } finally {
+          if (queue.idle && admissionQueues.get(queueKey) === queue) {
+            admissionQueues.delete(queueKey);
+          }
+        }
+        return;
+      }
+      if (offer.status === "accepted") {
+        void offer.settled.then(
+          (settlement) => decision.resolve(
+            settlement.status === "requeue"
+              ? "run"
+              : settlement.status === "applied"
+                ? "applied"
+                : "discarded",
+          ),
+          () => decision.resolve("run"),
+        );
+        if (reactions?.working === true) {
+          await applyReaction(chatId, telegramMessage.message_id, REACTION_WORKING);
+        }
+        void reserved.catch((error: unknown) => {
+          logger?.error?.("Telegram deferred live-input fallback failed.", {
+            error: errorMessage(error),
+          });
+        }).finally(() => {
+          if (queue.idle && admissionQueues.get(queueKey) === queue) {
+            admissionQueues.delete(queueKey);
+          }
+        });
+        return;
+      }
+      decision.resolve("run");
+      try {
+        await reserved;
+      } finally {
+        if (queue.idle && admissionQueues.get(queueKey) === queue) {
+          admissionQueues.delete(queueKey);
+        }
+      }
+      return;
+    }
     await admit(
       chatId,
       () => runAgentTurn(ctx, telegramMessage, input, controller),

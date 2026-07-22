@@ -1,4 +1,6 @@
 import type {
+  AgentLiveInputOffer,
+  AgentLiveInputRequest,
   AgentAttachment,
   AgentContinuationOriginContext,
   AgentContinuationTurn,
@@ -134,6 +136,8 @@ export interface AgentHarnessResponse {
 
 export interface AgentHarness {
   run(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
+  /** Offer user guidance to this conversation's active interactive turn. */
+  offerLiveInput?(request: AgentLiveInputRequest): AgentLiveInputOffer;
   /**
    * Queue-after-turn entry point. In continuous-session mode a same-conversation
    * request that arrives while a turn is in flight is queued and answered after

@@ -1,5 +1,7 @@
 import {
   parseAgentStreamFrame,
+  type AgentLiveInputSettlement,
+  type AgentLiveInputUnavailableReason,
   type AgentAttachment,
   type AgentStreamWireFrame,
   type ChannelAskAnswer,
@@ -33,6 +35,19 @@ export interface OperatorInfo {
   readonly supportsAttachments: boolean;
   readonly supportsHistoryAppend: boolean;
   readonly supportsAskUser: boolean;
+  readonly supportsLiveInput: boolean;
+}
+
+export type OperatorLiveInputResult =
+  | AgentLiveInputSettlement
+  | { readonly status: "unavailable"; readonly reason: AgentLiveInputUnavailableReason };
+
+export interface OperatorLiveInputInput {
+  readonly conversationId: string;
+  readonly id: string;
+  readonly text: string;
+  readonly receivedAt: string;
+  readonly signal?: AbortSignal;
 }
 
 export interface OperatorTurnInput {
@@ -99,6 +114,7 @@ export class OperatorClient {
       supportsAttachments: capabilities?.attachments === true,
       supportsHistoryAppend: capabilities?.historyAppend === true,
       supportsAskUser: capabilities?.askUser === true,
+      supportsLiveInput: capabilities?.liveInput === true,
     };
   }
 
@@ -157,6 +173,41 @@ export class OperatorClient {
     }).then(async (response) => {
       await response.body?.cancel().catch(() => undefined);
     });
+  }
+
+  async liveInput(input: OperatorLiveInputInput): Promise<OperatorLiveInputResult> {
+    const response = await this.request(
+      `${this.baseUrl}/v1/conversations/${encodeURIComponent(input.conversationId)}/live-input`,
+      {
+        method: "POST",
+        headers: this.headers(true),
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+        body: JSON.stringify({ id: input.id, text: input.text, receivedAt: input.receivedAt }),
+      },
+    );
+    const body = record(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_live_input_too_large")));
+    if (body === undefined || typeof body.status !== "string") {
+      throw new WebConsoleError("invalid_operator_live_input", "The agent returned an invalid live-input response.", 502);
+    }
+    if (body.status === "applied" && typeof body.runId === "string") {
+      return { status: "applied", runId: body.runId };
+    }
+    if (body.status === "discarded" && body.reason === "cancelled") {
+      return { status: "discarded", reason: "cancelled" };
+    }
+    if (
+      body.status === "requeue"
+      && (body.reason === "unsupported" || body.reason === "closed" || body.reason === "failed")
+    ) {
+      return { status: "requeue", reason: body.reason };
+    }
+    if (
+      body.status === "unavailable"
+      && (body.reason === "inactive" || body.reason === "unsupported" || body.reason === "too_large" || body.reason === "full" || body.reason === "invalid")
+    ) {
+      return { status: "unavailable", reason: body.reason };
+    }
+    throw new WebConsoleError("invalid_operator_live_input", "The agent returned an invalid live-input settlement.", 502);
   }
 
   async recordVerbatim(conversationId: string, text: string, idempotencyKey: string): Promise<void> {

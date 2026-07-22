@@ -264,12 +264,24 @@ export function startLiveInput({ harness, options, onEvent }) {
     ? options.liveInput[Symbol.asyncIterator]()
     : options.liveInput;
   let runComplete = false;
+  /** @type {() => void} */
+  let signalStop = () => {};
+  const stopped = new Promise((resolve) => { signalStop = () => resolve(); });
   const task = (async () => {
     try {
       while (!runComplete && !options.abortSignal?.aborted) {
-        const next = await iterator.next();
+        const next = await Promise.race([
+          iterator.next(),
+          stopped.then(() => ({ done: true, value: undefined })),
+        ]);
         if (next.done || runComplete || options.abortSignal?.aborted) break;
-        await harness.steer(formatLiveInputGuidance(next.value.body, options.prompts));
+        try {
+          await harness.steer(formatLiveInputGuidance(next.value.body, options.prompts));
+          next.value.acknowledge?.();
+        } catch (err) {
+          next.value.reject?.(err);
+          throw err;
+        }
       }
     } catch (err) {
       onEvent({
@@ -282,15 +294,17 @@ export function startLiveInput({ harness, options, onEvent }) {
   return {
     // The run is done: stop the live-steering consumer so it cannot steer a
     // finished harness or swallow a follow-up meant for the next turn. We signal
-    // completion, then best-effort return() the iterator to unblock a pending
-    // next(). We do NOT await the task (it could block on next() if the source
-    // has no return()), but the runComplete guard prevents any further steering.
+    // completion, then best-effort return() the iterator. The explicit stop
+    // race releases the task even when a third-party iterator's return() does
+    // not unblock its pending next(); awaiting the task still closes any steer
+    // acknowledgement already in progress.
     stop: async () => {
       runComplete = true;
+      signalStop();
       if (iterator && typeof iterator.return === "function") {
-        try { await iterator.return(); } catch { /* best-effort */ }
+        try { void Promise.resolve(iterator.return()).catch(() => {}); } catch { /* best-effort */ }
       }
-      void task;
+      await task;
     },
   };
 }

@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AgentResponseCancelledError,
   isChannelUserCancelReason,
+  type AgentLiveInputRequest,
+  type AgentLiveInputSettlement,
   type ChannelAskSnapshot,
 } from "@mono-agent/agent-contracts";
 
@@ -1643,6 +1645,94 @@ describe("SlackAdapter", () => {
     // Delivered in arrival order, one final post each.
     expect(api.postMessageCalls.map((call) => call.text)).toEqual(["done-1", "done-2"]);
     expect(api.updateCalls).toEqual([]);
+  });
+
+  it("steers the active Slack run without starting a second responder turn", async () => {
+    const api = new FakeSlackApi();
+    const active = createDeferred<{ text: string }>();
+    let respondCalls = 0;
+    let offered: AgentLiveInputRequest | undefined;
+    let settle!: (result: AgentLiveInputSettlement) => void;
+    const settled = new Promise<AgentLiveInputSettlement>((resolve) => { settle = resolve; });
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: {
+        respond: async () => {
+          respondCalls += 1;
+          return active.promise;
+        },
+        offerLiveInput(request) {
+          if (request.text !== "steer now") return { status: "unavailable", reason: "inactive" };
+          offered = request;
+          return { status: "accepted", settled };
+        },
+      },
+    });
+
+    const first = adapter.handleEventCallback(directMessage("long task"));
+    await vi.waitFor(() => expect(respondCalls).toBe(1));
+    await expect(adapter.handleEventCallback(directMessage("steer now", {
+      eventId: "Ev2",
+      ts: "171.000002",
+      threadTs: "171.000001",
+    }))).resolves.toMatchObject({ metadata: { liveInput: true } });
+    expect(offered).toMatchObject({
+      conversationId: "slack:D123:171.000001",
+      id: "Ev2",
+      text: "steer now",
+    });
+    expect(api.reactionsAddCalls).toContainEqual({
+      channel: "D123",
+      timestamp: "171.000002",
+      name: "eyes",
+    });
+    expect(respondCalls).toBe(1);
+
+    settle({ status: "applied", runId: "run-1" });
+    active.resolve({ text: "steered answer" });
+    await expect(first).resolves.toMatchObject({ kind: "handled" });
+    await vi.waitFor(() => expect(api.postMessageCalls.map((call) => call.text)).toEqual(["steered answer"]));
+    expect(respondCalls).toBe(1);
+  });
+
+  it("runs an unsettled Slack follow-up as the next queued turn", async () => {
+    const api = new FakeSlackApi();
+    const firstResponse = createDeferred<{ text: string }>();
+    const seen: string[] = [];
+    let settle!: (result: AgentLiveInputSettlement) => void;
+    const settled = new Promise<AgentLiveInputSettlement>((resolve) => { settle = resolve; });
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: {
+        respond: async (request) => {
+          seen.push(request.text);
+          return request.text === "long task" ? firstResponse.promise : { text: "follow-up answer" };
+        },
+        offerLiveInput(request) {
+          return request.text === "follow up"
+            ? { status: "accepted", settled }
+            : { status: "unavailable", reason: "inactive" };
+        },
+      },
+    });
+
+    const first = adapter.handleEventCallback(directMessage("long task"));
+    await vi.waitFor(() => expect(seen).toEqual(["long task"]));
+    await adapter.handleEventCallback(directMessage("follow up", {
+      eventId: "Ev2",
+      ts: "171.000002",
+      threadTs: "171.000001",
+    }));
+    settle({ status: "requeue", reason: "closed" });
+    firstResponse.resolve({ text: "first answer" });
+    await first;
+    await vi.waitFor(() => expect(seen).toEqual(["long task", "follow up"]));
+    await vi.waitFor(() => expect(api.postMessageCalls.map((call) => call.text)).toEqual([
+      "first answer",
+      "follow-up answer",
+    ]));
   });
 
   it("rejects an over-cap same-thread flood with a busy result and posts busyText without leaking its controller", async () => {

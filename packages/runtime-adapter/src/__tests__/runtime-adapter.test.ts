@@ -7,6 +7,7 @@ import {
   defaultExecutionModeForModel,
   describeMonoRuntimeSupport,
   listMonoRuntimeBackends,
+  monoRuntimeSupportsLiveInput,
   monoRuntimeSupportsSessionResume,
   parseMonoRuntimeModelReference,
   runtimeOptionsForLocalProvider,
@@ -137,6 +138,14 @@ describe("runtime adapter Pi auth exports", () => {
 });
 
 describe("runtime adapter provider sessions", () => {
+  it("reports live-input support from the selected runtime backend", () => {
+    expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "sdk")).toBe(true);
+    expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli")).toBe(false);
+    expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("codex:gpt-5.5"), "cli")).toBe(true);
+    expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5"))).toBe(true);
+    expect(monoRuntimeSupportsLiveInput(parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1"), "cli")).toBe(false);
+  });
+
   it("reports session resume support for every backend", () => {
     expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "sdk")).toBe(true);
     expect(monoRuntimeSupportsSessionResume(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli")).toBe(true);

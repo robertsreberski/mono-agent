@@ -32,9 +32,14 @@ export function operatorFetch(options: {
   readonly supportsAttachments?: boolean;
   readonly supportsHistoryAppend?: boolean;
   readonly supportsAskUser?: boolean;
+  readonly supportsLiveInput?: boolean;
   readonly pendingAsk?: Record<string, unknown> | null;
   readonly onAskSubmit?: (body: Record<string, unknown>) => void;
   readonly onTurn?: (body: Record<string, unknown>) => void;
+  readonly onLiveInput?: (
+    conversationId: string,
+    body: Record<string, unknown>,
+  ) => Record<string, unknown> | Promise<Record<string, unknown>>;
   readonly onVerbatim?: (conversationId: string, body: Record<string, unknown>) => void | Promise<void>;
 } = {}): typeof fetch {
   return (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -58,6 +63,7 @@ export function operatorFetch(options: {
           attachments: options.supportsAttachments ?? true,
           ...(options.supportsHistoryAppend === true ? { historyAppend: true } : {}),
           askUser: options.supportsAskUser ?? false,
+          liveInput: options.supportsLiveInput ?? false,
         },
       });
     }
@@ -75,6 +81,16 @@ export function operatorFetch(options: {
     }
     if (url.includes("/v1/conversations/") && url.endsWith("/cancel")) {
       return Response.json({ cancelled: true }, { status: 202 });
+    }
+    if (url.includes("/v1/conversations/") && url.endsWith("/live-input")) {
+      const encodedConversationId = url.slice(
+        url.lastIndexOf("/v1/conversations/") + "/v1/conversations/".length,
+        -"/live-input".length,
+      );
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const result = await options.onLiveInput?.(decodeURIComponent(encodedConversationId), body)
+        ?? { status: "applied", runId: "run-1" };
+      return Response.json(result, { status: 200 });
     }
     if (url.includes("/v1/conversations/") && url.endsWith("/verbatim")) {
       const encodedConversationId = url.slice(

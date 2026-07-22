@@ -8,6 +8,8 @@ import {
   parseAgentStreamFrame,
   serializeAgentStreamFrame,
   type AgentMessageStream,
+  type AgentLiveInputRequest,
+  type AgentLiveInputSettlement,
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
@@ -506,6 +508,59 @@ describe("startTuiAdapter", () => {
     expect(accepted.status).toBe(200);
     expect(await accepted.json()).toEqual({ recorded: true, conversationId: "web:notification-1" });
     expect(recorded).toEqual([["web:notification-1", "Morning brief", "cron:job:one"]]);
+  });
+
+  it("advertises live input and holds the request until the active run settles it", async () => {
+    let markOffered!: (request: AgentLiveInputRequest) => void;
+    const offered = new Promise<AgentLiveInputRequest>((resolve) => { markOffered = resolve; });
+    let settle!: (value: AgentLiveInputSettlement) => void;
+    const settled = new Promise<AgentLiveInputSettlement>((resolve) => { settle = resolve; });
+    running = await startTuiAdapter({
+      responder: {
+        ...scriptedResponder(async () => ({ text: "ok" })),
+        offerLiveInput(request) {
+          markOffered(request);
+          return { status: "accepted", settled };
+        },
+      },
+    });
+
+    const info = await (await fetch(running.infoUrl)).json() as { capabilities: Record<string, boolean> };
+    expect(info.capabilities).toEqual({ attachments: true, liveInput: true });
+    const responsePromise = fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-1",
+        text: "Use the latest requirements",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+      }),
+    });
+    await expect(offered).resolves.toEqual({
+      conversationId: "web:thread-1",
+      id: "input-1",
+      text: "Use the latest requirements",
+      receivedAt: "2026-07-21T09:00:00.000Z",
+    });
+    settle({ status: "applied", runId: "run-1" });
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "applied", runId: "run-1" });
+  });
+
+  it("reports unavailable live input for responders without an active mailbox", async () => {
+    running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })) });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-1",
+        text: "Follow up",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "unavailable", reason: "unsupported" });
   });
 
   it("validates verbatim history append and reports unsupported responders", async () => {

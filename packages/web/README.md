@@ -24,6 +24,8 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   `~/.mono-agent/web`.
 - Keep an upstream turn running when a browser reloads or disconnects, and expose
   state invalidations over SSE so any connected browser can catch up.
+- Offer plain-text follow-ups to a capable active provider run, persist their
+  pending/applied/queued state, and promote safe fallbacks into normal turns.
 - Render a running agent's structured `AskUser` interaction as one complete web
   form and proxy validated answer submission back to that same model run.
 - Accept browser-selected files through bounded staged uploads and forward the
@@ -102,6 +104,15 @@ blockquote context; it does not rewrite the visible message text. The public
 turn DTO exposes this as `quote: { text, messageId }`, and the source message
 must belong to the same thread.
 
+The composer remains sendable while a response is running. A text-only send is
+persisted immediately and offered to the active provider as live guidance. Its
+message shows `pending`, `applied`, `queued`, or `cancelled`; an unsupported
+provider, delivery failure, end-of-turn race, or web-service restart queues it
+as the next normal turn instead of dropping it. Attachments keep the ordinary
+turn path, and cancelling the active turn also cancels its pending or queued
+live follow-ups. Live follow-ups are capped at 8,000 characters and 100
+unsettled messages per thread.
+
 The header bell explicitly enables browser notifications for successful
 responses that arrive while the console is hidden or unfocused. Notifications
 include a short response preview and open the exact conversation. Permission
@@ -131,7 +142,7 @@ the turn also cancels its pending form.
 1. `server.ts` accepts the versioned browser API, staged uploads, and SSE
    subscriptions, then delegates stateful work to `WebConsoleService`.
 2. The service discovers agents from the trace-source registry, persists agent,
-   thread, message, part, turn, upload, and preference records through the
+   thread, message, part, turn, live-input, upload, and preference records through the
    SQLite store, and drives each agent over its loopback operator endpoint.
 3. Service mutations publish invalidations. Browsers consume `/api/v1/events`
    and refetch authoritative projections, so reloads and concurrent tabs do not
@@ -148,9 +159,9 @@ the turn also cancels its pending form.
 | Source area | Responsibility |
 | --- | --- |
 | [`server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/server.ts) | HTTP service, `/api/v1` routes, uploads, SSE invalidations, host/origin checks, and static webapp serving. |
-| [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, attachments, `AskUser` snapshots/submission, cancellation, notifications, and invalidation. |
+| [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, live-input delivery/fallback, attachments, `AskUser` snapshots/submission, cancellation, notifications, and invalidation. |
 | [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence. |
-| [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info, pending/submitted `AskUser`, cancellation, and durable history append over the operator protocol. |
+| [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, and durable history append over the operator protocol. |
 | [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook notification delivery. |
 | [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including atomic `AskUser` forms, tests, and its own dependency lockfile. |
 
@@ -186,12 +197,14 @@ DiscoverOperatorAgentsOptions
 DiscoveredOperatorAgent
 PatchWebAgentInput
 PatchWebThreadInput
+StartWebLiveInputInput
 StartWebServerOptions
 StartWebTurnInput
 WEB_API_VERSION
 WEB_MAX_ACTIVE_ATTACHMENT_TURN_BYTES
 WEB_MAX_CONCURRENT_UPLOADS
 WEB_MAX_FILES_PER_TURN
+WEB_MAX_LIVE_INPUTS_PER_THREAD
 WEB_MAX_QUEUED_ATTACHMENT_TURNS
 WEB_MAX_STAGED_UPLOADS
 WEB_MAX_STAGED_UPLOAD_BYTES
@@ -204,6 +217,7 @@ WebBootstrap
 WebConsoleError
 WebEvent
 WebEventType
+WebLiveInputReceipt
 WebMessage
 WebMessagePart
 WebMessageStatus
@@ -241,7 +255,8 @@ the actual bound address/port plus idempotent `stop()` and `close()` methods.
 The browser API is rooted at `/api/v1`:
 
 - `GET /bootstrap`, `PATCH /agents/:id`, and `GET/PATCH/DELETE /threads/:id`
-- `POST /threads`, `/threads/:id/turns`, and `/threads/:id/cancel`
+- `POST /threads`, `/threads/:id/turns`, `/threads/:id/live-input`, and
+  `/threads/:id/cancel`
 - `GET /threads/:id/ask` and `POST /threads/:id/ask` for the current structured
   `AskUser` snapshot and atomic answer submission
 - `POST /uploads`, `PUT/GET /uploads/:id/content`, and `DELETE /uploads/:id`
@@ -250,6 +265,9 @@ The browser API is rooted at `/api/v1`:
 `GET /healthz` is intentionally outside the versioned API for service probes.
 `POST /threads/:id/turns` accepts optional
 `quote: { text, messageId }` metadata in addition to the authored `text`.
+`POST /threads/:id/live-input` accepts `{ text }` and returns a persisted message
+with `disposition: "pending" | "queued"`; SSE invalidation exposes its later
+`liveInputStatus` settlement.
 Permanent deletion is limited to archived, inactive conversations. It removes
 database descendants transactionally and deletes committed attachment files;
 startup and scheduled cleanup remove any file orphaned by a crash or transient
