@@ -913,6 +913,30 @@ describe("createTelegramBot", () => {
     );
   });
 
+  // A tap on a retired protocol is indistinguishable from a dead button — the spinner
+  // clears and nothing happens. Personal Agent heartbeat cards kept emitting `ask:<index>`
+  // for a week after it was replaced by `reply:v1:`, and nothing in the logs said so.
+  it("warns instead of silently swallowing a tap that matches no protocol", async () => {
+    const responder = { respond: vi.fn() } satisfies AgentResponder;
+    const warnings: Array<{ message: string; context?: unknown }> = [];
+    const { bot, calls } = buildTestBot({
+      responder,
+      logger: { warn: (message, context) => warnings.push({ message, context }) },
+    });
+
+    await bot.handleUpdate(callbackUpdate({
+      data: "ask:0",
+      buttons: [{ text: "Show details", callback_data: "ask:0" }],
+    }));
+
+    expect(responder.respond).not.toHaveBeenCalled();
+    expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(true);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.message).toMatch(/matched no known protocol/u);
+    // The prefix identifies the stale producer; the payload after it is not echoed.
+    expect(warnings[0]?.context).toEqual({ prefix: "ask:" });
+  });
+
   it("runs non-blocking reply options as a new turn and de-dupes a second tap", async () => {
     let runCount = 0;
     const responder = responderFrom(async () => {
