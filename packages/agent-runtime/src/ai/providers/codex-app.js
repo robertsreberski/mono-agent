@@ -617,6 +617,19 @@ function codexMcpConfig(mcpServers = {}) {
   return servers;
 }
 
+function codexConfiguredMcpApprovalResponse(request, configuredMcpServerNames) {
+  const params = request?.params;
+  if (
+    request?.method !== "mcpServer/elicitation/request"
+    || params?._meta?.codex_approval_kind !== "mcp_tool_call"
+    || typeof params?.serverName !== "string"
+    || !configuredMcpServerNames.has(params.serverName)
+  ) {
+    return null;
+  }
+  return { action: "accept", content: {}, _meta: null };
+}
+
 function codexErrorMessage(error) {
   if (!error) return "Codex app-server error";
   if (typeof error === "string") return error;
@@ -1109,6 +1122,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   const makeClient = options.codexClientFactory || createCodexAppServerClient;
   const keepAlive = options.sessionKeepAlive === true;
   const noToolsProbe = options.codexNoToolsProbe === true;
+  const configuredMcpServerNames = new Set(Object.keys(codexMcpConfig(options.mcpServers)));
   // The bridge TTL is a backstop behind the host's session policy; the grace
   // keeps the host's lazy expiry firing first so eviction stays host-driven.
   const sessionTtlMs = Number.isFinite(Number(options.sessionIdleTimeoutMs))
@@ -1446,6 +1460,10 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       ),
       onServerRequest: (request) => {
         const method = typeof request?.method === "string" ? request.method : "unknown";
+        const approval = noToolsProbe
+          ? null
+          : codexConfiguredMcpApprovalResponse(request, configuredMcpServerNames);
+        if (approval) return approval;
         failUnsupportedServerRequest(method);
         throw new Error(`Unsupported Codex app-server request: ${method}`);
       },

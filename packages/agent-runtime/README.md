@@ -650,7 +650,7 @@ Per-call options (a non-exhaustive selection):
 | `cwd` | `string` | Working directory for the agent's tools. |
 | `allowedTools` | `string[]` | Built-in tool allowlist. Default: all. |
 | `disallowedTools` | `string[]` | Block list. |
-| `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http). |
+| `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http); on direct Codex, each forwarded server authorizes its own tool calls. |
 | `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
 | `maxTurns` | `number` | Hard cap on agent turns. |
 | `outputSchema` | `JSONSchema` | Requests structured JSON on capable bridges; see “Structured output” below for bridge-specific return behavior. |
@@ -760,6 +760,17 @@ truncation is explicitly desired; omitting it is not a separate hidden limit.
 The standard 256 KiB tool-payload guard still applies to oversized tool results.
 
 Override or extend the tool surface by passing `mcpServers` for MCP-backed tools.
+On direct Codex normal runs, each valid server that survives translation into
+the app-server config is the authorization boundary for the tools it exposes.
+The bridge accepts Codex's synthesized `mcp_tool_call` elicitation for that exact
+server without persisting an approval. Inherited or otherwise unconfigured
+server names, genuine downstream MCP elicitations, and other app-server requests
+remain fail-closed.
+
+This also applies under direct Codex `permissionMode: "plan"`: the read-only
+sandbox constrains Codex-owned filesystem and command execution, but a declared
+MCP tool can still change state managed by its server. Do not declare a server
+whose complete tool surface is not authorized for the run.
 
 ### Structured output
 
