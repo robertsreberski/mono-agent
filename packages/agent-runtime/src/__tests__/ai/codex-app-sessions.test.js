@@ -262,6 +262,106 @@ describe("codex-app persistent sessions", () => {
     });
   });
 
+  it("auto-approves MCP tool-call elicitations for runtime-configured Codex servers", async () => {
+    const factory = stubClientFactory({ threadId: "thread-configured-mcp-approval" });
+    factory.turnPlan.push("manual");
+    const emitted = [];
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, {
+      permissionMode: "plan",
+      mcpServers: {
+        worklab: { command: "worklab-mcp" },
+      },
+      onEvent: (event) => emitted.push(event),
+    }));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+
+    const approval = factory.clients[0].serverRequest("mcpServer/elicitation/request", {
+      threadId: "thread-configured-mcp-approval",
+      turnId: "turn-1",
+      serverName: "worklab",
+      mode: "form",
+      _meta: { codex_approval_kind: "mcp_tool_call" },
+      message: 'Allow the worklab MCP server to run tool "journal_append"?',
+      requestedSchema: { type: "object", properties: {} },
+    });
+    expect(approval).toEqual({ action: "accept", content: {}, _meta: null });
+
+    factory.clients[0].finishTurn({ text: "done" });
+    await expect(pending).resolves.toMatchObject({
+      text: "done",
+      error: null,
+      failureKind: null,
+    });
+    expect(emitted).not.toContainEqual(expect.objectContaining({
+      warning_kind: "codex_server_request_unsupported",
+    }));
+  });
+
+  it.each([
+    [
+      "an unconfigured Codex server",
+      { worklab: { command: "worklab-mcp" } },
+      {
+        serverName: "global-server",
+        mode: "form",
+        _meta: { codex_approval_kind: "mcp_tool_call" },
+        message: 'Allow the global-server MCP server to run tool "write"?',
+        requestedSchema: { type: "object", properties: {} },
+      },
+    ],
+    [
+      "a server definition Codex did not receive",
+      { worklab: {} },
+      {
+        serverName: "worklab",
+        mode: "form",
+        _meta: { codex_approval_kind: "mcp_tool_call" },
+        message: 'Allow the worklab MCP server to run tool "journal_append"?',
+        requestedSchema: { type: "object", properties: {} },
+      },
+    ],
+    [
+      "a genuine downstream MCP elicitation",
+      { worklab: { command: "worklab-mcp" } },
+      {
+        serverName: "worklab",
+        mode: "form",
+        _meta: null,
+        message: "Which journal should receive this note?",
+        requestedSchema: {
+          type: "object",
+          properties: { journal: { type: "string" } },
+          required: ["journal"],
+        },
+      },
+    ],
+  ])("keeps failing closed for %s", async (_label, mcpServers, requestParams) => {
+    const factory = stubClientFactory({ threadId: "thread-rejected-mcp-approval" });
+    factory.turnPlan.push("manual");
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, {
+      permissionMode: "plan",
+      mcpServers,
+    }));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+
+    expect(() => factory.clients[0].serverRequest(
+      "mcpServer/elicitation/request",
+      {
+        threadId: "thread-rejected-mcp-approval",
+        turnId: "turn-1",
+        ...requestParams,
+      },
+    )).toThrow("Unsupported Codex app-server request");
+
+    await expect(pending).resolves.toMatchObject({
+      failureKind: "skipped_capability_mismatch",
+      diagnostics: {
+        codex_error_code: "codex_server_request_unsupported",
+        codex_server_request_method: "mcpServer/elicitation/request",
+      },
+    });
+  });
+
   it("writes a JSON-RPC response for inbound app-server requests", async () => {
     const childSource = `
       const readline = require("node:readline");
@@ -281,11 +381,11 @@ describe("codex-app persistent sessions", () => {
     const client = createCodexAppServerClient({
       command: process.execPath,
       args: ["-e", childSource],
-      onServerRequest: () => ({ decision: "decline" }),
+      onServerRequest: () => ({ action: "accept", content: {}, _meta: null }),
     });
     try {
       await expect(client.request("probe", {})).resolves.toEqual({
-        serverResult: { decision: "decline" },
+        serverResult: { action: "accept", content: {}, _meta: null },
       });
     } finally {
       await client.close();
