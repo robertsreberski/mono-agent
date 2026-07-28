@@ -13,7 +13,7 @@ primary route.
 
 ---
 
-## Unreleased
+## 0.15.1
 
 - **Runtime-owned Pi interoperability:** consumers that directly import
   `@earendil-works/pi-ai` only for catalog, reasoning, or OAuth behavior should
