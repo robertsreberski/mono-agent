@@ -1,5 +1,6 @@
 import { detectEffortKeyword, EFFORT_LEVELS, effortRank } from "@mono-agent/config";
 import { parseMonoRuntimeModelReference, runtimeOptionsForLocalProvider } from "@mono-agent/runtime-adapter";
+import { isAllowAllTools } from "./modules/known-tools.js";
 import type {
   LocalProviderDefinition,
   LocalProviderRuntimeOptions,
@@ -285,7 +286,7 @@ function resolveAcceptedModelOverride(
       sandboxMode: sandboxPolicy.mode,
       reason: `${sandboxBypassRuntime}'s provider-owned tool loop does not consume the mono-agent sandbox policy.`,
     });
-  } else if (parsed.sdk === "opencode" && toolPolicy !== undefined && !isExactAllowAllToolPolicy(toolPolicy)) {
+  } else if (parsed.sdk === "opencode" && toolPolicy !== undefined && !isAllowAllOnlyToolPolicy(toolPolicy)) {
     logger?.warn?.("Ignoring per-request direct OpenCode model override under a restrictive tool policy.", {
       model: rawModel,
       reason: "Direct OpenCode does not consume mono-agent allowedTools/disallowedTools.",
@@ -338,10 +339,8 @@ function monoSandboxBypassRuntime(model: RuntimeModelReference): "Claude" | "dir
   return undefined;
 }
 
-function isExactAllowAllToolPolicy(policy: NonNullable<RequestModelOverrideOptions["toolPolicy"]>): boolean {
-  return policy.allowedTools.length === 1
-    && policy.allowedTools[0] === "*"
-    && policy.disallowedTools.length === 0;
+function isAllowAllOnlyToolPolicy(policy: NonNullable<RequestModelOverrideOptions["toolPolicy"]>): boolean {
+  return isAllowAllTools(policy.allowedTools) && policy.disallowedTools.length === 0;
 }
 
 /**

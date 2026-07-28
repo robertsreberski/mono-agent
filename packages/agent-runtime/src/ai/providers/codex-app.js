@@ -10,6 +10,10 @@ import { buildCapabilitiesUsed } from "../runtime/capabilities-used.js";
 import { resolveSandboxPolicy } from "../../agent/tools/shared/tool-context.js";
 import { createSessionRegistry } from "../runtime/sessions.js";
 import { createSessionLiveness } from "../runtime/session-liveness.js";
+import {
+  isAllowAllToolPolicy,
+  TOOL_POLICY_ALLOW_ALL_ONLY,
+} from "../runtime/tool-policy.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_THREAD_START_ATTEMPTS = 2;
@@ -448,6 +452,7 @@ const CODEX_APP_CAPABILITIES = {
   supports_live_input: true,
   supports_native_subagents: true,
   supports_fast_mode: true,
+  tool_policy: TOOL_POLICY_ALLOW_ALL_ONLY,
 };
 
 function promptFromMessages(messages) {
@@ -558,14 +563,9 @@ function codexToolPolicyProblem(options) {
     }
     return "Codex no-tool probe mode requires an empty tool policy, no MCP servers, and a disposable session.";
   }
-  // `undefined` retains the public runtime's documented allow-all default.
-  // Once a caller specifies a policy, require the exact wildcard contract.
-  // Extra entries can conceal a caller's mistaken belief that Codex enforces a
-  // mixed allowlist, which the app-server cannot project.
-  const effectiveAllowAll = allowedTools === null || (allowedTools.length === 1 && allowedTools[0] === "*");
-  return effectiveAllowAll && disallowedTools.length === 0
+  return isAllowAllToolPolicy(allowedTools, disallowedTools)
     ? null
-    : "Direct Codex cannot enforce allowedTools/disallowedTools. Use exact allow-all ([\"*\"] with no disallowedTools) or another runtime.";
+    : "Direct Codex cannot enforce allowedTools/disallowedTools. Use allow-all-only (omit allowedTools or include \"*\", with no disallowedTools) or another runtime.";
 }
 
 const CODEX_NO_TOOL_ACTION_ITEMS = new Set([

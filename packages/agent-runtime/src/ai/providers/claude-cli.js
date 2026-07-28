@@ -12,6 +12,10 @@ import { modelWithContextWindow } from "../runtime/context-windows.js";
 import { readRuntimeBrand } from "../../agent/tools/shared/runtime-context.js";
 import { buildCapabilitiesUsed } from "../runtime/capabilities-used.js";
 import {
+  isAllowAllToolPolicy,
+  TOOL_POLICY_PROJECTED,
+} from "../runtime/tool-policy.js";
+import {
   claudeNativeAgentDefinitions,
   resolveClaudeAllowedTools,
 } from "./claude-subagents.js";
@@ -28,13 +32,9 @@ const CLAUDE_CLI_EMPTY_TOOL_POLICY_UNSUPPORTED =
   "Claude Code CLI cannot enforce an explicit empty allowedTools list: omitting --tools would restore Claude Code's default toolset. Use a specific non-empty allowlist, a denylist, or the Claude SDK for a no-tools run.";
 
 function codexCliToolPolicyProblem(options) {
-  const allowedTools = Array.isArray(options.allowedTools) ? options.allowedTools : null;
-  const disallowedTools = Array.isArray(options.disallowedTools) ? options.disallowedTools : [];
-  const exactAllowAll = allowedTools === null
-    || (allowedTools.length === 1 && allowedTools[0] === "*");
-  return exactAllowAll && disallowedTools.length === 0
+  return isAllowAllToolPolicy(options.allowedTools, options.disallowedTools)
     ? null
-    : "Direct Codex CLI cannot enforce allowedTools/disallowedTools. Use exact allow-all ([\"*\"] with no disallowedTools) or another runtime.";
+    : "Direct Codex CLI cannot enforce allowedTools/disallowedTools. Use allow-all-only (omit allowedTools or include \"*\", with no disallowedTools) or another runtime.";
 }
 
 function codexCliCapabilityMismatchResult(options, error, codexErrorCode, start) {
@@ -86,6 +86,7 @@ const DORMANT_CLI_CAPABILITIES = {
   // The one-shot CLI bridge cannot add stdin messages after process launch.
   supports_live_input: false,
   supports_native_subagents: true,
+  tool_policy: TOOL_POLICY_PROJECTED,
 };
 
 function promptFromMessages(messages) {
@@ -465,7 +466,7 @@ export function buildCliCommand({
       args.push("--tools", cliAllowedTools.join(","));
     }
     const autoAllowed = [
-      ...(Array.isArray(cliAllowedTools) ? cliAllowedTools : []),
+      ...(!cliAllowAll && Array.isArray(cliAllowedTools) ? cliAllowedTools : []),
       ...Object.keys(mcpServers || {}).map((name) => `mcp__${name}__*`),
     ];
     if (autoAllowed.length) args.push("--allowedTools", shellList(autoAllowed));

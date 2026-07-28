@@ -50,8 +50,20 @@ describe("AI runtime bridge registry", () => {
   });
 
   it("exposes bridge-owned capabilities", () => {
-    expect(runtimeCapabilities("pi")).toMatchObject({ kind: "pi", runtime: "pi-agent" });
-    expect(runtimeCapabilities("claude")).toMatchObject({ kind: "claude", runtime: "sdk" });
+    expect(runtimeCapabilities("pi")).toMatchObject({
+      kind: "pi",
+      runtime: "pi-agent",
+      tool_policy: "projected",
+    });
+    expect(runtimeCapabilities("claude")).toMatchObject({
+      kind: "claude",
+      runtime: "sdk",
+      tool_policy: "projected",
+    });
+    expect(listRuntimeBridges().find((bridge) => bridge.id === "claude-code")?.capabilities()).toMatchObject({
+      kind: "claude-code",
+      tool_policy: "projected",
+    });
     const opencode = runtimeCapabilities("opencode");
     expect(opencode).toMatchObject({
       kind: "opencode",
@@ -59,6 +71,7 @@ describe("AI runtime bridge registry", () => {
       structured_output: false,
       supports_session_resume: false,
       supports_mcp: false,
+      tool_policy: "allow_all_only",
     });
     const registered = listRuntimeBridges().find((bridge) => bridge.id === "opencode-app")?.capabilities();
     expect(registered).toMatchObject({
@@ -66,11 +79,37 @@ describe("AI runtime bridge registry", () => {
       structured_output: opencode.structured_output,
       supports_session_resume: opencode.supports_session_resume,
       supports_mcp: opencode.supports_mcp,
+      tool_policy: "allow_all_only",
     });
-    expect(runtimeCapabilities("codex")).toMatchObject({ supports_fast_mode: true });
+    expect(runtimeCapabilities("codex")).toMatchObject({
+      supports_fast_mode: true,
+      tool_policy: "allow_all_only",
+    });
     expect(listRuntimeBridges().find((bridge) => bridge.id === "codex-app")?.capabilities()).toMatchObject({
       kind: "codex-app",
       supports_fast_mode: true,
+      tool_policy: "allow_all_only",
     });
+  });
+
+  it("keeps resolved bridge capability objects aligned with registry descriptors", async () => {
+    const resolved = await Promise.all([
+      resolveRuntimeBridge({ sdk: "claude", model: "claude-sonnet-4-6" }),
+      resolveRuntimeBridge({ sdk: "claude", model: "claude-sonnet-4-6" }, { executionMode: "cli" }),
+      resolveRuntimeBridge({ sdk: "pi", provider: "openai", model: "gpt-5.5" }),
+      resolveRuntimeBridge({ sdk: "codex", model: "gpt-5.6-terra" }, { executionMode: "cli" }),
+      resolveRuntimeBridge(
+        { sdk: "opencode", provider: "github-copilot", model: "gpt-5.1" },
+        { executionMode: "cli" },
+      ),
+    ]);
+
+    expect(resolved.map((bridge) => [bridge.id, bridge.capabilities.tool_policy])).toEqual([
+      ["claude", "projected"],
+      ["claude-code", "projected"],
+      ["pi", "projected"],
+      ["codex-app", "allow_all_only"],
+      ["opencode-app", "allow_all_only"],
+    ]);
   });
 });

@@ -60,7 +60,7 @@ Equivalent environment overrides exist for headless deploys:
 
 ## Allow-all by default
 
-Omit `tools.allowedTools` (or set it to `["*"]`) and the policy allows **every** tool — the open default. On runtimes that enforce lists, narrow it by naming specific tools or use `[]` for chat-only; deny wins and overlap is rejected. Direct Codex instead rejects all restrictive variants, including `[]` and any `disallowedTools`, so they are never silently widened.
+Omit `tools.allowedTools` (or include `"*"` in it) and the policy allows **every** tool — the open default. A wildcard dominates any named entries beside it. On runtimes that enforce lists, narrow it by naming specific tools or use `[]` for chat-only; deny wins and overlap is rejected. Direct Codex instead rejects all restrictive variants, including named-only lists, `[]`, and any `disallowedTools`, so they are never silently widened.
 
 :::caution
 An **omitted** `allowedTools` and an **explicit empty** `allowedTools: []` are opposites: omitted means all tools, `[]` means none. To subtract a single tool from the open default, leave `allowedTools` off and add the name to `disallowedTools` — you do not need to switch to an explicit allowlist.
@@ -72,7 +72,7 @@ Allow-all is the **config** default. Code-defined agents built directly on the h
 
 ## Request-scoped policies only tighten
 
-Channels and programmatic callers can supply per-request tool and sandbox policies. The harness merges supported policies monotonically: a request can narrow the configured policy, never widen it (coverage: `auto`). If the selected runtime cannot enforce that result—direct Codex/OpenCode with anything other than exact allow-all, or Claude Code CLI with explicit empty—the run fails with a capability mismatch rather than proceeding wider.
+Channels and programmatic callers can supply per-request tool and sandbox policies. The harness merges supported policies monotonically: a request can narrow the configured policy, never widen it (coverage: `auto`). If the selected runtime cannot enforce that result—direct Codex/OpenCode without an omitted-or-wildcard allowlist and empty denylist, or Claude Code CLI with explicit empty—the run fails with a capability mismatch rather than proceeding wider.
 
 Model routing is checked against the same boundary. `uniform` rejects an
 incompatible fallback/override. Explicit `per-route-native` isolates each route:

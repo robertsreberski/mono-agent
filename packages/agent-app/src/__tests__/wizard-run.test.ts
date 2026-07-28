@@ -262,7 +262,7 @@ describe("wizard production flow", () => {
     }
     expect(promptMock.autocompleteCalls[0]?.initialValue).toBe("codex:gpt-5.6-sol");
     const matrix = promptMock.notes.find((note) => note.title === "Per-route safety contract")?.message ?? "";
-    expect(matrix).toContain("Codex-native sandbox + exact allow-all");
+    expect(matrix).toContain("Codex-native sandbox + allow-all-only policy");
     expect(matrix).toContain("Claude: provider-native sandbox");
     const review = promptMock.notes.find((note) => note.title === "Creation review")?.message ?? "";
     expect(review).toContain("Agent:        Research Companion");

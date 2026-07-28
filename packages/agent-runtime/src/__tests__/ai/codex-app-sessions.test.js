@@ -201,6 +201,23 @@ describe("codex-app persistent sessions", () => {
     expect(factory).not.toHaveBeenCalled();
   });
 
+  it('accepts a wildcard mixed with named tools as an effective allow-all policy', async () => {
+    const factory = stubClientFactory({ threadId: "thread-mixed-wildcard" });
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, {
+      allowedTools: ["*", "Read"],
+      disallowedTools: [],
+    }));
+
+    expect(result).toMatchObject({
+      error: null,
+      failureKind: null,
+      text: "hello",
+    });
+    expect(result.diagnostics?.codex_error_code).not.toBe("codex_tool_policy_unsupported");
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
   it("fails closed before starting Codex when a native mono-agent sandbox is supplied", async () => {
     const factory = stubClientFactory();
 

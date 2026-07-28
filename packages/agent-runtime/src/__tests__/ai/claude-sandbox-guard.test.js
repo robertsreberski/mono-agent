@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(() => {
@@ -133,5 +135,47 @@ describe("Claude mono-agent sandbox guard", () => {
     });
     expect(result.error).toContain("cannot enforce allowedTools/disallowedTools");
     expect(mocks.spawn).not.toHaveBeenCalled();
+  });
+
+  it('starts the public legacy Codex CLI export for a wildcard mixed with named tools', async () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = vi.fn();
+    mocks.spawn.mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        child.stdout.end(`${JSON.stringify({
+          type: "item.completed",
+          item: { type: "agent_message", text: "ok" },
+        })}\n`);
+        child.stderr.end();
+        setImmediate(() => child.emit("close", 0));
+      });
+      return child;
+    });
+
+    const result = await generateCliResponse("SYS", {
+      model: {
+        sdk: "codex",
+        model: "gpt-5.6-terra",
+        reference: "codex:gpt-5.6-terra",
+      },
+      messages: [{ role: "user", content: "hi" }],
+      allowedTools: ["*", "Read"],
+      disallowedTools: [],
+    });
+
+    expect(result).toMatchObject({
+      error: null,
+      failureKind: null,
+      text: "ok",
+      sdk: "codex",
+    });
+    expect(result.diagnostics?.codex_error_code).not.toBe("codex_tool_policy_unsupported");
+    expect(mocks.spawn).toHaveBeenCalledWith(
+      "codex",
+      expect.any(Array),
+      expect.objectContaining({ stdio: ["ignore", "pipe", "pipe"] }),
+    );
   });
 });
