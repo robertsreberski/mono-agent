@@ -1,5 +1,27 @@
 # Release notes
 
+## 0.15.2 — Wildcard tool-policy compatibility (2026-07-28)
+
+### Runtime policy discovery
+
+- Built-in runtime bridges now report whether they project named tool policy or
+  support only unrestricted tool access. Pi, Claude SDK, and Claude Code report
+  `projected`; direct Codex and direct OpenCode report `allow_all_only`.
+- Custom structural bridges may omit the capability, preserving compatibility
+  while allowing hosts to reject unsupported routes before provider startup.
+
+### Safety and compatibility
+
+- Any `allowedTools` list containing `"*"` now has consistent allow-all
+  semantics. Mixed forms such as `["*", "Read"]` work on direct Codex and
+  OpenCode and no longer narrow Claude CLI projection by accident.
+- Named-only allowlists, empty allowlists, and non-empty denylists remain
+  fail-closed on providers that cannot project tool policy. The exact no-tool
+  Codex readiness probe and `tools: "exact-allow-all"` telemetry token retain
+  their existing contracts.
+- All 22 catalog-publishable packages move together to 0.15.2. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.15.1 — Provider interoperability and bounded teardown (2026-07-28)
 
 ### Runtime interoperability
