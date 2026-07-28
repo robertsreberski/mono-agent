@@ -198,7 +198,45 @@ function textUpdate(
       },
       text,
     },
-  } as Parameters<Bot["handleUpdate"]>[0];
+  } as unknown as Parameters<Bot["handleUpdate"]>[0];
+}
+
+function groupTextUpdate(
+  text: string,
+  options?: {
+    updateId?: number;
+    mentionedUsername?: string;
+    replyToBot?: boolean;
+  },
+): Parameters<Bot["handleUpdate"]>[0] {
+  const mentionToken = options?.mentionedUsername === undefined
+    ? undefined
+    : `@${options.mentionedUsername}`;
+  const mentionOffset = mentionToken === undefined ? -1 : text.indexOf(mentionToken);
+  return {
+    update_id: options?.updateId ?? 1,
+    message: {
+      message_id: 10,
+      date: 1234,
+      chat: { id: -10042, type: "supergroup", title: "Family travel" },
+      from: { id: 7, is_bot: false, first_name: "Person A", username: "person_a" },
+      text,
+      ...(mentionToken === undefined || mentionOffset < 0
+        ? {}
+        : { entities: [{ type: "mention", offset: mentionOffset, length: mentionToken.length }] }),
+      ...(options?.replyToBot !== true
+        ? {}
+        : {
+            reply_to_message: {
+              message_id: 9,
+              date: 1233,
+              chat: { id: -10042, type: "supergroup", title: "Family travel" },
+              from: FAKE_BOT_INFO,
+              text: "Where would you like to go?",
+            },
+          }),
+    },
+  } as unknown as Parameters<Bot["handleUpdate"]>[0];
 }
 
 function commandUpdate(
@@ -351,16 +389,30 @@ function albumPhotoUpdate(options: {
   caption?: string;
   updateId: number;
   messageId: number;
+  chatType?: "private" | "supergroup";
+  mentionedUsername?: string;
 }): Parameters<Bot["handleUpdate"]>[0] {
+  const mentionToken = options.mentionedUsername === undefined
+    ? undefined
+    : `@${options.mentionedUsername}`;
+  const mentionOffset = mentionToken === undefined || options.caption === undefined
+    ? -1
+    : options.caption.indexOf(mentionToken);
   return {
     update_id: options.updateId,
     message: {
       message_id: options.messageId,
       date: 1234,
-      chat: { id: 42, type: "private" },
+      chat: {
+        id: options.chatType === "supergroup" ? -10042 : 42,
+        type: options.chatType ?? "private",
+      },
       from: { id: 7, is_bot: false, first_name: "Person A", username: "person_a" },
       media_group_id: options.groupId,
       caption: options.caption,
+      ...(mentionToken === undefined || mentionOffset < 0
+        ? {}
+        : { caption_entities: [{ type: "mention", offset: mentionOffset, length: mentionToken.length }] }),
       photo: [
         {
           file_id: options.fileId,
@@ -901,6 +953,84 @@ describe("createTelegramBot", () => {
     expect(responder.respond).not.toHaveBeenCalled();
   });
 
+  it("keeps the backward-compatible any mode while mention mode ignores plain group text", async () => {
+    const anyRequests: AgentRequest[] = [];
+    const mentionRequests: AgentRequest[] = [];
+    const anyBot = buildTestBot({
+      responder: responderFrom(async (request) => {
+        anyRequests.push(request);
+        return { text: "ok" };
+      }),
+    });
+    const mentionBot = buildTestBot({
+      groupMode: "mention",
+      responder: responderFrom(async (request) => {
+        mentionRequests.push(request);
+        return { text: "ok" };
+      }),
+    });
+
+    await anyBot.bot.handleUpdate(groupTextUpdate("family chatter"));
+    await mentionBot.bot.handleUpdate(groupTextUpdate("family chatter"));
+    await mentionBot.bot.handleUpdate(textUpdate("private hello", { updateId: 2 }));
+
+    expect(anyRequests.map((request) => request.text)).toEqual(["family chatter"]);
+    expect(mentionRequests.map((request) => request.text)).toEqual(["private hello"]);
+  });
+
+  it("runs matching native group mentions, strips only the bot mention, and ignores another bot", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = buildTestBot({
+      groupMode: "mention",
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+    });
+
+    await bot.handleUpdate(groupTextUpdate("🏖️ @ExampleBot plan a week in Crete", {
+      mentionedUsername: "ExampleBot",
+    }));
+    await bot.handleUpdate(groupTextUpdate("@SomeOtherBot hello", {
+      updateId: 2,
+      mentionedUsername: "SomeOtherBot",
+    }));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.text).toBe("🏖️ plan a week in Crete");
+  });
+
+  it("runs replies to the bot in mention mode without requiring an @mention", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = buildTestBot({
+      groupMode: "mention",
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+    });
+
+    await bot.handleUpdate(groupTextUpdate("Amsterdam in October", { replyToBot: true }));
+
+    expect(requests.map((request) => request.text)).toEqual(["Amsterdam in October"]);
+  });
+
+  it("can preserve the native mention when stripMentionText is disabled", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot } = buildTestBot({
+      groupMode: "mention",
+      stripMentionText: false,
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "ok" };
+      }),
+    });
+
+    await bot.handleUpdate(groupTextUpdate("@ExampleBot hello", { mentionedUsername: "ExampleBot" }));
+
+    expect(requests.map((request) => request.text)).toEqual(["@ExampleBot hello"]);
+  });
+
   it("invokes the responder with a bounded request and streams the answer", async () => {
     const requests: AgentRequest[] = [];
     const { bot, calls } = buildTestBot({
@@ -1130,6 +1260,50 @@ describe("createTelegramBot", () => {
     expect(requests[0]?.attachments).toHaveLength(3);
     expect(requests[0]?.metadata.telegram.attachments).toHaveLength(3);
     expect(downloadedFileIds).toEqual(["p1", "p2", "p3"]);
+  });
+
+  it("applies the mention-only trigger to an album as one unit", async () => {
+    const requests: AgentRequest[] = [];
+    const { bot, activeControllerCount } = buildTestBot({
+      groupMode: "mention",
+      albumAggregationDelayMs: 0,
+      responder: responderFrom(async (request) => {
+        requests.push(request);
+        return { text: "got the album" };
+      }),
+    });
+
+    await bot.handleUpdate(albumPhotoUpdate({
+      groupId: "GROUP-MENTION",
+      fileId: "p1",
+      caption: "@ExampleBot compare these hotels",
+      updateId: 1,
+      messageId: 10,
+      chatType: "supergroup",
+      mentionedUsername: "ExampleBot",
+    }));
+    await bot.handleUpdate(albumPhotoUpdate({
+      groupId: "GROUP-MENTION",
+      fileId: "p2",
+      updateId: 2,
+      messageId: 11,
+      chatType: "supergroup",
+    }));
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+
+    await bot.handleUpdate(albumPhotoUpdate({
+      groupId: "GROUP-PLAIN",
+      fileId: "p3",
+      caption: "unrelated family photos",
+      updateId: 3,
+      messageId: 12,
+      chatType: "supergroup",
+    }));
+    await vi.waitFor(() => expect(activeControllerCount()).toBe(0));
+
+    expect(requests[0]?.text).toBe("compare these hotels");
+    expect(requests[0]?.attachments).toHaveLength(2);
+    expect(requests).toHaveLength(1);
   });
 
   it("preserves arrival order: an album runs before a later same-chat text buffered within its quiet window", async () => {
@@ -2339,6 +2513,32 @@ describe("createTelegramBot pending asks and status posts", () => {
 
     expect(requests).toHaveLength(1);
     expect(requests[0]?.text).toBe("just a normal message");
+  });
+
+  it("does not consume unrelated group chat as a pending AskUser answer in mention mode", async () => {
+    const snapshot = askSnapshot();
+    const getPendingAsk = vi.fn(async () => snapshot);
+    const submitAskAnswers = vi.fn(async () => ({ accepted: true, snapshot }));
+    const { bot } = buildTestBot({
+      groupMode: "mention",
+      responder: responderFrom(async () => ({ text: "turn" })),
+      pendingAsks: {
+        getPendingAsk,
+        submitAskAnswers,
+        cancel: vi.fn(),
+      },
+    });
+
+    await bot.handleUpdate(groupTextUpdate("unrelated family answer"));
+    await bot.handleUpdate(groupTextUpdate("@ExampleBot choose the first option", {
+      updateId: 2,
+      mentionedUsername: "ExampleBot",
+    }));
+
+    expect(getPendingAsk).toHaveBeenCalledTimes(1);
+    expect(submitAskAnswers).toHaveBeenCalledWith(expect.objectContaining({
+      answers: [expect.objectContaining({ customReply: "choose the first option" })],
+    }));
   });
 
   it("does not consume media messages or slash commands as ask answers", async () => {

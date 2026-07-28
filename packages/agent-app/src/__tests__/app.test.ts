@@ -2306,6 +2306,8 @@ describe("startMonoAgentApp", () => {
         botToken: "test-token",
         allowedChatIds: ["42"],
         allowAllChats: false,
+        groupMode: "mention",
+        stripMentionText: false,
         apiRoot: "http://127.0.0.1:8081",
         attachments: { maxBytes: 268_435_456, downloadTimeoutMs: 120_000, maxUploadBytes: 268_435_456 },
       },
@@ -2316,6 +2318,8 @@ describe("startMonoAgentApp", () => {
     });
 
     expect(captured?.apiRoot).toBe("http://127.0.0.1:8081");
+    expect(captured?.groupMode).toBe("mention");
+    expect(captured?.stripMentionText).toBe(false);
     // maxUploadBytes is a send-tools concern; only the download knobs flow here.
     expect(captured?.attachments).toEqual({ maxBytes: 268_435_456, downloadTimeoutMs: 120_000 });
     await running.stop();

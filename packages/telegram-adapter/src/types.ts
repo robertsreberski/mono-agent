@@ -18,13 +18,24 @@ export interface TelegramChat {
   last_name?: string;
 }
 
+/** The Bot API message-entity fields used for native @mention matching. */
+export interface TelegramMessageEntity {
+  type: string;
+  offset: number;
+  length: number;
+  user?: TelegramUser;
+}
+
 export interface TelegramMessage {
   message_id: number;
   date?: number;
   chat: TelegramChat;
   from?: TelegramUser;
   text?: string;
+  entities?: TelegramMessageEntity[];
   caption?: string;
+  caption_entities?: TelegramMessageEntity[];
+  reply_to_message?: TelegramMessage;
   /** Set on each message of a multi-photo/video album; shared across the group. */
   media_group_id?: string;
   animation?: unknown;

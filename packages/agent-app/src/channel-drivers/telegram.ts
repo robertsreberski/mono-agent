@@ -29,6 +29,8 @@ const UNCONFIGURED_TELEGRAM_CONFIG: TelegramAdapterConfig = {
   botToken: "",
   allowedChatIds: [],
   allowAllChats: false,
+  groupMode: "any",
+  stripMentionText: true,
 };
 
 export interface TelegramChannelOverrides {
@@ -199,6 +201,8 @@ function telegramStartOptions(
     botToken: input.config.botToken,
     allowedChatIds: [...input.config.allowedChatIds],
     allowAllChats: input.config.allowAllChats,
+    groupMode: input.config.groupMode ?? "any",
+    stripMentionText: input.config.stripMentionText ?? true,
     responder: input.responder,
     allowedUpdates: ["message", "callback_query"],
     runtimeControls,
