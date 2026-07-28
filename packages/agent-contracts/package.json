@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/agent-contracts",
-  "version": "0.15.0",
+  "version": "0.15.1",
   "description": "Shared structural contracts plus adapter-neutral settings JSON, env, safe-bind, and bearer helpers for reusable packages.",
   "type": "module",
   "license": "GPL-3.0-only",

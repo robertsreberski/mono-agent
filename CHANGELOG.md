@@ -1,5 +1,31 @@
 # Release notes
 
+## 0.15.1 — Provider interoperability and bounded teardown (2026-07-28)
+
+### Runtime interoperability
+
+- `@mono-agent/agent-runtime/ai` now owns the supported Pi model catalog,
+  reasoning-level, and OAuth boundary. Consumers can remove direct Pi imports
+  while the runtime keeps its Pi dependencies exact-pinned and returns isolated
+  model and credential snapshots.
+- Claude SDK tests can inject `RuntimeRunOptions.claudeAgentQuery` without
+  package-level module mocks. Production calls still use the runtime-owned
+  Claude Agent SDK, preserving its intentional separation from Pi's Anthropic
+  SDK dependency.
+
+### Reliability and compatibility
+
+- Codex app-server runs now settle when the transport closes or aborts while a
+  live-input iterator is pending. Throwing acknowledgement and rejection
+  callbacks are isolated from the provider result and reported as bounded
+  warnings.
+- The inert `toolPayloadCompactionTriggerChars` and
+  `toolPruneTriggerTokens` policy fields are removed. `ReadSkill` continues to
+  return complete instructions by default; callers may opt into an explicit
+  positive `maxChars` cap.
+- All 22 catalog-publishable packages move together to 0.15.1. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.15.0 — Live steering and precise runtime activity (2026-07-22)
 
 ### Highlights
