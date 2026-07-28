@@ -12,6 +12,7 @@ import {
 } from "../package-graph.mjs";
 import {
   assertPackResult,
+  orphanedBuildArtifacts,
   parsePnpmPackOutput,
 } from "../pack-release.mjs";
 import {
@@ -429,6 +430,62 @@ describe("release pack validation", () => {
       ).toThrow(/webapp\/dist\/index\.html/);
     } finally {
       fs.rmSync(packDestination, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects compiled output whose source was deleted", () => {
+    const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-orphan-test-"));
+    const packDestination = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-pack-test-"));
+    try {
+      fs.mkdirSync(path.join(packageDir, "src", "nested"), { recursive: true });
+      fs.writeFileSync(path.join(packageDir, "src", "index.ts"), "");
+      fs.writeFileSync(path.join(packageDir, "src", "nested", "kept.ts"), "");
+      fs.writeFileSync(path.join(packageDir, "src", "runner.mjs"), "");
+      const tarballPath = path.join(packDestination, "mono-agent-example-1.2.3.tgz");
+      fs.writeFileSync(tarballPath, "tgz");
+      const packOutput = (distFiles) => ({
+        name: pkg.name,
+        version: "1.2.3",
+        filename: tarballPath,
+        files: [
+          { path: "package.json" },
+          { path: "README.md" },
+          ...distFiles.map((file) => ({ path: file })),
+        ],
+      });
+
+      // Emit that still mirrors src — declarations, maps, a copied .mjs, and the bundler
+      // output that lives outside dist/ — must all pass.
+      expect(
+        assertPackResult(pkg, packOutput([
+          "dist/index.js",
+          "dist/index.d.ts",
+          "dist/index.js.map",
+          "dist/nested/kept.js",
+          "dist/runner.mjs",
+          "dist/.tsbuildinfo",
+          "webapp/dist/assets/index-a1b2c3.js",
+        ]), packDestination, { packageDir }),
+      ).toMatchObject({ tarballPath });
+
+      expect(() =>
+        assertPackResult(pkg, packOutput(["dist/index.js", "dist/gone.js"]), packDestination, { packageDir }),
+      ).toThrow(/ships build artifacts with no source: dist\/gone\.js/);
+      expect(() =>
+        assertPackResult(pkg, packOutput(["dist/nested/gone.d.ts"]), packDestination, { packageDir }),
+      ).toThrow(/dist\/nested\/gone\.d\.ts/);
+    } finally {
+      fs.rmSync(packageDir, { recursive: true, force: true });
+      fs.rmSync(packDestination, { recursive: true, force: true });
+    }
+  });
+
+  test("skips the orphan check for packages that ship no src directory", () => {
+    const packageDir = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-orphan-test-"));
+    try {
+      expect(orphanedBuildArtifacts(packageDir, ["dist/anything.js"])).toEqual([]);
+    } finally {
+      fs.rmSync(packageDir, { recursive: true, force: true });
     }
   });
 
