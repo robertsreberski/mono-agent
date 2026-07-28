@@ -173,6 +173,34 @@ describe("opencode-app bridge", () => {
     expect(createIsolatedOpencode).not.toHaveBeenCalled();
   });
 
+  it('accepts a wildcard mixed with named tools as an effective allow-all policy', async () => {
+    fakeOpencode({
+      events: [idle()],
+      promptParts: [{ type: "text", text: "final answer" }],
+      info: baseInfo,
+    });
+
+    const result = await opencodeAppRuntimeBridge.execute("SYSTEM", {
+      model: {
+        sdk: "opencode",
+        provider: "github-copilot",
+        model: "gpt-5.1",
+        reference: "opencode:github-copilot:gpt-5.1",
+      },
+      messages: [{ role: "user", content: "do it" }],
+      allowedTools: ["*", "Read"],
+      disallowedTools: [],
+    });
+
+    expect(result).toMatchObject({
+      error: null,
+      failureKind: null,
+      text: "final answer",
+    });
+    expect(result.diagnostics?.opencode_error_code).not.toBe("opencode_tool_policy_unsupported");
+    expect(createIsolatedOpencode).toHaveBeenCalledTimes(1);
+  });
+
   it("runs a turn: normalizes tool events, captures final text + usage, closes the server", async () => {
     const harness = fakeOpencode({
       events: [

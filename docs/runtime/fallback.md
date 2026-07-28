@@ -94,15 +94,21 @@ The per-route-native matrix is deliberately concrete:
 - **Pi:** mono-agent tool policy, plus managed SRT when configured.
 - **Claude:** provider-native sandbox with the tool restrictions the Claude
   bridge can represent; mono-agent SRT is not projected onto the route.
-- **Direct Codex:** Codex-native sandbox and exact allow-all at the mono-agent
-  tool-policy layer.
-- **Direct OpenCode:** provider-native permissions and exact allow-all;
+- **Direct Codex:** Codex-native sandbox and an effective allow-all policy at
+  the mono-agent tool-policy layer.
+- **Direct OpenCode:** provider-native permissions and an effective allow-all
+  policy;
   unsupported capabilities cause the route to be skipped.
 
 Capability-bearing inputs such as MCP, skills, structured output, live input,
 or native subagents are never silently removed to make a route pass. Doctor and
 runtime checks fail closed or skip that route with `safety_unavailable` /
 `skipped_capability_mismatch` and credential-free safety telemetry.
+
+The route-safety telemetry token `tools: "exact-allow-all"` is retained for
+compatibility. It means the effective unrestricted contract—an omitted
+allowlist or any allowlist containing `"*"`, with no denied tools—not a required
+literal `["*"]` array.
 
 ## What failover does
 

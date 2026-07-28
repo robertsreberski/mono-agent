@@ -303,10 +303,10 @@ export function routeSafetyContract(model: string, managedSrt: boolean): string 
     return "Claude: provider-native sandbox; representable tool restrictions only; mono-agent SRT is not applied";
   }
   if (model.startsWith("codex:")) {
-    return "Codex: Codex-native sandbox + exact allow-all; mono-agent SRT/tool allowlist is not applied";
+    return "Codex: Codex-native sandbox + allow-all-only policy; mono-agent SRT/tool allowlist is not applied";
   }
   if (model.startsWith("opencode:")) {
-    return "OpenCode: provider-native sandbox + exact allow-all; unsupported capabilities skip this route";
+    return "OpenCode: provider-native sandbox + allow-all-only policy; unsupported capabilities skip this route";
   }
   return "Custom runtime: provider-native policy; unsupported capabilities skip this route";
 }

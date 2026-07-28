@@ -11,7 +11,29 @@ exports map, a five-bridge lazy registry, typed policy objects, stricter sandbox
 behavior, and revised provider-session semantics even when Pi is not your
 primary route.
 
+Migration policy: every newly introduced fail-closed validation belongs in the
+first affected version section, even when it tightens behavior without changing
+the configuration schema.
+
 ---
+
+## 0.15.2
+
+- **Tool-policy capability discovery:** built-in bridge capabilities now report
+  `tool_policy: "projected" | "allow_all_only"`. Pi, Claude SDK, and Claude Code
+  report `projected`; direct Codex and direct OpenCode report
+  `allow_all_only`. Custom structural bridges that omit the field have unknown
+  capability.
+- **Wildcard normalization:** any `allowedTools` list containing `"*"` is
+  semantically allow-all. Direct Codex, direct OpenCode, and the public legacy
+  Codex CLI export now accept forms such as `["*", "Read"]` when
+  `disallowedTools` is empty. Named-only lists, `[]`, and every non-empty
+  denylist still fail closed on those non-projecting routes. The guided Codex
+  readiness probe retains its exact no-tool contract.
+- **Telemetry compatibility:** the route-safety value
+  `tools: "exact-allow-all"` is unchanged. It now explicitly denotes the
+  effective unrestricted contract rather than requiring a literal one-element
+  `["*"]` array.
 
 ## 0.15.1
 
@@ -62,6 +84,12 @@ public-surface cleanup described in this guide.
 
 ## 0.10.x
 
+- Direct Codex normal runs introduced a fail-closed tool-policy gate: omitted
+  `allowedTools` or the explicit `["*"]` sentinel was accepted with no denied
+  tools, while named-only allowlists, `[]`, and deny lists were rejected before
+  provider startup. Version 0.15.2 preserves that safety boundary while
+  normalizing every wildcard-containing allowlist to the same effective
+  allow-all meaning.
 - `ReadSkill` returns complete skill instructions by default, including content
   beyond the former 12,000-character boundary. Programmatic callers of
   `formatSkillBodyWithPathNote()` opt into truncation by passing a positive

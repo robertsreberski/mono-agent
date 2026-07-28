@@ -3,6 +3,10 @@ import { estimateCost } from "../cost.js";
 import { buildCapabilitiesUsed } from "../runtime/capabilities-used.js";
 import { createApprovalManager, RISK_TIERS } from "../../agent/approval.js";
 import { resolveSandboxPolicy } from "../../agent/tools/shared/tool-context.js";
+import {
+  isAllowAllToolPolicy,
+  TOOL_POLICY_ALLOW_ALL_ONLY,
+} from "../runtime/tool-policy.js";
 import { createIsolatedOpencode } from "./opencode-server.js";
 import {
   toolUseEvent,
@@ -37,6 +41,7 @@ const OPENCODE_APP_CAPABILITIES = {
   supports_live_input: false,
   supports_native_subagents: false,
   supports_fast_mode: false,
+  tool_policy: TOOL_POLICY_ALLOW_ALL_ONLY,
 };
 
 // How long to keep draining the event stream after session.prompt resolves, in
@@ -428,13 +433,9 @@ export function mapSpawnFailureKind(err) {
 }
 
 function opencodeToolPolicyProblem(options) {
-  const allowedTools = Array.isArray(options.allowedTools) ? options.allowedTools : null;
-  const disallowedTools = Array.isArray(options.disallowedTools) ? options.disallowedTools : [];
-  const exactAllowAll = allowedTools === null
-    || (allowedTools.length === 1 && allowedTools[0] === "*");
-  return exactAllowAll && disallowedTools.length === 0
+  return isAllowAllToolPolicy(options.allowedTools, options.disallowedTools)
     ? null
-    : "Direct OpenCode cannot enforce allowedTools/disallowedTools. Use exact allow-all ([\"*\"] with no disallowedTools) or a Pi runtime (including pi:opencode-go:*).";
+    : "Direct OpenCode cannot enforce allowedTools/disallowedTools. Use allow-all-only (omit allowedTools or include \"*\", with no disallowedTools) or a Pi runtime (including pi:opencode-go:*).";
 }
 
 function opencodeCapabilityMismatchResult({

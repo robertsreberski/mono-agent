@@ -259,7 +259,7 @@ describe("wizard prompt builders", () => {
       true,
     );
     expect(matrix).toContain("Pi: mono-agent managed SRT");
-    expect(matrix).toContain("Codex-native sandbox + exact allow-all");
+    expect(matrix).toContain("Codex-native sandbox + allow-all-only policy");
     expect(matrix).toContain("representable tool restrictions only");
     expect(matrix).toContain("unsupported capabilities skip this route");
     expect(creationReviewOptions({ setupRequired: true }).map((option) => option.label)).toEqual([

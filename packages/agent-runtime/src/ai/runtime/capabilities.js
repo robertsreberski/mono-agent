@@ -1,3 +1,8 @@
+import {
+  TOOL_POLICY_ALLOW_ALL_ONLY,
+  TOOL_POLICY_PROJECTED,
+} from "./tool-policy.js";
+
 export const COMMON_CAPABILITIES = {
   streaming: true,
   structured_output: true,
@@ -9,6 +14,7 @@ export const COMMON_CAPABILITIES = {
   supports_live_input: true,
   supports_native_subagents: true,
   supports_fast_mode: false,
+  tool_policy: TOOL_POLICY_PROJECTED,
 };
 
 export const RUNTIME_CAPABILITIES = {
@@ -36,6 +42,7 @@ export const RUNTIME_CAPABILITIES = {
     // when options.sessionKeepAlive is set; resumed turns reuse the thread.
     supports_session_resume: true,
     supports_fast_mode: true,
+    tool_policy: TOOL_POLICY_ALLOW_ALL_ONLY,
   },
   opencode: {
     runtime: "cli",
@@ -46,6 +53,7 @@ export const RUNTIME_CAPABILITIES = {
     supports_skills: false,
     supports_live_input: false,
     supports_native_subagents: false,
+    tool_policy: TOOL_POLICY_ALLOW_ALL_ONLY,
   },
 };
 

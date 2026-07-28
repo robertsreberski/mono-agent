@@ -272,7 +272,8 @@ when a route cannot represent a required capability. Explicit
 tool policy and uses SRT only when an effective native sandbox policy is active
 (otherwise telemetry says `disabled` and subprocess tools are unsandboxed),
 Claude drops only the unrepresentable mono-agent SRT layer, and direct
-Codex/OpenCode use provider-native safety with exact allow-all. Capability-bearing
+Codex/OpenCode use provider-native safety with an effective allow-all policy
+(allowlist omitted or containing `"*"`, empty denylist). Capability-bearing
 inputs are never silently discarded; an unsupported route is skipped with bounded,
 credential-free safety telemetry.
 

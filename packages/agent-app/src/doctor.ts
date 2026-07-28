@@ -407,7 +407,7 @@ async function applyRequestModelOverrideCompatibilityChecks(
   const skillBypasses: string[] = [];
   const piModelResolutionFailures: string[] = [];
   const monoSandboxActive = config.sandbox !== undefined && config.sandbox.mode !== "off";
-  const restrictiveToolPolicy = !hasExactAllowAllToolPolicy(config.tools);
+  const restrictiveToolPolicy = !hasAllowAllOnlyToolPolicy(config.tools);
   let configuredMcpServerNames: string[] = [];
   if (config.tools.mcpConfigPath !== undefined) {
     try {
@@ -530,7 +530,7 @@ async function applyRequestModelOverrideCompatibilityChecks(
       ...(toolPolicyBypasses.length === 0
         ? []
         : [
-            "Per-trigger direct OpenCode model overrides require exact allow-all because OpenCode's provider-owned tool loop does not consume mono-agent allowedTools/disallowedTools.",
+            "Per-trigger direct OpenCode model overrides require an effective allow-all policy because OpenCode's provider-owned tool loop does not consume mono-agent allowedTools/disallowedTools.",
             ...toolPolicyBypasses,
           ]),
       ...(effortBypasses.length === 0
@@ -571,12 +571,10 @@ function isUnknownRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function hasExactAllowAllToolPolicy(
+function hasAllowAllOnlyToolPolicy(
   tools: Pick<MonoAgentConfig["tools"], "allowedTools" | "disallowedTools">,
 ): boolean {
-  return tools.allowedTools.length === 1
-    && tools.allowedTools[0] === "*"
-    && tools.disallowedTools.length === 0;
+  return isAllowAllTools(tools.allowedTools) && tools.disallowedTools.length === 0;
 }
 
 /** Adapter send tools each channel owns; an allowed entry needs BOTH the tool AND the enabled channel. */
@@ -2059,27 +2057,27 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
   ]
     .filter(({ model, executionMode }) => model.sdk === "claude" && executionMode === "cli")
     .map(({ model }) => referenceOf(model));
-  const exactAllowAll = hasExactAllowAllToolPolicy(config.tools);
+  const allowAllOnly = hasAllowAllOnlyToolPolicy(config.tools);
   const dedicatedNoToolsProbe = input.codexNoToolsProbe === true
     && allowedTools.length === 0
     && config.tools.disallowedTools.length === 0;
   if (
     directCodexModels.length > 0
     && !dedicatedNoToolsProbe
-    && !exactAllowAll
+    && !allowAllOnly
   ) {
     status = "error";
     details.push(
       `Direct Codex model${directCodexModels.length === 1 ? "" : "s"} ${directCodexModels.join(", ")} cannot enforce ` +
-        "tools.allowedTools/tools.disallowedTools. Use exact allow-all (allowedTools: [\"*\"] with no disallowedTools), " +
+        "tools.allowedTools/tools.disallowedTools. Use allow-all-only (allowedTools omitted or containing \"*\", with no disallowedTools), " +
         "or select a runtime that supports restrictive tool policies.",
     );
   }
-  if (directOpenCodeModels.length > 0 && !exactAllowAll) {
+  if (directOpenCodeModels.length > 0 && !allowAllOnly) {
     status = "error";
     details.push(
       `Direct OpenCode model${directOpenCodeModels.length === 1 ? "" : "s"} ${directOpenCodeModels.join(", ")} cannot enforce ` +
-        "tools.allowedTools/tools.disallowedTools. Use exact allow-all (allowedTools: [\"*\"] with no disallowedTools), " +
+        "tools.allowedTools/tools.disallowedTools. Use allow-all-only (allowedTools omitted or containing \"*\", with no disallowedTools), " +
         "or use a Pi runtime (including pi:opencode-go:*).",
     );
   }
@@ -3445,7 +3443,7 @@ function routeNativeSafetyDetail(
   if (model.sdk === "codex") {
     return `${label} ${ref}: ${directCodexSandboxPosture(config.runtime.permissionMode).detail}`;
   }
-  return `${label} ${ref}: OpenCode provider-owned execution with exact allow-all tool policy applies; mono-agent SRT rules are not projected.`;
+  return `${label} ${ref}: OpenCode provider-owned execution with an effective allow-all tool policy applies; mono-agent SRT rules are not projected.`;
 }
 
 function directCodexSandboxPosture(permissionMode: MonoAgentConfig["runtime"]["permissionMode"]): {

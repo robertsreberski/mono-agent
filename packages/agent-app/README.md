@@ -309,16 +309,17 @@ stale auth locks are repaired only when the recorded process is securely proven
 gone. The
 wizard keeps **Allow all tools** as its default. Pi/Claude flows disclose
 shell/file/web/channel effects and reconfirm an unsandboxed choice. Direct Codex
-fixes policy to exact allow-all, uses its native network-off workspace sandbox,
+fixes policy to effective allow-all (an omitted or wildcard-containing
+allowlist with no denied tools), uses its native network-off workspace sandbox,
 denies unattended escalations, and fails unexpected server requests promptly.
 Mixed chains are unrestricted only under explicit `runtime.routeSafety:
 "per-route-native"`, which isolates provider runtimes and applies a documented
 route-local contract. The default `uniform` mode keeps one common monotonic
 contract and rejects/skips routes that cannot represent it. Pi keeps mono-agent
 tool policy and optional SRT; Claude uses representable provider-native controls;
-direct Codex/OpenCode use provider-native safety plus exact allow-all. No route
+direct Codex/OpenCode use provider-native safety plus effective allow-all. No route
 silently drops a required capability. Pi `pi:opencode-go:*` remains a Pi route.
-Direct OpenCode also requires exact allow-all; restrictive static policies fail
+Direct OpenCode has the same omitted-or-wildcard/empty-deny requirement; restrictive static policies fail
 validation/runtime and an incompatible dynamic override is warned and ignored.
 
 ### Run history

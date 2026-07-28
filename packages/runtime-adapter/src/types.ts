@@ -50,6 +50,7 @@ export interface MonoRuntimeBackendCapabilities {
   readonly supports_builtin_tools?: boolean;
   readonly supports_live_input?: boolean;
   readonly supports_native_subagents?: boolean;
+  readonly tool_policy?: "projected" | "allow_all_only";
   readonly [key: string]: unknown;
 }
 

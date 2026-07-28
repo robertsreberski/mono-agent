@@ -230,7 +230,7 @@ explicit `per-route-native` mode, doctor prints every route contract and warns
 that mono-agent readable/writable roots, deny-write globs, and network rules do
 not project onto non-Pi routes. Pi retains SRT; Claude uses provider-native
 controls with representable tool restrictions; direct Codex/OpenCode use native
-safety plus exact allow-all. Unsupported capabilities skip the route instead of
+safety plus an effective allow-all policy. Unsupported capabilities skip the route instead of
 being removed silently. Static trigger routes and dynamic overrides are checked
 at the same boundary.
 :::

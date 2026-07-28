@@ -264,13 +264,13 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     );
   });
 
-  it("allows a direct OpenCode override with exact allow-all and no active sandbox", async () => {
+  it("allows a direct OpenCode override with a mixed wildcard allowlist and no active sandbox", async () => {
     const result = await run(
       { webhook: { model: "opencode:github-copilot:gpt-5.1" } },
       {
         baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
         sandboxPolicy: { mode: "off" },
-        toolPolicy: { allowedTools: ["*"], disallowedTools: [] },
+        toolPolicy: { allowedTools: ["*", "Read"], disallowedTools: [] },
       },
     );
 

@@ -56,7 +56,12 @@
  * branch ran for a particular command.
  */
 
-/** @typedef {"mono-agent-monotonic"|"mono-agent-policy"|"provider-representable"|"exact-allow-all"|"unsupported"} RuntimeRouteToolsContract */
+/**
+ * @typedef {"mono-agent-monotonic"|"mono-agent-policy"|"provider-representable"|"exact-allow-all"|"unsupported"} RuntimeRouteToolsContract
+ * `exact-allow-all` is a stable telemetry token. It describes an effective
+ * unrestricted contract, including mixed allowlists that contain `"*"`;
+ * it does not require the literal one-element array `["*"]`.
+ */
 
 /**
  * @typedef {Object} RuntimeRouteSafetyContract
@@ -223,6 +228,10 @@
  * @property {boolean} [supports_live_input]
  * @property {boolean} [supports_native_subagents]
  * @property {boolean} [supports_fast_mode]
+ * @property {"projected"|"allow_all_only"} [tool_policy] Whether the bridge can
+ *   project named allow/deny policies or accepts only a semantically unrestricted
+ *   policy. Built-in bridges always report this field; omission means unknown
+ *   for custom structural capability objects.
  */
 
 /**

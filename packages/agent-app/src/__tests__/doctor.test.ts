@@ -1932,7 +1932,7 @@ describe("validateMonoAgentFolder", () => {
     expect(report.ok).toBe(false);
     const runtime = sectionById(report, "runtime");
     expect(runtime.status).toBe("error");
-    expect(runtime.details.join("\n")).toContain("direct OpenCode model overrides require exact allow-all");
+    expect(runtime.details.join("\n")).toContain("direct OpenCode model overrides require an effective allow-all policy");
     expect(runtime.details.join("\n")).toContain("cron.jobs[0].model=opencode:github-copilot:gpt-5.1");
   });
 
@@ -5244,15 +5244,15 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     const tools = sectionById(report, "tools");
     expect(tools.status).toBe("error");
     expect(tools.details.join("\n")).toContain("Direct Codex model codex:gpt-5.6-terra cannot enforce");
-    expect(tools.details.join("\n")).toContain('allowedTools: ["*"] with no disallowedTools');
+    expect(tools.details.join("\n")).toContain('allowedTools omitted or containing "*", with no disallowedTools');
   });
 
-  it("accepts direct Codex only with exact allow-all and no disallowed tools", async () => {
+  it("accepts direct Codex with a mixed wildcard allowlist and no disallowed tools", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
       runtime: { model: "codex:gpt-5.6-terra" },
       context: { identityPath: "./IDENTITY.md" },
-      tools: { allowedTools: ["*"] },
+      tools: { allowedTools: ["*", "Read"] },
     });
 
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
@@ -5275,15 +5275,15 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     const tools = sectionById(report, "tools");
     expect(tools.status).toBe("error");
     expect(tools.details.join("\n")).toContain("Direct OpenCode model opencode:github-copilot:gpt-5.1 cannot enforce");
-    expect(tools.details.join("\n")).toContain('allowedTools: ["*"] with no disallowedTools');
+    expect(tools.details.join("\n")).toContain('allowedTools omitted or containing "*", with no disallowedTools');
   });
 
-  it("accepts a minimal direct OpenCode host and suppresses implicit app-owned MCP tools", async () => {
+  it("accepts a mixed wildcard direct OpenCode host and suppresses implicit app-owned MCP tools", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
       runtime: { model: "opencode:github-copilot:gpt-5.1", executionMode: "cli" },
       context: { identityPath: "./IDENTITY.md" },
-      tools: { allowedTools: ["*"] },
+      tools: { allowedTools: ["*", "Read"] },
     });
 
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });

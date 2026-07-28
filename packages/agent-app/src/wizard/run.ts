@@ -645,7 +645,7 @@ async function collectInteractiveFromSeed(
             returnToReviewAfterStep === 1
             && (
               previousFamilies !== nextFamilies
-              || !hasExactAllowAllTools(draft)
+              || !isAllowAllTools(draft.allowedTools)
               || hasInvalidUniformManagedSrtChain(draft)
             )
           ) {
@@ -1585,10 +1585,6 @@ function sameOrderedValues(left: readonly string[], right: readonly string[]): b
 
 function hasFixedAllowAllToolPolicyRef(model: string): boolean {
   return isDirectCodexRef(model) || isDirectOpenCodeRef(model);
-}
-
-function hasExactAllowAllTools(draft: Pick<DraftAnswers, "allowedTools">): boolean {
-  return draft.allowedTools.length === 1 && draft.allowedTools[0] === ALLOW_ALL_TOOLS;
 }
 
 function hasInvalidUniformManagedSrtChain(
