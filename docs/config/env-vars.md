@@ -231,6 +231,8 @@ Most channels are opt-in via their `enabled` flag (default off). The `tui` opera
 | `MONO_AGENT_TELEGRAM_BOT_TOKEN` | `telegram.botToken` | Bot token. |
 | `MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS` | `telegram.allowedChatIds` | Or `allowAllChats`. See [Telegram channel configuration](/channels/telegram/). |
 | `MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS` | `telegram.allowAllChats` | Allow any chat instead of requiring `allowedChatIds`; default `false`. |
+| `MONO_AGENT_TELEGRAM_GROUP_MODE` | `telegram.groupMode` | `any` (default) runs every allowed group message; `mention` admits native bot mentions and replies to bot messages. Direct chats and commands are unaffected. |
+| `MONO_AGENT_TELEGRAM_STRIP_MENTION_TEXT` | `telegram.stripMentionText` | Remove the matching native @mention before the responder sees the text; default `true`. |
 | `MONO_AGENT_TELEGRAM_REACTIONS` | `telegram.reactions` | All-on/all-off boolean override for the lifecycle status reactions (👀 working / 👍 done / 👎 error). Granular per-state control (`{ working, done, error }`) is JSON-only. |
 | `MONO_AGENT_TELEGRAM_IP_FAMILY` | `telegram.transport.ipFamily` | Pin the Bot API HTTP client to IPv4 (`4`) or IPv6 (`6`); omit for dual-stack. Workaround for a broken IPv6 route to `api.telegram.org`. |
 | `MONO_AGENT_TELEGRAM_POLL_WATCHDOG_MS` | `telegram.pollWatchdogMs` | Poll-liveness watchdog window (ms); default `120000`, `0` disables. Force-restarts a runner that stops delivering updates without crashing. |

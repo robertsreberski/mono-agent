@@ -42,6 +42,8 @@ describe("loadTelegramAdapterConfig", () => {
       botToken: "123456:json-token",
       allowedChatIds: ["111", "222"],
       allowAllChats: false,
+      groupMode: "any",
+      stripMentionText: true,
     });
   });
 
@@ -99,6 +101,8 @@ describe("loadTelegramAdapterConfig", () => {
       botToken: "123456:env-token",
       allowedChatIds: [],
       allowAllChats: true,
+      groupMode: "any",
+      stripMentionText: true,
     });
   });
 
@@ -117,6 +121,8 @@ describe("loadTelegramAdapterConfig", () => {
       botToken: "",
       allowedChatIds: [],
       allowAllChats: false,
+      groupMode: "any",
+      stripMentionText: true,
     });
   });
 
@@ -136,7 +142,45 @@ describe("loadTelegramAdapterConfig", () => {
       botToken: "",
       allowedChatIds: [],
       allowAllChats: false,
+      groupMode: "any",
+      stripMentionText: true,
     });
+  });
+
+  it("parses mention-only group triggers from JSON and env overrides", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(path, JSON.stringify({
+      telegram: {
+        enabled: true,
+        botToken: "123456:json-token",
+        allowedChatIds: ["111"],
+        groupMode: "mention",
+        stripMentionText: true,
+      },
+    }), "utf8");
+
+    const fromJson = await loadTelegramAdapterConfig({ env: {}, jsonPath: path });
+    expect(fromJson).toMatchObject({ groupMode: "mention", stripMentionText: true });
+
+    const fromEnv = await loadTelegramAdapterConfig({
+      env: {
+        MONO_AGENT_TELEGRAM_GROUP_MODE: "any",
+        MONO_AGENT_TELEGRAM_STRIP_MENTION_TEXT: "false",
+      },
+      jsonPath: path,
+    });
+    expect(fromEnv).toMatchObject({ groupMode: "any", stripMentionText: false });
+  });
+
+  it("rejects an unknown Telegram group trigger mode", async () => {
+    await expect(loadTelegramAdapterConfig({
+      env: {
+        MONO_AGENT_TELEGRAM_ENABLED: "true",
+        MONO_AGENT_TELEGRAM_BOT_TOKEN: "123456:token",
+        MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS: "true",
+        MONO_AGENT_TELEGRAM_GROUP_MODE: "sometimes",
+      },
+    })).rejects.toBeInstanceOf(TelegramAdapterConfigError);
   });
 
   it("parses transport.ipFamily and pollWatchdogMs from JSON", async () => {
@@ -467,6 +511,8 @@ describe("redactTelegramAdapterConfig", () => {
       botToken: { present: true, redacted: true },
       allowedChatIds: { count: 2 },
       allowAllChats: false,
+      groupMode: "any",
+      stripMentionText: true,
     });
   });
 });

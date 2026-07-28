@@ -35,7 +35,7 @@ import {
 } from "./adapter.js";
 import { parseTelegramAskUserCallbackData, telegramAskUserCallbackData } from "./ask-user.js";
 import { isTelegramReplyCallbackData } from "./reply-options.js";
-import type { TelegramCommandConfig, TelegramReactionsConfig } from "./config.js";
+import type { TelegramCommandConfig, TelegramGroupTriggerMode, TelegramReactionsConfig } from "./config.js";
 import { createGrammyTelegramApi } from "./grammy-client.js";
 import {
   createSecretSafeTelegramLogger,
@@ -46,7 +46,13 @@ import {
   TelegramMessageStream,
   type TelegramMessageStreamOptions,
 } from "./message-stream.js";
-import type { TelegramChatId, TelegramMessage, TelegramSendMessageParams, TelegramUpdate } from "./types.js";
+import type {
+  TelegramChatId,
+  TelegramMessage,
+  TelegramMessageEntity,
+  TelegramSendMessageParams,
+  TelegramUpdate,
+} from "./types.js";
 
 type RunnerFetchOptions = NonNullable<NonNullable<RunOptions<Context>["runner"]>["fetch"]>;
 type AllowedUpdates = NonNullable<RunnerFetchOptions["allowed_updates"]>;
@@ -305,6 +311,10 @@ export interface CreateTelegramBotOptions {
   readonly responder: AgentResponder;
   readonly allowedChatIds?: readonly TelegramChatId[];
   readonly allowAllChats?: boolean;
+  /** In groups, run on every message (`any`) or only native mentions/replies (`mention`). */
+  readonly groupMode?: TelegramGroupTriggerMode;
+  /** Remove matching native @mentions before passing text to the responder. Defaults to true. */
+  readonly stripMentionText?: boolean;
   readonly stream?: TelegramAdapterStreamOptions;
   readonly messages?: TelegramAdapterMessages;
   readonly logger?: TelegramAdapterLogger;
@@ -541,6 +551,133 @@ function telegramButtonLabel(value: string): string {
     : `${points.slice(0, TELEGRAM_BUTTON_LABEL_CODE_POINTS - 1).join("")}…`;
 }
 
+interface TelegramBotIdentity {
+  readonly id: number;
+  readonly username?: string;
+}
+
+interface TelegramMentionRange {
+  readonly offset: number;
+  readonly length: number;
+}
+
+/**
+ * Apply the opt-in group trigger boundary to one message. Telegram's native
+ * entity offsets and JavaScript string indexes are both UTF-16 code units, so
+ * the Bot API offsets can be used directly with `slice` without corrupting
+ * emoji or other astral characters before the mention.
+ */
+function resolveTelegramGroupTrigger(
+  message: TelegramMessage,
+  bot: TelegramBotIdentity,
+  groupMode: TelegramGroupTriggerMode,
+  stripMentionText: boolean,
+): TelegramMessage | undefined {
+  if (!isTelegramGroup(message) || groupMode === "any") {
+    return message;
+  }
+
+  const textRanges = matchingTelegramMentionRanges(message.text, message.entities, bot);
+  const captionRanges = matchingTelegramMentionRanges(message.caption, message.caption_entities, bot);
+  const repliedToBot = telegramReplyTargetsBot(message, bot);
+  if (!repliedToBot && textRanges.length === 0 && captionRanges.length === 0) {
+    return undefined;
+  }
+  if (!stripMentionText || (textRanges.length === 0 && captionRanges.length === 0)) {
+    return message;
+  }
+
+  return {
+    ...message,
+    ...(message.text === undefined
+      ? {}
+      : { text: stripTelegramMentionRanges(message.text, textRanges) }),
+    ...(message.caption === undefined
+      ? {}
+      : { caption: stripTelegramMentionRanges(message.caption, captionRanges) }),
+  };
+}
+
+/** Resolve one album as a unit: any matching part admits all of its media. */
+function resolveTelegramAlbumTrigger(
+  messages: readonly TelegramMessage[],
+  bot: TelegramBotIdentity,
+  groupMode: TelegramGroupTriggerMode,
+  stripMentionText: boolean,
+): readonly TelegramMessage[] | undefined {
+  if (groupMode === "any" || !messages.some(isTelegramGroup)) {
+    return messages;
+  }
+
+  const admitted = messages.some((message) =>
+    telegramReplyTargetsBot(message, bot)
+    || matchingTelegramMentionRanges(message.text, message.entities, bot).length > 0
+    || matchingTelegramMentionRanges(message.caption, message.caption_entities, bot).length > 0
+  );
+  if (!admitted) {
+    return undefined;
+  }
+  if (!stripMentionText) {
+    return messages;
+  }
+  return messages.map((message) =>
+    resolveTelegramGroupTrigger(message, bot, "mention", true) ?? message
+  );
+}
+
+function isTelegramGroup(message: TelegramMessage): boolean {
+  return message.chat.type === "group" || message.chat.type === "supergroup";
+}
+
+function telegramReplyTargetsBot(message: TelegramMessage, bot: TelegramBotIdentity): boolean {
+  const sender = message.reply_to_message?.from;
+  if (sender?.id === bot.id) {
+    return true;
+  }
+  return sender?.username !== undefined
+    && bot.username !== undefined
+    && sender.username.toLocaleLowerCase("en-US") === bot.username.toLocaleLowerCase("en-US");
+}
+
+function matchingTelegramMentionRanges(
+  text: string | undefined,
+  entities: readonly TelegramMessageEntity[] | undefined,
+  bot: TelegramBotIdentity,
+): TelegramMentionRange[] {
+  if (text === undefined || entities === undefined) {
+    return [];
+  }
+  const botMention = bot.username === undefined ? undefined : `@${bot.username}`.toLocaleLowerCase("en-US");
+  const ranges: TelegramMentionRange[] = [];
+  for (const entity of entities) {
+    if (
+      !Number.isInteger(entity.offset)
+      || !Number.isInteger(entity.length)
+      || entity.offset < 0
+      || entity.length <= 0
+      || entity.offset + entity.length > text.length
+    ) {
+      continue;
+    }
+    const nativeMentionMatches = entity.type === "mention"
+      && botMention !== undefined
+      && text.slice(entity.offset, entity.offset + entity.length).toLocaleLowerCase("en-US") === botMention;
+    const textMentionMatches = entity.type === "text_mention" && entity.user?.id === bot.id;
+    if (nativeMentionMatches || textMentionMatches) {
+      ranges.push({ offset: entity.offset, length: entity.length });
+    }
+  }
+  return ranges;
+}
+
+function stripTelegramMentionRanges(text: string, ranges: readonly TelegramMentionRange[]): string {
+  let stripped = text;
+  for (const range of [...ranges].sort((left, right) => right.offset - left.offset)) {
+    stripped = `${stripped.slice(0, range.offset)} ${stripped.slice(range.offset + range.length)}`;
+  }
+  return stripped.replace(/\s+/gu, " ").trim();
+}
+
 /**
  * Build a grammY bot that routes authorized text messages to an agent responder.
  *
@@ -558,6 +695,8 @@ function telegramButtonLabel(value: string): string {
 export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBotController {
   const allowAllChats = options.allowAllChats === true;
   const allowedChatIds = new Set((options.allowedChatIds ?? []).map((id) => String(id)));
+  const groupMode = options.groupMode ?? "any";
+  const stripMentionText = options.stripMentionText ?? true;
   if (!allowAllChats && allowedChatIds.size === 0) {
     throw new TypeError("createTelegramBot requires allowedChatIds or allowAllChats: true.");
   }
@@ -1367,14 +1506,24 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       return;
     }
 
+    const triggeredMessage = resolveTelegramGroupTrigger(
+      telegramMessage,
+      { id: ctx.me.id, username: ctx.me.username },
+      groupMode,
+      stripMentionText,
+    );
+    if (triggeredMessage === undefined) {
+      return;
+    }
+
     // A plain-text reply while AskUser is pending is a custom answer. Consume it
     // before admission: the asking turn holds this chat's queue slot, so queueing
     // the reply behind it would deadlock. Slash commands remain commands.
     if (
       options.pendingAsks !== undefined &&
-      typeof telegramMessage.text === "string" &&
-      telegramMessage.text.trim().length > 0 &&
-      !telegramMessage.text.trimStart().startsWith("/")
+      typeof triggeredMessage.text === "string" &&
+      triggeredMessage.text.trim().length > 0 &&
+      !triggeredMessage.text.trimStart().startsWith("/")
     ) {
       const conversationId = `telegram:${String(chatId)}`;
       const snapshot = await options.pendingAsks.getPendingAsk(conversationId);
@@ -1389,7 +1538,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           answers: [{
             questionId: question.id,
             selectedOptionIds,
-            customReply: telegramMessage.text,
+            customReply: triggeredMessage.text,
           }],
         });
         if (!result.accepted) {
@@ -1401,7 +1550,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       }
     }
 
-    const input = normalizeTelegramMessageInput(telegramMessage);
+    const input = normalizeTelegramMessageInput(triggeredMessage);
     if (input === undefined) {
       await ctx.reply(messages.unsupportedText);
       return;
@@ -1417,8 +1566,8 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
     if (
       input.attachments.length === 0
-      && typeof telegramMessage.text === "string"
-      && telegramMessage.text.trim().length > 0
+      && typeof triggeredMessage.text === "string"
+      && triggeredMessage.text.trim().length > 0
       && options.responder.offerLiveInput !== undefined
       && !queue.full
     ) {
@@ -1426,7 +1575,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       const reserved = queue.run(async () => {
         const next = await decision.promise;
         if (next === "run") {
-          await runAgentTurn(ctx, telegramMessage, input, controller);
+          await runAgentTurn(ctx, triggeredMessage, input, controller);
           return;
         }
         if (reactions !== undefined) {
@@ -1442,9 +1591,9 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       try {
         offer = options.responder.offerLiveInput({
           conversationId: `telegram:${String(chatId)}`,
-          id: `${String(chatId)}:${String(telegramMessage.message_id)}`,
-          text: telegramMessage.text,
-          receivedAt: new Date((telegramMessage.date ?? Math.floor(Date.now() / 1_000)) * 1_000).toISOString(),
+          id: `${String(chatId)}:${String(triggeredMessage.message_id)}`,
+          text: triggeredMessage.text,
+          receivedAt: new Date((triggeredMessage.date ?? Math.floor(Date.now() / 1_000)) * 1_000).toISOString(),
         });
       } catch (error) {
         logger?.debug?.("Telegram live-input offer failed; running as a queued turn.", {
@@ -1472,7 +1621,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
           () => decision.resolve("run"),
         );
         if (reactions?.working === true) {
-          await applyReaction(chatId, telegramMessage.message_id, REACTION_WORKING);
+          await applyReaction(chatId, triggeredMessage.message_id, REACTION_WORKING);
         }
         void reserved.catch((error: unknown) => {
           logger?.error?.("Telegram deferred live-input fallback failed.", {
@@ -1497,7 +1646,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     }
     await admit(
       chatId,
-      () => runAgentTurn(ctx, telegramMessage, input, controller),
+      () => runAgentTurn(ctx, triggeredMessage, input, controller),
       // Over-cap: the task was rejected before entering the queue, so runAgentTurn
       // (and its finally) never ran. Unregister the eagerly created controller so
       // it does not leak in activeControllers, then reply with the busy terminal.
@@ -1600,8 +1749,18 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       }
     }
 
-    const primary = parts[0];
-    const input = mergeTelegramMessageInputs(parts);
+    const triggeredParts = resolveTelegramAlbumTrigger(
+      parts,
+      { id: ctx.me.id, username: ctx.me.username },
+      groupMode,
+      stripMentionText,
+    );
+    if (triggeredParts === undefined) {
+      settleAsNoop();
+      return;
+    }
+    const primary = triggeredParts[0];
+    const input = mergeTelegramMessageInputs(triggeredParts);
     if (primary === undefined || input === undefined) {
       settleAsNoop();
       await ctx.reply(messages.unsupportedText);

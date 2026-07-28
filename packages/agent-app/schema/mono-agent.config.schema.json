@@ -2268,6 +2268,26 @@
           "type": "boolean",
           "default": false
         },
+        "groupMode": {
+          "description": "Group-message trigger rule: `any` runs every allowed group message; `mention` runs only native @mentions of the bot and replies to its messages. Direct chats and commands are unaffected.",
+          "examples": [
+            "mention"
+          ],
+          "type": "string",
+          "default": "any",
+          "enum": [
+            "any",
+            "mention"
+          ]
+        },
+        "stripMentionText": {
+          "description": "Removes matching native @mentions from responder text in `mention` mode; replies without a mention are unchanged.",
+          "examples": [
+            "true"
+          ],
+          "type": "boolean",
+          "default": true
+        },
         "transport": {
           "type": "object",
           "additionalProperties": false,

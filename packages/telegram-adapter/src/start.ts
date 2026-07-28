@@ -17,7 +17,7 @@ import {
   type TelegramPendingAsks,
   type TelegramRuntimeControls,
 } from "./bot.js";
-import type { TelegramCommandConfig, TelegramReactionsConfig } from "./config.js";
+import type { TelegramCommandConfig, TelegramGroupTriggerMode, TelegramReactionsConfig } from "./config.js";
 import type { TelegramChatId } from "./types.js";
 
 export type { TelegramNotifyOptions, TelegramNotifyResult, TelegramPendingAsks } from "./bot.js";
@@ -29,6 +29,10 @@ export interface TelegramAdapterStartOptions {
   readonly allowedChatIds?: readonly TelegramChatId[];
   /** Explicitly permit every chat. Leave off when using an allowlist. */
   readonly allowAllChats?: boolean;
+  /** In groups, run on every message (`any`) or only native mentions/replies (`mention`). */
+  readonly groupMode?: TelegramGroupTriggerMode;
+  /** Strip the matching native @mention before passing text to the responder. */
+  readonly stripMentionText?: boolean;
   /** Responder the bot routes authorized text messages to. */
   readonly responder: AgentResponder;
   /** Optional per-response stream tuning. */
@@ -127,6 +131,8 @@ function toCreateOptions(options: TelegramAdapterStartOptions): CreateTelegramBo
     responder: options.responder,
     ...(options.allowedChatIds === undefined ? {} : { allowedChatIds: options.allowedChatIds }),
     ...(options.allowAllChats === undefined ? {} : { allowAllChats: options.allowAllChats }),
+    ...(options.groupMode === undefined ? {} : { groupMode: options.groupMode }),
+    ...(options.stripMentionText === undefined ? {} : { stripMentionText: options.stripMentionText }),
     ...(options.stream === undefined ? {} : { stream: options.stream }),
     ...(options.messages === undefined ? {} : { messages: options.messages }),
     ...(options.logger === undefined ? {} : { logger: options.logger }),

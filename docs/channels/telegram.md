@@ -18,7 +18,8 @@ Add a `telegram` block to your `mono-agent.config.json`. The channel is opt-in: 
   "telegram": {
     "enabled": true,
     "allowedChatIds": ["123456789"],
-    "allowAllChats": false
+    "allowAllChats": false,
+    "groupMode": "mention"
   }
 }
 ```
@@ -29,6 +30,8 @@ Add a `telegram` block to your `mono-agent.config.json`. The channel is opt-in: 
 | `botToken` | string | — | Bot token issued by [BotFather](https://t.me/BotFather). An effective value is required when enabled. Inline config remains accepted for compatibility; new source configs should set `MONO_AGENT_TELEGRAM_BOT_TOKEN` in `.env`. |
 | `allowedChatIds` | string[] | — | Chat IDs (as strings) permitted to talk to the agent. |
 | `allowAllChats` | boolean | `false` | When `true`, accept any chat; a simultaneous allowlist is retained but no longer restrictive. |
+| `groupMode` | `any` \| `mention` | `any` | Group trigger boundary. `mention` admits native @mentions of this bot and replies to its messages; direct chats and commands are unaffected. |
+| `stripMentionText` | boolean | `true` | In `mention` mode, remove the matching native @mention before sending text to the agent. |
 | `apiRoot` | HTTP(S) URL | Telegram hosted API | Self-hosted Bot API root used for Bot API calls and downloads. |
 | `attachments.maxBytes` | number | `20971520` | Inbound decoded-byte cap. |
 | `attachments.downloadTimeoutMs` | number | `30000` | Per-file download timeout on the URL path. |
@@ -60,6 +63,8 @@ See [Environment Variables](/config/env-vars/).
 | `MONO_AGENT_TELEGRAM_BOT_TOKEN` | `telegram.botToken` |
 | `MONO_AGENT_TELEGRAM_ALLOWED_CHAT_IDS` | `telegram.allowedChatIds` (comma-separated) |
 | `MONO_AGENT_TELEGRAM_ALLOW_ALL_CHATS` | `telegram.allowAllChats` |
+| `MONO_AGENT_TELEGRAM_GROUP_MODE` | `telegram.groupMode` |
+| `MONO_AGENT_TELEGRAM_STRIP_MENTION_TEXT` | `telegram.stripMentionText` |
 | `MONO_AGENT_TELEGRAM_API_ROOT` | `telegram.apiRoot` |
 | `MONO_AGENT_TELEGRAM_ATTACHMENT_MAX_BYTES` | `telegram.attachments.maxBytes` |
 | `MONO_AGENT_TELEGRAM_ATTACHMENT_DOWNLOAD_TIMEOUT_MS` | `telegram.attachments.downloadTimeoutMs` |
@@ -92,9 +97,23 @@ See [Environment Variables](/config/env-vars/).
    mono-agent start
    ```
 
+### Mention-only groups
+
+For a family or travel-planning group, allowlist its negative chat ID and set
+`groupMode: "mention"`. Telegram must still deliver group updates to the bot:
+make it a group administrator or disable its privacy mode with BotFather. The
+adapter then applies the local trigger boundary before pending questions, media
+albums, live-input steering, or agent admission. Plain group conversation is
+silently ignored; a native `@BotUsername` mention or a reply to one of the bot's
+messages starts a turn. Built-in and configured slash commands remain active.
+
+`groupMode: "any"` is the backward-compatible default and runs every message in
+an allowed group. Keep `allowedChatIds` narrow whichever trigger mode you use.
+
 ### Smoke test
 
-Send `Hello` from an allowed chat. You should see the `typing…` indicator and
+Send `Hello` from an allowed direct chat, or mention the bot in a group configured
+with `groupMode: "mention"`. You should see the `typing…` indicator and
 then the final answer. A turn that uses tools first shows one temporary activity
 message; the final answer arrives separately and the activity message disappears.
 If nothing happens:

@@ -329,6 +329,15 @@ describe("config reference", () => {
       default: "auto",
       enum: ["auto", "sse", "websocket", "websocket-cached"],
     });
+    expect(schemaNode(schema, "telegram", "groupMode")).toMatchObject({
+      type: "string",
+      default: "any",
+      enum: ["any", "mention"],
+    });
+    expect(schemaNode(schema, "telegram", "stripMentionText")).toMatchObject({
+      type: "boolean",
+      default: true,
+    });
   });
 
   it("models durable continuations as a strict fixed-port host-owned block", () => {
