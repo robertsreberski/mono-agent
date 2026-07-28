@@ -1,5 +1,25 @@
 # Release notes
 
+## 0.15.3 — Configured Codex MCP approvals (2026-07-28)
+
+### Direct Codex MCP calls
+
+- Direct Codex now accepts its synthesized `mcp_tool_call` elicitation only
+  when the server name matches a valid MCP server explicitly forwarded by the
+  runtime. Plan-mode calls can therefore reach configured Worklab-style tools
+  without aborting the turn.
+- Unknown or inherited servers, invalid server definitions, genuine downstream
+  MCP form/URL elicitations, unrelated app-server requests, and exact no-tool
+  probes remain fail-closed.
+
+### Safety and compatibility
+
+- Documentation now makes the authorization boundary explicit: direct Codex
+  `permissionMode: "plan"` constrains Codex-owned command and filesystem work,
+  but does not sandbox side effects implemented by a declared MCP server.
+- All 22 catalog-publishable packages move together to 0.15.3. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.15.2 — Wildcard tool-policy compatibility (2026-07-28)
 
 ### Runtime policy discovery
