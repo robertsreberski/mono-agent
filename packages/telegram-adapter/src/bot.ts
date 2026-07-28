@@ -1399,6 +1399,14 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         return;
       }
       if (!isTelegramReplyCallbackData(data)) {
+        // A tap that matches no protocol looks identical to a dead button: the spinner
+        // clears and nothing else happens. Say so in the log, because the usual cause is a
+        // producer still emitting a retired protocol — a card built by an out-of-repo
+        // helper, or a keyboard that outlived the release that renamed its payload. Only
+        // the prefix is recorded; the rest of the payload can carry caller-chosen data.
+        logger?.warn?.("Telegram callback data matched no known protocol; the tap did nothing.", {
+          prefix: callbackDataPrefix(data),
+        });
         await answerCallbackQuietly(ctx);
         return;
       }
@@ -2819,6 +2827,17 @@ async function readBodyWithCap(
  * the tapped message's own inline keyboard. Returns undefined when the keyboard or
  * a matching button is absent. Pure so it can be unit-tested directly.
  */
+/**
+ * The leading protocol token of a `callback_query` payload, bounded and sanitized so an
+ * unrecognized tap can be logged without echoing whatever the producer packed after it.
+ */
+function callbackDataPrefix(data: string): string {
+  const separator = data.indexOf(":");
+  const prefix = separator === -1 ? data : data.slice(0, separator + 1);
+  const bounded = prefix.slice(0, 16);
+  return /^[\w:-]*$/u.test(bounded) ? bounded : "(unprintable)";
+}
+
 function labelForCallbackData(replyMarkup: unknown, data: string): string | undefined {
   const keyboard = (
     replyMarkup as

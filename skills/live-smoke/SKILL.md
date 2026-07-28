@@ -16,6 +16,7 @@ generic merge ritual.
 | Web server, API, PWA | C. Web via curl |
 | Readiness worker transport | D. Real worker with local protocol server |
 | Documentation MCP package / stdio boundary | E. Packed documentation MCP |
+| Wire contract another process parses (`callback_data`, event/tool names, on-disk shapes) | F. Contract round-trip |
 | Provider routing or provider-specific behavior | A with the explicitly approved real provider |
 
 Add another scenario only when the diff independently changes another live
@@ -130,6 +131,27 @@ pnpm --filter @mono-agent/docs-mcp run smoke
 The smoke makes no provider call and does not register an MCP server in Codex,
 Claude Code, or a user config. Success requires `"transport":"packed-stdio"`
 and a `mono-agent-docs://chunk/...` top result in the emitted JSON.
+
+## F. Contract round-trip (producer → consumer, across processes)
+
+Required by `verify-green` §1a whenever a wire contract changes. Unit tests
+cannot see the far side: they assert what the producer emits, not that anything
+still acts on it. Emit the real payload and confirm the consumer responds.
+
+For a Telegram inline keyboard, send one card carrying the new `callback_data`
+through the throwaway agent from scenario A, tap the button, and require **both**:
+
+- a new turn appears in the agent's history quoting the card and the button label
+  (`Re: "…" — I chose: <label>`), and
+- no `callback data matched no known protocol` warning in the agent log — the
+  adapter emits that on every unrecognized tap, so its presence *is* the failure.
+
+A tap that only clears the spinner is a dead button. That is what a retired
+protocol looks like from the outside, and it is the exact failure #527 shipped.
+
+Apply the same shape to other contracts: write the value with the producer, read
+it back with the real consumer, and assert the consumer acted — never that the
+literal matches.
 
 ## Gotchas
 
