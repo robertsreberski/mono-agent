@@ -13,6 +13,7 @@
     "pnpm:devPreinstall": "node scripts/node-version.mjs && node scripts/pnpm-release-age-policy.mjs",
     "preinstall": "node scripts/node-version.mjs && node scripts/pnpm-release-age-policy.mjs",
     "build": "node scripts/build-with-provenance.mjs",
+    "clean": "node scripts/clean-dist.mjs",
     "check:node": "node scripts/node-version.mjs",
     "check:pnpm-policy": "node scripts/pnpm-release-age-policy.mjs",
     "check:secrets": "node scripts/check-secrets.mjs",
