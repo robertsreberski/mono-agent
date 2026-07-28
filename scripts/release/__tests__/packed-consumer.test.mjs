@@ -123,6 +123,113 @@ describe("packed consumer verification", () => {
     ]);
   });
 
+  test("keeps provider interoperability on the runtime-owned public boundary", async () => {
+    const runtimeManifestUrl = new URL(
+      "../../../packages/agent-runtime/package.json",
+      import.meta.url,
+    );
+    const runtime = JSON.parse(fs.readFileSync(runtimeManifestUrl, "utf8"));
+    const packedRuntime = {
+      name: runtime.name,
+      tarballPath: "/tmp/mono-agent-agent-runtime.tgz",
+    };
+    const consumer = buildIsolatedConsumerManifest(
+      {
+        name: "runtime-only-consumer",
+        version: "0.0.0",
+        private: true,
+        type: "module",
+        engines: { node: ">=22.19.0" },
+      },
+      packedRuntime,
+      [packedRuntime],
+    );
+
+    expect(consumer.dependencies).toEqual({
+      "@mono-agent/agent-runtime": "file:/tmp/mono-agent-agent-runtime.tgz",
+    });
+    expect(consumer.dependencies).not.toHaveProperty("@earendil-works/pi-ai");
+    expect(consumer.dependencies).not.toHaveProperty("@anthropic-ai/claude-agent-sdk");
+    expect(runtime.dependencies).toMatchObject({
+      "@earendil-works/pi-ai": "0.80.6",
+      "@anthropic-ai/claude-agent-sdk": "0.3.206",
+    });
+
+    const packedImports = publicExportSpecifiers(runtime.name, runtime);
+    expect(packedImports).toEqual(expect.arrayContaining([
+      "@mono-agent/agent-runtime",
+      "@mono-agent/agent-runtime/ai",
+      "@mono-agent/agent-runtime/ai/providers/claude-sdk.js",
+    ]));
+
+    const ai = await import(publicRuntimeExportUrl(runtimeManifestUrl, runtime, "./ai"));
+    for (const exportName of [
+      "getPiBuiltinModel",
+      "listPiBuiltinModels",
+      "loginPiOAuth",
+      "reasoningLevelsForPiModel",
+      "resolvePiOAuthApiKey",
+    ]) {
+      expect(ai[exportName], `${exportName} must be exported by the public AI barrel`).toBeTypeOf("function");
+    }
+    const listedPiModels = ai.listPiBuiltinModels("anthropic");
+    expect(listedPiModels.length).toBeGreaterThan(0);
+    expect(ai.getPiBuiltinModel("anthropic", listedPiModels[0].id)).toEqual(listedPiModels[0]);
+    expect(listedPiModels.some((model) =>
+      Object.values(model.thinkingLevelMap || {}).some((value) => value === null),
+    )).toBe(true);
+    const tieredPiModel = ai.listPiBuiltinModels("openai").find(
+      (model) => Array.isArray(model.cost?.tiers) && model.cost.tiers.length > 0,
+    );
+    expect(tieredPiModel?.cost.tiers[0]).toMatchObject({
+      inputTokensAbove: expect.any(Number),
+      input: expect.any(Number),
+      output: expect.any(Number),
+      cacheRead: expect.any(Number),
+      cacheWrite: expect.any(Number),
+    });
+
+    const claude = await import(publicRuntimeExportUrl(
+      runtimeManifestUrl,
+      runtime,
+      "./ai/providers/claude-sdk.js",
+    ));
+    const calls = [];
+    let closeCount = 0;
+    const claudeAgentQuery = (input) => {
+      calls.push(input);
+      const stream = (async function* () {
+        yield {
+          type: "result",
+          subtype: "success",
+          result: "injected query result",
+          usage: { input_tokens: 1, output_tokens: 2 },
+          duration_ms: 3,
+          num_turns: 1,
+          total_cost_usd: 0,
+        };
+      })();
+      stream.close = () => {
+        closeCount += 1;
+      };
+      return stream;
+    };
+
+    const result = await claude.generateClaudeResponse("system", {
+      model: { model: "claude-test", reference: "claude:claude-test" },
+      messages: [{ role: "user", content: "hello" }],
+      cwd: os.tmpdir(),
+      claudeAgentQuery,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(result).toMatchObject({
+      text: "injected query result",
+      failureKind: null,
+    });
+    expect(closeCount).toBe(1);
+  });
+
   test("derives the complete declared internal dependency closure", () => {
     const manifests = new Map([
       ["@mono-agent/target", { dependencies: { "@mono-agent/direct": "1.2.3" } }],
@@ -227,6 +334,23 @@ describe("packed consumer verification", () => {
     ).not.toThrow();
   });
 
+  test("rejects an incompatible host Pi copy that rewires Pi Agent Core", () => {
+    const fixture = packedDependencyFixture({
+      rootPiVersion: "0.80.8",
+      nestedRuntimePiVersion: "0.80.6",
+    });
+    const runtimePackages = fixture.packages.filter(
+      (pkg) => pkg.name === "@mono-agent/agent-runtime",
+    );
+
+    expect(runtimePackages).toHaveLength(1);
+    expect(() =>
+      assertPackedDependencyResolution(fixture.consumerDir, runtimePackages),
+    ).toThrow(
+      "Packed consumer resolved @earendil-works/pi-ai@0.80.8 from @earendil-works/pi-agent-core@0.80.6; expected 0.80.6",
+    );
+  });
+
   test("rejects a packed manifest that can float to a newer Pi runtime", () => {
     const fixture = packedDependencyFixture({ appPiRange: "^0.80.6" });
 
@@ -272,6 +396,8 @@ function packedDependencyFixture({
   appPiRange = "0.80.6",
   installedTuiVersion = "0.79.10",
   nestedCorePiVersion,
+  nestedRuntimePiVersion,
+  rootPiVersion = "0.80.6",
   tuiPiRange = "0.79.10",
 } = {}) {
   const consumerDir = fs.mkdtempSync(path.join(os.tmpdir(), "packed-dependency-policy-"));
@@ -283,7 +409,7 @@ function packedDependencyFixture({
     version: "1.2.3",
     dependencies: { "@earendil-works/pi-ai": appPiRange },
   });
-  writePackage(modulesDir, {
+  const runtimeDir = writePackage(modulesDir, {
     name: "@mono-agent/agent-runtime",
     version: "1.2.3",
     dependencies: {
@@ -303,12 +429,18 @@ function packedDependencyFixture({
   });
   writePackage(modulesDir, {
     name: "@earendil-works/pi-ai",
-    version: "0.80.6",
+    version: rootPiVersion,
   });
   writePackage(modulesDir, {
     name: "@earendil-works/pi-tui",
     version: installedTuiVersion,
   });
+  if (nestedRuntimePiVersion !== undefined) {
+    writePackage(path.join(runtimeDir, "node_modules"), {
+      name: "@earendil-works/pi-ai",
+      version: nestedRuntimePiVersion,
+    });
+  }
   if (nestedCorePiVersion !== undefined) {
     writePackage(path.join(coreDir, "node_modules"), {
       name: "@earendil-works/pi-ai",
@@ -403,6 +535,17 @@ function importPackage(directory, name) {
     cwd: directory,
     encoding: "utf8",
   });
+}
+
+function publicRuntimeExportUrl(manifestUrl, manifest, subpath) {
+  const target = manifest.exports?.[subpath];
+  const runtimeTarget = typeof target === "string"
+    ? target
+    : target?.default ?? target?.import;
+  if (typeof runtimeTarget !== "string") {
+    throw new Error(`Runtime package export ${subpath} has no importable runtime target.`);
+  }
+  return new URL(runtimeTarget, manifestUrl);
 }
 
 function writeJson(filePath, value) {

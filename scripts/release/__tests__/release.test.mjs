@@ -506,6 +506,27 @@ describe("current launch manifest", () => {
     expect(result.publishablePackages.every((pkg) => pkg.version === version)).toBe(true);
   });
 
+  test("keeps the runtime migration baseline aligned with the package version", () => {
+    const runtime = JSON.parse(fs.readFileSync(
+      new URL("../../../packages/agent-runtime/package.json", import.meta.url),
+      "utf8",
+    ));
+    const migration = fs.readFileSync(
+      new URL("../../../packages/agent-runtime/MIGRATION.md", import.meta.url),
+      "utf8",
+    );
+    const version = /^(\d+)\.(\d+)\.\d+(?:[-+].*)?$/u.exec(runtime.version);
+
+    expect(version).not.toBeNull();
+    if (version === null) {
+      throw new Error(`agent-runtime version is not valid semver: ${runtime.version}`);
+    }
+    const expectedBaseline = `${version[1]}.${version[2]}.x`;
+    expect(migration).toContain(
+      `This guide describes the published \`${expectedBaseline}\` package contract.`,
+    );
+  });
+
   test("keeps canonical Pi guidance aligned with the enforced exact pins", () => {
     const guidance = fs.readFileSync(
       new URL("../../../skills/pi-upstream-recon/SKILL.md", import.meta.url),
@@ -531,9 +552,11 @@ describe("current launch manifest", () => {
       `@earendil-works/pi-ai\` and \`@earendil-works/pi-agent-core\` are now \`${piAi}\``,
     );
     expect(migration).toContain(
-      `@earendil-works/pi-agent-core\` (\`${piAi}\`)`,
+      `The runtime keeps Pi AI and Pi Agent Core exact-pinned at \`${piAi}\``,
     );
-    expect(migration).toContain(`Pi bump \`^0.74.0\` → \`${piAi}\` in lockstep`);
+    expect(migration).toContain(
+      `exact \`${piAi}\` compatibility pin inside the runtime`,
+    );
     expect(migration).not.toContain("`^0.80.x`");
   });
 

@@ -131,6 +131,7 @@
  * @property {string} [executionMode]                     "sdk" (default) or "cli"; selects which bridge variant handles the model.
  * @property {string} [sessionId]                         Host conversation/session key for resumable bridges.
  * @property {string} [providerSessionId]                 Provider-owned resume id for resumable bridges.
+ * @property {typeof import("@anthropic-ai/claude-agent-sdk").query} [claudeAgentQuery] Advanced programmatic/test seam for the Claude SDK route; omitted runs use the runtime's pinned SDK query implementation.
  * @property {boolean} [sessionKeepAlive]                 Keep resumable provider state alive after the turn.
  * @property {number} [sessionIdleTimeoutMs]              Idle TTL for resumable provider state.
  * @property {AsyncIterable<{body: string, id?: string, receivedAt?: string, acknowledge?: () => void, reject?: (error?: unknown) => void}>} [liveInput] Stream of in-flight user messages for steering an active run. Providers acknowledge only after accepting a message into the active turn.

@@ -748,6 +748,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
   const prompt = options.liveInput
     ? livePromptMessages({ initialPrompt: promptString, liveInput: options.liveInput, sessionId: reusableProviderSessionId || randomUUID(), prompts: options.prompts })
     : promptString;
+  const claudeAgentQuery = options.claudeAgentQuery ?? query;
   const providerRequestStartedAt = Date.now();
   emitEvent({
     type: "provider_request_started",
@@ -805,7 +806,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
   }
 
   try {
-    stream = query({ prompt: /** @type {any} */ (prompt), options: queryOptions });
+    stream = claudeAgentQuery({ prompt: /** @type {any} */ (prompt), options: queryOptions });
     for await (const event of stream) {
       const nextSessionId = sessionIdFromEvent(event);
       if (nextSessionId) providerSessionId = nextSessionId;

@@ -44,8 +44,24 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 - `packages/agent-runtime`: `@earendil-works/pi-ai` + `pi-agent-core` at `0.80.6`.
   This exact pair retains the runtime OAuth exports used by mono-agent;
   `pi-ai@0.80.8` turns `./oauth` into a type-only entry point.
+- Importing projects should not add their own Pi dependency merely to read
+  built-in models, reasoning levels, or OAuth helpers. Use the
+  runtime-owned façade exported from `@mono-agent/agent-runtime/ai`:
+  `listPiBuiltinModels`, `getPiBuiltinModel`, `reasoningLevelsForPiModel`,
+  `resolvePiOAuthApiKey`, and `loginPiOAuth`. The model APIs return cloned
+  snapshots, and the OAuth APIs do not expose Pi's mutable provider registry.
+  A consumer test that still imports Pi's faux helpers must use an isolated
+  fixture or the runtime's exact `0.80.6` as a development-only pin; a floating
+  host range can otherwise satisfy Pi Agent Core's upstream dependency with a
+  different copy.
 - `packages/tui`: `@earendil-works/pi-tui` at `0.79.10` — **intentionally behind**;
   the 0.80 pi-tui API breaks the TUI. Bumping it is its own project.
+
+Pi AI's `@anthropic-ai/sdk@0.91.1` pin cannot satisfy the Claude Agent SDK's
+`>=0.93.0` peer range. Two isolated Anthropic SDK versions are therefore the
+expected topology; do not deduplicate them manually. Consumer tests that need
+to replace Claude execution should pass `RuntimeRunOptions.claudeAgentQuery`
+instead of mocking the transitive Claude Agent SDK module.
 
 ## Bump procedure
 

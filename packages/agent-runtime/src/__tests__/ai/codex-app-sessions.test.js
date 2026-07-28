@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { createCodexAppServerClient, generateCodexAppResponse } from "../../ai/providers/codex-app.js";
 import { disposeAllProviderSessions, disposeProviderSession } from "../../ai/runtime/sessions.js";
@@ -69,6 +72,19 @@ function runOptions(factory, overrides = {}) {
     messages: [{ role: "user", content: "hi" }],
     codexClientFactory: factory,
     ...overrides,
+  };
+}
+
+function nonSettlingLiveInput() {
+  const iterator = {
+    next: vi.fn(() => new Promise(() => {})),
+    return: vi.fn(() => new Promise(() => {})),
+  };
+  return {
+    liveInput: {
+      [Symbol.asyncIterator]: () => iterator,
+    },
+    iterator,
   };
 }
 
@@ -706,6 +722,7 @@ describe("codex-app persistent sessions", () => {
   it("acknowledges live input only after turn/steer accepts it", async () => {
     const factory = stubClientFactory({ threadId: "thread-live-input" });
     factory.turnPlan.push("manual");
+    const emitted = [];
     let releaseInput = () => {};
     const inputReady = new Promise((resolve) => { releaseInput = resolve; });
     const acknowledge = vi.fn();
@@ -715,7 +732,10 @@ describe("codex-app persistent sessions", () => {
       yield { body: "Use the stricter constraint", id: "live-1", acknowledge, reject };
     })();
 
-    const pending = generateCodexAppResponse("SYS", runOptions(factory, { liveInput }));
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, {
+      liveInput,
+      onEvent: (event) => emitted.push(event),
+    }));
     await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
     releaseInput();
     await vi.waitFor(() => expect(
@@ -732,6 +752,229 @@ describe("codex-app persistent sessions", () => {
 
     factory.clients[0]?.finishTurn();
     await expect(pending).resolves.toMatchObject({ error: null, text: "hello" });
+    expect(emitted.some((event) => event.warning_kind === "live_input_failed")).toBe(false);
+  });
+
+  it("preserves accepted steering when the acknowledge callback throws", async () => {
+    const factory = stubClientFactory({ threadId: "thread-live-input-ack-throws" });
+    factory.turnPlan.push("manual");
+    const emitted = [];
+    const acknowledge = vi.fn(() => {
+      throw new Error(`acknowledge hook failed ${"x".repeat(4 * 1024)}`);
+    });
+    const reject = vi.fn();
+    const liveInput = (async function* () {
+      yield { body: "Keep the accepted steering", id: "live-ack-throws", acknowledge, reject };
+    })();
+
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, {
+      liveInput,
+      onEvent: (event) => emitted.push(event),
+    }));
+    await vi.waitFor(() => expect(
+      factory.clients[0]?.requests.some((request) => request.method === "turn/steer"),
+    ).toBe(true));
+    factory.clients[0].finishTurn();
+    const result = await pending;
+
+    expect(result).toMatchObject({ error: null, failureKind: null, text: "hello" });
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(reject).not.toHaveBeenCalled();
+    const warning = emitted.find((event) => event.warning_kind === "live_input_callback_failed");
+    expect(warning?.message).toContain("Live-input acknowledge callback failed");
+    expect(Buffer.byteLength(warning?.message || "")).toBeLessThanOrEqual(1_024);
+    expect(emitted.some((event) => event.warning_kind === "live_input_rejected")).toBe(false);
+    expect(emitted.some((event) => event.warning_kind === "live_input_failed")).toBe(false);
+  });
+
+  it("preserves native steering rejection when the reject callback throws", async () => {
+    const factory = stubClientFactory({ threadId: "thread-live-input-reject-throws" });
+    factory.turnPlan.push("manual");
+    let releaseInput = () => {};
+    const inputReady = new Promise((resolve) => { releaseInput = resolve; });
+    const emitted = [];
+    const acknowledge = vi.fn();
+    const reject = vi.fn(() => {
+      throw new Error("reject hook failed");
+    });
+    const liveInput = (async function* () {
+      await inputReady;
+      yield { body: "This steer will be rejected", id: "live-reject-throws", acknowledge, reject };
+    })();
+
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, {
+      liveInput,
+      onEvent: (event) => emitted.push(event),
+    }));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+    const nativeError = new Error("native turn/steer rejected");
+    client.request.mockImplementation(async (method, params) => {
+      client.requests.push({ method, params });
+      if (method === "turn/steer") throw nativeError;
+      return {};
+    });
+    releaseInput();
+    await vi.waitFor(() => expect(reject).toHaveBeenCalledTimes(1));
+    client.finishTurn();
+    const result = await pending;
+
+    expect(result).toMatchObject({ error: null, failureKind: null, text: "hello" });
+    expect(acknowledge).not.toHaveBeenCalled();
+    expect(reject).toHaveBeenCalledWith(nativeError);
+    expect(emitted).toContainEqual(expect.objectContaining({
+      type: "runtime_warning",
+      warning_kind: "live_input_rejected",
+      message: "native turn/steer rejected",
+    }));
+    expect(emitted).toContainEqual(expect.objectContaining({
+      type: "runtime_warning",
+      warning_kind: "live_input_callback_failed",
+      message: expect.stringContaining("Live-input reject callback failed"),
+    }));
+    expect(emitted.some((event) => event.warning_kind === "live_input_failed")).toBe(false);
+  });
+
+  it("settles transport failure while live-input next and return never settle", async () => {
+    const factory = stubClientFactory({ threadId: "thread-live-input-close" });
+    factory.turnPlan.push("manual");
+    const emitted = [];
+    const { liveInput, iterator } = nonSettlingLiveInput();
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, {
+      liveInput,
+      onEvent: (event) => emitted.push(event),
+    }));
+    await vi.waitFor(() => {
+      expect(factory.clients[0]?.finishTurn).toBeTruthy();
+      expect(iterator.next).toHaveBeenCalledTimes(1);
+    });
+
+    factory.clients[0].resolveClosed(new Error("codex app-server exited before completion"));
+    const result = await pending;
+
+    expect(result).toMatchObject({
+      failureKind: "provider_unavailable",
+      diagnostics: { codex_error_code: "codex_app_server_closed" },
+    });
+    expect(result.error).toContain("codex app-server exited before completion");
+    expect(iterator.return).toHaveBeenCalledTimes(1);
+    expect(emitted.some((event) => event.warning_kind === "live_input_failed")).toBe(false);
+  });
+
+  it("settles when a real app-server exits with non-settling live input", async () => {
+    const fixtureDirectory = await mkdtemp(join(tmpdir(), "mono-agent-codex-app-exit-"));
+    const fixturePath = join(fixtureDirectory, "fake-app-server.cjs");
+    const fixtureSource = `
+      const readline = require("node:readline");
+      const rl = readline.createInterface({ input: process.stdin });
+      const send = (message, callback) => {
+        process.stdout.write(JSON.stringify(message) + "\\n", callback);
+      };
+      rl.on("line", (line) => {
+        const message = JSON.parse(line);
+        if (message.method === "initialize") {
+          send({ id: message.id, result: {} });
+          return;
+        }
+        if (message.method === "thread/start") {
+          send({ id: message.id, result: { thread: { id: "thread-real-exit" } } });
+          return;
+        }
+        if (message.method === "turn/start") {
+          send({ id: message.id, result: { turn: { id: "turn-real-exit" } } }, () => {
+            setTimeout(() => process.exit(17), 10);
+          });
+          return;
+        }
+        send({ id: message.id, result: {} });
+      });
+    `;
+    await writeFile(fixturePath, fixtureSource, "utf8");
+    const emitted = [];
+    const { liveInput, iterator } = nonSettlingLiveInput();
+    const startedAt = Date.now();
+    try {
+      const result = await generateCodexAppResponse("SYS", runOptions(null, {
+        codexClientFactory: undefined,
+        codexAppServerCommand: process.execPath,
+        codexAppServerArgs: [fixturePath],
+        liveInput,
+        onEvent: (event) => emitted.push(event),
+      }));
+
+      expect(result).toMatchObject({
+        failureKind: "provider_unavailable",
+        diagnostics: { codex_error_code: "codex_app_server_closed" },
+      });
+      expect(result.error).toContain("codex app-server exited");
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+      expect(iterator.next).toHaveBeenCalledTimes(1);
+      expect(iterator.return).toHaveBeenCalledTimes(1);
+      expect(emitted.some((event) => event.warning_kind === "live_input_failed")).toBe(false);
+    } finally {
+      await rm(fixtureDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("stops non-settling live input when an active resumed turn is aborted", async () => {
+    const factory = stubClientFactory({ threadId: "thread-live-input-abort" });
+    await generateCodexAppResponse("SYS", runOptions(factory, { sessionKeepAlive: true }));
+
+    factory.turnPlan.push("manual");
+    const controller = new AbortController();
+    const emitted = [];
+    const { liveInput, iterator } = nonSettlingLiveInput();
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionId: "thread-live-input-abort",
+      abortSignal: controller.signal,
+      liveInput,
+      onEvent: (event) => emitted.push(event),
+    }));
+    const client = factory.clients[0];
+    await vi.waitFor(() => {
+      expect(client.finishTurn).toBeTruthy();
+      expect(iterator.next).toHaveBeenCalledTimes(1);
+    });
+
+    controller.abort();
+    const result = await pending;
+
+    expect(result.cancelled).toBe(true);
+    expect(client.requests.some((request) => request.method === "turn/interrupt")).toBe(true);
+    expect(client.close).not.toHaveBeenCalled();
+    expect(iterator.return).toHaveBeenCalledTimes(1);
+    expect(emitted.some((event) => event.warning_kind === "live_input_failed")).toBe(false);
+  });
+
+  it("stops live input once when abort follows premature transport close", async () => {
+    const factory = stubClientFactory({ threadId: "thread-live-input-close-abort" });
+    factory.turnPlan.push("manual");
+    const controller = new AbortController();
+    const emitted = [];
+    const { liveInput, iterator } = nonSettlingLiveInput();
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, {
+      abortSignal: controller.signal,
+      liveInput,
+      onEvent: (event) => emitted.push(event),
+    }));
+    const client = factory.clients[0];
+    await vi.waitFor(() => {
+      expect(client.finishTurn).toBeTruthy();
+      expect(iterator.next).toHaveBeenCalledTimes(1);
+    });
+
+    client.resolveClosed(new Error("codex app-server transport died"));
+    controller.abort();
+    const result = await pending;
+
+    expect(result).toMatchObject({
+      cancelled: true,
+      failureKind: "provider_unavailable",
+      diagnostics: { codex_error_code: "codex_app_server_closed" },
+    });
+    expect(result.error).toContain("codex app-server transport died");
+    expect(iterator.return).toHaveBeenCalledTimes(1);
+    expect(emitted.some((event) => event.warning_kind === "live_input_failed")).toBe(false);
   });
 
   it("runs the dedicated no-tool probe read-only and interrupts the first tool action", async () => {
