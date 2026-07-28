@@ -35,6 +35,12 @@ pnpm run check:consumer-docs-consistency
 pnpm run check:codex-discoverability
 ```
 
+`dist/` is gitignored and no build step clears it, so a long-lived checkout keeps compiled
+output for sources that were deleted. Run `pnpm run clean` before a release build so nothing
+stale is packed; `release:pack` fails closed and names the offending files when it was skipped.
+It is deliberately not part of `pnpm run build` because it discards each package's
+`.tsbuildinfo` and forces a full rebuild of the graph.
+
 ## Generated documentation
 
 Run only the generator for the surface you changed:

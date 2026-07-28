@@ -47,11 +47,19 @@ When it does, run only the release-specific mechanical checks:
 pnpm run release:test
 pnpm run release:validate -- --tag vX.Y.Z
 pnpm run check:architecture
+pnpm run clean
 pnpm run build
 pnpm run release:pack -- --tag vX.Y.Z
 pnpm run release:consumer -- --tag vX.Y.Z --require-minimum
 git diff --check
 ```
+
+`clean` precedes the build because `dist/` is gitignored and never cleared, so a
+reused checkout still holds compiled output for deleted sources and packs it —
+that is how `@mono-agent/telegram-adapter@0.15.3` shipped `dist/ask.js` two
+releases after `src/ask.ts` was removed. `release:pack` fails closed and names
+the offending files if the clean was skipped; do not work around it by editing
+the tarball.
 
 When the base is not proven or Actions is unavailable, run the single broad
 local gate instead:

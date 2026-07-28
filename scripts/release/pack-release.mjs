@@ -47,7 +47,48 @@ function tarballPathFromPackResult(packed, packDestination) {
     : path.join(packDestination, packed.filename);
 }
 
-export function assertPackResult(pkg, packed, packDestination) {
+const BUILD_ARTIFACT_EXTENSIONS = [".d.ts", ".d.mts", ".d.cts", ".js", ".mjs", ".cjs"];
+const SOURCE_EXTENSIONS = [".ts", ".mts", ".cts", ".tsx", ".js", ".mjs", ".cjs"];
+const SOURCE_MAP_SUFFIX = ".map";
+const DIST_PREFIX = "dist/";
+
+/**
+ * Packed compiled output whose source no longer exists under `src/`.
+ *
+ * `dist/` is gitignored and no build step clears it, so deleting a source leaves its old
+ * `.js`/`.d.ts` behind and `pnpm pack` ships it: @mono-agent/telegram-adapter@0.15.3 published
+ * `dist/ask.js` two releases after `src/ask.ts` was removed. Dead output is not merely untidy —
+ * it makes greps, audits, and dead-code sweeps report a surface that no longer exists.
+ *
+ * Only tsc-shaped emit is considered. `webapp/dist` bundles (hashed names, no one-to-one
+ * source) sit outside `dist/`, and packages with no `src/` are skipped entirely.
+ */
+export function orphanedBuildArtifacts(packageDir, filePaths) {
+  const sourceDir = path.join(packageDir, "src");
+  if (!fs.existsSync(sourceDir)) {
+    return [];
+  }
+
+  const orphans = [];
+  for (const filePath of filePaths) {
+    if (!filePath.startsWith(DIST_PREFIX)) continue;
+    const emitted = filePath.endsWith(SOURCE_MAP_SUFFIX)
+      ? filePath.slice(0, -SOURCE_MAP_SUFFIX.length)
+      : filePath;
+    const extension = BUILD_ARTIFACT_EXTENSIONS.find((candidate) => emitted.endsWith(candidate));
+    if (extension === undefined) continue;
+    const stem = emitted.slice(DIST_PREFIX.length, -extension.length);
+    const hasSource = SOURCE_EXTENSIONS.some(
+      (candidate) => fs.existsSync(path.join(sourceDir, `${stem}${candidate}`)),
+    );
+    if (!hasSource) {
+      orphans.push(filePath);
+    }
+  }
+  return orphans;
+}
+
+export function assertPackResult(pkg, packed, packDestination, options = {}) {
   const files = new Set((packed.files || []).map((file) => file.path));
   const requiredFiles = ["package.json", "README.md"];
   if (pkg.name === "@mono-agent/web") {
@@ -56,6 +97,15 @@ export function assertPackResult(pkg, packed, packDestination) {
   const missing = requiredFiles.filter((file) => !files.has(file));
   if (missing.length > 0) {
     throw new Error(`${pkg.name} pack output is missing ${missing.join(", ")}`);
+  }
+
+  const packageDir = options.packageDir ?? path.join(REPO_ROOT, pkg.relativeDir);
+  const orphans = orphanedBuildArtifacts(packageDir, files);
+  if (orphans.length > 0) {
+    throw new Error(
+      `${pkg.name} pack output ships build artifacts with no source: ${orphans.join(", ")}. `
+      + "Run `pnpm run clean && pnpm run build`, then pack again.",
+    );
   }
 
   const tarballPath = tarballPathFromPackResult(packed, packDestination);
