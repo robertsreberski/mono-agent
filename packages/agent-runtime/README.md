@@ -93,6 +93,8 @@ the [architecture guide](https://github.com/robertsreberski/mono-agent/blob/main
 | `parseRuntimeModelReference()` | Convert a canonical `claude:`, `codex:`, `opencode:`, or `pi:` string into the object required by `run()` |
 | `listRuntimeBridges()` / `runtimeCapabilities()` | Inspect the five built-in bridge descriptors without loading provider implementations |
 | `createPiOAuthApiKeyResolver()` | Bind a host-owned Pi auth file with refresh-safe writes |
+| `listPiBuiltinModels()` / `getPiBuiltinModel()` | Read cloned snapshots from the runtime-owned, exact-pinned Pi model catalog without importing Pi directly |
+| `resolvePiOAuthApiKey()` / `loginPiOAuth()` | Use the runtime-owned Pi OAuth implementation without importing Pi's mutable provider registry |
 | `createMetricsObserver()` | Aggregate normalized event, token, cache, cost, tool, error, turn, and approval metrics |
 
 Most hosts should use `@mono-agent/runtime-adapter` instead of importing deep
@@ -143,11 +145,14 @@ disposeAllProviderSessions
 disposeProviderSession
 executionModeIncompatibilityReason
 generatePiNativeResponse
+getPiBuiltinModel
 inferAllowlistMode
 invalidateProviderSession
 isLikelyContextTermination
 isModelCompatibleWithExecutionMode
+listPiBuiltinModels
 listRuntimeBridges
+loginPiOAuth
 normalizeAllowlistMode
 normalizeClaudeSdkCatalog
 normalizeClaudeSdkModelId
@@ -158,12 +163,14 @@ parseStoredAllowlist
 piNativeRuntimeBridge
 readRuntimeBrand
 readToolRuntime
+reasoningLevelsForPiModel
 refreshProviderSession
 renderResumeSnapshot
 resetToolRuntime
 resolveAgentCompactionPolicy
 resolveAllowlist
 resolveAllowlistMap
+resolvePiOAuthApiKey
 resolveRuntimeBrand
 resolveRuntimeBridge
 runtimeCapabilities
@@ -310,15 +317,20 @@ disposeAllProviderSessions
 disposeProviderSession
 executionModeIncompatibilityReason
 generatePiNativeResponse
+getPiBuiltinModel
 invalidateProviderSession
 isModelCompatibleWithExecutionMode
+listPiBuiltinModels
 listRuntimeBridges
+loginPiOAuth
 normalizeClaudeSdkCatalog
 normalizeClaudeSdkModelId
 normalizeRuntimeModelReference
 parseRuntimeModelReference
 piNativeRuntimeBridge
+reasoningLevelsForPiModel
 refreshProviderSession
+resolvePiOAuthApiKey
 resolveRuntimeBridge
 runtimeCapabilities
 sdkFromModelReference
@@ -602,6 +614,21 @@ The resolver reads provider credentials from the configured file, delegates toke
 refresh to `@earendil-works/pi-ai/oauth`, and writes refreshed credentials back
 with `0600` permissions.
 
+Consumers that need lower-level Pi interoperability should still import only
+`@mono-agent/agent-runtime/ai`. `listPiBuiltinModels(providerId)` returns fresh,
+defensively cloned model snapshots; `getPiBuiltinModel(providerId, modelId)`
+returns one cloned snapshot or `undefined`; and
+`reasoningLevelsForPiModel(model)` translates a Pi model into mono-agent's
+reasoning vocabulary, including `none` rather than Pi's `off`.
+`resolvePiOAuthApiKey(providerId, credentials)` refreshes a caller-owned
+credential snapshot and returns `{ apiKey, newCredentials }` or `null`, while
+`loginPiOAuth(providerId, callbacks)` runs the selected supported login flow.
+Login callers must implement Pi's four required interaction callbacks:
+`onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; optional progress,
+manual-code, and abort callbacks pass through unchanged.
+These functions deliberately do not expose Pi's mutable model collections or
+OAuth-provider registry.
+
 Returns:
 
 - `run(systemPrompt, options)` — async, runs one agent turn against the chosen backend.
@@ -629,6 +656,7 @@ Per-call options (a non-exhaustive selection):
 | `outputSchema` | `JSONSchema` | Requests structured JSON on capable bridges; see “Structured output” below for bridge-specific return behavior. |
 | `abortSignal` | `AbortSignal` | Cancel the run. |
 | `liveInput` | `AsyncIterable<{ body: string; id?: string; receivedAt?: string; acknowledge?: () => void; reject?: (error?: unknown) => void }>` | Stream of in-flight user messages for steering on capable bridges. A bridge acknowledges only after its native steering boundary accepts the message; per-attempt rejection permits router replay. Acknowledgement emits metadata-only `live_input_applied` telemetry. |
+| `claudeAgentQuery` | `typeof query` | Advanced programmatic/test seam for the Claude SDK bridge. When omitted, the bridge uses the runtime's pinned Claude Agent SDK. This is not a config field or telemetry value. |
 | `onEvent` | `(event) => void` | Fired for every runtime event (assistant text, tool calls/results, applied live input, runtime warnings, structured output). |
 | `runId` | `string` | Tag this run for downstream callbacks (e.g. `onCompactionRecorded`). |
 | `providerSessionId` | `string` | Resume a prior provider session. |
@@ -643,7 +671,9 @@ After a native bridge invokes `acknowledge()`, the runtime emits exactly one
 `{ type: "live_input_applied", inputId, receivedAt? }` event for that logical
 run. It deliberately omits the guidance body. A fallback router reuses the same
 instrumented input stream, so replay or duplicate acknowledgement cannot emit a
-second applied event.
+second applied event. A throwing host `acknowledge` or `reject` callback cannot
+change the native steering outcome; the Codex bridge reports it as a bounded
+`live_input_callback_failed` runtime warning.
 
 Returns:
 
@@ -711,6 +741,13 @@ The agent kernel's managed tools are `Read`, `Write`, `Edit`, `Glob`, `Grep`, `B
 - Output truncation with optional artifact persistence (`{toolArtifactDir}/tool-output/{runId}/...` when `toolArtifactDir` is configured)
 
 `NodeRepl` uses Node's default `node:repl` evaluator, so variables, `_`, `_error`, and loaded modules persist across calls in the same run. It supports multiline input and top-level `await`, resolves workspace-installed packages, and is closed with the run. Its child is prepared through the same sandbox seam as `Bash`; abort, the fixed 120-second timeout, child exit, or hard output overflow resets the session. It deliberately has no session ids, persistent history, terminal commands, or package-install surface.
+
+Pi runs with selected skills also expose `ReadSkill`. It returns the complete
+skill instructions by default, including content beyond the former
+12,000-character boundary. Programmatic callers of
+`formatSkillBodyWithPathNote()` may pass a positive `maxChars` only when
+truncation is explicitly desired; omitting it is not a separate hidden limit.
+The standard 256 KiB tool-payload guard still applies to oversized tool results.
 
 Override or extend the tool surface by passing `mcpServers` for MCP-backed tools.
 
@@ -921,6 +958,19 @@ dependencies are `@anthropic-ai/claude-agent-sdk`, `@anthropic-ai/sdk`,
 `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`,
 `@modelcontextprotocol/sdk`, `@opencode-ai/sdk`, `@vscode/ripgrep`,
 `cross-spawn`, and `zod`.
+
+The runtime owns and exact-pins the compatible Pi pair at `0.80.6`; consumers
+use the runtime's Pi façade rather than coordinating a second direct
+`@earendil-works/pi-ai` dependency. Do not attempt to flatten the resulting
+Anthropic dependency tree: Pi AI pins `@anthropic-ai/sdk@0.91.1`, while the
+Claude Agent SDK requires `@anthropic-ai/sdk>=0.93.0` and the runtime supplies
+its compatible newer SDK. Two isolated Anthropic SDK versions are therefore
+expected. `RuntimeRunOptions.claudeAgentQuery` provides deterministic Claude
+tests without mocking package resolution or sending real SDK traffic.
+If a downstream test suite still needs Pi's faux-provider helpers, isolate that
+fixture or keep its development-only Pi dependency on the runtime's exact
+`0.80.6` version until the fixture is removed; a broad host range can otherwise
+float Pi Agent Core's own upstream dependency independently of this façade.
 
 Sandbox enforcement is an injectable `RuntimeSandbox` seam.
 `@mono-agent/runtime-adapter` supplies the mono-agent implementation; a direct

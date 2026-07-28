@@ -108,6 +108,26 @@ describe("Claude Agent SDK 0.3 effort and query contract", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it("uses an injected query implementation without calling the pinned SDK query", async () => {
+    const close = vi.fn();
+    const injectedQuery = vi.fn(() => {
+      const stream = (async function* () {
+        yield resultEvent();
+      })();
+      stream.close = close;
+      return stream;
+    });
+
+    const result = await generateClaudeResponse("system", options({
+      claudeAgentQuery: injectedQuery,
+    }));
+
+    expect(result).toMatchObject({ text: "done", failureKind: null });
+    expect(injectedQuery).toHaveBeenCalledOnce();
+    expect(queryMock).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("rejects none before query creation with an actionable typed result", async () => {
     const result = await generateClaudeResponse("system", options({ effort: "none" }));
     expect(result).toMatchObject({

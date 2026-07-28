@@ -206,6 +206,22 @@ describe("resolveRuntimePolicyInputs (typed policy objects <-> deprecated settin
     );
   });
 
+  it("ignores retired tool-payload compaction and pruning settings", () => {
+    const retiredSettings = {
+      agent_tool_payload_compaction_trigger_chars: 32_000,
+      agent_tool_prune_trigger_tokens: 40_000,
+    };
+    const { settingsLike, consumedSettingsKeys } = resolveRuntimePolicyInputs({
+      settings: retiredSettings,
+    });
+    const policy = resolveAgentCompactionPolicy(retiredSettings);
+
+    expect(settingsLike).toEqual({});
+    expect(consumedSettingsKeys).toEqual([]);
+    expect(policy).not.toHaveProperty("toolPayloadCompactionTriggerChars");
+    expect(policy).not.toHaveProperty("toolPruneTriggerTokens");
+  });
+
   it("mixes a typed group with a settings fallback for the OTHER group", () => {
     const { settingsLike, consumedSettingsKeys } = resolveRuntimePolicyInputs({
       toolLimits: { toolTextLimitChars: 1000 },

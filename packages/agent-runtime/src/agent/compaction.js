@@ -22,8 +22,6 @@
  * @property {number} summaryMaxTokens
  * @property {boolean} fixedOverheadEnabled
  * @property {number} compactionMinSavingsTokens
- * @property {number} toolPayloadCompactionTriggerChars
- * @property {number} toolPruneTriggerTokens
  * @property {number} toolTextLimitChars
  * @property {number} bashOutputLimitChars
  * @property {number} mcpTextLimitChars
@@ -36,8 +34,6 @@
 
 const DEFAULT_CONTEXT_WINDOW = 128000;
 const DEFAULT_TRIGGER_RATIO = 0.70;
-const DEFAULT_TOOL_PAYLOAD_COMPACTION_TRIGGER_CHARS = 0;
-const DEFAULT_TOOL_PRUNE_TRIGGER_TOKENS = 40000;
 // intelligence-ramp Phase 3: lifted from 16K/20K/12K. Mid-task tool reads
 // (large file edits, long bash output, deep MCP results) were being silently
 // clipped before the agent could reason about them. The 256KB hard ceiling
@@ -134,13 +130,6 @@ export function resolveAgentCompactionPolicy(settings = {}, model = {}) {
       0,
       500000,
     ),
-    toolPayloadCompactionTriggerChars: clampInteger(
-      settings.agent_tool_payload_compaction_trigger_chars,
-      DEFAULT_TOOL_PAYLOAD_COMPACTION_TRIGGER_CHARS,
-      0,
-      10 * 1024 * 1024,
-    ),
-    toolPruneTriggerTokens: clampInteger(settings.agent_tool_prune_trigger_tokens, DEFAULT_TOOL_PRUNE_TRIGGER_TOKENS, 0, 500000),
     toolTextLimitChars: clampInteger(settings.agent_tool_text_limit_chars, DEFAULT_TOOL_TEXT_LIMIT_CHARS, 1000, 200000),
     bashOutputLimitChars: clampInteger(settings.agent_bash_output_limit_chars, DEFAULT_BASH_OUTPUT_LIMIT_CHARS, 1000, 200000),
     mcpTextLimitChars: clampInteger(settings.agent_mcp_text_limit_chars, DEFAULT_MCP_TEXT_LIMIT_CHARS, 1000, 200000),

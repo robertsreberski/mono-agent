@@ -13,7 +13,88 @@ primary route.
 
 ---
 
-## Pre-1.0 public-surface cleanup
+## Unreleased
+
+- **Runtime-owned Pi interoperability:** consumers that directly import
+  `@earendil-works/pi-ai` only for catalog, reasoning, or OAuth behavior should
+  switch to `listPiBuiltinModels`, `getPiBuiltinModel`,
+  `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` from
+  `@mono-agent/agent-runtime/ai`. The runtime keeps Pi AI and Pi Agent Core
+  exact-pinned at `0.80.6`; the façade returns cloned model and credential
+  snapshots rather than exposing mutable upstream registries.
+- **Claude test seam:** downstream tests should pass
+  `RuntimeRunOptions.claudeAgentQuery` instead of mocking
+  `@anthropic-ai/claude-agent-sdk` by package name. Normal runs omit this option
+  and use the runtime-owned SDK. Pi AI's `@anthropic-ai/sdk@0.91.1` pin and the
+  Claude Agent SDK's `@anthropic-ai/sdk>=0.93.0` requirement intentionally
+  remain as two isolated SDK versions.
+- **Compaction policy cleanup:** the inert
+  `toolPayloadCompactionTriggerChars` and `toolPruneTriggerTokens` properties
+  were removed from `AgentCompactionPolicy`, policy resolution, defaults, and
+  declarations. They had no supported typed/config path and did not activate
+  runtime pruning, so no replacement is required.
+- **Codex live-input teardown:** a Codex app-server transport death now also
+  terminates a pending live-input read. Runs settle with the existing
+  `provider_unavailable` / `codex_app_server_closed` classification instead of
+  waiting forever for the input iterator. If a host `acknowledge` or `reject`
+  callback throws, the already-decided native steering result remains
+  authoritative and the runtime emits a bounded
+  `live_input_callback_failed` warning.
+
+## 0.15.x baseline
+
+This is the current published baseline for the detailed pre-1.0 reference
+below. It includes the explicit exports map, the five-bridge lazy registry,
+typed runtime policies, runtime-owned provider dependencies, and the
+public-surface cleanup described in this guide.
+
+## 0.12.x
+
+- Persistent provider context overflow is classified as `context_limit`, which
+  lets a fallback router try its next model without conflating context capacity
+  with quota, output, or max-turn `usage_limit` failures.
+- Omitted Pi compaction values resolve from effective context window `W`:
+  trigger ratio `0.70`, retained context `10%`, summary output `4%`, and minimum
+  proactive savings `10%`, subject to the documented scalar clamps. Numeric
+  provider limits and generic overflow evidence may lower a learned
+  process-local ceiling; `contextWindowOverride` remains the persistent
+  correction.
+
+## 0.10.x
+
+- `ReadSkill` returns complete skill instructions by default, including content
+  beyond the former 12,000-character boundary. Programmatic callers of
+  `formatSkillBodyWithPathNote()` opt into truncation by passing a positive
+  `maxChars`; omitting it means no helper-level cap. The standard 256 KiB
+  tool-payload guard remains in effect.
+
+## 0.7.x
+
+- Omitting Claude SDK effort now preserves the provider default instead of
+  deriving a `thinking` option. Supported effort values are forwarded exactly;
+  explicit `none` is unsupported (`skipped_capability_mismatch` through the
+  bridge, while direct `claudeEffortOptions("none")` calls throw).
+- Cancellation uses a private abort controller and closes the active Claude SDK
+  `Query` with `Query.close()`. Test doubles must honor both boundaries rather
+  than implementing only iterator `return()`.
+- `Glob` and `Grep` prefer an explicit `ripgrepPath`, then the packaged
+  `@vscode/ripgrep` binary on supported platforms, and finally `PATH`.
+
+## 0.6.2
+
+- Codex file edits use a flat top-level `file_change` event instead of synthetic
+  assistant/user `file_edit` tool-use/tool-result pairs.
+- The synthetic `createClaudeFileEditHooks`,
+  `createFileEditToolUseEvent`, and `createFileEditToolResultEvent` exports were
+  removed. Consumers should observe normalized runtime events or use the
+  remaining file-change statistics helpers rather than recreating provider hook
+  behavior.
+
+---
+
+## Detailed pre-1.0 reference
+
+### Pre-1.0 public-surface cleanup
 
 The compatibility entrypoints `./ai/backend.js` and `./ai/registry.js` were
 removed after repository-wide reachability checks found no supported caller.
@@ -24,7 +105,7 @@ instead. Runtime behavior and the canonical bridge descriptors are unchanged.
 
 ---
 
-## 1. Pi is now native-only (`pi-sdk.js` → `pi-native.js`)
+### 1. Pi is now native-only (`pi-sdk.js` → `pi-native.js`)
 
 The hand-rolled Pi bridge that drove the low-level `Agent` was replaced by a
 bridge built on `@earendil-works/pi-agent-core`'s high-level `AgentHarness`. The
@@ -43,7 +124,7 @@ registry resolves `pi` → the native bridge unconditionally; there is no
   `@mono-agent/agent-runtime/ai/failure.js`. The `pi*Backend` aliases are gone —
   all Pi routes through the native bridge.
 
-## 2. Removed run options: `piReasoningSummary`, `piCodexTransport`
+### 2. Removed run options: `piReasoningSummary`, `piCodexTransport`
 
 These were Pi-bridge knobs the native path does not consume.
 
@@ -54,7 +135,7 @@ These were Pi-bridge knobs the native path does not consume.
   `runtime.reasoningSummary` config field has also been removed.
 - `piCodexTransport` was doc-only and is removed. No replacement is needed.
 
-## 3. Pi context compaction: bridge-driven via AgentHarness.compact()
+### 3. Pi context compaction: bridge-driven via AgentHarness.compact()
 
 `AgentHarness` has no automatic compaction, so the pi bridge drives it directly
 (the legacy low-level `transformContext` / `afterToolCall` hooks and
@@ -76,7 +157,7 @@ These were Pi-bridge knobs the native path does not consume.
   correction. Deprecated programmatic `agent_compaction_*` settings and
   `resolveAgentCompactionPolicy` remain compatibility surfaces.
 
-## 4. Durable Pi session resume: create-on-miss semantics
+### 4. Durable Pi session resume: create-on-miss semantics
 
 When a run supplies a `providerSessionId` (or the legacy `sessionId` alias) **and**
 durable storage is configured (`piSessionsRoot`), Pi-native now **creates the
@@ -91,7 +172,7 @@ passed an arbitrary `providerSessionId` to a durable run expecting a hard
 The in-memory (non-durable) resume path still fast-fails `session_not_found` on a
 miss.
 
-## 5. Fallback router enforces requested native-subagent capability
+### 5. Fallback router enforces requested native-subagent capability
 
 Pi advertises `supports_native_subagents: false`. The fallback router now infers
 a `supports_native_subagents` requirement when a run passes
@@ -103,7 +184,7 @@ a `supports_native_subagents` requirement when a run passes
 native-subagent runs, ensure at least one entry supports native subagents, or the
 run reports exhausted instead of degrading silently.
 
-## 6. Diagnostics & internal behavior changes (no API change)
+### 6. Diagnostics & internal behavior changes (no API change)
 
 - **Pi multimodal**: image inputs are delivered to the model as image content
   blocks (internal fix; affects behavior, not the call shape).
@@ -119,7 +200,7 @@ run reports exhausted instead of degrading silently.
   resumed sessions roll back to their pre-turn leaf on host-side (outer-catch)
   failures. These are correctness fixes with no API surface change.
 
-## 7. Sandbox enforcement is now an injectable seam (agent-runtime has zero workspace-package dependencies)
+### 7. Sandbox enforcement is now an injectable seam (agent-runtime has zero workspace-package dependencies)
 
 `@mono-agent/agent-runtime` does not depend on `@mono-agent/runtime-adapter`. Sandbox
 enforcement (command sandboxing, network-policy checks, and monotonic policy
@@ -147,7 +228,7 @@ mono-agent hosts — no action needed if you build your runtime through
   `@mono-agent/runtime-adapter`, also pass a `sandbox` implementation, or drop
   the policy.
 
-## 8. Typed run options replace the `settings` bag (`toolLimits` / `compaction` / `prompts`)
+### 8. Typed run options replace the `settings` bag (`toolLimits` / `compaction` / `prompts`)
 
 The flat `options.settings` bag is **deprecated** as the way to configure
 tool-output clamps and context compaction. The supported replacements are typed,
@@ -177,7 +258,7 @@ mapper's fallback window.
 **Action:** migrate `settings` → `toolLimits` / `compaction`; until then the shim
 keeps working with one deprecation warning per run.
 
-## 9. New per-run overrides: `sandbox`, `sandboxPolicy`, `prompts`
+### 9. New per-run overrides: `sandbox`, `sandboxPolicy`, `prompts`
 
 Beyond `toolLimits` / `compaction`, `RuntimeRunOptions` gained:
 
@@ -193,7 +274,7 @@ Beyond `toolLimits` / `compaction`, `RuntimeRunOptions` gained:
   (byte-identical default). These are also accepted on `AgentRuntimeHostOptions`
   as the host-level default.
 
-## 10. Pi 0.80 auth: `Models` credential store (`resolvePiApiKey` semantics preserved)
+### 10. Pi 0.80 auth: `Models` credential store (`resolvePiApiKey` semantics preserved)
 
 Pi 0.80 removed the harness `getApiKeyAndHeaders` hook; request auth now resolves
 through a `Models` collection's `CredentialStore`. The bridge's **per-run
@@ -208,7 +289,7 @@ now `0.80.6`** (the initial Pi 0.80 migration landed at `0.80.5`, from
 `^0.79.1`). Compaction is driven natively (section 3). The `0.80.6` refresh also
 preserves model-native `max` reasoning and Pi's request-wide pricing tiers.
 
-## 11. Exports map: wildcards removed (explicit deep-path map)
+### 11. Exports map: wildcards removed (explicit deep-path map)
 
 The package's `./ai/*` and `./agent/*` **wildcard exports were replaced by an
 explicit `exports` map**: 3 barrels (`.`, `./ai`, `./agent`) plus the generated
@@ -257,64 +338,51 @@ a compatibility subpath.
 
 ## Version
 
-This guide describes the published `0.13.x` package contract. Keep
+This guide describes the published `0.15.x` package contract. Keep
 `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, and other
 `@mono-agent/*` packages on the same lockstep version when upgrading. The paired
 runtime adapter no longer exposes `piReasoningSummary` in its run-options type.
 
 ---
 
-## Appendix — Porting this kernel to a new scope/host (worklab port-readiness)
+## Appendix — Worklab shared-kernel adoption
 
-This kernel is designed to be vendored into a differently-scoped host (the
-concrete target is **worklab**, `@worklab-ai/agent-runtime`, GPL-3.0-only, npm
-workspaces, pure-JS no-build, consuming this package's raw `src/`). The port
-itself is a follow-up; this is the executable checklist, with the port-readiness
-dry-run results recorded inline (verified against the worklab tree read-only).
+Worklab should consume the published `@mono-agent/agent-runtime` package rather
+than vendor or rename its source. The products remain separate, but provider
+execution has one owner. Apply this downstream checklist when removing
+Worklab's runtime fork:
 
-Run these before/at the port:
-
-1. **Scope rename `@mono-agent/` → `@worklab-ai/`.** Touches `package.json`
-   (`name` + the package-name prefix inside each `exports` key's consumer
-   specifier) only — the kernel's own source uses **relative** imports, so no
-   source import references the scope. *(Verified: zero `@mono-agent/*` specifiers
-   in `src/`.)*
-2. **Dependencies.** Post-decoupling the kernel has **zero workspace-package
-   deps**; only the third-party pins need aligning: `@earendil-works/pi-ai` +
-   `@earendil-works/pi-agent-core` (`0.80.6`), `@modelcontextprotocol/sdk`,
-   `@opencode-ai/sdk`, `@anthropic-ai/claude-agent-sdk`, `zod`.
-3. **Pi bump `^0.74.0` → `0.80.6` in lockstep.** worklab tests that use old pi
-   APIs are rewritten at the port. Do not restore the old `pi-sdk.js` deep
-   import; use `generatePiNativeResponse` from `@mono-agent/agent-runtime/ai`.
-4. **Sandbox.** worklab passes **no** `sandbox` implementation → `passthroughSandbox`,
-   and **never sets `sandboxPolicy`** *(verified: zero `sandboxPolicy` /
-   `sandbox:` in worklab `src/`)*, so with no policy every tool runs unsandboxed
-   exactly as today — behavior is byte-identical. (If worklab later adds a policy,
-   it must also inject a `RuntimeSandbox` impl — section 7's fail-closed rule.)
-5. **License / packaging.** GPL-3.0-only stays; `files` includes `types/`
-   (additive — worklab consumes raw `src/`, `.d.ts` generation is optional).
-6. **Deep imports resolve.** `node scripts/verify-deep-imports.mjs` (default +
-   types conditions) is green. Every worklab **non-test** deep import resolves in
-   the explicit exports map *(verified — no gap)*, and the Worklab-test provider
-   bridge imports for `claude-sdk.js`, `claude-cli.js`, and `codex-app.js` are
-   supported as exported subpaths. The only worklab deep import NOT in the map is
-   the removed **test-only** `pi-sdk.js`; those tests are rewritten at the port
-   (step 3), so no export entry is added for it.
-7. **Contract supersets.** `HOST_KEYS` ⊇ worklab's host bag *(verified:
-   worklab passes `resolveCustomPricing`, `onCompactionRecorded`, `persistArtifact`,
-   `resolvePiApiKey`, `observers` — all covered)*; the deep-import
-   `configureToolRuntime` accepts worklab's keys *(verified: `workspace`,
-   `repoRoot`, `runId`, `toolArtifactDir`, `ripgrepPath`, `qaOutputDir` ⊂
-   `TOOL_CONTEXT_KEYS`)*; and every `RuntimeResult` field worklab's
-   `worker/agent-turn.js` reads exists on the result *(verified: `cancelled`,
-   `providerSessionId`, `error`, `failureKind`, `errorDetails`, `diagnostics`,
-   `runtimeWarnings`, plus `text`/`usage`/`model`/`effort`/`numTurns`/
-   `structuredResult`/`capabilitiesUsed`/`durationMs`/`failoverHistory`;
-   `observerSnapshot` is worklab-side, folded from its own metrics observer)*.
-8. **`options.settings` day one.** Works via the deprecated shim (section 8) with
-   one `deprecated_settings_option` warning per run; worklab later maps
-   `settings` → the typed policy objects in its `core/ai.js`.
-9. **Test layout + no-build consumption.** `src/__tests__` + vitest already match;
-   the package is fully consumable from raw `src/` with **no build**
-   *(verified: a smoke import of `createRuntime` / `createRouterRuntime` from
-   `src/index.js` constructs a runtime with no model call)*.
+1. **Install the lockstep runtime package.** Keep the `@mono-agent/*` packages a
+   Worklab release uses on the same published version. Preserve the shared
+   kernel's `GPL-3.0-only` distribution boundary.
+2. **Remove direct provider ownership.** Delete Worklab production imports from
+   `@earendil-works/pi-ai`, its separate Pi version constraint, and local copies
+   of provider bridge code. Move tests off Pi's faux-provider helpers too; until
+   that is complete, isolate the fixture or pin its development-only Pi
+   dependency to exact `0.80.6` rather than a floating range. Do not restore the
+   removed `pi-sdk.js` subpath.
+3. **Use the public Pi surfaces.** Run models through
+   `generatePiNativeResponse` or the runtime registry. Use
+   `listPiBuiltinModels`, `getPiBuiltinModel`,
+   `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` for
+   catalog and OAuth integration. Those façades keep Pi mutable state and the
+   exact `0.80.6` compatibility pin inside the runtime. OAuth login adapters
+   must supply `onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; the façade
+   rejects an incomplete callback contract before starting provider login.
+4. **Inject Claude tests.** Replace package-level mocks of
+   `@anthropic-ai/claude-agent-sdk` with
+   `RuntimeRunOptions.claudeAgentQuery`. Production calls omit the seam. Expect
+   the runtime installation to retain Pi's Anthropic SDK `0.91.1` beside the
+   newer Anthropic SDK required by Claude; do not force-deduplicate them.
+5. **Preserve the sandbox boundary.** A direct runtime consumer that supplies
+   `sandboxPolicy` must also inject a `RuntimeSandbox`; otherwise the runtime
+   intentionally fails closed. With neither a policy nor an implementation,
+   passthrough behavior remains unchanged.
+6. **Use supported contracts.** Keep host callbacks within
+   `AgentRuntimeHostOptions`, tool state within the exported tool-runtime
+   context, and reads within `RuntimeResult`. Replace deprecated
+   `options.settings` with typed `toolLimits` and `compaction` objects.
+7. **Verify the installed package.** Run Worklab's provider and worker tests
+   against the packed or published package, assert that no production import
+   resolves Pi directly, and prove the injected Claude query performs no
+   network call.
