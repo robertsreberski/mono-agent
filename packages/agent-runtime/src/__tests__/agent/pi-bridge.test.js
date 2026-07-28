@@ -788,6 +788,11 @@ describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", 
     expect(toolNames(tools)).toEqual([...BUILTIN_TOOL_NAMES].sort());
   });
 
+  it('treats a wildcard mixed with named tools as all built-in tools', () => {
+    const tools = getPiBuiltinTools(["*", "Read"], {});
+    expect(toolNames(tools)).toEqual([...BUILTIN_TOOL_NAMES].sort());
+  });
+
   it("treats undefined as all built-in tools (unchanged)", () => {
     const tools = getPiBuiltinTools(undefined, {});
     expect(toolNames(tools)).toEqual([...BUILTIN_TOOL_NAMES].sort());

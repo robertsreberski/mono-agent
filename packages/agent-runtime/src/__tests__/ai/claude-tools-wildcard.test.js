@@ -55,11 +55,25 @@ describe("claude-cli buildCliCommand — allowed/disallowed tools", () => {
     expect(spec.args).not.toContain("--allowedTools");
     expect(spec.args).not.toContain("*");
   });
+
+  it('treats a wildcard mixed with named tools as allow-all and never narrows the CLI toolset', () => {
+    const spec = cliSpec({ allowedTools: ["*", "Read"] });
+    expect(spec.args).not.toContain("--tools");
+    expect(spec.args).not.toContain("--allowedTools");
+    expect(spec.args).not.toContain("*");
+  });
 });
 
 describe("resolveClaudeAllowedTools — SDK allow-all mapping", () => {
   it('flags allow-all and strips the bare "*" (SDK caller passes undefined)', () => {
     expect(resolveClaudeAllowedTools(["*"], null)).toEqual({ allowAll: true, tools: [] });
+  });
+
+  it('keeps named entries discoverable while a mixed wildcard still selects the SDK default toolset', () => {
+    expect(resolveClaudeAllowedTools(["*", "Read"], null)).toEqual({
+      allowAll: true,
+      tools: ["Read"],
+    });
   });
 
   it("passes an explicit list through unchanged (not allow-all)", () => {

@@ -66,7 +66,7 @@ The init wizard runs bounded `codex --version`, `codex login status`, and app-se
 
 GPT-5.6 Sol is available through `codex:gpt-5.6-sol` or the separate Pi route `pi:openai-codex:gpt-5.6-sol`. Guided readiness makes one exact no-tool call per selected primary/fallback route before it can produce an **Agent ready** result.
 
-The Codex app-server does not currently project arbitrary mono-agent allow/deny lists. Normal direct `codex:*` runs therefore require exact allow-all (`tools.allowedTools: ["*"]` and no `disallowedTools`, or the equivalent omitted allowlist); restrictive policies fail validation rather than being silently widened. The guided readiness probe is a separate internal contract: read-only sandbox, approval policy `never`, no MCP/dynamic tools, disposable session, and failure on the first command/file/MCP/tool event.
+The Codex app-server does not currently project arbitrary mono-agent allow/deny lists. Normal direct `codex:*` runs therefore require effective allow-all: `tools.allowedTools` is omitted or contains `"*"`, and `disallowedTools` is empty. A named-only list, `[]`, or any denylist fails validation rather than being silently widened. The guided readiness probe is a separate, unchanged internal contract: read-only sandbox, approval policy `never`, exact no-tool input, no MCP/dynamic tools, disposable session, and failure on the first command/file/MCP/tool event.
 
 The wizard also presents `pi:openai-codex:gpt-5.6-terra` and `pi:openai-codex:gpt-5.6-sol` as selectable Pi candidates; they use a separate SDK/auth boundary, and a missing Pi auth store can be repaired with `mono-agent auth login openai-codex`.
 
@@ -106,7 +106,8 @@ Copilot-class models are therefore reachable two ways: through `pi:github-copilo
 The init wizard's OpenCode discovery uses `opencode models opencode-go --pure` inside disposable private XDG state, accepts only `opencode-go/` entries, and references those discovered models as `pi:opencode-go:<model>` so setup can save `OPENCODE_API_KEY` into the Pi auth store and run OpenCode-Go through the Pi SDK path. Guided primary/fallback/repair selection rejects direct OpenCode rather than making an unprovable readiness claim. Flagged/non-TTY scaffolds and hand-authored `opencode:<provider>:<model>` config remain supported. Validation reads the exact provider id from the standard OpenCode `auth.json` without invoking auth middleware; live validation additionally runs a bounded, minimal-environment `opencode --version` check.
 
 Direct OpenCode cannot enforce mono-agent allow/deny names or native `srt`
-scopes, so it requires exact allow-all, rejects a mono-agent sandbox block, and
+scopes, so it requires effective allow-all (omitted or wildcard-containing
+allowlist, empty denylist), rejects a mono-agent sandbox block, and
 uses OpenCode's own fail-closed permission rules for `permissionMode`. See
 [Tool policy](/tools/policy/) and [Execution, effort & permissions](/runtime/execution-effort-permissions/).
 
@@ -157,7 +158,7 @@ metadata breaks inference and validation before the turn reaches that registry.
 
 ## Fallback chains
 
-`runtime.fallbacks` takes an ordered, uncapped list of `{ model, effort? }` routes tried on retryable provider/auth failures. Omitted effort means the route's provider default. `runtime.routeSafety` controls mixed-family safety: `uniform` (default) requires one compatible monotonic contract; explicit `per-route-native` isolates each provider and records its route-local safety contract. Pi keeps mono-agent tool policy and records the configured guarantee: `disabled` for no sandbox policy, `mono-agent-srt` for fail-closed SRT, or `mono-agent-srt-unsafe-host-fallback` when policy prefers SRT but explicitly permits unsandboxed host execution if the engine is unavailable. This telemetry does not claim which branch ran. Claude uses representable provider-native controls, and direct Codex/OpenCode use provider-native safety plus exact allow-all. Unsupported capabilities skip a route rather than being silently removed. Any fallback chain disables cross-turn provider-session reuse and relies on history/snapshot replay.
+`runtime.fallbacks` takes an ordered, uncapped list of `{ model, effort? }` routes tried on retryable provider/auth failures. Omitted effort means the route's provider default. `runtime.routeSafety` controls mixed-family safety: `uniform` (default) requires one compatible monotonic contract; explicit `per-route-native` isolates each provider and records its route-local safety contract. Pi keeps mono-agent tool policy and records the configured guarantee: `disabled` for no sandbox policy, `mono-agent-srt` for fail-closed SRT, or `mono-agent-srt-unsafe-host-fallback` when policy prefers SRT but explicitly permits unsandboxed host execution if the engine is unavailable. This telemetry does not claim which branch ran. Claude uses representable provider-native controls, and direct Codex/OpenCode use provider-native safety plus an effective allow-all policy. The stable route-safety telemetry value `tools: "exact-allow-all"` describes that effective unrestricted contract; it does not require the literal one-element array `["*"]`. Unsupported capabilities skip a route rather than being silently removed. Any fallback chain disables cross-turn provider-session reuse and relies on history/snapshot replay.
 
 ```json
 {

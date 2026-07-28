@@ -664,6 +664,16 @@ Per-call options (a non-exhaustive selection):
 | `codexAppServerCommand` | `string` | Override the Codex CLI binary. |
 | `codexAppServerArgs` | `string[]` | Override the Codex CLI arguments. |
 
+`runtimeCapabilities()` and each descriptor returned by
+`listRuntimeBridges()` expose `tool_policy`. `"projected"` means the bridge can
+project restrictive `allowedTools` / `disallowedTools`; `"allow_all_only"`
+means it accepts only an effective unrestricted policy—`allowedTools` omitted
+or containing `"*"`, with no denied tools. A wildcard dominates named entries,
+so `["*", "Read"]` is allow-all. Named-only lists, `[]`, and any denylist remain
+unsupported on the direct Codex and direct OpenCode bridges and fail before
+provider startup. Built-in bridges always report this field; omission by a
+custom structural bridge means the capability is unknown.
+
 Live input is native on the Claude SDK, Codex app-server, and Pi bridges. The
 one-shot Claude CLI and direct OpenCode bridges advertise it as unsupported so
 routers skip them when a direct runtime call requires steering.

@@ -167,9 +167,10 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   },
 
   // Tool policy (allow-all by default) + MCP servers. Direct codex:* normal runs
-  // require this exact allow-all shape; use an enforcing runtime for narrower lists.
+  // require effective allow-all (omitted or containing "*", with no denied tools);
+  // use an enforcing runtime for narrower lists.
   "tools": {
-    "allowedTools": ["*"],                 // omit or ["*"] = all tools; ["Read","Bash"] = just those; [] = none (chat-only)
+    "allowedTools": ["*"],                 // omit or include "*" = all tools; ["Read","Bash"] = just those; [] = none (chat-only)
     "disallowedTools": [],                 // deny wins where supported; overlap is rejected
     "mcpConfigPath": "./mcp.json",         // stdio/sse/http servers; inlined for SDK runtimes
     "mcpRequestContextServers": ["transcribe"], // trusted stdio servers receiving scoped request/progress context

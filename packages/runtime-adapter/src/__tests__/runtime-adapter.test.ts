@@ -76,10 +76,12 @@ describe("runtime adapter model references", () => {
       sdk: "claude",
       executionMode: "sdk",
       transport: "sdk",
+      capabilities: expect.objectContaining({ tool_policy: "projected" }),
     });
     expect(backends.find((backend) => backend.id === "codex-app-cli")?.capabilities).toMatchObject({
       kind: "codex-app",
       supports_mcp: true,
+      tool_policy: "allow_all_only",
     });
     expect(backends.find((backend) => backend.id === "opencode-app-cli")).toMatchObject({
       runtimeBridgeId: "opencode-app",
@@ -91,9 +93,13 @@ describe("runtime adapter model references", () => {
         kind: "opencode-app",
         supports_mcp: false,
         supports_session_resume: false,
+        tool_policy: "allow_all_only",
       }),
     });
-    expect(backends.find((backend) => backend.id === "pi-sdk")?.acceptsProviderIds).toBe(true);
+    expect(backends.find((backend) => backend.id === "pi-sdk")).toMatchObject({
+      acceptsProviderIds: true,
+      capabilities: expect.objectContaining({ tool_policy: "projected" }),
+    });
   });
 
   it("resolves runtime backend support by model and execution mode", () => {

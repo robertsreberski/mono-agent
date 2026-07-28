@@ -15,6 +15,7 @@ If you set no `tools` block, or omit `allowedTools`, the agent can call **every*
 | --- | --- |
 | omitted | **all tools** (the default) |
 | `["*"]` | all tools (explicit allow-all) |
+| `["*", "Read"]` | all tools (`"*"` dominates named entries) |
 | `["Read", "Bash"]` | just those tools |
 | `[]` | **no tools** — a deliberate chat-only agent |
 
@@ -28,7 +29,7 @@ If you set no `tools` block, or omit `allowedTools`, the agent can call **every*
 
 An explicit empty list is still expressible and still meaningful: `"allowedTools": []` means the agent can hold a conversation but cannot read files, run commands, or send proactively. [`validate` / `doctor`](/observability/cli-reference/#validate) reports that as `waiting` (never a silent `ok`) so an accidental empty list surfaces, while allow-all reports `All tools allowed.`
 
-In guided init, **Allow all tools** remains the default product choice. Pi/Claude flows explicitly name the resulting code-execution, file, web, and enabled channel-send surface before accepting it. If no enforceable sandbox constrains that runtime, a second confirmation is required before continuing; the review never presents allow-all as a risk-free default. Direct Codex skips the tool and mono-srt prompts because normal runs require exact allow-all and use the Codex-native network-off workspace sandbox.
+In guided init, **Allow all tools** remains the default product choice. Pi/Claude flows explicitly name the resulting code-execution, file, web, and enabled channel-send surface before accepting it. If no enforceable sandbox constrains that runtime, a second confirmation is required before continuing; the review never presents allow-all as a risk-free default. Direct Codex skips the tool and mono-srt prompts because normal runs require an effective allow-all policy and use the Codex-native network-off workspace sandbox.
 
 :::note
 Allow-all is the **config** default, not a programmatic one. For code-defined agents built directly on `@mono-agent/agent-harness`, the no-config safety net is the opposite: `failClosedToolPolicy()` returns `{ allowedTools: [], disallowedTools: [] }` — an empty, fail-closed policy — so a harness constructed with no policy starts with zero tools until you pass one. The allow-all default lives in the config loader, not the harness.
@@ -40,17 +41,24 @@ Allow-all is the **config** default, not a programmatic one. For code-defined ag
 - **pi-native** — both guarantees hold: `[]` is a true chat-only agent, and a specific list is the agent's complete tool surface.
 - **Claude SDK** — both guarantees hold through the SDK's native tool options.
 - **Claude Code** CLI — a specific non-empty list is passed as `--tools` and restricts the surface; `disallowedTools` reaches the native denylist. An explicit `[]` cannot represent chat-only in that CLI and is therefore rejected by validation and runtime before spawn.
-- **Codex** CLI — the app-server cannot enforce arbitrary mono-agent name lists. Normal direct `codex:*` runs are accepted only with exact allow-all (`["*"]` or omitted, with no `disallowedTools`). A specific list, `[]`, or any denylist fails validation and runtime startup with a capability mismatch; mono-agent never silently widens it. Choose another runtime for a restrictive policy.
-- **Direct OpenCode** — the app-server bridge likewise requires exact allow-all (`["*"]` or omitted, with no `disallowedTools`). Restrictive policies fail validation and runtime before the OpenCode server is created. `pi:opencode-go:*` is a Pi runtime and supports Pi's full policy instead.
+- **Codex** CLI — the app-server cannot enforce arbitrary mono-agent name lists. Normal direct `codex:*` runs require effective allow-all: `allowedTools` is omitted or contains `"*"`, and `disallowedTools` is empty. Named entries alongside `"*"` are redundant but accepted because the wildcard dominates. A named-only list, `[]`, or any denylist fails validation and runtime startup with a capability mismatch; mono-agent never silently widens it. Choose another runtime for a restrictive policy.
+- **Direct OpenCode** — the app-server bridge has the same effective allow-all requirement. Restrictive policies fail validation and runtime before the OpenCode server is created. `pi:opencode-go:*` is a Pi runtime and supports Pi's full policy instead.
 
-The guided direct-Codex route check is not an exception operators can reuse: it is a dedicated internal contract with a read-only sandbox, approval policy `never`, no MCP/dynamic tools, a disposable session, and interruption/failure on the first tool-action event.
+The guided direct-Codex route check is not an exception operators can reuse: it is a dedicated internal contract with a read-only sandbox, approval policy `never`, no MCP/dynamic tools, a disposable session, and interruption/failure on the first tool-action event. Its exact no-tool policy is unchanged by the normal-run wildcard normalization.
 :::
+
+Runtime discovery exposes this distinction as `RuntimeCapabilities.tool_policy`.
+`"projected"` means the bridge can project restrictive allow/deny policy;
+`"allow_all_only"` means it accepts only the effective unrestricted contract
+described above. Built-in bridges always report the field. A custom structural
+bridge that omits it has unknown tool-policy capability and should be treated
+conservatively.
 
 ## allowedTools / disallowedTools
 
 | Key | Type | Behavior |
 | --- | --- | --- |
-| `tools.allowedTools` | `string[]` | The allowlist. Omitted or `["*"]` means all tools; a specific list narrows to those names; `[]` means none. |
+| `tools.allowedTools` | `string[]` | The allowlist. Omitted or containing `"*"` means all tools; a specific named-only list narrows to those names; `[]` means none. |
 | `tools.disallowedTools` | `string[]` | The denylist. Tools named here are always blocked, even under allow-all. |
 
 Two rules govern how the lists combine:

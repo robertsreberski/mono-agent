@@ -150,7 +150,7 @@ new agent.
 
   // Tool policy (allow-all by default) + MCP servers. Deny wins; overlap is rejected.
   "tools": {
-    "allowedTools": ["*"],                 // omit or ["*"] = all tools; ["Read","Bash"] = just those; [] = none (chat-only)
+    "allowedTools": ["*"],                 // omit or include "*" = all tools; ["Read","Bash"] = just those; [] = none (chat-only)
     "disallowedTools": ["Bash"],           // deny wins even under allow-all; the escape hatch to subtract one tool
     "mcpConfigPath": "./mcp.json"          // stdio/sse/http servers; inlined for SDK runtimes
   },
