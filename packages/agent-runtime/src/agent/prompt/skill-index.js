@@ -35,6 +35,9 @@ export function buildSkillPathNote({ assetsPath, skillsRoot } = {}) {
 }
 
 /**
+ * Render a complete skill body plus its path note. Omitting `maxChars` returns
+ * the full text; pass a positive `maxChars` only when explicit truncation is
+ * required by the caller.
  * @param {{body?: string, assetsPath?: string, skillsRoot?: any, maxChars?: number}} [options]
  */
 export function formatSkillBodyWithPathNote({ body, assetsPath, skillsRoot, maxChars } = {}) {
@@ -42,7 +45,8 @@ export function formatSkillBodyWithPathNote({ body, assetsPath, skillsRoot, maxC
     buildSkillPathNote({ assetsPath, skillsRoot }),
     String(body || "").trim(),
   ].filter(Boolean).join("\n\n");
-  return maxChars ? text.slice(0, maxChars) : text;
+  const limit = Number(maxChars);
+  return Number.isFinite(limit) && limit > 0 ? text.slice(0, Math.floor(limit)) : text;
 }
 
 export function buildSkillIndex(skills) {

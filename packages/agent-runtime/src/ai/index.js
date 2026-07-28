@@ -13,6 +13,13 @@ export {
 export { createMetricsObserver, createObserverHub } from "./observer.js";
 export { generatePiNativeResponse, piNativeRuntimeBridge } from "./providers/pi-native.js";
 export {
+  getPiBuiltinModel,
+  listPiBuiltinModels,
+  loginPiOAuth,
+  reasoningLevelsForPiModel,
+  resolvePiOAuthApiKey,
+} from "./pi-interop.js";
+export {
   CLAUDE_SDK_CATALOG_VERSION,
   createClaudeSdkDiscoveryIsolation,
   curatedClaudeSdkModels,

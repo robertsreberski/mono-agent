@@ -31,6 +31,35 @@ For Pi-native response generation, Worklab should use
 `generatePiNativeResponse` from `@mono-agent/agent-runtime/ai` rather than a
 separate provider subpath or a `pi-sdk` compatibility export.
 
+Provider-package ownership follows the same rule. Worklab should remove
+production imports from `@earendil-works/pi-ai` and use the runtime-owned façade
+from `@mono-agent/agent-runtime/ai`:
+
+- `listPiBuiltinModels()` and `getPiBuiltinModel()` for cloned model snapshots
+- `reasoningLevelsForPiModel()` for mono-agent reasoning levels
+- `resolvePiOAuthApiKey()` and `loginPiOAuth()` for supported OAuth flows
+
+The login façade requires Pi's `onAuth`, `onDeviceCode`, `onPrompt`, and
+`onSelect` callbacks. Worklab's terminal adapter must implement device-code and
+selection handling instead of carrying forward the older partial callback
+shape.
+
+The runtime keeps its known-good Pi AI and Pi Agent Core versions exact-pinned.
+This avoids a second host-selected Pi copy and prevents an importing project
+from changing the runtime's OAuth surface. Worklab's Claude tests should also
+stop mocking `@anthropic-ai/claude-agent-sdk` by package name and instead pass
+`RuntimeRunOptions.claudeAgentQuery`. The injected function is a programmatic
+test seam; normal runs omit it and use the runtime-owned Claude Agent SDK.
+Worklab tests that still need Pi's faux-provider helpers should move those
+fixtures behind the runtime boundary; during that transition, keep any
+development-only Pi dependency exact at `0.80.6` or isolate its install rather
+than allowing a host range to float Pi Agent Core's upstream dependency.
+
+The shared kernel intentionally contains two versions of
+`@anthropic-ai/sdk`: Pi AI pins `0.91.1`, while the Claude Agent SDK requires
+`>=0.93.0`. They are separate provider implementation details, not a dependency
+that Worklab should force-deduplicate.
+
 ## Why not merge the repos?
 
 A full mono-agent and Worklab merge is rejected for the current v1 path:
@@ -68,6 +97,7 @@ separate product. The operating lesson transfers; the runtime fork does not.
   publishable package graph and the repository-level `LICENSE`.
 - Mono-agent keeps the runtime package as the ecosystem kernel and avoids
   Worklab-specific product concepts in the core runtime.
-- Additive runtime exports are acceptable when they expose existing files and do
-  not create new compatibility shims.
+- Additive runtime exports are acceptable when they expose narrow,
+  runtime-owned façades and do not create new compatibility shims or leak
+  mutable upstream registries.
 - No repository merge is required to remove duplicated runtime ownership.
