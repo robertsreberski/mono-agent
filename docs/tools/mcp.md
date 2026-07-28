@@ -165,6 +165,7 @@ Consequences:
 
 - Under allow-all (the default) MCP tools are available because their server is declared, not because of the wildcard. Setting `tools.allowedTools: []` ("no built-in tools") still leaves every MCP tool available.
 - An MCP tool's availability is governed by whether its server is **declared** in `mcp.json` / `tools.mcpServers`, not by the allowlist. To withhold an MCP tool, remove or don't declare its server.
+- On **direct Codex**, a valid declared server also authorizes Codex-generated `mcp_tool_call` approval elicitations for that exact server name. The bridge does not persist the approval and does not accept inherited/unconfigured servers or genuine downstream MCP form/URL elicitations. `permissionMode: "plan"` still permits these declared MCP calls, so their server-owned side effects are outside Codex's read-only filesystem sandbox.
 - On the **pi-native runtime**, `disallowedTools` does **not** filter external MCP-server tools either — declaring the server is the only lever. Claude Code receives `--disallowedTools`; direct Codex has no native name-policy projection and therefore rejects any normal-run restrictive policy instead of partially enforcing it. To hard-restrict an external MCP tool on pi, don't declare its server.
 - App-injected MCP tools define their own boundary. `MemoryRecall` and `AskCollaborator` are gated by their own enablement/composition switches; `RunHistory` and adapter send tools are deliberately governed by the normal tool policy.
 
