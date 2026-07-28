@@ -33,6 +33,27 @@ Zero non-owning callers **and** no `@deprecated`/`@experimental` label ⇒ remov
 candidate. Good test coverage is not a reprieve. (The dead public search API in
 `memory` was found exactly this way.)
 
+**Exception — wire contracts are not proved dead by this grep.** When the symbol
+defines a value another *process* parses (a `callback_data` protocol, event or
+tool name, on-disk shape, notification payload), zero in-repo callers is the
+normal state even when live consumers exist. Sweep the fleet before removing:
+
+```bash
+grep -rn "<protocol literal>" ~/personal-agent ~/agents/*/ ~/a8c-agents/*/ \
+  --include="*.mjs" --include="*.ts" --include="*.md" 2>/dev/null \
+  | grep -v node_modules | grep -v "/dist/"
+```
+
+`packages/telegram-adapter/src/ask.ts` had zero in-repo callers when #527
+retired it, and the Personal Agent heartbeat helper was still emitting its
+`ask:<index>` payload — every heartbeat button silently stopped working.
+`verify-green` §1a owns the change side of this rule.
+
+Removing a wire contract also leaves a **stale published artifact** behind if a
+release is packed from a reused checkout; `release:pack` fails closed on that
+since #556, but run `pnpm run clean` rather than trusting the gate to be the
+first line of defence.
+
 ## 2. Maintenance-routine call-site check
 
 When a diff adds an exported `compact*`/`prune*`/`rotate*`/`gc*` function, it

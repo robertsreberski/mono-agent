@@ -267,6 +267,13 @@ use `TelegramSendMessage.reply_options` with two to eight labels. Those buttons
 are intentionally separate from `AskUser`: they do not pause or resume the
 current model run.
 
+A tap the adapter cannot match to any of its button protocols is acknowledged and
+otherwise ignored — the spinner clears and no turn starts, which is
+indistinguishable from a dead button. The adapter logs a warning naming the
+unrecognized payload prefix when that happens. It normally means a keyboard
+outlived the release that renamed its payload, or that something outside the
+agent built the card with a retired protocol.
+
 ### Sending files
 
 `TelegramSendFile` lets the agent send a generated file or image back to an allowed chat (available under the allow-all default; name it explicitly under a specific `tools.allowedTools`). A required `kind` selects `"document"` (any file, downloadable) or `"photo"` (an image shown inline). It accepts the bytes as base64 `data` (with a `filename`) **or** a workspace `path`, plus an optional `caption`; uploads are bounded by the adapter's attachment size cap.

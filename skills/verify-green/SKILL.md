@@ -23,6 +23,36 @@ Choose the highest applicable lane:
 A mixed diff uses the highest lane. Explain the classification in the final
 evidence so reviewers can challenge it.
 
+## 1a. Cross-process contract changes
+
+A **wire contract** is any value this repo emits that a different process parses
+later: `callback_data` protocols, event and tool names, on-disk state shapes,
+notification payloads, CLI JSON. Renaming or retiring one is always **high
+risk**, however small the diff, because in-repo tests cannot observe the other
+side. Green tests are the expected result of this break, not evidence against it.
+
+Before merging such a diff:
+
+```bash
+# in-repo consumers
+grep -rn "<old protocol literal>" packages/*/src extras/*/src --include="*.ts"
+# out-of-repo consumers — the fleet parses these contracts too
+grep -rn "<old protocol literal>" ~/personal-agent ~/agents/*/ ~/a8c-agents/*/ \
+  --include="*.mjs" --include="*.ts" --include="*.md" 2>/dev/null \
+  | grep -v node_modules | grep -v "/dist/"
+```
+
+Then require the matching `live-smoke` round-trip: emit the new contract and
+confirm the far side acts on it. A unit test asserting a **literal** (`["ask:0",
+"ask:1"]`) proves only that the literal is unchanged — derive the expectation
+from the exported builder instead, so retiring the protocol fails the test that
+pins it.
+
+PR #527 renamed the Telegram button protocol `ask:<index>` → `reply:v1:<0-7>`
+with every gate green. Personal Agent heartbeat cards kept emitting the old
+payload for a week; taps did nothing, and a test pinning the literal stayed green
+throughout.
+
 ## 2. Process lane
 
 Do not build packages, run live smoke, inspect the fleet, or run release checks
