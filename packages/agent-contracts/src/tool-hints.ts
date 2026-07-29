@@ -68,6 +68,13 @@ interface ToolActivitySpec {
   readonly action: string;
   readonly actionWithoutPreview?: string;
   readonly previewFields: readonly string[];
+  /**
+   * Argv-shaped tools carry the program in one scalar field and the
+   * subcommand/flags in a string array, so no single field is a usable preview.
+   * Joining them into one shell-looking line is what keeps distinct calls on
+   * distinct activity lines instead of collapsing into a bare `(×N)` entry.
+   */
+  readonly argvPreview?: { readonly head: string; readonly tail: string };
   readonly quotePreview?: boolean;
 }
 
@@ -107,6 +114,7 @@ const CODE_NAMES = new Set([
   "code",
   "codeinterpreter",
   "executecode",
+  "noderepl",
   "python",
   "pythoncode",
   "runcode",
@@ -166,7 +174,7 @@ export function formatToolActivityLine(
   const leaf = toolLeaf(rawName);
   const normalized = leaf.toLowerCase().replace(/[^a-z0-9]+/gu, "");
   const spec = activitySpec(normalized, leaf);
-  const preview = previewFromArguments(toolArguments, spec.previewFields, options);
+  const preview = previewFromArguments(toolArguments, spec, options);
   return preview === undefined
     ? (spec.actionWithoutPreview ?? spec.action)
     : `${spec.action} ${spec.quotePreview ? JSON.stringify(preview) : preview}`;
@@ -217,7 +225,11 @@ function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
     return { action: "✏️ Editing", previewFields: ["file_path", "path", "destination", "name"] };
   }
   if (COMMAND_NAMES.has(normalized)) {
-    return { action: "🖥️ Running", previewFields: ["command", "cmd", "script"] };
+    return {
+      action: "🖥️ Running",
+      previewFields: ["command", "cmd", "script"],
+      argvPreview: { head: "executable", tail: "args" },
+    };
   }
   if (CODE_NAMES.has(normalized)) {
     return { action: "🐍 Running code", previewFields: ["code", "source", "script"] };
@@ -261,19 +273,65 @@ function humanizeToolLeaf(leaf: string): string {
 
 function previewFromArguments(
   toolArguments: unknown,
-  previewFields: readonly string[],
+  spec: ToolActivitySpec,
   options?: ToolActivityLineOptions,
 ): string | undefined {
   const record = safePlainRecord(toolArguments);
   if (record === undefined) return undefined;
 
-  for (const key of previewFields) {
+  for (const key of spec.previewFields) {
     const value = safeOwnScalar(record, key);
     if (value === undefined) continue;
     const preview = sanitizePreview(value, previewTruncationForField(key), options);
     if (preview !== undefined) return preview;
   }
-  return undefined;
+  // Argv is the fallback, not the first choice: a tool that offers a whole
+  // command line already has the more complete rendering.
+  return spec.argvPreview === undefined
+    ? undefined
+    : previewFromArgv(record, spec.argvPreview, options);
+}
+
+function previewFromArgv(
+  record: object,
+  fields: { readonly head: string; readonly tail: string },
+  options?: ToolActivityLineOptions,
+): string | undefined {
+  const head = safeOwnScalar(record, fields.head);
+  if (head === undefined) return undefined;
+  // Space-joined so the shell-shaped redactions (`--token x`, `-u user:pass`,
+  // `Authorization: Bearer …`) match argv exactly as they match a command line,
+  // and so the preview truncates like the command it stands in for.
+  const argv = [head, ...safeOwnStringArray(record, fields.tail)].join(" ");
+  return sanitizePreview(argv, "balanced", options);
+}
+
+/**
+ * Read a bounded, contiguous run of string elements using the same descriptor
+ * discipline as `safeOwnScalar`: no getters, no proxy traps, no iterator
+ * protocol. A non-string element ends the run, because a hole makes the rest of
+ * an argv positionally meaningless — a truthful prefix beats a spliced line.
+ */
+function safeOwnStringArray(record: object, key: string): readonly string[] {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (descriptor === undefined || !("value" in descriptor)) return [];
+    const value = descriptor.value as unknown;
+    if (nodeUtilTypes.isProxy(value) || !Array.isArray(value)) return [];
+
+    const parts: string[] = [];
+    let budget = TOOL_PREVIEW_SCAN_CODE_POINTS;
+    const count = Number(safeOwnScalar(value, "length") ?? 0);
+    for (let index = 0; index < count && budget > 0; index += 1) {
+      const element = Object.getOwnPropertyDescriptor(value, String(index));
+      if (element === undefined || !("value" in element) || typeof element.value !== "string") break;
+      parts.push(element.value);
+      budget -= element.value.length + 1;
+    }
+    return parts;
+  } catch {
+    return [];
+  }
 }
 
 /**
