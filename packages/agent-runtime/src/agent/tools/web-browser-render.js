@@ -1,5 +1,6 @@
 // @ts-check
 
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { passthroughSandbox } from "../sandbox-seam.js";
@@ -10,6 +11,7 @@ import { resolveSandboxPolicy } from "./shared/tool-context.js";
 const BROWSER_TIMEOUT_MS = 20_000;
 const BROWSER_CLOSE_TIMEOUT_MS = 5_000;
 const BROWSER_OUTPUT_BYTES = 2 * 1024 * 1024;
+const MAX_BROWSER_NAMESPACE_CHARS = 16;
 
 /**
  * Render one public page in a fresh anonymous agent-browser session.
@@ -34,7 +36,8 @@ export async function renderWithAgentBrowser(
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   const workspace = resolve(resolvedCtx.workspace || process.cwd());
-  const session = `${namespace}-${Math.random().toString(36).slice(2, 10)}`;
+  const browserNamespace = compactBrowserNamespace(namespace);
+  const session = `s-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   const allowedDomains = browserAllowedDomains(parsed.hostname);
   let tempDir = null;
   let unregister = () => {};
@@ -62,7 +65,7 @@ export async function renderWithAgentBrowser(
     const configPath = join(tempDir, "agent-browser.json");
     const baseArgs = [
       "--namespace",
-      namespace,
+      browserNamespace,
       "--session",
       session,
       "--config",
@@ -126,6 +129,7 @@ export async function renderWithAgentBrowser(
           AGENT_BROWSER_SESSION: undefined,
           AGENT_BROWSER_SESSION_NAME: undefined,
           AGENT_BROWSER_SKILLS_DIR: undefined,
+          AGENT_BROWSER_SOCKET_DIR: undefined,
           AGENT_BROWSER_STATE: undefined,
           AGENT_BROWSER_STATE_EXPIRE_DAYS: undefined,
           AGENT_BROWSER_STREAM_PORT: undefined,
@@ -173,6 +177,15 @@ export async function renderWithAgentBrowser(
   } finally {
     await closeSession();
   }
+}
+
+function compactBrowserNamespace(value) {
+  const candidate = String(value || "").trim();
+  if (/^[A-Za-z0-9_-]+$/u.test(candidate) && candidate.length <= MAX_BROWSER_NAMESPACE_CHARS) {
+    return candidate;
+  }
+  const digest = createHash("sha256").update(candidate).digest("hex").slice(0, 10);
+  return `mw-${digest}`;
 }
 
 export function extractBrowserText(output) {
