@@ -5,7 +5,63 @@ sidebar:
   order: 6
 ---
 
-This page covers mono-agent's managed built-ins (Read, Write, Edit, Glob, Grep, Bash, Exec, NodeRepl, WebFetch, WebSearch) and the runtime guards that protect each turn: loss-aware process execution, the tool-output bloat guard, per-run usage/cost tracking, bridge-driven Pi context compaction, and WebFetch's in-tool retry. It also notes which behaviors you configure versus which run automatically.
+This page covers mono-agent's managed built-ins (Read, Write, Edit, Glob, Grep, Bash, Exec, NodeRepl, WebFetch, WebSearch, Agent) and the runtime guards that protect each turn: loss-aware process execution, the tool-output bloat guard, per-run usage/cost tracking, bridge-driven Pi context compaction, and WebFetch's in-tool retry. It also notes which behaviors you configure versus which run automatically.
+
+## Subagents (`Agent`)
+
+`Agent` lets the main agent hand a self-contained task to a helper that works
+independently and reports back. It exists only on the pi runtime, and only when
+`subagents.enabled` is true **and** `Agent` appears in `tools.allowedTools` —
+`mono-agent validate` warns when one half is configured without the other.
+
+```json
+{
+  "tools": { "allowedTools": ["Read", "Glob", "Grep", "Agent"] },
+  "subagents": {
+    "enabled": true,
+    "maxConcurrent": 5,
+    "definitions": [
+      {
+        "name": "researcher",
+        "description": "Reads code and docs to answer a factual question. Read-only.",
+        "prompt": "You are a codebase researcher. Answer with file:line citations. Never modify files.",
+        "allowedTools": ["Read", "Glob", "Grep", "WebFetch"],
+        "maxTurns": 25
+      }
+    ]
+  }
+}
+```
+
+Each definition needs exactly one of `prompt` or `promptPath`. The `Agent` tool
+takes `{prompt, name?, description?}`; with no `name` it runs a read-only
+general-purpose researcher on the parent's model.
+
+**What comes back.** The main agent receives the subagent's final answer plus a
+compact log — one line per tool call with a short argument summary, ok/error,
+and duration — capped at roughly 24 KB. It does not receive raw tool output. A
+subagent that fails, times out, or returns nothing still reports its activity
+log, since that log is usually the most useful part of a failed delegation.
+
+**What operators see.** Every subagent tool call streams live to the TUI and web
+console as its own entry, named `<profile>▸<tool>` and bracketed by the
+subagent's own start/finish rows. The subagent's thinking and prose stay
+internal — only its final answer reaches the parent, through the tool result.
+
+**Limits.** `maxConcurrent` (default 5) bounds simultaneous subagents;
+`maxPerTurn` (default 20) bounds the total per parent turn and is the real
+runaway guard, since a delegation loop can spend budget serially without ever
+hitting the concurrency cap. Each subagent gets `maxTurns` (default 20) and
+`timeoutMs` (default 5 minutes), and its timeout starts only once it actually
+begins, not while queued.
+
+**Guardrails.** A subagent is read-only unless its profile enumerates more, and
+it never receives `Agent`, `AskUser`, or any channel-send tool — it cannot
+message the user or spawn subagents of its own. It inherits the parent's sandbox
+and cannot widen it, gets no MCP servers unless its profile names them, and runs
+with no provider session of its own. Omitting a profile's `model` inherits the
+parent's configured route, so subagents get the fallback chain and same-model
+retries too; naming a model routes that profile through it instead.
 
 ## Built-in tools
 

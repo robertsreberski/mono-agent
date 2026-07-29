@@ -41,7 +41,7 @@ import {
   PERMISSION_MODES,
   ROUTE_SAFETY_MODES,
 } from "./enums.js";
-import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, RouteSafetyMode, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
+import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, RouteSafetyMode, MonoAgentSubagentConfig, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -166,6 +166,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   );
   const permissionMode = readPermissionMode(input.env.MONO_AGENT_PERMISSION_MODE);
   const concurrency = readConcurrencyConfig(input.env);
+  const subagents = readSubagentsConfig(input.env, cwd);
   const runtime: MonoAgentConfig["runtime"] = {
     model,
     ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
@@ -247,6 +248,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     ...(agentName === undefined ? {} : { agent: { name: agentName } }),
     runtime,
     ...(concurrency === undefined ? {} : { concurrency }),
+    ...(subagents === undefined ? {} : { subagents }),
     context,
     tools,
     ...(sandbox === undefined ? {} : { sandbox }),
@@ -455,6 +457,149 @@ function readFallbackAttempts(value: unknown, index: number): number | undefined
     );
   }
   return value;
+}
+
+const SUBAGENT_NAME_RE = /^[a-z0-9][a-z0-9-]*$/u;
+
+function readSubagentsConfig(
+  env: Record<string, string | undefined>,
+  cwd: string,
+): MonoAgentSubagentsConfig | undefined {
+  const raw = normalizeOptionalString(env.MONO_AGENT_SUBAGENTS_JSON);
+  if (raw === undefined) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new MonoAgentConfigError("invalid_json", "MONO_AGENT_SUBAGENTS_JSON must be a JSON object.", {
+      env: "MONO_AGENT_SUBAGENTS_JSON",
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new MonoAgentConfigError("invalid_env", "MONO_AGENT_SUBAGENTS_JSON must be a JSON object.", {
+      env: "MONO_AGENT_SUBAGENTS_JSON",
+    });
+  }
+  const record = parsed as Record<string, unknown>;
+  const definitions = readSubagentDefinitions(record.definitions, cwd);
+  return {
+    ...(record.enabled === undefined ? {} : { enabled: readSubagentBoolean(record.enabled, "enabled") }),
+    ...(record.maxConcurrent === undefined ? {} : { maxConcurrent: readSubagentInteger(record.maxConcurrent, "maxConcurrent", 1, 10) }),
+    ...(record.maxPerTurn === undefined ? {} : { maxPerTurn: readSubagentInteger(record.maxPerTurn, "maxPerTurn", 1, 200) }),
+    ...(record.timeoutMs === undefined ? {} : { timeoutMs: readSubagentInteger(record.timeoutMs, "timeoutMs", 1_000, 3_600_000) }),
+    ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, "maxTurns", 1, 200) }),
+    ...(definitions === undefined ? {} : { definitions }),
+  };
+}
+
+function readSubagentDefinitions(
+  value: unknown,
+  cwd: string,
+): readonly MonoAgentSubagentConfig[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw invalidSubagents("definitions must be an array.");
+  }
+  const seen = new Set<string>();
+  return value.map((entry, index) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw invalidSubagents(`definition ${index + 1} must be an object.`);
+    }
+    const record = entry as Record<string, unknown>;
+    const name = typeof record.name === "string" ? record.name.trim() : "";
+    if (!SUBAGENT_NAME_RE.test(name)) {
+      throw invalidSubagents(`definition ${index + 1} name must be lowercase kebab-case (got ${JSON.stringify(record.name)}).`);
+    }
+    if (seen.has(name)) {
+      throw invalidSubagents(`duplicate definition name "${name}".`);
+    }
+    seen.add(name);
+    const description = typeof record.description === "string" ? record.description.trim() : "";
+    if (description.length === 0) {
+      throw invalidSubagents(`definition "${name}" needs a non-empty description; the model picks profiles by it.`);
+    }
+    const hasPrompt = typeof record.prompt === "string" && record.prompt.trim().length > 0;
+    const hasPromptPath = typeof record.promptPath === "string" && record.promptPath.trim().length > 0;
+    if (hasPrompt === hasPromptPath) {
+      throw invalidSubagents(`definition "${name}" needs exactly one of prompt or promptPath.`);
+    }
+    const allowedTools = readSubagentTools(record.allowedTools, name, "allowedTools");
+    const disallowedTools = readSubagentTools(record.disallowedTools, name, "disallowedTools");
+    const mcpServers = readSubagentTools(record.mcpServers, name, "mcpServers");
+    // `"*"` would hand a subagent every built-in including shell and writes.
+    // Widening a helper's reach must be an explicit, enumerated decision.
+    if (allowedTools?.includes(ALLOW_ALL_TOOLS)) {
+      throw invalidSubagents(`definition "${name}" cannot use the ${ALLOW_ALL_TOOLS} wildcard; list the tools it needs.`);
+    }
+    if (allowedTools?.includes("Agent")) {
+      throw invalidSubagents(`definition "${name}" cannot allow Agent; subagents never spawn subagents.`);
+    }
+    return {
+      name,
+      description,
+      ...(hasPrompt ? { prompt: String(record.prompt).trim() } : {}),
+      ...(hasPromptPath ? { promptPath: readPath(String(record.promptPath), cwd) } : {}),
+      ...(record.model === undefined ? {} : { model: parseSubagentModel(record.model, name) }),
+      ...(record.effort === undefined ? {} : {
+        effort: readChoice<EffortLevel>(String(record.effort), `subagents.definitions[${index}].effort`, EFFORT_LEVELS, "medium", invalidEnv),
+      }),
+      ...(allowedTools === undefined ? {} : { allowedTools }),
+      ...(disallowedTools === undefined ? {} : { disallowedTools }),
+      ...(mcpServers === undefined ? {} : { mcpServers }),
+      ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, `definition "${name}" maxTurns`, 1, 200) }),
+      ...(record.timeoutMs === undefined ? {} : { timeoutMs: readSubagentInteger(record.timeoutMs, `definition "${name}" timeoutMs`, 1_000, 3_600_000) }),
+    } satisfies MonoAgentSubagentConfig;
+  });
+}
+
+function parseSubagentModel(value: unknown, name: string): MonoAgentConfig["runtime"]["model"] {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw invalidSubagents(`definition "${name}" model must be a model reference string.`);
+  }
+  try {
+    return parseMonoRuntimeModelReference(value);
+  } catch (error) {
+    throw new MonoAgentConfigError(
+      "invalid_model_reference",
+      `MONO_AGENT_SUBAGENTS_JSON definition "${name}" model is not a valid runtime model reference.`,
+      { env: "MONO_AGENT_SUBAGENTS_JSON", reason: error instanceof Error ? error.message : String(error) },
+    );
+  }
+}
+
+function readSubagentTools(value: unknown, name: string, field: string): readonly string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || entry.trim().length === 0)) {
+    throw invalidSubagents(`definition "${name}" ${field} must be an array of non-empty strings.`);
+  }
+  return value.map((entry) => String(entry).trim());
+}
+
+function readSubagentBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") {
+    throw invalidSubagents(`${field} must be a boolean.`);
+  }
+  return value;
+}
+
+function readSubagentInteger(value: unknown, field: string, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+    throw invalidSubagents(`${field} must be an integer between ${min} and ${max}.`);
+  }
+  return value;
+}
+
+function invalidSubagents(detail: string): MonoAgentConfigError {
+  return new MonoAgentConfigError("invalid_env", `MONO_AGENT_SUBAGENTS_JSON ${detail}`, {
+    env: "MONO_AGENT_SUBAGENTS_JSON",
+  });
 }
 
 function readRetryConfig(env: Record<string, string | undefined>): RuntimeRetryConfig {

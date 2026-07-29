@@ -2188,6 +2188,45 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     );
   }
 
+
+  // Subagents: the Agent tool is registered only when BOTH the capability is
+  // enabled and the tool is allowed, so surface either half being missing.
+  const subagents = config.subagents;
+  const agentAllowed = allowAll || allowedTools.includes("Agent");
+  if (subagents?.enabled === true) {
+    const count = subagents.definitions?.length ?? 0;
+    details.push(`Subagents: enabled, ${count} profile${count === 1 ? "" : "s"}${count === 0 ? " (general-purpose only)" : ""}.`);
+    if (!agentAllowed) {
+      status = status === "error" ? status : "waiting";
+      details.push(
+        "Subagents are enabled but Agent is not in tools.allowedTools, so the tool is never registered. Add \"Agent\" to tools.allowedTools.",
+      );
+    }
+    for (const definition of subagents.definitions ?? []) {
+      if (definition.promptPath !== undefined && !(await pathExists(definition.promptPath))) {
+        status = "error";
+        details.push(`Subagent "${definition.name}" promptPath does not exist: ${definition.promptPath}`);
+      }
+      for (const tool of definition.allowedTools ?? []) {
+        if (!isKnownToolName(tool) && !isMcpToolName(tool)) {
+          status = "error";
+          details.push(`Subagent "${definition.name}" allows unknown tool "${tool}".`);
+        }
+      }
+      for (const server of definition.mcpServers ?? []) {
+        if (configuredMcpServerNames.length > 0 && !configuredMcpServerNames.includes(server)) {
+          status = "error";
+          details.push(`Subagent "${definition.name}" references MCP server "${server}", which is not in tools.mcpConfigPath.`);
+        }
+      }
+    }
+  } else if (agentAllowed && !allowAll) {
+    status = status === "error" ? status : "waiting";
+    details.push(
+      "Agent is allowed but subagents.enabled is not true, so the tool is never registered. Set subagents.enabled to true or drop Agent from tools.allowedTools.",
+    );
+  }
+
   return { id: "tools", label: "Tools & MCP", status, details };
 }
 

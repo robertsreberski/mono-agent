@@ -25,6 +25,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "runtime.model": "string",
   "runtime.fallbackModels": "string[]",
   "runtime.fallbacks": "array",
+  subagents: "object",
   "runtime.retry.primaryAttempts": "integer",
   "runtime.retry.backoffMs": "integer",
   "runtime.retry.maxBackoffMs": "integer",

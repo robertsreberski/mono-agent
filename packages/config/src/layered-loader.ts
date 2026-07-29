@@ -652,6 +652,9 @@ export function layerJsonOntoEnv(
   if (json.runtime?.retry?.maxBackoffMs !== undefined) {
     fromJson.MONO_AGENT_RETRY_MAX_BACKOFF_MS = String(json.runtime.retry.maxBackoffMs);
   }
+  if (json.subagents !== undefined && !hasValue(env.MONO_AGENT_SUBAGENTS_JSON)) {
+    fromJson.MONO_AGENT_SUBAGENTS_JSON = JSON.stringify(json.subagents);
+  }
   if (json.runtime?.routeSafety !== undefined) {
     fromJson.MONO_AGENT_ROUTE_SAFETY = json.runtime.routeSafety;
   }

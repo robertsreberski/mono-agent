@@ -432,6 +432,54 @@ describe("loadMonoAgentConfig", () => {
     })).toThrow(/cannot both be set/u);
   });
 
+  it("loads subagent profiles and caps", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({
+          enabled: true,
+          maxConcurrent: 3,
+          definitions: [
+            { name: "researcher", description: "Reads code.", prompt: "You research.", allowedTools: ["Read", "Grep"] },
+            { name: "test-runner", description: "Runs tests.", promptPath: "./agents/test-runner.md", model: "codex:gpt-5.6-sol", timeoutMs: 900_000 },
+          ],
+        }),
+      },
+    });
+
+    expect(config.subagents?.enabled).toBe(true);
+    expect(config.subagents?.maxConcurrent).toBe(3);
+    expect(config.subagents?.definitions?.[0]).toEqual({
+      name: "researcher",
+      description: "Reads code.",
+      prompt: "You research.",
+      allowedTools: ["Read", "Grep"],
+    });
+    expect(config.subagents?.definitions?.[1]?.promptPath).toBe("/repo/agents/test-runner.md");
+    expect(config.subagents?.definitions?.[1]?.model).toMatchObject({ sdk: "codex", model: "gpt-5.6-sol" });
+  });
+
+  it("is absent when no subagents are configured", () => {
+    expect(loadMonoAgentConfig({ cwd: "/repo", env: baseEnv }).subagents).toBeUndefined();
+  });
+
+  it.each([
+    ["a non-object payload", "[]", /must be a JSON object/u],
+    ["a nameless definition", JSON.stringify({ definitions: [{ description: "d", prompt: "p" }] }), /name must be lowercase kebab-case/u],
+    ["a non-kebab name", JSON.stringify({ definitions: [{ name: "Researcher", description: "d", prompt: "p" }] }), /name must be lowercase kebab-case/u],
+    ["a duplicate name", JSON.stringify({ definitions: [{ name: "a", description: "d", prompt: "p" }, { name: "a", description: "d2", prompt: "p2" }] }), /duplicate definition name "a"/u],
+    ["a missing description", JSON.stringify({ definitions: [{ name: "a", prompt: "p" }] }), /needs a non-empty description/u],
+    ["both prompt and promptPath", JSON.stringify({ definitions: [{ name: "a", description: "d", prompt: "p", promptPath: "./x.md" }] }), /exactly one of prompt or promptPath/u],
+    ["neither prompt nor promptPath", JSON.stringify({ definitions: [{ name: "a", description: "d" }] }), /exactly one of prompt or promptPath/u],
+    ["the allow-all wildcard", JSON.stringify({ definitions: [{ name: "a", description: "d", prompt: "p", allowedTools: ["*"] }] }), /cannot use the \* wildcard/u],
+    ["a self-referential Agent grant", JSON.stringify({ definitions: [{ name: "a", description: "d", prompt: "p", allowedTools: ["Agent"] }] }), /subagents never spawn subagents/u],
+    ["an out-of-range maxConcurrent", JSON.stringify({ maxConcurrent: 99 }), /maxConcurrent must be an integer between 1 and 10/u],
+  ])("rejects %s", (_label, payload, expected) => {
+    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_SUBAGENTS_JSON: payload } }))
+      .toThrow(expected);
+  });
+
   it("materializes same-model retry defaults", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: baseEnv });
     expect(config.runtime.retry).toEqual({ primaryAttempts: 2, backoffMs: 1_000, maxBackoffMs: 15_000 });
