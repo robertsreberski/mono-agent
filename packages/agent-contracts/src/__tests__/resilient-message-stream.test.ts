@@ -240,6 +240,32 @@ describe("ResilientMessageStream", () => {
       .not.toContain("hidden draft");
   });
 
+  it("finalOnly mode: keeps distinct argv commands on distinct ledger lines", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    const exec = (id: string, args: readonly string[]) => stream.event({
+      type: "tool_call_started" as const,
+      id,
+      name: "Exec",
+      arguments: { executable: "git", args },
+    });
+
+    await exec("t1", ["status", "--short"]);
+    await exec("t2", ["diff", "--stat"]);
+    await exec("t3", ["diff", "--stat"]);
+    await stream.finish("done");
+
+    // Only genuinely repeated calls collapse; the ledger never hides distinct work
+    // behind a bare `🖥️ Running (×N)`.
+    expect(transport.calls.map((call) => call.op === "delete" ? "delete" : call.text)).toEqual([
+      "🖥️ Running git status --short",
+      "🖥️ Running git status --short\n🖥️ Running git diff --stat",
+      "🖥️ Running git status --short\n🖥️ Running git diff --stat (×2)",
+      "done",
+    ]);
+  });
+
   it("finalOnly mode: relocates the cumulative ledger after applied live guidance", async () => {
     const transport = new FakeTransport({ maxMessageChars: 500 });
     const stream = makeStream(transport, { finalOnly: true, showHints: true });
