@@ -490,6 +490,7 @@ describe("run-scoped web controller and browser isolation", () => {
         AGENT_BROWSER_RESTORE_SAVE: "never",
         AGENT_BROWSER_SESSION: undefined,
         AGENT_BROWSER_SESSION_NAME: undefined,
+        AGENT_BROWSER_SOCKET_DIR: undefined,
         AGENT_BROWSER_STATE: undefined,
       });
       sessions.add(command.args[command.args.indexOf("--session") + 1]);
@@ -498,6 +499,39 @@ describe("run-scoped web controller and browser isolation", () => {
     expect(preparedCommands.at(-1).args.at(-1)).toBe("close");
     expect(cleanups.every((cleanup) => cleanup.mock.calls.length === 1)).toBe(true);
     expect(readdirSync(workspace).filter((name) => name.startsWith(".mono-agent-web-"))).toEqual([]);
+  });
+
+  it("bounds browser namespace and session ids for macOS Unix socket paths", async () => {
+    const workspace = tempWorkspace();
+    const preparedCommands = [];
+    const sandbox = {
+      mergePolicies: (_configured, request) => request,
+      networkAllowsUrl: () => true,
+      async prepareCommand({ command }) {
+        preparedCommands.push(command);
+        const output = command.args.includes("read")
+          ? JSON.stringify({ text: "Rendered from a bounded browser session" })
+          : "";
+        return {
+          command: process.execPath,
+          args: ["--eval", `process.stdout.write(${JSON.stringify(output)})`],
+          cwd: workspace,
+          cleanup: async () => {},
+        };
+      },
+    };
+
+    await renderWithAgentBrowser("https://example.com/page", {
+      namespace: `mono-agent-web-${"a".repeat(36)}`,
+      ctx: { workspace, sandbox },
+    });
+
+    const command = preparedCommands[0];
+    const browserNamespace = command.args[command.args.indexOf("--namespace") + 1];
+    const session = command.args[command.args.indexOf("--session") + 1];
+    expect(browserNamespace).toMatch(/^mw-[a-f0-9]{10}$/u);
+    expect(session).toMatch(/^s-[a-f0-9]{12}$/u);
+    expect(browserNamespace.length + session.length).toBeLessThanOrEqual(27);
   });
 });
 
