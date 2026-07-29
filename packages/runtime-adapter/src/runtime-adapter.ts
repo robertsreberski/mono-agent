@@ -168,14 +168,30 @@ export interface MonoRuntimeFallbackChainEntry {
   readonly executionMode?: RuntimeExecutionMode;
   /** String pins this route, `null` selects the provider default, omitted inherits the run effort. */
   readonly effort?: string | null;
+  /**
+   * Total attempts on this route including the first, 1–10. Omitted means a
+   * single shot. A retry re-runs the whole logical turn on the same model and
+   * only fires for transient provider failures.
+   */
+  readonly attempts?: number;
 }
 
 export type MonoRuntimeRouteSafetyMode = "uniform" | "per-route-native";
 
+export interface MonoRuntimeRetryPolicy {
+  /** Delay before the first retry; doubles per retry. Defaults to 1000. */
+  readonly backoffMs?: number;
+  /** Ceiling for the doubled delay. Defaults to 15000. */
+  readonly maxBackoffMs?: number;
+}
+
 export interface MonoRuntimeAttemptContext {
   readonly model: RuntimeModelReference;
   readonly executionMode: string | null;
+  /** Index of this route in the chain. Stable across same-model retries. */
   readonly attemptIndex: number;
+  /** 0 for the first try of a route, then 1, 2, … for each same-model retry. */
+  readonly retryIndex: number;
   readonly routeSafety: MonoRuntimeRouteSafetyMode;
 }
 
@@ -208,12 +224,14 @@ export interface CreateMonoRuntimeOptions extends MonoRuntimeHostOptions {
   readonly fallbackChain?: readonly MonoRuntimeFallbackChainEntry[];
   /** Compatibility-preserving uniform safety, or explicit isolated provider-native route contracts. */
   readonly routeSafety?: MonoRuntimeRouteSafetyMode;
+  /** Backoff shape for same-model retries. Per-route counts live on each chain entry's `attempts`. */
+  readonly retry?: MonoRuntimeRetryPolicy;
   /** Private host seam for actual-model provider options and route-owned runtimes. */
   readonly resolveAttempt?: MonoRuntimeAttemptResolver;
 }
 
 export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoRuntimeLike {
-  const { fallbackChain, routeSafety = "uniform", resolveAttempt, ...hostOptions } = options;
+  const { fallbackChain, routeSafety = "uniform", retry, resolveAttempt, ...hostOptions } = options;
   if (routeSafety !== "uniform" && routeSafety !== "per-route-native") {
     throw new RuntimeAdapterError(
       "invalid_runtime_options",
@@ -222,6 +240,7 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
     );
   }
   const chain = normalizeFallbackChain(fallbackChain);
+  const retryPolicy = normalizeRetryPolicy(retry);
   // agent-runtime's kernel ships only a fail-closed passthrough sandbox (see
   // agent/sandbox-seam.js) — this is the ONE place the real sandbox
   // implementation gets injected, so every mono-agent host's sandbox policy is
@@ -239,6 +258,7 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
         host: hostWithSandbox,
         chain,
         routeSafety,
+        ...(retryPolicy === undefined ? {} : { retry: retryPolicy }),
         ...(protectedResolveAttempt === undefined
           ? {}
           : {
@@ -344,6 +364,7 @@ function normalizeFallbackChain(
   model: RuntimeModelReference;
   executionMode: RuntimeExecutionMode;
   effort?: string | null;
+  attempts?: number;
 }[] | undefined {
   if (fallbackChain === undefined) {
     return undefined;
@@ -371,13 +392,44 @@ function normalizeFallbackChain(
         "Runtime fallback effort must be a non-empty trimmed string, null, or omitted.",
       );
     }
+    if (
+      entry.attempts !== undefined
+      && (!Number.isInteger(entry.attempts) || entry.attempts < 1 || entry.attempts > 10)
+    ) {
+      throw new RuntimeAdapterError(
+        "invalid_runtime_options",
+        "Runtime fallback attempts must be an integer between 1 and 10, or omitted.",
+      );
+    }
     return {
       model: entry.model,
       executionMode,
       ...(entry.effort === undefined ? {} : { effort: entry.effort }),
+      ...(entry.attempts === undefined ? {} : { attempts: entry.attempts }),
     };
   });
   return normalized;
+}
+
+function normalizeRetryPolicy(
+  retry: MonoRuntimeRetryPolicy | undefined,
+): MonoRuntimeRetryPolicy | undefined {
+  if (retry === undefined) {
+    return undefined;
+  }
+  if (retry === null || typeof retry !== "object" || Array.isArray(retry)) {
+    throw new RuntimeAdapterError("invalid_runtime_options", "Runtime retry policy must be an object.");
+  }
+  for (const key of ["backoffMs", "maxBackoffMs"] as const) {
+    const value = retry[key];
+    if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) {
+      throw new RuntimeAdapterError(
+        "invalid_runtime_options",
+        `Runtime retry ${key} must be a non-negative finite number.`,
+      );
+    }
+  }
+  return retry;
 }
 
 export function assertParsedRuntimeModelReference(value: unknown): asserts value is RuntimeModelReference {

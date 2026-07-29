@@ -71,6 +71,11 @@ function failoverModel(model: unknown): string | undefined {
  * the summary. Idempotent on already-normalized data, so it is safe to call again
  * at read/export time. Returns undefined when there is nothing recordable.
  */
+function positiveIntegerField(entry: Record<string, unknown>, key: string): number | undefined {
+  const value = entry[key];
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
 export function normalizeFailoverHistory(value: unknown): FailoverAttempt[] | undefined {
   if (!Array.isArray(value) || value.length === 0) return undefined;
   const attempts: FailoverAttempt[] = [];
@@ -82,6 +87,10 @@ export function normalizeFailoverHistory(value: unknown): FailoverAttempt[] | un
     // idempotent when fed already-normalized attempts.
     const subkind = stringField(entry, "retryableSubkind") ?? stringField(entry, "subkind");
     const requestId = stringField(entry, "requestId");
+    // Same-model retries carry their own request id and can carry a different
+    // subkind, so each is its own attempt. Reading the field this helper also
+    // writes keeps it idempotent.
+    const retryIndex = positiveIntegerField(entry, "retryIndex");
     if (model === undefined && failureKind === undefined && subkind === undefined && requestId === undefined) {
       continue;
     }
@@ -90,6 +99,7 @@ export function normalizeFailoverHistory(value: unknown): FailoverAttempt[] | un
       ...(failureKind === undefined ? {} : { failureKind }),
       ...(subkind === undefined ? {} : { subkind }),
       ...(requestId === undefined ? {} : { requestId }),
+      ...(retryIndex === undefined ? {} : { retryIndex }),
     });
   }
   return attempts.length === 0 ? undefined : attempts;
@@ -108,7 +118,12 @@ export function renderFailoverHistory(history: readonly FailoverAttempt[] | unde
       const label = attempt.model ?? "(unknown model)";
       const reason = attempt.subkind ?? attempt.failureKind ?? "failed";
       const req = attempt.requestId === undefined ? "" : ` (req ${attempt.requestId})`;
-      return `${label} → ${reason}${req}`;
+      // Without this marker a retried route renders as a duplicated entry and
+      // reads like a bug rather than a deliberate second attempt.
+      const retry = attempt.retryIndex !== undefined && attempt.retryIndex > 0
+        ? ` (retry ${attempt.retryIndex})`
+        : "";
+      return `${label} → ${reason}${req}${retry}`;
     })
     .join(", ");
 }

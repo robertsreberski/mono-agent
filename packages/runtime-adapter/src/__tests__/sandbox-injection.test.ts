@@ -174,6 +174,7 @@ describe("createMonoRuntime sandbox injection", () => {
       model,
       executionMode: "sdk",
       attemptIndex: 0,
+      retryIndex: 0,
       routeSafety: "uniform",
     });
     expect(protectedResolution?.cleanup).toBe(resolution.cleanup);

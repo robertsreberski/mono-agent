@@ -21,6 +21,7 @@ export type {
   MonoRuntimeAttemptResolution,
   MonoRuntimeAttemptResolver,
   MonoRuntimeFallbackChainEntry,
+  MonoRuntimeRetryPolicy,
   MonoRuntimeRouteSafetyMode,
   RuntimeAdapterErrorCode,
   RuntimeAdapterErrorDetails,

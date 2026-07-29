@@ -1,5 +1,40 @@
 # Release notes
 
+## Unreleased
+
+### Same-model retries before failover
+
+- A fallback route can now retry itself before the chain advances.
+  `runtime.retry.primaryAttempts` (default `2`) sets the total attempts on
+  `runtime.model` including the first, and each `runtime.fallbacks[]` entry
+  takes an optional `attempts` (omitted = single shot). `runtime.retry.backoffMs`
+  doubles per retry, capped by `runtime.retry.maxBackoffMs`. Set
+  `primaryAttempts: 1` to restore the previous single-shot behavior.
+- Retries fire only for transient provider failures — overloaded, rate-limited,
+  timeout, network, 5xx, and terminated streams. `context_limit` and
+  `provider_auth` still advance immediately, because a second identical request
+  against the same window or the same credentials cannot succeed. Cancellation
+  and mid-turn sandbox/safety failures never retry.
+- Agents with no configured backups now get a retry-only single-entry chain, so
+  the primary-retry default applies to them too.
+- A retry drops the route's provider session (the failed attempt already
+  appended to it), emits the new `provider_status` kind `retry_started` rather
+  than a failover event, and appends its own `failoverHistory` entry carrying
+  `retryIndex` with its own request id and failure subkind.
+- The router retry is a whole-turn retry layered outside each bridge's transport
+  retries. On a `pi` primary the defaults allow up to six provider stream starts
+  (2 router attempts x 3 pi stream tries); lower
+  `providers.piNative.piMaxRetries` when raising `primaryAttempts`.
+- `mono.agent.failover.count` now counts failed provider attempts rather than
+  route transitions, so a primary-then-fallback run reports `2` where it
+  previously reported `1`.
+
+### Fixes
+
+- `provider_status.from` / `.to` are populated again. The router emitted model
+  references as objects while the responder read them as strings, so both fields
+  were silently dropped and the TUI rendered `failover ? -> ?`.
+
 ## 0.15.3 — Configured Codex MCP approvals (2026-07-28)
 
 ### Direct Codex MCP calls

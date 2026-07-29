@@ -97,6 +97,12 @@ export interface FailoverAttempt {
   readonly subkind?: string;
   /** Provider request id, when the underlying error text carried one. */
   readonly requestId?: string;
+  /**
+   * Which same-model retry of this route the attempt was: absent or 0 for the
+   * route's first try, 1 for its first retry, and so on. Absent on artifacts
+   * written before same-model retries existed.
+   */
+  readonly retryIndex?: number;
 }
 
 export interface RunSummary {

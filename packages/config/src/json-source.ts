@@ -13,6 +13,8 @@ import type { MemoryBackend, MemoryEmbeddingsProvider, MemoryLlmProvider, Memory
 export type MonoAgentRuntimeFallbackJson = {
   readonly model?: string;
   readonly effort?: string;
+  /** Total attempts on this route including the first, 1-10. Omitted = single shot. */
+  readonly attempts?: number;
 };
 
 /** JSON-serialisable shape for run-artifact retention. */
@@ -123,6 +125,11 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly model?: string;
     readonly fallbackModels?: readonly string[];
     readonly fallbacks?: readonly MonoAgentRuntimeFallbackJson[];
+    readonly retry?: {
+      readonly primaryAttempts?: number;
+      readonly backoffMs?: number;
+      readonly maxBackoffMs?: number;
+    };
     readonly routeSafety?: string;
     readonly executionMode?: string;
     readonly effort?: string;

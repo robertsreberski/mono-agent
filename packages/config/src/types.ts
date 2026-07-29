@@ -162,6 +162,27 @@ export type RouteSafetyMode = (typeof ROUTE_SAFETY_MODES)[number];
 export interface RuntimeFallbackConfig {
   readonly model: RuntimeModelReference;
   readonly effort?: EffortLevel;
+  /**
+   * Total attempts on this route including the first, 1–10. Omitted means a
+   * single shot, so only the primary retries by default.
+   */
+  readonly attempts?: number;
+}
+
+/**
+ * Same-model retry policy. A retry re-runs the whole logical turn on the same
+ * route before the chain advances, and only fires for transient provider
+ * failures (overloaded, rate-limited, timeout, network, 5xx). Deterministic
+ * failures — context overflow, bad credentials — advance immediately, because
+ * a second identical request cannot succeed where the first did not.
+ */
+export interface RuntimeRetryConfig {
+  /** Total attempts on `runtime.model` including the first. Bounded 1–10, default 2. */
+  readonly primaryAttempts: number;
+  /** Delay before the first retry; doubles each retry. Bounded 0–60000, default 1000. */
+  readonly backoffMs: number;
+  /** Ceiling for the doubled delay. Bounded 0–300000, default 15000. */
+  readonly maxBackoffMs: number;
 }
 
 export interface ArtifactRetentionConfig {
@@ -192,6 +213,14 @@ export interface MonoAgentConfig {
      * `runtime.effort`.
      */
     readonly fallbacks?: readonly RuntimeFallbackConfig[];
+    /**
+     * Same-model retry policy. `loadMonoAgentConfig` always materializes it, so
+     * loaded configs always carry it. It stays optional because MonoAgentConfig
+     * is hand-constructible by programmatic embedders: a config built without
+     * this block keeps the pre-retry behavior of one attempt per route rather
+     * than failing to compile.
+     */
+    readonly retry?: RuntimeRetryConfig;
     /** Uniform is the compatibility-preserving default. */
     readonly routeSafety?: RouteSafetyMode;
     readonly executionMode: RuntimeExecutionMode;

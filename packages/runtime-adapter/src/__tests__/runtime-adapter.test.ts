@@ -467,4 +467,28 @@ describe("runtime adapter local providers", () => {
     });
     expect(gateway.isPrivateProvider).toBe(false);
   });
+
+describe("createMonoRuntime same-model retry options", () => {
+  const model = { sdk: "claude", model: "claude-sonnet-4-6", reference: "claude:claude-sonnet-4-6" } as const;
+
+  it.each([0, 11, 1.5, "2" as unknown as number])("rejects a fallback attempts value of %s", (attempts) => {
+    expect(() => createMonoRuntime({ fallbackChain: [{ model, attempts }] }))
+      .toThrow(/attempts must be an integer between 1 and 10/u);
+  });
+
+  it("accepts an omitted or in-range attempts value", () => {
+    expect(() => createMonoRuntime({ fallbackChain: [{ model }] })).not.toThrow();
+    expect(() => createMonoRuntime({ fallbackChain: [{ model, attempts: 3 }] })).not.toThrow();
+  });
+
+  it.each([
+    ["backoffMs", -1],
+    ["maxBackoffMs", Number.POSITIVE_INFINITY],
+  ])("rejects a non-negative-finite retry %s", (key, value) => {
+    expect(() => createMonoRuntime({
+      fallbackChain: [{ model }],
+      retry: { [key]: value } as Record<string, number>,
+    })).toThrow(/must be a non-negative finite number/u);
+  });
+});
 });

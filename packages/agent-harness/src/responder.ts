@@ -441,13 +441,15 @@ export function streamEventFromRuntimeEvent(
     event.type === "provider_request_started" ||
     event.type === "provider_request_completed" ||
     event.type === "provider_failover_started" ||
-    event.type === "provider_failover_completed"
+    event.type === "provider_failover_completed" ||
+    event.type === "provider_retry_started"
   ) {
     const kind = event.type.replace("provider_", "") as
       | "request_started"
       | "request_completed"
       | "failover_started"
-      | "failover_completed";
+      | "failover_completed"
+      | "retry_started";
     const model = stringField(event, "model");
     const from = stringField(event, "from");
     const to = stringField(event, "to");
@@ -458,6 +460,7 @@ export function streamEventFromRuntimeEvent(
       ...(from === undefined ? {} : { from }),
       ...(to === undefined ? {} : { to }),
       ...(typeof event.attemptIndex === "number" ? { attemptIndex: event.attemptIndex } : {}),
+      ...(typeof event.retryIndex === "number" ? { retryIndex: event.retryIndex } : {}),
       ...(typeof event.durationMs === "number" ? { durationMs: event.durationMs } : {}),
       ...(typeof event.cancelled === "boolean" ? { cancelled: event.cancelled } : {}),
     };
