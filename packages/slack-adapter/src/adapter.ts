@@ -5,6 +5,7 @@ import {
   type ChannelAskSubmission,
   type ChannelAskSubmissionResult,
   type AgentContinuationTurn,
+  type AgentMessageSender,
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
   type AgentResponse,
@@ -25,7 +26,11 @@ import {
   type SlackMessageStreamOptions,
 } from "./message-stream.js";
 import { SlackApiError } from "./slack-client.js";
-import { formatMarkdownForSlack, normalizeSlackMarkdownToMarkdown } from "./slack-markdown.js";
+import {
+  formatMarkdownForSlack,
+  normalizeSlackMarkdownToMarkdown,
+  renderSlackMentionTokens,
+} from "./slack-markdown.js";
 import {
   buildSlackRuntimeControlCatalog,
   buildSlackRuntimeSlashCommandMap,
@@ -90,6 +95,8 @@ export interface AgentRequest extends AgentRequestBase {
   trigger: SlackTriggerKind;
   abortSignal: AbortSignal;
   attachments?: readonly AgentAttachment[];
+  /** Model-visible speaker identity; `sender.id` stays host-only. */
+  sender?: AgentMessageSender;
   metadata: {
     slack: SlackRequestMetadata;
     [key: string]: unknown;
@@ -2805,6 +2812,11 @@ export class SlackAdapter {
   }
 
   private prepareText(text: string): string {
+    // `stripMentionText: false` is an explicit opt-out of ALL inbound mention
+    // rewriting: callers in that mode receive Slack's raw text verbatim, and
+    // prepareCommandText still recognizes a leading raw `<@bot>` token. So
+    // third-party mention rendering is gated on the same flag rather than
+    // applied unconditionally.
     if (!this.stripMentionText) {
       return normalizeSlackMarkdownToMarkdown(text);
     }
@@ -2819,7 +2831,11 @@ export class SlackAdapter {
         stripped = stripped.replaceAll(normalizedAlias, " ");
       }
     }
-    return normalizeSlackMarkdownToMarkdown(stripped);
+    // Third-party mention tokens render AFTER the bot's own mentions are removed
+    // (that strip matches the raw `<@U…>` form) and BEFORE markdown
+    // normalization, so `<@U08ABC>` reaches the model as a readable name rather
+    // than an opaque id. Purely local: no Web API call, no extra scope.
+    return normalizeSlackMarkdownToMarkdown(renderSlackMentionTokens(stripped));
   }
 
   private prepareCommandText(text: string): string {
@@ -2930,6 +2946,11 @@ function buildAgentRequest(
   }
   if (event.userId !== undefined) {
     request.userId = event.userId;
+    // Id only for now: Slack exposes no display name on the event, and resolving
+    // one costs a `users.info` call plus the `users:read` scope. The harness
+    // renders nothing without a name or handle, so this is inert until the
+    // opt-in user directory lands and fills them in.
+    request.sender = { id: event.userId };
   }
   if (attachments.length > 0) {
     request.attachments = attachments;

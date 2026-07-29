@@ -319,6 +319,30 @@ describe("SlackAdapter", () => {
     expect(responder.respond).not.toHaveBeenCalled();
   });
 
+  it("carries the sender id and renders third-party mentions in a channel", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      botUserIds: ["U0BOT"],
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "ok" };
+      }),
+    });
+
+    await adapter.handleEventCallback(
+      appMention("<@U0BOT> ask <@U0THIRD|carol> about <#C9|releases>", { user: "U0ALICE" }),
+    );
+
+    expect(captured?.sender).toEqual({ id: "U0ALICE" });
+    // Host-only: the harness renders nothing from an id alone, so this stays out
+    // of the prompt until the opt-in user directory supplies a name.
+    expect(captured?.userId).toBe("U0ALICE");
+    expect(captured?.text).toBe("ask @carol about #releases");
+  });
+
   it("notify() runs a proactive turn on the target thread and posts the answer there", async () => {
     const api = new FakeSlackApi();
     let captured: AgentRequest | undefined;

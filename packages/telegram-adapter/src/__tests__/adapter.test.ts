@@ -8,6 +8,7 @@ import {
 import {
   DEFAULT_ATTACHMENT_MAX_BYTES,
   DEFAULT_ATTACHMENT_MIME_ALLOWLIST,
+  buildAgentRequest,
   downloadTelegramAttachments,
   normalizeTelegramMessageInput,
   type TelegramAttachment,
@@ -163,5 +164,57 @@ describe("downloadTelegramAttachments transcription", () => {
 
     expect(called).toBe(false);
     expect(resolved[0]?.text).toBeUndefined();
+  });
+});
+
+describe("buildAgentRequest sender identity", () => {
+  function update(from: TelegramMessage["from"], chatType = "supergroup") {
+    const message: TelegramMessage = {
+      message_id: 7,
+      chat: { id: -100_42, type: chatType },
+      text: "status?",
+      ...(from === undefined ? {} : { from }),
+    };
+    return { update: { update_id: 1, message }, message };
+  }
+
+  it("prefers the first+last name group members actually see, keeping the handle alongside", () => {
+    const { update: u, message } = update({ id: 55, first_name: "Alice", last_name: "Chen", username: "alice" });
+    const request = buildAgentRequest(u, message, { text: "status?", attachments: [] }, new AbortController().signal);
+
+    expect(request.sender).toEqual({
+      id: "55",
+      displayName: "Alice Chen",
+      handle: "alice",
+    });
+  });
+
+  it("falls back to the handle alone and marks transport-asserted bots", () => {
+    const { update: u, message } = update({ id: 56, username: "solo", is_bot: true });
+    const request = buildAgentRequest(u, message, { text: "status?", attachments: [] }, new AbortController().signal);
+
+    expect(request.sender).toEqual({ id: "56", handle: "solo", isBot: true });
+  });
+
+  it("carries the numeric id as a string even with no name at all", () => {
+    const { update: u, message } = update({ id: 57 });
+    const request = buildAgentRequest(u, message, { text: "status?", attachments: [] }, new AbortController().signal);
+
+    // Id only: the harness renders no label from this, so the turn stays anonymous.
+    expect(request.sender).toEqual({ id: "57" });
+  });
+
+  it("omits sender entirely for a message with no author", () => {
+    const { update: u, message } = update(undefined);
+    const request = buildAgentRequest(u, message, { text: "status?", attachments: [] }, new AbortController().signal);
+
+    expect(request.sender).toBeUndefined();
+  });
+
+  it("attributes a private chat too, so a DM knows who it is talking to", () => {
+    const { update: u, message } = update({ id: 58, first_name: "Robert" }, "private");
+    const request = buildAgentRequest(u, message, { text: "hi", attachments: [] }, new AbortController().signal);
+
+    expect(request.sender).toEqual({ id: "58", displayName: "Robert" });
   });
 });

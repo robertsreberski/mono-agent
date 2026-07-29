@@ -634,6 +634,7 @@ export class MonoAgentHarness implements AgentHarness {
           liveInputMailbox?.applied() ?? [],
           text,
           runId,
+          request.sender,
         );
         try {
           if (providerHistoryTurn !== undefined) {
@@ -776,7 +777,12 @@ export class MonoAgentHarness implements AgentHarness {
           request.conversationId,
           completedTurn.userMemoryText,
           text,
-          { runId, ...(runSource.source === undefined ? {} : { source: runSource.source }), emit },
+          {
+            runId,
+            ...(runSource.source === undefined ? {} : { source: runSource.source }),
+            ...(request.sender === undefined ? {} : { sender: request.sender }),
+            emit,
+          },
         );
       }
       // Memory persistence degradation is emitted above, while the recorder is

@@ -238,6 +238,36 @@ describe("createAgentResponder", () => {
     expect(seen?.continuation).toMatchObject({ continuationId: "continuation-1", originRunId: "run-origin" });
   });
 
+  it("forwards speaker identity and collapses an empty preceding list to undefined", async () => {
+    const seen: AgentHarnessRequest[] = [];
+    const responder = createAgentResponder({
+      harness: {
+        run: async (request) => {
+          seen.push(request);
+          return okResponse(request.conversationId);
+        },
+      },
+    });
+
+    await responder.respond({
+      ...baseRequest("slack:C1:thread"),
+      sender: { id: "U08ABC", displayName: "Alice Chen", handle: "alice" },
+      precedingMessages: [{ sender: { id: "U2", displayName: "Bob" }, text: "earlier" }],
+    }, noopStream());
+    // An empty array must collapse so every downstream reader is a presence check.
+    await responder.respond({
+      ...baseRequest("slack:C1:thread"),
+      precedingMessages: [],
+    }, noopStream());
+    await responder.respond(baseRequest("slack:C1:thread"), noopStream());
+
+    expect(seen[0]?.sender).toEqual({ id: "U08ABC", displayName: "Alice Chen", handle: "alice" });
+    expect(seen[0]?.precedingMessages).toHaveLength(1);
+    expect(seen[1]).not.toHaveProperty("precedingMessages");
+    expect(seen[2]).not.toHaveProperty("sender");
+    expect(seen[2]).not.toHaveProperty("precedingMessages");
+  });
+
   it("preserves an explicit prior-day origin bucket for continuation synthesis", async () => {
     let seen: AgentHarnessRequest | undefined;
     const responder = createAgentResponder({

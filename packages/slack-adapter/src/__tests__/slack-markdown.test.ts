@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatMarkdownForSlack,
   normalizeSlackMarkdownToMarkdown,
+  renderSlackMentionTokens,
 } from "../slack-markdown.js";
 
 describe("formatMarkdownForSlack", () => {
@@ -124,5 +125,31 @@ describe("normalizeSlackMarkdownToMarkdown", () => {
     expect(normalizeSlackMarkdownToMarkdown(slack)).toBe(
       `outside text \`inline${nonbreakingSpace}code\`\n\`\`\`txt\nfenced${nonbreakingSpace}code\n\`\`\``,
     );
+  });
+});
+
+describe("renderSlackMentionTokens", () => {
+  it("uses the label Slack already inlines, with no API call", () => {
+    expect(renderSlackMentionTokens("hey <@U08ABC|alice> and <@U0DEF|bob>")).toBe("hey @alice and @bob");
+  });
+
+  it("renders channel, broadcast, and user-group tokens", () => {
+    expect(renderSlackMentionTokens("<#C1|general>")).toBe("#general");
+    expect(renderSlackMentionTokens("<!here> <!channel> <!everyone>")).toBe("@here @channel @everyone");
+    expect(renderSlackMentionTokens("<!subteam^S1|@design>")).toBe("@design");
+    expect(renderSlackMentionTokens("<!date^1700000000^{date_short}|Nov 14>")).toBe("@Nov 14");
+  });
+
+  // Still better than the opaque token; the opt-in directory upgrades it later.
+  it("degrades a label-less token to its id rather than dropping it", () => {
+    expect(renderSlackMentionTokens("ping <@U08ABC>")).toBe("ping @U08ABC");
+    expect(renderSlackMentionTokens("see <#C0DEF>")).toBe("see #C0DEF");
+  });
+
+  it("leaves links and code spans untouched", () => {
+    expect(renderSlackMentionTokens("<https://example.com|site> and <mailto:a@b.c>"))
+      .toBe("<https://example.com|site> and <mailto:a@b.c>");
+    expect(renderSlackMentionTokens("`<@U08ABC>` literal")).toBe("`<@U08ABC>` literal");
+    expect(renderSlackMentionTokens("```\n<@U08ABC>\n```")).toBe("```\n<@U08ABC>\n```");
   });
 });

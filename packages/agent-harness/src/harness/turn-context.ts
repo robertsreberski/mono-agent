@@ -62,6 +62,7 @@ export function buildTurnContextEvent(
   history: readonly HistoryMessage[],
   historyOmitted: boolean,
   memory: ContextBlockInput | undefined,
+  speaker: SpeakerTurnContextFields = {},
 ): RuntimeEventLike {
   const mappedHistory = history.map(clampTurnContextMessage);
   const mem = turnContextMemory(memory);
@@ -71,8 +72,25 @@ export function buildTurnContextEvent(
     historyOmitted,
     ...(mappedHistory.length === 0 ? {} : { history: mappedHistory }),
     ...(mem === undefined ? {} : { memory: mem }),
+    ...speaker,
     timestamp: new Date().toISOString(),
   };
+}
+
+/**
+ * Speaker attribution for the turn. Deliberately asymmetric with `history`: the
+ * speaker LABEL is recorded, but preceding messages contribute only counts and a
+ * byte size, never their text. Same rationale as the memory diagnostic -- that
+ * transcript is third-party chatter the run does not own, so recording it would
+ * multiply its retention surface for no debugging value that `precedingRendered
+ * < precedingCount` (the "we clipped it" signal) does not already give. The
+ * host-only `sender.id` never appears here either.
+ */
+export interface SpeakerTurnContextFields {
+  readonly speaker?: string;
+  readonly precedingCount?: number;
+  readonly precedingRendered?: number;
+  readonly precedingBytes?: number;
 }
 
 function clampTurnContextMessage(message: HistoryMessage): Record<string, unknown> {

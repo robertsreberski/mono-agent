@@ -30,6 +30,11 @@ import {
   sameRuntimeModel,
   withoutToolPolicyOptions,
 } from "./runtime-options.js";
+import {
+  composeUserMessageWithSpeakerContext,
+  neutralizeSpeakerMarkup,
+  speakerTurnContextFields,
+} from "./speaker-context.js";
 import { buildTurnContextEvent, composeUserMessageWithMemory } from "./turn-context.js";
 
 export async function runHarnessRuntime(
@@ -265,9 +270,27 @@ export async function runHarnessRuntime(
         !sameRuntimeModel(overrideModel, options.model)
           ? options.runtimeForModel(effectiveModel, effectiveExecutionMode)
           : options.runtime;
+      // Speaker/group context wraps the user's words FIRST (it is chronologically
+      // prior and identity-scoping); recalled memory still appends last. Composing
+      // HERE rather than mutating request.userMessage is load-bearing: that field
+      // is the memory recall query (see loadHarnessMemory in prepareContext), so
+      // folding this into applyHarnessAttachments would silently make BuJo retrieve
+      // against third-party chatter instead of the user's actual ask. It also keeps
+      // the transcript out of persistUserMessage, so it can never reach history or
+      // long-term memory. A continuation turn has a host-synthesized prompt and no
+      // live speaker, so it is skipped -- the same guard memory uses.
       const currentUserMessage: RuntimeMessage = {
         role: "user",
-        content: composeUserMessageWithMemory(request.userMessage, memory),
+        content: composeUserMessageWithMemory(
+          request.continuation === undefined
+            ? composeUserMessageWithSpeakerContext(
+                request.userMessage,
+                request.sender,
+                request.precedingMessages,
+              )
+            : request.userMessage,
+          memory,
+        ),
       };
       const runtimeOptions: RuntimeRunOptions = {
         ...merged,
@@ -359,7 +382,12 @@ export async function runHarnessRuntime(
       // `historyOmitted` is true only for a confirmed live warm mapping. A cold
       // epoch-owned reopen may create its JSONL on miss, so an empty canonical
       // history must remain distinguishable from intentionally omitted history.
-      const turnContextEvent = buildTurnContextEvent(history, historyOmitted, memory);
+      const turnContextEvent = buildTurnContextEvent(
+        history,
+        historyOmitted,
+        memory,
+        speakerTurnContextFields(request.sender, request.precedingMessages),
+      );
       recorder.onEvent(turnContextEvent);
       hostOnEvent?.(turnContextEvent);
       // Bracket the provider call so observability can separate provider+tool+IO
@@ -394,10 +422,24 @@ export async function runHarnessRuntime(
     }
 }
 
+/**
+ * "messages" mode has no rendered `### n. role — name — timestamp` header to
+ * carry the speaker (that exists only on the prompt path, see renderHistory), and
+ * the pi bridge keeps nothing but role/content/timestamp -- so an attributed user
+ * turn MUST inline its label here or the identity vanishes with no error on every
+ * cold durable-provider reopen. Reserved markup is neutralized across all user
+ * content so a past message cannot forge the current turn's speaker tag.
+ */
 function structuredHistoryMessages(history: readonly HistoryMessage[]): RuntimeMessage[] {
-  return history.map((message) => ({
-    role: message.role,
-    content: message.content,
-    ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),
-  }));
+  return history.map((message) => {
+    const isUser = message.role === "user";
+    const content = isUser ? neutralizeSpeakerMarkup(message.content) : message.content;
+    return {
+      role: message.role,
+      content: isUser && message.name !== undefined
+        ? `<current_speaker>${neutralizeSpeakerMarkup(message.name)}</current_speaker>\n${content}`
+        : content,
+      ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),
+    };
+  });
 }
