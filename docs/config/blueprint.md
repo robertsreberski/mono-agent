@@ -63,7 +63,12 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
         "prompt": "You are a codebase researcher. Answer with file:line citations.",
         "allowedTools": ["Read", "Glob", "Grep"]  // omitted = read-only default set; "*" rejected
       }
-    ]
+    ],
+    // Subagents the agent builds at call time with its own systemPrompt.
+    "inline": {
+      "enabled": true,                     // omitted = on; false allows only the profiles above
+      "allowedTools": ["Read", "Grep", "Edit"] // ceiling on what it may grant; omitted = this agent's own built-ins
+    }
   },
 
   // Runtime: primary model plus ordered backups tried on retryable provider

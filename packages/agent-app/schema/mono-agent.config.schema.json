@@ -321,7 +321,7 @@
       ]
     },
     "subagents": {
-      "description": "Subagent profiles the Agent tool can deploy, plus its caps. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the \"*\" wildcard is rejected.",
+      "description": "Subagent profiles the Agent tool can deploy, plus its caps. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the \"*\" wildcard is rejected. The agent may also author a specialized subagent at call time unless inline.enabled is false; inline.allowedTools caps what an authored subagent may request, defaulting to the parent agent's own built-ins.",
       "examples": [
         {
           "enabled": true,
@@ -439,6 +439,22 @@
                 "type": "integer",
                 "minimum": 1000,
                 "maximum": 3600000
+              }
+            }
+          }
+        },
+        "inline": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "allowedTools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
               }
             }
           }

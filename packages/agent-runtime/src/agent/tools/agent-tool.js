@@ -12,6 +12,8 @@
 
 // @ts-check
 
+import { homedir } from "node:os";
+
 import { createCountingSemaphore } from "./shared/semaphore.js";
 
 /** @typedef {import('../../ai/types.js').RuntimeSubagentDefinition} RuntimeSubagentDefinition */
@@ -41,8 +43,12 @@ export const SUBAGENT_HARD_DENY = Object.freeze([
 
 const DEFAULT_MAX_CONCURRENT = 5;
 const DEFAULT_MAX_PER_TURN = 20;
-const DEFAULT_MAX_TURNS = 20;
+const DEFAULT_MAX_TURNS = 100;
 const DEFAULT_TIMEOUT_MS = 300_000;
+/** Shape an authored subagent's name must take, mirroring a configured one. */
+const INLINE_NAME_RE = /^[a-z0-9][a-z0-9-]{0,39}$/u;
+/** Effort levels a caller may pin on an authored subagent. Mirrors EFFORT_LEVELS in @mono-agent/config. */
+const EFFORT_LEVELS = Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
 /** Grace after the abort signal before the deadline stops waiting on a runner. */
 const DEADLINE_GRACE_MS = 5_000;
 /** Sentinel distinguishing "deadline won the race" from a real child result. */
@@ -78,15 +84,21 @@ State exactly what you want back ("return a bullet list of file:line and a one-l
 /**
  * @param {RuntimeSubagentsOptions} subagents
  * @param {ReadonlyArray<RuntimeSubagentDefinition>} definitions
+ * @param {ReadonlyArray<string>|null} ceiling Tools an authored subagent may request, or null when authoring is off.
  * @returns {string}
  */
-function toolDescription(subagents, definitions) {
+function toolDescription(subagents, definitions, ceiling) {
   const maxConcurrent = positiveInt(subagents.maxConcurrent, DEFAULT_MAX_CONCURRENT);
   const parallel = `\n\nIssue several Agent calls in ONE message to run them in parallel (up to ${maxConcurrent} at a time). Subagents run concurrently and independently.`;
   const named = definitions.length === 0
     ? ""
     : `\n\nAvailable subagents:\n${definitions.map((d) => `- ${d.name}: ${d.description}`).join("\n")}\n- ${GENERAL_PURPOSE_SUBAGENT}: read-only researcher inheriting the main model. Used when \`name\` is omitted.`;
-  return `${DESCRIPTION_BASE}${parallel}${named}`;
+  // The ceiling is listed because the model has no other way to discover it: a
+  // tool it cannot see is indistinguishable from one it forgot to ask for.
+  const inline = ceiling === null
+    ? ""
+    : `\n\nYou can also build a specialist on the spot instead of picking a profile: pass \`systemPrompt\` with its full instructions, a kebab-case \`name\`, and the \`tools\` it needs. Do that when no profile fits the task — a dedicated prompt beats stuffing constraints into \`prompt\`. Tools you may grant: ${ceiling.join(", ")}. Anything else is dropped. Omit \`tools\` for a read-only helper.`;
+  return `${DESCRIPTION_BASE}${parallel}${named}${inline}`;
 }
 
 /**
@@ -144,6 +156,10 @@ export function createAgentTool(subagents, context = {}) {
   // logical turn starts fresh, and bounded so a long-lived host cannot grow it.
   const budget = budgetForRun(subagents, context.parentRunId);
 
+  // The ceiling doubles as the authoring switch: null means the closed schema
+  // this tool has always had, with `name` restricted to configured profiles.
+  const ceiling = inlineCeiling(subagents.inline);
+
   const parameters = {
     type: "object",
     properties: {
@@ -152,13 +168,45 @@ export function createAgentTool(subagents, context = {}) {
         minLength: 1,
         description: "The complete, self-contained task. The subagent sees NONE of this conversation — restate all needed context, file paths, and the exact shape of the answer you want back.",
       },
-      ...(names.length === 0 ? {} : {
-        name: {
-          type: "string",
-          enum: [...names, GENERAL_PURPOSE_SUBAGENT],
-          description: `Which subagent profile to use. Omit for ${GENERAL_PURPOSE_SUBAGENT}.`,
-        },
-      }),
+      // A free-string `name` and a closed enum are mutually exclusive, and no
+      // JSON Schema conditional expresses "enum unless systemPrompt is present"
+      // portably across providers. Keeping the enum whenever authoring is off
+      // means turning the feature off is a true return to the old contract.
+      ...(ceiling !== null
+        ? {
+            name: {
+              type: "string",
+              pattern: INLINE_NAME_RE.source,
+              description: `A configured profile's name, or the name to give a subagent you author here with \`systemPrompt\`. Omit for ${GENERAL_PURPOSE_SUBAGENT}.`,
+            },
+            systemPrompt: {
+              type: "string",
+              minLength: 1,
+              maxLength: 8_000,
+              description: "Build a specialist for this one task: its complete instructions. Requires `name`. Omit to use a configured profile instead.",
+            },
+            tools: {
+              type: "array",
+              items: { type: "string", minLength: 1 },
+              maxItems: 20,
+              description: `Tools the subagent you author needs, e.g. ["Read","Edit","Bash"]. Only usable with \`systemPrompt\`. Available: ${ceiling.join(", ")}. Omit for a read-only helper.`,
+            },
+            effort: {
+              type: "string",
+              enum: [...EFFORT_LEVELS],
+              description: "Reasoning effort for the subagent you author. Only usable with `systemPrompt`. Omit to inherit yours.",
+            },
+          }
+        : {}),
+      ...(ceiling === null && names.length > 0
+        ? {
+            name: {
+              type: "string",
+              enum: [...names, GENERAL_PURPOSE_SUBAGENT],
+              description: `Which subagent profile to use. Omit for ${GENERAL_PURPOSE_SUBAGENT}.`,
+            },
+          }
+        : {}),
       description: {
         type: "string",
         maxLength: 80,
@@ -172,7 +220,7 @@ export function createAgentTool(subagents, context = {}) {
   return {
     name: "Agent",
     label: "Agent",
-    description: toolDescription(subagents, definitions),
+    description: toolDescription(subagents, definitions, ceiling),
     parameters,
     // MUST stay undefined. pi-agent-core's agent loop makes the ENTIRE batch
     // sequential when any tool in it declares executionMode "sequential"
@@ -180,13 +228,19 @@ export function createAgentTool(subagents, context = {}) {
     executionMode: undefined,
     /**
      * @param {string} toolCallId
-     * @param {{prompt: string, name?: string, description?: string}} params
+     * @param {{prompt: string, name?: string, description?: string, systemPrompt?: string, tools?: ReadonlyArray<string>, effort?: string}} params
      * @param {AbortSignal} [signal]
      */
     async execute(toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("tool execution aborted");
 
-      const profile = resolveProfile(definitions, params?.name);
+      const authored = ceiling !== null && typeof params?.systemPrompt === "string" && params.systemPrompt.trim().length > 0;
+      if (!authored && (params?.tools !== undefined || params?.effort !== undefined)) {
+        throw new Error("Error: `tools` and `effort` only apply when you supply `systemPrompt` to build a subagent. A configured profile brings its own.");
+      }
+      const { profile, droppedTools } = authored
+        ? buildInlineProfile(params, ceiling, names)
+        : { profile: resolveProfile(definitions, params?.name), droppedTools: [] };
       if (profile === null) {
         const available = [...names, GENERAL_PURPOSE_SUBAGENT].join(", ");
         throw new Error(`Error: unknown subagent "${params?.name}". Available: ${available}.`);
@@ -322,6 +376,10 @@ export function createAgentTool(subagents, context = {}) {
         durationMs,
         activity: collector.entries(),
         maxBytes: Math.min(RESULT_MAX_BYTES, remaining),
+        ...(context.cwd === undefined ? {} : { cwd: context.cwd }),
+        ...(droppedTools.length === 0 ? {} : {
+          notice: `${droppedTools.join(", ")} ${droppedTools.length === 1 ? "is" : "are"} not available to a subagent you build; it ran with ${profile.allowedTools.join(", ")}.`,
+        }),
       });
       budget.bytes += Buffer.byteLength(text, "utf8");
       // `details.subagent.status` is the load-bearing signal: pi hardcodes
@@ -336,6 +394,70 @@ export function createAgentTool(subagents, context = {}) {
         },
       };
     },
+  };
+}
+
+/**
+ * The tools an authored subagent may be granted, or null when authoring is off.
+ *
+ * A host that enables authoring without stating a ceiling gets the read-only
+ * default rather than every built-in: the same reasoning as `normalizeProfile`,
+ * one layer up. Only `enabled: false` turns authoring off, so a bare-kernel
+ * caller keeps the capability at its safest setting instead of losing it.
+ *
+ * @param {{enabled?: boolean, allowedTools?: ReadonlyArray<string>}|undefined} inline
+ * @returns {ReadonlyArray<string>|null}
+ */
+function inlineCeiling(inline) {
+  if (inline?.enabled === false) return null;
+  if (inline === undefined || inline === null) return null;
+  const configured = Array.isArray(inline.allowedTools) && inline.allowedTools.length > 0
+    ? inline.allowedTools
+    : DEFAULT_SUBAGENT_TOOLS;
+  return configured.filter((tool) => !SUBAGENT_HARD_DENY.includes(tool));
+}
+
+/**
+ * Build a one-off profile from what the model authored at call time.
+ *
+ * The ceiling is the escalation guard: a child's `allowedTools` become its
+ * actual tool set, so without an intersection the model could grant a helper a
+ * tool its own policy denies it.
+ *
+ * @param {{name?: string, systemPrompt?: string, description?: string, tools?: ReadonlyArray<string>, effort?: string}} params
+ * @param {ReadonlyArray<string>} ceiling
+ * @param {ReadonlyArray<string>} configuredNames
+ * @returns {{profile: RuntimeSubagentDefinition, droppedTools: string[]}}
+ */
+function buildInlineProfile(params, ceiling, configuredNames) {
+  const name = typeof params.name === "string" ? params.name.trim() : "";
+  if (!INLINE_NAME_RE.test(name)) {
+    throw new Error("Error: a subagent you build needs a `name` — lowercase kebab-case, e.g. \"css-refactorer\". It labels the run in the activity log.");
+  }
+  if (configuredNames.includes(name) || name === GENERAL_PURPOSE_SUBAGENT) {
+    throw new Error(`Error: "${name}" is already a configured subagent. Drop \`systemPrompt\` to use it, or pick a different name.`);
+  }
+  const requested = Array.isArray(params.tools) ? params.tools.map((tool) => String(tool).trim()) : undefined;
+  const readOnly = DEFAULT_SUBAGENT_TOOLS.filter((tool) => ceiling.includes(tool));
+  const droppedTools = requested === undefined ? [] : requested.filter((tool) => !ceiling.includes(tool));
+  // An empty list would reach `normalizeProfile`, whose "no tools named" branch
+  // substitutes the full read-only default — WIDER than a narrow ceiling. A
+  // request that survives nothing therefore has to land on the read-only set
+  // already clamped to the ceiling, or fail outright.
+  const granted = requested === undefined ? readOnly : requested.filter((tool) => ceiling.includes(tool));
+  const effective = granted.length > 0 ? granted : readOnly;
+  if (effective.length === 0) {
+    throw new Error(`Error: no tools available to a subagent you build (this agent allows ${ceiling.join(", ") || "none"}). Use a configured profile, or do this yourself.`);
+  }
+  return {
+    profile: normalizeProfile({
+      name,
+      description: params.description ?? name,
+      systemPrompt: String(params.systemPrompt),
+      allowedTools: effective,
+      ...(params.effort === undefined ? {} : { effort: String(params.effort) }),
+    }),
+    droppedTools,
   };
 }
 
@@ -562,17 +684,20 @@ function classifyOutcome({ result, thrown, timedOut, abandoned = false }) {
  * log: that log is the most useful artifact of a failed delegation, and a
  * thrown tool error would discard it.
  *
- * @param {{profileName: string, label?: string, outcome: {status: string, answer: string, reason?: string}, durationMs: number, activity: ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>, maxBytes?: number}} input
+ * @param {{profileName: string, label?: string, outcome: {status: string, answer: string, reason?: string}, durationMs: number, activity: ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>, maxBytes?: number, cwd?: string, notice?: string}} input
  * @returns {string}
  */
-export function formatSubagentResult({ profileName, label, outcome, durationMs, activity, maxBytes = RESULT_MAX_BYTES }) {
+export function formatSubagentResult({ profileName, label, outcome, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice }) {
   const seconds = (durationMs / 1000).toFixed(1);
   const calls = `${activity.length} tool call${activity.length === 1 ? "" : "s"}`;
   const header = `<subagent: ${profileName}${label ? ` · ${label}` : ""} · ${outcome.status} · ${calls} · ${seconds}s>`;
   const parts = [header];
+  // Surfaced before the answer: a request the runtime silently declined would
+  // otherwise have the caller re-request it on every future call.
+  if (notice !== undefined) parts.push(`note: ${truncate(notice, 300)}`);
   if (outcome.reason !== undefined) parts.push(`reason: ${truncate(outcome.reason, 500)}`);
   if (outcome.answer.length > 0) parts.push("", truncate(outcome.answer, ANSWER_MAX_CHARS));
-  if (activity.length > 0) parts.push("", "<activity>", ...renderActivity(activity), "</activity>");
+  if (activity.length > 0) parts.push("", "<activity>", ...renderActivity(activity, cwd), "</activity>");
   // A fully spent turn budget still returns the header + reason, so the model
   // learns the delegation happened and why it was truncated.
   const floor = 512;
@@ -583,11 +708,12 @@ export function formatSubagentResult({ profileName, label, outcome, durationMs, 
  * Head-and-tail elision: the informative parts of a delegation trace are what
  * it opened with and what it concluded with; the middle is usually a read loop.
  * @param {ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>} activity
+ * @param {string} [cwd]
  * @returns {string[]}
  */
-function renderActivity(activity) {
+function renderActivity(activity, cwd) {
   const line = (entry, index) => {
-    const args = summarizeArgs(entry.name, entry.args);
+    const args = summarizeArgs(entry.name, entry.args, cwd);
     const status = entry.isError ? "error" : "ok";
     const ms = entry.ms === undefined ? "" : ` ${formatMs(entry.ms)}`;
     return truncate(`${index + 1}. ${entry.name}${args ? ` ${args}` : ""} → ${status}${ms}`, LOG_LINE_MAX_CHARS);
@@ -605,25 +731,64 @@ function formatMs(ms) {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
 }
 
+/** Bound on the argv elements read for an `Exec` summary, before truncation. */
+const ARGV_PREVIEW_MAX_CHARS = 200;
+
+/**
+ * Show local paths relative to the agent root (and collapse the operator's home
+ * directory to `~`), mirroring what the chat ledger does for the same tool
+ * arguments. Absolute machine layout has no meaning to the parent model and
+ * leaks the operator's account name into its context and every operator surface.
+ *
+ * Duplicated rather than imported: `@mono-agent/agent-runtime` deliberately has
+ * no internal dependencies, so it cannot reach `agent-contracts`.
+ *
+ * @param {string} value
+ * @param {string|undefined} cwd
+ * @returns {string}
+ */
+function relativizePaths(value, cwd) {
+  let result = value;
+  for (const [root, replacement] of [[cwd, ""], [safeHomedir(), "~/"]]) {
+    if (root === undefined || root === "" || root === "/") continue;
+    const normalized = root.endsWith("/") ? root.slice(0, -1) : root;
+    result = result.replaceAll(`${normalized}/`, replacement);
+  }
+  return result;
+}
+
+/** @returns {string|undefined} */
+function safeHomedir() {
+  try {
+    return homedir();
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Tool-aware one-liners keep the log readable where a generic JSON dump would
  * blow the per-line budget on a single Write payload.
  * @param {string} name
  * @param {unknown} args
+ * @param {string} [cwd] Agent root; paths are shown relative to it.
  * @returns {string}
  */
-function summarizeArgs(name, args) {
+function summarizeArgs(name, args, cwd) {
   if (args === null || typeof args !== "object") return "";
   const record = /** @type {Record<string, unknown>} */ (args);
-  const pick = (key) => (typeof record[key] === "string" ? String(record[key]) : undefined);
+  const pick = (key) => (typeof record[key] === "string" ? relativizePaths(String(record[key]), cwd) : undefined);
   switch (name) {
     case "Read":
     case "Write":
     case "Edit":
       return pick("file_path") ?? "";
     case "Bash":
+      return quote(pick("command") ?? "");
     case "Exec":
-      return quote(pick("command") ?? pick("executable") ?? "");
+      // Exec carries no `command`. Rendering only `executable` collapsed every
+      // line to `Exec "rg"`, saying nothing about what the subagent actually ran.
+      return quote(execArgv(record, cwd));
     case "Grep":
       return [pick("pattern") && `pattern=${quote(String(pick("pattern")))}`, pick("path") && `path=${pick("path")}`]
         .filter(Boolean).join(" ");
@@ -637,10 +802,33 @@ function summarizeArgs(name, args) {
       const scalars = Object.entries(record)
         .filter(([, value]) => typeof value === "string" || typeof value === "number" || typeof value === "boolean")
         .slice(0, 2)
-        .map(([key, value]) => `${key}=${typeof value === "string" ? quote(value) : String(value)}`);
+        .map(([key, value]) => `${key}=${typeof value === "string" ? quote(relativizePaths(value, cwd)) : String(value)}`);
       return scalars.join(" ");
     }
   }
+}
+
+/**
+ * Space-joined executable and arguments, so the summary reads like the command
+ * line it stands in for. A non-string element ends the run: a hole makes the
+ * rest of an argv positionally meaningless, and a truthful prefix beats a
+ * spliced line.
+ *
+ * @param {Record<string, unknown>} record
+ * @param {string|undefined} cwd
+ * @returns {string}
+ */
+function execArgv(record, cwd) {
+  const executable = typeof record.executable === "string" ? record.executable : "";
+  if (executable === "") return "";
+  const parts = [executable];
+  let budget = ARGV_PREVIEW_MAX_CHARS;
+  for (const arg of Array.isArray(record.args) ? record.args : []) {
+    if (typeof arg !== "string" || budget <= 0) break;
+    parts.push(arg);
+    budget -= arg.length + 1;
+  }
+  return relativizePaths(parts.join(" "), cwd);
 }
 
 /** @param {string} value */

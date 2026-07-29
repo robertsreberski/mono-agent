@@ -223,6 +223,7 @@ SettingsJsonErrorCode
 SettingsJsonErrorDetails
 SettingsJsonValue
 SettingsPrimitive
+ToolActivityLineOptions
 agentAttachmentKindFromMimeType
 assertAgentContinuationOriginContext
 assertSafeBind
@@ -265,6 +266,7 @@ readString
 redactedSecret
 sanitizeInboundHttpHeaders
 serializeAgentStreamFrame
+setToolActivityPathRoots
 splitSubagentToolName
 splitTextByCodePoints
 suppressesNotification

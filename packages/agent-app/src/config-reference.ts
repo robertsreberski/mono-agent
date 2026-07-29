@@ -986,6 +986,14 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
               },
             },
           },
+          inline: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              enabled: { type: "boolean" },
+              allowedTools: { type: "array", items: { type: "string", minLength: 1 } },
+            },
+          },
         };
       } else {
         schema.additionalProperties = true;
@@ -1409,7 +1417,7 @@ function descriptionFor(id: string): string {
     return "Legacy fallback list whose routes inherit runtime.effort. Prefer runtime.fallbacks for new configs.";
   }
   if (id === "subagents") {
-    return "Subagent profiles the Agent tool can deploy, plus its caps. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the \"*\" wildcard is rejected.";
+    return "Subagent profiles the Agent tool can deploy, plus its caps. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the \"*\" wildcard is rejected. The agent may also author a specialized subagent at call time unless inline.enabled is false; inline.allowedTools caps what an authored subagent may request, defaulting to the parent agent's own built-ins.";
   }
   if (id === "runtime.retry.primaryAttempts") {
     return "Total attempts on runtime.model including the first, before the chain advances. Retries fire only for transient provider failures (overloaded, rate-limited, timeout, network, 5xx); context overflow and bad credentials advance immediately. Set 1 to disable.";

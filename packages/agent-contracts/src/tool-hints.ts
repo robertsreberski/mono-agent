@@ -198,6 +198,24 @@ export interface ToolActivityLineOptions {
   readonly homeDir?: string;
 }
 
+let configuredPathRoots: ToolActivityLineOptions = {};
+
+/**
+ * Set the process-wide roots used to relativize paths in activity previews.
+ *
+ * The streaming call site formats an event with no per-message context to hand
+ * a workspace down from, so without this the root falls back to
+ * `process.cwd()` — which for a service-managed agent is whatever directory the
+ * supervisor happened to start it in, not the agent root. Explicit
+ * {@link ToolActivityLineOptions} still take precedence.
+ *
+ * A module-level default is the right shape here because a host process runs
+ * exactly one agent; call it once during composition.
+ */
+export function setToolActivityPathRoots(roots: ToolActivityLineOptions): void {
+  configuredPathRoots = roots;
+}
+
 /**
  * Format one cumulative tool-activity line for a user-visible transient status.
  * A malformed/proxied/accessor-backed argument object produces action-only copy.
@@ -394,8 +412,8 @@ function safeOwnStringArray(record: object, key: string): readonly string[] {
 function relativizeLocalPaths(value: string, options?: ToolActivityLineOptions): string {
   let result = value;
   for (const [root, replacement] of [
-    [normalizeRoot(options?.workspaceRoot ?? safeCwd()), ""],
-    [normalizeRoot(options?.homeDir ?? safeHomedir()), "~/"],
+    [normalizeRoot(options?.workspaceRoot ?? configuredPathRoots.workspaceRoot ?? safeCwd()), ""],
+    [normalizeRoot(options?.homeDir ?? configuredPathRoots.homeDir ?? safeHomedir()), "~/"],
   ] as const) {
     if (root === undefined) continue;
     result = result.replaceAll(`${root}/`, replacement);

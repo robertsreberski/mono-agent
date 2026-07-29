@@ -2195,7 +2195,16 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
   const agentAllowed = allowAll || allowedTools.includes("Agent");
   if (subagents?.enabled === true) {
     const count = subagents.definitions?.length ?? 0;
-    details.push(`Subagents: enabled, ${count} profile${count === 1 ? "" : "s"}${count === 0 ? " (general-purpose only)" : ""}.`);
+    const inline = subagents.inline?.enabled === false
+      ? "; call-time authoring off"
+      : `; call-time authoring on${subagents.inline?.allowedTools === undefined ? "" : ` (capped at ${subagents.inline.allowedTools.join(", ")})`}`;
+    details.push(`Subagents: enabled, ${count} profile${count === 1 ? "" : "s"}${count === 0 ? " (general-purpose only)" : ""}${inline}.`);
+    for (const tool of subagents.inline?.allowedTools ?? []) {
+      if (!isKnownToolName(tool) && !isMcpToolName(tool)) {
+        status = "error";
+        details.push(`subagents.inline.allowedTools lists unknown tool "${tool}".`);
+      }
+    }
     if (!agentAllowed) {
       status = status === "error" ? status : "waiting";
       details.push(

@@ -41,7 +41,7 @@ import {
   PERMISSION_MODES,
   ROUTE_SAFETY_MODES,
 } from "./enums.js";
-import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, RouteSafetyMode, MonoAgentSubagentConfig, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
+import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, RouteSafetyMode, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -492,6 +492,28 @@ function readSubagentsConfig(
     ...(record.timeoutMs === undefined ? {} : { timeoutMs: readSubagentInteger(record.timeoutMs, "timeoutMs", 1_000, 3_600_000) }),
     ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, "maxTurns", 1, 200) }),
     ...(definitions === undefined ? {} : { definitions }),
+    ...(record.inline === undefined ? {} : { inline: readInlineSubagentsConfig(record.inline) }),
+  };
+}
+
+function readInlineSubagentsConfig(value: unknown): MonoAgentInlineSubagentsConfig {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw invalidSubagents("inline must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  const allowedTools = readSubagentTools(record.allowedTools, "inline", "allowedTools");
+  // Same reasoning as a declared profile: the ceiling is what stops an authored
+  // subagent reaching past its author, so it must be enumerated, and `Agent`
+  // stays out of it because subagents never spawn subagents.
+  if (allowedTools?.includes(ALLOW_ALL_TOOLS)) {
+    throw invalidSubagents(`inline allowedTools cannot use the ${ALLOW_ALL_TOOLS} wildcard; list the tools it needs.`);
+  }
+  if (allowedTools?.includes("Agent")) {
+    throw invalidSubagents("inline allowedTools cannot allow Agent; subagents never spawn subagents.");
+  }
+  return {
+    ...(record.enabled === undefined ? {} : { enabled: readSubagentBoolean(record.enabled, "inline.enabled") }),
+    ...(allowedTools === undefined ? {} : { allowedTools }),
   };
 }
 
@@ -528,9 +550,10 @@ function readSubagentDefinitions(
     if (hasPrompt === hasPromptPath) {
       throw invalidSubagents(`definition "${name}" needs exactly one of prompt or promptPath.`);
     }
-    const allowedTools = readSubagentTools(record.allowedTools, name, "allowedTools");
-    const disallowedTools = readSubagentTools(record.disallowedTools, name, "disallowedTools");
-    const mcpServers = readSubagentTools(record.mcpServers, name, "mcpServers");
+    const subject = `definition "${name}"`;
+    const allowedTools = readSubagentTools(record.allowedTools, subject, "allowedTools");
+    const disallowedTools = readSubagentTools(record.disallowedTools, subject, "disallowedTools");
+    const mcpServers = readSubagentTools(record.mcpServers, subject, "mcpServers");
     // `"*"` would hand a subagent every built-in including shell and writes.
     // Widening a helper's reach must be an explicit, enumerated decision.
     if (allowedTools?.includes(ALLOW_ALL_TOOLS)) {
@@ -572,12 +595,13 @@ function parseSubagentModel(value: unknown, name: string): MonoAgentConfig["runt
   }
 }
 
-function readSubagentTools(value: unknown, name: string, field: string): readonly string[] | undefined {
+/** `subject` is the already-formatted owner of the field, e.g. `definition "researcher"`. */
+function readSubagentTools(value: unknown, subject: string, field: string): readonly string[] | undefined {
   if (value === undefined) {
     return undefined;
   }
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || entry.trim().length === 0)) {
-    throw invalidSubagents(`definition "${name}" ${field} must be an array of non-empty strings.`);
+    throw invalidSubagents(`${subject} ${field} must be an array of non-empty strings.`);
   }
   return value.map((entry) => String(entry).trim());
 }

@@ -642,10 +642,12 @@ export {
 export {
   formatLiveInputActivityLine,
   isSubagentLaunchToolName,
+  setToolActivityPathRoots,
   splitSubagentToolName,
   SUBAGENT_TOOL_SEPARATOR,
   toolHintFor,
 } from "./tool-hints.js";
+export type { ToolActivityLineOptions } from "./tool-hints.js";
 export {
   ResilientMessageStream,
   ChannelDeliveryError,
