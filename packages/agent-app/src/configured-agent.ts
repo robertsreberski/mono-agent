@@ -13,6 +13,7 @@ import type {
   ConversationHistoryStore,
 } from "@mono-agent/agent-harness";
 import type { ToolPolicyInput } from "@mono-agent/agent-harness";
+import { readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 
 import type { AgentResponder, MemoryStore } from "@mono-agent/agent-contracts";
@@ -374,6 +375,167 @@ export function createConfiguredAgentRuntime(
 }
 
 /**
+ * Narrow the loaded MCP servers to the ones a profile names.
+ *
+ * An unknown name is a configuration error the loader cannot catch (it does not
+ * read mcp.json), and silently dropping it would leave the subagent quietly
+ * less capable than its config claims.
+ */
+function selectMcpServers(
+  available: Record<string, unknown>,
+  names: readonly string[] | undefined,
+  profile: string,
+): Record<string, unknown> {
+  if (names === undefined || names.length === 0) {
+    return {};
+  }
+  const selected: Record<string, unknown> = {};
+  for (const name of names) {
+    if (!Object.hasOwn(available, name)) {
+      throw new Error(
+        `Subagent "${profile}" references MCP server "${name}", which is not defined in tools.mcpConfigPath.`,
+      );
+    }
+    selected[name] = available[name];
+  }
+  return selected;
+}
+
+/** Denied for every subagent regardless of profile. Mirrors the kernel's own list. */
+const SUBAGENT_HARD_DENY = [
+  "Agent",
+  "AskUser",
+  "SlackSendMessage",
+  "TelegramSendMessage",
+  "TelegramSendFile",
+] as const;
+
+/** Read-only default when a profile does not enumerate its tools. */
+const DEFAULT_SUBAGENT_TOOLS = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"] as const;
+
+interface SubagentRunRequest {
+  readonly systemPrompt: string;
+  readonly prompt: string;
+  readonly definition: {
+    readonly name: string;
+    readonly model?: RuntimeModelReference;
+    readonly effort?: string;
+    readonly allowedTools?: readonly string[];
+    readonly disallowedTools?: readonly string[];
+    readonly mcpServers?: Record<string, unknown>;
+  };
+  readonly maxTurns: number;
+  readonly depth: number;
+  readonly cwd?: string;
+  readonly sandboxPolicy?: unknown;
+  readonly sandboxEngine?: unknown;
+  readonly abortSignal: AbortSignal;
+  readonly onEvent: (event: unknown) => void;
+}
+
+/** Inline prompt, or the contents of promptPath; the loader guarantees exactly one. */
+function resolveSubagentPrompt(definition: { readonly prompt?: string; readonly promptPath?: string }): string {
+  if (definition.prompt !== undefined) {
+    return definition.prompt;
+  }
+  return readFileSync(definition.promptPath as string, "utf8");
+}
+
+/**
+ * Build the `subagents` runtime option: the profiles the `Agent` tool offers,
+ * its caps, and the callback that runs one child turn.
+ *
+ * agent-app owns this rather than the harness or the adapter because it alone
+ * holds the config, the router runtime, and `runtimeForModel`. Routing a child
+ * through the shared router is what gives subagents the configured fallback
+ * chain and same-model retries for free.
+ */
+function subagentsRuntimeOptions(
+  config: MonoAgentConfig,
+  deps: {
+    readonly runtime: MonoRuntimeLike;
+    readonly baseModel: RuntimeModelReference;
+    readonly baseExecutionMode: RuntimeExecutionMode;
+    readonly runtimeForModel?: AgentHarnessOptions["runtimeForModel"];
+  },
+): StaticRuntimeOptions | undefined {
+  const subagents = config.subagents;
+  if (subagents?.enabled !== true) {
+    return undefined;
+  }
+  // Config, schema, doctor, and docs all advertise per-profile MCP servers, so
+  // resolve the named subset here rather than silently handing every child an
+  // empty map. Only the servers a profile names are exposed.
+  const availableMcpServers = (toolPolicyInput(config).mcpServers ?? {}) as Record<string, unknown>;
+  const definitions = (subagents.definitions ?? []).map((definition) => ({
+    name: definition.name,
+    description: definition.description,
+    systemPrompt: resolveSubagentPrompt(definition),
+    ...(definition.model === undefined ? {} : { model: definition.model }),
+    ...(definition.effort === undefined ? {} : { effort: definition.effort }),
+    allowedTools: definition.allowedTools ?? [...DEFAULT_SUBAGENT_TOOLS],
+    disallowedTools: [...new Set([...(definition.disallowedTools ?? []), ...SUBAGENT_HARD_DENY])],
+    mcpServers: selectMcpServers(availableMcpServers, definition.mcpServers, definition.name),
+    ...(definition.maxTurns === undefined ? {} : { maxTurns: definition.maxTurns }),
+    ...(definition.timeoutMs === undefined ? {} : { timeoutMs: definition.timeoutMs }),
+  }));
+
+  const run = async (request: SubagentRunRequest): Promise<RuntimeResult> => {
+    // A profile model must go through `runtimeForModel`: the router overrides
+    // `options.model` per chain entry, so handing a different model to the
+    // shared router is silently ignored and the child would run on the chain
+    // primary instead of the model its profile asked for.
+    const overrides = request.definition.model !== undefined
+      && modelReferenceKey(request.definition.model) !== modelReferenceKey(deps.baseModel);
+    const childModel = overrides
+      ? (request.definition.model as RuntimeModelReference)
+      : deps.baseModel;
+    const childExecutionMode = overrides
+      ? defaultExecutionModeForModel(childModel)
+      : deps.baseExecutionMode;
+    const runtime = overrides && deps.runtimeForModel !== undefined
+      ? deps.runtimeForModel(childModel, childExecutionMode)
+      : deps.runtime;
+
+    return await runtime.run(request.systemPrompt, {
+      model: childModel,
+      executionMode: childExecutionMode,
+      messages: [{ role: "user", content: request.prompt }],
+      maxTurns: request.maxTurns,
+      ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+      // Monotonic: the child is confined by the same policy as the parent turn.
+      // This runs outside the harness, which is where the policy is normally
+      // attached, so dropping it would leave the child entirely unsandboxed.
+      ...(request.sandboxPolicy === undefined ? {} : { sandboxPolicy: request.sandboxPolicy }),
+      ...(request.sandboxEngine === undefined ? {} : { sandboxEngine: request.sandboxEngine }),
+      ...(request.definition.effort === undefined ? {} : { effort: request.definition.effort }),
+      allowedTools: request.definition.allowedTools ?? [...DEFAULT_SUBAGENT_TOOLS],
+      disallowedTools: [...new Set([...(request.definition.disallowedTools ?? []), ...SUBAGENT_HARD_DENY])],
+      // Only the servers this profile named. A profile that names none gets an
+      // empty map, keeping the app-owned AskUser and channel-send tools
+      // structurally out of reach rather than merely denied by name.
+      mcpServers: request.definition.mcpServers ?? {},
+      abortSignal: request.abortSignal,
+      onEvent: request.onEvent,
+      // Depth propagation is the recursion lock the kernel also enforces.
+      subagents: { depth: request.depth },
+    } as unknown as RuntimeRunOptions);
+  };
+
+  return {
+    subagents: {
+      definitions,
+      ...(subagents.maxConcurrent === undefined ? {} : { maxConcurrent: subagents.maxConcurrent }),
+      ...(subagents.maxPerTurn === undefined ? {} : { maxPerTurn: subagents.maxPerTurn }),
+      ...(subagents.maxTurns === undefined ? {} : { maxTurns: subagents.maxTurns }),
+      ...(subagents.timeoutMs === undefined ? {} : { timeoutMs: subagents.timeoutMs }),
+      run,
+    },
+  } as unknown as StaticRuntimeOptions;
+}
+
+
+/**
  * When backup models are configured, runs go through the agent-runtime fallback
  * router with the effective primary model first. Fallback entries use their
  * default execution mode.
@@ -502,10 +664,17 @@ async function createConfiguredAgentHarnessInternal(
     // request override; arbitrary caller/action MCP extensions remain excluded.
     preserveMcpServersUnderOverride: memoryRecall === undefined ? [] : [memoryRecall],
   });
+  const subagents = subagentsRuntimeOptions(config, {
+    runtime,
+    baseModel: model,
+    baseExecutionMode: executionMode as RuntimeExecutionMode,
+    ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),
+  });
   const runtimeOptions = mergeStaticRuntimeOptions(
     runtimeOptionsForLocalProvider(model, config.providers?.local),
     configRuntimeFlags(config),
     options.sandboxEngine === undefined ? undefined : { sandboxEngine: options.sandboxEngine },
+    subagents,
     options.runtimeOptions,
   );
   const sessionOptions: AgentHarnessSessionOptionsWithEvents = {

@@ -251,4 +251,85 @@ describe("createRuntime", () => {
     expect(readToolRuntime().workspace).toBeUndefined();
     expect(readToolRuntime().runtimeBrand.schemaPrefix).toBe("agent_runtime");
   });
+
+describe("createRuntime subagent seam", () => {
+  const model = { sdk: "pi", provider: "faux", model: "m" };
+  const subagents = {
+    definitions: [{ name: "researcher", description: "d", systemPrompt: "child system prompt" }],
+  };
+
+  it("supplies a kernel self-run so the Agent tool works without host wiring", async () => {
+    executeMock.mockResolvedValue({ text: "ok", events: [] });
+    const runtime = createRuntime();
+    await runtime.run("parent", { model, subagents });
+
+    const forwarded = executeMock.mock.calls[0][1];
+    expect(typeof forwarded.subagents.run).toBe("function");
+    expect(forwarded.subagents.definitions).toBe(subagents.definitions);
+  });
+
+  it("does not overwrite a host-supplied run callback", async () => {
+    executeMock.mockResolvedValue({ text: "ok", events: [] });
+    const hostRun = vi.fn();
+    const runtime = createRuntime();
+    await runtime.run("parent", { model, subagents: { ...subagents, run: hostRun } });
+
+    expect(executeMock.mock.calls[0][1].subagents.run).toBe(hostRun);
+  });
+
+  it("runs a child turn one level deeper, with no session or steering state", async () => {
+    executeMock.mockResolvedValue({ text: "child answer", events: [] });
+    const runtime = createRuntime();
+    await runtime.run("parent", { model, subagents });
+
+    const childRun = executeMock.mock.calls[0][1].subagents.run;
+    executeMock.mockClear();
+    const result = await childRun({
+      systemPrompt: "child system prompt",
+      prompt: "do the thing",
+      definition: { name: "researcher", allowedTools: ["Read"] },
+      model,
+      maxTurns: 7,
+      depth: 1,
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    });
+
+    expect(result.text).toBe("child answer");
+    const childOptions = executeMock.mock.calls[0][1];
+    expect(executeMock.mock.calls[0][0]).toBe("child system prompt");
+    expect(childOptions.messages).toEqual([{ role: "user", content: "do the thing" }]);
+    expect(childOptions.maxTurns).toBe(7);
+    expect(childOptions.allowedTools).toEqual(["Read"]);
+    // Depth 1 is what makes getPiBuiltinTools refuse to register Agent for the
+    // child, so a subagent can never spawn subagents even via a custom run.
+    expect(childOptions.subagents).toEqual({ depth: 1, run: expect.any(Function) });
+    expect(childOptions.sessionId).toBeUndefined();
+    expect(childOptions.liveInput).toBeUndefined();
+  });
+
+  it("confines a child with the parent's sandbox policy", async () => {
+    executeMock.mockResolvedValue({ text: "ok", events: [] });
+    const runtime = createRuntime();
+    await runtime.run("parent", { model, subagents });
+    const childRun = executeMock.mock.calls[0][1].subagents.run;
+
+    executeMock.mockClear();
+    const sandboxPolicy = { mode: "read-only", network: { mode: "deny" } };
+    await childRun({
+      systemPrompt: "s",
+      prompt: "p",
+      definition: { name: "researcher", allowedTools: ["Read"] },
+      model,
+      maxTurns: 3,
+      depth: 1,
+      sandboxPolicy,
+      sandboxEngine: { id: "srt" },
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    });
+
+    expect(executeMock.mock.calls[0][1]).toMatchObject({ sandboxPolicy, sandboxEngine: { id: "srt" } });
+  });
+});
 });

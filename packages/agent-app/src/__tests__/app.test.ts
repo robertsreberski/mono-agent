@@ -2194,8 +2194,13 @@ describe("startMonoAgentApp", () => {
   });
 
   it("applies an accepted Pi-to-OpenCode request override without leaking AskUser MCP", async () => {
+    // primaryAttempts 1 keeps this agent off the fallback router, so the
+    // injected runtime is the one that serves the override and can observe it.
+    // A routed agent instead gets a model-bound runtime from runtimeForModel —
+    // see the sibling case below.
     await writeConfig({
       ...baseConfig(),
+      runtime: { ...baseConfig().runtime, retry: { primaryAttempts: 1 } },
       tools: { allowedTools: ["*"], disallowedTools: [] },
     });
     const runtimeCalls: RuntimeRunOptions[] = [];
@@ -2235,6 +2240,54 @@ describe("startMonoAgentApp", () => {
       model: "gpt-5.1",
     }));
     expect(runtimeCalls[0]?.mcpServers).toBeUndefined();
+    await app.stop();
+  });
+
+  it("routes a request model override through a model-bound runtime when retries are on", async () => {
+    // Regression guard for the retry-only chain: the router freezes the model
+    // chain, so an override served by the SHARED router would silently run on
+    // the chain primary. With retries enabled the app must build a runtime
+    // whose chain has the override as primary, leaving the shared runtime
+    // untouched for that turn.
+    await writeConfig({
+      ...baseConfig(),
+      runtime: { ...baseConfig().runtime, retry: { primaryAttempts: 2 } },
+      tools: { allowedTools: ["*"], disallowedTools: [] },
+    });
+    const runtimeCalls: RuntimeRunOptions[] = [];
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        runtimeCalls.push(options);
+        return { text: "ok" };
+      },
+    };
+    const driver: ChannelDriver = {
+      id: "probe" as never,
+      label: "Probe",
+      async loadConfig() {
+        return { enabled: true };
+      },
+      isConfigError() {
+        return false;
+      },
+      async start(input) {
+        await input.responder.respond(
+          {
+            conversationId: "routed-override",
+            text: "ping",
+            abortSignal: new AbortController().signal,
+            metadata: { webhook: { model: "opencode:github-copilot:gpt-5.1" } },
+          },
+          { append: async () => undefined },
+        );
+        return { summary: {}, stop: async () => undefined };
+      },
+    };
+
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver], runtime });
+    // The shared runtime must NOT have served the override; before the fix it
+    // did, and the router overwrote the model with the configured primary.
+    expect(runtimeCalls.some((call) => call.model?.sdk === "pi")).toBe(false);
     await app.stop();
   });
 

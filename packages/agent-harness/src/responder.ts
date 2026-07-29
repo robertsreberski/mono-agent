@@ -388,6 +388,41 @@ export function streamEventFromRuntimeEvent(
   if (!isRecord(event)) {
     return undefined;
   }
+  // Subagent activity rides the existing tool-call events rather than a new
+  // union variant: only four event types are field-reducible on the operator
+  // wire, so a new variant would collapse to an `oversized_event` marker on
+  // exactly the payloads worth seeing. The tool ids arrive pre-namespaced
+  // (`agent:<callId>:<toolUseId>`) because both the TUI and the web store key
+  // tool state flatly on the id. This branch is required rather than optional:
+  // the pi-shaped mapping below reconstructs events from raw blocks and copies
+  // no metadata, so `metadata.subagent` has no other way through.
+  if (event.type === "subagent_activity") {
+    const id = stringField(event, "id");
+    const phase = stringField(event, "phase");
+    if (id === undefined || phase === undefined) {
+      return undefined;
+    }
+    const name = stringField(event, "name") ?? "subagent";
+    const metadata = { subagent: event.subagent, synthetic: true };
+    if (phase === "started" || phase === "agent_started") {
+      return {
+        type: "tool_call_started",
+        id,
+        name,
+        ...(hasOwn(event, "arguments") ? { arguments: event.arguments } : {}),
+        metadata,
+      };
+    }
+    return {
+      type: "tool_call_completed",
+      id,
+      name,
+      ...(hasOwn(event, "content") ? { content: event.content } : {}),
+      ...(typeof event.isError === "boolean" ? { isError: event.isError } : {}),
+      ...(typeof event.executionMs === "number" ? { executionMs: event.executionMs } : {}),
+      metadata,
+    };
+  }
   if (event.type === "runtime_warning") {
     const message = stringField(event, "message");
     if (message === undefined) {

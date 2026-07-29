@@ -23,3 +23,18 @@ export function hasConfiguredRuntimeFallbacks(
 ): boolean {
   return configuredRuntimeFallbackModels(runtime).length > 0;
 }
+
+/**
+ * Whether runs are served by the fallback router rather than the plain runtime.
+ *
+ * This is NOT the same question as "are backups configured": a primary with
+ * `runtime.retry.primaryAttempts > 1` gets a retry-only single-entry chain, and
+ * the router freezes the model chain either way. Anything that must survive the
+ * router — notably per-trigger model overrides, which the router would otherwise
+ * overwrite with the chain primary — has to key off this, not off the backups.
+ */
+export function runtimeUsesFallbackRouter(
+  runtime: Pick<RuntimeConfig, "fallbacks" | "fallbackModels" | "retry">,
+): boolean {
+  return hasConfiguredRuntimeFallbacks(runtime) || (runtime.retry?.primaryAttempts ?? 1) > 1;
+}

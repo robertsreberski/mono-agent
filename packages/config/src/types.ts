@@ -185,6 +185,50 @@ export interface RuntimeRetryConfig {
   readonly maxBackoffMs: number;
 }
 
+/**
+ * One named subagent the `Agent` tool can deploy. Shaped to project onto the
+ * provider-native subagent definitions (`{name, description, helperSystemPrompt,
+ * allowedTools, disallowedTools, modelRef, mcpServers}`) so one config block can
+ * drive both the in-process pi tool and a native Task-style surface.
+ */
+export interface MonoAgentSubagentConfig {
+  /** Model-visible identifier and the `Agent` tool's `name` enum value. */
+  readonly name: string;
+  /** Model-visible: when to pick this profile. One sentence. */
+  readonly description: string;
+  /** The subagent's system prompt. Mutually exclusive with `promptPath`. */
+  readonly prompt?: string;
+  /** File holding the system prompt, resolved against the config directory. */
+  readonly promptPath?: string;
+  /** Absent inherits the parent's configured route and its fallback chain. */
+  readonly model?: RuntimeModelReference;
+  readonly effort?: EffortLevel;
+  /** Absent uses the safe read-only default set. `"*"` is rejected. */
+  readonly allowedTools?: readonly string[];
+  readonly disallowedTools?: readonly string[];
+  /** Names of servers from `tools.mcpConfigPath` to expose to this subagent. */
+  readonly mcpServers?: readonly string[];
+  readonly maxTurns?: number;
+  readonly timeoutMs?: number;
+}
+
+/**
+ * Subagent deployment policy. Absent or `enabled: false` means the `Agent` tool
+ * is never registered.
+ */
+export interface MonoAgentSubagentsConfig {
+  readonly enabled?: boolean;
+  /** In-flight subagents per parent turn. Default 5. */
+  readonly maxConcurrent?: number;
+  /** Total `Agent` calls per parent turn — the runaway guard. Default 20. */
+  readonly maxPerTurn?: number;
+  /** Default per-subagent wall clock in ms. Default 300000. */
+  readonly timeoutMs?: number;
+  /** Default per-subagent turn cap. Default 20. */
+  readonly maxTurns?: number;
+  readonly definitions?: readonly MonoAgentSubagentConfig[];
+}
+
 export interface ArtifactRetentionConfig {
   /** Delete terminal run artifacts older than this many days. */
   readonly maxAgeDays: number;
@@ -267,6 +311,8 @@ export interface MonoAgentConfig {
     readonly maxConcurrentRuns?: number;
     readonly maxPendingRuns?: number;
   };
+  /** Subagent profiles and caps for the `Agent` tool. */
+  readonly subagents?: MonoAgentSubagentsConfig;
   readonly context: {
     readonly identityPath: string;
     readonly soulPath?: string;

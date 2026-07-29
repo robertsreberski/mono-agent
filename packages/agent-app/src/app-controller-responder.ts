@@ -27,7 +27,7 @@ import {
   requestModelOverrideTargetsDirectOpenCode,
 } from "./request-model-override.js";
 import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
-import { configuredRuntimeFallbackModels, hasConfiguredRuntimeFallbacks } from "./runtime-routes.js";
+import { configuredRuntimeFallbackModels, runtimeUsesFallbackRouter } from "./runtime-routes.js";
 import { isNotifyDestinationConversationId } from "./notify-destinations.js";
 import { createSlackPostedReplyHistory } from "./posted-reply-history.js";
 import {
@@ -160,12 +160,14 @@ export async function buildResponder(controller: ResponderControllerPort, coreCo
     // session can replace the daemon's ordinary action/MCP surface.
     localConfigurationExtension,
   ]);
-  // The override factory is only needed when fallbacks are configured: the
-  // fallback router freezes the model chain, so an override must run on a runtime
-  // whose chain has it as primary. With no fallbacks the shared (plain) runtime
-  // honors the per-run model directly, so building a separate runtime would be
-  // redundant. Omit the factory there and the harness uses the shared runtime.
-  const runtimeForModel = hasConfiguredRuntimeFallbacks(coreConfig.runtime)
+  // The override factory is needed whenever the ROUTER is active, not merely
+  // when backups exist: the router freezes the model chain, so an override must
+  // run on a runtime whose chain has it as primary. A primary configured for
+  // same-model retries gets a retry-only chain and is therefore routed too —
+  // keying this off configured backups alone silently ran per-trigger overrides
+  // on the chain primary instead of the requested model. Only a genuinely
+  // unrouted runtime honors the per-run model directly.
+  const runtimeForModel = runtimeUsesFallbackRouter(coreConfig.runtime)
     ? controller.buildRuntimeForModel(coreConfig)
     : undefined;
   const observabilityContext = await controller.observabilityContext();

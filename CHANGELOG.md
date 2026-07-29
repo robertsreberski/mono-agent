@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Subagents: the `Agent` tool
+
+- The main agent can now deploy independent subagents on the pi runtime. `Agent`
+  takes `{prompt, name?, description?}`, resolves `name` against
+  `subagents.definitions[]` or falls back to a read-only general-purpose
+  researcher, and returns the subagent's final answer plus a compact
+  per-tool-call activity log capped at roughly 24KB.
+- Requires BOTH `subagents.enabled: true` and `Agent` in `tools.allowedTools`;
+  `mono-agent validate` warns when only one half is set.
+- Every subagent tool call streams live to the TUI and web console as
+  `<profile>▸<tool>`, bracketed by the subagent's own start/finish rows. Ids
+  are namespaced per subagent so concurrent helpers running the same tool stay
+  distinct. No wire-schema change and no TUI/web changes were needed.
+- `maxConcurrent` (default 5) bounds simultaneous subagents; `maxPerTurn`
+  (default 20) bounds the total per turn and is the real runaway guard. Each
+  subagent gets `maxTurns` (20) and `timeoutMs` (5 min), and its timeout starts
+  only once it begins rather than while queued.
+- Subagents are read-only unless a profile enumerates more, never receive
+  `Agent`/`AskUser`/channel-send tools, get no MCP servers unless named, inherit
+  the sandbox without being able to widen it, and cannot spawn subagents.
+  A profile without a `model` inherits the parent's configured route, so
+  subagents get the fallback chain and same-model retries too.
+
+
 ### Same-model retries before failover
 
 - A fallback route can now retry itself before the chain advances.
