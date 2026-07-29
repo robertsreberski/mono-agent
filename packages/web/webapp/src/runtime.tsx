@@ -126,6 +126,11 @@ const convertPart = (
         result: part.result,
         isError: part.status === "failed",
       };
+    case "subagent":
+      // A delegation owns its children, so it cannot be an assistant-ui
+      // tool-call part (those carry no nested calls). A named data part keeps
+      // the whole group intact and lets it render as one disclosure.
+      return { type: "data-subagent", data: jsonObject(part) };
     case "telemetry":
       // Most telemetry remains store-only for chrome such as ContextDisplay.
       // Compaction is user-visible activity, so expose that one canonical kind
@@ -165,8 +170,12 @@ const completeAttachment = (attachment: WebAttachment): CompleteAttachment => {
 
 export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
   const content = message.parts.flatMap((part) => {
+    // The service worker precaches this bundle, so a console left open across a
+    // server upgrade can be handed a part type it does not know yet. `== null`
+    // covers that `undefined` too: pushing it into content breaks the whole
+    // transcript over one unrecognized row.
     const converted = convertPart(part);
-    return converted === null ? [] : [converted];
+    return converted == null ? [] : [converted];
   });
   const status: ThreadMessageLike["status"] =
     message.status === "running"

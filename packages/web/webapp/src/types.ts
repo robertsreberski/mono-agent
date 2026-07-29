@@ -96,16 +96,32 @@ export interface ThreadSummary {
   readonly canUpload: boolean;
 }
 
+export type ToolCallStatus = "running" | "complete" | "failed";
+
+/** One tool call, whether the agent made it or one of its subagents did. */
+export interface ToolCall {
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly args?: unknown;
+  readonly result?: unknown;
+  readonly status: ToolCallStatus;
+}
+
 export type MessagePart =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "reasoning"; readonly text: string }
+  | ({ readonly type: "tool-call" } & ToolCall)
+  /** One `Agent` delegation and the tool calls its subagent made. */
   | {
-      readonly type: "tool-call";
+      readonly type: "subagent";
       readonly toolCallId: string;
-      readonly toolName: string;
+      readonly name: string;
+      readonly label?: string;
       readonly args?: unknown;
       readonly result?: unknown;
-      readonly status: "running" | "complete" | "failed";
+      readonly executionMs?: number;
+      readonly status: ToolCallStatus;
+      readonly calls: readonly ToolCall[];
     }
   | { readonly type: "telemetry"; readonly event: string; readonly data?: unknown }
   | { readonly type: "error"; readonly code?: string; readonly message: string };

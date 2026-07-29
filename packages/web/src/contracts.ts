@@ -80,16 +80,40 @@ export interface WebThread {
 
 export type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" | "interrupted";
 
+export type WebToolCallStatus = "running" | "complete" | "failed";
+
+/** One tool call, whether the agent made it or one of its subagents did. */
+export interface WebToolCall {
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly args?: unknown;
+  readonly result?: unknown;
+  readonly status: WebToolCallStatus;
+}
+
 export type WebMessagePart =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "reasoning"; readonly text: string }
+  | ({ readonly type: "tool-call" } & WebToolCall)
+  /**
+   * One `Agent` delegation and the tool calls its subagent made. The children
+   * are owned by the delegation rather than listed alongside it because
+   * concurrent subagents interleave their events: a flat transcript would
+   * shuffle several agents' work into one indistinguishable run.
+   */
   | {
-      readonly type: "tool-call";
+      readonly type: "subagent";
+      /** The parent `Agent` tool call id, which every child event carries. */
       readonly toolCallId: string;
-      readonly toolName: string;
+      /** The subagent profile that ran. */
+      readonly name: string;
+      /** The model's short label for this task, when it supplied one. */
+      readonly label?: string;
       readonly args?: unknown;
       readonly result?: unknown;
-      readonly status: "running" | "complete" | "failed";
+      readonly executionMs?: number;
+      readonly status: WebToolCallStatus;
+      readonly calls: readonly WebToolCall[];
     }
   | { readonly type: "telemetry"; readonly event: string; readonly data?: unknown }
   | { readonly type: "error"; readonly code?: string; readonly message: string };

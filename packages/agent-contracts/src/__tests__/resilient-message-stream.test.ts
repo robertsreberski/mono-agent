@@ -669,3 +669,199 @@ describe("ResilientMessageStream", () => {
     expect(lastEdit?.text).not.toContain("Searching the web");
   });
 });
+
+/** The events one subagent produces, in the order the runtime emits them. */
+const launch = (id: string, name: string) => ({
+  type: "tool_call_started" as const,
+  id,
+  name: "Agent",
+  arguments: { name, prompt: "do the thing", description: "a task" },
+});
+const bookend = (id: string, name: string) => ({
+  type: "tool_call_started" as const,
+  id: `agent:${id}`,
+  name: `Agent(${name})`,
+  arguments: { name },
+  metadata: { subagent: { id, name, callIndex: 0 }, synthetic: true, subagentLifecycle: true },
+});
+const childCall = (id: string, name: string, toolId: string, tool: string, args: unknown) => ({
+  type: "tool_call_started" as const,
+  id: `agent:${id}:${toolId}`,
+  name: `${name}▸${tool}`,
+  arguments: args,
+  metadata: { subagent: { id, name, callIndex: 0 }, synthetic: true },
+});
+
+const lastLedger = (transport: FakeTransport): string => {
+  const writes = transport.calls.filter(
+    (call): call is RecordedPost | RecordedEdit => call.op !== "delete",
+  );
+  return writes.at(-1)?.text ?? "";
+};
+
+describe("ResilientMessageStream subagent activity", () => {
+  it("nests a subagent's tool calls under one header", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event(launch("call-1", "researcher"));
+    await stream.event(bookend("call-1", "researcher"));
+    await stream.event(childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/foo.ts" }));
+    await stream.event(childCall("call-1", "researcher", "t2", "Grep", { pattern: "createTool" }));
+
+    expect(lastLedger(transport)).toBe(
+      [
+        '🤖 Starting agent "researcher"',
+        "  ↳ 📖 Reading /repo/foo.ts",
+        '  ↳ 🔎 Searching files for createTool',
+      ].join("\n"),
+    );
+  });
+
+  it("keeps concurrent subagents in their own groups as their events interleave", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event(launch("a", "researcher"));
+    await stream.event(launch("b", "reviewer"));
+    // Interleaved on purpose: chronological appending would shuffle both agents'
+    // work into one list, which is exactly what grouping exists to prevent.
+    await stream.event(childCall("a", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }));
+    await stream.event(childCall("b", "reviewer", "t2", "Read", { file_path: "/repo/b.ts" }));
+    await stream.event(childCall("a", "researcher", "t3", "Read", { file_path: "/repo/c.ts" }));
+
+    expect(lastLedger(transport)).toBe(
+      [
+        '🤖 Starting agent "researcher"',
+        "  ↳ 📖 Reading /repo/a.ts",
+        "  ↳ 📖 Reading /repo/c.ts",
+        '🤖 Starting agent "reviewer"',
+        "  ↳ 📖 Reading /repo/b.ts",
+      ].join("\n"),
+    );
+  });
+
+  it("collapses repeats within a group without merging two agents' work", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event(launch("a", "researcher"));
+    await stream.event(launch("b", "researcher"));
+    await stream.event(childCall("a", "researcher", "t1", "Grep", { pattern: "x" }));
+    await stream.event(childCall("a", "researcher", "t2", "Grep", { pattern: "x" }));
+    await stream.event(childCall("b", "researcher", "t3", "Grep", { pattern: "x" }));
+
+    // Two launches of the SAME profile stay two headers: identical rendered text
+    // must not collapse them, or the attribution of each child is lost.
+    expect(lastLedger(transport)).toBe(
+      [
+        '🤖 Starting agent "researcher"',
+        "  ↳ 🔎 Searching files for x (×2)",
+        '🤖 Starting agent "researcher"',
+        "  ↳ 🔎 Searching files for x",
+      ].join("\n"),
+    );
+  });
+
+  it("settles the header when the subagent finishes", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event(launch("call-1", "researcher"));
+    await stream.event(childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }));
+    await stream.event({
+      type: "tool_call_completed",
+      id: "agent:call-1",
+      name: "Agent(researcher)",
+      executionMs: 12_400,
+      metadata: { subagent: { id: "call-1", name: "researcher" }, synthetic: true, subagentLifecycle: true },
+    });
+
+    expect(lastLedger(transport)).toBe(
+      ['🤖 Agent "researcher" · 1 tool call · 12.4s', "  ↳ 📖 Reading /repo/a.ts"].join("\n"),
+    );
+  });
+
+  it("marks a failed subagent in its header", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event(launch("call-1", "researcher"));
+    await stream.event({
+      type: "tool_call_completed",
+      id: "call-1",
+      name: "Agent",
+      isError: true,
+      executionMs: 800,
+    });
+
+    expect(lastLedger(transport)).toBe('⚠️ Agent "researcher" · 0 tool calls · 800ms');
+  });
+
+  it("opens a group from child activity alone when the launch was never observed", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event(childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }));
+
+    expect(lastLedger(transport)).toBe(
+      ['🤖 Starting agent "researcher"', "  ↳ 📖 Reading /repo/a.ts"].join("\n"),
+    );
+  });
+
+  it("renders a flat line when subagent metadata is malformed", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "t1",
+      name: "Read",
+      arguments: { file_path: "/repo/a.ts" },
+      // `metadata` is an open record arriving over the operator wire: a
+      // non-string id must degrade, never key a group.
+      metadata: { subagent: { id: 42, name: "researcher" }, synthetic: true },
+    });
+
+    expect(lastLedger(transport)).toBe("📖 Reading /repo/a.ts");
+  });
+
+  it("keeps the agent's own activity flat alongside a subagent group", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "own",
+      name: "WebSearch",
+      arguments: { query: "pi agent core" },
+    });
+    await stream.event(launch("call-1", "researcher"));
+    await stream.event(childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }));
+
+    expect(lastLedger(transport)).toBe(
+      [
+        '🌐 Searching the web for pi agent core',
+        '🤖 Starting agent "researcher"',
+        "  ↳ 📖 Reading /repo/a.ts",
+      ].join("\n"),
+    );
+  });
+
+  it("bounds the ledger by evicting the oldest lines, header included", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 100_000 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event(launch("a", "noisy"));
+    for (let index = 0; index < 600; index += 1) {
+      await stream.event(childCall("a", "noisy", `t${index}`, "Read", { file_path: `/repo/f${index}.ts` }));
+    }
+
+    const lines = lastLedger(transport).split("\n");
+    expect(lines).toHaveLength(512);
+    // The group shed its own oldest children first, so the header survived and
+    // the newest work is what remains visible.
+    expect(lines[0]).toBe('🤖 Starting agent "noisy"');
+    expect(lines.at(-1)).toBe("  ↳ 📖 Reading /repo/f599.ts");
+  });
+});
