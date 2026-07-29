@@ -51,6 +51,21 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // service ids, sessions, or provider identity.
   "agent": { "name": "Research Companion" },
 
+  // Subagents the Agent tool can deploy. Requires "Agent" in tools.allowedTools too.
+  "subagents": {
+    "enabled": true,
+    "maxConcurrent": 5,                    // simultaneous subagents per turn
+    "maxPerTurn": 20,                      // total Agent calls per turn (runaway guard)
+    "definitions": [
+      {
+        "name": "researcher",              // lowercase kebab-case, unique
+        "description": "Reads code and docs to answer a factual question. Read-only.",
+        "prompt": "You are a codebase researcher. Answer with file:line citations.",
+        "allowedTools": ["Read", "Glob", "Grep"]  // omitted = read-only default set; "*" rejected
+      }
+    ]
+  },
+
   // Runtime: primary model plus ordered backups tried on retryable provider
   // failures (failover is reported in run results, never silent).
   "runtime": {

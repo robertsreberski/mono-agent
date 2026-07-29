@@ -905,4 +905,35 @@ describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", 
     });
     expect(denied.find((tool) => tool.name === "ReadSkill")).toBeUndefined();
   });
+
+describe("getPiBuiltinTools Agent registration", () => {
+  const subagents = () => ({
+    definitions: [{ name: "researcher", description: "d", systemPrompt: "s" }],
+    run: async () => ({ text: "ok", events: [] }),
+  });
+  const names = (tools) => tools.map((tool) => tool.name);
+
+  it("registers Agent only when subagents are wired for this run", () => {
+    expect(names(getPiBuiltinTools(["Agent"], {}))).not.toContain("Agent");
+    expect(names(getPiBuiltinTools(["Agent"], { subagents: subagents() }))).toContain("Agent");
+  });
+
+  it("suppresses Agent inside a subagent run", () => {
+    expect(names(getPiBuiltinTools(["Agent"], { subagents: { ...subagents(), depth: 1 } })))
+      .not.toContain("Agent");
+  });
+
+  it("honors the allow-all sentinel and deny-wins for Agent", () => {
+    expect(names(getPiBuiltinTools(["*"], { subagents: subagents() }))).toContain("Agent");
+    expect(names(getPiBuiltinTools(["*"], { subagents: subagents(), disallowedTools: ["Agent"] })))
+      .not.toContain("Agent");
+    expect(names(getPiBuiltinTools(["Read"], { subagents: subagents() }))).not.toContain("Agent");
+  });
+
+  it("keeps Agent parallel so it cannot serialize a mixed tool batch", () => {
+    const agent = getPiBuiltinTools(["Agent"], { subagents: subagents() })
+      .find((tool) => tool.name === "Agent");
+    expect(agent.executionMode).toBeUndefined();
+  });
+});
 });

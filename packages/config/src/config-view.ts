@@ -68,6 +68,7 @@ export const CONFIG_ENV_KEYS = {
   "runtime.model": "MONO_AGENT_MODEL",
   "runtime.fallbackModels": "MONO_AGENT_FALLBACK_MODELS",
   "runtime.fallbacks": "MONO_AGENT_FALLBACKS_JSON",
+  "subagents": "MONO_AGENT_SUBAGENTS_JSON",
   "runtime.retry.primaryAttempts": "MONO_AGENT_RETRY_PRIMARY_ATTEMPTS",
   "runtime.retry.backoffMs": "MONO_AGENT_RETRY_BACKOFF_MS",
   "runtime.retry.maxBackoffMs": "MONO_AGENT_RETRY_MAX_BACKOFF_MS",

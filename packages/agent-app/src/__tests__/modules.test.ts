@@ -106,9 +106,9 @@ describe("baseConfig", () => {
 });
 
 describe("known-tools", () => {
-  it("lists all ten built-in tools", () => {
-    expect(BUILTIN_TOOL_NAMES).toHaveLength(10);
-    for (const name of ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec", "NodeRepl", "WebFetch", "WebSearch"]) {
+  it("lists all eleven built-in tools", () => {
+    expect(BUILTIN_TOOL_NAMES).toHaveLength(11);
+    for (const name of ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec", "NodeRepl", "WebFetch", "WebSearch", "Agent"]) {
       expect(BUILTIN_TOOL_NAMES).toContain(name);
     }
   });

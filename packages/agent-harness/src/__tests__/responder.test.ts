@@ -8,7 +8,7 @@ import {
   type AgentStreamEvent,
 } from "@mono-agent/agent-contracts";
 
-import { bucketConversationId, createAgentResponder, streamEventFromRuntimeEvent } from "../responder.js";
+import { assistantTextFromRuntimeEvent, bucketConversationId, createAgentResponder, streamEventFromRuntimeEvent } from "../responder.js";
 import type { AgentHarness, AgentHarnessRequest, AgentHarnessResponse } from "../types.js";
 
 function okResponse(conversationId: string): AgentHarnessResponse {
@@ -770,6 +770,70 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
       attemptIndex: 0,
       retryIndex: 1,
     });
+  });
+
+  it("maps subagent activity onto namespaced tool-call events", () => {
+    const subagent = { id: "call-1", name: "researcher", callIndex: 1 };
+    expect(streamEventFromRuntimeEvent({
+      type: "subagent_activity",
+      phase: "started",
+      id: "agent:call-1:t1",
+      name: "researcher▸Read",
+      arguments: { file_path: "/a/b.ts" },
+      subagent,
+    })).toEqual({
+      type: "tool_call_started",
+      id: "agent:call-1:t1",
+      name: "researcher▸Read",
+      arguments: { file_path: "/a/b.ts" },
+      metadata: { subagent, synthetic: true },
+    });
+
+    expect(streamEventFromRuntimeEvent({
+      type: "subagent_activity",
+      phase: "completed",
+      id: "agent:call-1:t1",
+      name: "researcher▸Read",
+      isError: false,
+      executionMs: 12,
+      content: "file body",
+      subagent,
+    })).toEqual({
+      type: "tool_call_completed",
+      id: "agent:call-1:t1",
+      name: "researcher▸Read",
+      content: "file body",
+      isError: false,
+      executionMs: 12,
+      metadata: { subagent, synthetic: true },
+    });
+  });
+
+  it("drops malformed subagent activity instead of throwing", () => {
+    expect(streamEventFromRuntimeEvent({ type: "subagent_activity", phase: "started" })).toBeUndefined();
+    expect(streamEventFromRuntimeEvent({ type: "subagent_activity", id: "agent:c1:t1" })).toBeUndefined();
+  });
+
+  it("keeps two concurrent subagents' identical tools on distinct ids", () => {
+    const read = (callId: string) => streamEventFromRuntimeEvent({
+      type: "subagent_activity",
+      phase: "started",
+      id: `agent:${callId}:t1`,
+      name: "researcher▸Read",
+      subagent: { id: callId, name: "researcher", callIndex: 1 },
+    }) as { id: string };
+    // The TUI and web store both key tool state flatly on this id, so a
+    // collision here would merge two subagents into one panel.
+    expect(read("call-1").id).not.toBe(read("call-2").id);
+  });
+
+  it("never splices subagent activity into the parent's answer body", () => {
+    expect(assistantTextFromRuntimeEvent({
+      type: "subagent_activity",
+      phase: "started",
+      id: "agent:c1:t1",
+      name: "researcher▸Read",
+    })).toBe("");
   });
 
   it("maps memory_recalled through with source and bytes", () => {

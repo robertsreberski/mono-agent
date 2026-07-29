@@ -9,6 +9,7 @@ import {
   modulesByKind,
   resolveModuleInputs,
 } from "../modules/index.js";
+import { BUILTIN_TOOL_NAMES, DEFAULT_SAFE_TOOLS, isKnownToolName } from "../modules/known-tools.js";
 
 const MODEL = "claude:claude-sonnet-4-6";
 
@@ -120,4 +121,13 @@ describe("capability-module catalog", () => {
     expect(findModule("channel:telegram")?.inputs.find((input) => input.secret === true)?.envVar)
       .toBe("MONO_AGENT_TELEGRAM_BOT_TOKEN");
   });
+
+describe("Agent tool catalog entry", () => {
+  it("is a known built-in but never a safe default", () => {
+    expect(BUILTIN_TOOL_NAMES).toContain("Agent");
+    expect(isKnownToolName("Agent")).toBe(true);
+    // Deploying subagents is not a read-only capability.
+    expect(DEFAULT_SAFE_TOOLS as readonly string[]).not.toContain("Agent");
+  });
+});
 });

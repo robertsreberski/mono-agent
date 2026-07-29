@@ -957,7 +957,39 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
       break;
     case "object":
       schema.type = "object";
-      schema.additionalProperties = true;
+      if (field.jsonPath === "subagents") {
+        schema.additionalProperties = false;
+        schema.properties = {
+          enabled: { type: "boolean" },
+          maxConcurrent: { type: "integer", minimum: 1, maximum: 10 },
+          maxPerTurn: { type: "integer", minimum: 1, maximum: 200 },
+          timeoutMs: { type: "integer", minimum: 1_000, maximum: 3_600_000 },
+          maxTurns: { type: "integer", minimum: 1, maximum: 200 },
+          definitions: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["name", "description"],
+              properties: {
+                name: { type: "string", pattern: "^[a-z0-9][a-z0-9-]*$" },
+                description: { type: "string", minLength: 1 },
+                prompt: { type: "string", minLength: 1 },
+                promptPath: { type: "string", minLength: 1 },
+                model: { type: "string", minLength: 1 },
+                effort: { type: "string", enum: EFFORT_LEVELS },
+                allowedTools: { type: "array", items: { type: "string", minLength: 1 } },
+                disallowedTools: { type: "array", items: { type: "string", minLength: 1 } },
+                mcpServers: { type: "array", items: { type: "string", minLength: 1 } },
+                maxTurns: { type: "integer", minimum: 1, maximum: 200 },
+                timeoutMs: { type: "integer", minimum: 1_000, maximum: 3_600_000 },
+              },
+            },
+          },
+        };
+      } else {
+        schema.additionalProperties = true;
+      }
       break;
     case "string":
     default:
@@ -1101,6 +1133,9 @@ function inferType(id: string): ConfigReferenceType {
   if (id === "runtime.fallbacks") {
     return "array";
   }
+  if (id === "subagents") {
+    return "object";
+  }
   if (id === "providers.piNative.transport") {
     return "string";
   }
@@ -1162,6 +1197,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "runtime.fallbackModels": [],
     "runtime.fallbacks": [],
     "runtime.routeSafety": "uniform",
+    subagents: { enabled: false },
     "runtime.retry.primaryAttempts": 2,
     "runtime.retry.backoffMs": 1_000,
     "runtime.retry.maxBackoffMs": 15_000,
@@ -1261,6 +1297,16 @@ function exampleFor(id: string): SettingsJsonValue {
       { model: "pi:openai-codex:gpt-5.6-terra", effort: "high" },
     ],
     "runtime.routeSafety": "per-route-native",
+    subagents: {
+      enabled: true,
+      maxConcurrent: 5,
+      definitions: [{
+        name: "researcher",
+        description: "Reads code and docs to answer a factual question about the codebase. Read-only.",
+        prompt: "You are a codebase researcher. Answer with file:line citations. Never modify files.",
+        allowedTools: ["Read", "Glob", "Grep"],
+      }],
+    },
     "runtime.retry.primaryAttempts": 3,
     "runtime.retry.backoffMs": 2_000,
     "runtime.retry.maxBackoffMs": 30_000,
@@ -1361,6 +1407,9 @@ function descriptionFor(id: string): string {
   }
   if (id === "runtime.fallbackModels") {
     return "Legacy fallback list whose routes inherit runtime.effort. Prefer runtime.fallbacks for new configs.";
+  }
+  if (id === "subagents") {
+    return "Subagent profiles the Agent tool can deploy, plus its caps. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the \"*\" wildcard is rejected.";
   }
   if (id === "runtime.retry.primaryAttempts") {
     return "Total attempts on runtime.model including the first, before the chain advances. Retries fire only for transient provider failures (overloaded, rate-limited, timeout, network, 5xx); context overflow and bad credentials advance immediately. Set 1 to disable.";

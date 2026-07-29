@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   configuredRuntimeFallbackModels,
   configuredRuntimeModels,
+  runtimeUsesFallbackRouter,
   hasConfiguredRuntimeFallbacks,
 } from "../runtime-routes.js";
 
@@ -27,4 +28,33 @@ describe("configured runtime routes", () => {
     expect(configuredRuntimeFallbackModels({ fallbackModels: [legacy], fallbacks: [] })).toEqual([legacy]);
     expect(hasConfiguredRuntimeFallbacks({ fallbackModels: [], fallbacks: [] })).toBe(false);
   });
+
+describe("runtimeUsesFallbackRouter", () => {
+  const base = { model: { sdk: "pi", model: "m", reference: "pi:m" } };
+
+  it("is true when backups are configured", () => {
+    expect(runtimeUsesFallbackRouter({
+      ...base,
+      fallbacks: [{ model: { sdk: "claude", model: "c", reference: "claude:c" } }],
+    } as never)).toBe(true);
+  });
+
+  it("is true for a retry-only chain with no backups", () => {
+    // Regression guard: same-model retries build a single-entry chain, so the
+    // router is active and freezes the model. Keying per-trigger overrides off
+    // configured backups alone ran them on the chain primary instead.
+    expect(runtimeUsesFallbackRouter({
+      ...base,
+      retry: { primaryAttempts: 2, backoffMs: 1_000, maxBackoffMs: 15_000 },
+    } as never)).toBe(true);
+  });
+
+  it("is false only when nothing routes", () => {
+    expect(runtimeUsesFallbackRouter({
+      ...base,
+      retry: { primaryAttempts: 1, backoffMs: 1_000, maxBackoffMs: 15_000 },
+    } as never)).toBe(false);
+    expect(runtimeUsesFallbackRouter(base as never)).toBe(false);
+  });
+});
 });

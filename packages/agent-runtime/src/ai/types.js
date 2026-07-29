@@ -167,6 +167,7 @@
  * @property {"one-at-a-time"|"all"} [piToolParallelismMode] DEPRECATED. Compatibility alias mapped to piToolExecutionMode.
  * @property {Object} [settings] DEPRECATED. Legacy flat settings bag; consumed only as a per-group FALLBACK when the corresponding typed object (`toolLimits` / `compaction`) is absent. Consuming any key emits one `deprecated_settings_option` runtime_warning per run. Migrate via resolveRuntimePolicies (@mono-agent/runtime-adapter).
  * @property {Object} [nativeSubagents] Same-runtime teammate helpers exposed through native provider subagent surfaces.
+ * @property {RuntimeSubagentsOptions} [subagents] In-process `Agent` built-in: profiles, caps, and the nested-run callback.
  * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when
  *   failing over mid-chain; a host-level coordinator may relay it forward (see agent/transcript.js), not read by any
  *   bridge in this package today.
@@ -187,6 +188,42 @@
  * internal tool helpers; absent when a host drives a bridge directly without
  * createRuntime), and the per-run observerHub (onEvent is overridden to the
  * hub's emit). `systemPrompt` is passed positionally, not folded into this object.
+ */
+
+/**
+ * @typedef {Object} RuntimeSubagentDefinition
+ * One named subagent profile the `Agent` built-in can deploy.
+ * @property {string} name Model-visible identifier and the tool's `name` enum value.
+ * @property {string} description Model-visible: when to pick this profile.
+ * @property {string} systemPrompt Full system prompt for the child run.
+ * @property {RuntimeModelRef} [model] Absent inherits the parent's configured route.
+ * @property {string} [effort]
+ * @property {ReadonlyArray<string>} [allowedTools] Absent uses the safe read-only default set.
+ * @property {ReadonlyArray<string>} [disallowedTools]
+ * @property {Object<string, Object>} [mcpServers]
+ * @property {number} [maxTurns]
+ * @property {number} [timeoutMs]
+ */
+
+/**
+ * @callback RuntimeSubagentRun
+ * Owning-layer callback that actually executes one child turn. The kernel
+ * supplies a self-run fallback so `createRuntime` works without host wiring;
+ * agent-app replaces it so subagent runs get the configured fallback chain,
+ * same-model retries, and run recording.
+ * @param {Object} request
+ * @returns {Promise<RuntimeResult>}
+ */
+
+/**
+ * @typedef {Object} RuntimeSubagentsOptions
+ * @property {ReadonlyArray<RuntimeSubagentDefinition>} [definitions] Named profiles.
+ * @property {number} [maxConcurrent] In-flight subagents per parent turn. Default 5.
+ * @property {number} [maxPerTurn] Total Agent calls per parent turn. Default 20.
+ * @property {number} [maxTurns] Default per-subagent turn cap.
+ * @property {number} [timeoutMs] Default per-subagent wall clock.
+ * @property {RuntimeSubagentRun} [run] Nested-run callback; absent uses the kernel self-run.
+ * @property {number} [depth] Kernel-owned. Absent/0 is the parent; >=1 suppresses the `Agent` tool.
  */
 
 /**

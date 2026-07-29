@@ -194,6 +194,20 @@ describe("TurnPresenter", () => {
     expect(status()).not.toContain("answered by");
   });
 
+  it("gives each subagent its own tool panel instead of merging identical tools", async () => {
+    const { presenter, rendered } = setup();
+    // Two subagents running Read concurrently. The panel map is keyed flatly on
+    // the event id, so unnamespaced ids would collapse these into one panel.
+    await presenter.event({ type: "tool_call_started", id: "agent:c1:t1", name: "alpha▸Read" });
+    await presenter.event({ type: "tool_call_started", id: "agent:c2:t1", name: "beta▸Read" });
+    await presenter.event({ type: "tool_call_completed", id: "agent:c1:t1", name: "alpha▸Read", content: "a body" });
+    await presenter.event({ type: "tool_call_completed", id: "agent:c2:t1", name: "beta▸Read", content: "b body" });
+
+    const text = rendered();
+    expect(text).toContain("alpha▸Read");
+    expect(text).toContain("beta▸Read");
+  });
+
   it("no longer sets a 'waiting for <model>' ephemeral on request_started", async () => {
     const { presenter, status } = setup();
 

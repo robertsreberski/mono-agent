@@ -154,6 +154,26 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly isolateProactive?: boolean;
     };
   };
+  readonly subagents?: {
+    readonly enabled?: boolean;
+    readonly maxConcurrent?: number;
+    readonly maxPerTurn?: number;
+    readonly timeoutMs?: number;
+    readonly maxTurns?: number;
+    readonly definitions?: readonly {
+      readonly name?: string;
+      readonly description?: string;
+      readonly prompt?: string;
+      readonly promptPath?: string;
+      readonly model?: string;
+      readonly effort?: string;
+      readonly allowedTools?: readonly string[];
+      readonly disallowedTools?: readonly string[];
+      readonly mcpServers?: readonly string[];
+      readonly maxTurns?: number;
+      readonly timeoutMs?: number;
+    }[];
+  };
   readonly concurrency?: {
     readonly maxConcurrentRuns?: number;
     readonly maxPendingRuns?: number;

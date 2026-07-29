@@ -181,6 +181,7 @@ export {
   configuredRuntimeFallbackModels,
   configuredRuntimeModels,
   hasConfiguredRuntimeFallbacks,
+  runtimeUsesFallbackRouter,
 } from "./runtime-routes.js";
 export { badge, channelBadge, computeColorEnabled, healthBadge, isColorEnabled, keyValue, rule, style } from "./ui.js";
 export { COMPOSER_SKILL_NAME, installComposerSkill } from "./install-skill.js";

@@ -140,7 +140,44 @@ export function createRuntime(host = {}) {
   // THIS object so later runs of this instance observe the update.
   const toolContext = createToolContext({ ...toolRuntime, runtimeBrand });
 
-  return {
+  /** @type {*} */
+  let self;
+
+  /**
+   * Kernel fallback for `subagents.run`, so the `Agent` built-in works from a
+   * bare `createRuntime` with no host wiring. Hosts replace it to route child
+   * turns through their own runtime (fallback chain, retries, recording).
+   *
+   * Scope of the guarantee, precisely: this fallback rebuilds the child bag with
+   * stripped session/steering state, but a HOST-SUPPLIED `run` is installed
+   * verbatim and is a privileged seam — it is responsible for its own session
+   * isolation. Recursion is blocked independently of the callback: the `Agent`
+   * tool stamps `depth + 1` into every descriptor it hands out, and
+   * `getPiBuiltinTools` refuses to register the tool at depth >= 1, so a custom
+   * callback cannot produce a grandchild even if it ignores the rest.
+   * @param {*} request
+   */
+  const defaultSubagentRun = async (request) => self.run(request.systemPrompt, {
+    model: request.model,
+    // A child must never be less confined than its parent. The policy is a
+    // per-run option, not a host key, so without forwarding it the child would
+    // run with no sandbox at all — and its default tools include WebFetch and
+    // WebSearch, so even a read-only profile could bypass network policy.
+    ...(request.sandboxPolicy === undefined ? {} : { sandboxPolicy: request.sandboxPolicy }),
+    ...(request.sandboxEngine === undefined ? {} : { sandboxEngine: request.sandboxEngine }),
+    ...(request.executionMode === undefined ? {} : { executionMode: request.executionMode }),
+    ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+    messages: [{ role: "user", content: request.prompt }],
+    maxTurns: request.maxTurns,
+    allowedTools: request.definition?.allowedTools,
+    disallowedTools: request.definition?.disallowedTools,
+    mcpServers: request.definition?.mcpServers ?? {},
+    abortSignal: request.abortSignal,
+    onEvent: request.onEvent,
+    subagents: { depth: (request.depth ?? 1) },
+  });
+
+  self = {
     /**
      * @param {string} systemPrompt
      * @param {Partial<RuntimeRunOptions>} [options] Optional only so the
@@ -162,9 +199,16 @@ export function createRuntime(host = {}) {
       });
       const liveInput = instrumentLiveInputAppliedEvents(options.liveInput, hub.emit);
       const prompts = resolvePrompts(host.prompts, options.prompts);
+      // Default the nested-run callback so the Agent built-in is usable without
+      // host wiring; the depth field is left exactly as the caller set it, since
+      // defaultSubagentRun is what increments it for the child.
+      const subagents = options.subagents === undefined
+        ? undefined
+        : { ...options.subagents, run: options.subagents.run ?? defaultSubagentRun };
       const result = await bridge.execute(systemPrompt, {
         ...hostDefaults,
         ...options,
+        ...(subagents === undefined ? {} : { subagents }),
         // `...options` alone doesn't carry the `options.model` narrowing above
         // (spread reads the parameter's declared — Partial — type); re-assert
         // the already-validated model so the request satisfies RuntimeRequest.
@@ -204,4 +248,6 @@ export function createRuntime(host = {}) {
       return disposeAllProviderSessions();
     },
   };
+
+  return self;
 }

@@ -28,6 +28,7 @@ import { wrapToolsWithApprovalGate } from "../approval.js";
 import { isInsidePath } from "./shared/path-resolver.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { createAgentTool } from "./agent-tool.js";
 
 function textResult(text, details = {}) {
   return {
@@ -416,7 +417,7 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
 
 /**
  * @param {any} allowedTools
- * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, webController?: any, toolExecutionMode?: "sequential"|"safe-parallel", ctx?: any}} [options]
+ * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, webController?: any, toolExecutionMode?: "sequential"|"safe-parallel", subagents?: any, subagentContext?: any, ctx?: any}} [options]
  */
 export function getPiBuiltinTools(allowedTools, {
   disallowedTools = [],
@@ -438,6 +439,8 @@ export function getPiBuiltinTools(allowedTools, {
   approvalModel = null,
   nodeReplController = null,
   webController = null,
+  subagents = null,
+  subagentContext = null,
   toolExecutionMode = "safe-parallel",
   ctx = null,
 } = {}) {
@@ -531,6 +534,9 @@ export function getPiBuiltinTools(allowedTools, {
         toolContext,
       )
       : null,
+    // Built directly (not via createBuiltinTool) so a subagent answer starting
+    // with "Error:" is not reclassified as a tool failure, discarding its log.
+    Agent: createAgentTool(subagents, { onEvent, ...(subagentContext || {}) }),
     WebFetch: createBuiltinTool("WebFetch", "Web Fetch", "Fetch and extract one HTTP(S) URL locally. Static extraction is preferred; browser rendering is available only through the configured render policy.", objectSchema({
       url: { type: "string" },
       headers: { type: "object", additionalProperties: { type: "string" } },

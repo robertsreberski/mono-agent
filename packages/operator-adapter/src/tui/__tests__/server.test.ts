@@ -791,6 +791,35 @@ describe("startTuiAdapter", () => {
     expect(frames.at(-1)).toEqual({ kind: "finish", finalText: "done" });
   });
 
+  it("field-reduces an oversized subagent tool event instead of collapsing it to a marker", async () => {
+    // Subagent activity deliberately rides tool_call_* rather than a new event
+    // variant: only those four types are field-reducible, so a bespoke variant
+    // would degrade to an `oversized_event` marker exactly when it matters.
+    const huge = "x".repeat(MAX_FRAME_BYTES + 1024);
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async (_request, stream) => {
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "agent:call-1:t1",
+          name: "researcher▸Read",
+          content: huge,
+          metadata: { subagent: { id: "call-1", name: "researcher", callIndex: 1 }, synthetic: true },
+        });
+        return { text: "done" };
+      }),
+    });
+
+    const frames = await readFrames(await postTurn(running.baseUrl, { conversationId: "c", text: "hi" }));
+    const eventFrame = frames[0] as Extract<AgentStreamWireFrame, { kind: "event" }>;
+    const event = eventFrame.event as { type: string; id: string; name?: string; content: string };
+
+    expect(event.type).toBe("tool_call_completed");
+    expect(event.id).toBe("agent:call-1:t1");
+    expect(event.content.endsWith("… [truncated]")).toBe(true);
+    // The marker path would have replaced the whole event with runtime_telemetry.
+    expect(event.type).not.toBe("runtime_telemetry");
+  });
+
   it("rechecks the encoded byte cap after reducing multibyte event text", async () => {
     const huge = "é".repeat(MAX_FRAME_BYTES);
     const priorSinglePass = serializeAgentStreamFrame({
