@@ -152,11 +152,21 @@ new agent.
   "tools": {
     "allowedTools": ["*"],                 // omit or include "*" = all tools; ["Read","Bash"] = just those; [] = none (chat-only)
     "disallowedTools": ["Bash"],           // deny wins even under allow-all; the escape hatch to subtract one tool
-    "mcpConfigPath": "./mcp.json"          // stdio/sse/http servers; inlined for SDK runtimes
+    "mcpConfigPath": "./mcp.json",         // stdio/sse/http servers; inlined for SDK runtimes
+    "web": {
+      "search": {
+        "backend": "auto",                 // auto | searxng (strict) | keyless
+        "endpoint": "http://127.0.0.1:8088" // optional unauthenticated loopback HTTP SearXNG base URL
+      },
+      "fetch": {
+        "render": "never",                 // never disables browser capability; auto is static-first
+        "browserCommand": "agent-browser"  // direct executable name/path
+      }
+    }
   },
 
-  // NodeRepl shares state only inside one run and uses the same sandbox policy
-  // as Bash.
+  // Exec is direct argv; use Bash only for shell syntax. NodeRepl shares state
+  // only inside one run. All three use the same sandbox policy.
 
   // Human-in-the-loop bridge: structured blocking AskUser plus
   // run-scoped project-MCP progress. It auto-starts when either ask tool is

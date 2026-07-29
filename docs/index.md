@@ -15,7 +15,7 @@ New here? Read [Getting Started → Quickstart](/getting-started/quickstart/) to
 
 - **Any backend, one model string** — `runtime.model` defaults to `codex:gpt-5.6-terra` and can select claude (sdk/cli), codex (cli), pi (sdk, 15+ providers), or opencode (cli); e.g. `codex:gpt-5.6-terra`, `codex:gpt-5.6-sol`, `pi:openai-codex:gpt-5.6-sol`, and `pi:opencode-go:kimi-k2.6`.
 - **Many channels, one config** — external transports are opt-in, the loopback TUI operator endpoint is opt-out, and every active surface uses the same configured runtime, tools, memory, and context through its own responder/harness.
-- **Batteries included** — managed Read/Write/Edit/Glob/Grep/Bash/NodeRepl/WebFetch/WebSearch tools, a tool policy, MCP servers, a native sandbox, tiered memory, and observability.
+- **Batteries included** — managed Read/Write/Edit/Glob/Grep/Exec/Bash/NodeRepl/WebFetch/WebSearch tools, a tool policy, MCP servers, a native sandbox, tiered memory, and observability.
 
 ```json
 {

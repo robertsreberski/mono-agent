@@ -15,6 +15,8 @@ import type {
 
 export type MemoryWriteMode = (typeof MEMORY_WRITE_MODES)[number];
 export type MemoryMode = (typeof MEMORY_MODES)[number];
+export type WebSearchBackend = "auto" | "searxng" | "keyless";
+export type WebFetchRenderMode = "never" | "auto";
 /**
  * Which memory engine backs the store. `"bujo"` (default) is the homegrown
  * SQLite/embeddings engine selected by {@link MemoryMode}. External backends
@@ -297,6 +299,18 @@ export interface MonoAgentConfig {
     readonly mcpCallTimeoutMs?: number;
     /** Hard wall clock per MCP tool call that progress cannot extend. Runtime default: 45 min. */
     readonly mcpCallMaxTotalTimeoutMs?: number;
+    /** Local-first public web research tools. */
+    readonly web?: {
+      readonly search: {
+        readonly backend: WebSearchBackend;
+        /** SearXNG must be unauthenticated loopback HTTP. */
+        readonly endpoint?: string;
+      };
+      readonly fetch: {
+        readonly render: WebFetchRenderMode;
+        readonly browserCommand: string;
+      };
+    };
   };
   readonly sandbox?: SandboxPolicy;
   readonly artifacts: {

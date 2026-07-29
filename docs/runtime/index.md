@@ -51,7 +51,7 @@ Guided init searches every bundled model for Pi Anthropic, GitHub Copilot, OpenA
 - [Fallback chains](/runtime/fallback/) — canonical `runtime.fallbacks`, exact route effort, mixed-provider safety contracts, legacy compatibility, and visible failover history.
 - [Local providers](/runtime/local-providers/) — wire Ollama, LM Studio, or any OpenAI-compatible endpoint via `providers.local[]` for `pi:<provider>:<model>` references, plus pi-native transport tuning and Pi credential resolution.
 - [Sessions & concurrency](/runtime/sessions-concurrency/) — continuous provider sessions with idle eviction (`runtime.session`) and per-channel admission/execution bounds (`concurrency.maxConcurrentRuns`, `concurrency.maxPendingRuns`).
-- [Built-in tools & auto-guards](/runtime/tools-and-guards/) — the managed Read/Write/Edit/Glob/Grep/Bash/NodeRepl/WebFetch/WebSearch tools and the automatic guards (tool-output bloat truncation, WebFetch retry, cost tracking, context compaction).
+- [Built-in tools & auto-guards](/runtime/tools-and-guards/) — the managed Read/Write/Edit/Glob/Grep/Exec/Bash/NodeRepl/WebFetch/WebSearch tools and the automatic guards (loss-aware process execution, tool-output truncation, web retry, cost tracking, context compaction).
 
 ## Local providers in one block
 
@@ -94,7 +94,7 @@ By default a conversation keeps a continuous provider session that is evicted af
 
 ## Built-in tools & auto-guards
 
-Mono-agent's managed tool surface includes Read/Write/Edit/Glob/Grep/Bash/NodeRepl/WebFetch/WebSearch, gated by [tool policy](/tools/policy/) (`tools.allowedTools` / `tools.disallowedTools`). Provider-owned routes enforce the representable native surface described in [Tool policy](/tools/policy/). Auto-guards run with no configuration: 256 KB tool-output truncation with best-effort separate artifact persistence to `artifacts.dir`, WebFetch in-tool retry on transient network errors, per-run cost/usage tracking, and bridge-driven context compaction. See [Built-in tools & auto-guards](/runtime/tools-and-guards/).
+Mono-agent's managed tool surface includes Read/Write/Edit/Glob/Grep/Exec/Bash/NodeRepl/WebFetch/WebSearch, gated by [tool policy](/tools/policy/) (`tools.allowedTools` / `tools.disallowedTools`). Provider-owned routes enforce the representable native surface described in [Tool policy](/tools/policy/). Auto-guards run with no configuration: loss-aware process termination/output capture, 256 KB model-facing tool-output truncation with best-effort separate artifact persistence to `artifacts.dir`, WebFetch retry on transient failures, per-run cost/usage tracking, and bridge-driven context compaction. See [Built-in tools & auto-guards](/runtime/tools-and-guards/) and [Local-first web research](/tools/web-research/).
 
 :::tip
 Capabilities such as structured output (`runtimeOptions.outputSchema`), live in-flight input, human-in-the-loop approval gates, and tool parallelism are **code-only** — they are set through harness/runtime options, not config. See [Programmatic API](/programmatic/) and [Approval & structured output](/programmatic/approval-and-structured-output/).

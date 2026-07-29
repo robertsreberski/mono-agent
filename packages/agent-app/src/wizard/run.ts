@@ -129,7 +129,7 @@ interface DraftAnswers {
   moduleInputs: Record<string, Record<string, string>>;
 }
 
-const SANDBOXABLE_TOOLS = new Set(["Bash", "Write", "Edit", "NodeRepl"]);
+const SANDBOXABLE_TOOLS = new Set(["Bash", "Exec", "Write", "Edit", "NodeRepl"]);
 const MANAGED_MEMORY_MODULE_IDS = new Set(["memory:journal", "memory:bujo"]);
 const MANUAL_EMBEDDING_MODEL = "__manual_embedding_model__";
 

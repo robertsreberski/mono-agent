@@ -7,14 +7,14 @@ import { passthroughSandbox } from "../sandbox-seam.js";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import {
-  bashToolImpl,
+  bashToolRun,
   editToolImpl,
+  execToolRun,
   globToolImpl,
   grepToolImpl,
   normalizeBashTimeoutMs,
+  normalizeProcessTimeoutMs,
   readToolImpl,
-  webFetchToolImpl,
-  webSearchToolImpl,
   writeToolImpl,
 } from "./index.js";
 import {
@@ -114,7 +114,7 @@ function withAbsolutePaths(name, params, cwd, ctx) {
   const next = { ...(params || {}) };
   if (["Read", "Write", "Edit"].includes(name)) next.file_path = absolutizePath(next.file_path, cwd);
   if (["Glob", "Grep"].includes(name)) next.path = absolutizePath(next.path, cwd);
-  if (["Read", "Write", "Edit", "Glob", "Grep", "Bash"].includes(name)) {
+  if (["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec"].includes(name)) {
     next.workdir = normalizeWorkdir(next.workdir, cwd, ctx);
   }
   return next;
@@ -198,9 +198,14 @@ function withToolLimits(name, params, limits = {}) {
     next.output_mode = next.output_mode || "files_with_matches";
     delete next.max_matches;
   }
-  if (name === "Bash") {
+  if (name === "Bash" || name === "Exec") {
+    const timeoutLimit = limits.bashTimeoutMs || DEFAULT_BASH_TIMEOUT_MS;
     next.max_output_chars = limitedNumber(next.max_output_chars, limits.bashOutputLimitChars || limits.toolTextLimitChars || 20000);
-    next.timeout = normalizeBashTimeoutMs(next.timeout, limits.bashTimeoutMs || DEFAULT_BASH_TIMEOUT_MS);
+    if (name === "Bash" && next.timeout_ms === undefined && next.timeout !== undefined) {
+      next.timeout = normalizeBashTimeoutMs(next.timeout, timeoutLimit);
+    } else {
+      next.timeout_ms = normalizeProcessTimeoutMs(next.timeout_ms, timeoutLimit);
+    }
   }
   return next;
 }
@@ -238,21 +243,41 @@ function isReadOnlyShellCommand(command) {
   ].some((pattern) => pattern.test(text));
 }
 
+const ALWAYS_SEQUENTIAL_BUILTINS = new Set(["Write", "Edit", "Bash", "Exec", "NodeRepl"]);
+const SENSITIVE_RESULT_PARAMS = new Set(["Bash", "Exec", "WebFetch", "WebSearch"]);
+
+function isStructuredToolRun(value) {
+  return Boolean(value)
+    && typeof value === "object"
+    && typeof value.text === "string"
+    && value.outcome
+    && typeof value.outcome === "object";
+}
+
 /**
  * @param {any} name
  * @param {any} label
  * @param {any} description
  * @param {any} parameters
  * @param {any} execute
- * @param {{cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ * @param {{cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, forceSequential?: boolean}} [options]
  */
-function createBuiltinTool(name, label, description, parameters, execute, { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine, ctx } = {}) {
+function createBuiltinTool(name, label, description, parameters, execute, {
+  cwd,
+  onEvent,
+  toolLimits,
+  toolPolicy,
+  sandboxPolicy,
+  sandboxEngine,
+  ctx,
+  forceSequential = false,
+} = {}) {
   return {
     name,
     label,
     description,
     parameters,
-    executionMode: name === "Write" || name === "Edit" || name === "Bash" || name === "NodeRepl" ? "sequential" : undefined,
+    executionMode: forceSequential || ALWAYS_SEQUENTIAL_BUILTINS.has(name) ? "sequential" : undefined,
     async execute(toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("tool execution aborted");
       const normalized = normalizePiBuiltinToolParams(name, params, { cwd, toolLimits, ctx });
@@ -268,9 +293,21 @@ function createBuiltinTool(name, label, description, parameters, execute, { cwd,
       if (isImageToolResult(raw)) {
         return imageResult(raw.data, raw.mimeType, { tool: name, params: normalized });
       }
-      const text = toolText(raw);
-      if (isErrorText(text)) throw new Error(text);
-      const details = { tool: name, params: normalized };
+      const structured = isStructuredToolRun(raw) ? raw : null;
+      const text = structured ? structured.text : toolText(raw);
+      if (!structured && isErrorText(text)) throw new Error(text);
+      if (structured?.outcome?.legacyTimeoutUsed) {
+        onEvent?.({
+          type: "runtime_warning",
+          warning_kind: "deprecated_bash_timeout",
+          message: "Bash.timeout is deprecated; use timeout_ms for exact millisecond semantics.",
+        });
+      }
+      const details = /** @type {any} */ ({
+        tool: name,
+        ...(SENSITIVE_RESULT_PARAMS.has(name) ? {} : { params: normalized }),
+        ...(structured ? { outcome: structured.outcome } : {}),
+      });
       if (shouldTrackWrite) {
         details.file_change = writeFileChangeDetails(normalized.file_path, beforeWrite, readFileChangeSnapshot(normalized.file_path));
       }
@@ -379,7 +416,7 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
 
 /**
  * @param {any} allowedTools
- * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, ctx?: any}} [options]
+ * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, webController?: any, toolExecutionMode?: "sequential"|"safe-parallel", ctx?: any}} [options]
  */
 export function getPiBuiltinTools(allowedTools, {
   disallowedTools = [],
@@ -400,17 +437,33 @@ export function getPiBuiltinTools(allowedTools, {
   approvalManager = null,
   approvalModel = null,
   nodeReplController = null,
+  webController = null,
+  toolExecutionMode = "safe-parallel",
   ctx = null,
 } = {}) {
   const textLimitSchema = integerSchema();
   const bashLimitSchema = integerSchema();
-  const bashTimeoutSchema = {
+  const legacyBashTimeoutSchema = {
     type: "integer",
-    description: "Timeout in milliseconds. Use 30000 for 30 seconds; small values like 30 are treated as seconds for compatibility.",
+    description: "Deprecated compatibility timeout. Values up to 600 mean seconds and larger values mean milliseconds; use timeout_ms instead.",
+  };
+  const processTimeoutSchema = {
+    type: "integer",
+    minimum: 1,
+    description: "Exact timeout in milliseconds.",
   };
   // Per-tool closure config (cwd/event sink/limits/policy) plus the per-instance
   // ToolContext `ctx` that the tool impls and shared helpers read from.
-  const toolContext = { cwd, onEvent, toolLimits, toolPolicy, sandboxPolicy, sandboxEngine, ctx };
+  const toolContext = {
+    cwd,
+    onEvent,
+    toolLimits,
+    toolPolicy,
+    sandboxPolicy,
+    sandboxEngine,
+    forceSequential: toolExecutionMode === "sequential",
+    ctx,
+  };
   const all = {
     Read: createBuiltinTool("Read", "Read", "Read a local file. Text files return line-numbered content; image files (PNG, JPEG, GIF, WebP, BMP) are returned as a viewable image you can see directly — use this to look at image attachments.", objectSchema({
       file_path: { type: "string" },
@@ -451,32 +504,61 @@ export function getPiBuiltinTools(allowedTools, {
       max_matches: { type: "integer" },
       max_output_chars: textLimitSchema,
     }, ["pattern"]), grepToolImpl, toolContext),
-    Bash: createBuiltinTool("Bash", "Bash", "Execute a shell command in the workspace.", objectSchema({
+    Bash: createBuiltinTool("Bash", "Bash", "Execute a shell command for pipelines, redirection, conditionals, or other shell syntax. Prefer Exec for one executable with an argv array. This is macOS: do not assume GNU-only commands or flags.", objectSchema({
       command: { type: "string" },
       workdir: { type: "string" },
       description: { type: "string" },
-      timeout: bashTimeoutSchema,
+      timeout_ms: processTimeoutSchema,
+      timeout: legacyBashTimeoutSchema,
       max_output_chars: bashLimitSchema,
-    }, ["command"]), bashToolImpl, toolContext),
+    }, ["command"]), bashToolRun, toolContext),
+    Exec: createBuiltinTool("Exec", "Exec", "Execute one program directly from an argv array without shell parsing. Prefer this for ordinary commands; use Bash only when shell syntax is required.", objectSchema({
+      executable: { type: "string", minLength: 1 },
+      args: { type: "array", items: { type: "string" }, maxItems: 256 },
+      workdir: { type: "string" },
+      timeout_ms: processTimeoutSchema,
+      max_output_chars: bashLimitSchema,
+    }, ["executable"]), execToolRun, toolContext),
     NodeRepl: nodeReplController
       ? createBuiltinTool(
         "NodeRepl",
         "Node REPL",
         "Evaluate JavaScript in a run-scoped Node.js REPL. Variables persist across NodeRepl calls in this run.",
         objectSchema({ code: { type: "string", minLength: 1 } }, ["code"]),
-        (params, { signal }) => nodeReplController.execute(params, { signal }),
+        (params, { signal }) => typeof nodeReplController.executeDetailed === "function"
+          ? nodeReplController.executeDetailed(params, { signal })
+          : nodeReplController.execute(params, { signal }),
         toolContext,
       )
       : null,
-    WebFetch: createBuiltinTool("WebFetch", "Web Fetch", "Fetch a URL and return text.", objectSchema({
+    WebFetch: createBuiltinTool("WebFetch", "Web Fetch", "Fetch and extract one HTTP(S) URL locally. Static extraction is preferred; browser rendering is available only through the configured render policy.", objectSchema({
       url: { type: "string" },
       headers: { type: "object", additionalProperties: { type: "string" } },
       max_output_chars: textLimitSchema,
-    }, ["url"]), webFetchToolImpl, toolContext),
-    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Search the web and return result summaries.", objectSchema({
+      format: { type: "string", enum: ["markdown", "text", "raw"] },
+      render: { type: "string", enum: ["never", "auto", "always"] },
+    }, ["url"]), webController
+      ? (params, execution) => webController.fetch(params, execution)
+      : async () => ({
+        text: "Error: WebFetch controller is unavailable.",
+        outcome: { status: "error", code: "controller_unavailable", retryable: false, attempts: 0 },
+        error: true,
+      }), toolContext),
+    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Search the public web with an operator-owned SearXNG endpoint when available, otherwise a keyless fallback, and return deduplicated ranked results.", objectSchema({
       query: { type: "string" },
       limit: { type: "integer" },
-    }, ["query"]), webSearchToolImpl, toolContext),
+      alternate_queries: { type: "array", items: { type: "string" }, maxItems: 3 },
+      domains: { type: "array", items: { type: "string" } },
+      exclude_domains: { type: "array", items: { type: "string" } },
+      language: { type: "string" },
+      time_range: { type: "string", enum: ["day", "month", "year"] },
+    }, ["query"]), webController
+      ? (params, execution) => webController.search(params, execution)
+      : async () => ({
+        text: "Error: WebSearch controller is unavailable.",
+        outcome: { status: "error", code: "controller_unavailable", retryable: false, attempts: 0 },
+        error: true,
+      }), toolContext),
   };
   // allowedTools honors the `"*"` allow-all sentinel (and undefined) as "every
   // built-in"; disallowedTools is the deny-wins filter applied to the final set.
@@ -489,6 +571,9 @@ export function getPiBuiltinTools(allowedTools, {
   // Deny-check the canonical PascalCase name AND the legacy snake_case alias so
   // an old denylist keeps disabling the tool after the rename.
   if (skillTool && !denied.has("ReadSkill") && !denied.has("read_skill" /* legacy alias */)) tools.push(skillTool);
+  if (toolExecutionMode === "sequential") {
+    for (const tool of tools) tool.executionMode = "sequential";
+  }
   const gated = approvalManager
     ? wrapToolsWithApprovalGate(tools, approvalManager, { model: approvalModel })
     : tools;

@@ -50,6 +50,10 @@ console.log(result.text);
 Use this package when a TypeScript host needs the mono-agent runtime contract.
 Use `@mono-agent/agent-runtime` directly only when the host deliberately owns
 the lower-level sandbox injection and provider-kernel integration.
+Set `RuntimeRunOptions.piToolExecutionMode` to `"sequential"` when every Pi
+tool must serialize, or leave the default `"safe-parallel"` mode to overlap
+only independent read-only built-ins. Stateful, mutating, and MCP tools remain
+sequential in the default mode.
 
 ## Architecture
 

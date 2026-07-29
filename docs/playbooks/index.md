@@ -35,7 +35,7 @@ Choose along three axes, in order: **channel** (how messages reach the agent), t
 | Plain HTTP (sync + async jobs) | [Webhook Automation](/playbooks/webhook-automation-sync-async/) |
 | Another agent over A2A | [A2A Provider + Consumer](/playbooks/a2a-provider-and-consumer/) |
 | A scheduled prompt (no inbound channel) | [Cron Digest](/playbooks/cron-digest-proactive-notify/) |
-| The local terminal TUI only | [Local-Only Ollama Agent](/playbooks/local-only-ollama-agent/) · [Local-Only LM Studio Agent](/playbooks/local-only-lmstudio-agent/) · [Phoenix-Observed Agent](/playbooks/phoenix-observed-agent/) |
+| The local terminal TUI only | [Local-Only Ollama Agent](/playbooks/local-only-ollama-agent/) · [Local-Only LM Studio Agent](/playbooks/local-only-lmstudio-agent/) · [Local-first Web Research](/playbooks/local-web-research/) · [Phoenix-Observed Agent](/playbooks/phoenix-observed-agent/) |
 
 See [Channels](/channels/) for the full per-channel reference.
 
@@ -74,6 +74,7 @@ Memory tiers, `writeMode`, embeddings, and consolidation are covered in [Memory]
 | [A2A Provider + Consumer Pair](/playbooks/a2a-provider-and-consumer/) | Platform integrator connecting two agents over A2A | Publish agent A as an A2A provider (Agent Card discovery, bearer) and configure agent B to discover and call it. |
 | [Multi-Agent Orchestration (AskCollaborator)](/playbooks/multi-agent-orchestration/) | Workflow designer composing specialist agents | One orchestrator delegates subtasks to named collaborator responders via the loopback `AskCollaborator` MCP tool. |
 | [Sandboxed Code Agent (Loopback Only, Deny .env)](/playbooks/sandboxed-code-agent/) | Security team deploying an internal code assistant | Agent that reads repos and runs Bash inside the native sandbox with loopback-only network access and protected secrets, recalling local context. |
+| [Local-first Web Research Agent](/playbooks/local-web-research/) | Researcher wanting operator-owned search infrastructure and bounded public-page extraction | Pi agent using loopback SearXNG, deterministic keyless fallback policy, local extraction, and optional isolated browser rendering. |
 | [Phoenix-Observed Agent with TUI](/playbooks/phoenix-observed-agent/) | Agent builder evaluating runs in a tracing dashboard | Run an agent with the TUI, attempt a best-effort terminal-batched Phoenix export, and retain a bounded local JSONL snapshot after terminal persistence; a pre-terminal crash can omit the Phoenix batch and terminal event snapshot. |
 | [Backfill Historical Runs to Phoenix](/playbooks/backfill-historical-runs/) | Operations engineer onboarding observability after the fact | Retroactively export already-recorded JSONL run artifacts to Phoenix with original timestamps, idempotently. |
 | [Multi-Model Fallback Chain with Transcript Resume](/playbooks/multi-model-fallback-chain/) | Reliability-minded builder who can't afford a single-provider outage | Primary cloud model with ordered backups the failover router tries on retryable failures, resuming from the transcript tail. |

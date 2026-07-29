@@ -17,6 +17,7 @@ export const BUILTIN_TOOL_NAMES = [
   "Glob",
   "Grep",
   "Bash",
+  "Exec",
   "NodeRepl",
   "WebFetch",
   "WebSearch",

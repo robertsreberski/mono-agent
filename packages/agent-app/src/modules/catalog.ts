@@ -473,7 +473,7 @@ const sandbox: CapabilityModule = {
       fallback: "fail-closed",
     },
   }),
-  recommendedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+  recommendedTools: ["Read", "Write", "Edit", "Glob", "Grep", "Exec", "Bash"],
   validateExpectations: [{ sectionId: "sandbox", mustBe: "ok", note: SANDBOX_FAIL_CLOSED_ENGINE_NOTE }],
 };
 
