@@ -68,6 +68,9 @@ export const CONFIG_ENV_KEYS = {
   "runtime.model": "MONO_AGENT_MODEL",
   "runtime.fallbackModels": "MONO_AGENT_FALLBACK_MODELS",
   "runtime.fallbacks": "MONO_AGENT_FALLBACKS_JSON",
+  "runtime.retry.primaryAttempts": "MONO_AGENT_RETRY_PRIMARY_ATTEMPTS",
+  "runtime.retry.backoffMs": "MONO_AGENT_RETRY_BACKOFF_MS",
+  "runtime.retry.maxBackoffMs": "MONO_AGENT_RETRY_MAX_BACKOFF_MS",
   "runtime.routeSafety": "MONO_AGENT_ROUTE_SAFETY",
   "runtime.executionMode": "MONO_AGENT_EXECUTION_MODE",
   "runtime.effort": "MONO_AGENT_EFFORT",
@@ -278,7 +281,10 @@ function formatFallbacks(
     return PLACEHOLDER;
   }
   return fallbacks
-    .map((entry) => `${formatModelReference(entry.model)} (${entry.effort ?? "provider default"})`)
+    .map((entry) => {
+      const attempts = entry.attempts !== undefined && entry.attempts > 1 ? ` x${entry.attempts}` : "";
+      return `${formatModelReference(entry.model)} (${entry.effort ?? "provider default"})${attempts}`;
+    })
     .join(", ");
 }
 
@@ -335,6 +341,24 @@ function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
         value: formatFallbacks(runtime.fallbacks),
         jsonPresent: json.runtime?.fallbacks !== undefined
           && !legacyFallbackEnvPresent(env),
+      }),
+      toField(env, {
+        id: "runtime.retry.primaryAttempts",
+        label: "Primary attempts",
+        value: String(runtime.retry?.primaryAttempts ?? 2),
+        jsonPresent: json.runtime?.retry?.primaryAttempts !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.retry.backoffMs",
+        label: "Retry backoff (ms)",
+        value: String(runtime.retry?.backoffMs ?? 1_000),
+        jsonPresent: json.runtime?.retry?.backoffMs !== undefined,
+      }),
+      toField(env, {
+        id: "runtime.retry.maxBackoffMs",
+        label: "Retry backoff cap (ms)",
+        value: String(runtime.retry?.maxBackoffMs ?? 15_000),
+        jsonPresent: json.runtime?.retry?.maxBackoffMs !== undefined,
       }),
       toField(env, {
         id: "runtime.routeSafety",

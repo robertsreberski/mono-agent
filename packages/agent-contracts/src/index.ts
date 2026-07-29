@@ -319,11 +319,16 @@ export type AgentStreamEvent =
         | "request_started"
         | "request_completed"
         | "failover_started"
-        | "failover_completed";
+        | "failover_completed"
+        /** A same-model retry is about to run after a transient provider failure. */
+        | "retry_started";
       readonly model?: string;
       readonly from?: string;
       readonly to?: string;
+      /** Index of the route in the fallback chain. Stable across same-model retries. */
       readonly attemptIndex?: number;
+      /** Which retry of `attemptIndex` this is: 1 for the first retry, 2 for the second. */
+      readonly retryIndex?: number;
       readonly durationMs?: number;
       readonly cancelled?: boolean;
       readonly metadata?: AgentResponseMetadata;

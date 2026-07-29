@@ -820,8 +820,10 @@ import { createRouterRuntime } from "@mono-agent/agent-runtime";
 const router = createRouterRuntime({
   host: { /* same shape as createRuntime */ },
   routeSafety: "per-route-native",
+  // Backoff shape for same-model retries; per-route counts live on `attempts`.
+  retry: { backoffMs: 1000, maxBackoffMs: 15000 },
   chain: [
-    { model: { sdk: "claude", model: "claude-sonnet-5" }, effort: "high" },
+    { model: { sdk: "claude", model: "claude-sonnet-5" }, effort: "high", attempts: 2 },
     { model: { sdk: "codex", model: "gpt-5.6-sol" }, effort: "xhigh" },
     { model: { sdk: "pi", provider: "ollama", model: "gemma4:31b" }, effort: null },
   ],
@@ -834,8 +836,11 @@ console.log(result.failoverHistory, result.routeSafetyHistory);
 Behaviour:
 
 - Successful run on entry N → returns the result with `failoverHistory` set to attempts 0..N-1.
-- Retryable provider failure → emits `provider_failover_started`, builds a transcript snapshot, and retries on the next entry.
-- Context-window failure after bridge compaction recovery → preserves `failureKind: "context_limit"` in `failoverHistory` and tries the next entry; quota/output/max-turn `usage_limit` remains terminal.
+- Retryable provider failure → retries the SAME entry while it has `attempts` left (emitting `provider_retry_started` after a doubling backoff), then emits `provider_failover_started`, builds a transcript snapshot, and advances to the next entry. `attempts` defaults to `1` per entry, so the kernel is single-shot unless a host opts in — `@mono-agent/config` supplies the product default of 2 on the primary.
+- Same-model retries fire only for transient subkinds (`overloaded`, `rate_limited`, `timeout`, `network`, `server_error`, `retryable_request`, terminated streams). A retry drops the route's provider session, since the failed attempt already appended to it, and appends its own `failoverHistory` entry carrying `retryIndex`.
+- A retry is *not* a failover: `provider_route_safety` and `provider_failover_started` are emitted once per entry, and `provider_failover_completed` only fires when a genuinely different model answered.
+- This is a whole-logical-turn retry sitting strictly outside the provider bridges' own transport retries. On a `pi` route, `attempts: 2` combined with pi's default `maxRetries: 2` means up to six provider stream starts.
+- Context-window failure after bridge compaction recovery → never retries the same entry (a second identical request against the same window is a guaranteed second failure); preserves `failureKind: "context_limit"` in `failoverHistory` and tries the next entry; quota/output/max-turn `usage_limit` remains terminal.
 - Provider auth failure → retries the next chain entry and preserves `failureKind: "provider_auth"` in `failoverHistory` for the failed attempt.
 - Malformed request/config/billing-type non-retryable failure → returns immediately with `failoverHistory` containing the one attempt.
 - Cancellation → returns immediately.
@@ -851,7 +856,11 @@ Behaviour:
   inputs, while request-scoped overrides remain on that exact run. A runtime
   that cannot accept this projection fails closed as `safety_unavailable`.
 - Attempt-resolver failures are sanitized to `safety_unavailable`; resolver
-  credentials/options never enter result telemetry.
+  credentials/options never enter result telemetry, and they advance to the next
+  entry rather than consuming the route's remaining `attempts`.
+- `resolveAttempt` runs once per attempt — including every same-model retry — and
+  receives `{ attemptIndex, retryIndex }`, where `attemptIndex` stays the chain
+  index. Its `cleanup` runs after each attempt.
 
 Chain entries can require backend capabilities via `requires: { structured_output: true, supports_mcp: true, ... }`; entries that don't satisfy the requirements are skipped (logged in `failoverHistory` as `failureKind: "skipped_capability_mismatch"`).
 

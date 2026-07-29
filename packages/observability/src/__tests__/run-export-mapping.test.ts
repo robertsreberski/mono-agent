@@ -484,6 +484,33 @@ describe("normalizeFailoverHistory", () => {
     ]);
   });
 
+  it("preserves a same-model retryIndex and stays idempotent over it", () => {
+    const raw = [
+      { model: { reference: "pi:x:y" }, failureKind: "provider_unavailable", retryableSubkind: "overloaded" },
+      { model: { reference: "pi:x:y" }, failureKind: "provider_unavailable", retryableSubkind: "timeout", retryIndex: 1 },
+    ];
+    const normalized = normalizeFailoverHistory(raw);
+    expect(normalized).toEqual([
+      { model: "pi:x:y", failureKind: "provider_unavailable", subkind: "overloaded" },
+      { model: "pi:x:y", failureKind: "provider_unavailable", subkind: "timeout", retryIndex: 1 },
+    ]);
+    expect(normalizeFailoverHistory(normalized)).toEqual(normalized);
+  });
+
+  it("drops a non-positive or non-integer retryIndex so old artifacts read as first tries", () => {
+    expect(normalizeFailoverHistory([
+      { model: "pi:x:y", subkind: "timeout", retryIndex: 0 },
+      { model: "pi:x:y", subkind: "timeout", retryIndex: -1 },
+      { model: "pi:x:y", subkind: "timeout", retryIndex: 1.5 },
+      { model: "pi:x:y", subkind: "timeout", retryIndex: "2" },
+    ])).toEqual([
+      { model: "pi:x:y", subkind: "timeout" },
+      { model: "pi:x:y", subkind: "timeout" },
+      { model: "pi:x:y", subkind: "timeout" },
+      { model: "pi:x:y", subkind: "timeout" },
+    ]);
+  });
+
   it("returns undefined for non-arrays, empty arrays, and entries with no usable fields", () => {
     expect(normalizeFailoverHistory(undefined)).toBeUndefined();
     expect(normalizeFailoverHistory([])).toBeUndefined();
@@ -529,6 +556,14 @@ describe("composeFailureDetail", () => {
     expect(detail).toBe(
       "provider_unavailable_exhausted: pi:openai-codex:gpt-5.5 → timeout, pi:opencode-go:kimi-k2.6 → server_error (req abc123); last error: 503 Service Unavailable",
     );
+  });
+
+  it("marks retried routes so a repeated model does not read like a duplicate entry", () => {
+    expect(renderFailoverHistory([
+      { model: "pi:x:y", subkind: "overloaded" },
+      { model: "pi:x:y", subkind: "timeout", retryIndex: 1 },
+      { model: "claude:sonnet", subkind: "server_error" },
+    ])).toBe("pi:x:y → overloaded, pi:x:y → timeout (retry 1), claude:sonnet → server_error");
   });
 
   it("caps and single-lines a long error message", () => {

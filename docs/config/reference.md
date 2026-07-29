@@ -117,6 +117,9 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `runtime.maxTurns` | `integer` | `MONO_AGENT_MAX_TURNS` | unset | `1` | Configures maxTurns for the runtime section. |
 | `runtime.model` | `string` | `MONO_AGENT_MODEL` | required | `codex:gpt-5.6-terra` | Configures model for the runtime section. |
 | `runtime.permissionMode` | `string` | `MONO_AGENT_PERMISSION_MODE` | unset | `default` | Configures permissionMode for the runtime section. |
+| `runtime.retry.backoffMs` | `integer` | `MONO_AGENT_RETRY_BACKOFF_MS` | 1000 | `2000` | Delay before the first same-model retry. Doubles on each further retry, capped by runtime.retry.maxBackoffMs. |
+| `runtime.retry.maxBackoffMs` | `integer` | `MONO_AGENT_RETRY_MAX_BACKOFF_MS` | 15000 | `30000` | Ceiling for the doubling same-model retry delay. |
+| `runtime.retry.primaryAttempts` | `integer` | `MONO_AGENT_RETRY_PRIMARY_ATTEMPTS` | 2 | `3` | Total attempts on runtime.model including the first, before the chain advances. Retries fire only for transient provider failures (overloaded, rate-limited, timeout, network, 5xx); context overflow and bad credentials advance immediately. Set 1 to disable. |
 | `runtime.routeSafety` | `string` | `MONO_AGENT_ROUTE_SAFETY` | uniform | `per-route-native` | Uniform preserves one shared safety contract; per-route-native uses and reports each provider's explicit contract. |
 | `runtime.session.idleTimeoutMs` | `integer` | `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS` | 1800000 | `1800000` | Configures session.idleTimeoutMs for the runtime section. |
 | `runtime.session.isolateProactive` | `boolean` | `MONO_AGENT_SESSION_ISOLATE_PROACTIVE` | false | `true` | Configures session.isolateProactive for the runtime section. |

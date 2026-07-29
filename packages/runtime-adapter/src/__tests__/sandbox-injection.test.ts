@@ -174,6 +174,7 @@ describe("createMonoRuntime sandbox injection", () => {
       model,
       executionMode: "sdk",
       attemptIndex: 0,
+      retryIndex: 0,
       routeSafety: "uniform",
     });
     expect(protectedResolution?.cleanup).toBe(resolution.cleanup);
@@ -190,5 +191,27 @@ describe("createMonoRuntime sandbox injection", () => {
     expect(callerOptions.sandbox).toBe(hostSandbox);
     expect(request.sandbox).toBe(requestSandbox);
     expect(pluginOptions.sandbox).toBe(pluginSandbox);
+  });
+
+  it("forwards per-route attempts and the retry policy into the kernel router", () => {
+    // Closes the config->router gap: agent-app proves the chain it builds, this
+    // proves createMonoRuntime hands that chain's attempts and the backoff
+    // policy to the real kernel router rather than dropping them.
+    createMonoRuntime({
+      workspace: "/router/workspace",
+      retry: { backoffMs: 250, maxBackoffMs: 5_000 },
+      fallbackChain: [
+        { model, attempts: 2 },
+        { model: { sdk: "claude", model: "claude-sonnet-4-6", reference: "claude:claude-sonnet-4-6" } },
+      ],
+    });
+
+    expect(kernelMocks.createRouterRuntime).toHaveBeenCalledOnce();
+    const options = kernelMocks.createRouterRuntime.mock.calls[0]?.[0] as {
+      chain: readonly { attempts?: number }[];
+      retry?: { backoffMs?: number; maxBackoffMs?: number };
+    };
+    expect(options.chain.map((entry) => entry.attempts)).toEqual([2, undefined]);
+    expect(options.retry).toEqual({ backoffMs: 250, maxBackoffMs: 5_000 });
   });
 });

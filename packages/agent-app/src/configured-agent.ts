@@ -354,6 +354,14 @@ export function createConfiguredAgentRuntime(
       ? {}
       : {
           routeSafety: config.runtime.routeSafety ?? "uniform",
+          ...(config.runtime.retry === undefined
+            ? {}
+            : {
+                retry: {
+                  backoffMs: config.runtime.retry.backoffMs,
+                  maxBackoffMs: config.runtime.retry.maxBackoffMs,
+                },
+              }),
           // Resolve custom/local Pi options from the ACTUAL route selected by
           // the fallback router. Secrets stay inside this private return value
           // and are never copied into route metadata or events.
@@ -376,8 +384,28 @@ function fallbackChainForConfig(
 ): { fallbackChain?: readonly MonoRuntimeFallbackChainEntry[] } {
   const canonicalFallbacks = config.runtime.fallbacks;
   const legacyFallbackModels = config.runtime.fallbackModels;
+  // The loader always materializes `retry`, but this package is published and
+  // `createConfiguredAgentRuntime` accepts a caller-built MonoAgentConfig — an
+  // older hand-built object must degrade to single-shot, not crash.
+  const primaryAttempts = config.runtime.retry?.primaryAttempts ?? 1;
   if ((canonicalFallbacks?.length ?? 0) === 0 && (legacyFallbackModels?.length ?? 0) === 0) {
-    return {};
+    // Without a chain `createMonoRuntime` takes the plain `createRuntime` path
+    // and the router never runs — so same-model retries would silently do
+    // nothing for every agent with no configured backups. Build a retry-only
+    // single-entry chain instead whenever the primary asks for more than one
+    // attempt. `hasConfiguredFallback` deliberately stays false for this shape,
+    // keeping `sessionOptions.supportsResume` true: the router only drops the
+    // provider session on the retry itself (retryIndex > 0).
+    if (primaryAttempts <= 1) {
+      return {};
+    }
+    return {
+      fallbackChain: [{
+        model: options?.model ?? config.runtime.model,
+        executionMode: (options?.executionMode ?? config.runtime.executionMode) as RuntimeExecutionMode,
+        attempts: primaryAttempts,
+      }],
+    };
   }
   const primaryModel = options?.model ?? config.runtime.model;
   const primaryExecutionMode = options?.executionMode ?? config.runtime.executionMode;
@@ -393,13 +421,20 @@ function fallbackChainForConfig(
           // Canonical omission means provider default. Legacy fallbackModels
           // omit this field and therefore continue inheriting runtime.effort.
           effort: entry.effort ?? null,
+          // Omitted per-route attempts stay single-shot: only the primary
+          // retries unless a backup opts in explicitly.
+          ...(entry.attempts === undefined ? {} : { attempts: entry.attempts }),
         }))
     : (legacyFallbackModels ?? [])
         .filter((model) => modelReferenceKey(model) !== primaryKey)
         .map((model) => ({ model }));
   return {
     fallbackChain: [
-      { model: primaryModel, executionMode: primaryExecutionMode as RuntimeExecutionMode },
+      {
+        model: primaryModel,
+        executionMode: primaryExecutionMode as RuntimeExecutionMode,
+        ...(primaryAttempts > 1 ? { attempts: primaryAttempts } : {}),
+      },
       ...fallbackEntries,
     ],
   };

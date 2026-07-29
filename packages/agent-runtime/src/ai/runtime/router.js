@@ -55,11 +55,13 @@ import { instrumentLiveInputAppliedEvents } from "./live-input-events.js";
 /**
  * @typedef {Object} RouterChainEntryInput
  * A chain entry as accepted by createRouterRuntime: either the shorthand bare
- * RuntimeModelRef, or the full `{model, executionMode?, effort?, requires?}` form.
+ * RuntimeModelRef, or the full `{model, executionMode?, effort?, requires?,
+ * attempts?}` form.
  * @property {RuntimeModelRef} model
  * @property {string} [executionMode]
  * @property {string|null} [effort]
  * @property {Object<string, *>} [requires]
+ * @property {number} [attempts]
  */
 
 /**
@@ -68,6 +70,13 @@ import { instrumentLiveInputAppliedEvents } from "./live-input-events.js";
  * @property {string|null} executionMode
  * @property {string|null|undefined} effort
  * @property {Object<string, *>|null} requires
+ * @property {number} attempts Total attempts on this route including the first.
+ */
+
+/**
+ * @typedef {Object} RouterRetryPolicy
+ * @property {number} backoffMs Delay before the first retry; doubles per retry.
+ * @property {number} maxBackoffMs Ceiling for the doubled delay.
  */
 
 /**
@@ -97,13 +106,16 @@ const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
  * @param {AgentRuntimeHostOptions} [options.host]
  * @param {ReadonlyArray<RuntimeModelRef|RouterChainEntryInput>} [options.chain]
  * @param {"uniform"|"per-route-native"} [options.routeSafety]
- * @param {(input: {model: RuntimeModelRef, executionMode: string|null, attemptIndex: number, routeSafety: "uniform"|"per-route-native"}) => (RouterAttemptResolution|Promise<RouterAttemptResolution>)} [options.resolveAttempt]
+ * @param {(input: {model: RuntimeModelRef, executionMode: string|null, attemptIndex: number, retryIndex: number, routeSafety: "uniform"|"per-route-native"}) => (RouterAttemptResolution|Promise<RouterAttemptResolution>)} [options.resolveAttempt]
+ * @param {Partial<RouterRetryPolicy>} [options.retry] Backoff shape for same-model
+ *   retries. Per-route retry counts live on each chain entry's `attempts`.
  * @returns {AgentRuntimeInstance & {chain: () => Array<RouterChainEntry>}}
  */
-export function createRouterRuntime({ host = {}, chain = [], routeSafety = "uniform", resolveAttempt } = {}) {
+export function createRouterRuntime({ host = {}, chain = [], routeSafety = "uniform", resolveAttempt, retry } = {}) {
   if (!ROUTE_SAFETY_MODES.has(routeSafety)) {
     throw new Error("createRouterRuntime routeSafety must be uniform or per-route-native");
   }
+  const retryPolicy = normalizeRetryPolicy(retry);
   const entries = normaliseChain(chain);
   if (entries.length === 0) {
     throw new Error("createRouterRuntime requires a non-empty chain");
@@ -160,7 +172,7 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
       for (let i = 0; i < entries.length; i += 1) {
         const entry = entries[i];
         const effectiveToolOptions = effectiveRouterToolOptions(host, configuredTools);
-        let safetyContract = routeSafetyContract(
+        const entrySafetyContract = routeSafetyContract(
           routeSafety,
           entry,
           effectivePiSandboxPolicy(effectiveToolOptions, options),
@@ -179,16 +191,21 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
             failureKind: "skipped_capability_mismatch",
             requirements: entry.requires,
             routeSafety,
-            safetyContract,
+            safetyContract: entrySafetyContract,
           });
-          const skippedRecord = routeSafetyRecord(i, entry, safetyContract, "skipped_capability_mismatch");
+          const skippedRecord = routeSafetyRecord(i, entry, entrySafetyContract, "skipped_capability_mismatch");
           routeSafetyHistory.push(skippedRecord);
           emit(options, { type: "provider_route_safety", ...skippedRecord });
           continue;
         }
 
+        // Attempt-scoped stripping is a property of the ROUTE (chain index), not
+        // of one attempt, so it is decided once here. Every same-model retry
+        // derives a fresh mutable callOptions from this immutable base, because
+        // the per-attempt bag is mutated in place (effort, session deletes,
+        // snapshot seed) and reassigned by mergeAttemptOptions.
         /** @type {*} */
-        let callOptions = {
+        const entryOptionsBase = {
           ...options,
           model: entry.model,
           executionMode: entry.executionMode || options.executionMode,
@@ -197,185 +214,248 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
         // route. Without a route resolver there is no authoritative metadata
         // for a different fallback, so never let the primary's credentials or
         // model capabilities contaminate later attempts.
-        if (resolveAttempt === undefined && i > 0) {
-          callOptions = withoutAttemptScopedOptions(callOptions);
-        }
-        /** @type {AgentRuntimeInstance} */
-        let attemptRuntime = inner;
-        /** @type {(() => (void|Promise<void>))|undefined} */
-        let attemptCleanup;
-        try {
-          const resolved = resolveAttempt === undefined
-            ? undefined
-            : await resolveAttempt({
-                model: entry.model,
-                executionMode: entry.executionMode,
+        const entryCallBase = resolveAttempt === undefined && i > 0
+          ? withoutAttemptScopedOptions(entryOptionsBase)
+          : entryOptionsBase;
+
+        /** @type {RuntimeResult|null} A failure that ends the whole logical run. */
+        let terminalResult = null;
+
+        for (let retryIndex = 0; retryIndex < entry.attempts; retryIndex += 1) {
+          let safetyContract = entrySafetyContract;
+          /** @type {*} */
+          let callOptions = { ...entryCallBase };
+          /** @type {AgentRuntimeInstance} */
+          let attemptRuntime = inner;
+          /** @type {(() => (void|Promise<void>))|undefined} */
+          let attemptCleanup;
+          try {
+            const resolved = resolveAttempt === undefined
+              ? undefined
+              : await resolveAttempt({
+                  model: entry.model,
+                  executionMode: entry.executionMode,
+                  attemptIndex: i,
+                  retryIndex,
+                  routeSafety,
+                });
+            const resolution = normalizeAttemptResolution(resolved);
+            attemptCleanup = resolution?.cleanup;
+            if (resolveAttempt !== undefined) {
+              callOptions = mergeAttemptOptions(callOptions, resolution?.options);
+            }
+            if (routeSafety === "per-route-native") {
+              callOptions = projectPerRouteNativeOptions(entry, callOptions);
+              const key = routeRuntimeKey(entry, i);
+              const resolvedRuntime = resolution?.runtime;
+              if (resolvedRuntime !== undefined) {
+                assertRuntimeLike(resolvedRuntime);
+                const previousRuntime = routeRuntimes.get(key);
+                if (previousRuntime !== undefined && previousRuntime !== resolvedRuntime) {
+                  try { await previousRuntime.disposeAllSessions?.(); } catch { /* best-effort replacement */ }
+                }
+                routeRuntimes.set(key, resolvedRuntime);
+                if (entry.model.sdk !== "pi") {
+                  resolvedRuntime.configureTools?.(projectPerRouteNativeToolOptions(entry, configuredTools));
+                }
+              }
+              attemptRuntime = routeRuntimes.get(key) ?? createRouteRuntime(key, entry, host, routeRuntimes, configuredTools);
+              if (entry.model.sdk === "pi") {
+                projectPiRuntimeToolContext(attemptRuntime, effectiveToolOptions);
+                // Derive the attestation from the same complete base context and
+                // request-scoped inputs that the supplied/runtime-owned Pi
+                // bridge will actually receive. Resolver options cannot alter
+                // these protected fields.
+                safetyContract = routeSafetyContract(
+                  routeSafety,
+                  entry,
+                  effectivePiSandboxPolicy(effectiveToolOptions, callOptions),
+                );
+              }
+            } else if (resolution?.runtime !== undefined && resolution.runtime !== inner) {
+              throw new Error("uniform route safety cannot replace the shared monotonic runtime");
+            }
+          } catch (error) {
+            try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
+            const failure = safetyUnavailableResult(error);
+            lastRouteSkip = failure;
+            failoverHistory.push({
+              model: entry.model,
+              failureKind: "safety_unavailable",
+              routeSafety,
+              safetyContract,
+            });
+            const unavailableRecord = routeSafetyRecord(i, entry, safetyContract, "safety_unavailable");
+            routeSafetyHistory.push(unavailableRecord);
+            emit(callOptions, { type: "provider_route_safety", ...unavailableRecord });
+            // A resolver fault is a config/credential problem, not a transient
+            // provider blip: retrying the same route cannot fix it. Advance.
+            break;
+          }
+
+          applyEntryEffort(callOptions, entry.effort);
+          // A provider session belongs to the route AND to the attempt that
+          // created it. The entire chain is stateless whenever a fallback exists,
+          // keeping the full logical run replayable regardless of which route is
+          // attempted. A same-model retry re-sends the whole logical turn, so
+          // resuming the session the failed attempt already appended into would
+          // duplicate the turn or hit session_busy.
+          if (entries.length > 1 || i > 0 || retryIndex > 0 || !entrySupportsSessionResume(entry)) {
+            delete callOptions.sessionId;
+            delete callOptions.providerSessionId;
+            delete callOptions.sessionKeepAlive;
+            delete callOptions.sessionIdleTimeoutMs;
+          }
+          let attemptSystemPrompt = promptBase;
+          if (pendingSnapshot) {
+            callOptions.diagnosticsSeed = {
+              ...(callOptions.diagnosticsSeed || {}),
+              resume_snapshot: pendingSnapshot,
+            };
+            // Also prepend the rendered snapshot to the system prompt so SDK
+            // backends that don't read diagnosticsSeed still continue from the
+            const rendered = renderResumeSnapshot(pendingSnapshot);
+            if (rendered) {
+              callOptions.systemPromptPrefix = rendered;
+              attemptSystemPrompt = `${rendered}\n\n${promptBase}`;
+            }
+          }
+
+          // The safety contract is a property of the route: resolver options can
+          // never reach the sandbox/tool policy (RESOLVER_PROTECTED_OPTION_KEYS)
+          // and effectivePiSandboxPolicy reads only protected fields, so every
+          // retry of one entry derives an identical contract. Record it once so
+          // the bounded safety telemetry stays one record per chain entry.
+          if (retryIndex === 0) {
+            const safetyRecord = routeSafetyRecord(i, entry, safetyContract, "attempted");
+            routeSafetyHistory.push(safetyRecord);
+            emit(callOptions, { type: "provider_route_safety", ...safetyRecord });
+          }
+
+          // A same-model retry is not a failover: only the first attempt of a new
+          // route announces a transition.
+          if (retryIndex === 0 && failoverHistory.length > 0) {
+            emit(callOptions, {
+              type: "provider_failover_started",
+              from: modelKey(failoverHistory[failoverHistory.length - 1]?.model),
+              to: modelKey(entry.model),
+              attemptIndex: i,
+            });
+          }
+
+          let result;
+          try {
+            result = await attemptRuntime.run(attemptSystemPrompt, callOptions);
+          } catch (err) {
+            // The inner runtime usually surfaces errors as structured result
+            // fields, but a bridge can still throw synchronously (e.g. spawn
+            // failures). Convert to a result-like shape so the chain logic
+            // is uniform.
+            result = {
+              text: null,
+              error: err?.message || String(err),
+              failureKind: "provider_unavailable",
+              events: [],
+              cancelled: false,
+              usage: {},
+            };
+          } finally {
+            try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
+          }
+
+          result = normalizeProviderAuthFailure(result);
+
+          const retryability = retryableProviderFailureInfo({
+            errorText: result.error || "",
+            stderrTail: result.stderrTail || "",
+            failureKind: result.failureKind,
+          });
+
+          const successful = !result.error && !result.failureKind && !result.cancelled;
+          if (successful) {
+            // Only a genuine route change is a completed failover: succeeding
+            // after a same-model retry must not render as "answered by X
+            // (failover)" when X is still the route the operator asked for.
+            if (failoverHistory.some((attempt) => modelKey(attempt.model) !== modelKey(entry.model))) {
+              emit(callOptions, {
+                type: "provider_failover_completed",
                 attemptIndex: i,
-                routeSafety,
+                model: entry.model,
               });
-          const resolution = normalizeAttemptResolution(resolved);
-          attemptCleanup = resolution?.cleanup;
-          if (resolveAttempt !== undefined) {
-            callOptions = mergeAttemptOptions(callOptions, resolution?.options);
-          }
-          if (routeSafety === "per-route-native") {
-            callOptions = projectPerRouteNativeOptions(entry, callOptions);
-            const key = routeRuntimeKey(entry, i);
-            const resolvedRuntime = resolution?.runtime;
-            if (resolvedRuntime !== undefined) {
-              assertRuntimeLike(resolvedRuntime);
-              const previousRuntime = routeRuntimes.get(key);
-              if (previousRuntime !== undefined && previousRuntime !== resolvedRuntime) {
-                try { await previousRuntime.disposeAllSessions?.(); } catch { /* best-effort replacement */ }
-              }
-              routeRuntimes.set(key, resolvedRuntime);
-              if (entry.model.sdk !== "pi") {
-                resolvedRuntime.configureTools?.(projectPerRouteNativeToolOptions(entry, configuredTools));
-              }
             }
-            attemptRuntime = routeRuntimes.get(key) ?? createRouteRuntime(key, entry, host, routeRuntimes, configuredTools);
-            if (entry.model.sdk === "pi") {
-              projectPiRuntimeToolContext(attemptRuntime, effectiveToolOptions);
-              // Derive the attestation from the same complete base context and
-              // request-scoped inputs that the supplied/runtime-owned Pi
-              // bridge will actually receive. Resolver options cannot alter
-              // these protected fields.
-              safetyContract = routeSafetyContract(
-                routeSafety,
-                entry,
-                effectivePiSandboxPolicy(effectiveToolOptions, callOptions),
-              );
-            }
-          } else if (resolution?.runtime !== undefined && resolution.runtime !== inner) {
-            throw new Error("uniform route safety cannot replace the shared monotonic runtime");
+            return { ...result, failoverHistory, routeSafetyHistory };
           }
-        } catch (error) {
-          try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
-          const failure = safetyUnavailableResult(error);
-          lastRouteSkip = failure;
+
           failoverHistory.push({
             model: entry.model,
-            failureKind: "safety_unavailable",
+            failureKind: result.failureKind || null,
+            requestId: retryability.requestId,
+            retryableSubkind: retryability.subkind,
+            ...(retryIndex > 0 ? { retryIndex } : {}),
             routeSafety,
             safetyContract,
           });
-          const unavailableRecord = routeSafetyRecord(i, entry, safetyContract, "safety_unavailable");
-          routeSafetyHistory.push(unavailableRecord);
-          emit(callOptions, { type: "provider_route_safety", ...unavailableRecord });
-          continue;
-        }
-
-        applyEntryEffort(callOptions, entry.effort);
-        // A provider session belongs to the route that created it. The entire
-        // chain is stateless whenever a fallback exists, keeping the full
-        // logical run replayable regardless of which route is attempted.
-        if (entries.length > 1 || i > 0 || !entrySupportsSessionResume(entry)) {
-          delete callOptions.sessionId;
-          delete callOptions.providerSessionId;
-          delete callOptions.sessionKeepAlive;
-          delete callOptions.sessionIdleTimeoutMs;
-        }
-        let attemptSystemPrompt = promptBase;
-        if (pendingSnapshot) {
-          callOptions.diagnosticsSeed = {
-            ...(callOptions.diagnosticsSeed || {}),
-            resume_snapshot: pendingSnapshot,
-          };
-          // Also prepend the rendered snapshot to the system prompt so SDK
-          // backends that don't read diagnosticsSeed still continue from the
-          const rendered = renderResumeSnapshot(pendingSnapshot);
-          if (rendered) {
-            callOptions.systemPromptPrefix = rendered;
-            attemptSystemPrompt = `${rendered}\n\n${promptBase}`;
+          if (result.failureKind === "skipped_capability_mismatch") {
+            lastRouteSkip = result;
+            // A bridge-level mismatch is about this route, not the logical run.
+            // Try the next entry and do not derive a transcript snapshot from it.
+            break;
           }
-        }
+          lastResult = result;
 
-        const safetyRecord = routeSafetyRecord(i, entry, safetyContract, "attempted");
-        routeSafetyHistory.push(safetyRecord);
-        emit(callOptions, { type: "provider_route_safety", ...safetyRecord });
+          // Provider auth is terminal for one provider, but chain-retryable: a
+          // fallback provider may have working credentials. Other non-retryable
+          // provider/request errors remain terminal.
+          const shouldFallback = (retryability.retryable || result.failureKind === "provider_auth")
+            && !result.cancelled
+            && !isMidTurnSafetyFailure(result.failureKind);
+          if (!shouldFallback) {
+            terminalResult = result;
+            break;
+          }
 
-        if (failoverHistory.length > 0) {
+          // Build a transcript-tail snapshot from this run's events so the next
+          // attempt — same model or next route — can continue. A run that
+          // produced no usable events yields a falsy snapshot and merges to a
+          // no-op, so the common "died before the first token" retry costs
+          // nothing. Keep one bounded snapshot object across the logical run
+          // instead of nesting a new <resume_context> block per transition.
+          pendingSnapshot = mergeResumeSnapshots(
+            pendingSnapshot,
+            buildTranscriptTailSnapshot(result.events, { runtimeBrand }),
+          );
+
+          // context_limit is forced retryable so the chain can reach a model with
+          // a bigger window, but it is deterministic against the SAME window:
+          // another attempt here is a guaranteed second failure. Advance instead.
+          const sameModelRetryable = retryability.retryable
+            && retryability.subkind !== "context_limit"
+            && retryIndex + 1 < entry.attempts;
+          if (!sameModelRetryable) break;
+
+          const backoffMs = Math.min(retryPolicy.maxBackoffMs, retryPolicy.backoffMs * (2 ** retryIndex));
           emit(callOptions, {
-            type: "provider_failover_started",
-            from: failoverHistory[failoverHistory.length - 1]?.model,
-            to: entry.model,
+            type: "provider_retry_started",
+            model: modelKey(entry.model),
             attemptIndex: i,
+            retryIndex: retryIndex + 1,
+            attempts: entry.attempts,
+            delayMs: backoffMs,
+            reason: retryability.subkind || result.failureKind || null,
           });
-        }
-
-        let result;
-        try {
-          result = await attemptRuntime.run(attemptSystemPrompt, callOptions);
-        } catch (err) {
-          // The inner runtime usually surfaces errors as structured result
-          // fields, but a bridge can still throw synchronously (e.g. spawn
-          // failures). Convert to a result-like shape so the chain logic
-          // is uniform.
-          result = {
-            text: null,
-            error: err?.message || String(err),
-            failureKind: "provider_unavailable",
-            events: [],
-            cancelled: false,
-            usage: {},
-          };
-        } finally {
-          try { await attemptCleanup?.(); } catch { /* cleanup is additive */ }
-        }
-
-        result = normalizeProviderAuthFailure(result);
-
-        const retryability = retryableProviderFailureInfo({
-          errorText: result.error || "",
-          stderrTail: result.stderrTail || "",
-          failureKind: result.failureKind,
-        });
-
-        const successful = !result.error && !result.failureKind && !result.cancelled;
-        if (successful) {
-          if (failoverHistory.length > 0) {
-            emit(callOptions, {
-              type: "provider_failover_completed",
-              attemptIndex: i,
-              model: entry.model,
-            });
+          if (callOptions.abortSignal?.aborted) {
+            return { ...result, cancelled: true, failoverHistory, routeSafetyHistory };
           }
-          return { ...result, failoverHistory, routeSafetyHistory };
+          await delay(backoffMs, callOptions.abortSignal);
+          if (callOptions.abortSignal?.aborted) {
+            return { ...result, cancelled: true, failoverHistory, routeSafetyHistory };
+          }
         }
 
-        failoverHistory.push({
-          model: entry.model,
-          failureKind: result.failureKind || null,
-          requestId: retryability.requestId,
-          retryableSubkind: retryability.subkind,
-          routeSafety,
-          safetyContract,
-        });
-        if (result.failureKind === "skipped_capability_mismatch") {
-          lastRouteSkip = result;
-          // A bridge-level mismatch is about this route, not the logical run.
-          // Try the next entry and do not derive a transcript snapshot from it.
-          continue;
+        if (terminalResult !== null) {
+          return { ...terminalResult, failoverHistory, routeSafetyHistory };
         }
-        lastResult = result;
-
-        // Provider auth is terminal for one provider, but chain-retryable: a
-        // fallback provider may have working credentials. Other non-retryable
-        // provider/request errors remain terminal.
-        const shouldFallback = (retryability.retryable || result.failureKind === "provider_auth")
-          && !result.cancelled
-          && !isMidTurnSafetyFailure(result.failureKind);
-        if (!shouldFallback) {
-          return { ...result, failoverHistory, routeSafetyHistory };
-        }
-
-        // Build a transcript-tail snapshot from this run's events so the
-        // next provider can continue. If the run produced no usable events,
-        // skip the snapshot (the next attempt starts fresh).
-        const snapshot = buildTranscriptTailSnapshot(result.events, { runtimeBrand });
-        // Keep one bounded snapshot object across the logical run instead of
-        // nesting a new <resume_context> block on every provider transition.
-        pendingSnapshot = mergeResumeSnapshots(pendingSnapshot, snapshot);
+        // Every other inner break falls through to the next chain entry.
       }
 
       const exhaustedResult = lastResult || lastRouteSkip || {
@@ -467,7 +547,7 @@ function normaliseChain(chain) {
       if (!entry) return null;
       if (entry.sdk && entry.model) {
         // ModelRef shorthand: { sdk, model, ... }
-        return { model: entry, executionMode: null, effort: undefined, requires: null };
+        return { model: entry, executionMode: null, effort: undefined, requires: null, attempts: 1 };
       }
       if (entry.model) {
         return {
@@ -475,11 +555,67 @@ function normaliseChain(chain) {
           executionMode: typeof entry.executionMode === "string" ? entry.executionMode : null,
           effort: normalizeChainEffort(entry.effort),
           requires: entry.requires && typeof entry.requires === "object" ? entry.requires : null,
+          attempts: normalizeChainAttempts(entry.attempts),
         };
       }
       return null;
     })
     .filter(Boolean));
+}
+
+/**
+ * The kernel default is ONE attempt per entry. Enabling same-model retries is a
+ * host policy decision (`@mono-agent/config` supplies the product default), so
+ * the router stays mechanism and existing callers keep single-shot behavior.
+ * @param {*} attempts
+ * @returns {number}
+ */
+function normalizeChainAttempts(attempts) {
+  if (attempts === undefined || attempts === null) return 1;
+  if (!Number.isInteger(attempts) || attempts < 1 || attempts > 10) {
+    throw new Error("createRouterRuntime chain attempts must be an integer between 1 and 10");
+  }
+  return attempts;
+}
+
+/**
+ * @param {Partial<RouterRetryPolicy>|undefined} retry
+ * @returns {RouterRetryPolicy}
+ */
+function normalizeRetryPolicy(retry) {
+  const backoffMs = normalizeRetryDelay(retry?.backoffMs, 1000, "backoffMs");
+  const maxBackoffMs = normalizeRetryDelay(retry?.maxBackoffMs, 15000, "maxBackoffMs");
+  return { backoffMs, maxBackoffMs };
+}
+
+/** @param {*} value @param {number} fallback @param {string} name @returns {number} */
+function normalizeRetryDelay(value, fallback, name) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`createRouterRuntime retry.${name} must be a non-negative finite number`);
+  }
+  return value;
+}
+
+/**
+ * Abortable sleep. agent-runtime is the kernel and cannot reach the app-layer
+ * backoff helpers, so this mirrors the local `delay` in the codex bridge.
+ * @param {number} ms
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<void>}
+ */
+function delay(ms, signal) {
+  if (!(ms > 0)) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    /** @type {*} */ (timer).unref?.();
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 /** @param {*} effort @returns {string|null|undefined} */

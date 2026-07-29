@@ -1012,6 +1012,9 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     "runtime.compaction.summaryMaxTokens": { minimum: 1_000, maximum: 64_000 },
     "runtime.compaction.minSavingsTokens": { minimum: 0, maximum: 500_000 },
     "runtime.compaction.contextWindowOverride": { minimum: 32_000, maximum: 10_000_000 },
+    "runtime.retry.primaryAttempts": { minimum: 1, maximum: 10 },
+    "runtime.retry.backoffMs": { minimum: 0, maximum: 60_000 },
+    "runtime.retry.maxBackoffMs": { minimum: 0, maximum: 300_000 },
   };
   const bounds = numericBounds[field.jsonPath];
   if (bounds !== undefined) {
@@ -1034,6 +1037,7 @@ function arrayItemSchemaForField(field: ConfigReferenceField): JsonSchema {
       properties: {
         model: { type: "string", minLength: 1 },
         effort: { type: "string", enum: EFFORT_LEVELS },
+        attempts: { type: "integer", minimum: 1, maximum: 10 },
       },
     };
   }
@@ -1120,7 +1124,7 @@ function inferType(id: string): ConfigReferenceType {
   if (id.endsWith("enabled") || id.endsWith("allowAllChats") || id.endsWith("allowAllChannels") || id.endsWith("allowNonLoopback") || id.endsWith("dryRun") || id.endsWith("globalDiscovery") || id.endsWith("rolloverNotice") || id.endsWith("isolateProactive") || id.endsWith("unsafeAllowHostProcess") || id.endsWith("trace") || id.endsWith("exposeMcpServer")) {
     return "boolean";
   }
-  if (/(Ms|Bytes|Count|Days|Turns|Retries|Delay|port|dim|threshold|Hours|Runs)$/iu.test(id) || id.endsWith(".port")) {
+  if (/(Ms|Bytes|Count|Days|Turns|Retries|Attempts|Delay|port|dim|threshold|Hours|Runs)$/iu.test(id) || id.endsWith(".port")) {
     return "integer";
   }
   if (id === "providers.local" || id === "observability.exporters") {
@@ -1158,6 +1162,9 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "runtime.fallbackModels": [],
     "runtime.fallbacks": [],
     "runtime.routeSafety": "uniform",
+    "runtime.retry.primaryAttempts": 2,
+    "runtime.retry.backoffMs": 1_000,
+    "runtime.retry.maxBackoffMs": 15_000,
     "runtime.compaction.enabled": true,
     "runtime.compaction.triggerRatio": 0.70,
     "runtime.compaction.fixedOverheadEnabled": true,
@@ -1254,6 +1261,9 @@ function exampleFor(id: string): SettingsJsonValue {
       { model: "pi:openai-codex:gpt-5.6-terra", effort: "high" },
     ],
     "runtime.routeSafety": "per-route-native",
+    "runtime.retry.primaryAttempts": 3,
+    "runtime.retry.backoffMs": 2_000,
+    "runtime.retry.maxBackoffMs": 30_000,
     "runtime.effort": "medium",
     "runtime.permissionMode": "default",
     "runtime.compaction.triggerRatio": 0.70,
@@ -1351,6 +1361,15 @@ function descriptionFor(id: string): string {
   }
   if (id === "runtime.fallbackModels") {
     return "Legacy fallback list whose routes inherit runtime.effort. Prefer runtime.fallbacks for new configs.";
+  }
+  if (id === "runtime.retry.primaryAttempts") {
+    return "Total attempts on runtime.model including the first, before the chain advances. Retries fire only for transient provider failures (overloaded, rate-limited, timeout, network, 5xx); context overflow and bad credentials advance immediately. Set 1 to disable.";
+  }
+  if (id === "runtime.retry.backoffMs") {
+    return "Delay before the first same-model retry. Doubles on each further retry, capped by runtime.retry.maxBackoffMs.";
+  }
+  if (id === "runtime.retry.maxBackoffMs") {
+    return "Ceiling for the doubling same-model retry delay.";
   }
   if (id === "runtime.routeSafety") {
     return "Uniform preserves one shared safety contract; per-route-native uses and reports each provider's explicit contract.";

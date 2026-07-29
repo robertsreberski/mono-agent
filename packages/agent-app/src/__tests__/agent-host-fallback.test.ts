@@ -32,7 +32,7 @@ describe("configured agent runtime fallback models", () => {
       expect.objectContaining({
         routeSafety: "uniform",
         fallbackChain: [
-          { model: config.runtime.model, executionMode: "sdk" },
+          { model: config.runtime.model, executionMode: "sdk", attempts: 2 },
           { model: config.runtime.fallbackModels?.[0] },
         ],
         resolveAttempt: expect.any(Function),
@@ -63,7 +63,7 @@ describe("configured agent runtime fallback models", () => {
     expect(createMonoRuntimeMock).toHaveBeenCalledWith(expect.objectContaining({
       routeSafety: "per-route-native",
       fallbackChain: [
-        { model: config.runtime.model, executionMode: "sdk" },
+        { model: config.runtime.model, executionMode: "sdk", attempts: 2 },
         { model: config.runtime.fallbacks?.[0]?.model, effort: null },
         { model: config.runtime.fallbacks?.[1]?.model, effort: "ultra" },
       ],
@@ -109,9 +109,57 @@ describe("configured agent runtime fallback models", () => {
     expect(cloud?.options).toEqual({});
   });
 
-  it("omits the fallback chain when no backup models are configured", () => {
-    createConfiguredAgentRuntime(monoConfig(undefined));
+  it("builds a retry-only single-entry chain when retries are on and no backups are configured", () => {
+    // Without this the router never runs for a fallback-less agent, so the
+    // primary-retry default would silently do nothing for most deployments.
+    const config = monoConfig(undefined);
+    createConfiguredAgentRuntime(config);
 
+    const options = createMonoRuntimeMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(options.fallbackChain).toEqual([
+      { model: config.runtime.model, executionMode: "sdk", attempts: 2 },
+    ]);
+    expect(options.retry).toEqual({ backoffMs: 1_000, maxBackoffMs: 15_000 });
+  });
+
+  it("omits the fallback chain when retries are disabled and no backups are configured", () => {
+    createConfiguredAgentRuntime(monoConfig(undefined, { primaryAttempts: 1 }));
+
+    const options = createMonoRuntimeMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(options.fallbackChain).toBeUndefined();
+  });
+
+  it("forwards per-route attempts and leaves omitted backups single-shot", () => {
+    const base = monoConfig(undefined);
+    const config: MonoAgentConfig = {
+      ...base,
+      runtime: {
+        ...base.runtime,
+        fallbacks: [
+          {
+            model: { sdk: "codex", model: "gpt-5.6-sol", reference: "codex:gpt-5.6-sol" },
+            attempts: 3,
+          },
+          { model: { sdk: "claude", model: "claude-sonnet-4-6", reference: "claude:claude-sonnet-4-6" } },
+        ],
+      },
+    };
+    createConfiguredAgentRuntime(config);
+
+    const options = createMonoRuntimeMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(options.fallbackChain).toEqual([
+      { model: config.runtime.model, executionMode: "sdk", attempts: 2 },
+      { model: config.runtime.fallbacks?.[0]?.model, effort: null, attempts: 3 },
+      { model: config.runtime.fallbacks?.[1]?.model, effort: null },
+    ]);
+  });
+
+  it("degrades a caller-built config without a retry block to single-shot instead of crashing", () => {
+    const base = monoConfig(undefined);
+    const legacy = { ...base, runtime: { ...base.runtime } } as { runtime: Record<string, unknown> };
+    delete legacy.runtime.retry;
+
+    expect(() => createConfiguredAgentRuntime(legacy as unknown as MonoAgentConfig)).not.toThrow();
     const options = createMonoRuntimeMock.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(options.fallbackChain).toBeUndefined();
   });
@@ -119,11 +167,14 @@ describe("configured agent runtime fallback models", () => {
 
 function monoConfig(
   fallbackModels: MonoAgentConfig["runtime"]["fallbackModels"],
+  retry?: Partial<MonoAgentConfig["runtime"]["retry"]>,
 ): MonoAgentConfig {
   return {
     runtime: {
       model: { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" },
       ...(fallbackModels === undefined ? {} : { fallbackModels }),
+      // The loader always materializes these; mirror a real loaded config.
+      retry: { primaryAttempts: 2, backoffMs: 1_000, maxBackoffMs: 15_000, ...retry },
       executionMode: "sdk",
       maxTurns: 4,
       workspace: "/repo",

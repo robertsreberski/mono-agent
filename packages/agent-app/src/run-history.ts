@@ -1040,6 +1040,7 @@ function projectRun(
       ...(attempt.subkind === undefined
         ? {}
         : { subkind: sanitizeVisibleText(attempt.subkind, artifactDir, 128) }),
+      ...(attempt.retryIndex === undefined ? {} : { retryIndex: attempt.retryIndex }),
     });
   }
   if (summary.status !== "succeeded") {

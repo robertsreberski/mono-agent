@@ -123,6 +123,14 @@ export class TurnPresenter implements AgentMessageStream {
           const note = `failover ${event.from ?? "?"} → ${event.to ?? "?"}`;
           this.options.statusBar.setProviderNote(note);
           this.options.transcript.addChild(new NoticeCell(note, "warning"));
+        } else if (event.kind === "retry_started") {
+          // A retry is a multi-second stall (backoff plus a full turn re-run),
+          // so say so rather than leaving the loader unexplained. This branch
+          // must stay ahead of the trailing else, which would otherwise render
+          // a same-model retry as "answered by X (failover)".
+          const note = `retrying ${event.model ?? "?"} (attempt ${(event.retryIndex ?? 1) + 1})`;
+          this.options.statusBar.setProviderNote(note);
+          this.options.transcript.addChild(new NoticeCell(note, "warning"));
         } else {
           this.options.statusBar.setProviderNote(
             event.model === undefined ? "" : `answered by ${event.model} (failover)`,

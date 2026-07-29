@@ -56,9 +56,16 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   "runtime": {
     "model": "pi:openai-codex:gpt-5.6-terra", // pi:<provider>:<model> | claude:* | codex:* | opencode:*
     "fallbacks": [
-      { "model": "claude:claude-sonnet-5", "effort": "xhigh" },
-      { "model": "pi:ollama:gemma4:31b" } // omitted effort = provider default
+      { "model": "claude:claude-sonnet-5", "effort": "xhigh", "attempts": 2 },
+      { "model": "pi:ollama:gemma4:31b" } // omitted effort = provider default, omitted attempts = single shot
     ],
+    // Same-model retries before the chain advances. Transient failures only:
+    // context overflow and bad credentials still advance immediately.
+    "retry": {
+      "primaryAttempts": 2,                // total attempts on runtime.model, incl. the first; 1 disables
+      "backoffMs": 1000,                   // doubles per retry
+      "maxBackoffMs": 15000
+    },
     "routeSafety": "per-route-native",     // uniform (default) | per-route-native
     "executionMode": "sdk",                // sdk | cli (default inferred from model)
     "effort": "medium",                    // none|minimal|low|medium|high|xhigh|max|ultra

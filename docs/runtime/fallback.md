@@ -110,9 +110,56 @@ compatibility. It means the effective unrestricted contract—an omitted
 allowlist or any allowlist containing `"*"`, with no denied tools—not a required
 literal `["*"]` array.
 
+## Same-model retries
+
+Before the chain advances, a route can retry itself. `runtime.retry.primaryAttempts`
+sets the total attempts on `runtime.model` including the first (default `2`, so the
+primary gets one retry); each `runtime.fallbacks[]` entry takes its own optional
+`attempts` and stays single-shot when omitted. Set `primaryAttempts` to `1` to turn
+same-model retries off entirely.
+
+```json
+{
+  "runtime": {
+    "model": "pi:openai-codex:gpt-5.6-terra",
+    "retry": { "primaryAttempts": 2, "backoffMs": 1000, "maxBackoffMs": 15000 },
+    "fallbacks": [
+      { "model": "claude:claude-sonnet-4-6", "effort": "high", "attempts": 2 },
+      { "model": "pi:ollama:gemma4:31b" }
+    ]
+  }
+}
+```
+
+A retry re-runs the whole logical turn on the same route after
+`backoffMs`, doubling on each further retry and capped by `maxBackoffMs`. Only
+*transient* failures retry — `overloaded`, `rate_limited`, `timeout`, `network`,
+`server_error`, `retryable_request`, and terminated streams. Two retryable kinds
+deliberately advance instead:
+
+- `context_limit` is deterministic against the same window, so a second identical
+  request is a guaranteed second failure. It needs a route with a larger window.
+- `provider_auth` cannot change mid-turn, but a different provider's credentials
+  may work.
+
+Cancellation and mid-turn sandbox/safety failures never retry, and a failed
+attempt resolver advances immediately rather than burning the route's budget.
+
+A same-model retry drops the provider session (the failed attempt already
+appended to it), emits `provider_retry_started` rather than a failover event, and
+appends its own `failoverHistory` entry carrying `retryIndex` — each retry keeps
+its own request id and failure subkind.
+
+Retries compose with, and multiply against, the provider-level retry inside a
+single attempt. With defaults on a `pi` primary, `runtime.retry.primaryAttempts: 2`
+and pi's own `maxRetries` of 2 mean up to **six** provider stream starts before the
+chain advances. Lower `providers.piNative.piMaxRetries` when raising
+`primaryAttempts`. The harness's one-shot session-resume retry is disjoint: it
+fires on `session_not_found` / `session_busy`, which never retry at the router.
+
 ## What failover does
 
-The router advances after retryable provider errors (transport failures, rate
+The router advances after a route exhausts its attempts on retryable provider errors (transport failures, rate
 limits, transient server failures), provider-auth failures, and a classified
 `context_limit` after the active bridge's compaction recovery is exhausted. A
 fallback may have a larger usable window even when the primary cannot reduce its

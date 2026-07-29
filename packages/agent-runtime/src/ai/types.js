@@ -210,7 +210,7 @@
  * @property {Array<Object>} [runtimeWarnings]
  * @property {Object} [diagnostics]
  * @property {Object} [capabilitiesUsed]
- * @property {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null), retryableSubkind?: (string|null), requirements?: Object, routeSafety?: RuntimeRouteSafetyMode, safetyContract?: RuntimeRouteSafetyContract}>} [failoverHistory] Set by createRouterRuntime (ai/runtime/router.js) on every failed/skipped attempt.
+ * @property {Array<{model: RuntimeModelRef, failureKind: (string|null), requestId?: (string|null), retryableSubkind?: (string|null), retryIndex?: number, requirements?: Object, routeSafety?: RuntimeRouteSafetyMode, safetyContract?: RuntimeRouteSafetyContract}>} [failoverHistory] Set by createRouterRuntime (ai/runtime/router.js) on every failed/skipped attempt.
  * @property {Array<{attemptIndex: number, model: RuntimeModelRef, routeSafety: RuntimeRouteSafetyMode, safetyContract: RuntimeRouteSafetyContract, status: string}>} [routeSafetyHistory] Bounded route-safety audit emitted by createRouterRuntime.
  */
 

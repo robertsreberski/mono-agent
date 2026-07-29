@@ -41,7 +41,7 @@ import {
   PERMISSION_MODES,
   ROUTE_SAFETY_MODES,
 } from "./enums.js";
-import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, RouteSafetyMode, RuntimeFallbackConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
+import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, RouteSafetyMode, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -119,6 +119,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const model = parseModel(readRequired(input.env, "MONO_AGENT_MODEL"));
   const fallbackModels = readFallbackModels(input.env);
   const fallbacks = readFallbacks(input.env);
+  const retry = readRetryConfig(input.env);
   assertUniqueFallbackRoutes(model, fallbackModels, fallbacks);
   const executionMode = parseExecutionMode(input.env.MONO_AGENT_EXECUTION_MODE, model);
   const maxTurns = readMaxTurns(input.env.MONO_AGENT_MAX_TURNS);
@@ -169,6 +170,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     model,
     ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
     ...(fallbacks.length === 0 ? {} : { fallbacks }),
+    retry,
     routeSafety,
     executionMode,
     ...(maxTurns === undefined ? {} : { maxTurns }),
@@ -393,11 +395,13 @@ function readFallbacks(env: Record<string, string | undefined>): readonly Runtim
       );
     }
     const record = entry as Record<string, unknown>;
-    const unknownKeys = Object.keys(record).filter((key) => key !== "model" && key !== "effort");
+    const unknownKeys = Object.keys(record).filter(
+      (key) => key !== "model" && key !== "effort" && key !== "attempts",
+    );
     if (unknownKeys.length > 0) {
       throw new MonoAgentConfigError(
         "invalid_env",
-        `MONO_AGENT_FALLBACKS_JSON entry ${index + 1} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.sort().join(", ")}. Only model and effort are supported.`,
+        `MONO_AGENT_FALLBACKS_JSON entry ${index + 1} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.sort().join(", ")}. Only model, effort, and attempts are supported.`,
         { env: "MONO_AGENT_FALLBACKS_JSON", index, unknownKeys: unknownKeys.sort() },
       );
     }
@@ -409,8 +413,9 @@ function readFallbacks(env: Record<string, string | undefined>): readonly Runtim
       );
     }
     const model = parseFallbackModel(record.model, "MONO_AGENT_FALLBACKS_JSON", index);
+    const attempts = readFallbackAttempts(record.attempts, index);
     if (record.effort === undefined) {
-      return { model };
+      return attempts === undefined ? { model } : { model, attempts };
     }
     if (typeof record.effort !== "string") {
       throw new MonoAgentConfigError(
@@ -434,8 +439,52 @@ function readFallbacks(env: Record<string, string | undefined>): readonly Runtim
       "medium",
       invalidEnv,
     );
-    return { model, effort };
+    return attempts === undefined ? { model, effort } : { model, effort, attempts };
   });
+}
+
+function readFallbackAttempts(value: unknown, index: number): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 10) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `MONO_AGENT_FALLBACKS_JSON entry ${index + 1} attempts must be an integer between 1 and 10.`,
+      { env: "MONO_AGENT_FALLBACKS_JSON", index },
+    );
+  }
+  return value;
+}
+
+function readRetryConfig(env: Record<string, string | undefined>): RuntimeRetryConfig {
+  return {
+    primaryAttempts: readRetryInteger(env.MONO_AGENT_RETRY_PRIMARY_ATTEMPTS, "MONO_AGENT_RETRY_PRIMARY_ATTEMPTS", 2, 1, 10),
+    backoffMs: readRetryInteger(env.MONO_AGENT_RETRY_BACKOFF_MS, "MONO_AGENT_RETRY_BACKOFF_MS", 1_000, 0, 60_000),
+    maxBackoffMs: readRetryInteger(env.MONO_AGENT_RETRY_MAX_BACKOFF_MS, "MONO_AGENT_RETRY_MAX_BACKOFF_MS", 15_000, 0, 300_000),
+  };
+}
+
+function readRetryInteger(
+  raw: string | undefined,
+  env: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const normalized = normalizeOptionalString(raw);
+  if (normalized === undefined) {
+    return fallback;
+  }
+  const value = Number(normalized);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${env} must be an integer between ${min} and ${max}.`,
+      { env },
+    );
+  }
+  return value;
 }
 
 function parseFallbackModel(raw: string, env: string, index: number): MonoAgentConfig["runtime"]["model"] {

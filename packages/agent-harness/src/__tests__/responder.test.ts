@@ -752,6 +752,26 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     ).toEqual({ type: "provider_status", kind: "failover_completed", model: "kimi", attemptIndex: 1 });
   });
 
+  it("maps a same-model retry to provider_status retry_started", () => {
+    expect(
+      streamEventFromRuntimeEvent({
+        type: "provider_retry_started",
+        model: "pi:openai-codex:gpt-5.5",
+        attemptIndex: 0,
+        retryIndex: 1,
+        attempts: 2,
+        delayMs: 1_000,
+        reason: "overloaded",
+      }),
+    ).toEqual({
+      type: "provider_status",
+      kind: "retry_started",
+      model: "pi:openai-codex:gpt-5.5",
+      attemptIndex: 0,
+      retryIndex: 1,
+    });
+  });
+
   it("maps memory_recalled through with source and bytes", () => {
     expect(streamEventFromRuntimeEvent({ type: "memory_recalled", source: "bujo", bytes: 512 }))
       .toEqual({ type: "memory_recalled", source: "bujo", bytes: 512 });
