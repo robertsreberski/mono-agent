@@ -1,4 +1,4 @@
-import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
+import { classifyNotifySuppression } from "@mono-agent/agent-contracts";
 import type { CronJobConfig, CronJobResult } from "@mono-agent/cron-adapter";
 import type {
   WebhookEndpointConfig,
@@ -10,10 +10,27 @@ import type { MonoAgentAppLogger } from "../channels.js";
 import type { NotifyDestination } from "../notify-destinations.js";
 import type { NotifyDeliveryResult } from "../proactive-notify.js";
 
-/** Whether a notify-enabled turn's final text intentionally suppresses delivery. */
-function suppressesNotification(text: string | undefined): boolean {
-  const trimmed = text?.trim() ?? "";
-  return trimmed.length === 0 || trimmed.toUpperCase() === NOTHING_TO_REPORT_SENTINEL;
+/**
+ * Suppress delivery, and say so when the model went off-contract to get there.
+ *
+ * A `narrated-sentinel` turn is handled correctly but is still a signal worth
+ * surfacing: it means the model that ran wrote prose before the marker, which is
+ * how an entire cron turn's reasoning once reached a shared channel. Suppressing
+ * it silently would leave that invisible until the next time the contract slips.
+ */
+function suppressesNotification(
+  text: string | undefined,
+  source: Record<string, unknown>,
+  logger: MonoAgentAppLogger | undefined,
+): boolean {
+  const suppression = classifyNotifySuppression(text);
+  if (suppression === "narrated-sentinel") {
+    logger?.warn?.(
+      "Native notification suppressed: the final answer ended with the NOTHING_TO_REPORT sentinel but was not the sentinel alone.",
+      source,
+    );
+  }
+  return suppression !== "none";
 }
 
 export async function deliverNativeCronNotification(input: {
@@ -31,7 +48,7 @@ export async function deliverNativeCronNotification(input: {
     return;
   }
   const text = input.result.text;
-  if (text === undefined || suppressesNotification(text)) {
+  if (text === undefined || suppressesNotification(text, { jobId: job.id }, input.logger)) {
     return;
   }
   try {
@@ -103,11 +120,11 @@ export async function deliverNativeWebhookNotification(input: {
   if (endpoint?.notify !== true || input.status.status !== "succeeded") {
     return;
   }
+  const source = { endpointName: input.request.metadata.webhook.endpointName };
   const text = input.status.text;
-  if (text === undefined || suppressesNotification(text)) {
+  if (text === undefined || suppressesNotification(text, source, input.logger)) {
     return;
   }
-  const source = { endpointName: input.request.metadata.webhook.endpointName };
   try {
     if (input.notifyDestination === undefined) {
       input.logger?.warn?.("Native webhook notification skipped: no delivery hook is available.", source);

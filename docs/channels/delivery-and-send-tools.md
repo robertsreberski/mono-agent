@@ -267,7 +267,7 @@ When the web console's existing header bell is enabled, a new marked conversatio
 
 ### Staying silent ("nothing to report")
 
-To send nothing for a tick or request, the agent either produces an **empty final answer** or replies with exactly the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed, case-insensitive). In either case no notification is posted.
+To send nothing for a tick or request, the agent either produces an **empty final answer** or replies with the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed and case-insensitively, either as the whole answer or as its final line — never as a substring). In either case no notification is posted.
 
 ### How native notification differs from send tools
 

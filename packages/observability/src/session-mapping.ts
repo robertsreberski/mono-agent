@@ -1,4 +1,4 @@
-import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
+import { suppressesNotification } from "@mono-agent/agent-contracts";
 
 import { compactString } from "./content.js";
 import { isRecord } from "./guards.js";
@@ -907,13 +907,13 @@ function coerceCtxMemory(value: unknown): { readonly text: string; readonly src?
   };
 }
 
-/** Silent when the final assistant text is empty or the NOTHING_TO_REPORT sentinel (trimmed, case-insensitive). */
+/**
+ * Silent when the final assistant text is empty or ends with the NOTHING_TO_REPORT
+ * sentinel. Shares the delivery predicate deliberately: if the ledger and the
+ * notifier disagree about what was suppressed, the operator view lies.
+ */
 function resolveOutcome(finalTextRaw: string): SessionOutcome {
-  const trimmed = finalTextRaw.trim();
-  if (trimmed.length === 0 || trimmed.toLowerCase() === NOTHING_TO_REPORT_SENTINEL.toLowerCase()) {
-    return "silent";
-  }
-  return "notified";
+  return suppressesNotification(finalTextRaw) ? "silent" : "notified";
 }
 
 /**

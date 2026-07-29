@@ -210,7 +210,7 @@ ids, so restart after canonical/SQLite commit cannot duplicate the audit or sema
 or partial model JSON remains retryable and never counts as a successful empty capture. An intake
 admission failure leaves the provider answer intact but reports explicit memory degradation.
 
-Low-signal successful turns are skipped in every write mode: the `NOTHING_TO_REPORT` no-op sentinel and tiny explicit test/ping probes such as `test` / `test ok`. Cron and webhook writes are assistant-answer-only, so trigger prompts and webhook pre-instructions do not enter memory.
+Low-signal successful turns are skipped in every write mode: the `NOTHING_TO_REPORT` no-op sentinel (as the whole answer or its final line) and tiny explicit test/ping probes such as `test` / `test ok`. Cron and webhook writes are assistant-answer-only, so trigger prompts and webhook pre-instructions do not enter memory.
 
 ```jsonc
 { "memory": { "mode": "bujo", "writeMode": "capture", "path": "./.mono-agent/memory" /* + embeddings + llm */ } }

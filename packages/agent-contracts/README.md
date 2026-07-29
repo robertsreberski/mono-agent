@@ -208,6 +208,7 @@ MessageRef
 NOTHING_TO_REPORT_SENTINEL
 NotifyDeliveryResult
 NotifyDestination
+NotifySuppression
 ReadSettingsJsonResult
 RedactedSecretValue
 ResilientAgentMessageStream
@@ -226,6 +227,7 @@ assertAgentContinuationOriginContext
 assertSafeBind
 bearerTokensEqual
 buildStreamingTailPreview
+classifyNotifySuppression
 close
 closeServerBounded
 createChannelUserCancelReason
@@ -262,6 +264,7 @@ redactedSecret
 sanitizeInboundHttpHeaders
 serializeAgentStreamFrame
 splitTextByCodePoints
+suppressesNotification
 toolHintFor
 writeSettingsJson
 ```
