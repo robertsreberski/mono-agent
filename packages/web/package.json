@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/web",
-  "version": "0.15.3",
+  "version": "0.15.4",
   "description": "Always-on assistant-ui web console for discovering and chatting with local mono-agent instances.",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -34,9 +34,9 @@
     "test": "vitest run src/__tests__ && pnpm --dir webapp run test"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.15.3",
-    "@mono-agent/config": "workspace:0.15.3",
-    "@mono-agent/observability": "workspace:0.15.3",
+    "@mono-agent/agent-contracts": "workspace:0.15.4",
+    "@mono-agent/config": "workspace:0.15.4",
+    "@mono-agent/observability": "workspace:0.15.4",
     "express": "^5.1.0"
   },
   "devDependencies": {
