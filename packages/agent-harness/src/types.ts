@@ -4,6 +4,8 @@ import type {
   AgentAttachment,
   AgentContinuationOriginContext,
   AgentContinuationTurn,
+  AgentMessageSender,
+  AgentPrecedingMessage,
   AgentReplyTarget,
   MemoryStore,
 } from "@mono-agent/agent-contracts";
@@ -101,6 +103,10 @@ export interface AgentHarnessRequest {
    * contract required.
    */
   readonly attachments?: readonly AgentAttachment[];
+  /** Speaker identity. Model-visible (name and handle); `sender.id` is host-only. */
+  readonly sender?: AgentMessageSender;
+  /** Untrusted background transcript. Model-visible for this turn only; never persisted. */
+  readonly precedingMessages?: readonly AgentPrecedingMessage[];
   /** Host-owned physical delivery target. Never included in prompts or traces. */
   readonly replyTo?: AgentReplyTarget;
   /** Host-owned continuation synthesis controls. Never included in prompts. */

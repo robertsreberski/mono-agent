@@ -235,6 +235,12 @@ export function createAgentResponder(options: {
       abortSignal: request.abortSignal,
       ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
       ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
+      ...(request.sender === undefined ? {} : { sender: request.sender }),
+      // An empty array collapses to `undefined` so every downstream reader is a
+      // single presence check rather than a length check.
+      ...(request.precedingMessages === undefined || request.precedingMessages.length === 0
+        ? {}
+        : { precedingMessages: request.precedingMessages }),
       ...(request.replyTo === undefined ? {} : { replyTo: request.replyTo }),
       ...(request.continuation === undefined ? {} : { continuation: request.continuation }),
       ...(boundary === undefined ? {} : { sessionBoundary: boundary }),

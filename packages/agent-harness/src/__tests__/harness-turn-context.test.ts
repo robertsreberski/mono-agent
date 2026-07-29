@@ -88,6 +88,10 @@ interface TurnContextEvent extends RuntimeEventLike {
   readonly historyOmitted: boolean;
   readonly history?: ReadonlyArray<{ role: string; content: string; name?: string; timestamp?: string; truncated?: boolean }>;
   readonly memory?: { content: string; source?: string; truncated?: boolean };
+  readonly speaker?: string;
+  readonly precedingCount?: number;
+  readonly precedingRendered?: number;
+  readonly precedingBytes?: number;
   readonly timestamp: string;
 }
 
@@ -317,5 +321,68 @@ describe("AgentHarness turn_context synthetic event", () => {
     expect(tc[0]!.history).toBeUndefined();
     expect(tc[0]!.historyCount).toBe(0);
     expect(tc[0]!.historyOmitted).toBe(false);
+  });
+
+  it("records the speaker label and preceding counts, never the id or the chatter", async () => {
+    const identityPath = await identityFixture();
+    const fake = createFakeRuntime();
+    const recorder = new SpyRecorder();
+
+    await createAgentHarness({ identityPath, runtime: fake.runtime, model, recorderFactory: () => recorder }).run({
+      ...request("conv-speaker", "ship it"),
+      sender: { id: "U08ABC", displayName: "Alice Chen", handle: "alice" },
+      precedingMessages: [{ sender: { id: "U2", displayName: "Bob" }, text: "confidential chatter" }],
+    });
+
+    const [event] = turnContextEvents(recorder.events);
+    expect(event?.speaker).toBe("Alice Chen (@alice)");
+    expect(event?.precedingCount).toBe(1);
+    expect(event?.precedingRendered).toBe(1);
+    expect(event?.precedingBytes).toBeGreaterThan(0);
+    const serialized = JSON.stringify(event);
+    expect(serialized).not.toContain("confidential chatter");
+    expect(serialized).not.toContain("U08ABC");
+  });
+
+  it("omits the speaker keys entirely on an unattributed turn", async () => {
+    const identityPath = await identityFixture();
+    const fake = createFakeRuntime();
+    const recorder = new SpyRecorder();
+
+    await createAgentHarness({ identityPath, runtime: fake.runtime, model, recorderFactory: () => recorder })
+      .run(request("conv-anon", "hi"));
+
+    const [event] = turnContextEvents(recorder.events);
+    expect(event).not.toHaveProperty("speaker");
+    expect(event).not.toHaveProperty("precedingCount");
+  });
+
+  it("carries speaker context on the runtime user message, never in the system prompt", async () => {
+    const identityPath = await identityFixture();
+    const fake = createFakeRuntime();
+
+    await createAgentHarness({ identityPath, runtime: fake.runtime, model }).run({
+      ...request("conv-compose", "ship it"),
+      sender: { id: "U08ABC", displayName: "Alice Chen", handle: "alice" },
+      precedingMessages: [{ sender: { id: "U2", displayName: "Bob" }, text: "adapter side is done" }],
+    });
+
+    const last = fake.calls[0]?.options.messages?.at(-1);
+    expect(last?.content).toContain("<current_speaker>Alice Chen (@alice)</current_speaker>");
+    expect(last?.content).toContain("adapter side is done");
+    expect(last?.content).toContain("ship it");
+    // The system prompt must stay cache-stable across speakers.
+    expect(fake.calls[0]?.prompt).not.toContain("Alice Chen");
+    expect(fake.calls[0]?.prompt).not.toContain("adapter side is done");
+  });
+
+  it("leaves the runtime user message byte-identical when the turn is unattributed", async () => {
+    const identityPath = await identityFixture();
+    const fake = createFakeRuntime();
+
+    await createAgentHarness({ identityPath, runtime: fake.runtime, model })
+      .run(request("conv-plain", "just asking"));
+
+    expect(fake.calls[0]?.options.messages?.at(-1)?.content).toBe("just asking");
   });
 });
