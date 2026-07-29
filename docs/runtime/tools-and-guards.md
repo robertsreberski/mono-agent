@@ -37,6 +37,34 @@ Each definition needs exactly one of `prompt` or `promptPath`. The `Agent` tool
 takes `{prompt, name?, description?}`; with no `name` it runs a read-only
 general-purpose researcher on the parent's model.
 
+**Subagents built at call time.** A pre-declared profile means editing config and
+restarting for every new specialization, so the agent can also author one on the
+spot: passing `systemPrompt` (plus a kebab-case `name`, and optionally `tools`
+and `effort`) builds a one-off subagent for that call instead of selecting a
+profile. `tools` and `effort` apply only alongside `systemPrompt` — a configured
+profile brings its own — and a name that collides with a configured profile is
+rejected so the activity log stays unambiguous.
+
+What an authored subagent may reach is an operator decision, not the model's.
+Requested tools are intersected with a ceiling, and anything dropped is reported
+back in the result so the model stops asking for it:
+
+```json
+{
+  "subagents": {
+    "enabled": true,
+    "inline": { "allowedTools": ["Read", "Glob", "Grep", "Edit", "Bash"] }
+  }
+}
+```
+
+Omitting `inline.allowedTools` caps authored subagents at the parent agent's own
+built-ins (its `tools.allowedTools` minus `tools.disallowedTools`), so a helper
+never reaches further than the agent that built it. Omitting `tools` on the call
+gives a read-only helper. Set `"inline": { "enabled": false }` to allow only
+pre-declared profiles; the `Agent` tool then takes exactly `{prompt, name?,
+description?}` with `name` restricted to the configured profiles.
+
 **What comes back.** The main agent receives the subagent's final answer plus a
 compact log — one line per tool call with a short argument summary, ok/error,
 and duration — capped at roughly 24 KB. It does not receive raw tool output. A
@@ -51,11 +79,12 @@ internal — only its final answer reaches the parent, through the tool result.
 **Limits.** `maxConcurrent` (default 5) bounds simultaneous subagents;
 `maxPerTurn` (default 20) bounds the total per parent turn and is the real
 runaway guard, since a delegation loop can spend budget serially without ever
-hitting the concurrency cap. Each subagent gets `maxTurns` (default 20) and
+hitting the concurrency cap. Each subagent gets `maxTurns` (default 100) and
 `timeoutMs` (default 5 minutes), and its timeout starts only once it actually
 begins, not while queued.
 
-**Guardrails.** A subagent is read-only unless its profile enumerates more, and
+**Guardrails.** A subagent is read-only unless its profile enumerates more (or,
+for one built at call time, unless its `tools` request survives the ceiling), and
 it never receives `Agent`, `AskUser`, or any channel-send tool — it cannot
 message the user or spawn subagents of its own. It inherits the parent's sandbox
 and cannot widen it, gets no MCP servers unless its profile names them, and runs

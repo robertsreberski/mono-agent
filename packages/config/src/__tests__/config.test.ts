@@ -464,6 +464,21 @@ describe("loadMonoAgentConfig", () => {
     expect(loadMonoAgentConfig({ cwd: "/repo", env: baseEnv }).subagents).toBeUndefined();
   });
 
+  it("loads the in-flight subagent policy", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({
+          enabled: true,
+          inline: { enabled: false, allowedTools: ["Read", "Edit", "Bash"] },
+        }),
+      },
+    });
+
+    expect(config.subagents?.inline).toEqual({ enabled: false, allowedTools: ["Read", "Edit", "Bash"] });
+  });
+
   it.each([
     ["a non-object payload", "[]", /must be a JSON object/u],
     ["a nameless definition", JSON.stringify({ definitions: [{ description: "d", prompt: "p" }] }), /name must be lowercase kebab-case/u],
@@ -475,6 +490,9 @@ describe("loadMonoAgentConfig", () => {
     ["the allow-all wildcard", JSON.stringify({ definitions: [{ name: "a", description: "d", prompt: "p", allowedTools: ["*"] }] }), /cannot use the \* wildcard/u],
     ["a self-referential Agent grant", JSON.stringify({ definitions: [{ name: "a", description: "d", prompt: "p", allowedTools: ["Agent"] }] }), /subagents never spawn subagents/u],
     ["an out-of-range maxConcurrent", JSON.stringify({ maxConcurrent: 99 }), /maxConcurrent must be an integer between 1 and 10/u],
+    ["a non-object inline policy", JSON.stringify({ inline: [] }), /inline must be an object/u],
+    ["an inline allow-all wildcard", JSON.stringify({ inline: { allowedTools: ["*"] } }), /cannot use the \* wildcard/u],
+    ["an inline Agent grant", JSON.stringify({ inline: { allowedTools: ["Agent"] } }), /subagents never spawn subagents/u],
   ])("rejects %s", (_label, payload, expected) => {
     expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_SUBAGENTS_JSON: payload } }))
       .toThrow(expected);

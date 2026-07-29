@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   formatLiveInputActivityLine,
   formatToolActivityLine,
   isSubagentLaunchToolName,
+  setToolActivityPathRoots,
   splitSubagentToolName,
   toolHintFor,
 } from "../tool-hints.js";
@@ -98,6 +99,36 @@ describe("formatToolActivityLine", () => {
     // Paths outside both roots stay untouched.
     expect(formatToolActivityLine("Read", { file_path: "/etc/hosts" }, options))
       .toBe("📖 Reading /etc/hosts");
+  });
+
+  describe("process-wide path roots", () => {
+    afterEach(() => {
+      setToolActivityPathRoots({});
+    });
+
+    it("relativizes against the configured roots when a caller passes no options", () => {
+      // The streaming call site has no per-message workspace to hand down, so
+      // without this the root falls back to process.cwd() — which for a
+      // service-managed agent is not the agent directory.
+      setToolActivityPathRoots({ workspaceRoot: "/srv/agents/assistant", homeDir: "/srv" });
+      expect(formatToolActivityLine("Read", { file_path: "/srv/agents/assistant/backlog.md" }))
+        .toBe("📖 Reading backlog.md");
+      expect(formatToolActivityLine("Exec", {
+        executable: "rg",
+        args: ["needle", "/srv/agents/assistant/src"],
+      })).toBe("🖥️ Running rg needle src");
+      expect(formatToolActivityLine("Read", { file_path: "/srv/other/notes.md" }))
+        .toBe("📖 Reading ~/other/notes.md");
+    });
+
+    it("lets explicit options override the configured roots", () => {
+      setToolActivityPathRoots({ workspaceRoot: "/srv/agents/assistant", homeDir: "/srv" });
+      expect(formatToolActivityLine(
+        "Read",
+        { file_path: "/Users/example/agent/backlog.md" },
+        { workspaceRoot: "/Users/example/agent", homeDir: "/Users/example" },
+      )).toBe("📖 Reading backlog.md");
+    });
   });
 
   it.each([

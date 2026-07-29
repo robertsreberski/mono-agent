@@ -14,8 +14,10 @@ import type {
 } from "@mono-agent/agent-harness";
 import type { ToolPolicyInput } from "@mono-agent/agent-harness";
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve as resolvePath } from "node:path";
 
+import { setToolActivityPathRoots } from "@mono-agent/agent-contracts";
 import type { AgentResponder, MemoryStore } from "@mono-agent/agent-contracts";
 import { resolveSupermemoryContainer } from "@mono-agent/config";
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -51,6 +53,7 @@ import type {
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
 import { resolveMemoryRecallSettings } from "./memory-recall.js";
+import { BUILTIN_TOOL_NAMES, canonicalToolName, isAllowAllTools } from "./modules/known-tools.js";
 import {
   createSharedMemoryRecallRuntimeExtension,
   isSharedRecallStore,
@@ -413,6 +416,29 @@ const SUBAGENT_HARD_DENY = [
 /** Read-only default when a profile does not enumerate its tools. */
 const DEFAULT_SUBAGENT_TOOLS = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"] as const;
 
+/**
+ * Cap on the tools the agent may grant a subagent it authors at call time.
+ *
+ * A subagent's `allowedTools` become its real tool set, so an unbounded list
+ * would let the model hand a helper a tool its own policy denies it. An
+ * operator-authored profile may legitimately exceed the parent (they wrote it);
+ * one the model invents may not. Absent an explicit ceiling, the parent's own
+ * effective built-ins are the bound — an authored helper never reaches further
+ * than its author.
+ */
+function inlineSubagentCeiling(config: MonoAgentConfig): readonly string[] {
+  const configured = config.subagents?.inline?.allowedTools;
+  const parentTools = isAllowAllTools(config.tools.allowedTools)
+    ? [...BUILTIN_TOOL_NAMES]
+    : config.tools.allowedTools.map(canonicalToolName);
+  const denied = new Set([
+    ...SUBAGENT_HARD_DENY as readonly string[],
+    ...config.tools.disallowedTools.map(canonicalToolName),
+  ]);
+  const ceiling = configured ?? parentTools.filter((name) => (BUILTIN_TOOL_NAMES as readonly string[]).includes(name));
+  return ceiling.filter((name) => !denied.has(canonicalToolName(name)));
+}
+
 interface SubagentRunRequest {
   readonly systemPrompt: string;
   readonly prompt: string;
@@ -525,6 +551,12 @@ function subagentsRuntimeOptions(
   return {
     subagents: {
       definitions,
+      // Authoring is on unless an operator turns it off; the ceiling is what
+      // keeps that safe, so it is always resolved here rather than left to the
+      // kernel's conservative read-only fallback.
+      ...(config.subagents?.inline?.enabled === false
+        ? {}
+        : { inline: { allowedTools: inlineSubagentCeiling(config) } }),
       ...(subagents.maxConcurrent === undefined ? {} : { maxConcurrent: subagents.maxConcurrent }),
       ...(subagents.maxPerTurn === undefined ? {} : { maxPerTurn: subagents.maxPerTurn }),
       ...(subagents.maxTurns === undefined ? {} : { maxTurns: subagents.maxTurns }),
@@ -629,6 +661,11 @@ async function createConfiguredAgentHarnessInternal(
   internalHooks: ConfiguredAgentInternalHooks = {},
 ): Promise<AgentHarness> {
   const config = options.config;
+  // Chat activity lines are formatted deep in the streaming layer, which has no
+  // per-message workspace to hand down. Without this the root falls back to
+  // `process.cwd()` — for a service-managed agent, whatever directory the
+  // supervisor started it in — and tool previews expose the full machine layout.
+  setToolActivityPathRoots({ workspaceRoot: config.runtime.workspace, homeDir: homedir() });
   const model = options.model ?? config.runtime.model;
   const executionMode = options.executionMode ?? config.runtime.executionMode;
   const runtime = options.runtime ?? createConfiguredAgentRuntime({
