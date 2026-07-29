@@ -451,8 +451,20 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .markdown code { padding: 0.13em 0.35em; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 5px; font-family: var(--font-mono); font-size: 0.88em; }
 .markdown pre { max-width: 100%; padding: 13px 15px; overflow-x: auto; color: var(--text); background: var(--rail); border: 1px solid var(--line); border-radius: 10px; }
 .markdown pre code { padding: 0; color: #e8eee8; background: transparent; border: 0; }
-.markdown table { width: 100%; display: block; overflow-x: auto; border-collapse: collapse; font-size: 12px; }
-.markdown th, .markdown td { padding: 7px 9px; border: 1px solid var(--line); text-align: left; }
+.markdown-table { max-width: 100%; margin: 0 0 0.85em; overflow-x: auto; overscroll-behavior-x: contain; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.markdown-table:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.markdown table { width: 100%; min-width: max-content; border-collapse: collapse; overflow-wrap: normal; font-size: 12px; }
+.markdown th, .markdown td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.markdown thead th { color: var(--text-soft); background: var(--surface-subtle); border-bottom-color: var(--line-strong); font-weight: 650; white-space: nowrap; }
+.markdown tbody tr:nth-child(even) { background: color-mix(in srgb, var(--surface-hover) 55%, transparent); }
+.markdown tbody tr:last-child > * { border-bottom: 0; }
+.markdown del { color: var(--text-muted); text-decoration-thickness: 1px; }
+.markdown .contains-task-list { padding-left: 0; list-style: none; }
+.markdown .contains-task-list .contains-task-list { padding-left: 1.2em; }
+.markdown .task-list-item input[type="checkbox"] { margin: 0 0.45em 0 0; vertical-align: -0.08em; accent-color: var(--accent); }
+.markdown .footnotes { margin-top: 1.3em; padding-top: 0.9em; color: var(--text-soft); border-top: 1px solid var(--line); font-size: 12px; }
+.markdown .footnotes p { margin-bottom: 0.35em; }
+.markdown [data-footnote-ref], .markdown .data-footnote-backref { text-decoration: none; }
 .message-quote { max-width: 100%; display: flex; gap: 8px; margin: 0 0 9px; padding: 8px 10px; overflow: hidden; color: var(--text-muted); background: color-mix(in srgb, var(--surface) 68%, transparent); border-left: 2px solid var(--accent); border-radius: 7px; font-size: 11px; line-height: 1.45; }
 .message-quote svg { flex: none; margin-top: 1px; color: var(--accent); }
 .message-quote span { display: -webkit-box; overflow: hidden; overflow-wrap: anywhere; white-space: pre-wrap; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
@@ -690,6 +702,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .assistant-content { padding-right: 2px; }
   .assistant-content > .activity-root:first-child { margin-top: -6px; }
   .markdown { font-size: 13.5px; line-height: 1.62; }
+  .markdown table { font-size: 11.5px; }
+  .markdown th, .markdown td { padding: 6px 8px; }
   .thread-footer { padding: 24px max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); }
   .composer-root { border-radius: 14px; }
   .composer-dropzone { padding: 8px 8px 6px; }
