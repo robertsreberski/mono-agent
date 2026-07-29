@@ -181,7 +181,9 @@ describe("Agent tool outcomes", () => {
     expect(text).toContain("· failed ·");
     expect(text).toContain("provider_unavailable: boom");
     expect(text).toContain("1. Read /a/b.ts → ok 12ms");
-    expect(result.error).toBe(true);
+    // pi ignores a top-level `error` field; the pi-native tool_result hook
+    // reads this status to restore isError, so it is the load-bearing signal.
+    expect(result.details.subagent.status).toBe("failed");
   });
 
   it("reports an empty answer distinctly from a failure", async () => {
@@ -195,7 +197,7 @@ describe("Agent tool outcomes", () => {
     const tool = createAgentTool(subagentOptions({ run: okRun("Error: the build is broken at foo.ts:12") }));
     const result = await tool.execute("c1", { prompt: "x" });
     expect(result.content[0].text).toContain("Error: the build is broken at foo.ts:12");
-    expect(result.error).toBeUndefined();
+    expect(result.details.subagent.status).toBe("ok");
   });
 
   it("surfaces a parent-turn abort as an aborted tool call", async () => {
@@ -320,6 +322,136 @@ describe("Agent tool activity forwarding", () => {
     });
     const result = await tool.execute("call-1", { name: "researcher", prompt: "x" });
     expect(result.content[0].text).toContain("the answer");
+  });
+});
+
+describe("Agent tool confinement", () => {
+  it("materializes the safe read-only set for a named profile that omits tools", async () => {
+    // Forwarding `undefined` would mean pi's allow-all sentinel — every
+    // built-in including Bash, Write, and Exec — for a profile that merely
+    // declined to enumerate its tools.
+    const run = okRun();
+    const tool = createAgentTool({
+      definitions: [{ name: "bare", description: "d", systemPrompt: "s" }],
+      run,
+    });
+    await tool.execute("c1", { name: "bare", prompt: "x" });
+
+    const { definition } = run.mock.calls[0][0];
+    expect(definition.allowedTools).toEqual(DEFAULT_SUBAGENT_TOOLS);
+    expect(definition.allowedTools).not.toContain("Bash");
+  });
+
+  it("unions the hard-deny list onto every profile, including in the bare kernel", async () => {
+    const run = okRun();
+    const tool = createAgentTool({
+      definitions: [{ name: "shelly", description: "d", systemPrompt: "s", allowedTools: ["Read", "Bash"], disallowedTools: ["Write"] }],
+      run,
+    });
+    await tool.execute("c1", { name: "shelly", prompt: "x" });
+
+    const { definition } = run.mock.calls[0][0];
+    expect(definition.disallowedTools).toEqual(expect.arrayContaining([
+      "Write", "Agent", "AskUser", "SlackSendMessage", "TelegramSendMessage", "TelegramSendFile",
+    ]));
+  });
+
+  it("strips a hard-denied tool a profile tries to allow", async () => {
+    const run = okRun();
+    const tool = createAgentTool({
+      definitions: [{ name: "sneaky", description: "d", systemPrompt: "s", allowedTools: ["Read", "Agent", "AskUser"] }],
+      run,
+    });
+    await tool.execute("c1", { name: "sneaky", prompt: "x" });
+
+    const { definition } = run.mock.calls[0][0];
+    expect(definition.allowedTools).toEqual(["Read"]);
+  });
+
+  it("hands the parent's sandbox policy to every child request", async () => {
+    const run = okRun();
+    const sandboxPolicy = { mode: "workspace-write", network: { mode: "deny" } };
+    const sandboxEngine = { id: "srt" };
+    const tool = createAgentTool(subagentOptions({ run }), { sandboxPolicy, sandboxEngine });
+    await tool.execute("c1", { prompt: "x" });
+
+    // A child inheriting no policy would bypass network deny through its own
+    // default WebFetch/WebSearch tools.
+    expect(run.mock.calls[0][0]).toMatchObject({ sandboxPolicy, sandboxEngine });
+  });
+});
+
+describe("Agent tool bounds", () => {
+  it("abandons a runner that ignores both its abort signal and its deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      // A signal only asks. Without an enforceable deadline this call would stay
+      // pending forever, holding its permit and wedging every queued sibling.
+      const run = vi.fn(() => new Promise(() => {}));
+      const tool = createAgentTool(subagentOptions({ run, timeoutMs: 1_000, maxConcurrent: 1 }));
+      const first = tool.execute("c1", { prompt: "x" });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+      const text = (await first).content[0].text;
+      expect(text).toContain("· timeout ·");
+      expect(text).toContain("abandoned");
+
+      // The slot is free, so a queued sibling can still run.
+      const second = tool.execute("c2", { prompt: "y" });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect((await second).content[0].text).toContain("· timeout ·");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds the aggregate bytes of many results in one turn", async () => {
+    const run = vi.fn(async () => ({ text: "z".repeat(200_000), events: [] }));
+    const tool = createAgentTool(subagentOptions({ run, maxPerTurn: 20 }));
+
+    let total = 0;
+    for (let i = 0; i < 20; i += 1) {
+      const result = await tool.execute(`c${i}`, { prompt: "x" });
+      total += Buffer.byteLength(result.content[0].text, "utf8");
+    }
+    // Twenty individually-capped 24KB results would be ~480KB of parent context.
+    expect(total).toBeLessThanOrEqual(140_000);
+  });
+
+  it("still reports the outcome after the turn byte budget is spent", async () => {
+    const run = vi.fn(async () => ({ text: "z".repeat(200_000), events: [] }));
+    const tool = createAgentTool(subagentOptions({ run, maxPerTurn: 20 }));
+    for (let i = 0; i < 12; i += 1) await tool.execute(`c${i}`, { prompt: "x" });
+
+    const last = await tool.execute("last", { name: "researcher", prompt: "x" });
+    expect(last.content[0].text).toContain("<subagent: researcher");
+  });
+
+  it("keeps one call budget across router attempts that rebuild the tool", async () => {
+    // getPiBuiltinTools runs per router attempt, so a closure-local counter
+    // would hand each retry and failover a fresh maxPerTurn allowance.
+    const shared = subagentOptions({ maxPerTurn: 2 });
+    const context = { parentRunId: "run-1" };
+
+    const attemptOne = createAgentTool(shared, context);
+    await attemptOne.execute("c1", { prompt: "x" });
+
+    const attemptTwo = createAgentTool(shared, context);
+    await attemptTwo.execute("c2", { prompt: "x" });
+    await expect(attemptTwo.execute("c3", { prompt: "x" }))
+      .rejects.toThrow(/budget for this turn is exhausted/u);
+  });
+
+  it("starts a fresh budget for a different parent run", async () => {
+    const shared = subagentOptions({ maxPerTurn: 1 });
+    const first = createAgentTool(shared, { parentRunId: "run-1" });
+    await first.execute("c1", { prompt: "x" });
+    await expect(first.execute("c2", { prompt: "x" })).rejects.toThrow(/exhausted/u);
+
+    const second = createAgentTool(shared, { parentRunId: "run-2" });
+    await expect(second.execute("c3", { prompt: "x" })).resolves.toBeDefined();
   });
 });
 });

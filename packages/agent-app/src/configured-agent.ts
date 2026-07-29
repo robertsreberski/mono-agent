@@ -374,6 +374,33 @@ export function createConfiguredAgentRuntime(
   return createMonoRuntime(runtimeOptions);
 }
 
+/**
+ * Narrow the loaded MCP servers to the ones a profile names.
+ *
+ * An unknown name is a configuration error the loader cannot catch (it does not
+ * read mcp.json), and silently dropping it would leave the subagent quietly
+ * less capable than its config claims.
+ */
+function selectMcpServers(
+  available: Record<string, unknown>,
+  names: readonly string[] | undefined,
+  profile: string,
+): Record<string, unknown> {
+  if (names === undefined || names.length === 0) {
+    return {};
+  }
+  const selected: Record<string, unknown> = {};
+  for (const name of names) {
+    if (!Object.hasOwn(available, name)) {
+      throw new Error(
+        `Subagent "${profile}" references MCP server "${name}", which is not defined in tools.mcpConfigPath.`,
+      );
+    }
+    selected[name] = available[name];
+  }
+  return selected;
+}
+
 /** Denied for every subagent regardless of profile. Mirrors the kernel's own list. */
 const SUBAGENT_HARD_DENY = [
   "Agent",
@@ -395,10 +422,13 @@ interface SubagentRunRequest {
     readonly effort?: string;
     readonly allowedTools?: readonly string[];
     readonly disallowedTools?: readonly string[];
+    readonly mcpServers?: Record<string, unknown>;
   };
   readonly maxTurns: number;
   readonly depth: number;
   readonly cwd?: string;
+  readonly sandboxPolicy?: unknown;
+  readonly sandboxEngine?: unknown;
   readonly abortSignal: AbortSignal;
   readonly onEvent: (event: unknown) => void;
 }
@@ -433,6 +463,10 @@ function subagentsRuntimeOptions(
   if (subagents?.enabled !== true) {
     return undefined;
   }
+  // Config, schema, doctor, and docs all advertise per-profile MCP servers, so
+  // resolve the named subset here rather than silently handing every child an
+  // empty map. Only the servers a profile names are exposed.
+  const availableMcpServers = (toolPolicyInput(config).mcpServers ?? {}) as Record<string, unknown>;
   const definitions = (subagents.definitions ?? []).map((definition) => ({
     name: definition.name,
     description: definition.description,
@@ -441,6 +475,7 @@ function subagentsRuntimeOptions(
     ...(definition.effort === undefined ? {} : { effort: definition.effort }),
     allowedTools: definition.allowedTools ?? [...DEFAULT_SUBAGENT_TOOLS],
     disallowedTools: [...new Set([...(definition.disallowedTools ?? []), ...SUBAGENT_HARD_DENY])],
+    mcpServers: selectMcpServers(availableMcpServers, definition.mcpServers, definition.name),
     ...(definition.maxTurns === undefined ? {} : { maxTurns: definition.maxTurns }),
     ...(definition.timeoutMs === undefined ? {} : { timeoutMs: definition.timeoutMs }),
   }));
@@ -468,12 +503,18 @@ function subagentsRuntimeOptions(
       messages: [{ role: "user", content: request.prompt }],
       maxTurns: request.maxTurns,
       ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+      // Monotonic: the child is confined by the same policy as the parent turn.
+      // This runs outside the harness, which is where the policy is normally
+      // attached, so dropping it would leave the child entirely unsandboxed.
+      ...(request.sandboxPolicy === undefined ? {} : { sandboxPolicy: request.sandboxPolicy }),
+      ...(request.sandboxEngine === undefined ? {} : { sandboxEngine: request.sandboxEngine }),
       ...(request.definition.effort === undefined ? {} : { effort: request.definition.effort }),
       allowedTools: request.definition.allowedTools ?? [...DEFAULT_SUBAGENT_TOOLS],
       disallowedTools: [...new Set([...(request.definition.disallowedTools ?? []), ...SUBAGENT_HARD_DENY])],
-      // Subagents get no MCP servers, so the app-owned AskUser and channel-send
-      // tools are structurally out of reach, not merely denied by name.
-      mcpServers: {},
+      // Only the servers this profile named. A profile that names none gets an
+      // empty map, keeping the app-owned AskUser and channel-send tools
+      // structurally out of reach rather than merely denied by name.
+      mcpServers: request.definition.mcpServers ?? {},
       abortSignal: request.abortSignal,
       onEvent: request.onEvent,
       // Depth propagation is the recursion lock the kernel also enforces.

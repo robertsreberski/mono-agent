@@ -307,5 +307,29 @@ describe("createRuntime subagent seam", () => {
     expect(childOptions.sessionId).toBeUndefined();
     expect(childOptions.liveInput).toBeUndefined();
   });
+
+  it("confines a child with the parent's sandbox policy", async () => {
+    executeMock.mockResolvedValue({ text: "ok", events: [] });
+    const runtime = createRuntime();
+    await runtime.run("parent", { model, subagents });
+    const childRun = executeMock.mock.calls[0][1].subagents.run;
+
+    executeMock.mockClear();
+    const sandboxPolicy = { mode: "read-only", network: { mode: "deny" } };
+    await childRun({
+      systemPrompt: "s",
+      prompt: "p",
+      definition: { name: "researcher", allowedTools: ["Read"] },
+      model,
+      maxTurns: 3,
+      depth: 1,
+      sandboxPolicy,
+      sandboxEngine: { id: "srt" },
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    });
+
+    expect(executeMock.mock.calls[0][1]).toMatchObject({ sandboxPolicy, sandboxEngine: { id: "srt" } });
+  });
 });
 });

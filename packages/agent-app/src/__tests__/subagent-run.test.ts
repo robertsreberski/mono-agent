@@ -178,4 +178,15 @@ describe("configured subagents", () => {
     expect(runtimeForModel).not.toHaveBeenCalled();
     expect(runtime.run).toHaveBeenCalledOnce();
   });
+
+  it("gives a profile only the MCP servers it names, and none by default", async () => {
+    const { subagents } = await buildSubagents(monoConfig({
+      enabled: true,
+      definitions: [RESEARCHER],
+    }));
+    const definitions = (subagents?.definitions ?? []) as Array<Record<string, unknown>>;
+    // No named servers means AskUser and the channel-send tools stay
+    // structurally unreachable rather than merely denied by name.
+    expect(definitions[0]?.mcpServers).toEqual({});
+  });
 });

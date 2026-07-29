@@ -43,6 +43,10 @@ const DEFAULT_MAX_CONCURRENT = 5;
 const DEFAULT_MAX_PER_TURN = 20;
 const DEFAULT_MAX_TURNS = 20;
 const DEFAULT_TIMEOUT_MS = 300_000;
+/** Grace after the abort signal before the deadline stops waiting on a runner. */
+const DEADLINE_GRACE_MS = 5_000;
+/** Sentinel distinguishing "deadline won the race" from a real child result. */
+const DEADLINE = Symbol("subagent-deadline");
 
 // Kept an order of magnitude under the bloat guard's 256 KiB default: when that
 // guard fires it replaces the whole payload with an artifact pointer, which
@@ -53,6 +57,10 @@ const LOG_HEAD_LINES = 25;
 const LOG_TAIL_LINES = 30;
 const LOG_LINE_MAX_CHARS = 160;
 const RESULT_MAX_BYTES = 24_000;
+/** Aggregate ceiling for every Agent result in one logical turn. */
+const TURN_RESULT_MAX_BYTES = 120_000;
+/** Bound on retained per-run budget entries for a long-lived host. */
+const MAX_TRACKED_RUNS = 32;
 
 const DESCRIPTION_BASE = `Delegate a self-contained task to a subagent that works independently and reports back.
 
@@ -81,6 +89,30 @@ function toolDescription(subagents, definitions) {
   return `${DESCRIPTION_BASE}${parallel}${named}`;
 }
 
+/**
+ * Per-logical-run call and byte budget, shared across router attempts.
+ * @param {*} subagents The run-scoped options object, stable across attempts.
+ * @param {string|undefined} parentRunId
+ */
+function budgetForRun(subagents, parentRunId) {
+  const store = subagents.__budgets instanceof Map ? subagents.__budgets : new Map();
+  if (!(subagents.__budgets instanceof Map)) {
+    Object.defineProperty(subagents, "__budgets", { value: store, enumerable: false, configurable: true });
+  }
+  const key = parentRunId ?? "unkeyed";
+  const existing = store.get(key);
+  if (existing !== undefined) return existing;
+  // Oldest-first eviction: Map preserves insertion order.
+  while (store.size >= MAX_TRACKED_RUNS) {
+    const oldest = store.keys().next();
+    if (oldest.done) break;
+    store.delete(oldest.value);
+  }
+  const fresh = { total: 0, bytes: 0, warnedQueued: false };
+  store.set(key, fresh);
+  return fresh;
+}
+
 /** @param {*} value @param {number} fallback @returns {number} */
 function positiveInt(value, fallback) {
   return Number.isInteger(value) && value > 0 ? value : fallback;
@@ -90,7 +122,7 @@ function positiveInt(value, fallback) {
  * Build the `Agent` tool, or null when subagents are unavailable for this run.
  *
  * @param {RuntimeSubagentsOptions|null|undefined} subagents
- * @param {{model?: *, executionMode?: string, cwd?: string, parentRunId?: string, onEvent?: (event: *) => void}} [context]
+ * @param {{model?: *, executionMode?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, onEvent?: (event: *) => void}} [context]
  * @returns {*|null}
  */
 export function createAgentTool(subagents, context = {}) {
@@ -104,10 +136,13 @@ export function createAgentTool(subagents, context = {}) {
   const maxPerTurn = positiveInt(subagents.maxPerTurn, DEFAULT_MAX_PER_TURN);
   const names = definitions.map((definition) => definition.name);
 
-  // Turn-scoped: getPiBuiltinTools runs once per turn, so these counters reset
-  // naturally and cannot leak budget across turns.
   const slots = createCountingSemaphore(maxConcurrent);
-  const turnState = { total: 0, warnedQueued: false };
+  // Budget state hangs off the shared `subagents` options object, NOT this
+  // closure: getPiBuiltinTools runs once per ROUTER ATTEMPT, so a closure-local
+  // counter would reset on every same-model retry and failover, multiplying the
+  // effective ceiling by the number of attempts. Keyed by parent run so a later
+  // logical turn starts fresh, and bounded so a long-lived host cannot grow it.
+  const budget = budgetForRun(subagents, context.parentRunId);
 
   const parameters = {
     type: "object",
@@ -160,16 +195,16 @@ export function createAgentTool(subagents, context = {}) {
       // The concurrency cap bounds resources, not cost: a delegation loop can
       // fire calls serially across turns without ever contending the semaphore.
       // This counter is the actual runaway guard.
-      if (turnState.total >= maxPerTurn) {
+      if (budget.total >= maxPerTurn) {
         throw new Error(
           `Error: subagent budget for this turn is exhausted (${maxPerTurn} of ${maxPerTurn} used). Do the remaining work yourself.`,
         );
       }
-      turnState.total += 1;
-      const callIndex = turnState.total;
+      budget.total += 1;
+      const callIndex = budget.total;
 
-      if (slots.inFlight() >= maxConcurrent && !turnState.warnedQueued) {
-        turnState.warnedQueued = true;
+      if (slots.inFlight() >= maxConcurrent && !budget.warnedQueued) {
+        budget.warnedQueued = true;
         context.onEvent?.({
           type: "runtime_warning",
           warning_kind: "subagent_queued",
@@ -178,6 +213,12 @@ export function createAgentTool(subagents, context = {}) {
       }
 
       const releaseSlot = await slots.acquire(signal);
+      // The parent can abort while this call was queued; without rechecking, an
+      // already-cancelled turn would still spawn a child.
+      if (signal?.aborted) {
+        releaseSlot();
+        throw new Error("tool execution aborted");
+      }
       // The timeout starts only AFTER a slot is held. Started earlier, a call
       // queued behind five long-running siblings would time out having never run.
       const timeoutMs = positiveInt(profile.timeoutMs, positiveInt(subagents.timeoutMs, DEFAULT_TIMEOUT_MS));
@@ -189,10 +230,21 @@ export function createAgentTool(subagents, context = {}) {
       if (signal?.aborted) controller.abort();
       else signal?.addEventListener("abort", onParentAbort, { once: true });
       const timer = setTimeout(() => {
-        if (controller.signal.aborted) return;
         timedOut = true;
-        controller.abort();
+        // Ask first — a cooperative runner settles and we keep its partial text.
+        if (!controller.signal.aborted) controller.abort();
+        // Then stop waiting regardless, after a short grace period.
+        setTimeout(() => fireDeadline?.(), DEADLINE_GRACE_MS).unref?.();
       }, timeoutMs);
+
+      /** @type {(() => void)|undefined} */
+      let fireDeadline;
+      // A signal only ASKS a runner to stop. A runner that ignores both its
+      // abort signal and its deadline would otherwise keep `execute()` pending
+      // forever, holding its permit and wedging every queued sibling. Racing an
+      // enforceable deadline lets the slot go; the abandoned work is left to
+      // settle on its own and its late result is ignored.
+      const deadline = new Promise((resolve) => { fireDeadline = () => resolve(DEADLINE); });
 
       const collector = createActivityCollector({
         callId: toolCallId,
@@ -207,8 +259,9 @@ export function createAgentTool(subagents, context = {}) {
       let result;
       /** @type {unknown} */
       let thrown;
+      let abandoned = false;
       try {
-        result = await subagents.run({
+        const running = subagents.run({
           systemPrompt: profile.systemPrompt,
           prompt: params.prompt,
           definition: profile,
@@ -216,6 +269,9 @@ export function createAgentTool(subagents, context = {}) {
           ...(context.executionMode === undefined ? {} : { executionMode: context.executionMode }),
           ...(context.cwd === undefined ? {} : { cwd: context.cwd }),
           ...(context.parentRunId === undefined ? {} : { parentRunId: context.parentRunId }),
+          // Inherited, never widened: a profile cannot loosen confinement.
+          ...(context.sandboxPolicy === undefined ? {} : { sandboxPolicy: context.sandboxPolicy }),
+          ...(context.sandboxEngine === undefined ? {} : { sandboxEngine: context.sandboxEngine }),
           abortSignal: controller.signal,
           maxTurns,
           callId: toolCallId,
@@ -223,6 +279,15 @@ export function createAgentTool(subagents, context = {}) {
           depth: positiveInt(subagents.depth, 0) + 1,
           onEvent: collector.observe,
         });
+        // Never let an abandoned runner surface as an unhandled rejection.
+        void Promise.resolve(running).catch(() => undefined);
+        const settled = await Promise.race([running, deadline]);
+        if (settled === DEADLINE) {
+          timedOut = true;
+          abandoned = true;
+        } else {
+          result = settled;
+        }
       } catch (error) {
         thrown = error;
       } finally {
@@ -232,26 +297,43 @@ export function createAgentTool(subagents, context = {}) {
       }
 
       // The parent turn being cancelled is not a subagent outcome — surface it
-      // as an aborted tool call the way every other built-in does.
-      if (signal?.aborted && !timedOut) throw new Error("tool execution aborted");
+      // as an aborted tool call the way every other built-in does. Close any
+      // still-open child activity first so the operator surfaces do not keep a
+      // spinner running for a tool that will never report.
+      if (signal?.aborted && !timedOut) {
+        collector.drain("parent turn cancelled");
+        collector.finished({ status: "cancelled", durationMs: Date.now() - startedAt });
+        throw new Error("tool execution aborted");
+      }
+      collector.drain("subagent ended before this tool reported");
 
       const durationMs = Date.now() - startedAt;
-      const outcome = classifyOutcome({ result, thrown, timedOut });
+      const outcome = classifyOutcome({ result, thrown, timedOut, abandoned });
       collector.finished({ status: outcome.status, durationMs });
+      // Each result is individually capped, but the parent's context sees the
+      // SUM. The description encourages parallel calls, so twenty valid results
+      // would otherwise land ~480KB in one batch. Later calls get whatever
+      // budget remains.
+      const remaining = Math.max(0, TURN_RESULT_MAX_BYTES - budget.bytes);
       const text = formatSubagentResult({
         profileName: profile.name,
         label: params.description,
         outcome,
         durationMs,
         activity: collector.entries(),
+        maxBytes: Math.min(RESULT_MAX_BYTES, remaining),
       });
+      budget.bytes += Buffer.byteLength(text, "utf8");
+      // `details.subagent.status` is the load-bearing signal: pi hardcodes
+      // isError:false for every resolved execute(), so the pi-native
+      // `tool_result` hook reads this to restore the error flag. A top-level
+      // `error` field here would be silently ignored.
       return {
         content: [{ type: "text", text }],
         details: {
           tool: "Agent",
           subagent: { name: profile.name, callIndex, status: outcome.status, toolCalls: collector.entries().length },
         },
-        ...(outcome.status === "ok" ? {} : { error: true }),
       };
     },
   };
@@ -264,14 +346,36 @@ export function createAgentTool(subagents, context = {}) {
  */
 function resolveProfile(definitions, name) {
   if (name === undefined || name === null || name === GENERAL_PURPOSE_SUBAGENT) {
-    return {
+    return normalizeProfile({
       name: GENERAL_PURPOSE_SUBAGENT,
       description: "Read-only researcher inheriting the main model.",
       systemPrompt: "You are a focused research subagent. Work only from the task you were given — you cannot see the parent conversation and cannot ask anyone anything. Investigate with the tools you have, then finish with a written answer in exactly the shape the task requested. Cite file:line where relevant. Never modify files.",
-      allowedTools: DEFAULT_SUBAGENT_TOOLS,
-    };
+    });
   }
-  return definitions.find((definition) => definition.name === name) ?? null;
+  const found = definitions.find((definition) => definition.name === name);
+  return found === undefined ? null : normalizeProfile(found);
+}
+
+/**
+ * Materialize a profile's effective tool boundary in the KERNEL, not just in
+ * whichever host happened to build the definitions.
+ *
+ * An omitted `allowedTools` is documented as "the safe read-only default set",
+ * but forwarding `undefined` to `getPiBuiltinTools` means the allow-all sentinel
+ * — every built-in, including Bash, Write, and Exec. A bare-kernel caller
+ * supplying a profile without tools would therefore silently get the widest
+ * possible child. The hard-deny list is unioned here for the same reason: it
+ * must hold on every path, not only the configured-app one.
+ *
+ * @param {RuntimeSubagentDefinition} definition
+ * @returns {RuntimeSubagentDefinition}
+ */
+function normalizeProfile(definition) {
+  const allowed = Array.isArray(definition.allowedTools) && definition.allowedTools.length > 0
+    ? definition.allowedTools.filter((tool) => !SUBAGENT_HARD_DENY.includes(tool))
+    : DEFAULT_SUBAGENT_TOOLS;
+  const denied = [...new Set([...(definition.disallowedTools ?? []), ...SUBAGENT_HARD_DENY])];
+  return { ...definition, allowedTools: allowed, disallowedTools: denied };
 }
 
 /** Hard cap on any single forwarded payload, so the operator wire's binary-search reducer never has to run. */
@@ -333,12 +437,30 @@ function createActivityCollector({ callId, profileName, callIndex, label, emit }
         content: `${status} · ${done.length} tool call${done.length === 1 ? "" : "s"}`,
       });
     },
+    /** Close any tool left open when a run ends abnormally, exactly once. */
+    drain(reason) {
+      for (const [id, entry] of open) {
+        done.push({ name: entry.name, args: entry.args, ms: Date.now() - entry.startedAt, isError: true });
+        publish({
+          phase: "completed",
+          id: `agent:${callId}:${id}`,
+          name: `${profileName}▸${entry.name}`,
+          isError: true,
+          content: reason,
+        });
+      }
+      open.clear();
+    },
     /** @param {*} event */
     observe(event) {
       const type = event?.type;
+      // Providers legitimately forward multiple blocks in one message; the
+      // Claude bridges do routinely. Inspecting only content[0] dropped every
+      // tool call after the first.
+      const blocks = Array.isArray(event?.message?.content) ? event.message.content : [];
       if (type === "assistant") {
-        const block = event.message?.content?.[0];
-        if (block?.type === "tool_use" && typeof block.id === "string") {
+        for (const block of blocks) {
+          if (block?.type !== "tool_use" || typeof block.id !== "string") continue;
           const name = String(block.name ?? "?");
           open.set(block.id, { name, args: block.input, startedAt: Date.now() });
           publish({
@@ -356,8 +478,8 @@ function createActivityCollector({ callId, profileName, callIndex, label, emit }
         return;
       }
       if (type === "user") {
-        const block = event.message?.content?.[0];
-        if (block?.type === "tool_result" && typeof block.tool_use_id === "string") {
+        for (const block of blocks) {
+          if (block?.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
           const entry = open.get(block.tool_use_id);
           open.delete(block.tool_use_id);
           const ms = entry?.ms ?? (entry ? Date.now() - entry.startedAt : undefined);
@@ -404,10 +526,17 @@ function safeJson(value) {
 }
 
 /**
- * @param {{result: *, thrown: unknown, timedOut: boolean}} input
+ * @param {{result: *, thrown: unknown, timedOut: boolean, abandoned?: boolean}} input
  * @returns {{status: string, answer: string, reason?: string}}
  */
-function classifyOutcome({ result, thrown, timedOut }) {
+function classifyOutcome({ result, thrown, timedOut, abandoned = false }) {
+  if (abandoned) {
+    return {
+      status: "timeout",
+      answer: "",
+      reason: "the subagent ignored its deadline and was abandoned; its slot was released",
+    };
+  }
   if (timedOut) {
     return { status: "timeout", answer: typeof result?.text === "string" ? result.text : "", reason: "the subagent exceeded its time budget" };
   }
@@ -433,10 +562,10 @@ function classifyOutcome({ result, thrown, timedOut }) {
  * log: that log is the most useful artifact of a failed delegation, and a
  * thrown tool error would discard it.
  *
- * @param {{profileName: string, label?: string, outcome: {status: string, answer: string, reason?: string}, durationMs: number, activity: ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>}} input
+ * @param {{profileName: string, label?: string, outcome: {status: string, answer: string, reason?: string}, durationMs: number, activity: ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>, maxBytes?: number}} input
  * @returns {string}
  */
-export function formatSubagentResult({ profileName, label, outcome, durationMs, activity }) {
+export function formatSubagentResult({ profileName, label, outcome, durationMs, activity, maxBytes = RESULT_MAX_BYTES }) {
   const seconds = (durationMs / 1000).toFixed(1);
   const calls = `${activity.length} tool call${activity.length === 1 ? "" : "s"}`;
   const header = `<subagent: ${profileName}${label ? ` · ${label}` : ""} · ${outcome.status} · ${calls} · ${seconds}s>`;
@@ -444,7 +573,10 @@ export function formatSubagentResult({ profileName, label, outcome, durationMs, 
   if (outcome.reason !== undefined) parts.push(`reason: ${truncate(outcome.reason, 500)}`);
   if (outcome.answer.length > 0) parts.push("", truncate(outcome.answer, ANSWER_MAX_CHARS));
   if (activity.length > 0) parts.push("", "<activity>", ...renderActivity(activity), "</activity>");
-  return capBytes(parts.join("\n"), RESULT_MAX_BYTES);
+  // A fully spent turn budget still returns the header + reason, so the model
+  // learns the delegation happened and why it was truncated.
+  const floor = 512;
+  return capBytes(parts.join("\n"), Math.max(floor, maxBytes));
 }
 
 /**

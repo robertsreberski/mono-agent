@@ -683,6 +683,7 @@ rule
 runCli
 runContinuationCommand
 runSandboxCommand
+runtimeUsesFallbackRouter
 sandboxRuntimeStatus
 setupManagedSrt
 startContinuationService

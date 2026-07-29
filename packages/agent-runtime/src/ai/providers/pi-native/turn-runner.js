@@ -130,6 +130,10 @@ export async function buildTurnTools(runState, {
         executionMode: options.executionMode,
         cwd: options.cwd,
         parentRunId: runCtx?.runId,
+        // Same policy + engine this turn's own tools are confined by, so a
+        // child is never less sandboxed than the parent that spawned it.
+        sandboxPolicy: options.sandboxPolicy,
+        sandboxEngine,
       },
       ctx: runCtx,
     }));
@@ -216,6 +220,26 @@ export function thinkingLevelForEffort(effort, capabilities) {
  * @param {any} params
  * @returns {any}
  */
+/**
+ * Restore the error flag on a tool result pi resolved successfully.
+ *
+ * pi hardcodes `isError: false` for every `execute()` that returns rather than
+ * throws, so any tool that reports failure in its payload needs this hook or
+ * the model is told the call succeeded.
+ *
+ * @param {*} details Tool-result details recorded by the bridge.
+ * @returns {{isError: true}|undefined}
+ */
+export function toolResultErrorOverride(details) {
+  const subagentStatus = details?.subagent?.status;
+  const failed = details?.mcp_result_is_error === true
+    || details?.outcome?.status === "error"
+    // A failed subagent returns its answer-plus-log instead of throwing,
+    // precisely so a failed delegation keeps its activity log.
+    || (typeof subagentStatus === "string" && subagentStatus !== "ok");
+  return failed ? { isError: true } : undefined;
+}
+
 export function buildTurnHarness(runState, {
   cwd,
   session,
@@ -252,10 +276,13 @@ export function buildTurnHarness(runState, {
   // this after-tool hook restores the error flag while preserving the already
   // bounded content/details verbatim. Downstream tool_execution_end and timing
   // events therefore report the failure accurately.
-  harness.on("tool_result", (event) => /** @type {any} */ (event?.details)?.mcp_result_is_error === true
-    || /** @type {any} */ (event?.details)?.outcome?.status === "error"
-    ? { isError: true }
-    : undefined);
+  //
+  // A failed subagent is the same shape of problem: the `Agent` tool returns
+  // its formatted answer-plus-activity-log rather than throwing, precisely so a
+  // failed delegation keeps its log — but pi hardcodes `isError: false` for
+  // every resolved execute(), so without this the model would be told a failed,
+  // timed-out, or empty delegation succeeded.
+  harness.on("tool_result", (event) => toolResultErrorOverride(event?.details));
   runState.harness = harness;
 
   harness.subscribe(createStreamSubscriber(runState, {

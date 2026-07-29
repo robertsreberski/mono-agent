@@ -148,14 +148,23 @@ export function createRuntime(host = {}) {
    * bare `createRuntime` with no host wiring. Hosts replace it to route child
    * turns through their own runtime (fallback chain, retries, recording).
    *
-   * This is also where the depth lock is enforced for EVERY implementation: the
-   * child's option bag is rebuilt here with an incremented depth and stripped
-   * session/steering state, so a host-supplied `run` that forgets to do either
-   * still cannot recurse or inherit the parent's provider session.
+   * Scope of the guarantee, precisely: this fallback rebuilds the child bag with
+   * stripped session/steering state, but a HOST-SUPPLIED `run` is installed
+   * verbatim and is a privileged seam — it is responsible for its own session
+   * isolation. Recursion is blocked independently of the callback: the `Agent`
+   * tool stamps `depth + 1` into every descriptor it hands out, and
+   * `getPiBuiltinTools` refuses to register the tool at depth >= 1, so a custom
+   * callback cannot produce a grandchild even if it ignores the rest.
    * @param {*} request
    */
   const defaultSubagentRun = async (request) => self.run(request.systemPrompt, {
     model: request.model,
+    // A child must never be less confined than its parent. The policy is a
+    // per-run option, not a host key, so without forwarding it the child would
+    // run with no sandbox at all — and its default tools include WebFetch and
+    // WebSearch, so even a read-only profile could bypass network policy.
+    ...(request.sandboxPolicy === undefined ? {} : { sandboxPolicy: request.sandboxPolicy }),
+    ...(request.sandboxEngine === undefined ? {} : { sandboxEngine: request.sandboxEngine }),
     ...(request.executionMode === undefined ? {} : { executionMode: request.executionMode }),
     ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
     messages: [{ role: "user", content: request.prompt }],
