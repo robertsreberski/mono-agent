@@ -39,8 +39,11 @@ const ACTIVITY_GROUP_BY_TYPE = groupPartByType({
   "standalone-tool-call": [] as const,
 });
 
+/** Named data parts that are user-visible activity rather than diagnostics. */
+const ACTIVITY_DATA_PARTS = new Set(["context-compaction", "subagent"]);
+
 export const ACTIVITY_GROUP_BY: typeof ACTIVITY_GROUP_BY_TYPE = (part, context) =>
-  part.type === "data" && part.name === "context-compaction"
+  part.type === "data" && ACTIVITY_DATA_PARTS.has(part.name)
     ? ["group-activity"] as const
     : ACTIVITY_GROUP_BY_TYPE(part, context);
 

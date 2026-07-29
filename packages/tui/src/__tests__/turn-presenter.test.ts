@@ -449,3 +449,111 @@ describe("TurnPresenter", () => {
     expect(afterSecondTurnFirstThought).not.toContain(`${formatTokens(100)} chars`);
   });
 });
+
+describe("TurnPresenter subagent panels", () => {
+  const launch = (id: string, name: string) => ({
+    type: "tool_call_started" as const,
+    id,
+    name: "Agent",
+    arguments: { name, prompt: "find X" },
+  });
+  const bookend = (id: string, name: string) => ({
+    type: "tool_call_started" as const,
+    id: `agent:${id}`,
+    name: `Agent(${name})`,
+    metadata: { subagent: { id, name, callIndex: 0 }, synthetic: true, subagentLifecycle: true },
+  });
+  const childCall = (id: string, name: string, toolId: string, tool: string, args: unknown) => ({
+    type: "tool_call_started" as const,
+    id: `agent:${id}:${toolId}`,
+    name: `${name}▸${tool}`,
+    arguments: args,
+    metadata: { subagent: { id, name, callIndex: 0 }, synthetic: true },
+  });
+
+  it("nests a subagent's tool calls under its Agent panel and drops the bookend", async () => {
+    const { presenter, rendered } = setup();
+
+    await presenter.event(launch("call-1", "researcher"));
+    await presenter.event(bookend("call-1", "researcher"));
+    await presenter.event(childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }));
+    presenter.settle();
+
+    const lines = rendered().split("\n").filter((line) => line.trim().length > 0);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("Agent");
+    // The profile already names the panel above, so the `researcher▸` prefix is
+    // dropped and the call is indented past its parent.
+    expect(lines[1]).toContain("Read");
+    expect(lines[1]).not.toContain("researcher▸");
+    expect(indentOf(lines[1] ?? "")).toBeGreaterThan(indentOf(lines[0] ?? ""));
+    // The lifecycle bookend must not become a second panel.
+    expect(rendered()).not.toContain("Agent(researcher)");
+  });
+
+  it("keeps concurrent subagents' calls under their own parents", async () => {
+    const { presenter, rendered } = setup();
+
+    await presenter.event(launch("a", "researcher"));
+    await presenter.event(launch("b", "reviewer"));
+    // Interleaved: appending each child at the transcript tail would shuffle
+    // both agents' work into one list.
+    await presenter.event(childCall("a", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }));
+    await presenter.event(childCall("b", "reviewer", "t2", "Grep", { pattern: "x" }));
+    await presenter.event(childCall("a", "researcher", "t3", "Glob", { pattern: "*.ts" }));
+    presenter.settle();
+
+    const lines = rendered().split("\n").filter((line) => line.trim().length > 0);
+    expect(lines.map((line) => line.trim().split(/\s+/u)[1])).toEqual([
+      "Agent", "Read", "Glob", "Agent", "Grep",
+    ]);
+  });
+
+  it("completes a nested panel from its own completion event", async () => {
+    const { presenter, rendered } = setup();
+
+    await presenter.event(launch("call-1", "researcher"));
+    await presenter.event(childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }));
+    await presenter.event({
+      type: "tool_call_completed",
+      id: "agent:call-1:t1",
+      name: "researcher▸Read",
+      isError: true,
+      executionMs: 12,
+    });
+    presenter.settle();
+
+    expect(rendered()).toContain("✗ Read");
+  });
+
+  it("falls back to a top-level panel when the parent Agent call was never seen", async () => {
+    const { presenter, rendered } = setup();
+
+    await presenter.event(childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }));
+    presenter.settle();
+
+    // Orphaned activity is still shown, keeping its profile prefix since no
+    // parent panel names the agent it came from.
+    expect(rendered()).toContain("researcher▸Read");
+  });
+
+  it("ignores malformed subagent metadata instead of keying a panel on it", async () => {
+    const { presenter, rendered, transcript } = setup();
+
+    await presenter.event({
+      type: "tool_call_started",
+      id: "t1",
+      name: "Read",
+      arguments: { file_path: "/repo/a.ts" },
+      metadata: { subagent: { id: 42 }, synthetic: true },
+    });
+    presenter.settle();
+
+    expect(transcript.children).toHaveLength(1);
+    expect(rendered()).toContain("Read");
+  });
+});
+
+function indentOf(line: string): number {
+  return line.length - line.trimStart().length;
+}

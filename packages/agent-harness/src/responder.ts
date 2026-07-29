@@ -409,7 +409,16 @@ export function streamEventFromRuntimeEvent(
       return undefined;
     }
     const name = stringField(event, "name") ?? "subagent";
-    const metadata = { subagent: event.subagent, synthetic: true };
+    // The two bookends describe the subagent itself, not a tool it ran. Flag
+    // them here so every renderer can tell a lifecycle event from real activity
+    // by reading one field, instead of pattern-matching the `agent:<callId>` id
+    // format in four packages that would each drift independently.
+    const lifecycle = phase === "agent_started" || phase === "agent_completed";
+    const metadata = {
+      subagent: event.subagent,
+      synthetic: true,
+      ...(lifecycle ? { subagentLifecycle: true } : {}),
+    };
     if (phase === "started" || phase === "agent_started") {
       return {
         type: "tool_call_started",

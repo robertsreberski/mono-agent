@@ -215,6 +215,7 @@ ResilientMessageStream
 ResilientMessageStreamLogger
 ResilientMessageStreamOptions
 RunningChannel
+SUBAGENT_TOOL_SEPARATOR
 SettingsJson
 SettingsJsonError
 SettingsJsonErrorCode
@@ -241,6 +242,7 @@ isChannelUserCancelReason
 isCodedError
 isDeliverableConversation
 isLoopbackHost
+isSubagentLaunchToolName
 isWildcardHost
 layerJsonOntoEnv
 listen
@@ -261,6 +263,7 @@ readString
 redactedSecret
 sanitizeInboundHttpHeaders
 serializeAgentStreamFrame
+splitSubagentToolName
 splitTextByCodePoints
 toolHintFor
 writeSettingsJson

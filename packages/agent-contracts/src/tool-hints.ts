@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { types as nodeUtilTypes } from "node:util";
 
 const BUILTIN_HINTS: Readonly<Record<string, string>> = {
+  agent: "Delegating to a subagent…",
   websearch: "Searching the web…",
   webfetch: "Reading a page…",
   bash: "Running a command…",
@@ -37,7 +38,7 @@ const KEYWORD_HINTS: ReadonlyArray<readonly [test: RegExp, hint: string]> = [
 ];
 
 export function toolHintFor(toolName: string): string {
-  const raw = typeof toolName === "string" ? toolName.trim() : "";
+  const raw = splitSubagentToolName(typeof toolName === "string" ? toolName.trim() : "").tool;
   if (raw.length === 0) {
     return "Working…";
   }
@@ -134,6 +135,44 @@ const MEMORY_NAMES = new Set([
   "updatememory",
 ]);
 const MEMORY_READ_NAMES = new Set(["memoryrecall"]);
+/**
+ * Tools that launch a subagent. Their activity line is a *header* for the work
+ * that follows, not a leaf action, so renderers group the child tool calls
+ * underneath it.
+ */
+const SUBAGENT_LAUNCH_NAMES = new Set(["agent", "task", "subagent", "dispatchagent"]);
+
+/**
+ * Separator the runtime puts between a subagent's profile name and the tool it
+ * ran (`researcher▸Read`), so concurrent subagents stay visually distinct on
+ * surfaces that render one flat list.
+ */
+export const SUBAGENT_TOOL_SEPARATOR = "▸";
+
+/** Whether this tool name launches a subagent (case/namespace insensitive). */
+export function isSubagentLaunchToolName(toolName: string): boolean {
+  const raw = typeof toolName === "string" ? toolName.trim() : "";
+  return SUBAGENT_LAUNCH_NAMES.has(toolLeaf(raw).toLowerCase().replace(/[^a-z0-9]+/gu, ""));
+}
+
+/**
+ * Split a forwarded subagent tool name into its profile and the underlying
+ * tool. A name without the separator is returned unchanged with no profile, so
+ * this is safe to call on every tool name.
+ */
+export function splitSubagentToolName(
+  toolName: string,
+): { readonly profile?: string; readonly tool: string } {
+  const raw = typeof toolName === "string" ? toolName : "";
+  const index = raw.indexOf(SUBAGENT_TOOL_SEPARATOR);
+  if (index < 0) return { tool: raw };
+  const profile = raw.slice(0, index).trim();
+  const tool = raw.slice(index + SUBAGENT_TOOL_SEPARATOR.length).trim();
+  // A leading/trailing separator carries no profile or no tool; keep whichever
+  // half is real rather than rendering an empty name.
+  if (tool.length === 0) return { tool: raw };
+  return profile.length === 0 ? { tool } : { profile, tool };
+}
 
 const SENSITIVE_ASSIGNMENT_PATTERN = /\b((?:[A-Za-z][A-Za-z0-9_-]*)?(?:authorization|cookie|api[-_]?key|access[-_]?token|refresh[-_]?token|auth[-_]?token|security[-_]?token|password|passwd|secret|private[-_]?key|credential|session[-_]?(?:id|token)|token))\s*[:=]\s*(?:(?:Bearer|Basic)\s+)?(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
 const AUTH_SCHEME_PATTERN = /\b(Bearer|Basic)\s+(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu;
@@ -170,7 +209,10 @@ export function formatToolActivityLine(
   toolArguments?: unknown,
   options?: ToolActivityLineOptions,
 ): string {
-  const rawName = typeof toolName === "string" ? toolName.trim() : "";
+  // A forwarded subagent tool arrives as `researcher▸Read`. Without stripping
+  // the profile the whole string normalizes to one unknown token and every
+  // child renders as a generic "🔧 Researcher read".
+  const rawName = splitSubagentToolName(typeof toolName === "string" ? toolName.trim() : "").tool;
   const leaf = toolLeaf(rawName);
   const normalized = leaf.toLowerCase().replace(/[^a-z0-9]+/gu, "");
   const spec = activitySpec(normalized, leaf);
@@ -195,6 +237,16 @@ export function formatLiveInputActivityLine(
 }
 
 function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
+  if (SUBAGENT_LAUNCH_NAMES.has(normalized)) {
+    // The profile name is an operator-authored identifier, never free text, so
+    // quoting it reads as a name rather than as part of the sentence.
+    return {
+      action: "🤖 Starting agent",
+      actionWithoutPreview: "🤖 Starting a subagent",
+      previewFields: ["name", "subagent", "agent", "profile"],
+      quotePreview: true,
+    };
+  }
   if (WEB_SEARCH_NAMES.has(normalized)) {
     return {
       action: "🌐 Searching the web for",
