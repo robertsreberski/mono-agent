@@ -213,6 +213,21 @@ export interface MonoAgentSubagentConfig {
 }
 
 /**
+ * Whether the agent may author a specialized subagent at call time instead of
+ * picking a pre-declared profile, and how far that authored subagent may reach.
+ */
+export interface MonoAgentInlineSubagentsConfig {
+  /** Default true whenever subagents are enabled. */
+  readonly enabled?: boolean;
+  /**
+   * Ceiling on the tools an authored subagent may request. Absent means the
+   * parent agent's own effective built-ins, so an in-flight helper can never
+   * reach further than the agent that created it. `"*"` is rejected.
+   */
+  readonly allowedTools?: readonly string[];
+}
+
+/**
  * Subagent deployment policy. Absent or `enabled: false` means the `Agent` tool
  * is never registered.
  */
@@ -224,9 +239,10 @@ export interface MonoAgentSubagentsConfig {
   readonly maxPerTurn?: number;
   /** Default per-subagent wall clock in ms. Default 300000. */
   readonly timeoutMs?: number;
-  /** Default per-subagent turn cap. Default 20. */
+  /** Default per-subagent turn cap. Default 100. */
   readonly maxTurns?: number;
   readonly definitions?: readonly MonoAgentSubagentConfig[];
+  readonly inline?: MonoAgentInlineSubagentsConfig;
 }
 
 export interface ArtifactRetentionConfig {

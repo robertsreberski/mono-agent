@@ -216,11 +216,21 @@
  */
 
 /**
+ * @typedef {Object} RuntimeInlineSubagentsOptions
+ * Policy for subagents the model authors at call time rather than picking from
+ * `definitions`. Absent suppresses authoring entirely.
+ * @property {boolean} [enabled] Only `false` turns authoring off.
+ * @property {ReadonlyArray<string>} [allowedTools] Ceiling on what an authored subagent may
+ *   request. Absent means the safe read-only default set, never every built-in.
+ */
+
+/**
  * @typedef {Object} RuntimeSubagentsOptions
  * @property {ReadonlyArray<RuntimeSubagentDefinition>} [definitions] Named profiles.
+ * @property {RuntimeInlineSubagentsOptions} [inline] Call-time authoring policy.
  * @property {number} [maxConcurrent] In-flight subagents per parent turn. Default 5.
  * @property {number} [maxPerTurn] Total Agent calls per parent turn. Default 20.
- * @property {number} [maxTurns] Default per-subagent turn cap.
+ * @property {number} [maxTurns] Default per-subagent turn cap. Default 100.
  * @property {number} [timeoutMs] Default per-subagent wall clock.
  * @property {RuntimeSubagentRun} [run] Nested-run callback; absent uses the kernel self-run.
  * @property {number} [depth] Kernel-owned. Absent/0 is the parent; >=1 suppresses the `Agent` tool.

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { homedir } from "node:os";
 
 const { createAgentTool, DEFAULT_SUBAGENT_TOOLS } = await import("../../agent/tools/agent-tool.js");
 
@@ -76,6 +77,13 @@ describe("Agent tool dispatch", () => {
     expect(request.definition.allowedTools).toEqual(DEFAULT_SUBAGENT_TOOLS);
     expect(request.definition.allowedTools).not.toContain("Bash");
     expect(request.definition.allowedTools).not.toContain("Write");
+  });
+
+  it("gives a subagent a turn budget it can finish real work inside", async () => {
+    const run = okRun();
+    const tool = createAgentTool(subagentOptions({ run }));
+    await tool.execute("call-1", { prompt: "x" });
+    expect(run.mock.calls[0][0].maxTurns).toBe(100);
   });
 
   it("always tells the child it is one level deeper than the parent", async () => {
@@ -454,4 +462,208 @@ describe("Agent tool bounds", () => {
     await expect(second.execute("c3", { prompt: "x" })).resolves.toBeDefined();
   });
 });
+});
+
+describe("Agent tool in-flight subagent creation", () => {
+  /** Inline options with a ceiling wide enough to exercise the intersection. */
+  function inlineOptions(overrides = {}, inline = { allowedTools: ["Read", "Edit", "Bash", "Grep"] }) {
+    return subagentOptions({ inline, ...overrides });
+  }
+
+  it("exposes the authoring parameters and drops the closed name enum", () => {
+    const { properties } = createAgentTool(inlineOptions()).parameters;
+    expect(properties.systemPrompt).toBeDefined();
+    expect(properties.tools).toBeDefined();
+    expect(properties.effort.enum).toContain("high");
+    // A configured profile stays selectable, but `name` must accept an authored
+    // one too, so the enum cannot survive.
+    expect(properties.name.enum).toBeUndefined();
+    expect(properties.name.pattern).toBe("^[a-z0-9][a-z0-9-]{0,39}$");
+  });
+
+  it("keeps today's closed schema when inline authoring is disabled", () => {
+    const { properties } = createAgentTool(subagentOptions({ inline: { enabled: false } })).parameters;
+    expect(properties.systemPrompt).toBeUndefined();
+    expect(properties.tools).toBeUndefined();
+    expect(properties.effort).toBeUndefined();
+    expect(properties.name.enum).toEqual(["researcher", "general-purpose"]);
+  });
+
+  it("dispatches an authored subagent with its prompt, name, tools, and effort", async () => {
+    const run = okRun("refactored");
+    const tool = createAgentTool(inlineOptions({ run }));
+    await tool.execute("c1", {
+      name: "css-refactorer",
+      systemPrompt: "You refactor CSS. Never touch JavaScript.",
+      tools: ["Read", "Edit"],
+      effort: "high",
+      prompt: "tidy up buttons.css",
+    });
+
+    const request = run.mock.calls[0][0];
+    expect(request.systemPrompt).toBe("You refactor CSS. Never touch JavaScript.");
+    expect(request.definition).toMatchObject({
+      name: "css-refactorer",
+      effort: "high",
+      allowedTools: ["Read", "Edit"],
+    });
+  });
+
+  it("intersects requested tools with the operator ceiling and says what it dropped", async () => {
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Read", "Grep"] }));
+    const result = await tool.execute("c1", {
+      name: "helper",
+      systemPrompt: "s",
+      tools: ["Read", "Write", "Bash"],
+      prompt: "x",
+    });
+
+    expect(run.mock.calls[0][0].definition.allowedTools).toEqual(["Read"]);
+    // Silently dropping them would have the model re-request every turn.
+    expect(result.content[0].text).toMatch(/note: Write, Bash are not available/u);
+  });
+
+  it("refuses a hard-denied tool even when the ceiling would allow it", async () => {
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Read", "AskUser"] }));
+    await tool.execute("c1", { name: "sneaky", systemPrompt: "s", tools: ["Read", "AskUser", "Agent"], prompt: "x" });
+
+    const { definition } = run.mock.calls[0][0];
+    expect(definition.allowedTools).toEqual(["Read"]);
+    expect(definition.disallowedTools).toEqual(expect.arrayContaining(["Agent", "AskUser"]));
+  });
+
+  it("gives an authored subagent that names no tools the read-only default set", async () => {
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Read", "Glob", "Grep", "WebFetch", "WebSearch", "Edit"] }));
+    await tool.execute("c1", { name: "reader", systemPrompt: "s", prompt: "x" });
+    expect(run.mock.calls[0][0].definition.allowedTools).toEqual(DEFAULT_SUBAGENT_TOOLS);
+  });
+
+  it("keeps the omitted-tools default inside a narrower ceiling", async () => {
+    // An operator who caps authored subagents at Read+Edit did not thereby
+    // consent to WebFetch arriving through the read-only default.
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Read", "Edit"] }));
+    await tool.execute("c1", { name: "reader", systemPrompt: "s", prompt: "x" });
+    expect(run.mock.calls[0][0].definition.allowedTools).toEqual(["Read"]);
+  });
+
+  it("falls back to the read-only set when the host supplies no ceiling", async () => {
+    // A bare-kernel caller must not hand the model every built-in just by
+    // declining to state a ceiling.
+    const run = okRun();
+    const tool = createAgentTool(subagentOptions({ run, inline: {} }));
+    await tool.execute("c1", { name: "reader", systemPrompt: "s", tools: ["Bash", "Write", "Read"], prompt: "x" });
+    expect(run.mock.calls[0][0].definition.allowedTools).toEqual(["Read"]);
+  });
+
+  it("does not let an all-dropped request fall through to the wider read-only default", async () => {
+    // normalizeProfile treats an empty allow-list as "use the read-only default
+    // set", which is WIDER than a narrow ceiling — so an entirely out-of-ceiling
+    // request must not reach it.
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Read", "Edit"] }));
+    await tool.execute("c1", { name: "helper", systemPrompt: "s", tools: ["Bash", "WebFetch"], prompt: "x" });
+
+    const { definition } = run.mock.calls[0][0];
+    expect(definition.allowedTools).toEqual(["Read"]);
+    expect(definition.allowedTools).not.toContain("WebFetch");
+  });
+
+  it("refuses to build a subagent when the ceiling leaves it no tools at all", async () => {
+    const tool = createAgentTool(inlineOptions({}, { allowedTools: ["Bash"] }));
+    await expect(tool.execute("c1", { name: "helper", systemPrompt: "s", tools: ["Write"], prompt: "x" }))
+      .rejects.toThrow(/no tools available/u);
+  });
+
+  it("requires a name for an authored subagent", async () => {
+    const tool = createAgentTool(inlineOptions());
+    await expect(tool.execute("c1", { systemPrompt: "s", prompt: "x" }))
+      .rejects.toThrow(/needs a `name`/u);
+  });
+
+  it("rejects a name that collides with a configured profile", async () => {
+    const tool = createAgentTool(inlineOptions());
+    await expect(tool.execute("c1", { name: "researcher", systemPrompt: "s", prompt: "x" }))
+      .rejects.toThrow(/"researcher" is already a configured subagent/u);
+    await expect(tool.execute("c2", { name: "general-purpose", systemPrompt: "s", prompt: "x" }))
+      .rejects.toThrow(/already a configured subagent/u);
+  });
+
+  it("rejects tools or effort without a system prompt", async () => {
+    const tool = createAgentTool(inlineOptions());
+    await expect(tool.execute("c1", { name: "researcher", tools: ["Read"], prompt: "x" }))
+      .rejects.toThrow(/only apply when you supply `systemPrompt`/u);
+    await expect(tool.execute("c2", { name: "researcher", effort: "high", prompt: "x" }))
+      .rejects.toThrow(/only apply when you supply `systemPrompt`/u);
+  });
+
+  it("still routes a configured profile by name", async () => {
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }));
+    await tool.execute("c1", { name: "researcher", prompt: "x" });
+    expect(run.mock.calls[0][0].systemPrompt).toBe("You are a researcher.");
+  });
+
+  it("still rejects an unknown name when no prompt is authored", async () => {
+    const tool = createAgentTool(inlineOptions());
+    await expect(tool.execute("c1", { name: "nope", prompt: "x" }))
+      .rejects.toThrow(/unknown subagent "nope"/u);
+  });
+});
+
+describe("Agent tool activity log rendering", () => {
+  const CWD = `${homedir()}/agents/assistant`;
+
+  /** Run one child tool call and return the rendered `<activity>` line. */
+  async function activityLine(name, input, context = { cwd: CWD }) {
+    const run = vi.fn(async (request) => {
+      request.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name, input }] } });
+      request.onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: false }] } });
+      return { text: "done", events: [] };
+    });
+    const tool = createAgentTool(subagentOptions({ run }), context);
+    const text = (await tool.execute("c1", { prompt: "x" })).content[0].text;
+    // Drop the non-deterministic duration suffix; only the argument summary matters here.
+    return text.split("\n").find((line) => line.startsWith("1. "))?.replace(/(→ \w+).*$/u, "$1");
+  }
+
+  it("shows a path under the agent root relative to it", async () => {
+    expect(await activityLine("Read", { file_path: `${CWD}/notes/backlog.md` }))
+      .toBe("1. Read notes/backlog.md → ok");
+  });
+
+  it("collapses the operator's home directory outside the agent root", async () => {
+    expect(await activityLine("Write", { file_path: `${homedir()}/other-repo/x.ts` }))
+      .toBe("1. Write ~/other-repo/x.ts → ok");
+  });
+
+  it("leaves an unrelated absolute path intact", async () => {
+    expect(await activityLine("Read", { file_path: "/etc/hosts" }))
+      .toBe("1. Read /etc/hosts → ok");
+  });
+
+  it("renders the full Exec argv, not just the executable", async () => {
+    // Exec has no `command`; rendering only `executable` collapsed every line to
+    // `Exec "rg"`, which says nothing about what the subagent actually ran.
+    expect(await activityLine("Exec", { executable: "rg", args: ["--json", "needle", `${CWD}/src`] }))
+      .toBe(`1. Exec "rg --json needle src" → ok`);
+  });
+
+  it("relativizes paths inside a Bash command", async () => {
+    expect(await activityLine("Bash", { command: `cat ${CWD}/daily/2026-07-29.md` }))
+      .toBe(`1. Bash "cat daily/2026-07-29.md" → ok`);
+  });
+
+  it("relativizes a Grep path", async () => {
+    expect(await activityLine("Grep", { pattern: "TODO", path: `${CWD}/packages` }))
+      .toBe(`1. Grep pattern="TODO" path=packages → ok`);
+  });
+
+  it("falls back to unrelativized paths when the parent turn has no cwd", async () => {
+    expect(await activityLine("Read", { file_path: "/srv/app/main.ts" }, {}))
+      .toBe("1. Read /srv/app/main.ts → ok");
+  });
 });

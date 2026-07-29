@@ -167,6 +167,10 @@ export function createRuntime(host = {}) {
     ...(request.sandboxEngine === undefined ? {} : { sandboxEngine: request.sandboxEngine }),
     ...(request.executionMode === undefined ? {} : { executionMode: request.executionMode }),
     ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+    // A profile that pins effort — declared or authored at call time — means it
+    // on this path too; dropping it would silently run the child at the
+    // parent's level while reporting the profile's.
+    ...(request.definition?.effort === undefined ? {} : { effort: request.definition.effort }),
     messages: [{ role: "user", content: request.prompt }],
     maxTurns: request.maxTurns,
     allowedTools: request.definition?.allowedTools,

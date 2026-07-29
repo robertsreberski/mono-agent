@@ -14,7 +14,10 @@ const { createConfiguredAgentHarness } = await import("../index.js");
 const PRIMARY = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
 const HAIKU = { sdk: "pi", provider: "anthropic", model: "claude-haiku-4-5", reference: "pi:anthropic:claude-haiku-4-5" } as const;
 
-function monoConfig(subagents?: MonoAgentConfig["subagents"]): MonoAgentConfig {
+function monoConfig(
+  subagents?: MonoAgentConfig["subagents"],
+  tools: MonoAgentConfig["tools"] = { allowedTools: ["Read", "Agent"], disallowedTools: [] },
+): MonoAgentConfig {
   return {
     runtime: {
       model: PRIMARY,
@@ -25,7 +28,7 @@ function monoConfig(subagents?: MonoAgentConfig["subagents"]): MonoAgentConfig {
     },
     ...(subagents === undefined ? {} : { subagents }),
     context: { identityPath: "/repo/IDENTITY.md", selectedSkills: [] },
-    tools: { allowedTools: ["Read", "Agent"], disallowedTools: [] },
+    tools,
     artifacts: {
       dir: "/repo/.mono-agent/artifacts",
       retention: { maxAgeDays: 365, maxCount: 50_000, dryRun: false },
@@ -188,5 +191,49 @@ describe("configured subagents", () => {
     // No named servers means AskUser and the channel-send tools stay
     // structurally unreachable rather than merely denied by name.
     expect(definitions[0]?.mcpServers).toEqual({});
+  });
+});
+
+describe("in-flight subagent ceiling", () => {
+  async function ceilingFor(
+    inline: NonNullable<MonoAgentConfig["subagents"]>["inline"],
+    tools?: MonoAgentConfig["tools"],
+  ): Promise<readonly string[] | undefined> {
+    const { subagents } = await buildSubagents(monoConfig(
+      { enabled: true, definitions: [RESEARCHER], ...(inline === undefined ? {} : { inline }) },
+      tools,
+    ));
+    return (subagents?.inline as { allowedTools?: readonly string[] } | undefined)?.allowedTools;
+  }
+
+  it("bounds an authored subagent by the parent agent's own built-ins", async () => {
+    // The model must not be able to hand a helper a tool it was itself denied.
+    expect(await ceilingFor(undefined, { allowedTools: ["Read", "Grep", "Agent"], disallowedTools: [] }))
+      .toEqual(["Read", "Grep"]);
+  });
+
+  it("expands the allow-all wildcard to the built-in set, minus the hard-denied tools", async () => {
+    const ceiling = await ceilingFor(undefined, { allowedTools: ["*"], disallowedTools: [] });
+    expect(ceiling).toEqual(expect.arrayContaining(["Read", "Write", "Edit", "Bash", "Exec"]));
+    expect(ceiling).not.toContain("Agent");
+  });
+
+  it("honours the parent's deny list", async () => {
+    expect(await ceilingFor(undefined, { allowedTools: ["*"], disallowedTools: ["Bash", "Exec"] }))
+      .not.toEqual(expect.arrayContaining(["Bash"]));
+  });
+
+  it("lets an operator clamp below the parent's own tools", async () => {
+    expect(await ceilingFor({ allowedTools: ["Read", "Edit"] }, { allowedTools: ["*"], disallowedTools: [] }))
+      .toEqual(["Read", "Edit"]);
+  });
+
+  it("withholds the authoring policy entirely when disabled", async () => {
+    const { subagents } = await buildSubagents(monoConfig({
+      enabled: true,
+      definitions: [RESEARCHER],
+      inline: { enabled: false },
+    }));
+    expect(subagents?.inline).toBeUndefined();
   });
 });
