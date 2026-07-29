@@ -63,6 +63,10 @@ describe("golden consumer config contracts", () => {
           "status": "ok",
         },
         {
+          "id": "web-tools",
+          "status": "ok",
+        },
+        {
           "id": "continuations",
           "status": "disabled",
         },
@@ -144,6 +148,10 @@ describe("golden consumer config contracts", () => {
         },
         {
           "id": "tools",
+          "status": "ok",
+        },
+        {
+          "id": "web-tools",
           "status": "ok",
         },
         {

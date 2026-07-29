@@ -233,6 +233,7 @@ export async function validateMonoAgentFolder(
       options.preferAppPluginInstall === true,
     ));
     sections.push(await toolsSection(coreConfig, options));
+    sections.push(await webToolsSection(coreConfig, options, liveness));
     sections.push(await continuationSection(coreConfig, options));
     sections.push(await sandboxSection(coreConfig, options.sandboxEngine));
   }
@@ -2188,6 +2189,124 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
   }
 
   return { id: "tools", label: "Tools & MCP", status, details };
+}
+
+const MIN_AGENT_BROWSER_VERSION = [0, 33, 1] as const;
+
+async function webToolsSection(
+  config: MonoAgentConfig,
+  input: ValidateMonoAgentFolderOptions,
+  liveness: boolean,
+): Promise<ValidationSection> {
+  const web = config.tools.web;
+  const search = web?.search ?? { backend: "auto" as const };
+  const fetchConfig = web?.fetch ?? { render: "never" as const, browserCommand: "agent-browser" };
+  const details = [`WebSearch backend: ${search.backend}.`];
+  let status: ValidationStatus = "ok";
+
+  if (search.endpoint === undefined) {
+    details.push(search.backend === "keyless"
+      ? "SearXNG is not configured; keyless search is enabled."
+      : "SearXNG is not configured; auto mode will use keyless search.");
+  } else {
+    details.push(`SearXNG endpoint: ${search.endpoint}.`);
+    if (!liveness) {
+      details.push("SearXNG liveness was not probed.");
+    } else {
+      const probe = await probeSearxngEndpoint(search.endpoint);
+      if (probe.ok) {
+        details.push("SearXNG JSON search probe succeeded.");
+      } else {
+        status = "waiting";
+        details.push(
+          `[WARN] SearXNG JSON search probe failed (${probe.reason}). ` +
+          (search.backend === "auto"
+            ? "Start the local companion or fix tools.web.search.endpoint; auto mode can still fall back to keyless search."
+            : "Start the local companion or fix tools.web.search.endpoint; strict SearXNG mode has no fallback."),
+        );
+      }
+    }
+  }
+
+  details.push(`WebFetch browser rendering: ${fetchConfig.render}.`);
+  if (fetchConfig.render === "never") {
+    details.push("Static Defuddle/Readability extraction is active; agent-browser is not required.");
+  } else if (!liveness) {
+    details.push(`agent-browser liveness was not probed (${fetchConfig.browserCommand}).`);
+  } else {
+    const version = await readAgentBrowserVersion(fetchConfig.browserCommand, input);
+    if (version === null || compareVersion(version, MIN_AGENT_BROWSER_VERSION) < 0) {
+      status = "waiting";
+      const found = version === null ? "missing or unreadable" : `v${version.join(".")}`;
+      details.push(
+        `[WARN] agent-browser is ${found}; WebFetch auto rendering requires >=${MIN_AGENT_BROWSER_VERSION.join(".")}.`,
+      );
+    } else {
+      details.push(`agent-browser v${version.join(".")} is ready.`);
+    }
+  }
+
+  return { id: "web-tools", label: "Web search & fetch", status, details };
+}
+
+async function probeSearxngEndpoint(endpoint: string): Promise<{ readonly ok: boolean; readonly reason: string }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => { ctrl.abort(); }, LIVENESS_PROBE_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${endpoint.replace(/\/+$/u, "")}/search`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+      },
+      body: new URLSearchParams({ q: "mono-agent doctor", format: "json", categories: "general" }),
+      redirect: "error",
+      signal: ctrl.signal,
+    });
+    if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
+    const body = await response.json() as { readonly results?: unknown };
+    return Array.isArray(body.results)
+      ? { ok: true, reason: "" }
+      : { ok: false, reason: "response did not contain a results array" };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readAgentBrowserVersion(
+  command: string,
+  input: ValidateMonoAgentFolderOptions,
+): Promise<readonly [number, number, number] | null> {
+  const run = input.sdkAuthStatusExecFile ?? defaultSdkAuthStatusExecFile;
+  try {
+    const { stdout } = await run(command, ["--version"], {
+      cwd: input.cwd,
+      env: Object.fromEntries(
+        ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "SHELL", "TMPDIR", "TMP", "TEMP"]
+          .flatMap((key) => typeof input.env[key] === "string" ? [[key, input.env[key]]] : []),
+      ),
+      timeout: SDK_AUTH_STATUS_TIMEOUT_MS,
+      maxBuffer: SDK_AUTH_STATUS_MAX_BUFFER_BYTES,
+      encoding: "utf8",
+    });
+    const match = /(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?:\s|$)/u.exec(stdout.trim());
+    if (match === null) return null;
+    return [Number(match[1]), Number(match[2]), Number(match[3])];
+  } catch {
+    return null;
+  }
+}
+
+function compareVersion(
+  left: readonly [number, number, number],
+  right: readonly [number, number, number],
+): number {
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index]! !== right[index]!) return left[index]! - right[index]!;
+  }
+  return 0;
 }
 
 async function continuationSection(

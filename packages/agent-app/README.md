@@ -55,6 +55,10 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   provider-free strict health and payload-free intake inspect/retry/resolve).
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
   folders non-destructively.
+- Resolve local-first WebSearch/WebFetch settings into every runtime run and
+  report a separate bounded readiness section for loopback SearXNG plus the
+  optional `agent-browser` renderer; the app never owns either companion's
+  lifecycle.
 - Operate the machine-wide `@mono-agent/web` assistant-ui console through
   `mono-agent web`; use `mono-agent tui` for bounded recorded-run replay.
 
@@ -245,6 +249,13 @@ whose freshly recomputed installed closure and coherent current manifest validat
 names its full closure id plus sanitized install metadata; other executions report
 `dev (unmanaged)`. With `--consumer`, this remains the validator CLI's provenance,
 not an attestation of a separately running daemon.
+
+Its **Web search & fetch** section reports the resolved SearXNG backend and
+static/browser extraction mode. With liveness enabled it performs one bounded
+JSON query against a configured loopback SearXNG endpoint and checks that an
+enabled browser renderer reports `agent-browser` 0.33.1 or newer. Start
+preflight (`liveness: false`) skips both probes without changing structural
+validation.
 
 Managed launchd stdout/stderr use a fixed automatic policy: each active file
 and each of three retained generations is capped at 5 MiB. A separate one-shot
@@ -707,6 +718,7 @@ compose communication adapters; adapters never depend on it.
 - [CLI reference](https://mono-agent-docs.vercel.app/observability/cli-reference/)
 - [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/composition/)
 - [Channels](https://mono-agent-docs.vercel.app/channels/)
+- [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-app)
 
 ## Verification

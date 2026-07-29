@@ -156,6 +156,39 @@ MONO_AGENT_LOCAL_PROVIDER_TRUST_PUBLIC_URL=false
 
 `MONO_AGENT_LOCAL_PROVIDERS_JSON` can hold the full local-provider array. Env values win over JSON; empty env values are ignored. `MONO_AGENT_LOCAL_PROVIDER_API_KEY` and provider `apiKeyEnv` are passed only to the runtime path and are redacted from `redactMonoAgentConfig()`.
 
+### Local-first web tools
+
+The resolved `tools.web` block configures the managed Pi `WebSearch` and
+`WebFetch` tools:
+
+```json
+{
+  "tools": {
+    "web": {
+      "search": {
+        "backend": "auto",
+        "endpoint": "http://127.0.0.1:8088"
+      },
+      "fetch": {
+        "render": "never",
+        "browserCommand": "agent-browser"
+      }
+    }
+  }
+}
+```
+
+Search backend values are `auto`, strict `searxng`, and `keyless`. SearXNG
+endpoints are deliberately limited to unauthenticated loopback HTTP URLs.
+Fetch rendering is `never` by default (browser capability disabled) or `auto`
+for static-first isolated `agent-browser` fallback.
+
+Environment overrides are
+`MONO_AGENT_WEB_SEARCH_BACKEND`,
+`MONO_AGENT_WEB_SEARCH_ENDPOINT`,
+`MONO_AGENT_WEB_FETCH_RENDER`, and
+`MONO_AGENT_WEB_BROWSER_COMMAND`.
+
 ### Managed memory embeddings
 
 Journal and BuJo accept `ollama`, `lmstudio`, or `openai` in
@@ -366,6 +399,7 @@ It does not load Telegram, WhatsApp, Slack, or other adapter-specific credential
 - [Complete configuration blueprint](https://mono-agent-docs.vercel.app/config/blueprint/)
 - [Environment variable map](https://mono-agent-docs.vercel.app/config/env-vars/)
 - [Generated field reference](https://mono-agent-docs.vercel.app/config/reference/)
+- [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
 - [Runtime and provider configuration](https://mono-agent-docs.vercel.app/runtime/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/config)
 

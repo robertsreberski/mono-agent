@@ -1,11 +1,11 @@
 ---
 title: "Tools, MCP & Sandbox"
-description: "Configure tool policy, MCP servers, durable continuations, documentation lookup, and runtime sandboxing."
+description: "Configure built-in tools, local-first web research, MCP servers, durable continuations, and runtime sandboxing."
 sidebar:
   order: 0
 ---
 
-This section covers how an agent's tool surface is controlled in mono-agent: the **tool policy** (`@mono-agent/agent-harness`) that allow/deny-lists built-in and adapter tools, the **MCP servers** you attach to extend that surface, and the **native sandbox** (`@mono-agent/runtime-adapter`) that confines what tools like `Bash`, `NodeRepl`, `Write`, and `Edit` may touch on disk and over the network.
+This section covers how an agent's tool surface is controlled in mono-agent: the **tool policy** (`@mono-agent/agent-harness`) that allow/deny-lists built-in and adapter tools, the **MCP servers** you attach to extend that surface, and the **native sandbox** (`@mono-agent/runtime-adapter`) that confines what tools like `Exec`, `Bash`, `NodeRepl`, `Write`, and `Edit` may touch on disk and over the network.
 
 All three are configured in `mono-agent.config.json`; enforcement depends on the selected runtime boundary and unsupported combinations fail closed. The tool policy is **allow-all by default**. In `uniform` route safety, every attempt must represent one common contract. Explicit `per-route-native` lets Pi keep mono-agent tool policy and an active SRT policy, while Claude/Codex/OpenCode use their documented native contract. When Pi has no active native sandbox, route telemetry says SRT is `disabled` and Bash/stdio MCP subprocesses are unsandboxed. The route matrix is visible and unsupported capabilities are never silently removed.
 
@@ -14,6 +14,7 @@ All three are configured in `mono-agent.config.json`; enforcement depends on the
 | Concern | Package | Config block | Page |
 | --- | --- | --- | --- |
 | Which tools the model may call | `@mono-agent/agent-harness` | `tools.allowedTools` / `tools.disallowedTools` | [Tool Policy](/tools/policy/) |
+| Searching and fetching the public web | `@mono-agent/agent-runtime` | `tools.web.*` | [Local-first web research](/tools/web-research/) |
 | Attaching external MCP servers | `@mono-agent/agent-harness` | `tools.mcpConfigPath` → `mcp.json` | [MCP Servers](/tools/mcp/) |
 | Searching version-matched docs while authoring | `@mono-agent/docs-mcp` | harness MCP entry installed with the composer | [Documentation MCP companion](/tools/documentation-mcp/) |
 | Returning trusted asynchronous results | `@mono-agent/agent-app` + harness | `tools.continuationServers` + `continuations.*` | [Durable continuations](/tools/durable-continuations/) |
@@ -42,9 +43,15 @@ The `tools` block selects the surface; the `sandbox` block confines it. A minima
 }
 ```
 
-The managed built-ins are `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `NodeRepl`, `WebFetch`, and `WebSearch` (coverage: `config`). They are gated by `tools.allowedTools` / `tools.disallowedTools` and supplied through the Pi bridge; provider-owned routes use their native tool surfaces.
+The managed built-ins are `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`,
+`Exec`, `NodeRepl`, `WebFetch`, and `WebSearch` (coverage: `config`). They are
+gated by `tools.allowedTools` / `tools.disallowedTools` and supplied through the
+Pi bridge; provider-owned routes use their native tool surfaces.
 
-`NodeRepl` shares state only within one run and uses the same sandbox policy as `Bash`. See [Built-in tools & auto-guards](/runtime/tools-and-guards/#noderepl) for its lifecycle and limits.
+`Exec` is the direct-argv process tool; use `Bash` only for shell syntax.
+`NodeRepl` shares state only within one run and uses the same sandbox policy.
+See [Built-in tools & auto-guards](/runtime/tools-and-guards/) for process
+lifecycle and limits.
 
 Equivalent environment overrides exist for headless deploys:
 
@@ -54,6 +61,8 @@ Equivalent environment overrides exist for headless deploys:
 | `tools.disallowedTools` | `MONO_AGENT_DISALLOWED_TOOLS` |
 | `tools.mcpConfigPath` | `MONO_AGENT_MCP_CONFIG_PATH` |
 | `tools.continuationServers` | `MONO_AGENT_CONTINUATION_SERVERS` |
+| `tools.web.search.backend` / `.endpoint` | `MONO_AGENT_WEB_SEARCH_BACKEND` / `MONO_AGENT_WEB_SEARCH_ENDPOINT` |
+| `tools.web.fetch.render` / `.browserCommand` | `MONO_AGENT_WEB_FETCH_RENDER` / `MONO_AGENT_WEB_BROWSER_COMMAND` |
 | `sandbox.mode` | `MONO_AGENT_SANDBOX_MODE` |
 | `sandbox.network.mode` / `.allowlist` | `MONO_AGENT_SANDBOX_NETWORK` / `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST` |
 | `sandbox.fallback` | `MONO_AGENT_SANDBOX_FALLBACK` |
@@ -83,6 +92,7 @@ mode are warned and ignored.
 ## Where to go next
 
 - **[Tool Policy](/tools/policy/)** — allowlist/denylist semantics, built-in tools, naming MCP tools, and how approval gates relate (the latter is `code`-only — see [programmatic/](/programmatic/approval-and-structured-output/)).
+- **[Local-first web research](/tools/web-research/)** — SearXNG/keyless discovery, static extraction, retry, browser isolation, and validation.
 - **[MCP Servers](/tools/mcp/)** — authoring `mcp.json`, stdio/sse/http transports, how servers are inlined for SDK runtimes versus path-forwarded for CLI runtimes.
 - **[Documentation MCP companion](/tools/documentation-mcp/)** — offline semantic and exact-identifier search for the composer and other MCP clients.
 - **[Durable continuations](/tools/durable-continuations/)** — trusted claim capabilities, immutable later results, tool-free synthesis, native delivery, and recovery.

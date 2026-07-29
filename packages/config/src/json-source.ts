@@ -183,6 +183,16 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly continuationServers?: readonly string[];
     readonly mcpCallTimeoutMs?: number;
     readonly mcpCallMaxTotalTimeoutMs?: number;
+    readonly web?: {
+      readonly search?: {
+        readonly backend?: string;
+        readonly endpoint?: string;
+      };
+      readonly fetch?: {
+        readonly render?: string;
+        readonly browserCommand?: string;
+      };
+    };
   };
   readonly sandbox?: {
     readonly mode?: string;

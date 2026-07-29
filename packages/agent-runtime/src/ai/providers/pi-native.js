@@ -78,6 +78,37 @@ import {
 } from "./pi-native/turn-runner.js";
 import { resolvePiTransport } from "./pi-native/transport.js";
 
+/**
+ * Pi 0.80.6 exposes per-tool execution markers but not AgentHarness's global
+ * toolExecution option. Resolve mono-agent's programmatic mode once per run;
+ * individual tool builders then mark stateful/mutating tools sequential.
+ */
+export function resolvePiToolExecutionMode(options = {}) {
+  const warnings = [];
+  const requested = options.piToolExecutionMode;
+  let mode = requested === "sequential" || requested === "safe-parallel"
+    ? requested
+    : null;
+  if (requested !== undefined && mode === null) {
+    warnings.push({
+      warning_kind: "invalid_pi_tool_execution_mode",
+      message: `Unknown piToolExecutionMode ${JSON.stringify(requested)}; using safe-parallel.`,
+    });
+  }
+  if (options.piToolParallelismMode !== undefined) {
+    warnings.push({
+      warning_kind: "deprecated_pi_tool_parallelism_mode",
+      message: "piToolParallelismMode is deprecated; use piToolExecutionMode (sequential or safe-parallel).",
+    });
+    if (mode === null) {
+      mode = options.piToolParallelismMode === "one-at-a-time"
+        ? "sequential"
+        : "safe-parallel";
+    }
+  }
+  return { mode: mode || "safe-parallel", warnings };
+}
+
 async function resolveApiKey(provider, { apiKeys, resolvePiApiKey, runtimeWarnings }) {
   if (apiKeys?.has(provider)) return apiKeys.get(provider);
   if (typeof resolvePiApiKey !== "function") return undefined;
@@ -307,13 +338,21 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   const piTransport = resolvePiTransport(options.piTransport);
 
   const onEvent = (event) => emitCaptured(events, options.onEvent, event);
+  const approvalRiskTiers = {
+    ...(options.toolRiskTiers || {}),
+    ...(
+      options.toolRiskTiers?.Exec === undefined && options.toolRiskTiers?.Bash !== undefined
+        ? { Exec: options.toolRiskTiers.Bash }
+        : {}
+    ),
+  };
   const approvalManager = options.onToolApprovalRequest
     ? createApprovalManager({
       onToolApprovalRequest: options.onToolApprovalRequest,
       defaultRiskTier: options.approvalDefaultRiskTier,
       timeoutMs: options.approvalTimeoutMs,
       onEvent,
-      riskTiersByTool: options.toolRiskTiers,
+      riskTiersByTool: approvalRiskTiers,
       alwaysAllowTools: options.approvalAlwaysAllowTools,
     })
     : null;
@@ -396,6 +435,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // normalization. Restores configurable clamping (toolTextLimitChars,
     // searchResultLimit, ...) on top of the 256KB hard ceiling.
     const toolLimits = resolveAgentCompactionPolicy(settingsLike, runtime.model);
+    const toolExecution = resolvePiToolExecutionMode(options);
+    for (const warning of toolExecution.warnings) {
+      runtimeWarnings.push(warning);
+      onEvent({ type: "runtime_warning", ...warning });
+    }
 
     // Build the turn's tools (builtins + MCP bridge + StructuredOutput). The
     // StructuredOutput callback writes runState.structuredResult; the MCP clients
@@ -414,6 +458,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       resolved,
       onEvent,
       runtimeWarnings,
+      toolExecutionMode: toolExecution.mode,
     });
     mcpClients = builtMcpClients;
     closeRunTools = builtCloseRunTools;
@@ -426,10 +471,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     const maxRetryDelayMs = Number.isFinite(Number(options.maxRetryDelayMs))
       ? Number(options.maxRetryDelayMs)
       : 60_000;
-    // Tool steering: default "one-at-a-time" (safe, deterministic ordering).
-    // Opt-in "all" lets pi-agent-core run a model step's tool calls concurrently
-    // (QueueMode). Only enable when tools in a step are independent.
-    const toolSteeringMode = options.piToolParallelismMode === "all" ? "all" : "one-at-a-time";
+    // Steering controls user follow-up delivery, not tool scheduling. Keep it
+    // independent from piToolExecutionMode; tools carry their own executionMode.
+    const toolSteeringMode = "one-at-a-time";
 
     const piModels = buildRunModels(runtime, options, runtimeWarnings);
 

@@ -1106,6 +1106,44 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[0]?.options.executionMode).toBe("sdk");
   });
 
+  it("threads resolved WebSearch and WebFetch config into each runtime run", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    const baseConfig = monoConfig({ dir, identityPath, artifactDir });
+
+    const harness = await createConfiguredAgentHarness({
+      config: {
+        ...baseConfig,
+        tools: {
+          ...baseConfig.tools,
+          web: {
+            search: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+            fetch: { render: "auto", browserCommand: "/opt/homebrew/bin/agent-browser" },
+          },
+        },
+      },
+      runtime: fake.runtime,
+    });
+
+    await harness.run({
+      conversationId: "conversation-web-tools",
+      userMessage: "Research this",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(fake.calls[0]?.options.webSearchConfig).toEqual({
+      backend: "searxng",
+      endpoint: "http://127.0.0.1:8088",
+    });
+    expect(fake.calls[0]?.options.webFetchConfig).toEqual({
+      render: "auto",
+      browserCommand: "/opt/homebrew/bin/agent-browser",
+    });
+  });
+
   it("creates the default Mono runtime with config workspace and artifact directory", () => {
     const config = monoConfig({
       dir: "/tmp/mono-agent-host",

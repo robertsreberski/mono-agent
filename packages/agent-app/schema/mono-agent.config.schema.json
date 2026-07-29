@@ -906,6 +906,64 @@
           ],
           "type": "integer",
           "default": 2700000
+        },
+        "web": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "search": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "backend": {
+                  "description": "WebSearch backend: auto tries a configured local SearXNG endpoint then keyless fallbacks; searxng is strict; keyless skips SearXNG.",
+                  "examples": [
+                    "auto"
+                  ],
+                  "type": "string",
+                  "default": "auto",
+                  "enum": [
+                    "auto",
+                    "searxng",
+                    "keyless"
+                  ]
+                },
+                "endpoint": {
+                  "description": "Optional unauthenticated loopback HTTP SearXNG base URL. Remote HTTPS, credentials, query strings, and fragments are rejected.",
+                  "examples": [
+                    "http://127.0.0.1:8088"
+                  ],
+                  "type": "string"
+                }
+              }
+            },
+            "fetch": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "render": {
+                  "description": "Browser-render capability for sparse JavaScript pages. never forces every call to static extraction; auto permits an isolated agent-browser session when needed.",
+                  "examples": [
+                    "never"
+                  ],
+                  "type": "string",
+                  "default": "never",
+                  "enum": [
+                    "never",
+                    "auto"
+                  ]
+                },
+                "browserCommand": {
+                  "description": "Direct executable name or path for agent-browser; shell fragments are not evaluated.",
+                  "examples": [
+                    "agent-browser"
+                  ],
+                  "type": "string",
+                  "default": "agent-browser"
+                }
+              }
+            }
+          }
         }
       }
     },

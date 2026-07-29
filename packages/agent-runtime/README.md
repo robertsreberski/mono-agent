@@ -246,12 +246,19 @@ inferSkillsRoot
 
 ```text
 bashToolImpl
+bashToolRun
+createWebToolController
 editToolImpl
+execToolImpl
+execToolRun
 globToolImpl
 grepToolImpl
 isPathAllowed
 isWorkdirAllowed
 normalizeBashTimeoutMs
+normalizeProcessTimeoutMs
+performWebFetch
+performWebSearch
 readToolImpl
 resolveRgPath
 webFetchToolImpl
@@ -652,6 +659,9 @@ Per-call options (a non-exhaustive selection):
 | `disallowedTools` | `string[]` | Block list. |
 | `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http); on direct Codex, each forwarded server authorizes its own tool calls. |
 | `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
+| `webSearchConfig` | `{ backend?, endpoint? }` | Run-scoped local SearXNG/keyless WebSearch backend selection. |
+| `webFetchConfig` | `{ render?, browserCommand? }` | Run-scoped static extraction and optional isolated browser-render policy. |
+| `piToolExecutionMode` | `"safe-parallel" \| "sequential"` | Pi built-in scheduling. Safe parallelism is the default; stateful/mutating and MCP tools stay sequential. |
 | `maxTurns` | `number` | Hard cap on agent turns. |
 | `outputSchema` | `JSONSchema` | Requests structured JSON on capable bridges; see “Structured output” below for bridge-specific return behavior. |
 | `abortSignal` | `AbortSignal` | Cancel the run. |
@@ -744,13 +754,29 @@ Successful provider requests may also emit exact context telemetry through
 
 ### Built-in tools
 
-The agent kernel's managed tools are `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `NodeRepl`, `WebFetch`, and `WebSearch`. `NodeRepl({ code })` is backed by one lazily started Node.js REPL child per run. You select them via `allowedTools`. Tool implementations honor:
+The agent kernel's managed tools are `Read`, `Write`, `Edit`, `Glob`, `Grep`,
+`Exec`, `Bash`, `NodeRepl`, `WebFetch`, and `WebSearch`.
+`Exec({ executable, args })` invokes one executable directly; `Bash` is the
+clean non-interactive shell surface for pipelines, redirection, and other shell
+syntax. Both preserve bounded partial stdout/stderr and structured exit,
+timeout, abort, signal, and truncation metadata. `NodeRepl({ code })` is backed
+by one lazily started Node.js REPL child per run. You select them via
+`allowedTools`. Tool implementations honor:
 
 - `cwd` (required for path-based tools)
 - The runtime context's `workspace` / `repoRoot` allow-list (paths outside both, plus `/tmp` and `process.cwd()`, are rejected)
 - Output truncation with optional artifact persistence (`{toolArtifactDir}/tool-output/{runId}/...` when `toolArtifactDir` is configured)
 
-`NodeRepl` uses Node's default `node:repl` evaluator, so variables, `_`, `_error`, and loaded modules persist across calls in the same run. It supports multiline input and top-level `await`, resolves workspace-installed packages, and is closed with the run. Its child is prepared through the same sandbox seam as `Bash`; abort, the fixed 120-second timeout, child exit, or hard output overflow resets the session. It deliberately has no session ids, persistent history, terminal commands, or package-install surface.
+`NodeRepl` uses Node's default `node:repl` evaluator, so variables, `_`, `_error`, and loaded modules persist across calls in the same run. It supports multiline input and top-level `await`, resolves workspace-installed packages, and is closed with the run. Its child is prepared through the same sandbox seam as `Exec`/`Bash` and communicates through token-authenticated, length-prefixed JSON frames on ordinary stdin/stdout; abort, the fixed 120-second timeout, child exit, or hard output overflow resets the session. It deliberately has no session ids, persistent history, terminal commands, or package-install surface.
+
+`WebSearch` uses a configured loopback SearXNG endpoint and/or deterministic
+public fallbacks that require no credentials. It canonicalizes and deduplicates
+results, then fuses multiple query rankings. `WebFetch` extracts HTML, JSON,
+feeds, PDFs, and text locally with
+bounded redirects, bodies, headers, and retries. Config can opt into isolated
+`agent-browser` rendering for sparse client-rendered HTML. One ephemeral
+controller per run deduplicates identical calls and closes every browser
+namespace at run end.
 
 Pi runs with selected skills also expose `ReadSkill`. It returns the complete
 skill instructions by default, including content beyond the former
@@ -1015,6 +1041,8 @@ runtime fails closed.
   documents all five bridges and their execution modes.
 - [Programmatic approvals and structured output](https://mono-agent-docs.vercel.app/programmatic/approval-and-structured-output/)
   shows the code-only host hooks.
+- [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
+  documents SearXNG, extraction, retry, browser isolation, and sandbox policy.
 - [Architecture](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/ARCHITECTURE.md)
   and [migration guide](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/MIGRATION.md)
   cover internal flow and upgrades from `0.3.x`.

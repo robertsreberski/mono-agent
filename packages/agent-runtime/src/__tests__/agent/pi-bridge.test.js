@@ -137,6 +137,22 @@ describe("pi MCP tool helpers", () => {
       workdir: "/repo",
       timeout: 120000,
     });
+    expect(normalizePiBuiltinToolParams("Bash", {
+      command: "ls",
+    }, { cwd: "/repo", toolLimits: { ...toolLimits, bashTimeoutMs: 5000 } })).toMatchObject({
+      command: "ls",
+      workdir: "/repo",
+      timeout_ms: 5000,
+    });
+    expect(normalizePiBuiltinToolParams("Exec", {
+      executable: "git",
+      args: ["status"],
+    }, { cwd: "/repo", toolLimits: { ...toolLimits, bashTimeoutMs: 5000 } })).toMatchObject({
+      executable: "git",
+      args: ["status"],
+      workdir: "/repo",
+      timeout_ms: 5000,
+    });
     expect(normalizePiBuiltinToolParams("Glob", {
       pattern: "**/*",
       max_matches: 5000,
@@ -769,14 +785,20 @@ describe("pi MCP tool helpers", () => {
 
     setTimeout(() => ac.abort(), 50);
 
-    await expect(promise).rejects.toThrow("Error: Command aborted");
+    await expect(promise).resolves.toMatchObject({
+      content: [{ type: "text", text: expect.stringContaining("Error: Command aborted") }],
+      details: {
+        tool: "Bash",
+        outcome: { status: "error", code: "aborted" },
+      },
+    });
   });
 });
 
 // The always-created built-ins getPiBuiltinTools owns. NodeRepl is run-owned and
 // joins this set only when its controller is supplied. ReadSkill (legacy alias
 // read_skill) is appended separately only when skills are supplied.
-const BUILTIN_TOOL_NAMES = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "WebFetch", "WebSearch"];
+const BUILTIN_TOOL_NAMES = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Exec", "WebFetch", "WebSearch"];
 
 function toolNames(tools) {
   return tools.map((tool) => tool.name).sort();

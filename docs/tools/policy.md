@@ -92,9 +92,16 @@ The example above keeps allow-all (every tool stays available) but denies `Bash`
 
 These are the names recognized for built-in runtime tools (coverage: `config`, gated by this policy):
 
-Managed built-ins: `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`. They are supplied through the Pi bridge; provider-owned routes use their documented native tool surfaces.
+Managed built-ins: `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash`, `Exec`,
+`NodeRepl`, `WebFetch`, `WebSearch`. They are supplied through the Pi bridge;
+provider-owned routes use their documented native tool surfaces.
 
-`NodeRepl` evaluates JavaScript in one REPL child per run. Code run by `Bash` or `NodeRepl` is further constrained by the [sandbox](/tools/sandbox/) (filesystem scopes and network policy) when `sandbox.mode` is `native`. The allowlist controls *whether* a tool exists; the sandbox controls *what it can reach*. See [Tools and guards](/runtime/tools-and-guards/#noderepl).
+`Exec` runs direct argv; `Bash` is reserved for shell syntax. `NodeRepl`
+evaluates JavaScript in one REPL child per run. Code run by `Exec`, `Bash`, or
+`NodeRepl` is further constrained by the [sandbox](/tools/sandbox/) (filesystem
+scopes and network policy) when `sandbox.mode` is `native`. The allowlist
+controls *whether* a tool exists; the sandbox controls *what it can reach*. See
+[Tools and guards](/runtime/tools-and-guards/).
 
 ## Adapter send tools
 

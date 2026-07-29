@@ -4091,6 +4091,94 @@ describe("validateMonoAgentFolder — liveness:false (start preflight)", () => {
   });
 });
 
+describe("validateMonoAgentFolder — web tools", () => {
+  async function writeWebToolsConfig(web: Record<string, unknown>): Promise<string> {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    return writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      tools: { web },
+    });
+  }
+
+  it("reports the static defaults without running a liveness probe", async () => {
+    const fetchSpy = vi.fn();
+    const execSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({});
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      sdkAuthStatusExecFile: execSpy,
+    });
+
+    expect(sectionById(report, "web-tools")).toMatchObject({
+      status: "ok",
+      details: expect.arrayContaining([
+        "WebSearch backend: auto.",
+        "SearXNG is not configured; auto mode will use keyless search.",
+        "WebFetch browser rendering: never.",
+        "Static Defuddle/Readability extraction is active; agent-browser is not required.",
+      ]),
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(execSpy).not.toHaveBeenCalled();
+  });
+
+  it("probes the configured SearXNG JSON endpoint", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ results: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({
+      search: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
+    const web = sectionById(report, "web-tools");
+
+    expect(web.status).toBe("ok");
+    expect(web.details).toContain("SearXNG JSON search probe succeeded.");
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://127.0.0.1:8088/search",
+      expect.objectContaining({ method: "POST", redirect: "error" }),
+    );
+  });
+
+  it.each([
+    ["agent-browser 0.33.1\n", "ok", "agent-browser v0.33.1 is ready."],
+    ["agent-browser 0.26.0\n", "waiting", "[WARN] agent-browser is v0.26.0; WebFetch auto rendering requires >=0.33.1."],
+  ])("checks the browser renderer version: %s", async (stdout, expectedStatus, expectedDetail) => {
+    const execSpy = vi.fn().mockResolvedValue({ stdout, stderr: "" });
+    const configPath = await writeWebToolsConfig({
+      fetch: { render: "auto", browserCommand: "agent-browser" },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: { PATH: "/usr/bin:/bin" },
+      cwd: dir,
+      configPath,
+      liveness: true,
+      sdkAuthStatusExecFile: execSpy,
+    });
+    const web = sectionById(report, "web-tools");
+
+    expect(web.status).toBe(expectedStatus);
+    expect(web.details).toContain(expectedDetail);
+    expect(execSpy).toHaveBeenCalledWith(
+      "agent-browser",
+      ["--version"],
+      expect.objectContaining({ cwd: dir }),
+    );
+  });
+});
+
 describe("validateMonoAgentFolder — provider credentials section", () => {
   const FUTURE = 4_102_444_800_000; // 2100-01-01, comfortably valid
   const PAST = 1_000_000_000_000; // 2001-09, comfortably expired

@@ -15,6 +15,7 @@ import {
   initPiMcpTools,
 } from "../../../agent/tools/pi-bridge.js";
 import { createNodeReplController } from "../../../agent/tools/node-repl.js";
+import { createWebToolController } from "../../../agent/tools/web-controller.js";
 import { readToolRuntime } from "../../../agent/tools/shared/runtime-context.js";
 import { formatLiveInputGuidance } from "../../live-input-prompt.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
@@ -40,6 +41,7 @@ export async function buildTurnTools(runState, {
   resolved,
   onEvent,
   runtimeWarnings,
+  toolExecutionMode = "safe-parallel",
 }) {
   const onTruncate = (info) => {
     try {
@@ -69,6 +71,15 @@ export async function buildTurnTools(runState, {
     : createNodeReplController({
       cwd: options.cwd,
       maxOutputChars: toolLimits.bashOutputLimitChars || toolLimits.toolTextLimitChars,
+      sandboxPolicy: options.sandboxPolicy,
+      sandboxEngine,
+      ctx: runCtx,
+    });
+  const webController = capabilities.tool_use === false
+    ? null
+    : createWebToolController({
+      searchConfig: options.webSearchConfig,
+      fetchConfig: options.webFetchConfig,
       sandboxPolicy: options.sandboxPolicy,
       sandboxEngine,
       ctx: runCtx,
@@ -109,6 +120,8 @@ export async function buildTurnTools(runState, {
       approvalManager,
       approvalModel: runtime.model?.id || runtime.model?.name || resolved.model,
       nodeReplController,
+      webController,
+      toolExecutionMode,
       ctx: runCtx,
     }));
 
@@ -143,14 +156,19 @@ export async function buildTurnTools(runState, {
 
   const tools = [
     ...builtIns,
-    ...mcpInit.tools,
+    ...mcpInit.tools.map((tool) => ({ ...tool, executionMode: "sequential" })),
     ...(structuredTool ? [structuredTool] : []),
   ];
   return {
     tools,
     structuredTool,
     mcpClients: mcpInit.clients,
-    closeRunTools: async () => { await nodeReplController?.close(); },
+    closeRunTools: async () => {
+      await Promise.allSettled([
+        nodeReplController?.close(),
+        webController?.close(),
+      ].filter(Boolean));
+    },
   };
 }
 
@@ -226,6 +244,7 @@ export function buildTurnHarness(runState, {
   // bounded content/details verbatim. Downstream tool_execution_end and timing
   // events therefore report the failure accurately.
   harness.on("tool_result", (event) => /** @type {any} */ (event?.details)?.mcp_result_is_error === true
+    || /** @type {any} */ (event?.details)?.outcome?.status === "error"
     ? { isError: true }
     : undefined);
   runState.harness = harness;

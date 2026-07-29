@@ -22,6 +22,41 @@ function toolResultFileChange(result) {
     : null;
 }
 
+function toolResultOutcome(result) {
+  const source = result?.details?.outcome;
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const bounded = {};
+  const strings = {
+    status: "status",
+    code: "code",
+    backend: "backend",
+    signal: "signal",
+  };
+  const numbers = {
+    attempts: "attempts",
+    bytes: "bytes",
+    exitCode: "exit_code",
+    statusCode: "status_code",
+  };
+  const booleans = {
+    retryable: "retryable",
+    cacheHit: "cache_hit",
+    truncated: "truncated",
+    timedOut: "timed_out",
+    rendered: "rendered",
+  };
+  for (const [input, output] of Object.entries(strings)) {
+    if (typeof source[input] === "string") bounded[output] = source[input].slice(0, 120);
+  }
+  for (const [input, output] of Object.entries(numbers)) {
+    if (Number.isFinite(Number(source[input]))) bounded[output] = Number(source[input]);
+  }
+  for (const [input, output] of Object.entries(booleans)) {
+    if (typeof source[input] === "boolean") bounded[output] = source[input];
+  }
+  return bounded;
+}
+
 /**
  * The slice of run state the stream subscriber reads and mutates. A structural
  * subset of the orchestrator's runState.
@@ -107,6 +142,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
     } else if (event.type === "tool_execution_end") {
       const resultContent = toolResultContent(event.result);
       const fileChange = toolResultFileChange(event.result);
+      const outcome = toolResultOutcome(event.result);
       if (!event.isError) runState.toolResultsSeen += 1;
       const startedAt = runState.toolStartTimes.get(event.toolCallId);
       if (startedAt !== undefined) {
@@ -117,6 +153,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
           name: event.toolName,
           execution_ms: Date.now() - startedAt,
           is_error: !!event.isError,
+          ...(outcome || {}),
         });
       }
       onEvent({

@@ -79,7 +79,18 @@ Plus, independently: MCP servers from an mcp.json config file?
 
 Fills: `tools.allowedTools`, `tools.disallowedTools` (denylist wins, even under allow-all), `tools.mcpConfigPath`. The default is allow-all (`["*"]`) — write that unless the user asks to narrow. Under allow-all the adapter-derived send tools (`SlackSendMessage` / `TelegramSendMessage` / …) are auto-available once the channel is enabled; only a **specific** allowlist needs their exact names added. Valid enabled Slack/Telegram adapter config and destination allowlists are required either way. On the pi-native runtime `disallowedTools` does not filter external MCP-server tools — to withhold one, don't declare its server.
 
-Offer the `NodeRepl` built-in when the user wants run-scoped JavaScript evaluation. It executes with the same sandbox authority as `Bash`.
+For Pi process work, prefer the `Exec` built-in for one executable plus literal
+argv and offer `Bash` only when shell syntax is required. Offer `NodeRepl` when
+the user wants run-scoped JavaScript evaluation. All three execute with the same
+sandbox authority.
+
+If the agent needs public-web research, ask whether it should use the keyless
+default, a loopback SearXNG companion, or strict SearXNG-only discovery. Fill
+`tools.web.search.backend` and optional `tools.web.search.endpoint`. Keep
+`tools.web.fetch.render: "never"` unless the user explicitly needs
+JavaScript-heavy pages and has `agent-browser` 0.33.1 or newer; then select
+`"auto"` plus the direct `browserCommand`. Explain that SearXNG is local
+infrastructure but both search and fetch still generate public network traffic.
 
 ## 6. Memory Strategy
 

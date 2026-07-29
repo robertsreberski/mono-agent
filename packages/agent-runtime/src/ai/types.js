@@ -161,6 +161,10 @@
  * @property {RuntimeToolLimits} [toolLimits] Typed per-run tool-output limits (supported replacement for the deprecated `settings` tool keys).
  * @property {RuntimeCompactionPolicy} [compaction] Typed per-run compaction policy (supported replacement for the deprecated `settings` compaction keys).
  * @property {RuntimePromptOverrides} [prompts] Per-run prompt-fragment overrides (run wins over the host default).
+ * @property {{backend?: "auto"|"searxng"|"keyless", endpoint?: string}} [webSearchConfig] Run-scoped WebSearch backend configuration.
+ * @property {{render?: "never"|"auto", browserCommand?: string}} [webFetchConfig] Run-scoped WebFetch extraction/render configuration.
+ * @property {"sequential"|"safe-parallel"} [piToolExecutionMode] Pi built-in tool scheduling mode. Safe parallelism is the default.
+ * @property {"one-at-a-time"|"all"} [piToolParallelismMode] DEPRECATED. Compatibility alias mapped to piToolExecutionMode.
  * @property {Object} [settings] DEPRECATED. Legacy flat settings bag; consumed only as a per-group FALLBACK when the corresponding typed object (`toolLimits` / `compaction`) is absent. Consuming any key emits one `deprecated_settings_option` runtime_warning per run. Migrate via resolveRuntimePolicies (@mono-agent/runtime-adapter).
  * @property {Object} [nativeSubagents] Same-runtime teammate helpers exposed through native provider subagent surfaces.
  * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when

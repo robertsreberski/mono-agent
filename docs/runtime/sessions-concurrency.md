@@ -164,4 +164,4 @@ For retry behavior across *different* models (provider failover, not transport r
 - [Backends & models](/runtime/backends/) — choosing `runtime.model` and execution mode
 - [Local providers](/runtime/local-providers/) — `pi:<provider>:<model>` for Ollama / LM Studio / OpenAI-compatible
 - [Fallback models](/runtime/fallback/) — ordered backups on retryable provider failure
-- [Tool parallelism](/runtime/tools-and-guards/) — concurrent tool calls within a model step (code-only)
+- [Tool scheduling](/runtime/tools-and-guards/#tool-scheduling-code-only) — safe parallel or forced-sequential tool calls within a model step (code-only)

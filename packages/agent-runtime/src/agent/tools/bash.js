@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+// @ts-check
+
 import { existsSync } from "node:fs";
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { DEFAULT_MAX_BASH_OUTPUT_CHARS } from "./shared/constants.js";
@@ -8,157 +9,274 @@ import {
   isWorkdirAllowed,
   workspaceRoot,
 } from "./shared/path-resolver.js";
+import {
+  combinedProcessOutput,
+  DEFAULT_PROCESS_BUFFER_BYTES,
+  runPreparedProcess,
+} from "./shared/process-runner.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 
-const DEFAULT_BASH_TIMEOUT_MS = 120000;
-const BASH_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
-const KILL_GRACE_MS = 1000;
+const DEFAULT_BASH_TIMEOUT_MS = 120_000;
+const BASH_STARTUP_ENV_KEYS = new Set([
+  "BASHOPTS",
+  "BASH_COMPAT",
+  "BASH_XTRACEFD",
+  "CDPATH",
+  "GLOBIGNORE",
+  "POSIXLY_CORRECT",
+  "PROMPT_COMMAND",
+  "PS4",
+  "SHELLOPTS",
+]);
 
+/**
+ * Legacy Bash timeout normalization. Values up to 600 are seconds; larger
+ * values are milliseconds. New callers should use `timeout_ms`.
+ */
 export function normalizeBashTimeoutMs(value, fallback = DEFAULT_BASH_TIMEOUT_MS) {
-  const cap = Number.isFinite(Number(fallback)) && Number(fallback) > 0
-    ? Math.floor(Number(fallback))
-    : DEFAULT_BASH_TIMEOUT_MS;
+  const cap = finitePositiveInteger(fallback, DEFAULT_BASH_TIMEOUT_MS);
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return cap;
   const floored = Math.floor(n);
-  const ms = floored <= 600 ? floored * 1000 : floored;
-  return Math.max(1000, Math.min(ms, cap));
-}
-
-function killProcessGroup(child, signal) {
-  if (!child?.pid) return;
-  try {
-    process.kill(process.platform === "win32" ? child.pid : -child.pid, signal);
-  } catch {
-    try { process.kill(child.pid, signal); } catch { /* already gone */ }
-  }
-}
-
-function appendChunk(chunks, chunk, state) {
-  state.bytes += chunk.length;
-  if (state.bytes > state.maxBufferBytes) {
-    state.bufferExceeded = true;
-    return false;
-  }
-  chunks.push(chunk);
-  return true;
-}
-
-function runCommand(commandSpec, { timeoutMs, signal, maxBufferBytes = BASH_MAX_BUFFER_BYTES }) {
-  return new Promise((resolve) => {
-    const child = spawn(commandSpec.command, commandSpec.args || [], {
-      cwd: commandSpec.cwd,
-      detached: true,
-      env: commandSpec.env ? { ...process.env, ...commandSpec.env } : process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const stdout = [];
-    const stderr = [];
-    const state = {
-      aborted: false,
-      bufferExceeded: false,
-      bytes: 0,
-      maxBufferBytes,
-      spawnError: null,
-      timedOut: false,
-    };
-    let killTimer = null;
-    let settled = false;
-
-    function terminate() {
-      killProcessGroup(child, "SIGTERM");
-      if (!killTimer) {
-        killTimer = setTimeout(() => killProcessGroup(child, "SIGKILL"), KILL_GRACE_MS);
-        killTimer.unref?.();
-      }
-    }
-
-    const timeoutTimer = setTimeout(() => {
-      state.timedOut = true;
-      terminate();
-    }, timeoutMs);
-    timeoutTimer.unref?.();
-
-    const onAbort = () => {
-      state.aborted = true;
-      terminate();
-    };
-    if (signal?.aborted) onAbort();
-    else signal?.addEventListener?.("abort", onAbort, { once: true });
-
-    child.stdout?.on("data", (chunk) => {
-      if (!appendChunk(stdout, chunk, state)) terminate();
-    });
-    child.stderr?.on("data", (chunk) => {
-      if (!appendChunk(stderr, chunk, state)) terminate();
-    });
-    child.once("error", (err) => {
-      state.spawnError = err;
-    });
-    child.once("close", (code, closeSignal) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeoutTimer);
-      if (killTimer) clearTimeout(killTimer);
-      signal?.removeEventListener?.("abort", onAbort);
-      resolve({
-        code,
-        signal: closeSignal,
-        stdout: Buffer.concat(stdout).toString("utf8"),
-        stderr: Buffer.concat(stderr).toString("utf8"),
-        ...state,
-      });
-    });
-  });
+  const milliseconds = floored <= 600 ? floored * 1_000 : floored;
+  return Math.max(1_000, Math.min(milliseconds, cap));
 }
 
 /**
- * @param {{command: string, timeout?: number, max_output_chars?: number, workdir?: string}} params
- * @param {{signal?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ * Exact millisecond timeout used by Bash.timeout_ms and Exec.timeout_ms.
  */
-export async function bashToolImpl({ command, timeout = DEFAULT_BASH_TIMEOUT_MS, max_output_chars, workdir }, { signal, sandboxPolicy, sandboxEngine, ctx } = {}) {
+export function normalizeProcessTimeoutMs(value, fallback = DEFAULT_BASH_TIMEOUT_MS) {
+  const cap = finitePositiveInteger(fallback, DEFAULT_BASH_TIMEOUT_MS);
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return cap;
+  return Math.max(1, Math.min(Math.floor(n), cap));
+}
+
+/**
+ * Compatibility wrapper retained for direct callers and tests.
+ *
+ * @param {{command: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string}} params
+ * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ */
+export async function bashToolImpl(params, options = {}) {
+  return (await bashToolRun(params, options)).text;
+}
+
+/**
+ * Structured Bash execution used by the Pi bridge.
+ *
+ * @param {{command: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string}} params
+ * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ */
+export async function bashToolRun(
+  {
+    command,
+    timeout,
+    timeout_ms,
+    max_output_chars,
+    workdir,
+  },
+  {
+    signal,
+    sandboxPolicy,
+    sandboxEngine,
+    ctx,
+  } = {},
+) {
+  const startedAt = Date.now();
+  if (typeof command !== "string") {
+    return failed("Error: Bash command must be a string.", "invalid_command", startedAt);
+  }
+  if (command.includes("\0")) {
+    return failed("Error: Bash command must not contain NUL characters.", "invalid_command", startedAt);
+  }
   const resolvedCtx = ctx ?? readToolRuntime();
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
-  const pathOptions = { sandboxPolicy: policy, ctx };
-  if (workdir && !isWorkdirAllowed(workdir, pathOptions)) return `Error: Working directory not allowed: ${workdir}`;
-  const cwd = workspaceRoot(workdir, ctx);
-  if (!isPathAllowed(cwd, workdir, pathOptions)) return `Error: Working directory not allowed: ${cwd}`;
-  if (!existsSync(cwd)) return `Error: Working directory not found: ${cwd}`;
-  const maxChars = Number(max_output_chars) || DEFAULT_MAX_BASH_OUTPUT_CHARS;
-  const timeoutMs = normalizeBashTimeoutMs(timeout);
+  const pathOptions = { sandboxPolicy: policy, ctx: resolvedCtx };
+  if (workdir && !isWorkdirAllowed(workdir, pathOptions)) {
+    return failed(`Error: Working directory not allowed: ${workdir}`, "workdir_denied", startedAt);
+  }
+  const cwd = workspaceRoot(workdir, resolvedCtx);
+  if (!isPathAllowed(cwd, workdir, pathOptions)) {
+    return failed(`Error: Working directory not allowed: ${cwd}`, "workdir_denied", startedAt);
+  }
+  if (!existsSync(cwd)) {
+    return failed(`Error: Working directory not found: ${cwd}`, "workdir_not_found", startedAt);
+  }
+
+  const maxChars = finitePositiveInteger(max_output_chars, DEFAULT_MAX_BASH_OUTPUT_CHARS);
+  const legacyTimeoutUsed = timeout_ms === undefined && timeout !== undefined;
+  const timeoutMs = timeout_ms === undefined
+    ? normalizeBashTimeoutMs(timeout, DEFAULT_BASH_TIMEOUT_MS)
+    : normalizeProcessTimeoutMs(timeout_ms, DEFAULT_BASH_TIMEOUT_MS);
   let prepared;
   try {
     prepared = await sandbox.prepareCommand({
       policy,
-      engine: sandboxEngine ?? undefined,
-      command: { command: "/bin/bash", args: ["-lc", command], cwd },
+      engine: sandboxEngine ?? resolvedCtx.sandboxEngine ?? undefined,
+      command: {
+        command: "/bin/bash",
+        args: ["--noprofile", "--norc", "-c", command],
+        cwd,
+        env: cleanBashEnvironment(),
+      },
     });
-  } catch (err) {
-    return `Error: ${err?.message || String(err)}`;
+  } catch (error) {
+    return failed(`Error: ${error?.message || String(error)}`, "sandbox_prepare_failed", startedAt);
   }
+
   let result;
+  let cleanupError;
   try {
-    result = await runCommand(prepared, { timeoutMs, signal });
-  } finally {
-    await prepared.cleanup?.();
-  }
-  if (result.timedOut) return `Error: Command timed out after ${timeoutMs}ms`;
-  if (result.aborted) return "Error: Command aborted";
-  if (result.bufferExceeded) return `Error: Command output exceeded ${BASH_MAX_BUFFER_BYTES} bytes`;
-  if (result.spawnError) return `Exit code 1:\n${result.spawnError.message}`;
-  if (result.code && result.code !== 0) {
-    return capChars(`Exit code ${result.code || 1}:\n${result.stdout || ""}${result.stderr || ""}`, {
-      label: "Bash",
-      maxChars,
-      strategy: "head_tail",
-      ctx,
+    result = await runPreparedProcess(prepared, {
+      timeoutMs,
+      signal,
+      maxBufferBytes: DEFAULT_PROCESS_BUFFER_BYTES,
     });
+  } finally {
+    try {
+      await prepared.cleanup?.();
+    } catch (error) {
+      cleanupError = error;
+    }
   }
-  if (result.signal) return `Exit code 1:\nCommand terminated by ${result.signal}`;
-  const output = result.stdout && result.stderr
-    ? `STDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`
-    : (result.stdout || result.stderr || "(no output)");
-  return capChars(output, { label: "Bash", maxChars, strategy: "head_tail", ctx });
+
+  const baseOutcome = processOutcome(result, {
+    status: "ok",
+    code: "ok",
+    legacyTimeoutUsed,
+  });
+  const partial = combinedProcessOutput(result);
+  if (result.timedOut) {
+    return failedWithOutcome(
+      withPartial(`Error: Command timed out after ${timeoutMs}ms`, partial),
+      { ...baseOutcome, status: "error", code: "timeout", retryable: false, timedOut: true },
+      maxChars,
+      resolvedCtx,
+    );
+  }
+  if (result.aborted) {
+    return failedWithOutcome(
+      withPartial("Error: Command aborted", partial),
+      { ...baseOutcome, status: "error", code: "aborted", retryable: false },
+      maxChars,
+      resolvedCtx,
+    );
+  }
+  if (result.bufferExceeded) {
+    return failedWithOutcome(
+      withPartial(`Error: Command output exceeded ${DEFAULT_PROCESS_BUFFER_BYTES} bytes`, partial),
+      { ...baseOutcome, status: "error", code: "output_limit", retryable: false, truncated: true },
+      maxChars,
+      resolvedCtx,
+    );
+  }
+  if (result.spawnError) {
+    return failedWithOutcome(
+      withPartial(`Exit code 1:\n${result.spawnError.message}`, partial),
+      { ...baseOutcome, status: "error", code: "spawn_error", retryable: false, exitCode: 1 },
+      maxChars,
+      resolvedCtx,
+    );
+  }
+  if (result.code !== null && result.code !== 0) {
+    return failedWithOutcome(
+      withPartial(`Exit code ${result.code}`, partial),
+      { ...baseOutcome, status: "error", code: "nonzero_exit", retryable: false },
+      maxChars,
+      resolvedCtx,
+    );
+  }
+  if (result.signal) {
+    return failedWithOutcome(
+      withPartial(`Exit code 1:\nCommand terminated by ${result.signal}`, partial),
+      { ...baseOutcome, status: "error", code: "signal", retryable: false, exitCode: 1 },
+      maxChars,
+      resolvedCtx,
+    );
+  }
+  if (cleanupError) {
+    return failedWithOutcome(
+      withPartial(`Error: Sandbox cleanup failed: ${cleanupError?.message || String(cleanupError)}`, partial),
+      { ...baseOutcome, status: "error", code: "cleanup_failed", retryable: false },
+      maxChars,
+      resolvedCtx,
+    );
+  }
+
+  return completed(partial, baseOutcome, maxChars, "Bash", resolvedCtx);
+}
+
+function cleanBashEnvironment() {
+  const env = {
+    BASH_ENV: "/dev/null",
+    ENV: "/dev/null",
+  };
+  for (const key of Object.keys(process.env)) {
+    if (BASH_STARTUP_ENV_KEYS.has(key) || key.startsWith("BASH_FUNC_")) {
+      env[key] = undefined;
+    }
+  }
+  return env;
+}
+
+function finitePositiveInteger(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
+}
+
+function processOutcome(result, extra = {}) {
+  return {
+    status: "ok",
+    code: "ok",
+    retryable: false,
+    attempts: 1,
+    durationMs: Number(result.durationMs) || 0,
+    bytes: Number(result.bytes) || 0,
+    truncated: !!result.truncated,
+    exitCode: result.code,
+    signal: result.signal,
+    timedOut: !!result.timedOut,
+    ...extra,
+  };
+}
+
+function withPartial(message, output) {
+  return output && output !== "(no output)" ? `${message}\n\nPartial output:\n${output}` : message;
+}
+
+function completed(text, outcome, maxChars, label, ctx) {
+  const raw = String(text || "(no output)");
+  const truncated = raw.length > maxChars || outcome.truncated;
+  return {
+    text: capChars(raw, { label, maxChars, strategy: "head_tail", ctx }),
+    outcome: { ...outcome, truncated },
+    error: false,
+  };
+}
+
+function failed(text, code, startedAt) {
+  return {
+    text,
+    outcome: {
+      status: "error",
+      code,
+      retryable: false,
+      attempts: 1,
+      durationMs: Date.now() - startedAt,
+      bytes: 0,
+      truncated: false,
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+    },
+    error: true,
+  };
+}
+
+function failedWithOutcome(text, outcome, maxChars, ctx) {
+  const completedResult = completed(text, outcome, maxChars, "Bash", ctx);
+  return { ...completedResult, error: true };
 }

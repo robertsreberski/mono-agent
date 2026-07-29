@@ -1,11 +1,11 @@
 ---
 title: "Built-in tools & auto-guards"
-description: "Understand mono-agent's built-in tools and automatic protections for tool output, usage telemetry, context compaction, retries, and parallelism."
+description: "Understand mono-agent's built-in tools and automatic protections for processes, web access, tool output, telemetry, retries, and safe parallelism."
 sidebar:
   order: 6
 ---
 
-This page covers mono-agent's managed built-ins (Read, Write, Edit, Glob, Grep, Bash, NodeRepl, WebFetch, WebSearch) and the runtime guards that protect each turn: the tool-output bloat guard, per-run usage/cost tracking, bridge-driven Pi context compaction, and WebFetch's in-tool retry. It also notes which behaviors you configure versus which run automatically.
+This page covers mono-agent's managed built-ins (Read, Write, Edit, Glob, Grep, Bash, Exec, NodeRepl, WebFetch, WebSearch) and the runtime guards that protect each turn: loss-aware process execution, the tool-output bloat guard, per-run usage/cost tracking, bridge-driven Pi context compaction, and WebFetch's in-tool retry. It also notes which behaviors you configure versus which run automatically.
 
 ## Built-in tools
 
@@ -18,12 +18,13 @@ These tools need no extra capability config (coverage: `config` — they exist b
 | `Edit` | Exact-string replacement in a file. |
 | `Glob` | Match files by glob pattern. |
 | `Grep` | Search file contents. |
-| `Bash` | Run a shell command. |
+| `Bash` | Run a command string through a clean non-interactive Bash. |
+| `Exec` | Run one executable directly with an argv array and no shell parsing. |
 | `NodeRepl` | Evaluate JavaScript in a run-scoped Node.js REPL. |
-| `WebFetch` | Fetch a URL and return its content. |
-| `WebSearch` | Run a web search. |
+| `WebFetch` | Fetch and locally extract one public URL, with opt-in browser rendering. |
+| `WebSearch` | Search via local SearXNG or keyless public fallbacks. |
 
-These are gated by `tools.allowedTools` / `tools.disallowedTools`. Deny always wins, and listing the same tool in both is rejected at validation time. Mono-agent-managed built-ins are provided by the Pi bridge; provider-owned routes use their native tool surfaces. See [Tool Policy](/tools/policy/) for the full allow/deny semantics, plus [MCP tools](/tools/mcp/) and the [sandbox](/tools/sandbox/) for `Bash` and `NodeRepl` confinement.
+These are gated by `tools.allowedTools` / `tools.disallowedTools`. Deny always wins, and listing the same tool in both is rejected at validation time. Mono-agent-managed built-ins are provided by the Pi bridge; provider-owned routes use their native tool surfaces. See [Tool Policy](/tools/policy/) for the full allow/deny semantics, plus [MCP tools](/tools/mcp/) and the [sandbox](/tools/sandbox/) for process and network confinement.
 
 ```json
 {
@@ -42,11 +43,51 @@ An **omitted** `allowedTools` (or `["*"]`) allows **every** tool subject to `dis
 
 These are the normalized policy semantics, but the selected runtime must be able to enforce them. Direct `codex:*` normal runs currently accept only effective allow-all (an omitted or wildcard-containing allowlist, with no denylist); named-only lists, `[]`, and denylist variants fail validation/runtime setup instead of being silently widened. See [Tool policy](/tools/policy/#allow-all-by-default).
 
+## Exec and Bash
+
+Use `Exec({ executable, args, workdir?, timeout_ms?, max_output_chars? })` for
+ordinary commands. It calls the executable directly, so every argument stays
+literal: no shell expansion, redirection, command substitution, pipelines, or
+quoting ambiguity. Use `Bash` only for commands that genuinely require shell
+syntax.
+
+`Bash` launches `/bin/bash --noprofile --norc -c`, pins `BASH_ENV` and `ENV` to
+`/dev/null`, and removes inherited Bash functions/startup-option variables.
+This avoids interactive aliases, user profiles, exported functions, and shell
+startup hooks changing an agent call. Its public `timeout_ms` is exact
+milliseconds.
+The old `timeout` field remains temporarily compatible—values up to 600 retain
+the historical seconds interpretation and larger values mean milliseconds—but
+every use emits a deprecation warning.
+
+Both tools share one loss-aware process runner. It:
+
+- spawns a detached process group without an extra shell;
+- enforces abort and timeout with `SIGTERM`, then `SIGKILL` after a one-second
+  grace period;
+- bounds stdout and stderr together at 8 MiB before applying the smaller
+  model-facing output cap;
+- preserves partial stdout/stderr on non-zero exit, signal, abort, timeout, and
+  overflow;
+- returns sandbox preparation and cleanup failures as structured tool errors;
+- records structured status, exit code/signal, duration, byte count, timeout,
+  and truncation metadata without copying the command or argv into timing
+  telemetry.
+
+These are macOS-facing tools. Prefer portable commands or feature-detect flags
+instead of assuming GNU variants of `sed`, `date`, `stat`, `xargs`, and similar
+utilities.
+
 ## NodeRepl
 
 `NodeRepl({ code })` uses Node's built-in [`node:repl`](https://nodejs.org/api/repl.html) default evaluator. Mono-agent lazily starts one child REPL for a run and reuses it for later `NodeRepl` calls in that run. Variables, the module cache, `_`, and `_error` therefore persist between calls; the child is destroyed when the run ends, so the next run starts clean. The evaluator supports multiline JavaScript, top-level `await`, Node built-ins, `console` output, and `require()` of packages already installed for the workspace.
 
-This is code execution, with the same filesystem, process, and network authority as `Bash`. The child goes through the same sandbox preparation seam and configured SRT policy. With no active sandbox it runs on the host; with native SRT it receives the configured roots, deny-write rules, and network policy. A fixed 120-second evaluation timeout, abort, child exit, or hard output overflow kills the child and resets its state before a later call. Normal results use the existing tool-output cap.
+This is code execution, with the same filesystem, process, and network authority as `Exec` and `Bash`. The child goes through the same sandbox preparation seam and configured SRT policy. With no active sandbox it runs on the host; with native SRT it receives the configured roots, deny-write rules, and network policy. A fixed 120-second evaluation timeout, abort, child exit, or hard output overflow kills the child and resets its state before a later call. Normal results use the existing tool-output cap.
+
+The host and REPL child communicate through random-token, length-prefixed JSON
+frames on ordinary stdin/stdout. Console output is captured separately from
+protocol frames. This works through sandbox wrappers that forward standard
+pipes and avoids relying on Node's special IPC file descriptor.
 
 `NodeRepl` is intentionally small: it has no session ids, persistent history, reset command, terminal emulation, or package installer. Use `Bash` for shell commands and install dependencies before the run. REPL dot commands such as `.save` and `.load` are not a supported tool interface.
 
@@ -115,25 +156,46 @@ against the effective context window `W`: trigger ratio `0.70`, safety headroom
 `runtime.compaction` (or the matching `MONO_AGENT_COMPACTION_*` variables).
 Other bridges follow their own compaction behavior. See [Backends](/runtime/backends/) for bridge differences, [Sessions & concurrency](/runtime/sessions-concurrency/) for how sessions persist, and [Fallback](/runtime/fallback/) for window changes across the fallback chain.
 
-## WebFetch retry (auto)
+## Web research and WebFetch retry
 
-The `WebFetch` tool retries transient network failures (timeout, `ECONNRESET`, 5xx) in-tool with backoff. This keeps the model from burning reasoning rounds re-issuing a fetch that failed for a momentary network reason. It is built into the tool (coverage: `auto`) — there is nothing to configure.
+`WebSearch` supports a loopback SearXNG companion and deterministic keyless
+fallbacks. `WebFetch` performs local Defuddle/Readability extraction for HTML,
+plus JSON, feed, PDF, and text handling. Optional `agent-browser` rendering is
+off by default and is a config-level capability ceiling.
+
+`WebFetch` retries transient network failures and HTTP 408/425/429/5xx in-tool
+with bounded backoff and `Retry-After` handling. This keeps the model from
+burning reasoning rounds re-issuing a fetch that failed for a momentary network
+reason. Browser rendering is never attempted for HTTP errors or non-HTML
+content.
+
+See [Local-first web research](/tools/web-research/) for the backend, extraction,
+isolation, and config contract.
 
 :::tip
 This is distinct from provider-transport retries (`providers.piNative.piMaxRetries` / `maxRetryDelayMs`), which retry the model call itself. WebFetch retry is local to the tool's HTTP request. See [Fallback](/runtime/fallback/) for provider-level retry and failover.
 :::
 
-## Tool parallelism (code-only)
+## Tool scheduling (code-only)
 
-By default a model step runs its tool calls one at a time. You can opt into running an independent step's tool calls concurrently (pi-agent-core QueueMode), but only programmatically:
+Pi defaults to safe parallelism: independent read-only tools may overlap, while
+`Write`, `Edit`, `Bash`, `Exec`, `NodeRepl`, every MCP tool, and other
+stateful/mutating built-ins carry a sequential execution marker. Force every
+tool to run sequentially only when a host needs globally deterministic ordering:
 
 ```ts
 const runtimeOptions = {
-  piToolParallelismMode: "all", // default: "one-at-a-time"
+  piToolExecutionMode: "sequential", // default: "safe-parallel"
 };
 ```
 
-There is no config-file or CLI key for this (coverage: `code`). Enable it only when a step's tools are genuinely independent — concurrent `Write`/`Edit` to the same file, or order-dependent `Bash` commands, will race. See [Programmatic composition](/programmatic/composition/) for where `runtimeOptions` is supplied.
+There is no config-file or CLI key for this (coverage: `code`). The deprecated
+`piToolParallelismMode` alias maps `one-at-a-time` to `sequential` and `all` to
+`safe-parallel`, with a runtime warning. Tool scheduling is independent from
+Pi's one-at-a-time user steering/follow-up queue.
+
+See [Programmatic composition](/programmatic/composition/) for where
+`runtimeOptions` is supplied.
 
 ## Coverage at a glance
 
@@ -143,5 +205,5 @@ There is no config-file or CLI key for this (coverage: `code`). Enable it only w
 | Bloat guard (256KB + artifacts) | `auto` | Built in; artifacts to `artifacts.dir` |
 | Usage/cost tracking | `auto` | Recorded in JSONL artifacts |
 | Context compaction | `config` + `provider` | `runtime.compaction.*`; bridge-driven Pi compaction |
-| WebFetch retry | `auto` | Built into the WebFetch tool |
-| Tool parallelism | `code` | `runtimeOptions.piToolParallelismMode` |
+| Web research | `config` + `auto` | `tools.web.*`; extraction/retry built in |
+| Tool scheduling | `code` | `runtimeOptions.piToolExecutionMode` |

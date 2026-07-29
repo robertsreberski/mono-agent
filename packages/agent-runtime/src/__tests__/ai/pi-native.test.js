@@ -30,6 +30,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import {
   createDynamicCredentialStore,
   generatePiNativeResponse,
+  resolvePiToolExecutionMode,
   splitPromptMessages,
 } from "../../ai/providers/pi-native.js";
 import { failureKindForPiError } from "../../ai/providers/pi-native/result-builder.js";
@@ -75,6 +76,49 @@ describe("pi-native live input", () => {
     await vi.waitFor(() => expect(iterator.next).toHaveBeenCalledTimes(1));
     await expect(consumer.stop()).resolves.toBeUndefined();
     expect(iterator.return).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("resolvePiToolExecutionMode", () => {
+  it("defaults to safe parallelism and accepts both current modes", () => {
+    expect(resolvePiToolExecutionMode({})).toEqual({ mode: "safe-parallel", warnings: [] });
+    expect(resolvePiToolExecutionMode({ piToolExecutionMode: "sequential" }))
+      .toEqual({ mode: "sequential", warnings: [] });
+    expect(resolvePiToolExecutionMode({ piToolExecutionMode: "safe-parallel" }))
+      .toEqual({ mode: "safe-parallel", warnings: [] });
+  });
+
+  it("maps the deprecated one-at-a-time alias to sequential", () => {
+    const resolved = resolvePiToolExecutionMode({ piToolParallelismMode: "one-at-a-time" });
+
+    expect(resolved.mode).toBe("sequential");
+    expect(resolved.warnings).toEqual([
+      expect.objectContaining({ warning_kind: "deprecated_pi_tool_parallelism_mode" }),
+    ]);
+  });
+
+  it("maps the deprecated all alias to safe parallelism", () => {
+    expect(resolvePiToolExecutionMode({ piToolParallelismMode: "all" })).toMatchObject({
+      mode: "safe-parallel",
+      warnings: [expect.objectContaining({ warning_kind: "deprecated_pi_tool_parallelism_mode" })],
+    });
+  });
+
+  it("lets the current option win while still warning about a supplied alias", () => {
+    expect(resolvePiToolExecutionMode({
+      piToolExecutionMode: "safe-parallel",
+      piToolParallelismMode: "one-at-a-time",
+    })).toMatchObject({
+      mode: "safe-parallel",
+      warnings: [expect.objectContaining({ warning_kind: "deprecated_pi_tool_parallelism_mode" })],
+    });
+  });
+
+  it("warns and falls back for an invalid current mode", () => {
+    expect(resolvePiToolExecutionMode({ piToolExecutionMode: "race-everything" })).toMatchObject({
+      mode: "safe-parallel",
+      warnings: [expect.objectContaining({ warning_kind: "invalid_pi_tool_execution_mode" })],
+    });
   });
 });
 

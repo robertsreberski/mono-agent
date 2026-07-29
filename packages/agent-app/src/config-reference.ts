@@ -995,6 +995,10 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     schema.enum = SANDBOX_FALLBACKS;
   } else if (field.jsonPath === "providers.piNative.transport") {
     schema.enum = PI_TRANSPORTS;
+  } else if (field.jsonPath === "tools.web.search.backend") {
+    schema.enum = ["auto", "searxng", "keyless"];
+  } else if (field.jsonPath === "tools.web.fetch.render") {
+    schema.enum = ["never", "auto"];
   } else if (field.jsonPath === "telegram.groupMode") {
     schema.enum = ["any", "mention"];
   } else if (field.jsonPath === "telegram.sendTools.scope") {
@@ -1186,6 +1190,9 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "tools.mcpRequestContextServers": [],
     "tools.mcpCallTimeoutMs": 120_000,
     "tools.mcpCallMaxTotalTimeoutMs": 2_700_000,
+    "tools.web.search.backend": "auto",
+    "tools.web.fetch.render": "never",
+    "tools.web.fetch.browserCommand": "agent-browser",
     "sandbox.network.mode": "none",
     "sandbox.fallback": "fail-closed",
     "sandbox.unsafeAllowHostProcess": false,
@@ -1265,6 +1272,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "traceability.sourceId": "my-agent",
     "traceability.sourceLabel": "My Agent",
     "tools.mcpRequestContextServers": ["transcribe"],
+    "tools.web.search.endpoint": "http://127.0.0.1:8088",
     "providers.piAuthPath": "~/.pi/agent/auth.json",
     "providers.piNative.transport": "sse",
     "telegram.botToken": "env:MONO_AGENT_TELEGRAM_BOT_TOKEN",
@@ -1352,6 +1360,18 @@ function descriptionFor(id: string): string {
   }
   if (id === "tools.mcpRequestContextServers") {
     return "Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context.";
+  }
+  if (id === "tools.web.search.backend") {
+    return "WebSearch backend: auto tries a configured local SearXNG endpoint then keyless fallbacks; searxng is strict; keyless skips SearXNG.";
+  }
+  if (id === "tools.web.search.endpoint") {
+    return "Optional unauthenticated loopback HTTP SearXNG base URL. Remote HTTPS, credentials, query strings, and fragments are rejected.";
+  }
+  if (id === "tools.web.fetch.render") {
+    return "Browser-render capability for sparse JavaScript pages. never forces every call to static extraction; auto permits an isolated agent-browser session when needed.";
+  }
+  if (id === "tools.web.fetch.browserCommand") {
+    return "Direct executable name or path for agent-browser; shell fragments are not evaluated.";
   }
   if (id === "providers.piNative.transport") {
     return "Preferred Pi provider transport: auto, sse, websocket, or websocket-cached. Providers without multiple transports ignore it.";

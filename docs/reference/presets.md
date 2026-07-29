@@ -58,7 +58,7 @@ The wizard composes an agent from these modules. Selecting one auto-checks its r
 | `memory:journal` | Semantic recall via a guided Ollama or LM Studio embeddings service. | — |
 | `memory:bujo` | Daily-log capture plus semantic recall via guided Ollama or LM Studio embeddings; capture LLM remains explicit. | — |
 | `memory:supermemory` | External Supermemory instance for server-side extraction + recall. | — |
-| `sandbox` | Native `srt` sandbox: workspace-only FS, localhost network, fails closed. | `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Bash` |
+| `sandbox` | Native `srt` sandbox: workspace-only FS, localhost network, fails closed. | `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash` |
 | `observability:phoenix` | Best-effort Phoenix OTLP export, sensitive data excluded. | — |
 
 ### The tools step and the no-tools guardrail
@@ -66,7 +66,9 @@ The wizard composes an agent from these modules. Selecting one auto-checks its r
 The tools step first frames the three tool families so you know what the decision covers:
 
 - **Always on** — auto-provisioned and **not** gated by this choice: `MemoryRecall` (when the memory tier enables recall), plus `ReadSkill` and MCP-server tools (`mcp__…`, owned by their servers). These are shown dimmed for clarity, never as a checkbox.
-- **Built-ins** — files (`Read`/`Write`/`Edit`/`Glob`/`Grep`), shell (`Bash`), JavaScript (`NodeRepl`), and web (`WebFetch`/`WebSearch`).
+- **Built-ins** — files (`Read`/`Write`/`Edit`/`Glob`/`Grep`), direct processes
+  (`Exec`), shell syntax (`Bash`), JavaScript (`NodeRepl`), and local-first web
+  research (`WebFetch`/`WebSearch`).
 - **Channel tools** — the send tools that came with the channels you enabled (for example `TelegramSendMessage` and `SlackSendMessage`), plus `AskUser` (structured human input on web, Slack, or Telegram).
 
 For Pi and Claude it then asks a single **"Allow all tools? [Yes]"** — the default. Accepting writes `tools.allowedTools: ["*"]` (every built-in available on each route and every enabled channel's send tools; the "Always on" family is unaffected). The wizard spells out that this includes shell/JavaScript execution, file, web, and channel-side effects. If no enforceable sandbox constrains that runtime, it requires a second explicit confirmation before accepting the unsandboxed allow-all surface. Direct `codex:*` skips these questions: normal runs require an omitted or wildcard-containing allowlist with no denied tools and use the Codex-native network-off workspace sandbox with unattended escalation denied. Guided readiness rejects manually entered direct `opencode:*` because it cannot prove that advanced backend's credential/permission posture; choose `pi:opencode-go:*`, or use a flagged/non-TTY scaffold and configure OpenCode's native `permissionMode` explicitly.

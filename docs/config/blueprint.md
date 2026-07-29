@@ -176,7 +176,17 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "mcpRequestContextServers": ["transcribe"], // trusted stdio servers receiving scoped request/progress context
     "continuationServers": ["work-control"], // trusted stdio or loopback-HTTP async result owners
     "mcpCallTimeoutMs": 120000,            // inactivity cap per MCP call; tool progress resets it
-    "mcpCallMaxTotalTimeoutMs": 2700000    // hard per-call wall clock (45 min); progress cannot extend it
+    "mcpCallMaxTotalTimeoutMs": 2700000,   // hard per-call wall clock (45 min); progress cannot extend it
+    "web": {
+      "search": {
+        "backend": "auto",                 // auto | searxng (strict) | keyless
+        "endpoint": "http://127.0.0.1:8088" // optional loopback HTTP SearXNG base URL
+      },
+      "fetch": {
+        "render": "never",                 // never (capability disabled) | auto
+        "browserCommand": "agent-browser"  // direct executable name/path; no shell parsing
+      }
+    }
   },
 
   // Host-owned durable async delivery. A model never receives the route or
