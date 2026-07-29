@@ -124,6 +124,7 @@ const BUILTIN_TOOL_HINTS: Readonly<Record<string, string>> = {
   Glob: "find files by pattern",
   Grep: "search file contents",
   Bash: "run shell commands (pair with the sandbox)",
+  Exec: "run one executable directly without shell parsing",
   NodeRepl: "execute JavaScript in a run-scoped Node REPL",
   WebFetch: "fetch a URL",
   WebSearch: "search the web",

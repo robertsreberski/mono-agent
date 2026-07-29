@@ -41,7 +41,7 @@ import {
   PERMISSION_MODES,
   ROUTE_SAFETY_MODES,
 } from "./enums.js";
-import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, RouteSafetyMode, RuntimeFallbackConfig, SessionMode, SessionRollover, SkillDisclosureMode } from "./types.js";
+import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PermissionMode, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, RouteSafetyMode, RuntimeFallbackConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -193,6 +193,29 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     input.env.MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS,
     "MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS",
   );
+  const webSearchBackend = readChoice<WebSearchBackend>(
+    input.env.MONO_AGENT_WEB_SEARCH_BACKEND,
+    "MONO_AGENT_WEB_SEARCH_BACKEND",
+    ["auto", "searxng", "keyless"],
+    "auto",
+    invalidEnv,
+  );
+  const webSearchEndpoint = readWebSearchEndpoint(input.env.MONO_AGENT_WEB_SEARCH_ENDPOINT);
+  if (webSearchBackend === "searxng" && webSearchEndpoint === undefined) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_WEB_SEARCH_ENDPOINT is required when MONO_AGENT_WEB_SEARCH_BACKEND=searxng.",
+      { env: "MONO_AGENT_WEB_SEARCH_ENDPOINT" },
+    );
+  }
+  const webFetchRender = readChoice<WebFetchRenderMode>(
+    input.env.MONO_AGENT_WEB_FETCH_RENDER,
+    "MONO_AGENT_WEB_FETCH_RENDER",
+    ["never", "auto"],
+    "never",
+    invalidEnv,
+  );
+  const webBrowserCommand = readWebBrowserCommand(input.env.MONO_AGENT_WEB_BROWSER_COMMAND);
   const tools: MonoAgentConfig["tools"] = {
     // Omitted `tools.allowedTools` (env unset) → allow-all default; an explicit empty
     // list arrives as `MONO_AGENT_ALLOWED_TOOLS=""` (readCsv → []) meaning chat-only.
@@ -206,6 +229,16 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
     ...(continuationServers.length === 0 ? {} : { continuationServers }),
     ...(mcpCallTimeoutMs === undefined ? {} : { mcpCallTimeoutMs }),
     ...(mcpCallMaxTotalTimeoutMs === undefined ? {} : { mcpCallMaxTotalTimeoutMs }),
+    web: {
+      search: {
+        backend: webSearchBackend,
+        ...(webSearchEndpoint === undefined ? {} : { endpoint: webSearchEndpoint }),
+      },
+      fetch: {
+        render: webFetchRender,
+        browserCommand: webBrowserCommand,
+      },
+    },
   };
 
   const config: MonoAgentConfig = {
@@ -245,6 +278,12 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
       ...config.tools,
       allowedTools: [...config.tools.allowedTools],
       disallowedTools: [...config.tools.disallowedTools],
+      ...(config.tools.web === undefined ? {} : {
+        web: {
+          search: { ...config.tools.web.search },
+          fetch: { ...config.tools.web.fetch },
+        },
+      }),
     },
     ...(config.sandbox === undefined ? {} : { sandbox: { ...config.sandbox } }),
     artifacts: { ...config.artifacts },
@@ -457,6 +496,45 @@ function readOptionalTimeoutMs(raw: string | undefined, name: string): number | 
     return undefined;
   }
   return readInteger(raw, name, 0, invalidEnv, { min: 1000, max: 86_400_000 });
+}
+
+function readWebSearchEndpoint(raw: string | undefined): string | undefined {
+  const normalized = normalizeOptionalString(raw);
+  if (normalized === undefined) return undefined;
+  try {
+    const endpoint = new URL(normalized);
+    const host = endpoint.hostname.toLowerCase().replace(/^\[|\]$/gu, "");
+    if (
+      endpoint.protocol !== "http:"
+      || !["localhost", "127.0.0.1", "::1"].includes(host)
+      || endpoint.username
+      || endpoint.password
+      || endpoint.search
+      || endpoint.hash
+    ) {
+      throw new Error("not loopback HTTP");
+    }
+    endpoint.pathname = endpoint.pathname.replace(/\/+$/u, "");
+    return endpoint.href.replace(/\/+$/u, "");
+  } catch {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_WEB_SEARCH_ENDPOINT must be an unauthenticated loopback HTTP URL.",
+      { env: "MONO_AGENT_WEB_SEARCH_ENDPOINT" },
+    );
+  }
+}
+
+function readWebBrowserCommand(raw: string | undefined): string {
+  const value = normalizeOptionalString(raw) ?? "agent-browser";
+  if (/[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_WEB_BROWSER_COMMAND must be one executable name or path without control characters.",
+      { env: "MONO_AGENT_WEB_BROWSER_COMMAND" },
+    );
+  }
+  return value;
 }
 
 function readMaxTurns(raw: string | undefined): number | undefined {

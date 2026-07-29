@@ -851,6 +851,18 @@ export function layerJsonOntoEnv(
   if (json.tools?.mcpCallMaxTotalTimeoutMs !== undefined) {
     fromJson.MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS = String(json.tools.mcpCallMaxTotalTimeoutMs);
   }
+  if (json.tools?.web?.search?.backend !== undefined) {
+    fromJson.MONO_AGENT_WEB_SEARCH_BACKEND = json.tools.web.search.backend;
+  }
+  if (json.tools?.web?.search?.endpoint !== undefined) {
+    fromJson.MONO_AGENT_WEB_SEARCH_ENDPOINT = json.tools.web.search.endpoint;
+  }
+  if (json.tools?.web?.fetch?.render !== undefined) {
+    fromJson.MONO_AGENT_WEB_FETCH_RENDER = json.tools.web.fetch.render;
+  }
+  if (json.tools?.web?.fetch?.browserCommand !== undefined) {
+    fromJson.MONO_AGENT_WEB_BROWSER_COMMAND = json.tools.web.fetch.browserCommand;
+  }
   if (json.sandbox?.mode !== undefined) {
     fromJson.MONO_AGENT_SANDBOX_MODE = json.sandbox.mode;
   }

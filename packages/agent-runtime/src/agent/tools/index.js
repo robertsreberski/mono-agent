@@ -9,9 +9,16 @@ export { writeToolImpl } from "./write.js";
 export { editToolImpl } from "./edit.js";
 export { globToolImpl } from "./glob.js";
 export { grepToolImpl } from "./grep.js";
-export { bashToolImpl, normalizeBashTimeoutMs } from "./bash.js";
-export { webFetchToolImpl } from "./web-fetch.js";
-export { webSearchToolImpl } from "./web-search.js";
+export {
+  bashToolImpl,
+  bashToolRun,
+  normalizeBashTimeoutMs,
+  normalizeProcessTimeoutMs,
+} from "./bash.js";
+export { execToolImpl, execToolRun } from "./exec.js";
+export { webFetchToolImpl, performWebFetch } from "./web-fetch.js";
+export { webSearchToolImpl, performWebSearch } from "./web-search.js";
+export { createWebToolController } from "./web-controller.js";
 
 export { isPathAllowed, isWorkdirAllowed } from "./shared/path-resolver.js";
 export { resolveRgPath } from "./shared/ripgrep.js";

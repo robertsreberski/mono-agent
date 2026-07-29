@@ -78,6 +78,10 @@ describe("loadMonoAgentConfig", () => {
       continuationServers: ["a8c-control", "local-worker"],
       mcpCallTimeoutMs: 150000,
       mcpCallMaxTotalTimeoutMs: 2700000,
+      web: {
+        search: { backend: "auto" },
+        fetch: { render: "never", browserCommand: "agent-browser" },
+      },
     });
     expect(config.artifacts.dir).toBe("/repo/artifacts");
     expect(config.artifacts.retention).toEqual({ maxAgeDays: 14, maxCount: 250, dryRun: true });
@@ -100,6 +104,54 @@ describe("loadMonoAgentConfig", () => {
     expect(config.runtime.compaction).toEqual({ enabled: true, fixedOverheadEnabled: true });
     expect(config.artifacts.retention).toEqual({ maxAgeDays: 365, maxCount: 50000, dryRun: false });
     expect(config.artifacts.memoryRetention).toEqual({ maxAgeDays: 7, maxCount: 5000, dryRun: false });
+    expect(config.tools.web).toEqual({
+      search: { backend: "auto" },
+      fetch: { render: "never", browserCommand: "agent-browser" },
+    });
+  });
+
+  it("loads local web search and browser-render settings from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_WEB_SEARCH_BACKEND: "searxng",
+        MONO_AGENT_WEB_SEARCH_ENDPOINT: "http://127.0.0.1:8088/",
+        MONO_AGENT_WEB_FETCH_RENDER: "auto",
+        MONO_AGENT_WEB_BROWSER_COMMAND: "/opt/homebrew/bin/agent-browser",
+      },
+    });
+
+    expect(config.tools.web).toEqual({
+      search: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+      fetch: { render: "auto", browserCommand: "/opt/homebrew/bin/agent-browser" },
+    });
+  });
+
+  it("rejects remote or credentialed SearXNG endpoints and strict mode without an endpoint", () => {
+    for (const endpoint of [
+      "https://search.example.com",
+      "http://user:pass@127.0.0.1:8088",
+      "http://192.168.1.2:8088",
+      "http://127.0.0.1:8088?format=html",
+      "http://127.0.0.1:8088#fragment",
+    ]) {
+      expect(() => loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_WEB_SEARCH_ENDPOINT: endpoint },
+      })).toThrow(MonoAgentConfigError);
+    }
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_WEB_SEARCH_BACKEND: "searxng" },
+    })).toThrow(/MONO_AGENT_WEB_SEARCH_ENDPOINT/u);
+  });
+
+  it("rejects control characters in the direct browser executable", () => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_WEB_BROWSER_COMMAND: "agent-browser\t--unsafe" },
+    })).toThrow(/MONO_AGENT_WEB_BROWSER_COMMAND/u);
   });
 
   it("loads every runtime compaction override from env", () => {

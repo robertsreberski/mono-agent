@@ -132,4 +132,52 @@ describe("run-scoped Node REPL controller", () => {
     await controller.close();
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
+
+  it("survives an SRT-style native wrapper that forwards only ordinary stdio pipes", async () => {
+    const root = tempWorkspace();
+    const wrapperSource = [
+      "const { spawn } = require('node:child_process');",
+      "const spec = JSON.parse(process.argv[1]);",
+      "const child = spawn(spec.command, spec.args, { cwd: spec.cwd, env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });",
+      "process.stdin.pipe(child.stdin);",
+      "child.stdout.pipe(process.stdout);",
+      "child.stderr.pipe(process.stderr);",
+      "child.once('error', (error) => { console.error(error.message); process.exit(1); });",
+      "child.once('exit', (code) => process.exit(code ?? 1));",
+    ].join("\n");
+    const prepareCommand = vi.fn(async ({ command }) => ({
+      command: process.execPath,
+      args: [
+        "--eval",
+        wrapperSource,
+        JSON.stringify({
+          command: command.command,
+          args: command.args ?? [],
+          cwd: command.cwd ?? root,
+        }),
+      ],
+      cwd: root,
+      sandboxed: true,
+    }));
+    const sandbox = {
+      mergePolicies: (_configured, request) => request,
+      prepareCommand,
+      networkAllowsUrl: () => false,
+    };
+    const controller = createNodeReplController({
+      cwd: root,
+      sandboxPolicy: { mode: "native" },
+      ctx: { workspace: root, sandbox },
+    });
+
+    try {
+      await expect(controller.execute({ code: "const retainedThroughWrapper = 40" }))
+        .resolves.toBe("undefined");
+      await expect(controller.execute({ code: "retainedThroughWrapper + 2" }))
+        .resolves.toBe("42");
+      expect(prepareCommand).toHaveBeenCalledTimes(1);
+    } finally {
+      await controller.close();
+    }
+  });
 });

@@ -182,6 +182,60 @@ describe("createStreamSubscriber — tool lifecycle + timing", () => {
     });
   });
 
+  it("copies only bounded non-sensitive outcome fields onto tool timing", () => {
+    const { emitted, handler } = driver();
+    handler({ type: "tool_execution_start", toolName: "WebFetch", toolCallId: "fetch-1", args: { url: "https://secret.example/path" } });
+    handler({
+      type: "tool_execution_end",
+      toolName: "WebFetch",
+      toolCallId: "fetch-1",
+      result: {
+        content: [{ type: "text", text: "done" }],
+        details: {
+          outcome: {
+            status: "error",
+            code: "http_error",
+            backend: "static",
+            signal: "SIGTERM",
+            attempts: 2,
+            bytes: 4096,
+            exitCode: 7,
+            statusCode: 503,
+            retryable: true,
+            cacheHit: false,
+            truncated: true,
+            timedOut: false,
+            rendered: false,
+            url: "https://secret.example/path",
+            query: "private query",
+            command: "printenv",
+          },
+        },
+      },
+      isError: true,
+    });
+
+    const timing = emitted.find((event) => event.type === "tool_timing");
+    expect(timing).toMatchObject({
+      status: "error",
+      code: "http_error",
+      backend: "static",
+      signal: "SIGTERM",
+      attempts: 2,
+      bytes: 4096,
+      exit_code: 7,
+      status_code: 503,
+      retryable: true,
+      cache_hit: false,
+      truncated: true,
+      timed_out: false,
+      rendered: false,
+    });
+    expect(timing).not.toHaveProperty("url");
+    expect(timing).not.toHaveProperty("query");
+    expect(timing).not.toHaveProperty("command");
+  });
+
   it("emits no tool_timing when the end has no recorded start", () => {
     const { emitted, handler } = driver();
     handler({ type: "tool_execution_end", toolName: "t", toolCallId: "unseen", result: "x", isError: false });

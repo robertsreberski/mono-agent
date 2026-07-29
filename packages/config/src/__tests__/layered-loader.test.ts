@@ -48,6 +48,10 @@ describe("layerJsonOntoEnv", () => {
           continuationServers: ["a8c-control"],
           mcpCallTimeoutMs: 150000,
           mcpCallMaxTotalTimeoutMs: 2700000,
+          web: {
+            search: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+            fetch: { render: "auto", browserCommand: "agent-browser-next" },
+          },
         },
         artifacts: {
           dir: ".mono-agent/artifacts",
@@ -87,6 +91,10 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_CONTINUATION_SERVERS).toBe("a8c-control");
     expect(layered.MONO_AGENT_MCP_CALL_TIMEOUT_MS).toBe("150000");
     expect(layered.MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS).toBe("2700000");
+    expect(layered.MONO_AGENT_WEB_SEARCH_BACKEND).toBe("searxng");
+    expect(layered.MONO_AGENT_WEB_SEARCH_ENDPOINT).toBe("http://127.0.0.1:8088");
+    expect(layered.MONO_AGENT_WEB_FETCH_RENDER).toBe("auto");
+    expect(layered.MONO_AGENT_WEB_BROWSER_COMMAND).toBe("agent-browser-next");
     expect(layered.MONO_AGENT_ARTIFACT_DIR).toBe(".mono-agent/artifacts");
     expect(layered.MONO_AGENT_ARTIFACT_RETENTION_MAX_AGE_DAYS).toBe("21");
     expect(layered.MONO_AGENT_ARTIFACT_RETENTION_MAX_COUNT).toBe("300");

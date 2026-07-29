@@ -175,7 +175,7 @@ const orchestrator = await createConfiguredAgentResponder({
 
 ## 9. Sandboxed code agent (loopback only, deny .env)
 **For:** a security team deploying an internal code assistant.
-**Goal:** read repos + run Bash or run-scoped NodeRepl inside the native srt sandbox with loopback-only network access and protected secrets.
+**Goal:** read repos + run direct Exec, shell-syntax Bash, or run-scoped NodeRepl inside the native srt sandbox with loopback-only network access and protected secrets.
 **Features:** `sandbox.mode`, `sandbox.network-policy`, `sandbox.filesystem-scopes`, `sandbox.fallback`, `tool-policy.allow-all`, `memory.journal`.
 
 ```json
@@ -186,7 +186,7 @@ const orchestrator = await createConfiguredAgentResponder({
 }
 ```
 **Steps:** `mono-agent init --memory journal` → leave tools at the allow-all default (`["*"]`); the **sandbox**, not an allowlist, is what constrains the code tools → `sandbox.mode native` + `network localhost` + deny-write defaults → keep `fallback: fail-closed` (do NOT set `unsafe-host-process`) → `validate` → `start`.
-**Smoke:** ask it to read a file, run Bash, then use NodeRepl twice to retain a variable and produce `42` (all work); next fetch an external URL or write `.env` (both blocked in the artifact). Keep every primary/fallback/trigger model on Pi; direct Codex, Claude, and direct OpenCode reject this mono-agent sandbox policy.
+**Smoke:** ask it to read a file, use Exec for one argv-safe command, run one Bash pipeline, then use NodeRepl twice to retain a variable and produce `42` (all work); next fetch an external URL or write `.env` (both blocked in the artifact). Keep every primary/fallback/trigger model on Pi; direct Codex, Claude, and direct OpenCode reject this mono-agent sandbox policy.
 
 ## 10. Phoenix-observed agent with the TUI
 **For:** an agent builder evaluating runs in a tracing dashboard.
@@ -287,3 +287,26 @@ per-route form for a new agent.
 ```
 **Steps:** run a loopback self-hosted Bot API server if files exceed 20 MB, wire a long-running MCP tool in `.mcp.json`, `validate`, `start`.
 **Smoke:** send media with no caption, answer the `AskUser` question, watch progress update during the long job, and receive the generated file via `TelegramSendFile`.
+
+## 16. Local-first web research agent
+**For:** a researcher wanting operator-owned search infrastructure and bounded public-page extraction.
+**Goal:** discover through loopback SearXNG, extract pages locally, and optionally render sparse JavaScript HTML in an isolated anonymous browser.
+**Features:** `runtime.web-research`, `runtime.webfetch-retry`, `runtime.builtin-tools`, `sandbox.network-policy`.
+
+```json
+{
+  "runtime": { "model": "pi:openai-codex:gpt-5.5" },
+  "tools": {
+    "allowedTools": ["Read", "Glob", "Grep", "WebSearch", "WebFetch"],
+    "web": {
+      "search": { "backend": "searxng", "endpoint": "http://127.0.0.1:8088" },
+      "fetch": { "render": "never", "browserCommand": "agent-browser" }
+    }
+  },
+  "sandbox": { "mode": "native", "network": { "mode": "all" }, "fallback": "fail-closed" }
+}
+```
+
+**Steps:** start the pinned loopback companion from `demos/searxng` → keep strict `searxng` or choose `auto` for keyless fallback → keep render `never`, or install `agent-browser >=0.33.1` and opt into `auto` for SPA pages → `validate` → `start`.
+**Boundary:** local SearXNG is private infrastructure, not an offline index; it contacts public engines and WebFetch contacts result sites. `localhost` permits the companion but blocks public fetches.
+**Smoke:** ask for two query variants and one official-page fetch; require canonical ranked URLs, untrusted-content boundaries, bounded timing metadata without query/URL leakage, and no duplicate network work for an identical call in the run.

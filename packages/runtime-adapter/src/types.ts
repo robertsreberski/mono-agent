@@ -205,7 +205,19 @@ export interface RuntimeRunOptions {
   readonly piMaxRetries?: number;
   readonly maxRetryDelayMs?: number;
   readonly piSessionsRoot?: string;
-  /** Tool steering: "one-at-a-time" (default) or "all" (concurrent tool calls). */
+  /** Local-first WebSearch backend selection for this run. */
+  readonly webSearchConfig?: {
+    readonly backend?: "auto" | "searxng" | "keyless";
+    readonly endpoint?: string;
+  };
+  /** Static WebFetch extraction and optional isolated browser-render policy. */
+  readonly webFetchConfig?: {
+    readonly render?: "never" | "auto";
+    readonly browserCommand?: string;
+  };
+  /** Built-in tool scheduling. Safe parallelism keeps stateful/mutating tools sequential. */
+  readonly piToolExecutionMode?: "sequential" | "safe-parallel";
+  /** @deprecated Use piToolExecutionMode. */
   readonly piToolParallelismMode?: "one-at-a-time" | "all";
   readonly [key: string]: unknown;
 }

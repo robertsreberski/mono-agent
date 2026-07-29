@@ -373,6 +373,34 @@ describe("buildMonoAgentConfigView", () => {
     expect(field(buildView({ ...baseEnv, MONO_AGENT_ALLOWED_TOOLS: "Read,Bash" }), "tools.allowedTools").value)
       .toBe("Read, Bash");
   });
+
+  it("shows web tool defaults and JSON/env precedence", () => {
+    const defaults = buildView(baseEnv);
+    expect(field(defaults, "tools.web.search.backend")).toMatchObject({ value: "auto", source: "default" });
+    expect(field(defaults, "tools.web.fetch.render")).toMatchObject({ value: "never", source: "default" });
+
+    const configured = buildView({
+      ...baseEnv,
+      MONO_AGENT_WEB_FETCH_RENDER: "never",
+    }, {
+      tools: {
+        web: {
+          search: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+          fetch: { render: "auto", browserCommand: "agent-browser-next" },
+        },
+      },
+    });
+    expect(field(configured, "tools.web.search.backend")).toMatchObject({ value: "searxng", source: "json" });
+    expect(field(configured, "tools.web.search.endpoint")).toMatchObject({
+      value: "http://127.0.0.1:8088",
+      source: "json",
+    });
+    expect(field(configured, "tools.web.fetch.render")).toMatchObject({ value: "never", source: "env" });
+    expect(field(configured, "tools.web.fetch.browserCommand")).toMatchObject({
+      value: "agent-browser-next",
+      source: "json",
+    });
+  });
 });
 
 describe("findJsonSecretConfigWarnings", () => {

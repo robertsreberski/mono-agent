@@ -1093,6 +1093,8 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
   // agent loop reads via resolveAgentCompactionPolicy) — only when configured, so
   // the runtime defaults (120s inactivity / 45 min total) stay authoritative.
   const { mcpCallTimeoutMs, mcpCallMaxTotalTimeoutMs } = config.tools;
+  const webSearchConfig = config.tools.web?.search;
+  const webFetchConfig = config.tools.web?.fetch;
   const settings = mcpCallTimeoutMs === undefined && mcpCallMaxTotalTimeoutMs === undefined
     ? undefined
     : {
@@ -1108,6 +1110,8 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
     && piNative?.maxRetryDelayMs === undefined
     && compaction === undefined
     && settings === undefined
+    && webSearchConfig === undefined
+    && webFetchConfig === undefined
   ) {
     return undefined;
   }
@@ -1118,6 +1122,8 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
     ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
     ...(compaction === undefined ? {} : { compaction }),
     ...(settings === undefined ? {} : { settings }),
+    ...(webSearchConfig === undefined ? {} : { webSearchConfig }),
+    ...(webFetchConfig === undefined ? {} : { webFetchConfig }),
   };
 }
 

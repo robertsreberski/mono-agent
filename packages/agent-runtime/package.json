@@ -142,9 +142,13 @@
     "@earendil-works/pi-agent-core": "0.80.6",
     "@earendil-works/pi-ai": "0.80.6",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@mozilla/readability": "0.6.0",
     "@opencode-ai/sdk": "^1.15.13",
     "@vscode/ripgrep": "1.18.0",
     "cross-spawn": "^7.0.6",
+    "defuddle": "0.19.2",
+    "linkedom": "0.18.13",
+    "unpdf": "1.8.0",
     "zod": "^4.3.6"
   }
 }
