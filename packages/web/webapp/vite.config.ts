@@ -56,6 +56,9 @@ export default defineConfig({
         manualChunks(id) {
           if (!id.includes("/node_modules/")) return undefined;
           if (id.includes("@assistant-ui/react-markdown")) return "markdown";
+          // remark-gfm is imported from app code, so without this it would land
+          // in the index chunk that rehashes on every UI edit.
+          if (/remark-gfm|mdast-util-gfm|micromark-extension-gfm|markdown-table/.test(id)) return "markdown";
           if (id.includes("@assistant-ui")) return "assistant-ui";
           return undefined;
         }

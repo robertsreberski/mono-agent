@@ -7,7 +7,8 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
-import { useEffect, useState } from "react";
+import { type ComponentProps, useEffect, useState } from "react";
+import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import { useConsoleStore } from "../console-store";
 import type { AskAnswer, AskSnapshot } from "../types";
@@ -116,8 +117,43 @@ function MessageActions({
   );
 }
 
+type MarkdownComponents = NonNullable<ComponentProps<typeof MarkdownTextPrimitive>["components"]>;
+
+// The wrapper owns the horizontal scroll and the rounded border that
+// `border-collapse: collapse` defeats on the table itself, so the table keeps
+// `display: table` and real column widths.
+function MarkdownTable({ node: _node, ...props }: ComponentProps<"table"> & { readonly node?: unknown }) {
+  return (
+    <div className="markdown-table" tabIndex={0}>
+      <table {...props} />
+    </div>
+  );
+}
+
+// GFM autolinks make every bare URL clickable, and the console is installable as
+// a standalone PWA with no back affordance, so external targets open elsewhere.
+function MarkdownLink({ node: _node, href, ...props }: ComponentProps<"a"> & { readonly node?: unknown }) {
+  const external = href !== undefined && /^https?:/i.test(href);
+  return <a {...props} href={href} {...(external ? { target: "_blank", rel: "noreferrer noopener" } : {})} />;
+}
+
+// Both stay module-level so streaming re-renders reuse the same identities: the
+// primitive memoizes its component map on `components`, and react-markdown
+// rebuilds its processor from `remarkPlugins`.
+const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
+const MARKDOWN_COMPONENTS: MarkdownComponents = { a: MarkdownLink, table: MarkdownTable };
+
 function MarkdownText() {
-  return <MarkdownTextPrimitive className="markdown" data-aui-quote-selectable defer smooth />;
+  return (
+    <MarkdownTextPrimitive
+      className="markdown"
+      data-aui-quote-selectable
+      components={MARKDOWN_COMPONENTS}
+      remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+      defer
+      smooth
+    />
+  );
 }
 
 function LiveInputStatus() {

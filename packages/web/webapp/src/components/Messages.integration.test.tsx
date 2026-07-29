@@ -3,7 +3,7 @@ import {
   ThreadPrimitive,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { convertWebMessage } from "../runtime";
 import type { WebMessage } from "../types";
@@ -291,5 +291,68 @@ describe("message actions", () => {
 
     expect(screen.getByText("The earlier response")).toBeVisible();
     expect(screen.getByText("Inspect this workspace.")).toBeVisible();
+  });
+});
+
+const markdownMessage = (text: string): WebMessage => ({
+  ...assistantMessage("complete"),
+  parts: [{ type: "text", text }],
+});
+
+const ALIGNED_TABLE = "| Agent | Status |\n| --- | ---: |\n| alpha | ready |\n";
+
+describe("GitHub-Flavored Markdown rendering", () => {
+  it("renders a pipe table as a real table inside a focusable scroll wrapper", () => {
+    render(<MessageHarness message={markdownMessage(ALIGNED_TABLE)} />);
+
+    const table = screen.getByRole("table");
+    expect(within(table).getByRole("columnheader", { name: "Agent" })).toBeVisible();
+    expect(within(table).getByRole("cell", { name: "ready" })).toBeVisible();
+    expect(screen.queryByText(/\| Agent \| Status \|/)).not.toBeInTheDocument();
+
+    expect(table.parentElement).toHaveClass("markdown-table");
+    expect(table.parentElement).toHaveAttribute("tabindex", "0");
+  });
+
+  // Alignment arrives as an inline style, which outranks the stylesheet's
+  // default `text-align: left` on its own. Assert it so a renderer upgrade that
+  // switches back to the presentational `align` attribute cannot silently drop
+  // alignment behind that default.
+  it("keeps GFM column alignment", () => {
+    render(<MessageHarness message={markdownMessage(ALIGNED_TABLE)} />);
+
+    expect(screen.getByRole("columnheader", { name: "Status" })).toHaveStyle({ textAlign: "right" });
+    expect(screen.getByRole("cell", { name: "ready" })).toHaveStyle({ textAlign: "right" });
+    expect(screen.getByRole("columnheader", { name: "Agent" })).not.toHaveStyle({ textAlign: "right" });
+  });
+
+  it("renders task lists and strikethrough", () => {
+    render(<MessageHarness message={markdownMessage("- [x] shipped\n- [ ] pending\n\n~~dropped~~\n")} />);
+
+    const boxes = screen.getAllByRole("checkbox");
+    expect(boxes).toHaveLength(2);
+    expect(boxes[0]).toBeChecked();
+    expect(boxes[0]).toBeDisabled();
+    expect(screen.getByText("dropped").tagName).toBe("DEL");
+  });
+
+  // Enabling GFM must not enable raw HTML: no rehype-raw is configured, so
+  // markup in a reply stays escaped text and GFM's tagfilter never has to run.
+  it("escapes raw HTML in a reply instead of rendering it", () => {
+    render(<MessageHarness message={markdownMessage(
+      "<img src=x onerror=\"alert(1)\"> and <b>bold</b>\n",
+    )} />);
+
+    expect(document.querySelector(".markdown img")).toBeNull();
+    expect(document.querySelector(".markdown b")).toBeNull();
+    expect(screen.getByText(/<b>bold<\/b>/)).toBeVisible();
+  });
+
+  it("opens external autolinks outside the standalone console window", () => {
+    render(<MessageHarness message={markdownMessage("See https://example.com for details.")} />);
+
+    const link = screen.getByRole("link", { name: "https://example.com" });
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noreferrer noopener");
   });
 });
