@@ -140,7 +140,35 @@ export function createRuntime(host = {}) {
   // THIS object so later runs of this instance observe the update.
   const toolContext = createToolContext({ ...toolRuntime, runtimeBrand });
 
-  return {
+  /** @type {*} */
+  let self;
+
+  /**
+   * Kernel fallback for `subagents.run`, so the `Agent` built-in works from a
+   * bare `createRuntime` with no host wiring. Hosts replace it to route child
+   * turns through their own runtime (fallback chain, retries, recording).
+   *
+   * This is also where the depth lock is enforced for EVERY implementation: the
+   * child's option bag is rebuilt here with an incremented depth and stripped
+   * session/steering state, so a host-supplied `run` that forgets to do either
+   * still cannot recurse or inherit the parent's provider session.
+   * @param {*} request
+   */
+  const defaultSubagentRun = async (request) => self.run(request.systemPrompt, {
+    model: request.model,
+    ...(request.executionMode === undefined ? {} : { executionMode: request.executionMode }),
+    ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+    messages: [{ role: "user", content: request.prompt }],
+    maxTurns: request.maxTurns,
+    allowedTools: request.definition?.allowedTools,
+    disallowedTools: request.definition?.disallowedTools,
+    mcpServers: request.definition?.mcpServers ?? {},
+    abortSignal: request.abortSignal,
+    onEvent: request.onEvent,
+    subagents: { depth: (request.depth ?? 1) },
+  });
+
+  self = {
     /**
      * @param {string} systemPrompt
      * @param {Partial<RuntimeRunOptions>} [options] Optional only so the
@@ -162,9 +190,16 @@ export function createRuntime(host = {}) {
       });
       const liveInput = instrumentLiveInputAppliedEvents(options.liveInput, hub.emit);
       const prompts = resolvePrompts(host.prompts, options.prompts);
+      // Default the nested-run callback so the Agent built-in is usable without
+      // host wiring; the depth field is left exactly as the caller set it, since
+      // defaultSubagentRun is what increments it for the child.
+      const subagents = options.subagents === undefined
+        ? undefined
+        : { ...options.subagents, run: options.subagents.run ?? defaultSubagentRun };
       const result = await bridge.execute(systemPrompt, {
         ...hostDefaults,
         ...options,
+        ...(subagents === undefined ? {} : { subagents }),
         // `...options` alone doesn't carry the `options.model` narrowing above
         // (spread reads the parameter's declared — Partial — type); re-assert
         // the already-validated model so the request satisfies RuntimeRequest.
@@ -204,4 +239,6 @@ export function createRuntime(host = {}) {
       return disposeAllProviderSessions();
     },
   };
+
+  return self;
 }

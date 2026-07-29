@@ -122,6 +122,15 @@ export async function buildTurnTools(runState, {
       nodeReplController,
       webController,
       toolExecutionMode,
+      subagents: options.subagents,
+      // The child inherits the parent's route and workspace unless its profile
+      // pins a model; the tool closure reads these to build each child request.
+      subagentContext: {
+        model: options.model,
+        executionMode: options.executionMode,
+        cwd: options.cwd,
+        parentRunId: runCtx?.runId,
+      },
       ctx: runCtx,
     }));
 
