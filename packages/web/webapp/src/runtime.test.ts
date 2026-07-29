@@ -99,6 +99,58 @@ describe("convertWebMessage", () => {
     expect(converted.status).toEqual({ type: "running" });
   });
 
+  it("skips a part type this bundle does not know instead of corrupting the transcript", () => {
+    const converted = convertWebMessage(
+      message({
+        role: "assistant",
+        status: "complete",
+        // A precached console can outlive a server upgrade by a whole release.
+        parts: [{ type: "from-a-newer-server" } as never, { type: "text", text: "Ready" }],
+      }),
+    );
+
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content).toEqual([{ type: "text", text: "Ready" }]);
+  });
+
+  it("converts a delegation into one named data part that keeps its nested calls", () => {
+    const converted = convertWebMessage(
+      message({
+        role: "assistant",
+        status: "complete",
+        parts: [
+          {
+            type: "subagent",
+            toolCallId: "call-1",
+            name: "researcher",
+            label: "read the router",
+            status: "complete",
+            executionMs: 12_400,
+            result: "<subagent: researcher · ok>",
+            calls: [
+              { toolCallId: "agent:call-1:t1", toolName: "Read", args: { file_path: "/repo/a.ts" }, status: "complete" },
+            ],
+          },
+          { type: "text", text: "Ready" },
+        ],
+      }),
+    );
+
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content.map((part) => part.type)).toEqual(["data-subagent", "text"]);
+    // assistant-ui tool-call parts carry no children, so the whole group has to
+    // survive as one payload or the nesting is lost on the way to the renderer.
+    expect(converted.content[0]).toMatchObject({
+      type: "data-subagent",
+      data: {
+        name: "researcher",
+        label: "read the router",
+        status: "complete",
+        calls: [{ toolCallId: "agent:call-1:t1", toolName: "Read" }],
+      },
+    });
+  });
+
   it("exposes only canonical compaction telemetry as a named assistant-ui data part", () => {
     const converted = convertWebMessage(message({
       role: "assistant",

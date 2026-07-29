@@ -1,5 +1,9 @@
 import { Container } from "@earendil-works/pi-tui";
-import type { AgentMessageStream, AgentStreamEvent } from "@mono-agent/agent-contracts";
+import {
+  splitSubagentToolName,
+  type AgentMessageStream,
+  type AgentStreamEvent,
+} from "@mono-agent/agent-contracts";
 
 import { AssistantCell, NoticeCell, ThinkingCell } from "./components/transcript-cells.js";
 import { ToolPanel } from "./components/tool-panel.js";
@@ -86,6 +90,29 @@ export class TurnPresenter implements AgentMessageStream {
         break;
       }
       case "tool_call_started": {
+        const subagent = subagentOf(event);
+        // The bookends only announce the subagent; its parent `Agent` panel is
+        // already on the transcript and carries the same lifecycle, so a second
+        // panel for them would just be noise.
+        if (subagent !== undefined && event.metadata?.subagentLifecycle === true) {
+          break;
+        }
+        const parent = subagent === undefined ? undefined : this.toolPanels.get(subagent.id);
+        if (parent !== undefined) {
+          // The profile already names the panel this nests under, so the
+          // `researcher▸Read` prefix would only repeat it.
+          const panel = new ToolPanel(
+            event.id,
+            splitSubagentToolName(event.name).tool,
+            event.arguments,
+            { nested: true },
+          );
+          this.toolPanels.set(event.id, panel);
+          parent.addChild(panel);
+          break;
+        }
+        // No parent panel (a truncated or replayed stream): fall back to a
+        // top-level panel so the activity is still shown rather than dropped.
         this.sealStreamingCells();
         const panel = new ToolPanel(event.id, event.name, event.arguments);
         this.toolPanels.set(event.id, panel);
@@ -329,4 +356,21 @@ export class TurnPresenter implements AgentMessageStream {
 
 function normalizeForCompare(text: string): string {
   return text.replace(/\s+/gu, " ").trim();
+}
+
+/**
+ * The subagent this tool event belongs to, or undefined for the agent's own
+ * work. Validated rather than cast: `metadata` is an open record arriving over
+ * the operator wire, so a malformed payload must fall back to a top-level
+ * panel instead of keying the panel map on a non-string.
+ */
+function subagentOf(
+  event: Extract<AgentStreamEvent, { type: "tool_call_started" }>,
+): { readonly id: string } | undefined {
+  const subagent = event.metadata?.subagent;
+  if (typeof subagent !== "object" || subagent === null || Array.isArray(subagent)) {
+    return undefined;
+  }
+  const id = (subagent as Record<string, unknown>).id;
+  return typeof id === "string" && id.length > 0 ? { id } : undefined;
 }

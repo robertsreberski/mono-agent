@@ -38,6 +38,7 @@ Chat runs under its own `conversationId` (default `tui-<sourceId>`), so it never
 | --- | --- |
 | Thinking cells | The model's reasoning, streamed live. Collapsed to a one-line summary by default; `ctrl+t` expands/collapses all. |
 | Tool panels | One per tool call: name + argument preview while pending, a live tail of partial output as the tool runs, then the result preview and execution time (green success / red error). Applied live guidance appears as a completed `↪️ Steered` panel with `Applied to current run`. |
+| Subagent panels | An `Agent` call's panel owns the tool calls its subagent makes: each child renders indented inside the parent, named by the tool alone since the parent already names the profile. Concurrent delegations therefore stay separate even though their events interleave. Orphaned activity (a truncated or replayed stream with no parent panel) falls back to a top-level panel keeping its `researcher▸Read` prefix rather than being dropped. |
 | Answer | The assistant's reply as streamed markdown. |
 | Notices | Runtime warnings and provider failover (`failover gpt-5.6-terra → kimi`) inline in the transcript. |
 | Status bar | Instance label · model · live token usage (`↑input ↓output (cache …)`) · cumulative cost · provider state · hints. |

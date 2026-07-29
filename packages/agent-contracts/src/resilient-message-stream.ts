@@ -27,7 +27,7 @@ import {
   normalizeTrailing,
   splitTextByCodePoints,
 } from "./stream-text.js";
-import { formatToolActivityLine, toolHintFor } from "./tool-hints.js";
+import { formatToolActivityLine, isSubagentLaunchToolName, toolHintFor } from "./tool-hints.js";
 
 /** Opaque handle to a posted message, returned by {@link ChannelTransport.post}. */
 export interface MessageRef {
@@ -153,6 +153,44 @@ const DEFAULT_MAX_SEND_RETRIES = 3;
 const DEFAULT_RETRY_CAP_MS = 60_000;
 const DEFAULT_RETRY_BASE_DELAY_MS = 500;
 const EMPTY_FINAL_TEXT = DEFAULT_EMPTY_FINAL_TEXT;
+/**
+ * Ceiling on rendered ledger lines (headers plus nested subagent lines). Runtime
+ * turn limits normally keep this far smaller; the cap only stops a pathological
+ * tool loop from growing a user-visible transient message without bound.
+ */
+const MAX_ACTIVITY_LINES = 512;
+/** Indent for a subagent's own tool calls, so they read as that agent's work. */
+const SUBAGENT_LINE_INDENT = "  ↳ ";
+
+/** One deduplicated activity line and how many identical calls it stands for. */
+interface ActivityLine {
+  line: string;
+  count: number;
+}
+
+/**
+ * The transient activity ledger is a flat list of the agent's own actions, with
+ * one exception: a subagent launch opens a group that owns the tool calls that
+ * subagent makes. Grouping (rather than appending each child at the tail) is
+ * what keeps five concurrent subagents readable — their events interleave
+ * arbitrarily, so chronological order alone would shuffle five agents' work
+ * into one indistinguishable list.
+ */
+type ActivityEntry =
+  | ({ readonly kind: "line" } & ActivityLine)
+  | {
+      readonly kind: "agent";
+      /** The parent `Agent` tool call id, which every child event carries. */
+      readonly id: string;
+      /**
+       * Captured when the group opens. A completion event carries no arguments,
+       * so re-deriving the profile there would silently rename every finished
+       * subagent to the default.
+       */
+      readonly name: string;
+      header: string;
+      readonly children: ActivityLine[];
+    };
 
 export interface ResilientAgentMessageStream extends AgentMessageStreamBase {
   status(text: string): Promise<void>;
@@ -189,7 +227,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
   private lastFlushedMarkdown = false;
   private lastFlushedContentKind: ChannelMessageContentKind | undefined;
   private answerDeliveryAttempted = false;
-  private readonly toolActivityEntries: Array<{ line: string; count: number }> = [];
+  private readonly toolActivityEntries: ActivityEntry[] = [];
   private dismissPromise: Promise<void> | undefined;
   private finished = false;
 
@@ -314,9 +352,29 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
         } else {
           await this.awaitInFlightEdit();
         }
-        this.appendToolActivity(
-          liveInputActivity ? event.name : formatToolActivityLine(event.name, event.arguments),
-        );
+        const subagent = subagentOf(event);
+        if (liveInputActivity) {
+          this.appendToolActivity(event.name);
+        } else if (subagent === undefined) {
+          // A subagent launch opens its own group rather than a flat line, so
+          // the tool calls it goes on to make can nest beneath it.
+          if (isSubagentLaunchToolName(event.name)) {
+            this.subagentGroup(event.id, subagentNameFromArguments(event.arguments));
+            this.renderToolActivity();
+          } else {
+            this.appendToolActivity(formatToolActivityLine(event.name, event.arguments));
+          }
+        } else if (isSubagentLifecycle(event)) {
+          // The bookend only announces the subagent; its header already exists.
+          this.subagentGroup(subagent.id, subagent.name);
+          this.renderToolActivity();
+        } else {
+          this.appendSubagentActivity(
+            subagent.id,
+            subagent.name,
+            formatToolActivityLine(event.name, event.arguments),
+          );
+        }
         const hadMessage = this.sentMessage !== undefined;
         try {
           await this.ensureMessage();
@@ -339,6 +397,24 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
           name: event.name,
           isError: event.isError === true,
         });
+        // Settle a subagent header in place, from whichever of the two
+        // completions arrives — the parent `Agent` tool call or the runtime's
+        // lifecycle bookend. Both carry the outcome, so neither has to win.
+        const subagent = subagentOf(event);
+        const finished = subagent !== undefined && isSubagentLifecycle(event)
+          ? { id: subagent.id, name: subagent.name }
+          : subagent === undefined && event.name !== undefined && isSubagentLaunchToolName(event.name)
+            ? { id: event.id, name: subagentNameFromArguments(event.arguments) }
+            : undefined;
+        if (finished !== undefined && this.showHints) {
+          await this.awaitInFlightEdit();
+          this.completeSubagentGroup(finished.id, finished.name, {
+            ...(event.isError === undefined ? {} : { isError: event.isError }),
+            ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
+          });
+          if (this.sentMessage !== undefined) this.scheduleEdit();
+          return;
+        }
       }
       if (this.toolActivityEntries.length === 0) {
         await this.maybeIndicateActivity();
@@ -768,19 +844,99 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
 
   private appendToolActivity(line: string): void {
     const last = this.toolActivityEntries.at(-1);
-    if (last?.line === line) {
+    if (last?.kind === "line" && last.line === line) {
       last.count += 1;
     } else {
-      this.toolActivityEntries.push({ line, count: 1 });
-      // Runtime turn limits normally keep this far smaller. The cap prevents a
-      // pathological tool loop from growing a user-visible transient ledger
-      // without bound; the channel tail preview still preserves newest work.
-      if (this.toolActivityEntries.length > 512) {
-        this.toolActivityEntries.shift();
-      }
+      this.toolActivityEntries.push({ kind: "line", line, count: 1 });
+      this.enforceLedgerBound();
     }
+    this.renderToolActivity();
+  }
+
+  /**
+   * Record one tool call a subagent made, under that subagent's own header.
+   * The group is created on demand so activity still renders when the parent
+   * `Agent` call was never observed (a truncated or replayed stream).
+   */
+  private appendSubagentActivity(id: string, subagentName: string, line: string): void {
+    const group = this.subagentGroup(id, subagentName);
+    const last = group.children.at(-1);
+    if (last?.line === line) {
+      last.count += 1;
+      this.renderToolActivity();
+      return;
+    }
+    group.children.push({ line, count: 1 });
+    this.enforceLedgerBound();
+    this.renderToolActivity();
+  }
+
+  /** Find or open the ledger group for one subagent launch. */
+  private subagentGroup(id: string, subagentName: string): Extract<ActivityEntry, { kind: "agent" }> {
+    for (const entry of this.toolActivityEntries) {
+      if (entry.kind === "agent" && entry.id === id) return entry;
+    }
+    const group: Extract<ActivityEntry, { kind: "agent" }> = {
+      kind: "agent",
+      id,
+      name: subagentName,
+      header: formatToolActivityLine("Agent", { name: subagentName }),
+      children: [],
+    };
+    this.toolActivityEntries.push(group);
+    this.enforceLedgerBound();
+    return group;
+  }
+
+  /** Replace a subagent header once its outcome is known. */
+  private completeSubagentGroup(
+    id: string,
+    subagentName: string,
+    outcome: { readonly isError?: boolean; readonly executionMs?: number },
+  ): void {
+    const group = this.subagentGroup(id, subagentName);
+    const calls = group.children.reduce((total, child) => total + child.count, 0);
+    const parts = [
+      `${outcome.isError === true ? "⚠️" : "🤖"} Agent ${JSON.stringify(group.name)}`,
+      `${calls} tool call${calls === 1 ? "" : "s"}`,
+      ...(outcome.executionMs === undefined ? [] : [formatSeconds(outcome.executionMs)]),
+    ];
+    group.header = parts.join(" · ");
+    this.renderToolActivity();
+  }
+
+  /**
+   * Drop the oldest rendered line whenever the ledger exceeds its bound. Groups
+   * shed their own oldest child first so a long-running subagent never evicts
+   * unrelated top-level activity, and an emptied group is removed with its
+   * header.
+   */
+  private enforceLedgerBound(): void {
+    while (this.renderedLineCount() > MAX_ACTIVITY_LINES) {
+      const oldest = this.toolActivityEntries[0];
+      if (oldest === undefined) return;
+      if (oldest.kind === "line" || oldest.children.length === 0) {
+        this.toolActivityEntries.shift();
+        continue;
+      }
+      oldest.children.shift();
+    }
+  }
+
+  private renderedLineCount(): number {
+    return this.toolActivityEntries.reduce(
+      (total, entry) => total + (entry.kind === "line" ? 1 : 1 + entry.children.length),
+      0,
+    );
+  }
+
+  private renderToolActivity(): void {
+    const withCount = (entry: ActivityLine): string =>
+      entry.count === 1 ? entry.line : `${entry.line} (×${entry.count})`;
     this.statusText = this.toolActivityEntries
-      .map((entry) => entry.count === 1 ? entry.line : `${entry.line} (×${entry.count})`)
+      .flatMap((entry) => entry.kind === "line"
+        ? [withCount(entry)]
+        : [entry.header, ...entry.children.map((child) => `${SUBAGENT_LINE_INDENT}${withCount(child)}`)])
       .join("\n");
   }
 
@@ -945,4 +1101,44 @@ function isLiveInputActivity(
   event: Extract<AgentStreamEvent, { type: "tool_call_started" }>,
 ): boolean {
   return event.metadata?.liveInput === true && event.metadata.synthetic === true;
+}
+
+/**
+ * The subagent this event belongs to, or undefined for the agent's own work.
+ * Validated rather than cast: `metadata` is an open record that arrives over
+ * the operator wire, so a malformed payload must degrade to a flat line rather
+ * than open a group keyed on a non-string.
+ */
+function subagentOf(
+  event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
+): { readonly id: string; readonly name: string } | undefined {
+  const subagent = event.metadata?.subagent;
+  if (typeof subagent !== "object" || subagent === null || Array.isArray(subagent)) {
+    return undefined;
+  }
+  const record = subagent as Record<string, unknown>;
+  const id = typeof record.id === "string" ? record.id.trim() : "";
+  const name = typeof record.name === "string" ? record.name.trim() : "";
+  return id.length === 0 ? undefined : { id, name: name.length === 0 ? "subagent" : name };
+}
+
+/** Whether this event announces the subagent itself rather than a tool it ran. */
+function isSubagentLifecycle(
+  event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
+): boolean {
+  return event.metadata?.subagentLifecycle === true;
+}
+
+/** The profile a launch call names, falling back to the runtime's own default. */
+function subagentNameFromArguments(toolArguments: unknown): string {
+  if (typeof toolArguments !== "object" || toolArguments === null || Array.isArray(toolArguments)) {
+    return "general-purpose";
+  }
+  const name = (toolArguments as Record<string, unknown>).name;
+  return typeof name === "string" && name.trim().length > 0 ? name.trim() : "general-purpose";
+}
+
+function formatSeconds(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "0s";
+  return ms < 1_000 ? `${Math.round(ms)}ms` : `${(ms / 1_000).toFixed(1)}s`;
 }

@@ -3,8 +3,49 @@ import { describe, expect, it, vi } from "vitest";
 import {
   formatLiveInputActivityLine,
   formatToolActivityLine,
+  isSubagentLaunchToolName,
+  splitSubagentToolName,
   toolHintFor,
 } from "../tool-hints.js";
+
+describe("subagent tool names", () => {
+  it("splits a forwarded name into its profile and tool", () => {
+    expect(splitSubagentToolName("researcher▸Read")).toEqual({ profile: "researcher", tool: "Read" });
+  });
+
+  it("leaves an ordinary tool name untouched", () => {
+    expect(splitSubagentToolName("Read")).toEqual({ tool: "Read" });
+    expect(splitSubagentToolName("mcp__gws__calendar_list_events"))
+      .toEqual({ tool: "mcp__gws__calendar_list_events" });
+  });
+
+  it("keeps the raw name when a separator carries no tool", () => {
+    expect(splitSubagentToolName("researcher▸")).toEqual({ tool: "researcher▸" });
+    expect(splitSubagentToolName("▸Read")).toEqual({ tool: "Read" });
+  });
+
+  it("recognizes the launch tool regardless of case or namespace", () => {
+    expect(isSubagentLaunchToolName("Agent")).toBe(true);
+    expect(isSubagentLaunchToolName("agent")).toBe(true);
+    expect(isSubagentLaunchToolName("mcp__helper__task")).toBe(true);
+    expect(isSubagentLaunchToolName("Read")).toBe(false);
+    expect(isSubagentLaunchToolName("")).toBe(false);
+  });
+
+  it("formats a launch as a header naming the profile", () => {
+    expect(formatToolActivityLine("Agent", { name: "researcher", prompt: "find X" }))
+      .toBe('🤖 Starting agent "researcher"');
+    expect(formatToolActivityLine("Agent", { prompt: "find X" })).toBe("🤖 Starting a subagent");
+  });
+
+  it("formats a forwarded child call as the tool it actually ran", () => {
+    // Without stripping the profile the whole string is one unknown token and
+    // this degrades to a generic "🔧 Researcher read".
+    expect(formatToolActivityLine("researcher▸Read", { file_path: "/repo/a.ts" }))
+      .toBe("📖 Reading /repo/a.ts");
+    expect(toolHintFor("researcher▸WebSearch")).toBe("Searching the web…");
+  });
+});
 
 describe("toolHintFor", () => {
   it("maps built-in tools to friendly hints", () => {

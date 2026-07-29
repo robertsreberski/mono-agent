@@ -23,6 +23,7 @@ import {
   type WebQuote,
   type WebRunState,
   type WebThread,
+  type WebToolCall,
   type WebThreadDetail,
 } from "./contracts.js";
 import { WebConsoleError } from "./errors.js";
@@ -1527,6 +1528,21 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
     return;
   }
   if (event.type === "tool_call_started") {
+    const subagent = subagentOf(event);
+    if (subagent !== undefined) {
+      const group = ensureSubagentPart(parts, subagent);
+      // The bookend only announces the subagent; the group it belongs to is the
+      // whole of its contribution here.
+      if (event.metadata?.subagentLifecycle !== true) {
+        upsertSubagentCall(parts, group, {
+          toolCallId: event.id,
+          toolName: subagentToolName(event.name),
+          ...(event.arguments === undefined ? {} : { args: event.arguments }),
+          status: "running",
+        });
+      }
+      return;
+    }
     upsertToolCall(parts, {
       type: "tool-call",
       toolCallId: event.id,
@@ -1547,13 +1563,46 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
     return;
   }
   if (event.type === "tool_call_completed") {
+    const status = event.isError === true ? "failed" : "complete";
+    const subagent = subagentOf(event);
+    if (subagent !== undefined) {
+      const group = ensureSubagentPart(parts, subagent);
+      if (event.metadata?.subagentLifecycle === true) {
+        replaceSubagentPart(parts, {
+          ...group,
+          status,
+          ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
+        });
+        return;
+      }
+      upsertSubagentCall(parts, group, {
+        toolCallId: event.id,
+        toolName: subagentToolName(event.name ?? existingSubagentToolName(group, event.id) ?? "Tool"),
+        ...(event.arguments === undefined ? {} : { args: event.arguments }),
+        ...(event.content === undefined ? {} : { result: event.content }),
+        status,
+      });
+      return;
+    }
+    // The parent `Agent` call completes against the group that replaced its
+    // tool-call part, so its answer and outcome are not lost to the conversion.
+    const group = findSubagentPart(parts, event.id);
+    if (group !== undefined) {
+      replaceSubagentPart(parts, {
+        ...group,
+        status,
+        ...(event.content === undefined ? {} : { result: event.content }),
+        ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
+      });
+      return;
+    }
     upsertToolCall(parts, {
       type: "tool-call",
       toolCallId: event.id,
       toolName: event.name ?? existingToolName(parts, event.id) ?? "Tool",
       ...(event.arguments === undefined ? {} : { args: event.arguments }),
       ...(event.content === undefined ? {} : { result: event.content }),
-      status: event.isError === true ? "failed" : "complete",
+      status,
     });
     return;
   }
@@ -1594,6 +1643,100 @@ function upsertContextCompaction(
 function existingToolName(parts: readonly WebMessagePart[], id: string): string | undefined {
   const existing = parts.find((part) => part.type === "tool-call" && part.toolCallId === id);
   return existing?.type === "tool-call" ? existing.toolName : undefined;
+}
+
+type SubagentPart = Extract<WebMessagePart, { type: "subagent" }>;
+
+/**
+ * The subagent this tool event belongs to, or undefined for the agent's own
+ * work. Validated rather than cast: `metadata` is an open record arriving over
+ * the operator wire, so a malformed payload must fall through to an ordinary
+ * tool-call part instead of keying a group on a non-string.
+ */
+function subagentOf(
+  event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
+): { readonly id: string; readonly name: string; readonly label?: string } | undefined {
+  const subagent = event.metadata?.subagent;
+  if (typeof subagent !== "object" || subagent === null || Array.isArray(subagent)) return undefined;
+  const record = subagent as Record<string, unknown>;
+  const id = typeof record.id === "string" ? record.id.trim() : "";
+  if (id.length === 0) return undefined;
+  const name = typeof record.name === "string" ? record.name.trim() : "";
+  const label = typeof record.label === "string" ? record.label.trim() : "";
+  return {
+    id,
+    name: name.length === 0 ? "subagent" : name,
+    ...(label.length === 0 ? {} : { label }),
+  };
+}
+
+/** Drop the `<profile>▸` prefix: the group header already names the profile. */
+function subagentToolName(name: string): string {
+  const index = name.indexOf("▸");
+  if (index < 0) return name;
+  const tool = name.slice(index + 1).trim();
+  return tool.length === 0 ? name : tool;
+}
+
+function findSubagentPart(parts: readonly WebMessagePart[], id: string): SubagentPart | undefined {
+  return parts.find(
+    (part): part is SubagentPart => part.type === "subagent" && part.toolCallId === id,
+  );
+}
+
+function existingSubagentToolName(group: SubagentPart, id: string): string | undefined {
+  return group.calls.find((call) => call.toolCallId === id)?.toolName;
+}
+
+/**
+ * Find the group for one delegation, converting the parent `Agent` tool-call
+ * part **in place** so the transcript keeps its original position. A group is
+ * created outright when that part is absent (a truncated or replayed stream).
+ */
+function ensureSubagentPart(
+  parts: WebMessagePart[],
+  subagent: { readonly id: string; readonly name: string; readonly label?: string },
+): SubagentPart {
+  const existing = findSubagentPart(parts, subagent.id);
+  if (existing !== undefined) return existing;
+
+  const index = parts.findIndex(
+    (part) => part.type === "tool-call" && part.toolCallId === subagent.id,
+  );
+  const previous = index < 0 ? undefined : parts[index];
+  const group: SubagentPart = {
+    type: "subagent",
+    toolCallId: subagent.id,
+    name: subagent.name,
+    ...(subagent.label === undefined ? {} : { label: subagent.label }),
+    ...(previous?.type === "tool-call" && previous.args !== undefined ? { args: previous.args } : {}),
+    ...(previous?.type === "tool-call" && previous.result !== undefined ? { result: previous.result } : {}),
+    status: previous?.type === "tool-call" ? previous.status : "running",
+    calls: [],
+  };
+  if (index < 0) parts.push(group);
+  else parts[index] = group;
+  return group;
+}
+
+function replaceSubagentPart(parts: WebMessagePart[], next: SubagentPart): void {
+  const index = parts.findIndex(
+    (part) => part.type === "subagent" && part.toolCallId === next.toolCallId,
+  );
+  if (index < 0) parts.push(next);
+  else parts[index] = next;
+}
+
+function upsertSubagentCall(
+  parts: WebMessagePart[],
+  group: SubagentPart,
+  next: WebToolCall,
+): void {
+  const index = group.calls.findIndex((call) => call.toolCallId === next.toolCallId);
+  const calls = index < 0
+    ? [...group.calls, next]
+    : group.calls.map((call, at) => at === index ? { ...call, ...next } : call);
+  replaceSubagentPart(parts, { ...group, calls });
 }
 
 function upsertToolCall(parts: WebMessagePart[], next: Extract<WebMessagePart, { type: "tool-call" }>): void {
@@ -1750,14 +1893,31 @@ function quoteFromParts(parts: readonly WebMessagePart[]): WebQuote | undefined 
   return { text: quote.text, messageId: quote.messageId };
 }
 
+function isWebToolCallStatus(value: unknown): boolean {
+  return value === "running" || value === "complete" || value === "failed";
+}
+
+function isWebToolCall(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const call = value as Record<string, unknown>;
+  return typeof call.toolCallId === "string"
+    && typeof call.toolName === "string"
+    && isWebToolCallStatus(call.status);
+}
+
 function isWebMessagePart(value: unknown): value is WebMessagePart {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const part = value as Record<string, unknown>;
   if (part.type === "text" || part.type === "reasoning") return typeof part.text === "string";
-  if (part.type === "tool-call") {
+  if (part.type === "tool-call") return isWebToolCall(part);
+  if (part.type === "subagent") {
     return typeof part.toolCallId === "string"
-      && typeof part.toolName === "string"
-      && (part.status === "running" || part.status === "complete" || part.status === "failed");
+      && typeof part.name === "string"
+      && (part.label === undefined || typeof part.label === "string")
+      && (part.executionMs === undefined || typeof part.executionMs === "number")
+      && isWebToolCallStatus(part.status)
+      && Array.isArray(part.calls)
+      && part.calls.every(isWebToolCall);
   }
   if (part.type === "telemetry") return typeof part.event === "string";
   if (part.type === "error") return typeof part.message === "string" && (part.code === undefined || typeof part.code === "string");

@@ -54,6 +54,11 @@ describe("Reasoning", () => {
       status: { type: "running" },
     })).toEqual(["group-activity"]);
     expect(ACTIVITY_GROUP_BY({ type: "standalone-tool-call" } as never)).toEqual([]);
+    // A delegation is user-visible activity, so it joins the same disclosure as
+    // the tool calls around it rather than sitting loose in the transcript.
+    expect(ACTIVITY_GROUP_BY({ type: "data", name: "subagent", data: {} } as never))
+      .toEqual(["group-activity"]);
+    expect(ACTIVITY_GROUP_BY({ type: "data", name: "telemetry", data: {} } as never)).toEqual([]);
   });
 });
 

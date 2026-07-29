@@ -839,6 +839,32 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     });
   });
 
+  it("flags the lifecycle bookends so renderers need not parse the id format", () => {
+    const subagent = { id: "call-1", name: "researcher", callIndex: 1 };
+    const bookends = (["agent_started", "agent_completed"] as const).map((phase) =>
+      streamEventFromRuntimeEvent({
+        type: "subagent_activity",
+        phase,
+        id: "agent:call-1",
+        name: "Agent(researcher)",
+        subagent,
+      }) as { metadata?: Record<string, unknown> });
+
+    for (const bookend of bookends) {
+      expect(bookend.metadata).toMatchObject({ subagent, synthetic: true, subagentLifecycle: true });
+    }
+    // A tool the subagent actually ran is not lifecycle, or every renderer would
+    // hide its real activity.
+    const toolCall = streamEventFromRuntimeEvent({
+      type: "subagent_activity",
+      phase: "started",
+      id: "agent:call-1:t1",
+      name: "researcher▸Read",
+      subagent,
+    }) as { metadata?: Record<string, unknown> };
+    expect(toolCall.metadata).not.toHaveProperty("subagentLifecycle");
+  });
+
   it("drops malformed subagent activity instead of throwing", () => {
     expect(streamEventFromRuntimeEvent({ type: "subagent_activity", phase: "started" })).toBeUndefined();
     expect(streamEventFromRuntimeEvent({ type: "subagent_activity", id: "agent:c1:t1" })).toBeUndefined();

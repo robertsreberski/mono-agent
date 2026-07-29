@@ -657,3 +657,190 @@ describe("WebStore", () => {
     reopened.close();
   });
 });
+
+describe("WebStore subagent parts", () => {
+  const subagent = (id: string, name: string, label?: string) => ({
+    subagent: { id, name, callIndex: 0, ...(label === undefined ? {} : { label }) },
+    synthetic: true,
+  });
+  const launch = (id: string, name: string) => ({
+    kind: "event" as const,
+    event: {
+      type: "tool_call_started" as const,
+      id,
+      name: "Agent",
+      arguments: { name, prompt: "find X", description: "read the router" },
+    },
+  });
+  const bookend = (id: string, name: string, label?: string) => ({
+    kind: "event" as const,
+    event: {
+      type: "tool_call_started" as const,
+      id: `agent:${id}`,
+      name: `Agent(${name})`,
+      metadata: { ...subagent(id, name, label), subagentLifecycle: true },
+    },
+  });
+  const childCall = (id: string, name: string, toolId: string, tool: string, args: unknown) => ({
+    kind: "event" as const,
+    event: {
+      type: "tool_call_started" as const,
+      id: `agent:${id}:${toolId}`,
+      name: `${name}▸${tool}`,
+      arguments: args,
+      metadata: subagent(id, name),
+    },
+  });
+
+  async function turnWith(frames: readonly { kind: "event"; event: unknown }[]) {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, frames as never);
+    const detail = store.completeTurn(turn.turnId, "done");
+    store.close();
+    return detail.messages.at(-1)?.parts ?? [];
+  }
+
+  it("converts the parent Agent tool call in place and owns its subagent's calls", async () => {
+    const parts = await turnWith([
+      { kind: "event", event: { type: "tool_call_started", id: "own", name: "Search", arguments: { q: "x" } } },
+      launch("call-1", "researcher"),
+      bookend("call-1", "researcher", "read the router"),
+      childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }),
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "agent:call-1:t1",
+          name: "researcher▸Read",
+          content: "file body",
+          metadata: subagent("call-1", "researcher"),
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "agent:call-1",
+          name: "Agent(researcher)",
+          executionMs: 12_400,
+          metadata: { ...subagent("call-1", "researcher"), subagentLifecycle: true },
+        },
+      },
+      {
+        kind: "event",
+        event: { type: "tool_call_completed", id: "call-1", name: "Agent", content: "<subagent: researcher · ok>" },
+      },
+    ]);
+
+    // The delegation keeps the position its tool-call part held, after the
+    // agent's own earlier call.
+    expect(parts.map((part) => part.type)).toEqual(["tool-call", "subagent", "text"]);
+    expect(parts.find((part) => part.type === "subagent")).toEqual({
+      type: "subagent",
+      toolCallId: "call-1",
+      name: "researcher",
+      label: "read the router",
+      args: { name: "researcher", prompt: "find X", description: "read the router" },
+      result: "<subagent: researcher · ok>",
+      executionMs: 12_400,
+      status: "complete",
+      calls: [{
+        toolCallId: "agent:call-1:t1",
+        // The group header names the profile, so the `researcher▸` prefix goes.
+        toolName: "Read",
+        args: { file_path: "/repo/a.ts" },
+        result: "file body",
+        status: "complete",
+      }],
+    });
+  });
+
+  it("keeps concurrent subagents in separate groups as their events interleave", async () => {
+    const parts = await turnWith([
+      launch("a", "researcher"),
+      launch("b", "reviewer"),
+      childCall("a", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }),
+      childCall("b", "reviewer", "t2", "Grep", { pattern: "x" }),
+      childCall("a", "researcher", "t3", "Glob", { pattern: "*.ts" }),
+    ]);
+
+    const groups = parts.filter((part) => part.type === "subagent");
+    expect(groups).toHaveLength(2);
+    expect(groups.map((group) => group.type === "subagent" ? group.calls.map((call) => call.toolName) : []))
+      .toEqual([["Read", "Glob"], ["Grep"]]);
+  });
+
+  it("marks a failed delegation and keeps the activity it managed to record", async () => {
+    const parts = await turnWith([
+      launch("call-1", "researcher"),
+      childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }),
+      {
+        kind: "event",
+        event: { type: "tool_call_completed", id: "call-1", name: "Agent", isError: true, content: "timed out" },
+      },
+    ]);
+
+    expect(parts.find((part) => part.type === "subagent")).toMatchObject({
+      type: "subagent",
+      status: "failed",
+      result: "timed out",
+      calls: [{ toolName: "Read", status: "running" }],
+    });
+  });
+
+  it("opens a group from child activity alone when the launch was never observed", async () => {
+    const parts = await turnWith([childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" })]);
+
+    expect(parts.find((part) => part.type === "subagent")).toMatchObject({
+      type: "subagent",
+      toolCallId: "call-1",
+      name: "researcher",
+      status: "running",
+      calls: [{ toolName: "Read" }],
+    });
+  });
+
+  it("falls back to a plain tool-call part when subagent metadata is malformed", async () => {
+    const parts = await turnWith([
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_started",
+          id: "t1",
+          name: "Read",
+          arguments: { file_path: "/repo/a.ts" },
+          // An open wire record: a non-string id must never key a group.
+          metadata: { subagent: { id: 42, name: "researcher" }, synthetic: true },
+        },
+      },
+    ]);
+
+    expect(parts.find((part) => part.type === "tool-call")).toMatchObject({ type: "tool-call", toolCallId: "t1", toolName: "Read" });
+  });
+
+  it("round-trips a persisted subagent part through validation", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      launch("call-1", "researcher"),
+      childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }),
+    ] as never);
+    store.completeTurn(turn.turnId, "done");
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    const parts = reopened.getThreadDetail(thread.id)?.messages.at(-1)?.parts ?? [];
+    expect(parts.find((part) => part.type === "subagent")).toMatchObject({ type: "subagent", calls: [{ toolName: "Read" }] });
+    reopened.close();
+  });
+});

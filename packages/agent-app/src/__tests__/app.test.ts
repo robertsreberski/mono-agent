@@ -2200,7 +2200,7 @@ describe("startMonoAgentApp", () => {
     // see the sibling case below.
     await writeConfig({
       ...baseConfig(),
-      runtime: { ...baseConfig().runtime, retry: { primaryAttempts: 1 } },
+      runtime: { ...(baseConfig().runtime as Record<string, unknown>), retry: { primaryAttempts: 1 } },
       tools: { allowedTools: ["*"], disallowedTools: [] },
     });
     const runtimeCalls: RuntimeRunOptions[] = [];
@@ -2251,7 +2251,7 @@ describe("startMonoAgentApp", () => {
     // untouched for that turn.
     await writeConfig({
       ...baseConfig(),
-      runtime: { ...baseConfig().runtime, retry: { primaryAttempts: 2 } },
+      runtime: { ...(baseConfig().runtime as Record<string, unknown>), retry: { primaryAttempts: 2 } },
       tools: { allowedTools: ["*"], disallowedTools: [] },
     });
     const runtimeCalls: RuntimeRunOptions[] = [];

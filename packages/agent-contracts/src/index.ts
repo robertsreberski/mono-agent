@@ -639,7 +639,13 @@ export {
   normalizeTrailing,
   splitTextByCodePoints,
 } from "./stream-text.js";
-export { formatLiveInputActivityLine, toolHintFor } from "./tool-hints.js";
+export {
+  formatLiveInputActivityLine,
+  isSubagentLaunchToolName,
+  splitSubagentToolName,
+  SUBAGENT_TOOL_SEPARATOR,
+  toolHintFor,
+} from "./tool-hints.js";
 export {
   ResilientMessageStream,
   ChannelDeliveryError,
