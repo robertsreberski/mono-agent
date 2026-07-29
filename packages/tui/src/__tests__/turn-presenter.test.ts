@@ -177,6 +177,23 @@ describe("TurnPresenter", () => {
     expect(status()).toContain("answered by kimi");
   });
 
+  it("announces a same-model retry instead of a bogus failover-completed note", async () => {
+    // retry_started must be handled explicitly: the trailing else in the
+    // provider_status branch would otherwise render it as "answered by X".
+    const { presenter, rendered, status } = setup();
+    await presenter.event({
+      type: "provider_status",
+      kind: "retry_started",
+      model: "gpt-5.5",
+      attemptIndex: 0,
+      retryIndex: 1,
+    });
+
+    expect(rendered()).toContain("retrying gpt-5.5 (attempt 2)");
+    expect(status()).toContain("retrying gpt-5.5");
+    expect(status()).not.toContain("answered by");
+  });
+
   it("no longer sets a 'waiting for <model>' ephemeral on request_started", async () => {
     const { presenter, status } = setup();
 

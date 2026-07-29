@@ -1320,3 +1320,292 @@ describe("createRouterRuntime — production fallback contracts", () => {
     })).toThrow(/non-empty trimmed string/u);
   });
 });
+
+describe("createRouterRuntime — same-model retry", () => {
+  const OPUS = { sdk: "claude", model: "claude-opus-4-7" };
+  const SONNET = { sdk: "claude", model: "claude-sonnet-4-6" };
+  const overloaded = () => ({
+    text: null,
+    error: "Anthropic API overloaded — try again later",
+    failureKind: "provider_unavailable",
+    events: [],
+    cancelled: false,
+  });
+
+  it("defaults to one attempt per entry so an unconfigured chain is unchanged", async () => {
+    executeMock.mockResolvedValue(overloaded());
+    const router = createRouterRuntime({ chain: [OPUS, SONNET] });
+    const result = await router.run("sys", { messages: [] });
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(result.failureKind).toBe("provider_unavailable_exhausted");
+  });
+
+  it("retries the same model before advancing to the next entry", async () => {
+    executeMock
+      .mockResolvedValueOnce(overloaded())
+      .mockResolvedValueOnce(overloaded())
+      .mockResolvedValueOnce({ text: "recovered", events: [], failureKind: null });
+
+    const router = createRouterRuntime({
+      chain: [{ model: OPUS, attempts: 2 }, { model: SONNET }],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
+    });
+    const result = await router.run("sys", { messages: [] });
+
+    expect(result.text).toBe("recovered");
+    expect(executeMock).toHaveBeenCalledTimes(3);
+    expect(executeMock.mock.calls.map((c) => c[1].model.model)).toEqual([
+      "claude-opus-4-7",
+      "claude-opus-4-7",
+      "claude-sonnet-4-6",
+    ]);
+    expect(result.failoverHistory.map((a) => [a.model.model, a.retryIndex])).toEqual([
+      ["claude-opus-4-7", undefined],
+      ["claude-opus-4-7", 1],
+    ]);
+  });
+
+  it("does not retry the same model on context_limit — a fresh window is the only fix", async () => {
+    executeMock
+      .mockResolvedValueOnce({
+        text: null,
+        error: "prompt is too long: 210000 tokens > 200000 maximum",
+        failureKind: "context_limit",
+        events: [],
+        cancelled: false,
+      })
+      .mockResolvedValueOnce({ text: "bigger window", events: [], failureKind: null });
+
+    const router = createRouterRuntime({
+      chain: [{ model: OPUS, attempts: 3 }, { model: SONNET }],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
+    });
+    const result = await router.run("sys", { messages: [] });
+
+    expect(result.text).toBe("bigger window");
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(executeMock.mock.calls[1][1].model.model).toBe("claude-sonnet-4-6");
+  });
+
+  it("retries a terminated stream on the same model", async () => {
+    executeMock
+      .mockResolvedValueOnce({
+        text: null,
+        error: "stream disconnected before completion",
+        failureKind: "provider_unavailable",
+        events: [],
+        cancelled: false,
+      })
+      .mockResolvedValueOnce({ text: "second try", events: [], failureKind: null });
+
+    const router = createRouterRuntime({
+      chain: [{ model: OPUS, attempts: 2 }],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
+    });
+    const result = await router.run("sys", { messages: [] });
+    expect(result.text).toBe("second try");
+    expect(executeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["non-retryable request errors", { error: "invalid request: bad schema", failureKind: "provider_unavailable" }],
+    ["provider auth", { error: "401 unauthorized", failureKind: "provider_auth" }],
+    ["mid-turn safety failures", { error: "sandbox denied", failureKind: "sandbox_denied" }],
+    ["cancellation", { error: "aborted", failureKind: "provider_unavailable", cancelled: true }],
+    // The harness owns a one-shot session-resume retry for these kinds; the
+    // router must stay out of it so the two layers cannot multiply.
+    ["session_not_found", { error: "no such session", failureKind: "session_not_found" }],
+    ["session_busy", { error: "session in use", failureKind: "session_busy" }],
+  ])("never retries the same model on %s", async (_label, failure) => {
+    executeMock.mockResolvedValue({ text: null, events: [], cancelled: false, ...failure });
+    const router = createRouterRuntime({
+      chain: [{ model: OPUS, attempts: 3 }],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
+    });
+    await router.run("sys", { messages: [] });
+    expect(executeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("backs off with a doubling delay between retries", async () => {
+    vi.useFakeTimers();
+    try {
+      executeMock.mockResolvedValue(overloaded());
+      const router = createRouterRuntime({
+        chain: [{ model: OPUS, attempts: 3 }],
+        retry: { backoffMs: 1000, maxBackoffMs: 15000 },
+      });
+      const promise = router.run("sys", { messages: [] });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(executeMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(executeMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(executeMock).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(executeMock).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(executeMock).toHaveBeenCalledTimes(3);
+
+      await promise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("caps the doubling delay at maxBackoffMs", async () => {
+    vi.useFakeTimers();
+    try {
+      executeMock.mockResolvedValue(overloaded());
+      const router = createRouterRuntime({
+        chain: [{ model: OPUS, attempts: 3 }],
+        retry: { backoffMs: 1000, maxBackoffMs: 1500 },
+      });
+      const promise = router.run("sys", { messages: [] });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(executeMock).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(executeMock).toHaveBeenCalledTimes(3);
+      await promise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("emits provider_retry_started and no failover event for a same-model retry", async () => {
+    executeMock
+      .mockResolvedValueOnce(overloaded())
+      .mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
+
+    const events = [];
+    const router = createRouterRuntime({
+      chain: [{ model: OPUS, attempts: 2 }],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
+    });
+    await router.run("sys", { messages: [], onEvent: (e) => events.push(e) });
+
+    const retryEvents = events.filter((e) => e.type === "provider_retry_started");
+    expect(retryEvents).toHaveLength(1);
+    expect(retryEvents[0]).toMatchObject({
+      attemptIndex: 0,
+      retryIndex: 1,
+      attempts: 2,
+      delayMs: 0,
+      reason: "overloaded",
+    });
+    expect(events.filter((e) => e.type?.startsWith("provider_failover"))).toEqual([]);
+  });
+
+  it("records exactly one attempted route-safety record per entry regardless of retries", async () => {
+    executeMock.mockResolvedValue(overloaded());
+    const events = [];
+    const router = createRouterRuntime({
+      chain: [{ model: OPUS, attempts: 3 }],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
+    });
+    const result = await router.run("sys", { messages: [], onEvent: (e) => events.push(e) });
+
+    expect(executeMock).toHaveBeenCalledTimes(3);
+    expect(result.routeSafetyHistory.filter((r) => r.status === "attempted")).toHaveLength(1);
+    expect(events.filter((e) => e.type === "provider_route_safety")).toHaveLength(1);
+  });
+
+  it("aborting during the backoff returns cancelled without touching the next entry", async () => {
+    const controller = new AbortController();
+    executeMock.mockImplementation(async () => {
+      controller.abort();
+      return overloaded();
+    });
+    const router = createRouterRuntime({
+      chain: [{ model: OPUS, attempts: 3 }, { model: SONNET }],
+      retry: { backoffMs: 60000, maxBackoffMs: 60000 },
+    });
+    const result = await router.run("sys", { messages: [], abortSignal: controller.signal });
+
+    expect(result.cancelled).toBe(true);
+    expect(executeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-resolves the attempt and runs its cleanup once per retry", async () => {
+    executeMock.mockResolvedValue(overloaded());
+    const cleanup = vi.fn();
+    const resolveAttempt = vi.fn(() => ({ cleanup }));
+    const router = createRouterRuntime({
+      chain: [{ model: OPUS, attempts: 3 }],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
+      resolveAttempt,
+    });
+    await router.run("sys", { messages: [] });
+
+    expect(resolveAttempt).toHaveBeenCalledTimes(3);
+    expect(resolveAttempt.mock.calls.map((c) => c[0].retryIndex)).toEqual([0, 1, 2]);
+    expect(resolveAttempt.mock.calls.every((c) => c[0].attemptIndex === 0)).toBe(true);
+    expect(cleanup).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps the provider session on the first attempt and drops it on a retry", async () => {
+    executeMock
+      .mockResolvedValueOnce(overloaded())
+      .mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
+
+    resolveRuntimeBridgeMock.mockResolvedValue({
+      id: "stub",
+      execute: executeMock,
+      capabilities: { supports_session_resume: true },
+    });
+
+    const router = createRouterRuntime({
+      chain: [{ model: OPUS, attempts: 2 }],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
+    });
+    await router.run("sys", { messages: [], sessionId: "sess-1" });
+
+    expect(executeMock.mock.calls[0][1].sessionId).toBe("sess-1");
+    expect(executeMock.mock.calls[1][1].sessionId).toBeUndefined();
+  });
+
+  it("carries one merged resume snapshot across a same-model retry", async () => {
+    executeMock
+      .mockResolvedValueOnce({
+        ...overloaded(),
+        events: [
+          { type: "assistant", message: { content: [{ type: "text", text: "first progress" }] } },
+          { type: "final" },
+        ],
+      })
+      .mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
+
+    const router = createRouterRuntime({
+      chain: [{ model: OPUS, attempts: 2 }],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
+    });
+    await router.run("sys", { messages: [] });
+
+    const retryPrompt = executeMock.mock.calls[1][0];
+    expect(retryPrompt.match(/<resume_context>/gu)).toHaveLength(1);
+    expect(retryPrompt).toContain("first progress");
+  });
+
+  it("advances immediately when the attempt resolver fails, without burning retries", async () => {
+    const resolveAttempt = vi.fn(() => {
+      throw new Error("credential mint failed");
+    });
+    const router = createRouterRuntime({
+      chain: [{ model: OPUS, attempts: 3 }, { model: SONNET }],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
+      resolveAttempt,
+    });
+    executeMock.mockResolvedValue({ text: "ok", events: [], failureKind: null });
+    await router.run("sys", { messages: [] });
+
+    expect(resolveAttempt).toHaveBeenCalledTimes(2);
+    expect(resolveAttempt.mock.calls.map((c) => c[0].attemptIndex)).toEqual([0, 1]);
+  });
+
+  it("rejects invalid attempts values", () => {
+    for (const attempts of [0, 1.5, 99, "2"]) {
+      expect(() => createRouterRuntime({ chain: [{ model: OPUS, attempts }] }))
+        .toThrow(/attempts must be an integer between 1 and 10/u);
+    }
+  });
+});

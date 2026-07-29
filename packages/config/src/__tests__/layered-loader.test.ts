@@ -23,6 +23,26 @@ describe("layerJsonOntoEnv", () => {
     expect(layered).toEqual({ FOO: "bar" });
   });
 
+  it("projects the retry policy onto env and lets env win", () => {
+    const json = { runtime: { retry: { primaryAttempts: 3, backoffMs: 500, maxBackoffMs: 9_000 } } };
+    expect(layerJsonOntoEnv(json, {})).toMatchObject({
+      MONO_AGENT_RETRY_PRIMARY_ATTEMPTS: "3",
+      MONO_AGENT_RETRY_BACKOFF_MS: "500",
+      MONO_AGENT_RETRY_MAX_BACKOFF_MS: "9000",
+    });
+    expect(layerJsonOntoEnv(json, { MONO_AGENT_RETRY_PRIMARY_ATTEMPTS: "5" }))
+      .toMatchObject({ MONO_AGENT_RETRY_PRIMARY_ATTEMPTS: "5", MONO_AGENT_RETRY_BACKOFF_MS: "500" });
+  });
+
+  it("round-trips per-route attempts through the canonical fallbacks JSON", () => {
+    const layered = layerJsonOntoEnv(
+      { runtime: { fallbacks: [{ model: "codex:gpt-5.6-sol", attempts: 3 }] } },
+      {},
+    );
+    expect(JSON.parse(layered.MONO_AGENT_FALLBACKS_JSON as string))
+      .toEqual([{ model: "codex:gpt-5.6-sol", attempts: 3 }]);
+  });
+
   it("translates JSON sections to env keys", () => {
     const layered = layerJsonOntoEnv(
       {

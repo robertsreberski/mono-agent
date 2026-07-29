@@ -432,6 +432,61 @@ describe("loadMonoAgentConfig", () => {
     })).toThrow(/cannot both be set/u);
   });
 
+  it("materializes same-model retry defaults", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: baseEnv });
+    expect(config.runtime.retry).toEqual({ primaryAttempts: 2, backoffMs: 1_000, maxBackoffMs: 15_000 });
+  });
+
+  it("reads the retry policy from env", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_RETRY_PRIMARY_ATTEMPTS: "4",
+        MONO_AGENT_RETRY_BACKOFF_MS: "250",
+        MONO_AGENT_RETRY_MAX_BACKOFF_MS: "5000",
+      },
+    });
+    expect(config.runtime.retry).toEqual({ primaryAttempts: 4, backoffMs: 250, maxBackoffMs: 5_000 });
+  });
+
+  it.each([
+    ["MONO_AGENT_RETRY_PRIMARY_ATTEMPTS", "0"],
+    ["MONO_AGENT_RETRY_PRIMARY_ATTEMPTS", "11"],
+    ["MONO_AGENT_RETRY_PRIMARY_ATTEMPTS", "2.5"],
+    ["MONO_AGENT_RETRY_BACKOFF_MS", "-1"],
+    ["MONO_AGENT_RETRY_BACKOFF_MS", "60001"],
+    ["MONO_AGENT_RETRY_MAX_BACKOFF_MS", "300001"],
+  ])("rejects out-of-range %s=%s", (env, value) => {
+    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, [env]: value } }))
+      .toThrow(/must be an integer between/u);
+  });
+
+  it("accepts per-route attempts on canonical fallbacks", () => {
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_FALLBACKS_JSON: JSON.stringify([
+          { model: "codex:gpt-5.6-sol", attempts: 3 },
+          { model: "claude:claude-sonnet-4-6", effort: "high", attempts: 2 },
+          { model: "pi:ollama:gemma4:31b" },
+        ]),
+      },
+    });
+    expect(config.runtime.fallbacks?.map((entry) => entry.attempts)).toEqual([3, 2, undefined]);
+  });
+
+  it.each([0, 11, 2.5, "2"])("rejects a fallback attempts value of %s", (attempts) => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "codex:gpt-5.6-sol", attempts }]),
+      },
+    })).toThrow(/attempts must be an integer between 1 and 10/u);
+  });
+
   it("rejects malformed canonical fallback entries and route safety", () => {
     expect(() => loadMonoAgentConfig({
       cwd: "/repo",

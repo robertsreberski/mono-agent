@@ -135,6 +135,7 @@ MonoRuntimeHostOptions
 MonoRuntimeLike
 MonoRuntimeParsedPricingModel
 MonoRuntimePricing
+MonoRuntimeRetryPolicy
 MonoRuntimeRouteSafetyMode
 MonoRuntimeSandboxEngine
 MonoRuntimeSelectionEntry
