@@ -50,6 +50,10 @@ describe("formatToolActivityLine", () => {
       .toBe("📖 Reading ~/other-repo/notes.md");
     expect(formatToolActivityLine("bash", { command: "cat /Users/example/agents/assistant/daily/2026-07-20.md" }, options))
       .toBe("🖥️ Running cat daily/2026-07-20.md");
+    expect(formatToolActivityLine("Exec", {
+      executable: "cat",
+      args: ["/Users/example/agents/assistant/daily/2026-07-20.md"],
+    }, options)).toBe("🖥️ Running cat daily/2026-07-20.md");
     // Paths outside both roots stay untouched.
     expect(formatToolActivityLine("Read", { file_path: "/etc/hosts" }, options))
       .toBe("📖 Reading /etc/hosts");
@@ -63,12 +67,92 @@ describe("formatToolActivityLine", () => {
     ["Edit", { path: "/repo/existing.ts" }, "✏️ Editing /repo/existing.ts"],
     ["terminal", { command: "pnpm test" }, "🖥️ Running pnpm test"],
     ["python", { code: "print(42)" }, "🐍 Running code print(42)"],
+    ["NodeRepl", { code: "1 + 1" }, "🐍 Running code 1 + 1"],
     ["vision", { question: "identify product" }, "👁️ Looking at the image identify product"],
     ["MemoryRecall", { query: "private preferences" }, "🧠 Recalling memory"],
     ["memory_recall", { query: "private preferences" }, "🧠 Recalling memory"],
     ["memory_write", { target: "preferences" }, "🧠 Updating memory preferences"],
   ])("maps %s to its stable activity family", (name, args, expected) => {
     expect(formatToolActivityLine(name, args)).toBe(expected);
+  });
+
+  it.each([
+    [{ executable: "git", args: ["status", "--short"] }, "🖥️ Running git status --short"],
+    [{ executable: "git" }, "🖥️ Running git"],
+    [{ executable: "git", args: [] }, "🖥️ Running git"],
+    // Non-argv fields never leak into the preview.
+    [{ executable: "ls", args: ["-la"], workdir: "/repo", timeout_ms: 5_000 }, "🖥️ Running ls -la"],
+    // A missing program leaves nothing safe to show; args alone are not a command.
+    [{ args: ["status", "--short"] }, "🖥️ Running"],
+  ])("renders an argv tool as one command line: %o", (args, expected) => {
+    expect(formatToolActivityLine("Exec", args)).toBe(expected);
+  });
+
+  it("prefers an explicit command field over argv when a tool carries both", () => {
+    expect(formatToolActivityLine("Exec", {
+      command: "make build",
+      executable: "git",
+      args: ["status"],
+    })).toBe("🖥️ Running make build");
+  });
+
+  it("truncates a long argv line on the same balanced 40-code-point bound as a command", () => {
+    const line = formatToolActivityLine("Exec", {
+      executable: "pnpm",
+      args: ["--filter", "@mono-agent/agent-contracts", "test"],
+    });
+
+    expect(line).toBe("🖥️ Running pnpm --filter @mono-…gent-contracts test");
+    expect(Array.from(line.slice("🖥️ Running ".length))).toHaveLength(40);
+  });
+
+  it("bounds the join for a pathological argv before truncation", () => {
+    const line = formatToolActivityLine("Exec", {
+      executable: "rg",
+      args: Array.from({ length: 256 }, () => "x".repeat(64)),
+    });
+
+    expect(Array.from(line.slice("🖥️ Running ".length))).toHaveLength(40);
+  });
+
+  it("redacts argv credentials exactly as it redacts a shell command line", () => {
+    const slackToken = ["xoxb", "1234567890-fixtureCredential"].join("-");
+    const header = formatToolActivityLine("Exec", {
+      executable: "curl",
+      args: ["-H", `Authorization: Bearer ${slackToken}`],
+    });
+
+    expect(header).toContain("[redacted]");
+    expect(header).not.toContain(slackToken);
+    expect(formatToolActivityLine("Exec", {
+      executable: "deploy",
+      args: ["--api-key", "hunter2"],
+    })).toBe("🖥️ Running deploy --api-key [redacted]");
+  });
+
+  it("keeps a truthful argv prefix without invoking array traps or accessors", () => {
+    const elementGetter = vi.fn(() => { throw new Error("must not run"); });
+    const accessorArgs: string[] = ["status"];
+    Object.defineProperty(accessorArgs, "1", { get: elementGetter, configurable: true });
+    const fieldGetter = vi.fn(() => { throw new Error("must not run"); });
+    const accessorField = { executable: "git" };
+    Object.defineProperty(accessorField, "args", { get: fieldGetter });
+    const proxyGet = vi.fn(() => "secret");
+    const proxiedArgs = new Proxy(["status"], { get: proxyGet });
+
+    expect(formatToolActivityLine("Exec", { executable: "git", args: accessorArgs }))
+      .toBe("🖥️ Running git status");
+    expect(formatToolActivityLine("Exec", accessorField)).toBe("🖥️ Running git");
+    expect(formatToolActivityLine("Exec", { executable: "git", args: proxiedArgs }))
+      .toBe("🖥️ Running git");
+    // A hole makes the rest of an argv positionally meaningless: stop, never splice.
+    expect(formatToolActivityLine("Exec", { executable: "git", args: ["status", 3, "--short"] }))
+      .toBe("🖥️ Running git status");
+    expect(formatToolActivityLine("Exec", { executable: "git", args: "status" }))
+      .toBe("🖥️ Running git");
+    expect(elementGetter).not.toHaveBeenCalled();
+    expect(fieldGetter).not.toHaveBeenCalled();
+    expect(proxyGet).not.toHaveBeenCalled();
   });
 
   it("redacts credentials, auth headers, URL userinfo, and sensitive query parameters", () => {
