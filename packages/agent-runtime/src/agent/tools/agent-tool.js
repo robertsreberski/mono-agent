@@ -194,7 +194,14 @@ export function createAgentTool(subagents, context = {}) {
         controller.abort();
       }, timeoutMs);
 
-      const collector = createActivityCollector();
+      const collector = createActivityCollector({
+        callId: toolCallId,
+        profileName: profile.name,
+        callIndex,
+        ...(params.description === undefined ? {} : { label: params.description }),
+        ...(context.onEvent === undefined ? {} : { emit: context.onEvent }),
+      });
+      collector.started();
       const startedAt = Date.now();
       /** @type {*} */
       let result;
@@ -230,6 +237,7 @@ export function createAgentTool(subagents, context = {}) {
 
       const durationMs = Date.now() - startedAt;
       const outcome = classifyOutcome({ result, thrown, timedOut });
+      collector.finished({ status: outcome.status, durationMs });
       const text = formatSubagentResult({
         profileName: profile.name,
         label: params.description,
@@ -266,24 +274,79 @@ function resolveProfile(definitions, name) {
   return definitions.find((definition) => definition.name === name) ?? null;
 }
 
+/** Hard cap on any single forwarded payload, so the operator wire's binary-search reducer never has to run. */
+const WIRE_CONTENT_MAX_CHARS = 2_000;
+
 /**
- * Translates the child's raw provider events into a bounded per-tool-call log.
- * Phase 2 additionally forwards them to the parent's operator stream.
+ * Translates the child's raw provider events into (a) a bounded per-tool-call
+ * log for the parent's context and (b) `subagent_activity` events on the
+ * parent's operator stream.
+ *
+ * Tool ids are namespaced `agent:<callId>:<toolUseId>` because both the TUI
+ * (`toolPanels`) and the web store (`upsertToolCall`) key tool state FLATLY on
+ * the id — two subagents running Read concurrently would otherwise collapse
+ * into a single panel.
+ *
+ * The child's assistant text and thinking are deliberately dropped: the
+ * responder pipes `assistantTextFromRuntimeEvent` straight into the parent's
+ * answer body, so forwarding them would splice a subagent's prose into the
+ * main agent's reply. Its text reaches the parent through the tool result.
+ *
+ * @param {{callId: string, profileName: string, callIndex: number, label?: string, emit?: (event: *) => void}} options
  */
-function createActivityCollector() {
-  /** @type {Map<string, {name: string, args: unknown, startedAt: number, ms?: number, isError?: boolean}>} */
+function createActivityCollector({ callId, profileName, callIndex, label, emit }) {
+  /** @type {Map<string, {name: string, args: unknown, startedAt: number, ms?: number}>} */
   const open = new Map();
   /** @type {Array<{name: string, args: unknown, ms?: number, isError: boolean}>} */
   const done = [];
+  const subagent = { id: callId, name: profileName, callIndex, ...(label === undefined ? {} : { label }) };
+
+  /** @param {*} event */
+  const publish = (event) => {
+    if (emit === undefined) return;
+    try {
+      emit({ type: "subagent_activity", subagent, ...event });
+    } catch {
+      // Operator telemetry is additive; never fail a subagent over it.
+    }
+  };
+
   return {
     entries: () => done,
+    /** Lifecycle bookends so the subagent is visible before its first tool call. */
+    started() {
+      publish({
+        phase: "agent_started",
+        id: `agent:${callId}`,
+        name: `Agent(${profileName})`,
+        arguments: { name: profileName, ...(label === undefined ? {} : { description: label }) },
+      });
+    },
+    /** @param {{status: string, durationMs: number}} outcome */
+    finished({ status, durationMs }) {
+      publish({
+        phase: "agent_completed",
+        id: `agent:${callId}`,
+        name: `Agent(${profileName})`,
+        isError: status !== "ok",
+        executionMs: durationMs,
+        content: `${status} · ${done.length} tool call${done.length === 1 ? "" : "s"}`,
+      });
+    },
     /** @param {*} event */
     observe(event) {
       const type = event?.type;
       if (type === "assistant") {
         const block = event.message?.content?.[0];
         if (block?.type === "tool_use" && typeof block.id === "string") {
-          open.set(block.id, { name: String(block.name ?? "?"), args: block.input, startedAt: Date.now() });
+          const name = String(block.name ?? "?");
+          open.set(block.id, { name, args: block.input, startedAt: Date.now() });
+          publish({
+            phase: "started",
+            id: `agent:${callId}:${block.id}`,
+            name: `${profileName}▸${name}`,
+            arguments: block.input,
+          });
         }
         return;
       }
@@ -297,16 +360,47 @@ function createActivityCollector() {
         if (block?.type === "tool_result" && typeof block.tool_use_id === "string") {
           const entry = open.get(block.tool_use_id);
           open.delete(block.tool_use_id);
-          done.push({
-            name: entry?.name ?? "?",
-            args: entry?.args,
-            ...(entry?.ms === undefined ? { ms: entry ? Date.now() - entry.startedAt : undefined } : { ms: entry.ms }),
-            isError: block.is_error === true,
+          const ms = entry?.ms ?? (entry ? Date.now() - entry.startedAt : undefined);
+          const isError = block.is_error === true;
+          done.push({ name: entry?.name ?? "?", args: entry?.args, ms, isError });
+          publish({
+            phase: "completed",
+            id: `agent:${callId}:${block.tool_use_id}`,
+            name: `${profileName}▸${entry?.name ?? "?"}`,
+            isError,
+            ...(ms === undefined ? {} : { executionMs: ms }),
+            ...(summarizeForWire(block.content) === undefined ? {} : { content: summarizeForWire(block.content) }),
           });
+        }
+        return;
+      }
+      // Child warnings are worth surfacing; everything else (context usage,
+      // partial tool output, cost) stays inside the subagent for now.
+      if (type === "runtime_warning" && emit !== undefined) {
+        try {
+          emit({ ...event, subagentId: callId });
+        } catch {
+          // additive
         }
       }
     },
   };
+}
+
+/** @param {unknown} value */
+function summarizeForWire(value) {
+  if (value === undefined || value === null) return undefined;
+  const text = typeof value === "string" ? value : safeJson(value);
+  return text.length <= WIRE_CONTENT_MAX_CHARS ? text : `${text.slice(0, WIRE_CONTENT_MAX_CHARS)}…`;
+}
+
+/** @param {unknown} value */
+function safeJson(value) {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
 }
 
 /**

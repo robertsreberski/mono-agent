@@ -247,4 +247,79 @@ describe("Agent tool result budget", () => {
     expect(text).toContain("10000. Read");
     expect(text).toMatch(/… 9945 calls elided …/u);
   });
+
+describe("Agent tool activity forwarding", () => {
+  function capture(runImpl, params = { name: "researcher", prompt: "x" }, options = {}) {
+    const events = [];
+    const tool = createAgentTool(subagentOptions({ run: runImpl, ...options }), { onEvent: (e) => events.push(e) });
+    return { events, done: tool.execute("call-1", params) };
+  }
+
+  it("brackets the subagent with its own lifecycle events", async () => {
+    const { events, done } = capture(okRun("answer"), { name: "researcher", prompt: "x", description: "find the thing" });
+    await done;
+
+    const lifecycle = events.filter((e) => e.phase?.startsWith("agent_"));
+    expect(lifecycle.map((e) => e.phase)).toEqual(["agent_started", "agent_completed"]);
+    expect(lifecycle[0]).toMatchObject({
+      type: "subagent_activity",
+      id: "agent:call-1",
+      name: "Agent(researcher)",
+      subagent: { id: "call-1", name: "researcher", callIndex: 1, label: "find the thing" },
+    });
+    expect(lifecycle[1]).toMatchObject({ isError: false, content: "ok · 0 tool calls" });
+  });
+
+  it("forwards each child tool call with a namespaced id and subagent metadata", async () => {
+    const run = async (request) => {
+      request.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/a.ts" } }] } });
+      request.onEvent({ type: "tool_timing", tool_use_id: "t1", execution_ms: 9 });
+      request.onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "body", is_error: false }] } });
+      return { text: "done", events: [] };
+    };
+    const { events, done } = capture(run);
+    await done;
+
+    const toolEvents = events.filter((e) => e.phase === "started" || e.phase === "completed");
+    expect(toolEvents.map((e) => e.id)).toEqual(["agent:call-1:t1", "agent:call-1:t1"]);
+    expect(toolEvents[0]).toMatchObject({ name: "researcher▸Read", arguments: { file_path: "/a.ts" } });
+    expect(toolEvents[1]).toMatchObject({ name: "researcher▸Read", isError: false, executionMs: 9, content: "body" });
+    expect(toolEvents[0].subagent).toEqual({ id: "call-1", name: "researcher", callIndex: 1 });
+  });
+
+  it("never forwards the child's assistant text, which would splice into the parent answer", async () => {
+    const run = async (request) => {
+      request.onEvent({ type: "assistant", message: { content: [{ type: "text", text: "internal monologue" }] } });
+      request.onEvent({ type: "assistant", message: { content: [{ type: "thinking", thinking: "hmm" }] } });
+      return { text: "final", events: [] };
+    };
+    const { events, done } = capture(run);
+    await done;
+
+    expect(JSON.stringify(events)).not.toContain("internal monologue");
+    expect(JSON.stringify(events)).not.toContain("hmm");
+  });
+
+  it("caps a forwarded tool result so the wire reducer never has to run", async () => {
+    const run = async (request) => {
+      request.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Read", input: {} }] } });
+      request.onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "z".repeat(500_000) }] } });
+      return { text: "done", events: [] };
+    };
+    const { events, done } = capture(run);
+    await done;
+
+    const completed = events.find((e) => e.phase === "completed");
+    expect(completed.content.length).toBeLessThanOrEqual(2_001);
+    expect(completed.content.endsWith("…")).toBe(true);
+  });
+
+  it("keeps forwarding failures from breaking the subagent", async () => {
+    const tool = createAgentTool(subagentOptions(), {
+      onEvent: () => { throw new Error("operator stream is gone"); },
+    });
+    const result = await tool.execute("call-1", { name: "researcher", prompt: "x" });
+    expect(result.content[0].text).toContain("the answer");
+  });
+});
 });
