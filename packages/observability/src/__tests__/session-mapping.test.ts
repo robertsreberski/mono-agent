@@ -272,6 +272,27 @@ describe("mapRunToSession", () => {
     expect(call?.ok).toBe(false);
   });
 
+  it("treats a narrated sentinel as silent, matching what the notifier suppressed", () => {
+    // The ledger shares the delivery predicate on purpose. If a run was suppressed
+    // for ending with the sentinel but the ledger reported it as notified, the
+    // operator view would disagree with what actually reached the channel.
+    const { summary, events } = loadFixture("silent-recall");
+    const narrated = events.map((event, index) =>
+      index === events.length - 1
+        ? {
+            ...event,
+            message: {
+              content: [{ type: "text", text: "Checked every source.\n\n- No new items.\n\nNOTHING_TO_REPORT" }],
+            },
+          }
+        : event,
+    );
+
+    const session = mapRunToSession(summary, narrated, OPTS);
+
+    expect(session.outcome).toBe("silent");
+  });
+
   it("tolerates a partial/running run: coalesced thinking, an open (unresolved) tool call, no crash", () => {
     const { summary, events } = loadFixture("running");
     const session = mapRunToSession(summary, events, OPTS);

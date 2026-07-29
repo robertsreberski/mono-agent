@@ -1,4 +1,4 @@
-import { NOTHING_TO_REPORT_SENTINEL, type AgentMessageSender } from "@mono-agent/agent-contracts";
+import { classifyNotifySuppression, type AgentMessageSender } from "@mono-agent/agent-contracts";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 
 import type { HistoryMessage } from "../context/index.js";
@@ -208,8 +208,12 @@ function shouldSkipMemoryPersistence(
   return isNothingToReportSentinel(assistantText) || isTrivialMemoryTurn(userMessage, assistantText, options);
 }
 
+// Deliberately not `suppressesNotification`, which also treats empty text as
+// suppressed: an empty assistant turn was never skipped here and changing that
+// is a separate decision. This adds only the narrated-sentinel case.
 function isNothingToReportSentinel(assistantText: string): boolean {
-  return assistantText.trim().toUpperCase() === NOTHING_TO_REPORT_SENTINEL;
+  const suppression = classifyNotifySuppression(assistantText);
+  return suppression === "sentinel" || suppression === "narrated-sentinel";
 }
 
 function isTrivialMemoryTurn(

@@ -1614,42 +1614,51 @@ describe("AgentHarness", () => {
   const memoryWriteModes = ["append-host-summary", "capture"] as const;
 
   for (const mode of memoryWriteModes) {
-    it(`writeMode '${mode}' skips memory writes when the assistant returns NOTHING_TO_REPORT`, async () => {
-      const dir = await tempDir();
-      const identityPath = join(dir, "IDENTITY.md");
-      await writeFile(identityPath, "You are Mono.", "utf8");
-      const calls: string[] = [];
-      const memory = {
-        load: async () => undefined,
-        appendHostSummary: async (id: string) => {
-          calls.push(`append:${id}`);
-          return { conversationId: id, source: "memory.md", bytesWritten: 1 };
-        },
-        scheduleCapture: (id: string) => {
-          calls.push(`schedule:${id}`);
-        },
-        flush: async () => {},
-      };
-      const fake = createFakeRuntime(async () => ({ text: "  nothing_to_report  " }));
+    // Both shapes of "nothing to report": the sentinel alone, and a model that
+    // narrated its assessment before emitting the marker on the last line. The
+    // second reached a shared channel in production; it is not a report either,
+    // so it must not be memorized as one.
+    for (const [slug, label, finalText] of [
+      ["alone", "the sentinel alone", "  nothing_to_report  "],
+      ["narrated", "prose then the sentinel", "Checked every topic.\n\n- No active rows.\n\nNOTHING_TO_REPORT"],
+    ] as const) {
+      it(`writeMode '${mode}' skips memory writes when the assistant returns ${label}`, async () => {
+        const dir = await tempDir();
+        const identityPath = join(dir, "IDENTITY.md");
+        await writeFile(identityPath, "You are Mono.", "utf8");
+        const calls: string[] = [];
+        const memory = {
+          load: async () => undefined,
+          appendHostSummary: async (id: string) => {
+            calls.push(`append:${id}`);
+            return { conversationId: id, source: "memory.md", bytesWritten: 1 };
+          },
+          scheduleCapture: (id: string) => {
+            calls.push(`schedule:${id}`);
+          },
+          flush: async () => {},
+        };
+        const fake = createFakeRuntime(async () => ({ text: finalText }));
 
-      const response = await createAgentHarness({
-        identityPath,
-        runtime: fake.runtime,
-        model,
-        executionMode: "sdk",
-        memory,
-        memoryWriteMode: mode,
-        createRunId: () => `run-nothing-to-report-${mode}`,
-      }).run({
-        conversationId: "cron:focus-scan",
-        userMessage: "Run the hourly focus scan.",
-        metadata: { cron: { jobId: "focus-scan" } },
-        abortSignal: new AbortController().signal,
+        const response = await createAgentHarness({
+          identityPath,
+          runtime: fake.runtime,
+          model,
+          executionMode: "sdk",
+          memory,
+          memoryWriteMode: mode,
+          createRunId: () => `run-nothing-to-report-${mode}-${slug}`,
+        }).run({
+          conversationId: "cron:focus-scan",
+          userMessage: "Run the hourly focus scan.",
+          metadata: { cron: { jobId: "focus-scan" } },
+          abortSignal: new AbortController().signal,
+        });
+
+        expect(response.text).toBe(finalText);
+        expect(calls).toEqual([]);
       });
-
-      expect(response.text).toBe("  nothing_to_report  ");
-      expect(calls).toEqual([]);
-    });
+    }
 
     for (const [probe, answer] of [["test", "test ok"], ["ping", "pong"]] as const) {
       it(`writeMode '${mode}' skips memory writes for tiny ${probe} turns`, async () => {

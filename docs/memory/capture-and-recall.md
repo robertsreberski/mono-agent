@@ -19,7 +19,7 @@ For tier selection (lite / journal / bujo) and embeddings setup, start at the [M
 | `append-host-summary` | Admit one deterministic host observation by provider run id. The built-in backend fsyncs and projects it; Supermemory awaits a remote upsert. | built-in Lite/Journal/BuJo; Supermemory | built-in: no; Supermemory: service-owned |
 | `capture` | Admit the host summary plus full approved capture text by provider run id. Built-in BuJo curates in the background; Supermemory sends it for server-side extraction. | built-in BuJo; Supermemory | BuJo: configured chat model; Supermemory: service-owned |
 
-The host deliberately skips memory writes for two low-signal successful turns, in every write mode: final answers equal to `NOTHING_TO_REPORT` (the cron/webhook no-op sentinel) and tiny explicit test/ping probes such as `test` / `test ok`. Short contextual acknowledgements are not skipped by this default.
+The host deliberately skips memory writes for two low-signal successful turns, in every write mode: final answers that are `NOTHING_TO_REPORT` (the cron/webhook no-op sentinel), or that end with it on their final line, and tiny explicit test/ping probes such as `test` / `test ok`. Short contextual acknowledgements are not skipped by this default.
 
 Cron and webhook turns are also capture-hygienic: when they do write memory, only the assistant answer is written. The trigger prompt or webhook pre-instructions are never sent to the deterministic host summary or intelligent capture pipeline.
 
