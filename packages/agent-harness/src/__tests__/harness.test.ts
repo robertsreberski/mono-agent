@@ -1278,6 +1278,113 @@ describe("AgentHarness", () => {
     expect(legacyCalls).toEqual([]);
   });
 
+  // Recall is already global across conversations, so attributing the captured
+  // turn is the only missing link for carrying group context into a 1:1 DM.
+  it("attributes a captured turn to its speaker without leaking the host-only id", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const admissions: MemoryCompletedTurn[] = [];
+    const memory: MemoryStore = {
+      load: async () => undefined,
+      appendHostSummary: async () => { throw new Error("legacy append must not run"); },
+      async persistCompletedTurn(turn): Promise<MemoryCompletedTurnResult> {
+        admissions.push(turn);
+        return {
+          id: "completed-turn-attributed",
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          source: "strong",
+          bytesWritten: 0,
+          admissionStatus: "admitted",
+        };
+      },
+    };
+
+    await createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "The build is green." })).runtime,
+      model,
+      executionMode: "sdk",
+      memory,
+      memoryWriteMode: "capture",
+      createRunId: () => "run-attributed",
+    }).run({
+      conversationId: "slack:C1:1.1",
+      userMessage: "Is the build ok?",
+      sender: { id: "U08ABC", displayName: "Alice Chen", handle: "alice" },
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(admissions[0]?.captureText).toBe(
+      "User (Alice Chen (@alice)): Is the build ok?\nAssistant: The build is green.",
+    );
+    expect(admissions[0]?.summary).toContain("User (Alice Chen (@alice)): Is the build ok?");
+    expect(JSON.stringify(admissions)).not.toContain("U08ABC");
+  });
+
+  it("persists the speaker as history name, keeping it out of the message content", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore();
+
+    await createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "green" })).runtime,
+      model,
+      executionMode: "sdk",
+      historyStore,
+    }).run({
+      conversationId: "slack:C1:1.1",
+      userMessage: "status?",
+      sender: { id: "U08ABC", displayName: "Alice Chen", handle: "alice" },
+      precedingMessages: [{ sender: { id: "U2", displayName: "Bob" }, text: "background chatter" }],
+      abortSignal: new AbortController().signal,
+    });
+
+    const history = await historyStore.load("slack:C1:1.1");
+    const user = history.find((message) => message.role === "user");
+    expect(user?.name).toBe("Alice Chen (@alice)");
+    expect(user?.content).toBe("status?");
+    // The transcript is turn-local: persisting it would compound with whatever
+    // the adapter re-fetches on the next turn.
+    expect(JSON.stringify(history)).not.toContain("background chatter");
+    expect(history.find((message) => message.role === "assistant")?.name).toBeUndefined();
+  });
+
+  it("omits history name entirely for a whitespace-only display name", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const historyStore = createInMemoryHistoryStore();
+
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: createFakeRuntime(async () => ({ text: "green" })).runtime,
+      model,
+      executionMode: "sdk",
+      historyStore,
+    });
+    await harness.run({
+      conversationId: "slack:C1:1.1",
+      userMessage: "first",
+      sender: { id: "U08ABC", displayName: "   " },
+      abortSignal: new AbortController().signal,
+    });
+
+    const history = await historyStore.load("slack:C1:1.1");
+    expect(history.find((message) => message.role === "user")).not.toHaveProperty("name");
+    // An empty-string name would throw invalid_history when the NEXT turn builds
+    // its context, so prove the follow-up turn actually succeeds.
+    const second = await harness.run({
+      conversationId: "slack:C1:1.1",
+      userMessage: "second",
+      abortSignal: new AbortController().signal,
+    });
+    expect(second.text).toBe("green");
+  });
+
   it("omits capture text from a strong append-host-summary admission", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

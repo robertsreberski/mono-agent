@@ -109,6 +109,63 @@ export interface AgentReplyTarget {
   readonly conversationId: string;
 }
 
+/**
+ * Who produced the current message, in transport-neutral form.
+ *
+ * EXPLICITLY MODEL-VISIBLE, the opposite polarity to {@link AgentReplyTarget}
+ * and {@link AgentContinuationTurn}: the harness renders `displayName`/`handle`
+ * into the turn so the agent knows who is speaking in a group chat, attributes
+ * the persisted history turn to that person, and labels the memory capture.
+ *
+ * `id` is the sole exception and stays HOST-ONLY. It is a physical channel
+ * identity and an actionable delivery target -- a Slack user id doubles as a DM
+ * channel id -- so putting it in a prompt would hand the model an exfiltration
+ * token. Hosts may use it for bookkeeping and traces only.
+ *
+ * `displayName` and `handle` are user-controlled on every channel, so they are
+ * evidence of a name, never proof of identity. `isBot` is the only trustworthy
+ * discriminator here because it comes from the transport, not from the user.
+ *
+ * Identity is per channel. Nothing here implies a cross-channel identity map.
+ */
+export interface AgentMessageSender {
+  /** Host-only platform participant id; never model-visible. */
+  readonly id?: string;
+  /** Model-visible human name, e.g. "Alice Chen". User-controlled. */
+  readonly displayName?: string;
+  /** Model-visible platform handle without a leading `@`, e.g. "alice". User-controlled. */
+  readonly handle?: string;
+  /** Transport-asserted: this sender is a bot or app rather than a human. */
+  readonly isBot?: boolean;
+}
+
+/**
+ * One message that landed in this conversation BEFORE the current one and that
+ * the agent has not seen -- a group chat that kept talking between turns.
+ *
+ * EXPLICITLY MODEL-VISIBLE background context. Channels produce it however they
+ * like: Slack pulls `conversations.replies`/`history` from a watermark when it
+ * is triggered, Telegram buffers ambiently when opted in. The harness renders it
+ * as a bounded, fenced, explicitly untrusted transcript on the user message and
+ * never writes it to durable history or long-term memory.
+ */
+export interface AgentPrecedingMessage {
+  readonly sender?: AgentMessageSender;
+  readonly text: string;
+  /** ISO-8601 transport timestamp, when known. */
+  readonly timestamp?: string;
+}
+
+/**
+ * Harness-enforced bounds for {@link AgentRequestBase.precedingMessages}. They
+ * live here so adapters can pre-trim to the same numbers the harness enforces.
+ */
+export const AGENT_PRECEDING_MESSAGES_MAX_COUNT = 30;
+export const AGENT_PRECEDING_MESSAGE_MAX_TEXT_BYTES = 2 * 1024;
+export const AGENT_PRECEDING_MESSAGES_MAX_TOTAL_BYTES = 16 * 1024;
+/** Harness-enforced bound for one rendered {@link AgentMessageSender} label. */
+export const AGENT_MESSAGE_SENDER_LABEL_MAX_CHARS = 64;
+
 /** One host-owned message in a pinned continuation origin snapshot. */
 export interface AgentContinuationContextMessage {
   readonly role: "system" | "user" | "assistant" | "tool";
@@ -257,6 +314,19 @@ export interface AgentRequestBase {
   readonly abortSignal: AbortSignal;
   readonly metadata?: AgentRequestMetadata;
   readonly attachments?: readonly AgentAttachment[];
+  /**
+   * Who is speaking this turn. EXPLICITLY MODEL-VISIBLE (name and handle only;
+   * `sender.id` stays host-only) -- contrast `replyTo`/`continuation` below.
+   * Channels with no human identity (cron, webhook, single-user CLI) omit it and
+   * the turn is byte-identical to one built before this field existed.
+   */
+  readonly sender?: AgentMessageSender;
+  /**
+   * Messages that arrived in this conversation since the agent's last turn,
+   * OLDEST FIRST. EXPLICITLY MODEL-VISIBLE background context: rendered as a
+   * bounded untrusted transcript on the user message, never persisted.
+   */
+  readonly precedingMessages?: readonly AgentPrecedingMessage[];
   /** Host-only physical reply destination; never model-visible. */
   readonly replyTo?: AgentReplyTarget;
   /** Host-only continuation synthesis controls; never model-visible. */

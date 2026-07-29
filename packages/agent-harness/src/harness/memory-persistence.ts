@@ -1,9 +1,10 @@
-import { NOTHING_TO_REPORT_SENTINEL } from "@mono-agent/agent-contracts";
+import { NOTHING_TO_REPORT_SENTINEL, type AgentMessageSender } from "@mono-agent/agent-contracts";
 import type { RuntimeEventLike } from "@mono-agent/observability";
 
 import type { HistoryMessage } from "../context/index.js";
 import type { AgentHarnessOptions } from "../types.js";
 import type { AppliedLiveInput } from "../live-input.js";
+import { senderLabel } from "./speaker-context.js";
 import { compactOneLine } from "./value-utils.js";
 
 const MEMORY_PERSISTENCE_WARNING = "Memory persistence was not confirmed after the provider answer; the provider response was preserved.";
@@ -15,6 +16,7 @@ export async function buildSuccessfulTurn(
   liveInputs: readonly AppliedLiveInput[],
   assistantText: string,
   runId: string,
+  sender?: AgentMessageSender,
 ): Promise<{
   readonly capturedAt: string;
   readonly messages: readonly HistoryMessage[];
@@ -32,11 +34,20 @@ export async function buildSuccessfulTurn(
       // Enrichment is additive. A successful provider answer still commits its
       // original bytes when the optional app-owned enrichment fails.
     }
+    const senderName = senderLabel(sender);
     return {
       capturedAt,
       userMemoryText: composeUserMemoryText(userMessage, liveInputs),
       messages: [
-        { role: "user", content: userMessage, timestamp: capturedAt, runId },
+        {
+          role: "user",
+          content: userMessage,
+          timestamp: capturedAt,
+          runId,
+          ...(senderName === undefined ? {} : { name: senderName }),
+        },
+        // Live follow-ups deliberately carry NO name: AppliedLiveInput has no
+        // identity of its own, and assuming "same speaker" is wrong in a group.
         ...liveInputs.map((input) => ({
           role: "user" as const,
           content: input.text,
@@ -69,6 +80,7 @@ export async function persistSuccessfulMemory(
   persistenceOptions: {
     readonly runId: string;
     readonly source?: string;
+    readonly sender?: AgentMessageSender;
     readonly emit?: (event: RuntimeEventLike) => void;
   },
 ): Promise<void> {
@@ -128,7 +140,7 @@ export async function persistSuccessfulMemory(
 function deterministicHostSummary(
   userMessage: string,
   assistantText: string,
-  options: { readonly source?: string } = {},
+  options: MemoryTurnOptions = {},
 ): string {
   if (isTriggerSource(options.source)) {
     return [
@@ -138,7 +150,7 @@ function deterministicHostSummary(
   }
   return [
     "Host-observed completed turn.",
-    `User: ${compactOneLine(userMessage, 240)}`,
+    `User${speakerSuffix(options.sender)}: ${compactOneLine(userMessage, 240)}`,
     `Assistant: ${compactOneLine(assistantText, 240)}`,
   ].join("\n");
 }
@@ -146,13 +158,29 @@ function deterministicHostSummary(
 function captureTurnText(
   userMessage: string,
   assistantText: string,
-  options: { readonly source?: string } = {},
+  options: MemoryTurnOptions = {},
 ): string {
   // Richer than the compacted host summary: the distiller wants the real turn content.
   if (isTriggerSource(options.source)) {
     return `Assistant: ${assistantText}`;
   }
-  return `User: ${userMessage}\nAssistant: ${assistantText}`;
+  return `User${speakerSuffix(options.sender)}: ${userMessage}\nAssistant: ${assistantText}`;
+}
+
+/**
+ * Attributes the captured turn to a named person so that what the agent learns
+ * in a group chat is recallable in that person's DM -- recall is global, so the
+ * attribution is the only missing link. Purely additive: an unattributed turn
+ * still produces the exact `User: ` stem the distiller has always seen.
+ */
+function speakerSuffix(sender: AgentMessageSender | undefined): string {
+  const label = senderLabel(sender);
+  return label === undefined ? "" : ` (${label})`;
+}
+
+interface MemoryTurnOptions {
+  readonly source?: string;
+  readonly sender?: AgentMessageSender;
 }
 
 function isTriggerSource(source: string | undefined): boolean {

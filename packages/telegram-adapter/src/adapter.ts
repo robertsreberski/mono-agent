@@ -4,6 +4,7 @@ import {
   agentAttachmentKindFromMimeType,
   decodeAgentAttachmentText,
   type AgentAttachment,
+  type AgentMessageSender,
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
   type AgentResponse,
@@ -132,6 +133,8 @@ export interface AgentRequest extends AgentRequestBase {
    * `fileId`/`sizes`/`kind` should read it from there.
    */
   attachments?: readonly AgentAttachment[];
+  /** Model-visible speaker identity; `sender.id` stays host-only. */
+  sender?: AgentMessageSender;
   abortSignal: AbortSignal;
   metadata: {
     telegram: TelegramRequestMetadata;
@@ -279,8 +282,35 @@ export function buildAgentRequest(
   if (from !== undefined) {
     request.metadata.telegram.from = from;
   }
+  const sender = senderFromTelegramUser(message.from);
+  if (sender !== undefined) {
+    request.sender = sender;
+  }
 
   return request;
+}
+
+/**
+ * Model-visible speaker identity for the turn.
+ *
+ * Name precedence is `first_name (+ last_name)` because that is what group
+ * members actually see in the Telegram UI, so it is what makes the agent's
+ * references recognizable. `username` is the stable handle and rides alongside
+ * rather than substituting for the name. The numeric id is the only immutable
+ * field, and stays host-only.
+ */
+function senderFromTelegramUser(user: TelegramUser | undefined): AgentMessageSender | undefined {
+  if (user === undefined) return undefined;
+  const displayName = [user.first_name, user.last_name]
+    .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+    .join(" ")
+    .trim();
+  return {
+    id: String(user.id),
+    ...(displayName.length === 0 ? {} : { displayName }),
+    ...(user.username === undefined ? {} : { handle: user.username }),
+    ...(user.is_bot === undefined ? {} : { isBot: user.is_bot }),
+  };
 }
 
 export function normalizeTelegramMessageInput(

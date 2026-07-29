@@ -1,6 +1,12 @@
 const INLINE_CODE_PATTERN = /`[^`\n]+`/gu;
 const FENCED_CODE_PATTERN = /```[\s\S]*?```/gu;
 const SLACK_LINK_PATTERN = /<((?:https?:\/\/|mailto:)[^>|]+)(?:\|([^>\n]+))?>/gu;
+/**
+ * Slack's non-link angle tokens: `<@U…>` users, `<#C…>` channels, and `<!…>`
+ * specials (`here`, `channel`, `subteam^S…`, `date^…`). Cannot collide with
+ * {@link SLACK_LINK_PATTERN}, which matches only `http(s):`/`mailto:` targets.
+ */
+const SLACK_MENTION_TOKEN = /<([@#!])([^>|\s]*)(?:\|([^>\n]*))?>/gu;
 const TOKEN_PREFIX = "\uE000";
 const TOKEN_SUFFIX = "\uE001";
 
@@ -16,6 +22,42 @@ export function normalizeSlackMarkdownToMarkdown(text: string): string {
     FENCED_CODE_PATTERN,
     normalizeSlackMarkdownChunk,
   ).trim();
+}
+
+/**
+ * Rewrites Slack's angle-bracket mention tokens into the text a human reads, so
+ * a third party mentioned in a message reaches the model as `@Alice` rather than
+ * the opaque `<@U08ABC>`.
+ *
+ * Resolution is purely local: it uses the label Slack already inlines after `|`
+ * and never calls the Web API, so it costs no request and needs no extra scope.
+ * A bare `<@U08ABC>` with no inline label degrades to `@U08ABC` -- still an
+ * improvement over the raw token, and the opt-in user directory upgrades it to a
+ * real display name.
+ */
+export function renderSlackMentionTokens(text: string): string {
+  return replaceProtectedSegments(text, FENCED_CODE_PATTERN, (chunk) =>
+    replaceProtectedSegments(chunk, INLINE_CODE_PATTERN, renderMentionTokenChunk));
+}
+
+function renderMentionTokenChunk(text: string): string {
+  return text.replace(SLACK_MENTION_TOKEN, (match, sigil: string, body: string, label?: string) => {
+    const inline = label?.trim();
+    if (sigil === "#") {
+      // Channel labels already read as names; a bare id has no local rendering.
+      return inline === undefined || inline.length === 0 ? `#${body}` : `#${inline}`;
+    }
+    if (sigil === "@") {
+      return inline === undefined || inline.length === 0 ? `@${body}` : `@${inline}`;
+    }
+    // `<!…>` specials. `here`/`channel`/`everyone` are broadcast keywords;
+    // `subteam^S…` and `date^…` carry their human form in the inline label.
+    if (inline !== undefined && inline.length > 0) {
+      return inline.startsWith("@") ? inline : `@${inline}`;
+    }
+    const special = body.split("^")[0] ?? body;
+    return special === "" ? match : `@${special}`;
+  });
 }
 
 function formatMarkdownChunk(text: string): string {
