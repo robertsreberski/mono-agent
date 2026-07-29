@@ -4,9 +4,11 @@ import {
   AgentResponseCancelledError,
   ChannelUserCancelReason,
   assertAgentContinuationOriginContext,
+  classifyNotifySuppression,
   createChannelUserCancelReason,
   isAgentResponseCancelledError,
   isChannelUserCancelReason,
+  suppressesNotification,
   type AgentMessageStream,
   type AgentRequestBase,
   type AgentResponder,
@@ -157,5 +159,50 @@ describe("shared agent contracts", () => {
     expect(describeEvent({ type: "memory_recalled", bytes: 9 })).toBe("9b");
     expect(describeEvent({ type: "runtime_telemetry", kind: "cache_hit" })).toBe("cache_hit");
     expect(describeEvent({ type: "runtime_warning", message: "warned" })).toBe("warned");
+  });
+});
+
+describe("notify suppression", () => {
+  // Verbatim shape of a real cron turn that reached a shared Slack channel: the
+  // run failed over to a different vendor's model, which narrated its assessment
+  // and then emitted the marker on its own last line. Whole-string matching let
+  // all of it through.
+  const narratedFromProduction = [
+    "All cursors are properly set. Let me summarize the tick:",
+    "",
+    "**Assessment:**",
+    "- **4 P2-based topics** — first run with epoch cursors. Nothing to report.",
+    "- **People** — no active rows.",
+    "",
+    "NOTHING_TO_REPORT",
+  ].join("\n");
+
+  it.each([
+    ["the sentinel alone", "NOTHING_TO_REPORT", "sentinel"],
+    ["lowercased", "nothing_to_report", "sentinel"],
+    ["whitespace-padded", "  NOTHING_TO_REPORT  ", "sentinel"],
+    ["empty", "", "empty"],
+    ["whitespace only", "   \n  ", "empty"],
+    ["prose then the sentinel", narratedFromProduction, "narrated-sentinel"],
+    ["prose then a padded sentinel", "Checked everything.\n\n  nothing_to_report  ", "narrated-sentinel"],
+    ["an ordinary report", "**Review radar** · 16:00\n- Two PRs waiting on Geri.", "none"],
+  ])("classifies %s", (_label, text, expected) => {
+    expect(classifyNotifySuppression(text)).toBe(expected);
+    expect(suppressesNotification(text)).toBe(expected !== "none");
+  });
+
+  it("never matches the sentinel as a substring", () => {
+    // The marker only carries meaning where a final answer ends. A report that
+    // explains the convention, or mentions it mid-body, must still be delivered
+    // — that is the property the last-line anchor preserves.
+    const mentions = "The job replies NOTHING_TO_REPORT when the queue is clean.\n\nTwo PRs are stale.";
+    expect(classifyNotifySuppression(mentions)).toBe("none");
+    expect(classifyNotifySuppression("NOTHING_TO_REPORT is the sentinel")).toBe("none");
+    expect(classifyNotifySuppression("Nothing to report today.")).toBe("none");
+  });
+
+  it("treats undefined as empty", () => {
+    expect(classifyNotifySuppression(undefined)).toBe("empty");
+    expect(suppressesNotification(undefined)).toBe(true);
   });
 });

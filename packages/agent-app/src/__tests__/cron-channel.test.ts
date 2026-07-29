@@ -365,6 +365,39 @@ describe("cron channel driver — native notification delivery", () => {
     expect(notifyDestination).not.toHaveBeenCalled();
   });
 
+  it("skips native delivery, and warns, when a model narrates before the sentinel", async () => {
+    // Regression: a cron run that failed over to another vendor's model wrote its
+    // whole assessment before the marker. Whole-string matching delivered all of
+    // it to a shared channel. Suppression is right, but silence about it is not —
+    // the warning is what makes an off-contract model visible.
+    const warn = vi.fn();
+    const notifyDestination = vi.fn(async () => ({ delivered: true }));
+    const captured = await startCapturingCron({
+      ...baseInput,
+      logger: { warn },
+      notifyDestination,
+      config: {
+        jobs: [
+          {
+            id: "j",
+            expression: "* * * * *",
+            timezone: "UTC",
+            prompt: "p",
+            enabled: true,
+            notify: true,
+            notifyConversationId: "telegram:42",
+          },
+        ],
+      },
+    });
+
+    await captured.onResult?.(succeededResult("Checked every topic.\n\n- No active rows.\n\nNOTHING_TO_REPORT"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(notifyDestination).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("NOTHING_TO_REPORT"), { jobId: "j" });
+  });
+
   it("skips and warns when destination inference has zero or multiple candidates", async () => {
     const warn = vi.fn();
     const notifyDestination = vi.fn(async () => ({ delivered: true }));
