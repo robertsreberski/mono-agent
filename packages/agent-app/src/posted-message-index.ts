@@ -122,11 +122,28 @@ export interface PostedMessageEntry {
   readonly conversationId: string;
   /** ISO timestamp of when the entry was written. */
   readonly writtenAt: string;
+  /**
+   * The SEND this post belongs to — the `ts` of its first message. Present only
+   * on the trailing chunks of a message Slack forced us to split, so several
+   * chunks of one send count as one claim on the producing conversation rather
+   * than as competing posts. Absent (and therefore equal to `ts`) for every
+   * ordinary single-message post.
+   */
+  readonly groupId?: string;
 }
 
 /** The single index-file path both producer and consumer agree on. */
 export function resolvePostedMessageIndexPath(artifactDir: string): string {
   return join(artifactDir, POSTED_MESSAGE_INDEX_FILENAME);
+}
+
+/**
+ * Identity of the SEND an entry came from. Chunks of one split post share their
+ * first message's ts; everything else is its own send. A space separates the
+ * two halves because neither a channel id nor a Slack ts can contain one.
+ */
+function sendKeyFor(entry: PostedMessageEntry): string {
+  return `${entry.channelId} ${entry.groupId ?? entry.ts}`;
 }
 
 /** Strip a trailing daily-rollover bucket so the stored id is the base producing id. */
@@ -148,7 +165,7 @@ export function basePostedConversationId(conversationId: string): string {
  */
 export async function appendPostedMessage(
   indexPath: string,
-  entry: { channelId: string; ts: string; conversationId: string },
+  entry: { channelId: string; ts: string; conversationId: string; groupId?: string },
   now: () => Date = () => new Date(),
   maxEntries: number = DEFAULT_COMPACT_MAX_ENTRIES,
   compactionHooks: PostedMessageIndexCompactionHooks = {},
@@ -159,11 +176,14 @@ export async function appendPostedMessage(
   if (channelId.length === 0 || ts.length === 0 || conversationId.length === 0) {
     return;
   }
+  // Written only for a trailing chunk, so an ordinary post's line is unchanged.
+  const groupId = entry.groupId?.trim();
   const record: PostedMessageEntry = {
     channelId,
     ts,
     conversationId,
     writtenAt: now().toISOString(),
+    ...(groupId === undefined || groupId.length === 0 || groupId === ts ? {} : { groupId }),
   };
   const line = `${JSON.stringify(record)}\n`;
   const cap = normalizedAppendCap(maxEntries);
@@ -211,8 +231,10 @@ export async function appendPostedMessage(
 
 /**
  * Resolve the producing conversationId for a posted message, newest write wins.
- * Returns `undefined` when the file is missing or has no matching entry, so the
- * caller falls back to the default (a fresh `slack:` conversation) — no regression.
+ * Returns `undefined` when the file is missing, has no matching entry, or maps
+ * several posts onto the matched conversation (an ambiguous alias is no alias —
+ * see below), so the caller falls back to the default (a fresh `slack:`
+ * conversation) — no regression.
  */
 export async function lookupProducingConversation(
   indexPath: string,
@@ -235,7 +257,27 @@ export async function lookupProducingConversation(
         match = entry;
       }
     }
-    return match?.conversationId;
+    if (match === undefined) {
+      return undefined;
+    }
+    // An alias only means anything while it is one-to-one. Several SENDS recorded
+    // against ONE producing conversation — every cron card delivered to the same
+    // channel, say — would otherwise collapse all of their threads onto that
+    // conversation: one session, one admission queue, one live-input mailbox, so a
+    // message typed in one thread can be steered into a run belonging to another.
+    // When the mapping is ambiguous the caller falls back to the thread-scoped
+    // default, trading history continuity for thread isolation.
+    //
+    // Counted per send, not per message: the chunks Slack forced one oversized
+    // post to split into are one claim, and a reply under any of them resumes the
+    // producer as it always has.
+    const wantSend = sendKeyFor(match);
+    for (const entry of entries) {
+      if (entry.conversationId === match.conversationId && sendKeyFor(entry) !== wantSend) {
+        return undefined;
+      }
+    }
+    return match.conversationId;
   });
 }
 
@@ -1519,11 +1561,13 @@ function parseEntry(line: string): PostedMessageEntry | undefined {
   if (channelId === undefined || ts === undefined || conversationId === undefined) {
     return undefined;
   }
+  const groupId = stringField(record.groupId);
   return {
     channelId,
     ts,
     conversationId,
     writtenAt: stringField(record.writtenAt) ?? "",
+    ...(groupId === undefined ? {} : { groupId }),
   };
 }
 

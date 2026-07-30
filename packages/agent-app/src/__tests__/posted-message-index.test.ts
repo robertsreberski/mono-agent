@@ -153,6 +153,66 @@ describe("posted-message-index", () => {
     expect(await lookupProducingConversation(indexPath, "C1", "1.1")).toBeUndefined();
   });
 
+  it("declines an alias shared by several posts so their threads stay isolated", async () => {
+    // The shape a channel of proactive cards used to produce: every post recorded
+    // against one destination conversation.
+    await appendPostedMessage(indexPath, { channelId: "C1", ts: "1.1", conversationId: "slack:C1" });
+    await appendPostedMessage(indexPath, { channelId: "C1", ts: "2.2", conversationId: "slack:C1" });
+
+    expect(await lookupProducingConversation(indexPath, "C1", "1.1")).toBeUndefined();
+    expect(await lookupProducingConversation(indexPath, "C1", "2.2")).toBeUndefined();
+  });
+
+  it("declines an alias shared across channels too", async () => {
+    await appendPostedMessage(indexPath, { channelId: "C1", ts: "1.1", conversationId: "scheduled-scan" });
+    await appendPostedMessage(indexPath, { channelId: "C2", ts: "1.1", conversationId: "scheduled-scan" });
+
+    expect(await lookupProducingConversation(indexPath, "C1", "1.1")).toBeUndefined();
+  });
+
+  it("still resolves an alias that only one post claims", async () => {
+    await appendPostedMessage(indexPath, { channelId: "C1", ts: "1.1", conversationId: "scheduled-scan" });
+    await appendPostedMessage(indexPath, { channelId: "C1", ts: "2.2", conversationId: "other-producer" });
+
+    expect(await lookupProducingConversation(indexPath, "C1", "1.1")).toBe("scheduled-scan");
+    expect(await lookupProducingConversation(indexPath, "C1", "2.2")).toBe("other-producer");
+  });
+
+  it("treats the chunks of one split send as one claim", async () => {
+    // An oversized SlackSendMessage posts as several messages; they all carry the
+    // first chunk's ts as their groupId, so the alias survives.
+    await appendPostedMessage(indexPath, { channelId: "C1", ts: "1.1", conversationId: "scheduled-scan", groupId: "1.1" });
+    await appendPostedMessage(indexPath, { channelId: "C1", ts: "2.2", conversationId: "scheduled-scan", groupId: "1.1" });
+
+    expect(await lookupProducingConversation(indexPath, "C1", "1.1")).toBe("scheduled-scan");
+    expect(await lookupProducingConversation(indexPath, "C1", "2.2")).toBe("scheduled-scan");
+  });
+
+  it("declines when a second send joins an already-chunked producer", async () => {
+    await appendPostedMessage(indexPath, { channelId: "C1", ts: "1.1", conversationId: "scheduled-scan", groupId: "1.1" });
+    await appendPostedMessage(indexPath, { channelId: "C1", ts: "2.2", conversationId: "scheduled-scan", groupId: "1.1" });
+    await appendPostedMessage(indexPath, { channelId: "C1", ts: "3.3", conversationId: "scheduled-scan" });
+
+    expect(await lookupProducingConversation(indexPath, "C1", "1.1")).toBeUndefined();
+    expect(await lookupProducingConversation(indexPath, "C1", "3.3")).toBeUndefined();
+  });
+
+  it("omits groupId from the stored line for an ordinary single-message post", async () => {
+    await appendPostedMessage(indexPath, { channelId: "C1", ts: "1.1", conversationId: "conv-a", groupId: "1.1" });
+
+    const [line] = (await readFile(indexPath, "utf8")).trim().split("\n");
+    expect(JSON.parse(line ?? "{}")).not.toHaveProperty("groupId");
+  });
+
+  it("treats a rewritten (channel, ts) as one claim, not an ambiguous alias", async () => {
+    // Newest-write-wins already collapses these to a single logical entry; the
+    // superseded row must not make its own conversation look contested.
+    await appendPostedMessage(indexPath, { channelId: "C1", ts: "1.1", conversationId: "conv-a" }, at("2026-06-22T10:00:00Z"));
+    await appendPostedMessage(indexPath, { channelId: "C1", ts: "1.1", conversationId: "conv-b" }, at("2026-06-22T11:00:00Z"));
+
+    expect(await lookupProducingConversation(indexPath, "C1", "1.1")).toBe("conv-b");
+  });
+
   it("skips malformed lines but still returns valid ones", async () => {
     await writeFile(
       indexPath,

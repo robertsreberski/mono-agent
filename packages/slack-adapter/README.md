@@ -137,13 +137,22 @@ block or replace the final answer.
 ### Live follow-up steering
 
 When the responder exposes live input, another plain-text message in the same
-Slack conversation while a turn is running is offered to that active provider
-run and acknowledged with 👀. Commands, pending `AskUser` replies, and messages
-with files retain their existing paths. The adapter reserves the follow-up's
-ordinary queue position before offering it: if the provider is unsupported, the
-run ends first, or delivery fails, the exact message runs next as a normal turn.
-Applied guidance does not create a second assistant response. Provider
-acknowledgement adds the completed `↪️ Steered` activity described above.
+Slack **thread** while a turn is running is offered to that active provider run
+and acknowledged with 👀. Commands, pending `AskUser` replies, and messages with
+files retain their existing paths. The adapter reserves the follow-up's ordinary
+queue position before offering it: if the provider is unsupported, the run ends
+first, or delivery fails, the exact message runs next as a normal turn. Applied
+guidance does not create a second assistant response. Provider acknowledgement
+adds the completed `↪️ Steered` activity described above.
+
+An offer is made only from the thread that owns the active run. Two physical
+threads can still resolve to one conversation — a threaded proactive post, or a
+recorded producing-conversation alias — and serializing them there is correct
+because they share a session, but steering across them is not: it would fold a
+message typed in one thread into a run streaming into another, leaving its
+sender with a reaction instead of an answer. A run from a different thread, and
+any cron or proactive run, is therefore never offered an inbound message; it
+runs as its own queued turn and answers in its own thread.
 
 ### Model and effort controls
 
