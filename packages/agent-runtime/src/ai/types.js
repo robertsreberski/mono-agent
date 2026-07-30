@@ -147,7 +147,8 @@
  * @property {boolean} [fastMode]
  * @property {string} [cwd]
  * @property {Object<string, Object>} [mcpServers]
- * @property {ReadonlyArray<Object>} [skills]             Runtime skill metadata for progressive disclosure.
+ * @property {ReadonlyArray<{name: string, description?: string}>} [skills] Skills disclosed to this run, as `{name, description}`. Non-empty makes `supports_skills` a routing requirement (see router.js), so a chain entry that lacks it is skipped.
+ * @property {string} [skillsRoot]                       Directory holding `<name>/SKILL.md`. Required alongside `skills` for `ReadSkill` to be built.
  * @property {ReadonlyArray<string>} [allowedTools]
  * @property {ReadonlyArray<string>} [disallowedTools]
  * @property {string} [permissionMode]

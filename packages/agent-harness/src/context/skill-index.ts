@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { ContextValidationError } from './errors.js';
 import { fileReadError, resolveRequiredPath } from './fs-paths.js';
 import { normalizeInlineText } from './text.js';
-import type { SkillIndexEntry } from './types.js';
+import type { SkillIndexEntry, SkillIndexSummary } from './types.js';
 
 const READ_SKILL_GUIDANCE =
   "When a skill applies, call `ReadSkill` with its name before acting in that domain. Do not use `Read` to open a skill's `SKILL.md`; reserve ordinary file reads for files referenced by the loaded skill.";
@@ -98,12 +98,32 @@ export function renderSkillIndex(
   return renderSkillIndexEntries(buildSkillIndex(entries), skillDisclosure);
 }
 
+/**
+ * Takes `SkillIndexSummary` rather than `SkillIndexEntry` because rendering only
+ * ever reads `name` and `description`. Widening the parameter is what lets a
+ * caller holding runtime-options entries (which carry no `mainFile`) render the
+ * same index the context builder does. Existing callers passing full entries are
+ * unaffected.
+ */
 export function renderSkillIndexEntries(
-  entries: readonly SkillIndexEntry[],
+  entries: readonly SkillIndexSummary[],
   skillDisclosure?: 'index' | 'full',
 ): string {
   const index = entries.map((entry) => `- **${entry.name}** — ${entry.description}`).join('\n');
   return skillDisclosure === 'index' ? `${READ_SKILL_GUIDANCE}\n\n${index}` : index;
+}
+
+/**
+ * The whole `## Skill Index` section, heading included.
+ *
+ * Exists so a caller outside the context builder — the subagent path in
+ * agent-app, which composes a child prompt without going through the harness —
+ * cannot drift from the section heading `buildAgentContext` emits. Disclosure is
+ * fixed to `index`: inlining bodies into a child is the cost this exists to
+ * avoid, so `ReadSkill` guidance always belongs with it.
+ */
+export function renderSkillIndexSection(entries: readonly SkillIndexSummary[]): string {
+  return `## Skill Index\n\n${renderSkillIndexEntries(entries, 'index')}`;
 }
 
 function normalizeSkillEntry(entry: SkillIndexEntry, index: number): SkillIndexEntry {

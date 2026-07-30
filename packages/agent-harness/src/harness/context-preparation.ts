@@ -7,6 +7,7 @@ import type {
   ContextBlockInput,
   HistoryMessage,
   SkillIndexEntry,
+  SkillIndexSummary,
 } from "../context/index.js";
 import type { AgentHarnessOptions, AgentHarnessRequest } from "../types.js";
 import type { SkillsCache } from "../skills/index.js";
@@ -26,7 +27,7 @@ export async function prepareHarnessContext(
 ): Promise<{
   readonly context: BuiltAgentContext;
   readonly memory: ContextBlockInput | undefined;
-  readonly skillDisclosureNames: readonly string[];
+  readonly skillDisclosureEntries: readonly SkillIndexSummary[];
   readonly history: readonly HistoryMessage[];
   readonly historyOmitted: boolean;
   readonly historyAsMessages: boolean;
@@ -65,11 +66,11 @@ export async function prepareHarnessContext(
     // 'full' mode (the default) keeps today's behavior (selectedSkills bodies
     // inlined up front) and does NOT add ReadSkill. Names load only when a
     // skillsRoot is set.
-    const skillDisclosureNames = await loadSkillDisclosureNames(options);
+    const skillDisclosureEntries = await loadSkillDisclosureEntries(options);
     return {
       context,
       memory,
-      skillDisclosureNames,
+      skillDisclosureEntries,
       history,
       historyOmitted: contextOptions.historyMode === "omitted",
       historyAsMessages: contextOptions.historyMode === "messages",
@@ -77,15 +78,21 @@ export async function prepareHarnessContext(
 }
 
 /**
- * Discovers the skill names the ReadSkill tool may load for progressive
- * disclosure. Full disclosure and absent roots deliberately expose no tool.
+ * Discovers the skills the ReadSkill tool may load for progressive disclosure.
+ * Full disclosure and absent roots deliberately expose no tool.
+ *
+ * Descriptions ride along with the names because these entries are also what a
+ * subagent inherits (see the subagent run in agent-app): a child needs to render
+ * its own index, and a bare name list cannot say what any skill is for. Only
+ * name and description cross over — `mainFile` is an absolute host path and is
+ * dropped here so it never reaches run options or a prompt built from them.
  */
-async function loadSkillDisclosureNames(options: AgentHarnessOptions): Promise<readonly string[]> {
+async function loadSkillDisclosureEntries(options: AgentHarnessOptions): Promise<readonly SkillIndexSummary[]> {
     if ((options.skillDisclosure ?? "full") !== "index" || options.skillsRoot === undefined) {
       return [];
     }
     const entries = await loadSkillIndexFromDirectory(options.skillsRoot);
-    return entries.map((entry) => entry.name);
+    return entries.map((entry) => ({ name: entry.name, description: entry.description }));
 }
 
 export async function loadHarnessHistory(

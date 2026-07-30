@@ -331,5 +331,33 @@ describe("createRuntime subagent seam", () => {
 
     expect(executeMock.mock.calls[0][1]).toMatchObject({ sandboxPolicy, sandboxEngine: { id: "srt" } });
   });
+
+  it("forwards the parent's skill context to a bare-kernel child", async () => {
+    // Same reasoning as the sandbox policy: these are per-run options, so a child
+    // that does not receive them gets no index and — since ReadSkill is only built
+    // when `skills` is non-empty — no way to read one either. Without this the bug
+    // is merely relocated from the host path down to the kernel default.
+    executeMock.mockResolvedValue({ text: "ok", events: [] });
+    const runtime = createRuntime();
+    await runtime.run("parent", { model, subagents });
+    const childRun = executeMock.mock.calls[0][1].subagents.run;
+
+    executeMock.mockClear();
+    const skills = [{ name: "research", description: "Reads the web." }];
+    await childRun({
+      systemPrompt: "s",
+      prompt: "p",
+      definition: { name: "researcher", allowedTools: ["Read"] },
+      model,
+      maxTurns: 3,
+      depth: 1,
+      skills,
+      skillsRoot: "/repo/skills",
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    });
+
+    expect(executeMock.mock.calls[0][1]).toMatchObject({ skills, skillsRoot: "/repo/skills" });
+  });
 });
 });
