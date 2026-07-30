@@ -855,6 +855,17 @@ export class SlackAdapter {
   /** The same controllers indexed by resolved conversation for cross-thread aliases. */
   private readonly activeControllersByConversation = new Map<string, Set<AbortController>>();
   /**
+   * The run key currently holding a conversation, for as long as its responder
+   * call is in flight — the physical Slack thread for an inbound turn, or a
+   * `proactive:` key for a top-level post that has no user thread at all.
+   *
+   * Two threads can still resolve to ONE conversationId — a threaded proactive
+   * post, or a recorded alias — and serializing them there is correct, because
+   * they share a session. Steering across them is not: it would fold a message
+   * typed in one thread into a run streaming into another.
+   */
+  private readonly activeRunKeyByConversation = new Map<string, string>();
+  /**
    * Per-conversation admission queue. Socket Mode dispatches envelopes
    * concurrently, and pre-submit work (status + file download) is variable
    * latency, so without this a later same-thread message could reach
@@ -1175,6 +1186,7 @@ export class SlackAdapter {
       && event.files.length === 0
       && this.responder.offerLiveInput !== undefined
       && !queue.full
+      && this.liveInputAllowedFrom(conversationId, event)
     ) {
       const decision = createDeferred<"run" | "skip">();
       const reserved = queue.run(async () => {
@@ -2338,17 +2350,18 @@ export class SlackAdapter {
   /**
    * Build the stream options shared by both proactive delivery paths
    * ({@link runProactiveTurn} and {@link runVerbatimDelivery}): a threaded post
-   * targets the existing thread; a top-level post records its ts → this
-   * conversation so a user's in-thread reply resolves back here.
+   * targets the existing thread; a top-level post announces the thread root it
+   * opens through `onThreadRootPosted`, and the caller decides which conversation
+   * that thread belongs to so a user's in-thread reply resolves there.
    */
   private buildProactiveStreamOptions(
-    conversationId: string,
     channelId: SlackChannelId,
     threadTs: SlackMessageTs | undefined,
     controller: AbortController,
     deliveryKey?: string,
     silent?: boolean,
     onAnswerReceipt?: (ref: { readonly ts: SlackMessageTs; readonly channel: SlackChannelId }) => void,
+    onThreadRootPosted?: (ts: SlackMessageTs, channel: SlackChannelId) => void,
   ): SlackMessageStreamOptions {
     const streamOptions: SlackMessageStreamOptions = {
       api: this.api,
@@ -2364,16 +2377,18 @@ export class SlackAdapter {
     if (threadTs !== undefined) {
       streamOptions.threadTs = threadTs;
     }
-    if (this.recordPostedMessage !== undefined) {
-      // A top-level proactive post is a fresh thread root with no prior history.
-      // Record its ts → this conversation so a user's in-thread reply resolves
-      // back here (the threaded case already shares the thread's conversationId).
-      const record = this.recordPostedMessage;
-      let recorded = false;
+    if (onThreadRootPosted !== undefined) {
+      // A top-level proactive post creates a fresh thread root. Announce the FIRST
+      // posted message of the delivery — the one every later reply threads off —
+      // and let the caller decide which conversation that thread belongs to; the
+      // answer differs by delivery mode (see runVerbatimDelivery and
+      // runProactiveTurn). A threaded post already shares the thread's
+      // conversationId, so it is not a root and is never announced.
+      let announced = false;
       streamOptions.onPosted = ({ ts, channel }) => {
-        if (threadTs === undefined && record !== undefined && !recorded && ts.length > 0) {
-          recorded = true;
-          record(channel, ts, conversationId);
+        if (threadTs === undefined && !announced && ts.length > 0) {
+          announced = true;
+          onThreadRootPosted(ts, channel);
         }
       };
     }
@@ -2405,8 +2420,10 @@ export class SlackAdapter {
   /**
    * Deliver `text` VERBATIM to a Slack destination: post it unchanged through the
    * normal stream with NO model call (the producing cron/webhook run already wrote
-   * the message), then record it to the destination's durable history via the
-   * responder so a later reply resumes with it in context. Best-effort: a
+   * the message), then record it to durable history via the responder so a later
+   * reply resumes with it in context. A top-level post records against the thread
+   * it just opened rather than the destination, so each card is its own
+   * conversation; a threaded post stays on the destination. Best-effort: a
    * history-record failure never fails an already-delivered post.
    */
   private async runVerbatimDelivery(
@@ -2420,8 +2437,9 @@ export class SlackAdapter {
     silent?: boolean,
   ): Promise<SlackNotifyResult> {
     let answerReceipt: { readonly ts: SlackMessageTs; readonly channel: SlackChannelId } | undefined;
+    // Set once the top-level post lands: the conversation this card OWNS.
+    let threadRootConversationId: string | undefined;
     const streamOptions = this.buildProactiveStreamOptions(
-      conversationId,
       channelId,
       threadTs,
       controller,
@@ -2429,6 +2447,16 @@ export class SlackAdapter {
       silent,
       (ref) => {
         answerReceipt = ref;
+      },
+      (ts, channel) => {
+        // Each top-level verbatim post owns the thread it just opened. Recording
+        // the DESTINATION id here instead would alias every post delivered to the
+        // channel onto one conversation — several cron cards in one channel would
+        // collapse their threads into a single session, admission queue, and
+        // live-input mailbox, and a reply in one card's thread would be steered
+        // into a run belonging to another's.
+        threadRootConversationId = `slack:${channel}:${ts}`;
+        this.recordPostedMessage?.(channel, ts, threadRootConversationId);
       },
     );
     const stream = new SlackMessageStream(streamOptions);
@@ -2467,7 +2495,10 @@ export class SlackAdapter {
           historyErrorCode = "history_record_unavailable";
         } else {
           await this.responder.deliverVerbatim(
-            conversationId,
+            // The card's own conversation when it opened a thread, so a reply in
+            // that thread resumes with exactly this card in context. A threaded
+            // delivery has no root of its own and stays on the destination.
+            threadRootConversationId ?? conversationId,
             text,
             deliveryKey === undefined ? undefined : { idempotencyKey: deliveryKey },
           );
@@ -2506,7 +2537,6 @@ export class SlackAdapter {
   ): Promise<SlackNotifyResult> {
     let answerReceipt: { readonly ts: SlackMessageTs; readonly channel: SlackChannelId } | undefined;
     const streamOptions = this.buildProactiveStreamOptions(
-      conversationId,
       channelId,
       threadTs,
       controller,
@@ -2514,6 +2544,14 @@ export class SlackAdapter {
       silent,
       (ref) => {
         answerReceipt = ref;
+      },
+      (ts, channel) => {
+        // Unlike a verbatim card, this answer came from a real turn on the
+        // DESTINATION conversation and its history lives there, so that is what a
+        // reply in this thread should resume. When several such posts share one
+        // destination the mapping stops being one-to-one; the index resolves that
+        // by declining an ambiguous alias rather than collapsing the threads.
+        this.recordPostedMessage?.(channel, ts, conversationId);
       },
     );
     const stream = new SlackMessageStream(streamOptions);
@@ -2541,6 +2579,10 @@ export class SlackAdapter {
         },
       };
       let response: AgentResponse;
+      // A top-level proactive run holds a `proactive:` key that matches no Slack
+      // thread, so an inbound reply in an aliased thread cannot steer it; a
+      // threaded one holds that thread's key, where steering is the user's own.
+      this.activeRunKeyByConversation.set(conversationId, runKey);
       try {
         response = await this.responder.respond(request, stream);
       } catch (error) {
@@ -2589,6 +2631,7 @@ export class SlackAdapter {
           : { deliveryId: `slack:${answerReceipt.channel}:${answerReceipt.ts}` }),
       };
     } finally {
+      this.releaseConversationClaim(conversationId, runKey);
       this.unregisterController(runKey, conversationId, controller);
     }
   }
@@ -2830,6 +2873,25 @@ export class SlackAdapter {
     }
   }
 
+  /**
+   * Whether a message may join the active run as live input instead of running as
+   * its own turn.
+   *
+   * Only when that run is this message's OWN — same physical Slack thread. When
+   * two threads resolve to one conversation they share the harness session and
+   * its single live-input mailbox, so an offer from the other thread would be
+   * applied to a run that is streaming somewhere else, and its sender would get
+   * an acknowledgement reaction instead of an answer. A cron/proactive run holds
+   * a `proactive:` key that matches no thread, so an inbound message can never
+   * steer one. Falling through to the queued path costs a wait and answers in the
+   * right thread. With no run active the responder reports `inactive` anyway, so
+   * this stays out of the way.
+   */
+  private liveInputAllowedFrom(conversationId: string, event: SlackTextEvent): boolean {
+    const active = this.activeRunKeyByConversation.get(conversationId);
+    return active === undefined || active === runKeyFor(event);
+  }
+
   private async respondToEvent(
     event: SlackTextEvent,
     text: string,
@@ -2910,6 +2972,10 @@ export class SlackAdapter {
         turnContext,
       );
       this.applyRuntimeSelection(event, request.metadata.slack);
+      // Claim the conversation for this thread for the duration of the run, so a
+      // message arriving in a different thread that resolves here cannot be
+      // steered into it (see liveInputAllowedFrom).
+      this.activeRunKeyByConversation.set(conversationId, runKey);
       const response = await this.responder.respond(request, stream);
 
       if (controller.signal.aborted) {
@@ -2942,6 +3008,17 @@ export class SlackAdapter {
       return { kind: "error", eventId: event.eventId, channelId: event.channelId, error };
     } finally {
       this.unregisterController(runKey, conversationId, controller);
+      this.releaseConversationClaim(conversationId, runKey);
+    }
+  }
+
+  /**
+   * Identity-checked release: a turn that never claimed the conversation, or one
+   * whose claim a later run already took over, must not free someone else's.
+   */
+  private releaseConversationClaim(conversationId: string, runKey: string): void {
+    if (this.activeRunKeyByConversation.get(conversationId) === runKey) {
+      this.activeRunKeyByConversation.delete(conversationId);
     }
   }
 
