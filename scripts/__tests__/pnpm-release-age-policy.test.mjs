@@ -447,8 +447,8 @@ describe("pnpm release-age policy", () => {
     const ciVerifyJob = ci.split("\n  website:")[0];
     for (const workflow of [ciVerifyJob, release]) {
       expect(workflow).toContain([
-        "      - name: Enable Corepack",
-        "        run: corepack enable",
+        "      - name: Install pinned pnpm",
+        `        run: npm install --global pnpm@${pinnedPnpmVersion(packageJson.packageManager)}`,
         "",
         "      - name: Check pnpm release-age policy",
         "        run: node scripts/pnpm-release-age-policy.mjs",
@@ -463,7 +463,40 @@ describe("pnpm release-age policy", () => {
     expect(websiteJob).not.toContain("scripts/pnpm-release-age-policy.mjs");
     expect(verifyAll).toContain('{ label: "check:pnpm-policy"');
   });
+
+  it("pins one exact pnpm across both manifests and every workflow install", async () => {
+    const packageJson = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8"));
+    const websitePackageJson = JSON.parse(await readFile(join(repoRoot, "website/package.json"), "utf8"));
+    const workflows = await Promise.all(
+      [".github/workflows/ci.yml", ".github/workflows/npm-release.yml"]
+        .map(async (path) => ({ path, source: await readFile(join(repoRoot, path), "utf8") })),
+    );
+
+    // Corepack pinned nothing here (no packageManager field existed), so `corepack enable` fetched
+    // whatever pnpm npm had published most recently — including into the publish lane. The pin
+    // replaces it, and the pin is only worth anything while every copy of it agrees.
+    expect(packageJson.packageManager).toMatch(/^pnpm@\d+\.\d+\.\d+\+sha512\.[a-f\d]{128}$/u);
+    expect(websitePackageJson.packageManager).toBe(packageJson.packageManager);
+
+    const expectedInstall = `run: npm install --global pnpm@${pinnedPnpmVersion(packageJson.packageManager)}`;
+    for (const { path, source } of workflows) {
+      const installs = source.match(/run: npm install --global pnpm@\S+/gu) ?? [];
+      expect(installs.length, `${path} must install the pinned pnpm`).toBeGreaterThan(0);
+      for (const install of installs) {
+        expect(install, `${path} pnpm install must match packageManager`).toBe(expectedInstall);
+      }
+      expect(source, `${path} must not reintroduce corepack`).not.toMatch(/corepack/iu);
+    }
+  });
 });
+
+function pinnedPnpmVersion(packageManager) {
+  const match = /^pnpm@(\d+\.\d+\.\d+)(?:\+|$)/u.exec(packageManager ?? "");
+  if (match === null) {
+    throw new Error(`Root packageManager must pin an exact pnpm version, got ${packageManager}.`);
+  }
+  return match[1];
+}
 
 function validate(overrides = {}) {
   return validatePnpmReleaseAgePolicy({
