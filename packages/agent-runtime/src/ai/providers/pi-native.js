@@ -481,7 +481,6 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // external abort handler (which sets runState.externalAbort and aborts the
     // harness). Sets runState.harness + runState.removeAbortHandler.
     harness = buildTurnHarness(runState, {
-      cwd: options.cwd,
       session: runState.session,
       piModels,
       model: runtime.model,

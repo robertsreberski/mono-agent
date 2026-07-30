@@ -345,10 +345,10 @@ describe("release graph validation", () => {
       throw new Error("validateRelease did not reject floating Pi dependencies");
     } catch (error) {
       expect(error.issues).toEqual([
-        "@mono-agent/agent-app dependencies.@earendil-works/pi-ai must pin known-compatible version 0.80.6 exactly; found ^0.80.6",
-        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-agent-core must pin known-compatible version 0.80.6 exactly; found ~0.80.6",
-        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-ai must pin known-compatible version 0.80.6 exactly; found 0.80.8",
-        "@mono-agent/tui dependencies.@earendil-works/pi-tui must pin known-compatible version 0.79.10 exactly; found ^0.79.1",
+        "@mono-agent/agent-app dependencies.@earendil-works/pi-ai must pin known-compatible version 0.83.0 exactly; found ^0.80.6",
+        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-agent-core must pin known-compatible version 0.83.0 exactly; found ~0.80.6",
+        "@mono-agent/agent-runtime dependencies.@earendil-works/pi-ai must pin known-compatible version 0.83.0 exactly; found 0.80.8",
+        "@mono-agent/tui dependencies.@earendil-works/pi-tui must pin known-compatible version 0.83.0 exactly; found ^0.79.1",
       ]);
     }
   });
@@ -601,10 +601,11 @@ describe("current launch manifest", () => {
     expect(guidance).toContain(
       `packages/agent-runtime\`: \`@earendil-works/pi-ai\` + \`pi-agent-core\` at \`${piAi}\``,
     );
-    expect(guidance).toContain(
-      `packages/tui\`: \`@earendil-works/pi-tui\` at \`${piTui}\` — **intentionally behind**`,
-    );
-    expect(guidance).toContain("the 0.80 pi-tui API breaks the TUI");
+    // pi-tui is no longer held behind the runtime pair; the guidance now has to
+    // carry the interactive-verification caveat instead of the old rationale.
+    expect(guidance).toContain(`packages/tui\`: \`@earendil-works/pi-tui\` at \`${piTui}\``);
+    expect(piTui).toBe(piAi);
+    expect(guidance).toContain("verify the console interactively");
     expect(migration).toContain(
       `@earendil-works/pi-ai\` and \`@earendil-works/pi-agent-core\` are now \`${piAi}\``,
     );

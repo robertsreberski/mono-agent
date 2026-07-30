@@ -6,8 +6,12 @@ import { isIP } from "node:net";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import type { KnownProvider as PiBuiltinProvider } from "@earendil-works/pi-ai";
+// `BuiltinProvider`, not the root `KnownProvider`: since pi-ai 0.83.0 the
+// latter also covers purely dynamic providers (e.g. "radius") that have no
+// generated catalog entry, so it no longer keys `getBuiltinModels`. This guard
+// is built from `getBuiltinProviders()`, which is exactly the catalog set.
 import {
+  type BuiltinProvider as PiBuiltinProvider,
   getBuiltinModels as getPiBuiltinModels,
   getBuiltinProviders as getPiBuiltinProviders,
 } from "@earendil-works/pi-ai/providers/all";

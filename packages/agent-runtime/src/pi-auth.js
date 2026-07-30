@@ -4,7 +4,7 @@ import { realpathSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
-import { getOAuthApiKey } from "@earendil-works/pi-ai/oauth";
+import { resolveOAuthApiKey } from "./ai/pi-oauth-compat.js";
 
 /**
  * @typedef {{type: "api_key", key?: string, env?: Object<string, *>}} PiApiKeyCredential
@@ -41,7 +41,7 @@ export function createPiOAuthApiKeyResolver(options = {}) {
         return undefined;
       }
 
-      const result = await getOAuthApiKey(provider, cloneAuth(auth));
+      const result = await resolveOAuthApiKey(provider, cloneAuth(auth));
       if (result === null || result === undefined || typeof result.apiKey !== "string" || result.apiKey.length === 0) {
         return undefined;
       }

@@ -153,7 +153,8 @@ describe("tui channel driver — info composition", () => {
     });
     const info = await resolveInfo(captured);
 
-    expect(info.modelOptions?.["codex:gpt-5.6-sol"]?.contextWindow).toBe(372_000);
+    // Sourced from pi's generated catalog, corrected to 272_000 in pi-ai 0.83.0.
+    expect(info.modelOptions?.["codex:gpt-5.6-sol"]?.contextWindow).toBe(272_000);
     expect(info.modelOptions?.["pi:openai-codex:gpt-5.5"]?.contextWindow).toBe(16_384);
     expect(info.modelOptions?.["pi:openai-codex:gpt-5.6-terra"]?.contextWindow).toBe(32_768);
     expect(info.modelOptions?.["pi:openai-codex:gpt-5.4"]).not.toHaveProperty("contextWindow");

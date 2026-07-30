@@ -16,9 +16,9 @@ let isolatedPort;
 let manualInputs = 0;
 let tokenExchangeAttempts = 0;
 
-// Pi 0.80.5 owns the callback server and hard-codes its port. Keep its real
-// server lifecycle, parser, and state validation, but isolate only that exact
-// bind so an unrelated host listener cannot preempt the contract assertion.
+// Pi owns the callback server and hard-codes its port. Keep its real server
+// lifecycle, parser, and state validation, but isolate only that exact bind so
+// an unrelated host listener cannot preempt the contract assertion.
 Server.prototype.listen = function (port, host, callback) {
   if (port !== CALLBACK_PORT || host !== CALLBACK_HOST || typeof callback !== "function") {
     return Reflect.apply(originalListen, this, arguments);
@@ -47,17 +47,25 @@ globalThis.fetch = async () => {
 
 let observedError;
 try {
-  const { loginAnthropic } = await import("@earendil-works/pi-ai/oauth");
+  // pi-ai 0.83.0 made `@earendil-works/pi-ai/oauth` type-only and made the
+  // login flows private provider implementations, so `loginAnthropic` is gone.
+  // The same real implementation is now reached through `provider.auth.oauth`,
+  // driven by the `prompt`/`notify` interaction rather than six callbacks.
+  const { builtinProviders } = await import("@earendil-works/pi-ai/providers/all");
+  const anthropicOAuth = builtinProviders().find((provider) => provider.id === "anthropic")?.auth.oauth;
+  if (anthropicOAuth === undefined) {
+    throw new Error("Pi no longer exposes an anthropic OAuth implementation");
+  }
   try {
-    await loginAnthropic({
-      onAuth: () => undefined,
-      onPrompt: async () => {
+    await anthropicOAuth.login({
+      notify: () => undefined,
+      prompt: async (prompt) => {
+        if (prompt.type === "manual_code") {
+          manualInputs += 1;
+          return WRONG_STATE_REDIRECT;
+        }
         fallbackPrompts += 1;
         throw new Error("The wrong-state fixture reached Pi's fallback prompt");
-      },
-      onManualCodeInput: async () => {
-        manualInputs += 1;
-        return WRONG_STATE_REDIRECT;
       },
     });
   } catch (error) {

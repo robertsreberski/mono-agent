@@ -42,8 +42,8 @@ the configuration schema.
   switch to `listPiBuiltinModels`, `getPiBuiltinModel`,
   `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` from
   `@mono-agent/agent-runtime/ai`. The runtime keeps Pi AI and Pi Agent Core
-  exact-pinned at `0.80.6`; the façade returns cloned model and credential
-  snapshots rather than exposing mutable upstream registries.
+  exact-pinned at `0.83.0`; the façade returns cloned model and credential
+  snapshots rather than exposing upstream provider objects.
 - **Claude test seam:** downstream tests should pass
   `RuntimeRunOptions.claudeAgentQuery` instead of mocking
   `@anthropic-ai/claude-agent-sdk` by package name. Normal runs omit this option
@@ -313,9 +313,22 @@ falls back to its own env vars, exactly as returning `undefined` from the old ho
 did). **No host action needed** — `resolvePiApiKey` behaves as before.
 
 Dependency bump: **`@earendil-works/pi-ai` and `@earendil-works/pi-agent-core` are
-now `0.80.6`** (the initial Pi 0.80 migration landed at `0.80.5`, from
-`^0.79.1`). Compaction is driven natively (section 3). The `0.80.6` refresh also
-preserves model-native `max` reasoning and Pi's request-wide pricing tiers.
+now `0.83.0`** (the initial Pi 0.80 migration landed at `0.80.5`, from
+`^0.79.1`, and ran at `0.80.6` until the 0.83 upgrade). Compaction is driven
+natively (section 3), and model-native `max` reasoning plus Pi's request-wide
+pricing tiers are preserved.
+
+The 0.83 upgrade carries two upstream removals, both absorbed inside the runtime
+so hosts need no action:
+
+- `@earendil-works/pi-ai/oauth` became a type-only entry point. The generic
+  registry (`getOAuthApiKey`, `getOAuthProvider`, `getOAuthProviders`) is gone,
+  and the per-provider flows are not importable. `src/ai/pi-oauth-compat.js`
+  rebuilds the same contracts over `provider.auth.oauth`, so `resolvePiApiKey`,
+  `resolvePiOAuthApiKey`, and `loginPiOAuth` keep their existing signatures and
+  behaviour, including the refresh-on-expiry trigger.
+- `AgentHarnessOptions.env` was removed in favour of a per-turn `toolContext`.
+  The runtime passes neither: it uses none of Pi's built-in file/shell tools.
 
 ### 11. Exports map: wildcards removed (explicit deep-path map)
 
@@ -387,14 +400,14 @@ Worklab's runtime fork:
    `@earendil-works/pi-ai`, its separate Pi version constraint, and local copies
    of provider bridge code. Move tests off Pi's faux-provider helpers too; until
    that is complete, isolate the fixture or pin its development-only Pi
-   dependency to exact `0.80.6` rather than a floating range. Do not restore the
+   dependency to exact `0.83.0` rather than a floating range. Do not restore the
    removed `pi-sdk.js` subpath.
 3. **Use the public Pi surfaces.** Run models through
    `generatePiNativeResponse` or the runtime registry. Use
    `listPiBuiltinModels`, `getPiBuiltinModel`,
    `reasoningLevelsForPiModel`, `resolvePiOAuthApiKey`, and `loginPiOAuth` for
-   catalog and OAuth integration. Those façades keep Pi mutable state and the
-   exact `0.80.6` compatibility pin inside the runtime. OAuth login adapters
+   catalog and OAuth integration. Those façades keep Pi provider objects and the
+   exact `0.83.0` compatibility pin inside the runtime. OAuth login adapters
    must supply `onAuth`, `onDeviceCode`, `onPrompt`, and `onSelect`; the façade
    rejects an incomplete callback contract before starting provider login.
 4. **Inject Claude tests.** Replace package-level mocks of

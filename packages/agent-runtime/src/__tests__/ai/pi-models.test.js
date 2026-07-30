@@ -82,7 +82,9 @@ describe("resolvePiRuntimeModel — OpenAI Codex GPT-5.6 metadata", () => {
         api: "openai-codex-responses",
         provider: "openai-codex",
         reasoning: true,
-        contextWindow: 372_000,
+        // Mirrors pi's generated catalog, which corrected this from 372_000 to
+        // 272_000 in the 0.83.0 upgrade — matching the tier boundary below.
+        contextWindow: 272_000,
         maxTokens: 128_000,
         cost: metadata.cost,
       });
