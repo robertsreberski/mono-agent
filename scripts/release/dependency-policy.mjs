@@ -4,9 +4,9 @@ import path from "node:path";
 import { DEPENDENCY_SECTIONS } from "./package-graph.mjs";
 
 export const PINNED_RUNTIME_DEPENDENCIES = Object.freeze({
-  "@earendil-works/pi-agent-core": "0.80.6",
-  "@earendil-works/pi-ai": "0.80.6",
-  "@earendil-works/pi-tui": "0.79.10",
+  "@earendil-works/pi-agent-core": "0.83.0",
+  "@earendil-works/pi-ai": "0.83.0",
+  "@earendil-works/pi-tui": "0.83.0",
 });
 
 export function releaseDependencyPinIssues(packages) {
@@ -77,7 +77,7 @@ function assertResolvedVersion({
     );
   }
 
-  // pi-agent-core@0.80.6 declares pi-ai with a compatible range. Resolve from
+  // pi-agent-core declares pi-ai with a compatible range. Resolve from
   // the core package itself so a nested, newly-published Pi AI cannot hide
   // behind the exact direct dependency in agent-runtime.
   if (name === "@earendil-works/pi-agent-core") {

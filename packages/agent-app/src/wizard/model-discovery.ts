@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { getOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type { EffortLevel } from "@mono-agent/config";
 import { discoverClaudeSdkModels } from "@mono-agent/runtime-adapter";
@@ -367,8 +366,12 @@ async function discoverPiModels(
   }
 
   const verified = new Set(opts.verifiedModelRefs ?? []);
-  const oauthProviders = new Set(getOAuthProviders().map((provider) => provider.id));
   const models = builtinModels();
+  const oauthProviders = new Set(
+    models.getProviders()
+      .filter((provider) => provider.auth.oauth !== undefined)
+      .map((provider) => provider.id),
+  );
   const providerNames = new Map(models.getProviders().map((provider) => [provider.id, provider.name]));
   const candidates = models.getModels()
     .filter((model) => GUIDED_PI_PROVIDERS.has(model.provider))

@@ -6,10 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import type {
-  OAuthLoginCallbacks,
-  OAuthProviderInterface,
-} from "@earendil-works/pi-ai/oauth";
+import type { AuthInteraction, OAuthAuth } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -45,20 +42,24 @@ describe("Pi OAuth terminal wrapper", () => {
     const questions: string[] = [];
     let received = "";
     const provider = {
-      id: "anthropic",
       name: "Anthropic",
-      usesCallbackServer: true,
-      login: vi.fn(async (callbacks: OAuthLoginCallbacks) => {
-        callbacks.onAuth({ url: "https://claude.ai/oauth/authorize?state=expected-state" });
-        received = await callbacks.onManualCodeInput!();
+      login: vi.fn(async (interaction: AuthInteraction) => {
+        interaction.notify({
+          type: "auth_url",
+          url: "https://claude.ai/oauth/authorize?state=expected-state",
+        });
+        received = await interaction.prompt({
+          type: "manual_code",
+          message: "Paste the final redirect URL",
+        });
         const parsed = new URL(received);
         if (parsed.searchParams.get("state") !== "expected-state") throw new Error("OAuth state mismatch");
         if (parsed.searchParams.get("code") === null) throw new Error("Missing authorization code");
-        return { access: "access", refresh: "refresh", expires: Date.now() + 60_000 };
+        return { type: "oauth", access: "access", refresh: "refresh", expires: Date.now() + 60_000 };
       }),
-      refreshToken: vi.fn(),
-      getApiKey: vi.fn(),
-    } as unknown as OAuthProviderInterface;
+      refresh: vi.fn(),
+      toAuth: vi.fn(),
+    } as unknown as OAuthAuth;
 
     await runPiOAuthLogin("anthropic", {
       authPath,
@@ -250,15 +251,13 @@ describe("Pi OAuth terminal wrapper", () => {
   });
 });
 
-function stubProvider(credentials: Record<string, unknown>): OAuthProviderInterface {
+function stubProvider(credentials: Record<string, unknown>): OAuthAuth {
   return {
-    id: "anthropic",
     name: "Anthropic",
-    usesCallbackServer: true,
     login: vi.fn(async () => credentials),
-    refreshToken: vi.fn(),
-    getApiKey: vi.fn(),
-  } as unknown as OAuthProviderInterface;
+    refresh: vi.fn(),
+    toAuth: vi.fn(),
+  } as unknown as OAuthAuth;
 }
 
 async function withCwd<T>(cwd: string, run: () => Promise<T>): Promise<T> {

@@ -3,7 +3,7 @@
 // directly so the runtime's known-good Pi version remains authoritative.
 
 import { getBuiltinModel, getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
-import { getOAuthApiKey, getOAuthProvider } from "@earendil-works/pi-ai/oauth";
+import { getPiOAuthAuth, resolveOAuthApiKey, toAuthInteraction } from "./pi-oauth-compat.js";
 import { reasoningLevelsForPiModel as resolveReasoningLevels } from "./providers/pi-models.js";
 
 /**
@@ -122,7 +122,7 @@ export function reasoningLevelsForPiModel(model) {
  * @returns {Promise<{apiKey: string, newCredentials: PiOAuthCredentialsSnapshot}|null>}
  */
 export async function resolvePiOAuthApiKey(providerId, credentials) {
-  const result = await getOAuthApiKey(
+  const result = await resolveOAuthApiKey(
     providerId,
     /** @type {any} */ (cloneInteropValue(credentials)),
   );
@@ -142,8 +142,8 @@ export async function resolvePiOAuthApiKey(providerId, credentials) {
  * @returns {Promise<PiOAuthCredentialsSnapshot>}
  */
 export async function loginPiOAuth(providerId, callbacks) {
-  const provider = getOAuthProvider(providerId);
-  if (!provider || typeof provider.login !== "function") {
+  const oauth = getPiOAuthAuth(providerId);
+  if (!oauth || typeof oauth.login !== "function") {
     throw new Error(`Pi OAuth provider is unavailable: ${providerId}`);
   }
   for (const callbackName of ["onAuth", "onDeviceCode", "onPrompt", "onSelect"]) {
@@ -151,6 +151,8 @@ export async function loginPiOAuth(providerId, callbacks) {
       throw new TypeError(`loginPiOAuth requires callbacks.${callbackName}()`);
     }
   }
-  const credentials = await provider.login(/** @type {any} */ ({ ...callbacks }));
+  const credentials = await oauth.login(
+    toAuthInteraction(/** @type {any} */ ({ ...callbacks })),
+  );
   return cloneInteropValue(credentials);
 }
