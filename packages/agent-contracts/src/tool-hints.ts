@@ -11,6 +11,11 @@
 import { homedir } from "node:os";
 import { types as nodeUtilTypes } from "node:util";
 
+import type { AgentStreamEvent } from "./index.js";
+
+/** The routing variant of {@link AgentStreamEvent}, narrowed for the formatter below. */
+type ProviderStatusStreamEvent = Extract<AgentStreamEvent, { type: "provider_status" }>;
+
 const BUILTIN_HINTS: Readonly<Record<string, string>> = {
   agent: "Delegating to a subagent…",
   websearch: "Searching the web…",
@@ -252,6 +257,34 @@ export function formatLiveInputActivityLine(
 ): string {
   const preview = sanitizePreview(text, "head", options);
   return preview === undefined ? "↪️ Steered" : `↪️ Steered: “${preview}”`;
+}
+
+/**
+ * Format one activity line for a provider routing transition, or `undefined`
+ * when the kind is not worth a line.
+ *
+ * Only the two transitions an operator can act on are rendered: a route change
+ * and a same-model retry. The request lifecycle is pure noise on a chat surface,
+ * and `failover_completed` is deliberately silent — the run's final answer
+ * carries the attribution, and a completion line would arrive after the answer
+ * it explains.
+ *
+ * Route references are the full `sdk:provider:model` key rather than a short
+ * name so the line can be matched against the configured chain unambiguously.
+ * These come from the router's own `modelKey()`, never from tool arguments, so
+ * no preview sanitization applies.
+ */
+export function formatProviderStatusLine(event: ProviderStatusStreamEvent): string | undefined {
+  const cause = typeof event.reason === "string" && event.reason.length > 0 ? ` (${event.reason})` : "";
+  if (event.kind === "failover_started") {
+    return `⚠️ Failed over: ${event.from ?? "?"} → ${event.to ?? "?"}${cause}`;
+  }
+  if (event.kind === "retry_started") {
+    // retryIndex is 1-based over retries; the human-facing count includes the
+    // original attempt. Matches the TUI's wording in turn-presenter.ts.
+    return `⏳ Retrying ${event.model ?? "?"} — attempt ${(event.retryIndex ?? 1) + 1}${cause}`;
+  }
+  return undefined;
 }
 
 function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
