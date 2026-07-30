@@ -28,6 +28,8 @@ JSON completion. Clients such as Open WebUI can select the streaming form. See
 
 The shared formatter maps common tool families to stable copy: web search/browse, file read/search/write/edit, shell commands, code execution, image inspection, and memory access. `ReadSkill` renders the selected skill as `📚 Reading "<skill>"` without exposing its path, and read-only `MemoryRecall` uses preview-free `🧠 Recalling memory`; memory writes use `🧠 Updating memory`, and ordinary file reads use `📖 Reading`. Unknown or MCP-qualified tools use a humanized leaf name. Consecutive identical lines collapse in place as `(×N)`; a different tool starts a new line, so only adjacent duplicates are combined.
 
+Shell previews drop a leading `cd <agent root> &&`. Every command already runs in the agent root, so the prefix is the same on every line and would spend half of the preview budget saying nothing — `cd /srv/agents/assistant && td list --json` renders as `🖥️ Running td list --json`. A `cd` to any other directory is real information and is kept, relativized against the agent root (`🖥️ Running cd packages/web && pnpm build`).
+
 #### Subagent activity
 
 An `Agent` call opens its own group in the ledger rather than adding a flat line. The launch renders as `🤖 Starting agent "researcher"`, and every tool that subagent runs is indented beneath it with `↳`:

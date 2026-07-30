@@ -95,7 +95,10 @@ answer message. Skill disclosure renders the selected skill name as
 preview-free as `🧠 Recalling memory`; memory writes and ordinary file reads
 retain their distinct `🧠 Updating memory` and `📖 Reading` families. File
 paths use suffix-weighted middle truncation so filenames survive; commands keep
-a balanced prefix and suffix. Redaction still precedes the 40-code-point cap.
+a balanced prefix and suffix. Shell previews first drop a leading
+`cd <agent root> &&`, which is constant across every command and would otherwise
+consume half the budget; a `cd` elsewhere is kept. Redaction still precedes the
+40-code-point cap.
 Applied live guidance uses the same boundary through
 `formatLiveInputActivityLine()`, producing `↪️ Steered: “…”` without exposing the
 full follow-up as tool arguments or metadata. In final-only streams, a marked
