@@ -43,6 +43,48 @@ describe("SlackWebApiClient", () => {
     expect(JSON.parse(String(init?.body))).toEqual({ channel: "C1", text: "hello" });
   });
 
+  it("reads a thread anchored at a known message through conversations.replies", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ ok: true, messages: [{ ts: "170.1", text: "root" }], has_more: false }),
+    ) as unknown as typeof fetch;
+    const client = new SlackWebApiClient({
+      botToken: BOT_TOKEN,
+      apiBaseUrl: "https://slack.example/api",
+      fetchImpl,
+      requestTimeoutMs: 0,
+    });
+
+    await expect(
+      client.conversationsReplies({
+        channelId: "C1",
+        threadTs: "170.1",
+        latest: "172.5",
+        inclusive: true,
+        limit: 15,
+      }),
+    ).resolves.toMatchObject({ ok: true, messages: [{ ts: "170.1" }] });
+
+    const [url, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
+    expect(String(url)).toBe("https://slack.example/api/conversations.replies");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      channel: "C1",
+      ts: "170.1",
+      latest: "172.5",
+      inclusive: true,
+      limit: 15,
+    });
+  });
+
+  it("omits unset window arguments from conversations.history", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ ok: true, messages: [] })) as unknown as typeof fetch;
+    const client = new SlackWebApiClient({ botToken: BOT_TOKEN, fetchImpl, requestTimeoutMs: 0 });
+
+    await client.conversationsHistory({ channelId: "C1", limit: 15 });
+
+    const [, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
+    expect(JSON.parse(String(init?.body))).toEqual({ channel: "C1", limit: 15 });
+  });
+
   it("resolves a member profile through users.info", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({ ok: true, user: { name: "alice", profile: { display_name: "Alice Chen" } } }),

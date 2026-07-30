@@ -82,7 +82,7 @@ You can enable any combination — for example Telegram for your own use plus a 
 The app builds one runtime harness per channel, and each harness holds its own concurrency limiter. The `concurrency.*` bounds therefore apply to **each** channel independently, not as a single global cap: with N enabled channels the effective ceiling is N× the configured value. See [Sessions & concurrency](/runtime/sessions-concurrency/) for `maxConcurrentRuns` / `maxPendingRuns` and the admission model.
 
 :::note
-Conversational adapters (Slack/Telegram) do per-conversation admission and attachment downloads *before* the harness run boundary, so cross-conversation transport download IO is not covered by the harness concurrency bounds (per-file byte caps and timeouts apply instead). Adapter queues are drained/aborted on `/cancel` and stop.
+Conversational adapters (Slack/Telegram) do per-conversation admission and attachment downloads *before* the harness run boundary, so cross-conversation transport download IO is not covered by the harness concurrency bounds (per-file byte caps and timeouts apply instead). Slack additionally does one bounded, best-effort context read there (speaker name plus preceding messages), raced against its own deadline so it can shorten the context but never the turn. Adapter queues are drained/aborted on `/cancel` and stop.
 :::
 
 ## Sending and proactive delivery

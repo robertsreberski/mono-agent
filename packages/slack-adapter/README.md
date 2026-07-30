@@ -204,6 +204,26 @@ the same thread is consumed as the custom answer before normal turn admission,
 so the blocked model run resumes without deadlocking. Stale actions expire and
 the configured Slack channel allowlist remains authoritative.
 
+### Thread and channel context
+
+An in-thread trigger reads that thread (`conversations.replies`); a top-level
+channel mention or a DM reads recent history (`conversations.history`). The
+result becomes the shared contract's `precedingMessages`, which the harness
+renders as a bounded, fenced, explicitly untrusted transcript and never persists.
+
+Slack caps these methods at roughly one request per minute and 15 objects for
+non-Marketplace apps, so the adapter issues **exactly one** request per admitted
+turn with no retries and no pagination, and latches a per-channel cooldown from
+`Retry-After`. Slack's docs disagree with themselves about which end `limit`
+truncates, so the replies path requests a page anchored at the trigger and
+verifies the trigger came back; an unanchored page produces no transcript rather
+than a misleading one. The whole phase is raced against `timeoutMs`, so a custom
+client that ignores `options.signal` still cannot delay a turn.
+
+The app's own posts are excluded by both user ID and `bot_id`. Other apps'
+messages are included and labelled `isBot`, since a CI bot's failure is often why
+someone pulled the agent in.
+
 ### Speaker names
 
 A Slack event identifies its sender only by user ID. That ID doubles as a DM
@@ -289,8 +309,9 @@ The request lifecycle is:
    interactivity, and slash commands; `adapter.ts` authorizes and normalizes them
    into structural agent requests with per-conversation admission and live-input
    fallback reservation. Just before a turn is submitted, `user-directory.ts`
-   resolves the speaker's model-visible name; the phase is best-effort and cannot
-   fail or delay the turn.
+   resolves the speaker's model-visible name and `thread-context.ts` selects the
+   preceding messages from one bounded conversation read; the phase is
+   best-effort, raced against its own deadline, and cannot fail or delay the turn.
 4. The host responder emits standard stream events. `message-stream.ts` converts
    them into Slack posts/updates/deletes, while `slack-markdown.ts` translates
    standard Markdown at the transport boundary.
@@ -309,6 +330,7 @@ The request lifecycle is:
 | [`message-stream.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/message-stream.ts) | Final-only delivery, transient status, retry classification, and message limits. |
 | [`slack-markdown.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/slack-markdown.ts) | Standard Markdown to Slack `mrkdwn` conversion and normalization. |
 | [`user-directory.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/user-directory.ts) | Bounded `users.info` cache turning user IDs into model-visible speaker names. |
+| [`thread-context.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/thread-context.ts) | Pure selection, bounding, and deadline logic for the preceding-message transcript. |
 | [`types.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/types.ts) | Minimal Slack wire and client contracts. |
 
 ## Public API
@@ -340,6 +362,12 @@ AgentResponse
 LoadSlackAdapterConfigInput
 SLACK_CONFIG_FIELDS
 SLACK_MAX_MESSAGE_CHARS
+SLACK_THREAD_CONTEXT_DEFAULT_MAX_MESSAGES
+SLACK_THREAD_CONTEXT_DEFAULT_REQUEST_LIMIT
+SLACK_THREAD_CONTEXT_DEFAULT_TIMEOUT_MS
+SLACK_THREAD_CONTEXT_MAX_MESSAGES_CEILING
+SLACK_THREAD_CONTEXT_RATE_LIMIT_COOLDOWN_MS
+SLACK_THREAD_CONTEXT_REQUEST_LIMIT_CEILING
 SerialQueueFullError
 SlackAdapter
 SlackAdapterConfig
@@ -370,6 +398,10 @@ SlackChatPostMessageResult
 SlackChatUpdateParams
 SlackChatUpdateResult
 SlackContinuationSynthesisInput
+SlackConversationMessage
+SlackConversationMessagesResult
+SlackConversationsHistoryParams
+SlackConversationsRepliesParams
 SlackDeliveryError
 SlackDeliveryReceipt
 SlackDeliveryReceiptListener
@@ -414,6 +446,9 @@ SlackSocketModeRunnerHeartbeatOptions
 SlackSocketModeRunnerLogger
 SlackSocketModeRunnerOptions
 SlackSocketModeRunnerStartOptions
+SlackThreadContextConfig
+SlackThreadContextOptions
+SlackThreadContextSkipReason
 SlackTriggerKind
 SlackUserId
 SlackUsersInfoParams

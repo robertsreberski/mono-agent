@@ -116,6 +116,67 @@ export interface SlackViewsPublishParams {
   view: { type: "home"; blocks: readonly unknown[]; [key: string]: unknown };
 }
 
+/**
+ * Params for `conversations.replies` — the messages of one thread.
+ *
+ * `latest` + `inclusive` are how a caller anchors the returned page at a known
+ * message. Slack's docs do not state which end `limit` truncates, so a caller
+ * that needs the NEWEST messages should verify the anchor is present in the page
+ * rather than assume.
+ */
+export interface SlackConversationsRepliesParams {
+  channelId: SlackChannelId;
+  /** The thread root (`thread_ts`). */
+  threadTs: SlackMessageTs;
+  latest?: SlackMessageTs;
+  oldest?: SlackMessageTs;
+  inclusive?: boolean;
+  /**
+   * Objects per request. Slack caps this at 15 for non-Marketplace apps created
+   * after 2025-05-29; internal apps keep the Tier 3 ceiling.
+   */
+  limit?: number;
+}
+
+/** Params for `conversations.history` — recent top-level messages in a channel. */
+export interface SlackConversationsHistoryParams {
+  channelId: SlackChannelId;
+  latest?: SlackMessageTs;
+  oldest?: SlackMessageTs;
+  inclusive?: boolean;
+  /** Objects per request; the same non-Marketplace cap as `conversations.replies`. */
+  limit?: number;
+}
+
+/**
+ * One message as returned by `conversations.history` / `conversations.replies`.
+ * Only the fields the adapter reads are typed; the rest pass through.
+ */
+export interface SlackConversationMessage {
+  type?: string;
+  subtype?: string;
+  ts?: SlackMessageTs;
+  thread_ts?: SlackMessageTs;
+  user?: SlackUserId;
+  /** Present when Slack attributes the message to an app rather than a user. */
+  bot_id?: string;
+  /** Display name Slack attaches to a `bot_message`. */
+  username?: string;
+  bot_profile?: { id?: string; name?: string; [key: string]: unknown };
+  text?: string;
+  files?: readonly SlackFile[];
+  [key: string]: unknown;
+}
+
+/** Shared result shape of `conversations.history` and `conversations.replies`. */
+export interface SlackConversationMessagesResult {
+  ok: true;
+  messages?: readonly SlackConversationMessage[];
+  has_more?: boolean;
+  response_metadata?: { next_cursor?: string; [key: string]: unknown };
+  [key: string]: unknown;
+}
+
 /** Params for `users.info` — resolve one workspace member's profile. */
 export interface SlackUsersInfoParams {
   userId: SlackUserId;
@@ -200,6 +261,25 @@ export interface SlackWebApi {
     params: SlackViewsPublishParams,
     options?: SlackRequestOptions,
   ): Promise<void>;
+  /**
+   * Optional: read one thread's messages via `conversations.replies` (needs a
+   * `*:history` scope). Used only to assemble best-effort turn context; the
+   * adapter guards before calling it and drops the context on any failure, so a
+   * text-only custom client may omit it.
+   */
+  conversationsReplies?(
+    params: SlackConversationsRepliesParams,
+    options?: SlackRequestOptions,
+  ): Promise<SlackConversationMessagesResult>;
+  /**
+   * Optional: read recent top-level channel messages via `conversations.history`.
+   * Same scope requirement and same best-effort guarding as
+   * {@link SlackWebApi.conversationsReplies}.
+   */
+  conversationsHistory?(
+    params: SlackConversationsHistoryParams,
+    options?: SlackRequestOptions,
+  ): Promise<SlackConversationMessagesResult>;
   /**
    * Optional: resolve one member's display name/handle via `users.info` (needs the
    * `users:read` scope). Used only to put a model-visible speaker name on a turn;

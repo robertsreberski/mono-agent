@@ -6,6 +6,7 @@ import {
   type ChannelAskSubmissionResult,
   type AgentContinuationTurn,
   type AgentMessageSender,
+  type AgentPrecedingMessage,
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
   type AgentResponse,
@@ -66,11 +67,27 @@ export type {
   SlackRuntimeModelOption,
   SlackRuntimeSlashCommands,
 } from "./runtime-controls.js";
+import {
+  raceAgainstDeadline,
+  resolveSlackThreadContext,
+  selectPrecedingSlackMessages,
+  SLACK_CONTEXT_DEADLINE_EXCEEDED,
+  SLACK_THREAD_CONTEXT_RATE_LIMIT_COOLDOWN_MS,
+  toAgentPrecedingMessage,
+  trimPrecedingToTotalBytes,
+  withContextDeadline,
+} from "./thread-context.js";
+import type {
+  ResolvedSlackThreadContext,
+  SlackThreadContextOptions,
+  SlackThreadContextSkipReason,
+} from "./thread-context.js";
 import { SlackUserDirectory } from "./user-directory.js";
 import type {
   SlackBlockAction,
   SlackBlockActionsPayload,
   SlackChannelId,
+  SlackConversationMessage,
   SlackEventBase,
   SlackEventCallback,
   SlackFile,
@@ -98,6 +115,8 @@ export interface AgentRequest extends AgentRequestBase {
   attachments?: readonly AgentAttachment[];
   /** Model-visible speaker identity; `sender.id` stays host-only. */
   sender?: AgentMessageSender;
+  /** Model-visible background transcript of the conversation before this turn. */
+  precedingMessages?: readonly AgentPrecedingMessage[];
   metadata: {
     slack: SlackRequestMetadata;
     [key: string]: unknown;
@@ -112,6 +131,8 @@ export interface AgentRequest extends AgentRequestBase {
 interface SlackTurnContext {
   /** The triggering user's model-visible name, when it could be resolved. */
   readonly sender?: AgentMessageSender;
+  /** What was said in this conversation before the trigger, oldest first. */
+  readonly precedingMessages?: readonly AgentPrecedingMessage[];
 }
 
 /** Tunes how inbound Slack file attachments are downloaded. */
@@ -394,6 +415,17 @@ export interface SlackAdapterOptions {
    * client method is missing, which is byte-identical to the pre-name behaviour.
    */
   resolveUserNames?: boolean;
+  /**
+   * Best-effort model-visible transcript of what was said in the conversation
+   * before the agent was triggered. Enabled by default; needs a `*:history` scope.
+   */
+  threadContext?: SlackThreadContextOptions;
+  /**
+   * This app's own `bot_id` from `auth.test`, so its own posts are recognized when
+   * reading a conversation back. `botUserIds` cannot cover messages Slack
+   * attributes to the app rather than to a user.
+   */
+  botId?: string;
   logger?: SlackAdapterLogger;
   /**
    * Resolve an in-thread reply back to the conversation that produced the message
@@ -833,6 +865,17 @@ export class SlackAdapter {
   private readonly admissionQueues = new Map<string, SerialQueue>();
   /** Speaker-name resolver. Undefined when `resolveUserNames` is off. */
   private readonly userDirectory: SlackUserDirectory | undefined;
+  private readonly threadContext: ResolvedSlackThreadContext;
+  /** This app's own `bot_id`, so its own posts never enter a transcript. */
+  private readonly ownBotId: string | undefined;
+  /**
+   * Per-channel rate-limit breaker. Slack allows non-Marketplace apps roughly one
+   * `conversations.*` read per minute, so once throttled we skip the call outright
+   * rather than spending the turn's deadline learning that again.
+   */
+  private readonly contextRateLimitedUntil = new Map<string, number>();
+  /** Latched after a missing `*:history` scope: every later read would also fail. */
+  private contextScopeMissing = false;
 
   constructor(options: SlackAdapterOptions) {
     this.api = options.api;
@@ -878,6 +921,9 @@ export class SlackAdapter {
     this.resolvePostIndex = options.resolvePostIndex;
     this.recordPostedMessage = options.recordPostedMessage;
     this.pendingAsks = options.pendingAsks;
+    this.threadContext = resolveSlackThreadContext(options.threadContext);
+    const botId = options.botId?.trim();
+    this.ownBotId = botId === undefined || botId.length === 0 ? undefined : botId;
     this.userDirectory = options.resolveUserNames === false
       ? undefined
       : new SlackUserDirectory({
@@ -2548,32 +2594,221 @@ export class SlackAdapter {
   }
 
   /**
-   * Model-visible context for one inbound turn: who is speaking.
+   * Model-visible context for one inbound turn: who is speaking, and what was
+   * said in this conversation before the agent was pulled in.
    *
-   * Strictly best-effort. It never throws, never retries, and never delays the
-   * turn beyond its own bounded work — a missing scope, a rate limit, or a client
-   * without `usersInfo` all return an empty result, which renders exactly as the
-   * adapter did before speaker names existed.
+   * Strictly best-effort. It never throws, never retries, never paginates, and
+   * never delays the turn beyond one bounded deadline covering the whole phase. A
+   * missing scope, a rate limit, an unusable window, or a client without the read
+   * methods all yield less context — never a failed or slower turn. The result
+   * with nothing in it renders exactly as the adapter did before any of this
+   * existed.
    */
   private async collectTurnContext(
     event: SlackTextEvent,
     signal: AbortSignal,
   ): Promise<SlackTurnContext> {
-    if (signal.aborted || this.userDirectory === undefined || event.userId === undefined) {
-      return {};
-    }
+    if (signal.aborted) return {};
+    const deadline = withContextDeadline(signal, this.threadContext.timeoutMs);
     try {
-      const resolved = await this.userDirectory.resolveMany([event.userId], signal, 1);
-      const sender = resolved.get(event.userId.trim());
-      return sender === undefined ? {} : { sender };
+      const window = await this.readConversationWindow(event, deadline.signal);
+      const selection = "messages" in window
+        ? selectPrecedingSlackMessages({
+            raw: window.messages,
+            triggerTs: event.messageTs,
+            maxMessages: this.threadContext.maxMessages,
+            requireTrigger: window.requireTrigger,
+            ownBotUserIds: this.botUserIds,
+            ...(this.ownBotId === undefined ? {} : { ownBotId: this.ownBotId }),
+            includeBotMessages: this.threadContext.includeBotMessages,
+          })
+        : undefined;
+      const kept = selection?.kept ?? [];
+
+      const resolved = await this.resolveSpeakerNames(event, kept, deadline.signal);
+      const entries: AgentPrecedingMessage[] = [];
+      for (const message of kept) {
+        const entry = toAgentPrecedingMessage(message, senderFor(message.user, resolved));
+        if (entry !== undefined) entries.push(entry);
+      }
+      const precedingMessages = trimPrecedingToTotalBytes(entries);
+      const sender = senderFor(event.userId, resolved);
+
+      this.logger?.debug?.("Slack turn context assembled.", {
+        source: window.source,
+        ...("messages" in window ? { fetched: window.messages.length } : { skipped: window.skipped }),
+        ...(selection?.windowMissed === true ? { skipped: "window_missed" } : {}),
+        selected: kept.length,
+        rendered: precedingMessages.length,
+        named: resolved.size,
+      });
+
+      return {
+        ...(sender === undefined ? {} : { sender }),
+        ...(precedingMessages.length === 0 ? {} : { precedingMessages }),
+      };
     } catch (error) {
-      // resolveMany is contractually non-throwing; this guard exists so a future
-      // change there can never turn a naming failure into a failed turn.
+      // Both halves are contractually non-throwing; this guard exists so a future
+      // change to either can never turn missing context into a failed turn.
       this.logger?.debug?.("Slack turn context could not be assembled.", {
         error: redactSlackErrorMessage(error),
       });
       return {};
+    } finally {
+      deadline.dispose();
     }
+  }
+
+  /**
+   * One read of the surrounding conversation, or the reason there wasn't one.
+   *
+   * Exactly one request, ever. An in-thread trigger reads the thread; a top-level
+   * trigger reads recent channel history. The replies path asks for a page
+   * anchored at the trigger (`latest` + `inclusive`) so
+   * {@link selectPrecedingSlackMessages} can verify the window rather than trust
+   * Slack's undocumented truncation direction.
+   */
+  private async readConversationWindow(
+    event: SlackTextEvent,
+    signal: AbortSignal,
+  ): Promise<
+    | { readonly source: "replies" | "history"; readonly messages: readonly SlackConversationMessage[]; readonly requireTrigger: boolean }
+    | { readonly source: "replies" | "history" | "none"; readonly skipped: SlackThreadContextSkipReason }
+  > {
+    const inThread = event.threadTs !== event.messageTs;
+    const source = inThread ? "replies" : "history";
+    if (!this.threadContext.enabled || this.threadContext.maxMessages === 0) {
+      return { source: "none", skipped: "disabled" };
+    }
+    if (this.contextScopeMissing) {
+      return { source, skipped: "missing_scope" };
+    }
+    const cooldownUntil = this.contextRateLimitedUntil.get(event.channelId);
+    if (cooldownUntil !== undefined && cooldownUntil > Date.now()) {
+      return { source, skipped: "rate_limited" };
+    }
+    if (signal.aborted) {
+      return { source, skipped: "timeout" };
+    }
+
+    // One spare object so the trigger itself can be present without costing a
+    // context message, bounded by whatever Slack will actually return.
+    const limit = Math.min(this.threadContext.maxMessages + 1, this.threadContext.requestLimit);
+    try {
+      if (inThread) {
+        const replies = this.api.conversationsReplies;
+        if (typeof replies !== "function") {
+          return { source, skipped: "unsupported_client" };
+        }
+        const result = await raceAgainstDeadline(
+          replies.call(
+            this.api,
+            {
+              channelId: event.channelId,
+              threadTs: event.threadTs,
+              latest: event.messageTs,
+              inclusive: true,
+              limit,
+            },
+            { signal },
+          ),
+          signal,
+        );
+        if (result === SLACK_CONTEXT_DEADLINE_EXCEEDED) {
+          return { source, skipped: "timeout" };
+        }
+        return { source, messages: result.messages ?? [], requireTrigger: true };
+      }
+      const history = this.api.conversationsHistory;
+      if (typeof history !== "function") {
+        return { source, skipped: "unsupported_client" };
+      }
+      const result = await raceAgainstDeadline(
+        history.call(
+          this.api,
+          { channelId: event.channelId, latest: event.messageTs, inclusive: false, limit },
+          { signal },
+        ),
+        signal,
+      );
+      if (result === SLACK_CONTEXT_DEADLINE_EXCEEDED) {
+        return { source, skipped: "timeout" };
+      }
+      // `conversations.history` documents its window as newest-first from
+      // `latest`, so unlike the replies path there is nothing to verify — and
+      // demanding the trigger here would false-negative on Slack's index lag.
+      return { source, messages: result.messages ?? [], requireTrigger: false };
+    } catch (error) {
+      return { source, skipped: this.classifyContextFailure(error, event.channelId, signal) };
+    }
+  }
+
+  /** Turn a failed read into a skip reason, latching cooldowns as it goes. */
+  private classifyContextFailure(
+    error: unknown,
+    channelId: SlackChannelId,
+    signal: AbortSignal,
+  ): SlackThreadContextSkipReason {
+    if (!(error instanceof SlackApiError)) {
+      this.logger?.debug?.("Slack conversation read failed.", {
+        error: redactSlackErrorMessage(error),
+      });
+      return "api_error";
+    }
+    if (error.kind === "aborted" || signal.aborted) {
+      return "timeout";
+    }
+    if (error.slackError === "missing_scope") {
+      this.contextScopeMissing = true;
+      this.logger?.warn?.(
+        "Slack conversation history is missing a scope; turn context is disabled for this process.",
+        { ...(error.needed === undefined ? {} : { needed: error.needed }) },
+      );
+      return "missing_scope";
+    }
+    if (error.slackError === "ratelimited" || error.status === 429) {
+      const cooldownMs = error.retryAfterMs ?? SLACK_THREAD_CONTEXT_RATE_LIMIT_COOLDOWN_MS;
+      this.contextRateLimitedUntil.set(channelId, Date.now() + cooldownMs);
+      this.logger?.warn?.("Slack rate-limited a conversation read; skipping turn context.", {
+        cooldownMs,
+      });
+      return "rate_limited";
+    }
+    if (error.slackError === "not_in_channel" || error.slackError === "channel_not_found") {
+      this.logger?.debug?.("Slack conversation is not readable by this app.", {
+        slackError: error.slackError,
+      });
+      return "not_in_channel";
+    }
+    this.logger?.debug?.("Slack conversation read was rejected.", {
+      ...(error.slackError === undefined ? {} : { slackError: error.slackError }),
+    });
+    return "api_error";
+  }
+
+  /** Names for the trigger's sender plus every distinct speaker in the window. */
+  private async resolveSpeakerNames(
+    event: SlackTextEvent,
+    kept: readonly SlackConversationMessage[],
+    signal: AbortSignal,
+  ): Promise<ReadonlyMap<string, AgentMessageSender>> {
+    if (this.userDirectory === undefined) return new Map();
+    const userIds: string[] = [];
+    if (event.userId !== undefined) userIds.push(event.userId);
+    for (const message of kept) {
+      // A bot's own message carries its name, so it costs no lookup.
+      if (typeof message.user === "string" && message.bot_id === undefined) {
+        userIds.push(message.user);
+      }
+    }
+    if (userIds.length === 0) return new Map();
+    // Raced for the same reason the reads are: a client that ignores the signal
+    // must not be able to stretch the phase past its budget.
+    const resolved = await raceAgainstDeadline(
+      this.userDirectory.resolveMany(userIds, signal, userIds.length),
+      signal,
+    );
+    return resolved === SLACK_CONTEXT_DEADLINE_EXCEEDED ? new Map() : resolved;
   }
 
   /**
@@ -3023,6 +3258,9 @@ function buildAgentRequest(
   } else if (context.sender !== undefined) {
     request.sender = context.sender;
   }
+  if (context.precedingMessages !== undefined && context.precedingMessages.length > 0) {
+    request.precedingMessages = context.precedingMessages;
+  }
   if (attachments.length > 0) {
     request.attachments = attachments;
   }
@@ -3142,6 +3380,14 @@ function conversationIdFor(event: SlackTextEvent): string {
 
 function normalizeIdForMatch(value: string): string {
   return value.trim().toLowerCase();
+}
+
+/** The resolved name for a Slack user id, if one was resolved. */
+function senderFor(
+  userId: string | undefined,
+  resolved: ReadonlyMap<string, AgentMessageSender>,
+): AgentMessageSender | undefined {
+  return userId === undefined ? undefined : resolved.get(userId.trim());
 }
 
 /** Provider event sink for a continuation turn whose output is persisted before delivery. */

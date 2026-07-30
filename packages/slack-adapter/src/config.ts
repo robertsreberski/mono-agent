@@ -6,9 +6,17 @@ import {
   readCsv,
   readInteger,
   readJsonSection,
+  readRecord,
   readRequired,
   readSettingsJson,
 } from "@mono-agent/agent-contracts";
+import {
+  SLACK_THREAD_CONTEXT_DEFAULT_MAX_MESSAGES,
+  SLACK_THREAD_CONTEXT_DEFAULT_REQUEST_LIMIT,
+  SLACK_THREAD_CONTEXT_DEFAULT_TIMEOUT_MS,
+  SLACK_THREAD_CONTEXT_MAX_MESSAGES_CEILING,
+  SLACK_THREAD_CONTEXT_REQUEST_LIMIT_CEILING,
+} from "./thread-context.js";
 import type {
   JsonEnvFieldSpec,
   SettingsJson,
@@ -50,6 +58,18 @@ export interface SlackHomeTabConfig {
   readonly buttons: readonly SlackHomeButtonConfig[];
 }
 
+/**
+ * Best-effort model-visible transcript of the conversation before a turn, read
+ * from the `slack.threadContext` JSON object (each field also has an env form).
+ */
+export interface SlackThreadContextConfig {
+  readonly enabled: boolean;
+  readonly maxMessages: number;
+  readonly requestLimit: number;
+  readonly timeoutMs: number;
+  readonly includeBotMessages: boolean;
+}
+
 export interface SlackAdapterConfig {
   readonly enabled: boolean;
   readonly botToken: string;
@@ -69,6 +89,8 @@ export interface SlackAdapterConfig {
    * degrades to an unnamed speaker rather than failing turns.
    */
   readonly resolveUserNames: boolean;
+  /** Thread/channel turn context, read from `slack.threadContext`. */
+  readonly threadContext: SlackThreadContextConfig;
   // Optional Socket Mode resilience tuning. Each is undefined unless the operator
   // sets it; the Socket Mode runner then applies its own defaults. See the runner's
   // SlackSocketModeRunnerBackoffOptions / SlackSocketModeRunnerHeartbeatOptions.
@@ -170,6 +192,7 @@ export async function loadSlackAdapterConfig(
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames,
+      threadContext: readSlackThreadContext(env),
     };
   }
 
@@ -200,7 +223,55 @@ export async function loadSlackAdapterConfig(
     shortcuts,
     homeTab,
     resolveUserNames,
+    threadContext: readSlackThreadContext(env),
     ...readSlackSocketTuning(env),
+  };
+}
+
+/**
+ * Read the thread/channel context knobs, resolving concrete defaults (unlike the
+ * Socket Mode tuning, which stays omitted so the runner owns its own defaults).
+ *
+ * `maxMessages` is bounded by the shared contract's own ceiling so a value the
+ * harness would silently drop is rejected loudly at load instead.
+ */
+function readSlackThreadContext(
+  env: Record<string, string | undefined>,
+): SlackThreadContextConfig {
+  return {
+    enabled: readBoolean(
+      env.MONO_AGENT_SLACK_THREAD_CONTEXT_ENABLED,
+      "MONO_AGENT_SLACK_THREAD_CONTEXT_ENABLED",
+      true,
+      invalidConfig,
+    ),
+    maxMessages: readInteger(
+      env.MONO_AGENT_SLACK_THREAD_CONTEXT_MAX_MESSAGES,
+      "MONO_AGENT_SLACK_THREAD_CONTEXT_MAX_MESSAGES",
+      SLACK_THREAD_CONTEXT_DEFAULT_MAX_MESSAGES,
+      invalidConfig,
+      { min: 0, max: SLACK_THREAD_CONTEXT_MAX_MESSAGES_CEILING },
+    ),
+    requestLimit: readInteger(
+      env.MONO_AGENT_SLACK_THREAD_CONTEXT_REQUEST_LIMIT,
+      "MONO_AGENT_SLACK_THREAD_CONTEXT_REQUEST_LIMIT",
+      SLACK_THREAD_CONTEXT_DEFAULT_REQUEST_LIMIT,
+      invalidConfig,
+      { min: 1, max: SLACK_THREAD_CONTEXT_REQUEST_LIMIT_CEILING },
+    ),
+    timeoutMs: readInteger(
+      env.MONO_AGENT_SLACK_THREAD_CONTEXT_TIMEOUT_MS,
+      "MONO_AGENT_SLACK_THREAD_CONTEXT_TIMEOUT_MS",
+      SLACK_THREAD_CONTEXT_DEFAULT_TIMEOUT_MS,
+      invalidConfig,
+      { min: 0, max: 60_000 },
+    ),
+    includeBotMessages: readBoolean(
+      env.MONO_AGENT_SLACK_THREAD_CONTEXT_INCLUDE_BOT_MESSAGES,
+      "MONO_AGENT_SLACK_THREAD_CONTEXT_INCLUDE_BOT_MESSAGES",
+      true,
+      invalidConfig,
+    ),
   };
 }
 
@@ -429,6 +500,11 @@ export const SLACK_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "slack.mentionTextAliases", env: "MONO_AGENT_SLACK_MENTION_TEXT_ALIASES", kind: "csv", fromJson: (s) => s.mentionTextAliases },
   { id: "slack.stripMentionText", env: "MONO_AGENT_SLACK_STRIP_MENTION_TEXT", kind: "boolean", fromJson: (s) => s.stripMentionText },
   { id: "slack.resolveUserNames", env: "MONO_AGENT_SLACK_RESOLVE_USER_NAMES", kind: "boolean", fromJson: (s) => s.resolveUserNames },
+  { id: "slack.threadContext.enabled", env: "MONO_AGENT_SLACK_THREAD_CONTEXT_ENABLED", kind: "boolean", fromJson: (s) => readRecord(s.threadContext).enabled },
+  { id: "slack.threadContext.maxMessages", env: "MONO_AGENT_SLACK_THREAD_CONTEXT_MAX_MESSAGES", kind: "integer", fromJson: (s) => readRecord(s.threadContext).maxMessages },
+  { id: "slack.threadContext.requestLimit", env: "MONO_AGENT_SLACK_THREAD_CONTEXT_REQUEST_LIMIT", kind: "integer", fromJson: (s) => readRecord(s.threadContext).requestLimit },
+  { id: "slack.threadContext.timeoutMs", env: "MONO_AGENT_SLACK_THREAD_CONTEXT_TIMEOUT_MS", kind: "integer", fromJson: (s) => readRecord(s.threadContext).timeoutMs },
+  { id: "slack.threadContext.includeBotMessages", env: "MONO_AGENT_SLACK_THREAD_CONTEXT_INCLUDE_BOT_MESSAGES", kind: "boolean", fromJson: (s) => readRecord(s.threadContext).includeBotMessages },
   { id: "slack.heartbeatIntervalMs", env: "MONO_AGENT_SLACK_HEARTBEAT_INTERVAL_MS", kind: "integer", fromJson: (s) => s.heartbeatIntervalMs },
   { id: "slack.heartbeatTimeoutMs", env: "MONO_AGENT_SLACK_HEARTBEAT_TIMEOUT_MS", kind: "integer", fromJson: (s) => s.heartbeatTimeoutMs },
   { id: "slack.reconnectInitialBackoffMs", env: "MONO_AGENT_SLACK_RECONNECT_INITIAL_BACKOFF_MS", kind: "integer", fromJson: (s) => s.reconnectInitialBackoffMs },
