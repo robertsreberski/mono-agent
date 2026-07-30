@@ -23,8 +23,12 @@ const MANAGED_MEMORY_EMBEDDING_DIMENSION = 768;
 
 function stubEmbeddingProbe(): void {
   const realFetch = globalThis.fetch;
-  vi.stubGlobal("fetch", (async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  type FetchInput = Parameters<typeof fetch>[0];
+  type FetchInit = Parameters<typeof fetch>[1];
+  vi.stubGlobal("fetch", (async (input: FetchInput, init?: FetchInit) => {
+    const url = typeof input === "string"
+      ? input
+      : input instanceof URL ? input.href : (input as { url: string }).url;
     if (url.endsWith("/api/embed")) {
       return new Response(
         JSON.stringify({ embeddings: [Array.from({ length: MANAGED_MEMORY_EMBEDDING_DIMENSION }, () => 0)] }),
