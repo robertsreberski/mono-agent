@@ -206,6 +206,7 @@ RuntimeSessionStore
 RuntimeSessionStoreOptions
 SkillActivationError
 SkillIndexEntry
+SkillIndexSummary
 SkillsCache
 SkillsLoader
 SkillsStat
@@ -237,6 +238,8 @@ loadSkillIndexFromDirectory
 loadToolPolicyFromJsonFile
 loadToolPolicyFromJsonFileSync
 normalizeInlineText
+renderSkillIndexEntries
+renderSkillIndexSection
 skillInstructionsToContextBlocks
 toolPolicyToRuntimeOptions
 ```

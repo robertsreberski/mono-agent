@@ -63,6 +63,12 @@ export interface SlackAdapterConfig {
   readonly shortcuts: readonly SlackShortcutConfig[];
   /** App Home tab config, read from the `slack.homeTab` JSON object. */
   readonly homeTab: SlackHomeTabConfig;
+  /**
+   * Resolve the speaker's real name via `users.info` so the agent knows who is
+   * talking. Requires the `users:read` scope; default `true`, and a missing scope
+   * degrades to an unnamed speaker rather than failing turns.
+   */
+  readonly resolveUserNames: boolean;
   // Optional Socket Mode resilience tuning. Each is undefined unless the operator
   // sets it; the Socket Mode runner then applies its own defaults. See the runner's
   // SlackSocketModeRunnerBackoffOptions / SlackSocketModeRunnerHeartbeatOptions.
@@ -141,6 +147,12 @@ export async function loadSlackAdapterConfig(
     botUserIds.length > 0 || mentionTextAliases.length > 0,
     invalidConfig,
   );
+  const resolveUserNames = readBoolean(
+    env.MONO_AGENT_SLACK_RESOLVE_USER_NAMES,
+    "MONO_AGENT_SLACK_RESOLVE_USER_NAMES",
+    true,
+    invalidConfig,
+  );
 
   // A disabled channel never validates its credentials: the status surface reads
   // it as "disabled", not "waiting for config". Only an enabled channel demands
@@ -157,6 +169,7 @@ export async function loadSlackAdapterConfig(
       stripMentionText,
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
+      resolveUserNames,
     };
   }
 
@@ -186,6 +199,7 @@ export async function loadSlackAdapterConfig(
     stripMentionText,
     shortcuts,
     homeTab,
+    resolveUserNames,
     ...readSlackSocketTuning(env),
   };
 }
@@ -414,6 +428,7 @@ export const SLACK_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "slack.botUserIds", env: "MONO_AGENT_SLACK_BOT_USER_IDS", kind: "csv", fromJson: (s) => s.botUserIds },
   { id: "slack.mentionTextAliases", env: "MONO_AGENT_SLACK_MENTION_TEXT_ALIASES", kind: "csv", fromJson: (s) => s.mentionTextAliases },
   { id: "slack.stripMentionText", env: "MONO_AGENT_SLACK_STRIP_MENTION_TEXT", kind: "boolean", fromJson: (s) => s.stripMentionText },
+  { id: "slack.resolveUserNames", env: "MONO_AGENT_SLACK_RESOLVE_USER_NAMES", kind: "boolean", fromJson: (s) => s.resolveUserNames },
   { id: "slack.heartbeatIntervalMs", env: "MONO_AGENT_SLACK_HEARTBEAT_INTERVAL_MS", kind: "integer", fromJson: (s) => s.heartbeatIntervalMs },
   { id: "slack.heartbeatTimeoutMs", env: "MONO_AGENT_SLACK_HEARTBEAT_TIMEOUT_MS", kind: "integer", fromJson: (s) => s.heartbeatTimeoutMs },
   { id: "slack.reconnectInitialBackoffMs", env: "MONO_AGENT_SLACK_RECONNECT_INITIAL_BACKOFF_MS", kind: "integer", fromJson: (s) => s.reconnectInitialBackoffMs },

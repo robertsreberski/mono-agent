@@ -21,6 +21,8 @@ export type {
   SlackInteractivityPayload,
   SlackSocketModeEnvelope,
   SlackUserId,
+  SlackUsersInfoParams,
+  SlackUsersInfoResult,
   SlackViewsPublishParams,
   SlackWebApi,
 } from "./types.js";

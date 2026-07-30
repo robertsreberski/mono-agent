@@ -204,6 +204,26 @@ the same thread is consumed as the custom answer before normal turn admission,
 so the blocked model run resumes without deadlocking. Stale actions expire and
 the configured Slack channel allowlist remains authoritative.
 
+### Speaker names
+
+A Slack event identifies its sender only by user ID. That ID doubles as a DM
+channel ID, so it is an actionable delivery target and stays host-only — it never
+reaches a prompt. With `resolveUserNames` on (the default) the adapter resolves
+the sender's display name and handle through `users.info` and passes those as the
+model-visible `sender`, so a shared-channel turn reads as `Alice Chen (@alice)`.
+
+Requires the `users:read` bot scope. `user-directory.ts` caches 500 entries for
+30 minutes (failed lookups for 5), bounds concurrency at 3, and latches the
+lookup off for the process after one `missing_scope` failure so a mis-scoped app
+pays a single call rather than one per speaker per turn. Every failure path leaves
+the turn unnamed instead of failing it, which is byte-identical to the behaviour
+before names existed. A resolved name is user-controlled, so it is evidence of a
+name and never proof of identity.
+
+Note that the name is durable: it becomes the stored conversation turn's speaker
+label and the memory-capture label, so enabling this changes what later recalls
+surface, not only the current prompt.
+
 ### Silent-delivery limitation
 
 Programmatic proactive delivery accepts `silent: true` in both
@@ -268,7 +288,9 @@ The request lifecycle is:
 3. `socket-mode-runner.ts` acknowledges envelopes and routes events,
    interactivity, and slash commands; `adapter.ts` authorizes and normalizes them
    into structural agent requests with per-conversation admission and live-input
-   fallback reservation.
+   fallback reservation. Just before a turn is submitted, `user-directory.ts`
+   resolves the speaker's model-visible name; the phase is best-effort and cannot
+   fail or delay the turn.
 4. The host responder emits standard stream events. `message-stream.ts` converts
    them into Slack posts/updates/deletes, while `slack-markdown.ts` translates
    standard Markdown at the transport boundary.
@@ -286,6 +308,7 @@ The request lifecycle is:
 | [`slack-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/slack-client.ts) | Typed Slack Web API boundary and private-file downloads. |
 | [`message-stream.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/message-stream.ts) | Final-only delivery, transient status, retry classification, and message limits. |
 | [`slack-markdown.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/slack-markdown.ts) | Standard Markdown to Slack `mrkdwn` conversion and normalization. |
+| [`user-directory.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/user-directory.ts) | Bounded `users.info` cache turning user IDs into model-visible speaker names. |
 | [`types.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/types.ts) | Minimal Slack wire and client contracts. |
 
 ## Public API
@@ -393,6 +416,8 @@ SlackSocketModeRunnerOptions
 SlackSocketModeRunnerStartOptions
 SlackTriggerKind
 SlackUserId
+SlackUsersInfoParams
+SlackUsersInfoResult
 SlackViewsPublishParams
 SlackWebApi
 SlackWebApiClient

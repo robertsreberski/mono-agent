@@ -66,6 +66,7 @@ export type {
   SlackRuntimeModelOption,
   SlackRuntimeSlashCommands,
 } from "./runtime-controls.js";
+import { SlackUserDirectory } from "./user-directory.js";
 import type {
   SlackBlockAction,
   SlackBlockActionsPayload,
@@ -101,6 +102,16 @@ export interface AgentRequest extends AgentRequestBase {
     slack: SlackRequestMetadata;
     [key: string]: unknown;
   };
+}
+
+/**
+ * Best-effort model-visible context assembled just before a turn is submitted.
+ * Every member is optional because every source of it is allowed to fail without
+ * affecting the turn.
+ */
+interface SlackTurnContext {
+  /** The triggering user's model-visible name, when it could be resolved. */
+  readonly sender?: AgentMessageSender;
 }
 
 /** Tunes how inbound Slack file attachments are downloaded. */
@@ -376,6 +387,13 @@ export interface SlackAdapterOptions {
    * runs its bound prompt as a proactive turn. Omitted/disabled means no Home tab.
    */
   homeTab?: SlackHomeTabOptions;
+  /**
+   * Resolve the speaker's real name via `users.info` (needs the `users:read`
+   * scope) so the harness can label the turn with who is talking instead of
+   * nothing. Default `true`; degrades to an unnamed speaker when the scope or the
+   * client method is missing, which is byte-identical to the pre-name behaviour.
+   */
+  resolveUserNames?: boolean;
   logger?: SlackAdapterLogger;
   /**
    * Resolve an in-thread reply back to the conversation that produced the message
@@ -813,6 +831,8 @@ export class SlackAdapter {
    * /cancel stays out-of-band (handled before this queue).
    */
   private readonly admissionQueues = new Map<string, SerialQueue>();
+  /** Speaker-name resolver. Undefined when `resolveUserNames` is off. */
+  private readonly userDirectory: SlackUserDirectory | undefined;
 
   constructor(options: SlackAdapterOptions) {
     this.api = options.api;
@@ -858,6 +878,12 @@ export class SlackAdapter {
     this.resolvePostIndex = options.resolvePostIndex;
     this.recordPostedMessage = options.recordPostedMessage;
     this.pendingAsks = options.pendingAsks;
+    this.userDirectory = options.resolveUserNames === false
+      ? undefined
+      : new SlackUserDirectory({
+          api: this.api,
+          ...(this.logger === undefined ? {} : { logger: this.logger }),
+        });
 
     if (!this.allowAllChannels && this.allowedChannelIds.size === 0) {
       throw new TypeError(
@@ -2522,6 +2548,35 @@ export class SlackAdapter {
   }
 
   /**
+   * Model-visible context for one inbound turn: who is speaking.
+   *
+   * Strictly best-effort. It never throws, never retries, and never delays the
+   * turn beyond its own bounded work — a missing scope, a rate limit, or a client
+   * without `usersInfo` all return an empty result, which renders exactly as the
+   * adapter did before speaker names existed.
+   */
+  private async collectTurnContext(
+    event: SlackTextEvent,
+    signal: AbortSignal,
+  ): Promise<SlackTurnContext> {
+    if (signal.aborted || this.userDirectory === undefined || event.userId === undefined) {
+      return {};
+    }
+    try {
+      const resolved = await this.userDirectory.resolveMany([event.userId], signal, 1);
+      const sender = resolved.get(event.userId.trim());
+      return sender === undefined ? {} : { sender };
+    } catch (error) {
+      // resolveMany is contractually non-throwing; this guard exists so a future
+      // change there can never turn a naming failure into a failed turn.
+      this.logger?.debug?.("Slack turn context could not be assembled.", {
+        error: redactSlackErrorMessage(error),
+      });
+      return {};
+    }
+  }
+
+  /**
    * The conversation the run should continue. A genuine in-thread reply
    * (`threadTs !== messageTs`) whose `(channel, threadTs)` matches a message we
    * posted resolves to that producing conversation; everything else uses the
@@ -2605,7 +2660,20 @@ export class SlackAdapter {
         return { kind: "ignored", reason: "no_usable_attachments", eventId: event.eventId, channelId: event.channelId };
       }
 
-      const request = buildAgentRequest(event, text, controller.signal, attachments, conversationId);
+      const turnContext = await this.collectTurnContext(event, controller.signal);
+      if (controller.signal.aborted) {
+        await this.finishCancelledUnlessAcknowledged(stream, controller.signal);
+        return { kind: "cancelled", eventId: event.eventId, channelId: event.channelId };
+      }
+
+      const request = buildAgentRequest(
+        event,
+        text,
+        controller.signal,
+        attachments,
+        conversationId,
+        turnContext,
+      );
       this.applyRuntimeSelection(event, request.metadata.slack);
       const response = await this.responder.respond(request, stream);
 
@@ -2896,6 +2964,7 @@ function buildAgentRequest(
   abortSignal: AbortSignal,
   attachments: readonly AgentAttachment[],
   conversationId: string,
+  context: SlackTurnContext,
 ): AgentRequest {
   const metadata: SlackRequestMetadata = {
     eventId: event.eventId,
@@ -2946,11 +3015,13 @@ function buildAgentRequest(
   }
   if (event.userId !== undefined) {
     request.userId = event.userId;
-    // Id only for now: Slack exposes no display name on the event, and resolving
-    // one costs a `users.info` call plus the `users:read` scope. The harness
-    // renders nothing without a name or handle, so this is inert until the
-    // opt-in user directory lands and fills them in.
-    request.sender = { id: event.userId };
+    // `id` stays host-only; `displayName`/`handle` are the model-visible half and
+    // arrive from `users.info` behind a bounded cache. With names unresolved the
+    // sender is id-only and the harness renders the turn exactly as it did before
+    // names existed.
+    request.sender = { id: event.userId, ...context.sender };
+  } else if (context.sender !== undefined) {
+    request.sender = context.sender;
   }
   if (attachments.length > 0) {
     request.attachments = attachments;
