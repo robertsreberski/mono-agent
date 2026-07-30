@@ -2,7 +2,7 @@
 
 import { Popover } from "@base-ui/react/popover";
 import type { CSSProperties, ReactNode } from "react";
-import type { ConsoleContextProjection } from "../../usage";
+import { formatUsd, type ConsoleContextProjection } from "../../usage";
 import { Icon } from "../Icon";
 
 export interface ContextDisplayUsage {
@@ -30,11 +30,6 @@ const formatTokenCount = (tokens: number): string => {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/u, "")}M`;
   if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1).replace(/\.0$/u, "")}k`;
   return String(tokens);
-};
-
-const formatUsd = (cost: number): string => {
-  const precision = cost > 0 && cost < 0.01 ? 4 : 2;
-  return `$${cost.toFixed(precision)}`;
 };
 
 const tokenCount = (value: number | undefined): number =>

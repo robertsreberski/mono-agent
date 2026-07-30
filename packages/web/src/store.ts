@@ -1572,6 +1572,7 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
           ...group,
           status,
           ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
+          ...(subagent.costUsd === undefined ? {} : { costUsd: subagent.costUsd }),
         });
         return;
       }
@@ -1655,7 +1656,12 @@ type SubagentPart = Extract<WebMessagePart, { type: "subagent" }>;
  */
 function subagentOf(
   event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
-): { readonly id: string; readonly name: string; readonly label?: string } | undefined {
+): {
+  readonly id: string;
+  readonly name: string;
+  readonly label?: string;
+  readonly costUsd?: number;
+} | undefined {
   const subagent = event.metadata?.subagent;
   if (typeof subagent !== "object" || subagent === null || Array.isArray(subagent)) return undefined;
   const record = subagent as Record<string, unknown>;
@@ -1663,10 +1669,16 @@ function subagentOf(
   if (id.length === 0) return undefined;
   const name = typeof record.name === "string" ? record.name.trim() : "";
   const label = typeof record.label === "string" ? record.label.trim() : "";
+  // Only the closing bookend carries a price, and only when the runtime priced
+  // the subagent's model at all.
+  const costUsd = typeof record.costUsd === "number" && Number.isFinite(record.costUsd) && record.costUsd > 0
+    ? record.costUsd
+    : undefined;
   return {
     id,
     name: name.length === 0 ? "subagent" : name,
     ...(label.length === 0 ? {} : { label }),
+    ...(costUsd === undefined ? {} : { costUsd }),
   };
 }
 
@@ -1749,10 +1761,39 @@ function upsertToolCall(parts: WebMessagePart[], next: Extract<WebMessagePart, {
   if (previous?.type === "tool-call") parts[index] = { ...previous, ...next };
 }
 
+/**
+ * Whether a stored part reaches the transcript at all. The console renders
+ * exactly one kind of telemetry — context compaction — and drops the rest in
+ * `convertPart`, so every other telemetry part is invisible between two runs of
+ * prose.
+ */
+function isRenderedPart(part: WebMessagePart): boolean {
+  if (part.type !== "telemetry") return true;
+  const event = part.data;
+  if (event === null || typeof event !== "object" || Array.isArray(event)) return false;
+  const record = event as Record<string, unknown>;
+  return record.type === "runtime_telemetry" && record.kind === "context_compaction";
+}
+
+/**
+ * Append a streamed delta to the trailing run of `type`.
+ *
+ * Invisible parts land between text deltas constantly: a status frame pushes
+ * one, and so does every stream event `applyEvent` does not map. Merging only
+ * into the very last part therefore opened a NEW text part on each of them —
+ * usually mid-word, since deltas do not respect word boundaries — and the
+ * console renders every text part as its own markdown block, so a sentence
+ * visibly broke in half. Skipping the parts the console never renders keeps
+ * prose in one run, while a real tool call or delegation, which IS rendered,
+ * still separates the text on either side of it.
+ */
 function appendTextPart(parts: WebMessagePart[], type: "text" | "reasoning", delta: string): void {
-  const last = parts.at(-1);
-  if (last?.type === type) {
-    parts[parts.length - 1] = { type, text: `${last.text}${delta}` };
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    if (part === undefined) break;
+    if (!isRenderedPart(part)) continue;
+    if (part.type !== type) break;
+    parts[index] = { type, text: `${part.text}${delta}` };
     return;
   }
   parts.push({ type, text: delta });
@@ -1915,6 +1956,7 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && typeof part.name === "string"
       && (part.label === undefined || typeof part.label === "string")
       && (part.executionMs === undefined || typeof part.executionMs === "number")
+      && (part.costUsd === undefined || typeof part.costUsd === "number")
       && isWebToolCallStatus(part.status)
       && Array.isArray(part.calls)
       && part.calls.every(isWebToolCall);
