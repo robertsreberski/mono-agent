@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const piMocks = vi.hoisted(() => ({
   getBuiltinModel: vi.fn(),
   getBuiltinModels: vi.fn(),
-  getOAuthApiKey: vi.fn(),
-  getOAuthProvider: vi.fn(),
+  resolveOAuthApiKey: vi.fn(),
+  getPiOAuthAuth: vi.fn(),
   getSupportedThinkingLevels: vi.fn(),
 }));
 
@@ -17,9 +17,12 @@ vi.mock("@earendil-works/pi-ai/providers/all", () => ({
   getBuiltinModels: piMocks.getBuiltinModels,
 }));
 
-vi.mock("@earendil-works/pi-ai/oauth", () => ({
-  getOAuthApiKey: piMocks.getOAuthApiKey,
-  getOAuthProvider: piMocks.getOAuthProvider,
+vi.mock("../../ai/pi-oauth-compat.js", () => ({
+  resolveOAuthApiKey: piMocks.resolveOAuthApiKey,
+  getPiOAuthAuth: piMocks.getPiOAuthAuth,
+  // The callbacks -> AuthInteraction bridge is covered by its own unit tests;
+  // here it stays identity-ish so login assertions still see the callbacks.
+  toAuthInteraction: (callbacks) => callbacks,
 }));
 
 import {
@@ -97,7 +100,7 @@ describe("Pi interoperability facade", () => {
       },
     };
     let delegatedCredentials;
-    piMocks.getOAuthApiKey.mockImplementation(async (_providerId, received) => {
+    piMocks.resolveOAuthApiKey.mockImplementation(async (_providerId, received) => {
       delegatedCredentials = received;
       received["openai-codex"].access = "access-refreshed";
       received["openai-codex"].metadata.account = "delegated";
@@ -127,10 +130,10 @@ describe("Pi interoperability facade", () => {
   });
 
   it("preserves a null OAuth resolution and propagates refresh failures", async () => {
-    piMocks.getOAuthApiKey.mockResolvedValueOnce(null);
+    piMocks.resolveOAuthApiKey.mockResolvedValueOnce(null);
     await expect(resolvePiOAuthApiKey("openai-codex", {})).resolves.toBeNull();
 
-    piMocks.getOAuthApiKey.mockRejectedValueOnce(new Error("refresh failed"));
+    piMocks.resolveOAuthApiKey.mockRejectedValueOnce(new Error("refresh failed"));
     await expect(resolvePiOAuthApiKey("openai-codex", {})).rejects.toThrow("refresh failed");
   });
 
@@ -142,7 +145,7 @@ describe("Pi interoperability facade", () => {
       metadata: { account: "original" },
     };
     const login = vi.fn(async () => returnedCredentials);
-    piMocks.getOAuthProvider.mockReturnValue({ login });
+    piMocks.getPiOAuthAuth.mockReturnValue({ login });
     const callbacks = {
       onAuth: vi.fn(),
       onDeviceCode: vi.fn(),
@@ -163,19 +166,19 @@ describe("Pi interoperability facade", () => {
   });
 
   it("rejects unavailable providers and missing required callbacks", async () => {
-    piMocks.getOAuthProvider.mockReturnValueOnce(undefined);
+    piMocks.getPiOAuthAuth.mockReturnValueOnce(undefined);
     await expect(loginPiOAuth("missing", {})).rejects.toThrow(
       "Pi OAuth provider is unavailable: missing",
     );
 
-    piMocks.getOAuthProvider.mockReturnValueOnce({ login: vi.fn() });
+    piMocks.getPiOAuthAuth.mockReturnValueOnce({ login: vi.fn() });
     await expect(loginPiOAuth("openai-codex", {})).rejects.toThrow(
       "loginPiOAuth requires callbacks.onAuth()",
     );
   });
 
   it("propagates provider login failures after validating callbacks", async () => {
-    piMocks.getOAuthProvider.mockReturnValueOnce({
+    piMocks.getPiOAuthAuth.mockReturnValueOnce({
       login: vi.fn(async () => {
         throw new Error("login failed");
       }),

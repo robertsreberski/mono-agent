@@ -8,7 +8,6 @@
 // caller-owned runState.
 
 import { AgentHarness } from "@earendil-works/pi-agent-core";
-import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import {
   createStructuredOutputTool,
   getPiBuiltinTools,
@@ -241,7 +240,6 @@ export function toolResultErrorOverride(details) {
 }
 
 export function buildTurnHarness(runState, {
-  cwd,
   session,
   piModels,
   model,
@@ -259,8 +257,12 @@ export function buildTurnHarness(runState, {
   sdk,
   reference,
 }) {
+  // pi-agent-core 0.83.0 removed `env` from AgentHarnessOptions: an
+  // ExecutionEnv now reaches tools through the generic per-turn `toolContext`
+  // instead. mono-agent needs neither — it uses none of pi's built-in
+  // file/shell tools, and its own tools close over what they need — so the
+  // option is dropped rather than migrated.
   const harness = new AgentHarness({
-    env: new NodeExecutionEnv({ cwd: cwd || process.cwd() }),
     session,
     models: piModels,
     model,

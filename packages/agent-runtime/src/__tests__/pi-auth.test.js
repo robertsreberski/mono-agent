@@ -4,10 +4,10 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const getOAuthApiKeyMock = vi.fn();
+const resolveOAuthApiKeyMock = vi.fn();
 
-vi.mock("@earendil-works/pi-ai/oauth", () => ({
-  getOAuthApiKey: (...args) => getOAuthApiKeyMock(...args),
+vi.mock("../ai/pi-oauth-compat.js", () => ({
+  resolveOAuthApiKey: (...args) => resolveOAuthApiKeyMock(...args),
 }));
 
 const { createPiOAuthApiKeyResolver } = await import("../pi-auth.js");
@@ -15,7 +15,7 @@ const { createPiOAuthApiKeyResolver } = await import("../pi-auth.js");
 const tempDirs = [];
 
 beforeEach(() => {
-  getOAuthApiKeyMock.mockReset();
+  resolveOAuthApiKeyMock.mockReset();
 });
 
 afterEach(async () => {
@@ -28,7 +28,7 @@ describe("createPiOAuthApiKeyResolver", () => {
     const resolver = createPiOAuthApiKeyResolver({ path: join(dir, "auth.json") });
 
     await expect(resolver("openai-codex")).resolves.toBeUndefined();
-    expect(getOAuthApiKeyMock).not.toHaveBeenCalled();
+    expect(resolveOAuthApiKeyMock).not.toHaveBeenCalled();
   });
 
   it("returns undefined when the provider is not present", async () => {
@@ -36,7 +36,7 @@ describe("createPiOAuthApiKeyResolver", () => {
     const resolver = createPiOAuthApiKeyResolver({ path: authPath });
 
     await expect(resolver("openai-codex")).resolves.toBeUndefined();
-    expect(getOAuthApiKeyMock).not.toHaveBeenCalled();
+    expect(resolveOAuthApiKeyMock).not.toHaveBeenCalled();
   });
 
   it("resolves and persists refreshed OAuth credentials with protected file mode", async () => {
@@ -44,7 +44,7 @@ describe("createPiOAuthApiKeyResolver", () => {
       "openai-codex": oauthCredentials("old-token"),
       "github-copilot": oauthCredentials("github-token"),
     });
-    getOAuthApiKeyMock.mockResolvedValue({
+    resolveOAuthApiKeyMock.mockResolvedValue({
       apiKey: "new-token",
       newCredentials: {
         access: "new-token",
@@ -55,7 +55,7 @@ describe("createPiOAuthApiKeyResolver", () => {
     const resolver = createPiOAuthApiKeyResolver({ path: authPath });
 
     await expect(resolver("openai-codex")).resolves.toBe("new-token");
-    expect(getOAuthApiKeyMock).toHaveBeenCalledWith(
+    expect(resolveOAuthApiKeyMock).toHaveBeenCalledWith(
       "openai-codex",
       expect.objectContaining({
         "openai-codex": expect.objectContaining({ access: "old-token" }),
@@ -115,7 +115,7 @@ describe("createPiOAuthApiKeyResolver", () => {
 
   it("persists credentials when refreshes write concurrently", async () => {
     const authPath = await writeAuth({ "openai-codex": oauthCredentials("old-token") });
-    getOAuthApiKeyMock.mockResolvedValue({
+    resolveOAuthApiKeyMock.mockResolvedValue({
       apiKey: "new-token",
       newCredentials: {
         access: "new-token",

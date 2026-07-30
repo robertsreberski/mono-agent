@@ -41,21 +41,32 @@ npm view @earendil-works/pi-ai@latest version exports --registry https://registr
 
 ## Version pins (do not "unify" them)
 
-- `packages/agent-runtime`: `@earendil-works/pi-ai` + `pi-agent-core` at `0.80.6`.
-  This exact pair retains the runtime OAuth exports used by mono-agent;
-  `pi-ai@0.80.8` turns `./oauth` into a type-only entry point.
+- `packages/agent-runtime`: `@earendil-works/pi-ai` + `pi-agent-core` at `0.83.0`.
+  The old reason to hold at `0.80.6` was that it still exported the runtime
+  OAuth registry; `./oauth` is now a type-only entry point (literally
+  `export {}` at runtime) and the per-provider flows under `dist/auth/oauth/*`
+  are unreachable — that path has no `exports` entry. mono-agent no longer needs
+  those exports: `packages/agent-runtime/src/ai/pi-oauth-compat.js` rebuilds the
+  same contracts over `provider.auth.oauth`, reached through `builtinProviders()`.
+  Keep the OAuth migration confined to that module.
 - Importing projects should not add their own Pi dependency merely to read
   built-in models, reasoning levels, or OAuth helpers. Use the
   runtime-owned façade exported from `@mono-agent/agent-runtime/ai`:
   `listPiBuiltinModels`, `getPiBuiltinModel`, `reasoningLevelsForPiModel`,
   `resolvePiOAuthApiKey`, and `loginPiOAuth`. The model APIs return cloned
-  snapshots, and the OAuth APIs do not expose Pi's mutable provider registry.
+  snapshots, and the OAuth APIs do not expose Pi provider instances.
   A consumer test that still imports Pi's faux helpers must use an isolated
-  fixture or the runtime's exact `0.80.6` as a development-only pin; a floating
+  fixture or the runtime's exact `0.83.0` as a development-only pin; a floating
   host range can otherwise satisfy Pi Agent Core's upstream dependency with a
   different copy.
-- `packages/tui`: `@earendil-works/pi-tui` at `0.79.10` — **intentionally behind**;
-  the 0.80 pi-tui API breaks the TUI. Bumping it is its own project.
+- `packages/tui`: `@earendil-works/pi-tui` at `0.83.0`. This was held at
+  `0.79.10` because the 0.80 API broke the TUI; it type-checks and builds clean
+  at 0.83.0, but that bump rode along with the pi-ai upgrade rather than being
+  exercised on its own — **verify the console interactively** before trusting it.
+- `pi-agent-core` 0.83.0 removed `env` from `AgentHarnessOptions`; an
+  `ExecutionEnv` now reaches tools through the generic per-turn `toolContext`.
+  mono-agent needs neither, since it uses none of pi's built-in file/shell tools
+  and its own tools close over what they need.
 
 Pi AI's `@anthropic-ai/sdk@0.91.1` pin cannot satisfy the Claude Agent SDK's
 `>=0.93.0` peer range. Two isolated Anthropic SDK versions are therefore the

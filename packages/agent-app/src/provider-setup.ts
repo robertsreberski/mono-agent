@@ -19,7 +19,6 @@ import { basename, dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 
-import { getOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
@@ -546,8 +545,14 @@ export function planProviderSetup(options: PlanProviderSetupOptions): ProviderSe
   const piAuthPath = options.piAuthPath ?? DEFAULT_PI_AUTH_PATH;
   const actionsById = new Map<string, ProviderSetupAction>();
   const detectedModelRefs = new Set<string>();
-  const piOAuthProviders = new Set(getOAuthProviders().map((provider) => provider.id));
   const piProviders = builtinModels();
+  // pi-ai 0.83.0 dropped the standalone OAuth registry; OAuth support is now a
+  // property of the provider itself, alongside the `auth.apiKey` read below.
+  const piOAuthProviders = new Set(
+    piProviders.getProviders()
+      .filter((provider) => provider.auth.oauth !== undefined)
+      .map((provider) => provider.id),
+  );
   const authAlreadyDetected = (keys: readonly string[]): boolean =>
     options.forceAuthentication !== true && keys.some((key) => {
       const state = options.credentialStates?.[key];
