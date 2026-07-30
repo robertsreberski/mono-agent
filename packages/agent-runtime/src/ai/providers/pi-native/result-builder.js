@@ -33,6 +33,38 @@ export function usageFromMessages(messages = []) {
 }
 
 /**
+ * Add what this run's subagents spent to the run's own usage.
+ *
+ * A delegation is work the run asked for and is billed to the same account, but
+ * `usageFromMessages` only ever sees this agent's transcript — a subagent keeps
+ * its own — so every consumer of the run's usage was short by the whole cost of
+ * every subagent. Folding it in here rather than publishing a separate event
+ * makes the console's cost, the TUI status bar and the exported metrics correct
+ * with no change at any of them. The trade is attribution: a subagent on
+ * another model has its spend reported under this run's model, which is the
+ * right answer for a run total and the wrong one for a per-model breakdown.
+ *
+ * `estimatedCost` is this agent's own fallback price, used when the provider
+ * priced nothing (subscription auth). Adding to the raw `cost` alone in that
+ * case would have replaced this agent's cost with the subagent's rather than
+ * summing them.
+ *
+ * @param {{input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}} usage
+ * @param {{costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}} delegated
+ * @param {number} estimatedCost
+ * @returns {{input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}}
+ */
+export function withSubagentUsage(usage, delegated, estimatedCost) {
+  return {
+    input: usage.input + delegated.input,
+    output: usage.output + delegated.output,
+    cacheRead: usage.cacheRead + delegated.cacheRead,
+    cacheWrite: usage.cacheWrite + delegated.cacheWrite,
+    cost: delegated.costUsd > 0 ? (usage.cost || estimatedCost) + delegated.costUsd : usage.cost,
+  };
+}
+
+/**
  * Normalize one provider request's usage into an exact context snapshot.
  * Unlike usageFromMessages(), this deliberately does not aggregate earlier
  * requests in the run: the last assistant usage is the same provider-counted

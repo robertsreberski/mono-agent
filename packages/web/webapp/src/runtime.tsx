@@ -108,9 +108,9 @@ const isContextCompactionPart = (part: Extract<MessagePart, { type: "telemetry" 
   return false;
 };
 
-const convertPart = (
-  part: MessagePart,
-): Exclude<ThreadMessageLike["content"], string>[number] | null => {
+type ConvertedPart = Exclude<ThreadMessageLike["content"], string>[number];
+
+const convertPart = (part: MessagePart): ConvertedPart | null => {
   switch (part.type) {
     case "text":
       return { type: "text", text: part.text };
@@ -168,15 +168,35 @@ const completeAttachment = (attachment: WebAttachment): CompleteAttachment => {
   };
 };
 
+/**
+ * Join runs of adjacent text into one part, because each one renders as its own
+ * markdown root and would otherwise read as a paragraph break.
+ *
+ * Every message stored before the runtime stopped splitting text across
+ * invisible telemetry carries those splits — frequently mid-word — so this also
+ * repairs history rather than only protecting new turns. Concatenation is
+ * verbatim: the parts were one continuous stream of deltas.
+ */
+const joinAdjacentText = (parts: readonly ConvertedPart[]): ConvertedPart[] =>
+  parts.reduce<ConvertedPart[]>((joined, part) => {
+    const previous = joined.at(-1);
+    if (part.type === "text" && previous?.type === "text") {
+      joined[joined.length - 1] = { ...previous, text: `${previous.text}${part.text}` };
+      return joined;
+    }
+    joined.push(part);
+    return joined;
+  }, []);
+
 export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
-  const content = message.parts.flatMap((part) => {
+  const content = joinAdjacentText(message.parts.flatMap((part) => {
     // The service worker precaches this bundle, so a console left open across a
     // server upgrade can be handed a part type it does not know yet. `== null`
     // covers that `undefined` too: pushing it into content breaks the whole
     // transcript over one unrecognized row.
     const converted = convertPart(part);
     return converted == null ? [] : [converted];
-  });
+  }));
   const status: ThreadMessageLike["status"] =
     message.status === "running"
       ? { type: "running" }

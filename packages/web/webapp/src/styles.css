@@ -523,7 +523,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .tool-call { color: var(--text-soft); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 9px; font-size: 11px; }
 .tool-call summary { min-height: 35px; display: flex; align-items: center; gap: 8px; padding: 0 10px; list-style: none; cursor: pointer; }
 .tool-call summary::-webkit-details-marker { display: none; }
-.tool-call summary > svg { margin-left: auto; transition: transform 130ms ease; }
+.tool-call summary > svg { flex: none; margin-left: auto; transition: transform 130ms ease; }
 .tool-call[open] summary > svg { transform: rotate(90deg); }
 .tool-status { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--accent); }
 .tool-status.is-running { animation: pulse 1.2s ease infinite; }
@@ -550,11 +550,15 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .ask-user-loading, .ask-user-complete, .ask-user-error { margin: 0; color: var(--text-soft); font-size: 12px; }
 .ask-user-error { color: var(--danger); }
 .ask-user-result { max-width: 100%; overflow: auto; margin: 0; font: 11px/1.5 var(--font-mono); }
-.tool-name { color: var(--text); font-family: var(--font-mono); font-weight: 600; }
-.tool-state { color: var(--text-muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; }
+/* An MCP name runs to 40+ characters, so the name has to be the row's shrinking
+   column; without this it clips against `.thread-root`'s hidden overflow. */
+.tool-name { min-width: 0; overflow: hidden; color: var(--text); font-family: var(--font-mono); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.tool-state { flex: none; color: var(--text-muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; white-space: nowrap; }
 .tool-payload { display: grid; gap: 6px; padding: 0 10px 10px; }
 .tool-payload > span { color: var(--text-muted); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
-.tool-payload pre { max-height: 280px; margin: 0; padding: 9px; overflow: auto; color: var(--text-soft); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; font-family: var(--font-mono); font-size: 10px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+/* `.message` turns selection off; a tool's input and output are exactly the
+   kind of thing an operator copies out, and on touch there is no other route. */
+.tool-payload pre { max-height: 280px; margin: 0; padding: 9px; overflow: auto; overscroll-behavior: contain; color: var(--text-soft); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; font-family: var(--font-mono); font-size: 10px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 
 /* One Agent delegation, holding the tool calls its subagent made. The rows
    inside it read as a tree: the disclosure marker leads, and a rail drops from
@@ -562,7 +566,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .tool-call.subagent { background: var(--surface); border-color: var(--line-strong); }
 .tool-call.subagent > summary > svg, .subagent-payload .tool-call > summary > svg { flex: none; margin-left: 0; }
 .tool-call.subagent > summary > .tool-state, .subagent-payload .tool-call > summary > .tool-state { margin-left: auto; }
-.subagent-mark { display: inline-flex; align-items: center; color: var(--accent); }
+.subagent-mark { flex: none; display: inline-flex; align-items: center; color: var(--accent); }
 .subagent-label { min-width: 0; overflow: hidden; color: var(--text-soft); text-overflow: ellipsis; white-space: nowrap; }
 .subagent-payload {
   display: grid;
@@ -575,12 +579,20 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 /* Children are rows on the rail, not cards: a dozen of them has to stay scannable. */
 .subagent-payload .tool-call { background: transparent; border: 0; border-radius: 7px; }
 .subagent-payload .tool-call > summary { min-height: 27px; gap: 7px; padding: 0 7px; }
-.subagent-payload .tool-call > summary:hover { background: var(--surface-subtle); }
 .subagent-payload .tool-call[open] > summary { background: var(--surface-subtle); }
 .subagent-payload .tool-payload { padding: 4px 7px 8px 28px; }
 .subagent-payload .tool-call.is-error .tool-state { color: var(--danger); }
 .subagent-call-preview { min-width: 0; flex: 1; overflow: hidden; color: var(--text-muted); font-family: var(--font-mono); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .subagent-note .tool-name { color: var(--text-muted); font-family: inherit; font-size: 9px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+@media (hover: hover) {
+  .subagent-payload .tool-call > summary:hover { background: var(--surface-subtle); }
+}
+/* A tapped row keeps a hover background it can never clear, and 27px is not a
+   target a thumb can hit. Both only apply where the pointer is coarse. */
+@media (hover: none), (pointer: coarse) {
+  .tool-call summary { min-height: 40px; }
+  .subagent-payload .tool-call > summary { min-height: 36px; }
+}
 
 /* Attachments and composer */
 .message-attachments, .composer-attachments { display: flex; flex-wrap: wrap; gap: 7px; }
@@ -730,6 +742,27 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .markdown { font-size: 13.5px; line-height: 1.62; }
   .markdown table { font-size: 11.5px; }
   .markdown th, .markdown td { padding: 6px 8px; }
+  /* Three nested rails cost ~90px of a 334px column, so each one gives some
+     back; the tree still reads as a tree at half the indent. */
+  .reasoning-text { margin-left: 4px; padding-left: 11px; }
+  .subagent-payload { margin: 0 0 8px 8px; padding-left: 9px; }
+  .subagent-payload .tool-payload { padding: 4px 8px 8px 12px; }
+  .tool-call summary { gap: 7px; padding: 0 8px; }
+  .subagent-payload .tool-call > summary { padding: 0 6px; }
+  /* Two lines beat an ellipsis that eats the whole preview: the name and its
+     state stay on the first row, the argument preview wraps under the name.
+     `order` is what moves the state ahead of the preview it follows in DOM.
+     Scoped to the tree — a plain tool row has neither preview nor label, and
+     its chevron is the flex item carrying `margin-left: auto`. */
+  .tool-call.subagent > summary, .subagent-payload .tool-call > summary { flex-wrap: wrap; row-gap: 2px; }
+  .tool-call.subagent > summary > .tool-state, .subagent-payload .tool-call > summary > .tool-state { order: 1; }
+  /* Indented with padding, not margin: a `100%` basis plus a left margin is
+     wider than the row it sits in, and the tree clips rather than scrolls. */
+  .subagent-call-preview, .subagent-label { order: 2; flex: 1 0 100%; padding-left: 21px; }
+  /* A settled activity log is a 256px scroll box inside the page scroll —
+     unusable on touch. Let it scroll with the page; payloads stay capped. */
+  .activity-root .reasoning-text { max-height: none; overflow-y: visible; }
+  .tool-payload pre { max-height: 220px; }
   .thread-footer { padding: 24px max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); }
   .composer-root { border-radius: 14px; }
   .composer-dropzone { padding: 8px 8px 6px; }

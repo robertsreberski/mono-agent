@@ -109,6 +109,19 @@ describe("SubagentPart", () => {
     expect(screen.getByText("2 tools · running")).toBeVisible();
   });
 
+  it("prices a delegation in its header, where an expensive one is identifiable", () => {
+    // The run total this folds into cannot say which delegation spent it.
+    render(part({ ...delegation, costUsd: 0.0042 }));
+
+    expect(screen.getByText("2 tools · 12.4s · $0.0042")).toBeVisible();
+  });
+
+  it("omits the price, and its separator, when the runtime priced nothing", () => {
+    render(part({ ...delegation, costUsd: 0 }));
+
+    expect(screen.getByText("2 tools · 12.4s")).toBeVisible();
+  });
+
   it("says one tool in the singular", () => {
     render(part({ ...delegation, calls: [delegation.calls[0]] }));
 

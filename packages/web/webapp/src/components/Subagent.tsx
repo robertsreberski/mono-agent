@@ -1,6 +1,7 @@
 import type { DataMessagePartProps } from "@assistant-ui/react";
 import type { ReactNode } from "react";
 
+import { formatUsd } from "../usage";
 import { Icon } from "./Icon";
 import { safeJson } from "./json";
 
@@ -20,6 +21,7 @@ interface SubagentView {
   readonly prompt?: string;
   readonly result?: unknown;
   readonly executionMs?: number;
+  readonly costUsd?: number;
   readonly status: ToolCallStatus;
   readonly calls: readonly SubagentCallView[];
 }
@@ -94,6 +96,9 @@ const subagentView = (data: unknown): SubagentView | undefined => {
     ...(record.result === undefined || record.result === null ? {} : { result: record.result }),
     ...(typeof record.executionMs === "number" && Number.isFinite(record.executionMs)
       ? { executionMs: record.executionMs }
+      : {}),
+    ...(typeof record.costUsd === "number" && Number.isFinite(record.costUsd) && record.costUsd > 0
+      ? { costUsd: record.costUsd }
       : {}),
     status: toolCallStatus(record.status),
     calls: calls.flatMap((entry): SubagentCallView[] => {
@@ -176,6 +181,9 @@ export function SubagentPart({ data }: DataMessagePartProps) {
     `${view.calls.length} tool${view.calls.length === 1 ? "" : "s"}`,
     ...(view.status === "complete" ? [] : [view.status]),
     ...(view.executionMs === undefined ? [] : [formatSeconds(view.executionMs)]),
+    // A delegation is the one part of a turn that can quietly cost more than
+    // the turn itself, and the run total it folds into cannot say which one did.
+    ...(view.costUsd === undefined ? [] : [formatUsd(view.costUsd)]),
   ].join(" · ");
 
   return (

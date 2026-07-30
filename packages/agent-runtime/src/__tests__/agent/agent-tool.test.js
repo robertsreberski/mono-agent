@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { homedir } from "node:os";
 
-const { createAgentTool, DEFAULT_SUBAGENT_TOOLS, subagentInvocationCount } = await import("../../agent/tools/agent-tool.js");
+const {
+  createAgentTool,
+  DEFAULT_SUBAGENT_TOOLS,
+  subagentInvocationCount,
+  subagentUsageForRun,
+} = await import("../../agent/tools/agent-tool.js");
 
 const PROFILE = {
   name: "researcher",
@@ -437,6 +442,96 @@ describe("subagentInvocationCount", () => {
     expect(subagentInvocationCount(undefined, "run-1")).toBe(0);
     expect(subagentInvocationCount({}, "run-1")).toBe(0);
     expect(subagentInvocationCount({ __budgets: "not a map" }, "run-1")).toBe(0);
+  });
+});
+
+describe("subagentUsageForRun", () => {
+  /** A child that reports one completed provider run's totals, as both bridges do. */
+  function spendingRun(cumulativeUsd, tokens = { input: 100, output: 20, cacheReadTokens: 5, cacheCreationTokens: 3 }) {
+    return async (request) => {
+      request.onEvent({ type: "cost_accumulated", sdk: "pi", model: "m", cumulativeUsd, tokens });
+      return { text: "done", events: [] };
+    };
+  }
+
+  it("sums what every delegation in a run spent, keyed by parent run", async () => {
+    const options = subagentOptions({ run: spendingRun(0.02) });
+    const tool = createAgentTool(options, { parentRunId: "run-1" });
+
+    expect(subagentUsageForRun(options, "run-1")).toEqual({
+      costUsd: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
+    });
+    await tool.execute("c1", { prompt: "x" });
+    await tool.execute("c2", { prompt: "y" });
+    expect(subagentUsageForRun(options, "run-1")).toEqual({
+      costUsd: 0.04, input: 200, output: 40, cacheRead: 10, cacheWrite: 6,
+    });
+    // A later logical turn starts fresh, exactly like the call budget.
+    expect(subagentUsageForRun(options, "run-2").costUsd).toBe(0);
+  });
+
+  it("reads the child's totals as a running total rather than a delta", async () => {
+    // Same rule `ai/observer.js` applies to the parent's own events: two
+    // snapshots from one child run are one child's spend, not two.
+    const run = async (request) => {
+      request.onEvent({ type: "cost_accumulated", cumulativeUsd: 0.01, tokens: { input: 50, output: 5 } });
+      request.onEvent({ type: "cost_accumulated", cumulativeUsd: 0.03, tokens: { input: 150, output: 15 } });
+      return { text: "done", events: [] };
+    };
+    const options = subagentOptions({ run });
+    const tool = createAgentTool(options, { parentRunId: "run-1" });
+    await tool.execute("c1", { prompt: "x" });
+
+    expect(subagentUsageForRun(options, "run-1")).toMatchObject({ costUsd: 0.03, input: 150, output: 15 });
+  });
+
+  it("keeps what a child that timed out spent before it was stopped", async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn((request) => new Promise((resolve) => {
+        request.onEvent({ type: "cost_accumulated", cumulativeUsd: 0.05, tokens: { input: 10, output: 2 } });
+        request.abortSignal.addEventListener("abort", () => resolve({ text: "", events: [], cancelled: true }), { once: true });
+      }));
+      const options = subagentOptions({ run, timeoutMs: 500 });
+      const tool = createAgentTool(options, { parentRunId: "run-1" });
+      const pending = tool.execute("c1", { name: "researcher", prompt: "x" });
+      await vi.advanceTimersByTimeAsync(600);
+      await pending;
+
+      // Stopping a subagent does not refund what it already burned.
+      expect(subagentUsageForRun(options, "run-1").costUsd).toBe(0.05);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never republishes the child's cost on the parent stream", async () => {
+    // Consumers read `usage_update` as the run's cumulative figure, so a
+    // child's smaller total arriving last would read as the run getting cheaper.
+    const events = [];
+    const options = subagentOptions({ run: spendingRun(0.02) });
+    const tool = createAgentTool(options, { parentRunId: "run-1", onEvent: (event) => events.push(event) });
+    await tool.execute("c1", { name: "researcher", prompt: "x" });
+
+    expect(events.some((event) => event.type === "cost_accumulated")).toBe(false);
+    const completed = events.find((event) => event.phase === "agent_completed");
+    expect(completed.subagent).toMatchObject({ id: "c1", name: "researcher", costUsd: 0.02 });
+  });
+
+  it("leaves the price off a delegation the runtime never priced", async () => {
+    const events = [];
+    const options = subagentOptions({ run: okRun() });
+    const tool = createAgentTool(options, { parentRunId: "run-1", onEvent: (event) => events.push(event) });
+    await tool.execute("c1", { prompt: "x" });
+
+    expect(events.find((event) => event.phase === "agent_completed").subagent).not.toHaveProperty("costUsd");
+  });
+
+  it("reads all zeroes rather than throwing when nothing was ever registered", () => {
+    const zero = { costUsd: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    expect(subagentUsageForRun(undefined, "run-1")).toEqual(zero);
+    expect(subagentUsageForRun({}, "run-1")).toEqual(zero);
+    expect(subagentUsageForRun({ __budgets: "not a map" }, "run-1")).toEqual(zero);
   });
 });
 

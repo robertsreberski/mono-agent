@@ -33,7 +33,7 @@ import {
   resolvePiToolExecutionMode,
   splitPromptMessages,
 } from "../../ai/providers/pi-native.js";
-import { failureKindForPiError } from "../../ai/providers/pi-native/result-builder.js";
+import { failureKindForPiError, withSubagentUsage } from "../../ai/providers/pi-native/result-builder.js";
 import { startLiveInput } from "../../ai/providers/pi-native/turn-runner.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 
@@ -295,6 +295,35 @@ describe("failureKindForPiError", () => {
 
   it("keeps max-turn termination in usage_limit", () => {
     expect(failureKindForPiError("Maximum turns reached", {}, { maxTurnsHit: true })).toBe("usage_limit");
+  });
+});
+
+describe("withSubagentUsage", () => {
+  const own = { input: 1_000, output: 200, cacheRead: 50, cacheWrite: 10, cost: 0.02 };
+  const none = { costUsd: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+  it("adds a delegation's cost and tokens to the run that asked for it", () => {
+    // A subagent keeps its own transcript, so `usageFromMessages` never sees
+    // this — every consumer of the run's usage was short by the whole amount.
+    expect(withSubagentUsage(own, { costUsd: 0.03, input: 400, output: 60, cacheRead: 5, cacheWrite: 1 }, 0.019))
+      .toEqual({ input: 1_400, output: 260, cacheRead: 55, cacheWrite: 11, cost: 0.05 });
+  });
+
+  it("sums onto the estimate when the provider priced nothing", () => {
+    // Subscription auth reports no cost, so the estimate is what gets shown;
+    // adding to the raw field alone would report only the subagent's spend.
+    expect(withSubagentUsage({ ...own, cost: 0 }, { ...none, costUsd: 0.03 }, 0.019).cost)
+      .toBeCloseTo(0.049, 10);
+  });
+
+  it("leaves a run that delegated nothing exactly as it was", () => {
+    expect(withSubagentUsage(own, none, 0.019)).toEqual(own);
+    expect(withSubagentUsage({ ...own, cost: 0 }, none, 0.019).cost).toBe(0);
+  });
+
+  it("keeps an unpriced delegation's tokens without inventing a price for them", () => {
+    expect(withSubagentUsage(own, { ...none, input: 400, output: 60 }, 0.019))
+      .toEqual({ ...own, input: 1_400, output: 260 });
   });
 });
 

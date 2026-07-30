@@ -120,6 +120,8 @@ export type MessagePart =
       readonly args?: unknown;
       readonly result?: unknown;
       readonly executionMs?: number;
+      /** What this delegation cost, when the runtime priced its model. */
+      readonly costUsd?: number;
       readonly status: ToolCallStatus;
       readonly calls: readonly ToolCall[];
     }

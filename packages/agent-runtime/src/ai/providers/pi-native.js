@@ -31,7 +31,7 @@ import {
   resolveAgentCompactionPolicy,
   resolveRuntimePolicyInputs,
 } from "../../agent/compaction.js";
-import { subagentInvocationCount } from "../../agent/tools/agent-tool.js";
+import { subagentInvocationCount, subagentUsageForRun } from "../../agent/tools/agent-tool.js";
 import { closePiMcpClients } from "../../agent/tools/pi-bridge.js";
 import { readToolRuntime } from "../../agent/tools/shared/runtime-context.js";
 import { createApprovalManager } from "../../agent/approval.js";
@@ -57,6 +57,7 @@ import {
   emitCapabilitiesResolved,
   emitUsageCostEvents,
   usageFromMessages,
+  withSubagentUsage,
 } from "./pi-native/result-builder.js";
 import {
   cleanupSessionOnThrow,
@@ -646,15 +647,24 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     const { runTranscript, lastAssistant, stopReason, finalText, finalThinking } = state;
     const runAssistantCount = state.assistantMessages.length;
 
-    const usage = usageFromMessages(runTranscript);
+    const ownUsage = usageFromMessages(runTranscript);
+    // Priced from this agent's own tokens: it is the fallback for a run the
+    // provider did not price, and only these tokens are this model's.
     const estimatedCost = estimateCost({
       resolveCustomPricing: options.resolveCustomPricing,
       model: reference,
-      inputTokens: usage.input,
-      outputTokens: usage.output,
-      cachedTokens: usage.cacheRead,
-      cacheWriteTokens: usage.cacheWrite,
+      inputTokens: ownUsage.input,
+      outputTokens: ownUsage.output,
+      cachedTokens: ownUsage.cacheRead,
+      cacheWriteTokens: ownUsage.cacheWrite,
     });
+    // Keyed by the same parentRunId the Agent tool stamps its budget under, the
+    // way `subagentInvoked` below reads its count.
+    const usage = withSubagentUsage(
+      ownUsage,
+      subagentUsageForRun(options.subagents, (options.toolContext ?? readToolRuntime())?.runId),
+      estimatedCost,
+    );
     emitUsageCostEvents({
       onEvent,
       resolved,
