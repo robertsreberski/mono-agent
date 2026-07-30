@@ -73,6 +73,12 @@ const REDACTED = "[redacted]";
 interface ToolActivitySpec {
   readonly action: string;
   readonly actionWithoutPreview?: string;
+  /**
+   * Action used when the preview is a model-authored `description` — prose that
+   * already reads as a sentence, so the verb would double up
+   * ("Running Show working tree status").
+   */
+  readonly narrativeAction?: string;
   readonly previewFields: readonly string[];
   /**
    * Argv-shaped tools carry the program in one scalar field and the
@@ -239,10 +245,10 @@ export function formatToolActivityLine(
   const leaf = toolLeaf(rawName);
   const normalized = leaf.toLowerCase().replace(/[^a-z0-9]+/gu, "");
   const spec = activitySpec(normalized, leaf);
-  const preview = previewFromArguments(toolArguments, spec, options);
-  return preview === undefined
-    ? (spec.actionWithoutPreview ?? spec.action)
-    : `${spec.action} ${spec.quotePreview ? JSON.stringify(preview) : preview}`;
+  const result = previewFromArguments(toolArguments, spec, options);
+  if (result === undefined) return spec.actionWithoutPreview ?? spec.action;
+  const action = result.narrative ? (spec.narrativeAction ?? spec.action) : spec.action;
+  return `${action} ${spec.quotePreview ? JSON.stringify(result.preview) : result.preview}`;
 }
 
 /**
@@ -256,7 +262,7 @@ export function formatLiveInputActivityLine(
   options?: ToolActivityLineOptions,
 ): string {
   // Steering text is operator prose, not a shell line: no `cd` prefix to elide.
-  const preview = sanitizePreview(text, { truncation: "head", shell: false }, options);
+  const preview = sanitizePreview(text, { truncation: "head", shell: false, narrative: false }, options);
   return preview === undefined ? "↪️ Steered" : `↪️ Steered: “${preview}”`;
 }
 
@@ -332,7 +338,13 @@ function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
   if (COMMAND_NAMES.has(normalized)) {
     return {
       action: "🖥️ Running",
-      previewFields: ["command", "cmd", "script"],
+      narrativeAction: "🖥️",
+      // A `description` states the intent better than the command line ever
+      // can. It arrives two ways: a runtime that declares the field (the Claude
+      // Agent SDK) or a model that volunteers it anyway — the event carries the
+      // raw `tool_use.input`, not a schema-filtered copy, so an undeclared key
+      // survives. Fall back to the command whenever it is absent.
+      previewFields: ["description", "command", "cmd", "script"],
       argvPreview: { head: "executable", tail: "args" },
     };
   }
@@ -376,19 +388,26 @@ function humanizeToolLeaf(leaf: string): string {
   return `${bounded.charAt(0).toUpperCase()}${bounded.slice(1)}`;
 }
 
+interface ActivityPreview {
+  readonly preview: string;
+  /** Preview is model-authored prose that already reads as a sentence. */
+  readonly narrative: boolean;
+}
+
 function previewFromArguments(
   toolArguments: unknown,
   spec: ToolActivitySpec,
   options?: ToolActivityLineOptions,
-): string | undefined {
+): ActivityPreview | undefined {
   const record = safePlainRecord(toolArguments);
   if (record === undefined) return undefined;
 
   for (const key of spec.previewFields) {
     const value = safeOwnScalar(record, key);
     if (value === undefined) continue;
-    const preview = sanitizePreview(value, previewShapeForField(key), options);
-    if (preview !== undefined) return preview;
+    const shape = previewShapeForField(key);
+    const preview = sanitizePreview(value, shape, options);
+    if (preview !== undefined) return { preview, narrative: shape.narrative };
   }
   // Argv is the fallback, not the first choice: a tool that offers a whole
   // command line already has the more complete rendering.
@@ -401,14 +420,15 @@ function previewFromArgv(
   record: object,
   fields: { readonly head: string; readonly tail: string },
   options?: ToolActivityLineOptions,
-): string | undefined {
+): ActivityPreview | undefined {
   const head = safeOwnScalar(record, fields.head);
   if (head === undefined) return undefined;
   // Space-joined so the shell-shaped redactions (`--token x`, `-u user:pass`,
   // `Authorization: Bearer …`) match argv exactly as they match a command line,
   // and so the preview truncates like the command it stands in for.
   const argv = [head, ...safeOwnStringArray(record, fields.tail)].join(" ");
-  return sanitizePreview(argv, { truncation: "balanced", shell: true }, options);
+  const preview = sanitizePreview(argv, { truncation: "balanced", shell: true, narrative: false }, options);
+  return preview === undefined ? undefined : { preview, narrative: false };
 }
 
 /**
@@ -516,20 +536,26 @@ interface PreviewShape {
   readonly truncation: PreviewTruncation;
   /** Value is a shell command line, so a redundant `cd` prefix can be elided. */
   readonly shell: boolean;
+  /** Value is prose the model wrote to explain itself, not an argument. */
+  readonly narrative: boolean;
 }
 
 function previewShapeForField(field: string): PreviewShape {
+  // Prose reads left to right, so it truncates from the end like a sentence.
+  if (field === "description") {
+    return { truncation: "head", shell: false, narrative: true };
+  }
   if (field === "file_path" || field === "path" || field === "destination") {
-    return { truncation: "middle", shell: false };
+    return { truncation: "middle", shell: false, narrative: false };
   }
   if (field === "command" || field === "cmd" || field === "script") {
-    return { truncation: "balanced", shell: true };
+    return { truncation: "balanced", shell: true, narrative: false };
   }
   // Program source, not a shell line: a `cd` inside it is code, not a prefix.
   if (field === "code" || field === "source") {
-    return { truncation: "balanced", shell: false };
+    return { truncation: "balanced", shell: false, narrative: false };
   }
-  return { truncation: "head", shell: false };
+  return { truncation: "head", shell: false, narrative: false };
 }
 
 function safePlainRecord(value: unknown): object | undefined {

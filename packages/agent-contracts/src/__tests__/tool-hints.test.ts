@@ -102,6 +102,53 @@ describe("formatToolActivityLine", () => {
       .toBe("📖 Reading /etc/hosts");
   });
 
+  describe("shell tool descriptions", () => {
+    it("states the intent instead of the command line when the runtime supplies one", () => {
+      expect(formatToolActivityLine("Bash", {
+        command: "cd /srv/agents/assistant && git status",
+        description: "Show working tree status",
+      })).toBe("🖥️ Show working tree status");
+    });
+
+    it("drops the verb so the description is not doubled up", () => {
+      // "🖥️ Running Show working tree status" would read as two verbs.
+      const line = formatToolActivityLine("Bash", { command: "ls", description: "List files in current directory" });
+      expect(line).toBe("🖥️ List files in current directory");
+      expect(line).not.toContain("Running");
+    });
+
+    it("falls back to the command when the runtime has no description field", () => {
+      // pi's shell tool is `{ command, timeout }` — no description is ever sent.
+      expect(formatToolActivityLine("Bash", { command: "git status" }))
+        .toBe("🖥️ Running git status");
+    });
+
+    it("ignores an empty or whitespace-only description", () => {
+      expect(formatToolActivityLine("Bash", { command: "git status", description: "   " }))
+        .toBe("🖥️ Running git status");
+    });
+
+    it("redacts and bounds a description like any other preview", () => {
+      const secret = ["sk", "fixtureCredential0123456789"].join("-");
+      const line = formatToolActivityLine("Bash", { command: "curl x", description: `Call the API with ${secret}` });
+      expect(line).not.toContain(secret);
+      expect(line).toContain("[redacted]");
+
+      const long = formatToolActivityLine("Bash", {
+        command: "find .",
+        description: "Find and delete every temporary file recursively beneath the workspace root",
+      });
+      expect(Array.from(long.slice("🖥️ ".length))).toHaveLength(40);
+      expect(long.endsWith("…")).toBe(true);
+    });
+
+    it("leaves non-shell families on their own verbs", () => {
+      // `description` is only a preview field for shell tools.
+      expect(formatToolActivityLine("Read", { file_path: "/tmp/a.md", description: "Read the notes" }))
+        .toBe("📖 Reading /tmp/a.md");
+    });
+  });
+
   describe("redundant `cd <agent root>` prefixes", () => {
     const options = { workspaceRoot: "/Users/example/agents/assistant", homeDir: "/Users/example" };
 
