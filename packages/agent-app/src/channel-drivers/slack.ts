@@ -37,9 +37,16 @@ const UNCONFIGURED_SLACK_CONFIG: SlackAdapterConfig = {
   stripMentionText: false,
   shortcuts: [],
   homeTab: { enabled: false, buttons: [] },
-  // Mirrors the loader's own default rather than "everything off": channel-gate
+  // Mirrors the loader's own defaults rather than "everything off": channel-gate
   // requires this constant to deep-equal loadSlackAdapterConfig on empty input.
   resolveUserNames: true,
+  threadContext: {
+    enabled: true,
+    maxMessages: 15,
+    requestLimit: 15,
+    timeoutMs: 4000,
+    includeBotMessages: true,
+  },
 };
 
 export interface SlackChannelOverrides {
@@ -110,6 +117,7 @@ export function createSlackChannelDriver(
         shortcuts: input.config.shortcuts,
         homeTab: input.config.homeTab,
         resolveUserNames: input.config.resolveUserNames,
+        threadContext: input.config.threadContext,
         ...(input.coreConfig?.runtime === undefined
           ? {}
           : {

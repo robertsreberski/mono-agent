@@ -2332,6 +2332,52 @@
           "type": "boolean",
           "default": true
         },
+        "threadContext": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "description": "Sends what was said in the conversation before the agent was triggered as untrusted background context. Reads the thread for an in-thread trigger and recent channel history otherwise; needs a `*:history` scope.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": true
+            },
+            "maxMessages": {
+              "description": "Messages of context sent per turn, newest kept. `0` disables the read. Capped at the harness's own 30-message bound.",
+              "examples": [
+                15
+              ],
+              "type": "integer",
+              "default": 15
+            },
+            "requestLimit": {
+              "description": "Objects requested from Slack per read. Slack caps this at 15 for non-Marketplace apps; internal apps can raise it.",
+              "examples": [
+                15
+              ],
+              "type": "integer",
+              "default": 15
+            },
+            "timeoutMs": {
+              "description": "Budget for the whole context phase, including name resolution. Exceeding it submits the turn with less context rather than delaying it. `0` bounds the phase only by the turn itself.",
+              "examples": [
+                4000
+              ],
+              "type": "integer",
+              "default": 4000
+            },
+            "includeBotMessages": {
+              "description": "Include other apps' messages (a CI or alert bot) labelled as bots. The agent's own posts are always excluded.",
+              "examples": [
+                true
+              ],
+              "type": "boolean",
+              "default": true
+            }
+          }
+        },
         "heartbeatIntervalMs": {
           "description": "Configures heartbeatIntervalMs for the slack section.",
           "examples": [

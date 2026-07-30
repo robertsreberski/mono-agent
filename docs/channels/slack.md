@@ -14,6 +14,7 @@ The Slack channel connects your agent to a Slack workspace over **Socket Mode** 
 - **Final-answer delivery with transient tool activity.** Like Telegram, Slack does not stream answer tokens. It starts with assistant-thread status or a 👀 reaction. When an inbound turn starts tools, one redacted cumulative activity message is edited in place. Applied live guidance adds a completed `↪️ Steered: “<safe preview>”` line. On completion Slack posts the final answer as a fresh message, then best-effort deletes the activity message; cleanup failure can leave stale activity behind but cannot duplicate or lose the answer. `ReadSkill` renders the selected skill as `📚 Reading "<skill>"` without exposing its path, and memory recall appears as preview-free `🧠 Recalling memory`, distinct from memory writes (`🧠`) and ordinary file reads (`📖`). Adjacent duplicates become `(×N)`; proactive notifications do not show the ledger. An acknowledged `/cancel` best-effort deletes a still-transient ledger and leaves one `Cancelled.` acknowledgement. This is the default (`stream.finalOnly: true`, `stream.showHints: true`); see [Delivery and send tools](/channels/delivery-and-send-tools/).
 - **Live follow-up steering.** Send another plain-text message in the same Slack conversation while the agent is working to guide that active run. Slack acknowledges the accepted message with 👀. Once the provider applies it, Slack best-effort deletes and reposts any confirmed cumulative activity ledger with the `↪️ Steered` line so that ledger follows the human message; delete failure edits in place. Applied guidance does not create a second response. If the provider cannot steer, delivery fails, or the active turn wins the race to finish, the exact message runs next as an ordinary queued turn and no `Steered` activity is emitted. Commands, pending `AskUser` replies, and file messages retain their existing paths. See [Live input steering](/programmatic/approval-and-structured-output/#live-input-steering).
 - **Native runtime controls.** Mention-message and workspace-registered slash commands open Block Kit selectors for the configured primary/fallback models and model-supported effort values. Direct-message choices apply across new DM threads. In shared channels, `/<bot>-model` and `/<bot>-effort` establish a channel choice while `@agent /model` and `@agent /effort` can override it inside one thread. No Slack-specific model catalog is required. See [Runtime model and effort controls](#runtime-model-and-effort-controls-built-in).
+- **Thread and channel context.** A mention deep in a thread arrives with the thread behind it, so "what do you think?" is answerable. An in-thread trigger reads that thread; a top-level channel mention or a fresh DM reads recent history instead. The transcript is background only: the harness renders it fenced and explicitly untrusted, and never writes it to durable history or memory. Bounded to one Slack request per turn with a per-channel cooldown, and every failure mode sends less context rather than delaying the turn. See [Thread and channel context](#thread-and-channel-context).
 - **Speaker names.** Each inbound turn carries who sent it, so the agent can address people by name in a shared channel instead of guessing. Slack's events carry only a user ID, so the adapter resolves the display name and handle through `users.info` behind a bounded in-process cache. Strictly best-effort: a missing `users:read` scope, a rate limit, or a deleted profile leaves the turn unnamed rather than failing it. See [Speaker names](#speaker-names).
 - **Markdown boundary.** mono-agent treats agent-visible Slack text as standard Markdown. Inbound Slack `mrkdwn` links/lists are normalized before they reach the agent, and outbound final replies plus `SlackSendMessage` text are rendered to Slack `mrkdwn` at delivery time.
 - **Slack message length.** Slack final replies and `SlackSendMessage` keep text under Slack's 40,000-character platform limit. Replies below that limit are delivered as one Slack message; longer text is split into continuation posts without changing the configured destination or thread. This Slack default is separate from the shared 3,800-character default used by other chat stream implementations.
@@ -50,6 +51,7 @@ Put the Socket Mode credentials in `.env` as `MONO_AGENT_SLACK_BOT_TOKEN` and `M
 | `mentionTextAliases` | string[] | — | Plain-text aliases (e.g. `@agent`) that also trigger a response. |
 | `stripMentionText` | boolean | conditional | Strip the mention/alias text from the prompt before the agent sees it. When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`. |
 | `resolveUserNames` | boolean | `true` | Resolve the speaker's display name and handle so the agent knows who is talking. Requires the `users:read` scope. See [Speaker names](#speaker-names). |
+| `threadContext` | object | see below | Send what was said in the conversation before the agent was triggered. Requires a `*:history` scope. See [Thread and channel context](#thread-and-channel-context). |
 | `shortcuts` | object[] | `[]` | JSON-only global/message shortcut bindings that run configured prompts; no environment-variable form. See [Shortcuts](#shortcuts). |
 | `homeTab` | object | `{ "enabled": false, "buttons": [] }` | JSON-only App Home header/buttons; no environment-variable form. See [App Home](#app-home). |
 
@@ -75,10 +77,80 @@ interaction fields are structured and JSON-only: configure them in
 | `slack.mentionTextAliases` | `MONO_AGENT_SLACK_MENTION_TEXT_ALIASES` (CSV) |
 | `slack.stripMentionText` | `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` |
 | `slack.resolveUserNames` | `MONO_AGENT_SLACK_RESOLVE_USER_NAMES` |
+| `slack.threadContext.enabled` | `MONO_AGENT_SLACK_THREAD_CONTEXT_ENABLED` |
+| `slack.threadContext.maxMessages` | `MONO_AGENT_SLACK_THREAD_CONTEXT_MAX_MESSAGES` |
+| `slack.threadContext.requestLimit` | `MONO_AGENT_SLACK_THREAD_CONTEXT_REQUEST_LIMIT` |
+| `slack.threadContext.timeoutMs` | `MONO_AGENT_SLACK_THREAD_CONTEXT_TIMEOUT_MS` |
+| `slack.threadContext.includeBotMessages` | `MONO_AGENT_SLACK_THREAD_CONTEXT_INCLUDE_BOT_MESSAGES` |
 
 :::tip
 Keep tokens out of every source `mono-agent.config.json`, including ignored or untracked development configs. Set `MONO_AGENT_SLACK_BOT_TOKEN` / `MONO_AGENT_SLACK_APP_TOKEN` from your secret store or `.env` instead.
 :::
+
+### Thread and channel context
+
+Slack delivers a mention with no surroundings. Without this, `@agent what do you
+think?` twenty messages into a thread is unanswerable — the agent sees only those
+five words. With `threadContext` enabled (the default) the adapter reads the
+conversation and passes what came before as **background context**:
+
+| Trigger | What is read |
+| --- | --- |
+| A mention inside a thread | That thread (`conversations.replies`) |
+| A top-level channel mention | Recent channel messages (`conversations.history`) |
+| A direct message | Recent DM messages (`conversations.history`) |
+
+The DM case matters more than it looks: each top-level DM message starts its own
+agent session, so without this the agent has no memory of what you said earlier
+in the same DM. Note that its **own** replies are excluded (see below), so a DM
+recovers what you said, not what it answered.
+
+```json
+{
+  "slack": {
+    "threadContext": {
+      "enabled": true,
+      "maxMessages": 15,
+      "requestLimit": 15,
+      "timeoutMs": 4000,
+      "includeBotMessages": true
+    }
+  }
+}
+```
+
+Requires a history scope for each conversation type you allow:
+`channels:history`, `groups:history`, `im:history`, `mpim:history`.
+
+**How the context is treated.** It becomes the shared contract's
+`precedingMessages`, which the harness renders as a bounded, fenced, explicitly
+untrusted transcript — a record of what other people said, never instructions to
+follow. It is **turn-local**: it reaches the provider message only and is never
+written to durable history or long-term memory, so it cannot compound with
+whatever the adapter reads next turn. See
+[Speaker and group context](/context/assembly/#speaker-and-group-context).
+
+**What is excluded.** The agent's own posts, always — they are already in the
+session's history, and re-framing the agent's own words as untrusted third-party
+content would be worse than omitting them. Other apps' messages are **included**
+and labelled as bots, because a CI or alert bot's message is often the whole
+reason someone pulled the agent in; set `includeBotMessages: false` to drop them.
+Join/leave notices, edits, and tombstones never reach the prompt.
+
+:::caution Slack rate limits
+Slack caps `conversations.history` and `conversations.replies` at roughly **one
+request per minute and 15 objects** for non-Marketplace apps
+([May 2025 change](https://docs.slack.dev/changelog/2025/05/29/rate-limit-changes-for-non-marketplace-apps/));
+internal workspace apps keep the higher Tier 3 limits and can raise
+`requestLimit`. The adapter is built for the strict case: exactly one request per
+turn, no retries, no pagination, and a per-channel cooldown after a rate-limited
+response. When the cooldown is active the read is skipped outright.
+:::
+
+Every failure path — missing scope, rate limit, an unreadable channel, an
+exceeded `timeoutMs` — sends the turn with less context rather than failing or
+delaying it. A missing scope logs one warning and disables the read for the rest
+of the process.
 
 ### Speaker names
 
@@ -350,7 +422,7 @@ for a standalone example and its source-module map.
 
 1. Create a Slack app at <https://api.slack.com/apps> (from scratch, in your target workspace).
 2. **Socket Mode** → enable it. This generates an **app-level token** (`xapp-...`) with the `connections:write` scope → this is your `appToken`.
-3. **OAuth & Permissions** → add bot token scopes, then install the app to the workspace. The install yields the **bot token** (`xoxb-...`) → this is your `botToken`. Typical scopes: `app_mentions:read`, `chat:write`, `reactions:write` (for the 👀 indicator), and `channels:history` / `groups:history` to read messages in the channels you allow. Add `users:read` for [speaker names](#speaker-names) and `commands` when exposing model/effort controls in Slack's `/` picker.
+3. **OAuth & Permissions** → add bot token scopes, then install the app to the workspace. The install yields the **bot token** (`xoxb-...`) → this is your `botToken`. Typical scopes: `app_mentions:read`, `chat:write`, `reactions:write` (for the 👀 indicator), and `channels:history` / `groups:history` to read messages in the channels you allow. Add `users:read` for [speaker names](#speaker-names), `im:history` / `mpim:history` if you want [thread and channel context](#thread-and-channel-context) in direct and group DMs, and `commands` when exposing model/effort controls in Slack's `/` picker.
 4. **Event Subscriptions** → subscribe to the `app_mention` bot event, plus `message.im` when using direct messages (and, if you want non-mention messages handled in allowed channels, `message.channels`). Add `app_home_opened` when using `slack.homeTab`.
 5. **Interactivity & Shortcuts** → enable interactivity for the built-in model/effort menus, `slack.shortcuts`, or App Home buttons. Create each global/message shortcut with a callback ID matching its configured `callbackId`. Socket Mode carries the interaction payloads; no request URL is needed.
 6. **Slash Commands** → create `/<bot-username>-model` and `/<bot-username>-effort` (for example `/foo-model` and `/foo-effort`). Add concise descriptions and usage hints. Socket Mode carries the commands, so leave the Request URL unset; reinstall/reauthorize the app if Slack prompts after adding the `commands` scope.

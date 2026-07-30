@@ -14,6 +14,7 @@ import {
   type SlackPendingAsks,
   type SlackShortcutBinding,
 } from "./adapter.js";
+import type { SlackThreadContextOptions } from "./thread-context.js";
 import {
   createSecretSafeSlackLogger,
   redactSlackErrorMessage,
@@ -78,6 +79,8 @@ export interface SlackAdapterStartOptions {
    * adapter; a missing scope degrades to an unnamed speaker.
    */
   readonly resolveUserNames?: boolean;
+  /** Best-effort thread/channel turn context. Enabled by default; needs a `*:history` scope. */
+  readonly threadContext?: SlackThreadContextOptions;
   readonly logger?: SlackAdapterStartLogger;
 
   /** Resolve an in-thread reply back to the conversation that produced the message it threads off. */
@@ -164,6 +167,7 @@ export async function startSlackAdapter(
     logger,
     identity.botUserIds,
     runtimeSlashCommands,
+    identity.botId,
   ));
   const runner = new SlackSocketModeRunner(buildRunnerOptions(
     api,
@@ -216,11 +220,13 @@ function buildAdapterOptions(
   logger: SlackAdapterStartLogger | undefined,
   botUserIds: readonly SlackUserId[],
   runtimeSlashCommands: SlackRuntimeSlashCommands | undefined,
+  botId: string | undefined,
 ): ConstructorParameters<typeof SlackAdapter>[0] {
   const adapterOptions: ConstructorParameters<typeof SlackAdapter>[0] = {
     api,
     responder: options.responder,
     botUserIds: [...botUserIds],
+    ...(botId === undefined ? {} : { botId }),
   };
   if (options.allowedChannelIds !== undefined) {
     adapterOptions.allowedChannelIds = [...options.allowedChannelIds];
@@ -258,6 +264,9 @@ function buildAdapterOptions(
   if (options.resolveUserNames !== undefined) {
     adapterOptions.resolveUserNames = options.resolveUserNames;
   }
+  if (options.threadContext !== undefined) {
+    adapterOptions.threadContext = options.threadContext;
+  }
   if (logger !== undefined) {
     adapterOptions.logger = logger;
   }
@@ -276,6 +285,8 @@ function buildAdapterOptions(
 interface ResolvedSlackBotIdentity {
   readonly botUserIds: readonly SlackUserId[];
   readonly botUserName?: string;
+  /** The app's own `bot_id`, so its posts are recognizable when reading history back. */
+  readonly botId?: string;
 }
 
 async function resolveBotIdentity(
@@ -288,6 +299,8 @@ async function resolveBotIdentity(
     const auth = await api.authTest();
     const botUserName = auth.user?.trim();
     const discoveredUserId = auth.user_id?.trim();
+    const botId = auth.bot_id?.trim();
+    const botIdFields = botId === undefined || botId.length === 0 ? {} : { botId };
     if (discoveredUserId === undefined || discoveredUserId.length === 0) {
       logger?.warn?.(
         "Slack auth.test did not return a bot user ID; continuing with configured mention identities.",
@@ -295,6 +308,7 @@ async function resolveBotIdentity(
       return {
         botUserIds,
         ...(botUserName === undefined || botUserName.length === 0 ? {} : { botUserName }),
+        ...botIdFields,
       };
     }
     if (!botUserIds.some((userId) => userId.toLowerCase() === discoveredUserId.toLowerCase())) {
@@ -303,6 +317,7 @@ async function resolveBotIdentity(
     return {
       botUserIds,
       ...(botUserName === undefined || botUserName.length === 0 ? {} : { botUserName }),
+      ...botIdFields,
     };
   } catch (error) {
     logger?.warn?.(
