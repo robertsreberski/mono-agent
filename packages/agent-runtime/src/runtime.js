@@ -165,6 +165,13 @@ export function createRuntime(host = {}) {
     // WebSearch, so even a read-only profile could bypass network policy.
     ...(request.sandboxPolicy === undefined ? {} : { sandboxPolicy: request.sandboxPolicy }),
     ...(request.sandboxEngine === undefined ? {} : { sandboxEngine: request.sandboxEngine }),
+    // The parent's disclosed skills, for the same reason: they are a per-run
+    // option, so a child that does not receive them has no ReadSkill tool and no
+    // index, and must rediscover by trial and error what its parent could look
+    // up. A host-supplied `run` may gate this; the default has no route or deny
+    // list of its own to consult, so it forwards what it was given.
+    ...(request.skills === undefined ? {} : { skills: request.skills }),
+    ...(request.skillsRoot === undefined ? {} : { skillsRoot: request.skillsRoot }),
     ...(request.executionMode === undefined ? {} : { executionMode: request.executionMode }),
     ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
     // A profile that pins effort — declared or authored at call time — means it

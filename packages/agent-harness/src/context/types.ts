@@ -33,6 +33,16 @@ export interface SkillIndexEntry {
   readonly mainFile: string;
 }
 
+/**
+ * A skill index entry without its on-disk location.
+ *
+ * What crosses into runtime options — and therefore into a subagent request —
+ * is only what is needed to *render* an index. `mainFile` is an absolute host
+ * path, so dropping it here is what keeps host paths out of run options and out
+ * of any prompt built from them.
+ */
+export type SkillIndexSummary = Pick<SkillIndexEntry, 'name' | 'description'>;
+
 export interface BuildContextInput {
   readonly identity: ContextBlockInput;
   readonly userMessage: string;

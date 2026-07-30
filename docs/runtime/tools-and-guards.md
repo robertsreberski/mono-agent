@@ -92,6 +92,17 @@ with no provider session of its own. Omitting a profile's `model` inherits the
 parent's configured route, so subagents get the fallback chain and same-model
 retries too; naming a model routes that profile through it instead.
 
+**Skills.** A subagent inherits the parent's skill index and the `ReadSkill` tool
+whenever the agent runs with `context.skillDisclosure: "index"` and a
+`context.skillsRoot` — the index is appended to the profile prompt, and the child
+pulls any body it needs on demand. It never receives inlined skill bodies:
+`selectedSkills` and `skillMaxBytes` are full-disclosure concepts and do not carry
+over. Under full disclosure a child gets no index, matching its parent. Opt a
+profile out with `"disallowedTools": ["ReadSkill"]`, which withholds both the tool
+and the index. A profile pinned to a model whose runtime lacks skill support
+(direct OpenCode) is skipped automatically rather than failing the run, since a
+non-empty skill list makes skill support a routing requirement.
+
 ## Built-in tools
 
 These tools need no extra capability config (coverage: `config` — they exist by default on the supporting runtime; you gate them):

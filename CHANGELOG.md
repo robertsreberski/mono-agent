@@ -17,7 +17,7 @@
   distinct. No wire-schema change and no TUI/web changes were needed.
 - `maxConcurrent` (default 5) bounds simultaneous subagents; `maxPerTurn`
   (default 20) bounds the total per turn and is the real runaway guard. Each
-  subagent gets `maxTurns` (20) and `timeoutMs` (5 min), and its timeout starts
+  subagent gets `maxTurns` (100) and `timeoutMs` (5 min), and its timeout starts
   only once it begins rather than while queued.
 - Subagents are read-only unless a profile enumerates more, never receive
   `Agent`/`AskUser`/channel-send tools, get no MCP servers unless named, inherit

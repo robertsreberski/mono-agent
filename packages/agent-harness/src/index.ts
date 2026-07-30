@@ -62,7 +62,13 @@ export { DEFAULT_SOUL_TEXT } from "./context/default-soul.js";
 export { ContextValidationError } from "./context/errors.js";
 export type { ContextValidationErrorCode, ContextValidationErrorDetails } from "./context/errors.js";
 export { loadContextFromFiles } from "./context/file-loader.js";
-export { buildSkillIndex, loadSkillFilesFromDirectory, loadSkillIndexFromDirectory } from "./context/skill-index.js";
+export {
+  buildSkillIndex,
+  loadSkillFilesFromDirectory,
+  loadSkillIndexFromDirectory,
+  renderSkillIndexEntries,
+  renderSkillIndexSection,
+} from "./context/skill-index.js";
 export type { LoadedSkillFile } from "./context/skill-index.js";
 export { normalizeInlineText } from "./context/text.js";
 export type {
@@ -76,6 +82,7 @@ export type {
   HistoryMessage,
   MarkdownContextBlock,
   SkillIndexEntry,
+  SkillIndexSummary,
 } from "./context/types.js";
 export {
   loadSelectedSkills,

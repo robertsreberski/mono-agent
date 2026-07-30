@@ -134,6 +134,27 @@ function budgetForRun(subagents, parentRunId) {
   return fresh;
 }
 
+/**
+ * How many subagents this logical run actually spawned.
+ *
+ * A read-only accessor so a provider can report `subagent_invoked` truthfully
+ * without reaching into `__budgets`, which is a deliberately private,
+ * non-enumerable implementation detail. Returns 0 when nothing was ever
+ * registered — a run with no `Agent` tool never creates a budget entry, and that
+ * is indistinguishable from one that had the tool and never used it, which is
+ * exactly what "no subagent was invoked" means for this signal.
+ *
+ * @param {*} subagents The run-scoped options object, or undefined.
+ * @param {string|undefined} parentRunId
+ * @returns {number}
+ */
+export function subagentInvocationCount(subagents, parentRunId) {
+  const store = subagents?.__budgets;
+  if (!(store instanceof Map)) return 0;
+  const entry = store.get(parentRunId ?? "unkeyed");
+  return Number.isInteger(entry?.total) ? entry.total : 0;
+}
+
 /** @param {*} value @param {number} fallback @returns {number} */
 function positiveInt(value, fallback) {
   return Number.isInteger(value) && value > 0 ? value : fallback;
@@ -143,7 +164,7 @@ function positiveInt(value, fallback) {
  * Build the `Agent` tool, or null when subagents are unavailable for this run.
  *
  * @param {RuntimeSubagentsOptions|null|undefined} subagents
- * @param {{model?: *, executionMode?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, onEvent?: (event: *) => void}} [context]
+ * @param {{model?: *, executionMode?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, onEvent?: (event: *) => void}} [context]
  * @returns {*|null}
  */
 export function createAgentTool(subagents, context = {}) {
@@ -335,6 +356,11 @@ export function createAgentTool(subagents, context = {}) {
           // Inherited, never widened: a profile cannot loosen confinement.
           ...(context.sandboxPolicy === undefined ? {} : { sandboxPolicy: context.sandboxPolicy }),
           ...(context.sandboxEngine === undefined ? {} : { sandboxEngine: context.sandboxEngine }),
+          // The parent's disclosed skills. Offered, not imposed — the host's
+          // `run` decides whether this child may have them, since only it knows
+          // the child's resolved route and deny lists.
+          ...(context.skills === undefined ? {} : { skills: context.skills }),
+          ...(context.skillsRoot === undefined ? {} : { skillsRoot: context.skillsRoot }),
           abortSignal: controller.signal,
           maxTurns,
           callId: toolCallId,

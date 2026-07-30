@@ -160,6 +160,16 @@ export interface MonoAgentConfigJson extends SettingsJson {
     readonly maxPerTurn?: number;
     readonly timeoutMs?: number;
     readonly maxTurns?: number;
+    /**
+     * Ceiling on a subagent the MODEL authors at call time. Parsed and validated
+     * by readSubagentsConfig, and read by agent-app and doctor — it was simply
+     * missing from this interface, so a config that set it typechecked only by
+     * accident of the whole block being optional.
+     */
+    readonly inline?: {
+      readonly enabled?: boolean;
+      readonly allowedTools?: readonly string[];
+    };
     readonly definitions?: readonly {
       readonly name?: string;
       readonly description?: string;

@@ -9,7 +9,7 @@ import {
   type RuntimeRunOptions,
 } from "@mono-agent/runtime-adapter";
 
-import type { BuiltAgentContext, ContextBlockInput, HistoryMessage } from "../context/index.js";
+import type { BuiltAgentContext, ContextBlockInput, HistoryMessage, SkillIndexSummary } from "../context/index.js";
 import type { Semaphore } from "../semaphore.js";
 import type {
   AgentHarnessContinuationClaimCapability,
@@ -49,7 +49,7 @@ export async function runHarnessRuntime(
   resumeSessionId: string | undefined,
   durablePiSessionsRoot: string | undefined,
   sessionIsolated: boolean,
-  skillDisclosureNames: readonly string[],
+  skillDisclosureEntries: readonly SkillIndexSummary[],
   history: readonly HistoryMessage[],
   historyOmitted: boolean,
   historyAsMessages: boolean,
@@ -316,14 +316,18 @@ export async function runHarnessRuntime(
         ...(durablePiSessionsRoot === undefined || runtime !== options.runtime
           ? {}
           : { piSessionsRoot: durablePiSessionsRoot }),
-        // Progressive skill disclosure (index mode): pass the discovered skill names
+        // Progressive skill disclosure (index mode): pass the discovered skills
         // and the skills root so pi-native's getPiBuiltinTools creates the on-demand
         // `ReadSkill` tool. These live after the merge so request extensions cannot
         // clobber them. Empty in 'full' mode / when no skillsRoot is set, so the
         // tool is not created and behavior matches the legacy path.
-        ...(skillDisclosureNames.length > 0 && options.skillsRoot !== undefined
+        //
+        // Each entry carries its description as well as its name: this is also
+        // what a subagent inherits (agent-app forwards it down the Agent tool
+        // seam), and a child renders its own index from these entries.
+        ...(skillDisclosureEntries.length > 0 && options.skillsRoot !== undefined
           ? {
-            skills: skillDisclosureNames.map((name) => ({ name })),
+            skills: skillDisclosureEntries.map(({ name, description }) => ({ name, description })),
             skillsRoot: options.skillsRoot,
           }
           : {}),

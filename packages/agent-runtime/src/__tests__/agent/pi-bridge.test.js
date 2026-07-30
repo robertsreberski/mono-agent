@@ -631,6 +631,35 @@ describe("pi MCP tool helpers", () => {
     expect(result.content[0].text).not.toContain("name: research");
   });
 
+  it("creates ReadSkill for a subagent-shaped allowlist that never names it", () => {
+    // Load-bearing for subagent skill inheritance: a profile enumerates its tools
+    // explicitly (`["Bash","Read","Glob","Grep"]`) and would never think to list
+    // ReadSkill, so the whole feature rests on this tool being deny-gated rather
+    // than allow-gated. If that ever flips, children go silently tool-less and the
+    // only symptom is wasted turns.
+    const root = tempWorkspace();
+    const skillsRoot = join(root, "skills");
+    mkdirSync(join(skillsRoot, "research"), { recursive: true });
+    writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nbody\n");
+
+    const tools = getPiBuiltinTools(["Bash", "Read", "Glob", "Grep"], { skillsRoot, skillNames: ["research"] });
+    expect(tools.find((tool) => tool.name === "ReadSkill")).toBeTruthy();
+  });
+
+  it("withholds ReadSkill when a profile denies it, under either spelling", () => {
+    const root = tempWorkspace();
+    const skillsRoot = join(root, "skills");
+    mkdirSync(join(skillsRoot, "research"), { recursive: true });
+    writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nbody\n");
+
+    // The deny gate honors a legacy alias; a policy that blocks only one spelling
+    // is not a policy, so agent-app checks both when deciding what a child gets.
+    for (const denied of ["ReadSkill", "read_skill"]) {
+      const tools = getPiBuiltinTools(["Read"], { skillsRoot, skillNames: ["research"], disallowedTools: [denied] });
+      expect(tools.find((tool) => tool.name === "ReadSkill"), denied).toBeFalsy();
+    }
+  });
+
   it("ReadSkill returns instructions beyond the legacy 12,000-character boundary", async () => {
     const root = tempWorkspace();
     const skillsRoot = join(root, "skills");
@@ -934,6 +963,22 @@ describe("getPiBuiltinTools Agent registration", () => {
     const agent = getPiBuiltinTools(["Agent"], { subagents: subagents() })
       .find((tool) => tool.name === "Agent");
     expect(agent.executionMode).toBeUndefined();
+  });
+
+  it("passes the run's skill context through to every child request", async () => {
+    // Covers the turn-runner -> pi-bridge -> agent-tool seam: pi-bridge spreads
+    // subagentContext into createAgentTool, so a skills-carrying run must produce
+    // children whose requests carry them too.
+    const run = vi.fn(async () => ({ text: "ok", events: [] }));
+    const skills = [{ name: "research", description: "Reads the web." }];
+    const agent = getPiBuiltinTools(["Agent"], {
+      subagents: { ...subagents(), run },
+      subagentContext: { skills, skillsRoot: "/repo/skills" },
+    }).find((tool) => tool.name === "Agent");
+
+    await agent.execute("c1", { name: "researcher", prompt: "x" });
+
+    expect(run.mock.calls[0][0]).toMatchObject({ skills, skillsRoot: "/repo/skills" });
   });
 });
 });

@@ -5305,6 +5305,24 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(report.ok).toBe(true);
   });
 
+  it("says subagents are off under allow-all, without holding readiness", async () => {
+    // The wildcard was the one posture with no signal in either direction: an
+    // operator could ask the agent to delegate, watch it silently not do so, and
+    // find nothing here saying why (the warning branch was gated on !allowAll).
+    //
+    // It must stay a DETAIL, never a status change: nobody asked for `Agent`
+    // under `["*"]` — the wildcard merely includes it — so promoting this to
+    // "waiting" would make every default wildcard agent look misconfigured.
+    const configPath = await writeToolsConfig({ allowedTools: ["*"] });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("ok");
+    expect(report.ok).toBe(true);
+    expect(tools.details.join("\n")).toMatch(/Subagents: off .*cannot delegate/u);
+  });
+
   it("folds disallowedTools into the allow-all line (no separate Disallowed line)", async () => {
     const configPath = await writeToolsConfig({ allowedTools: ["*"], disallowedTools: ["Bash"] });
 
