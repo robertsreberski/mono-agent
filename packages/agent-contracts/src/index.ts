@@ -435,6 +435,12 @@ export type AgentStreamEvent =
       readonly attemptIndex?: number;
       /** Which retry of `attemptIndex` this is: 1 for the first retry, 2 for the second. */
       readonly retryIndex?: number;
+      /**
+       * Classified failure subkind that caused this transition ("overloaded",
+       * "rate_limited", "context_limit", …), on `failover_started` and
+       * `retry_started`. Absent when the router could not classify it.
+       */
+      readonly reason?: string;
       readonly durationMs?: number;
       readonly cancelled?: boolean;
       readonly metadata?: AgentResponseMetadata;
@@ -641,6 +647,7 @@ export {
 } from "./stream-text.js";
 export {
   formatLiveInputActivityLine,
+  formatProviderStatusLine,
   isSubagentLaunchToolName,
   setToolActivityPathRoots,
   splitSubagentToolName,

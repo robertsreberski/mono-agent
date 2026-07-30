@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   createChannelUserCancelReason,
   isAgentResponseCancelledError,
+  suppressesNotification,
   type AgentLiveInputRequest,
   type AgentMessageStream,
   type AgentStreamEvent,
@@ -611,6 +612,132 @@ describe("createAgentResponder", () => {
     expect(response.text).toBe("New session bucket started: telegram:42#2026-06-20.\n\nok");
   });
 
+  describe("failover attribution note", () => {
+    /**
+     * A harness that replays the exact events createRouterRuntime emits for one
+     * routing outcome, then answers with `text`.
+     */
+    const routedHarness = (
+      events: readonly Record<string, unknown>[],
+      text: string | undefined = "the answer",
+    ): AgentHarness => ({
+      run: async (request: AgentHarnessRequest) => {
+        for (const event of events) {
+          request.onEvent?.(event);
+        }
+        return { ...okResponse(request.conversationId), ...(text === undefined ? {} : { text }) };
+      },
+    });
+
+    const FAILED_OVER = [
+      {
+        type: "provider_failover_started",
+        from: "pi:openai-codex:gpt-5.6-sol",
+        to: "pi:opencode-go:kimi-k2.7-code",
+        attemptIndex: 1,
+        reason: "overloaded",
+      },
+      { type: "provider_failover_completed", attemptIndex: 1, model: "pi:opencode-go:kimi-k2.7-code" },
+    ];
+
+    it("names the answering route when the run left its configured primary", async () => {
+      const responder = createAgentResponder({ harness: routedHarness(FAILED_OVER) });
+
+      const response = await responder.respond(baseRequest(), noopStream());
+
+      expect(response.text).toBe(
+        "the answer\n\n⚠️ Answered by pi:opencode-go:kimi-k2.7-code, "
+        + "not the configured pi:openai-codex:gpt-5.6-sol (overloaded).",
+      );
+    });
+
+    it("reports the first configured route across a multi-hop chain", async () => {
+      const responder = createAgentResponder({
+        harness: routedHarness([
+          { type: "provider_failover_started", from: "a", to: "b", attemptIndex: 1, reason: "overloaded" },
+          { type: "provider_failover_started", from: "b", to: "c", attemptIndex: 2, reason: "provider_auth" },
+          { type: "provider_failover_completed", attemptIndex: 2, model: "c" },
+        ]),
+      });
+
+      const response = await responder.respond(baseRequest(), noopStream());
+
+      // "a" is what the operator configured; "b" is an implementation detail of
+      // the chain, and naming it would misattribute the run.
+      expect(response.text).toBe("the answer\n\n⚠️ Answered by c, not the configured a (provider_auth).");
+    });
+
+    it("says nothing on a clean run", async () => {
+      const responder = createAgentResponder({ harness: routedHarness([]) });
+
+      expect((await responder.respond(baseRequest(), noopStream())).text).toBe("the answer");
+    });
+
+    it("says nothing when a same-model retry recovered on the configured primary", async () => {
+      const responder = createAgentResponder({
+        harness: routedHarness([
+          {
+            type: "provider_retry_started",
+            model: "pi:openai-codex:gpt-5.6-sol",
+            attemptIndex: 0,
+            retryIndex: 1,
+            reason: "overloaded",
+          },
+        ]),
+      });
+
+      // The router emits no failover_completed for a same-model retry, so the
+      // run's identity is unchanged and there is nothing to attribute.
+      expect((await responder.respond(baseRequest(), noopStream())).text).toBe("the answer");
+    });
+
+    it("omits the cause when the router could not classify it", async () => {
+      const responder = createAgentResponder({
+        harness: routedHarness([
+          { type: "provider_failover_started", from: "a", to: "b", attemptIndex: 1, reason: null },
+          { type: "provider_failover_completed", attemptIndex: 1, model: "b" },
+        ]),
+      });
+
+      expect((await responder.respond(baseRequest(), noopStream())).text)
+        .toBe("the answer\n\n⚠️ Answered by b, not the configured a.");
+    });
+
+    it("leaves a NOTHING_TO_REPORT turn suppressible", async () => {
+      const responder = createAgentResponder({
+        harness: routedHarness(FAILED_OVER, "NOTHING_TO_REPORT"),
+      });
+
+      const response = await responder.respond(baseRequest(), noopStream());
+
+      // Appending after the sentinel would move it off the final line and turn a
+      // silent cron run into a delivered one.
+      expect(response.text).toBe("NOTHING_TO_REPORT");
+      expect(suppressesNotification(response.text)).toBe(true);
+    });
+
+    it("composes with the rollover notice rather than replacing it", async () => {
+      let now = new Date("2026-06-19T23:30:00Z");
+      const responder = createAgentResponder({
+        harness: routedHarness(FAILED_OVER),
+        rollover: "daily",
+        rolloverTimezone: "UTC",
+        rolloverNotice: true,
+        now: () => now,
+      });
+
+      await responder.respond(baseRequest("telegram:42"), noopStream());
+      now = new Date("2026-06-20T00:05:00Z");
+      const response = await responder.respond(baseRequest("telegram:42"), noopStream());
+
+      expect(response.text).toBe(
+        "New session bucket started: telegram:42#2026-06-20.\n\nthe answer\n\n"
+        + "⚠️ Answered by pi:opencode-go:kimi-k2.7-code, "
+        + "not the configured pi:openai-codex:gpt-5.6-sol (overloaded).",
+      );
+    });
+  });
+
   it("serializes rollover boundary decisions per base conversation", async () => {
     let now = new Date("2026-06-19T23:30:00Z");
     let firstNewStarted!: () => void;
@@ -767,19 +894,51 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     });
   });
 
+  // Both payloads below are the exact shapes createRouterRuntime emits (see
+  // router.js provider_failover_started / _completed) — including the model as a
+  // modelKey string, which an earlier version of this test faked.
   it("maps provider failover to provider_status", () => {
     expect(
       streamEventFromRuntimeEvent({
         type: "provider_failover_started",
-        from: "gpt-5.5",
-        to: "kimi",
+        from: "pi:openai-codex:gpt-5.5",
+        to: "pi:opencode-go:kimi",
         attemptIndex: 1,
+        reason: "overloaded",
       }),
-    ).toEqual({ type: "provider_status", kind: "failover_started", from: "gpt-5.5", to: "kimi", attemptIndex: 1 });
+    ).toEqual({
+      type: "provider_status",
+      kind: "failover_started",
+      from: "pi:openai-codex:gpt-5.5",
+      to: "pi:opencode-go:kimi",
+      attemptIndex: 1,
+      reason: "overloaded",
+    });
 
     expect(
-      streamEventFromRuntimeEvent({ type: "provider_failover_completed", attemptIndex: 1, model: "kimi" }),
-    ).toEqual({ type: "provider_status", kind: "failover_completed", model: "kimi", attemptIndex: 1 });
+      streamEventFromRuntimeEvent({
+        type: "provider_failover_completed",
+        attemptIndex: 1,
+        model: "pi:opencode-go:kimi",
+      }),
+    ).toEqual({
+      type: "provider_status",
+      kind: "failover_completed",
+      model: "pi:opencode-go:kimi",
+      attemptIndex: 1,
+    });
+  });
+
+  it("drops a null failover reason rather than rendering it", () => {
+    expect(
+      streamEventFromRuntimeEvent({
+        type: "provider_failover_started",
+        from: "a",
+        to: "b",
+        attemptIndex: 1,
+        reason: null,
+      }),
+    ).toEqual({ type: "provider_status", kind: "failover_started", from: "a", to: "b", attemptIndex: 1 });
   });
 
   it("maps a same-model retry to provider_status retry_started", () => {
@@ -799,6 +958,7 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
       model: "pi:openai-codex:gpt-5.5",
       attemptIndex: 0,
       retryIndex: 1,
+      reason: "overloaded",
     });
   });
 

@@ -335,11 +335,16 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
           // A same-model retry is not a failover: only the first attempt of a new
           // route announces a transition.
           if (retryIndex === 0 && failoverHistory.length > 0) {
+            const previous = failoverHistory[failoverHistory.length - 1];
             emit(callOptions, {
               type: "provider_failover_started",
-              from: modelKey(failoverHistory[failoverHistory.length - 1]?.model),
+              from: modelKey(previous?.model),
               to: modelKey(entry.model),
               attemptIndex: i,
+              // Why the route changed, in the same vocabulary provider_retry_started
+              // uses. Operators reading a transcript need the cause next to the
+              // transition, not only in the run artifact's failoverHistory.
+              reason: previous?.retryableSubkind || previous?.failureKind || null,
             });
           }
 
@@ -378,9 +383,12 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
             // (failover)" when X is still the route the operator asked for.
             if (failoverHistory.some((attempt) => modelKey(attempt.model) !== modelKey(entry.model))) {
               emit(callOptions, {
+                // modelKey, not the ModelRef: every consumer of this event reads
+                // `model` as a string (responder.ts's stringField is string-only),
+                // so an object here is dropped silently rather than rendered.
                 type: "provider_failover_completed",
                 attemptIndex: i,
-                model: entry.model,
+                model: modelKey(entry.model),
               });
             }
             return { ...result, failoverHistory, routeSafetyHistory };
