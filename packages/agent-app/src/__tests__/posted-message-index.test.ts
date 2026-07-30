@@ -535,7 +535,10 @@ describe("posted-message-index", () => {
     const savedOriginal = join(dir, "saved-original-index.jsonl");
     const attacker = "ATTACKER-CONTENT\n";
     let attackerFingerprint: Record<string, number> | undefined;
-    await writeFile(indexPath, original, "utf8");
+    // This case compares the compacted file's mode against the seed's. Compaction normalizes the
+    // index to 0600, so an umask-dependent seed (0644 under the default 022) fails on a mode
+    // difference the test is not about. Seed it the way a real index file already exists.
+    await writeFile(indexPath, original, { encoding: "utf8", mode: 0o600 });
     const originalIndexFingerprint = await pathFingerprint(indexPath);
 
     await compactPostedMessageIndex(indexPath, 3, {

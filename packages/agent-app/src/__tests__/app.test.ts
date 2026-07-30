@@ -2289,7 +2289,11 @@ describe("startMonoAgentApp", () => {
     // did, and the router overwrote the model with the configured primary.
     expect(runtimeCalls.some((call) => call.model?.sdk === "pi")).toBe(false);
     await app.stop();
-  });
+    // Starts a whole app with a channel driver and a retry-enabled runtime chain. It runs in well
+    // under a second in isolation but measured 17s in a full-suite run, where it competes with the
+    // other 109 files — so Vitest's 5s default timed it out while it passed on its own. Allow 60s:
+    // enough headroom for a slower CI runner, still short enough to catch a genuine hang.
+  }, 60_000);
 
   it("keeps Pi AskUser MCP when an OpenCode override is rejected by inherited effort", async () => {
     await writeConfig({

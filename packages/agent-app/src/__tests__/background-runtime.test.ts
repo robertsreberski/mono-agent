@@ -1,4 +1,4 @@
-import { link, lstat, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile, mkdir } from "node:fs/promises";
+import { chmod, link, lstat, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
@@ -1129,6 +1129,12 @@ async function expectRepairFromStaleRuntimeLock(staleIncarnation: ProcessIncarna
 async function materializeInstalledPackage(input: ManagedRuntimeInstallInput, cli: Buffer): Promise<void> {
   const packageRoot = join(input.stagingDir, "node_modules", "@mono-agent", "agent-app");
   await mkdir(join(packageRoot, "dist"), { recursive: true });
+  // The closure identity includes directory modes. The source fixture's root comes from mkdtemp,
+  // which is always 0700, while these staged directories follow the ambient umask — so under the
+  // default 022 the roots differ (0700 vs 0755) and the identity check fails for a reason that has
+  // nothing to do with what was installed. A real install has a conventionally-moded root on both
+  // sides; mirror the source root so the comparison is about content, not the caller's umask.
+  await chmod(packageRoot, Number((await lstat(input.packageSource, { bigint: true })).mode & 0o777n));
   await writeFile(join(packageRoot, "dist", "cli.js"), cli);
   await writeFile(
     join(packageRoot, "package.json"),
