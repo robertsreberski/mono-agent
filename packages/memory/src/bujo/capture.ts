@@ -5,7 +5,9 @@ import {
   type CaptureIntentAction,
   type CaptureIntentHandle,
 } from "./capture-outbox.js";
-import type { GraphBatchInput } from "./graph.js";
+import type { ExtractedEntity } from "./entities.js";
+import { selectKnownEntityHints } from "./entity-reuse.js";
+import { readGraph, type GraphBatchInput } from "./graph.js";
 import { withSerializedBujoMutation } from "./mutation-lock.js";
 import { reconcileBatch, type ReconcileAction, type ReconcileDeps } from "./reconcile.js";
 
@@ -35,6 +37,20 @@ export async function captureTurnStrict(text: string, deps: ReconcileDeps): Prom
   return await withSerializedBujoMutation(deps, async () => await captureTurnUnlocked(text, deps, true));
 }
 
+/**
+ * Existing entities this turn appears to mention, offered to the extractor so a
+ * repeat mention extends the established node. Best-effort by design: capture
+ * must never fail because the reuse hint could not be read, and an unreadable
+ * graph simply reverts to today's behaviour of minting a fresh id.
+ */
+function knownEntityHints(root: string, text: string): ExtractedEntity[] {
+  try {
+    return selectKnownEntityHints(text, readGraph(root).entities);
+  } catch {
+    return [];
+  }
+}
+
 async function captureTurnUnlocked(
   text: string,
   deps: ReconcileDeps,
@@ -43,9 +59,10 @@ async function captureTurnUnlocked(
   deps.abortSignal?.throwIfAborted();
   // One batched extraction call yields candidates + their precise entity ids;
   // one optional batched reconcile call classifies every near neighbour.
+  const knownEntities = knownEntityHints(deps.root, text);
   const extraction = strictModelOutput
-    ? await extractCapturePlanStrict(text, deps.llm, deps.abortSignal)
-    : await extractCapturePlan(text, deps.llm, deps.abortSignal);
+    ? await extractCapturePlanStrict(text, deps.llm, deps.abortSignal, knownEntities)
+    : await extractCapturePlan(text, deps.llm, deps.abortSignal, knownEntities);
   deps.abortSignal?.throwIfAborted();
   const now = deps.now();
   const createdAt = now.toISOString();

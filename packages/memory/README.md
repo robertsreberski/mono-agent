@@ -363,6 +363,7 @@ MARKER_FOR
 MAX_CAPTURE_ENTITIES
 MAX_CAPTURE_MEMORIES
 MAX_CAPTURE_RELATIONS
+MAX_KNOWN_ENTITY_HINTS
 MEMORY_HEALTH_ISSUE_CODES
 MEMORY_REBUILD_POLICY_VERSION
 ManagedGeneration
@@ -414,6 +415,7 @@ readManagedIndexManifest
 rebuildFromMarkdown
 reconcile
 reconcileBatch
+renderKnownEntityHints
 resolveActiveMemoryDbPath
 resolveCompletedTurnIntake
 resolveExplicitMemoryForgetRoot
@@ -422,6 +424,7 @@ retryCompletedTurnIntake
 rollbackMemoryIndex
 safeRebuildMemoryIndex
 selectAutomaticRecallHits
+selectKnownEntityHints
 serializeBullet
 serializeDailyFile
 writeFutureLog

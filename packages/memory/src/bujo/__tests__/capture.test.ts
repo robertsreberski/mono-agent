@@ -657,3 +657,74 @@ describe("captureTurn", () => {
     await expect(captureTurn("a memorable sentence about the project", deps)).rejects.toThrow(/ollama unreachable/);
   });
 });
+
+describe("captureTurn entity reuse", () => {
+  /**
+   * A second mention of the same thing must extend the node the first mention
+   * created. Before reuse hints, extraction never saw the graph, so one set of
+   * curtains became three unrelated nodes across two days.
+   */
+  it("offers the ids an earlier turn established, and a reused id extends that node", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const prompts: string[] = [];
+
+    const first = JSON.stringify({
+      memories: [{
+        type: "note", text: "Robert wants black blackout curtains for three windows.",
+        salience: 0.9, isInsight: false, entityIds: ["project:black-curtains"],
+      }],
+      entities: [{ id: "project:black-curtains", name: "black blackout curtains", type: "project" }],
+      relations: [],
+    });
+    // The second turn reuses the offered id rather than minting a rival.
+    const second = JSON.stringify({
+      memories: [{
+        type: "note", text: "The blackout curtains ship on Wednesday.",
+        salience: 0.8, isInsight: false, entityIds: ["project:black-curtains"],
+      }],
+      entities: [{ id: "project:black-curtains", name: "black blackout curtains", type: "project" }],
+      relations: [],
+    });
+
+    let turn = 0;
+    const llm = {
+      id: "reuse",
+      complete: async (prompt: string) => {
+        if (!prompt.startsWith("Extract one bounded")) return "[]";
+        prompts.push(prompt);
+        turn += 1;
+        return turn === 1 ? first : second;
+      },
+    };
+    const deps: ReconcileDeps = { db, root, llm, nextId: makeSeqNextId(), now: () => FIXED };
+
+    await captureTurn("Robert wants black blackout curtains for three windows.", deps);
+    // Nothing was in the graph yet, so the first prompt is the unchanged one.
+    expect(prompts[0]).not.toContain("KNOWN ENTITIES");
+
+    await captureTurn("The blackout curtains ship on Wednesday.", deps);
+    expect(prompts[1]).toContain("KNOWN ENTITIES");
+    expect(prompts[1]).toContain("project:black-curtains");
+
+    // One entity, not two — and both facts hang off it.
+    const graph = readGraph(root);
+    expect(graph.entities.map((entity) => entity.id)).toEqual(["project:black-curtains"]);
+    expect(graph.associations.filter((row) => row.entityId === "project:black-curtains").length)
+      .toBeGreaterThanOrEqual(2);
+  });
+
+  it("captures normally when the graph cannot be read", async () => {
+    const root = newRoot();
+    const db = openDb(root);
+    const llm = fakeLlm([["Extract one bounded", JSON.stringify({
+      memories: [{ type: "note", text: "A durable fact about nothing known.", salience: 0.8, isInsight: false, entityIds: [] }],
+      entities: [],
+      relations: [],
+    })]]);
+    const deps: ReconcileDeps = { db, root, llm, nextId: makeSeqNextId(), now: () => FIXED };
+
+    const result = await captureTurn("A durable fact about nothing known.", deps);
+    expect(result.actions.length).toBeGreaterThan(0);
+  });
+});

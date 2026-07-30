@@ -97,6 +97,11 @@ export {
 } from "./capture-batch.js";
 export type { CapturePlan } from "./capture-batch.js";
 export {
+  MAX_KNOWN_ENTITY_HINTS,
+  renderKnownEntityHints,
+  selectKnownEntityHints,
+} from "./entity-reuse.js";
+export {
   auditCompletedTurnIntake,
   inspectCompletedTurnIntake,
   resolveCompletedTurnIntake,

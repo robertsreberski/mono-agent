@@ -4,6 +4,7 @@ import {
   type CandidateMemory,
 } from "./distill.js";
 import { normalizeExtraction, type ExtractedEntity, type ExtractedRelation } from "./entities.js";
+import { renderKnownEntityHints } from "./entity-reuse.js";
 import { MAX_MODEL_JSON_CHARS, parseJsonExact, parseJsonLoose } from "./json.js";
 import type { LlmComplete } from "./llm.js";
 import { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
@@ -26,7 +27,7 @@ interface RawCapturePlan {
 
 const SINGLE_JSON_FENCE = /^[\t\n\r ]*```(?:[jJ][sS][oO][nN])?[\t ]*\r?\n([\s\S]*?)\r?\n```[\t\n\r ]*$/;
 
-const prompt = (text: string): string => `Extract one bounded, durable memory plan from the completed turn below.
+const prompt = (text: string, known: readonly ExtractedEntity[] = []): string => `Extract one bounded, durable memory plan from the completed turn below.
 Return ONLY one exact JSON object with exactly these root keys:
 {"memories":[{"type":"note","text":"one atomic sentence","salience":0.8,"isInsight":false,"entityIds":["person:name"]}],"entities":[{"id":"person:name","name":"display name","type":"person"},{"id":"project:example","name":"example project","type":"project"}],"relations":[{"src":"person:name","dst":"project:example","relation":"works on"}]}
 
@@ -42,17 +43,29 @@ Rules:
 - A memory.entityIds list contains ONLY entities directly stated in that same fact, copied byte-for-byte from entities[].id with no repeated id; otherwise use [].
 - Relations and entityIds reference exact entity ids in this response. Never associate every memory with every turn entity.
 - Do not emit duplicate JSON object keys, duplicate entity ids, duplicate relations, duplicate memories, near-duplicate memories, extra keys, comments, or prose.
-- Use empty arrays when there are no durable memories, entities, or relations.
-
+- Use empty arrays when there are no durable memories, entities, or relations.${known.length === 0 ? "" : `
+- When something in this turn is the same real-world thing as a KNOWN ENTITY below, reuse that exact id and still list it in entities[] with its established name. Mint a new id only for something genuinely not listed. A different name for the same thing is not a new entity; a genuinely different thing that merely shares a word is.`}
+${renderKnownEntityHints(known)}
 TURN:
 ${text}`;
 
-/** One LLM call produces candidates and their precise graph evidence. */
-export async function extractCapturePlan(text: string, llm: LlmComplete, abortSignal?: AbortSignal): Promise<CapturePlan> {
+/**
+ * One LLM call produces candidates and their precise graph evidence.
+ *
+ * `knownEntities` are existing graph entities the turn appears to mention; the
+ * model is asked to reuse their ids so a second mention extends the existing
+ * node instead of minting a rival one. They are a hint, never a constraint.
+ */
+export async function extractCapturePlan(
+  text: string,
+  llm: LlmComplete,
+  abortSignal?: AbortSignal,
+  knownEntities: readonly ExtractedEntity[] = [],
+): Promise<CapturePlan> {
   if (text.trim().length === 0) return { candidates: [], entities: [], relations: [] };
   let raw: string;
   try {
-    raw = await llm.complete(prompt(text), {
+    raw = await llm.complete(prompt(text, knownEntities), {
       label: "capture:extract",
       ...(abortSignal === undefined ? {} : { abortSignal }),
     });
@@ -92,11 +105,12 @@ export async function extractCapturePlanStrict(
   text: string,
   llm: LlmComplete,
   abortSignal?: AbortSignal,
+  knownEntities: readonly ExtractedEntity[] = [],
 ): Promise<CapturePlan> {
   if (text.trim().length === 0) return { candidates: [], entities: [], relations: [] };
   let raw: string;
   try {
-    raw = await llm.complete(prompt(text), {
+    raw = await llm.complete(prompt(text, knownEntities), {
       label: "capture:extract",
       ...(abortSignal === undefined ? {} : { abortSignal }),
     });
