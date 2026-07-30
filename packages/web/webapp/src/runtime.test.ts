@@ -99,6 +99,46 @@ describe("convertWebMessage", () => {
     expect(converted.status).toEqual({ type: "running" });
   });
 
+  it("rejoins prose a stored telemetry part split in half", () => {
+    const converted = convertWebMessage(
+      message({
+        role: "assistant",
+        status: "complete",
+        // Exactly what a turn stored before the runtime stopped splitting text
+        // across invisible telemetry: one sentence, broken mid-word.
+        parts: [
+          { type: "text", text: "I'm re" },
+          { type: "telemetry", event: "usage_update", data: { tokens: { input: 10 } } },
+          { type: "text", text: "ally sorry" },
+        ],
+      }),
+    );
+
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content).toEqual([{ type: "text", text: "I'm really sorry" }]);
+  });
+
+  it("keeps text either side of a delegation apart", () => {
+    const converted = convertWebMessage(
+      message({
+        role: "assistant",
+        status: "complete",
+        parts: [
+          { type: "text", text: "Let me check. " },
+          { type: "subagent", toolCallId: "call-1", name: "researcher", status: "complete", calls: [] },
+          { type: "text", text: "You have 12 tasks." },
+        ],
+      }),
+    );
+
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content.map((part) => part.type)).toEqual([
+      "text",
+      "data-subagent",
+      "text",
+    ]);
+  });
+
   it("skips a part type this bundle does not know instead of corrupting the transcript", () => {
     const converted = convertWebMessage(
       message({

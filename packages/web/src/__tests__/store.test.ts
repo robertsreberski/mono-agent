@@ -524,6 +524,66 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("keeps prose in one part when invisible telemetry lands between two deltas", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "help", attachmentIds: [] });
+    // Deltas do not respect word boundaries, so a part started behind a status
+    // frame or an unmapped event renders as a sentence broken in half.
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "append", delta: "I'm re" },
+      { kind: "status", text: "Thinking" },
+      { kind: "event", event: { type: "usage_update", cumulativeUsd: 0.01 } },
+      { kind: "append", delta: "ally sorry" },
+    ]);
+    const detail = store.completeTurn(turn.turnId, "");
+    const assistant = detail.messages.at(-1);
+
+    expect(assistant?.parts.filter((part) => part.type === "text")).toEqual([
+      { type: "text", text: "I'm really sorry" },
+    ]);
+    // The telemetry itself still has to survive; the context display reads it.
+    expect(assistant?.parts.some((part) => part.type === "telemetry" && part.event === "status")).toBe(true);
+    store.close();
+  });
+
+  it("still separates the text either side of a rendered part", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "check", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "append", delta: "Let me check. " },
+      { kind: "event", event: { type: "tool_call_started", id: "tool-1", name: "Search", arguments: { q: "x" } } },
+      { kind: "append", delta: "You have 12 tasks." },
+      {
+        kind: "event",
+        event: {
+          type: "runtime_telemetry",
+          kind: "context_compaction",
+          data: { operationId: "compact-1", status: "succeeded", sdk: "pi", trigger: "proactive" },
+        },
+      },
+      { kind: "append", delta: "Anything else?" },
+    ]);
+    const detail = store.completeTurn(turn.turnId, "");
+    const assistant = detail.messages.at(-1);
+
+    expect(assistant?.parts.map((part) => part.type)).toEqual([
+      "text",
+      "tool-call",
+      "text",
+      "telemetry",
+      "text",
+    ]);
+    store.close();
+  });
+
   it("exposes a marked assistant-only notification only after durable-history completion", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -821,6 +881,51 @@ describe("WebStore subagent parts", () => {
     ]);
 
     expect(parts.find((part) => part.type === "tool-call")).toMatchObject({ type: "tool-call", toolCallId: "t1", toolName: "Read" });
+  });
+
+  it("records what a delegation cost from its closing bookend", async () => {
+    const parts = await turnWith([
+      launch("call-1", "researcher"),
+      bookend("call-1", "researcher"),
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "agent:call-1",
+          name: "Agent(researcher)",
+          executionMs: 4_200,
+          metadata: {
+            subagent: { id: "call-1", name: "researcher", callIndex: 0, costUsd: 0.0042 },
+            synthetic: true,
+            subagentLifecycle: true,
+          },
+        },
+      },
+    ]);
+
+    expect(parts.find((part) => part.type === "subagent")).toMatchObject({
+      executionMs: 4_200,
+      costUsd: 0.0042,
+      status: "complete",
+    });
+  });
+
+  it("leaves the cost off a delegation the runtime never priced", async () => {
+    const parts = await turnWith([
+      launch("call-1", "researcher"),
+      bookend("call-1", "researcher"),
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "agent:call-1",
+          name: "Agent(researcher)",
+          metadata: { ...subagent("call-1", "researcher"), subagentLifecycle: true },
+        },
+      },
+    ]);
+
+    expect(parts.find((part) => part.type === "subagent")).not.toHaveProperty("costUsd");
   });
 
   it("round-trips a persisted subagent part through validation", async () => {

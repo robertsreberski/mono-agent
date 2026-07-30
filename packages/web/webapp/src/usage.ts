@@ -38,6 +38,15 @@ export interface ConsoleUsageOptions {
   readonly selectedModel?: string;
 }
 
+/**
+ * One rendering of a dollar figure for the whole console, so a delegation's own
+ * cost and the conversation total that contains it read the same. Sub-cent
+ * amounts keep four places, because most single turns are sub-cent and `$0.00`
+ * says nothing.
+ */
+export const formatUsd = (cost: number): string =>
+  `$${cost.toFixed(cost > 0 && cost < 0.01 ? 4 : 2)}`;
+
 type UnknownRecord = Readonly<Record<string, unknown>>;
 
 interface NormalizedUsage extends ConsoleTokenUsage {

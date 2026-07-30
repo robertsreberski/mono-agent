@@ -110,8 +110,21 @@ function toolDescription(subagents, definitions, ceiling) {
   return `${DESCRIPTION_BASE}${parallel}${named}${shapes}${inline}`;
 }
 
+/** @param {*} value @returns {number} */
+function numberOrZero(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+/** @returns {{costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}} */
+function emptyUsage() {
+  return { costUsd: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+}
+
 /**
- * Per-logical-run call and byte budget, shared across router attempts.
+ * Per-logical-run call, byte and subagent-usage budget, shared across router
+ * attempts. `usage` rides the same entry so delegated spend inherits the
+ * existing per-run keying and eviction instead of needing a second store.
  * @param {*} subagents The run-scoped options object, stable across attempts.
  * @param {string|undefined} parentRunId
  */
@@ -129,7 +142,7 @@ function budgetForRun(subagents, parentRunId) {
     if (oldest.done) break;
     store.delete(oldest.value);
   }
-  const fresh = { total: 0, bytes: 0, warnedQueued: false };
+  const fresh = { total: 0, bytes: 0, warnedQueued: false, usage: emptyUsage() };
   store.set(key, fresh);
   return fresh;
 }
@@ -153,6 +166,32 @@ export function subagentInvocationCount(subagents, parentRunId) {
   if (!(store instanceof Map)) return 0;
   const entry = store.get(parentRunId ?? "unkeyed");
   return Number.isInteger(entry?.total) ? entry.total : 0;
+}
+
+/**
+ * What this logical run's subagents spent, summed across every delegation.
+ *
+ * A delegation is work the run asked for, so its cost belongs to the run's
+ * total — a provider folds this into its own usage before reporting, which is
+ * what makes the console's cost, the TUI status bar and the exported metrics
+ * agree with the bill. Same read-only-accessor contract as
+ * `subagentInvocationCount`: `__budgets` stays private. All zeroes when nothing
+ * delegated, which is the truthful answer for a run that never used the tool.
+ *
+ * @param {*} subagents The run-scoped options object, or undefined.
+ * @param {string|undefined} parentRunId
+ * @returns {{costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}}
+ */
+export function subagentUsageForRun(subagents, parentRunId) {
+  const store = subagents?.__budgets;
+  const usage = store instanceof Map ? store.get(parentRunId ?? "unkeyed")?.usage : undefined;
+  return {
+    costUsd: numberOrZero(usage?.costUsd),
+    input: numberOrZero(usage?.input),
+    output: numberOrZero(usage?.output),
+    cacheRead: numberOrZero(usage?.cacheRead),
+    cacheWrite: numberOrZero(usage?.cacheWrite),
+  };
 }
 
 /** @param {*} value @param {number} fallback @returns {number} */
@@ -336,6 +375,15 @@ export function createAgentTool(subagents, context = {}) {
         callIndex,
         ...(params.description === undefined ? {} : { label: params.description }),
         ...(context.onEvent === undefined ? {} : { emit: context.onEvent }),
+        // Summed, not replaced: a turn can delegate a dozen times and the run
+        // owns all of it. Lives on the run budget so router attempts share it.
+        recordUsage: (spent) => {
+          budget.usage.costUsd += spent.costUsd;
+          budget.usage.input += spent.input;
+          budget.usage.output += spent.output;
+          budget.usage.cacheRead += spent.cacheRead;
+          budget.usage.cacheWrite += spent.cacheWrite;
+        },
       });
       collector.started();
       const startedAt = Date.now();
@@ -553,13 +601,15 @@ const WIRE_CONTENT_MAX_CHARS = 2_000;
  * answer body, so forwarding them would splice a subagent's prose into the
  * main agent's reply. Its text reaches the parent through the tool result.
  *
- * @param {{callId: string, profileName: string, callIndex: number, label?: string, emit?: (event: *) => void}} options
+ * @param {{callId: string, profileName: string, callIndex: number, label?: string, emit?: (event: *) => void, recordUsage?: (usage: {costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}) => void}} options
  */
-function createActivityCollector({ callId, profileName, callIndex, label, emit }) {
+function createActivityCollector({ callId, profileName, callIndex, label, emit, recordUsage }) {
   /** @type {Map<string, {name: string, args: unknown, startedAt: number, ms?: number}>} */
   const open = new Map();
   /** @type {Array<{name: string, args: unknown, ms?: number, isError: boolean}>} */
   const done = [];
+  /** What the child reported spending, so the parent run can own it. */
+  const usage = emptyUsage();
   const subagent = { id: callId, name: profileName, callIndex, ...(label === undefined ? {} : { label }) };
 
   /** @param {*} event */
@@ -585,10 +635,17 @@ function createActivityCollector({ callId, profileName, callIndex, label, emit }
     },
     /** @param {{status: string, durationMs: number}} outcome */
     finished({ status, durationMs }) {
+      // Before the bookend, so the run's own usage report can already include
+      // it, and so an abandoned child still hands over whatever it spent.
+      recordUsage?.(usage);
       publish({
         phase: "agent_completed",
         id: `agent:${callId}`,
         name: `Agent(${profileName})`,
+        // The one place the child's price is knowable per delegation: operator
+        // surfaces show it on the row so an expensive one is identifiable, not
+        // just visible in the run total it disappears into.
+        ...(usage.costUsd > 0 ? { subagent: { ...subagent, costUsd: usage.costUsd } } : {}),
         isError: status !== "ok",
         executionMs: durationMs,
         content: `${status} · ${done.length} tool call${done.length === 1 ? "" : "s"}`,
@@ -653,8 +710,25 @@ function createActivityCollector({ callId, profileName, callIndex, label, emit }
         }
         return;
       }
+      if (type === "cost_accumulated") {
+        // Read as a running total, not a delta — the same rule
+        // `ai/observer.js` applies to the parent's own events, because a bridge
+        // emits one of these per completed provider run carrying that run's
+        // totals. Keeping one rule means a child that failed over undercounts
+        // exactly as its parent does today rather than inventing a second.
+        // Not republished on the parent stream: consumers treat `usage_update`
+        // as the run's cumulative figure, and a child's smaller total arriving
+        // last would read as the run getting cheaper.
+        const tokens = event.tokens && typeof event.tokens === "object" ? event.tokens : {};
+        usage.costUsd = numberOrZero(event.cumulativeUsd);
+        usage.input = numberOrZero(tokens.input);
+        usage.output = numberOrZero(tokens.output);
+        usage.cacheRead = numberOrZero(tokens.cacheReadTokens);
+        usage.cacheWrite = numberOrZero(tokens.cacheCreationTokens);
+        return;
+      }
       // Child warnings are worth surfacing; everything else (context usage,
-      // partial tool output, cost) stays inside the subagent for now.
+      // partial tool output) stays inside the subagent for now.
       if (type === "runtime_warning" && emit !== undefined) {
         try {
           emit({ ...event, subagentId: callId });
