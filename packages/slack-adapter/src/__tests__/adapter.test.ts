@@ -18,6 +18,7 @@ import {
   SlackAdapter,
   type SlackNotifyOptions,
   type SlackRuntimeControls,
+  type SlackThreadContextOptions,
 } from "../index.js";
 import { SlackApiError } from "../slack-client.js";
 import type {
@@ -28,6 +29,10 @@ import type {
   SlackDownloadFileParams,
   SlackReactionsAddParams,
   SlackRequestOptions,
+  SlackConversationMessage,
+  SlackConversationMessagesResult,
+  SlackConversationsHistoryParams,
+  SlackConversationsRepliesParams,
   SlackEventCallback,
   SlackUsersInfoParams,
   SlackUsersInfoResult,
@@ -64,6 +69,36 @@ class FakeSlackApi implements SlackWebApi {
   holdUsersInfo: Promise<void> | undefined = undefined;
   /** Resolves the first time usersInfo is entered. */
   readonly usersInfoStarted = createDeferred<void>();
+  readonly repliesCalls: SlackConversationsRepliesParams[] = [];
+  readonly historyCalls: SlackConversationsHistoryParams[] = [];
+  repliesMessages: readonly SlackConversationMessage[] = [];
+  historyMessages: readonly SlackConversationMessage[] = [];
+  repliesFailure: unknown = undefined;
+  historyFailure: unknown = undefined;
+  /** When set, the conversation read blocks on it. */
+  holdConversationRead: Promise<void> | undefined = undefined;
+  /** Resolves the first time a conversation read is entered. */
+  readonly conversationReadStarted = createDeferred<void>();
+
+  async conversationsReplies(
+    params: SlackConversationsRepliesParams,
+  ): Promise<SlackConversationMessagesResult> {
+    this.repliesCalls.push(params);
+    this.conversationReadStarted.resolve(undefined);
+    if (this.holdConversationRead !== undefined) await this.holdConversationRead;
+    if (this.repliesFailure !== undefined) throw this.repliesFailure;
+    return { ok: true, messages: this.repliesMessages };
+  }
+
+  async conversationsHistory(
+    params: SlackConversationsHistoryParams,
+  ): Promise<SlackConversationMessagesResult> {
+    this.historyCalls.push(params);
+    this.conversationReadStarted.resolve(undefined);
+    if (this.holdConversationRead !== undefined) await this.holdConversationRead;
+    if (this.historyFailure !== undefined) throw this.historyFailure;
+    return { ok: true, messages: this.historyMessages };
+  }
 
   async authTest() {
     return { ok: true as const };
@@ -3139,6 +3174,339 @@ describe("SlackAdapter speaker names", () => {
 
     await expect(turn).resolves.toMatchObject({ kind: "cancelled" });
     expect(respond).not.toHaveBeenCalled();
+  });
+});
+
+describe("SlackAdapter thread and channel context", () => {
+  function build(
+    api: FakeSlackApi,
+    options?: {
+      threadContext?: SlackThreadContextOptions;
+      resolveUserNames?: boolean;
+      botId?: string;
+    },
+  ): { readonly adapter: SlackAdapter; readonly captured: () => AgentRequest | undefined } {
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      botUserIds: ["UBOT"],
+      responder: responderFrom(async (request) => {
+        captured = request;
+        return { text: "ok" };
+      }),
+      ...(options?.threadContext === undefined ? {} : { threadContext: options.threadContext }),
+      ...(options?.resolveUserNames === undefined
+        ? {}
+        : { resolveUserNames: options.resolveUserNames }),
+      ...(options?.botId === undefined ? {} : { botId: options.botId }),
+    });
+    return { adapter, captured: () => captured };
+  }
+
+  it("reads the thread and sends what was said before the mention", async () => {
+    const api = new FakeSlackApi();
+    api.usersInfoUsers = {
+      U2: { name: "alice", profile: { display_name: "Alice Chen" } },
+      UUSER1: { real_name: "Carol" },
+    };
+    api.repliesMessages = [
+      { ts: "170.100000", user: "U2", text: "can we ship the slack thing today" },
+      { ts: "170.200000", user: "U3", text: "adapter side looks done" },
+      { ts: "172.500000", user: "UUSER1", text: "<@UBOT> what do you think?" },
+    ];
+    const { adapter, captured } = build(api);
+
+    await adapter.handleEventCallback(
+      appMention("what do you think?", { threadTs: "170.100000", ts: "172.500000" }),
+    );
+
+    expect(api.repliesCalls).toEqual([
+      {
+        channelId: "C123",
+        threadTs: "170.100000",
+        latest: "172.500000",
+        inclusive: true,
+        limit: 15,
+      },
+    ]);
+    expect(api.historyCalls).toEqual([]);
+    expect(captured()?.precedingMessages).toEqual([
+      {
+        sender: { displayName: "Alice Chen", handle: "alice" },
+        text: "can we ship the slack thing today",
+        timestamp: "1970-01-01T00:02:50.100Z",
+      },
+      { text: "adapter side looks done", timestamp: "1970-01-01T00:02:50.200Z" },
+    ]);
+  });
+
+  it("reads recent channel history for a top-level mention", async () => {
+    const api = new FakeSlackApi();
+    api.historyMessages = [
+      { ts: "171.000000", user: "U2", text: "deploy is stuck again" },
+      { ts: "172.000001", user: "UUSER1", text: "<@UBOT> take a look" },
+    ];
+    const { adapter, captured } = build(api);
+
+    await adapter.handleEventCallback(appMention("take a look"));
+
+    expect(api.historyCalls).toEqual([
+      { channelId: "C123", latest: "172.000001", inclusive: false, limit: 15 },
+    ]);
+    expect(api.repliesCalls).toEqual([]);
+    expect(captured()?.precedingMessages).toEqual([
+      { text: "deploy is stuck again", timestamp: "1970-01-01T00:02:51.000Z" },
+    ]);
+  });
+
+  it("reads DM history, where each top-level message otherwise starts a cold session", async () => {
+    const api = new FakeSlackApi();
+    api.historyMessages = [
+      { ts: "170.000000", user: "UUSER1", text: "remind me what we decided" },
+      { ts: "171.000001", user: "UUSER1", text: "actually never mind" },
+    ];
+    const { adapter, captured } = build(api);
+
+    await adapter.handleEventCallback(directMessage("actually never mind"));
+
+    expect(api.historyCalls).toHaveLength(1);
+    expect(captured()?.precedingMessages).toHaveLength(1);
+  });
+
+  it("excludes our own posts, by user id and by bot id", async () => {
+    const api = new FakeSlackApi();
+    api.repliesMessages = [
+      { ts: "170.100000", user: "UBOT", text: "my own earlier answer" },
+      { ts: "170.200000", bot_id: "B_SELF", text: "my own SlackSendMessage post" },
+      { ts: "170.300000", bot_id: "B_CI", bot_profile: { name: "CI" }, text: "build failed" },
+      { ts: "172.500000", user: "UUSER1", text: "look at this" },
+    ];
+    const { adapter, captured } = build(api, { botId: "B_SELF" });
+
+    await adapter.handleEventCallback(
+      appMention("look", { threadTs: "170.100000", ts: "172.500000" }),
+    );
+
+    expect(captured()?.precedingMessages).toEqual([
+      {
+        sender: { displayName: "CI", isBot: true },
+        text: "build failed",
+        timestamp: "1970-01-01T00:02:50.300Z",
+      },
+    ]);
+  });
+
+  it("sends no transcript when Slack returns a window that is not anchored at the trigger", async () => {
+    const api = new FakeSlackApi();
+    api.repliesMessages = [
+      { ts: "100.000000", user: "U2", text: "very old" },
+      { ts: "101.000000", user: "U3", text: "also old" },
+    ];
+    const { adapter, captured } = build(api);
+
+    await expect(
+      adapter.handleEventCallback(appMention("hi", { threadTs: "100.000000", ts: "172.500000" })),
+    ).resolves.toMatchObject({ kind: "handled" });
+    expect(captured()?.precedingMessages).toBeUndefined();
+  });
+
+  it("skips the read for the rest of the cooldown once Slack rate-limits the channel", async () => {
+    const api = new FakeSlackApi();
+    api.historyFailure = slackApiFailure("ratelimited", "conversations.history");
+    const { adapter, captured } = build(api);
+
+    await expect(adapter.handleEventCallback(appMention("one"))).resolves.toMatchObject({
+      kind: "handled",
+    });
+    expect(captured()?.precedingMessages).toBeUndefined();
+
+    await adapter.handleEventCallback(appMention("two", { eventId: "Ev31", ts: "172.000031" }));
+
+    expect(api.historyCalls).toHaveLength(1);
+  });
+
+  it("latches the read off across every channel after a missing history scope", async () => {
+    const api = new FakeSlackApi();
+    api.historyFailure = slackApiFailure("missing_scope", "conversations.history");
+    const { adapter } = build(api);
+
+    await adapter.handleEventCallback(appMention("one"));
+    await adapter.handleEventCallback(
+      appMention("two", { channel: "C999", eventId: "Ev32", ts: "172.000032" }),
+    );
+
+    expect(api.historyCalls).toHaveLength(1);
+  });
+
+  it("still answers when the conversation is unreadable", async () => {
+    const api = new FakeSlackApi();
+    api.historyFailure = slackApiFailure("not_in_channel", "conversations.history");
+    const { adapter, captured } = build(api);
+
+    await expect(adapter.handleEventCallback(appMention("hi"))).resolves.toMatchObject({
+      kind: "handled",
+    });
+    expect(captured()?.precedingMessages).toBeUndefined();
+  });
+
+  it("makes no read call when the context is disabled or budgeted to zero", async () => {
+    for (const threadContext of [{ enabled: false }, { maxMessages: 0 }]) {
+      const api = new FakeSlackApi();
+      api.historyMessages = [{ ts: "171.0", user: "U2", text: "earlier" }];
+      const { adapter, captured } = build(api, { threadContext });
+
+      await adapter.handleEventCallback(appMention("hi"));
+
+      expect(api.historyCalls).toEqual([]);
+      expect(api.repliesCalls).toEqual([]);
+      expect(captured()?.precedingMessages).toBeUndefined();
+      // Speaker naming is independent of the transcript.
+      expect(captured()?.sender).toEqual({ id: "UUSER1" });
+    }
+  });
+
+  it("sends an unattributed transcript when name resolution is off", async () => {
+    const api = new FakeSlackApi();
+    api.usersInfoUsers = { U2: { real_name: "Alice Chen" } };
+    api.historyMessages = [{ ts: "171.0", user: "U2", text: "earlier" }];
+    const { adapter, captured } = build(api, { resolveUserNames: false });
+
+    await adapter.handleEventCallback(appMention("hi"));
+
+    expect(api.usersInfoCalls).toEqual([]);
+    expect(captured()?.precedingMessages).toEqual([
+      { text: "earlier", timestamp: "1970-01-01T00:02:51.000Z" },
+    ]);
+    expect(captured()?.sender).toEqual({ id: "UUSER1" });
+  });
+
+  it("keeps only the newest maxMessages, oldest first", async () => {
+    const api = new FakeSlackApi();
+    api.historyMessages = Array.from({ length: 10 }, (_, index) => ({
+      ts: `${String(160 + index)}.000000`,
+      user: "U2",
+      text: `line ${String(index)}`,
+    }));
+    const { adapter, captured } = build(api, { threadContext: { maxMessages: 3 } });
+
+    await adapter.handleEventCallback(appMention("hi"));
+
+    expect(api.historyCalls[0]?.limit).toBe(4);
+    expect(captured()?.precedingMessages?.map((entry) => entry.text)).toEqual([
+      "line 7",
+      "line 8",
+      "line 9",
+    ]);
+  });
+
+  it("never puts a Slack id in model-visible transcript content", async () => {
+    const api = new FakeSlackApi();
+    // A profile with no usable name must not fall back to the id.
+    api.usersInfoUsers = { U08ABC: { is_bot: false } };
+    api.historyMessages = [{ ts: "171.0", user: "U08ABC", text: "earlier" }];
+    const { adapter, captured } = build(api);
+
+    await adapter.handleEventCallback(appMention("hi"));
+
+    const preceding = captured()?.precedingMessages ?? [];
+    expect(preceding).toHaveLength(1);
+    expect(preceding[0]).not.toHaveProperty("sender");
+    expect(JSON.stringify(preceding)).not.toContain("U08ABC");
+  });
+
+  it("submits the turn with no context rather than waiting when the read exceeds its deadline", async () => {
+    const api = new FakeSlackApi();
+    // Never resolves: only the phase deadline can end this.
+    api.holdConversationRead = new Promise<void>(() => {});
+    api.historyMessages = [{ ts: "171.0", user: "U2", text: "earlier" }];
+    const { adapter, captured } = build(api, { threadContext: { timeoutMs: 5 } });
+
+    await expect(adapter.handleEventCallback(appMention("hi"))).resolves.toMatchObject({
+      kind: "handled",
+    });
+    expect(captured()?.precedingMessages).toBeUndefined();
+  });
+
+  it("never submits the turn when /cancel lands during the read", async () => {
+    const api = new FakeSlackApi();
+    const hold = createDeferred<void>();
+    api.holdConversationRead = hold.promise;
+    const respond = vi.fn(async () => ({ text: "ok" }));
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: { respond, cancel: vi.fn() },
+    });
+
+    const turn = adapter.handleEventCallback(directMessage("slow read"));
+    await api.conversationReadStarted.promise;
+    await adapter.handleEventCallback(
+      directMessage("/cancel", { eventId: "Ev40", ts: "171.000040", threadTs: "171.000001" }),
+    );
+    hold.resolve(undefined);
+
+    await expect(turn).resolves.toMatchObject({ kind: "cancelled" });
+    expect(respond).not.toHaveBeenCalled();
+  });
+
+  it("works with a client that has neither read method", async () => {
+    const posts: SlackChatPostMessageParams[] = [];
+    const minimalApi: SlackWebApi = {
+      async authTest() {
+        return { ok: true as const };
+      },
+      async appsConnectionsOpen() {
+        return { ok: true as const, url: "wss://slack.test/socket" };
+      },
+      async chatPostMessage(params: SlackChatPostMessageParams) {
+        posts.push(params);
+        return { ok: true as const, channel: params.channel, ts: "200.000001" };
+      },
+      async chatUpdate(params: SlackChatUpdateParams) {
+        return { ok: true as const, channel: params.channel, ts: params.ts, text: params.text };
+      },
+    };
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api: minimalApi,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        captured = request;
+        return { text: "ok" };
+      }),
+    });
+
+    await expect(adapter.handleEventCallback(appMention("hi"))).resolves.toMatchObject({
+      kind: "handled",
+    });
+    expect(captured?.precedingMessages).toBeUndefined();
+    expect(captured?.sender).toEqual({ id: "UUSER1" });
+  });
+
+  it("leaves proactive turns free of any context read", async () => {
+    const api = new FakeSlackApi();
+    api.historyMessages = [{ ts: "171.0", user: "U2", text: "earlier" }];
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        captured = request;
+        return { text: "scheduled result" };
+      }),
+    });
+
+    await adapter.notify("C123", undefined, "run the nightly scan");
+
+    expect(api.historyCalls).toEqual([]);
+    expect(api.repliesCalls).toEqual([]);
+    expect(captured?.precedingMessages).toBeUndefined();
+    expect(captured?.sender).toBeUndefined();
   });
 });
 

@@ -20,6 +20,10 @@ export type {
   SlackBlockActionsPayload,
   SlackInteractivityPayload,
   SlackSocketModeEnvelope,
+  SlackConversationMessage,
+  SlackConversationMessagesResult,
+  SlackConversationsHistoryParams,
+  SlackConversationsRepliesParams,
   SlackUserId,
   SlackUsersInfoParams,
   SlackUsersInfoResult,
@@ -122,4 +126,18 @@ export type {
   SlackHomeButtonConfig,
   SlackHomeTabConfig,
   SlackShortcutConfig,
+  SlackThreadContextConfig,
 } from "./config.js";
+
+export {
+  SLACK_THREAD_CONTEXT_DEFAULT_MAX_MESSAGES,
+  SLACK_THREAD_CONTEXT_DEFAULT_REQUEST_LIMIT,
+  SLACK_THREAD_CONTEXT_DEFAULT_TIMEOUT_MS,
+  SLACK_THREAD_CONTEXT_MAX_MESSAGES_CEILING,
+  SLACK_THREAD_CONTEXT_RATE_LIMIT_COOLDOWN_MS,
+  SLACK_THREAD_CONTEXT_REQUEST_LIMIT_CEILING,
+} from "./thread-context.js";
+export type {
+  SlackThreadContextOptions,
+  SlackThreadContextSkipReason,
+} from "./thread-context.js";

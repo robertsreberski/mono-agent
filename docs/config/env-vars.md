@@ -265,6 +265,11 @@ Most channels are opt-in via their `enabled` flag (default off). The `tui` opera
 | `MONO_AGENT_SLACK_MENTION_TEXT_ALIASES` | `slack.mentionTextAliases` | Comma-separated plain-text aliases that trigger the bot. |
 | `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` | `slack.stripMentionText` | Remove the matched mention or alias before the prompt reaches the agent. When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`. |
 | `MONO_AGENT_SLACK_RESOLVE_USER_NAMES` | `slack.resolveUserNames` | Resolve the speaker's display name and handle via `users.info` so the agent knows who is talking; default `true`. Requires the `users:read` scope; a missing scope leaves turns unnamed. |
+| `MONO_AGENT_SLACK_THREAD_CONTEXT_ENABLED` | `slack.threadContext.enabled` | Send what was said in the conversation before the agent was triggered as untrusted background context; default `true`. Needs a `*:history` scope. |
+| `MONO_AGENT_SLACK_THREAD_CONTEXT_MAX_MESSAGES` | `slack.threadContext.maxMessages` | Messages of context sent per turn, newest kept; default `15`, maximum `30`, `0` disables the read. |
+| `MONO_AGENT_SLACK_THREAD_CONTEXT_REQUEST_LIMIT` | `slack.threadContext.requestLimit` | Objects requested from Slack per read; default `15`, matching Slack's cap for non-Marketplace apps. |
+| `MONO_AGENT_SLACK_THREAD_CONTEXT_TIMEOUT_MS` | `slack.threadContext.timeoutMs` | Budget for the whole context phase including name resolution (ms); default `4000`. Exceeding it submits the turn with less context rather than delaying it. |
+| `MONO_AGENT_SLACK_THREAD_CONTEXT_INCLUDE_BOT_MESSAGES` | `slack.threadContext.includeBotMessages` | Include other apps' messages, labelled as bots; default `true`. The agent's own posts are always excluded. |
 | `MONO_AGENT_SLACK_HEARTBEAT_INTERVAL_MS` | `slack.heartbeatIntervalMs` | Socket Mode ping/silence probe interval (ms); default `30000`. |
 | `MONO_AGENT_SLACK_HEARTBEAT_TIMEOUT_MS` | `slack.heartbeatTimeoutMs` | Silence budget before the watchdog force-recycles the socket (ms); default `90000`, `0` disables the watchdog. |
 | `MONO_AGENT_SLACK_RECONNECT_INITIAL_BACKOFF_MS` | `slack.reconnectInitialBackoffMs` | First reconnect backoff after a non-graceful drop (ms); default `500`. |

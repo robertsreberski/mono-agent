@@ -83,6 +83,8 @@ A few specifics:
 
 A channel that knows who is talking sets `sender` on the request, and one that can see messages it missed between turns sets `precedingMessages`. Both are optional; a channel with no human identity (cron, webhook, single-user CLI) omits them and the turn is byte-identical to one built before these fields existed.
 
+[Slack](/channels/slack/) is the first channel to produce both: it resolves the speaker through `users.info` and reads the surrounding thread or recent channel history when it is triggered. Cron, webhook, shortcut, and App Home turns omit both by construction.
+
 Like recalled memory, and for the same reasons, both ride the **user message** rather than the system prompt: the user message is the one field every runtime re-sends verbatim, so identity survives a session resume, and a speaker that changes every turn would otherwise bust the provider prefix cache on every message.
 
 ```text

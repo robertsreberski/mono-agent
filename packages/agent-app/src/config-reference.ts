@@ -1207,6 +1207,11 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "runtime.routeSafety": "uniform",
     subagents: { enabled: false },
     "slack.resolveUserNames": true,
+    "slack.threadContext.enabled": true,
+    "slack.threadContext.maxMessages": 15,
+    "slack.threadContext.requestLimit": 15,
+    "slack.threadContext.timeoutMs": 4000,
+    "slack.threadContext.includeBotMessages": true,
     "runtime.retry.primaryAttempts": 2,
     "runtime.retry.backoffMs": 1_000,
     "runtime.retry.maxBackoffMs": 15_000,
@@ -1346,6 +1351,11 @@ function exampleFor(id: string): SettingsJsonValue {
     "slack.appToken": "env:MONO_AGENT_SLACK_APP_TOKEN",
     "slack.stripMentionText": false,
     "slack.resolveUserNames": true,
+    "slack.threadContext.enabled": true,
+    "slack.threadContext.maxMessages": 15,
+    "slack.threadContext.requestLimit": 15,
+    "slack.threadContext.timeoutMs": 4000,
+    "slack.threadContext.includeBotMessages": true,
     "webhook.apiKey": "set-via-MONO_AGENT_WEBHOOK_API_KEY",
     "openaiApi.apiKey": "env:MONO_AGENT_OPENAI_API_KEY",
   };
@@ -1378,6 +1388,16 @@ function descriptionFor(id: string): string {
   }
   if (id === "slack.resolveUserNames") {
     return "Resolves the speaker's display name and handle via `users.info` so the agent knows who is talking. Requires the `users:read` scope; a missing scope degrades to an unnamed speaker rather than failing turns.";
+  }
+  const slackThreadContextDescriptions: Record<string, string> = {
+    "slack.threadContext.enabled": "Sends what was said in the conversation before the agent was triggered as untrusted background context. Reads the thread for an in-thread trigger and recent channel history otherwise; needs a `*:history` scope.",
+    "slack.threadContext.maxMessages": "Messages of context sent per turn, newest kept. `0` disables the read. Capped at the harness's own 30-message bound.",
+    "slack.threadContext.requestLimit": "Objects requested from Slack per read. Slack caps this at 15 for non-Marketplace apps; internal apps can raise it.",
+    "slack.threadContext.timeoutMs": "Budget for the whole context phase, including name resolution. Exceeding it submits the turn with less context rather than delaying it. `0` bounds the phase only by the turn itself.",
+    "slack.threadContext.includeBotMessages": "Include other apps' messages (a CI or alert bot) labelled as bots. The agent's own posts are always excluded.",
+  };
+  if (slackThreadContextDescriptions[id] !== undefined) {
+    return slackThreadContextDescriptions[id]!;
   }
   if (id === "telegram.groupMode") {
     return "Group-message trigger rule: `any` runs every allowed group message; `mention` runs only native @mentions of the bot and replies to its messages. Direct chats and commands are unaffected.";

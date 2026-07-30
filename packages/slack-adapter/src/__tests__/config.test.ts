@@ -51,6 +51,13 @@ describe("loadSlackAdapterConfig", () => {
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames: true,
+      threadContext: {
+        enabled: true,
+        maxMessages: 15,
+        requestLimit: 15,
+        timeoutMs: 4000,
+        includeBotMessages: true,
+      },
     });
   });
 
@@ -70,6 +77,80 @@ describe("loadSlackAdapterConfig", () => {
     await expect(
       loadSlackAdapterConfig({ env: { MONO_AGENT_SLACK_RESOLVE_USER_NAMES: "true" }, jsonPath: path }),
     ).resolves.toMatchObject({ resolveUserNames: true });
+  });
+
+  it("reads the nested threadContext block from JSON and lets env override it", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: {
+          enabled: true,
+          botToken: "b",
+          appToken: "a",
+          allowAllChannels: true,
+          threadContext: {
+            enabled: true,
+            maxMessages: 20,
+            requestLimit: 100,
+            timeoutMs: 2500,
+            includeBotMessages: false,
+          },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(loadSlackAdapterConfig({ env: {}, jsonPath: path })).resolves.toMatchObject({
+      threadContext: {
+        enabled: true,
+        maxMessages: 20,
+        requestLimit: 100,
+        timeoutMs: 2500,
+        includeBotMessages: false,
+      },
+    });
+    await expect(
+      loadSlackAdapterConfig({
+        env: { MONO_AGENT_SLACK_THREAD_CONTEXT_MAX_MESSAGES: "5" },
+        jsonPath: path,
+      }),
+    ).resolves.toMatchObject({ threadContext: { maxMessages: 5 } });
+  });
+
+  it("rejects a maxMessages above the shared preceding-message ceiling", async () => {
+    // Loud at load beats a value the harness would silently drop.
+    await expect(
+      loadSlackAdapterConfig({
+        env: {
+          MONO_AGENT_SLACK_ENABLED: "true",
+          MONO_AGENT_SLACK_BOT_TOKEN: "b",
+          MONO_AGENT_SLACK_APP_TOKEN: "a",
+          MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS: "true",
+          MONO_AGENT_SLACK_THREAD_CONTEXT_MAX_MESSAGES: "31",
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "invalid_config",
+      details: { env: "MONO_AGENT_SLACK_THREAD_CONTEXT_MAX_MESSAGES" },
+    });
+  });
+
+  it("rejects a non-integer threadContext timeout", async () => {
+    await expect(
+      loadSlackAdapterConfig({
+        env: {
+          MONO_AGENT_SLACK_ENABLED: "true",
+          MONO_AGENT_SLACK_BOT_TOKEN: "b",
+          MONO_AGENT_SLACK_APP_TOKEN: "a",
+          MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS: "true",
+          MONO_AGENT_SLACK_THREAD_CONTEXT_TIMEOUT_MS: "abc",
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "invalid_config",
+      details: { env: "MONO_AGENT_SLACK_THREAD_CONTEXT_TIMEOUT_MS" },
+    });
   });
 
   it("rejects a non-boolean resolveUserNames", async () => {
@@ -196,6 +277,13 @@ describe("loadSlackAdapterConfig", () => {
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames: true,
+      threadContext: {
+        enabled: true,
+        maxMessages: 15,
+        requestLimit: 15,
+        timeoutMs: 4000,
+        includeBotMessages: true,
+      },
     });
   });
 
@@ -229,6 +317,13 @@ describe("loadSlackAdapterConfig", () => {
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames: true,
+      threadContext: {
+        enabled: true,
+        maxMessages: 15,
+        requestLimit: 15,
+        timeoutMs: 4000,
+        includeBotMessages: true,
+      },
     });
   });
 
@@ -267,6 +362,13 @@ describe("loadSlackAdapterConfig", () => {
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames: true,
+      threadContext: {
+        enabled: true,
+        maxMessages: 15,
+        requestLimit: 15,
+        timeoutMs: 4000,
+        includeBotMessages: true,
+      },
     });
   });
 
@@ -293,6 +395,13 @@ describe("loadSlackAdapterConfig", () => {
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames: true,
+      threadContext: {
+        enabled: true,
+        maxMessages: 15,
+        requestLimit: 15,
+        timeoutMs: 4000,
+        includeBotMessages: true,
+      },
     });
   });
 

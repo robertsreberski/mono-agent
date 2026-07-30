@@ -7,6 +7,9 @@ import type {
   SlackChatPostMessageResult,
   SlackChatUpdateParams,
   SlackChatUpdateResult,
+  SlackConversationMessagesResult,
+  SlackConversationsHistoryParams,
+  SlackConversationsRepliesParams,
   SlackDownloadFileParams,
   SlackReactionsAddParams,
   SlackRequestOptions,
@@ -194,6 +197,43 @@ export class SlackWebApiClient implements SlackWebApi {
     await this.request<{ ok: true }>(
       "views.publish",
       { user_id: params.userId, view: params.view },
+      this.botToken,
+      options,
+    );
+  }
+
+  conversationsReplies(
+    params: SlackConversationsRepliesParams,
+    options?: SlackRequestOptions,
+  ): Promise<SlackConversationMessagesResult> {
+    return this.request<SlackConversationMessagesResult>(
+      "conversations.replies",
+      {
+        channel: params.channelId,
+        ts: params.threadTs,
+        ...(params.latest === undefined ? {} : { latest: params.latest }),
+        ...(params.oldest === undefined ? {} : { oldest: params.oldest }),
+        ...(params.inclusive === undefined ? {} : { inclusive: params.inclusive }),
+        ...(params.limit === undefined ? {} : { limit: params.limit }),
+      },
+      this.botToken,
+      options,
+    );
+  }
+
+  conversationsHistory(
+    params: SlackConversationsHistoryParams,
+    options?: SlackRequestOptions,
+  ): Promise<SlackConversationMessagesResult> {
+    return this.request<SlackConversationMessagesResult>(
+      "conversations.history",
+      {
+        channel: params.channelId,
+        ...(params.latest === undefined ? {} : { latest: params.latest }),
+        ...(params.oldest === undefined ? {} : { oldest: params.oldest }),
+        ...(params.inclusive === undefined ? {} : { inclusive: params.inclusive }),
+        ...(params.limit === undefined ? {} : { limit: params.limit }),
+      },
       this.botToken,
       options,
     );
