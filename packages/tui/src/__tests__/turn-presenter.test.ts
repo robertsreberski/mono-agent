@@ -166,15 +166,31 @@ describe("TurnPresenter", () => {
     expect(text).not.toContain("partial garbage");
   });
 
-  it("renders warnings and failover notices inline", async () => {
+  it("renders warnings and failover notices inline, with the cause", async () => {
     const { presenter, rendered, status } = setup();
     await presenter.event({ type: "runtime_warning", message: "context compaction imminent" });
-    await presenter.event({ type: "provider_status", kind: "failover_started", from: "gpt-5.5", to: "kimi" });
+    await presenter.event({
+      type: "provider_status",
+      kind: "failover_started",
+      from: "gpt-5.5",
+      to: "kimi",
+      reason: "overloaded",
+    });
     await presenter.event({ type: "provider_status", kind: "failover_completed", model: "kimi" });
 
     expect(rendered()).toContain("context compaction imminent");
-    expect(rendered()).toContain("failover gpt-5.5 → kimi");
+    expect(rendered()).toContain("failover gpt-5.5 → kimi (overloaded)");
+    // The router emits `model` as a modelKey string, so the completion note can
+    // actually name the route that answered.
     expect(status()).toContain("answered by kimi");
+  });
+
+  it("omits the cause when the router could not classify it", async () => {
+    const { presenter, rendered } = setup();
+    await presenter.event({ type: "provider_status", kind: "failover_started", from: "a", to: "b" });
+
+    expect(rendered()).toContain("failover a → b");
+    expect(rendered()).not.toContain("(");
   });
 
   it("announces a same-model retry instead of a bogus failover-completed note", async () => {
@@ -187,9 +203,10 @@ describe("TurnPresenter", () => {
       model: "gpt-5.5",
       attemptIndex: 0,
       retryIndex: 1,
+      reason: "overloaded",
     });
 
-    expect(rendered()).toContain("retrying gpt-5.5 (attempt 2)");
+    expect(rendered()).toContain("retrying gpt-5.5 (attempt 2, overloaded)");
     expect(status()).toContain("retrying gpt-5.5");
     expect(status()).not.toContain("answered by");
   });

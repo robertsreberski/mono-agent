@@ -147,7 +147,8 @@ export class TurnPresenter implements AgentMessageStream {
         } else if (event.kind === "request_completed") {
           this.options.statusBar.setEphemeral("");
         } else if (event.kind === "failover_started") {
-          const note = `failover ${event.from ?? "?"} → ${event.to ?? "?"}`;
+          const cause = event.reason === undefined ? "" : ` (${event.reason})`;
+          const note = `failover ${event.from ?? "?"} → ${event.to ?? "?"}${cause}`;
           this.options.statusBar.setProviderNote(note);
           this.options.transcript.addChild(new NoticeCell(note, "warning"));
         } else if (event.kind === "retry_started") {
@@ -155,7 +156,8 @@ export class TurnPresenter implements AgentMessageStream {
           // so say so rather than leaving the loader unexplained. This branch
           // must stay ahead of the trailing else, which would otherwise render
           // a same-model retry as "answered by X (failover)".
-          const note = `retrying ${event.model ?? "?"} (attempt ${(event.retryIndex ?? 1) + 1})`;
+          const cause = event.reason === undefined ? "" : `, ${event.reason}`;
+          const note = `retrying ${event.model ?? "?"} (attempt ${(event.retryIndex ?? 1) + 1}${cause})`;
           this.options.statusBar.setProviderNote(note);
           this.options.transcript.addChild(new NoticeCell(note, "warning"));
         } else {

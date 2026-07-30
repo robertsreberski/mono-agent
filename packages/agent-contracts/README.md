@@ -237,6 +237,7 @@ decodeAgentAttachmentText
 encodeJsonEnvValue
 fieldSpecMappings
 formatLiveInputActivityLine
+formatProviderStatusLine
 frameFeedingMessageStream
 generateBearerToken
 hostForUrl

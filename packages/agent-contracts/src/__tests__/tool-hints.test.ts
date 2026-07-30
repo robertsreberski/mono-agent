@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   formatLiveInputActivityLine,
+  formatProviderStatusLine,
   formatToolActivityLine,
   isSubagentLaunchToolName,
   setToolActivityPathRoots,
@@ -361,5 +362,51 @@ describe("formatLiveInputActivityLine", () => {
 
   it("uses a stable label when no safe preview remains", () => {
     expect(formatLiveInputActivityLine("\n\t")).toBe("↪️ Steered");
+  });
+});
+
+describe("formatProviderStatusLine", () => {
+  it("announces a route change with its cause", () => {
+    expect(formatProviderStatusLine({
+      type: "provider_status",
+      kind: "failover_started",
+      from: "pi:openai-codex:gpt-5.6-sol",
+      to: "pi:opencode-go:kimi-k2.7-code",
+      attemptIndex: 1,
+      reason: "overloaded",
+    })).toBe("⚠️ Failed over: pi:openai-codex:gpt-5.6-sol → pi:opencode-go:kimi-k2.7-code (overloaded)");
+  });
+
+  it("omits the cause when the router could not classify it", () => {
+    expect(formatProviderStatusLine({
+      type: "provider_status",
+      kind: "failover_started",
+      from: "a",
+      to: "b",
+    })).toBe("⚠️ Failed over: a → b");
+  });
+
+  it("words a same-model retry as a retry, not a failover", () => {
+    expect(formatProviderStatusLine({
+      type: "provider_status",
+      kind: "retry_started",
+      model: "pi:openai-codex:gpt-5.6-sol",
+      attemptIndex: 0,
+      retryIndex: 1,
+      reason: "overloaded",
+    })).toBe("⏳ Retrying pi:openai-codex:gpt-5.6-sol — attempt 2 (overloaded)");
+  });
+
+  it("stays silent for the kinds the final answer already accounts for", () => {
+    for (const kind of ["request_started", "request_completed", "failover_completed"] as const) {
+      expect(formatProviderStatusLine({ type: "provider_status", kind, model: "m" })).toBeUndefined();
+    }
+  });
+
+  it("falls back to a stable placeholder when a route reference is missing", () => {
+    expect(formatProviderStatusLine({ type: "provider_status", kind: "failover_started" }))
+      .toBe("⚠️ Failed over: ? → ?");
+    expect(formatProviderStatusLine({ type: "provider_status", kind: "retry_started" }))
+      .toBe("⏳ Retrying ? — attempt 2");
   });
 });

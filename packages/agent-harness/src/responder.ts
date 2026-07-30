@@ -10,6 +10,7 @@ import type {
 import {
   AgentResponseCancelledError,
   formatLiveInputActivityLine,
+  suppressesNotification,
 } from "@mono-agent/agent-contracts";
 
 interface PendingLiveInputActivity {
@@ -230,6 +231,10 @@ export function createAgentResponder(options: {
     // The tool's name is folded in the same way, carried over from its tool_use.
     const eventContext: StreamEventContext = { toolTimings: new Map(), toolNames: new Map() };
     const emittedLiveInputIds = new Set<string>();
+    // Per-turn scratch: which route actually answered, when that is not the one
+    // the operator configured. Read from the router's own events rather than
+    // from the result's `model`, which is bridge-set and optional.
+    const routing: RoutingScratch = {};
     const response = await invoke({
       conversationId: bucketed,
       userMessage: request.text,
@@ -246,6 +251,7 @@ export function createAgentResponder(options: {
       ...(request.continuation === undefined ? {} : { continuation: request.continuation }),
       ...(boundary === undefined ? {} : { sessionBoundary: boundary }),
       onEvent: (event) => {
+        recordRoutingTransition(event, routing);
         const liveInputEvents = liveInputActivityFromRuntimeEvent(
           event,
           pendingLiveInputByBaseConversation.get(serializationKey),
@@ -279,11 +285,86 @@ export function createAgentResponder(options: {
       throw new AgentHarnessFailureError(response.failure);
     }
 
+    const text = composeResponseText(response.text, notice, routing);
     return {
-      ...(response.text === undefined ? {} : { text: notice === undefined ? response.text : `${notice}${response.text}` }),
+      ...(text === undefined ? {} : { text }),
       metadata: { ...response.metadata },
     };
   }
+}
+
+/** What `respondOnce` learns about a turn's routing from the router's events. */
+interface RoutingScratch {
+  /** `from` of the FIRST transition: the route the operator configured. */
+  configuredModel?: string;
+  /** `model` of the completion: the route that actually answered. */
+  answeredByModel?: string;
+  /** Classified cause of the most recent transition, when the router named one. */
+  reason?: string;
+}
+
+/**
+ * Record a routing transition from a raw runtime event.
+ *
+ * Only a genuine route change is tracked. A same-model retry emits
+ * `provider_retry_started` and no completion, so a run that recovered on its
+ * configured primary leaves this scratch empty and produces no note.
+ */
+function recordRoutingTransition(event: unknown, routing: RoutingScratch): void {
+  if (!isRecord(event)) {
+    return;
+  }
+  if (event.type === "provider_failover_started") {
+    const from = stringField(event, "from");
+    // First one wins: a multi-hop chain reports the route the operator asked
+    // for, not the intermediate hop it failed through.
+    if (from !== undefined && routing.configuredModel === undefined) {
+      routing.configuredModel = from;
+    }
+    const reason = stringField(event, "reason");
+    if (reason !== undefined) {
+      routing.reason = reason;
+    }
+    return;
+  }
+  if (event.type === "provider_failover_completed") {
+    const model = stringField(event, "model");
+    if (model !== undefined) {
+      routing.answeredByModel = model;
+    }
+  }
+}
+
+/**
+ * Compose the text delivered to the channel: the optional rollover notice, the
+ * model's answer, and — when the run did not execute on its configured route —
+ * one line naming what actually answered.
+ *
+ * The note is suppressed for a `NOTHING_TO_REPORT` turn. `classifyNotifySuppression`
+ * matches the whole text or its FINAL line, so appending after the sentinel would
+ * silently convert a suppressed cron/webhook run into a delivered one. A run with
+ * nothing to report also has no output to attribute.
+ */
+function composeResponseText(
+  text: string | undefined,
+  notice: string | undefined,
+  routing: RoutingScratch,
+): string | undefined {
+  if (text === undefined) {
+    return undefined;
+  }
+  const withNotice = notice === undefined ? text : `${notice}${text}`;
+  const { configuredModel, answeredByModel, reason } = routing;
+  if (
+    answeredByModel === undefined
+    || configuredModel === undefined
+    || answeredByModel === configuredModel
+    || suppressesNotification(withNotice)
+  ) {
+    return withNotice;
+  }
+  const cause = reason === undefined ? "" : ` (${reason})`;
+  return `${withNotice}\n\n⚠️ Answered by ${answeredByModel}, not the configured ${configuredModel}${cause}.`;
 }
 
 function liveInputActivityFromRuntimeEvent(
@@ -511,12 +592,16 @@ export function streamEventFromRuntimeEvent(
     const model = stringField(event, "model");
     const from = stringField(event, "from");
     const to = stringField(event, "to");
+    // The router emits `reason: null` when it could not classify the failure;
+    // stringField already drops that, so renderers only ever see a real subkind.
+    const reason = stringField(event, "reason");
     return {
       type: "provider_status",
       kind,
       ...(model === undefined ? {} : { model }),
       ...(from === undefined ? {} : { from }),
       ...(to === undefined ? {} : { to }),
+      ...(reason === undefined ? {} : { reason }),
       ...(typeof event.attemptIndex === "number" ? { attemptIndex: event.attemptIndex } : {}),
       ...(typeof event.retryIndex === "number" ? { retryIndex: event.retryIndex } : {}),
       ...(typeof event.durationMs === "number" ? { durationMs: event.durationMs } : {}),

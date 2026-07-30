@@ -27,7 +27,12 @@ import {
   normalizeTrailing,
   splitTextByCodePoints,
 } from "./stream-text.js";
-import { formatToolActivityLine, isSubagentLaunchToolName, toolHintFor } from "./tool-hints.js";
+import {
+  formatProviderStatusLine,
+  formatToolActivityLine,
+  isSubagentLaunchToolName,
+  toolHintFor,
+} from "./tool-hints.js";
 
 /** Opaque handle to a posted message, returned by {@link ChannelTransport.post}. */
 export interface MessageRef {
@@ -336,6 +341,29 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
         });
         return;
       }
+      if (event.type === "provider_status") {
+        // A route change or a retry backoff is work the reader can act on, so it
+        // joins the tool ledger and inherits its dedupe and bound. Silent kinds
+        // fall through to the shared no-op tail below.
+        const line = formatProviderStatusLine(event);
+        if (line !== undefined && this.showHints) {
+          await this.awaitInFlightEdit();
+          this.appendToolActivity(line);
+          const hadMessage = this.sentMessage !== undefined;
+          try {
+            await this.ensureMessage();
+            if (hadMessage) {
+              this.scheduleEdit();
+            }
+          } catch (error) {
+            this.logger?.warn?.("Resilient stream transient routing post failed (ignored).", {
+              error: errorMessage(error),
+            });
+            await this.maybeIndicateActivity();
+          }
+          return;
+        }
+      }
       if (event.type === "tool_call_started") {
         this.logger?.debug?.("Resilient stream received tool start event.", {
           id: event.id,
@@ -435,6 +463,24 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
         warningKind: event.warningKind,
         message: event.message,
       });
+      return;
+    }
+
+    if (event.type === "provider_status") {
+      // Same rule as a tool hint: a routing transition explains an otherwise
+      // unexplained stall, but it never overwrites answer text.
+      const line = formatProviderStatusLine(event);
+      if (line === undefined || !this.showHints || this.hasAnswerText) {
+        return;
+      }
+      this.statusText = normalizeTrailing(line, EMPTY_FINAL_TEXT);
+      const hadMessage = this.sentMessage !== undefined;
+      await this.ensureMessage();
+      if (hadMessage) {
+        await this.deliverText(this.statusText, { final: false, contentKind: "status" });
+      } else {
+        this.scheduleEdit();
+      }
       return;
     }
 

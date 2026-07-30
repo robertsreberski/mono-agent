@@ -79,10 +79,22 @@ describe("createRouterRuntime — fallback on retryable", () => {
     expect(result.failoverHistory).toHaveLength(1);
     expect(result.failoverHistory[0].model.model).toBe("claude-opus-4-7");
     expect(executeMock).toHaveBeenCalledTimes(2);
+    // Payloads, not just types: every renderer reads these fields as strings, so
+    // an object here is silently dropped downstream rather than failing loudly.
     const failoverEvents = events.filter((e) => e.type?.startsWith("provider_failover"));
-    expect(failoverEvents.map((e) => e.type)).toEqual([
-      "provider_failover_started",
-      "provider_failover_completed",
+    expect(failoverEvents).toEqual([
+      {
+        type: "provider_failover_started",
+        from: "claude:claude-opus-4-7",
+        to: "claude:claude-sonnet-4-6",
+        attemptIndex: 1,
+        reason: "overloaded",
+      },
+      {
+        type: "provider_failover_completed",
+        attemptIndex: 1,
+        model: "claude:claude-sonnet-4-6",
+      },
     ]);
   });
 

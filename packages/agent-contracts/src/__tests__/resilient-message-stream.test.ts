@@ -891,3 +891,96 @@ describe("ResilientMessageStream subagent activity", () => {
     expect(lines.at(-1)).toBe("  ↳ 📖 Reading /repo/f599.ts");
   });
 });
+
+const failover = (from: string, to: string, reason?: string) => ({
+  type: "provider_status" as const,
+  kind: "failover_started" as const,
+  from,
+  to,
+  attemptIndex: 1,
+  ...(reason === undefined ? {} : { reason }),
+});
+const retry = (model: string, retryIndex: number, reason: string) => ({
+  type: "provider_status" as const,
+  kind: "retry_started" as const,
+  model,
+  attemptIndex: 0,
+  retryIndex,
+  reason,
+});
+
+describe("ResilientMessageStream provider routing activity", () => {
+  it("finalOnly mode: puts a route change on the ledger alongside tool work", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event(retry("pi:openai-codex:gpt-5.6-sol", 1, "overloaded"));
+    await stream.event(failover("pi:openai-codex:gpt-5.6-sol", "pi:opencode-go:kimi", "overloaded"));
+    await stream.event({ type: "tool_call_started", id: "t1", name: "Read", arguments: { file_path: "/repo/a.ts" } });
+
+    expect(lastLedger(transport)).toBe(
+      [
+        "⏳ Retrying pi:openai-codex:gpt-5.6-sol — attempt 2 (overloaded)",
+        "⚠️ Failed over: pi:openai-codex:gpt-5.6-sol → pi:opencode-go:kimi (overloaded)",
+        "📖 Reading /repo/a.ts",
+      ].join("\n"),
+    );
+  });
+
+  it("finalOnly mode: collapses repeated retries of the same route", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event(retry("m", 1, "overloaded"));
+    await stream.event(retry("m", 1, "overloaded"));
+
+    expect(lastLedger(transport)).toBe("⏳ Retrying m — attempt 2 (overloaded) (×2)");
+  });
+
+  it("finalOnly mode: stays silent for the request lifecycle and the failover completion", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event({ type: "provider_status", kind: "request_started", model: "m" });
+    await stream.event({ type: "provider_status", kind: "failover_completed", model: "m", attemptIndex: 1 });
+    await stream.finish("done");
+
+    // Only the answer was ever written: no ledger post, no edit.
+    expect(transport.calls.map((call) => call.op === "delete" ? "delete" : call.text)).toEqual(["done"]);
+  });
+
+  it("finalOnly mode: honors an opt-out of activity hints", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: false });
+
+    await stream.event(failover("a", "b", "overloaded"));
+    await stream.finish("done");
+
+    expect(lastLedger(transport)).toBe("done");
+  });
+
+  it("streaming mode: surfaces a route change while no answer text has arrived", async () => {
+    const transport = new FakeTransport();
+    const stream = makeStream(transport, { showHints: true });
+
+    await stream.event(failover("a", "b", "overloaded"));
+
+    const rendered = transport.calls
+      .map((call) => call.op === "delete" ? "" : call.text)
+      .join("\n");
+    expect(rendered).toContain("⚠️ Failed over: a → b (overloaded)");
+  });
+
+  it("streaming mode: never clobbers answer text that has already arrived", async () => {
+    const transport = new FakeTransport();
+    const stream = makeStream(transport, { showHints: true });
+
+    await stream.append("the answer");
+    await stream.event(failover("a", "b", "overloaded"));
+    await stream.finish();
+
+    const lastEdit = (transport.calls.filter((c) => c.op === "edit") as RecordedEdit[]).at(-1);
+    expect(lastEdit?.text).toContain("the answer");
+    expect(lastEdit?.text).not.toContain("Failed over");
+  });
+});
