@@ -29,6 +29,8 @@ import type {
   SlackReactionsAddParams,
   SlackRequestOptions,
   SlackEventCallback,
+  SlackUsersInfoParams,
+  SlackUsersInfoResult,
   SlackViewsPublishParams,
   SlackWebApi,
 } from "../types.js";
@@ -54,9 +56,26 @@ class FakeSlackApi implements SlackWebApi {
   postFailure: unknown = undefined;
   updateFailure: unknown = undefined;
   nextTs = 200;
+  readonly usersInfoCalls: SlackUsersInfoParams[] = [];
+  /** Profiles `users.info` resolves, keyed by user id. Unlisted ids resolve to no name. */
+  usersInfoUsers: Record<string, SlackUsersInfoResult["user"]> = {};
+  usersInfoFailure: unknown = undefined;
+  /** When set, usersInfo blocks on it, so a turn can be cancelled mid-naming. */
+  holdUsersInfo: Promise<void> | undefined = undefined;
+  /** Resolves the first time usersInfo is entered. */
+  readonly usersInfoStarted = createDeferred<void>();
 
   async authTest() {
     return { ok: true as const };
+  }
+
+  async usersInfo(params: SlackUsersInfoParams): Promise<SlackUsersInfoResult> {
+    this.usersInfoCalls.push(params);
+    this.usersInfoStarted.resolve(undefined);
+    if (this.holdUsersInfo !== undefined) await this.holdUsersInfo;
+    if (this.usersInfoFailure !== undefined) throw this.usersInfoFailure;
+    const user = this.usersInfoUsers[params.userId];
+    return user === undefined ? { ok: true } : { ok: true, user };
   }
 
   async setAssistantStatus(params: { channelId: string; threadTs: string; status: string }): Promise<void> {
@@ -2985,6 +3004,141 @@ describe("SlackAdapter posted-message linkage", () => {
     recordCalls.length = 0;
     await adapter.notify("C1", "171.5", "ping again");
     expect(recordCalls).toEqual([]);
+  });
+});
+
+describe("SlackAdapter speaker names", () => {
+  function captureRequest(api: FakeSlackApi, options?: { resolveUserNames?: boolean }): {
+    readonly adapter: SlackAdapter;
+    readonly captured: () => AgentRequest | undefined;
+  } {
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: responderFrom(async (request) => {
+        captured = request;
+        return { text: "ok" };
+      }),
+      ...(options?.resolveUserNames === undefined
+        ? {}
+        : { resolveUserNames: options.resolveUserNames }),
+    });
+    return { adapter, captured: () => captured };
+  }
+
+  it("labels the turn with the speaker's display name and handle", async () => {
+    const api = new FakeSlackApi();
+    api.usersInfoUsers = {
+      UUSER1: { name: "alice", profile: { display_name: "Alice Chen" } },
+    };
+    const { adapter, captured } = captureRequest(api);
+
+    await adapter.handleEventCallback(appMention("what do you think?"));
+
+    expect(api.usersInfoCalls).toEqual([{ userId: "UUSER1" }]);
+    expect(captured()?.sender).toEqual({
+      id: "UUSER1",
+      displayName: "Alice Chen",
+      handle: "alice",
+    });
+  });
+
+  it("keeps the user id host-only rather than using it as a name", async () => {
+    const api = new FakeSlackApi();
+    api.usersInfoUsers = { UUSER1: { real_name: "Alice Chen" } };
+    const { adapter, captured } = captureRequest(api);
+
+    await adapter.handleEventCallback(appMention("hi"));
+
+    const sender = captured()?.sender;
+    expect(sender?.id).toBe("UUSER1");
+    expect(sender?.displayName).toBe("Alice Chen");
+    expect(sender?.handle).toBeUndefined();
+  });
+
+  it("leaves the sender id-only when the profile carries no usable name", async () => {
+    // The pre-names behaviour, byte for byte: the harness renders no speaker line.
+    const api = new FakeSlackApi();
+    const { adapter, captured } = captureRequest(api);
+
+    await adapter.handleEventCallback(appMention("hi"));
+
+    expect(captured()?.sender).toEqual({ id: "UUSER1" });
+  });
+
+  it("makes no users.info call when name resolution is disabled", async () => {
+    const api = new FakeSlackApi();
+    api.usersInfoUsers = { UUSER1: { real_name: "Alice Chen" } };
+    const { adapter, captured } = captureRequest(api, { resolveUserNames: false });
+
+    await adapter.handleEventCallback(appMention("hi"));
+
+    expect(api.usersInfoCalls).toEqual([]);
+    expect(captured()?.sender).toEqual({ id: "UUSER1" });
+  });
+
+  it("resolves a repeat speaker from cache across turns", async () => {
+    const api = new FakeSlackApi();
+    api.usersInfoUsers = { UUSER1: { real_name: "Alice Chen" } };
+    const { adapter, captured } = captureRequest(api);
+
+    await adapter.handleEventCallback(appMention("first", { eventId: "Ev10", ts: "172.000010" }));
+    await adapter.handleEventCallback(appMention("second", { eventId: "Ev11", ts: "172.000011" }));
+
+    expect(api.usersInfoCalls).toHaveLength(1);
+    expect(captured()?.sender).toMatchObject({ displayName: "Alice Chen" });
+  });
+
+  it("answers the turn and stops calling users.info after a missing scope", async () => {
+    const api = new FakeSlackApi();
+    api.usersInfoFailure = slackApiFailure("missing_scope", "users.info");
+    const { adapter, captured } = captureRequest(api);
+
+    await expect(
+      adapter.handleEventCallback(appMention("hi", { eventId: "Ev12", ts: "172.000012" })),
+    ).resolves.toMatchObject({ kind: "handled" });
+    expect(captured()?.sender).toEqual({ id: "UUSER1" });
+
+    await adapter.handleEventCallback(appMention("again", { eventId: "Ev13", ts: "172.000013" }));
+
+    expect(api.usersInfoCalls).toHaveLength(1);
+  });
+
+  it("answers the turn when users.info fails outright", async () => {
+    const api = new FakeSlackApi();
+    api.usersInfoFailure = new Error("boom");
+    const { adapter, captured } = captureRequest(api);
+
+    await expect(adapter.handleEventCallback(appMention("hi"))).resolves.toMatchObject({
+      kind: "handled",
+    });
+    expect(captured()?.sender).toEqual({ id: "UUSER1" });
+  });
+
+  it("never submits the turn when /cancel lands while a name is being resolved", async () => {
+    const api = new FakeSlackApi();
+    const hold = createDeferred<void>();
+    api.holdUsersInfo = hold.promise;
+    api.usersInfoUsers = { UUSER1: { real_name: "Alice Chen" } };
+    const respond = vi.fn(async () => ({ text: "ok" }));
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      stream: { editDebounceMs: 0 },
+      responder: { respond, cancel: vi.fn() },
+    });
+
+    const turn = adapter.handleEventCallback(directMessage("slow name"));
+    await api.usersInfoStarted.promise;
+    await adapter.handleEventCallback(
+      directMessage("/cancel", { eventId: "Ev20", ts: "171.000020", threadTs: "171.000001" }),
+    );
+    hold.resolve(undefined);
+
+    await expect(turn).resolves.toMatchObject({ kind: "cancelled" });
+    expect(respond).not.toHaveBeenCalled();
   });
 });
 

@@ -37,6 +37,9 @@ const UNCONFIGURED_SLACK_CONFIG: SlackAdapterConfig = {
   stripMentionText: false,
   shortcuts: [],
   homeTab: { enabled: false, buttons: [] },
+  // Mirrors the loader's own default rather than "everything off": channel-gate
+  // requires this constant to deep-equal loadSlackAdapterConfig on empty input.
+  resolveUserNames: true,
 };
 
 export interface SlackChannelOverrides {
@@ -106,6 +109,7 @@ export function createSlackChannelDriver(
         stripMentionText: input.config.stripMentionText,
         shortcuts: input.config.shortcuts,
         homeTab: input.config.homeTab,
+        resolveUserNames: input.config.resolveUserNames,
         ...(input.coreConfig?.runtime === undefined
           ? {}
           : {

@@ -73,6 +73,11 @@ export interface SlackAdapterStartOptions {
    * adapter publishes the tab on open and routes button clicks to their prompts.
    */
   readonly homeTab?: SlackHomeTabOptions;
+  /**
+   * Resolve speaker names via `users.info` (`users:read`). Default `true` in the
+   * adapter; a missing scope degrades to an unnamed speaker.
+   */
+  readonly resolveUserNames?: boolean;
   readonly logger?: SlackAdapterStartLogger;
 
   /** Resolve an in-thread reply back to the conversation that produced the message it threads off. */
@@ -249,6 +254,9 @@ function buildAdapterOptions(
   }
   if (options.homeTab !== undefined) {
     adapterOptions.homeTab = options.homeTab;
+  }
+  if (options.resolveUserNames !== undefined) {
+    adapterOptions.resolveUserNames = options.resolveUserNames;
   }
   if (logger !== undefined) {
     adapterOptions.logger = logger;

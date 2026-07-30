@@ -11,6 +11,8 @@ import type {
   SlackReactionsAddParams,
   SlackRequestOptions,
   SlackSetAssistantStatusParams,
+  SlackUsersInfoParams,
+  SlackUsersInfoResult,
   SlackViewsPublishParams,
   SlackWebApi,
 } from "./types.js";
@@ -197,6 +199,18 @@ export class SlackWebApiClient implements SlackWebApi {
     );
   }
 
+  usersInfo(
+    params: SlackUsersInfoParams,
+    options?: SlackRequestOptions,
+  ): Promise<SlackUsersInfoResult> {
+    return this.request<SlackUsersInfoResult>(
+      "users.info",
+      { user: params.userId },
+      this.botToken,
+      options,
+    );
+  }
+
   /**
    * Download a private Slack file. Slack serves `url_private` only with an
    * `Authorization: Bearer <bot token>` header. The download is bounded by the
@@ -334,9 +348,15 @@ export class SlackWebApiClient implements SlackWebApi {
 
     const envelope = parseSlackEnvelope<T>(method, payload);
     if (!envelope.ok) {
+      // Slack can rate-limit with an HTTP 200 `ok:false, error:"ratelimited"`
+      // envelope rather than a 429, and it still carries `Retry-After`. Parsing
+      // it only on the 429 branch above would silently drop the backoff hint
+      // callers use to latch a cooldown.
+      const retryAfterMs = parseRetryAfterMs(response);
       throw new SlackApiError(`Slack API ${method} rejected the request.`, {
         kind: "slack",
         method,
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
         ...(typeof envelope.error === "string" ? { slackError: envelope.error } : {}),
         ...(typeof envelope.needed === "string" ? { needed: envelope.needed } : {}),
         ...(typeof envelope.provided === "string" ? { provided: envelope.provided } : {}),

@@ -43,6 +43,56 @@ describe("SlackWebApiClient", () => {
     expect(JSON.parse(String(init?.body))).toEqual({ channel: "C1", text: "hello" });
   });
 
+  it("resolves a member profile through users.info", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ ok: true, user: { name: "alice", profile: { display_name: "Alice Chen" } } }),
+    ) as unknown as typeof fetch;
+    const client = new SlackWebApiClient({
+      botToken: BOT_TOKEN,
+      apiBaseUrl: "https://slack.example/api",
+      fetchImpl,
+      requestTimeoutMs: 0,
+    });
+
+    await expect(client.usersInfo({ userId: "U1" })).resolves.toMatchObject({
+      ok: true,
+      user: { name: "alice" },
+    });
+
+    const [url, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
+    expect(String(url)).toBe("https://slack.example/api/users.info");
+    expect(JSON.parse(String(init?.body))).toEqual({ user: "U1" });
+  });
+
+  it("carries Retry-After off a rate-limited ok:false envelope, not just an HTTP 429", async () => {
+    // Slack can rate-limit with an HTTP 200 envelope; dropping the hint there
+    // would leave a caller's cooldown with nothing to latch onto.
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ ok: false, error: "ratelimited" }, { headers: { "retry-after": "42" } }),
+    ) as unknown as typeof fetch;
+    const client = new SlackWebApiClient({ botToken: BOT_TOKEN, fetchImpl, requestTimeoutMs: 0 });
+
+    await expect(client.usersInfo({ userId: "U1" })).rejects.toMatchObject({
+      kind: "slack",
+      slackError: "ratelimited",
+      retryAfterMs: 42_000,
+    });
+  });
+
+  it("surfaces the needed scope from a missing_scope envelope", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ ok: false, error: "missing_scope", needed: "users:read", provided: "chat:write" }),
+    ) as unknown as typeof fetch;
+    const client = new SlackWebApiClient({ botToken: BOT_TOKEN, fetchImpl, requestTimeoutMs: 0 });
+
+    await expect(client.usersInfo({ userId: "U1" })).rejects.toMatchObject({
+      kind: "slack",
+      slackError: "missing_scope",
+      needed: "users:read",
+      provided: "chat:write",
+    });
+  });
+
   it("uses the app token for Socket Mode connection URLs", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({ ok: true, url: "wss://wss.slack.com/link/?ticket=abc" }),

@@ -264,6 +264,7 @@ Most channels are opt-in via their `enabled` flag (default off). The `tui` opera
 | `MONO_AGENT_SLACK_BOT_USER_IDS` | `slack.botUserIds` | Comma-separated bot user IDs used to recognize native mentions. |
 | `MONO_AGENT_SLACK_MENTION_TEXT_ALIASES` | `slack.mentionTextAliases` | Comma-separated plain-text aliases that trigger the bot. |
 | `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` | `slack.stripMentionText` | Remove the matched mention or alias before the prompt reaches the agent. When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`. |
+| `MONO_AGENT_SLACK_RESOLVE_USER_NAMES` | `slack.resolveUserNames` | Resolve the speaker's display name and handle via `users.info` so the agent knows who is talking; default `true`. Requires the `users:read` scope; a missing scope leaves turns unnamed. |
 | `MONO_AGENT_SLACK_HEARTBEAT_INTERVAL_MS` | `slack.heartbeatIntervalMs` | Socket Mode ping/silence probe interval (ms); default `30000`. |
 | `MONO_AGENT_SLACK_HEARTBEAT_TIMEOUT_MS` | `slack.heartbeatTimeoutMs` | Silence budget before the watchdog force-recycles the socket (ms); default `90000`, `0` disables the watchdog. |
 | `MONO_AGENT_SLACK_RECONNECT_INITIAL_BACKOFF_MS` | `slack.reconnectInitialBackoffMs` | First reconnect backoff after a non-graceful drop (ms); default `500`. |

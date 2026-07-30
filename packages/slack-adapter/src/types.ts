@@ -116,6 +116,35 @@ export interface SlackViewsPublishParams {
   view: { type: "home"; blocks: readonly unknown[]; [key: string]: unknown };
 }
 
+/** Params for `users.info` — resolve one workspace member's profile. */
+export interface SlackUsersInfoParams {
+  userId: SlackUserId;
+}
+
+/**
+ * Result of `users.info`. Only the name fields the adapter turns into a
+ * model-visible speaker label are typed; everything else passes through.
+ *
+ * Deliberately NOT used: `id`. A Slack user id doubles as a DM channel id, so it
+ * is a delivery target rather than a name and never becomes model-visible.
+ */
+export interface SlackUsersInfoResult {
+  ok: true;
+  user?: {
+    /** Slack handle without a leading `@`. */
+    name?: string;
+    real_name?: string;
+    is_bot?: boolean;
+    profile?: {
+      display_name?: string;
+      real_name?: string;
+      [key: string]: unknown;
+    };
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
 export interface SlackWebApi {
   authTest(options?: SlackRequestOptions): Promise<SlackAuthTestResult>;
   appsConnectionsOpen(options?: SlackRequestOptions): Promise<SlackAppsConnectionsOpenResult>;
@@ -171,6 +200,16 @@ export interface SlackWebApi {
     params: SlackViewsPublishParams,
     options?: SlackRequestOptions,
   ): Promise<void>;
+  /**
+   * Optional: resolve one member's display name/handle via `users.info` (needs the
+   * `users:read` scope). Used only to put a model-visible speaker name on a turn;
+   * the adapter guards before calling it and falls back to an unnamed speaker on
+   * any failure, so a text-only custom client may omit it.
+   */
+  usersInfo?(
+    params: SlackUsersInfoParams,
+    options?: SlackRequestOptions,
+  ): Promise<SlackUsersInfoResult>;
 }
 
 /**

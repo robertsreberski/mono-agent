@@ -50,6 +50,42 @@ describe("loadSlackAdapterConfig", () => {
       stripMentionText: true,
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
+      resolveUserNames: true,
+    });
+  });
+
+  it("reads resolveUserNames from JSON and lets env override it", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(
+      path,
+      `${JSON.stringify({
+        slack: { enabled: true, botToken: "b", appToken: "a", allowAllChannels: true, resolveUserNames: false },
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(loadSlackAdapterConfig({ env: {}, jsonPath: path })).resolves.toMatchObject({
+      resolveUserNames: false,
+    });
+    await expect(
+      loadSlackAdapterConfig({ env: { MONO_AGENT_SLACK_RESOLVE_USER_NAMES: "true" }, jsonPath: path }),
+    ).resolves.toMatchObject({ resolveUserNames: true });
+  });
+
+  it("rejects a non-boolean resolveUserNames", async () => {
+    await expect(
+      loadSlackAdapterConfig({
+        env: {
+          MONO_AGENT_SLACK_ENABLED: "true",
+          MONO_AGENT_SLACK_BOT_TOKEN: "b",
+          MONO_AGENT_SLACK_APP_TOKEN: "a",
+          MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS: "true",
+          MONO_AGENT_SLACK_RESOLVE_USER_NAMES: "yes",
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "invalid_config",
+      details: { env: "MONO_AGENT_SLACK_RESOLVE_USER_NAMES" },
     });
   });
 
@@ -159,6 +195,7 @@ describe("loadSlackAdapterConfig", () => {
       stripMentionText: false,
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
+      resolveUserNames: true,
     });
   });
 
@@ -191,6 +228,7 @@ describe("loadSlackAdapterConfig", () => {
       stripMentionText: false,
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
+      resolveUserNames: true,
     });
   });
 
@@ -228,6 +266,7 @@ describe("loadSlackAdapterConfig", () => {
       stripMentionText: false,
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
+      resolveUserNames: true,
     });
   });
 
@@ -253,6 +292,7 @@ describe("loadSlackAdapterConfig", () => {
       stripMentionText: false,
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
+      resolveUserNames: true,
     });
   });
 
