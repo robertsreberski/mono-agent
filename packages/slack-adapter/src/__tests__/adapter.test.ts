@@ -3040,6 +3040,198 @@ describe("SlackAdapter posted-message linkage", () => {
     await adapter.notify("C1", "171.5", "ping again");
     expect(recordCalls).toEqual([]);
   });
+
+  it("gives each top-level verbatim post its own conversation so two cards never share one", async () => {
+    const api = new FakeSlackApi();
+    const recordCalls: Array<[string, string, string]> = [];
+    const verbatim: Array<[string, string]> = [];
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: {
+        respond: async () => ({ text: "unused" }),
+        deliverVerbatim: async (conversationId, text) => { verbatim.push([conversationId, text]); },
+      },
+      recordPostedMessage: (channelId, ts, conversationId) => {
+        recordCalls.push([channelId, ts, conversationId]);
+      },
+    });
+
+    await adapter.notify("C1", undefined, "first card", { verbatim: true });
+    await adapter.notify("C1", undefined, "second card", { verbatim: true });
+
+    // Two cards delivered to the SAME destination own two DIFFERENT conversations,
+    // keyed by the thread each of them opened.
+    expect(recordCalls).toEqual([
+      ["C1", "200.000001", "slack:C1:200.000001"],
+      ["C1", "201.000001", "slack:C1:201.000001"],
+    ]);
+    // …and each card's text lands in its own conversation's history, so a reply in
+    // one card's thread resumes with that card and nothing else.
+    expect(verbatim).toEqual([
+      ["slack:C1:200.000001", "first card"],
+      ["slack:C1:201.000001", "second card"],
+    ]);
+  });
+
+  it("keeps a threaded verbatim delivery on the destination conversation", async () => {
+    const api = new FakeSlackApi();
+    const recordCalls: Array<[string, string, string]> = [];
+    const verbatim: Array<[string, string]> = [];
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: {
+        respond: async () => ({ text: "unused" }),
+        deliverVerbatim: async (conversationId, text) => { verbatim.push([conversationId, text]); },
+      },
+      recordPostedMessage: (channelId, ts, conversationId) => {
+        recordCalls.push([channelId, ts, conversationId]);
+      },
+    });
+
+    await adapter.notify("C1", "171.5", "threaded card", { verbatim: true });
+
+    // No new thread root, so nothing to record and nothing to re-key.
+    expect(recordCalls).toEqual([]);
+    expect(verbatim).toEqual([["slack:C1:171.5", "threaded card"]]);
+  });
+
+  it("never steers a run in another Slack thread that resolved to the same conversation", async () => {
+    const api = new FakeSlackApi();
+    const active = createDeferred<{ text: string }>();
+    const seen: string[] = [];
+    const offered: string[] = [];
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: {
+        respond: async (request) => {
+          seen.push(request.text);
+          return request.text === "long task" ? active.promise : { text: "own answer" };
+        },
+        offerLiveInput(request) {
+          offered.push(request.text);
+          return request.text === "long task"
+            ? { status: "unavailable", reason: "inactive" }
+            : { status: "accepted", settled: new Promise<AgentLiveInputSettlement>(() => {}) };
+        },
+      },
+      // Both physical threads alias onto ONE producing conversation — the shape a
+      // channel full of proactive posts used to produce.
+      resolvePostIndex: async () => "shared-producer",
+    });
+
+    const first = adapter.handleEventCallback(directMessage("long task", {
+      ts: "171.000002",
+      threadTs: "171.000001",
+    }));
+    await vi.waitFor(() => expect(seen).toEqual(["long task"]));
+
+    const second = adapter.handleEventCallback(directMessage("other thread", {
+      eventId: "Ev2",
+      ts: "172.000002",
+      threadTs: "172.000001",
+    }));
+    active.resolve({ text: "first answer" });
+    await expect(first).resolves.toMatchObject({ kind: "handled" });
+    await expect(second).resolves.toMatchObject({ kind: "handled" });
+
+    // Only the first message was ever offered (nothing was active, so the responder
+    // declined it). The second was never offered at all: it ran as its own turn and
+    // got its own answer instead of an acknowledgement reaction.
+    expect(offered).toEqual(["long task"]);
+    expect(seen).toEqual(["long task", "other thread"]);
+    await vi.waitFor(() => expect(api.postMessageCalls.map((call) => call.text)).toEqual([
+      "first answer",
+      "own answer",
+    ]));
+  });
+
+  it("never steers a top-level proactive run with an inbound reply in an aliased thread", async () => {
+    const api = new FakeSlackApi();
+    const active = createDeferred<{ text: string }>();
+    const seen: string[] = [];
+    const offered: string[] = [];
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: {
+        respond: async (request) => {
+          seen.push(request.text);
+          return request.text === "run the digest" ? active.promise : { text: "own answer" };
+        },
+        offerLiveInput(request) {
+          offered.push(request.text);
+          return { status: "accepted", settled: new Promise<AgentLiveInputSettlement>(() => {}) };
+        },
+      },
+      // The reply lands on the conversation the proactive run is holding.
+      resolvePostIndex: async () => "slack:C1",
+    });
+
+    const proactive = adapter.notify("C1", undefined, "run the digest");
+    await vi.waitFor(() => expect(seen).toEqual(["run the digest"]));
+
+    const reply = adapter.handleEventCallback(directMessage("what about mine?", {
+      channel: "C1",
+      eventId: "Ev2",
+      ts: "172.000002",
+      threadTs: "172.000001",
+    }));
+    active.resolve({ text: "digest" });
+    await expect(proactive).resolves.toMatchObject({ delivered: true });
+    await expect(reply).resolves.toMatchObject({ kind: "handled" });
+
+    // A cron/proactive run holds a key no thread can match, so the reply was never
+    // offered to it and ran as its own turn.
+    expect(offered).toEqual([]);
+    expect(seen).toEqual(["run the digest", "what about mine?"]);
+  });
+
+  it("still steers a follow-up arriving in the SAME thread as the active run", async () => {
+    const api = new FakeSlackApi();
+    const active = createDeferred<{ text: string }>();
+    const seen: string[] = [];
+    const offered: string[] = [];
+    let settle!: (result: AgentLiveInputSettlement) => void;
+    const settled = new Promise<AgentLiveInputSettlement>((resolve) => { settle = resolve; });
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: {
+        respond: async (request) => {
+          seen.push(request.text);
+          return active.promise;
+        },
+        offerLiveInput(request) {
+          offered.push(request.text);
+          return request.text === "long task"
+            ? { status: "unavailable", reason: "inactive" }
+            : { status: "accepted", settled };
+        },
+      },
+      resolvePostIndex: async () => "shared-producer",
+    });
+
+    const first = adapter.handleEventCallback(directMessage("long task", {
+      ts: "171.000002",
+      threadTs: "171.000001",
+    }));
+    await vi.waitFor(() => expect(seen).toEqual(["long task"]));
+
+    await expect(adapter.handleEventCallback(directMessage("steer now", {
+      eventId: "Ev2",
+      ts: "171.000003",
+      threadTs: "171.000001",
+    }))).resolves.toMatchObject({ metadata: { liveInput: true } });
+
+    expect(offered).toEqual(["long task", "steer now"]);
+    settle({ status: "applied", runId: "run-1" });
+    active.resolve({ text: "steered answer" });
+    await expect(first).resolves.toMatchObject({ kind: "handled" });
+    expect(seen).toEqual(["long task"]);
+  });
 });
 
 describe("SlackAdapter speaker names", () => {

@@ -934,6 +934,12 @@ function registerSlackSendTool(
             channelId: result.channel,
             ts: result.ts,
             conversationId: indexing.conversationId,
+            // Every chunk of one oversized post is tagged with the first chunk's
+            // ts, so the index counts this as ONE claim on the producing
+            // conversation. Without it, a split message would look like several
+            // independent posts competing for the same producer, and the lookup
+            // would decline the alias for all of them.
+            groupId: results[0]?.ts ?? result.ts,
           });
         }
       }
