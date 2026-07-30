@@ -1206,6 +1206,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "runtime.fallbacks": [],
     "runtime.routeSafety": "uniform",
     subagents: { enabled: false },
+    "slack.resolveUserNames": true,
     "runtime.retry.primaryAttempts": 2,
     "runtime.retry.backoffMs": 1_000,
     "runtime.retry.maxBackoffMs": 15_000,
@@ -1344,6 +1345,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "slack.botToken": "env:MONO_AGENT_SLACK_BOT_TOKEN",
     "slack.appToken": "env:MONO_AGENT_SLACK_APP_TOKEN",
     "slack.stripMentionText": false,
+    "slack.resolveUserNames": true,
     "webhook.apiKey": "set-via-MONO_AGENT_WEBHOOK_API_KEY",
     "openaiApi.apiKey": "env:MONO_AGENT_OPENAI_API_KEY",
   };
@@ -1373,6 +1375,9 @@ function descriptionFor(id: string): string {
   const name = id.split(".").slice(1).join(".");
   if (id === "slack.stripMentionText") {
     return "When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`.";
+  }
+  if (id === "slack.resolveUserNames") {
+    return "Resolves the speaker's display name and handle via `users.info` so the agent knows who is talking. Requires the `users:read` scope; a missing scope degrades to an unnamed speaker rather than failing turns.";
   }
   if (id === "telegram.groupMode") {
     return "Group-message trigger rule: `any` runs every allowed group message; `mention` runs only native @mentions of the bot and replies to its messages. Direct chats and commands are unaffected.";
