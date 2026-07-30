@@ -721,6 +721,9 @@ describe("durable A2A logical dispatch idempotency", () => {
     } as const;
     await sendA2AMessage({ ...input, agentUrl: firstProvider.agentCardUrl });
     await firstProvider.stop();
+    // Let the monitor observe the shutdown's own `canceled` publication before restarting, so this
+    // pins the fail-closed contract instead of racing it. See the dispatch.test.ts sibling.
+    await new Promise((resolve) => setTimeout(resolve, 250));
 
     let restartedCalls = 0;
     const restarted = await startProvider({

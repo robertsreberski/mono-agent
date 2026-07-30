@@ -21,12 +21,14 @@ export function parsePnpmPackOutput(stdout) {
 
   // pnpm 10 writes prepack lifecycle output before the JSON document, whereas
   // pnpm 11 emits only JSON for the same `pack --json` command. The JSON object
-  // or array begins at column zero; nested values are indented.
-  const jsonStart = output.search(/^(?:\{|\[)/mu);
-  if (jsonStart === -1) {
+  // or array begins at column zero; nested values are indented. pnpm also emits
+  // diagnostics at column zero that open with the same bracket a JSON array does
+  // (`[WARN] This project is configured to use …`), so the first candidate is not
+  // necessarily the document — take the first one that actually parses.
+  const packed = parseFirstJsonDocument(output);
+  if (packed === undefined) {
     throw new Error("pnpm pack did not return JSON output");
   }
-  const packed = JSON.parse(output.slice(jsonStart));
   if (Array.isArray(packed)) {
     if (packed.length !== 1) {
       throw new Error(`expected one pnpm pack result; received ${packed.length}`);
@@ -35,6 +37,17 @@ export function parsePnpmPackOutput(stdout) {
   }
 
   return packed;
+}
+
+function parseFirstJsonDocument(output) {
+  for (const match of output.matchAll(/^[{[]/gmu)) {
+    try {
+      return JSON.parse(output.slice(match.index));
+    } catch {
+      // Not the document — keep looking past this line's opening bracket.
+    }
+  }
+  return undefined;
 }
 
 function tarballPathFromPackResult(packed, packDestination) {

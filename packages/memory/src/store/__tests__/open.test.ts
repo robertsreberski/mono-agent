@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
@@ -35,6 +35,32 @@ describe("openMemoryDb", () => {
     expect(existsSync(parent)).toBe(true);
     expect(existsSync(path)).toBe(true);
     db.close();
+  });
+
+  it("keeps the SQLite family owner-only regardless of the ambient umask", () => {
+    // SQLite creates the database and its WAL sidecars through its C layer, which applies the
+    // process umask — under the common default of 022 they land 0644. The BuJo adoption and
+    // rebuild guards refuse any family that is not exactly 0600, so without this the package
+    // rejects its own databases on every machine that is not running umask 077.
+    const root = mkdtempSync(join(tmpdir(), "memstore-mode-"));
+    const path = join(root, "memory.db");
+    const family = [path, `${path}-wal`, `${path}-shm`];
+
+    const first = openMemoryDb({ path, embeddings: fakeEmbeddings, dim: 8 });
+    first.close();
+    for (const candidate of family.filter((entry) => existsSync(entry))) {
+      expect(statSync(candidate).mode & 0o777, candidate).toBe(0o600);
+    }
+
+    // A family loosened out of band is re-tightened on the next writable open.
+    for (const candidate of family.filter((entry) => existsSync(entry))) {
+      chmodSync(candidate, 0o644);
+    }
+    const second = openMemoryDb({ path, embeddings: fakeEmbeddings, dim: 8 });
+    second.close();
+    for (const candidate of family.filter((entry) => existsSync(entry))) {
+      expect(statSync(candidate).mode & 0o777, candidate).toBe(0o600);
+    }
   });
 
   it("does not create a missing parent directory for a read-only open", () => {

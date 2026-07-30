@@ -41,8 +41,8 @@ jobs:
           node-version: "22.19.0"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Enable Corepack
-        run: corepack enable
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@11.18.0
 
       - name: Check pnpm release-age policy
         run: node scripts/pnpm-release-age-policy.mjs

@@ -11,6 +11,13 @@ import {
   startArtifactRetentionScheduler,
 } from "../artifact-retention.js";
 
+/**
+ * vi.waitFor defaults to a 1s budget, independent of testTimeout. These sweeps wait on real
+ * filesystem work, so on a loaded runner the poll expired before the sweep landed and the test
+ * failed intermittently while passing in isolation. Wait longer rather than assume a quiet machine.
+ */
+const SWEEP_WAIT = { timeout: 15_000, interval: 25 } as const;
+
 const NOW = Date.parse("2026-07-05T12:00:00.000Z");
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -159,13 +166,13 @@ describe("artifact retention app scheduler", () => {
 
     await vi.waitFor(async () => {
       await expectExists(join(operatorRoot, "forget-4"), false);
-    });
+    }, SWEEP_WAIT);
     const expired = join(operatorRoot, "forget-expired");
     await writeOperatorBackup(operatorRoot, "forget-expired", NOW - 40 * DAY_MS);
     intervalSweep?.();
     await vi.waitFor(async () => {
       await expectExists(expired, false);
-    });
+    }, SWEEP_WAIT);
 
     expect(logger.warn).not.toHaveBeenCalled();
     expect(logger.info).toHaveBeenCalledWith(
@@ -212,7 +219,7 @@ describe("artifact retention app scheduler", () => {
     releaseClaim?.();
     await vi.waitFor(async () => {
       await expectExists(candidate, true);
-    });
+    }, SWEEP_WAIT);
     expect(logger.info).not.toHaveBeenCalledWith(
       "Memory forget-backup retention pruned snapshots.",
       expect.anything(),

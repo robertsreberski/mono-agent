@@ -29,9 +29,9 @@ export const VERIFY_GATE_DELTA = Object.freeze({
       reason: "CI selects each exact Node-matrix runtime; local verify:all uses the active supported runtime.",
     }),
     Object.freeze({
-      key: "corepack setup",
+      key: "pnpm setup",
       after: "Node setup",
-      reason: "CI enables Corepack in its clean runner; local verify:all assumes the selected pnpm is already available.",
+      reason: "CI installs the pinned pnpm in its clean runner; local verify:all assumes the pinned pnpm is already available.",
     }),
     Object.freeze({
       key: "dependency install",
@@ -106,7 +106,7 @@ export const VERIFY_GATE_DELTA = Object.freeze({
         command: "node",
         args: Object.freeze(["scripts/pnpm-release-age-policy.mjs"]),
       }),
-      ciAfter: "corepack setup",
+      ciAfter: "pnpm setup",
       verifyAll: Object.freeze({
         label: "check:pnpm-policy",
         command: "pnpm",

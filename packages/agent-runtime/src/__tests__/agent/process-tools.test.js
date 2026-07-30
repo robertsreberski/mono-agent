@@ -58,7 +58,9 @@ describe("Exec", () => {
     const timedOut = await execToolRun({
       executable: process.execPath,
       args: ["--eval", "console.log('before-timeout'); setTimeout(() => {}, 5000)"],
-      timeout_ms: 50,
+      // Long enough for Node to boot and flush its line on a loaded CI runner, still far below the
+      // child's 5s sleep so the timeout is what ends it. At 50ms this raced Node's own startup.
+      timeout_ms: 1000,
     }, options(workspace));
     expect(timedOut.text).toContain("before-timeout");
     expect(timedOut).toMatchObject({
@@ -109,7 +111,9 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
     const workspace = tempWorkspace();
     const result = await bashToolRun({
       command: `${JSON.stringify(process.execPath)} --eval "console.log('started'); setTimeout(() => {}, 5000)"`,
-      timeout_ms: 50,
+      // Same startup race as the Exec case above: the assertion needs the child's line, so the
+      // budget must clear Node's boot time while staying well under the 5s sleep.
+      timeout_ms: 1000,
     }, options(workspace));
 
     expect(result.text).toContain("started");

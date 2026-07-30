@@ -4,6 +4,11 @@
 # Astro build into the repo's `pnpm -r run build`/`test`.
 packages: []
 
+# Same rationale as the root workspace: pnpm 11 cannot switch package-manager versions, so a
+# contributor whose pnpm differs from the packageManager pin would have every command here
+# hard-fail. Warn instead — CI installs the pinned version explicitly.
+pmOnFail: warn
+
 allowBuilds:
   esbuild: true
   sharp: true

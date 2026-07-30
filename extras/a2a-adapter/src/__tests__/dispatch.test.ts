@@ -208,6 +208,12 @@ describe("A2A durable dispatch lifecycle", () => {
     } as const;
     await dispatchA2AMessage({ ...input, agentUrl: original.agentCardUrl });
     await original.stop();
+    // Shutdown aborts the in-flight run and publishes a `canceled` task state. Wait past the
+    // monitor's poll interval so it definitely observes that state before the restart — the
+    // ordering CI hits and a fast local machine usually skips. Without the shutdown latch the
+    // monitor promotes that cancellation to a durable terminal record and the replay below
+    // returns a definite `remote_canceled` instead of failing closed.
+    await new Promise((resolve) => setTimeout(resolve, 250));
 
     let restartedCalls = 0;
     const restarted = await startProvider({

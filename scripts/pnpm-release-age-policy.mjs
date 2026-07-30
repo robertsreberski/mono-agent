@@ -428,20 +428,32 @@ async function createIsolatedPnpmConfigEnvironment(baseEnv) {
         const configKey = match[1].replaceAll("_", "").replaceAll("-", "");
         if (RELEASE_AGE_NPMRC_KEYS.has(configKey)
           || configKey === "userconfig"
-          || configKey === "globalconfig") {
+          || configKey === "globalconfig"
+          || configKey === "pmonfail") {
           delete env[key];
         }
       }
     }
+    // These probes only READ the committed policy with the pnpm that is already running, so the
+    // project's `packageManager` pin must not make them switch package-manager versions. pnpm 11
+    // cannot switch at all (it fails closed under corepack, and its download path rejects any
+    // resolution without lockfile integrity), which would turn a config read into a hard error
+    // whenever the running pnpm differs from the pin. `pmOnFail: ignore` keeps the probe reporting
+    // the running version on every supported pnpm; the pin is proved by the pinned CI install and
+    // by validatePnpmVersionContract, not by a self-switch inside this script.
     Object.assign(env, {
       NPM_CONFIG_GLOBALCONFIG: globalConfig,
+      NPM_CONFIG_PM_ON_FAIL: "ignore",
       NPM_CONFIG_USERCONFIG: userConfig,
       PNPM_CONFIG_GLOBALCONFIG: globalConfig,
+      PNPM_CONFIG_PM_ON_FAIL: "ignore",
       PNPM_CONFIG_USERCONFIG: userConfig,
       XDG_CONFIG_HOME: xdgConfigHome,
       npm_config_globalconfig: globalConfig,
+      npm_config_pm_on_fail: "ignore",
       npm_config_userconfig: userConfig,
       pnpm_config_globalconfig: globalConfig,
+      pnpm_config_pm_on_fail: "ignore",
       pnpm_config_userconfig: userConfig,
     });
     return { directory, env };

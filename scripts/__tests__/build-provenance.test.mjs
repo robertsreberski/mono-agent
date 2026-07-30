@@ -436,11 +436,11 @@ describe("provenance build lifecycle", () => {
     expect(selectBuildInvocation("pnpm", ["-r", "--sort", "run", "build"], {
       platform: "win32",
       nodePath: "C:\\Program Files\\nodejs\\node.exe",
-      npmExecPath: "C:\\Program Files\\nodejs\\node_modules\\corepack\\dist\\pnpm.js",
+      npmExecPath: "C:\\Program Files\\nodejs\\node_modules\\pnpm\\bin\\pnpm.cjs",
     })).toEqual({
       command: "C:\\Program Files\\nodejs\\node.exe",
       args: [
-        "C:\\Program Files\\nodejs\\node_modules\\corepack\\dist\\pnpm.js",
+        "C:\\Program Files\\nodejs\\node_modules\\pnpm\\bin\\pnpm.cjs",
         "-r",
         "--sort",
         "run",
@@ -472,7 +472,7 @@ describe("provenance build lifecycle", () => {
     for (const npmExecPath of [
       "C:\\private\\pnpm.js",
       "C:\\Program Files\\nodejs\\node_modules\\..\\pnpm.js",
-      "C:\\Program Files\\nodejs\\node_modules\\corepack\\dist\\not-pnpm.js",
+      "C:\\Program Files\\nodejs\\node_modules\\pnpm\\bin\\not-pnpm.js",
       undefined,
     ]) {
       expect(() => selectBuildInvocation("pnpm", ["run", "build:demo"], {

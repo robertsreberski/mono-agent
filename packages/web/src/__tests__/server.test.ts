@@ -484,9 +484,23 @@ describe("web HTTP server", () => {
     const overflow = await fetch(`${baseUrl}/api/v1/events`);
     expect(overflow.status).toBe(503);
     await Promise.all(streams.map(async (response) => response.body?.cancel().catch(() => undefined)));
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
-    const reconnected = await fetch(`${baseUrl}/api/v1/events`);
+    // Cancelling a stream client-side does not synchronously free the server's slot — the server
+    // reaps it when it observes the closed socket. A fixed 20ms sleep raced that reaper under load
+    // and read back the same 503 as the overflow above. Poll until capacity is actually free, and
+    // still return the last response so a genuine regression reports its real status.
+    const reconnected = await waitForFreeSseSlot(baseUrl);
     expect(reconnected.status).toBe(200);
     await reconnected.body?.cancel();
   }, 15_000);
 });
+
+/** Reconnect until the server has reaped the cancelled streams, or give up and let the caller assert. */
+async function waitForFreeSseSlot(baseUrl: string, timeoutMs = 5_000): Promise<Response> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const response = await fetch(`${baseUrl}/api/v1/events`);
+    if (response.status === 200 || Date.now() > deadline) return response;
+    await response.body?.cancel().catch(() => undefined);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+  }
+}

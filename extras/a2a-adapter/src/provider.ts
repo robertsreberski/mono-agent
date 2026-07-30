@@ -60,6 +60,7 @@ import {
 import { A2AProviderError } from "./errors.js";
 import {
   createIdempotentA2ARequestHandler,
+  beginA2AIdempotencyShutdown,
   guardUnsupportedA2AIdempotency,
   type A2AProviderIdempotencyOptions,
   validateA2AProviderIdempotencyOptions,
@@ -241,6 +242,9 @@ export async function startA2AProvider(
     agentCard,
     stop() {
       stopPromise ??= (async () => {
+        // Order matters: latch the shutdown before aborting in-flight runs, so the durable
+        // idempotency monitor never records our own cancellation as the responder's outcome.
+        beginA2AIdempotencyShutdown(requestHandler);
         executor.stop("A2A provider stopped.");
         await closeServerBounded(server);
       })();

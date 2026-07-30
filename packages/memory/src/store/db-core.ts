@@ -6,6 +6,7 @@ import BetterSqlite3, { type Database } from "better-sqlite3";
 import { ftsQuery } from "./fts.js";
 import { rrfFuse, reScore } from "./ranking.js";
 import { migrations } from "./schema.js";
+import { enforceOwnerOnlySqliteFamily } from "./sqlite-family-mode.js";
 import { loadVec, toBlob } from "./vec.js";
 import {
   DEFAULT_DECAY_GAMMA,
@@ -58,6 +59,9 @@ export class MemoryDbCore {
     loadVec(this.db);
     if (options.readOnly !== true) {
       for (const statement of migrations(vecDim)) this.db.exec(statement);
+      // SQLite created the database and its WAL sidecars under the process umask; restore the
+      // owner-only mode the rest of this package writes and the BuJo guards require.
+      enforceOwnerOnlySqliteFamily(options.path);
     }
     this.embeddings = options.embeddings;
     this.dim = vecDim;

@@ -201,6 +201,18 @@ export function validateA2AProviderIdempotencyOptions(
   normalizeMaxRecords(options.maxRecords);
 }
 
+/**
+ * Latch provider shutdown into the durable idempotency layer, if one is installed.
+ *
+ * Must run BEFORE in-flight runs are aborted, so the monitor never mistakes the shutdown's own
+ * `canceled` publication for the responder's outcome. A handler without durable idempotency has
+ * nothing to latch and is a no-op.
+ */
+export function beginA2AIdempotencyShutdown(handler: A2ARequestHandler): void {
+  const candidate = handler as Partial<{ beginShutdown(): void }>;
+  if (typeof candidate.beginShutdown === "function") candidate.beginShutdown();
+}
+
 export function guardUnsupportedA2AIdempotency(
   delegate: A2ARequestHandler,
 ): A2ARequestHandler {
@@ -349,6 +361,19 @@ class UnsupportedIdempotencyA2ARequestHandler extends DelegatingA2ARequestHandle
 class IdempotentA2ARequestHandler extends DelegatingA2ARequestHandler {
   private readonly activeRequests = new Map<string, RuntimeRequest>();
   private readonly liveImmediateTasks = new Set<string>();
+  private shuttingDown = false;
+
+  /**
+   * Provider shutdown aborts every in-flight run and publishes a `canceled` task state. That is a
+   * transport event, not an outcome: the responder may already have run to completion, so what
+   * actually happened is unknown. Recording it as terminal would hand a later replay a definite
+   * answer for work whose effects are in doubt, which is exactly what `activeAfterRestart:
+   * idempotency_in_doubt` promises never to do. Latch the shutdown so the monitor stops promoting
+   * terminal states and the admission stays active for the next process to fail closed on.
+   */
+  beginShutdown(): void {
+    this.shuttingDown = true;
+  }
 
   constructor(
     delegate: A2ARequestHandler,
@@ -540,9 +565,12 @@ class IdempotentA2ARequestHandler extends DelegatingA2ARequestHandler {
       throw storeError("A2A active idempotency record is missing taskId.");
     }
     try {
-      while (this.liveImmediateTasks.has(taskId)) {
+      while (this.liveImmediateTasks.has(taskId) && !this.shuttingDown) {
         const task = await this.taskStore.load(taskId, context);
         if (task !== undefined && isTerminalState(task.status?.state)) {
+          // Re-check after the await: a shutdown that landed while this poll was in flight makes
+          // the terminal state ours, not the responder's, so it must not be recorded.
+          if (this.shuttingDown) break;
           await this.store.save({
             schemaVersion: RECORD_SCHEMA_VERSION,
             keyHash: record.keyHash,

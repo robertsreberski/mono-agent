@@ -86,6 +86,10 @@ describe("AskUser web form", () => {
       { questionId: "q0", selectedOptionIds: ["q0o0"] },
       { questionId: "q1", selectedOptionIds: ["q1o1"], customReply: "Also mention risk" },
     ]));
-    expect(await screen.findByText("Answers submitted.")).toBeVisible();
+    // Re-query inside waitFor rather than asserting on the handle findByText returns. The
+    // completion notice re-renders right after it first appears, so under load the captured node
+    // was already detached by the time the assertion ran — "element is not in the document" for an
+    // element that is on screen.
+    await waitFor(() => expect(screen.getByText("Answers submitted.")).toBeVisible());
   });
 });

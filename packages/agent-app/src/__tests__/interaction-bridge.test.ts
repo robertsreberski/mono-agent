@@ -62,6 +62,21 @@ async function createAsk(handle: InteractionBridgeHandle, body: Record<string, u
   return { status: response.status, body: await response.json() as Record<string, unknown> };
 }
 
+/** Poll until the probe yields a value, so expiry is observed rather than timed. */
+async function waitFor<T>(
+  probe: () => Promise<T | undefined>,
+  description: string,
+  timeoutMs = 10_000,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const result = await probe();
+    if (result !== undefined) return result;
+    if (Date.now() > deadline) throw new Error(`Timed out waiting: ${description}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 async function pollAsk(handle: InteractionBridgeHandle, interactionId: string): Promise<ChannelAskSnapshot> {
   const response = await fetch(`${handle.url}/v1/asks/${encodeURIComponent(interactionId)}`, {
     headers: { authorization: `Bearer ${handle.token}` },
@@ -200,24 +215,28 @@ describe("structured AskUser interaction bridge", () => {
   });
 
   it("expires pending interactions and returns partial answers to the waiting tool", async () => {
-    vi.useFakeTimers();
-    try {
-      const { handle, updated } = await createHarness(25);
-      const created = await createAsk(handle, { conversationId: "web:timeout", questions: questions() });
-      const interactionId = created.body.interactionId as string;
-      const snapshot = handle.getPendingAsk("web:timeout")!;
-      await handle.submitAskAnswers({
-        conversationId: "web:timeout",
-        interactionId,
-        answers: [{ questionId: snapshot.questions[0]!.id, selectedOptionIds: [snapshot.questions[0]!.options[0]!.id] }],
-      });
-      await vi.advanceTimersByTimeAsync(25);
-      const terminal = await pollAsk(handle, interactionId);
-      expect(terminal.status).toBe("expired");
-      expect(terminal.answers).toHaveLength(1);
-      expect(updated.at(-1)?.status).toBe("expired");
-    } finally {
-      vi.useRealTimers();
-    }
+    // Deliberately real timers: createAsk/pollAsk make real HTTP requests, and undici schedules
+    // its own timers for them. Faking timers here left those unfired, so the request could hang
+    // until Vitest's 5s wall-clock timeout — it passed locally and timed out on CI. The expiry
+    // window is 25ms, so waiting it out for real is both cheaper and honest.
+    const { handle, updated } = await createHarness(25);
+    const created = await createAsk(handle, { conversationId: "web:timeout", questions: questions() });
+    const interactionId = created.body.interactionId as string;
+    const snapshot = handle.getPendingAsk("web:timeout")!;
+    await handle.submitAskAnswers({
+      conversationId: "web:timeout",
+      interactionId,
+      answers: [{ questionId: snapshot.questions[0]!.id, selectedOptionIds: [snapshot.questions[0]!.options[0]!.id] }],
+    });
+
+    const terminal = await waitFor(
+      async () => {
+        const polled = await pollAsk(handle, interactionId);
+        return polled.status === "expired" ? polled : undefined;
+      },
+      "pending interaction never expired",
+    );
+    expect(terminal.answers).toHaveLength(1);
+    expect(updated.at(-1)?.status).toBe("expired");
   });
 });

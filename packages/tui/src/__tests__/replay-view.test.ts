@@ -91,7 +91,23 @@ function normalizedJSDocBefore(source: string, anchor: string): string {
 
 async function openRun(view: ReplayView, runId: string): Promise<void> {
   view.list.onSelect?.({ value: runId, label: "", description: "" });
-  await flush();
+  // Opening a run reads its events from disk. A fixed sleep is a coin flip on a loaded CI runner —
+  // when it lost, the view was still in list mode and assertions saw the run list instead of the
+  // detail render. Wait for the transition itself, which is fast when the machine is idle and
+  // still correct when it is not.
+  await waitFor(() => view.isInDetail(), `run ${runId} never entered detail mode`);
+}
+
+async function waitFor(
+  predicate: () => boolean,
+  description: string,
+  timeoutMs = 5_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting: ${description}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 describe("replay projection contract comments", () => {
