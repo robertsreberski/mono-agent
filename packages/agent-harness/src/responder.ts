@@ -227,7 +227,8 @@ export function createAgentResponder(options: {
     }
     // Per-turn scratch: tool_timing arrives strictly before its tool_result and
     // is folded into that tool_call_completed rather than emitted on its own.
-    const eventContext: StreamEventContext = { toolTimings: new Map() };
+    // The tool's name is folded in the same way, carried over from its tool_use.
+    const eventContext: StreamEventContext = { toolTimings: new Map(), toolNames: new Map() };
     const emittedLiveInputIds = new Set<string>();
     const response = await invoke({
       conversationId: bucketed,
@@ -365,9 +366,16 @@ async function serializeByKey<T>(
  * tool_timing events (tool_use_id → execution_ms) so the duration can be
  * stamped onto the matching tool_call_completed instead of surfacing as a
  * separate event; entries are consumed on use.
+ *
+ * `toolNames` does the same for the tool's name, which the raw `tool_result`
+ * block does not carry. Without it a consumer cannot tell WHICH tool finished —
+ * and a subagent launch that failed before the runtime ever spawned a child has
+ * no lifecycle bookend either, so its activity header would never settle and a
+ * rejected `Agent` call would read as one still running.
  */
 export interface StreamEventContext {
   readonly toolTimings?: Map<string, number>;
+  readonly toolNames?: Map<string, string>;
 }
 
 /**
@@ -547,6 +555,7 @@ export function streamEventFromRuntimeEvent(
         const id = stringField(block, "id");
         const name = stringField(block, "name");
         if (id !== undefined && name !== undefined) {
+          context?.toolNames?.set(id, name);
           return {
             type: "tool_call_started",
             id,
@@ -563,9 +572,14 @@ export function streamEventFromRuntimeEvent(
         if (executionMs !== undefined) {
           context?.toolTimings?.delete(id);
         }
+        const name = context?.toolNames?.get(id);
+        if (name !== undefined) {
+          context?.toolNames?.delete(id);
+        }
         return {
           type: "tool_call_completed",
           id,
+          ...(name === undefined ? {} : { name }),
           ...(hasOwn(block, "content") ? { content: block.content } : {}),
           ...(typeof block.is_error === "boolean" ? { isError: block.is_error } : {}),
           ...(executionMs === undefined ? {} : { executionMs }),

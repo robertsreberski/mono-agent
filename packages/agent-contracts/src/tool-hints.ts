@@ -256,7 +256,8 @@ export function formatLiveInputActivityLine(
 
 function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
   if (SUBAGENT_LAUNCH_NAMES.has(normalized)) {
-    // The profile name is an operator-authored identifier, never free text, so
+    // An identifier either way — a configured subagent's name, or the
+    // kebab-case one a caller gave a subagent it authored at call time — so
     // quoting it reads as a name rather than as part of the sentence.
     return {
       action: "🤖 Starting agent",

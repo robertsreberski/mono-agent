@@ -93,12 +93,21 @@ function toolDescription(subagents, definitions, ceiling) {
   const named = definitions.length === 0
     ? ""
     : `\n\nAvailable subagents:\n${definitions.map((d) => `- ${d.name}: ${d.description}`).join("\n")}\n- ${GENERAL_PURPOSE_SUBAGENT}: read-only researcher inheriting the main model. Used when \`name\` is omitted.`;
+  // With authoring on, `name` is a free string rather than an enum, so it is
+  // the model's only signal for which of the two shapes it is writing. Left
+  // implicit, a caller that wants a configured profile AND a descriptive label
+  // splits those across two fields — label into `name`, profile into an
+  // invented one — and the closed schema rejects the whole call before any of
+  // the handler's precise errors can run.
+  const shapes = ceiling === null
+    ? ""
+    : `\n\nExactly two ways to call this, and \`name\` carries the agent's identity in both:\n- Use a configured one: set \`name\` to a name from the list above. Nothing else.\n- Build one for this task: set \`name\` to a NEW kebab-case name AND \`systemPrompt\` to its full instructions (optionally \`tools\`, \`effort\`). Do that when no configured one fits — a dedicated prompt beats stuffing constraints into \`prompt\`.\n\n\`description\` is the short label shown in the activity log, never the agent's name. There is no separate field for choosing a configured agent.`;
   // The ceiling is listed because the model has no other way to discover it: a
   // tool it cannot see is indistinguishable from one it forgot to ask for.
   const inline = ceiling === null
     ? ""
-    : `\n\nYou can also build a specialist on the spot instead of picking a profile: pass \`systemPrompt\` with its full instructions, a kebab-case \`name\`, and the \`tools\` it needs. Do that when no profile fits the task — a dedicated prompt beats stuffing constraints into \`prompt\`. Tools you may grant: ${ceiling.join(", ")}. Anything else is dropped. Omit \`tools\` for a read-only helper.`;
-  return `${DESCRIPTION_BASE}${parallel}${named}${inline}`;
+    : `\n\nTools you may grant a subagent you build: ${ceiling.join(", ")}. Anything else is dropped. Omit \`tools\` for a read-only helper.`;
+  return `${DESCRIPTION_BASE}${parallel}${named}${shapes}${inline}`;
 }
 
 /**

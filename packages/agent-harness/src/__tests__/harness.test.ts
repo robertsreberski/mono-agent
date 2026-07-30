@@ -2772,6 +2772,7 @@ describe("AgentHarness", () => {
       {
         type: "tool_call_completed",
         id: "tool-1",
+        name: "mcp__context_example__search",
         content: { matches: 2 },
         isError: false,
       },

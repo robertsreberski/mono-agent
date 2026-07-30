@@ -798,6 +798,32 @@ describe("ResilientMessageStream subagent activity", () => {
     expect(lastLedger(transport)).toBe('⚠️ Agent "researcher" · 0 tool calls · 800ms');
   });
 
+  it("settles a launch the runtime rejected before the subagent existed", async () => {
+    // A call whose arguments fail schema validation never reaches the runtime,
+    // so no lifecycle bookend arrives and no child activity ever nests. The
+    // parent tool completion is the only signal there is; without settling on
+    // it the header sits at "Starting agent" forever and a launch that never
+    // happened reads as one still running.
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event(launch("Agent_11", "tracks-vigilante-timeline"));
+    expect(lastLedger(transport)).toBe('🤖 Starting agent "tracks-vigilante-timeline"');
+
+    // Exactly what the responder maps a rejected tool_result to: no arguments,
+    // no subagent metadata, no lifecycle flag.
+    await stream.event({
+      type: "tool_call_completed",
+      id: "Agent_11",
+      name: "Agent",
+      content: 'Validation failed for tool "Agent":\n  - root: must not have additional properties',
+      isError: true,
+      executionMs: 5,
+    });
+
+    expect(lastLedger(transport)).toBe('⚠️ Agent "tracks-vigilante-timeline" · 0 tool calls · 5ms');
+  });
+
   it("opens a group from child activity alone when the launch was never observed", async () => {
     const transport = new FakeTransport({ maxMessageChars: 500 });
     const stream = makeStream(transport, { finalOnly: true, showHints: true });
