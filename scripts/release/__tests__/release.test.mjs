@@ -389,6 +389,20 @@ describe("release pack validation", () => {
     });
   });
 
+  test("parses past pnpm diagnostics that open with the same bracket as a JSON array", () => {
+    const json = JSON.stringify([{ name: pkg.name, filename: "example.tgz", files: [] }], null, 2);
+    const stdout = `[WARN] This project is configured to use 11.18.0 of pnpm. Your current pnpm is v11.5.2\n${json}\n`;
+
+    expect(parsePnpmPackOutput(stdout)).toEqual({
+      name: pkg.name,
+      filename: "example.tgz",
+      files: [],
+    });
+    expect(() => parsePnpmPackOutput("[WARN] no document follows\n")).toThrow(
+      "pnpm pack did not return JSON output",
+    );
+  });
+
   test("asserts required files and a non-empty tarball", () => {
     const packDestination = fs.mkdtempSync(path.join(os.tmpdir(), "mono-agent-pack-test-"));
     try {
