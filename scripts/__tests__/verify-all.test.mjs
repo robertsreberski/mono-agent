@@ -245,9 +245,9 @@ describe("verify-all", () => {
 
   it("rejects deleting, moving, or changing the pnpm policy gate", () => {
     const source = readCiWorkflow();
-    const corepack = [
-      "      - name: Enable Corepack",
-      "        run: corepack enable",
+    const pnpmSetup = [
+      "      - name: Install pinned pnpm",
+      "        run: npm install --global pnpm@11.18.0",
     ].join("\n");
     const policy = [
       "      - name: Check pnpm release-age policy",
@@ -261,8 +261,8 @@ describe("verify-all", () => {
       replaceExactly(source, `${policy}\n\n`, ""),
       replaceExactly(
         source,
-        `${corepack}\n\n${policy}\n\n${nodeCheck}`,
-        `${corepack}\n\n${nodeCheck}\n\n${policy}`,
+        `${pnpmSetup}\n\n${policy}\n\n${nodeCheck}`,
+        `${pnpmSetup}\n\n${nodeCheck}\n\n${policy}`,
       ),
       replaceExactly(
         source,
@@ -546,18 +546,18 @@ describe("verify-all", () => {
       CI_ACTION_SEQUENCE,
       `${CI_SETUP_NODE_STEP}\n\n${CI_CHECKOUT_STEP}`,
     );
-    const corepackStep = [
-      "      - name: Enable Corepack",
-      "        run: corepack enable",
+    const pnpmSetupStep = [
+      "      - name: Install pinned pnpm",
+      "        run: npm install --global pnpm@11.18.0",
     ].join("\n");
-    const movedPastCorepack = replaceExactly(
+    const movedPastPnpmSetup = replaceExactly(
       source,
-      `${CI_ACTION_SEQUENCE}\n\n${corepackStep}`,
-      `${CI_CHECKOUT_STEP}\n\n${corepackStep}\n\n${CI_SETUP_NODE_STEP}`,
+      `${CI_ACTION_SEQUENCE}\n\n${pnpmSetupStep}`,
+      `${CI_CHECKOUT_STEP}\n\n${pnpmSetupStep}\n\n${CI_SETUP_NODE_STEP}`,
     );
 
     expect(() => parseCiVerifyJob(reordered)).toThrow(/must remain at verify-step position/u);
-    expect(() => parseCiVerifyJob(movedPastCorepack)).toThrow(/must remain at verify-step position/u);
+    expect(() => parseCiVerifyJob(movedPastPnpmSetup)).toThrow(/must remain at verify-step position/u);
   });
 
   it("rejects folded run blocks that change release-tag shell semantics", () => {
@@ -611,9 +611,9 @@ describe("verify-all", () => {
 
   it("rejects CI environment-step reordering", () => {
     const source = readCiWorkflow();
-    const corepack = [
-      "      - name: Enable Corepack",
-      "        run: corepack enable",
+    const pnpmSetup = [
+      "      - name: Install pinned pnpm",
+      "        run: npm install --global pnpm@11.18.0",
     ].join("\n");
     const nodeCheck = [
       "      - name: Check Node support floor",
@@ -663,8 +663,8 @@ describe("verify-all", () => {
     const mutations = [
       replaceExactly(
         source,
-        `${corepack}\n\n${policy}\n\n${nodeCheck}`,
-        `${nodeCheck}\n\n${policy}\n\n${corepack}`,
+        `${pnpmSetup}\n\n${policy}\n\n${nodeCheck}`,
+        `${nodeCheck}\n\n${policy}\n\n${pnpmSetup}`,
       ),
       replaceExactly(
         source,
@@ -1038,7 +1038,7 @@ const ACTION_STEPS = Object.freeze([
 ]);
 
 const CI_RUN_STEP_CONTRACTS = Object.freeze([
-  setupRunContract("corepack setup", "corepack enable"),
+  setupRunContract("pnpm setup", "npm install --global pnpm@11.18.0"),
   gateRunContract("node scripts/pnpm-release-age-policy.mjs", {
     label: "check:pnpm-policy",
     command: "node",

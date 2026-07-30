@@ -27,6 +27,7 @@ import {
   assertReleaseGitState,
   computeTarballIntegrity,
   executeFrozenPublish,
+  isAlreadyPublishedRejection,
   freezeReleaseTarballs,
   publicNpmEnvironment,
   runWorkspaceBuild,
@@ -387,6 +388,33 @@ describe("release pack validation", () => {
       filename: "example.tgz",
       files: [],
     });
+  });
+
+  test("classifies only an already-published rejection as tolerable for a dry run", () => {
+    // Between releases the workspace still carries the last released version, so every dry-run
+    // publish is rejected for that reason alone — the PR job must not read that as a broken
+    // release. Anything else still fails, and the real publish never takes this path.
+    expect(isAlreadyPublishedRejection({
+      stderr: "npm error You cannot publish over the previously published versions: 0.15.4.",
+    })).toBe(true);
+    expect(isAlreadyPublishedRejection({ stdout: "npm error code EPUBLISHCONFLICT" })).toBe(true);
+    expect(isAlreadyPublishedRejection({ stderr: "npm error 403 Forbidden" })).toBe(false);
+    expect(isAlreadyPublishedRejection({ stderr: "npm error ENEEDAUTH" })).toBe(false);
+    expect(isAlreadyPublishedRejection({})).toBe(false);
+  });
+
+  test("parses past pnpm diagnostics that open with the same bracket as a JSON array", () => {
+    const json = JSON.stringify([{ name: pkg.name, filename: "example.tgz", files: [] }], null, 2);
+    const stdout = `[WARN] This project is configured to use 11.18.0 of pnpm. Your current pnpm is v11.5.2\n${json}\n`;
+
+    expect(parsePnpmPackOutput(stdout)).toEqual({
+      name: pkg.name,
+      filename: "example.tgz",
+      files: [],
+    });
+    expect(() => parsePnpmPackOutput("[WARN] no document follows\n")).toThrow(
+      "pnpm pack did not return JSON output",
+    );
   });
 
   test("asserts required files and a non-empty tarball", () => {

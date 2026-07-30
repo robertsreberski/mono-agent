@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseEnv } from "node:util";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MONO_AGENT_CONFIG_SCHEMA_URL } from "../config-reference.js";
 import { initMonoAgentFolder, mergeSecretEnvFile } from "../init.js";
@@ -12,11 +12,40 @@ import { findPreset, presetAnswers } from "../wizard/presets.js";
 
 let dir: string;
 
+/**
+ * Managed-memory presets pin an Ollama embedding model, and first-run init proves that model is
+ * reachable before it claims a memory root. Left unstubbed, these cases quietly pass only on a
+ * machine that happens to be running Ollama with the pinned model — they did here, and failed on
+ * CI where nothing listens on the default endpoint. Answer the probe locally so the tests exercise
+ * init's own behaviour rather than the developer's background services.
+ */
+const MANAGED_MEMORY_EMBEDDING_DIMENSION = 768;
+
+function stubEmbeddingProbe(): void {
+  const realFetch = globalThis.fetch;
+  type FetchInput = Parameters<typeof fetch>[0];
+  type FetchInit = Parameters<typeof fetch>[1];
+  vi.stubGlobal("fetch", (async (input: FetchInput, init?: FetchInit) => {
+    const url = typeof input === "string"
+      ? input
+      : input instanceof URL ? input.href : (input as { url: string }).url;
+    if (url.endsWith("/api/embed")) {
+      return new Response(
+        JSON.stringify({ embeddings: [Array.from({ length: MANAGED_MEMORY_EMBEDDING_DIMENSION }, () => 0)] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    return realFetch(input, init);
+  }) as typeof fetch);
+}
+
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "agent-app-init-"));
+  stubEmbeddingProbe();
 });
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await rm(dir, { recursive: true, force: true });
 });
 

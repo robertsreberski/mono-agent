@@ -10,6 +10,13 @@ allowBuilds:
   protobufjs: true
   sharp: true
 
+# pnpm 11 cannot switch package-manager versions: it fails closed under corepack, and its
+# download path rejects any resolution without lockfile integrity. Left at the default, a
+# contributor whose pnpm differs from the packageManager pin would have every command in this
+# repo hard-fail. Warn instead — CI proves the exact version by installing it explicitly, and
+# scripts/__tests__/pnpm-release-age-policy.test.mjs holds the pin and the workflows together.
+pmOnFail: warn
+
 # Package release-age cooldown is explicitly disabled across supported pnpm versions.
 # Keep minimumReleaseAgeExclude absent while minimumReleaseAge remains 0.
 minimumReleaseAge: 0

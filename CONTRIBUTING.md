@@ -10,9 +10,14 @@
 The workspace uses pnpm and requires Node.js 22.19.0 or newer:
 
 ```bash
-corepack enable
+npm install --global pnpm
 pnpm install --frozen-lockfile
 ```
+
+The exact pnpm the repository builds and publishes with is pinned in the root `packageManager`
+field, and CI installs that version explicitly. pnpm 11 cannot switch versions for you, so a
+different local pnpm only warns — run `node -p "require('./package.json').packageManager"` and
+install that version if you need to match CI byte for byte.
 
 ## Common commands
 

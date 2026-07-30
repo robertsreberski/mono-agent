@@ -23,7 +23,7 @@ describe("website CI contract", () => {
           uses: "actions/setup-node@v4",
           with: { "node-version": "24" },
         },
-        { name: "Enable Corepack", run: "corepack enable" },
+        { name: "Install pinned pnpm", run: "npm install --global pnpm@11.18.0" },
         { name: "Install website dependencies", run: "pnpm install --frozen-lockfile" },
         { name: "Test website transforms", run: "pnpm run test:unit" },
         { name: "Install Chromium", run: "pnpm exec playwright install --with-deps chromium" },

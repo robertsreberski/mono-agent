@@ -18,12 +18,19 @@ import {
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const tempDirs = [];
 
+/**
+ * Cases that drive the real pnpm binary rather than an injected fake. Each policy run spawns pnpm
+ * three times (`--version` plus two `config get` probes), so a case with several fixtures exceeds
+ * Vitest's 5s default on a loaded CI runner and times out with nothing actually broken.
+ */
+const itWithRealPnpm = (name, fn) => it(name, fn, 30_000);
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
 describe("pnpm release-age policy", () => {
-  it("keeps the checked-in policy explicit and its guidance honest", async () => {
+  itWithRealPnpm("keeps the checked-in policy explicit and its guidance honest", async () => {
     const workspaceSource = await readFile(join(repoRoot, "pnpm-workspace.yaml"), "utf8");
     const packageJson = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8"));
     const guidance = await readFile(join(repoRoot, "skills/pi-upstream-recon/SKILL.md"), "utf8");
@@ -56,7 +63,7 @@ describe("pnpm release-age policy", () => {
     expect(normalizedGuidance).toContain("bare package names require 10.16");
   });
 
-  it("keeps root-built isolated webapps on the explicit disabled policy", async () => {
+  itWithRealPnpm("keeps root-built isolated webapps on the explicit disabled policy", async () => {
     for (const relativePath of ["packages/web/webapp/pnpm-workspace.yaml"]) {
       const directory = dirname(join(repoRoot, relativePath));
       const source = await readFile(join(directory, "pnpm-workspace.yaml"), "utf8");
@@ -297,7 +304,7 @@ describe("pnpm release-age policy", () => {
     );
   });
 
-  it("uses pnpm's YAML parser for quoted and spaced keys", async () => {
+  itWithRealPnpm("uses pnpm's YAML parser for quoted and spaced keys", async () => {
     const cwd = await tempRepo([
       `# ${DISABLED_RELEASE_AGE_POLICY_COMMENT}`,
       '"minimumReleaseAge" : 0',
@@ -314,7 +321,7 @@ describe("pnpm release-age policy", () => {
     expect(result.exitCode).toBe(0);
   });
 
-  it("rejects the reviewer's quoted-key and spaced-key bypass mutations", async () => {
+  itWithRealPnpm("rejects the reviewer's quoted-key and spaced-key bypass mutations", async () => {
     const quotedAgeCwd = await tempRepo([
       `# ${DISABLED_RELEASE_AGE_POLICY_COMMENT}`,
       '"minimumReleaseAge": 1440',
@@ -355,7 +362,7 @@ describe("pnpm release-age policy", () => {
     expect(emptyExclusionError.text).toContain("must be absent while");
   });
 
-  it("isolates committed policy reads from release-age environment and user config", async () => {
+  itWithRealPnpm("isolates committed policy reads from release-age environment and user config", async () => {
     const cwd = await tempRepo([
       `# ${DISABLED_RELEASE_AGE_POLICY_COMMENT}`,
       "minimumReleaseAge: 0",
@@ -383,7 +390,28 @@ describe("pnpm release-age policy", () => {
     expect(cli.stdout).toContain("minimumReleaseAge=0; 0 exclusion(s)");
   });
 
-  it("rejects scalar and malformed YAML through the real pnpm parser path", async () => {
+  itWithRealPnpm("reads committed policy with the running pnpm instead of switching to the pinned one", async () => {
+    // The pin is a version that cannot be fetched, so any package-manager switch fails the probe.
+    // pnpm 11 refuses to switch at all (it fails closed under corepack and its download path
+    // rejects resolutions without lockfile integrity), which would turn every config read into a
+    // hard error whenever the running pnpm differs from `packageManager`.
+    const cwd = await tempRepo([
+      `# ${DISABLED_RELEASE_AGE_POLICY_COMMENT}`,
+      "minimumReleaseAge: 0",
+      "packages: []",
+      "",
+    ].join("\n"), { packageManager: "pnpm@10.99.99" });
+    const cli = spawnSync(process.execPath, [join(repoRoot, "scripts/pnpm-release-age-policy.mjs")], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, pnpm_config_pm_on_fail: "download" },
+    });
+
+    expect(cli.status, cli.stderr).toBe(0);
+    expect(cli.stdout).toContain("minimumReleaseAge=0; 0 exclusion(s)");
+  });
+
+  itWithRealPnpm("rejects scalar and malformed YAML through the real pnpm parser path", async () => {
     const scalarCwd = await tempRepo([
       "minimumReleaseAge: 1440",
       "minimumReleaseAgeExclude: package-a",
@@ -419,8 +447,8 @@ describe("pnpm release-age policy", () => {
     const ciVerifyJob = ci.split("\n  website:")[0];
     for (const workflow of [ciVerifyJob, release]) {
       expect(workflow).toContain([
-        "      - name: Enable Corepack",
-        "        run: corepack enable",
+        "      - name: Install pinned pnpm",
+        `        run: npm install --global pnpm@${pinnedPnpmVersion(packageJson.packageManager)}`,
         "",
         "      - name: Check pnpm release-age policy",
         "        run: node scripts/pnpm-release-age-policy.mjs",
@@ -435,7 +463,40 @@ describe("pnpm release-age policy", () => {
     expect(websiteJob).not.toContain("scripts/pnpm-release-age-policy.mjs");
     expect(verifyAll).toContain('{ label: "check:pnpm-policy"');
   });
+
+  it("pins one exact pnpm across both manifests and every workflow install", async () => {
+    const packageJson = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8"));
+    const websitePackageJson = JSON.parse(await readFile(join(repoRoot, "website/package.json"), "utf8"));
+    const workflows = await Promise.all(
+      [".github/workflows/ci.yml", ".github/workflows/npm-release.yml"]
+        .map(async (path) => ({ path, source: await readFile(join(repoRoot, path), "utf8") })),
+    );
+
+    // Corepack pinned nothing here (no packageManager field existed), so `corepack enable` fetched
+    // whatever pnpm npm had published most recently — including into the publish lane. The pin
+    // replaces it, and the pin is only worth anything while every copy of it agrees.
+    expect(packageJson.packageManager).toMatch(/^pnpm@\d+\.\d+\.\d+\+sha512\.[a-f\d]{128}$/u);
+    expect(websitePackageJson.packageManager).toBe(packageJson.packageManager);
+
+    const expectedInstall = `run: npm install --global pnpm@${pinnedPnpmVersion(packageJson.packageManager)}`;
+    for (const { path, source } of workflows) {
+      const installs = source.match(/run: npm install --global pnpm@\S+/gu) ?? [];
+      expect(installs.length, `${path} must install the pinned pnpm`).toBeGreaterThan(0);
+      for (const install of installs) {
+        expect(install, `${path} pnpm install must match packageManager`).toBe(expectedInstall);
+      }
+      expect(source, `${path} must not reintroduce corepack`).not.toMatch(/corepack/iu);
+    }
+  });
 });
+
+function pinnedPnpmVersion(packageManager) {
+  const match = /^pnpm@(\d+\.\d+\.\d+)(?:\+|$)/u.exec(packageManager ?? "");
+  if (match === null) {
+    throw new Error(`Root packageManager must pin an exact pnpm version, got ${packageManager}.`);
+  }
+  return match[1];
+}
 
 function validate(overrides = {}) {
   return validatePnpmReleaseAgePolicy({
