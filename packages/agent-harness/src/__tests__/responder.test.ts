@@ -1032,10 +1032,67 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
       ),
     ).toEqual({ type: "tool_call_completed", id: "t1", content: "x" });
   });
+
+  it("carries the tool's name from its tool_use onto tool_call_completed", () => {
+    // A raw tool_result block names no tool. Without this carry-over a consumer
+    // cannot tell which tool finished — and an `Agent` call rejected before the
+    // runtime spawned anything emits no lifecycle bookend either, so nothing
+    // else would ever identify it as a settled subagent launch.
+    const toolNames = new Map<string, string>();
+
+    expect(
+      streamEventFromRuntimeEvent(
+        {
+          type: "assistant",
+          message: {
+            content: [{ type: "tool_use", id: "Agent_11", name: "Agent", input: { name: "tracks-vigilante-timeline" } }],
+          },
+        },
+        { toolNames },
+      ),
+    ).toEqual({
+      type: "tool_call_started",
+      id: "Agent_11",
+      name: "Agent",
+      arguments: { name: "tracks-vigilante-timeline" },
+    });
+    expect(toolNames.get("Agent_11")).toBe("Agent");
+
+    expect(
+      streamEventFromRuntimeEvent(
+        {
+          type: "user",
+          message: {
+            content: [
+              { type: "tool_result", tool_use_id: "Agent_11", content: "Validation failed for tool \"Agent\"", is_error: true },
+            ],
+          },
+        },
+        { toolNames },
+      ),
+    ).toEqual({
+      type: "tool_call_completed",
+      id: "Agent_11",
+      name: "Agent",
+      content: "Validation failed for tool \"Agent\"",
+      isError: true,
+    });
+    // Consumed on use so the per-turn map stays bounded.
+    expect(toolNames.has("Agent_11")).toBe(false);
+  });
+
+  it("omits name when the tool_use was never observed", () => {
+    expect(
+      streamEventFromRuntimeEvent(
+        { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "x" }] } },
+        { toolNames: new Map() },
+      ),
+    ).toEqual({ type: "tool_call_completed", id: "t1", content: "x" });
+  });
 });
 
 describe("respond() end-to-end event forwarding", () => {
-  it("forwards the full telemetry stream in order with executionMs merged onto tool completion", async () => {
+  it("forwards the full telemetry stream in order with name and executionMs merged onto tool completion", async () => {
     const events: AgentStreamEvent[] = [];
     const stream: AgentMessageStream = {
       append: async () => {},
@@ -1065,7 +1122,7 @@ describe("respond() end-to-end event forwarding", () => {
       { type: "assistant_thought", text: "hmm" },
       { type: "tool_call_started", id: "t1", name: "bash", arguments: { command: "ls" } },
       { type: "tool_call_progress", id: "t1", name: "bash", partialResult: "partial" },
-      { type: "tool_call_completed", id: "t1", content: "done", isError: false, executionMs: 55 },
+      { type: "tool_call_completed", id: "t1", name: "bash", content: "done", isError: false, executionMs: 55 },
       { type: "usage_update", cumulativeUsd: 0.01, tokens: { input: 1, output: 2, cacheRead: 3, cacheCreation: 4 } },
     ]);
   });
