@@ -102,6 +102,119 @@ describe("formatToolActivityLine", () => {
       .toBe("📖 Reading /etc/hosts");
   });
 
+  describe("shell tool descriptions", () => {
+    it("states the intent instead of the command line when the runtime supplies one", () => {
+      expect(formatToolActivityLine("Bash", {
+        command: "cd /srv/agents/assistant && git status",
+        description: "Show working tree status",
+      })).toBe("🖥️ Show working tree status");
+    });
+
+    it("drops the verb so the description is not doubled up", () => {
+      // "🖥️ Running Show working tree status" would read as two verbs.
+      const line = formatToolActivityLine("Bash", { command: "ls", description: "List files in current directory" });
+      expect(line).toBe("🖥️ List files in current directory");
+      expect(line).not.toContain("Running");
+    });
+
+    it("falls back to the command when the runtime has no description field", () => {
+      // pi's shell tool is `{ command, timeout }` — no description is ever sent.
+      expect(formatToolActivityLine("Bash", { command: "git status" }))
+        .toBe("🖥️ Running git status");
+    });
+
+    it("ignores an empty or whitespace-only description", () => {
+      expect(formatToolActivityLine("Bash", { command: "git status", description: "   " }))
+        .toBe("🖥️ Running git status");
+    });
+
+    it("redacts and bounds a description like any other preview", () => {
+      const secret = ["sk", "fixtureCredential0123456789"].join("-");
+      const line = formatToolActivityLine("Bash", { command: "curl x", description: `Call the API with ${secret}` });
+      expect(line).not.toContain(secret);
+      expect(line).toContain("[redacted]");
+
+      const long = formatToolActivityLine("Bash", {
+        command: "find .",
+        description: "Find and delete every temporary file recursively beneath the workspace root",
+      });
+      expect(Array.from(long.slice("🖥️ ".length))).toHaveLength(40);
+      expect(long.endsWith("…")).toBe(true);
+    });
+
+    it("leaves non-shell families on their own verbs", () => {
+      // `description` is only a preview field for shell tools.
+      expect(formatToolActivityLine("Read", { file_path: "/tmp/a.md", description: "Read the notes" }))
+        .toBe("📖 Reading /tmp/a.md");
+    });
+  });
+
+  describe("redundant `cd <agent root>` prefixes", () => {
+    const options = { workspaceRoot: "/Users/example/agents/assistant", homeDir: "/Users/example" };
+
+    afterEach(() => {
+      setToolActivityPathRoots({});
+    });
+
+    it.each([
+      ["absolute root", "cd /Users/example/agents/assistant && td list --json 2>&1 | head -5"],
+      ["literal ~ form", "cd ~/agents/assistant && td list --json 2>&1 | head -5"],
+      ["double-quoted root", 'cd "/Users/example/agents/assistant" && td list --json 2>&1 | head -5'],
+      ["single-quoted root", "cd '/Users/example/agents/assistant' && td list --json 2>&1 | head -5"],
+      ["trailing slash", "cd /Users/example/agents/assistant/ && td list --json 2>&1 | head -5"],
+      ["semicolon separator", "cd /Users/example/agents/assistant; td list --json 2>&1 | head -5"],
+    ])("elides the %s so the command leads the preview", (_label, command) => {
+      expect(formatToolActivityLine("Bash", { command }, options))
+        .toBe("🖥️ Running td list --json 2>&1 | head -5");
+    });
+
+    it("keeps a cd to anywhere other than the agent root", () => {
+      expect(formatToolActivityLine(
+        "Bash",
+        { command: "cd /Users/example/agents/assistant/packages/web && pnpm build" },
+        options,
+      )).toBe("🖥️ Running cd packages/web && pnpm build");
+      expect(formatToolActivityLine("Bash", { command: "cd /etc && ls" }, options))
+        .toBe("🖥️ Running cd /etc && ls");
+    });
+
+    it("keeps a bare `cd <root>` that is the whole command", () => {
+      expect(formatToolActivityLine(
+        "Bash",
+        { command: "cd /Users/example/agents/assistant" },
+        options,
+      )).toBe("🖥️ Running cd ~/agents/assistant");
+    });
+
+    it("never strips a cd out of program source", () => {
+      expect(formatToolActivityLine(
+        "RunCode",
+        { code: "cd /Users/example/agents/assistant && run()" },
+        options,
+      )).toBe("🐍 Running code cd ~/agents/assistant && run()");
+    });
+
+    it("spends the whole 40-code-point budget on the real command", () => {
+      const line = formatToolActivityLine("Bash", {
+        command:
+          'cd /Users/example/agents/assistant && python3 -c "import json; print(json.dumps(payload, ensure_ascii=False))"',
+      }, options);
+      const preview = line.slice("🖥️ Running ".length);
+
+      expect(Array.from(preview)).toHaveLength(40);
+      expect(preview.startsWith("python3 -c")).toBe(true);
+      expect(line).not.toContain("assistant");
+    });
+
+    it("elides against the process-wide roots when a caller passes no options", () => {
+      setToolActivityPathRoots({ workspaceRoot: "/srv/agents/assistant", homeDir: "/srv" });
+      expect(formatToolActivityLine("Bash", { command: "cd /srv/agents/assistant && td list" }))
+        .toBe("🖥️ Running td list");
+      expect(formatToolActivityLine("Exec", { executable: "cd", args: ["/srv/agents/assistant", "&&", "td", "list"] }))
+        .toBe("🖥️ Running td list");
+    });
+  });
+
   describe("process-wide path roots", () => {
     afterEach(() => {
       setToolActivityPathRoots({});

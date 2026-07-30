@@ -73,6 +73,12 @@ const REDACTED = "[redacted]";
 interface ToolActivitySpec {
   readonly action: string;
   readonly actionWithoutPreview?: string;
+  /**
+   * Action used when the preview is a model-authored `description` — prose that
+   * already reads as a sentence, so the verb would double up
+   * ("Running Show working tree status").
+   */
+  readonly narrativeAction?: string;
   readonly previewFields: readonly string[];
   /**
    * Argv-shaped tools carry the program in one scalar field and the
@@ -239,10 +245,10 @@ export function formatToolActivityLine(
   const leaf = toolLeaf(rawName);
   const normalized = leaf.toLowerCase().replace(/[^a-z0-9]+/gu, "");
   const spec = activitySpec(normalized, leaf);
-  const preview = previewFromArguments(toolArguments, spec, options);
-  return preview === undefined
-    ? (spec.actionWithoutPreview ?? spec.action)
-    : `${spec.action} ${spec.quotePreview ? JSON.stringify(preview) : preview}`;
+  const result = previewFromArguments(toolArguments, spec, options);
+  if (result === undefined) return spec.actionWithoutPreview ?? spec.action;
+  const action = result.narrative ? (spec.narrativeAction ?? spec.action) : spec.action;
+  return `${action} ${spec.quotePreview ? JSON.stringify(result.preview) : result.preview}`;
 }
 
 /**
@@ -255,7 +261,8 @@ export function formatLiveInputActivityLine(
   text: string,
   options?: ToolActivityLineOptions,
 ): string {
-  const preview = sanitizePreview(text, "head", options);
+  // Steering text is operator prose, not a shell line: no `cd` prefix to elide.
+  const preview = sanitizePreview(text, { truncation: "head", shell: false, narrative: false }, options);
   return preview === undefined ? "↪️ Steered" : `↪️ Steered: “${preview}”`;
 }
 
@@ -331,7 +338,13 @@ function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
   if (COMMAND_NAMES.has(normalized)) {
     return {
       action: "🖥️ Running",
-      previewFields: ["command", "cmd", "script"],
+      narrativeAction: "🖥️",
+      // A `description` states the intent better than the command line ever
+      // can. It arrives two ways: a runtime that declares the field (the Claude
+      // Agent SDK) or a model that volunteers it anyway — the event carries the
+      // raw `tool_use.input`, not a schema-filtered copy, so an undeclared key
+      // survives. Fall back to the command whenever it is absent.
+      previewFields: ["description", "command", "cmd", "script"],
       argvPreview: { head: "executable", tail: "args" },
     };
   }
@@ -375,19 +388,26 @@ function humanizeToolLeaf(leaf: string): string {
   return `${bounded.charAt(0).toUpperCase()}${bounded.slice(1)}`;
 }
 
+interface ActivityPreview {
+  readonly preview: string;
+  /** Preview is model-authored prose that already reads as a sentence. */
+  readonly narrative: boolean;
+}
+
 function previewFromArguments(
   toolArguments: unknown,
   spec: ToolActivitySpec,
   options?: ToolActivityLineOptions,
-): string | undefined {
+): ActivityPreview | undefined {
   const record = safePlainRecord(toolArguments);
   if (record === undefined) return undefined;
 
   for (const key of spec.previewFields) {
     const value = safeOwnScalar(record, key);
     if (value === undefined) continue;
-    const preview = sanitizePreview(value, previewTruncationForField(key), options);
-    if (preview !== undefined) return preview;
+    const shape = previewShapeForField(key);
+    const preview = sanitizePreview(value, shape, options);
+    if (preview !== undefined) return { preview, narrative: shape.narrative };
   }
   // Argv is the fallback, not the first choice: a tool that offers a whole
   // command line already has the more complete rendering.
@@ -400,14 +420,15 @@ function previewFromArgv(
   record: object,
   fields: { readonly head: string; readonly tail: string },
   options?: ToolActivityLineOptions,
-): string | undefined {
+): ActivityPreview | undefined {
   const head = safeOwnScalar(record, fields.head);
   if (head === undefined) return undefined;
   // Space-joined so the shell-shaped redactions (`--token x`, `-u user:pass`,
   // `Authorization: Bearer …`) match argv exactly as they match a command line,
   // and so the preview truncates like the command it stands in for.
   const argv = [head, ...safeOwnStringArray(record, fields.tail)].join(" ");
-  return sanitizePreview(argv, "balanced", options);
+  const preview = sanitizePreview(argv, { truncation: "balanced", shell: true, narrative: false }, options);
+  return preview === undefined ? undefined : { preview, narrative: false };
 }
 
 /**
@@ -455,6 +476,39 @@ function relativizeLocalPaths(value: string, options?: ToolActivityLineOptions):
   return result;
 }
 
+const LEADING_CD_PATTERN = /^cd\s+(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))\s*(?:&&|;)\s*/u;
+
+/**
+ * Drop a leading `cd <agent root> &&` from a command preview. Every shell call
+ * an agent makes already runs in the agent root, so the prefix is constant — it
+ * eats half of the 40-code-point budget and pushes the part that distinguishes
+ * one call from the next out of view. A `cd` to anywhere *else* is real
+ * information and is kept.
+ */
+function stripRedundantWorkspaceCd(value: string, options?: ToolActivityLineOptions): string {
+  const root = normalizeRoot(
+    options?.workspaceRoot ?? configuredPathRoots.workspaceRoot ?? safeCwd(),
+  );
+  if (root === undefined) return value;
+  const match = LEADING_CD_PATTERN.exec(value);
+  if (match === null) return value;
+  const target = match[1] ?? match[2] ?? match[3];
+  if (target === undefined || expandHomePrefix(target, options) !== root) return value;
+  const remainder = value.slice(match[0].length);
+  // A bare `cd <root>` is the whole command; stripping it would leave the line
+  // with nothing to say.
+  return remainder.length === 0 ? value : remainder;
+}
+
+/** Resolve a `cd` target for comparison against the agent root, expanding `~`. */
+function expandHomePrefix(target: string, options?: ToolActivityLineOptions): string | undefined {
+  const home = normalizeRoot(options?.homeDir ?? configuredPathRoots.homeDir ?? safeHomedir());
+  if (target === "~") return home;
+  return normalizeRoot(
+    target.startsWith("~/") && home !== undefined ? `${home}/${target.slice(2)}` : target,
+  );
+}
+
 function normalizeRoot(root: string | undefined): string | undefined {
   if (root === undefined || root === "" || root === "/") return undefined;
   return root.endsWith("/") ? root.slice(0, -1) : root;
@@ -478,14 +532,30 @@ function safeHomedir(): string | undefined {
 
 type PreviewTruncation = "head" | "middle" | "balanced";
 
-function previewTruncationForField(field: string): PreviewTruncation {
+interface PreviewShape {
+  readonly truncation: PreviewTruncation;
+  /** Value is a shell command line, so a redundant `cd` prefix can be elided. */
+  readonly shell: boolean;
+  /** Value is prose the model wrote to explain itself, not an argument. */
+  readonly narrative: boolean;
+}
+
+function previewShapeForField(field: string): PreviewShape {
+  // Prose reads left to right, so it truncates from the end like a sentence.
+  if (field === "description") {
+    return { truncation: "head", shell: false, narrative: true };
+  }
   if (field === "file_path" || field === "path" || field === "destination") {
-    return "middle";
+    return { truncation: "middle", shell: false, narrative: false };
   }
-  if (field === "command" || field === "cmd" || field === "script" || field === "code" || field === "source") {
-    return "balanced";
+  if (field === "command" || field === "cmd" || field === "script") {
+    return { truncation: "balanced", shell: true, narrative: false };
   }
-  return "head";
+  // Program source, not a shell line: a `cd` inside it is code, not a prefix.
+  if (field === "code" || field === "source") {
+    return { truncation: "balanced", shell: false, narrative: false };
+  }
+  return { truncation: "head", shell: false, narrative: false };
 }
 
 function safePlainRecord(value: unknown): object | undefined {
@@ -515,7 +585,7 @@ function safeOwnScalar(record: object, key: string): string | undefined {
 
 function sanitizePreview(
   value: string,
-  truncation: PreviewTruncation,
+  shape: PreviewShape,
   options?: ToolActivityLineOptions,
 ): string | undefined {
   let sanitized = truncateCodePoints(value, TOOL_PREVIEW_SCAN_CODE_POINTS)
@@ -523,6 +593,8 @@ function sanitizePreview(
     .replace(/\s+/gu, " ")
     .trim();
   if (sanitized.length === 0) return undefined;
+  // Before relativization, so the comparison sees the raw absolute root.
+  if (shape.shell) sanitized = stripRedundantWorkspaceCd(sanitized, options);
   sanitized = relativizeLocalPaths(sanitized, options);
 
   sanitized = sanitized
@@ -543,7 +615,7 @@ function sanitizePreview(
   }
   sanitized = sanitized.replace(/\s+/gu, " ").trim();
   if (sanitized.length === 0) return undefined;
-  return truncatePreview(sanitized, TOOL_PREVIEW_CODE_POINTS, truncation);
+  return truncatePreview(sanitized, TOOL_PREVIEW_CODE_POINTS, shape.truncation);
 }
 
 function truncatePreview(value: string, maxCodePoints: number, mode: PreviewTruncation): string {
