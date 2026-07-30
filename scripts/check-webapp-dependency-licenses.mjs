@@ -104,7 +104,15 @@ function isRecord(value) {
 }
 
 function reasonOf(error) {
-  return error instanceof Error ? error.message : String(error);
+  if (!(error instanceof Error)) return String(error);
+  // execFile rejections carry the child's own diagnosis on stderr/stdout while
+  // `message` says only "Command failed: <argv>". Reporting the message alone
+  // turns an actionable pnpm error into an unactionable one.
+  const output = [error.stderr, error.stdout]
+    .map((stream) => (typeof stream === "string" ? stream.trim() : ""))
+    .filter((stream) => stream.length > 0)
+    .join("\n");
+  return output.length === 0 ? error.message : `${error.message}\n${output}`;
 }
 
 const isCli = process.argv[1] !== undefined
