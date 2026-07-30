@@ -329,8 +329,14 @@ describe("initializeFirstRunManagedMemory", () => {
       plan: localPrivatePlan(),
       hooks: {
         afterManifestLinked: async () => {
-          await rm(markerPath);
-          await writeFile(markerPath, "external replacement\n");
+          // Swap the replacement in by rename rather than rm-then-write. The ownership guard
+          // compares dev+ino, and unlinking first frees an inode that ext4 promptly reuses for the
+          // recreated file — the replacement then looked like the original marker and the guard
+          // passed, so this failed only on CI. Creating the replacement while the original still
+          // exists guarantees a distinct inode on any filesystem.
+          const replacement = `${markerPath}.external`;
+          await writeFile(replacement, "external replacement\n");
+          await rename(replacement, markerPath);
         },
       },
     })).rejects.toThrow(/exact initialization marker/u);
