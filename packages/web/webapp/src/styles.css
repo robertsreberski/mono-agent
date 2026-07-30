@@ -556,15 +556,31 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .tool-payload > span { color: var(--text-muted); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
 .tool-payload pre { max-height: 280px; margin: 0; padding: 9px; overflow: auto; color: var(--text-soft); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; font-family: var(--font-mono); font-size: 10px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 
-/* One Agent delegation, holding the tool calls its subagent made. */
+/* One Agent delegation, holding the tool calls its subagent made. The rows
+   inside it read as a tree: the disclosure marker leads, and a rail drops from
+   it so a subagent's work is never confused with the agent's own. */
 .tool-call.subagent { background: var(--surface); border-color: var(--line-strong); }
+.tool-call.subagent > summary > svg, .subagent-payload .tool-call > summary > svg { flex: none; margin-left: 0; }
+.tool-call.subagent > summary > .tool-state, .subagent-payload .tool-call > summary > .tool-state { margin-left: auto; }
 .subagent-mark { display: inline-flex; align-items: center; color: var(--accent); }
 .subagent-label { min-width: 0; overflow: hidden; color: var(--text-soft); text-overflow: ellipsis; white-space: nowrap; }
-.subagent-label + .tool-state { margin-left: auto; }
-.subagent-payload { display: grid; gap: 6px; padding: 0 10px 10px 22px; }
-.subagent-empty { margin: 0; color: var(--text-muted); font-size: 11px; }
-.tool-call.is-nested { background: var(--surface-subtle); }
-.tool-call.is-nested summary { min-height: 30px; }
+.subagent-payload {
+  display: grid;
+  gap: 1px;
+  margin: 0 10px 9px 16px;
+  padding: 3px 0 3px 13px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, var(--line-strong));
+}
+.subagent-empty { margin: 0; padding: 0 7px; color: var(--text-muted); font-size: 11px; }
+/* Children are rows on the rail, not cards: a dozen of them has to stay scannable. */
+.subagent-payload .tool-call { background: transparent; border: 0; border-radius: 7px; }
+.subagent-payload .tool-call > summary { min-height: 27px; gap: 7px; padding: 0 7px; }
+.subagent-payload .tool-call > summary:hover { background: var(--surface-subtle); }
+.subagent-payload .tool-call[open] > summary { background: var(--surface-subtle); }
+.subagent-payload .tool-payload { padding: 4px 7px 8px 28px; }
+.subagent-payload .tool-call.is-error .tool-state { color: var(--danger); }
+.subagent-call-preview { min-width: 0; flex: 1; overflow: hidden; color: var(--text-muted); font-family: var(--font-mono); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.subagent-note .tool-name { color: var(--text-muted); font-family: inherit; font-size: 9px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 
 /* Attachments and composer */
 .message-attachments, .composer-attachments { display: flex; flex-wrap: wrap; gap: 7px; }

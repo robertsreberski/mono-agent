@@ -19,15 +19,9 @@ import {
   Reasoning,
 } from "./assistant-ui/Reasoning";
 import { Icon } from "./Icon";
+import { safeJson } from "./json";
+import { SubagentPart } from "./Subagent";
 import { QuoteBlock } from "./assistant-ui/Quote";
-
-const safeJson = (value: unknown): string => {
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-};
 
 export const copyTextWithFallback = async (text: string): Promise<void> => {
   if (navigator.clipboard?.writeText) {
@@ -351,127 +345,6 @@ export function ToolFallback({
             <span>Output</span>
             <pre>{safeJson(result)}</pre>
           </>
-        )}
-      </div>
-    </details>
-  );
-}
-
-type ToolCallStatus = "running" | "complete" | "failed";
-
-interface SubagentCallView {
-  readonly toolCallId: string;
-  readonly toolName: string;
-  readonly args?: unknown;
-  readonly result?: unknown;
-  readonly status: ToolCallStatus;
-}
-
-interface SubagentView {
-  readonly name: string;
-  readonly label?: string;
-  readonly result?: unknown;
-  readonly executionMs?: number;
-  readonly status: ToolCallStatus;
-  readonly calls: readonly SubagentCallView[];
-}
-
-const toolCallStatus = (value: unknown): ToolCallStatus =>
-  value === "complete" || value === "failed" ? value : "running";
-
-/**
- * Read a delegation out of its data part. Deliberately defensive: the part
- * round-trips through JSON normalization, and a newer agent can send fields
- * this console does not know yet.
- */
-const subagentView = (data: unknown): SubagentView | undefined => {
-  if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
-  const record = data as Record<string, unknown>;
-  if (typeof record.name !== "string") return undefined;
-  const calls = Array.isArray(record.calls) ? record.calls : [];
-  return {
-    name: record.name,
-    ...(typeof record.label === "string" && record.label.length > 0 ? { label: record.label } : {}),
-    ...(record.result === undefined || record.result === null ? {} : { result: record.result }),
-    ...(typeof record.executionMs === "number" && Number.isFinite(record.executionMs)
-      ? { executionMs: record.executionMs }
-      : {}),
-    status: toolCallStatus(record.status),
-    calls: calls.flatMap((entry): SubagentCallView[] => {
-      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return [];
-      const call = entry as Record<string, unknown>;
-      if (typeof call.toolCallId !== "string" || typeof call.toolName !== "string") return [];
-      return [{
-        toolCallId: call.toolCallId,
-        toolName: call.toolName,
-        ...(call.args === undefined || call.args === null ? {} : { args: call.args }),
-        ...(call.result === undefined || call.result === null ? {} : { result: call.result }),
-        status: toolCallStatus(call.status),
-      }];
-    }),
-  };
-};
-
-const toolStateLabel = (status: ToolCallStatus, result: unknown): string =>
-  status === "running" ? "running" : status === "failed" ? "failed" : result === undefined ? "called" : "done";
-
-const formatSeconds = (ms: number): string =>
-  ms < 1_000 ? `${Math.round(ms)}ms` : `${(ms / 1_000).toFixed(1)}s`;
-
-function SubagentCall({ call }: { readonly call: SubagentCallView }) {
-  return (
-    <details className={`tool-call is-nested${call.status === "failed" ? " is-error" : ""}`}>
-      <summary>
-        <span className={`tool-status${call.status === "running" ? " is-running" : ""}`} />
-        <span className="tool-name">{call.toolName}</span>
-        <span className="tool-state">{toolStateLabel(call.status, call.result)}</span>
-        <Icon name="chevron" size={14} />
-      </summary>
-      <div className="tool-payload">
-        <span>Input</span>
-        <pre>{safeJson(call.args)}</pre>
-        {call.result !== undefined && (
-          <>
-            <span>Output</span>
-            <pre>{safeJson(call.result)}</pre>
-          </>
-        )}
-      </div>
-    </details>
-  );
-}
-
-/**
- * One `Agent` delegation: a foldable section whose body is the subagent's own
- * tool calls, indented, plus the report it sent back.
- */
-export function SubagentPart({ data }: DataMessagePartProps) {
-  const view = subagentView(data);
-  if (view === undefined) return null;
-  const summary = [
-    `${view.calls.length} tool call${view.calls.length === 1 ? "" : "s"}`,
-    ...(view.executionMs === undefined ? [] : [formatSeconds(view.executionMs)]),
-  ].join(" · ");
-
-  return (
-    <details className={`tool-call subagent${view.status === "failed" ? " is-error" : ""}`}>
-      <summary>
-        <span className={`tool-status${view.status === "running" ? " is-running" : ""}`} />
-        <span className="subagent-mark" aria-hidden="true"><Icon name="agent" size={12} /></span>
-        <span className="tool-name">{view.name}</span>
-        {view.label !== undefined && <span className="subagent-label">{view.label}</span>}
-        <span className="tool-state">{summary}</span>
-        <Icon name="chevron" size={14} />
-      </summary>
-      <div className="subagent-payload">
-        {view.calls.length === 0
-          ? <p className="subagent-empty">No tool calls recorded.</p>
-          : view.calls.map((call) => <SubagentCall key={call.toolCallId} call={call} />)}
-        {view.result !== undefined && (
-          <div className="tool-payload">
-            <span>Report</span>
-            <pre>{safeJson(view.result)}</pre>
-          </div>
         )}
       </div>
     </details>
