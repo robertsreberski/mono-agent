@@ -4,6 +4,7 @@ import {
   createDurableHistoryStore,
   createToolPolicy,
   loadToolPolicyFromJsonFileSync,
+  renderSkillIndexSection,
 } from "@mono-agent/agent-harness";
 import type {
   AgentHarness,
@@ -11,6 +12,7 @@ import type {
   AgentHarnessRuntimeOptionsExtension,
   AgentHarnessRuntimeOptionsInput,
   ConversationHistoryStore,
+  SkillIndexSummary,
 } from "@mono-agent/agent-harness";
 import type { ToolPolicyInput } from "@mono-agent/agent-harness";
 import { readFileSync } from "node:fs";
@@ -37,6 +39,7 @@ import {
   createMonoRuntime,
   createPiOAuthApiKeyResolver,
   defaultExecutionModeForModel,
+  describeMonoRuntimeSupport,
   modelReferenceKey,
   monoRuntimeSupportsSessionResume,
   parseMonoRuntimeModelReference,
@@ -455,8 +458,37 @@ interface SubagentRunRequest {
   readonly cwd?: string;
   readonly sandboxPolicy?: unknown;
   readonly sandboxEngine?: unknown;
+  /** The parent turn's disclosed skills, offered by the `Agent` tool. */
+  readonly skills?: readonly SkillIndexSummary[];
+  readonly skillsRoot?: string;
   readonly abortSignal: AbortSignal;
   readonly onEvent: (event: unknown) => void;
+}
+
+/**
+ * Whether a child on this route can be handed `skills` at all.
+ *
+ * This is a correctness guard, not an optimization. A non-empty `options.skills`
+ * makes `supports_skills` a ROUTING REQUIREMENT (see the router's capability
+ * matching), and a chain entry that does not advertise it is skipped — so
+ * threading skills onto a child pinned to a runtime without skill support turns
+ * a working subagent into `skipped_capability_mismatch`. Direct OpenCode is the
+ * live example. The parent's own chain is already validated for this by doctor;
+ * a profile that pins its own model is not, which is why the check lives here.
+ *
+ * Fails closed: an unparseable or incompatible route means no skills, never a
+ * throw from what is otherwise a plain forwarding decision.
+ */
+function childRuntimeSupportsSkills(
+  model: RuntimeModelReference,
+  executionMode: RuntimeExecutionMode,
+): boolean {
+  try {
+    const support = describeMonoRuntimeSupport(model, executionMode);
+    return support.backend?.capabilities.supports_skills !== false;
+  } catch {
+    return false;
+  }
 }
 
 /** Inline prompt, or the contents of promptPath; the loader guarantees exactly one. */
@@ -506,6 +538,13 @@ function subagentsRuntimeOptions(
     ...(definition.timeoutMs === undefined ? {} : { timeoutMs: definition.timeoutMs }),
   }));
 
+  // An operator who denied ReadSkill agent-wide must not get it back through a
+  // child. Both spellings, because pi-bridge's deny gate honors the legacy alias
+  // and a policy that only blocks one of them is not a policy.
+  const skillsDeniedGlobally = config.tools.disallowedTools
+    .map(canonicalToolName)
+    .some((tool) => tool === "ReadSkill" || tool === "read_skill");
+
   const run = async (request: SubagentRunRequest): Promise<RuntimeResult> => {
     // A profile model must go through `runtimeForModel`: the router overrides
     // `options.model` per chain entry, so handing a different model to the
@@ -523,7 +562,31 @@ function subagentsRuntimeOptions(
       ? deps.runtimeForModel(childModel, childExecutionMode)
       : deps.runtime;
 
-    return await runtime.run(request.systemPrompt, {
+    // Whether this child may inherit the parent's skill index. Decided here
+    // because this is the only layer holding all four inputs: the offered
+    // entries, the config's deny list, the profile's, and the child's RESOLVED
+    // route. Undefined means the child runs exactly as it did before — the
+    // prompt is untouched and neither run option is set.
+    const profileDeniesSkills = (request.definition.disallowedTools ?? [])
+      .map(canonicalToolName)
+      .some((tool) => tool === "ReadSkill" || tool === "read_skill");
+    const childSkills = request.skillsRoot !== undefined
+      && (request.skills?.length ?? 0) > 0
+      && !skillsDeniedGlobally
+      && !profileDeniesSkills
+      && childRuntimeSupportsSkills(childModel, childExecutionMode)
+      ? request.skills
+      : undefined;
+
+    // Appended, not prepended: the parent's own context orders these as
+    // Core -> Identity -> ... -> Skill Index -> user message, and a profile's
+    // systemPrompt IS the child's identity. Putting skills ahead of it is an
+    // order no other surface uses.
+    const childSystemPrompt = childSkills === undefined
+      ? request.systemPrompt
+      : `${request.systemPrompt}\n\n${renderSkillIndexSection(childSkills)}`;
+
+    return await runtime.run(childSystemPrompt, {
       model: childModel,
       executionMode: childExecutionMode,
       messages: [{ role: "user", content: request.prompt }],
@@ -534,6 +597,12 @@ function subagentsRuntimeOptions(
       // attached, so dropping it would leave the child entirely unsandboxed.
       ...(request.sandboxPolicy === undefined ? {} : { sandboxPolicy: request.sandboxPolicy }),
       ...(request.sandboxEngine === undefined ? {} : { sandboxEngine: request.sandboxEngine }),
+      // Both keys or neither: pi-bridge builds ReadSkill only when it has the
+      // names AND the root, and a half-set pair fails by silently omitting the
+      // tool rather than erroring.
+      ...(childSkills === undefined
+        ? {}
+        : { skills: childSkills, skillsRoot: request.skillsRoot }),
       ...(request.definition.effort === undefined ? {} : { effort: request.definition.effort }),
       allowedTools: request.definition.allowedTools ?? [...DEFAULT_SUBAGENT_TOOLS],
       disallowedTools: [...new Set([...(request.definition.disallowedTools ?? []), ...SUBAGENT_HARD_DENY])],

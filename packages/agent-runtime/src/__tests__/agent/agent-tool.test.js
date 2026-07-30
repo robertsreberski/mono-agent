@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { homedir } from "node:os";
 
-const { createAgentTool, DEFAULT_SUBAGENT_TOOLS } = await import("../../agent/tools/agent-tool.js");
+const { createAgentTool, DEFAULT_SUBAGENT_TOOLS, subagentInvocationCount } = await import("../../agent/tools/agent-tool.js");
 
 const PROFILE = {
   name: "researcher",
@@ -386,6 +386,57 @@ describe("Agent tool confinement", () => {
     // A child inheriting no policy would bypass network deny through its own
     // default WebFetch/WebSearch tools.
     expect(run.mock.calls[0][0]).toMatchObject({ sandboxPolicy, sandboxEngine });
+  });
+
+  it("offers the parent's skill index and skills root to every child request", async () => {
+    const run = okRun();
+    const skills = [{ name: "research", description: "Reads the web." }];
+    const tool = createAgentTool(subagentOptions({ run }), { skills, skillsRoot: "/repo/skills" });
+    await tool.execute("c1", { prompt: "x" });
+
+    // Offered, not imposed: the host's `run` decides whether this child may have
+    // them. Without the offer it cannot decide at all, and the child rediscovers
+    // by trial and error whatever its parent could have looked up.
+    expect(run.mock.calls[0][0]).toMatchObject({ skills, skillsRoot: "/repo/skills" });
+  });
+
+  it("omits the skill keys entirely when the parent has none", async () => {
+    const run = okRun();
+    const tool = createAgentTool(subagentOptions({ run }), {});
+    await tool.execute("c1", { prompt: "x" });
+
+    // Absent, not `undefined`: the host reads these with conditional spreads, and
+    // an explicit undefined would trip exactOptionalPropertyTypes downstream.
+    expect(run.mock.calls[0][0]).not.toHaveProperty("skills");
+    expect(run.mock.calls[0][0]).not.toHaveProperty("skillsRoot");
+  });
+});
+
+describe("subagentInvocationCount", () => {
+  // This is what a provider reports as `capabilities_resolved.subagent_invoked`.
+  // pi-native used to hardcode `false` there, so a turn that fanned out several
+  // subagents reported that none ran — the one signal that would have shown
+  // delegation working said it never happened.
+  it("counts what a run actually spawned, keyed by parent run", async () => {
+    const options = subagentOptions({ run: okRun() });
+    const tool = createAgentTool(options, { parentRunId: "run-1" });
+
+    expect(subagentInvocationCount(options, "run-1")).toBe(0);
+    await tool.execute("c1", { prompt: "x" });
+    expect(subagentInvocationCount(options, "run-1")).toBe(1);
+    await tool.execute("c2", { prompt: "y" });
+    expect(subagentInvocationCount(options, "run-1")).toBe(2);
+    // Another logical run must not inherit this one's tally.
+    expect(subagentInvocationCount(options, "run-2")).toBe(0);
+  });
+
+  it("reads 0 rather than throwing when nothing was ever registered", () => {
+    // A run without the Agent tool never creates a budget entry, and that is
+    // indistinguishable from having it and never using it — both mean "no
+    // subagent was invoked", which is exactly the signal's contract.
+    expect(subagentInvocationCount(undefined, "run-1")).toBe(0);
+    expect(subagentInvocationCount({}, "run-1")).toBe(0);
+    expect(subagentInvocationCount({ __budgets: "not a map" }, "run-1")).toBe(0);
   });
 });
 

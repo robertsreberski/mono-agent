@@ -2199,6 +2199,29 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
       ? "; call-time authoring off"
       : `; call-time authoring on${subagents.inline?.allowedTools === undefined ? "" : ` (capped at ${subagents.inline.allowedTools.join(", ")})`}`;
     details.push(`Subagents: enabled, ${count} profile${count === 1 ? "" : "s"}${count === 0 ? " (general-purpose only)" : ""}${inline}.`);
+    // Whether children inherit the parent's skill index and the ReadSkill tool.
+    // Worth stating either way: a subagent that has neither must rediscover by
+    // trial and error whatever the parent could have looked up, and that shows
+    // up as wasted turns rather than as an error anyone would report.
+    if (config.context?.skillsRoot === undefined) {
+      details.push("Subagents get no skill index (no context.skillsRoot is configured).");
+    } else if ((config.context.skillDisclosure ?? "full") !== "index") {
+      details.push(
+        "Subagents get no skill index because context.skillDisclosure is \"full\"; set it to \"index\" so subagents inherit the index and the ReadSkill tool.",
+      );
+    } else {
+      details.push("Subagents inherit the parent's skill index and the ReadSkill tool.");
+      // The parent's own chain is capability-checked elsewhere; a profile that
+      // pins its own model is not, so a direct-OpenCode profile would silently
+      // run without the index it was told it had.
+      for (const definition of subagents.definitions ?? []) {
+        if (definition.model?.sdk === "opencode") {
+          details.push(
+            `Subagent "${definition.name}" is pinned to a direct OpenCode model, which cannot use ReadSkill; it runs without the skill index.`,
+          );
+        }
+      }
+    }
     for (const tool of subagents.inline?.allowedTools ?? []) {
       if (!isKnownToolName(tool) && !isMcpToolName(tool)) {
         status = "error";
@@ -2230,9 +2253,22 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
       }
     }
   } else if (agentAllowed && !allowAll) {
+    // Naming `Agent` in an enumerated allowlist is an explicit request for it, so
+    // half-configuration is a real mistake and blocks readiness.
     status = status === "error" ? status : "waiting";
     details.push(
       "Agent is allowed but subagents.enabled is not true, so the tool is never registered. Set subagents.enabled to true or drop Agent from tools.allowedTools.",
+    );
+  } else if (allowAll) {
+    // Under `["*"]` nobody asked for `Agent` specifically — the wildcard merely
+    // includes it — so this is NOT a misconfiguration and must not affect status,
+    // or every default wildcard agent would report "waiting".
+    //
+    // It still gets a line, because the wildcard was previously the one posture
+    // with no signal in either direction: an operator could ask the agent to
+    // delegate, watch it silently not do so, and find nothing here saying why.
+    details.push(
+      "Subagents: off (subagents.enabled is not true), so the Agent tool is not registered and the agent cannot delegate.",
     );
   }
 

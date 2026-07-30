@@ -134,6 +134,14 @@ export async function buildTurnTools(runState, {
         // child is never less sandboxed than the parent that spawned it.
         sandboxPolicy: options.sandboxPolicy,
         sandboxEngine,
+        // The same skills this turn was disclosed. A child runs OUTSIDE the
+        // harness, so without this it gets no index and — because ReadSkill is
+        // only built when `skills` is non-empty — no way to read one either. It
+        // then rediscovers by trial and error whatever its parent could simply
+        // have looked up. Pass-through only: whether the child actually receives
+        // them is the host's decision, not this layer's.
+        skills: options.skills,
+        skillsRoot: options.skillsRoot,
       },
       ctx: runCtx,
     }));

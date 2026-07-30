@@ -31,7 +31,9 @@ import {
   resolveAgentCompactionPolicy,
   resolveRuntimePolicyInputs,
 } from "../../agent/compaction.js";
+import { subagentInvocationCount } from "../../agent/tools/agent-tool.js";
 import { closePiMcpClients } from "../../agent/tools/pi-bridge.js";
+import { readToolRuntime } from "../../agent/tools/shared/runtime-context.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../runtime/capabilities-used.js";
 import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "./pi-models.js";
@@ -709,8 +711,23 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       promptCacheActive: usage.cacheRead > 0 || usage.cacheWrite > 0,
       thinkingEnabled: effectiveThinkingLevel !== "off" && effectiveThinkingLevel !== "low",
       structuredOutputEnforced: !!options.outputSchema,
-      subagentInvoked: false,
+      // What actually happened, not what was configured. This used to be a
+      // hardcoded `false`, which reported "no subagent ran" for runs that had
+      // just spawned several — the one signal that would have shown delegation
+      // working said it never happened.
+      //
+      // The count is keyed by the same parentRunId the Agent tool stamps its
+      // budget under (turn-runner threads `runCtx?.runId`); `runId` survives the
+      // sandbox-branch spread there, so reading it off the tool context directly
+      // yields the same key.
+      subagentInvoked: subagentInvocationCount(
+        options.subagents,
+        (options.toolContext ?? readToolRuntime())?.runId,
+      ) > 0,
       mcpServersUsed: mcpClients.map((entry) => entry?.name).filter(Boolean),
+      // Empty by contract, not by omission: "native" means provider-native
+      // subagents (Claude's Task tool). mono-agent's `Agent` is its own, so pi
+      // has none — `subagent_invoked` above is where pi delegation is reported.
       nativeSubagentsUsed: [],
       toolCompactionApplied: toolCompactionAppliedFromWarnings(runtimeWarnings),
       // Tristate: true = a compaction fired this run (proactive or reactive),

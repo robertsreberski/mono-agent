@@ -194,6 +194,136 @@ describe("configured subagents", () => {
   });
 });
 
+describe("subagent confinement and context inheritance", () => {
+  const SKILLS = [
+    { name: "a8c-context", description: "Read Automattic work context." },
+    { name: "pr-review", description: "Review a pull request." },
+  ] as const;
+
+  /** Runs one child and returns the (prompt, options) the runtime was called with. */
+  async function runChild(
+    request: Record<string, unknown> = {},
+    config: MonoAgentConfig = monoConfig({ enabled: true, definitions: [RESEARCHER] }),
+  ): Promise<{ prompt: string; options: Record<string, unknown> }> {
+    const { runtime, subagents } = await buildSubagents(config);
+    const run = subagents?.run as (request: unknown) => Promise<unknown>;
+    await run({
+      systemPrompt: "You research.",
+      prompt: "find X",
+      definition: { name: "researcher", allowedTools: ["Read", "Grep"] },
+      maxTurns: 12,
+      depth: 1,
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+      ...request,
+    });
+    const [prompt, options] = runtime.run.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    return { prompt, options };
+  }
+
+  it("forwards the parent's cwd, sandbox policy, and sandbox engine to the child", async () => {
+    // This path runs OUTSIDE the harness, which is where the sandbox policy is
+    // normally attached. Dropping any of these leaves the child unconfined, and
+    // its default tools include WebFetch and WebSearch — so an unsandboxed child
+    // is a network egress path, not merely a permissive one.
+    const sandboxPolicy = { mode: "native", readableRoots: ["/repo"] };
+    const sandboxEngine = { id: "srt" };
+    const { options } = await runChild({ cwd: "/repo", sandboxPolicy, sandboxEngine });
+
+    expect(options.cwd).toBe("/repo");
+    expect(options.sandboxPolicy).toBe(sandboxPolicy);
+    expect(options.sandboxEngine).toBe(sandboxEngine);
+  });
+
+  it("inherits the parent's skill index and skills root, and renders the index into the child prompt", async () => {
+    const { prompt, options } = await runChild({ skills: SKILLS, skillsRoot: "/repo/skills" });
+
+    expect(options.skills).toEqual(SKILLS);
+    expect(options.skillsRoot).toBe("/repo/skills");
+    // Appended after the profile prompt: the profile prompt is the child's
+    // identity, and the parent's own context puts the index after identity too.
+    expect(prompt.startsWith("You research.")).toBe(true);
+    expect(prompt).toContain("## Skill Index");
+    expect(prompt).toContain("- **a8c-context** — Read Automattic work context.");
+    expect(prompt).toContain("call `ReadSkill` with its name");
+  });
+
+  it("stays inert when the parent disclosed no skills", async () => {
+    const { prompt, options } = await runChild();
+
+    expect(prompt).toBe("You research.");
+    expect(options).not.toHaveProperty("skills");
+    expect(options).not.toHaveProperty("skillsRoot");
+  });
+
+  it("needs both the entries and the root, never half the pair", async () => {
+    // pi-bridge builds ReadSkill only when it has both; a half-set pair fails by
+    // silently omitting the tool rather than erroring, so never send one alone.
+    const noRoot = await runChild({ skills: SKILLS });
+    expect(noRoot.options).not.toHaveProperty("skills");
+    expect(noRoot.prompt).toBe("You research.");
+
+    const noSkills = await runChild({ skillsRoot: "/repo/skills" });
+    expect(noSkills.options).not.toHaveProperty("skills");
+    expect(noSkills.prompt).toBe("You research.");
+  });
+
+  it("withholds skills from a profile that denies ReadSkill, under either spelling", async () => {
+    for (const denied of ["ReadSkill", "read_skill"]) {
+      const { prompt, options } = await runChild({
+        skills: SKILLS,
+        skillsRoot: "/repo/skills",
+        definition: { name: "researcher", disallowedTools: [denied] },
+      });
+      expect(options, denied).not.toHaveProperty("skills");
+      expect(prompt, denied).toBe("You research.");
+    }
+  });
+
+  it("withholds skills when the parent agent denies ReadSkill outright", async () => {
+    const { prompt, options } = await runChild(
+      { skills: SKILLS, skillsRoot: "/repo/skills" },
+      monoConfig(
+        { enabled: true, definitions: [RESEARCHER] },
+        { allowedTools: ["*"], disallowedTools: ["ReadSkill"] },
+      ),
+    );
+
+    expect(options).not.toHaveProperty("skills");
+    expect(prompt).toBe("You research.");
+  });
+
+  it("withholds skills from a profile pinned to a runtime that cannot use them", async () => {
+    // Non-empty `skills` makes supports_skills a ROUTING REQUIREMENT, and a chain
+    // entry that lacks it is skipped — so threading skills onto a direct-OpenCode
+    // child turns a working subagent into skipped_capability_mismatch. Do not
+    // "simplify" this guard away.
+    const OPENCODE = { sdk: "opencode", provider: "opencode", model: "glm-5.2", reference: "opencode:opencode:glm-5.2" } as const;
+    const overrideRuntime = { run: vi.fn(async () => ({ text: "answer", events: [] })) };
+    const { subagents } = await buildSubagents(
+      monoConfig({ enabled: true, definitions: [{ ...RESEARCHER, model: OPENCODE }] }),
+      { runtimeForModel: vi.fn(() => overrideRuntime) },
+    );
+    const run = subagents?.run as (request: unknown) => Promise<unknown>;
+
+    await run({
+      systemPrompt: "You research.",
+      prompt: "x",
+      definition: { name: "researcher", model: OPENCODE },
+      maxTurns: 5,
+      depth: 1,
+      skills: SKILLS,
+      skillsRoot: "/repo/skills",
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    });
+
+    const [prompt, options] = overrideRuntime.run.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(options).not.toHaveProperty("skills");
+    expect(prompt).toBe("You research.");
+  });
+});
+
 describe("in-flight subagent ceiling", () => {
   async function ceilingFor(
     inline: NonNullable<MonoAgentConfig["subagents"]>["inline"],
