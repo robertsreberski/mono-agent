@@ -63,12 +63,27 @@ the configuration schema.
   authoritative and the runtime emits a bounded
   `live_input_callback_failed` warning.
 
-## 0.15.x baseline
+## 0.16.x baseline
 
 This is the current published baseline for the detailed pre-1.0 reference
-below. It includes the explicit exports map, the five-bridge lazy registry,
-typed runtime policies, runtime-owned provider dependencies, and the
-public-surface cleanup described in this guide.
+below. It carries the whole 0.15.x contract forward and adds:
+
+- `skills` and `skillsRoot` on the run options. `skills` is the disclosed
+  `{name, description}` set for a run; a non-empty value makes `supports_skills`
+  a routing requirement, so a chain entry lacking it is skipped. `skillsRoot`
+  names the directory holding `<name>/SKILL.md` and is required alongside
+  `skills` for `ReadSkill` to exist. A subagent run now inherits both from its
+  parent unless a host-supplied `run` withholds them, so a child no longer has
+  to rediscover by trial and error what its parent could look up.
+- Provider failover detail reaches whoever is watching the run rather than being
+  flattened at the boundary.
+- Pi SDK 0.83.0.
+
+## 0.15.x
+
+- The explicit exports map, the five-bridge lazy registry, typed runtime
+  policies, runtime-owned provider dependencies, and the public-surface cleanup
+  described in this guide.
 
 ## 0.12.x
 
@@ -379,7 +394,7 @@ a compatibility subpath.
 
 ## Version
 
-This guide describes the published `0.15.x` package contract. Keep
+This guide describes the published `0.16.x` package contract. Keep
 `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, and other
 `@mono-agent/*` packages on the same lockstep version when upgrading. The paired
 runtime adapter no longer exposes `piReasoningSummary` in its run-options type.
