@@ -13,6 +13,15 @@ import { configDefaults, defineConfig } from "vitest/config";
 // discovered by any root invocation.
 export default defineConfig({
   test: {
+    /**
+     * The root invocations (`release:test`, `scripts:test`, `test:demo`) drive real subprocesses —
+     * npm installs into throwaway consumers, pnpm config probes, packed-tarball smoke tests. Those
+     * take well over Vitest's 5s default whenever the machine is busy, which is exactly when CI
+     * runs them: `packed-consumer` timed out immediately after a release pack while passing on its
+     * own. Budget for the work these suites actually do; a genuine hang still fails well inside the
+     * CI job timeout.
+     */
+    testTimeout: 30_000,
     exclude: [
       ...configDefaults.exclude,
       "**/.claude/**",

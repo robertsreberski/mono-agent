@@ -313,11 +313,33 @@ function publishFrozenTarball(pkg, { distTag, dryRun, npmEnvSource = process.env
   const result = spawnSync("npm", args, {
     cwd: REPO_ROOT,
     env: publicNpmEnvironment(npmEnvSource, { authenticated: !dryRun }),
-    stdio: "inherit",
+    // The dry run needs npm's output to classify its exit; the real publish streams straight through.
+    ...(dryRun ? { encoding: "utf8" } : { stdio: "inherit" }),
   });
+  if (dryRun) {
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+  }
   if (result.status !== 0) {
+    if (dryRun && isAlreadyPublishedRejection(result)) {
+      console.log(`${pkg.name}@${pkg.version} is already published; dry run proved the tarball instead.`);
+      return;
+    }
     throw new Error(`npm publish failed for ${pkg.name}@${pkg.version}`);
   }
+}
+
+/**
+ * Between releases the workspace still carries the last released version, so `npm publish
+ * --dry-run` rejects every tarball with "cannot publish over the previously published versions" —
+ * which made the PR dry-run job fail on every branch that had not bumped the version. That job
+ * exists to prove the tarballs build and the graph validates, not that this exact version is
+ * unpublished; `release:validate` owns the tag-to-manifest contract, and the real publish (which
+ * never passes --dry-run) still fails closed on a genuine conflict.
+ */
+export function isAlreadyPublishedRejection(result) {
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  return /cannot publish over the previously published version|EPUBLISHCONFLICT/iu.test(output);
 }
 
 async function waitForPublishedIntegrity(pkg, options = {}) {
