@@ -37,6 +37,60 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
+describe("parseCliArgs memory bundles", () => {
+  it("parses export and import flags", () => {
+    expect(parseCliArgs(["memory", "export", "--bundle", "/tmp/b", "--include-extras", "--json"]))
+      .toMatchObject({
+        command: "memory",
+        positionals: ["export"],
+        bundlePath: "/tmp/b",
+        includeExtras: true,
+        json: true,
+      });
+    expect(parseCliArgs([
+      "memory", "import", "prepare",
+      "--bundle", "/tmp/b", "--plan", "/tmp/p.json",
+      "--on-conflict", "skip", "--entity-conflict", "source",
+      "--accept-derived-association-drift",
+    ])).toMatchObject({
+      positionals: ["import", "prepare"],
+      bundlePath: "/tmp/b",
+      planPath: "/tmp/p.json",
+      onConflict: "skip",
+      entityConflict: "source",
+      acceptDerivedAssociationDrift: true,
+    });
+  });
+
+  it("rejects invalid policy values and out-of-scope bundle flags", () => {
+    expect(() => parseCliArgs(["memory", "import", "prepare", "--on-conflict", "merge"]))
+      .toThrow(/--on-conflict must be fail or skip/u);
+    expect(() => parseCliArgs(["memory", "import", "prepare", "--entity-conflict", "both"]))
+      .toThrow(/--entity-conflict must be target or source/u);
+    expect(() => parseCliArgs(["memory", "stats", "--bundle", "/tmp/b"]))
+      .toThrow(/memory export/u);
+    expect(() => parseCliArgs(["status", "--bundle", "/tmp/b"]))
+      .toThrow(/memory export/u);
+  });
+
+  it("keeps --plan and --backup available to forget as well as import", () => {
+    expect(parseCliArgs(["memory", "import", "apply", "--plan", "/tmp/p.json"]))
+      .toMatchObject({ positionals: ["import", "apply"], planPath: "/tmp/p.json" });
+    expect(parseCliArgs(["memory", "forget", "apply", "--plan", "/tmp/p.json"]))
+      .toMatchObject({ positionals: ["forget", "apply"], planPath: "/tmp/p.json" });
+    // The historical single-command message is still the one operators see
+    // when --plan is used outside either memory subcommand.
+    expect(() => parseCliArgs(["status", "--plan", "private.json"])).toThrow(/memory forget/iu);
+  });
+
+  it("documents both bundle verbs in the memory help detail", () => {
+    const help = helpTopicText("memory");
+    expect(help).toContain("mono-agent memory export --bundle <dir>");
+    expect(help).toContain("mono-agent memory import prepare --bundle <dir> --plan <file>");
+    expect(help).toContain("import restore --backup <dir>");
+  });
+});
+
 describe("parseCliArgs memory", () => {
   it("parses memory subcommands and limit/json flags", () => {
     expect(parseCliArgs(["memory", "search", "deploy", "pipeline", "--limit", "3", "--json"])).toMatchObject({

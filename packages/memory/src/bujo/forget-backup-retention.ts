@@ -11,13 +11,15 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 
 import {
-  assertExplicitMemoryForgetBackupDirectoryInfo,
-  assertExplicitMemoryForgetPrivateArtifactInfo,
-  assertSameExplicitMemoryForgetFile,
-  assertSameExplicitMemoryForgetSnapshot,
-  parseExplicitMemoryForgetBackupManifest,
-  type ExplicitMemoryForgetBackupManifest,
-} from "./explicit-forget.js";
+  assertDurableRootSwapBackupDirectoryInfo,
+  assertDurableSwapPrivateArtifactInfo,
+  assertSameDurableSwapFile,
+  assertSameDurableSwapSnapshot,
+  MANAGED_SWAP_OPERATIONS,
+  parseDurableRootSwapBackupManifest,
+  type DurableRootSwapBackupManifest,
+  type DurableRootSwapOperation,
+} from "./durable-root-swap.js";
 import { acquireMemoryMaintenanceLease } from "./maintenance.js";
 
 export const DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS = 30;
@@ -182,42 +184,51 @@ async function collectCandidates(
   warnings: string[],
 ): Promise<Candidate[]> {
   const escapedRootName = escapeRegExp(retentionRoot.rootName);
-  const managedPrefix = `.${retentionRoot.rootName}-forget-backup-`;
-  const managedPattern = new RegExp(`^\\.${escapedRootName}-forget-backup-([a-f0-9]{24})$`, "u");
-  const stagingPattern = new RegExp(
-    `^\\.${escapedRootName}-forget-backup-([a-f0-9]{24})\\.tmp-[1-9][0-9]*-`
-      + "[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$",
-    "u",
-  );
+  // Every stopped-store operation that writes a sibling whole-root backup
+  // shares this sweep, so a new operation cannot accumulate backups forever.
+  const shapes = MANAGED_SWAP_OPERATIONS.map((operation) => ({
+    operation,
+    prefix: `.${retentionRoot.rootName}-${operation.backupInfix}-`,
+    managed: new RegExp(`^\\.${escapedRootName}-${escapeRegExp(operation.backupInfix)}-([a-f0-9]{24})$`, "u"),
+    staging: new RegExp(
+      `^\\.${escapedRootName}-${escapeRegExp(operation.backupInfix)}-([a-f0-9]{24})\\.tmp-[1-9][0-9]*-`
+        + "[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$",
+      "u",
+    ),
+  }));
   const candidates: Candidate[] = [];
 
   await scanDirectory(retentionRoot.parent, warnings, ".", async (name) => {
     if (!shouldContinue(options)) return false;
     const absolutePath = join(retentionRoot.parent, name);
-    const managedMatch = managedPattern.exec(name);
-    if (managedMatch !== null) {
-      const candidate = await inspectManagedCandidate(
-        absolutePath,
-        name,
-        managedMatch[1]!,
-        retentionRoot,
-        warnings,
-      );
-      if (candidate !== undefined) candidates.push(candidate);
-      return true;
-    }
-    const stagingMatch = stagingPattern.exec(name);
-    if (name.startsWith(managedPrefix) && stagingMatch !== null) {
-      const candidate = await inspectDirectoryCandidate(
-        absolutePath,
-        name,
-        "staging",
-        true,
-        retentionRoot.parentInfo,
-        warnings,
-        `.${retentionRoot.rootName}-forget-backup-${stagingMatch[1]!}`,
-      );
-      if (candidate !== undefined) candidates.push(candidate);
+    for (const shape of shapes) {
+      const managedMatch = shape.managed.exec(name);
+      if (managedMatch !== null) {
+        const candidate = await inspectManagedCandidate(
+          absolutePath,
+          name,
+          managedMatch[1]!,
+          retentionRoot,
+          warnings,
+          shape.operation,
+        );
+        if (candidate !== undefined) candidates.push(candidate);
+        return true;
+      }
+      const stagingMatch = shape.staging.exec(name);
+      if (name.startsWith(shape.prefix) && stagingMatch !== null) {
+        const candidate = await inspectDirectoryCandidate(
+          absolutePath,
+          name,
+          "staging",
+          true,
+          retentionRoot.parentInfo,
+          warnings,
+          `${shape.prefix}${stagingMatch[1]!}`,
+        );
+        if (candidate !== undefined) candidates.push(candidate);
+        return true;
+      }
     }
     return true;
   });
@@ -260,11 +271,12 @@ async function inspectManagedCandidate(
   nameDigest: string,
   retentionRoot: RetentionRoot,
   warnings: string[],
+  operation: DurableRootSwapOperation,
 ): Promise<Candidate | undefined> {
   try {
     const directoryInfo = await lstat(absolutePath);
-    assertExplicitMemoryForgetBackupDirectoryInfo(directoryInfo);
-    const manifest = await readManagedManifest(join(absolutePath, "manifest.json"));
+    assertDurableRootSwapBackupDirectoryInfo(directoryInfo);
+    const manifest = await readManagedManifest(join(absolutePath, "manifest.json"), operation);
     if (manifest.rootFingerprint !== rootFingerprint(retentionRoot.root)
       || !manifest.planDigest.startsWith(nameDigest)) {
       throw new Error("invalid or foreign manifest");
@@ -283,7 +295,7 @@ async function inspectManagedCandidate(
       true,
       directoryInfo,
       retentionRoot.parentInfo,
-      `.${retentionRoot.rootName}-forget-backup-${nameDigest}`,
+      `.${retentionRoot.rootName}-${operation.backupInfix}-${nameDigest}`,
     );
   } catch (error) {
     warnings.push(`${relativePath}: ${reasonOf(error)}; preserved`);
@@ -291,19 +303,22 @@ async function inspectManagedCandidate(
   }
 }
 
-async function readManagedManifest(manifestPath: string): Promise<ExplicitMemoryForgetBackupManifest> {
+async function readManagedManifest(
+  manifestPath: string,
+  operation: DurableRootSwapOperation,
+): Promise<DurableRootSwapBackupManifest> {
   const before = await lstat(manifestPath);
-  assertExplicitMemoryForgetPrivateArtifactInfo(before);
+  assertDurableSwapPrivateArtifactInfo(before);
   const handle = await open(manifestPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const opened = await handle.stat();
-    assertExplicitMemoryForgetPrivateArtifactInfo(opened);
-    assertSameExplicitMemoryForgetFile(before, opened, manifestPath);
+    assertDurableSwapPrivateArtifactInfo(opened);
+    assertSameDurableSwapFile(before, opened, manifestPath);
     const data = await handle.readFile();
     if (data.length !== opened.size) throw new Error("memory-forget: short artifact read");
-    assertSameExplicitMemoryForgetSnapshot(opened, await handle.stat(), manifestPath);
-    assertSameExplicitMemoryForgetFile(opened, await lstat(manifestPath), manifestPath);
-    return parseExplicitMemoryForgetBackupManifest(JSON.parse(data.toString("utf8")) as unknown);
+    assertSameDurableSwapSnapshot(opened, await handle.stat(), manifestPath);
+    assertSameDurableSwapFile(opened, await lstat(manifestPath), manifestPath);
+    return parseDurableRootSwapBackupManifest(JSON.parse(data.toString("utf8")) as unknown, operation);
   } finally {
     await handle.close();
   }
@@ -320,7 +335,7 @@ async function inspectDirectoryCandidate(
 ): Promise<Candidate | undefined> {
   try {
     const info = await lstat(absolutePath);
-    if (requirePrivate) assertExplicitMemoryForgetBackupDirectoryInfo(info);
+    if (requirePrivate) assertDurableRootSwapBackupDirectoryInfo(info);
     else if (!isOwnedNonWritableDirectory(info)) throw new Error("unsafe directory");
     return candidateOf(
       absolutePath,
@@ -439,7 +454,7 @@ async function restoreClaimedCandidate(
 async function sameSafeCandidateDirectory(candidate: Candidate, candidatePath: string): Promise<boolean> {
   try {
     const info = await lstat(candidatePath);
-    if (candidate.requirePrivate) assertExplicitMemoryForgetBackupDirectoryInfo(info);
+    if (candidate.requirePrivate) assertDurableRootSwapBackupDirectoryInfo(info);
     else if (!isOwnedNonWritableDirectory(info)) return false;
     return info.dev === candidate.dev && info.ino === candidate.ino;
   } catch {

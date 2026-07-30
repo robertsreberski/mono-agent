@@ -100,6 +100,12 @@ export interface RunMemoryCommandInput {
   readonly reason?: string;
   readonly planPath?: string;
   readonly backupPath?: string;
+  readonly bundlePath?: string;
+  readonly includeExtras?: boolean;
+  readonly allowPending?: boolean;
+  readonly onConflict?: "fail" | "skip";
+  readonly entityConflict?: "target" | "source";
+  readonly acceptDerivedAssociationDrift?: boolean;
 }
 
 interface MemoryForgetPlanPayload {
@@ -145,6 +151,14 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       writeMemoryForgetFailure(input.json, input.positionals[1] ?? "unknown", "forget_usage");
       return 2;
     }
+    if (input.positionals[0] === "export") {
+      writeMemoryBundleFailure(input.json, "export", "export_usage");
+      return 2;
+    }
+    if (input.positionals[0] === "import") {
+      writeMemoryBundleFailure(input.json, `import-${input.positionals[1] ?? "unknown"}`, "import_usage");
+      return 2;
+    }
     process.stderr.write(ui.errorLine(usageError));
     return 2;
   }
@@ -167,6 +181,14 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
     }
     if (subcommand === "forget") {
       writeMemoryForgetFailure(input.json, rest[0] ?? "unknown", "forget_requires_bujo");
+      return 1;
+    }
+    if (subcommand === "export" || subcommand === "import") {
+      writeMemoryBundleFailure(
+        input.json,
+        subcommand === "export" ? "export" : `import-${rest[0] ?? "unknown"}`,
+        subcommand === "export" ? "export_requires_bujo" : "import_requires_bujo",
+      );
       return 1;
     }
     writeNoMemory(context.configPath, input.json);
@@ -214,9 +236,13 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       return await runReplayAdoption(context, input.json);
     case "forget":
       return await runMemoryForget(context, rest, input);
+    case "export":
+      return await runMemoryBundleExport(context, input);
+    case "import":
+      return await runMemoryBundleImport(context, rest, input);
     default:
       process.stderr.write(ui.errorLine(`Unknown memory subcommand \`${subcommand}\`.`));
-      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, audit, inspect [id], retry [id], resolve <id> <reason>, rebuild, rollback, adopt-replay, or forget prepare|apply|restore."));
+      process.stderr.write(ui.hint("Expected stats, today, show <date>, search <query>, top, audit, inspect [id], retry [id], resolve <id> <reason>, rebuild, rollback, adopt-replay, forget prepare|apply|restore, export, or import prepare|apply|restore."));
       return 2;
   }
 }
@@ -284,9 +310,478 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
         ? undefined
         : "Usage: mono-agent memory forget restore --backup <dir>.";
     }
+    case "export":
+      if (rest.length !== 0 || input.bundlePath === undefined || input.planPath !== undefined
+        || input.backupPath !== undefined || input.onConflict !== undefined
+        || input.entityConflict !== undefined || input.acceptDerivedAssociationDrift === true) {
+        return "Usage: mono-agent memory export --bundle <dir> [--include-extras] [--allow-pending].";
+      }
+      return undefined;
+    case "import": {
+      const operation = rest[0];
+      if (rest.length !== 1 || (operation !== "prepare" && operation !== "apply" && operation !== "restore")) {
+        return "Usage: mono-agent memory import prepare|apply|restore with the required operation flags.";
+      }
+      if (input.includeExtras === true || input.allowPending === true) {
+        return "--include-extras and --allow-pending are only supported for `mono-agent memory export`.";
+      }
+      if (operation === "prepare") {
+        return input.bundlePath !== undefined && input.planPath !== undefined && input.backupPath === undefined
+          ? undefined
+          : "Usage: mono-agent memory import prepare --bundle <dir> --plan <file> "
+            + "[--on-conflict fail|skip] [--entity-conflict target|source] [--accept-derived-association-drift].";
+      }
+      if (operation === "apply") {
+        return input.planPath !== undefined && input.bundlePath === undefined && input.backupPath === undefined
+          && input.onConflict === undefined && input.entityConflict === undefined
+          && input.acceptDerivedAssociationDrift !== true
+          ? undefined
+          : "Usage: mono-agent memory import apply --plan <file>.";
+      }
+      return input.backupPath !== undefined && input.bundlePath === undefined && input.planPath === undefined
+        && input.onConflict === undefined && input.entityConflict === undefined
+        && input.acceptDerivedAssociationDrift !== true
+        ? undefined
+        : "Usage: mono-agent memory import restore --backup <dir>.";
+    }
     default:
       return undefined;
   }
+}
+
+const MEMORY_BUNDLE_CLI_SCHEMA_VERSION = 1;
+const MAX_IMPORT_PLAN_BYTES = 64 * 1024;
+
+type MemoryBundleFailureCode =
+  | "export_requires_bujo"
+  | "export_usage"
+  | "export_config_invalid"
+  | "export_failed"
+  | "import_requires_bujo"
+  | "import_usage"
+  | "import_config_invalid"
+  | "import_bundle_invalid"
+  | "import_derived_drift"
+  | "import_conflict"
+  | "import_prepare_failed"
+  | "import_stale_plan"
+  | "import_apply_failed"
+  | "import_apply_failed_recovered"
+  | "import_apply_recovery_failed"
+  | "import_restore_failed";
+
+/**
+ * Frozen operator-facing messages. Package errors are never interpolated:
+ * they can carry memory text, memory ids, entity names, and absolute paths.
+ */
+const MEMORY_BUNDLE_FAILURE_MESSAGES: Readonly<Record<MemoryBundleFailureCode, string>> = Object.freeze({
+  export_requires_bujo: "Memory export requires a configured built-in BuJo store with embeddings.",
+  export_usage: "Memory export arguments are invalid.",
+  export_config_invalid: "Memory export requires a valid private configuration.",
+  export_failed: "Memory export failed; no bundle was published.",
+  import_requires_bujo: "Memory import requires a configured built-in BuJo store with embeddings.",
+  import_usage: "Memory import arguments are invalid.",
+  import_config_invalid: "Memory import requires a valid private configuration.",
+  import_bundle_invalid: "The bundle failed verification; the memory store was not changed.",
+  import_derived_drift: "Importing these entities would remove derived associations from existing memories; re-run with --accept-derived-association-drift to proceed.",
+  import_conflict: "Incoming memory ids already exist with different content; re-run with --on-conflict skip to keep this store's versions.",
+  import_prepare_failed: "Import-plan preparation failed without changing the memory store.",
+  import_stale_plan: "The import plan no longer matches this memory store or bundle; prepare a fresh plan.",
+  import_apply_failed: "Import application failed before a recoverable backup was available.",
+  import_apply_failed_recovered: "Import application failed and the complete pre-import backup was restored.",
+  import_apply_recovery_failed: "Import application failed and automatic recovery could not be verified; keep the agent stopped and restore the reported backup manually.",
+  import_restore_failed: "Backup restore was refused or failed; the current memory store was not intentionally overwritten.",
+});
+
+class MemoryBundleOperationError extends Error {
+  constructor(
+    readonly code: MemoryBundleFailureCode,
+    readonly recovered = false,
+    readonly backupPath?: string,
+  ) {
+    super(code);
+    this.name = "MemoryBundleOperationError";
+  }
+}
+
+interface MemoryImportPlanPayload {
+  readonly schemaVersion: typeof MEMORY_BUNDLE_CLI_SCHEMA_VERSION;
+  readonly operation: "import";
+  readonly rootFingerprint: string;
+  readonly destinationSourceFingerprint: string;
+  readonly bundlePath: string;
+  readonly bundleDigest: string;
+  readonly mergeDigest: string;
+  readonly onConflict: "fail" | "skip";
+  readonly entityConflict: "target" | "source";
+  readonly acceptDerivedAssociationDrift: boolean;
+  readonly createdAt: string;
+}
+
+interface MemoryImportPlan extends MemoryImportPlanPayload {
+  readonly planDigest: string;
+}
+
+/** Shared precondition: the built-in BuJo backend with a usable embedding provider. */
+function bundleMemorySettings(context: MemoryCommandContext): NonNullable<MonoAgentConfig["memory"]> | undefined {
+  const memory = context.config.memory;
+  if (memory === undefined || (memory.backend ?? "bujo") === "supermemory"
+    || memory.mode !== "bujo" || memory.embeddings === undefined) {
+    return undefined;
+  }
+  return memory;
+}
+
+async function runMemoryBundleExport(
+  context: MemoryCommandContext,
+  input: RunMemoryCommandInput,
+): Promise<number> {
+  const memory = bundleMemorySettings(context);
+  if (memory === undefined) {
+    writeMemoryBundleFailure(input.json, "export", "export_requires_bujo");
+    return 1;
+  }
+  try {
+    const bujo = await loadBujoModule();
+    const root = resolve(context.cwd, memory.path);
+    const bundlePath = await canonicalProspectivePath(resolve(context.cwd, input.bundlePath!));
+    const result = await bujo.exportMemoryBundle({
+      root,
+      bundlePath,
+      scope: input.includeExtras === true ? "canonical+extras" : "canonical",
+      ...(input.allowPending === true ? { allowPending: true } : {}),
+      ...(memory.embeddings?.model === undefined
+        ? {}
+        : { embeddingModel: `${memory.embeddings.provider}:${memory.embeddings.model}` }),
+      dimension: memory.embeddings?.dim ?? 768,
+    });
+    const published = {
+      schemaVersion: MEMORY_BUNDLE_CLI_SCHEMA_VERSION,
+      operation: "memory-export" as const,
+      status: "exported" as const,
+      bundlePath: result.bundlePath,
+      scope: result.scope,
+      sourceFingerprint: result.sourceFingerprint,
+      treeFingerprint: result.treeFingerprint,
+      counts: result.counts,
+      ...(result.pendingWork ? { pendingWork: true as const } : {}),
+    };
+    write(input.json, published, () => renderMemoryBundleExport(published));
+    return 0;
+  } catch {
+    writeMemoryBundleFailure(input.json, "export", "export_failed");
+    return 1;
+  }
+}
+
+async function runMemoryBundleImport(
+  context: MemoryCommandContext,
+  rest: readonly string[],
+  input: RunMemoryCommandInput,
+): Promise<number> {
+  const operation = rest[0] as "prepare" | "apply" | "restore";
+  const label = `import-${operation}`;
+  const memory = bundleMemorySettings(context);
+  if (memory === undefined) {
+    writeMemoryBundleFailure(input.json, label, "import_requires_bujo");
+    return 1;
+  }
+  try {
+    const root = resolve(context.cwd, memory.path);
+    if (operation === "prepare") {
+      const result = await prepareMemoryImportPlan(context, root, input);
+      write(input.json, result, () => renderMemoryBundleImport(result));
+      return 0;
+    }
+    if (operation === "apply") {
+      const result = await applyMemoryImportPlan(context, root, input.planPath!);
+      write(input.json, result, () => renderMemoryBundleImport(result));
+      return 0;
+    }
+    const result = await restoreMemoryImportBackup(context, root, input.backupPath!);
+    write(input.json, result, () => renderMemoryBundleImport(result));
+    return 0;
+  } catch (error) {
+    const failure = error instanceof MemoryBundleOperationError
+      ? error
+      : new MemoryBundleOperationError(
+          operation === "prepare"
+            ? "import_prepare_failed"
+            : operation === "restore"
+              ? "import_restore_failed"
+              : "import_apply_failed",
+        );
+    writeMemoryBundleFailure(input.json, label, failure.code, failure.recovered, failure.backupPath);
+    return 1;
+  }
+}
+
+async function prepareMemoryImportPlan(
+  context: MemoryCommandContext,
+  root: string,
+  input: RunMemoryCommandInput,
+) {
+  const planPath = await canonicalProspectivePath(resolve(context.cwd, input.planPath!));
+  if (isSameOrUnderDirectory(root, planPath)) {
+    throw new MemoryBundleOperationError("import_prepare_failed");
+  }
+  const bundlePath = resolve(context.cwd, input.bundlePath!);
+  const bujo = await loadBujoModule();
+  let preview;
+  try {
+    preview = bujo.prepareMemoryBundleImport({
+      root,
+      bundlePath,
+      onConflict: input.onConflict ?? "fail",
+      entityConflict: input.entityConflict ?? "target",
+      acceptDerivedAssociationDrift: input.acceptDerivedAssociationDrift === true,
+    });
+  } catch (error) {
+    throw new MemoryBundleOperationError(classifyImportPrepareFailure(error));
+  }
+
+  const payload: MemoryImportPlanPayload = {
+    schemaVersion: MEMORY_BUNDLE_CLI_SCHEMA_VERSION,
+    operation: "import",
+    rootFingerprint: preview.rootFingerprint,
+    destinationSourceFingerprint: preview.destinationSourceFingerprint,
+    bundlePath: preview.bundlePath,
+    bundleDigest: preview.bundleDigest,
+    mergeDigest: preview.mergeDigest,
+    onConflict: preview.onConflict,
+    entityConflict: preview.entityConflict,
+    acceptDerivedAssociationDrift: input.acceptDerivedAssociationDrift === true,
+    createdAt: new Date().toISOString(),
+  };
+  const plan: MemoryImportPlan = {
+    ...payload,
+    planDigest: createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
+  };
+  await writePrivateJsonExclusive(planPath, plan);
+  return {
+    schemaVersion: MEMORY_BUNDLE_CLI_SCHEMA_VERSION,
+    operation: "memory-import-prepare" as const,
+    status: "prepared" as const,
+    planPath,
+    planDigest: plan.planDigest,
+    counts: preview.counts,
+    // Counts only: entity ids and memory ids never enter the operator plan.
+    derivedAssociationsAdded: preview.derivedAssociationsAdded.length,
+    derivedAssociationsRemoved: preview.derivedAssociationsRemoved.length,
+    ...(preview.bundlePendingWork ? { bundlePendingWork: true } : {}),
+  };
+}
+
+async function applyMemoryImportPlan(
+  context: MemoryCommandContext,
+  root: string,
+  rawPlanPath: string,
+) {
+  const planPath = resolve(context.cwd, rawPlanPath);
+  if (isSameOrUnderDirectory(root, await canonicalProspectivePath(planPath))) {
+    throw new MemoryBundleOperationError("import_apply_failed");
+  }
+  const plan = await readMemoryImportPlan(planPath);
+  const bujo = await loadBujoModule();
+  if (plan.rootFingerprint !== memoryRootFingerprint(root)) {
+    throw new MemoryBundleOperationError("import_stale_plan");
+  }
+  // Preserve the user-facing same-config diagnostic; the package transaction
+  // independently enforces the authoritative shared-root writer lease.
+  await assertNoLiveConfiguredAgent(context.configPath, await memoryRegistryDirs(context));
+  const settings = previewRecallSettings(context.config);
+  if (settings === undefined || "supermemory" in settings || settings.embeddings === undefined) {
+    throw new MemoryBundleOperationError("import_config_invalid");
+  }
+  const { createMemoryEmbeddingProvider } = await loadMemoryRecallModule();
+  const embeddings = await createMemoryEmbeddingProvider(settings.embeddings);
+  try {
+    const result = await bujo.applyMemoryBundleImport({
+      root,
+      bundlePath: plan.bundlePath,
+      expectedRootFingerprint: plan.rootFingerprint,
+      expectedSourceFingerprint: plan.destinationSourceFingerprint,
+      expectedBundleDigest: plan.bundleDigest,
+      expectedMergeDigest: plan.mergeDigest,
+      planDigest: plan.planDigest,
+      onConflict: plan.onConflict,
+      entityConflict: plan.entityConflict,
+      acceptDerivedAssociationDrift: plan.acceptDerivedAssociationDrift,
+      embeddings,
+      dimension: settings.embeddings.dim ?? 768,
+    });
+    return {
+      schemaVersion: MEMORY_BUNDLE_CLI_SCHEMA_VERSION,
+      operation: "memory-import-apply" as const,
+      status: "applied" as const,
+      imported: result.imported,
+      skipped: result.skipped,
+      identical: result.identical,
+      sourceFingerprint: result.sourceFingerprint,
+      backupPath: result.backupPath,
+      planDigest: plan.planDigest,
+      rollbackRetained: false,
+    };
+  } catch (error) {
+    throw new MemoryBundleOperationError(...classifyImportApplyFailure(bujo, error));
+  }
+}
+
+async function restoreMemoryImportBackup(
+  context: MemoryCommandContext,
+  root: string,
+  rawBackupPath: string,
+) {
+  const backupPath = resolve(context.cwd, rawBackupPath);
+  const bujo = await loadBujoModule();
+  await assertNoLiveConfiguredAgent(context.configPath, await memoryRegistryDirs(context));
+  try {
+    const result = await bujo.restoreMemoryBundleImport({
+      root,
+      backupPath,
+      expectedRootFingerprint: memoryRootFingerprint(root),
+    });
+    return {
+      schemaVersion: MEMORY_BUNDLE_CLI_SCHEMA_VERSION,
+      operation: "memory-import-restore" as const,
+      status: "restored" as const,
+      sourceFingerprint: result.sourceFingerprint,
+      backupPath: result.backupPath,
+      planDigest: result.planDigest,
+    };
+  } catch {
+    throw new MemoryBundleOperationError("import_restore_failed");
+  }
+}
+
+function classifyImportPrepareFailure(error: unknown): MemoryBundleFailureCode {
+  const code = (error as { readonly code?: unknown }).code;
+  if (code === "import_derived_drift") return "import_derived_drift";
+  if (code === "import_bundle_invalid" || code === "import_bundle_incompatible") return "import_bundle_invalid";
+  if (code === "id_conflict") return "import_conflict";
+  const cause = (error as { readonly cause?: { readonly code?: unknown } }).cause;
+  if (cause?.code === "id_conflict") return "import_conflict";
+  return "import_prepare_failed";
+}
+
+function classifyImportApplyFailure(
+  bujo: Awaited<ReturnType<typeof loadBujoModule>>,
+  error: unknown,
+): [MemoryBundleFailureCode, boolean, string | undefined] {
+  if (error instanceof bujo.MemoryBundleImportError) {
+    if (error.code === "import_apply_failed_recovered") {
+      return ["import_apply_failed_recovered", true, error.backupPath];
+    }
+    if (error.code === "import_apply_recovery_failed") {
+      return ["import_apply_recovery_failed", false, error.backupPath];
+    }
+    if (error.code === "import_stale_plan") return ["import_stale_plan", false, undefined];
+    if (error.code === "import_derived_drift") return ["import_derived_drift", false, undefined];
+    if (error.code === "import_bundle_invalid" || error.code === "import_bundle_incompatible") {
+      return ["import_bundle_invalid", false, undefined];
+    }
+  }
+  return ["import_apply_failed", false, undefined];
+}
+
+async function readMemoryImportPlan(path: string): Promise<MemoryImportPlan> {
+  const value = await readPrivateJson(path, MAX_IMPORT_PLAN_BYTES);
+  if (!isObject(value)
+    || value.schemaVersion !== MEMORY_BUNDLE_CLI_SCHEMA_VERSION
+    || value.operation !== "import"
+    || typeof value.rootFingerprint !== "string"
+    || typeof value.destinationSourceFingerprint !== "string"
+    || typeof value.bundlePath !== "string"
+    || typeof value.bundleDigest !== "string"
+    || typeof value.mergeDigest !== "string"
+    || (value.onConflict !== "fail" && value.onConflict !== "skip")
+    || (value.entityConflict !== "target" && value.entityConflict !== "source")
+    || typeof value.acceptDerivedAssociationDrift !== "boolean"
+    || typeof value.createdAt !== "string"
+    || typeof value.planDigest !== "string") {
+    throw new MemoryBundleOperationError("import_stale_plan");
+  }
+  const plan = value as unknown as MemoryImportPlan;
+  const { planDigest, ...payload } = plan;
+  if (createHash("sha256").update(JSON.stringify(payload)).digest("hex") !== planDigest) {
+    throw new MemoryBundleOperationError("import_stale_plan");
+  }
+  return plan;
+}
+
+export function writeMemoryBundleFailure(
+  json: boolean,
+  operation: string,
+  code: MemoryBundleFailureCode,
+  recovered = false,
+  backupPath?: string,
+): void {
+  const result = {
+    schemaVersion: MEMORY_BUNDLE_CLI_SCHEMA_VERSION,
+    operation: `memory-${operation}`,
+    status: "failed" as const,
+    code,
+    message: MEMORY_BUNDLE_FAILURE_MESSAGES[code],
+    ...(recovered ? { recovered: true } : {}),
+    ...(backupPath === undefined ? {} : { backupPath }),
+  };
+  if (json) {
+    write(true, result, () => "");
+    return;
+  }
+  process.stderr.write(ui.errorLine(`[${code}] ${result.message}`));
+}
+
+function renderMemoryBundleExport(result: {
+  readonly bundlePath: string;
+  readonly scope: string;
+  readonly sourceFingerprint: string;
+  readonly counts: {
+    readonly memories: number;
+    readonly dailyFiles: number;
+    readonly graphEntities: number;
+  };
+  readonly pendingWork?: true;
+}): string {
+  return `${ui.banner("mono-agent memory", "export")}\n${ui.keyValue([
+    ["bundle", result.bundlePath],
+    ["scope", result.scope],
+    ["memories", String(result.counts.memories)],
+    ["daily files", String(result.counts.dailyFiles)],
+    ["entities", String(result.counts.graphEntities)],
+    ["source fingerprint", result.sourceFingerprint],
+    ...(result.pendingWork === true ? [["pending work", "yes"] as const] : []),
+  ])}\n`;
+}
+
+function renderMemoryBundleImport(result: {
+  readonly operation: string;
+  readonly status: string;
+  readonly planPath?: string;
+  readonly backupPath?: string;
+  readonly sourceFingerprint?: string;
+  readonly imported?: number;
+  readonly skipped?: number;
+  readonly identical?: number;
+  readonly counts?: { readonly newMemories: number; readonly conflictingMemories: number };
+  readonly derivedAssociationsAdded?: number;
+  readonly derivedAssociationsRemoved?: number;
+}): string {
+  return `${ui.banner("mono-agent memory", result.operation)}\n${ui.keyValue([
+    ["status", result.status],
+    ...(result.counts === undefined ? [] : [["new memories", String(result.counts.newMemories)] as const]),
+    ...(result.counts === undefined ? [] : [["conflicts", String(result.counts.conflictingMemories)] as const]),
+    ...(result.derivedAssociationsAdded === undefined
+      ? []
+      : [["derived associations +/-",
+          `${result.derivedAssociationsAdded}/${result.derivedAssociationsRemoved ?? 0}`] as const]),
+    ...(result.imported === undefined ? [] : [["imported", String(result.imported)] as const]),
+    ...(result.skipped === undefined ? [] : [["skipped", String(result.skipped)] as const]),
+    ...(result.identical === undefined ? [] : [["identical", String(result.identical)] as const]),
+    ...(result.planPath === undefined ? [] : [["plan", result.planPath] as const]),
+    ...(result.backupPath === undefined ? [] : [["backup", result.backupPath] as const]),
+    ...(result.sourceFingerprint === undefined ? [] : [["source fingerprint", result.sourceFingerprint] as const]),
+  ])}\n`;
 }
 
 async function runReplayAdoption(

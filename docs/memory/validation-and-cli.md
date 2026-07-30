@@ -86,6 +86,46 @@ If apply fails after the transaction record exists, the coordinator closes the i
 
 The app's startup and hourly artifact-retention sweep keeps the three newest forget backups and expires snapshots after 30 days. It covers root-bound managed siblings such as `.mono-agent/.memory-forget-backup-*` and, for conventional `.mono-agent/memory`, manual `.mono-agent/operator/forget-*` directories. The sweep shares the stopped-store maintenance lease, defers while recovery is pending, never follows symlinks, and inherits `artifacts.memoryRetention.dryRun`. Before deletion it atomically renames each selected directory to another reserved retention name, so an interrupted sweep leaves a claim that the next sweep can discover and finish. Copy any backup that must outlive this rollback window outside those reserved names.
 
+### Portable memory bundles: export and import
+
+`memory export` and `memory import` move a BuJo corpus between agents — for backup and machine migration, or to seed one agent from another. Both are built-in BuJo only.
+
+The bundle is a **directory**, not an archive, so no archive dependency enters the runtime; compress or copy it yourself. It contains `manifest.json` plus a `source/` tree shaped exactly like a memory root, holding only the canonical corpus: dated `daily/*.md` (including the supported root-legacy layout), `graph.jsonl`, and `.replay-projection-v1.json`. Managed generations, capture intake and outbox, and the derived `index.md`/`future-log.md` are never exported. `--include-extras` copies `audit/`, `monthly/`, and `legacy/` alongside for the operator; import never reads them, and `monthly/` in particular is excluded because a pending migrate decision replayed into another store would wedge its migration protocol.
+
+Because `source/` is root-shaped, verifying a bundle is literally "parse it as a memory root": the same canonical fingerprint and the same rebuild planner run against it unchanged.
+
+**Export does not require stopping the agent.** It takes no writer or maintenance lease and never opens SQLite. Every canonical read is identity-pinned and re-checked after reading, so a torn read is structurally impossible, and consistency is proven by fingerprinting the store before and after the copy *and* re-deriving the canonical fingerprint from the copied bytes. A racing write is retried up to three times before failing closed. Export refuses unreplayed durable work unless `--allow-pending` (which stamps `pendingWork` into the manifest), and refuses a destination inside the memory root.
+
+**Import merges.** Restoring into an empty store is simply the degenerate case, and importing a store's own bundle is a no-op. Memory ids are deduplicated by exact bullet bytes, which makes re-importing the same bundle idempotent. A *differing* id is a genuine conflict, never evidence of the same fact — capture ids are `sha256(runId)` plus an ordinal and the rest are ULIDs — so the default is `--on-conflict fail`; `skip` keeps this store's version and drops the incoming graph associations that described the other memory. Ids are never renamed, because an id is a foreign key from every graph association and all three replay entry kinds. Imported bullets always land in a dated `daily/YYYY-MM-DD.md` (or root-legacy `YYYY-MM-DD.md`); a non-dated name would index fine but could never afterwards be migrated or forgotten.
+
+Entity slugs collide by design. `--entity-conflict target` (the default) keeps this store's curated `name`/`type`/`summary` and reports what it discarded; `source` re-asserts the incoming record through the append-log fold so the earlier `createdAt` is preserved rather than regressing. Relations and associations are set-unioned, and association `provenance` is carried verbatim.
+
+Replay merging is delegated to the replay authority itself, so every lifecycle conflict already fails closed: a conflicting authority for the same key, a duplicate supersede destination, a terminal/supersede topology conflict, a supersede cycle that exists only after the union, thread fan-out above five, and the entry and byte caps.
+
+One consequence is easy to miss and is therefore measured and gated. The graph projection derives a `legacy-name-match` association for any memory that has no canonical association but whose text contains a unique entity name. Importing an entity can therefore attach it to memories you never imported — and importing a *second* entity whose normalized name collides with an existing one disables that whole name group, **removing** associations this store previously derived. Both are deterministic, so neither appears as a rebuild failure. `prepare` reports the added and removed counts, and any removal requires `--accept-derived-association-drift`.
+
+Run `apply` only after stopping the configured agent. It re-verifies the bundle, recomputes the merge, and requires the identical merge digest before touching anything, then makes an fsync-verified complete sibling backup. Canonical writes are ordered daily, then graph, then replay; replay is last because a published projection has no shrink path and a projection whose endpoints do not resolve makes the corpus permanently unrebuildable. A safe managed rebuild then re-embeds the whole corpus.
+
+**Embedding identity is advisory.** The rebuild re-derives every vector under *this* agent's configured provider, so a 768-dimension Ollama bundle imports cleanly into a 1536-dimension OpenAI agent. The manifest's `embeddingModel`/`dimension` are provenance only and never gate an import.
+
+Because import changes canonical sources, the post-import manifest advertises **no rollback generation** — exactly as after `forget apply`. The undo is `memory import restore --backup <dir>`, not `memory rollback`. Import backups are named `.<root>-import-backup-<digest>` and share the same retention sweep as forget backups: three newest, expired after 30 days.
+
+A canonical-only bundle is lossless for everything markdown owns and lossy for everything only SQLite held. Because import ends in a full rebuild, the first four rows below are reset for the **entire** destination corpus, not just the imported memories:
+
+| Not carried | Where it lived | Effect |
+| --- | --- | --- |
+| `accessCount`, `lastAccessedAt` | SQLite only | Reset to 0 / cleared |
+| `tags` | SQLite only | Emptied (nothing in the BuJo path sets it) |
+| `validFrom` | SQLite only; absent from the replay projection | Not reconstructable |
+| `source.session` | SQLite only, Journal path | Lost |
+| `content_hashes` | SQLite, Journal-only | Recomputed; must be empty for BuJo |
+| Vectors | SQLite | Re-embedded for the whole corpus |
+| `.capture-intake`, `.capture-outbox` | filesystem protocol | Not merged; both stores must be quiet |
+
+Preserved: id, type, status, text, salience, insight flag, `createdAt`, `dueAt`, `refs`, the `validTo`/`supersededBy`/`supersededAt` lifecycle and thread/supersedes/supports edges carried by the replay projection, and `collection`. Bullets are copied as their verbatim markdown blocks rather than re-serialized from records, which is why `refs` survives.
+
+Imported memories are not individually stamped with their origin: `source.file`/`source.line` are recomputed against the destination, and adding a bullet metadata key would be silently erased the first time anything rewrites that day's file. Keep the bundle's `manifest.json` if you need to prove provenance later.
+
 ### Strict provider-free health gate
 
 `mono-agent memory audit --strict --json` is the closed, provider-free health contract. It makes no embedding, chat-model, Ollama, LM Studio, OpenAI, or Supermemory request. For the built-in backend it takes a bounded, snapshot-coherent view of managed identity, SQLite integrity and metadata, FTS/vector coverage, canonical source parity (including BuJo's exact replay projection), rollback-source freshness, durable completed-turn intake, capture outbox, temporary artifacts, and the runtime snapshot. SQLite still requires the native modules built for the Node runtime that invokes the command; an unavailable native module reports `unknown` rather than leaking the loader error.
