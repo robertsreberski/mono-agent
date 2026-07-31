@@ -7,6 +7,7 @@ import type {
   AgentMessageSender,
   AgentPrecedingMessage,
   AgentReplyTarget,
+  AgentSurface,
   MemoryStore,
 } from "@mono-agent/agent-contracts";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
@@ -107,6 +108,8 @@ export interface AgentHarnessRequest {
   readonly sender?: AgentMessageSender;
   /** Untrusted background transcript. Model-visible for this turn only; never persisted. */
   readonly precedingMessages?: readonly AgentPrecedingMessage[];
+  /** Which surface this turn is on. Model-visible in full, `id` included. */
+  readonly surface?: AgentSurface;
   /** Host-owned physical delivery target. Never included in prompts or traces. */
   readonly replyTo?: AgentReplyTarget;
   /** Host-owned continuation synthesis controls. Never included in prompts. */

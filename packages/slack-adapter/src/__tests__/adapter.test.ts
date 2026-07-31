@@ -397,6 +397,116 @@ describe("SlackAdapter", () => {
     expect(captured?.text).toBe("ask @carol about #releases");
   });
 
+  it("tells the model which surface it is on, resolving the channel name", async () => {
+    const api = new FakeSlackApi();
+    api.conversationsInfo = async () => ({
+      ok: true as const,
+      channel: { name: "team-example", is_channel: true },
+    });
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      botUserIds: ["U0BOT"],
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "ok" };
+      }),
+    });
+
+    await adapter.handleEventCallback(appMention("<@U0BOT> where am I?", { channel: "C123" }));
+
+    expect(captured?.surface).toEqual({
+      kind: "channel",
+      name: "team-example",
+      id: "C123",
+      messageBudget: { maxChars: 3_800, overflow: "thread" },
+    });
+  });
+
+  it("classifies an app_mention from the channel-id prefix, since it carries no channel_type", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      botUserIds: ["U0BOT"],
+      // No conversations.info on this client, so kind must come from the id.
+      resolveChannelNames: false,
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "ok" };
+      }),
+    });
+
+    await adapter.handleEventCallback(appMention("<@U0BOT> hi", { channel: "C123" }));
+    expect(captured?.surface).toMatchObject({ kind: "channel", id: "C123" });
+    expect(captured?.surface?.name).toBeUndefined();
+
+    await adapter.handleEventCallback(
+      appMention("<@U0BOT> hi", { channel: "D999", eventId: "Ev-dm", ts: "173.000001" }),
+    );
+    expect(captured?.surface).toMatchObject({ kind: "dm", id: "D999" });
+  });
+
+  it("classifies a DM from the event's own channel_type", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      resolveChannelNames: false,
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "ok" };
+      }),
+    });
+
+    await adapter.handleEventCallback(directMessage("where am I?"));
+
+    expect(captured?.surface).toMatchObject({ kind: "dm", id: "D123" });
+  });
+
+  it("keeps the surface usable when conversations.info fails", async () => {
+    const api = new FakeSlackApi();
+    api.conversationsInfo = async () => { throw new Error("socket hang up"); };
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      botUserIds: ["U0BOT"],
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "ok" };
+      }),
+    });
+
+    await adapter.handleEventCallback(appMention("<@U0BOT> hi", { channel: "C123" }));
+
+    // The kind and id survive; only the name is lost.
+    expect(captured?.surface).toMatchObject({ kind: "channel", id: "C123" });
+    expect(captured?.surface?.name).toBeUndefined();
+  });
+
+  it("states the operator's configured per-message budget, not the default", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      resolveChannelNames: false,
+      stream: { maxMessageChars: 1_500 },
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "ok" };
+      }),
+    });
+
+    await adapter.handleEventCallback(directMessage("budget?"));
+
+    expect(captured?.surface?.messageBudget).toEqual({ maxChars: 1_500, overflow: "thread" });
+  });
+
   it("notify() runs a proactive turn on the target thread and posts the answer there", async () => {
     const api = new FakeSlackApi();
     let captured: AgentRequest | undefined;

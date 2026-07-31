@@ -79,6 +79,7 @@ export interface SlackAdapterStartOptions {
    * adapter; a missing scope degrades to an unnamed speaker.
    */
   readonly resolveUserNames?: boolean;
+  readonly resolveChannelNames?: boolean;
   /** Best-effort thread/channel turn context. Enabled by default; needs a `*:history` scope. */
   readonly threadContext?: SlackThreadContextOptions;
   readonly logger?: SlackAdapterStartLogger;
@@ -263,6 +264,9 @@ function buildAdapterOptions(
   }
   if (options.resolveUserNames !== undefined) {
     adapterOptions.resolveUserNames = options.resolveUserNames;
+  }
+  if (options.resolveChannelNames !== undefined) {
+    adapterOptions.resolveChannelNames = options.resolveChannelNames;
   }
   if (options.threadContext !== undefined) {
     adapterOptions.threadContext = options.threadContext;
