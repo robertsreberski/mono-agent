@@ -912,17 +912,31 @@ function registerSlackSendTool(
       const results: SlackChatPostMessageResult[] = [];
       const historyOutcomes: Array<DeliveryHistoryOutcome | undefined> = [];
       for (const chunk of chunks) {
-        const result: SlackChatPostMessageResult = await client.chatPostMessage(
-          {
-            channel: args.channel.trim(),
-            text: chunk,
-            ...(args.thread_ts === undefined ? {} : { thread_ts: args.thread_ts }),
-            mrkdwn,
-            ...(args.unfurl_links === undefined ? {} : { unfurl_links: args.unfurl_links }),
-            ...(args.unfurl_media === undefined ? {} : { unfurl_media: args.unfurl_media }),
-          },
-          { signal: extra.signal },
-        );
+        let result: SlackChatPostMessageResult;
+        try {
+          result = await client.chatPostMessage(
+            {
+              channel: args.channel.trim(),
+              text: chunk,
+              ...(args.thread_ts === undefined ? {} : { thread_ts: args.thread_ts }),
+              mrkdwn,
+              ...(args.unfurl_links === undefined ? {} : { unfurl_links: args.unfurl_links }),
+              ...(args.unfurl_media === undefined ? {} : { unfurl_media: args.unfurl_media }),
+            },
+            { signal: extra.signal },
+          );
+        } catch (error) {
+          // Chunks before this one are already visible in the channel. Throwing
+          // bare would tell the model only "it failed", and the obvious repair —
+          // send the whole thing again — would duplicate the confirmed prefix.
+          // So report the partial delivery explicitly and let it send only the
+          // remainder. (A stable per-chunk client_msg_id would let Slack dedupe a
+          // blind retry too; that is a larger contract change and not done here.)
+          if (results.length === 0) {
+            throw error;
+          }
+          return slackPartialSendResult(results, chunks, error, deliveryHistorySummary(historyOutcomes));
+        }
         results.push(result);
         const historyOutcome = await recordAdapterDeliveryHistory({
           settings: deliveryHistory,
@@ -982,6 +996,50 @@ function registerSlackSendTool(
       };
     },
   );
+}
+
+/**
+ * An oversized `SlackSendMessage` that got part-way through its chunks.
+ *
+ * `ok: false` with the confirmed chunks named, so the model can see exactly what
+ * the channel already shows and resend only the missing tail. Reporting this as a
+ * plain throw would invite a full resend and duplicate the visible prefix.
+ */
+function slackPartialSendResult(
+  delivered: readonly SlackChatPostMessageResult[],
+  chunks: readonly string[],
+  error: unknown,
+  history: DeliveryHistoryOutcome | undefined,
+): {
+  content: [{ type: "text"; text: string }];
+  isError: true;
+  structuredContent: Record<string, unknown>;
+} {
+  const first = delivered[0]!;
+  const remaining = chunks.length - delivered.length;
+  const message = [
+    `Partially sent: ${String(delivered.length)} of ${String(chunks.length)} Slack message parts reached`,
+    `${first.channel} starting at ${first.ts}, then delivery failed (${errorText(error)}).`,
+    `Those parts are already visible — send ONLY the remaining ${String(remaining)} part(s), never the whole message again.`,
+  ].join(" ");
+  return {
+    content: [{ type: "text", text: withDeliveryHistoryWarning(message, history) }],
+    isError: true,
+    structuredContent: {
+      ok: false,
+      partial: true,
+      channel: first.channel,
+      ts: first.ts,
+      chunkCount: chunks.length,
+      deliveredChunkCount: delivered.length,
+      chunks: delivered.map((result) => ({ channel: result.channel, ts: result.ts })),
+      ...(history === undefined ? {} : { history }),
+    },
+  };
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function registerTelegramSendTool(

@@ -33,6 +33,7 @@ type Recorded = RecordedPost | RecordedEdit | RecordedDelete;
  */
 class FakeTransport implements ChannelTransport {
   readonly maxMessageChars: number;
+  readonly splitsOversizedMessages: boolean;
   readonly calls: Recorded[] = [];
   activityCount = 0;
   private callCount = 0;
@@ -44,8 +45,10 @@ class FakeTransport implements ChannelTransport {
     maxMessageChars?: number;
     failures?: Record<number, ChannelSendOutcome>;
     renderMarkdown?: (text: string) => string;
+    splitsOversizedMessages?: boolean;
   }) {
     this.maxMessageChars = options?.maxMessageChars ?? 100;
+    this.splitsOversizedMessages = options?.splitsOversizedMessages ?? false;
     this.failures = new Map(
       Object.entries(options?.failures ?? {}).map(([k, v]) => [Number(k), v]),
     );
@@ -593,6 +596,59 @@ describe("ResilientMessageStream", () => {
     expect(overflowPosts.map((p) => p.continuesMessage)).toEqual(
       overflowPosts.map(() => ({ id: "m1" })),
     );
+  });
+
+  it("renders every overflow chunk, not just the head", async () => {
+    // Continuations posted raw would show the tail of an ordinary answer as
+    // unrendered markdown source.
+    const transport = new FakeTransport({
+      maxMessageChars: 40,
+      renderMarkdown: (text) => text.replaceAll("**", "*"),
+    });
+    const stream = new ResilientMessageStream({ transport, finalOnly: true, sleep: noSleep });
+    const head = "**bold head**".padEnd(30, ".");
+    const tail = "**bold tail**".padEnd(30, ".");
+
+    await stream.finish(`${head}\n\n${tail}`);
+
+    const posts = transport.calls.filter((c): c is RecordedPost => c.op === "post");
+    expect(posts.map((p) => p.text)).toEqual([
+      head.replaceAll("**", "*"),
+      tail.replaceAll("**", "*"),
+    ]);
+    expect(posts.every((p) => p.markdown)).toBe(true);
+  });
+
+  it("bounds every chunk by its RENDERED size, not its source size", async () => {
+    // Slack-style entity escaping expands the wire payload well past the source
+    // length; a chunk that "fits" before rendering can arrive oversized and be
+    // split by the channel anyway — the exact failure the budget exists to stop.
+    const transport = new FakeTransport({
+      maxMessageChars: 100,
+      renderMarkdown: (text) => text.replaceAll("&", "&amp;"),
+      splitsOversizedMessages: true,
+    });
+    const stream = new ResilientMessageStream({ transport, finalOnly: true, sleep: noSleep });
+
+    await stream.finish("&".repeat(400));
+
+    const posts = transport.calls.filter((c): c is RecordedPost => c.op === "post");
+    expect(posts.length).toBeGreaterThan(1);
+    for (const post of posts) {
+      expect(Array.from(post.text).length).toBeLessThanOrEqual(100);
+    }
+    // Nothing is dropped on the way.
+    expect(posts.map((p) => p.text).join("")).toBe("&amp;".repeat(400));
+  });
+
+  it("leaves chunking alone when rendering does not expand the text", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 40 });
+    const stream = new ResilientMessageStream({ transport, finalOnly: true, sleep: noSleep });
+
+    await stream.finish("x".repeat(95));
+
+    const posts = transport.calls.filter((c): c is RecordedPost => c.op === "post");
+    expect(posts.map((p) => p.text.length)).toEqual([40, 40, 15]);
   });
 
   it("splits a final answer on a paragraph boundary rather than mid-word", async () => {

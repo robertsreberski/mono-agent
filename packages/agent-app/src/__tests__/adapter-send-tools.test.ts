@@ -1521,6 +1521,75 @@ describe("adapter send tool posted-message indexing", () => {
     expect(await lookupProducingConversation(indexPath, "C1", "171.000100")).toBe("scheduled-scan");
   });
 
+  it("reports which chunks landed when a multi-part SlackSendMessage fails mid-way", async () => {
+    // Chunking at 3,800 makes a partial delivery routine rather than exotic. A
+    // bare throw would invite the model to resend everything and duplicate the
+    // prefix already visible in the channel.
+    const indexPath = resolvePostedMessageIndexPath(dir);
+    let posts = 0;
+    const server = await createAdapterSendToolsServer(
+      bothAdaptersSettings(),
+      {
+        slack: {
+          async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
+            posts += 1;
+            if (posts > 1) {
+              throw new Error("ratelimited");
+            }
+            return { ok: true, channel: params.channel, ts: "170.000100" };
+          },
+        },
+      },
+      { conversationId: "scheduled-scan#2026-06-22", indexPath },
+    );
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "SlackSendMessage",
+        arguments: { channel: "C1", text: `${"x".repeat(3_800)}tail`, mrkdwn: false },
+      });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        ok: false,
+        partial: true,
+        channel: "C1",
+        chunkCount: 2,
+        deliveredChunkCount: 1,
+        chunks: [{ channel: "C1", ts: "170.000100" }],
+      });
+      expect(String((result.content as { text: string }[])[0]?.text)).toContain(
+        "send ONLY the remaining 1 part(s)",
+      );
+    });
+
+    // The confirmed prefix stays indexed, so a reply in its thread still resolves.
+    expect(await lookupProducingConversation(indexPath, "C1", "170.000100")).toBe("scheduled-scan");
+  });
+
+  it("still throws when the very first SlackSendMessage chunk fails", async () => {
+    // Nothing is visible in the channel, so an ordinary error is the honest
+    // report and a full retry is the correct repair.
+    const server = await createAdapterSendToolsServer(
+      bothAdaptersSettings(),
+      {
+        slack: {
+          async chatPostMessage(): Promise<SlackChatPostMessageResult> {
+            throw new Error("channel_not_found");
+          },
+        },
+      },
+    );
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "SlackSendMessage",
+        arguments: { channel: "C1", text: "short" },
+      });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toBeUndefined();
+    });
+  });
+
   it("end-to-end: a scan's SlackSendMessage post lets a later in-thread reply resume the scan conversation", async () => {
     const indexPath = resolvePostedMessageIndexPath(dir);
 

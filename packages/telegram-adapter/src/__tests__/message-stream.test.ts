@@ -440,8 +440,10 @@ describe("TelegramMessageStream", () => {
       { chat_id: 99, message_id: 100, text: expectedChunks[0], parse_mode: "MarkdownV2" },
     ]);
     expect(api.sendMessageCalls[0]).toEqual({ chat_id: 99, text: "Thinking…" });
+    // Continuations render exactly like the head chunk. Posting them raw would
+    // show the tail of an ordinary answer as unrendered markdown source.
     expect(api.sendMessageCalls.slice(1)).toEqual(
-      expectedChunks.slice(1).map((text) => ({ chat_id: 99, text })),
+      expectedChunks.slice(1).map((text) => ({ chat_id: 99, text, parse_mode: "MarkdownV2" })),
     );
   });
 

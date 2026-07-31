@@ -390,6 +390,30 @@ describe("SlackMessageStream", () => {
     expect(api.postMessageCalls.map((call) => call.text.length)).toEqual([3_800, 101]);
   });
 
+  it("threads overflow under the ANSWER, not the tool ledger it replaced and deleted", async () => {
+    // A final-only turn with tool activity posts a status ledger, then posts the
+    // answer as a fresh message and DELETES the ledger. Threading the overflow
+    // under the stale ledger ref would target a deleted message.
+    const api = new FakeSlackApi();
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C1",
+      finalOnly: true,
+      editDebounceMs: 0,
+    });
+
+    await stream.event({ type: "tool_call_started", id: "t1", name: "WebFetch", arguments: {} });
+    const head = "a".repeat(3_000);
+    const tail = "b".repeat(1_500);
+    await stream.finish(`${head}\n\n${tail}`);
+
+    // 100 = the deleted ledger, 101 = the answer, 102 = the continuation.
+    expect(api.deleteCalls).toEqual([{ channel: "C1", ts: "100.000001" }]);
+    const answerPosts = api.postMessageCalls.filter((call) => call.text === head || call.text === tail);
+    expect(answerPosts.map((call) => call.text)).toEqual([head, tail]);
+    expect(answerPosts[1]?.thread_ts).toBe("101.000001");
+  });
+
   it("continues an overflow chunk in the thread under the head post", async () => {
     const api = new FakeSlackApi();
     const stream = new SlackMessageStream({
@@ -529,13 +553,14 @@ describe("SlackMessageStream", () => {
       thread_ts: "172.000001",
       mrkdwn: false,
     });
-    // The first final chunk edits the placeholder in place; overflow
-    // continuation chunks are posted as plain (mrkdwn: false) thread replies.
+    // The first final chunk edits the placeholder in place; overflow continuation
+    // chunks are posted as thread replies rendered exactly like it, so the tail
+    // of an answer is not shown as raw markdown source.
     expect(api.postMessageCalls[1]?.text).toHaveLength(32);
     expect(api.postMessageCalls[1]?.thread_ts).toBe("172.000001");
-    expect(api.postMessageCalls[1]?.mrkdwn).toBe(false);
+    expect(api.postMessageCalls[1]?.mrkdwn).toBe(true);
     expect(api.postMessageCalls[2]?.text).toHaveLength(6);
-    expect(api.postMessageCalls[2]?.mrkdwn).toBe(false);
+    expect(api.postMessageCalls[2]?.mrkdwn).toBe(true);
   });
 
   it("translates Markdown output to Slack mrkdwn for posts and updates", async () => {

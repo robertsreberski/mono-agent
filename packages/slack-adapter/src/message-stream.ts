@@ -167,6 +167,14 @@ export const SLACK_MAX_MESSAGE_CHARS = 40_000;
  */
 class SlackChannelTransport implements ChannelTransport {
   readonly maxMessageChars: number;
+  /**
+   * Slack accepts an over-long post and breaks it up itself, returning only the
+   * last fragment's ts — it never rejects, so there is no failure to fall back
+   * from. The stream must therefore fit the RENDERED text to the budget, which
+   * matters because `formatMarkdownForSlack` escapes `&`, `<`, and `>` into
+   * entities and can multiply an escape-heavy code block several times over.
+   */
+  readonly splitsOversizedMessages = true;
   private readonly api: SlackWebApi;
   private readonly channelId: SlackChannelId;
   private readonly threadTs: SlackMessageTs | undefined;
@@ -325,14 +333,16 @@ class SlackChannelTransport implements ChannelTransport {
     ref: MessageRef,
     text: string,
     options: { markdown: boolean; contentKind?: ChannelMessageContentKind },
-  ): Promise<void> {
+  ): Promise<MessageRef | void> {
     if (
       options.contentKind === "answer"
       && this.postFinalAnswerSeparately
       && this.abortSignal?.aborted !== true
     ) {
-      await this.post(text, options);
-      return;
+      // The answer becomes a NEW message and `ref`'s tool ledger is deleted, so
+      // report the replacement: it is the live message any continuation belongs
+      // under, and `ref` is about to be a tombstone.
+      return await this.post(text, options);
     }
     await this.api.chatUpdate({
       channel: this.channelId,
