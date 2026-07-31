@@ -168,6 +168,13 @@ interface ConfiguredAgentInternalHooks {
   readonly onRunArtifactCommitted?: RunArtifactCommitHook;
   /** App-only read decoration around the configured canonical history store. */
   readonly wrapHistoryStore?: (store: ConversationHistoryStore) => ConversationHistoryStore;
+  /**
+   * Overrides `runtime.session.rollover` for THIS channel's responder. The app
+   * builds one responder per channel, and a channel whose conversations already
+   * carry an explicit user-owned session boundary (the console's threads) must
+   * not have a second one imposed by the calendar.
+   */
+  readonly sessionRollover?: MonoAgentConfig["runtime"]["session"]["rollover"];
 }
 
 /**
@@ -923,9 +930,10 @@ async function createConfiguredAgentResponderInternal(
   internalHooks: ConfiguredAgentInternalHooks = {},
 ): Promise<AgentResponder> {
   const session = options.config.runtime.session;
+  const rollover = internalHooks.sessionRollover ?? session.rollover;
   return createAgentResponder({
     harness: await createConfiguredAgentHarnessInternal(options, internalHooks),
-    ...(session.rollover === undefined ? {} : { rollover: session.rollover }),
+    ...(rollover === undefined ? {} : { rollover }),
     ...(session.rolloverTimezone === undefined ? {} : { rolloverTimezone: session.rolloverTimezone }),
     ...(session.rolloverNotice === undefined ? {} : { rolloverNotice: session.rolloverNotice }),
     ...(options.now === undefined ? {} : { now: options.now }),

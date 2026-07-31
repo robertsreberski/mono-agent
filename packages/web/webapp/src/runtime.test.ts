@@ -133,10 +133,146 @@ describe("convertWebMessage", () => {
 
     if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
     expect(converted.content.map((part) => part.type)).toEqual([
-      "text",
+      "data-note",
       "data-subagent",
       "text",
     ]);
+  });
+
+  it("folds a settled turn into one run of activity over the answer", () => {
+    const converted = convertWebMessage(
+      message({
+        role: "assistant",
+        status: "complete",
+        parts: [
+          { type: "reasoning", text: "Planning" },
+          { type: "text", text: "Let me look at the inbox." },
+          { type: "tool-call", toolCallId: "t1", toolName: "Gmail", args: {}, status: "complete" },
+          { type: "text", text: "Now the calendar." },
+          { type: "tool-call", toolCallId: "t2", toolName: "Calendar", args: {}, status: "complete" },
+          { type: "text", text: "Here is the summary." },
+        ],
+      }),
+    );
+
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    // Everything before the answer is adjacent, so the renderer coalesces it
+    // into exactly one Activity disclosure instead of four interleaved ones.
+    expect(converted.content.map((part) => part.type)).toEqual([
+      "reasoning",
+      "data-note",
+      "tool-call",
+      "data-note",
+      "tool-call",
+      "text",
+    ]);
+    expect(converted.content.at(0)).toEqual({ type: "reasoning", text: "Planning" });
+    expect(converted.content.at(1)).toEqual({ type: "data-note", data: { text: "Let me look at the inbox." } });
+    expect(converted.content.at(-1)).toEqual({ type: "text", text: "Here is the summary." });
+  });
+
+  it("leaves a running turn interleaved, because the answer is not written yet", () => {
+    const converted = convertWebMessage(
+      message({
+        role: "assistant",
+        status: "running",
+        parts: [
+          { type: "text", text: "Let me look at the inbox." },
+          { type: "tool-call", toolCallId: "t1", toolName: "Gmail", args: {}, status: "running" },
+        ],
+      }),
+    );
+
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content.map((part) => part.type)).toEqual(["text", "tool-call"]);
+  });
+
+  it("treats a turn cancelled mid-tool as all activity rather than inventing an answer", () => {
+    const converted = convertWebMessage(
+      message({
+        role: "assistant",
+        status: "cancelled",
+        parts: [
+          { type: "reasoning", text: "Planning" },
+          { type: "tool-call", toolCallId: "t1", toolName: "Gmail", args: {}, status: "running" },
+        ],
+      }),
+    );
+
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content.map((part) => part.type)).toEqual(["reasoning", "tool-call"]);
+  });
+
+  it.each(["cancelled", "failed", "interrupted"] as const)(
+    "keeps a %s turn in arrival order, because its last prose is not an answer",
+    (status) => {
+      const converted = convertWebMessage(
+        message({
+          role: "assistant",
+          status,
+          parts: [
+            { type: "text", text: "Let me look at the inbox." },
+            { type: "tool-call", toolCallId: "t1", toolName: "Gmail", args: {}, status: "running" },
+          ],
+        }),
+      );
+
+      // A turn that never reached a final answer has only narration; hoisting
+      // the tool above it would invert the chronology and dress the narration
+      // up as the answer.
+      if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+      expect(converted.content.map((part) => part.type)).toEqual(["text", "tool-call"]);
+    },
+  );
+
+  it("keeps a run failure after the answer instead of letting it split the activity log", () => {
+    const converted = convertWebMessage(
+      message({
+        role: "assistant",
+        status: "complete",
+        parts: [
+          { type: "tool-call", toolCallId: "t1", toolName: "Gmail", args: {}, status: "failed" },
+          { type: "error", code: "provider_unavailable", message: "The agent run failed." },
+          { type: "text", text: "I could not reach Gmail." },
+        ],
+      }),
+    );
+
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content.map((part) => part.type)).toEqual([
+      "tool-call",
+      "text",
+      "data-error",
+    ]);
+  });
+
+  it("drops blank interim prose rather than folding an empty note into the log", () => {
+    const converted = convertWebMessage(
+      message({
+        role: "assistant",
+        status: "complete",
+        parts: [
+          { type: "text", text: "  \n " },
+          { type: "tool-call", toolCallId: "t1", toolName: "Gmail", args: {}, status: "complete" },
+          { type: "text", text: "Done." },
+        ],
+      }),
+    );
+
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content.map((part) => part.type)).toEqual(["tool-call", "text"]);
+  });
+
+  it("keeps a settled user message exactly as stored", () => {
+    const converted = convertWebMessage(
+      message({
+        role: "user",
+        status: "complete",
+        parts: [{ type: "text", text: "Go ahead with group A." }],
+      }),
+    );
+
+    expect(converted.content).toEqual([{ type: "text", text: "Go ahead with group A." }]);
   });
 
   it("skips a part type this bundle does not know instead of corrupting the transcript", () => {

@@ -39,8 +39,12 @@ const ACTIVITY_GROUP_BY_TYPE = groupPartByType({
   "standalone-tool-call": [] as const,
 });
 
-/** Named data parts that are user-visible activity rather than diagnostics. */
-const ACTIVITY_DATA_PARTS = new Set(["context-compaction", "subagent"]);
+/**
+ * Named data parts that are user-visible activity rather than diagnostics.
+ * `note` is the prose a settled turn wrote between its tool calls: working-out,
+ * not the answer, so it belongs in the log with the rows it narrates.
+ */
+const ACTIVITY_DATA_PARTS = new Set(["context-compaction", "subagent", "note"]);
 
 export const ACTIVITY_GROUP_BY: typeof ACTIVITY_GROUP_BY_TYPE = (part, context) =>
   part.type === "data" && ACTIVITY_DATA_PARTS.has(part.name)

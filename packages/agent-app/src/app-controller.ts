@@ -538,7 +538,7 @@ export class MonoAgentAppController implements MonoAgentApp {
 
   async stopChannel(id: ChannelId, reason: string): Promise<void> { return channelsOperations.stopChannel(this, id, reason); }
 
-  async buildResponder(coreConfig: MonoAgentConfig): Promise<AgentResponder> { return responderOperations.buildResponder(this, coreConfig); }
+  async buildResponder(coreConfig: MonoAgentConfig, channelId?: ChannelId): Promise<AgentResponder> { return responderOperations.buildResponder(this, coreConfig, channelId); }
 
   /**
    * Per-request extension that applies a cron/webhook/tui per-trigger model +
