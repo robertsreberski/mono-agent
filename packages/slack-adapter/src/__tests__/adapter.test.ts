@@ -3041,6 +3041,39 @@ describe("SlackAdapter posted-message linkage", () => {
     expect(recordCalls).toEqual([]);
   });
 
+  it("anchors a chunked verbatim card on its head post, with the rest in that thread", async () => {
+    // Regression for the Slack server-side split: one oversized chat.postMessage
+    // returned only the TAIL fragment's ts, so the index pointed at an orphan and
+    // a reply in the visible head's thread could not resolve the conversation.
+    const api = new FakeSlackApi();
+    const recordCalls: Array<[string, string, string]> = [];
+    const verbatim: Array<[string, string]> = [];
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: {
+        respond: async () => ({ text: "unused" }),
+        deliverVerbatim: async (conversationId, text) => { verbatim.push([conversationId, text]); },
+      },
+      recordPostedMessage: (channelId, ts, conversationId) => {
+        recordCalls.push([channelId, ts, conversationId]);
+      },
+    });
+
+    const head = "a".repeat(3_000);
+    const tail = "b".repeat(1_500);
+    await adapter.notify("C1", undefined, `${head}\n\n${tail}`, { verbatim: true });
+
+    // Two posts, chosen by the adapter at the paragraph break.
+    expect(api.postMessageCalls.map((call) => call.text)).toEqual([head, tail]);
+    // The continuation replies under the head instead of becoming a sibling card.
+    expect(api.postMessageCalls[0]?.thread_ts).toBeUndefined();
+    expect(api.postMessageCalls[1]?.thread_ts).toBe("200.000001");
+    // Exactly one index entry, on the HEAD ts — not the last fragment.
+    expect(recordCalls).toEqual([["C1", "200.000001", "slack:C1:200.000001"]]);
+    expect(verbatim).toEqual([["slack:C1:200.000001", `${head}\n\n${tail}`]]);
+  });
+
   it("gives each top-level verbatim post its own conversation so two cards never share one", async () => {
     const api = new FakeSlackApi();
     const recordCalls: Array<[string, string, string]> = [];

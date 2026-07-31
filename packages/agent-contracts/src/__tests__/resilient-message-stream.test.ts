@@ -12,6 +12,8 @@ interface RecordedPost {
   readonly op: "post";
   readonly text: string;
   readonly markdown: boolean;
+  /** Recorded only when the stream asked to continue an earlier message. */
+  readonly continuesMessage?: MessageRef;
 }
 interface RecordedEdit {
   readonly op: "edit";
@@ -62,9 +64,17 @@ class FakeTransport implements ChannelTransport {
     }
   }
 
-  async post(text: string, options: { markdown: boolean }): Promise<MessageRef> {
+  async post(
+    text: string,
+    options: { markdown: boolean; continuesMessage?: MessageRef },
+  ): Promise<MessageRef> {
     this.maybeThrow();
-    this.calls.push({ op: "post", text, markdown: options.markdown });
+    this.calls.push({
+      op: "post",
+      text,
+      markdown: options.markdown,
+      ...(options.continuesMessage === undefined ? {} : { continuesMessage: options.continuesMessage }),
+    });
     this.nextId += 1;
     return { id: `m${this.nextId}` };
   }
@@ -577,6 +587,24 @@ describe("ResilientMessageStream", () => {
       (p) => p.text.includes("x"),
     );
     expect(overflowPosts.length).toBeGreaterThanOrEqual(2);
+    // Every chunk continues the HEAD message — the streamed message `m1` that
+    // the first chunk was edited into — and not the chunk before it, so a
+    // threaded channel produces one card plus a flat thread rather than a chain.
+    expect(overflowPosts.map((p) => p.continuesMessage)).toEqual(
+      overflowPosts.map(() => ({ id: "m1" })),
+    );
+  });
+
+  it("splits a final answer on a paragraph boundary rather than mid-word", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 40 });
+    const stream = new ResilientMessageStream({ transport, finalOnly: true, sleep: noSleep });
+    const head = "first paragraph".padEnd(30, ".");
+    const tail = "second paragraph".padEnd(30, ".");
+
+    await stream.finish(`${head}\n\n${tail}`);
+
+    const posts = transport.calls.filter((c): c is RecordedPost => c.op === "post");
+    expect(posts.map((p) => p.text)).toEqual([head, tail]);
   });
 
   it("fails final delivery when an overflow chunk cannot be posted", async () => {

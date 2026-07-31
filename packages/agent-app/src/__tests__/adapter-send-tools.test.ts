@@ -1461,7 +1461,7 @@ describe("adapter send tool posted-message indexing", () => {
     expect(await lookupProducingConversation(indexPath, "C1", "170.000100")).toBe("scheduled-scan");
   });
 
-  it("splits SlackSendMessage at Slack's 40,000-char limit and indexes every posted chunk", async () => {
+  it("splits SlackSendMessage at the 3,800-char budget and indexes every posted chunk", async () => {
     const indexPath = resolvePostedMessageIndexPath(dir);
     const postCalls: SlackChatPostMessageParams[] = [];
     let nextTs = 170;
@@ -1477,7 +1477,10 @@ describe("adapter send tool posted-message indexing", () => {
       },
       { conversationId: "scheduled-scan#2026-06-22", indexPath },
     );
-    const text = `${"x".repeat(40_000)}tail`;
+    // Chunking below Slack's 40,000-char truncation ceiling is deliberate: at the
+    // ceiling Slack breaks the post itself and returns only the last fragment's
+    // ts, which would leave the head message out of the index entirely.
+    const text = `${"x".repeat(3_800)}tail`;
 
     await withMcpClient(server, async (client) => {
       const result = await client.callTool({
@@ -1503,7 +1506,7 @@ describe("adapter send tool posted-message indexing", () => {
       });
     });
 
-    expect(postCalls.map((call) => call.text.length)).toEqual([40_000, 4]);
+    expect(postCalls.map((call) => call.text.length)).toEqual([3_800, 4]);
     expect(
       postCalls.every(
         (call) =>

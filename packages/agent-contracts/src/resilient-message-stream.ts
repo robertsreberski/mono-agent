@@ -25,7 +25,7 @@ import {
   DEFAULT_MAX_MESSAGE_CHARS,
   buildStreamingTailPreview,
   normalizeTrailing,
-  splitTextByCodePoints,
+  splitTextForChat,
 } from "./stream-text.js";
 import {
   formatProviderStatusLine,
@@ -64,8 +64,23 @@ export type ChannelSendOutcome =
 export interface ChannelTransport {
   /** Per-message character budget for this channel. */
   readonly maxMessageChars: number;
-  /** Post a new message and return a ref usable by {@link edit}. */
-  post(text: string, options: { markdown: boolean; contentKind?: ChannelMessageContentKind }): Promise<MessageRef>;
+  /**
+   * Post a new message and return a ref usable by {@link edit}.
+   *
+   * `continuesMessage` marks an overflow chunk of an answer whose head already
+   * landed at that ref. A channel with threads should attach the chunk to that
+   * message so one answer stays one card plus its thread — and so the head, not
+   * the last fragment, is what a later reply threads off. Channels without
+   * threads ignore it and post a sibling message.
+   */
+  post(
+    text: string,
+    options: {
+      markdown: boolean;
+      contentKind?: ChannelMessageContentKind;
+      continuesMessage?: MessageRef;
+    },
+  ): Promise<MessageRef>;
   /** Edit a previously posted message in place. */
   edit(
     ref: MessageRef,
@@ -535,7 +550,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     await this.awaitInFlightEdit();
 
     const finalMessageText = normalizeTrailing(this.currentText, EMPTY_FINAL_TEXT);
-    const chunks = splitTextByCodePoints(finalMessageText, this.maxMessageChars);
+    const chunks = splitTextForChat(finalMessageText, this.maxMessageChars);
     const [firstChunk, ...remainingChunks] = chunks;
 
     // Final-only mode posts the answer for the first time at finish(): deliver it
@@ -561,8 +576,11 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
       // Do not spray overflow continuation messages onto a cancelled run.
       return;
     }
+    // Every overflow chunk continues the HEAD post, not the previous chunk, so a
+    // threaded channel produces one card plus a flat thread rather than a chain.
+    const head = this.sentMessage;
     for (const chunk of remainingChunks) {
-      await this.sendOverflowChunk(chunk);
+      await this.sendOverflowChunk(chunk, head);
     }
   }
 
@@ -838,14 +856,18 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
    * chunk has landed a later failure is necessarily ambiguous to the caller;
    * silently accepting it would falsely acknowledge a truncated answer.
    */
-  private async sendOverflowChunk(chunk: string): Promise<void> {
+  private async sendOverflowChunk(chunk: string, continuesMessage: MessageRef | undefined): Promise<void> {
     const normalized = normalizeTrailing(chunk, EMPTY_FINAL_TEXT);
     const maxAttempts = this.maxSendRetries + 1;
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        await this.transport.post(normalized, { markdown: false, contentKind: "answer" });
+        await this.transport.post(normalized, {
+          markdown: false,
+          contentKind: "answer",
+          ...(continuesMessage === undefined ? {} : { continuesMessage }),
+        });
         return;
       } catch (error) {
         lastError = error;

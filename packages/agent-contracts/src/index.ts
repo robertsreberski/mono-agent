@@ -644,6 +644,7 @@ export {
   buildStreamingTailPreview,
   normalizeTrailing,
   splitTextByCodePoints,
+  splitTextForChat,
 } from "./stream-text.js";
 export {
   formatLiveInputActivityLine,

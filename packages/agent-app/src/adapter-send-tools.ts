@@ -5,7 +5,7 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { splitTextByCodePoints } from "@mono-agent/agent-contracts";
+import { DEFAULT_MAX_MESSAGE_CHARS, splitTextForChat } from "@mono-agent/agent-contracts";
 import { ALLOW_ALL_TOOLS } from "@mono-agent/config";
 import type {
   SlackChatPostMessageResult,
@@ -32,7 +32,15 @@ const loadSlackModule = async (): Promise<SlackAdapterModule> =>
   (slackModule ??= await import("@mono-agent/slack-adapter"));
 const loadTelegramModule = async (): Promise<TelegramAdapterModule> =>
   (telegramModule ??= await import("@mono-agent/telegram-adapter"));
-const SLACK_SEND_MESSAGE_MAX_CHARS = 40_000;
+/**
+ * Per-post budget for `SlackSendMessage`. Deliberately the shared substrate
+ * budget rather than Slack's 40,000-character truncation ceiling: well below the
+ * ceiling Slack silently breaks a long post into several messages of its own
+ * and returns only the LAST fragment's `ts`, which would leave the head message
+ * absent from the posted-message index and unable to resolve a reply in its
+ * thread. Chunking here keeps the boundary — and the indexed ids — ours.
+ */
+const SLACK_SEND_MESSAGE_MAX_CHARS = DEFAULT_MAX_MESSAGE_CHARS;
 /** Keep cancellation responsive even when the loopback bridge is wedged. */
 const ASK_BRIDGE_CLEANUP_TIMEOUT_MS = 1_000;
 type TelegramSendToolName = "TelegramSendMessage" | "TelegramSendFile";
@@ -900,7 +908,7 @@ function registerSlackSendTool(
       assertSlackChannelAllowed(settings, args.channel);
       const mrkdwn = args.mrkdwn ?? true;
       const text = mrkdwn ? formatMarkdownForSlack(args.text) : args.text;
-      const chunks = splitTextByCodePoints(text, SLACK_SEND_MESSAGE_MAX_CHARS);
+      const chunks = splitTextForChat(text, SLACK_SEND_MESSAGE_MAX_CHARS);
       const results: SlackChatPostMessageResult[] = [];
       const historyOutcomes: Array<DeliveryHistoryOutcome | undefined> = [];
       for (const chunk of chunks) {

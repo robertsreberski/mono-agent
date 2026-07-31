@@ -1,5 +1,6 @@
 import {
   ChannelDeliveryError,
+  DEFAULT_MAX_MESSAGE_CHARS,
   ResilientMessageStream,
 } from "@mono-agent/agent-contracts";
 import { createHash } from "node:crypto";
@@ -136,6 +137,24 @@ export type SlackSendOutcome =
 
 const DEFAULT_INITIAL_STATUS_TEXT = "Thinking...";
 const DEFAULT_ASSISTANT_STATUS_TEXT = "is thinking…";
+/**
+ * Slack's hard TRUNCATION ceiling for `chat.postMessage` text — the point past
+ * which Slack discards characters. It is NOT a usable message size and is not
+ * the transport default: Slack documents 4,000 characters as the practical limit
+ * and, well below the ceiling, silently breaks a long post into several messages
+ * of its own choosing, returning only the LAST fragment's `ts`. That loses the
+ * adapter's control of where the text breaks and misanchors the posted-message
+ * index on the orphaned tail.
+ *
+ * So this survives only as the upper bound for an operator-supplied override.
+ * The default is {@link DEFAULT_MAX_MESSAGE_CHARS}, comfortably under the zone
+ * where Slack starts splitting. Slack documents no exact split threshold ("may
+ * be broken into multiple messages"), so the margin is deliberate rather than
+ * tuned to an observed boundary.
+ *
+ * @see https://docs.slack.dev/reference/methods/chat.postMessage
+ * @see https://docs.slack.dev/changelog/2018-truncating-really-long-messages
+ */
 export const SLACK_MAX_MESSAGE_CHARS = 40_000;
 
 /**
@@ -238,19 +257,26 @@ class SlackChannelTransport implements ChannelTransport {
 
   async post(
     text: string,
-    options: { markdown: boolean; contentKind?: ChannelMessageContentKind },
+    options: {
+      markdown: boolean;
+      contentKind?: ChannelMessageContentKind;
+      continuesMessage?: MessageRef;
+    },
   ): Promise<MessageRef> {
     this.warnIfSilentDeliveryIsUnsupported();
     const clientMsgId = this.clientMsgId === undefined
       ? undefined
       : slackPostClientMessageId(this.clientMsgId, this.postIndex);
     const sent = await this.api.chatPostMessage(
-      this.withThread({
-        channel: this.channelId,
-        text,
-        mrkdwn: options.markdown,
-        ...(clientMsgId === undefined ? {} : { client_msg_id: clientMsgId }),
-      }),
+      this.withThread(
+        {
+          channel: this.channelId,
+          text,
+          mrkdwn: options.markdown,
+          ...(clientMsgId === undefined ? {} : { client_msg_id: clientMsgId }),
+        },
+        options.continuesMessage,
+      ),
     );
     this.postIndex += 1;
     // Use `sent` (typed SlackChatPostMessageResult) rather than the transport-agnostic
@@ -352,13 +378,25 @@ class SlackChannelTransport implements ChannelTransport {
     }
   }
 
+  /**
+   * Attach the post to a thread when one applies.
+   *
+   * The stream's own `threadTs` always wins: a turn already answering inside a
+   * thread must stay in it, and Slack has no nested threads to open anyway.
+   * Otherwise a `continuesMessage` — an overflow chunk of an answer whose head
+   * opened this thread — replies under that head, so one answer reads as one
+   * top-level card plus its thread instead of a run of sibling posts, and the
+   * head is what a later reply threads off.
+   */
   private withThread<T extends { thread_ts?: SlackMessageTs }>(
     params: Omit<T, "thread_ts">,
+    continuesMessage?: MessageRef,
   ): T {
-    if (this.threadTs === undefined) {
+    const threadTs = this.threadTs ?? threadTsFromMessageRef(continuesMessage);
+    if (threadTs === undefined) {
       return params as T;
     }
-    return { ...params, thread_ts: this.threadTs } as T;
+    return { ...params, thread_ts: threadTs } as T;
   }
 
   private async dismissTransientStatus(): Promise<void> {
@@ -396,6 +434,38 @@ function slackMessageRef(message: SlackChatPostMessageResult): MessageRef {
 }
 
 /**
+ * The per-message budget this stream chunks to. Defaults to the shared substrate
+ * budget rather than Slack's truncation ceiling — see
+ * {@link SLACK_MAX_MESSAGE_CHARS} for why posting up to the ceiling hands the
+ * message boundary to Slack. An operator may tune it, but not above the ceiling,
+ * where Slack would discard the excess outright.
+ */
+function resolveSlackMaxMessageChars(configured: number | undefined): number {
+  if (configured === undefined) {
+    return DEFAULT_MAX_MESSAGE_CHARS;
+  }
+  if (!Number.isInteger(configured) || configured < 32) {
+    throw new RangeError("maxMessageChars must be an integer of at least 32.");
+  }
+  if (configured > SLACK_MAX_MESSAGE_CHARS) {
+    throw new RangeError(
+      `maxMessageChars must not exceed Slack's ${String(SLACK_MAX_MESSAGE_CHARS)}-character truncation limit.`,
+    );
+  }
+  return configured;
+}
+
+/**
+ * The `ts` to thread under, or undefined when the ref carries none. A blank id
+ * is treated as absent: `thread_ts: ""` is rejected by Slack and would fail an
+ * overflow chunk whose head is already visible in the channel.
+ */
+function threadTsFromMessageRef(ref: MessageRef | undefined): SlackMessageTs | undefined {
+  const ts = ref?.id;
+  return ts !== undefined && ts.length > 0 ? ts : undefined;
+}
+
+/**
  * Thin wrapper over the shared {@link ResilientMessageStream}. It builds a
  * {@link SlackChannelTransport} and delegates the streaming/resilience FSM,
  * preserving the adapter's public surface: the `status/append/replace/event/
@@ -408,7 +478,7 @@ export class SlackMessageStream implements AgentMessageStream {
   private readonly finalOnly: boolean;
 
   constructor(options: SlackMessageStreamOptions) {
-    const maxMessageChars = options.maxMessageChars ?? SLACK_MAX_MESSAGE_CHARS;
+    const maxMessageChars = resolveSlackMaxMessageChars(options.maxMessageChars);
     this.finalOnly = options.finalOnly ?? false;
     this.transport = new SlackChannelTransport({
       api: options.api,
