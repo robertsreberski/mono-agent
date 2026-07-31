@@ -253,6 +253,38 @@ Note that the name is durable: it becomes the stored conversation turn's speaker
 label and the memory-capture label, so enabling this changes what later recalls
 surface, not only the current prompt.
 
+### Channel names
+
+Every turn also tells the agent WHICH surface it is on: the kind (`dm`,
+`channel`, or `group`), the surface's id, and — with `resolveChannelNames` on
+(the default) — its name, resolved through `conversations.info`. The Session
+block additionally states the per-message character budget and that a longer
+answer continues in the thread.
+
+Kind resolution falls back in descending authority: `conversations.info`
+(`is_im`/`is_mpim`), the event's `channel_type`, then the channel-id prefix. The
+prefix fallback is what covers `app_mention`, which carries no `channel_type`.
+
+Requires `channels:read` (public) / `groups:read` (private).
+`channel-directory.ts` mirrors `user-directory.ts`: 200 entries for 30 minutes,
+5-minute negative TTL, never rejects, and latches off permanently on
+`missing_scope`. Every failure leaves the surface named by kind and id.
+
+Unlike a speaker id, the surface id IS model-visible — it is what disambiguates
+the surface when no name resolves. The thread ts, the `replyTo` conversation id,
+and the platform user id all remain host-only. Note the interaction with
+`SlackSendMessage`: that tool takes a raw channel id, so a deployment running it
+with `allowAllChannels` can post to any channel id the model has seen. An
+explicit channel allowlist still bounds delivery.
+
+### Bare mentions
+
+Mentioning the app with no other text starts an ordinary turn instead of being
+refused. The adapter substitutes `messages.bareMentionPrompt`, which tells the
+agent to work the request out from the conversation it was pulled into. A message
+that carried files whose attachments were all skipped is unchanged and still
+receives `messages.unsupportedText`.
+
 ### Silent-delivery limitation
 
 Programmatic proactive delivery accepts `silent: true` in both

@@ -163,6 +163,8 @@ AgentResponseCancelledErrorOptions
 AgentResponseMetadata
 AgentStreamEvent
 AgentStreamWireFrame
+AgentSurface
+AgentSurfaceMessageBudget
 BoundedHttpResponseWriter
 BoundedHttpResponseWriterOptions
 BufferedMessageStream
