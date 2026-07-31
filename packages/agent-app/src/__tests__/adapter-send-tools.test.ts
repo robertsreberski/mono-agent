@@ -1461,7 +1461,7 @@ describe("adapter send tool posted-message indexing", () => {
     expect(await lookupProducingConversation(indexPath, "C1", "170.000100")).toBe("scheduled-scan");
   });
 
-  it("splits SlackSendMessage at Slack's 40,000-char limit and indexes every posted chunk", async () => {
+  it("splits SlackSendMessage at the 3,800-char budget and indexes every posted chunk", async () => {
     const indexPath = resolvePostedMessageIndexPath(dir);
     const postCalls: SlackChatPostMessageParams[] = [];
     let nextTs = 170;
@@ -1477,7 +1477,10 @@ describe("adapter send tool posted-message indexing", () => {
       },
       { conversationId: "scheduled-scan#2026-06-22", indexPath },
     );
-    const text = `${"x".repeat(40_000)}tail`;
+    // Chunking below Slack's 40,000-char truncation ceiling is deliberate: at the
+    // ceiling Slack breaks the post itself and returns only the last fragment's
+    // ts, which would leave the head message out of the index entirely.
+    const text = `${"x".repeat(3_800)}tail`;
 
     await withMcpClient(server, async (client) => {
       const result = await client.callTool({
@@ -1503,7 +1506,7 @@ describe("adapter send tool posted-message indexing", () => {
       });
     });
 
-    expect(postCalls.map((call) => call.text.length)).toEqual([40_000, 4]);
+    expect(postCalls.map((call) => call.text.length)).toEqual([3_800, 4]);
     expect(
       postCalls.every(
         (call) =>
@@ -1516,6 +1519,79 @@ describe("adapter send tool posted-message indexing", () => {
     ).toBe(true);
     expect(await lookupProducingConversation(indexPath, "C1", "170.000100")).toBe("scheduled-scan");
     expect(await lookupProducingConversation(indexPath, "C1", "171.000100")).toBe("scheduled-scan");
+  });
+
+  it("reports which chunks landed when a multi-part SlackSendMessage fails mid-way", async () => {
+    // Chunking at 3,800 makes a partial delivery routine rather than exotic. A
+    // bare throw would invite the model to resend everything and duplicate the
+    // prefix already visible in the channel.
+    const indexPath = resolvePostedMessageIndexPath(dir);
+    let posts = 0;
+    const server = await createAdapterSendToolsServer(
+      bothAdaptersSettings(),
+      {
+        slack: {
+          async chatPostMessage(params: SlackChatPostMessageParams): Promise<SlackChatPostMessageResult> {
+            posts += 1;
+            if (posts > 1) {
+              throw new Error("ratelimited");
+            }
+            return { ok: true, channel: params.channel, ts: "170.000100" };
+          },
+        },
+      },
+      { conversationId: "scheduled-scan#2026-06-22", indexPath },
+    );
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "SlackSendMessage",
+        arguments: { channel: "C1", text: `${"x".repeat(3_800)}tail`, mrkdwn: false },
+      });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        ok: false,
+        partial: true,
+        channel: "C1",
+        chunkCount: 2,
+        deliveredChunkCount: 1,
+        chunks: [{ channel: "C1", ts: "170.000100" }],
+        disposition: "unknown",
+        unconfirmedChunkIndex: 1,
+      });
+      // The failed part is ambiguous, not known-undelivered — telling the model
+      // otherwise invites a resend that duplicates an accepted-but-lost post.
+      const text = String((result.content as { text: string }[])[0]?.text);
+      expect(text).toContain("UNKNOWN outcome");
+      expect(text).toContain("Never resend the confirmed parts");
+    });
+
+    // The confirmed prefix stays indexed, so a reply in its thread still resolves.
+    expect(await lookupProducingConversation(indexPath, "C1", "170.000100")).toBe("scheduled-scan");
+  });
+
+  it("still throws when the very first SlackSendMessage chunk fails", async () => {
+    // Nothing is visible in the channel, so an ordinary error is the honest
+    // report and a full retry is the correct repair.
+    const server = await createAdapterSendToolsServer(
+      bothAdaptersSettings(),
+      {
+        slack: {
+          async chatPostMessage(): Promise<SlackChatPostMessageResult> {
+            throw new Error("channel_not_found");
+          },
+        },
+      },
+    );
+
+    await withMcpClient(server, async (client) => {
+      const result = await client.callTool({
+        name: "SlackSendMessage",
+        arguments: { channel: "C1", text: "short" },
+      });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toBeUndefined();
+    });
   });
 
   it("end-to-end: a scan's SlackSendMessage post lets a later in-thread reply resume the scan conversation", async () => {

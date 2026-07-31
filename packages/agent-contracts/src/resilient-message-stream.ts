@@ -25,7 +25,7 @@ import {
   DEFAULT_MAX_MESSAGE_CHARS,
   buildStreamingTailPreview,
   normalizeTrailing,
-  splitTextByCodePoints,
+  splitTextForChat,
 } from "./stream-text.js";
 import {
   formatProviderStatusLine,
@@ -64,14 +64,51 @@ export type ChannelSendOutcome =
 export interface ChannelTransport {
   /** Per-message character budget for this channel. */
   readonly maxMessageChars: number;
-  /** Post a new message and return a ref usable by {@link edit}. */
-  post(text: string, options: { markdown: boolean; contentKind?: ChannelMessageContentKind }): Promise<MessageRef>;
-  /** Edit a previously posted message in place. */
+  /**
+   * This channel SILENTLY breaks an oversized message into several of its own
+   * and reports only the last fragment, rather than rejecting the write.
+   *
+   * It changes where the budget is enforced. Normally the budget is applied to
+   * the source text and an oversized render is caught by the channel, which
+   * rejects it and lets {@link ChannelSendOutcome} `reformat_plain` retry in
+   * plain text — keeping the answer in ONE message. A channel that splits
+   * instead never rejects, so there is nothing to fall back from: the stream has
+   * to fit the RENDERED text to the budget itself, accepting more chunks.
+   *
+   * Slack sets this. Telegram does not — it rejects an over-long message, so its
+   * plain-text fallback is the better outcome.
+   */
+  readonly splitsOversizedMessages?: boolean;
+  /**
+   * Post a new message and return a ref usable by {@link edit}.
+   *
+   * `continuesMessage` marks an overflow chunk of an answer whose head already
+   * landed at that ref. A channel with threads should attach the chunk to that
+   * message so one answer stays one card plus its thread — and so the head, not
+   * the last fragment, is what a later reply threads off. Channels without
+   * threads ignore it and post a sibling message.
+   */
+  post(
+    text: string,
+    options: {
+      markdown: boolean;
+      contentKind?: ChannelMessageContentKind;
+      continuesMessage?: MessageRef;
+    },
+  ): Promise<MessageRef>;
+  /**
+   * Edit a previously posted message in place.
+   *
+   * A transport that cannot edit in place — one whose final answer must become a
+   * NEW message, replacing and deleting `ref` — returns the replacement's ref so
+   * the stream stops treating `ref` as live. Returning nothing means the edit
+   * landed on `ref` itself, which is the ordinary case.
+   */
   edit(
     ref: MessageRef,
     text: string,
     options: { markdown: boolean; contentKind?: ChannelMessageContentKind },
-  ): Promise<void>;
+  ): Promise<MessageRef | void>;
   /** Delete a transient message, when the channel supports it. Best-effort. */
   delete?(ref: MessageRef): Promise<void>;
   /** Classify a post/edit failure into a recovery strategy. */
@@ -158,6 +195,15 @@ const DEFAULT_MAX_SEND_RETRIES = 3;
 const DEFAULT_RETRY_CAP_MS = 60_000;
 const DEFAULT_RETRY_BASE_DELAY_MS = 500;
 const EMPTY_FINAL_TEXT = DEFAULT_EMPTY_FINAL_TEXT;
+
+/** Shrink passes allowed while fitting rendered chunks to the wire budget. */
+const MAX_RENDER_FIT_PASSES = 4;
+/**
+ * Floor on the shrunk source budget. Deliberately one code point rather than the
+ * stream's 32-character minimum: that minimum bounds the RENDERED message, and
+ * heavy escaping legitimately needs a source budget well under it.
+ */
+const MIN_SOURCE_BUDGET = 1;
 /**
  * Ceiling on rendered ledger lines (headers plus nested subagent lines). Runtime
  * turn limits normally keep this far smaller; the cap only stops a pathological
@@ -535,7 +581,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     await this.awaitInFlightEdit();
 
     const finalMessageText = normalizeTrailing(this.currentText, EMPTY_FINAL_TEXT);
-    const chunks = splitTextByCodePoints(finalMessageText, this.maxMessageChars);
+    const chunks = this.splitFinalText(finalMessageText);
     const [firstChunk, ...remainingChunks] = chunks;
 
     // Final-only mode posts the answer for the first time at finish(): deliver it
@@ -561,9 +607,87 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
       // Do not spray overflow continuation messages onto a cancelled run.
       return;
     }
+    // Every overflow chunk continues the HEAD post, not the previous chunk, so a
+    // threaded channel produces one card plus a flat thread rather than a chain.
+    const head = this.sentMessage;
     for (const chunk of remainingChunks) {
-      await this.sendOverflowChunk(chunk);
+      await this.sendOverflowChunk(chunk, head);
     }
+  }
+
+  /**
+   * Split the final answer so every chunk fits the budget ON THE WIRE.
+   *
+   * The budget belongs to the rendered text, not the source: markdown rendering
+   * can expand what is sent (Slack escapes `&`, `<`, and `>` to entities, so an
+   * escape-heavy code block grows several times over). Splitting the source
+   * alone would let a chunk that "fits" arrive oversized and re-enter exactly the
+   * channel-side splitting this budget exists to prevent.
+   *
+   * Rendering is applied per chunk rather than up front because splitting already
+   * rendered text would cut through the channel's own markup. So the source
+   * budget is shrunk by the observed expansion ratio until the rendered chunks
+   * fit. Expansion is close enough to linear in content that this converges in
+   * one or two passes; the loop is bounded regardless, and a non-converging case
+   * still ends up smaller than it started rather than unbounded.
+   *
+   * Only channels that SILENTLY split an oversized message need this — see
+   * {@link ChannelTransport.splitsOversizedMessages}. A channel that rejects one
+   * instead is better served by its own plain-text fallback, which keeps the
+   * answer in a single message rather than fragmenting it.
+   */
+  private splitFinalText(text: string): readonly string[] {
+    let sourceBudget = this.maxMessageChars;
+    let chunks = splitTextForChat(text, sourceBudget);
+    if (this.transport.splitsOversizedMessages !== true) {
+      return chunks;
+    }
+    for (let pass = 0; pass < MAX_RENDER_FIT_PASSES; pass += 1) {
+      const worst = this.worstRenderedChunk(chunks);
+      if (worst === undefined) {
+        return chunks;
+      }
+      // Scale from the offending CHUNK's own length, not from the budget. A
+      // chunk shorter than the budget (text that simply expands a lot) would
+      // otherwise shrink the budget by a hair per pass and never converge.
+      const scaled = Math.floor(worst.sourceLength * (this.maxMessageChars / worst.renderedLength));
+      const next = Math.max(MIN_SOURCE_BUDGET, Math.min(sourceBudget - 1, scaled));
+      if (next >= sourceBudget) {
+        break;
+      }
+      sourceBudget = next;
+      chunks = splitTextForChat(text, sourceBudget);
+    }
+    // Proportional scaling assumes expansion is roughly uniform. Halving is the
+    // assumption-free backstop, so a chunk whose expansion is concentrated in one
+    // spot still ends up within budget instead of being handed to the channel to
+    // split — which is the whole point of measuring.
+    while (sourceBudget > MIN_SOURCE_BUDGET && this.worstRenderedChunk(chunks) !== undefined) {
+      sourceBudget = Math.max(MIN_SOURCE_BUDGET, Math.floor(sourceBudget / 2));
+      chunks = splitTextForChat(text, sourceBudget);
+    }
+    return chunks;
+  }
+
+  /**
+   * The chunk that renders widest, when any exceeds the budget. `undefined`
+   * means every chunk already fits on the wire.
+   */
+  private worstRenderedChunk(
+    chunks: readonly string[],
+  ): { readonly sourceLength: number; readonly renderedLength: number } | undefined {
+    let worst: { sourceLength: number; renderedLength: number } | undefined;
+    for (const chunk of chunks) {
+      const normalized = normalizeTrailing(chunk, EMPTY_FINAL_TEXT);
+      const renderedLength = Array.from(this.render(normalized, this.formatMarkdown)).length;
+      if (renderedLength <= this.maxMessageChars) {
+        continue;
+      }
+      if (worst === undefined || renderedLength > worst.renderedLength) {
+        worst = { sourceLength: Array.from(normalized).length, renderedLength };
+      }
+    }
+    return worst;
   }
 
   /** Remove a confirmed status bubble without ever deleting an answer. */
@@ -733,10 +857,17 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
           this.sentMessage = sent;
         } else {
           const message = await this.ensureMessage();
-          await this.transport.edit(message, renderedText, {
+          const replacement = await this.transport.edit(message, renderedText, {
             markdown: useMarkdown,
             contentKind: options.contentKind,
           });
+          // A transport that answered by REPLACING the message reports the new
+          // ref. Without adopting it, `sentMessage` would keep pointing at a
+          // message the transport just deleted, and overflow chunks would be
+          // threaded under a tombstone.
+          if (replacement !== undefined) {
+            this.sentMessage = replacement;
+          }
         }
         this.lastFlushedText = renderedText;
         this.lastFlushedMarkdown = useMarkdown;
@@ -837,19 +968,33 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
    * Deliver every overflow chunk or fail the final delivery. Once the primary
    * chunk has landed a later failure is necessarily ambiguous to the caller;
    * silently accepting it would falsely acknowledge a truncated answer.
+   *
+   * A continuation is rendered exactly like the head chunk, including the
+   * markdown→plain fallback. Posting it raw would show the tail of an ordinary
+   * answer as unrendered source — invisible while only 40,000-character answers
+   * overflowed, glaring now that a normal answer can.
    */
-  private async sendOverflowChunk(chunk: string): Promise<void> {
-    const normalized = normalizeTrailing(chunk, EMPTY_FINAL_TEXT);
+  private async sendOverflowChunk(chunk: string, continuesMessage: MessageRef | undefined): Promise<void> {
+    const normalizedSource = normalizeTrailing(chunk, EMPTY_FINAL_TEXT);
     const maxAttempts = this.maxSendRetries + 1;
+    let useMarkdown = this.formatMarkdown;
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       try {
-        await this.transport.post(normalized, { markdown: false, contentKind: "answer" });
+        await this.transport.post(this.render(normalizedSource, useMarkdown), {
+          markdown: useMarkdown,
+          contentKind: "answer",
+          ...(continuesMessage === undefined ? {} : { continuesMessage }),
+        });
         return;
       } catch (error) {
         lastError = error;
         const outcome = this.transport.classifyError(error);
+        if (outcome.kind === "reformat_plain" && useMarkdown) {
+          useMarkdown = false;
+          continue;
+        }
         if (outcome.kind === "retry" && attempt < maxAttempts) {
           await this.sleep(this.retryDelayMs(outcome.retryAfterMs, attempt));
           if (this.abortSignal?.aborted === true) {
