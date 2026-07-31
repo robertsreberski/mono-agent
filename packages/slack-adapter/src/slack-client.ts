@@ -9,13 +9,13 @@ import type {
   SlackChatUpdateResult,
   SlackConversationMessagesResult,
   SlackConversationsHistoryParams,
+  SlackConversationsInfoParams,
+  SlackConversationsInfoResult,
   SlackConversationsRepliesParams,
   SlackDownloadFileParams,
   SlackReactionsAddParams,
   SlackRequestOptions,
   SlackSetAssistantStatusParams,
-  SlackConversationsInfoParams,
-  SlackConversationsInfoResult,
   SlackUsersInfoParams,
   SlackUsersInfoResult,
   SlackViewsPublishParams,
@@ -104,6 +104,9 @@ interface SlackErrorEnvelope {
   provided?: string;
   warning?: string;
 }
+
+type SlackQueryValue = string | number | boolean | undefined;
+type SlackQueryParams = Readonly<Record<string, SlackQueryValue>>;
 
 const DEFAULT_API_BASE_URL = "https://slack.com/api";
 const DEFAULT_REQUEST_TIMEOUT_MS = 45_000;
@@ -208,7 +211,7 @@ export class SlackWebApiClient implements SlackWebApi {
     params: SlackConversationsRepliesParams,
     options?: SlackRequestOptions,
   ): Promise<SlackConversationMessagesResult> {
-    return this.request<SlackConversationMessagesResult>(
+    return this.query<SlackConversationMessagesResult>(
       "conversations.replies",
       {
         channel: params.channelId,
@@ -227,7 +230,7 @@ export class SlackWebApiClient implements SlackWebApi {
     params: SlackConversationsHistoryParams,
     options?: SlackRequestOptions,
   ): Promise<SlackConversationMessagesResult> {
-    return this.request<SlackConversationMessagesResult>(
+    return this.query<SlackConversationMessagesResult>(
       "conversations.history",
       {
         channel: params.channelId,
@@ -245,7 +248,7 @@ export class SlackWebApiClient implements SlackWebApi {
     params: SlackUsersInfoParams,
     options?: SlackRequestOptions,
   ): Promise<SlackUsersInfoResult> {
-    return this.request<SlackUsersInfoResult>(
+    return this.query<SlackUsersInfoResult>(
       "users.info",
       { user: params.userId },
       this.botToken,
@@ -257,7 +260,7 @@ export class SlackWebApiClient implements SlackWebApi {
     params: SlackConversationsInfoParams,
     options?: SlackRequestOptions,
   ): Promise<SlackConversationsInfoResult> {
-    return this.request<SlackConversationsInfoResult>(
+    return this.query<SlackConversationsInfoResult>(
       "conversations.info",
       { channel: params.channelId },
       this.botToken,
@@ -340,29 +343,70 @@ export class SlackWebApiClient implements SlackWebApi {
     }
   }
 
-  private async request<T extends { ok: true }>(
+  private request<T extends { ok: true }>(
     method: string,
     params: object,
     token: string,
     options?: SlackRequestOptions,
   ): Promise<T> {
     const url = `${this.apiBaseUrl}/${method}`;
-    const { signal, cleanup } = createRequestSignal(options?.signal, this.requestTimeoutMs);
-
-    let response: Response;
-    try {
-      const init: RequestInit = {
+    return this.executeRequest<T>(
+      method,
+      url,
+      {
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
           "content-type": "application/json; charset=utf-8",
         },
         body: JSON.stringify(params),
-      };
-      if (signal !== undefined) {
-        init.signal = signal;
+      },
+      options,
+    );
+  }
+
+  private query<T extends { ok: true }>(
+    method: string,
+    params: SlackQueryParams,
+    token: string,
+    options?: SlackRequestOptions,
+  ): Promise<T> {
+    const searchParams = new URLSearchParams();
+    for (const [name, value] of Object.entries(params)) {
+      if (value !== undefined) {
+        searchParams.set(name, String(value));
       }
-      response = await this.fetchImpl(url, init);
+    }
+
+    const query = searchParams.toString();
+    const url = `${this.apiBaseUrl}/${method}${query.length === 0 ? "" : `?${query}`}`;
+    return this.executeRequest<T>(
+      method,
+      url,
+      {
+        method: "GET",
+        headers: {
+          authorization: `Bearer ${token}`,
+        },
+      },
+      options,
+    );
+  }
+
+  private async executeRequest<T extends { ok: true }>(
+    method: string,
+    url: string,
+    init: RequestInit,
+    options?: SlackRequestOptions,
+  ): Promise<T> {
+    const { signal, cleanup } = createRequestSignal(options?.signal, this.requestTimeoutMs);
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(
+        url,
+        signal === undefined ? init : { ...init, signal },
+      );
     } catch (error) {
       cleanup();
       if (isAbortError(error) || options?.signal?.aborted === true) {
