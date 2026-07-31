@@ -12,6 +12,8 @@ interface RecordedPost {
   readonly op: "post";
   readonly text: string;
   readonly markdown: boolean;
+  /** Recorded only when the stream asked to continue an earlier message. */
+  readonly continuesMessage?: MessageRef;
 }
 interface RecordedEdit {
   readonly op: "edit";
@@ -31,6 +33,7 @@ type Recorded = RecordedPost | RecordedEdit | RecordedDelete;
  */
 class FakeTransport implements ChannelTransport {
   readonly maxMessageChars: number;
+  readonly splitsOversizedMessages: boolean;
   readonly calls: Recorded[] = [];
   activityCount = 0;
   private callCount = 0;
@@ -42,8 +45,10 @@ class FakeTransport implements ChannelTransport {
     maxMessageChars?: number;
     failures?: Record<number, ChannelSendOutcome>;
     renderMarkdown?: (text: string) => string;
+    splitsOversizedMessages?: boolean;
   }) {
     this.maxMessageChars = options?.maxMessageChars ?? 100;
+    this.splitsOversizedMessages = options?.splitsOversizedMessages ?? false;
     this.failures = new Map(
       Object.entries(options?.failures ?? {}).map(([k, v]) => [Number(k), v]),
     );
@@ -62,9 +67,17 @@ class FakeTransport implements ChannelTransport {
     }
   }
 
-  async post(text: string, options: { markdown: boolean }): Promise<MessageRef> {
+  async post(
+    text: string,
+    options: { markdown: boolean; continuesMessage?: MessageRef },
+  ): Promise<MessageRef> {
     this.maybeThrow();
-    this.calls.push({ op: "post", text, markdown: options.markdown });
+    this.calls.push({
+      op: "post",
+      text,
+      markdown: options.markdown,
+      ...(options.continuesMessage === undefined ? {} : { continuesMessage: options.continuesMessage }),
+    });
     this.nextId += 1;
     return { id: `m${this.nextId}` };
   }
@@ -577,6 +590,120 @@ describe("ResilientMessageStream", () => {
       (p) => p.text.includes("x"),
     );
     expect(overflowPosts.length).toBeGreaterThanOrEqual(2);
+    // Every chunk continues the HEAD message — the streamed message `m1` that
+    // the first chunk was edited into — and not the chunk before it, so a
+    // threaded channel produces one card plus a flat thread rather than a chain.
+    expect(overflowPosts.map((p) => p.continuesMessage)).toEqual(
+      overflowPosts.map(() => ({ id: "m1" })),
+    );
+  });
+
+  it("renders every overflow chunk, not just the head", async () => {
+    // Continuations posted raw would show the tail of an ordinary answer as
+    // unrendered markdown source.
+    const transport = new FakeTransport({
+      maxMessageChars: 40,
+      renderMarkdown: (text) => text.replaceAll("**", "*"),
+    });
+    const stream = new ResilientMessageStream({ transport, finalOnly: true, sleep: noSleep });
+    const head = "**bold head**".padEnd(30, ".");
+    const tail = "**bold tail**".padEnd(30, ".");
+
+    await stream.finish(`${head}\n\n${tail}`);
+
+    const posts = transport.calls.filter((c): c is RecordedPost => c.op === "post");
+    expect(posts.map((p) => p.text)).toEqual([
+      head.replaceAll("**", "*"),
+      tail.replaceAll("**", "*"),
+    ]);
+    expect(posts.every((p) => p.markdown)).toBe(true);
+  });
+
+  it("bounds every chunk by its RENDERED size, not its source size", async () => {
+    // Slack-style entity escaping expands the wire payload well past the source
+    // length; a chunk that "fits" before rendering can arrive oversized and be
+    // split by the channel anyway — the exact failure the budget exists to stop.
+    const transport = new FakeTransport({
+      maxMessageChars: 100,
+      renderMarkdown: (text) => text.replaceAll("&", "&amp;"),
+      splitsOversizedMessages: true,
+    });
+    const stream = new ResilientMessageStream({ transport, finalOnly: true, sleep: noSleep });
+
+    await stream.finish("&".repeat(400));
+
+    const posts = transport.calls.filter((c): c is RecordedPost => c.op === "post");
+    expect(posts.length).toBeGreaterThan(1);
+    for (const post of posts) {
+      expect(Array.from(post.text).length).toBeLessThanOrEqual(100);
+    }
+    // Nothing is dropped on the way.
+    expect(posts.map((p) => p.text).join("")).toBe("&amp;".repeat(400));
+  });
+
+  it("fits the wire budget even when the source is far shorter than it", async () => {
+    // Scaling from the BUDGET rather than the offending chunk barely moves when
+    // the source already fits it: 8,001 ampersands render to 40,005 against a
+    // 40,000 budget, so each pass shaves a handful of characters and the answer
+    // is handed to the channel oversized anyway.
+    for (const maxMessageChars of [3_800, 40_000]) {
+      const transport = new FakeTransport({
+        maxMessageChars,
+        renderMarkdown: (text) => text.replaceAll("&", "&amp;"),
+        splitsOversizedMessages: true,
+      });
+      const stream = new ResilientMessageStream({ transport, finalOnly: true, sleep: noSleep });
+
+      await stream.finish("&".repeat(Math.floor(maxMessageChars / 5) + 1));
+
+      const posts = transport.calls.filter((c): c is RecordedPost => c.op === "post");
+      expect(posts.length).toBeGreaterThan(0);
+      for (const post of posts) {
+        expect(Array.from(post.text).length).toBeLessThanOrEqual(maxMessageChars);
+      }
+    }
+  });
+
+  it("fits the budget when expansion is concentrated rather than uniform", async () => {
+    // Proportional scaling assumes uniform expansion; the halving backstop is
+    // what covers a single hot spot in otherwise cheap text.
+    const transport = new FakeTransport({
+      maxMessageChars: 100,
+      renderMarkdown: (text) => text.replaceAll("@", "X".repeat(200)),
+      splitsOversizedMessages: true,
+    });
+    const stream = new ResilientMessageStream({ transport, finalOnly: true, sleep: noSleep });
+
+    await stream.finish(`${"a".repeat(300)} @ ${"b".repeat(300)}`);
+
+    const posts = transport.calls.filter((c): c is RecordedPost => c.op === "post");
+    // The lone "@" cannot fit any budget once rendered, so it is delivered as its
+    // own chunk; everything else is inside the limit.
+    const oversized = posts.filter((p) => Array.from(p.text).length > 100);
+    expect(oversized).toHaveLength(1);
+    expect(oversized[0]?.text).toBe("X".repeat(200));
+  });
+
+  it("leaves chunking alone when rendering does not expand the text", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 40 });
+    const stream = new ResilientMessageStream({ transport, finalOnly: true, sleep: noSleep });
+
+    await stream.finish("x".repeat(95));
+
+    const posts = transport.calls.filter((c): c is RecordedPost => c.op === "post");
+    expect(posts.map((p) => p.text.length)).toEqual([40, 40, 15]);
+  });
+
+  it("splits a final answer on a paragraph boundary rather than mid-word", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 40 });
+    const stream = new ResilientMessageStream({ transport, finalOnly: true, sleep: noSleep });
+    const head = "first paragraph".padEnd(30, ".");
+    const tail = "second paragraph".padEnd(30, ".");
+
+    await stream.finish(`${head}\n\n${tail}`);
+
+    const posts = transport.calls.filter((c): c is RecordedPost => c.op === "post");
+    expect(posts.map((p) => p.text)).toEqual([head, tail]);
   });
 
   it("fails final delivery when an overflow chunk cannot be posted", async () => {

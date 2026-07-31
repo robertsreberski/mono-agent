@@ -373,7 +373,9 @@ describe("SlackMessageStream", () => {
     );
   });
 
-  it("keeps a default final-only Slack reply above the shared 3,800-char default in one message", async () => {
+  it("chunks a default final-only Slack reply at the shared 3,800-char budget", async () => {
+    // Posting the whole thing would let SLACK split it server-side at ~4,000
+    // characters and return only the tail fragment's ts.
     const api = new FakeSlackApi();
     const stream = new SlackMessageStream({
       api,
@@ -385,10 +387,63 @@ describe("SlackMessageStream", () => {
     await stream.finish(finalText);
 
     expect(api.updateCalls).toHaveLength(0);
-    expect(api.postMessageCalls.map((call) => call.text)).toEqual([finalText]);
+    expect(api.postMessageCalls.map((call) => call.text.length)).toEqual([3_800, 101]);
   });
 
-  it("splits default final-only Slack replies only at Slack's 40,000-char platform limit", async () => {
+  it("threads overflow under the ANSWER, not the tool ledger it replaced and deleted", async () => {
+    // A final-only turn with tool activity posts a status ledger, then posts the
+    // answer as a fresh message and DELETES the ledger. Threading the overflow
+    // under the stale ledger ref would target a deleted message.
+    const api = new FakeSlackApi();
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C1",
+      finalOnly: true,
+      editDebounceMs: 0,
+    });
+
+    await stream.event({ type: "tool_call_started", id: "t1", name: "WebFetch", arguments: {} });
+    const head = "a".repeat(3_000);
+    const tail = "b".repeat(1_500);
+    await stream.finish(`${head}\n\n${tail}`);
+
+    // 100 = the deleted ledger, 101 = the answer, 102 = the continuation.
+    expect(api.deleteCalls).toEqual([{ channel: "C1", ts: "100.000001" }]);
+    const answerPosts = api.postMessageCalls.filter((call) => call.text === head || call.text === tail);
+    expect(answerPosts.map((call) => call.text)).toEqual([head, tail]);
+    expect(answerPosts[1]?.thread_ts).toBe("101.000001");
+  });
+
+  it("continues an overflow chunk in the thread under the head post", async () => {
+    const api = new FakeSlackApi();
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C1",
+      finalOnly: true,
+    });
+    // A paragraph break sits inside the first window, so the adapter — not
+    // Slack — chooses where the card ends.
+    const head = "a".repeat(3_000);
+    const tail = "b".repeat(1_500);
+    await stream.finish(`${head}\n\n${tail}`);
+
+    expect(api.postMessageCalls.map((call) => call.text)).toEqual([head, tail]);
+    // The head opens a fresh thread; the continuation replies inside it rather
+    // than landing as a second top-level message. FakeSlackApi hands the first
+    // post ts `100.000001`.
+    expect(api.postMessageCalls[0]?.thread_ts).toBeUndefined();
+    expect(api.postMessageCalls[1]?.thread_ts).toBe("100.000001");
+  });
+
+  it("rejects a maxMessageChars override above Slack's truncation limit", () => {
+    expect(() => new SlackMessageStream({
+      api: new FakeSlackApi(),
+      channelId: "C1",
+      maxMessageChars: 40_001,
+    })).toThrow(RangeError);
+  });
+
+  it("keeps an existing thread rather than re-threading overflow under the head", async () => {
     const api = new FakeSlackApi();
     const stream = new SlackMessageStream({
       api,
@@ -396,6 +451,7 @@ describe("SlackMessageStream", () => {
       threadTs: "172.000001",
       finalOnly: true,
       clientMsgId: "5d465a3c-f7f3-4ac3-9eb6-9afc290211fa",
+      maxMessageChars: 40_000,
     });
     const finalText = `${"a".repeat(40_000)}tail`;
 
@@ -417,6 +473,7 @@ describe("SlackMessageStream", () => {
       threadTs: "172.000001",
       finalOnly: true,
       clientMsgId: "5d465a3c-f7f3-4ac3-9eb6-9afc290211fa",
+      maxMessageChars: 40_000,
     });
     await retriedStream.finish(finalText);
     expect(retriedApi.postMessageCalls.map((call) => call.client_msg_id)).toEqual(firstIds);
@@ -496,13 +553,14 @@ describe("SlackMessageStream", () => {
       thread_ts: "172.000001",
       mrkdwn: false,
     });
-    // The first final chunk edits the placeholder in place; overflow
-    // continuation chunks are posted as plain (mrkdwn: false) thread replies.
+    // The first final chunk edits the placeholder in place; overflow continuation
+    // chunks are posted as thread replies rendered exactly like it, so the tail
+    // of an answer is not shown as raw markdown source.
     expect(api.postMessageCalls[1]?.text).toHaveLength(32);
     expect(api.postMessageCalls[1]?.thread_ts).toBe("172.000001");
-    expect(api.postMessageCalls[1]?.mrkdwn).toBe(false);
+    expect(api.postMessageCalls[1]?.mrkdwn).toBe(true);
     expect(api.postMessageCalls[2]?.text).toHaveLength(6);
-    expect(api.postMessageCalls[2]?.mrkdwn).toBe(false);
+    expect(api.postMessageCalls[2]?.mrkdwn).toBe(true);
   });
 
   it("translates Markdown output to Slack mrkdwn for posts and updates", async () => {

@@ -5,7 +5,7 @@ import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { splitTextByCodePoints } from "@mono-agent/agent-contracts";
+import { DEFAULT_MAX_MESSAGE_CHARS, splitTextForChat } from "@mono-agent/agent-contracts";
 import { ALLOW_ALL_TOOLS } from "@mono-agent/config";
 import type {
   SlackChatPostMessageResult,
@@ -32,7 +32,15 @@ const loadSlackModule = async (): Promise<SlackAdapterModule> =>
   (slackModule ??= await import("@mono-agent/slack-adapter"));
 const loadTelegramModule = async (): Promise<TelegramAdapterModule> =>
   (telegramModule ??= await import("@mono-agent/telegram-adapter"));
-const SLACK_SEND_MESSAGE_MAX_CHARS = 40_000;
+/**
+ * Per-post budget for `SlackSendMessage`. Deliberately the shared substrate
+ * budget rather than Slack's 40,000-character truncation ceiling: well below the
+ * ceiling Slack silently breaks a long post into several messages of its own
+ * and returns only the LAST fragment's `ts`, which would leave the head message
+ * absent from the posted-message index and unable to resolve a reply in its
+ * thread. Chunking here keeps the boundary — and the indexed ids — ours.
+ */
+const SLACK_SEND_MESSAGE_MAX_CHARS = DEFAULT_MAX_MESSAGE_CHARS;
 /** Keep cancellation responsive even when the loopback bridge is wedged. */
 const ASK_BRIDGE_CLEANUP_TIMEOUT_MS = 1_000;
 type TelegramSendToolName = "TelegramSendMessage" | "TelegramSendFile";
@@ -900,21 +908,35 @@ function registerSlackSendTool(
       assertSlackChannelAllowed(settings, args.channel);
       const mrkdwn = args.mrkdwn ?? true;
       const text = mrkdwn ? formatMarkdownForSlack(args.text) : args.text;
-      const chunks = splitTextByCodePoints(text, SLACK_SEND_MESSAGE_MAX_CHARS);
+      const chunks = splitTextForChat(text, SLACK_SEND_MESSAGE_MAX_CHARS);
       const results: SlackChatPostMessageResult[] = [];
       const historyOutcomes: Array<DeliveryHistoryOutcome | undefined> = [];
       for (const chunk of chunks) {
-        const result: SlackChatPostMessageResult = await client.chatPostMessage(
-          {
-            channel: args.channel.trim(),
-            text: chunk,
-            ...(args.thread_ts === undefined ? {} : { thread_ts: args.thread_ts }),
-            mrkdwn,
-            ...(args.unfurl_links === undefined ? {} : { unfurl_links: args.unfurl_links }),
-            ...(args.unfurl_media === undefined ? {} : { unfurl_media: args.unfurl_media }),
-          },
-          { signal: extra.signal },
-        );
+        let result: SlackChatPostMessageResult;
+        try {
+          result = await client.chatPostMessage(
+            {
+              channel: args.channel.trim(),
+              text: chunk,
+              ...(args.thread_ts === undefined ? {} : { thread_ts: args.thread_ts }),
+              mrkdwn,
+              ...(args.unfurl_links === undefined ? {} : { unfurl_links: args.unfurl_links }),
+              ...(args.unfurl_media === undefined ? {} : { unfurl_media: args.unfurl_media }),
+            },
+            { signal: extra.signal },
+          );
+        } catch (error) {
+          // Chunks before this one are already visible in the channel. Throwing
+          // bare would tell the model only "it failed", and the obvious repair —
+          // send the whole thing again — would duplicate the confirmed prefix.
+          // So report the partial delivery explicitly and let it send only the
+          // remainder. (A stable per-chunk client_msg_id would let Slack dedupe a
+          // blind retry too; that is a larger contract change and not done here.)
+          if (results.length === 0) {
+            throw error;
+          }
+          return slackPartialSendResult(results, chunks, error, deliveryHistorySummary(historyOutcomes));
+        }
         results.push(result);
         const historyOutcome = await recordAdapterDeliveryHistory({
           settings: deliveryHistory,
@@ -974,6 +996,57 @@ function registerSlackSendTool(
       };
     },
   );
+}
+
+/**
+ * An oversized `SlackSendMessage` that got part-way through its chunks.
+ *
+ * `ok: false` with the confirmed chunks named, so the model can see exactly what
+ * the channel already shows and resend only the missing tail. Reporting this as a
+ * plain throw would invite a full resend and duplicate the visible prefix.
+ */
+function slackPartialSendResult(
+  delivered: readonly SlackChatPostMessageResult[],
+  chunks: readonly string[],
+  error: unknown,
+  history: DeliveryHistoryOutcome | undefined,
+): {
+  content: [{ type: "text"; text: string }];
+  isError: true;
+  structuredContent: Record<string, unknown>;
+} {
+  const first = delivered[0]!;
+  const remaining = chunks.length - delivered.length;
+  const message = [
+    `Partially sent: ${String(delivered.length)} of ${String(chunks.length)} Slack message parts are CONFIRMED in`,
+    `${first.channel} starting at ${first.ts}. Part ${String(delivered.length + 1)} failed (${errorText(error)}) with an`,
+    "UNKNOWN outcome — Slack may or may not have accepted it before the error.",
+    `Never resend the confirmed parts. Check the channel before resending part ${String(delivered.length + 1)};`,
+    `at most the last ${String(remaining)} part(s) are missing.`,
+  ].join(" ");
+  return {
+    content: [{ type: "text", text: withDeliveryHistoryWarning(message, history) }],
+    isError: true,
+    structuredContent: {
+      ok: false,
+      partial: true,
+      channel: first.channel,
+      ts: first.ts,
+      chunkCount: chunks.length,
+      deliveredChunkCount: delivered.length,
+      // The failing request is AMBIGUOUS, not known-undelivered: Slack may have
+      // accepted it and lost the response. Saying otherwise would invite a
+      // resend that duplicates it.
+      unconfirmedChunkIndex: delivered.length,
+      disposition: "unknown",
+      chunks: delivered.map((result) => ({ channel: result.channel, ts: result.ts })),
+      ...(history === undefined ? {} : { history }),
+    },
+  };
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function registerTelegramSendTool(

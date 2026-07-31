@@ -84,7 +84,9 @@ Status text, edit debounce, max message characters, and the welcome/help/error t
 
 Because these are code-only, they live in your driver wiring rather than `mono-agent.config.json`. See [Write your own channel adapter](/programmatic/custom-channels/).
 
-Slack's built-in driver uses Slack's 40,000-character platform limit for final replies by default, so a final answer above the shared 3,800-character default but below Slack's limit is still delivered as one Slack message. Slack final replies and `SlackSendMessage` split into continuation posts only when text exceeds that platform limit. Telegram and custom channel streams keep their own defaults unless their driver overrides `stream.maxMessageChars`.
+Slack final replies and `SlackSendMessage` both chunk at the shared 3,800-character default. Slack's own 40,000-character limit is a *truncation* ceiling, not a usable message size — well below it Slack silently breaks a long post into several messages of its own choosing and returns only the last fragment's `ts`, which loses control of where the text breaks and misanchors the posted-message index. Chunking below that zone keeps both the boundary and the message ids ours. It is still the upper bound for an explicit `stream.maxMessageChars` override. Telegram and custom channel streams keep their own defaults unless their driver overrides `stream.maxMessageChars`.
+
+Chunks break on a paragraph, line, or word boundary when one is available near the end of the budget, and a final answer's continuation chunks are posted **in the thread under the first message** rather than as sibling top-level messages — so one answer reads as one card plus its thread, and a reply anywhere in that thread resumes the conversation.
 
 ## App-owned send tools
 
@@ -159,7 +161,7 @@ The native sandbox's network allowlist is a separate egress boundary. App-owned 
 }
 ```
 
-`SlackSendMessage` accepts standard Markdown by default, renders it to Slack `mrkdwn`, and preserves Slack thread/formatting options on every chunk. Set its `mrkdwn` argument to `false` only when you need plain text sent unchanged. Text below Slack's 40,000-character platform limit is one post; text above the limit is split and each posted chunk is indexed so replies in those threads can resume the producing conversation.
+`SlackSendMessage` accepts standard Markdown by default, renders it to Slack `mrkdwn`, and preserves Slack thread/formatting options on every chunk. Set its `mrkdwn` argument to `false` only when you need plain text sent unchanged. Text below the 3,800-character budget is one post; longer text is split on a paragraph, line, or word boundary and each posted chunk is indexed so replies in those threads can resume the producing conversation.
 
 After Slack or Telegram confirms a send-tool post, mono-agent records the exact
 delivered text into that destination's assistant history: the Telegram chat, or

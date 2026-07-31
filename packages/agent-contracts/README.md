@@ -276,6 +276,7 @@ serializeAgentStreamFrame
 setToolActivityPathRoots
 splitSubagentToolName
 splitTextByCodePoints
+splitTextForChat
 suppressesNotification
 toolHintFor
 writeSettingsJson
