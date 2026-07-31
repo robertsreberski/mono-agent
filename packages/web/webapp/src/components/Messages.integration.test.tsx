@@ -4,7 +4,7 @@ import {
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { convertWebMessage } from "../runtime";
 import type { WebMessage } from "../types";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
@@ -143,6 +143,71 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.getByRole("button", { name: "Copy response" }).parentElement).toHaveClass(
       "is-persistent",
     );
+  });
+
+  it("collects a settled turn's interleaved work into one Activity block over the answer", () => {
+    const { container } = render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [
+        { type: "text", text: "Let me look at the inbox." },
+        {
+          type: "tool-call",
+          toolCallId: "tool-1",
+          toolName: "read_inbox",
+          args: {},
+          result: { ok: true },
+          status: "complete",
+        },
+        { type: "text", text: "Now the calendar." },
+        {
+          type: "tool-call",
+          toolCallId: "tool-2",
+          toolName: "read_calendar",
+          args: {},
+          result: { ok: true },
+          status: "complete",
+        },
+        { type: "text", text: "Here is the summary." },
+      ],
+    }} />);
+
+    // One disclosure, not one per band of prose the model wrote mid-turn.
+    expect(container.querySelectorAll(".activity-root")).toHaveLength(1);
+    const answer = screen.getByText("Here is the summary.");
+    expect(answer).toBeVisible();
+    expect(answer.closest(".activity-root")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    const activity = container.querySelector(".activity-root")!;
+    expect(within(activity as HTMLElement).getByText("Let me look at the inbox.")).toBeVisible();
+    expect(within(activity as HTMLElement).getByText("Now the calendar.")).toBeVisible();
+    expect(within(activity as HTMLElement).getByText("read_inbox")).toBeVisible();
+    expect(within(activity as HTMLElement).getByText("read_calendar")).toBeVisible();
+  });
+
+  it("copies the answer alone, not the narration folded into the activity log", async () => {
+    const writeText = vi.fn(async () => undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [
+        { type: "text", text: "Let me look at the inbox." },
+        {
+          type: "tool-call",
+          toolCallId: "tool-1",
+          toolName: "read_inbox",
+          args: {},
+          result: { ok: true },
+          status: "complete",
+        },
+        { type: "text", text: "Here is the summary." },
+      ],
+    }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy response" }));
+    await screen.findByRole("button", { name: "Copied" });
+    expect(writeText).toHaveBeenCalledWith("Here is the summary.");
+    vi.unstubAllGlobals();
   });
 
   it("updates a live compaction row in place and marks a dangling row interrupted", async () => {

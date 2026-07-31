@@ -62,7 +62,7 @@ Provider API keys (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) are **provider-na
 | `MONO_AGENT_SESSION_MODE` | `runtime.session.mode` | `continuous` (default) reuses a warm provider session and queues turns per conversation; `per-message` starts each provider turn cold. Durable history remains a separate replay layer in both modes. |
 | `MONO_AGENT_SESSION_IDLE_TIMEOUT_MS` | `runtime.session.idleTimeoutMs` | Idle eviction window for warm continuous sessions; default 30 minutes. It does not delete durable history. See [Sessions and concurrency](/runtime/sessions-concurrency/). |
 | `MONO_AGENT_SESSION_ISOLATE_PROACTIVE` | `runtime.session.isolateProactive` | When `true`, scheduled requests carrying cron metadata run one-shot instead of acquiring or saving the conversation's warm session. Interactive turns are unchanged. |
-| `MONO_AGENT_SESSION_ROLLOVER` | `runtime.session.rollover` | `none` or `daily`; daily adds a date bucket to each conversation id. |
+| `MONO_AGENT_SESSION_ROLLOVER` | `runtime.session.rollover` | `none` or `daily`; daily adds a date bucket to each conversation id, except console (TUI/web) threads, which own their own session boundary. |
 | `MONO_AGENT_SESSION_ROLLOVER_TIMEZONE` | `runtime.session.rolloverTimezone` | IANA timezone for daily bucket boundaries; defaults to the system timezone. |
 | `MONO_AGENT_SESSION_ROLLOVER_NOTICE` | `runtime.session.rolloverNotice` | When `true`, the first turn in a new daily bucket receives a one-line adapter-visible notice. Default off; it does not enable rollover by itself. |
 | `MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS` | `concurrency.maxConcurrentRuns` | Runs executing against the provider at once (**per-channel**). |
