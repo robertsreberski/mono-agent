@@ -206,6 +206,33 @@ export interface SlackUsersInfoResult {
   [key: string]: unknown;
 }
 
+/** Params for `conversations.info` — describe one channel, DM, or group. */
+export interface SlackConversationsInfoParams {
+  channelId: SlackChannelId;
+}
+
+/**
+ * Result of `conversations.info`. Only the fields that name and classify the
+ * surface are typed; everything else passes through.
+ *
+ * `name` is the channel name WITHOUT a leading `#`, and is absent for a DM (an
+ * `im` has no name, only a counterpart). The `is_*` flags are authoritative
+ * where an event's `channel_type` is missing — `app_mention` carries none.
+ */
+export interface SlackConversationsInfoResult {
+  ok: true;
+  channel?: {
+    name?: string;
+    is_im?: boolean;
+    is_mpim?: boolean;
+    is_private?: boolean;
+    is_channel?: boolean;
+    is_group?: boolean;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
 export interface SlackWebApi {
   authTest(options?: SlackRequestOptions): Promise<SlackAuthTestResult>;
   appsConnectionsOpen(options?: SlackRequestOptions): Promise<SlackAppsConnectionsOpenResult>;
@@ -290,6 +317,17 @@ export interface SlackWebApi {
     params: SlackUsersInfoParams,
     options?: SlackRequestOptions,
   ): Promise<SlackUsersInfoResult>;
+  /**
+   * Optional: name and classify the surface a turn is on via `conversations.info`
+   * (needs `channels:read` for public channels, `groups:read` for private ones,
+   * `im:read`/`mpim:read` for DMs and group DMs). Used only to put a model-visible
+   * surface name on the turn; the adapter guards before calling it and falls back
+   * to the kind alone on any failure, so a text-only custom client may omit it.
+   */
+  conversationsInfo?(
+    params: SlackConversationsInfoParams,
+    options?: SlackRequestOptions,
+  ): Promise<SlackConversationsInfoResult>;
 }
 
 /**

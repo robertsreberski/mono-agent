@@ -1815,6 +1815,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       input,
       controller.signal,
       resolvedAttachments,
+      options.stream?.maxMessageChars,
     );
     applyRuntimeSelection(chatId, request.metadata.telegram);
     const stream = new TelegramMessageStream(

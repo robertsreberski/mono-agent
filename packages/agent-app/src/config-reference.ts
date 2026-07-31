@@ -1207,6 +1207,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "runtime.routeSafety": "uniform",
     subagents: { enabled: false },
     "slack.resolveUserNames": true,
+    "slack.resolveChannelNames": true,
     "slack.threadContext.enabled": true,
     "slack.threadContext.maxMessages": 15,
     "slack.threadContext.requestLimit": 15,
@@ -1351,6 +1352,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "slack.appToken": "env:MONO_AGENT_SLACK_APP_TOKEN",
     "slack.stripMentionText": false,
     "slack.resolveUserNames": true,
+    "slack.resolveChannelNames": true,
     "slack.threadContext.enabled": true,
     "slack.threadContext.maxMessages": 15,
     "slack.threadContext.requestLimit": 15,
@@ -1388,6 +1390,9 @@ function descriptionFor(id: string): string {
   }
   if (id === "slack.resolveUserNames") {
     return "Resolves the speaker's display name and handle via `users.info` so the agent knows who is talking. Requires the `users:read` scope; a missing scope degrades to an unnamed speaker rather than failing turns.";
+  }
+  if (id === "slack.resolveChannelNames") {
+    return "Resolves the channel's name via `conversations.info` so the agent knows WHICH channel it is talking in, not just that it is in one. Requires `channels:read` (public) / `groups:read` (private); a missing scope degrades to the surface kind and id alone rather than failing turns.";
   }
   const slackThreadContextDescriptions: Record<string, string> = {
     "slack.threadContext.enabled": "Sends what was said in the conversation before the agent was triggered as untrusted background context. Reads the thread for an in-thread trigger and recent channel history otherwise; needs a `*:history` scope.",

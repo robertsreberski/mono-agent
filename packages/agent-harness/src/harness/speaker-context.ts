@@ -214,8 +214,12 @@ function stripControlCharacters(value: string): string {
  * Collapses a user-controlled name to one safe inline token. Structural controls
  * become visible single-character glyphs rather than transcript lines, matching
  * how the interaction bridge renders untrusted answers.
+ *
+ * Exported because a surface name (a Slack channel name, a Telegram chat title)
+ * is user-controlled in exactly the same way a display name is, and the Session
+ * block must neutralize it identically rather than grow a second dialect.
  */
-function sanitizeLabelPart(value: string | undefined): string | undefined {
+export function sanitizeLabelPart(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   // Emptiness is judged BEFORE escaping. A name of only whitespace and controls
   // carries no identity, and escaping it first would turn it into a label of

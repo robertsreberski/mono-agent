@@ -89,6 +89,12 @@ export interface SlackAdapterConfig {
    * degrades to an unnamed speaker rather than failing turns.
    */
   readonly resolveUserNames: boolean;
+  /**
+   * Resolve the surface's name via `conversations.info` so the agent knows WHICH
+   * channel it is talking in. Requires `channels:read`/`groups:read`; default
+   * `true`, and a missing scope degrades to the surface kind and id alone.
+   */
+  readonly resolveChannelNames: boolean;
   /** Thread/channel turn context, read from `slack.threadContext`. */
   readonly threadContext: SlackThreadContextConfig;
   // Optional Socket Mode resilience tuning. Each is undefined unless the operator
@@ -175,6 +181,12 @@ export async function loadSlackAdapterConfig(
     true,
     invalidConfig,
   );
+  const resolveChannelNames = readBoolean(
+    env.MONO_AGENT_SLACK_RESOLVE_CHANNEL_NAMES,
+    "MONO_AGENT_SLACK_RESOLVE_CHANNEL_NAMES",
+    true,
+    invalidConfig,
+  );
 
   // A disabled channel never validates its credentials: the status surface reads
   // it as "disabled", not "waiting for config". Only an enabled channel demands
@@ -192,6 +204,7 @@ export async function loadSlackAdapterConfig(
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames,
+      resolveChannelNames,
       threadContext: readSlackThreadContext(env),
     };
   }
@@ -223,6 +236,7 @@ export async function loadSlackAdapterConfig(
     shortcuts,
     homeTab,
     resolveUserNames,
+    resolveChannelNames,
     threadContext: readSlackThreadContext(env),
     ...readSlackSocketTuning(env),
   };
@@ -500,6 +514,7 @@ export const SLACK_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "slack.mentionTextAliases", env: "MONO_AGENT_SLACK_MENTION_TEXT_ALIASES", kind: "csv", fromJson: (s) => s.mentionTextAliases },
   { id: "slack.stripMentionText", env: "MONO_AGENT_SLACK_STRIP_MENTION_TEXT", kind: "boolean", fromJson: (s) => s.stripMentionText },
   { id: "slack.resolveUserNames", env: "MONO_AGENT_SLACK_RESOLVE_USER_NAMES", kind: "boolean", fromJson: (s) => s.resolveUserNames },
+  { id: "slack.resolveChannelNames", env: "MONO_AGENT_SLACK_RESOLVE_CHANNEL_NAMES", kind: "boolean", fromJson: (s) => s.resolveChannelNames },
   { id: "slack.threadContext.enabled", env: "MONO_AGENT_SLACK_THREAD_CONTEXT_ENABLED", kind: "boolean", fromJson: (s) => readRecord(s.threadContext).enabled },
   { id: "slack.threadContext.maxMessages", env: "MONO_AGENT_SLACK_THREAD_CONTEXT_MAX_MESSAGES", kind: "integer", fromJson: (s) => readRecord(s.threadContext).maxMessages },
   { id: "slack.threadContext.requestLimit", env: "MONO_AGENT_SLACK_THREAD_CONTEXT_REQUEST_LIMIT", kind: "integer", fromJson: (s) => readRecord(s.threadContext).requestLimit },

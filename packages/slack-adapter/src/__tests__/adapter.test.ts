@@ -23,6 +23,8 @@ import {
 import { SlackApiError } from "../slack-client.js";
 import type {
   SlackChatPostMessageParams,
+  SlackConversationsInfoParams,
+  SlackConversationsInfoResult,
   SlackChatPostMessageResult,
   SlackChatDeleteParams,
   SlackChatUpdateParams,
@@ -111,6 +113,17 @@ class FakeSlackApi implements SlackWebApi {
     if (this.usersInfoFailure !== undefined) throw this.usersInfoFailure;
     const user = this.usersInfoUsers[params.userId];
     return user === undefined ? { ok: true } : { ok: true, user };
+  }
+
+  readonly conversationsInfoCalls: SlackConversationsInfoParams[] = [];
+  conversationsInfoChannels: Record<string, SlackConversationsInfoResult["channel"]> = {};
+  conversationsInfoFailure: unknown = undefined;
+
+  async conversationsInfo(params: SlackConversationsInfoParams): Promise<SlackConversationsInfoResult> {
+    this.conversationsInfoCalls.push(params);
+    if (this.conversationsInfoFailure !== undefined) throw this.conversationsInfoFailure;
+    const channel = this.conversationsInfoChannels[params.channelId];
+    return channel === undefined ? { ok: true } : { ok: true, channel };
   }
 
   async setAssistantStatus(params: { channelId: string; threadTs: string; status: string }): Promise<void> {
@@ -395,6 +408,177 @@ describe("SlackAdapter", () => {
     // of the prompt until the opt-in user directory supplies a name.
     expect(captured?.userId).toBe("U0ALICE");
     expect(captured?.text).toBe("ask @carol about #releases");
+  });
+
+  it("answers a bare mention as a turn instead of refusing it", async () => {
+    // "@agent" with nothing after it is a summons into a conversation that
+    // already carries the question — not a malformed message.
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      botUserIds: ["U0BOT"],
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "on it" };
+      }),
+    });
+
+    const result = await adapter.handleEventCallback(appMention("<@U0BOT>"));
+
+    expect(result.kind).toBe("handled");
+    expect(captured?.text).toContain("mentioned here with no additional text");
+    expect(api.postMessageCalls.map((call) => call.text)).toContain("on it");
+    expect(api.postMessageCalls.map((call) => call.text)).not.toContain(
+      "I can only handle Slack text messages in this adapter for now.",
+    );
+  });
+
+  it("uses a configured bare-mention prompt when one is supplied", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      botUserIds: ["U0BOT"],
+      messages: { bareMentionPrompt: "Summarize this thread." },
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "done" };
+      }),
+    });
+
+    await adapter.handleEventCallback(appMention("<@U0BOT>   "));
+
+    expect(captured?.text).toBe("Summarize this thread.");
+  });
+
+  it("still refuses a file-only message whose attachments were all skipped", async () => {
+    // The bare-mention path must not swallow the genuinely unusable case.
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      botUserIds: ["U0BOT"],
+      responder: responderFrom(async () => ({ text: "should not run" })),
+    });
+
+    const result = await adapter.handleEventCallback(
+      directMessage("", { files: [{ id: "F1", mimetype: "application/x-msdownload", size: 10 }] }),
+    );
+
+    expect(result).toMatchObject({ kind: "ignored", reason: "no_usable_attachments" });
+    expect(api.postMessageCalls.map((call) => call.text)).toContain(
+      "I can only handle Slack text messages in this adapter for now.",
+    );
+  });
+
+  it("tells the model which surface it is on, resolving the channel name", async () => {
+    const api = new FakeSlackApi();
+    api.conversationsInfoChannels = { C123: { name: "team-example", is_channel: true } };
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      botUserIds: ["U0BOT"],
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "ok" };
+      }),
+    });
+
+    await adapter.handleEventCallback(appMention("<@U0BOT> where am I?", { channel: "C123" }));
+
+    expect(captured?.surface).toEqual({
+      kind: "channel",
+      name: "team-example",
+      id: "C123",
+      messageBudget: { maxChars: 3_800, overflow: "thread" },
+    });
+  });
+
+  it("classifies an app_mention from the channel-id prefix, since it carries no channel_type", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      botUserIds: ["U0BOT"],
+      // No conversations.info on this client, so kind must come from the id.
+      resolveChannelNames: false,
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "ok" };
+      }),
+    });
+
+    await adapter.handleEventCallback(appMention("<@U0BOT> hi", { channel: "C123" }));
+    expect(captured?.surface).toMatchObject({ kind: "channel", id: "C123" });
+    expect(captured?.surface?.name).toBeUndefined();
+
+    await adapter.handleEventCallback(
+      appMention("<@U0BOT> hi", { channel: "D999", eventId: "Ev-dm", ts: "173.000001" }),
+    );
+    expect(captured?.surface).toMatchObject({ kind: "dm", id: "D999" });
+  });
+
+  it("classifies a DM from the event's own channel_type", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      resolveChannelNames: false,
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "ok" };
+      }),
+    });
+
+    await adapter.handleEventCallback(directMessage("where am I?"));
+
+    expect(captured?.surface).toMatchObject({ kind: "dm", id: "D123" });
+  });
+
+  it("keeps the surface usable when conversations.info fails", async () => {
+    const api = new FakeSlackApi();
+    api.conversationsInfoFailure = new Error("socket hang up");
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      botUserIds: ["U0BOT"],
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "ok" };
+      }),
+    });
+
+    await adapter.handleEventCallback(appMention("<@U0BOT> hi", { channel: "C123" }));
+
+    // The kind and id survive; only the name is lost.
+    expect(captured?.surface).toMatchObject({ kind: "channel", id: "C123" });
+    expect(captured?.surface?.name).toBeUndefined();
+  });
+
+  it("states the operator's configured per-message budget, not the default", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      resolveChannelNames: false,
+      stream: { maxMessageChars: 1_500 },
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "ok" };
+      }),
+    });
+
+    await adapter.handleEventCallback(directMessage("budget?"));
+
+    expect(captured?.surface?.messageBudget).toEqual({ maxChars: 1_500, overflow: "thread" });
   });
 
   it("notify() runs a proactive turn on the target thread and posts the answer there", async () => {

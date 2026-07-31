@@ -1,6 +1,7 @@
 import {
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
+  DEFAULT_MAX_MESSAGE_CHARS,
   agentAttachmentKindFromMimeType,
   decodeAgentAttachmentText,
   type AgentAttachment,
@@ -8,6 +9,7 @@ import {
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
   type AgentResponse,
+  type AgentSurface,
 } from "@mono-agent/agent-contracts";
 
 import {
@@ -246,6 +248,8 @@ export function buildAgentRequest(
   input: TelegramAgentMessageInput,
   abortSignal: AbortSignal,
   resolvedAttachments?: readonly AgentAttachment[],
+  /** Effective per-message budget for this chat, so the surface can state it. */
+  maxMessageChars?: number,
 ): AgentRequest {
   const from = metadataFromUser(message.from);
   const telegramMetadata: TelegramRequestMetadata = {
@@ -265,6 +269,7 @@ export function buildAgentRequest(
     updateId: update.update_id,
     text: input.text,
     abortSignal,
+    surface: surfaceFromTelegramChat(message.chat, maxMessageChars),
     metadata: {
       telegram: telegramMetadata,
     },
@@ -288,6 +293,55 @@ export function buildAgentRequest(
   }
 
   return request;
+}
+
+/**
+ * Model-visible surface identity for the turn: which chat this is, what kind it
+ * is, and what a long answer will do here.
+ *
+ * Telegram states the kind outright on every update, so unlike Slack there is
+ * nothing to infer and no extra API call. A private chat's `username` IS the
+ * counterpart's handle, which is the recognizable name for a DM; `first_name`
+ * backs it up when the account has no username at all.
+ *
+ * Overflow is `follow_up` because Telegram has no threads to continue in — the
+ * shared stream posts further messages into the same chat.
+ */
+function surfaceFromTelegramChat(
+  chat: TelegramMessage["chat"],
+  maxMessageChars: number | undefined,
+): AgentSurface {
+  const kind = TELEGRAM_SURFACE_KINDS[chat.type ?? ""] ?? "group";
+  const name = kind === "dm"
+    ? chat.username ?? joinNameParts(chat.first_name, chat.last_name)
+    : chat.title ?? chat.username;
+  return {
+    kind,
+    ...(name === undefined ? {} : { name }),
+    id: String(chat.id),
+    messageBudget: {
+      maxChars: maxMessageChars ?? DEFAULT_MAX_MESSAGE_CHARS,
+      overflow: "follow_up",
+    },
+  };
+}
+
+/**
+ * Telegram's `chat.type` values. A supergroup is a group that outgrew the plain
+ * group limits — same audience shape — while `channel` is a broadcast surface
+ * with a name, which is what `channel` means here. An unknown or absent type
+ * falls back to `group`: assuming several readers is the safe error.
+ */
+const TELEGRAM_SURFACE_KINDS: Record<string, AgentSurface["kind"] | undefined> = {
+  private: "dm",
+  group: "group",
+  supergroup: "group",
+  channel: "channel",
+};
+
+function joinNameParts(first?: string, last?: string): string | undefined {
+  const joined = [first, last].filter((part) => part !== undefined && part.length > 0).join(" ");
+  return joined.length > 0 ? joined : undefined;
 }
 
 /**

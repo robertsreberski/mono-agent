@@ -247,6 +247,7 @@ export function createAgentResponder(options: {
       ...(request.precedingMessages === undefined || request.precedingMessages.length === 0
         ? {}
         : { precedingMessages: request.precedingMessages }),
+      ...(request.surface === undefined ? {} : { surface: request.surface }),
       ...(request.replyTo === undefined ? {} : { replyTo: request.replyTo }),
       ...(request.continuation === undefined ? {} : { continuation: request.continuation }),
       ...(boundary === undefined ? {} : { sessionBoundary: boundary }),

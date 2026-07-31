@@ -14,6 +14,8 @@ import type {
   SlackReactionsAddParams,
   SlackRequestOptions,
   SlackSetAssistantStatusParams,
+  SlackConversationsInfoParams,
+  SlackConversationsInfoResult,
   SlackUsersInfoParams,
   SlackUsersInfoResult,
   SlackViewsPublishParams,
@@ -246,6 +248,18 @@ export class SlackWebApiClient implements SlackWebApi {
     return this.request<SlackUsersInfoResult>(
       "users.info",
       { user: params.userId },
+      this.botToken,
+      options,
+    );
+  }
+
+  conversationsInfo(
+    params: SlackConversationsInfoParams,
+    options?: SlackRequestOptions,
+  ): Promise<SlackConversationsInfoResult> {
+    return this.request<SlackConversationsInfoResult>(
+      "conversations.info",
+      { channel: params.channelId },
       this.botToken,
       options,
     );

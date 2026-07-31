@@ -218,3 +218,70 @@ describe("buildAgentRequest sender identity", () => {
     expect(request.sender).toEqual({ id: "58", displayName: "Robert" });
   });
 });
+
+describe("buildAgentRequest surface identity", () => {
+  function requestFor(
+    chat: TelegramMessage["chat"],
+    maxMessageChars?: number,
+  ): ReturnType<typeof buildAgentRequest> {
+    const message: TelegramMessage = { message_id: 7, chat, text: "where am I?" };
+    return buildAgentRequest(
+      { update_id: 1, message },
+      message,
+      { text: "where am I?", attachments: [] },
+      new AbortController().signal,
+      undefined,
+      maxMessageChars,
+    );
+  }
+
+  it("names a supergroup by its title and marks it shared", () => {
+    const request = requestFor({ id: -100_42, type: "supergroup", title: "Ops crew" });
+
+    expect(request.surface).toEqual({
+      kind: "group",
+      name: "Ops crew",
+      id: "-10042",
+      messageBudget: { maxChars: 3_800, overflow: "follow_up" },
+    });
+  });
+
+  it("maps a plain group to the same kind as a supergroup", () => {
+    // A supergroup is a group that outgrew the plain limits — same audience.
+    expect(requestFor({ id: -7, type: "group", title: "Small" }).surface?.kind).toBe("group");
+  });
+
+  it("maps a broadcast channel to channel", () => {
+    expect(requestFor({ id: -8, type: "channel", title: "Announcements" }).surface).toMatchObject({
+      kind: "channel",
+      name: "Announcements",
+    });
+  });
+
+  it("names a private chat by the counterpart's handle", () => {
+    expect(requestFor({ id: 55, type: "private", username: "alice" }).surface).toMatchObject({
+      kind: "dm",
+      name: "alice",
+      id: "55",
+    });
+  });
+
+  it("falls back to a private chat's first+last name when there is no handle", () => {
+    expect(
+      requestFor({ id: 55, type: "private", first_name: "Alice", last_name: "Chen" }).surface?.name,
+    ).toBe("Alice Chen");
+  });
+
+  it("assumes several readers when the chat type is unknown or absent", () => {
+    // Assuming a shared audience is the safe direction to be wrong in.
+    expect(requestFor({ id: 9 }).surface?.kind).toBe("group");
+    expect(requestFor({ id: 9, type: "something_new" }).surface?.kind).toBe("group");
+  });
+
+  it("states the operator's configured budget rather than the default", () => {
+    expect(requestFor({ id: 9, type: "private" }, 1_500).surface?.messageBudget).toEqual({
+      maxChars: 1_500,
+      overflow: "follow_up",
+    });
+  });
+});

@@ -140,9 +140,80 @@ export function decodeAgentAttachmentText(
  * session rollover, while this value identifies the channel conversation that
  * can actually receive a reply.  Hosts must not copy it into model prompts,
  * tool arguments, or run artifacts.
+ *
+ * Note the narrower claim since {@link AgentSurface} arrived: what stays out of
+ * the prompt is the ROUTE -- this composite id, which pins a specific thread --
+ * not the fact of which channel the turn is happening in.
  */
 export interface AgentReplyTarget {
   readonly conversationId: string;
+}
+
+/**
+ * Which surface the current turn is happening on: a DM, a named channel, or a
+ * group chat.
+ *
+ * EXPLICITLY MODEL-VISIBLE, including `id`. Agent behaviour legitimately differs
+ * by surface -- a Slack channel run wakes only on `app_mention` so a follow-up
+ * needs another mention while a DM run does not; a channel has several readers
+ * and a DM has one; a multi-channel deployment scopes tone and topic per channel
+ * -- and an agent that cannot tell which surface it is on cannot apply any of it.
+ *
+ * On exposing `id`: this is a deliberate, operator-chosen relaxation of the older
+ * "no physical identity in a prompt" rule, taken so the agent can name its
+ * surface unambiguously. The residual risk is concrete rather than theoretical:
+ * the optional `SlackSendMessage` tool takes a raw channel id, so a deployment
+ * that enables it with `allowAllChannels` lets the model post to any channel
+ * whose id it has seen. A deployment with an explicit channel allowlist -- the
+ * default posture -- is unaffected, since the allowlist is what bounds delivery.
+ *
+ * What this type still does NOT carry, and must not:
+ *
+ * - A thread timestamp, or any {@link AgentReplyTarget} conversation id. The
+ *   model learns the channel, never the exact thread to deliver into.
+ * - {@link AgentMessageSender.id}. A Slack user id doubles as a DM channel id
+ *   with a DIFFERENT surface's identity, so it stays host-only; a DM's own
+ *   channel id here is the surface the turn is already on.
+ * - A callback URL or delivery token of any kind.
+ *
+ * `name` is user-controlled on every channel (anyone who can rename a channel
+ * controls it), so the harness sanitizes it exactly like a display name and it
+ * is evidence of a name rather than proof of one.
+ */
+export interface AgentSurface {
+  /**
+   * `dm` — one other reader. `channel` — a named, shared, potentially large
+   * audience. `group` — a multi-party chat that is not a named channel (a
+   * Telegram group, a Slack multi-person DM).
+   */
+  readonly kind: "dm" | "channel" | "group";
+  /**
+   * Model-visible human name for the surface: a Slack channel name without `#`,
+   * a Telegram chat title, or a DM counterpart's handle without `@`. Absent when
+   * the channel cannot resolve one (e.g. Slack without `channels:read`).
+   */
+  readonly name?: string;
+  /**
+   * Model-visible platform id for THIS conversation's channel or chat — a Slack
+   * `C…`/`D…`/`G…` id, a Telegram numeric chat id. Never a thread id.
+   */
+  readonly id?: string;
+  /**
+   * What the channel will actually do with a long answer, so the agent composes
+   * to the real limit instead of inventing one per skill. Sourced from the
+   * transport's own budget, so it cannot drift from what is enforced.
+   */
+  readonly messageBudget?: AgentSurfaceMessageBudget;
+}
+
+export interface AgentSurfaceMessageBudget {
+  /** Per-message character budget the transport chunks at. */
+  readonly maxChars: number;
+  /**
+   * Where the overflow goes: `thread` continues under the first message (Slack),
+   * `follow_up` posts further messages in the same conversation (Telegram).
+   */
+  readonly overflow: "thread" | "follow_up";
 }
 
 /**
@@ -155,8 +226,10 @@ export interface AgentReplyTarget {
  *
  * `id` is the sole exception and stays HOST-ONLY. It is a physical channel
  * identity and an actionable delivery target -- a Slack user id doubles as a DM
- * channel id -- so putting it in a prompt would hand the model an exfiltration
- * token. Hosts may use it for bookkeeping and traces only.
+ * channel id, so it would hand the model a route to a DIFFERENT surface than the
+ * one this turn is on. ({@link AgentSurface.id} is model-visible precisely
+ * because it names the surface already in play.) Hosts may use it for
+ * bookkeeping and traces only.
  *
  * `displayName` and `handle` are user-controlled on every channel, so they are
  * evidence of a name, never proof of identity. `isBot` is the only trustworthy
@@ -363,6 +436,13 @@ export interface AgentRequestBase {
    * bounded untrusted transcript on the user message, never persisted.
    */
   readonly precedingMessages?: readonly AgentPrecedingMessage[];
+  /**
+   * Which surface this turn is on. EXPLICITLY MODEL-VISIBLE in full, including
+   * `id` -- see {@link AgentSurface} for what it deliberately still excludes.
+   * Channels with no surface of their own (cron, webhook, single-user CLI) omit
+   * it and the turn is byte-identical to one built before this field existed.
+   */
+  readonly surface?: AgentSurface;
   /** Host-only physical reply destination; never model-visible. */
   readonly replyTo?: AgentReplyTarget;
   /** Host-only continuation synthesis controls; never model-visible. */
