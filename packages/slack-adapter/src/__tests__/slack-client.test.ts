@@ -17,7 +17,7 @@ function jsonResponse(payload: unknown, init?: ResponseInit): Response {
 }
 
 describe("SlackWebApiClient", () => {
-  it("sends Slack Web API requests with bearer auth and JSON bodies", async () => {
+  it("sends Slack write requests with bearer auth and JSON bodies", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({ ok: true, channel: "C1", ts: "171.1", message: { text: "hello" } }),
     ) as unknown as typeof fetch;
@@ -65,14 +65,15 @@ describe("SlackWebApiClient", () => {
     ).resolves.toMatchObject({ ok: true, messages: [{ ts: "170.1" }] });
 
     const [url, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
-    expect(String(url)).toBe("https://slack.example/api/conversations.replies");
-    expect(JSON.parse(String(init?.body))).toEqual({
-      channel: "C1",
-      ts: "170.1",
-      latest: "172.5",
-      inclusive: true,
-      limit: 15,
+    expect(String(url)).toBe(
+      "https://slack.example/api/conversations.replies?channel=C1&ts=170.1&latest=172.5&inclusive=true&limit=15",
+    );
+    expect(init).toMatchObject({
+      method: "GET",
+      headers: { authorization: `Bearer ${BOT_TOKEN}` },
     });
+    expect(init?.headers).toEqual({ authorization: `Bearer ${BOT_TOKEN}` });
+    expect(init?.body).toBeUndefined();
   });
 
   it("omits unset window arguments from conversations.history", async () => {
@@ -81,8 +82,16 @@ describe("SlackWebApiClient", () => {
 
     await client.conversationsHistory({ channelId: "C1", limit: 15 });
 
-    const [, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
-    expect(JSON.parse(String(init?.body))).toEqual({ channel: "C1", limit: 15 });
+    const [url, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
+    expect(String(url)).toBe(
+      "https://slack.com/api/conversations.history?channel=C1&limit=15",
+    );
+    expect(init).toMatchObject({
+      method: "GET",
+      headers: { authorization: `Bearer ${BOT_TOKEN}` },
+    });
+    expect(init?.headers).toEqual({ authorization: `Bearer ${BOT_TOKEN}` });
+    expect(init?.body).toBeUndefined();
   });
 
   it("resolves a member profile through users.info", async () => {
@@ -102,8 +111,39 @@ describe("SlackWebApiClient", () => {
     });
 
     const [url, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
-    expect(String(url)).toBe("https://slack.example/api/users.info");
-    expect(JSON.parse(String(init?.body))).toEqual({ user: "U1" });
+    expect(String(url)).toBe("https://slack.example/api/users.info?user=U1");
+    expect(init).toMatchObject({
+      method: "GET",
+      headers: { authorization: `Bearer ${BOT_TOKEN}` },
+    });
+    expect(init?.headers).toEqual({ authorization: `Bearer ${BOT_TOKEN}` });
+    expect(init?.body).toBeUndefined();
+  });
+
+  it("describes a channel through conversations.info", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ ok: true, channel: { name: "general", is_channel: true } }),
+    ) as unknown as typeof fetch;
+    const client = new SlackWebApiClient({
+      botToken: BOT_TOKEN,
+      apiBaseUrl: "https://slack.example/api",
+      fetchImpl,
+      requestTimeoutMs: 0,
+    });
+
+    await expect(client.conversationsInfo({ channelId: "C1" })).resolves.toMatchObject({
+      ok: true,
+      channel: { name: "general", is_channel: true },
+    });
+
+    const [url, init] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
+    expect(String(url)).toBe("https://slack.example/api/conversations.info?channel=C1");
+    expect(init).toMatchObject({
+      method: "GET",
+      headers: { authorization: `Bearer ${BOT_TOKEN}` },
+    });
+    expect(init?.headers).toEqual({ authorization: `Bearer ${BOT_TOKEN}` });
+    expect(init?.body).toBeUndefined();
   });
 
   it("carries Retry-After off a rate-limited ok:false envelope, not just an HTTP 429", async () => {
@@ -245,7 +285,10 @@ describe("SlackWebApiClient", () => {
 
     await expect(http.authTest()).rejects.toMatchObject({ kind: "http", status: 502 });
     await expect(network.authTest()).rejects.toMatchObject({ kind: "network" });
-    await expect(aborted.authTest()).rejects.toMatchObject({ kind: "aborted" });
+    await expect(aborted.usersInfo({ userId: "U1" })).rejects.toMatchObject({
+      kind: "aborted",
+      method: "users.info",
+    });
     await expect(malformed.authTest()).rejects.toMatchObject({ kind: "malformed" });
   });
 
