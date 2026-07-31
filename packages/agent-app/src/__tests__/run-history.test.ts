@@ -527,6 +527,40 @@ describe("RunHistory MCP tool", () => {
     }
   });
 
+  it("names the term a relaxed match scored on, even when only metadata carried it", async () => {
+    const artifactDir = await tempDir();
+    const conversationId = "web:model-only-match";
+    await writeRun({
+      artifactDir,
+      runId: "model-only-run",
+      conversationId,
+      startedAt: "2026-07-30T18:00:00.000Z",
+      userInput: "Tidy the reading list",
+      result: { model: "pi:openai-codex:gpt-5.5" },
+    });
+
+    const history = await openHistoryClient(artifactDir, conversationId);
+    try {
+      // "openai" is only in the model reference — a field the scorer reads. The
+      // explanation must come from the same haystack or it names nothing at all.
+      const result = await history.client.callTool({
+        name: RUN_HISTORY_TOOL_NAME,
+        arguments: { query: "openai newsletters" },
+      });
+      const body = structured<{
+        readonly runs: ReadonlyArray<{ readonly runId: string }>;
+        readonly matchedAllTerms: boolean;
+        readonly navigation: { readonly guidance: string };
+      }>(result);
+
+      expect(body.runs.map((run) => run.runId)).toEqual(["model-only-run"]);
+      expect(body.matchedAllTerms).toBe(false);
+      expect(body.navigation.guidance).toContain("best matched: openai");
+    } finally {
+      await history.close();
+    }
+  });
+
   it("ranks partial matches by how much of the query they carry", async () => {
     const artifactDir = await tempDir();
     const conversationId = "web:ranking";

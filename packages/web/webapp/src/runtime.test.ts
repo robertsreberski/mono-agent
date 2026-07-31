@@ -203,11 +203,33 @@ describe("convertWebMessage", () => {
     expect(converted.content.map((part) => part.type)).toEqual(["reasoning", "tool-call"]);
   });
 
+  it.each(["cancelled", "failed", "interrupted"] as const)(
+    "keeps a %s turn in arrival order, because its last prose is not an answer",
+    (status) => {
+      const converted = convertWebMessage(
+        message({
+          role: "assistant",
+          status,
+          parts: [
+            { type: "text", text: "Let me look at the inbox." },
+            { type: "tool-call", toolCallId: "t1", toolName: "Gmail", args: {}, status: "running" },
+          ],
+        }),
+      );
+
+      // A turn that never reached a final answer has only narration; hoisting
+      // the tool above it would invert the chronology and dress the narration
+      // up as the answer.
+      if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+      expect(converted.content.map((part) => part.type)).toEqual(["text", "tool-call"]);
+    },
+  );
+
   it("keeps a run failure after the answer instead of letting it split the activity log", () => {
     const converted = convertWebMessage(
       message({
         role: "assistant",
-        status: "failed",
+        status: "complete",
         parts: [
           { type: "tool-call", toolCallId: "t1", toolName: "Gmail", args: {}, status: "failed" },
           { type: "error", code: "provider_unavailable", message: "The agent run failed." },

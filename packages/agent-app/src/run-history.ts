@@ -705,14 +705,15 @@ function scorableTerms(terms: readonly string[]): readonly string[] {
   return discriminating.length === 0 ? terms : discriminating;
 }
 
-/** How many of the query's terms this run's safe metadata carries. */
-function searchScore(
-  run: RecordedRunListItem,
-  terms: readonly string[],
-  artifactDir: string,
-): number {
+/**
+ * The safe text a query is matched against. Scoring and the explanation of a
+ * relaxed match read the SAME haystack: an explanation built from a narrower
+ * one can name no term for a run that scored, leaving the caller with a ranked
+ * candidate and an empty "best matched" list.
+ */
+function searchHaystack(run: RecordedRunListItem, artifactDir: string): string {
   const metadata = projectRunMetadata(run, artifactDir);
-  const haystack = normalizeSearchText([
+  return normalizeSearchText([
     metadata.runId,
     metadata.status,
     metadata.startedAt,
@@ -724,6 +725,15 @@ function searchScore(
     metadata.failureKind,
     metadata.trigger,
   ].filter((value): value is string => typeof value === "string").join("\n"));
+}
+
+/** How many of the query's terms this run's safe metadata carries. */
+function searchScore(
+  run: RecordedRunListItem,
+  terms: readonly string[],
+  artifactDir: string,
+): number {
+  const haystack = searchHaystack(run, artifactDir);
   return terms.filter((term) => haystack.includes(term)).length;
 }
 
@@ -756,23 +766,14 @@ function rankSearchMatches(
   return { matches: ranked.map((entry) => entry.run), matchedAllTerms: false };
 }
 
-/** The terms a relaxed result actually matched, most useful first. */
+/** The terms a relaxed result actually matched, in query order. */
 function matchedTerms(
   run: RecordedRunListItem,
   queryTerms: readonly string[],
   artifactDir: string,
 ): readonly string[] {
-  const terms = scorableTerms(queryTerms);
-  const metadata = projectRunMetadata(run, artifactDir);
-  const haystack = normalizeSearchText([
-    metadata.runId,
-    metadata.status,
-    metadata.source,
-    metadata.sourceDetail,
-    metadata.failureKind,
-    metadata.trigger,
-  ].filter((value): value is string => typeof value === "string").join("\n"));
-  return terms.filter((term) => haystack.includes(term));
+  const haystack = searchHaystack(run, artifactDir);
+  return scorableTerms(queryTerms).filter((term) => haystack.includes(term));
 }
 
 function collectionNavigation(

@@ -200,18 +200,18 @@ const isBlankText = (part: ConvertedPart): boolean =>
   part.type === "text" && part.text.trim().length === 0;
 
 /**
- * Lay a finished assistant turn out as one activity log over one answer.
+ * Lay a completed assistant turn out as one activity log over one answer.
  *
  * The renderer coalesces only ADJACENT activity parts, so prose the model writes
  * between tool calls splits a turn into alternating bands of answer and
  * activity — which is how a settled message ended up reading as four disclosures
- * wedged into three paragraphs. Once the turn is settled the last prose IS the
- * answer and everything before it is working-out, so interim prose becomes a
- * `note` (activity, like a tool row) and the whole run closes up.
+ * wedged into three paragraphs. In a completed turn the last prose IS the answer
+ * and everything before it is working-out, so interim prose becomes a `note`
+ * (activity, like a tool row) and the whole run closes up.
  *
- * A run failure is neither: it stays behind the answer so it cannot split the
+ * An error part is neither: it stays behind the answer so it cannot split the
  * log, and so does any data part a newer server sends that this bundle cannot
- * place. A turn cancelled mid-tool has no answer to separate and is left alone.
+ * place. A turn that produced no prose at all is all activity.
  */
 const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] => {
   const visible = parts.filter((part) => !isBlankText(part));
@@ -243,9 +243,12 @@ export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
     const convertedPart = convertPart(part);
     return convertedPart == null ? [] : [convertedPart];
   }));
-  // Streaming stays in arrival order: the answer is still being written, and
-  // reordering under the reader mid-turn is worse than reading it interleaved.
-  const content = message.role === "assistant" && message.status !== "running"
+  // Only a COMPLETED turn is known to have an answer. Streaming is still
+  // writing one, and a cancelled/failed/interrupted turn was stopped with none
+  // (the store finalizes all three with no final text), so its last prose is
+  // narration: folding would invert the chronology and dress that narration up
+  // as the answer. Both keep arrival order.
+  const content = message.role === "assistant" && message.status === "complete"
     ? foldSettledActivity(converted)
     : converted;
   const status: ThreadMessageLike["status"] =
