@@ -180,7 +180,7 @@ The compact shorthand is designed for agent exploration:
 | Call arguments | Result |
 | --- | --- |
 | `{}` | List recent completed runs. |
-| `{ "query": "north Spain flights" }` | Search safe trigger and summary metadata. Every Unicode-normalized, case-folded term must match. |
+| `{ "query": "north Spain flights" }` | Search safe trigger and summary metadata, ranked by how many Unicode-normalized, case-folded terms a run carries. A single match also carries that run's compact overview. |
 | `{ "runId": "..." }` | Return a compact overview: metadata and trigger, final visible output, warnings/failures, tool-name call/error counts, and a timeline cursor when detail exists. |
 | `{ "runId": "...", "cursor": "..." }` | Return the next timeline page (at most 10 entries and about 16 KiB). |
 
@@ -192,10 +192,31 @@ search accept an optional `limit` (default 5, range 1–10) and expose an opaque
 untrusted evidence; each next action contains exact `arguments` the agent can
 submit to continue, narrow, or return to an overview.
 
-List/search scan retained summaries once per call. Search does not open event
-JSONL and only considers sanitized trigger/user input, run id, dates,
-status/failure kind, source/detail, model, and effort. It never searches system
-prompts, reasoning, memory, visible assistant output, or tool output.
+List/search **matching** scans retained summaries once per call. It does not
+open event JSONL to decide what matches and only considers sanitized
+trigger/user input, run id, dates, status/failure kind, source/detail, model,
+and effort. It never searches system prompts, reasoning, memory, visible
+assistant output, or tool output.
+
+Search **ranks** rather than requiring every term, because a caller naming what
+it wants ("unsubscribe group A newsletters") usually says more than the trigger
+it is looking for did. Runs carrying every term win outright and are returned
+alone; ranked partial matches are offered only when no run carried the whole
+query, in which case `matchedAllTerms` is `false` and `navigation.guidance`
+names the terms the best candidate actually matched — from the same fields the
+scorer read, so a run that ranked on its model or date says so. A run matching
+no term is never returned. Because matching is substring matching, a lone ASCII
+letter or digit (the "A" of "group A") is dropped from scoring unless the whole
+query is made of them.
+
+When a search lands on exactly one run and no cursor was supplied, the result
+also carries that run's compact `overview` and offers the timeline cursor as the
+next action — the "which one?" round trip is skipped. This **overview
+hydration** is the one place a search touches event JSONL, and it is the same
+bounded read and same safe projection an explicit `{ "runId" }` performs: no
+wider read than the follow-up call it replaces, and no change to what a search
+*matches* on. An unreadable artifact for that run degrades to the plain search
+result rather than a tool error.
 
 The current or any running run is excluded, as are unrelated conversations and threads. When daily session rollover is configured, its `#YYYY-MM-DD` buckets are ignored for RunHistory scope, so rollover never partitions one logical conversation's recorded history. The safe projection never returns system prompts, reasoning/thinking, recalled memory or turn-context payloads, raw artifact paths, or provider-session metadata. Structured and artifact-shaped opaque tool results are scrubbed or omitted; nested `RunHistory` result bodies are always replaced with an omission marker so inspection cannot recursively embed prior inspections. Structured projected values first pass through the shared observability redactor: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. `RunHistory` then applies an additional projection sanitizer. In that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible; numeric values under `apiKey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted. Assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel. An optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted. Per-string and per-page bounds still apply, and incomplete event input is announced. All historical content is labelled untrusted evidence, never instructions.
 

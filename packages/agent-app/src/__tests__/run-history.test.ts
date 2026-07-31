@@ -485,6 +485,192 @@ describe("RunHistory MCP tool", () => {
     }
   });
 
+  it("answers an over-specific query with its best partial matches instead of nothing", async () => {
+    const artifactDir = await tempDir();
+    const conversationId = "web:thread-1";
+    await writeRun({
+      artifactDir,
+      runId: "unsubscribe-run",
+      conversationId,
+      startedAt: "2026-07-30T21:13:05.000Z",
+      userInput: "Please help me evaluate my recent inbox and propose items we should unsubscribe from",
+      source: "web",
+    });
+    await writeRun({
+      artifactDir,
+      runId: "calendar-run",
+      conversationId,
+      startedAt: "2026-07-30T20:00:00.000Z",
+      userInput: "Deduplicate my calendar events",
+      source: "web",
+    });
+
+    const history = await openHistoryClient(artifactDir, conversationId);
+    try {
+      // The obvious phrasing of a follow-up names more than the trigger did.
+      // Requiring every term answered "0 matching runs" and cost two more calls.
+      const result = await history.client.callTool({
+        name: RUN_HISTORY_TOOL_NAME,
+        arguments: { query: "unsubscribe group A newsletters" },
+      });
+      const body = structured<{
+        readonly runs: ReadonlyArray<{ readonly runId: string }>;
+        readonly matchedAllTerms: boolean;
+        readonly navigation: { readonly guidance: string };
+      }>(result);
+
+      expect(body.runs.map((run) => run.runId)).toEqual(["unsubscribe-run"]);
+      expect(body.matchedAllTerms).toBe(false);
+      expect(body.navigation.guidance).toContain("unsubscribe");
+    } finally {
+      await history.close();
+    }
+  });
+
+  it("names the term a relaxed match scored on, even when only metadata carried it", async () => {
+    const artifactDir = await tempDir();
+    const conversationId = "web:model-only-match";
+    await writeRun({
+      artifactDir,
+      runId: "model-only-run",
+      conversationId,
+      startedAt: "2026-07-30T18:00:00.000Z",
+      userInput: "Tidy the reading list",
+      result: { model: "pi:openai-codex:gpt-5.5" },
+    });
+
+    const history = await openHistoryClient(artifactDir, conversationId);
+    try {
+      // "openai" is only in the model reference — a field the scorer reads. The
+      // explanation must come from the same haystack or it names nothing at all.
+      const result = await history.client.callTool({
+        name: RUN_HISTORY_TOOL_NAME,
+        arguments: { query: "openai newsletters" },
+      });
+      const body = structured<{
+        readonly runs: ReadonlyArray<{ readonly runId: string }>;
+        readonly matchedAllTerms: boolean;
+        readonly navigation: { readonly guidance: string };
+      }>(result);
+
+      expect(body.runs.map((run) => run.runId)).toEqual(["model-only-run"]);
+      expect(body.matchedAllTerms).toBe(false);
+      expect(body.navigation.guidance).toContain("best matched: openai");
+    } finally {
+      await history.close();
+    }
+  });
+
+  it("ranks partial matches by how much of the query they carry", async () => {
+    const artifactDir = await tempDir();
+    const conversationId = "web:ranking";
+    await writeRun({
+      artifactDir,
+      runId: "one-term-run",
+      conversationId,
+      startedAt: "2026-07-30T18:00:00.000Z",
+      userInput: "Newsletter cleanup ideas",
+    });
+    await writeRun({
+      artifactDir,
+      runId: "two-term-run",
+      conversationId,
+      startedAt: "2026-07-30T17:00:00.000Z",
+      userInput: "Unsubscribe from the newsletter senders",
+    });
+
+    const history = await openHistoryClient(artifactDir, conversationId);
+    try {
+      const result = await history.client.callTool({
+        name: RUN_HISTORY_TOOL_NAME,
+        arguments: { query: "unsubscribe newsletter digest" },
+      });
+      // Two matched terms beats one, even though the weaker run is more recent.
+      expect(structured<{ readonly runs: ReadonlyArray<{ readonly runId: string }> }>(result).runs
+        .map((run) => run.runId)).toEqual(["two-term-run", "one-term-run"]);
+    } finally {
+      await history.close();
+    }
+  });
+
+  it("carries the compact overview when a search lands on exactly one run", async () => {
+    const artifactDir = await tempDir();
+    const conversationId = "web:single-candidate";
+    await writeRun({
+      artifactDir,
+      runId: "only-match-run",
+      conversationId,
+      startedAt: "2026-07-30T21:13:05.000Z",
+      userInput: "Propose items we should unsubscribe from",
+      events: [
+        { type: "assistant", message: { content: [{ type: "text", text: "Group A: Seeking Alpha, HEMA." }] } },
+      ],
+    });
+
+    const history = await openHistoryClient(artifactDir, conversationId);
+    try {
+      const result = await history.client.callTool({
+        name: RUN_HISTORY_TOOL_NAME,
+        arguments: { query: "unsubscribe" },
+      });
+      const body = structured<{
+        readonly runs: readonly unknown[];
+        readonly overview?: {
+          readonly run: { readonly runId: string };
+          readonly trigger?: string;
+          readonly finalOutput?: string;
+          readonly nextCursor?: string;
+        };
+        readonly navigation: {
+          readonly nextActions: ReadonlyArray<{ readonly arguments: Readonly<Record<string, unknown>> }>;
+        };
+      }>(result);
+
+      expect(body.runs).toHaveLength(1);
+      // The only candidate needs no "which one?" round trip.
+      expect(body.overview?.run.runId).toBe("only-match-run");
+      expect(body.overview?.finalOutput).toContain("Seeking Alpha");
+      expect(JSON.stringify(result.content)).toContain("Seeking Alpha");
+      // And the follow-up on offer is the timeline, not the overview just given.
+      expect(body.navigation.nextActions[0]?.arguments).toMatchObject({
+        runId: "only-match-run",
+        cursor: expect.any(String),
+      });
+    } finally {
+      await history.close();
+    }
+  });
+
+  it("still answers a single-candidate search when that run's events cannot be read", async () => {
+    const artifactDir = await tempDir();
+    const conversationId = "web:unreadable-events";
+    await writeRun({
+      artifactDir,
+      runId: "damaged-run",
+      conversationId,
+      startedAt: "2026-07-30T21:13:05.000Z",
+      userInput: "Propose items we should unsubscribe from",
+      events: [{ type: "assistant", message: { content: [{ type: "text", text: "Group A." }] } }],
+    });
+    await writeFile(join(artifactDir, "damaged-run.events.jsonl"), "{not json\n", "utf8");
+
+    const history = await openHistoryClient(artifactDir, conversationId);
+    try {
+      const result = await history.client.callTool({
+        name: RUN_HISTORY_TOOL_NAME,
+        arguments: { query: "unsubscribe" },
+      });
+      const body = structured<{
+        readonly runs: ReadonlyArray<{ readonly runId: string }>;
+      }>(result);
+
+      expect(result.isError).not.toBe(true);
+      expect(body.runs.map((run) => run.runId)).toEqual(["damaged-run"]);
+    } finally {
+      await history.close();
+    }
+  });
+
   it("returns exact next-call arguments for search and timeline pagination", async () => {
     const artifactDir = await tempDir();
     const conversationId = "cron:pagination";

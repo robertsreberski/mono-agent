@@ -188,15 +188,69 @@ const joinAdjacentText = (parts: readonly ConvertedPart[]): ConvertedPart[] =>
     return joined;
   }, []);
 
+/** The part types the transcript presents as activity rather than as the answer. */
+const ACTIVITY_PART_TYPES: ReadonlySet<string> = new Set([
+  "reasoning",
+  "tool-call",
+  "data-subagent",
+  "data-context-compaction",
+]);
+
+const isBlankText = (part: ConvertedPart): boolean =>
+  part.type === "text" && part.text.trim().length === 0;
+
+/**
+ * Lay a completed assistant turn out as one activity log over one answer.
+ *
+ * The renderer coalesces only ADJACENT activity parts, so prose the model writes
+ * between tool calls splits a turn into alternating bands of answer and
+ * activity — which is how a settled message ended up reading as four disclosures
+ * wedged into three paragraphs. In a completed turn the last prose IS the answer
+ * and everything before it is working-out, so interim prose becomes a `note`
+ * (activity, like a tool row) and the whole run closes up.
+ *
+ * An error part is neither: it stays behind the answer so it cannot split the
+ * log, and so does any data part a newer server sends that this bundle cannot
+ * place. A turn that produced no prose at all is all activity.
+ */
+const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] => {
+  const visible = parts.filter((part) => !isBlankText(part));
+  let answerIndex = -1;
+  visible.forEach((part, index) => {
+    if (part.type === "text") answerIndex = index;
+  });
+  if (answerIndex < 0) return visible;
+
+  const activity: ConvertedPart[] = [];
+  const afterAnswer: ConvertedPart[] = [];
+  visible.forEach((part, index) => {
+    if (index === answerIndex) return;
+    if (part.type === "text") {
+      activity.push({ type: "data-note", data: { text: part.text } });
+      return;
+    }
+    (ACTIVITY_PART_TYPES.has(part.type) ? activity : afterAnswer).push(part);
+  });
+  return [...activity, visible[answerIndex]!, ...afterAnswer];
+};
+
 export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
-  const content = joinAdjacentText(message.parts.flatMap((part) => {
+  const converted = joinAdjacentText(message.parts.flatMap((part) => {
     // The service worker precaches this bundle, so a console left open across a
     // server upgrade can be handed a part type it does not know yet. `== null`
     // covers that `undefined` too: pushing it into content breaks the whole
     // transcript over one unrecognized row.
-    const converted = convertPart(part);
-    return converted == null ? [] : [converted];
+    const convertedPart = convertPart(part);
+    return convertedPart == null ? [] : [convertedPart];
   }));
+  // Only a COMPLETED turn is known to have an answer. Streaming is still
+  // writing one, and a cancelled/failed/interrupted turn was stopped with none
+  // (the store finalizes all three with no final text), so its last prose is
+  // narration: folding would invert the chronology and dress that narration up
+  // as the answer. Both keep arrival order.
+  const content = message.role === "assistant" && message.status === "complete"
+    ? foldSettledActivity(converted)
+    : converted;
   const status: ThreadMessageLike["status"] =
     message.status === "running"
       ? { type: "running" }

@@ -425,6 +425,17 @@ function ContextCompactionPart({ data, status: messageStatus }: DataMessagePartP
   );
 }
 
+/**
+ * Prose the agent wrote between its tool calls. It reads as narration of the
+ * work, so it renders as a plain row in the activity log — in its original
+ * place among the tool rows — rather than as a second answer above the answer.
+ */
+function NotePart({ data }: DataMessagePartProps) {
+  const text = (data as { readonly text?: unknown } | null)?.text;
+  if (typeof text !== "string" || text.trim().length === 0) return null;
+  return <p className="activity-note">{text.trim()}</p>;
+}
+
 // Runtime/provider telemetry remains attached to the message so the context
 // display can summarize it. Compaction alone is promoted into Activity; other
 // transport diagnostics remain out of the transcript UI.
@@ -446,6 +457,7 @@ const parts = {
     by_name: {
       "context-compaction": ContextCompactionPart,
       subagent: SubagentPart,
+      note: NotePart,
       error: ErrorPart,
     },
   },
@@ -475,6 +487,7 @@ function AssistantParts() {
             if (part.name === "telemetry") return null;
             if (part.name === "context-compaction") return <ContextCompactionPart {...part} />;
             if (part.name === "subagent") return <SubagentPart {...part} />;
+            if (part.name === "note") return <NotePart {...part} />;
             if (part.name === "error") return <ErrorPart {...part} />;
             return part.dataRendererUI;
           case "indicator":

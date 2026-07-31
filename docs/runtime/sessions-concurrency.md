@@ -22,7 +22,7 @@ Boundary rules:
 
 | Boundary | What ends | What survives | What is emitted |
 | --- | --- | --- | --- |
-| Daily rollover (`runtime.session.rollover: "daily"`) | The current day-bucket conversation id and its warm provider-session lineage | Durable memory, old run artifacts, durable Pi transcripts for other ids, and app process state | `session_boundary` with `kind: "rollover"` on the first turn of the new bucket |
+| Daily rollover (`runtime.session.rollover: "daily"`) | The current day-bucket conversation id and its warm provider-session lineage, on every channel **except** the console (TUI + web) | Durable memory, old run artifacts, durable Pi transcripts for other ids, app process state, and every console thread | `session_boundary` with `kind: "rollover"` on the first turn of the new bucket |
 | Isolated proactive turn (`runtime.session.isolateProactive: true`) | Nothing shared; the proactive turn intentionally skips the conversation's warm provider session | Existing interactive warm session, durable history, memory, and run artifacts | `session_boundary` with `kind: "isolated"` and `reason: "proactive"` |
 | Isolated model override | Nothing shared; the override turn uses a one-shot provider session for the alternate model | Existing default-model warm session, durable history, memory, and run artifacts | `session_boundary` with `kind: "isolated"` and `reason: "model_override"` |
 | Resume replay after stale/missing provider session | The stale provider session id | Durable history, memory, run artifacts, and the run itself, which retries once | `runtime_warning` `session_resume_retry` plus `session_boundary` with `kind: "resume_replay"` |
@@ -69,6 +69,24 @@ partition recorded-run exploration: the app-owned `RunHistory` tool strips the
 daily bucket only for its request-scoped authorization match, so completed runs
 from earlier buckets of the same logical conversation remain searchable. Other
 conversations and threads remain inaccessible.
+
+Rollover never applies to the console channel (the `gui` operator channel behind
+both `mono-agent tui` and the web console). A console thread already carries an
+explicit, reader-owned session boundary: it has a permanent conversation id and
+a visible "new thread" action. Bucketing it by day on top of that severed a live
+conversation at midnight, so the next morning's follow-up in the same visible
+thread woke with no transcript and had to reconstruct it through `RunHistory`.
+Every other channel — Telegram, Slack, cron, webhook, OpenAI-API — takes the
+configured policy unchanged. `RunHistory` still uses the *configured* policy for
+its scope match, so runs a console thread already recorded under a dated id stay
+searchable from the same thread's undated id.
+
+:::caution
+Enabling this on an agent that has been running with `rollover: "daily"` means
+each existing console thread starts cold exactly once: its durable history lives
+under the old dated id, and the thread now runs under the undated one. Every
+turn after that resumes normally.
+:::
 
 ## Concurrency: admission and execution bounds
 

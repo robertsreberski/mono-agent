@@ -35,7 +35,7 @@ import {
   reasonOf,
   runtimeRouteContainsDirectOpenCode,
 } from "./app-controller-utils.js";
-import type { MonoAgentAppLogger } from "./channels.js";
+import type { ChannelId, MonoAgentAppLogger } from "./channels.js";
 import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import type { ContinuationServiceHandle } from "./continuation-service.js";
 import type { MemoryRetrievalService } from "./memory-retrieval.js";
@@ -87,8 +87,31 @@ export interface ResponderControllerPort {
   recordSessionEvent(event: ConfiguredAgentSessionEvent, coreConfig: MonoAgentConfig): void;
 }
 
-export async function buildResponder(controller: ResponderControllerPort, coreConfig: MonoAgentConfig): Promise<AgentResponder> {
+/**
+ * The channel whose conversations the reader already owns a session boundary
+ * for. `tui` is the gui/operator channel behind both `mono-agent tui` and the
+ * web console: each console thread has a permanent conversation id and an
+ * explicit "new thread" action, so a daily bucket on top of it just severs a
+ * live conversation at midnight — the next morning's follow-up woke with no
+ * transcript and had to reconstruct it through RunHistory.
+ */
+const SELF_BOUNDED_CHANNEL_ID = "tui";
+
+/** The rollover policy this channel's responder runs under. */
+export function sessionRolloverForChannel(
+  channelId: ChannelId | undefined,
+  configured: MonoAgentConfig["runtime"]["session"]["rollover"],
+): MonoAgentConfig["runtime"]["session"]["rollover"] {
+  return channelId === SELF_BOUNDED_CHANNEL_ID ? "none" : configured;
+}
+
+export async function buildResponder(
+  controller: ResponderControllerPort,
+  coreConfig: MonoAgentConfig,
+  channelId?: ChannelId,
+): Promise<AgentResponder> {
   const sandboxEngine = controller.sandboxEngineFor(coreConfig);
+  const sessionRollover = sessionRolloverForChannel(channelId, coreConfig.runtime.session.rollover);
   const runtime = controller.runtime ?? createConfiguredAgentRuntime({
     config: coreConfig,
     ...(sandboxEngine === undefined ? {} : { sandboxEngine }),
@@ -209,6 +232,11 @@ export async function buildResponder(controller: ResponderControllerPort, coreCo
     exporterWarn: (warning) => controller.recordExporterWarning(warning),
     onSessionEvent: (event) => controller.recordSessionEvent(event, coreConfig),
   }, {
+    // Only the responder's own bucketing changes. RunHistory above keeps the
+    // CONFIGURED policy on purpose: it strips `#YYYY-MM-DD` only under `daily`,
+    // and dropping that here would hide every run this console thread already
+    // recorded under a dated id from the un-dated id it now runs as.
+    ...(sessionRollover === undefined ? {} : { sessionRollover }),
     wrapHistoryStore: postedReplyHistory.wrapHistoryStore,
     // Follow the local JSONL source of truth, not outer exporter work:
     // exporter start/finish may still be pending after the summary commits.

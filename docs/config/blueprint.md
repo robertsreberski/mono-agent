@@ -112,7 +112,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "session": {
       "mode": "continuous",                // warm provider session per conversation; per-message starts cold
       "idleTimeoutMs": 1800000,             // warm-session eviction only; durable history is separate
-      "rollover": "none",                  // none|daily; daily appends a date bucket to conversation ids
+      "rollover": "none",                  // none|daily; daily appends a date bucket to conversation ids (console threads excluded)
       "rolloverTimezone": "UTC",           // optional IANA timezone; system timezone when omitted
       "rolloverNotice": false,              // adapter-visible notice on a new daily bucket; default off
       "isolateProactive": false             // true makes scheduled cron turns one-shot; interactive turns unchanged
