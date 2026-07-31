@@ -1,4 +1,5 @@
 import {
+  DEFAULT_MAX_MESSAGE_CHARS,
   createChannelUserCancelReason,
   type AgentAttachment,
   type ChannelAskSnapshot,
@@ -10,8 +11,10 @@ import {
   type AgentRequestBase,
   type AgentResponder as SharedAgentResponder,
   type AgentResponse,
+  type AgentSurface,
 } from "@mono-agent/agent-contracts";
 import { createHash } from "node:crypto";
+import { SlackChannelDirectory, type SlackResolvedChannel } from "./channel-directory.js";
 
 import {
   isSafeSlackPrototypeInstance,
@@ -133,6 +136,61 @@ interface SlackTurnContext {
   readonly sender?: AgentMessageSender;
   /** What was said in this conversation before the trigger, oldest first. */
   readonly precedingMessages?: readonly AgentPrecedingMessage[];
+  /** Name and kind from `conversations.info`, when it could be resolved. */
+  readonly channel?: SlackResolvedChannel;
+}
+
+/**
+ * Model-visible surface identity for the turn.
+ *
+ * Kind comes from three sources in descending authority: `conversations.info`
+ * (which knows `is_im`/`is_mpim` outright), the event's own `channel_type`, and
+ * finally the channel-id prefix. The prefix fallback is what covers
+ * `app_mention`, which carries no `channel_type` at all — `D` is a DM, `G` a
+ * legacy private group, and everything else is treated as a channel.
+ *
+ * The id is always stated: it is the one identifier that is unambiguous when a
+ * name is unavailable, and it is deliberately model-visible — see
+ * {@link AgentSurface} for the boundary that remains.
+ */
+function slackSurface(
+  event: SlackTextEvent,
+  channel: SlackResolvedChannel | undefined,
+  maxMessageChars: number | undefined,
+): AgentSurface {
+  const kind = channel?.kind
+    ?? SLACK_CHANNEL_TYPE_KINDS[event.channelType ?? ""]
+    ?? slackKindFromChannelId(event.channelId);
+  return {
+    kind,
+    ...(channel?.name === undefined ? {} : { name: channel.name }),
+    id: event.channelId,
+    messageBudget: {
+      maxChars: maxMessageChars ?? DEFAULT_MAX_MESSAGE_CHARS,
+      overflow: "thread",
+    },
+  };
+}
+
+/** Slack's `channel_type` values, present on `message` events but not `app_mention`. */
+const SLACK_CHANNEL_TYPE_KINDS: Record<string, AgentSurface["kind"] | undefined> = {
+  im: "dm",
+  mpim: "group",
+  group: "channel",
+  channel: "channel",
+};
+
+/**
+ * Last-resort kind from the id prefix. `D` is a DM and `G` a legacy private
+ * group; modern private channels share the `C` prefix with public ones, which is
+ * why this cannot distinguish them — and does not need to, since both are shared
+ * surfaces with several readers.
+ */
+function slackKindFromChannelId(channelId: string): AgentSurface["kind"] {
+  const prefix = channelId.trim().charAt(0).toUpperCase();
+  if (prefix === "D") return "dm";
+  if (prefix === "G") return "group";
+  return "channel";
 }
 
 /** Tunes how inbound Slack file attachments are downloaded. */
@@ -415,6 +473,13 @@ export interface SlackAdapterOptions {
    * client method is missing, which is byte-identical to the pre-name behaviour.
    */
   resolveUserNames?: boolean;
+  /**
+   * Resolve the surface's name via `conversations.info` (needs `channels:read` /
+   * `groups:read`) so the agent can say WHICH channel it is talking in rather
+   * than only that it is in one. Default `true`; degrades to the surface kind
+   * and id alone when the scope or the client method is missing.
+   */
+  resolveChannelNames?: boolean;
   /**
    * Best-effort model-visible transcript of what was said in the conversation
    * before the agent was triggered. Enabled by default; needs a `*:history` scope.
@@ -876,6 +941,8 @@ export class SlackAdapter {
   private readonly admissionQueues = new Map<string, SerialQueue>();
   /** Speaker-name resolver. Undefined when `resolveUserNames` is off. */
   private readonly userDirectory: SlackUserDirectory | undefined;
+  /** Surface-name resolver. Undefined when `resolveChannelNames` is off. */
+  private readonly channelDirectory: SlackChannelDirectory | undefined;
   private readonly threadContext: ResolvedSlackThreadContext;
   /** This app's own `bot_id`, so its own posts never enter a transcript. */
   private readonly ownBotId: string | undefined;
@@ -938,6 +1005,12 @@ export class SlackAdapter {
     this.userDirectory = options.resolveUserNames === false
       ? undefined
       : new SlackUserDirectory({
+          api: this.api,
+          ...(this.logger === undefined ? {} : { logger: this.logger }),
+        });
+    this.channelDirectory = options.resolveChannelNames === false
+      ? undefined
+      : new SlackChannelDirectory({
           api: this.api,
           ...(this.logger === undefined ? {} : { logger: this.logger }),
         });
@@ -2654,6 +2727,10 @@ export class SlackAdapter {
     if (signal.aborted) return {};
     const deadline = withContextDeadline(signal, this.threadContext.timeoutMs);
     try {
+      // Started before the window read so the two reads overlap rather than
+      // queue: naming the surface is independent of reading the transcript, and
+      // stays useful even for a deployment with thread context switched off.
+      const channelPromise = this.channelDirectory?.resolve(event.channelId, deadline.signal);
       const window = await this.readConversationWindow(event, deadline.signal);
       const selection = "messages" in window
         ? selectPrecedingSlackMessages({
@@ -2676,6 +2753,7 @@ export class SlackAdapter {
       }
       const precedingMessages = trimPrecedingToTotalBytes(entries);
       const sender = senderFor(event.userId, resolved);
+      const channel = await channelPromise;
 
       this.logger?.debug?.("Slack turn context assembled.", {
         source: window.source,
@@ -2684,11 +2762,13 @@ export class SlackAdapter {
         selected: kept.length,
         rendered: precedingMessages.length,
         named: resolved.size,
+        surfaceNamed: channel?.name !== undefined,
       });
 
       return {
         ...(sender === undefined ? {} : { sender }),
         ...(precedingMessages.length === 0 ? {} : { precedingMessages }),
+        ...(channel === undefined ? {} : { channel }),
       };
     } catch (error) {
       // Both halves are contractually non-throwing; this guard exists so a future
@@ -2970,6 +3050,7 @@ export class SlackAdapter {
         attachments,
         conversationId,
         turnContext,
+        this.streamOptions.maxMessageChars,
       );
       this.applyRuntimeSelection(event, request.metadata.slack);
       // Claim the conversation for this thread for the duration of the run, so a
@@ -3277,6 +3358,12 @@ function buildAgentRequest(
   attachments: readonly AgentAttachment[],
   conversationId: string,
   context: SlackTurnContext,
+  /**
+   * Effective per-message budget, so the surface states the number the transport
+   * actually enforces. Passed separately from {@link SlackTurnContext} because it
+   * is always known — the context is best-effort and may come back empty.
+   */
+  maxMessageChars: number | undefined,
 ): AgentRequest {
   const metadata: SlackRequestMetadata = {
     eventId: event.eventId,
@@ -3313,6 +3400,7 @@ function buildAgentRequest(
   const request: AgentRequest = {
     conversationId,
     replyTo: { conversationId: `slack:${event.channelId}:${event.threadTs}` },
+    surface: slackSurface(event, context.channel, maxMessageChars),
     channelId: event.channelId,
     messageTs: event.messageTs,
     threadTs: event.threadTs,
