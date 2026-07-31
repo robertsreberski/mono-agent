@@ -2332,6 +2332,14 @@
           "type": "boolean",
           "default": true
         },
+        "resolveChannelNames": {
+          "description": "Resolves the channel's name via `conversations.info` so the agent knows WHICH channel it is talking in, not just that it is in one. Requires `channels:read` (public) / `groups:read` (private); a missing scope degrades to the surface kind and id alone rather than failing turns.",
+          "examples": [
+            true
+          ],
+          "type": "boolean",
+          "default": true
+        },
         "threadContext": {
           "type": "object",
           "additionalProperties": false,

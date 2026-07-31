@@ -2737,7 +2737,16 @@ export class SlackAdapter {
       // Started before the window read so the two reads overlap rather than
       // queue: naming the surface is independent of reading the transcript, and
       // stays useful even for a deployment with thread context switched off.
-      const channelPromise = this.channelDirectory?.resolve(event.channelId, deadline.signal);
+      //
+      // Raced against the deadline rather than merely handed its signal: a custom
+      // client is free to ignore an abort, and an unraced await would hold the
+      // conversation's admission queue open forever on a never-settling lookup.
+      const channelPromise = this.channelDirectory === undefined
+        ? undefined
+        : raceAgainstDeadline(
+            this.channelDirectory.resolve(event.channelId, deadline.signal),
+            deadline.signal,
+          );
       const window = await this.readConversationWindow(event, deadline.signal);
       const selection = "messages" in window
         ? selectPrecedingSlackMessages({
@@ -2760,7 +2769,8 @@ export class SlackAdapter {
       }
       const precedingMessages = trimPrecedingToTotalBytes(entries);
       const sender = senderFor(event.userId, resolved);
-      const channel = await channelPromise;
+      const raced = channelPromise === undefined ? undefined : await channelPromise;
+      const channel = raced === SLACK_CONTEXT_DEADLINE_EXCEEDED ? undefined : raced;
 
       this.logger?.debug?.("Slack turn context assembled.", {
         source: window.source,
