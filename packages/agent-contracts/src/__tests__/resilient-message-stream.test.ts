@@ -641,6 +641,49 @@ describe("ResilientMessageStream", () => {
     expect(posts.map((p) => p.text).join("")).toBe("&amp;".repeat(400));
   });
 
+  it("fits the wire budget even when the source is far shorter than it", async () => {
+    // Scaling from the BUDGET rather than the offending chunk barely moves when
+    // the source already fits it: 8,001 ampersands render to 40,005 against a
+    // 40,000 budget, so each pass shaves a handful of characters and the answer
+    // is handed to the channel oversized anyway.
+    for (const maxMessageChars of [3_800, 40_000]) {
+      const transport = new FakeTransport({
+        maxMessageChars,
+        renderMarkdown: (text) => text.replaceAll("&", "&amp;"),
+        splitsOversizedMessages: true,
+      });
+      const stream = new ResilientMessageStream({ transport, finalOnly: true, sleep: noSleep });
+
+      await stream.finish("&".repeat(Math.floor(maxMessageChars / 5) + 1));
+
+      const posts = transport.calls.filter((c): c is RecordedPost => c.op === "post");
+      expect(posts.length).toBeGreaterThan(0);
+      for (const post of posts) {
+        expect(Array.from(post.text).length).toBeLessThanOrEqual(maxMessageChars);
+      }
+    }
+  });
+
+  it("fits the budget when expansion is concentrated rather than uniform", async () => {
+    // Proportional scaling assumes uniform expansion; the halving backstop is
+    // what covers a single hot spot in otherwise cheap text.
+    const transport = new FakeTransport({
+      maxMessageChars: 100,
+      renderMarkdown: (text) => text.replaceAll("@", "X".repeat(200)),
+      splitsOversizedMessages: true,
+    });
+    const stream = new ResilientMessageStream({ transport, finalOnly: true, sleep: noSleep });
+
+    await stream.finish(`${"a".repeat(300)} @ ${"b".repeat(300)}`);
+
+    const posts = transport.calls.filter((c): c is RecordedPost => c.op === "post");
+    // The lone "@" cannot fit any budget once rendered, so it is delivered as its
+    // own chunk; everything else is inside the limit.
+    const oversized = posts.filter((p) => Array.from(p.text).length > 100);
+    expect(oversized).toHaveLength(1);
+    expect(oversized[0]?.text).toBe("X".repeat(200));
+  });
+
   it("leaves chunking alone when rendering does not expand the text", async () => {
     const transport = new FakeTransport({ maxMessageChars: 40 });
     const stream = new ResilientMessageStream({ transport, finalOnly: true, sleep: noSleep });

@@ -643,29 +643,51 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
       return chunks;
     }
     for (let pass = 0; pass < MAX_RENDER_FIT_PASSES; pass += 1) {
-      const widest = this.widestRenderedChunk(chunks);
-      if (widest <= this.maxMessageChars) {
+      const worst = this.worstRenderedChunk(chunks);
+      if (worst === undefined) {
         return chunks;
       }
-      const shrunk = Math.floor(sourceBudget * (this.maxMessageChars / widest));
-      const next = Math.max(MIN_SOURCE_BUDGET, Math.min(sourceBudget - 1, shrunk));
+      // Scale from the offending CHUNK's own length, not from the budget. A
+      // chunk shorter than the budget (text that simply expands a lot) would
+      // otherwise shrink the budget by a hair per pass and never converge.
+      const scaled = Math.floor(worst.sourceLength * (this.maxMessageChars / worst.renderedLength));
+      const next = Math.max(MIN_SOURCE_BUDGET, Math.min(sourceBudget - 1, scaled));
       if (next >= sourceBudget) {
         break;
       }
       sourceBudget = next;
       chunks = splitTextForChat(text, sourceBudget);
     }
+    // Proportional scaling assumes expansion is roughly uniform. Halving is the
+    // assumption-free backstop, so a chunk whose expansion is concentrated in one
+    // spot still ends up within budget instead of being handed to the channel to
+    // split — which is the whole point of measuring.
+    while (sourceBudget > MIN_SOURCE_BUDGET && this.worstRenderedChunk(chunks) !== undefined) {
+      sourceBudget = Math.max(MIN_SOURCE_BUDGET, Math.floor(sourceBudget / 2));
+      chunks = splitTextForChat(text, sourceBudget);
+    }
     return chunks;
   }
 
-  /** Widest chunk measured as the transport will actually send it. */
-  private widestRenderedChunk(chunks: readonly string[]): number {
-    let widest = 0;
+  /**
+   * The chunk that renders widest, when any exceeds the budget. `undefined`
+   * means every chunk already fits on the wire.
+   */
+  private worstRenderedChunk(
+    chunks: readonly string[],
+  ): { readonly sourceLength: number; readonly renderedLength: number } | undefined {
+    let worst: { sourceLength: number; renderedLength: number } | undefined;
     for (const chunk of chunks) {
-      const rendered = this.render(normalizeTrailing(chunk, EMPTY_FINAL_TEXT), this.formatMarkdown);
-      widest = Math.max(widest, Array.from(rendered).length);
+      const normalized = normalizeTrailing(chunk, EMPTY_FINAL_TEXT);
+      const renderedLength = Array.from(this.render(normalized, this.formatMarkdown)).length;
+      if (renderedLength <= this.maxMessageChars) {
+        continue;
+      }
+      if (worst === undefined || renderedLength > worst.renderedLength) {
+        worst = { sourceLength: Array.from(normalized).length, renderedLength };
+      }
     }
-    return widest;
+    return worst;
   }
 
   /** Remove a confirmed status bubble without ever deleting an answer. */

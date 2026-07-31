@@ -1556,10 +1556,14 @@ describe("adapter send tool posted-message indexing", () => {
         chunkCount: 2,
         deliveredChunkCount: 1,
         chunks: [{ channel: "C1", ts: "170.000100" }],
+        disposition: "unknown",
+        unconfirmedChunkIndex: 1,
       });
-      expect(String((result.content as { text: string }[])[0]?.text)).toContain(
-        "send ONLY the remaining 1 part(s)",
-      );
+      // The failed part is ambiguous, not known-undelivered — telling the model
+      // otherwise invites a resend that duplicates an accepted-but-lost post.
+      const text = String((result.content as { text: string }[])[0]?.text);
+      expect(text).toContain("UNKNOWN outcome");
+      expect(text).toContain("Never resend the confirmed parts");
     });
 
     // The confirmed prefix stays indexed, so a reply in its thread still resolves.

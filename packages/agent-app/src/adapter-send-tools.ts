@@ -1018,9 +1018,11 @@ function slackPartialSendResult(
   const first = delivered[0]!;
   const remaining = chunks.length - delivered.length;
   const message = [
-    `Partially sent: ${String(delivered.length)} of ${String(chunks.length)} Slack message parts reached`,
-    `${first.channel} starting at ${first.ts}, then delivery failed (${errorText(error)}).`,
-    `Those parts are already visible — send ONLY the remaining ${String(remaining)} part(s), never the whole message again.`,
+    `Partially sent: ${String(delivered.length)} of ${String(chunks.length)} Slack message parts are CONFIRMED in`,
+    `${first.channel} starting at ${first.ts}. Part ${String(delivered.length + 1)} failed (${errorText(error)}) with an`,
+    "UNKNOWN outcome — Slack may or may not have accepted it before the error.",
+    `Never resend the confirmed parts. Check the channel before resending part ${String(delivered.length + 1)};`,
+    `at most the last ${String(remaining)} part(s) are missing.`,
   ].join(" ");
   return {
     content: [{ type: "text", text: withDeliveryHistoryWarning(message, history) }],
@@ -1032,6 +1034,11 @@ function slackPartialSendResult(
       ts: first.ts,
       chunkCount: chunks.length,
       deliveredChunkCount: delivered.length,
+      // The failing request is AMBIGUOUS, not known-undelivered: Slack may have
+      // accepted it and lost the response. Saying otherwise would invite a
+      // resend that duplicates it.
+      unconfirmedChunkIndex: delivered.length,
+      disposition: "unknown",
       chunks: delivered.map((result) => ({ channel: result.channel, ts: result.ts })),
       ...(history === undefined ? {} : { history }),
     },
