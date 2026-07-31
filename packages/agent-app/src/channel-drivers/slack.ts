@@ -40,6 +40,7 @@ const UNCONFIGURED_SLACK_CONFIG: SlackAdapterConfig = {
   // Mirrors the loader's own defaults rather than "everything off": channel-gate
   // requires this constant to deep-equal loadSlackAdapterConfig on empty input.
   resolveUserNames: true,
+  resolveChannelNames: true,
   threadContext: {
     enabled: true,
     maxMessages: 15,
@@ -117,6 +118,7 @@ export function createSlackChannelDriver(
         shortcuts: input.config.shortcuts,
         homeTab: input.config.homeTab,
         resolveUserNames: input.config.resolveUserNames,
+        resolveChannelNames: input.config.resolveChannelNames,
         threadContext: input.config.threadContext,
         ...(input.coreConfig?.runtime === undefined
           ? {}

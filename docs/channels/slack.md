@@ -17,6 +17,8 @@ The Slack channel connects your agent to a Slack workspace over **Socket Mode** 
 - **Thread and channel context.** A mention deep in a thread arrives with the thread behind it, so "what do you think?" is answerable. An in-thread trigger reads that thread; a top-level channel mention or a fresh DM reads recent history instead. The transcript is background only: the harness renders it fenced and explicitly untrusted, and never writes it to durable history or memory. Bounded to one Slack request per turn with a per-channel cooldown, and every failure mode sends less context rather than delaying the turn. See [Thread and channel context](#thread-and-channel-context).
 - **Proactive posts own their thread.** A top-level proactive or cron post opens a new Slack thread, and that thread is its own conversation, recorded with the delivered text so a reply resumes with that post in context. Several posts to one channel therefore stay independent: replying under two different cards gives two separate sessions rather than one shared one. A post made *into* an existing thread keeps that thread's conversation, as before.
 - **Speaker names.** Each inbound turn carries who sent it, so the agent can address people by name in a shared channel instead of guessing. Slack's events carry only a user ID, so the adapter resolves the display name and handle through `users.info` behind a bounded in-process cache. Strictly best-effort: a missing `users:read` scope, a rate limit, or a deleted profile leaves the turn unnamed rather than failing it. See [Speaker names](#speaker-names).
+- **Surface awareness.** Every turn tells the agent which surface it is on — DM vs. shared channel vs. group, the channel's name and id, and the per-message character budget. Behaviour depends on it: a channel run wakes only on `app_mention` so a follow-up needs another mention, while a DM run does not. See [Channel names](#channel-names).
+- **A bare mention is a summons.** Mentioning the app with no other text (`@agent`) starts a normal turn rather than being refused: it means "come look at this", and the thread transcript and surface already say what is being asked. The adapter substitutes a short prompt telling the agent to work the request out from the conversation; override it with `messages.bareMentionPrompt`. A message that carried files but whose attachments were all skipped is a different case and still gets the `unsupportedText` reply.
 - **Markdown boundary.** mono-agent treats agent-visible Slack text as standard Markdown. Inbound Slack `mrkdwn` links/lists are normalized before they reach the agent, and outbound final replies plus `SlackSendMessage` text are rendered to Slack `mrkdwn` at delivery time.
 - **Slack message length.** Slack final replies and `SlackSendMessage` chunk at the shared 3,800-character default, deliberately below the zone where Slack starts breaking a long post into messages of its own. Chunks break on a paragraph, line, or word boundary, and a final answer's continuation chunks land in the thread under the first message rather than as sibling top-level posts. Slack's 40,000-character platform limit is a truncation ceiling and remains the maximum for an explicit `stream.maxMessageChars` override.
 - **Heartbeat watchdog.** A long-lived Socket Mode connection can go *half-open* — after the host sleeps or a network blip, the WebSocket stops delivering frames but never fires `close`/`error`, so the agent silently stops responding to Slack while still looking healthy. To recover, the adapter probes an otherwise-idle socket with a ping every **30 s** and force-recycles it if no frame (message, ping, or pong) arrives within **90 s** of silence; the recycle fires `close`, which the existing reconnect/backoff loop picks up. A healthy-but-idle socket stays up because Slack's own server pings refresh the activity timer, so there are no false recycles. This is **on by default**.
@@ -52,6 +54,7 @@ Put the Socket Mode credentials in `.env` as `MONO_AGENT_SLACK_BOT_TOKEN` and `M
 | `mentionTextAliases` | string[] | — | Plain-text aliases (e.g. `@agent`) that also trigger a response. |
 | `stripMentionText` | boolean | conditional | Strip the mention/alias text from the prompt before the agent sees it. When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`. |
 | `resolveUserNames` | boolean | `true` | Resolve the speaker's display name and handle so the agent knows who is talking. Requires the `users:read` scope. See [Speaker names](#speaker-names). |
+| `resolveChannelNames` | boolean | `true` | Resolve the channel's name so the agent knows which channel it is talking in. Requires `channels:read` / `groups:read`. See [Channel names](#channel-names). |
 | `threadContext` | object | see below | Send what was said in the conversation before the agent was triggered. Requires a `*:history` scope. See [Thread and channel context](#thread-and-channel-context). |
 | `shortcuts` | object[] | `[]` | JSON-only global/message shortcut bindings that run configured prompts; no environment-variable form. See [Shortcuts](#shortcuts). |
 | `homeTab` | object | `{ "enabled": false, "buttons": [] }` | JSON-only App Home header/buttons; no environment-variable form. See [App Home](#app-home). |
@@ -78,6 +81,7 @@ interaction fields are structured and JSON-only: configure them in
 | `slack.mentionTextAliases` | `MONO_AGENT_SLACK_MENTION_TEXT_ALIASES` (CSV) |
 | `slack.stripMentionText` | `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` |
 | `slack.resolveUserNames` | `MONO_AGENT_SLACK_RESOLVE_USER_NAMES` |
+| `slack.resolveChannelNames` | `MONO_AGENT_SLACK_RESOLVE_CHANNEL_NAMES` |
 | `slack.threadContext.enabled` | `MONO_AGENT_SLACK_THREAD_CONTEXT_ENABLED` |
 | `slack.threadContext.maxMessages` | `MONO_AGENT_SLACK_THREAD_CONTEXT_MAX_MESSAGES` |
 | `slack.threadContext.requestLimit` | `MONO_AGENT_SLACK_THREAD_CONTEXT_REQUEST_LIMIT` |
@@ -178,6 +182,40 @@ harness labels it as such.
 A resolved name is durable. It becomes the speaker label on the stored
 conversation turn and on any memory captured from it, so enabling this changes
 what future recalls surface — not just the current prompt.
+:::
+
+### Channel names
+
+Every Slack turn tells the agent **which surface it is on** — whether this is a
+DM or a shared channel, and which one — so it can apply the behaviour it is
+configured for. A channel run wakes only on `app_mention`, so a follow-up needs
+another mention; a DM run does not. A channel has several readers; a DM has one.
+Without this the agent has to guess from indirect signals.
+
+The kind (`dm` / `channel` / `group`) and the channel id are always stated. With
+`resolveChannelNames` on (the default) the adapter also resolves the channel's
+name through `conversations.info`, so a turn reads as
+`the channel "team-example" (C0A1B2C3D)` rather than just `the channel`.
+
+Requires the `channels:read` bot scope for public channels and `groups:read` for
+private ones. `channel-directory.ts` caches 200 entries for 30 minutes (failed
+lookups for 5) and latches the lookup off for the process after one
+`missing_scope` failure, so a mis-scoped app pays a single call rather than one
+per turn. Every failure path leaves the surface named by kind and id instead of
+failing the turn. Set `resolveChannelNames: false` to skip the lookup entirely.
+
+The Session block also states the **per-message character budget** and that a
+longer answer continues in the thread, so agents compose to the transport's real
+limit instead of each hard-coding one. See
+[Context assembly](/context/assembly/#surface-awareness).
+
+:::caution
+The channel **id** is model-visible. That is deliberate — it is what makes the
+surface unambiguous when no name resolves — but `SlackSendMessage` takes a raw
+channel id, so a deployment running that tool with `allowAllChannels` lets the
+agent post to any channel whose id it has seen. An explicit `allowedChannelIds`
+allowlist, the default posture, still bounds delivery. The thread ts and the
+reply-target conversation id remain host-only in every case.
 :::
 
 ### Runtime model and effort controls (built in)
