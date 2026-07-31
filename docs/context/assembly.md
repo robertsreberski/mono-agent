@@ -54,13 +54,37 @@ Skills are loaded from `<skillsRoot>/<name>/SKILL.md`, one per entry in `selecte
 
 ## Session
 
-The **Session** block (section 3) is auto-generated each turn (coverage `auto`, no config). It tells the agent whether this is an interactive push conversation or a request-driven scheduled/webhook/API turn, but it deliberately does not reveal the physical channel, thread, callback URL, or delivery token.
+The **Session** block (section 3) is auto-generated each turn (coverage `auto`, no config). It tells the agent whether this is an interactive push conversation or a request-driven scheduled/webhook/API turn, which surface it is talking on, and what a long answer will do there. It deliberately does not reveal the thread, callback URL, or delivery token.
 
-- For a deliverable push destination (`telegram:` / `slack:`), the host separately retains an `AgentReplyTarget` containing the physical channel/thread. That target is not added to the prompt, tool arguments, or run artifacts. The Session block explicitly forbids copying, requesting, inferring, or passing a conversation/channel ID, callback URL, or delivery token. A selected trusted MCP service can claim a [durable continuation](/tools/durable-continuations/) without the model seeing the route.
+- For a deliverable push destination (`telegram:` / `slack:`), the host separately retains an `AgentReplyTarget` containing the physical channel **and thread**. That target is not added to the prompt, tool arguments, or run artifacts, so the model never learns the exact thread to deliver into. The Session block forbids copying, requesting, inferring, or passing a thread identifier, callback URL, or delivery token, and forbids using the disclosed surface identifiers to redirect the turn's reply. A selected trusted MCP service can claim a [durable continuation](/tools/durable-continuations/) without the model seeing the route.
 - For non-push conversations (cron / webhook / openai-api / a2a), it instead clarifies that this conversation cannot itself receive a proactive follow-up. Cron jobs and webhook endpoints with `notify: true` deliver their successful final answer to the resolved Telegram/Slack destination or explicit `web:new` — the harness injects guidance on those turns that the final reply is delivered verbatim and how to stay silent. See [Delivery and send tools](/channels/delivery-and-send-tools/).
 - When memory is configured, it also states that persistence is host-owned: the agent acknowledges memory requests and lets post-turn capture write them, without editing memory Markdown, SQLite, manifests, generations, or indexes through tools.
 
-Note the distinction from [Speaker and group context](#speaker-and-group-context) below: *human* identity — who is talking — is model-visible, because a group chat is unusable without it. *Physical destination* identity — channel id, thread ts, conversation id — is not, because those are actionable delivery targets. A platform user id sits on the destination side of that line (a Slack user id doubles as a DM channel id), so it never reaches the prompt.
+### Surface awareness
+
+Chat channels also state **which surface the turn is on**, because agent behaviour legitimately differs by surface: a Slack channel run wakes only on `app_mention` so a follow-up needs another mention while a DM run does not, a channel has several readers and a DM has one, and a multi-channel deployment scopes tone and topic per channel. An agent that cannot tell them apart cannot apply any of it.
+
+```text
+Surface: you are talking in the channel "team-example" (C0A1B2C3D). It is shared: several people can read what you write here.
+Messages here are delivered in parts of at most 3800 characters; anything longer is continued in the thread under your first message, so write to that budget rather than guessing one.
+```
+
+- **Kind** — `dm`, `channel`, or `group` — is always stated. Slack derives it from `conversations.info`, the event's `channel_type`, or the channel-id prefix, in that order of authority; Telegram states it outright on every update.
+- **Name** is the Slack channel name, the Telegram chat title, or a DM counterpart's handle. It is user-controlled, so the harness sanitizes it exactly like a speaker's display name. Slack needs `channels:read`/`groups:read` for it — see [`slack.resolveChannelNames`](/channels/slack/#channel-names); without the scope the surface is still named by kind and id.
+- **Id** is the channel or chat id — a Slack `C…`/`D…`/`G…`, a Telegram numeric chat id. Never a thread id.
+- **Message budget** comes from the transport's own per-message limit, so the number the agent composes to cannot drift from the one actually enforced.
+
+Channels with no surface of their own (cron, webhook, TUI, single-user CLI) omit it, and their Session block is byte-identical to one built before surfaces existed.
+
+:::caution[Surface ids are model-visible]
+Exposing the channel id is a deliberate relaxation of the older "no physical identity in a prompt" rule, taken so the agent can name its surface unambiguously. The residual risk is concrete: the optional `SlackSendMessage` tool takes a raw channel id, so a deployment that enables it with `allowAllChannels` lets the model post to any channel whose id it has seen in a prompt. A deployment with an explicit `allowedChannelIds` allowlist — the default posture — is unaffected, because the allowlist is what bounds delivery. See [Tool policy](/tools/policy/).
+:::
+
+Note the distinction from [Speaker and group context](#speaker-and-group-context) below. Three things are now separated where there used to be two:
+
+- *Human* identity — who is talking — is model-visible, because a group chat is unusable without it.
+- *Surface* identity — which channel this is, by kind, name, and id — is model-visible, because behaviour depends on it.
+- *Route* — the thread ts, the `AgentReplyTarget` conversation id, callback URLs, and delivery tokens — is **not**, because those are what actually direct a delivery. A platform **user** id also stays on the route side (a Slack user id doubles as a DM channel id, i.e. a route to a *different* surface than the one in play), so it never reaches the prompt.
 
 ## Memory recall
 

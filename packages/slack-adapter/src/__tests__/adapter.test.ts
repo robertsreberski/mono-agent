@@ -23,6 +23,8 @@ import {
 import { SlackApiError } from "../slack-client.js";
 import type {
   SlackChatPostMessageParams,
+  SlackConversationsInfoParams,
+  SlackConversationsInfoResult,
   SlackChatPostMessageResult,
   SlackChatDeleteParams,
   SlackChatUpdateParams,
@@ -111,6 +113,17 @@ class FakeSlackApi implements SlackWebApi {
     if (this.usersInfoFailure !== undefined) throw this.usersInfoFailure;
     const user = this.usersInfoUsers[params.userId];
     return user === undefined ? { ok: true } : { ok: true, user };
+  }
+
+  readonly conversationsInfoCalls: SlackConversationsInfoParams[] = [];
+  conversationsInfoChannels: Record<string, SlackConversationsInfoResult["channel"]> = {};
+  conversationsInfoFailure: unknown = undefined;
+
+  async conversationsInfo(params: SlackConversationsInfoParams): Promise<SlackConversationsInfoResult> {
+    this.conversationsInfoCalls.push(params);
+    if (this.conversationsInfoFailure !== undefined) throw this.conversationsInfoFailure;
+    const channel = this.conversationsInfoChannels[params.channelId];
+    return channel === undefined ? { ok: true } : { ok: true, channel };
   }
 
   async setAssistantStatus(params: { channelId: string; threadTs: string; status: string }): Promise<void> {
@@ -397,12 +410,73 @@ describe("SlackAdapter", () => {
     expect(captured?.text).toBe("ask @carol about #releases");
   });
 
+  it("answers a bare mention as a turn instead of refusing it", async () => {
+    // "@agent" with nothing after it is a summons into a conversation that
+    // already carries the question — not a malformed message.
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      botUserIds: ["U0BOT"],
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "on it" };
+      }),
+    });
+
+    const result = await adapter.handleEventCallback(appMention("<@U0BOT>"));
+
+    expect(result.kind).toBe("handled");
+    expect(captured?.text).toContain("mentioned here with no additional text");
+    expect(api.postMessageCalls.map((call) => call.text)).toContain("on it");
+    expect(api.postMessageCalls.map((call) => call.text)).not.toContain(
+      "I can only handle Slack text messages in this adapter for now.",
+    );
+  });
+
+  it("uses a configured bare-mention prompt when one is supplied", async () => {
+    const api = new FakeSlackApi();
+    let captured: AgentRequest | undefined;
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      botUserIds: ["U0BOT"],
+      messages: { bareMentionPrompt: "Summarize this thread." },
+      responder: responderFrom(async (request) => {
+        captured = request as AgentRequest;
+        return { text: "done" };
+      }),
+    });
+
+    await adapter.handleEventCallback(appMention("<@U0BOT>   "));
+
+    expect(captured?.text).toBe("Summarize this thread.");
+  });
+
+  it("still refuses a file-only message whose attachments were all skipped", async () => {
+    // The bare-mention path must not swallow the genuinely unusable case.
+    const api = new FakeSlackApi();
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      botUserIds: ["U0BOT"],
+      responder: responderFrom(async () => ({ text: "should not run" })),
+    });
+
+    const result = await adapter.handleEventCallback(
+      directMessage("", { files: [{ id: "F1", mimetype: "application/x-msdownload", size: 10 }] }),
+    );
+
+    expect(result).toMatchObject({ kind: "ignored", reason: "no_usable_attachments" });
+    expect(api.postMessageCalls.map((call) => call.text)).toContain(
+      "I can only handle Slack text messages in this adapter for now.",
+    );
+  });
+
   it("tells the model which surface it is on, resolving the channel name", async () => {
     const api = new FakeSlackApi();
-    api.conversationsInfo = async () => ({
-      ok: true as const,
-      channel: { name: "team-example", is_channel: true },
-    });
+    api.conversationsInfoChannels = { C123: { name: "team-example", is_channel: true } };
     let captured: AgentRequest | undefined;
     const adapter = new SlackAdapter({
       api,
@@ -469,7 +543,7 @@ describe("SlackAdapter", () => {
 
   it("keeps the surface usable when conversations.info fails", async () => {
     const api = new FakeSlackApi();
-    api.conversationsInfo = async () => { throw new Error("socket hang up"); };
+    api.conversationsInfoFailure = new Error("socket hang up");
     let captured: AgentRequest | undefined;
     const adapter = new SlackAdapter({
       api,

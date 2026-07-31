@@ -296,6 +296,13 @@ export interface SlackAdapterMessages {
   cancelledText?: string;
   errorText?: string;
   unsupportedText?: string;
+  /**
+   * Prompt substituted when someone mentions the app with no other text. Unlike
+   * every other member here this is INBOUND — it becomes the turn's user message,
+   * not a canned reply — because a bare mention is a summons into a conversation
+   * that already carries the question.
+   */
+  bareMentionPrompt?: string;
 }
 
 export interface SlackAdapterStreamOptions {
@@ -520,7 +527,7 @@ export interface SlackPendingAsks {
 export type SlackEventIgnoredReason =
   | "unsupported_event"
   | "unsupported_message"
-  | "empty_text"
+  // No "empty_text": a bare mention is answered as a turn, not ignored.
   | "no_usable_attachments"
   | "from_bot"
   | "from_self";
@@ -726,6 +733,11 @@ const DEFAULT_MESSAGES: Required<SlackAdapterMessages> = {
   cancelledText: "Cancelled.",
   errorText: "The agent failed while processing your Slack message.",
   unsupportedText: "I can only handle Slack text messages in this adapter for now.",
+  bareMentionPrompt: [
+    "You were mentioned here with no additional text.",
+    "Work out what is being asked of you from this conversation and answer it directly.",
+    "If nothing here needs a response, say briefly what you can help with instead of guessing.",
+  ].join(" "),
 };
 const RUNTIME_CONTROL_HELP_TEXT =
   "Send a Slack DM or mention the app in a channel. Use /model and /effort to choose the runtime, or /cancel to stop an in-flight response.";
@@ -1099,20 +1111,15 @@ export class SlackAdapter {
       };
     }
 
-    const text = event.text.trim();
-    if (text.length === 0 && event.files.length === 0) {
-      await this.api.chatPostMessage({
-        channel: event.channelId,
-        text: this.messages.unsupportedText,
-        thread_ts: event.threadTs,
-      });
-      return {
-        kind: "ignored",
-        reason: "empty_text",
-        eventId: event.eventId,
-        channelId: event.channelId,
-      };
-    }
+    // A bare "@agent" with nothing after it is a real summons, not a malformed
+    // message: someone is pulling the agent into a conversation that already says
+    // what it needs. Refusing it with a canned "I can only handle text" is both
+    // wrong and unhelpful, so substitute a prompt and let the agent read the
+    // thread transcript and surface it is given. A message that carried files is
+    // a different case and is handled after the download attempt.
+    const text = event.text.trim().length === 0 && event.files.length === 0
+      ? this.messages.bareMentionPrompt
+      : event.text.trim();
 
     const command = parseCommand(this.prepareCommandText(text));
     if (command?.name === "start") {

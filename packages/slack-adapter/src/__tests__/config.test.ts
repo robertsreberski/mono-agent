@@ -51,6 +51,7 @@ describe("loadSlackAdapterConfig", () => {
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames: true,
+      resolveChannelNames: true,
       threadContext: {
         enabled: true,
         maxMessages: 15,
@@ -277,6 +278,7 @@ describe("loadSlackAdapterConfig", () => {
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames: true,
+      resolveChannelNames: true,
       threadContext: {
         enabled: true,
         maxMessages: 15,
@@ -317,6 +319,7 @@ describe("loadSlackAdapterConfig", () => {
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames: true,
+      resolveChannelNames: true,
       threadContext: {
         enabled: true,
         maxMessages: 15,
@@ -362,6 +365,7 @@ describe("loadSlackAdapterConfig", () => {
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames: true,
+      resolveChannelNames: true,
       threadContext: {
         enabled: true,
         maxMessages: 15,
@@ -395,6 +399,7 @@ describe("loadSlackAdapterConfig", () => {
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames: true,
+      resolveChannelNames: true,
       threadContext: {
         enabled: true,
         maxMessages: 15,
