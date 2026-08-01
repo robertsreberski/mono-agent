@@ -584,6 +584,161 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("leaves narration between tool calls alone when the answer is reconciled", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "clean up", attachmentIds: [] });
+    // `finalText` is only the LAST assistant message's text, while every block the
+    // model wrote — narration included — was streamed as a delta. Reconciling by
+    // character length therefore re-sliced the answer across the narration slots:
+    // each slot kept its length and received a contiguous piece of the answer,
+    // frequently cut mid-word, and the narration itself was overwritten.
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "append", delta: "I'll load the journal." },
+      { kind: "event", event: { type: "tool_call_started", id: "tool-1", name: "ReadSkill", arguments: {} } },
+      { kind: "append", delta: "Batch 1 committed." },
+      { kind: "event", event: { type: "tool_call_started", id: "tool-2", name: "Bash", arguments: {} } },
+      { kind: "append", delta: "Both done. Every entry now carries its real date." },
+    ]);
+    const detail = store.completeTurn(turn.turnId, "Both done. Every entry now carries its real date.");
+    const assistant = detail.messages.at(-1);
+
+    expect(assistant?.parts.filter((part) => part.type === "text")).toEqual([
+      { type: "text", text: "I'll load the journal." },
+      { type: "text", text: "Batch 1 committed." },
+      { type: "text", text: "Both done. Every entry now carries its real date." },
+    ]);
+    expect(assistant?.parts.map((part) => part.type)).toEqual([
+      "text",
+      "tool-call",
+      "text",
+      "tool-call",
+      "text",
+    ]);
+    store.close();
+  });
+
+  it("appends only the text the runtime added after the stream closed", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "check", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "append", delta: "Working." },
+      { kind: "event", event: { type: "tool_call_started", id: "tool-1", name: "Search", arguments: {} } },
+      { kind: "append", delta: " Done." },
+    ]);
+    // The harness appends the failover attribution after the stream has closed,
+    // so it reaches the store only on the finish frame.
+    const detail = store.completeTurn(
+      turn.turnId,
+      "Working. Done.\n\n⚠️ Answered by fallback/model, not the configured primary/model.",
+    );
+
+    expect(detail.messages.at(-1)?.parts.filter((part) => part.type === "text")).toEqual([
+      { type: "text", text: "Working." },
+      { type: "text", text: " Done.\n\n⚠️ Answered by fallback/model, not the configured primary/model." },
+    ]);
+    store.close();
+  });
+
+  it("collapses the prose a reasoning block split back into one answer", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "check", attachmentIds: [] });
+    // One assistant message can carry `thinking, text, thinking, text`, and the
+    // provider reports every text block of it as the same answer.
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "append", delta: "Looking." },
+      { kind: "event", event: { type: "tool_call_started", id: "tool-1", name: "Search", arguments: {} } },
+      { kind: "append", delta: "First half. " },
+      { kind: "event", event: { type: "assistant_thought", text: "hmm" } },
+      { kind: "append", delta: "Second half." },
+    ]);
+    const detail = store.completeTurn(turn.turnId, "First half. Second half.");
+
+    expect(detail.messages.at(-1)?.parts).toEqual([
+      { type: "text", text: "Looking." },
+      { type: "tool-call", toolCallId: "tool-1", toolName: "Search", args: {}, status: "running" },
+      { type: "reasoning", text: "hmm" },
+      { type: "text", text: "First half. Second half." },
+    ]);
+    store.close();
+  });
+
+  it("replaces only the last text part when the final answer diverges from everything streamed", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "check", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "append", delta: "Draft one." },
+      { kind: "event", event: { type: "tool_call_started", id: "tool-1", name: "Search", arguments: {} } },
+      { kind: "append", delta: "Draft two." },
+    ]);
+    const detail = store.completeTurn(turn.turnId, "Completely different answer.");
+
+    // Never a new part: the webapp joins adjacent text before folding, so one
+    // pushed here would render glued to the prose in front of it.
+    expect(detail.messages.at(-1)?.parts.filter((part) => part.type === "text")).toEqual([
+      { type: "text", text: "Draft one." },
+      { type: "text", text: "Completely different answer." },
+    ]);
+    store.close();
+  });
+
+  it("keeps the whole stream when the final text repeats it", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "check", attachmentIds: [] });
+    // The runtime falls back to the whole run's concatenation when the last
+    // assistant message carried no text of its own.
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "append", delta: "a" },
+      { kind: "event", event: { type: "tool_call_started", id: "tool-1", name: "Search", arguments: {} } },
+      { kind: "append", delta: "b" },
+    ]);
+    const detail = store.completeTurn(turn.turnId, "ab");
+
+    expect(detail.messages.at(-1)?.parts.filter((part) => part.type === "text")).toEqual([
+      { type: "text", text: "a" },
+      { type: "text", text: "b" },
+    ]);
+    store.close();
+  });
+
+  it("records the answer as its own part when the turn streamed no prose", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "check", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_started", id: "tool-1", name: "Search", arguments: {} } },
+    ]);
+    const detail = store.completeTurn(turn.turnId, "Answer");
+
+    expect(detail.messages.at(-1)?.parts).toEqual([
+      { type: "tool-call", toolCallId: "tool-1", toolName: "Search", args: {}, status: "running" },
+      { type: "text", text: "Answer" },
+    ]);
+    store.close();
+  });
+
   it("exposes a marked assistant-only notification only after durable-history completion", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

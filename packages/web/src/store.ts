@@ -1799,28 +1799,80 @@ function appendTextPart(parts: WebMessagePart[], type: "text" | "reasoning", del
   parts.push({ type, text: delta });
 }
 
+/**
+ * Text parts on either side of one of these came from DIFFERENT assistant
+ * messages: a tool call ends the message that requested it, so prose written
+ * after the result belongs to the next one. Reasoning does not — a single
+ * message can carry `thinking, text, thinking, text`, which `appendTextPart`
+ * splits into two text parts even though the provider reports one answer.
+ */
+function separatesAssistantMessages(part: WebMessagePart): boolean {
+  return part.type === "tool-call" || part.type === "subagent" || part.type === "error";
+}
+
+/**
+ * Settle the streamed transcript against the turn's authoritative final text.
+ *
+ * `finalText` is the LAST assistant message's text plus whatever the harness
+ * composed around it (a prepended rollover notice, an appended failover line) —
+ * NOT the concatenation of everything streamed. Prose the model writes BETWEEN
+ * tool calls lives in earlier text parts and is no part of it. Re-slicing
+ * `finalText` across every text part by character length therefore smeared one
+ * answer over that prose: each slot kept its own length and received a
+ * contiguous piece of the answer, usually cut mid-word, while the prose it held
+ * was overwritten. The console reads the last text part as the answer, so a
+ * whole reply arrived shredded across the activity log.
+ *
+ * Two shapes do cover everything streamed and are honoured exactly: an equal
+ * concatenation (the runtime falls back to the whole run when the last message
+ * carried no text of its own) and that concatenation plus a suffix appended
+ * after the stream closed. Otherwise the answer owns the TRAILING RUN of text
+ * and nothing before it.
+ *
+ * The answer always lands in the last text part, never a new one: the webapp
+ * joins adjacent text before folding, so a part pushed here would be glued onto
+ * the prose in front of it — the very symptom this repairs.
+ */
 function reconcileFinalText(parts: WebMessagePart[], finalText: string): void {
-  const textIndexes = parts
-    .map((part, index) => part.type === "text" ? index : -1)
-    .filter((index) => index >= 0);
+  const textIndexes: number[] = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    if (parts[index]?.type === "text") textIndexes.push(index);
+  }
   if (textIndexes.length === 0) {
     parts.push({ type: "text", text: finalText });
     return;
   }
-  const streamed = textIndexes.map((index) => {
+  const textAt = (index: number): string => {
     const part = parts[index];
     return part?.type === "text" ? part.text : "";
-  }).join("");
+  };
+  const lastIndex = textIndexes[textIndexes.length - 1] as number;
+  const streamed = textIndexes.map(textAt).join("");
   if (streamed === finalText) return;
-  let offset = 0;
-  for (let position = 0; position < textIndexes.length; position += 1) {
-    const index = textIndexes[position] as number;
-    const previous = parts[index];
-    const finalSegment = position === textIndexes.length - 1
-      ? finalText.slice(offset)
-      : finalText.slice(offset, offset + (previous?.type === "text" ? previous.text.length : 0));
-    parts[index] = { type: "text", text: finalSegment };
-    offset += finalSegment.length;
+  // Everything streamed is still a prefix of the answer, so only the tail is
+  // missing: a truncated stream, or a line the harness appended after it closed.
+  if (finalText.startsWith(streamed)) {
+    parts[lastIndex] = { type: "text", text: `${textAt(lastIndex)}${finalText.slice(streamed.length)}` };
+    return;
+  }
+  // How many trailing text parts did this answer stream into? Reasoning between
+  // two of them keeps them one answer; a tool call makes the earlier one another
+  // message's prose, which stays exactly as it streamed.
+  let first = textIndexes.length - 1;
+  let tail = textAt(lastIndex);
+  while (first > 0) {
+    const previous = textIndexes[first - 1] as number;
+    if (parts.slice(previous + 1, textIndexes[first] as number).some(separatesAssistantMessages)) break;
+    const candidate = `${textAt(previous)}${tail}`;
+    if (!finalText.includes(candidate)) break;
+    tail = candidate;
+    first -= 1;
+  }
+  // Absorbed parts are removed rather than left behind repeating half the
+  // answer. Splicing high-to-low keeps the surviving indexes valid.
+  parts[lastIndex] = { type: "text", text: finalText };
+  for (let position = textIndexes.length - 2; position >= first; position -= 1) {
+    parts.splice(textIndexes[position] as number, 1);
   }
 }
 
