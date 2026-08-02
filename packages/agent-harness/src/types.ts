@@ -8,6 +8,7 @@ import type {
   AgentPrecedingMessage,
   AgentReplyTarget,
   AgentSurface,
+  AgentToolEnvironment,
   MemoryStore,
 } from "@mono-agent/agent-contracts";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
@@ -104,6 +105,8 @@ export interface AgentHarnessRequest {
    * contract required.
    */
   readonly attachments?: readonly AgentAttachment[];
+  /** Host-only, request-scoped process-tool environment. */
+  readonly toolEnvironment?: AgentToolEnvironment;
   /** Speaker identity. Model-visible (name and handle); `sender.id` is host-only. */
   readonly sender?: AgentMessageSender;
   /** Untrusted background transcript. Model-visible for this turn only; never persisted. */

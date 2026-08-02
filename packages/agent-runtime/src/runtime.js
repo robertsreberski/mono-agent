@@ -172,6 +172,7 @@ export function createRuntime(host = {}) {
     // list of its own to consult, so it forwards what it was given.
     ...(request.skills === undefined ? {} : { skills: request.skills }),
     ...(request.skillsRoot === undefined ? {} : { skillsRoot: request.skillsRoot }),
+    ...(request.toolEnvironment === undefined ? {} : { toolEnvironment: request.toolEnvironment }),
     ...(request.executionMode === undefined ? {} : { executionMode: request.executionMode }),
     ...(request.cwd === undefined ? {} : { cwd: request.cwd }),
     // A profile that pins effort — declared or authored at call time — means it
@@ -210,6 +211,12 @@ export function createRuntime(host = {}) {
       });
       const liveInput = instrumentLiveInputAppliedEvents(options.liveInput, hub.emit);
       const prompts = resolvePrompts(host.prompts, options.prompts);
+      // A request-scoped environment must never mutate the long-lived runtime's
+      // shared ToolContext. Clone only for this call, preserving configureTools
+      // updates while keeping credentials isolated between concurrent turns.
+      const runToolContext = options.toolEnvironment === undefined
+        ? toolContext
+        : { ...toolContext, toolEnvironment: options.toolEnvironment };
       // Default the nested-run callback so the Agent built-in is usable without
       // host wiring; the depth field is left exactly as the caller set it, since
       // defaultSubagentRun is what increments it for the child.
@@ -226,7 +233,7 @@ export function createRuntime(host = {}) {
         model: options.model,
         executionMode,
         runtimeBrand,
-        toolContext,
+        toolContext: runToolContext,
         observerHub: hub,
         onEvent: hub.emit,
         ...(liveInput === undefined ? {} : { liveInput }),

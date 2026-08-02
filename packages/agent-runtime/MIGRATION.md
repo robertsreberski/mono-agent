@@ -63,10 +63,18 @@ the configuration schema.
   authoritative and the runtime emits a bounded
   `live_input_callback_failed` warning.
 
-## 0.16.x baseline
+## 0.17.x baseline
 
-This is the current published baseline for the detailed pre-1.0 reference
-below. It carries the whole 0.15.x contract forward and adds:
+This is the current published baseline. It carries the 0.16.x contract forward
+and adds a host-only, request-scoped `toolEnvironment` boundary. Hosts may pass
+validated values and PATH prefixes through the request, harness, and runtime;
+the runtime applies them only when Bash, Exec, or a nested subagent process is
+spawned. It does not mutate `process.env` or persist the values in prompts,
+metadata, history, traces, or long-lived tool context.
+
+## 0.16.x
+
+This baseline carries the whole 0.15.x contract forward and adds:
 
 - `skills` and `skillsRoot` on the run options. `skills` is the disclosed
   `{name, description}` set for a run; a non-empty value makes `supports_skills`
@@ -394,7 +402,7 @@ a compatibility subpath.
 
 ## Version
 
-This guide describes the published `0.16.x` package contract. Keep
+This guide describes the published `0.17.x` package contract. Keep
 `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, and other
 `@mono-agent/*` packages on the same lockstep version when upgrading. The paired
 runtime adapter no longer exposes `piReasoningSummary` in its run-options type.

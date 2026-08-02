@@ -205,6 +205,8 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `tui.enabled` | `boolean` | `MONO_AGENT_TUI_ENABLED` | true | `true` | Enables the tui capability. |
 | `tui.host` | `string` | `MONO_AGENT_TUI_HOST` | 127.0.0.1 | `127.0.0.1` | Configures host for the tui section. |
 | `tui.port` | `integer` | `MONO_AGENT_TUI_PORT` | 0 | `0` | Configures port for the tui section. |
+| `tui.requestToolEnvironment.allowedKeys` | `string[]` | `MONO_AGENT_TUI_REQUEST_TOOL_ENVIRONMENT_ALLOWED_KEYS` | [] | `["MULTICA_TOKEN","MULTICA_TASK_ID"]` | Explicit environment-variable names an ACP request may pass to Bash, Exec, and nested subagents for one turn. Disabled when empty; dangerous process-loader, shell-startup, home, temp, and PATH keys are rejected. |
+| `tui.requestToolEnvironment.allowPathPrepend` | `boolean` | `MONO_AGENT_TUI_REQUEST_TOOL_ENVIRONMENT_ALLOW_PATH_PREPEND` | false | `false` | Allows an ACP request to prepend up to four absolute directories to process-tool PATH for one turn. The caller cannot replace PATH. |
 | `webhook.allowNonLoopback` | `boolean` | `MONO_AGENT_WEBHOOK_ALLOW_NON_LOOPBACK` | unset | `true` | Configures allowNonLoopback for the webhook section. |
 | `webhook.apiKey` | `string` | `MONO_AGENT_WEBHOOK_API_KEY` | unset | `set-via-MONO_AGENT_WEBHOOK_API_KEY` | Secret value for webhook.apiKey; prefer the env override. |
 | `webhook.defaultMode` | `string` | `MONO_AGENT_WEBHOOK_DEFAULT_MODE` | sync | `sync` | Configures defaultMode for the webhook section. |

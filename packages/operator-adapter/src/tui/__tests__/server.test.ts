@@ -55,6 +55,58 @@ async function postTurn(
 }
 
 describe("startTuiAdapter", () => {
+  it("accepts an allowlisted ACP tool environment as host-only request state", async () => {
+    let seen: AgentRequestBase | undefined;
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async (request) => {
+        seen = request;
+        return { text: "ok" };
+      }),
+      requestToolEnvironment: {
+        allowedKeys: ["MULTICA_TOKEN", "MULTICA_TASK_ID"],
+        allowPathPrepend: true,
+      },
+    });
+
+    await expect((await fetch(running.infoUrl)).json()).resolves.toMatchObject({
+      capabilities: { toolEnvironment: true },
+    });
+    const response = await postTurn(running.baseUrl, {
+      conversationId: "acp:fixture:session",
+      text: "work",
+      client: "acp",
+      toolEnvironment: {
+        schema: 1,
+        values: { MULTICA_TOKEN: "secret", MULTICA_TASK_ID: "task-1" },
+        pathPrepend: ["/opt/multica/bin"],
+      },
+    });
+    expect(response.status).toBe(200);
+    await readFrames(response);
+    expect(seen?.toolEnvironment).toEqual({
+      schema: 1,
+      values: { MULTICA_TOKEN: "secret", MULTICA_TASK_ID: "task-1" },
+      pathPrepend: ["/opt/multica/bin"],
+    });
+    expect(seen?.metadata).toMatchObject({ source: "acp", acpRequestId: expect.any(String) });
+    expect(JSON.stringify(seen?.metadata)).not.toContain("secret");
+  });
+
+  it("rejects request environments outside the ACP loopback allowlist boundary", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      requestToolEnvironment: { allowedKeys: ["MULTICA_TOKEN"], allowPathPrepend: false },
+    });
+
+    for (const body of [
+      { conversationId: "web:one", text: "work", client: "web", toolEnvironment: { schema: 1, values: {} } },
+      { conversationId: "acp:one", text: "work", client: "acp", toolEnvironment: { schema: 1, values: { HOME: "/tmp" } } },
+      { conversationId: "acp:one", text: "work", client: "acp", toolEnvironment: { schema: 1, values: {}, pathPrepend: ["/tmp"] } },
+    ]) {
+      expect((await postTurn(running.baseUrl, body)).status).toBe(400);
+    }
+  });
+
   it("serves /v1/info with schema and identity", async () => {
     running = await startTuiAdapter({
       responder: scriptedResponder(async () => ({ text: "ok" })),

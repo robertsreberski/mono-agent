@@ -350,6 +350,8 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | `MONO_AGENT_TUI_BASE_PATH` | `tui.basePath` | Default `/gui`. |
 | `MONO_AGENT_TUI_ALLOW_NON_LOOPBACK` | `tui.allowNonLoopback` | Required to bind a non-loopback host. |
 | `MONO_AGENT_TUI_API_KEY` | `tui.apiKey` | Optional bearer the console must present. Put the value in `.env`; inline `tui.apiKey` remains accepted for compatibility but is not the documented source-config convention. See [operator stream configuration](/channels/tui/). |
+| `MONO_AGENT_TUI_REQUEST_TOOL_ENVIRONMENT_ALLOWED_KEYS` | `tui.requestToolEnvironment.allowedKeys` | Comma-separated names an ACP turn may pass to Bash, Exec, and nested subagents. Disabled by default; dangerous loader, shell-startup, home, temp, and PATH keys are rejected. |
+| `MONO_AGENT_TUI_REQUEST_TOOL_ENVIRONMENT_ALLOW_PATH_PREPEND` | `tui.requestToolEnvironment.allowPathPrepend` | Allows an ACP turn to prepend bounded absolute directories to process-tool PATH. Default `false`; request callers can never replace PATH. |
 
 ### A2A
 

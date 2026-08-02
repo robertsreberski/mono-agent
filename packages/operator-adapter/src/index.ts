@@ -15,6 +15,7 @@ export {
 export type {
   LoadTuiAdapterConfigInput,
   RedactedTuiAdapterConfig,
+  RequestToolEnvironmentConfig,
   TuiAdapterConfig,
 } from "./tui/index.js";
 export {

@@ -303,6 +303,7 @@ export async function runHarnessRuntime(
           currentUserMessage,
         ],
         abortSignal: request.abortSignal,
+        ...(request.toolEnvironment === undefined ? {} : { toolEnvironment: request.toolEnvironment }),
         ...(useManagedLiveInput && supportsLiveInput && liveInputMailbox !== undefined
           ? { liveInput: liveInputMailbox }
           : {}),

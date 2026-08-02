@@ -569,6 +569,28 @@ describe("createRouterRuntime — capability filtering", () => {
     expect(executeMock.mock.calls[0][1].model.sdk).toBe("codex");
   });
 
+  it("skips non-Pi routes when a request tool environment is present", async () => {
+    executeMock.mockResolvedValueOnce({ text: "capable", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "claude", model: "claude-sonnet-4-6" },
+        { sdk: "pi", provider: "openai-codex", model: "gpt-5.6-terra" },
+      ],
+    });
+
+    const result = await router.run("sys", {
+      messages: [],
+      toolEnvironment: { schema: 1, values: { MULTICA_TASK_ID: "task-1" } },
+    });
+
+    expect(result.text).toBe("capable");
+    expect(result.failoverHistory[0]).toMatchObject({
+      model: expect.objectContaining({ sdk: "claude" }),
+      failureKind: "skipped_capability_mismatch",
+    });
+    expect(executeMock.mock.calls[0][1].model.sdk).toBe("pi");
+  });
+
   it("continues when a bridge itself returns a capability mismatch", async () => {
     executeMock
       .mockResolvedValueOnce({

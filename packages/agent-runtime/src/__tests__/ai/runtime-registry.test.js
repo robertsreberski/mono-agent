@@ -54,11 +54,13 @@ describe("AI runtime bridge registry", () => {
       kind: "pi",
       runtime: "pi-agent",
       tool_policy: "projected",
+      supports_request_tool_environment: true,
     });
     expect(runtimeCapabilities("claude")).toMatchObject({
       kind: "claude",
       runtime: "sdk",
       tool_policy: "projected",
+      supports_request_tool_environment: false,
     });
     expect(listRuntimeBridges().find((bridge) => bridge.id === "claude-code")?.capabilities()).toMatchObject({
       kind: "claude-code",
