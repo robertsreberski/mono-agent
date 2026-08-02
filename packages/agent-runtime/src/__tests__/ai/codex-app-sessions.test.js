@@ -2267,6 +2267,10 @@ describe("codex-app persistent sessions", () => {
         newThreadId: "thread-child-request",
       },
     });
+    client.notify("turn/started", {
+      threadId: "thread-child-request",
+      turn: { id: "turn-child-request", status: "inProgress" },
+    });
     expect(() => client.serverRequest("item/tool/requestUserInput", {
       threadId: "thread-child-request",
       turnId: "turn-child-request",
@@ -2490,6 +2494,130 @@ describe("codex-app persistent sessions", () => {
       threadId: "thread-request-target",
       turnId: "turn-idle-again",
     })).toThrow("provider session was idle");
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a stale child MCP approval during a later retained turn without stopping the root", async () => {
+    const factory = stubClientFactory({ threadId: "thread-stale-child-approval" });
+    const mcpServers = { worklab: { command: "worklab-mcp" } };
+    const first = await generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionKeepAlive: true,
+      permissionMode: "plan",
+      mcpServers,
+    }));
+    expect(first).toMatchObject({ error: null, failureKind: null });
+
+    const client = factory.clients[0];
+    factory.turnPlan.push("manual");
+    let settled = false;
+    const secondPending = generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionId: "thread-stale-child-approval",
+      permissionMode: "plan",
+      mcpServers,
+      messages: [{ role: "user", content: "unrelated follow up" }],
+    }));
+    void secondPending.then(() => { settled = true; });
+    await vi.waitFor(() => expect(client.finishTurn).toBeTruthy());
+
+    expect(() => client.serverRequest("mcpServer/elicitation/request", {
+      threadId: "thread-child-from-prior-turn",
+      turnId: "turn-child-from-prior-turn",
+      serverName: "worklab",
+      _meta: { codex_approval_kind: "mcp_tool_call" },
+    })).toThrow("Unsupported Codex app-server request");
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    client.notify("item/completed", {
+      threadId: "thread-stale-child-approval",
+      turnId: "turn-2",
+      item: {
+        id: "spawn-current-child",
+        type: "collabToolCall",
+        tool: "spawn_agent",
+        status: "completed",
+        senderThreadId: "thread-stale-child-approval",
+        newThreadId: "thread-current-child",
+      },
+    });
+    client.notify("turn/started", {
+      threadId: "thread-current-child",
+      turn: { id: "turn-current-child", status: "inProgress" },
+    });
+
+    expect(() => client.serverRequest("mcpServer/elicitation/request", {
+      threadId: "thread-current-child",
+      turnId: "turn-stale-on-current-child",
+      serverName: "worklab",
+      _meta: { codex_approval_kind: "mcp_tool_call" },
+    })).toThrow("Unsupported Codex app-server request");
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    expect(client.serverRequest("mcpServer/elicitation/request", {
+      threadId: "thread-current-child",
+      turnId: "turn-current-child",
+      serverName: "worklab",
+      _meta: { codex_approval_kind: "mcp_tool_call" },
+    })).toEqual({ action: "accept", content: {}, _meta: null });
+
+    client.notify("turn/completed", {
+      threadId: "thread-current-child",
+      turn: { id: "turn-current-child", status: "completed" },
+    });
+
+    client.finishTurn({ text: "ROOT_B_DONE" });
+    const second = await secondPending;
+    expect(second).toMatchObject({
+      text: "ROOT_B_DONE",
+      error: null,
+      failureKind: null,
+    });
+    expect(second.events).not.toContainEqual(expect.objectContaining({
+      warning_kind: "codex_server_request_unsupported",
+    }));
+    expect(client.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retain a session whose root turn ends with a provider descendant still running", async () => {
+    const factory = stubClientFactory({ threadId: "thread-open-descendant" });
+    factory.turnPlan.push("manual");
+    const firstPending = generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionKeepAlive: true,
+    }));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.notify("item/completed", {
+      threadId: "thread-open-descendant",
+      turnId: "turn-1",
+      item: {
+        id: "spawn-open-descendant",
+        type: "collabToolCall",
+        tool: "spawn_agent",
+        status: "completed",
+        senderThreadId: "thread-open-descendant",
+        newThreadId: "thread-child-still-running",
+      },
+    });
+    client.notify("turn/started", {
+      threadId: "thread-child-still-running",
+      turn: { id: "turn-child-still-running", status: "inProgress" },
+    });
+    client.finishTurn({ text: "ROOT_A_DONE" });
+
+    const first = await firstPending;
+    expect(first).toMatchObject({ text: "ROOT_A_DONE", error: null, failureKind: null });
+    expect(client.close).toHaveBeenCalledTimes(1);
+
+    const second = await generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionId: "thread-open-descendant",
+      messages: [{ role: "user", content: "turn B" }],
+    }));
+    expect(second).toMatchObject({
+      failureKind: "session_not_found",
+      diagnostics: { codex_error_code: "codex_session_not_found" },
+    });
     expect(factory).toHaveBeenCalledTimes(1);
   });
 
