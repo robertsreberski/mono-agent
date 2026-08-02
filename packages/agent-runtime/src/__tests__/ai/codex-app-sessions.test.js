@@ -1553,6 +1553,58 @@ describe("codex-app persistent sessions", () => {
       .toMatchObject({ isError: true, content: "child failed safely" });
   });
 
+  it("rejects an unsupported child request without stopping the root turn", async () => {
+    const factory = stubClientFactory({ threadId: "thread-parent-child-request" });
+    factory.turnPlan.push("manual");
+    let settled = false;
+    const pending = generateCodexAppResponse("SYS", runOptions(factory));
+    void pending.then(() => { settled = true; });
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.notify("item/completed", {
+      threadId: "thread-parent-child-request",
+      turnId: "turn-1",
+      item: {
+        id: "spawn-child-request",
+        type: "collabToolCall",
+        tool: "spawn_agent",
+        status: "completed",
+        senderThreadId: "thread-parent-child-request",
+        newThreadId: "thread-child-request",
+      },
+    });
+    expect(() => client.serverRequest("item/tool/requestUserInput", {
+      threadId: "thread-child-request",
+      turnId: "turn-child-request",
+      itemId: "question-child-request",
+    })).toThrow("Unsupported Codex app-server request");
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    client.notify("turn/completed", {
+      threadId: "thread-child-request",
+      turn: {
+        id: "turn-child-request",
+        status: "failed",
+        error: { message: "child interaction was unavailable" },
+      },
+    });
+    client.finishTurn({ text: "PARENT_DONE" });
+    const result = await pending;
+
+    expect(result).toMatchObject({ text: "PARENT_DONE", error: null, failureKind: null });
+    expect(result.diagnostics?.codex_error_code).not.toBe("codex_server_request_unsupported");
+    expect(result.events).toContainEqual(expect.objectContaining({
+      type: "subagent_activity",
+      phase: "message",
+      kind: "error",
+      content: expect.stringContaining("unsupported client interaction"),
+    }));
+    expect(result.events.find((event) => event.type === "subagent_activity" && event.phase === "agent_completed"))
+      .toMatchObject({ isError: true, content: "child interaction was unavailable" });
+  });
+
   it("closes an active Codex subagent group when the parent is aborted", async () => {
     const factory = stubClientFactory({ threadId: "thread-parent-subagent-abort" });
     factory.turnPlan.push("manual");

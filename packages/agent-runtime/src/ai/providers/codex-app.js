@@ -1916,6 +1916,21 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     }
   }
 
+  function rejectUnsupportedChildServerRequest(request, method) {
+    const params = request?.params || {};
+    const sourceThreadId = notificationThreadId(params);
+    if (!threadId || !sourceThreadId || sourceThreadId === threadId) return false;
+    handleChildNotification({
+      method: "error",
+      params: {
+        threadId: sourceThreadId,
+        ...(notificationTurnId(params) ? { turnId: notificationTurnId(params) } : {}),
+        message: `Codex subagent requested unsupported client interaction (${safeDiagnostic(method, 512)}).`,
+      },
+    });
+    return true;
+  }
+
   function handleNotification(notification) {
     const safeNotification = sanitizeCodexNotification(notification, sensitiveValues);
     const { method, params = {} } = safeNotification;
@@ -2064,6 +2079,12 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
           ? null
           : codexConfiguredMcpApprovalResponse(request, configuredMcpServerNames);
         if (approval) return approval;
+        // A child turn can fail an interaction it cannot service without
+        // terminating the still-active root turn. The app-server receives the
+        // JSON-RPC error and reports the child lifecycle separately.
+        if (rejectUnsupportedChildServerRequest(request, method)) {
+          throw new Error(`Unsupported Codex app-server request: ${method}`);
+        }
         failUnsupportedServerRequest(method);
         throw new Error(`Unsupported Codex app-server request: ${method}`);
       },
