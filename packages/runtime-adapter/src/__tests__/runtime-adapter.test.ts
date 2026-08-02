@@ -42,6 +42,12 @@ describe("runtime adapter model references", () => {
     expect(defaultExecutionModeForModel(model)).toBe("cli");
   });
 
+  it("parses ACP profile references and defaults them to the dedicated ACP transport", () => {
+    const model = parseMonoRuntimeModelReference("acp:personal-agent");
+    expect(model).toEqual({ sdk: "acp", model: "personal-agent", reference: "acp:personal-agent" });
+    expect(defaultExecutionModeForModel(model)).toBe("acp");
+  });
+
   it("rejects raw or legacy-invalid model references with a stable error", () => {
     expect(() => parseMonoRuntimeModelReference("haiku")).toThrow(RuntimeAdapterError);
     try {
@@ -54,9 +60,13 @@ describe("runtime adapter model references", () => {
   it("rejects incompatible execution modes before calling the runtime", () => {
     const model = parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.5");
     expect(() => assertExecutionModeCompatible(model, "cli")).toThrow(/only runs under SDK execution mode/u);
+    expect(() => assertExecutionModeCompatible(model, "other")).toThrow(/sdk, cli, or acp/u);
   });
 
   it("accepts compatible execution modes", () => {
+    expect(() => assertExecutionModeCompatible(parseMonoRuntimeModelReference("acp:personal-agent"), "acp")).not.toThrow();
+    expect(() => assertExecutionModeCompatible(parseMonoRuntimeModelReference("acp:personal-agent"), "cli"))
+      .toThrow(/require ACP execution mode/i);
     expect(() => assertExecutionModeCompatible(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli")).not.toThrow();
     expect(() => assertExecutionModeCompatible(parseMonoRuntimeModelReference("codex:gpt-5.5"), "cli")).not.toThrow();
     expect(() => assertExecutionModeCompatible(parseMonoRuntimeModelReference("opencode:github-copilot:gpt-4.1"), "cli")).not.toThrow();
@@ -65,12 +75,24 @@ describe("runtime adapter model references", () => {
   it("lists the runtime backend matrix exposed by agent-runtime", () => {
     const backends = listMonoRuntimeBackends();
     expect(backends.map((backend) => backend.id)).toEqual([
+      "acp-stdio",
       "claude-sdk",
       "claude-code-cli",
       "codex-app-cli",
       "opencode-app-cli",
       "pi-sdk",
     ]);
+    expect(backends.find((backend) => backend.id === "acp-stdio")).toMatchObject({
+      runtimeBridgeId: "acp-stdio",
+      sdk: "acp",
+      executionMode: "acp",
+      transport: "acp",
+      capabilities: expect.objectContaining({
+        kind: "acp",
+        supports_session_resume: true,
+        tool_policy: "allow_all_only",
+      }),
+    });
     expect(backends.find((backend) => backend.id === "claude-sdk")).toMatchObject({
       runtimeBridgeId: "claude",
       sdk: "claude",
@@ -103,6 +125,7 @@ describe("runtime adapter model references", () => {
   });
 
   it("resolves runtime backend support by model and execution mode", () => {
+    expect(runtimeBackendForModel(parseMonoRuntimeModelReference("acp:personal-agent")).id).toBe("acp-stdio");
     expect(runtimeBackendForModel(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6")).id).toBe("claude-sdk");
     expect(runtimeBackendForModel(parseMonoRuntimeModelReference("claude:claude-sonnet-4-6"), "cli").id).toBe("claude-code-cli");
     expect(runtimeBackendForModel(parseMonoRuntimeModelReference("codex:gpt-5.5")).id).toBe("codex-app-cli");

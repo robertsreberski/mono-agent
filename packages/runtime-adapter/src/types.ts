@@ -1,4 +1,5 @@
 import type { AgentToolEnvironment } from "@mono-agent/agent-contracts";
+import type { AcpCallbackContext, AcpInteractionRequest, AcpProfileDescriptor } from "@mono-agent/agent-runtime";
 
 import type { PreparedSandboxCommand, SandboxCommandSpec, SandboxPolicy } from "./sandbox.js";
 
@@ -8,7 +9,7 @@ export interface MonoRuntimeSandboxEngine {
   prepareCommand(command: SandboxCommandSpec, policy: SandboxPolicy): Promise<PreparedSandboxCommand>;
 }
 
-export type RuntimeExecutionMode = "sdk" | "cli";
+export type RuntimeExecutionMode = "sdk" | "cli" | "acp";
 
 export interface RuntimeModelReference {
   readonly sdk: string;
@@ -22,7 +23,37 @@ export type MonoRuntimeBackendId =
   | "claude-code-cli"
   | "codex-app-cli"
   | "opencode-app-cli"
-  | "pi-sdk";
+  | "pi-sdk"
+  | "acp-stdio";
+
+export type MonoAcpProfileResolver = (
+  profileId: string,
+  context?: Readonly<Record<string, unknown>>,
+) => AcpProfileDescriptor | null | undefined | Promise<AcpProfileDescriptor | null | undefined>;
+
+export type MonoAcpInteractionRequest = AcpInteractionRequest;
+
+export type MonoAcpInteractionHandler = (
+  request: MonoAcpInteractionRequest,
+  context?: AcpCallbackContext,
+) => unknown | Promise<unknown>;
+
+export interface MonoAcpControlOptions {
+  readonly resolveAcpProfile: MonoAcpProfileResolver;
+  readonly onAcpInteractionRequest?: MonoAcpInteractionHandler;
+  readonly sandboxPolicy?: SandboxPolicy;
+  readonly sandboxEngine?: MonoRuntimeSandboxEngine;
+  readonly cwd?: string;
+  readonly signal?: AbortSignal;
+  readonly context?: Readonly<Record<string, unknown>>;
+  /** The sandbox implementation is owned and injected by runtime-adapter. */
+  readonly sandbox?: never;
+}
+
+export interface MonoAcpListSessionsRequest {
+  readonly cwd?: string | null;
+  readonly cursor?: string | null;
+}
 
 /**
  * One row of the additive (sdk, executionMode) -> backend selection table. This
@@ -38,7 +69,7 @@ export interface MonoRuntimeSelectionEntry {
   readonly backendId: MonoRuntimeBackendId;
 }
 
-export type MonoRuntimeBackendTransport = "sdk" | "cli";
+export type MonoRuntimeBackendTransport = "sdk" | "cli" | "acp";
 
 export interface MonoRuntimeBackendCapabilities {
   readonly kind?: string;
@@ -184,7 +215,7 @@ export interface RuntimeRunOptions {
   readonly abortSignal: AbortSignal;
   /** Host-only environment applied to Bash, Exec, and their nested subagents for this run. */
   readonly toolEnvironment?: AgentToolEnvironment;
-  readonly executionMode?: string;
+  readonly executionMode?: RuntimeExecutionMode;
   readonly onEvent?: (event: RuntimeEventLike) => void;
   readonly effort?: string;
   readonly cwd?: string;
@@ -203,6 +234,10 @@ export interface RuntimeRunOptions {
   readonly compaction?: RuntimeCompactionPolicy;
   /** Per-run prompt-fragment overrides. */
   readonly prompts?: RuntimePromptOverrides;
+  /** Per-run ACP profile resolution; preferred when profile config is worker/request scoped. */
+  readonly resolveAcpProfile?: MonoAcpProfileResolver;
+  /** Per-run permission/elicitation callback; wins over the host default. */
+  readonly onAcpInteractionRequest?: MonoAcpInteractionHandler;
   /** In-flight user guidance consumed by a provider's native steering API. */
   readonly liveInput?: AsyncIterable<RuntimeLiveInputMessage>;
   // Pi-native provider knobs (optional; ignored by other bridges).
@@ -314,6 +349,10 @@ export interface MonoRuntimeHostOptions extends RuntimeToolOptions {
   readonly prompts?: RuntimePromptOverrides;
   readonly resolveCustomPricing?: (parsed: MonoRuntimeParsedPricingModel) => MonoRuntimePricing | null;
   readonly resolvePiApiKey?: (provider: string) => Promise<string | undefined>;
+  /** Optional default; a per-run resolver wins. */
+  readonly resolveAcpProfile?: MonoAcpProfileResolver;
+  /** Optional default; a per-run interaction callback wins. */
+  readonly onAcpInteractionRequest?: MonoAcpInteractionHandler;
   readonly persistArtifact?: (artifact: {
     readonly filename: string;
     readonly buffer: Buffer;
