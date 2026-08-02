@@ -36,6 +36,15 @@ export type {
   DiscoveredOperatorAgent,
 } from "./discovery.js";
 
+export { OperatorClient } from "./operator-client.js";
+export type {
+  OperatorClientOptions,
+  OperatorConnection,
+  OperatorInfo,
+  OperatorTurnInput,
+  OperatorTurnResult,
+} from "./operator-client.js";
+
 export {
   WEB_API_VERSION,
   WEB_MAX_CONCURRENT_UPLOADS,

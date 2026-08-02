@@ -98,7 +98,7 @@ const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
   "allowedTools", "disallowedTools", "permissionMode", "mcpServers", "skills",
-  "outputSchema", "nativeSubagents", "liveInput", "fastMode",
+  "outputSchema", "nativeSubagents", "liveInput", "fastMode", "toolEnvironment",
 ]);
 
 /**
@@ -1045,6 +1045,9 @@ function entrySatisfiesRequirements(entry, options) {
   }
   if (options.liveInput) {
     effectiveRequires.supports_live_input = true;
+  }
+  if (options.toolEnvironment !== undefined) {
+    effectiveRequires.supports_request_tool_environment = true;
   }
   if (options.fastMode === true) {
     effectiveRequires.supports_fast_mode = true;

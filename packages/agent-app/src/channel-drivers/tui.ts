@@ -180,6 +180,9 @@ export function createTuiChannelDriver(
         basePath: input.config.basePath,
         allowNonLoopback: input.config.allowNonLoopback,
         ...(input.config.apiKey === undefined ? {} : { apiKey: input.config.apiKey }),
+        ...(input.config.requestToolEnvironment === undefined
+          ? {}
+          : { requestToolEnvironment: input.config.requestToolEnvironment }),
         responder: input.responder,
         ...(input.interaction === undefined ? {} : { interaction: input.interaction }),
         info: buildInfo,

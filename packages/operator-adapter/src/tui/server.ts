@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
+import { isAbsolute } from "node:path";
 
 import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
@@ -20,6 +21,7 @@ import {
   type AgentResponse,
   type AgentStreamEvent,
   type AgentStreamWireFrame,
+  type AgentToolEnvironment,
   type ChannelAskAnswer,
   type ChannelInteractionHub,
 } from "@mono-agent/agent-contracts";
@@ -36,6 +38,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 
 import { DEFAULT_BASE_PATH, DEFAULT_HOST, DEFAULT_PORT, MAX_FRAME_BYTES, TUI_WIRE_SCHEMA } from "./constants.js";
 import { TuiAdapterError } from "./errors.js";
+import type { RequestToolEnvironmentConfig } from "./config.js";
 
 export interface TuiAdapterLogger {
   debug?(message: string, metadata?: Record<string, unknown>): void;
@@ -84,6 +87,8 @@ export interface TuiAdapterOptions {
   readonly basePath?: string;
   readonly allowNonLoopback?: boolean;
   readonly apiKey?: string;
+  /** Optional loopback-only boundary for ACP request-scoped process-tool env. */
+  readonly requestToolEnvironment?: RequestToolEnvironmentConfig;
   readonly responder: AgentResponder;
   readonly logger?: TuiAdapterLogger;
   /**
@@ -123,6 +128,10 @@ const MAX_VERBATIM_TEXT_BYTES = 1024 * 1024;
 const MAX_LIVE_INPUT_BODY_BYTES = 32 * 1024;
 const MAX_WEB_ATTACHMENTS = 10;
 const MAX_WEB_ATTACHMENT_BYTES = 64 * 1024 * 1024;
+const MAX_REQUEST_TOOL_ENVIRONMENT_KEYS = 32;
+const MAX_REQUEST_TOOL_ENVIRONMENT_VALUE_BYTES = 16 * 1024;
+const MAX_REQUEST_TOOL_ENVIRONMENT_TOTAL_BYTES = 64 * 1024;
+const MAX_REQUEST_TOOL_ENVIRONMENT_PATHS = 4;
 const ALLOWED_ATTACHMENT_MIME_TYPES = new Set(
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST.map((mimeType) => mimeType.toLowerCase()),
 );
@@ -135,6 +144,13 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const port = options.port ?? DEFAULT_PORT;
   const basePath = normalizeBasePath(options.basePath ?? DEFAULT_BASE_PATH);
   const apiKey = normalizeOptionalString(options.apiKey);
+  if (options.requestToolEnvironment !== undefined && !isLoopbackHost(host)) {
+    throw new TuiAdapterError(
+      "unsafe_host",
+      "Request tool environment requires a loopback-only TUI adapter bind.",
+      { host },
+    );
+  }
   assertSafeBind(host, options.allowNonLoopback === true, (boundHost) =>
     new TuiAdapterError(
       "unsafe_host",
@@ -168,6 +184,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
             ...(typeof options.responder.offerLiveInput === "function" ? { liveInput: true } : {}),
             ...(typeof options.responder.deliverVerbatim === "function" ? { historyAppend: true } : {}),
             ...(options.interaction === undefined ? {} : { askUser: true }),
+            ...(options.requestToolEnvironment === undefined ? {} : { toolEnvironment: true }),
           },
           ...(info?.label === undefined ? {} : { label: info.label }),
           ...(info?.model === undefined ? {} : { model: info.model }),
@@ -373,6 +390,14 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       { host, boundAddress: address.address, boundPort: address.port },
     );
   }
+  if (boundNonLoopback && options.requestToolEnvironment !== undefined) {
+    await closeRejectedServer();
+    throw new TuiAdapterError(
+      "unsafe_host",
+      "Request tool environment requires the resolved TUI adapter bind to remain loopback-only.",
+      { host, boundAddress: address.address, boundPort: address.port },
+    );
+  }
 
   server.on("error", (error) => {
     options.onServerError?.(errorToMessage(error));
@@ -381,7 +406,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const url = `http://${hostForUrl(host)}:${boundPort}`;
 
   async function handleTurn(req: Request, res: Response): Promise<void> {
-    const body = normalizeTurnBody(req.body);
+    const body = normalizeTurnBody(req.body, options.requestToolEnvironment);
     const controller = new AbortController();
     activeTurns.add(controller);
     if (stopping) controller.abort(new Error("TUI adapter is stopping."));
@@ -394,6 +419,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       ...(body.attachments === undefined || body.attachments.length === 0
         ? {}
         : { attachments: body.attachments }),
+      ...(body.toolEnvironment === undefined ? {} : { toolEnvironment: body.toolEnvironment }),
     };
 
     res.status(200);
@@ -633,8 +659,9 @@ interface NormalizedTurnBody {
   readonly conversationId: string;
   readonly text: string;
   readonly metadata: Record<string, unknown>;
-  readonly client: "tui" | "web";
+  readonly client: "tui" | "web" | "acp";
   readonly attachments?: readonly AgentAttachment[];
+  readonly toolEnvironment?: AgentToolEnvironment;
 }
 
 interface NormalizedVerbatimBody {
@@ -670,7 +697,10 @@ function normalizeVerbatimBody(rawConversationId: string | string[] | undefined,
   return { conversationId, text, idempotencyKey };
 }
 
-function normalizeTurnBody(body: unknown): NormalizedTurnBody {
+function normalizeTurnBody(
+  body: unknown,
+  requestToolEnvironment: RequestToolEnvironmentConfig | undefined,
+): NormalizedTurnBody {
   if (typeof body !== "object" || body === null) {
     throw new TuiAdapterError("invalid_request", "Request body must be a JSON object.");
   }
@@ -689,13 +719,20 @@ function normalizeTurnBody(body: unknown): NormalizedTurnBody {
     typeof record.metadata === "object" && record.metadata !== null && !Array.isArray(record.metadata)
       ? (record.metadata as Record<string, unknown>)
       : {};
-  if (record.client !== undefined && record.client !== "tui" && record.client !== "web") {
-    throw new TuiAdapterError("invalid_request", "client must be 'tui' or 'web' when provided.");
+  if (record.client !== undefined && record.client !== "tui" && record.client !== "web" && record.client !== "acp") {
+    throw new TuiAdapterError("invalid_request", "client must be 'tui', 'web', or 'acp' when provided.");
   }
-  const client = record.client === "web" || (record.client === undefined && metadata.source === "web")
-    ? "web"
-    : "tui";
+  const client = record.client === "acp"
+    ? "acp"
+    : record.client === "web" || (record.client === undefined && metadata.source === "web")
+      ? "web"
+      : "tui";
   const attachments = normalizeTurnAttachments(record.attachments, client);
+  const toolEnvironment = normalizeRequestToolEnvironment(
+    record.toolEnvironment,
+    client,
+    requestToolEnvironment,
+  );
   if (text.length === 0 && (attachments === undefined || attachments.length === 0)) {
     throw new TuiAdapterError("invalid_request", "text or at least one attachment is required.");
   }
@@ -705,12 +742,16 @@ function normalizeTurnBody(body: unknown): NormalizedTurnBody {
     metadata,
     client,
     ...(attachments === undefined ? {} : { attachments }),
+    ...(toolEnvironment === undefined ? {} : { toolEnvironment }),
   };
 }
 
 function requestMetadata(body: NormalizedTurnBody, requestId: string): Record<string, unknown> {
   if (body.client === "tui") {
     return { ...body.metadata, source: "tui", tuiRequestId: requestId };
+  }
+  if (body.client === "acp") {
+    return { ...body.metadata, source: "acp", acpRequestId: requestId };
   }
 
   const web = isRecord(body.metadata.web) ? body.metadata.web : undefined;
@@ -744,6 +785,9 @@ function normalizeTurnAttachments(
   if (!Array.isArray(value)) {
     throw new TuiAdapterError("invalid_request", "attachments must be an array when provided.");
   }
+  if (client === "acp" && value.length > 0) {
+    throw new TuiAdapterError("invalid_request", "ACP turns do not support attachments.");
+  }
   if (client === "web" && value.length > MAX_WEB_ATTACHMENTS) {
     throw new TuiAdapterError(
       "invalid_request",
@@ -764,6 +808,68 @@ function normalizeTurnAttachments(
     );
   }
   return attachments;
+}
+
+function normalizeRequestToolEnvironment(
+  value: unknown,
+  client: NormalizedTurnBody["client"],
+  config: RequestToolEnvironmentConfig | undefined,
+): AgentToolEnvironment | undefined {
+  if (value === undefined) return undefined;
+  if (client !== "acp") {
+    throw new TuiAdapterError("invalid_request", "toolEnvironment is only supported for ACP turns.");
+  }
+  if (config === undefined) {
+    throw new TuiAdapterError("invalid_request", "Request tool environment is not enabled for this agent.");
+  }
+  if (!isRecord(value) || value.schema !== 1 || !isRecord(value.values)) {
+    throw new TuiAdapterError("invalid_request", "toolEnvironment must use schema 1 with a values object.");
+  }
+  const entries = Object.entries(value.values);
+  if (entries.length > MAX_REQUEST_TOOL_ENVIRONMENT_KEYS) {
+    throw new TuiAdapterError("invalid_request", "toolEnvironment contains too many values.");
+  }
+  const allowed = new Set(config.allowedKeys);
+  const values: Record<string, string> = {};
+  let totalBytes = 0;
+  for (const [key, raw] of entries) {
+    if (!allowed.has(key) || typeof raw !== "string" || raw.includes("\0")) {
+      throw new TuiAdapterError("invalid_request", `toolEnvironment value '${key}' is not allowed.`);
+    }
+    const valueBytes = Buffer.byteLength(raw, "utf8");
+    if (valueBytes > MAX_REQUEST_TOOL_ENVIRONMENT_VALUE_BYTES) {
+      throw new TuiAdapterError("invalid_request", `toolEnvironment value '${key}' is too large.`);
+    }
+    totalBytes += Buffer.byteLength(key, "utf8") + valueBytes;
+    values[key] = raw;
+  }
+  const rawPathPrepend = value.pathPrepend;
+  if (rawPathPrepend !== undefined && !config.allowPathPrepend) {
+    throw new TuiAdapterError("invalid_request", "toolEnvironment pathPrepend is not enabled.");
+  }
+  if (rawPathPrepend !== undefined && !Array.isArray(rawPathPrepend)) {
+    throw new TuiAdapterError("invalid_request", "toolEnvironment pathPrepend must be an array.");
+  }
+  const pathPrepend = rawPathPrepend === undefined
+    ? undefined
+    : rawPathPrepend.map((entry) => {
+        if (typeof entry !== "string" || !isAbsolute(entry) || entry.includes("\0")) {
+          throw new TuiAdapterError("invalid_request", "toolEnvironment pathPrepend entries must be absolute paths.");
+        }
+        totalBytes += Buffer.byteLength(entry, "utf8");
+        return entry;
+      });
+  if ((pathPrepend?.length ?? 0) > MAX_REQUEST_TOOL_ENVIRONMENT_PATHS) {
+    throw new TuiAdapterError("invalid_request", "toolEnvironment pathPrepend contains too many paths.");
+  }
+  if (totalBytes > MAX_REQUEST_TOOL_ENVIRONMENT_TOTAL_BYTES) {
+    throw new TuiAdapterError("invalid_request", "toolEnvironment exceeds the aggregate byte limit.");
+  }
+  return {
+    schema: 1,
+    values,
+    ...(pathPrepend === undefined || pathPrepend.length === 0 ? {} : { pathPrepend }),
+  };
 }
 
 function normalizeTurnAttachment(

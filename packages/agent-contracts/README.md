@@ -165,6 +165,7 @@ AgentStreamEvent
 AgentStreamWireFrame
 AgentSurface
 AgentSurfaceMessageBudget
+AgentToolEnvironment
 BoundedHttpResponseWriter
 BoundedHttpResponseWriterOptions
 BufferedMessageStream

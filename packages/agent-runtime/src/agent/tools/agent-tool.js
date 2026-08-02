@@ -203,7 +203,7 @@ function positiveInt(value, fallback) {
  * Build the `Agent` tool, or null when subagents are unavailable for this run.
  *
  * @param {RuntimeSubagentsOptions|null|undefined} subagents
- * @param {{model?: *, executionMode?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, onEvent?: (event: *) => void}} [context]
+ * @param {{model?: *, executionMode?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, onEvent?: (event: *) => void}} [context]
  * @returns {*|null}
  */
 export function createAgentTool(subagents, context = {}) {
@@ -409,6 +409,7 @@ export function createAgentTool(subagents, context = {}) {
           // the child's resolved route and deny lists.
           ...(context.skills === undefined ? {} : { skills: context.skills }),
           ...(context.skillsRoot === undefined ? {} : { skillsRoot: context.skillsRoot }),
+          ...(context.toolEnvironment === undefined ? {} : { toolEnvironment: context.toolEnvironment }),
           abortSignal: controller.signal,
           maxTurns,
           callId: toolCallId,

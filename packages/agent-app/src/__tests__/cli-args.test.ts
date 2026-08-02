@@ -552,7 +552,22 @@ describe("parseCliArgs", () => {
 
   it("never loads an invoking folder dotenv for the machine-wide web console", () => {
     expect(shouldLoadCommandDotenv("web")).toBe(false);
+    expect(shouldLoadCommandDotenv("bridge")).toBe(false);
     expect(shouldLoadCommandDotenv("start")).toBe(true);
+  });
+
+  it("parses the exact ACP bridge shape and rejects ambiguous targets", () => {
+    expect(parseCliArgs([
+      "bridge", "acp", "--source-id", "personal-agent", "--require-tool-environment",
+    ])).toMatchObject({
+      command: "bridge",
+      positionals: ["acp"],
+      sourceId: "personal-agent",
+      requireToolEnvironment: true,
+    });
+    expect(() => parseCliArgs(["bridge", "acp"])).toThrow(/requires --source-id/u);
+    expect(() => parseCliArgs(["bridge", "http", "--source-id", "personal-agent"])).toThrow(/exact subcommand `acp`/u);
+    expect(() => parseCliArgs(["status", "--source-id", "personal-agent"])).toThrow(/only supported.*bridge acp/u);
   });
 
   it("renders a grouped, scannable summary with every public command once", () => {
@@ -614,6 +629,10 @@ describe("parseCliArgs", () => {
     const webDetail = helpTopicText("web");
     expect(webDetail).toContain("web reset --all --yes");
     expect(webDetail).toContain("0.0.0.0:5050");
+
+    const bridgeDetail = helpTopicText("bridge");
+    expect(bridgeDetail).toContain("bridge acp --source-id <id>");
+    expect(bridgeDetail).toContain("stdout");
 
     // `start -f` was removed in PR1 (it errors); its help must never teach the
     // `-f` shorthand. The word-boundary match excludes `--foreground` (whose "f"

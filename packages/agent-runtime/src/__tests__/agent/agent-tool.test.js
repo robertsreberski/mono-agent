@@ -393,6 +393,15 @@ describe("Agent tool confinement", () => {
     expect(run.mock.calls[0][0]).toMatchObject({ sandboxPolicy, sandboxEngine });
   });
 
+  it("hands the parent's request tool environment to every child request", async () => {
+    const run = okRun();
+    const toolEnvironment = { schema: 1, values: { MULTICA_TASK_ID: "task-1" } };
+    const tool = createAgentTool(subagentOptions({ run }), { toolEnvironment });
+    await tool.execute("c1", { prompt: "x" });
+
+    expect(run.mock.calls[0][0]).toMatchObject({ toolEnvironment });
+  });
+
   it("offers the parent's skill index and skills root to every child request", async () => {
     const run = okRun();
     const skills = [{ name: "research", description: "Reads the web." }];
