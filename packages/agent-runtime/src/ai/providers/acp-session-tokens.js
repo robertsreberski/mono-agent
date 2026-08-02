@@ -2,6 +2,15 @@
 
 const PROFILE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
+const MAX_PROFILE_ID_LENGTH = 128;
+const MAX_RAW_TOKEN_BYTES = 4_096;
+const MAX_ENCODED_TOKEN_LENGTH = Math.ceil(MAX_RAW_TOKEN_BYTES * 4 / 3);
+const PROVIDER_SESSION_PREFIX = "acp:v1:";
+const SESSION_CURSOR_PREFIX = "acp-cursor:v1:";
+const MAX_PROVIDER_SESSION_ID_LENGTH = PROVIDER_SESSION_PREFIX.length
+  + MAX_PROFILE_ID_LENGTH + 1 + MAX_ENCODED_TOKEN_LENGTH;
+const MAX_SESSION_CURSOR_LENGTH = SESSION_CURSOR_PREFIX.length
+  + MAX_PROFILE_ID_LENGTH + 1 + MAX_ENCODED_TOKEN_LENGTH;
 
 export class AcpClientError extends Error {
   /**
@@ -43,6 +52,9 @@ function decodeToken(encoded, code, label) {
   if (bytes.length === 0 || bytes.toString("base64url") !== encoded) {
     throw new AcpClientError(code, `Non-canonical ${label} encoding.`);
   }
+  if (bytes.length > MAX_RAW_TOKEN_BYTES) {
+    throw new AcpClientError(code, `${label} exceeds ${MAX_RAW_TOKEN_BYTES} bytes.`);
+  }
   try {
     return requiredTokenString(new TextDecoder("utf-8", { fatal: true }).decode(bytes), code, label);
   } catch (error) {
@@ -55,10 +67,10 @@ function decodeToken(encoded, code, label) {
 export function encodeAcpProviderSessionId(profileId, sessionId) {
   validateAcpProfileId(profileId);
   requiredTokenString(sessionId, "invalid_session_id", "ACP session id");
-  if (Buffer.byteLength(sessionId, "utf8") > 4096) {
-    throw new AcpClientError("invalid_session_id", "ACP session id exceeds 4096 bytes.");
+  if (Buffer.byteLength(sessionId, "utf8") > MAX_RAW_TOKEN_BYTES) {
+    throw new AcpClientError("invalid_session_id", `ACP session id exceeds ${MAX_RAW_TOKEN_BYTES} bytes.`);
   }
-  return `acp:v1:${profileId}:${Buffer.from(sessionId, "utf8").toString("base64url")}`;
+  return `${PROVIDER_SESSION_PREFIX}${profileId}:${Buffer.from(sessionId, "utf8").toString("base64url")}`;
 }
 
 /** Internal protocol-state decoder. This module is not a package export. @param {string} providerSessionId */
@@ -66,7 +78,7 @@ export function decodeAcpProviderSessionId(providerSessionId) {
   if (typeof providerSessionId !== "string") {
     throw new AcpClientError("invalid_session_id", "ACP provider session id must be a string.");
   }
-  if (providerSessionId.length > 5_600) {
+  if (providerSessionId.length > MAX_PROVIDER_SESSION_ID_LENGTH) {
     throw new AcpClientError("invalid_session_id", "ACP provider session id exceeds the supported length.");
   }
   const match = /^acp:v1:([^:]+):([^:]+)$/.exec(providerSessionId);
@@ -97,16 +109,16 @@ export function validateAcpProviderSessionId(providerSessionId, expectedProfileI
 export function encodeAcpSessionCursor(profileId, cursor) {
   validateAcpProfileId(profileId);
   requiredTokenString(cursor, "invalid_cursor", "ACP session cursor");
-  if (Buffer.byteLength(cursor, "utf8") > 4096) {
-    throw new AcpClientError("invalid_cursor", "ACP session cursor exceeds 4096 bytes.");
+  if (Buffer.byteLength(cursor, "utf8") > MAX_RAW_TOKEN_BYTES) {
+    throw new AcpClientError("invalid_cursor", `ACP session cursor exceeds ${MAX_RAW_TOKEN_BYTES} bytes.`);
   }
-  return `acp-cursor:v1:${profileId}:${Buffer.from(cursor, "utf8").toString("base64url")}`;
+  return `${SESSION_CURSOR_PREFIX}${profileId}:${Buffer.from(cursor, "utf8").toString("base64url")}`;
 }
 
 /** @param {string} profileId @param {unknown} cursor */
 export function decodeAcpSessionCursor(profileId, cursor) {
   validateAcpProfileId(profileId);
-  if (typeof cursor !== "string" || cursor.length > 5_600) {
+  if (typeof cursor !== "string" || cursor.length > MAX_SESSION_CURSOR_LENGTH) {
     throw new AcpClientError("invalid_cursor", "ACP session cursor must be an opaque cursor returned by listAcpSessions.");
   }
   const match = /^acp-cursor:v1:([^:]+):([^:]+)$/.exec(cursor);
