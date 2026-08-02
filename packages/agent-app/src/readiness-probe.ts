@@ -14,6 +14,7 @@ import {
 import type { WizardPlan } from "./wizard/answers.js";
 import type {
   PiTransport,
+  RuntimeExecutionMode,
   RuntimeEventLike,
   RuntimeModelReference,
   RuntimeResult,
@@ -247,7 +248,7 @@ interface ReadinessWorkerHandle {
 
 interface ReadinessWorkerRuntimeSpec {
   readonly model: RuntimeModelReference;
-  readonly executionMode?: string;
+  readonly executionMode?: RuntimeExecutionMode;
   readonly effort?: string;
   readonly workspace: string;
   readonly artifactDir: string;

@@ -1,11 +1,20 @@
 import { constants as fsConstants } from "node:fs";
-import { open } from "node:fs/promises";
+import { open, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { parseEnv } from "node:util";
 
 import { isLoopbackHost } from "@mono-agent/agent-contracts";
 import { listTraceSources, mergeTraceSources, type TraceSourceListItem } from "@mono-agent/observability";
+
+import {
+  ACP_BRIDGE_DISCOVERY_SCHEMA,
+  ACP_BRIDGE_SOURCE_SCHEMA,
+  ACP_BRIDGE_VERSION,
+  ACP_PROTOCOL_VERSION,
+  type AcpBridgeDiscovery,
+  type AcpBridgeSourceDescriptor,
+} from "./contracts.js";
 
 const BACKGROUND_SNAPSHOT_SCHEMA = "mono-agent.background-snapshot.v1";
 const MAX_LOCAL_CONFIGURATION_BYTES = 1024 * 1024;
@@ -15,6 +24,8 @@ export interface DiscoverOperatorAgentsOptions {
   readonly staleAfterMs?: number;
   readonly env?: Readonly<Record<string, string | undefined>>;
 }
+
+export type DiscoverAcpBridgeAgentsOptions = DiscoverOperatorAgentsOptions;
 
 export interface DiscoveredOperatorAgent {
   readonly source: TraceSourceListItem;
@@ -33,12 +44,7 @@ export async function discoverOperatorAgents(
   options: DiscoverOperatorAgentsOptions = {},
 ): Promise<readonly DiscoveredOperatorAgent[]> {
   const env = options.env ?? process.env;
-  const registryDirs = normalizeRegistryDirs(options.registryDirs, env);
-  const results = await Promise.all(registryDirs.map(async (registryDir) => listTraceSources({
-    registryDir,
-    ...(options.staleAfterMs === undefined ? {} : { staleAfterMs: options.staleAfterMs }),
-  })));
-  const sources = mergeTraceSources(...results.map((result) => result.sources));
+  const sources = await discoverTraceSources(options, env);
   return Promise.all(sources
     .filter((source) => source.health !== "stopped")
     .map(async (source): Promise<DiscoveredOperatorAgent> => {
@@ -50,6 +56,148 @@ export async function discoverOperatorAgents(
         ...(apiKey === undefined ? {} : { apiKey }),
       };
     }));
+}
+
+/**
+ * Discover local mono-agent ACP targets without exposing operator credentials,
+ * endpoint details, configuration paths, or trace metadata.
+ */
+export async function discoverAcpBridgeAgents(
+  options: DiscoverAcpBridgeAgentsOptions = {},
+): Promise<AcpBridgeDiscovery> {
+  const env = options.env ?? process.env;
+  const sources = await discoverTraceSources(options, env);
+  return {
+    schema: ACP_BRIDGE_DISCOVERY_SCHEMA,
+    bridgeVersion: ACP_BRIDGE_VERSION,
+    protocolVersion: ACP_PROTOCOL_VERSION,
+    sources: await Promise.all(sources
+      .filter((source) => source.health !== "stopped")
+      .map(async (source) => buildAcpSourceDescriptor(source))),
+  };
+}
+
+interface PublishedAcpBridgeMetadata {
+  readonly bridgeVersion: number;
+  readonly protocolVersion: number;
+  readonly installedVersion: string;
+  readonly workspacePath: string;
+}
+
+async function buildAcpSourceDescriptor(
+  source: TraceSourceListItem,
+): Promise<AcpBridgeSourceDescriptor> {
+  const warnings: string[] = [];
+  const published = publishedAcpBridgeMetadata(source.metadata);
+  const operatorAvailable = operatorBaseUrlFromMetadata(source.metadata) !== undefined;
+  const workspacePath = await canonicalPath(
+    published?.workspacePath ?? await fallbackWorkspacePath(source),
+  );
+
+  if (published === undefined) warnings.push("bridge_metadata_missing_or_invalid");
+  if (published !== undefined && published.bridgeVersion !== ACP_BRIDGE_VERSION) {
+    warnings.push("bridge_version_unsupported");
+  }
+  if (published !== undefined && published.protocolVersion !== ACP_PROTOCOL_VERSION) {
+    warnings.push("protocol_version_unsupported");
+  }
+  if (!operatorAvailable) warnings.push("operator_endpoint_unavailable");
+  if (published === undefined) warnings.push("workspace_resolved_from_configuration");
+
+  return {
+    schema: ACP_BRIDGE_SOURCE_SCHEMA,
+    bridgeVersion: published?.bridgeVersion ?? 0,
+    protocolVersion: published?.protocolVersion ?? 0,
+    installedVersion: published?.installedVersion ?? "unknown",
+    sourceId: source.sourceId,
+    label: source.label,
+    health: source.health,
+    compatible: published !== undefined
+      && published.bridgeVersion === ACP_BRIDGE_VERSION
+      && published.protocolVersion === ACP_PROTOCOL_VERSION
+      && operatorAvailable,
+    workspace: { path: workspacePath, owner: "agent" },
+    ownership: {
+      configuration: "agent",
+      workspace: "agent",
+      mcp: "agent",
+    },
+    constraints: {
+      promptContent: ["text", "resource_link"],
+      clientMcp: false,
+      clientFilesystem: false,
+      clientTerminal: false,
+      attachments: false,
+      additionalDirectories: false,
+    },
+    warnings,
+  };
+}
+
+function publishedAcpBridgeMetadata(
+  metadata: Record<string, unknown> | undefined,
+): PublishedAcpBridgeMetadata | undefined {
+  const channels = record(metadata?.channels);
+  const tui = record(channels?.tui);
+  const acp = record(tui?.acpBridge);
+  if (
+    acp?.schema !== ACP_BRIDGE_SOURCE_SCHEMA
+    || typeof acp.bridgeVersion !== "number"
+    || !Number.isSafeInteger(acp.bridgeVersion)
+    || acp.bridgeVersion < 1
+    || typeof acp.protocolVersion !== "number"
+    || !Number.isSafeInteger(acp.protocolVersion)
+    || acp.protocolVersion < 1
+    || typeof acp.installedVersion !== "string"
+    || acp.installedVersion.trim().length === 0
+    || typeof acp.workspacePath !== "string"
+    || !isAbsolute(acp.workspacePath)
+  ) return undefined;
+  return {
+    bridgeVersion: acp.bridgeVersion,
+    protocolVersion: acp.protocolVersion,
+    installedVersion: acp.installedVersion,
+    workspacePath: resolve(acp.workspacePath),
+  };
+}
+
+async function fallbackWorkspacePath(source: TraceSourceListItem): Promise<string> {
+  if (source.configPath !== undefined) {
+    try {
+      const parsed = JSON.parse(await readOwnerRegularFile(source.configPath)) as {
+        runtime?: { readonly workspace?: unknown };
+      };
+      const configured = parsed.runtime?.workspace;
+      if (typeof configured === "string" && configured.trim().length > 0) {
+        return resolve(dirname(source.configPath), configured);
+      }
+      return dirname(resolve(source.configPath));
+    } catch {
+      return dirname(resolve(source.configPath));
+    }
+  }
+  return dirname(resolve(source.artifactDir));
+}
+
+async function canonicalPath(path: string): Promise<string> {
+  const absolute = resolve(path);
+  try {
+    return await realpath(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
+async function discoverTraceSources(
+  options: DiscoverOperatorAgentsOptions,
+  env: Readonly<Record<string, string | undefined>>,
+): Promise<readonly TraceSourceListItem[]> {
+  const registryDirs = normalizeRegistryDirs(options.registryDirs, env);
+  const results = await Promise.all(registryDirs.map(async (registryDir) => listTraceSources({
+    registryDir,
+    ...(options.staleAfterMs === undefined ? {} : { staleAfterMs: options.staleAfterMs }),
+  })));
+  return mergeTraceSources(...results.map((result) => result.sources));
 }
 
 export function operatorBaseUrlFromMetadata(metadata: Record<string, unknown> | undefined): string | undefined {

@@ -29,7 +29,31 @@ describe("parseRuntimeModelReference (opencode)", () => {
   });
 });
 
+describe("parseRuntimeModelReference (acp)", () => {
+  it("parses the canonical acp:<profile-id> reference", () => {
+    expect(parseRuntimeModelReference("acp:personal-agent")).toEqual({
+      sdk: "acp",
+      model: "personal-agent",
+      reference: "acp:personal-agent",
+    });
+  });
+
+  it.each(["acp:", "acp:bad profile", "acp:bad:profile", "acp:-bad"])(
+    "rejects invalid profile reference %s",
+    (reference) => expect(() => parseRuntimeModelReference(reference)).toThrow(),
+  );
+});
+
 describe("executionModeIncompatibilityReason", () => {
+  it("requires ACP profiles to use the dedicated ACP execution mode", () => {
+    expect(executionModeIncompatibilityReason("acp:personal-agent", "acp")).toBeNull();
+    expect(executionModeIncompatibilityReason("acp:personal-agent", "cli"))
+      .toMatch(/ACP profiles require ACP/i);
+    expect(executionModeIncompatibilityReason("acp:personal-agent", "sdk"))
+      .toMatch(/ACP profiles require ACP/i);
+    expect(executionModeIncompatibilityReason("claude:claude-sonnet-4-6", "acp"))
+      .toMatch(/not supported under ACP/i);
+  });
   it("returns null for sdk execution mode (no restriction)", () => {
     expect(executionModeIncompatibilityReason("claude:claude-sonnet-4-6", "sdk")).toBeNull();
     expect(executionModeIncompatibilityReason("pi:openai:gpt-5", "sdk")).toBeNull();

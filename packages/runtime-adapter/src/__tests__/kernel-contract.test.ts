@@ -23,6 +23,9 @@ import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registr
 import { createMonoRuntime } from "../runtime-adapter.js";
 import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptResolution } from "../runtime-adapter.js";
 import type {
+  MonoAcpInteractionRequest,
+  MonoAcpProfileResolver,
+  MonoAcpSessionControlOptions,
   MonoRuntimeBackendCapabilities,
   MonoRuntimeHostOptions,
   RuntimeEventLike,
@@ -39,6 +42,13 @@ type KernelToolOptions = Parameters<KernelRuntimeInstance["configureTools"]>[0];
 type KernelRunResult = Awaited<ReturnType<KernelRuntimeInstance["run"]>>;
 type KernelBridgeDescriptor = ReturnType<typeof listRuntimeBridges>[number];
 type KernelBridgeCapabilities = ReturnType<KernelBridgeDescriptor["capabilities"]>;
+type MonoAcpElicitationInteraction = Extract<MonoAcpInteractionRequest, { kind: "elicitation" }>;
+type MonoAcpFormPayload = Extract<MonoAcpElicitationInteraction["payload"], { mode: "form" }>;
+type MonoAcpResolvedProfile = NonNullable<Awaited<ReturnType<MonoAcpProfileResolver>>>;
+type MonoAcpProfileCallbacks = NonNullable<MonoAcpResolvedProfile["clientCallbacks"]>;
+type MonoAcpCallback<K extends keyof MonoAcpProfileCallbacks> = NonNullable<MonoAcpProfileCallbacks[K]>;
+type MonoAcpCallbackPayload<K extends keyof MonoAcpProfileCallbacks> = Parameters<MonoAcpCallback<K>>[0];
+type MonoAcpCallbackContext<K extends keyof MonoAcpProfileCallbacks> = Parameters<MonoAcpCallback<K>>[1];
 type RuntimeRunComparableKeys =
   | "model"
   | "messages"
@@ -56,7 +66,8 @@ type RuntimeRunComparableKeys =
   | "compaction"
   | "prompts"
   | "settingSources"
-  | "codexLoadProjectDocs";
+  | "codexLoadProjectDocs"
+  | "acpSessionTokenKey";
 type RuntimeRunComparableOptions = Pick<RuntimeRunOptions, RuntimeRunComparableKeys>;
 type KnownKeys<T> = {
   [K in keyof T]: string extends K
@@ -115,6 +126,8 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
   });
 
   it("the facade RuntimeRunOptions is assignable to createRuntime(...).run's options parameter", () => {
+    expectTypeOf<RuntimeRunOptions["executionMode"]>()
+      .toEqualTypeOf<"sdk" | "cli" | "acp" | undefined>();
     const facade = null as unknown as RuntimeRunComparableOptions;
     assertAssignable<KernelRunOptions>(facade);
   });
@@ -169,5 +182,94 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
   it("createPiOAuthApiKeyResolver keeps its real (path in, provider resolver out) signature", () => {
     expectTypeOf(createPiOAuthApiKeyResolver).toBeCallableWith({ path: "/tmp/auth.json" });
     expectTypeOf(createPiOAuthApiKeyResolver).returns.toBeFunction();
+  });
+
+  it("keeps typed ACP interaction payloads while hiding protocol session ids", () => {
+    const assertInteractionContract = (request: MonoAcpInteractionRequest): void => {
+      if (request.kind === "permission") {
+        assertAssignable<readonly unknown[]>(request.payload.options);
+        assertAssignable<object>(request.payload.toolCall);
+        // @ts-expect-error protocol session ids are private connection state.
+        assertAssignable<string>(request.payload.sessionId);
+      } else {
+        assertAssignable<string>(request.payload.message);
+        assertAssignable<string>(request.payload.mode);
+      }
+
+      const formPayload = null as unknown as MonoAcpFormPayload;
+      assertAssignable<object>(formPayload.requestedSchema);
+      // @ts-expect-error known elicitation variants also hide protocol session ids.
+      assertAssignable<string>(formPayload.sessionId);
+    };
+
+    expectTypeOf(assertInteractionContract).parameter(0).toEqualTypeOf<MonoAcpInteractionRequest>();
+  });
+
+  it("requires a binary token key for ACP session management options", () => {
+    expectTypeOf<MonoAcpSessionControlOptions["acpSessionTokenKey"]>()
+      .toEqualTypeOf<Uint8Array>();
+
+    if (false) {
+      // @ts-expect-error list/delete options require the host-owned token key.
+      const missingKey: MonoAcpSessionControlOptions = { resolveAcpProfile: async () => null };
+      assertAssignable<MonoAcpSessionControlOptions>(missingKey);
+    }
+  });
+
+  it("keeps raw protocol ids out of profile callbacks", () => {
+    if (false) {
+      const permission = null as unknown as MonoAcpCallbackPayload<"requestPermission">;
+      assertAssignable<readonly unknown[]>(permission.options);
+      // @ts-expect-error opaque correlation belongs in AcpCallbackContext, not the protocol-derived payload.
+      assertAssignable<string>(permission.providerSessionId);
+      // @ts-expect-error profile callbacks receive the opaque provider handle, never the raw protocol id.
+      assertAssignable<string>(permission.sessionId);
+
+      const context = null as unknown as MonoAcpCallbackContext<"requestPermission">;
+      assertAssignable<string | undefined>(context.providerSessionId);
+
+      const elicitation = null as unknown as MonoAcpCallbackPayload<"createElicitation">;
+      assertAssignable<string>(elicitation.message);
+      assertAssignable<string>(elicitation.mode);
+      // @ts-expect-error elicitation callbacks hide raw protocol ids too.
+      assertAssignable<string>(elicitation.sessionId);
+
+      const read = null as unknown as MonoAcpCallbackPayload<"readTextFile">;
+      assertAssignable<string>(read.path);
+      // @ts-expect-error filesystem callbacks hide raw protocol ids.
+      assertAssignable<string>(read.sessionId);
+
+      const write = null as unknown as MonoAcpCallbackPayload<"writeTextFile">;
+      assertAssignable<string>(write.path);
+      assertAssignable<string>(write.content);
+      // @ts-expect-error filesystem callbacks discard protocol metadata.
+      assertAssignable<object>(write._meta);
+
+      const createTerminal = null as unknown as MonoAcpCallbackPayload<"createTerminal">;
+      assertAssignable<string>(createTerminal.command);
+      // @ts-expect-error terminal callbacks hide raw protocol ids.
+      assertAssignable<string>(createTerminal.sessionId);
+
+      const terminalOutput = null as unknown as MonoAcpCallbackPayload<"terminalOutput">;
+      assertAssignable<string>(terminalOutput.terminalId);
+      const terminalWait = null as unknown as MonoAcpCallbackPayload<"waitForTerminalExit">;
+      assertAssignable<string>(terminalWait.terminalId);
+      const terminalKill = null as unknown as MonoAcpCallbackPayload<"killTerminal">;
+      assertAssignable<string>(terminalKill.terminalId);
+      const terminalRelease = null as unknown as MonoAcpCallbackPayload<"releaseTerminal">;
+      assertAssignable<string>(terminalRelease.terminalId);
+
+      const update = null as unknown as MonoAcpCallbackPayload<"sessionUpdate">;
+      assertAssignable<object>(update.update);
+      // @ts-expect-error opaque correlation belongs in AcpCallbackContext, not the protocol-derived payload.
+      assertAssignable<string>(update.providerSessionId);
+      // @ts-expect-error streamed profile callbacks also hide the raw protocol id.
+      assertAssignable<string>(update.sessionId);
+
+      const complete = null as unknown as MonoAcpCallbackPayload<"elicitationComplete">;
+      assertAssignable<string>(complete.elicitationId);
+      // @ts-expect-error notification callbacks discard protocol metadata.
+      assertAssignable<object>(complete._meta);
+    }
   });
 });

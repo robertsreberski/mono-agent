@@ -25,6 +25,12 @@ import { COMMON_CAPABILITIES, runtimeCapabilities } from "./capabilities.js";
 // pre-Phase-2 behaviour for any agent that hasn't opted in.
 /** @type {Object<string, BridgeSpec>} */
 const builtinBridgeSpecs = {
+  "acp-stdio": {
+    id: "acp-stdio",
+    supports: (ref, options) => ref?.sdk === "acp" && options?.executionMode === "acp",
+    capabilities: () => runtimeCapabilities("acp"),
+    load: async () => (await import("../providers/acp.js")).acpRuntimeBridge,
+  },
   "claude-code": {
     id: "claude-code",
     supports: (ref, options) => ref?.sdk === "claude" && options?.executionMode === "cli",

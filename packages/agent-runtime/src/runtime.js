@@ -8,8 +8,8 @@
 // method that resolves the right provider bridge based on `options.model` +
 // `options.executionMode`.
 //
-// The runtime registry contains a static table for the five built-in bridges
-// (claude-sdk, claude-cli, pi-native, codex-app, opencode-app) and lazily imports
+// The runtime registry contains a static table for the six built-in bridges
+// (ACP, Claude SDK/CLI, Pi-native, Codex app-server, OpenCode app-server) and lazily imports
 // the matching implementation only when a run selects it. Hosts that need finer
 // control can keep using the named exports (resolveRuntimeBridge,
 // generateClaudeResponse, etc.) directly.
@@ -53,6 +53,9 @@ import { instrumentLiveInputAppliedEvents } from "./ai/runtime/live-input-events
 const HOST_KEYS = [
   "resolveCustomPricing",
   "resolvePiApiKey",
+  "resolveAcpProfile",
+  "onAcpInteractionRequest",
+  "acpSessionTokenKey",
   "persistArtifact",
   "onCompactionRecorded",
   "onToolApprovalRequest",
