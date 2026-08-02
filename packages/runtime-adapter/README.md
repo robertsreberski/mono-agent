@@ -55,6 +55,26 @@ tool must serialize, or leave the default `"safe-parallel"` mode to overlap
 only independent read-only built-ins. Stateful, mutating, and MCP tools remain
 sequential in the default mode.
 
+Provider-owned project discovery is opt-in at this facade. For Claude SDK runs,
+`RuntimeRunOptions.settingSources` accepts `"user"`, `"project"`, and `"local"`;
+omitted/empty disables those filesystem sources while Anthropic managed
+settings remain in force. Each opted-in source may configure executable hooks
+and plugins. Enable only sources whose settings you trust, and avoid opting in
+while running in an untrusted checkout. For Codex app-server runs,
+`RuntimeRunOptions.codexLoadProjectDocs: true` restores Codex's native project
+document defaults; omitted/false disables automatic discovery with
+`project_doc_max_bytes=0`. Explicit `codexAppServerArgs` remain authoritative.
+Codex owns its native collaboration agents and their profiles: the facade
+normalizes their activity but does not inject `nativeSubagents` definitions.
+`RuntimeRunOptions.nativeSubagents` is the typed Claude-native `Task` profile
+contract; a non-empty list on a direct Codex attempt returns a capability
+mismatch so a fallback router can continue. Use `codexLoadProjectDocs` to let
+Codex and its own agents load repository instructions.
+
+For heterogeneous fallback chains, `resolveAttempt().policyOptions` may project
+only `allowedTools`, `disallowedTools`, and `permissionMode` for the runtime
+actually being attempted. Other logical request fields remain protected.
+
 ## Architecture
 
 `runtime-adapter` is the typed boundary between harness code and the JavaScript
@@ -165,10 +185,15 @@ RuntimeExecutionMode
 RuntimeLiveInputMessage
 RuntimeMessage
 RuntimeModelReference
+RuntimeNativeSubagentDefinition
+RuntimeNativeSubagentsOptions
 RuntimePolicies
 RuntimePromptOverrides
 RuntimeResult
 RuntimeRunOptions
+RuntimeSubagentActivityEvent
+RuntimeSubagentActivityPhase
+RuntimeSubagentIdentity
 RuntimeToolLimits
 RuntimeToolOptions
 SANDBOX_FALLBACKS
@@ -212,6 +237,7 @@ isCodedError
 isPlainObject
 isPrivateBaseUrl
 isRuntimeExecutionMode
+isRuntimeSubagentActivityEvent
 isValidMcpServerName
 listAcpSessions
 listMonoRuntimeBackends
@@ -251,6 +277,24 @@ Supported backend seams are exposed as data:
 | Codex app CLI | `codex:<model>` | `cli` | Codex app-server bridge through `@mono-agent/agent-runtime` |
 | OpenCode app CLI | `opencode:<provider>:<model>` | `cli` | OpenCode app-server bridge through `@mono-agent/agent-runtime` |
 | Pi SDK provider | `pi:<provider>:<model>` | `sdk` | Pi SDK gateway, including provider ids such as `openai-codex` or Copilot-style provider ids |
+
+Claude Code CLI settings discovery is provider-owned and does not consume
+`settingSources`. Claude-native teammate definitions add `Task` to an explicit
+allowlist automatically; callers using only filesystem `.claude/agents`
+profiles must include `Task` themselves. The kernel's in-process delegation
+surface similarly requires `Agent`. Direct Codex accepts only an effective
+allow-all policy, so restrictive named allowlists fail before provider startup.
+
+Native and in-process delegation paths emit the exact
+`RuntimeSubagentActivityEvent` shape: `subagent.id` is the canonical parent
+attachment key (normally the initiating parent tool-use id, with a stable
+synthetic fallback for orphan lifecycle records), while optional `nativeId` and
+`agentPath` retain provider correlation metadata. Its
+`RuntimeSubagentActivityPhase` phases are `agent_started`, `started`,
+`completed`, `message`, and `agent_completed`; child `message` activity is never
+parent answer text or a tool completion. `RuntimeEventLike` remains permissive
+for other provider telemetry; use `isRuntimeSubagentActivityEvent()` to narrow
+an open event before consuming the required normalized fields.
 
 ### ACP v1 profiles
 

@@ -68,6 +68,14 @@ GPT-5.6 Sol is available through `codex:gpt-5.6-sol` or the separate Pi route `p
 
 The Codex app-server does not currently project arbitrary mono-agent allow/deny lists. Normal direct `codex:*` runs therefore require effective allow-all: `tools.allowedTools` is omitted or contains `"*"`, and `disallowedTools` is empty. A named-only list, `[]`, or any denylist fails validation rather than being silently widened. The guided readiness probe is a separate, unchanged internal contract: read-only sandbox, approval policy `never`, exact no-tool input, no MCP/dynamic tools, disposable session, and failure on the first command/file/MCP/tool event.
 
+Codex also owns its native collaboration agents and their profiles. Mono-agent
+normalizes the activity those agents emit, but it does not inject configured
+teammate definitions into Codex. A direct Codex attempt with caller-defined
+`nativeSubagents` teammates fails before startup with a capability mismatch, so
+a fallback chain can continue to Claude. Set `codexLoadProjectDocs: true` when
+Codex and its own agents should load repository instructions; this does not
+define or replace Codex collaboration profiles.
+
 The wizard also presents `pi:openai-codex:gpt-5.6-terra` and `pi:openai-codex:gpt-5.6-sol` as selectable Pi candidates; they use a separate SDK/auth boundary, and a missing Pi auth store can be repaired with `mono-agent auth login openai-codex`.
 
 ### Pi SDK

@@ -1665,8 +1665,11 @@ function subagentOf(
   const subagent = event.metadata?.subagent;
   if (typeof subagent !== "object" || subagent === null || Array.isArray(subagent)) return undefined;
   const record = subagent as Record<string, unknown>;
-  const id = typeof record.id === "string" ? record.id.trim() : "";
-  if (id.length === 0) return undefined;
+  // The provider's task/thread id may differ (and is retained as nativeId in
+  // the open metadata record). Only the initiating parent tool-use id is a
+  // stable attachment key across Pi, Claude, and Codex.
+  const canonicalId = typeof record.id === "string" ? record.id.trim() : "";
+  if (canonicalId.length === 0) return undefined;
   const name = typeof record.name === "string" ? record.name.trim() : "";
   const label = typeof record.label === "string" ? record.label.trim() : "";
   // Only the closing bookend carries a price, and only when the runtime priced
@@ -1675,7 +1678,7 @@ function subagentOf(
     ? record.costUsd
     : undefined;
   return {
-    id,
+    id: canonicalId,
     name: name.length === 0 ? "subagent" : name,
     ...(label.length === 0 ? {} : { label }),
     ...(costUsd === undefined ? {} : { costUsd }),

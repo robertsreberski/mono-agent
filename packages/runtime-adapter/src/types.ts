@@ -18,6 +18,31 @@ export interface RuntimeModelReference {
   readonly reference?: string;
 }
 
+/** One caller-defined Claude native `Task` profile. */
+export interface RuntimeNativeSubagentDefinition {
+  readonly name: string;
+  readonly displayName?: string;
+  readonly description?: string;
+  readonly helperSystemPrompt?: string;
+  readonly instructions?: string;
+  readonly allowedTools?: readonly string[];
+  readonly disallowedTools?: readonly string[];
+  readonly modelRef?: string | RuntimeModelReference;
+  readonly model?: RuntimeModelReference;
+  readonly effort?: string;
+  readonly mcpServers?: Readonly<Record<string, object>>;
+}
+
+/**
+ * Caller-defined native profiles are a Claude-only request contract. Codex
+ * owns its collaboration agents; codexLoadProjectDocs controls whether they
+ * receive repository instructions.
+ */
+export interface RuntimeNativeSubagentsOptions {
+  readonly provider: "claude";
+  readonly teammates: readonly RuntimeNativeSubagentDefinition[];
+}
+
 export type MonoRuntimeBackendId =
   | "claude-sdk"
   | "claude-code-cli"
@@ -89,6 +114,7 @@ export interface MonoRuntimeBackendCapabilities {
   readonly supports_skills?: boolean;
   readonly supports_builtin_tools?: boolean;
   readonly supports_live_input?: boolean;
+  /** Native surface/activity support, not caller-defined profile injection. */
   readonly supports_native_subagents?: boolean;
   readonly supports_request_tool_environment?: boolean;
   readonly tool_policy?: "projected" | "allow_all_only";
@@ -123,9 +149,123 @@ export interface RuntimeMessage {
   readonly [key: string]: unknown;
 }
 
+/** Provider-neutral identity attached to every normalized subagent event. */
+export interface RuntimeSubagentIdentity {
+  /**
+   * Canonical parent attachment key: normally the initiating parent tool-use
+   * id, with a stable synthetic fallback only for an orphan lifecycle record.
+   */
+  readonly id: string;
+  /** Provider-native task or thread id; correlation metadata only. */
+  readonly nativeId?: string;
+  /** Provider-neutral profile or agent name. */
+  readonly name: string;
+  /** Provider call-order ordinal; never an identity key. */
+  readonly callIndex: number;
+  readonly label?: string;
+  /** Provider-reported ancestry; informational only. */
+  readonly agentPath?: string;
+  readonly costUsd?: number;
+}
+
+/** Normalized subagent lifecycle/activity phases. */
+export type RuntimeSubagentActivityPhase =
+  | "agent_started"
+  | "started"
+  | "completed"
+  | "message"
+  | "agent_completed";
+
+/**
+ * Permissive compatibility shape for the runtime's open telemetry stream.
+ * Use {@link isRuntimeSubagentActivityEvent} for the exact normalized subagent
+ * event contract.
+ */
 export interface RuntimeEventLike {
   readonly type?: string;
   readonly [key: string]: unknown;
+}
+
+/** One exact normalized native or in-process subagent activity event. */
+export interface RuntimeSubagentActivityEvent extends RuntimeEventLike {
+  readonly type: "subagent_activity";
+  readonly subagent: RuntimeSubagentIdentity;
+  readonly phase: RuntimeSubagentActivityPhase;
+  /** Unique lifecycle/tool/message row id, namespaced from `subagent.id`. */
+  readonly id: string;
+  readonly name?: string;
+  readonly arguments?: unknown;
+  readonly content?: unknown;
+  readonly kind?: "text" | "thinking" | "status" | "warning" | "error";
+  readonly role?: "assistant" | "user";
+  readonly isError?: boolean;
+  readonly executionMs?: number;
+  readonly totalTokens?: number;
+}
+
+/** Narrow an open runtime event to the exact normalized subagent contract. */
+export function isRuntimeSubagentActivityEvent(value: unknown): value is RuntimeSubagentActivityEvent {
+  if (!isUnknownRecord(value) || value.type !== "subagent_activity") {
+    return false;
+  }
+  if (
+    typeof value.id !== "string"
+    || !isRuntimeSubagentActivityPhase(value.phase)
+    || !isRuntimeSubagentIdentity(value.subagent)
+  ) {
+    return false;
+  }
+  return optionalString(value, "name")
+    && optionalLiteral(value, "kind", ["text", "thinking", "status", "warning", "error"])
+    && optionalLiteral(value, "role", ["assistant", "user"])
+    && optionalBoolean(value, "isError")
+    && optionalNumber(value, "executionMs")
+    && optionalNumber(value, "totalTokens");
+}
+
+function isRuntimeSubagentIdentity(value: unknown): value is RuntimeSubagentIdentity {
+  if (!isUnknownRecord(value)) {
+    return false;
+  }
+  return typeof value.id === "string"
+    && typeof value.name === "string"
+    && typeof value.callIndex === "number"
+    && optionalString(value, "nativeId")
+    && optionalString(value, "label")
+    && optionalString(value, "agentPath")
+    && optionalNumber(value, "costUsd");
+}
+
+function isRuntimeSubagentActivityPhase(value: unknown): value is RuntimeSubagentActivityPhase {
+  return value === "agent_started"
+    || value === "started"
+    || value === "completed"
+    || value === "message"
+    || value === "agent_completed";
+}
+
+function isUnknownRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function optionalString(value: Readonly<Record<string, unknown>>, key: string): boolean {
+  return !(key in value) || typeof value[key] === "string";
+}
+
+function optionalNumber(value: Readonly<Record<string, unknown>>, key: string): boolean {
+  return !(key in value) || typeof value[key] === "number";
+}
+
+function optionalBoolean(value: Readonly<Record<string, unknown>>, key: string): boolean {
+  return !(key in value) || typeof value[key] === "boolean";
+}
+
+function optionalLiteral(
+  value: Readonly<Record<string, unknown>>,
+  key: string,
+  choices: readonly string[],
+): boolean {
+  return !(key in value) || (typeof value[key] === "string" && choices.includes(value[key]));
 }
 
 export interface RuntimeResult {
@@ -254,6 +394,20 @@ export interface RuntimeRunOptions {
   readonly acpSessionTokenKey?: Uint8Array;
   /** In-flight user guidance consumed by a provider's native steering API. */
   readonly liveInput?: AsyncIterable<RuntimeLiveInputMessage>;
+  /**
+   * Claude Agent SDK filesystem setting sources. Omitted/empty disables user,
+   * project, and local sources; Anthropic managed settings still apply. These
+   * sources may execute configured hooks and plugins, so enable only trusted
+   * settings and avoid opting in while running in an untrusted checkout.
+   */
+  readonly settingSources?: readonly ("user" | "project" | "local")[];
+  /**
+   * Restore Codex app-server's native project-document loading defaults.
+   * Omitted/false disables automatic discovery; explicit app-server args win.
+   */
+  readonly codexLoadProjectDocs?: boolean;
+  /** Caller-defined Claude native `Task` profiles. Direct Codex rejects these definitions. */
+  readonly nativeSubagents?: RuntimeNativeSubagentsOptions;
   // Pi-native provider knobs (optional; ignored by other bridges).
   readonly piTransport?: PiTransport;
   readonly piMaxRetries?: number;

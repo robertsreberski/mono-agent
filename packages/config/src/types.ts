@@ -187,9 +187,10 @@ export interface RuntimeRetryConfig {
 
 /**
  * One named subagent the `Agent` tool can deploy. Shaped to project onto the
- * provider-native subagent definitions (`{name, description, helperSystemPrompt,
+ * Claude-native `Task` definitions (`{name, description, helperSystemPrompt,
  * allowedTools, disallowedTools, modelRef, mcpServers}`) so one config block can
- * drive both the in-process pi tool and a native Task-style surface.
+ * drive both the in-process Pi tool and Claude's native surface. Codex owns its
+ * collaboration-agent definitions instead of accepting this projection.
  */
 export interface MonoAgentSubagentConfig {
   /** Model-visible identifier and the `Agent` tool's `name` enum value. */
@@ -214,15 +215,18 @@ export interface MonoAgentSubagentConfig {
 
 /**
  * Whether the agent may author a specialized subagent at call time instead of
- * picking a pre-declared profile, and how far that authored subagent may reach.
+ * picking a pre-declared profile, and the ceiling for the runtime-owned
+ * general-purpose helper.
  */
 export interface MonoAgentInlineSubagentsConfig {
   /** Default true whenever subagents are enabled. */
   readonly enabled?: boolean;
   /**
-   * Ceiling on the tools an authored subagent may request. Absent means the
-   * parent agent's own effective built-ins, so an in-flight helper can never
-   * reach further than the agent that created it. `"*"` is rejected.
+   * Ceiling on the runtime-owned general-purpose helper's read-only tools and
+   * on what an authored subagent may request. Pre-declared profiles retain their
+   * explicit contracts. Absent means the parent agent's own effective built-ins,
+   * so an in-flight helper can never reach further than the agent that created
+   * it. `"*"` is rejected.
    */
   readonly allowedTools?: readonly string[];
 }

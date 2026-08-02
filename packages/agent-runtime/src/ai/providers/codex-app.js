@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 import { normalizeCodexItemEvent } from "../streaming/codex-events.js";
 import { createFileChangePayload } from "../file-change-stats.js";
@@ -26,6 +27,12 @@ const CODEX_DIAGNOSTIC_BYTES = 8 * 1024;
 const CODEX_STDERR_TAIL_BYTES = 8 * 1024;
 const CODEX_SHUTDOWN_GRACE_MS = 1_000;
 const CODEX_KILL_GRACE_MS = 1_000;
+const CODEX_APP_SERVER_ARGS = ["app-server", "--listen", "stdio://"];
+const CODEX_APP_SERVER_ISOLATED_ARGS = [
+  ...CODEX_APP_SERVER_ARGS,
+  "-c",
+  "project_doc_max_bytes=0",
+];
 
 const SENSITIVE_ASSIGNMENT_RE = /((?:api[_-]?key|private[_-]?key|access[_-]?key|authorization|authentication|auth|bearer|cookie|credential|password|signature|sig|secret|token)\s*[:=]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,\r\n]+)/giu;
 const SENSITIVE_HEADER_RE = /((?:(?:proxy-)?authorization|cookie|set-cookie)\s*[:=]\s*)[^\r\n]*/giu;
@@ -450,6 +457,9 @@ const CODEX_APP_CAPABILITIES = {
   supports_skills: true,
   supports_builtin_tools: true,
   supports_live_input: true,
+  // Codex owns its collaboration agents and exposes their lifecycle through
+  // app-server. This does not mean the bridge can inject caller-defined
+  // nativeSubagents profiles; that richer request contract is rejected below.
   supports_native_subagents: true,
   supports_fast_mode: true,
   tool_policy: TOOL_POLICY_ALLOW_ALL_ONLY,
@@ -574,6 +584,7 @@ const CODEX_NO_TOOL_ACTION_ITEMS = new Set([
   "mcpToolCall",
   "dynamicToolCall",
   "collabAgentToolCall",
+  "collabToolCall",
   "subAgentActivity",
   "webSearch",
   "imageView",
@@ -592,10 +603,30 @@ const CODEX_NO_TOOL_REQUEST_METHODS = new Set([
   "execCommandApproval",
 ]);
 
+// These protocol items are conversation or lifecycle records rather than
+// actionable child work. Keep them out of the unknown-item fallback: message
+// and reasoning content has dedicated handling, while the remaining records
+// would otherwise create misleading tool rows.
+const CODEX_PASSIVE_CHILD_ITEM_TYPES = new Set([
+  "userMessage",
+  "hookPrompt",
+  "agentMessage",
+  "plan",
+  "reasoning",
+  "enteredReviewMode",
+  "exitedReviewMode",
+  "contextCompaction",
+  "subAgentActivity",
+]);
+
 function codexMcpConfig(mcpServers = {}) {
   const servers = {};
+  const invalidNames = [];
   for (const [name, cfg] of Object.entries(mcpServers || {})) {
-    if (!/^[A-Za-z0-9_-]+$/.test(name)) continue;
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+      invalidNames.push(name);
+      continue;
+    }
     if (cfg?.command) {
       servers[name] = {
         command: cfg.command,
@@ -614,7 +645,27 @@ function codexMcpConfig(mcpServers = {}) {
       };
     }
   }
-  return servers;
+  return { servers, invalidNames };
+}
+
+function codexMcpServerNameProblem(invalidNames) {
+  if (!invalidNames.length) return null;
+  const names = invalidNames.map((name) => JSON.stringify(name)).join(", ");
+  return `Direct Codex cannot configure MCP server ${invalidNames.length === 1 ? "name" : "names"} ${names}. Rename ${invalidNames.length === 1 ? "it" : "them"} to use only ASCII letters, numbers, "_", or "-".`;
+}
+
+function stableConfigJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((entry) => stableConfigJson(entry)).join(",")}]`;
+  return `{${Object.keys(value)
+    .filter((key) => value[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableConfigJson(value[key])}`)
+    .join(",")}}`;
+}
+
+function codexMcpConfigFingerprint(config) {
+  return createHash("sha256").update(stableConfigJson(config)).digest("hex");
 }
 
 function codexConfiguredMcpApprovalResponse(request, configuredMcpServerNames) {
@@ -683,36 +734,6 @@ function withoutCodexRequestErrorDiagnostics(diagnostics) {
   return rest;
 }
 
-function codexNativeTeammates(nativeSubagents) {
-  if (nativeSubagents?.provider !== "codex" || !Array.isArray(nativeSubagents.teammates)) return [];
-  return nativeSubagents.teammates.map((agent) => {
-    const name = String(agent?.name || "").trim();
-    if (!name) return null;
-    return {
-      name,
-      displayName: agent.displayName || name,
-      description: agent.description || "",
-      model: agent.model?.model || agent.modelRef || null,
-      reasoningEffort: agent.effort || null,
-      instructions: agent.helperSystemPrompt || agent.instructions || "",
-    };
-  }).filter(Boolean);
-}
-
-function codexCollaborationModePayload(nativeSubagents, { model, effort, systemPrompt }) {
-  const teammates = codexNativeTeammates(nativeSubagents);
-  if (!teammates.length) return null;
-  return {
-    mode: "default",
-    teammates,
-    settings: {
-      model,
-      reasoningEffort: effort || null,
-      developerInstructions: systemPrompt,
-    },
-  };
-}
-
 /**
  * @param {{command?: string, args?: string[], cwd?: any, env?: any, redactionValues?: string[], onNotification?: (msg: any) => void, onServerRequest?: (msg: any) => Promise<any> | any, shutdownGraceMs?: number, killGraceMs?: number}} [options]
  */
@@ -720,7 +741,7 @@ export function createCodexAppServerClient({
   command = "codex",
   // project_doc_max_bytes=0 keeps codex from injecting its own project docs;
   // the host supplies the full context through developerInstructions.
-  args = ["app-server", "--listen", "stdio://", "-c", "project_doc_max_bytes=0"],
+  args = CODEX_APP_SERVER_ISOLATED_ARGS,
   cwd,
   env = {},
   redactionValues = [],
@@ -1008,7 +1029,7 @@ function mapThreadItem(method, item) {
       },
     };
   }
-  if (item.type === "collabAgentToolCall") {
+  if (item.type === "collabAgentToolCall" || item.type === "collabToolCall") {
     const name = `codex_${item.tool || "subagent"}`;
     if (method.endsWith("started")) {
       return {
@@ -1022,7 +1043,8 @@ function mapThreadItem(method, item) {
               prompt: item.prompt,
               model: item.model,
               reasoningEffort: item.reasoningEffort,
-              receiverThreadIds: item.receiverThreadIds || [],
+              receiverThreadIds: item.receiverThreadIds
+                || [item.newThreadId, item.receiverThreadId].filter(Boolean),
             },
           }],
         },
@@ -1036,11 +1058,38 @@ function mapThreadItem(method, item) {
           tool_use_id: item.id,
           content: {
             status: item.status,
-            receiverThreadIds: item.receiverThreadIds || [],
+            receiverThreadIds: item.receiverThreadIds
+              || [item.newThreadId, item.receiverThreadId].filter(Boolean),
             agentsStates: item.agentsStates || [],
             ...(item.error ? { error: item.error } : {}),
           },
           is_error: item.status === "failed" || Boolean(item.error),
+        }],
+      },
+    };
+  }
+  if (item.type === "dynamicToolCall") {
+    if (method.endsWith("started")) {
+      return {
+        type: "assistant",
+        message: {
+          content: [{
+            type: "tool_use",
+            id: item.id,
+            name: item.namespace ? `${item.namespace}__${item.tool}` : item.tool,
+            input: item.arguments || {},
+          }],
+        },
+      };
+    }
+    return {
+      type: "user",
+      message: {
+        content: [{
+          type: "tool_result",
+          tool_use_id: item.id,
+          content: item.contentItems || item.result || item.error || "",
+          is_error: item.status === "failed" || item.success === false || Boolean(item.error),
         }],
       },
     };
@@ -1050,6 +1099,108 @@ function mapThreadItem(method, item) {
     return text ? { type: "assistant", message: { content: [{ type: "thinking", text }] } } : null;
   }
   return null;
+}
+
+function normalizedCollabTool(tool) {
+  return String(tool || "")
+    .replace(/[^A-Za-z0-9]+/gu, "")
+    .toLowerCase();
+}
+
+function isCodexCollabItem(item) {
+  return item?.type === "collabAgentToolCall" || item?.type === "collabToolCall";
+}
+
+function codexCollabReceiverEntries(item) {
+  const entries = [];
+  const seen = new Set();
+  const add = (nativeId, source = {}) => {
+    const id = typeof nativeId === "string" ? nativeId.trim() : "";
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    const agentPath = typeof source.agentPath === "string" && source.agentPath.trim()
+      ? source.agentPath
+      : undefined;
+    const name = [source.name, source.nickname, source.agentNickname, source.agentRole]
+      .find((value) => typeof value === "string" && value.trim());
+    entries.push({
+      nativeId: id,
+      ...(agentPath === undefined ? {} : { agentPath }),
+      ...(name === undefined ? {} : { name }),
+    });
+  };
+
+  add(item?.newThreadId, item);
+  add(item?.receiverThreadId, item);
+  for (const id of item?.receiverThreadIds || []) add(id, item);
+  for (const receiver of item?.receiverAgents || []) {
+    add(receiver?.threadId ?? receiver?.id, receiver);
+  }
+  if (item?.agentStatus && typeof item.agentStatus === "object") {
+    add(item.agentStatus.threadId ?? item.agentStatus.id, item.agentStatus);
+  }
+  for (const id of Object.keys(item?.agentsStates || {})) add(id, item?.agentsStates?.[id]);
+  return entries;
+}
+
+function codexAgentName(agentPath, fallback = "codex") {
+  const path = typeof agentPath === "string" ? agentPath.trim() : "";
+  if (!path) return fallback;
+  const segments = path.split("/").filter(Boolean);
+  return segments.at(-1) || path;
+}
+
+function codexItemFailed(item) {
+  const agentStatus = typeof item?.agentStatus === "string"
+    ? item.agentStatus
+    : item?.agentStatus?.status;
+  const status = String(item?.status || agentStatus || "").toLowerCase();
+  const exitCode = item?.exitCode ?? item?.exit_code;
+  return Boolean(
+    item?.error
+    || item?.success === false
+    || status === "failed"
+    || status === "errored"
+    || status === "error"
+    || status === "interrupted"
+    || status === "cancelled"
+    || status === "notfound"
+    || (typeof exitCode === "number" && exitCode !== 0),
+  );
+}
+
+function codexActivityContent(value) {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function codexChildToolName(item) {
+  if (item?.type === "commandExecution") return "command_execution";
+  if (item?.type === "mcpToolCall") {
+    return item.server && item.tool ? `mcp__${item.server}__${item.tool}` : item.tool || "mcp_tool_call";
+  }
+  if (item?.type === "dynamicToolCall") {
+    return item.namespace && item.tool ? `${item.namespace}__${item.tool}` : item.tool || "dynamic_tool_call";
+  }
+  return item?.tool || item?.type || "tool";
+}
+
+function codexItemDurationMs(item) {
+  const value = Number(item?.durationMs ?? item?.duration_ms);
+  return Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function boundedCodexActivityItemId(value, limit = 256) {
+  const id = String(value || "item");
+  if (Buffer.byteLength(id) <= limit) return id;
+  const digest = createHash("sha256").update(id).digest("hex");
+  const suffix = `:${digest}`;
+  return `${utf8Head(id, Math.max(0, limit - Buffer.byteLength(suffix)))}${suffix}`;
 }
 
 function usageFromTokenUsage(tokenUsage) {
@@ -1083,6 +1234,11 @@ function contextUsageFromTokenUsage(tokenUsage) {
 }
 
 const noopNotificationHandler = () => {};
+const rejectIdleServerRequest = (request) => {
+  throw new Error(
+    `Codex app-server request arrived while its provider session was idle: ${String(request?.method || "unknown")}`,
+  );
+};
 
 async function closeCodexClient(client) {
   if (!client?.close) return;
@@ -1122,7 +1278,13 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   const makeClient = options.codexClientFactory || createCodexAppServerClient;
   const keepAlive = options.sessionKeepAlive === true;
   const noToolsProbe = options.codexNoToolsProbe === true;
-  const configuredMcpServerNames = new Set(Object.keys(codexMcpConfig(options.mcpServers)));
+  const {
+    servers: configuredMcpServers,
+    invalidNames: invalidMcpServerNames,
+  } = codexMcpConfig(options.mcpServers);
+  const configuredMcpServerNameList = Object.keys(configuredMcpServers);
+  const configuredMcpServerNames = new Set(configuredMcpServerNameList);
+  const mcpConfigFingerprint = codexMcpConfigFingerprint(configuredMcpServers);
   // The bridge TTL is a backstop behind the host's session policy; the grace
   // keeps the host's lazy expiry firing first so eviction stays host-driven.
   const sessionTtlMs = Number.isFinite(Number(options.sessionIdleTimeoutMs))
@@ -1141,6 +1303,13 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   const events = [];
   const texts = [];
   const agentTextByItem = new Map();
+  const childTextByItem = new Map();
+  const childMessageDeltaCounts = new Map();
+  const childReasoningDeltaCounts = new Map();
+  const subagentGroupsBySpawnId = new Map();
+  const subagentBindingsByThread = new Map();
+  const pendingChildNotifications = new Map();
+  const observedSubagentActivityItems = new Set();
   const compactionStatuses = new Map();
   const activeCompactions = new Map();
   const nativeCompactionTurnKeys = new Set();
@@ -1155,11 +1324,13 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   let codexDiagnostics = {};
   let noToolsViolation = null;
   let serverRequestViolation = null;
+  let sentMcpServerNames = [];
   let resolveTurn;
   let resolveTurnReady;
   let resolveLiveInputStop;
   let turnReadyResolved = false;
   let liveInputStopped = false;
+  let subagentCallIndex = 0;
   const fileChangeSnapshots = new Map();
   const codexItemContext = {
     fileChangePayload: (raw) => createFileChangePayload(raw, {
@@ -1290,6 +1461,642 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     emitEvent({ type: "assistant", message: { content: [{ type: "text", text: safeText }] } });
   }
 
+  function notificationThreadId(params = {}) {
+    if (typeof params.threadId === "string" && params.threadId) return params.threadId;
+    if (typeof params.item?.senderThreadId === "string" && params.item.senderThreadId) {
+      return params.item.senderThreadId;
+    }
+    return null;
+  }
+
+  function notificationTurnId(params = {}) {
+    const candidate = params.turn?.id ?? params.turnId;
+    return typeof candidate === "string" && candidate ? candidate : null;
+  }
+
+  function isRootThreadNotification(params = {}) {
+    const sourceThreadId = notificationThreadId(params);
+    return sourceThreadId === null || threadId === null || sourceThreadId === threadId;
+  }
+
+  function isRootActiveTurnNotification(params = {}) {
+    if (!isRootThreadNotification(params)) return false;
+    const sourceTurnId = notificationTurnId(params);
+    return sourceTurnId === null || activeTurnId === null || sourceTurnId === activeTurnId;
+  }
+
+  function ensureSubagentGroup(spawnId, item = {}) {
+    const id = typeof spawnId === "string" && spawnId ? spawnId : "codex-subagent";
+    let group = subagentGroupsBySpawnId.get(id);
+    if (!group) {
+      group = {
+        id,
+        callIndex: subagentCallIndex++,
+        name: "codex",
+        prompt: typeof item.prompt === "string" ? safeDiagnostic(item.prompt, 2_000) : undefined,
+        primaryThreadId: null,
+        started: false,
+        finished: false,
+        startedAt: Date.now(),
+        completedTurns: new Set(),
+        bindings: new Set(),
+        openActivities: new Map(),
+        settledActivities: new Set(),
+        primaryOutcome: null,
+      };
+      subagentGroupsBySpawnId.set(id, group);
+    } else if (group.prompt === undefined && typeof item.prompt === "string") {
+      group.prompt = safeDiagnostic(item.prompt, 2_000);
+    }
+    return group;
+  }
+
+  function metadataForSubagent(group, binding = null) {
+    const agentPath = typeof binding?.agentPath === "string" && binding.agentPath.trim()
+      ? binding.agentPath
+      : undefined;
+    const name = binding?.name || codexAgentName(agentPath, group.name || "codex");
+    return {
+      id: group.id,
+      ...(binding?.nativeId ? { nativeId: binding.nativeId } : {}),
+      name,
+      callIndex: group.callIndex,
+      ...(agentPath === undefined ? {} : { label: agentPath, agentPath }),
+    };
+  }
+
+  function observedSubagentCapabilities() {
+    const names = [];
+    const seenNames = new Set();
+    for (const binding of subagentBindingsByThread.values()) {
+      const name = metadataForSubagent(binding.group, binding).name;
+      if (typeof name !== "string" || !name.trim() || seenNames.has(name)) continue;
+      seenNames.add(name);
+      names.push(name);
+    }
+    return {
+      invoked: subagentGroupsBySpawnId.size > 0,
+      names,
+    };
+  }
+
+  function emitSubagentActivity(group, binding, activity) {
+    // Once the canonical terminal row is emitted, no late provider frame may
+    // append more activity to that group.
+    if (group.finished && activity.phase !== "agent_completed") return;
+    if (activity.phase === "started" && typeof activity.id === "string") {
+      if (group.openActivities.has(activity.id) || group.settledActivities.has(activity.id)) return;
+      group.openActivities.set(activity.id, {
+        binding,
+        name: activity.name,
+        startedAt: Date.now(),
+      });
+    } else if (activity.phase === "completed" && typeof activity.id === "string") {
+      if (group.settledActivities.has(activity.id)) return;
+      group.openActivities.delete(activity.id);
+      group.settledActivities.add(activity.id);
+    }
+    emitEvent({
+      type: "subagent_activity",
+      subagent: metadataForSubagent(group, binding),
+      ...activity,
+    });
+  }
+
+  function drainOpenSubagentActivities(group, reason, onlyBinding = null) {
+    for (const [id, activity] of [...group.openActivities]) {
+      if (onlyBinding && activity.binding !== onlyBinding) continue;
+      emitSubagentActivity(group, activity.binding, {
+        phase: "completed",
+        id,
+        name: activity.name,
+        isError: true,
+        executionMs: Math.max(0, Date.now() - activity.startedAt),
+        content: safeDiagnostic(reason, 2_000),
+      });
+    }
+  }
+
+  function ensureSubagentStarted(group, binding = null) {
+    if (group.started) return;
+    group.started = true;
+    group.startedAt = Date.now();
+    const subagent = metadataForSubagent(group, binding);
+    group.name = subagent.name;
+    emitSubagentActivity(group, binding, {
+      phase: "agent_started",
+      id: `agent:${group.id}`,
+      name: `Agent(${subagent.name})`,
+      arguments: {
+        name: subagent.name,
+        ...(subagent.agentPath === undefined ? {} : { description: subagent.agentPath }),
+        ...(group.prompt === undefined ? {} : { prompt: group.prompt }),
+      },
+    });
+  }
+
+  /**
+   * @param {any} group
+   * @param {any} binding
+   * @param {{status?: string, error?: any, content?: string, executionMs?: number}} [outcome]
+   */
+  function finishSubagentGroup(group, binding, {
+    status = "completed",
+    error,
+    content,
+    executionMs,
+  } = {}) {
+    if (group.finished) return;
+    ensureSubagentStarted(group, binding);
+    const isError = Boolean(error) || codexItemFailed({ status });
+    const subagent = metadataForSubagent(group, binding);
+    const summary = content
+      || (error ? safeDiagnostic(error, 2_000) : `${status || "completed"}`);
+    drainOpenSubagentActivities(
+      group,
+      error
+        ? safeDiagnostic(error, 2_000)
+        : "Codex subagent ended before this activity completed.",
+    );
+    // Mark terminal before invoking host callbacks so even re-entrant provider
+    // frames cannot append an event after this row.
+    group.finished = true;
+    emitSubagentActivity(group, binding, {
+      phase: "agent_completed",
+      id: `agent:${group.id}`,
+      name: `Agent(${subagent.name})`,
+      isError,
+      ...(Number.isFinite(executionMs) ? { executionMs } : {}),
+      content: safeDiagnostic(summary, 2_000),
+    });
+  }
+
+  function maybeFinishSubagentGroup(group) {
+    if (group.finished || !group.primaryOutcome) return;
+    if ([...group.bindings].some((binding) => !binding.terminal)) return;
+    finishSubagentGroup(
+      group,
+      group.primaryOutcome.binding,
+      group.primaryOutcome.outcome,
+    );
+  }
+
+  function recordPrimarySubagentOutcome(group, binding, outcome) {
+    if (!group.primaryOutcome) group.primaryOutcome = { binding, outcome };
+    maybeFinishSubagentGroup(group);
+  }
+
+  function finalizeOpenSubagents(status, content) {
+    for (const group of subagentGroupsBySpawnId.values()) {
+      if (group.finished) continue;
+      const binding = group.primaryThreadId
+        ? subagentBindingsByThread.get(group.primaryThreadId)
+        : null;
+      finishSubagentGroup(group, binding, { status, error: content, content });
+    }
+  }
+
+  function subagentActivityId(group, binding, itemId, suffix = "") {
+    const nativeId = binding?.nativeId || "child";
+    return `agent:${group.id}:${nativeId}:${itemId || "item"}${suffix}`;
+  }
+
+  function flushPendingChildNotifications(nativeId) {
+    const queued = pendingChildNotifications.get(nativeId);
+    if (!queued?.length) return;
+    pendingChildNotifications.delete(nativeId);
+    for (const notification of queued) handleChildNotification(notification);
+  }
+
+  function bindSubagentThread(group, receiver, { primary = false, flush = true } = {}) {
+    const nativeId = typeof receiver?.nativeId === "string" ? receiver.nativeId.trim() : "";
+    if (!nativeId) return null;
+    let binding = subagentBindingsByThread.get(nativeId);
+    if (binding && binding.group !== group) return binding;
+    if (!binding) {
+      binding = {
+        group,
+        nativeId,
+        agentPath: undefined,
+        name: undefined,
+        lastText: "",
+        turnStartedAt: new Map(),
+        turnStates: new Map(),
+        terminal: false,
+        usage: null,
+      };
+      subagentBindingsByThread.set(nativeId, binding);
+    }
+    group.bindings.add(binding);
+    if (typeof receiver.agentPath === "string" && receiver.agentPath.trim()) {
+      binding.agentPath = receiver.agentPath;
+      binding.name = codexAgentName(receiver.agentPath, binding.name || group.name);
+    }
+    if (typeof receiver.name === "string" && receiver.name.trim()) binding.name = receiver.name.trim();
+    // A root spawn can report multiple receiver ids. The first is the primary
+    // result source; every additional binding remains part of the same group
+    // and must terminate before the group terminal row is emitted.
+    if (group.primaryThreadId === null && (primary || group.bindings.size === 1)) {
+      group.primaryThreadId = nativeId;
+    }
+    ensureSubagentStarted(group, binding);
+    if (flush) flushPendingChildNotifications(nativeId);
+    return binding;
+  }
+
+  function handleCollabSpawn(method, params, item, sourceBinding = null) {
+    const isRootSpawn = sourceBinding === null;
+    const group = sourceBinding?.group || ensureSubagentGroup(item.id, item);
+    const receivers = codexCollabReceiverEntries(item);
+    const bindings = [];
+    for (const receiver of receivers) {
+      const binding = bindSubagentThread(group, receiver, {
+        primary: isRootSpawn,
+        // Bind the complete receiver set before replaying out-of-order child
+        // frames, otherwise the first queued completion can close the group
+        // before later receivers are known to it.
+        flush: false,
+      });
+      if (binding) bindings.push(binding);
+    }
+    for (const binding of bindings) flushPendingChildNotifications(binding.nativeId);
+    if (sourceBinding) {
+      const phase = method === "item/started" ? "started" : "completed";
+      emitSubagentActivity(group, sourceBinding, {
+        phase,
+        id: subagentActivityId(group, sourceBinding, item.id),
+        name: `${metadataForSubagent(group, sourceBinding).name}▸spawn_agent`,
+        ...(phase === "started"
+          ? { arguments: { prompt: item.prompt || "", receivers: receivers.map(({ nativeId }) => nativeId) } }
+          : {
+            isError: codexItemFailed(item),
+            content: safeDiagnostic(codexActivityContent({
+              status: item.status,
+              receivers: receivers.map(({ nativeId }) => nativeId),
+              ...(item.error ? { error: item.error } : {}),
+            }), 2_000),
+          }),
+      });
+      return;
+    }
+    if (method === "item/completed" && receivers.length === 0 && codexItemFailed(item)) {
+      finishSubagentGroup(group, null, {
+        status: item.status || "failed",
+        error: item.error || "Codex failed to spawn the subagent",
+      });
+    }
+  }
+
+  function handleSubAgentActivityItem(params, item, sourceBinding = null) {
+    const sourceThreadId = notificationThreadId(params) || threadId || "root";
+    const signalKey = `${sourceThreadId}:${item.id}:${item.kind}`;
+    if (observedSubagentActivityItems.has(signalKey)) return;
+    observedSubagentActivityItems.add(signalKey);
+
+    const targetNativeId = typeof item.agentThreadId === "string" ? item.agentThreadId : null;
+    const targetBinding = targetNativeId ? subagentBindingsByThread.get(targetNativeId) : null;
+    const group = sourceBinding?.group
+      || targetBinding?.group
+      || ensureSubagentGroup(item.id, item);
+    const binding = targetNativeId
+      ? bindSubagentThread(group, {
+        nativeId: targetNativeId,
+        agentPath: item.agentPath,
+      }, { primary: sourceBinding === null && targetBinding === undefined })
+      : sourceBinding;
+
+    const kind = String(item.kind || "started");
+    if (kind === "interrupted") {
+      if (binding) {
+        for (const turnId of binding.turnStates.keys()) binding.turnStates.set(turnId, "completed");
+        binding.terminal = true;
+        drainOpenSubagentActivities(
+          group,
+          `Codex subagent ${binding.agentPath || binding.nativeId} was interrupted before this activity completed.`,
+          binding,
+        );
+      }
+      if (binding?.nativeId === group.primaryThreadId) {
+        recordPrimarySubagentOutcome(group, binding, {
+          status: "interrupted",
+          error: `Codex subagent ${binding.agentPath || binding.nativeId} was interrupted`,
+        });
+      } else {
+        emitSubagentActivity(group, binding || sourceBinding, {
+          phase: "message",
+          id: subagentActivityId(group, binding || sourceBinding, item.id, ":interrupted"),
+          name: `${metadataForSubagent(group, binding || sourceBinding).name}▸status`,
+          kind: "status",
+          role: "assistant",
+          content: `interrupted ${item.agentPath || targetNativeId || "subagent"}`,
+        });
+        maybeFinishSubagentGroup(group);
+      }
+    } else if (kind === "interacted" || sourceBinding) {
+      emitSubagentActivity(group, binding || sourceBinding, {
+        phase: "message",
+        id: subagentActivityId(group, binding || sourceBinding, item.id, `:${kind}`),
+        name: `${metadataForSubagent(group, binding || sourceBinding).name}▸status`,
+        kind: "status",
+        role: "assistant",
+        content: `${kind} ${item.agentPath || targetNativeId || "subagent"}`,
+      });
+    }
+  }
+
+  function emitChildMessage(binding, {
+    itemId,
+    kind,
+    content,
+    index = 0,
+  }) {
+    const text = safeDiagnostic(content, 2_000);
+    if (!text) return;
+    const { group } = binding;
+    emitSubagentActivity(group, binding, {
+      phase: "message",
+      id: subagentActivityId(group, binding, itemId, `:${kind}:${index}`),
+      name: `${metadataForSubagent(group, binding).name}▸${kind}`,
+      kind,
+      role: "assistant",
+      content: text,
+    });
+  }
+
+  function handleChildItem(method, params, binding) {
+    const item = params.item;
+    if (!item || typeof item !== "object") return;
+    const { group } = binding;
+    if (isCodexCollabItem(item) && normalizedCollabTool(item.tool) === "spawnagent") {
+      handleCollabSpawn(method, params, item, binding);
+      return;
+    }
+    if (item.type === "subAgentActivity") {
+      handleSubAgentActivityItem(params, item, binding);
+      return;
+    }
+    const messageKey = `${binding.nativeId}:${item.id}`;
+    if (item.type === "agentMessage") {
+      if (method !== "item/completed") return;
+      const text = item.text || childTextByItem.get(messageKey) || "";
+      binding.lastText = safeDiagnostic(text, 2_000);
+      if (!childMessageDeltaCounts.has(messageKey)) {
+        emitChildMessage(binding, { itemId: item.id, kind: "text", content: text });
+      }
+      return;
+    }
+    if (item.type === "reasoning") {
+      if (method !== "item/completed" || childReasoningDeltaCounts.has(messageKey)) return;
+      const text = [...(item.summary || []), ...(item.content || [])].join("\n").trim();
+      emitChildMessage(binding, { itemId: item.id, kind: "thinking", content: text });
+      return;
+    }
+
+    const raw = mapThreadItem(method, item);
+    const normalized = /** @type {any} */ (normalizeCodexItemEvent(raw, codexItemContext) || raw);
+    if (normalized?.type === "file_change") {
+      const phase = method === "item/started" ? "started" : "completed";
+      const executionMs = codexItemDurationMs(item);
+      emitSubagentActivity(group, binding, {
+        phase,
+        id: subagentActivityId(group, binding, item.id),
+        name: `${metadataForSubagent(group, binding).name}▸file_change`,
+        ...(phase === "started"
+          ? { arguments: { changes: normalized.changes || [], status: normalized.status } }
+          : {
+            isError: normalized.is_error === true,
+            ...(executionMs === undefined ? {} : { executionMs }),
+            content: safeDiagnostic(codexActivityContent({
+              changes: normalized.changes || [],
+              status: normalized.status,
+              ...(normalized.error ? { error: normalized.error } : {}),
+            }), 2_000),
+          }),
+      });
+      return;
+    }
+    const blocks = normalized?.message?.content;
+    if (Array.isArray(blocks)) {
+      for (const block of blocks) {
+        if (block?.type === "tool_use") {
+          emitSubagentActivity(group, binding, {
+            phase: "started",
+            id: subagentActivityId(group, binding, block.id || item.id),
+            name: `${metadataForSubagent(group, binding).name}▸${block.name || item.type || "tool"}`,
+            arguments: block.input || {},
+          });
+        } else if (block?.type === "tool_result") {
+          const executionMs = codexItemDurationMs(item);
+          emitSubagentActivity(group, binding, {
+            phase: "completed",
+            id: subagentActivityId(group, binding, block.tool_use_id || item.id),
+            name: `${metadataForSubagent(group, binding).name}▸${codexChildToolName(item)}`,
+            isError: block.is_error === true,
+            ...(executionMs === undefined ? {} : { executionMs }),
+            content: safeDiagnostic(codexActivityContent(block.content), 2_000),
+          });
+        }
+      }
+      return;
+    }
+    if (item.type === "webSearch" || item.type === "imageView") {
+      const phase = method === "item/started" ? "started" : "completed";
+      emitSubagentActivity(group, binding, {
+        phase,
+        id: subagentActivityId(group, binding, item.id),
+        name: `${metadataForSubagent(group, binding).name}▸${item.type}`,
+        ...(phase === "started"
+          ? { arguments: item.type === "webSearch" ? { query: item.query } : { path: item.path } }
+          : {
+            isError: codexItemFailed(item),
+            content: safeDiagnostic(codexActivityContent(item.results || item.result || item.status), 2_000),
+          }),
+      });
+      return;
+    }
+    if (item.type === "sleep") {
+      const phase = method === "item/started" ? "started" : "completed";
+      const durationMs = codexItemDurationMs(item);
+      emitSubagentActivity(group, binding, {
+        phase,
+        id: subagentActivityId(group, binding, item.id),
+        name: `${metadataForSubagent(group, binding).name}▸sleep`,
+        ...(phase === "started"
+          ? { arguments: durationMs === undefined ? {} : { durationMs } }
+          : {
+            isError: codexItemFailed(item),
+            content: safeDiagnostic(codexActivityContent({
+              ...(durationMs === undefined ? {} : { durationMs }),
+              ...(item.status === undefined ? {} : { status: item.status }),
+              ...(item.error === undefined ? {} : { error: item.error }),
+            }), 2_000),
+          }),
+      });
+      return;
+    }
+    if (item.type === "imageGeneration") {
+      const phase = method === "item/started" ? "started" : "completed";
+      const startedDetails = {
+        ...(item.status === undefined ? {} : { status: safeDiagnostic(item.status, 128) }),
+        ...(item.revisedPrompt === undefined
+          ? {}
+          : {
+            revisedPrompt: item.revisedPrompt === null
+              ? null
+              : safeDiagnostic(item.revisedPrompt, 1_000),
+          }),
+      };
+      const details = {
+        ...(item.status === undefined ? {} : { status: safeDiagnostic(item.status, 128) }),
+        ...(item.savedPath === undefined ? {} : { savedPath: safeDiagnostic(item.savedPath, 512) }),
+        ...(item.revisedPrompt === undefined
+          ? {}
+          : {
+            revisedPrompt: item.revisedPrompt === null
+              ? null
+              : safeDiagnostic(item.revisedPrompt, 1_000),
+          }),
+        ...(item.result === undefined
+          ? {}
+          : { resultBytes: Buffer.byteLength(String(item.result)) }),
+        ...(item.error === undefined ? {} : { error: safeDiagnostic(item.error, 512) }),
+      };
+      emitSubagentActivity(group, binding, {
+        phase,
+        id: subagentActivityId(group, binding, item.id),
+        name: `${metadataForSubagent(group, binding).name}▸imageGeneration`,
+        ...(phase === "started"
+          ? { arguments: startedDetails }
+          : {
+            isError: codexItemFailed(item),
+            content: safeDiagnostic(codexActivityContent(details), 2_000),
+          }),
+      });
+      return;
+    }
+    if (
+      CODEX_PASSIVE_CHILD_ITEM_TYPES.has(item.type)
+      || typeof item.type !== "string"
+      || !item.type.trim()
+      || typeof item.id !== "string"
+      || !item.id.trim()
+    ) {
+      return;
+    }
+    // The protocol has no action/category discriminator. Favor visibility for
+    // unknown non-passive items until the bridge gains a first-class mapper;
+    // bound opaque details so a new provider payload cannot inflate the stream.
+    const phase = method === "item/started" ? "started" : "completed";
+    const executionMs = codexItemDurationMs(item);
+    const itemId = boundedCodexActivityItemId(item.id);
+    const itemType = safeDiagnostic(item.type, 128);
+    emitSubagentActivity(group, binding, {
+      phase,
+      id: subagentActivityId(group, binding, itemId),
+      name: `${metadataForSubagent(group, binding).name}▸${itemType}`,
+      ...(phase === "started"
+        ? { arguments: { item: safeDiagnostic(item, 1_000) } }
+        : {
+          isError: codexItemFailed(item),
+          ...(executionMs === undefined ? {} : { executionMs }),
+          content: safeDiagnostic(item, 2_000),
+        }),
+    });
+  }
+
+  function handleChildNotification(notification) {
+    const { method, params = {} } = notification;
+    const sourceThreadId = notificationThreadId(params);
+    const binding = sourceThreadId ? subagentBindingsByThread.get(sourceThreadId) : null;
+    if (!binding) {
+      if (!sourceThreadId) return;
+      const queued = pendingChildNotifications.get(sourceThreadId) || [];
+      if (queued.length >= 1_000) queued.shift();
+      queued.push(notification);
+      pendingChildNotifications.set(sourceThreadId, queued);
+      return;
+    }
+    const { group } = binding;
+    if (method === "turn/started") {
+      const childTurnId = notificationTurnId(params) || "turn";
+      binding.turnStartedAt.set(childTurnId, Date.now());
+      binding.turnStates.set(childTurnId, "running");
+      binding.terminal = false;
+      return;
+    }
+    if (method === "turn/completed") {
+      const childTurnId = notificationTurnId(params) || "turn";
+      const terminalKey = `${binding.nativeId}:${childTurnId}`;
+      if (group.completedTurns.has(terminalKey)) return;
+      group.completedTurns.add(terminalKey);
+      const status = params.turn?.status || "completed";
+      const error = params.turn?.error?.message || params.turn?.error;
+      const startedAt = binding.turnStartedAt.get(childTurnId);
+      const executionMs = startedAt === undefined ? undefined : Date.now() - startedAt;
+      binding.turnStates.set(childTurnId, "completed");
+      binding.terminal = [...binding.turnStates.values()].every((state) => state === "completed");
+      drainOpenSubagentActivities(
+        group,
+        error
+          ? safeDiagnostic(error, 2_000)
+          : `Codex subagent turn ${status} before this activity completed.`,
+        binding,
+      );
+      if (binding.nativeId === group.primaryThreadId) {
+        recordPrimarySubagentOutcome(group, binding, {
+          status,
+          error,
+          content: error || binding.lastText || status,
+          executionMs,
+        });
+      } else {
+        emitSubagentActivity(group, binding, {
+          phase: "message",
+          id: subagentActivityId(group, binding, childTurnId, ":completed"),
+          name: `${metadataForSubagent(group, binding).name}▸status`,
+          kind: "status",
+          role: "assistant",
+          content: safeDiagnostic(error || `${status} ${binding.agentPath || binding.nativeId}`, 2_000),
+        });
+        maybeFinishSubagentGroup(group);
+      }
+      return;
+    }
+    if (method === "item/agentMessage/delta") {
+      const itemId = params.itemId || "message";
+      const key = `${binding.nativeId}:${itemId}`;
+      const current = childTextByItem.get(key) || "";
+      childTextByItem.set(key, `${current}${params.delta || ""}`);
+      const index = childMessageDeltaCounts.get(key) || 0;
+      childMessageDeltaCounts.set(key, index + 1);
+      emitChildMessage(binding, { itemId, kind: "text", content: params.delta || "", index });
+      return;
+    }
+    if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") {
+      const itemId = params.itemId || "reasoning";
+      const key = `${binding.nativeId}:${itemId}`;
+      const index = childReasoningDeltaCounts.get(key) || 0;
+      childReasoningDeltaCounts.set(key, index + 1);
+      emitChildMessage(binding, { itemId, kind: "thinking", content: params.delta || "", index });
+      return;
+    }
+    if (method === "item/started" || method === "item/completed") {
+      handleChildItem(method, params, binding);
+      return;
+    }
+    if (method === "thread/tokenUsage/updated") {
+      binding.usage = usageFromTokenUsage(params.tokenUsage);
+      return;
+    }
+    if (method === "warning" || method === "error" || method === "configWarning" || method === "guardianWarning") {
+      emitChildMessage(binding, {
+        itemId: notificationTurnId(params) || "warning",
+        kind: method === "error" ? "error" : "warning",
+        content: params.message || params.error || params,
+      });
+    }
+  }
+
   function failNoToolsProbe(action) {
     if (!noToolsProbe || noToolsViolation) return;
     const safeAction = safeDiagnostic(action, 512);
@@ -1342,6 +2149,21 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     }
   }
 
+  function rejectUnsupportedChildServerRequest(request, method, binding) {
+    if (!binding) return false;
+    const params = request?.params || {};
+    const sourceThreadId = notificationThreadId(params);
+    handleChildNotification({
+      method: "error",
+      params: {
+        threadId: sourceThreadId,
+        ...(notificationTurnId(params) ? { turnId: notificationTurnId(params) } : {}),
+        message: `Codex subagent requested unsupported client interaction (${safeDiagnostic(method, 512)}).`,
+      },
+    });
+    return true;
+  }
+
   function handleNotification(notification) {
     const safeNotification = sanitizeCodexNotification(notification, sensitiveValues);
     const { method, params = {} } = safeNotification;
@@ -1355,12 +2177,19 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         return;
       }
     }
+    const sourceThreadId = notificationThreadId(params);
+    if (threadId && sourceThreadId && sourceThreadId !== threadId) {
+      handleChildNotification(safeNotification);
+      return;
+    }
     if (method === "turn/started") {
+      if (!isRootThreadNotification(params)) return;
       setActiveTurnId(params.turn?.id, { steerReady: true });
       emitEvent({ type: "cli_event", raw: { type: "turn_started", turn: params.turn } });
       return;
     }
     if (method === "turn/completed") {
+      if (!isRootActiveTurnNotification(params)) return;
       setActiveTurnId(params.turn?.id);
       turnCompleted = true;
       stopLiveInput();
@@ -1383,6 +2212,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       return;
     }
     if (method === "thread/tokenUsage/updated") {
+      if (!isRootActiveTurnNotification(params)) return;
       usage = usageFromTokenUsage(params.tokenUsage);
       const contextUsage = contextUsageFromTokenUsage(params.tokenUsage);
       if (contextUsage) {
@@ -1400,19 +2230,23 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       return;
     }
     if (method === "model/rerouted") {
+      if (!isRootActiveTurnNotification(params)) return;
       if (typeof params.toModel === "string" && params.toModel.trim().length > 0) actualModel = params.toModel;
       return;
     }
     if (method === "thread/compacted") {
+      if (!isRootActiveTurnNotification(params)) return;
       handleLegacyCompaction(params);
       return;
     }
     if (method === "item/agentMessage/delta") {
+      if (!isRootActiveTurnNotification(params)) return;
       const current = agentTextByItem.get(params.itemId) || "";
       agentTextByItem.set(params.itemId, `${current}${params.delta || ""}`);
       return;
     }
     if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") {
+      if (!isRootActiveTurnNotification(params)) return;
       emitEvent({ type: "assistant", message: { content: [{ type: "thinking", text: params.delta || "" }] } });
       return;
     }
@@ -1425,6 +2259,15 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       return;
     }
     if (method === "item/started" || method === "item/completed") {
+      if (!isRootActiveTurnNotification(params)) return;
+      if (isCodexCollabItem(params.item) && normalizedCollabTool(params.item.tool) === "spawnagent") {
+        handleCollabSpawn(method, params, params.item);
+        return;
+      }
+      if (params.item?.type === "subAgentActivity") {
+        handleSubAgentActivityItem(params, params.item);
+        return;
+      }
       if (params.item?.type === "contextCompaction") {
         handleContextCompactionItem(method, params);
         return;
@@ -1444,29 +2287,75 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   let sessionRetained = false;
   let abortRequested = false;
   let interruptSent = false;
+  let unownedChildRequestObserved = false;
   // Mutable holder so keep-alive clients can outlive this run: each run
-  // installs its own handleNotification and the bridge restores a no-op
-  // once the session goes idle.
+  // installs its own notification and server-request handlers. The bridge
+  // restores idle handlers once the session is no longer executing a turn.
   const notificationTarget = { handler: handleNotification };
+  function handleServerRequest(request) {
+    const method = typeof request?.method === "string" ? request.method : "unknown";
+    // A same-batch request can arrive after turn/completed but before the
+    // generate promise reaches finally. Never let that frame approve work or
+    // mutate the already-final provider result.
+    if (turnCompleted || abortRequested || !activeTurnId) return rejectIdleServerRequest(request);
+    const params = request?.params || {};
+    const sourceThreadId = notificationThreadId(params);
+    const sourceTurnId = notificationTurnId(params);
+    const isChildRequest = Boolean(
+      threadId && sourceThreadId && sourceThreadId !== threadId,
+    );
+    if (!isChildRequest && sourceTurnId !== activeTurnId) {
+      throw new Error(
+        `Codex app-server request does not match the active turn: ${method}`,
+      );
+    }
+    // A foreign thread id is not enough to establish child ownership. Retained
+    // app-server processes can still deliver work from an earlier logical run;
+    // only a live binding created by this run's root/descendant spawn records
+    // may inherit configured-MCP approval.
+    const currentChildBinding = isChildRequest
+      ? subagentBindingsByThread.get(sourceThreadId)
+      : null;
+    if (isChildRequest && (
+      !currentChildBinding
+      || currentChildBinding.terminal
+      || currentChildBinding.group.finished
+      || !sourceTurnId
+      || currentChildBinding.turnStates.get(sourceTurnId) !== "running"
+    )) {
+      unownedChildRequestObserved = true;
+      throw new Error(`Unsupported Codex app-server request: ${method}`);
+    }
+    const approval = noToolsProbe
+      ? null
+      : codexConfiguredMcpApprovalResponse(request, configuredMcpServerNames);
+    if (approval) return approval;
+    // A child turn can fail an interaction it cannot service without
+    // terminating the still-active root turn. The app-server receives the
+    // JSON-RPC error and reports the child lifecycle separately.
+    if (rejectUnsupportedChildServerRequest(request, method, currentChildBinding)) {
+      throw new Error(`Unsupported Codex app-server request: ${method}`);
+    }
+    failUnsupportedServerRequest(method);
+    throw new Error(`Unsupported Codex app-server request: ${method}`);
+  }
+  const serverRequestTarget = { handler: handleServerRequest };
   function createClient() {
+    const args = options.codexAppServerArgs !== undefined
+      ? options.codexAppServerArgs
+      : options.codexLoadProjectDocs === true
+        ? CODEX_APP_SERVER_ARGS
+        : CODEX_APP_SERVER_ISOLATED_ARGS;
     return makeClient({
       command: options.codexAppServerCommand,
-      args: options.codexAppServerArgs,
+      args,
       cwd: options.cwd,
       env: options.codexAppServerEnv,
       redactionValues: sensitiveValues,
       onNotification: (notification) => notificationTarget.handler(
         sanitizeCodexNotification(notification, sensitiveValues),
       ),
-      onServerRequest: (request) => {
-        const method = typeof request?.method === "string" ? request.method : "unknown";
-        const approval = noToolsProbe
-          ? null
-          : codexConfiguredMcpApprovalResponse(request, configuredMcpServerNames);
-        if (approval) return approval;
-        failUnsupportedServerRequest(method);
-        throw new Error(`Unsupported Codex app-server request: ${method}`);
-      },
+      onServerRequest: (request) => serverRequestTarget.handler(request),
     });
   }
 
@@ -1615,6 +2504,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   }
 
   function sessionUnavailableResult(kind, error, codexErrorCode) {
+    const subagentCapabilities = observedSubagentCapabilities();
     return {
       text: null,
       structuredResult: undefined,
@@ -1636,13 +2526,33 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         promptCacheActive: null,
         thinkingEnabled: null,
         structuredOutputEnforced: !!options.outputSchema,
-        subagentInvoked: null,
-        mcpServersUsed: Object.keys(options.mcpServers || {}),
-        nativeSubagentsUsed: [],
+        subagentInvoked: subagentCapabilities.invoked,
+        mcpServersUsed: sentMcpServerNames,
+        nativeSubagentsUsed: subagentCapabilities.names,
         toolCompactionApplied: false,
         contextCompactionApplied: null,
       }),
     };
+  }
+
+  if (
+    Array.isArray(options.nativeSubagents?.teammates)
+    && options.nativeSubagents.teammates.length > 0
+  ) {
+    return sessionUnavailableResult(
+      "skipped_capability_mismatch",
+      "Direct Codex owns its native collaboration agents and does not accept mono-agent nativeSubagents teammate/profile definitions. Remove nativeSubagents, use codexLoadProjectDocs for repository instructions, or route this run to Claude.",
+      "codex_native_subagent_definitions_unsupported",
+    );
+  }
+
+  const mcpServerNameProblem = codexMcpServerNameProblem(invalidMcpServerNames);
+  if (mcpServerNameProblem) {
+    return sessionUnavailableResult(
+      "skipped_capability_mismatch",
+      mcpServerNameProblem,
+      "codex_mcp_server_name_invalid",
+    );
   }
 
   if (resolveSandboxPolicy(options.toolContext, options.sandboxPolicy) !== undefined) {
@@ -1684,6 +2594,16 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         );
     }
     resumeEntry = claimed.entry;
+    if (resumeEntry.mcpConfigFingerprint !== mcpConfigFingerprint) {
+      await codexSessions.dispose(resumeSessionId);
+      return sessionUnavailableResult(
+        "session_not_found",
+        `Codex session ${resumeSessionId} was invalidated because its MCP configuration changed; retry without the provider session to replay history`,
+        "codex_session_config_mismatch",
+      );
+    }
+    // A retained thread keeps the MCP configuration sent with thread/start.
+    sentMcpServerNames = noToolsProbe ? [] : configuredMcpServerNameList;
   }
 
   try {
@@ -1691,6 +2611,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       client = resumeEntry.client;
       threadId = resumeEntry.threadId;
       resumeEntry.notificationTarget.handler = handleNotification;
+      resumeEntry.serverRequestTarget.handler = handleServerRequest;
       // Keep the idle TTL from firing while the turn is in flight.
       codexSessions.touch(resumeSessionId, { idleTimeoutMs: sessionTtlMs });
     } else {
@@ -1701,30 +2622,9 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       else options.abortSignal.addEventListener("abort", abortHandler, { once: true });
     }
     if (!resumeEntry) await initializeClient(client);
-    let collaborationMode = noToolsProbe
-      ? null
-      : codexCollaborationModePayload(options.nativeSubagents, {
-        model: resolved.model,
-        effort: normalizedEffort,
-        systemPrompt,
-      });
-    if (collaborationMode) {
-      try {
-        await client.request("collaborationMode/list", {}, { timeoutMs: 5_000 });
-      } catch (err) {
-        emitEvent({
-          type: "runtime_warning",
-          warning_kind: "codex_collaboration_mode_unavailable",
-          message: safeDiagnostic(codexErrorMessage(
-            err?.responseError ? safeResponseError(err.responseError) : err,
-          )),
-        });
-        collaborationMode = null;
-      }
-    }
     const fastMode = codexModelSupportsFastMode(resolved.model) && normalizeFastMode(options.fastMode, true);
     if (!resumeEntry) {
-      const mcpServers = noToolsProbe ? {} : codexMcpConfig(options.mcpServers);
+      const mcpServers = noToolsProbe ? {} : configuredMcpServers;
       // Incrementally assembled config handed across the codex app-server
       // boundary; the reasoning fields below are attached conditionally.
       const config = /** @type {any} */ ({
@@ -1740,6 +2640,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         config.model_reasoning_effort = normalizedEffort;
         if (normalizedEffort !== "none") config.model_reasoning_summary = "auto";
       }
+      sentMcpServerNames = Object.keys(mcpServers);
       // The codex app-server protocol exposes thread/start but no thread/load
       // primitive, so cold continuations always start a fresh thread; a
       // thread is only resumable while its subprocess stays live in
@@ -1783,26 +2684,9 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       effort: normalizedEffort,
       summary: normalizedEffort && normalizedEffort !== "none" ? "auto" : "none",
       outputSchema: options.outputSchema,
-      ...(collaborationMode ? { collaborationMode } : {}),
     };
-    let turn;
-    try {
-      turn = await client.request("turn/start", turnParams);
-      assertNoUnsupportedServerRequest();
-    } catch (err) {
-      if (!collaborationMode) throw err;
-      emitEvent({
-        type: "runtime_warning",
-        warning_kind: "codex_collaboration_mode_rejected",
-        message: safeDiagnostic(codexErrorMessage(
-          err?.responseError ? safeResponseError(err.responseError) : err,
-        )),
-      });
-      const fallbackParams = { ...turnParams };
-      delete fallbackParams.collaborationMode;
-      turn = await client.request("turn/start", fallbackParams);
-      assertNoUnsupportedServerRequest();
-    }
+    const turn = await client.request("turn/start", turnParams);
+    assertNoUnsupportedServerRequest();
     setActiveTurnId(turn?.turn?.id);
 
     let prematureClose = false;
@@ -1860,17 +2744,44 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       failureKind = "provider_unavailable";
       codexErrorCode = codexErrorCode || "codex_app_server_no_output";
     }
+    // The app-server owns native descendants. If a known descendant remains
+    // open, or an unowned/stale descendant requests work, retaining this
+    // process would let old execution cross into another logical turn. Close
+    // the provider session after the unaffected root finishes; the host can
+    // replay history on a fresh process.
+    const hasUnfinishedProviderDescendants = [...subagentGroupsBySpawnId.values()]
+      .some((group) => !group.finished);
+    const providerSessionHasUnsafeDescendants = hasUnfinishedProviderDescendants
+      || unownedChildRequestObserved;
     if (resumeEntry) {
       // A failed turn or a closed transport leaves the thread untrustworthy,
-      // but an interrupt is normal steering: the aborted session survives.
+      // but an interrupt is normal steering only when no provider descendant
+      // remains live.
       const aborted = !!options.abortSignal?.aborted;
-      sessionRetained = (aborted && !prematureClose) || (!errorMessage && !failureKind);
+      sessionRetained = !providerSessionHasUnsafeDescendants
+        && ((aborted && !prematureClose) || (!errorMessage && !failureKind));
       if (sessionRetained) codexSessions.touch(resumeSessionId, { idleTimeoutMs: sessionTtlMs });
       else codexSessions.delete(resumeSessionId);
-    } else if (keepAlive && threadId && !errorMessage && !failureKind && !options.abortSignal?.aborted) {
+    } else if (
+      keepAlive
+      && threadId
+      && !errorMessage
+      && !failureKind
+      && !options.abortSignal?.aborted
+      && !providerSessionHasUnsafeDescendants
+    ) {
       sessionRetained = true;
       notificationTarget.handler = noopNotificationHandler;
-      const entry = { client, threadId, busy: false, notificationTarget, closedTarget: { handler: null } };
+      serverRequestTarget.handler = rejectIdleServerRequest;
+      const entry = {
+        client,
+        threadId,
+        busy: false,
+        notificationTarget,
+        serverRequestTarget,
+        mcpConfigFingerprint,
+        closedTarget: { handler: null },
+      };
       codexSessions.set(threadId, entry, { idleTimeoutMs: sessionTtlMs });
       client.closed.then(() => {
         codexSessions.delete(threadId);
@@ -1900,6 +2811,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       cache_creation_tokens: cacheCreationTokens || null,
       cost_usd: costUsd,
     };
+    const subagentCapabilities = observedSubagentCapabilities();
     return {
       text,
       structuredResult: undefined,
@@ -1927,15 +2839,16 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         promptCacheActive: (cachedTokens || 0) > 0 || (cacheCreationTokens || 0) > 0,
         thinkingEnabled: null,
         structuredOutputEnforced: !!options.outputSchema,
-        subagentInvoked: null,
-        mcpServersUsed: Object.keys(options.mcpServers || {}),
-        nativeSubagentsUsed: [],
+        subagentInvoked: subagentCapabilities.invoked,
+        mcpServersUsed: sentMcpServerNames,
+        nativeSubagentsUsed: subagentCapabilities.names,
         toolCompactionApplied: false,
         contextCompactionApplied: null,
       }),
     };
   } catch (err) {
     if (resumeEntry) codexSessions.delete(resumeSessionId);
+    const subagentCapabilities = observedSubagentCapabilities();
     return {
       text: texts[texts.length - 1] || null,
       structuredResult: undefined,
@@ -1961,15 +2874,38 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         promptCacheActive: null,
         thinkingEnabled: null,
         structuredOutputEnforced: !!options.outputSchema,
-        subagentInvoked: null,
-        mcpServersUsed: Object.keys(options.mcpServers || {}),
-        nativeSubagentsUsed: [],
+        subagentInvoked: subagentCapabilities.invoked,
+        mcpServersUsed: sentMcpServerNames,
+        nativeSubagentsUsed: subagentCapabilities.names,
         toolCompactionApplied: false,
         contextCompactionApplied: null,
       }),
     };
   } finally {
     stopLiveInput();
+    // The returned result is already being finalized. Park every transport
+    // callback before lifecycle drains or close() so shutdown-time frames
+    // cannot mutate its event array or stale per-run state.
+    if (resumeEntry) {
+      resumeEntry.notificationTarget.handler = noopNotificationHandler;
+      resumeEntry.serverRequestTarget.handler = rejectIdleServerRequest;
+      resumeEntry.closedTarget.handler = null;
+    } else {
+      notificationTarget.handler = noopNotificationHandler;
+      serverRequestTarget.handler = rejectIdleServerRequest;
+    }
+    if ([...subagentGroupsBySpawnId.values()].some((group) => !group.finished)) {
+      const cancelled = !!options.abortSignal?.aborted;
+      const failed = Boolean(errorMessage || failureKind);
+      finalizeOpenSubagents(
+        cancelled ? "cancelled" : failed ? "failed" : "incomplete",
+        cancelled
+          ? "Parent Codex turn was cancelled before the subagent completed."
+          : failed
+            ? "Parent Codex turn failed before the subagent completed."
+            : "Parent Codex turn ended before the subagent completed.",
+      );
+    }
     if (activeCompactions.size > 0) {
       const cancelled = !!options.abortSignal?.aborted;
       finalizeOpenCompactions(
@@ -1980,8 +2916,6 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     options.abortSignal?.removeEventListener?.("abort", abortHandler);
     if (resumeEntry) {
       resumeEntry.busy = false;
-      resumeEntry.notificationTarget.handler = noopNotificationHandler;
-      resumeEntry.closedTarget.handler = null;
     }
     if (!sessionRetained) await closeCodexClient(client);
   }

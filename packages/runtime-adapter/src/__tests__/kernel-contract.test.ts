@@ -3,18 +3,17 @@
 // (packages/agent-runtime/types/**, built by `tsc -p tsconfig.types.json`
 // from the kernel's JSDoc typedefs — see ai/types.js).
 //
-// This file asserts nothing at runtime; `expectTypeOf(...).toExtend<...>()`
-// only compiles if the assignability actually holds, so `tsc --noEmit`
-// (`pnpm run typecheck`) is what enforces it. It still runs under
-// `vitest run` as a no-op so a type-only regression shows up in `pnpm test`
-// too, not just in a separate typecheck step.
+// Most assertions are compile-time only: `expectTypeOf(...).toExtend<...>()`
+// compiles only when assignability holds, so `tsc --noEmit` (`pnpm run
+// typecheck`) enforces the contract. Vitest also executes the public event
+// guard's positive and negative boundary cases.
 //
 // Kernel parameter/return/element types are extracted structurally via
 // `Parameters<...>`/`ReturnType<...>` off the six consumed kernel symbols
 // (see src/runtime-adapter.ts's imports) rather than importing agent-runtime's
 // internal type names by name — this only depends on the shape actually
 // exercised at the seam, not on kernel type-alias naming.
-import { describe, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 
 import { createPiOAuthApiKeyResolver, createRuntime } from "@mono-agent/agent-runtime";
 import { executionModeIncompatibilityReason, parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
@@ -22,21 +21,29 @@ import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registr
 
 import { createMonoRuntime } from "../runtime-adapter.js";
 import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptResolution } from "../runtime-adapter.js";
+import { isRuntimeSubagentActivityEvent } from "../index.js";
 import type {
   MonoAcpInteractionRequest,
   MonoAcpProfileResolver,
   MonoAcpSessionControlOptions,
   MonoRuntimeBackendCapabilities,
   MonoRuntimeHostOptions,
+  RuntimeEventLike,
   RuntimeModelReference,
+  RuntimeNativeSubagentsOptions,
   RuntimeResult,
   RuntimeRunOptions,
+  RuntimeSubagentActivityEvent,
+  RuntimeSubagentActivityPhase,
+  RuntimeSubagentIdentity,
   RuntimeToolOptions,
 } from "../types.js";
 
 type KernelRuntimeInstance = ReturnType<typeof createRuntime>;
 type KernelHostOptions = NonNullable<Parameters<typeof createRuntime>[0]>;
 type KernelRunOptions = Parameters<KernelRuntimeInstance["run"]>[1];
+type KernelRuntimeEvent = Parameters<NonNullable<KernelRunOptions["onEvent"]>>[0];
+type KernelSubagentActivityEvent = Extract<KernelRuntimeEvent, { type: "subagent_activity" }>;
 type KernelToolOptions = Parameters<KernelRuntimeInstance["configureTools"]>[0];
 type KernelRunResult = Awaited<ReturnType<KernelRuntimeInstance["run"]>>;
 type KernelBridgeDescriptor = ReturnType<typeof listRuntimeBridges>[number];
@@ -64,6 +71,9 @@ type RuntimeRunComparableKeys =
   | "toolLimits"
   | "compaction"
   | "prompts"
+  | "settingSources"
+  | "codexLoadProjectDocs"
+  | "nativeSubagents"
   | "acpSessionTokenKey";
 type RuntimeRunComparableOptions = Pick<RuntimeRunOptions, RuntimeRunComparableKeys>;
 type KnownKeys<T> = {
@@ -127,6 +137,117 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
       .toEqualTypeOf<"sdk" | "cli" | "acp" | undefined>();
     const facade = null as unknown as RuntimeRunComparableOptions;
     assertAssignable<KernelRunOptions>(facade);
+  });
+
+  it("keeps provider project-discovery controls typed at the facade/kernel seam", () => {
+    expectTypeOf<RuntimeRunOptions["settingSources"]>()
+      .toEqualTypeOf<readonly ("user" | "project" | "local")[] | undefined>();
+    expectTypeOf<RuntimeRunOptions["codexLoadProjectDocs"]>()
+      .toEqualTypeOf<boolean | undefined>();
+    expectTypeOf<KernelRunOptions["settingSources"]>()
+      .toEqualTypeOf<readonly ("user" | "project" | "local")[] | undefined>();
+    expectTypeOf<KernelRunOptions["codexLoadProjectDocs"]>()
+      .toEqualTypeOf<boolean | undefined>();
+    expectTypeOf<RuntimeRunOptions["nativeSubagents"]>()
+      .toEqualTypeOf<RuntimeNativeSubagentsOptions | undefined>();
+    expectTypeOf<NonNullable<RuntimeRunOptions["nativeSubagents"]>["provider"]>()
+      .toEqualTypeOf<"claude">();
+    expectTypeOf<NonNullable<KernelRunOptions["nativeSubagents"]>["provider"]>()
+      .toEqualTypeOf<"claude">();
+  });
+
+  it("types per-attempt tool-policy projection without opening other request fields", () => {
+    const resolution = {
+      policyOptions: {
+        allowedTools: ["*"],
+        disallowedTools: [],
+        permissionMode: "plan",
+      },
+    } satisfies MonoRuntimeAttemptResolution;
+    assertAssignable<MonoRuntimeAttemptResolution>(resolution);
+
+    if (false) {
+      const invalid = {
+        policyOptions: {
+          permissionMode: "plan",
+          // @ts-expect-error attempt policy projection cannot replace messages.
+          messages: [],
+        },
+      } satisfies MonoRuntimeAttemptResolution;
+      assertAssignable<MonoRuntimeAttemptResolution>(invalid);
+    }
+  });
+
+  it("exports an exact normalized subagent event path while keeping open events permissive", () => {
+    const event = {
+      type: "subagent_activity",
+      phase: "agent_started",
+      id: "agent:toolu_parent",
+      subagent: {
+        id: "toolu_parent",
+        nativeId: "provider-task-42",
+        name: "researcher",
+        callIndex: 0,
+        agentPath: "root/researcher",
+      },
+    } satisfies RuntimeSubagentActivityEvent;
+    expectTypeOf<RuntimeSubagentActivityPhase>()
+      .toEqualTypeOf<"agent_started" | "started" | "completed" | "message" | "agent_completed">();
+    expectTypeOf<RuntimeSubagentIdentity>().toExtend<KernelSubagentActivityEvent["subagent"]>();
+    expectTypeOf<KernelSubagentActivityEvent["subagent"]>().toExtend<RuntimeSubagentIdentity>();
+    expectTypeOf<RuntimeSubagentActivityEvent>().toExtend<KernelSubagentActivityEvent>();
+    expectTypeOf<KernelSubagentActivityEvent>().toExtend<RuntimeSubagentActivityEvent>();
+    assertAssignable<RuntimeEventLike>(event);
+
+    const opaqueProviderEvent = {
+      type: "subagent_activity",
+      vendorPayload: { deliberately: "open" },
+    } satisfies RuntimeEventLike;
+    assertAssignable<RuntimeEventLike>(opaqueProviderEvent);
+
+    expect(isRuntimeSubagentActivityEvent(event)).toBe(true);
+    expect(isRuntimeSubagentActivityEvent(opaqueProviderEvent)).toBe(false);
+    expect(isRuntimeSubagentActivityEvent({
+      ...event,
+      subagent: { ...event.subagent, callIndex: "0" },
+    })).toBe(false);
+    expect(isRuntimeSubagentActivityEvent({ ...event, role: "system" })).toBe(false);
+
+    const narrowEvent = (candidate: RuntimeEventLike): void => {
+      if (isRuntimeSubagentActivityEvent(candidate)) {
+        expectTypeOf(candidate).toEqualTypeOf<RuntimeSubagentActivityEvent>();
+        expectTypeOf(candidate.type).toEqualTypeOf<"subagent_activity">();
+      }
+    };
+    narrowEvent(event);
+
+    if (false) {
+      // @ts-expect-error exact subagent events require their unique activity-row id.
+      const missingActivityId: RuntimeSubagentActivityEvent = {
+        type: "subagent_activity",
+        phase: "agent_started",
+        subagent: { id: "toolu_parent", name: "researcher", callIndex: 0 },
+      };
+      assertAssignable<RuntimeSubagentActivityEvent>(missingActivityId);
+
+      const invalidPhase = {
+        type: "subagent_activity",
+        id: "agent:toolu_parent",
+        // @ts-expect-error normalized subagent events reject unknown phases.
+        phase: "queued",
+        subagent: { id: "toolu_parent", name: "researcher", callIndex: 0 },
+      } satisfies RuntimeSubagentActivityEvent;
+      void invalidPhase;
+
+      const missingCallIndex = {
+        type: "subagent_activity",
+        id: "agent:toolu_parent",
+        phase: "agent_started",
+        // @ts-expect-error exact subagent identities require a provider call ordinal.
+        subagent: { id: "toolu_parent", name: "researcher" },
+      } satisfies RuntimeSubagentActivityEvent;
+      void missingCallIndex;
+    }
   });
 
   it("the facade RuntimeToolOptions is assignable to createRuntime(...).configureTools options except for the concrete sandbox engine", () => {

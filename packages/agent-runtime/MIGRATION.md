@@ -282,6 +282,13 @@ a `supports_native_subagents` requirement when a run passes
 native-subagent runs, ensure at least one entry supports native subagents, or the
 run reports exhausted instead of degrading silently.
 
+Caller-defined `nativeSubagents.teammates` are a Claude-only projection. Codex
+still advertises and reports its provider-owned native collaboration surface,
+but a direct Codex attempt now rejects configured teammate/profile definitions
+with `codex_native_subagent_definitions_unsupported` before transport; a router
+may then continue to Claude. Use `codexLoadProjectDocs: true` to enable Codex's
+repository instructions, not to define Codex collaboration profiles.
+
 ### 6. Diagnostics & internal behavior changes (no API change)
 
 - **Pi multimodal**: image inputs are delivered to the model as image content

@@ -705,6 +705,34 @@ describe("Agent tool in-flight subagent creation", () => {
     expect(run.mock.calls[0][0].definition.allowedTools).toEqual(["Read"]);
   });
 
+  it.each([undefined, "general-purpose"])(
+    "keeps the built-in general-purpose profile inside a narrower ceiling (name: %s)",
+    async (name) => {
+      const run = okRun();
+      const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Read", "Edit", "Grep"] }));
+      await tool.execute("c1", { ...(name === undefined ? {} : { name }), prompt: "x" });
+
+      expect(run.mock.calls[0][0].definition.allowedTools).toEqual(["Read", "Grep"]);
+    },
+  );
+
+  it("keeps a configured profile's explicit tools outside the inline ceiling", async () => {
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Read"] }));
+    await tool.execute("c1", { name: "researcher", prompt: "x" });
+
+    expect(run.mock.calls[0][0].definition.allowedTools).toEqual(["Read", "Grep"]);
+  });
+
+  it("refuses the built-in general-purpose profile when the ceiling has no read-only tools", async () => {
+    const run = okRun();
+    const tool = createAgentTool(inlineOptions({ run }, { allowedTools: ["Edit", "Bash"] }));
+
+    await expect(tool.execute("c1", { prompt: "x" }))
+      .rejects.toThrow(/no read-only tools available to general-purpose/u);
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it("falls back to the read-only set when the host supplies no ceiling", async () => {
     // A bare-kernel caller must not hand the model every built-in just by
     // declining to state a ceiling.

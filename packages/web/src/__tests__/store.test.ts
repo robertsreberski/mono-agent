@@ -975,6 +975,96 @@ describe("WebStore subagent parts", () => {
     });
   });
 
+  it("keeps a background group running until its lifecycle terminal arrives", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      launch("call-1", "researcher"),
+      bookend("call-1", "researcher", "read the router"),
+      childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }),
+    ] as never);
+
+    expect(store.getThreadDetail(thread.id)?.messages.at(-1)?.parts.find(
+      (part) => part.type === "subagent",
+    )).toMatchObject({
+      type: "subagent",
+      toolCallId: "call-1",
+      status: "running",
+      calls: [{ toolName: "Read", status: "running" }],
+    });
+
+    store.applyStreamFrames(turn.turnId, [{
+      kind: "event",
+      event: {
+        type: "tool_call_completed",
+        id: "agent:call-1",
+        name: "Agent(researcher)",
+        content: "Review complete",
+        metadata: { ...subagent("call-1", "researcher"), subagentLifecycle: true },
+      },
+    }] as never);
+    expect(store.getThreadDetail(thread.id)?.messages.at(-1)?.parts.find(
+      (part) => part.type === "subagent",
+    )).toMatchObject({
+      type: "subagent",
+      toolCallId: "call-1",
+      status: "complete",
+    });
+
+    store.completeTurn(turn.turnId, "done");
+    store.close();
+  });
+
+  it("groups native activity by the parent tool id when the provider task id differs", async () => {
+    const canonicalId = "toolu_parent";
+    const nativeId = "provider-task-42";
+    const nativeMetadata = {
+      subagent: {
+        id: canonicalId,
+        nativeId,
+        name: "researcher",
+        callIndex: 0,
+        agentPath: "root/researcher",
+      },
+      synthetic: true,
+    };
+    const parts = await turnWith([
+      launch(canonicalId, "researcher"),
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_started",
+          id: `agent:${canonicalId}`,
+          name: "Agent(researcher)",
+          metadata: { ...nativeMetadata, subagentLifecycle: true },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_started",
+          id: `agent:${canonicalId}:read-1`,
+          name: "researcher▸Read",
+          arguments: { file_path: "/repo/a.ts" },
+          metadata: nativeMetadata,
+        },
+      },
+    ]);
+
+    const groups = parts.filter((part) => part.type === "subagent");
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      type: "subagent",
+      toolCallId: canonicalId,
+      calls: [{ toolCallId: `agent:${canonicalId}:read-1`, toolName: "Read" }],
+    });
+    expect(parts.some((part) => "toolCallId" in part && part.toolCallId === nativeId)).toBe(false);
+  });
+
   it("keeps concurrent subagents in separate groups as their events interleave", async () => {
     const parts = await turnWith([
       launch("a", "researcher"),
