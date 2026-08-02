@@ -30,6 +30,7 @@ import type {
   MonoRuntimeHostOptions,
   RuntimeEventLike,
   RuntimeModelReference,
+  RuntimeNativeSubagentsOptions,
   RuntimeResult,
   RuntimeRunOptions,
   RuntimeSubagentActivityEvent,
@@ -72,6 +73,7 @@ type RuntimeRunComparableKeys =
   | "prompts"
   | "settingSources"
   | "codexLoadProjectDocs"
+  | "nativeSubagents"
   | "acpSessionTokenKey";
 type RuntimeRunComparableOptions = Pick<RuntimeRunOptions, RuntimeRunComparableKeys>;
 type KnownKeys<T> = {
@@ -146,6 +148,12 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
       .toEqualTypeOf<readonly ("user" | "project" | "local")[] | undefined>();
     expectTypeOf<KernelRunOptions["codexLoadProjectDocs"]>()
       .toEqualTypeOf<boolean | undefined>();
+    expectTypeOf<RuntimeRunOptions["nativeSubagents"]>()
+      .toEqualTypeOf<RuntimeNativeSubagentsOptions | undefined>();
+    expectTypeOf<NonNullable<RuntimeRunOptions["nativeSubagents"]>["provider"]>()
+      .toEqualTypeOf<"claude">();
+    expectTypeOf<NonNullable<KernelRunOptions["nativeSubagents"]>["provider"]>()
+      .toEqualTypeOf<"claude">();
   });
 
   it("types per-attempt tool-policy projection without opening other request fields", () => {

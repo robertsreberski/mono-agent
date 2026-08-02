@@ -40,6 +40,32 @@
  */
 
 /**
+ * @typedef {Object} RuntimeNativeSubagentDefinition
+ * One caller-defined Claude native `Task` profile. Codex collaboration-agent
+ * definitions are owned by Codex and are not represented by this type.
+ * @property {string} name
+ * @property {string} [displayName]
+ * @property {string} [description]
+ * @property {string} [helperSystemPrompt]
+ * @property {string} [instructions]
+ * @property {ReadonlyArray<string>} [allowedTools]
+ * @property {ReadonlyArray<string>} [disallowedTools]
+ * @property {string | RuntimeModelRef} [modelRef]
+ * @property {RuntimeModelRef} [model]
+ * @property {string} [effort]
+ * @property {Object<string, Object>} [mcpServers]
+ */
+
+/**
+ * @typedef {Object} RuntimeNativeSubagentsOptions
+ * Caller-defined native profiles are supported only by the Claude bridges.
+ * Codex owns its collaboration agents; use `codexLoadProjectDocs` when those
+ * agents should receive repository instructions.
+ * @property {"claude"} provider
+ * @property {ReadonlyArray<RuntimeNativeSubagentDefinition>} teammates
+ */
+
+/**
  * @typedef {Object} RuntimeSubagentIdentity
  * Provider-neutral identity attached to every `subagent_activity` event.
  * @property {string} id The canonical parent attachment key: the initiating
@@ -226,7 +252,9 @@
  * @property {boolean} [codexLoadProjectDocs] Codex app-server only. Omitted/false starts the managed app-server with
  *   `project_doc_max_bytes=0`, preventing automatic repository-instruction discovery. True restores Codex's native
  *   project-doc loading defaults. An explicit `codexAppServerArgs` array wins over this convenience option.
- * @property {Object} [nativeSubagents] Same-runtime teammate helpers exposed through native provider subagent surfaces.
+ * @property {RuntimeNativeSubagentsOptions} [nativeSubagents] Caller-defined Claude native `Task` profiles. Direct
+ *   Codex owns its collaboration agents and rejects configured teammate definitions; `codexLoadProjectDocs` controls
+ *   whether Codex loads repository instructions for its own agents.
  * @property {RuntimeSubagentsOptions} [subagents] In-process `Agent` built-in: profiles, caps, and the nested-run callback.
  * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when
  *   failing over mid-chain; a host-level coordinator may relay it forward (see agent/transcript.js), not read by any
@@ -337,7 +365,9 @@
  * @property {boolean} [supports_skills]
  * @property {boolean} [supports_builtin_tools]
  * @property {boolean} [supports_live_input]
- * @property {boolean} [supports_native_subagents]
+ * @property {boolean} [supports_native_subagents] Whether the bridge exposes provider-native subagent surfaces and
+ *   normalized activity. This does not imply it accepts caller-defined `nativeSubagents`: Codex owns its collaboration
+ *   agents, while only the Claude bridges project caller-defined profiles.
  * @property {boolean} [supports_request_tool_environment]
  * @property {boolean} [supports_fast_mode]
  * @property {"projected"|"allow_all_only"} [tool_policy] Whether the bridge can

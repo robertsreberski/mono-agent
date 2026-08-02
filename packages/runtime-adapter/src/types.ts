@@ -18,6 +18,31 @@ export interface RuntimeModelReference {
   readonly reference?: string;
 }
 
+/** One caller-defined Claude native `Task` profile. */
+export interface RuntimeNativeSubagentDefinition {
+  readonly name: string;
+  readonly displayName?: string;
+  readonly description?: string;
+  readonly helperSystemPrompt?: string;
+  readonly instructions?: string;
+  readonly allowedTools?: readonly string[];
+  readonly disallowedTools?: readonly string[];
+  readonly modelRef?: string | RuntimeModelReference;
+  readonly model?: RuntimeModelReference;
+  readonly effort?: string;
+  readonly mcpServers?: Readonly<Record<string, object>>;
+}
+
+/**
+ * Caller-defined native profiles are a Claude-only request contract. Codex
+ * owns its collaboration agents; codexLoadProjectDocs controls whether they
+ * receive repository instructions.
+ */
+export interface RuntimeNativeSubagentsOptions {
+  readonly provider: "claude";
+  readonly teammates: readonly RuntimeNativeSubagentDefinition[];
+}
+
 export type MonoRuntimeBackendId =
   | "claude-sdk"
   | "claude-code-cli"
@@ -89,6 +114,7 @@ export interface MonoRuntimeBackendCapabilities {
   readonly supports_skills?: boolean;
   readonly supports_builtin_tools?: boolean;
   readonly supports_live_input?: boolean;
+  /** Native surface/activity support, not caller-defined profile injection. */
   readonly supports_native_subagents?: boolean;
   readonly supports_request_tool_environment?: boolean;
   readonly tool_policy?: "projected" | "allow_all_only";
@@ -380,6 +406,8 @@ export interface RuntimeRunOptions {
    * Omitted/false disables automatic discovery; explicit app-server args win.
    */
   readonly codexLoadProjectDocs?: boolean;
+  /** Caller-defined Claude native `Task` profiles. Direct Codex rejects these definitions. */
+  readonly nativeSubagents?: RuntimeNativeSubagentsOptions;
   // Pi-native provider knobs (optional; ignored by other bridges).
   readonly piTransport?: PiTransport;
   readonly piMaxRetries?: number;

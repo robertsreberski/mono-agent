@@ -132,6 +132,8 @@ export type {
   RuntimeLiveInputMessage,
   RuntimeMessage,
   RuntimeModelReference,
+  RuntimeNativeSubagentDefinition,
+  RuntimeNativeSubagentsOptions,
   PiTransport,
   RuntimePolicies,
   RuntimePromptOverrides,

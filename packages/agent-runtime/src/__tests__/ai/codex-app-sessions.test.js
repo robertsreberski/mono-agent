@@ -231,6 +231,45 @@ describe("codex-app persistent sessions", () => {
     expect(factory).not.toHaveBeenCalled();
   });
 
+  it("rejects configured native teammate definitions before starting Codex", async () => {
+    const factory = stubClientFactory();
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, {
+      nativeSubagents: {
+        provider: "codex",
+        teammates: [{
+          name: "reviewer",
+          displayName: "Reviewer",
+          description: "Review the change",
+          helperSystemPrompt: "Inspect the diff.",
+          allowedTools: ["Read", "Grep"],
+          modelRef: "codex:gpt-5.1-codex",
+        }],
+      },
+    }));
+
+    expect(result).toMatchObject({
+      failureKind: "skipped_capability_mismatch",
+      diagnostics: { codex_error_code: "codex_native_subagent_definitions_unsupported" },
+      numTurns: 0,
+    });
+    expect(result.error).toContain("Codex owns its native collaboration agents");
+    expect(result.error).toContain("codexLoadProjectDocs");
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("does not synthesize a Codex collaboration-mode transport payload", async () => {
+    const factory = stubClientFactory({ threadId: "thread-native-collaboration" });
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory));
+
+    expect(result).toMatchObject({ error: null, failureKind: null });
+    const client = factory.clients[0];
+    expect(client.requests.some((request) => request.method === "collaborationMode/list")).toBe(false);
+    expect(client.requests.find((request) => request.method === "turn/start")?.params)
+      .not.toHaveProperty("collaborationMode");
+  });
+
   it('accepts a wildcard mixed with named tools as an effective allow-all policy', async () => {
     const factory = stubClientFactory({ threadId: "thread-mixed-wildcard" });
 
@@ -2321,7 +2360,6 @@ describe("codex-app persistent sessions", () => {
       mcpServers: {},
       codexNoToolsProbe: true,
       sessionKeepAlive: false,
-      nativeSubagents: { mode: "auto" },
       onEvent: (event) => emitted.push(event),
     }));
     await vi.waitFor(() => {
@@ -2363,7 +2401,6 @@ describe("codex-app persistent sessions", () => {
       approvalPolicy: "never",
       sandboxPolicy: { type: "readOnly", networkAccess: false },
     });
-    expect(client.requests.some((request) => request.method === "collaborationMode/list")).toBe(false);
     expect(client.requests.some((request) => request.method === "turn/interrupt")).toBe(true);
     expect(client.close).toHaveBeenCalled();
   });
@@ -2514,7 +2551,7 @@ describe("codex-app persistent sessions", () => {
     let setupRequestResult;
     let setupRequestError;
     client.request.mockImplementation(async (method, params) => {
-      if (method === "collaborationMode/list") {
+      if (method === "turn/start") {
         try {
           setupRequestResult = client.serverRequest("mcpServer/elicitation/request", {
             threadId: "thread-stale-child",
@@ -2532,10 +2569,6 @@ describe("codex-app persistent sessions", () => {
     const resumed = await generateCodexAppResponse("SYS", runOptions(factory, {
       sessionId: "thread-resume-setup",
       mcpServers,
-      nativeSubagents: {
-        provider: "codex",
-        teammates: [{ name: "reviewer", description: "Review the change" }],
-      },
     }));
 
     expect(resumed).toMatchObject({ error: null, failureKind: null });
