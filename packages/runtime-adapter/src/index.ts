@@ -1,16 +1,21 @@
 export {
   assertExecutionModeCompatible,
   assertParsedRuntimeModelReference,
+  authenticateAcpProfile,
   createMonoRuntime,
   createPiOAuthApiKeyResolver,
   defaultExecutionModeForModel,
+  deleteAcpSession,
   describeMonoRuntimeSupport,
   isRuntimeExecutionMode,
+  listAcpSessions,
   listMonoRuntimeBackends,
+  logoutAcpProfile,
   modelReferenceKey,
   monoRuntimeSupportsLiveInput,
   monoRuntimeSupportsSessionResume,
   parseMonoRuntimeModelReference,
+  probeAcpProfile,
   runtimeBackendForModel,
   RuntimeAdapterError,
   selectMonoRuntimeBackendId,
@@ -27,6 +32,7 @@ export type {
   RuntimeAdapterErrorDetails,
 } from "./runtime-adapter.js";
 export { discoverClaudeSdkModels } from "@mono-agent/agent-runtime";
+export type { AcpCallbackContext, AcpInteractionRequest, AcpProfileDescriptor } from "@mono-agent/agent-runtime";
 export { CodedError, isCodedError } from "@mono-agent/agent-contracts";
 export {
   isPlainObject,
@@ -100,6 +106,11 @@ export type {
   ModelEffortLevels,
 } from "./local-providers.js";
 export type {
+  MonoAcpControlOptions,
+  MonoAcpInteractionHandler,
+  MonoAcpInteractionRequest,
+  MonoAcpListSessionsRequest,
+  MonoAcpProfileResolver,
   MonoRuntimeApprovalDecision,
   MonoRuntimeApprovalRequest,
   MonoRuntimeBackendCapabilities,

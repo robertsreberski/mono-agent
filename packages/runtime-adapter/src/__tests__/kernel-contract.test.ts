@@ -112,6 +112,8 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
   });
 
   it("the facade RuntimeRunOptions is assignable to createRuntime(...).run's options parameter", () => {
+    expectTypeOf<RuntimeRunOptions["executionMode"]>()
+      .toEqualTypeOf<"sdk" | "cli" | "acp" | undefined>();
     const facade = null as unknown as RuntimeRunComparableOptions;
     assertAssignable<KernelRunOptions>(facade);
   });
