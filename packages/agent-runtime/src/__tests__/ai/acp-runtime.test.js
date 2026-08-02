@@ -118,10 +118,15 @@ describe("ACP runtime bridge", () => {
       expect.objectContaining({ type: "context_usage" }),
     ]));
     expect(streamed).toHaveLength(result.events.length);
+    const sessionUpdates = result.events.filter((event) => event.type === "acp_session_update");
+    expect(sessionUpdates.length).toBeGreaterThan(0);
+    expect(sessionUpdates.every((event) => !Object.hasOwn(event, "sessionId"))).toBe(true);
+    expect(JSON.stringify({ sessionUpdates, streamed })).not.toContain("session-1");
     expect(interaction).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "permission", profileId: "personal-agent" }),
       expect.objectContaining({ profileId: "personal-agent", operation: "permission" }),
     );
+    expect(JSON.stringify(interaction.mock.calls)).not.toContain("session-1");
     expect(resolveAcpProfile).toHaveBeenCalledWith(
       "personal-agent",
       expect.objectContaining({ operation: "run", profileId: "personal-agent" }),

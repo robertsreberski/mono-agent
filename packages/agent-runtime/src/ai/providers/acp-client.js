@@ -83,8 +83,8 @@ const DEFAULT_PROCESS_POLICY = Object.freeze({
  */
 
 /**
- * @typedef {{kind: "permission", profileId: string, payload: import("@agentclientprotocol/sdk").RequestPermissionRequest}
- *   | {kind: "elicitation", profileId: string, payload: import("@agentclientprotocol/sdk").CreateElicitationRequest}} AcpInteractionRequest
+ * @typedef {{kind: "permission", profileId: string, payload: Record<string, unknown>}
+ *   | {kind: "elicitation", profileId: string, payload: Record<string, unknown>}} AcpInteractionRequest
  */
 
 /**
@@ -446,6 +446,20 @@ function elicitationResponse(value) {
   return { action: "cancel" };
 }
 
+/**
+ * The protocol session id is private connection state. Hosts answer through
+ * the pending callback, so exposing the raw id in UI-facing interaction
+ * payloads adds persistence risk without enabling any supported response.
+ * Low-level descriptor callbacks still receive the native SDK request.
+ * @param {unknown} value
+ * @returns {Record<string, unknown>}
+ */
+function hostInteractionPayload(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const { sessionId: _sessionId, ...payload } = /** @type {Record<string, unknown>} */ (value);
+  return payload;
+}
+
 /** @param {any} descriptor @param {AcpClientHostOptions} options @param {string} profileId @param {string} operation */
 function callbackContext(descriptor, options, profileId, operation, extra = {}) {
   return {
@@ -522,7 +536,7 @@ export async function connectAcpProfile(profileId, options) {
         result = await descriptor.clientCallbacks.requestPermission(ctx.params, context);
       } else if (typeof options.onAcpInteractionRequest === "function") {
         result = await options.onAcpInteractionRequest(
-          { kind: "permission", profileId, payload: ctx.params },
+          { kind: "permission", profileId, payload: hostInteractionPayload(ctx.params) },
           context,
         );
       }
@@ -584,7 +598,7 @@ export async function connectAcpProfile(profileId, options) {
           result = await descriptor.clientCallbacks.createElicitation(ctx.params, context);
         } else if (typeof options.onAcpInteractionRequest === "function") {
           result = await options.onAcpInteractionRequest(
-            { kind: "elicitation", profileId, payload: ctx.params },
+            { kind: "elicitation", profileId, payload: hostInteractionPayload(ctx.params) },
             context,
           );
         }

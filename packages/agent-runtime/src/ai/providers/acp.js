@@ -109,7 +109,6 @@ function runtimePrompt(systemPrompt, messages, options) {
 function normalizeUpdate(update, state) {
   const raw = {
     type: "acp_session_update",
-    sessionId: update.sessionId,
     update: jsonSafe(update.update),
   };
   const body = update.update || {};
