@@ -1468,6 +1468,104 @@ describe("codex-app persistent sessions", () => {
     expect(result.text).toBe("PARENT_DONE");
   });
 
+  it("emits the group terminal only after a later-finishing nested descendant", async () => {
+    const factory = stubClientFactory({ threadId: "thread-parent-reverse" });
+    factory.turnPlan.push("manual");
+    const emitted = [];
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, {
+      onEvent: (event) => emitted.push(event),
+    }));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.notify("item/completed", {
+      threadId: "thread-parent-reverse",
+      turnId: "turn-1",
+      item: {
+        id: "spawn-reverse",
+        type: "subAgentActivity",
+        kind: "started",
+        agentThreadId: "thread-primary-reverse",
+        agentPath: "/root/research",
+      },
+    });
+    client.notify("turn/started", {
+      threadId: "thread-primary-reverse",
+      turn: { id: "turn-primary-reverse", status: "inProgress" },
+    });
+    client.notify("item/completed", {
+      threadId: "thread-primary-reverse",
+      turnId: "turn-primary-reverse",
+      item: {
+        id: "spawn-descendant-reverse",
+        type: "subAgentActivity",
+        kind: "started",
+        agentThreadId: "thread-descendant-reverse",
+        agentPath: "/root/research/audit",
+      },
+    });
+    client.notify("turn/started", {
+      threadId: "thread-descendant-reverse",
+      turn: { id: "turn-descendant-reverse", status: "inProgress" },
+    });
+    client.notify("item/completed", {
+      threadId: "thread-primary-reverse",
+      turnId: "turn-primary-reverse",
+      item: { id: "msg-primary-reverse", type: "agentMessage", text: "primary done" },
+    });
+    client.notify("turn/completed", {
+      threadId: "thread-primary-reverse",
+      turn: { id: "turn-primary-reverse", status: "completed" },
+    });
+
+    expect(emitted.some((event) => event.type === "subagent_activity"
+      && event.phase === "agent_completed")).toBe(false);
+
+    client.notify("item/started", {
+      threadId: "thread-descendant-reverse",
+      turnId: "turn-descendant-reverse",
+      item: {
+        id: "read-descendant-reverse",
+        type: "commandExecution",
+        command: "git status --short",
+        status: "inProgress",
+      },
+    });
+    client.notify("item/completed", {
+      threadId: "thread-descendant-reverse",
+      turnId: "turn-descendant-reverse",
+      item: {
+        id: "read-descendant-reverse",
+        type: "commandExecution",
+        command: "git status --short",
+        status: "completed",
+        aggregatedOutput: "clean",
+        exitCode: 0,
+      },
+    });
+    client.notify("turn/completed", {
+      threadId: "thread-descendant-reverse",
+      turn: { id: "turn-descendant-reverse", status: "completed" },
+    });
+    client.finishTurn({ text: "PARENT_DONE" });
+    const result = await pending;
+
+    const activity = result.events.filter((event) => event.type === "subagent_activity");
+    expect(activity.filter((event) => event.phase === "agent_completed")).toHaveLength(1);
+    expect(activity.at(-1)).toMatchObject({
+      phase: "agent_completed",
+      subagent: {
+        id: "spawn-reverse",
+        nativeId: "thread-primary-reverse",
+        name: "research",
+      },
+      content: "primary done",
+    });
+    expect(activity.find((event) => event.id.includes("read-descendant-reverse"))).toMatchObject({
+      subagent: { nativeId: "thread-descendant-reverse", name: "audit" },
+    });
+  });
+
   it("keeps root live-input steering pinned when a child turn starts", async () => {
     const factory = stubClientFactory({ threadId: "thread-parent-steer" });
     factory.turnPlan.push("manual");
@@ -1624,17 +1722,36 @@ describe("codex-app persistent sessions", () => {
         agentPath: "/root/aborted",
       },
     });
+    client.notify("item/started", {
+      threadId: "thread-child-aborted",
+      turnId: "turn-child-aborted",
+      item: {
+        id: "tool-child-aborted",
+        type: "commandExecution",
+        command: "sleep 30",
+        status: "inProgress",
+      },
+    });
     controller.abort();
     const result = await pending;
 
     expect(result.cancelled).toBe(true);
-    const terminal = result.events.filter((event) => event.type === "subagent_activity"
-      && event.phase === "agent_completed");
+    const activity = result.events.filter((event) => event.type === "subagent_activity");
+    const terminal = activity.filter((event) => event.phase === "agent_completed");
     expect(terminal).toHaveLength(1);
     expect(terminal[0]).toMatchObject({
       isError: true,
       content: "Parent Codex turn was cancelled before the subagent completed.",
     });
+    expect(activity.filter((event) => event.id.includes("tool-child-aborted"))).toEqual([
+      expect.objectContaining({ phase: "started" }),
+      expect.objectContaining({
+        phase: "completed",
+        isError: true,
+        content: "Parent Codex turn was cancelled before the subagent completed.",
+      }),
+    ]);
+    expect(activity.at(-1)?.phase).toBe("agent_completed");
   });
 
   it("runs the dedicated no-tool probe read-only and interrupts the first tool action", async () => {

@@ -1470,6 +1470,9 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         finished: false,
         startedAt: Date.now(),
         completedTurns: new Set(),
+        bindings: new Set(),
+        openActivities: new Map(),
+        primaryOutcome: null,
       };
       subagentGroupsBySpawnId.set(id, group);
     } else if (group.prompt === undefined && typeof item.prompt === "string") {
@@ -1493,11 +1496,37 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   }
 
   function emitSubagentActivity(group, binding, activity) {
+    // Once the canonical terminal row is emitted, no late provider frame may
+    // append more activity to that group.
+    if (group.finished && activity.phase !== "agent_completed") return;
+    if (activity.phase === "started" && typeof activity.id === "string") {
+      group.openActivities.set(activity.id, {
+        binding,
+        name: activity.name,
+        startedAt: Date.now(),
+      });
+    } else if (activity.phase === "completed" && typeof activity.id === "string") {
+      group.openActivities.delete(activity.id);
+    }
     emitEvent({
       type: "subagent_activity",
       subagent: metadataForSubagent(group, binding),
       ...activity,
     });
+  }
+
+  function drainOpenSubagentActivities(group, reason, onlyBinding = null) {
+    for (const [id, activity] of [...group.openActivities]) {
+      if (onlyBinding && activity.binding !== onlyBinding) continue;
+      emitSubagentActivity(group, activity.binding, {
+        phase: "completed",
+        id,
+        name: activity.name,
+        isError: true,
+        executionMs: Math.max(0, Date.now() - activity.startedAt),
+        content: safeDiagnostic(reason, 2_000),
+      });
+    }
   }
 
   function ensureSubagentStarted(group, binding = null) {
@@ -1531,11 +1560,19 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   } = {}) {
     if (group.finished) return;
     ensureSubagentStarted(group, binding);
-    group.finished = true;
     const isError = Boolean(error) || codexItemFailed({ status });
     const subagent = metadataForSubagent(group, binding);
     const summary = content
       || (error ? safeDiagnostic(error, 2_000) : `${status || "completed"}`);
+    drainOpenSubagentActivities(
+      group,
+      error
+        ? safeDiagnostic(error, 2_000)
+        : "Codex subagent ended before this activity completed.",
+    );
+    // Mark terminal before invoking host callbacks so even re-entrant provider
+    // frames cannot append an event after this row.
+    group.finished = true;
     emitSubagentActivity(group, binding, {
       phase: "agent_completed",
       id: `agent:${group.id}`,
@@ -1544,6 +1581,21 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       ...(Number.isFinite(executionMs) ? { executionMs } : {}),
       content: safeDiagnostic(summary, 2_000),
     });
+  }
+
+  function maybeFinishSubagentGroup(group) {
+    if (group.finished || !group.primaryOutcome) return;
+    if ([...group.bindings].some((binding) => !binding.terminal)) return;
+    finishSubagentGroup(
+      group,
+      group.primaryOutcome.binding,
+      group.primaryOutcome.outcome,
+    );
+  }
+
+  function recordPrimarySubagentOutcome(group, binding, outcome) {
+    if (!group.primaryOutcome) group.primaryOutcome = { binding, outcome };
+    maybeFinishSubagentGroup(group);
   }
 
   function finalizeOpenSubagents(status, content) {
@@ -1581,16 +1633,24 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         name: undefined,
         lastText: "",
         turnStartedAt: new Map(),
+        turnStates: new Map(),
+        terminal: false,
         usage: null,
       };
       subagentBindingsByThread.set(nativeId, binding);
     }
+    group.bindings.add(binding);
     if (typeof receiver.agentPath === "string" && receiver.agentPath.trim()) {
       binding.agentPath = receiver.agentPath;
       binding.name = codexAgentName(receiver.agentPath, binding.name || group.name);
     }
     if (typeof receiver.name === "string" && receiver.name.trim()) binding.name = receiver.name.trim();
-    if (primary || group.primaryThreadId === null) group.primaryThreadId = nativeId;
+    // A root spawn can report multiple receiver ids. The first is the primary
+    // result source; every additional binding remains part of the same group
+    // and must terminate before the group terminal row is emitted.
+    if (group.primaryThreadId === null && (primary || group.bindings.size === 1)) {
+      group.primaryThreadId = nativeId;
+    }
     ensureSubagentStarted(group, binding);
     flushPendingChildNotifications(nativeId);
     return binding;
@@ -1650,8 +1710,17 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
 
     const kind = String(item.kind || "started");
     if (kind === "interrupted") {
+      if (binding) {
+        for (const turnId of binding.turnStates.keys()) binding.turnStates.set(turnId, "completed");
+        binding.terminal = true;
+        drainOpenSubagentActivities(
+          group,
+          `Codex subagent ${binding.agentPath || binding.nativeId} was interrupted before this activity completed.`,
+          binding,
+        );
+      }
       if (binding?.nativeId === group.primaryThreadId) {
-        finishSubagentGroup(group, binding, {
+        recordPrimarySubagentOutcome(group, binding, {
           status: "interrupted",
           error: `Codex subagent ${binding.agentPath || binding.nativeId} was interrupted`,
         });
@@ -1664,6 +1733,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
           role: "assistant",
           content: `interrupted ${item.agentPath || targetNativeId || "subagent"}`,
         });
+        maybeFinishSubagentGroup(group);
       }
     } else if (kind === "interacted" || sourceBinding) {
       emitSubagentActivity(group, binding || sourceBinding, {
@@ -1804,6 +1874,8 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     if (method === "turn/started") {
       const childTurnId = notificationTurnId(params) || "turn";
       binding.turnStartedAt.set(childTurnId, Date.now());
+      binding.turnStates.set(childTurnId, "running");
+      binding.terminal = false;
       return;
     }
     if (method === "turn/completed") {
@@ -1815,8 +1887,17 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       const error = params.turn?.error?.message || params.turn?.error;
       const startedAt = binding.turnStartedAt.get(childTurnId);
       const executionMs = startedAt === undefined ? undefined : Date.now() - startedAt;
+      binding.turnStates.set(childTurnId, "completed");
+      binding.terminal = [...binding.turnStates.values()].every((state) => state === "completed");
+      drainOpenSubagentActivities(
+        group,
+        error
+          ? safeDiagnostic(error, 2_000)
+          : `Codex subagent turn ${status} before this activity completed.`,
+        binding,
+      );
       if (binding.nativeId === group.primaryThreadId) {
-        finishSubagentGroup(group, binding, {
+        recordPrimarySubagentOutcome(group, binding, {
           status,
           error,
           content: error || binding.lastText || status,
@@ -1831,6 +1912,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
           role: "assistant",
           content: safeDiagnostic(error || `${status} ${binding.agentPath || binding.nativeId}`, 2_000),
         });
+        maybeFinishSubagentGroup(group);
       }
       return;
     }
