@@ -1465,7 +1465,88 @@ describe("codex-app persistent sessions", () => {
     });
     expect(result.events.filter((event) => event.type === "subagent_activity" && event.phase === "agent_completed"))
       .toHaveLength(1);
+    expect(result.capabilitiesUsed).toMatchObject({
+      subagent_invoked: true,
+      native_subagents_used: ["research", "audit"],
+    });
     expect(result.text).toBe("PARENT_DONE");
+  });
+
+  it("retains observed subagent telemetry on a partial transport failure", async () => {
+    const factory = stubClientFactory({ threadId: "thread-subagent-partial" });
+    factory.turnPlan.push("manual");
+    const pending = generateCodexAppResponse("SYS", runOptions(factory));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.notify("item/completed", {
+      threadId: "thread-subagent-partial",
+      turnId: "turn-1",
+      item: {
+        id: "spawn-subagent-partial",
+        type: "subAgentActivity",
+        kind: "started",
+        agentThreadId: "thread-child-partial",
+        agentPath: "/root/research",
+      },
+    });
+    client.resolveClosed(new Error("codex app-server transport died after spawning"));
+    const result = await pending;
+
+    expect(result).toMatchObject({
+      failureKind: "provider_unavailable",
+      diagnostics: {
+        codex_error_code: "codex_app_server_closed",
+        had_partial_progress: true,
+      },
+      capabilitiesUsed: {
+        subagent_invoked: true,
+        native_subagents_used: ["research"],
+      },
+    });
+  });
+
+  it("retains observed subagent telemetry when the provider exits through catch", async () => {
+    const factory = vi.fn(({ onNotification }) => {
+      let resolveClosed;
+      const closed = new Promise((resolve) => { resolveClosed = resolve; });
+      return {
+        closed,
+        request: vi.fn(async (method) => {
+          if (method === "thread/start") return { thread: { id: "thread-subagent-catch" } };
+          if (method === "turn/start") {
+            onNotification({
+              method: "item/completed",
+              params: {
+                threadId: "thread-subagent-catch",
+                item: {
+                  id: "spawn-subagent-catch",
+                  type: "subAgentActivity",
+                  kind: "started",
+                  agentThreadId: "thread-child-catch",
+                  agentPath: "/root/reviewer",
+                },
+              },
+            });
+            throw new Error("turn/start failed after spawning");
+          }
+          return {};
+        }),
+        close: vi.fn(async () => resolveClosed(new Error("codex app-server closed"))),
+      };
+    });
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory));
+
+    expect(result).toMatchObject({
+      failureKind: "provider_unavailable",
+      error: "turn/start failed after spawning",
+      diagnostics: { had_partial_progress: true },
+      capabilitiesUsed: {
+        subagent_invoked: true,
+        native_subagents_used: ["reviewer"],
+      },
+    });
   });
 
   it("emits the group terminal only after a later-finishing nested descendant", async () => {

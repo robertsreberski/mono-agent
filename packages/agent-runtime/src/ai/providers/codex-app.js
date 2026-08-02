@@ -1495,6 +1495,21 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     };
   }
 
+  function observedSubagentCapabilities() {
+    const names = [];
+    const seenNames = new Set();
+    for (const binding of subagentBindingsByThread.values()) {
+      const name = metadataForSubagent(binding.group, binding).name;
+      if (typeof name !== "string" || !name.trim() || seenNames.has(name)) continue;
+      seenNames.add(name);
+      names.push(name);
+    }
+    return {
+      invoked: subagentGroupsBySpawnId.size > 0,
+      names,
+    };
+  }
+
   function emitSubagentActivity(group, binding, activity) {
     // Once the canonical terminal row is emitted, no late provider frame may
     // append more activity to that group.
@@ -2325,6 +2340,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   }
 
   function sessionUnavailableResult(kind, error, codexErrorCode) {
+    const subagentCapabilities = observedSubagentCapabilities();
     return {
       text: null,
       structuredResult: undefined,
@@ -2346,9 +2362,9 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         promptCacheActive: null,
         thinkingEnabled: null,
         structuredOutputEnforced: !!options.outputSchema,
-        subagentInvoked: null,
+        subagentInvoked: subagentCapabilities.invoked,
         mcpServersUsed: Object.keys(options.mcpServers || {}),
-        nativeSubagentsUsed: [],
+        nativeSubagentsUsed: subagentCapabilities.names,
         toolCompactionApplied: false,
         contextCompactionApplied: null,
       }),
@@ -2619,6 +2635,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       cache_creation_tokens: cacheCreationTokens || null,
       cost_usd: costUsd,
     };
+    const subagentCapabilities = observedSubagentCapabilities();
     return {
       text,
       structuredResult: undefined,
@@ -2646,15 +2663,16 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         promptCacheActive: (cachedTokens || 0) > 0 || (cacheCreationTokens || 0) > 0,
         thinkingEnabled: null,
         structuredOutputEnforced: !!options.outputSchema,
-        subagentInvoked: null,
+        subagentInvoked: subagentCapabilities.invoked,
         mcpServersUsed: Object.keys(options.mcpServers || {}),
-        nativeSubagentsUsed: [],
+        nativeSubagentsUsed: subagentCapabilities.names,
         toolCompactionApplied: false,
         contextCompactionApplied: null,
       }),
     };
   } catch (err) {
     if (resumeEntry) codexSessions.delete(resumeSessionId);
+    const subagentCapabilities = observedSubagentCapabilities();
     return {
       text: texts[texts.length - 1] || null,
       structuredResult: undefined,
@@ -2680,9 +2698,9 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         promptCacheActive: null,
         thinkingEnabled: null,
         structuredOutputEnforced: !!options.outputSchema,
-        subagentInvoked: null,
+        subagentInvoked: subagentCapabilities.invoked,
         mcpServersUsed: Object.keys(options.mcpServers || {}),
-        nativeSubagentsUsed: [],
+        nativeSubagentsUsed: subagentCapabilities.names,
         toolCompactionApplied: false,
         contextCompactionApplied: null,
       }),
