@@ -1,0 +1,148 @@
+[
+  {
+    "type": "assistant",
+    "uuid": "cli-parent-tool",
+    "session_id": "cli-session",
+    "parent_tool_use_id": null,
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_cli_parent",
+          "name": "Agent",
+          "input": {
+            "description": "Review the diff",
+            "prompt": "Inspect the changed files",
+            "subagent_type": "reviewer",
+            "run_in_background": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "system",
+    "subtype": "background_tasks_changed",
+    "uuid": "cli-background-level",
+    "session_id": "cli-session",
+    "tasks": [
+      {
+        "task_id": "native-cli-1",
+        "task_type": "local_agent",
+        "description": "Review the diff"
+      }
+    ]
+  },
+  {
+    "type": "system",
+    "subtype": "task_started",
+    "task_id": "native-cli-1",
+    "tool_use_id": "toolu_cli_parent",
+    "description": "Review the diff",
+    "task_type": "local_agent",
+    "subagent_type": "reviewer",
+    "prompt": "Inspect the changed files",
+    "uuid": "cli-task-started",
+    "session_id": "cli-session"
+  },
+  {
+    "type": "assistant",
+    "uuid": "cli-child-assistant",
+    "session_id": "cli-session",
+    "parent_tool_use_id": "toolu_cli_parent",
+    "subagent_type": "reviewer",
+    "message": {
+      "role": "assistant",
+      "content": [
+        { "type": "thinking", "thinking": "Check both files." },
+        { "type": "text", "text": "I am inspecting the changes." },
+        {
+          "type": "tool_use",
+          "id": "toolu_cli_child_read",
+          "name": "Read",
+          "input": { "file_path": "src/a.js" }
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_cli_child_grep",
+          "name": "Grep",
+          "input": { "pattern": "TODO" }
+        }
+      ]
+    }
+  },
+  {
+    "type": "user",
+    "uuid": "cli-child-user",
+    "session_id": "cli-session",
+    "parent_tool_use_id": "toolu_cli_parent",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_cli_child_read",
+          "content": "file contents"
+        },
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_cli_child_grep",
+          "content": "no matches"
+        }
+      ]
+    }
+  },
+  {
+    "type": "user",
+    "uuid": "cli-parent-launch-result",
+    "session_id": "cli-session",
+    "parent_tool_use_id": null,
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_cli_parent",
+          "content": "Async agent launched successfully. The agent is working in the background."
+        }
+      ]
+    }
+  },
+  {
+    "type": "system",
+    "subtype": "task_notification",
+    "task_id": "native-cli-1",
+    "tool_use_id": "toolu_cli_parent",
+    "status": "completed",
+    "output_file": "/tmp/native-cli-1.output",
+    "summary": "Review complete",
+    "usage": {
+      "total_tokens": 123,
+      "tool_uses": 2,
+      "duration_ms": 42
+    },
+    "uuid": "cli-task-completed",
+    "session_id": "cli-session"
+  },
+  {
+    "type": "assistant",
+    "uuid": "cli-parent-answer",
+    "session_id": "cli-session",
+    "parent_tool_use_id": null,
+    "message": {
+      "role": "assistant",
+      "content": [{ "type": "text", "text": "PARENT_DONE" }]
+    }
+  },
+  {
+    "type": "result",
+    "subtype": "success",
+    "result": "PARENT_DONE",
+    "usage": { "input_tokens": 10, "output_tokens": 2 },
+    "duration_ms": 50,
+    "num_turns": 1,
+    "uuid": "cli-result",
+    "session_id": "cli-session"
+  }
+]
