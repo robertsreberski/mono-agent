@@ -41,7 +41,7 @@ export {
 export { parseMcpServers } from "./mcp-servers.js";
 export type { NormalizedMcpServer, NormalizedMcpTransport } from "./mcp-servers.js";
 export { resolveRuntimePolicies } from "./runtime-policies.js";
-export { PI_TRANSPORTS } from "./types.js";
+export { PI_TRANSPORTS, isRuntimeSubagentActivityEvent } from "./types.js";
 export {
   DEFAULT_DENY_WRITE,
   SANDBOX_FALLBACKS,
@@ -137,6 +137,9 @@ export type {
   RuntimePromptOverrides,
   RuntimeResult,
   RuntimeRunOptions,
+  RuntimeSubagentActivityEvent,
+  RuntimeSubagentActivityPhase,
+  RuntimeSubagentIdentity,
   RuntimeToolLimits,
   RuntimeToolOptions,
 } from "./types.js";
