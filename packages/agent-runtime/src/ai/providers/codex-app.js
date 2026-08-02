@@ -1212,6 +1212,11 @@ function contextUsageFromTokenUsage(tokenUsage) {
 }
 
 const noopNotificationHandler = () => {};
+const rejectIdleServerRequest = (request) => {
+  throw new Error(
+    `Codex app-server request arrived while its provider session was idle: ${String(request?.method || "unknown")}`,
+  );
+};
 
 async function closeCodexClient(client) {
   if (!client?.close) return;
@@ -2055,9 +2060,25 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   let abortRequested = false;
   let interruptSent = false;
   // Mutable holder so keep-alive clients can outlive this run: each run
-  // installs its own handleNotification and the bridge restores a no-op
-  // once the session goes idle.
+  // installs its own notification and server-request handlers. The bridge
+  // restores idle handlers once the session is no longer executing a turn.
   const notificationTarget = { handler: handleNotification };
+  function handleServerRequest(request) {
+    const method = typeof request?.method === "string" ? request.method : "unknown";
+    const approval = noToolsProbe
+      ? null
+      : codexConfiguredMcpApprovalResponse(request, configuredMcpServerNames);
+    if (approval) return approval;
+    // A child turn can fail an interaction it cannot service without
+    // terminating the still-active root turn. The app-server receives the
+    // JSON-RPC error and reports the child lifecycle separately.
+    if (rejectUnsupportedChildServerRequest(request, method)) {
+      throw new Error(`Unsupported Codex app-server request: ${method}`);
+    }
+    failUnsupportedServerRequest(method);
+    throw new Error(`Unsupported Codex app-server request: ${method}`);
+  }
+  const serverRequestTarget = { handler: handleServerRequest };
   function createClient() {
     const args = options.codexAppServerArgs !== undefined
       ? options.codexAppServerArgs
@@ -2073,21 +2094,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       onNotification: (notification) => notificationTarget.handler(
         sanitizeCodexNotification(notification, sensitiveValues),
       ),
-      onServerRequest: (request) => {
-        const method = typeof request?.method === "string" ? request.method : "unknown";
-        const approval = noToolsProbe
-          ? null
-          : codexConfiguredMcpApprovalResponse(request, configuredMcpServerNames);
-        if (approval) return approval;
-        // A child turn can fail an interaction it cannot service without
-        // terminating the still-active root turn. The app-server receives the
-        // JSON-RPC error and reports the child lifecycle separately.
-        if (rejectUnsupportedChildServerRequest(request, method)) {
-          throw new Error(`Unsupported Codex app-server request: ${method}`);
-        }
-        failUnsupportedServerRequest(method);
-        throw new Error(`Unsupported Codex app-server request: ${method}`);
-      },
+      onServerRequest: (request) => serverRequestTarget.handler(request),
     });
   }
 
@@ -2312,6 +2319,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       client = resumeEntry.client;
       threadId = resumeEntry.threadId;
       resumeEntry.notificationTarget.handler = handleNotification;
+      resumeEntry.serverRequestTarget.handler = handleServerRequest;
       // Keep the idle TTL from firing while the turn is in flight.
       codexSessions.touch(resumeSessionId, { idleTimeoutMs: sessionTtlMs });
     } else {
@@ -2491,7 +2499,15 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     } else if (keepAlive && threadId && !errorMessage && !failureKind && !options.abortSignal?.aborted) {
       sessionRetained = true;
       notificationTarget.handler = noopNotificationHandler;
-      const entry = { client, threadId, busy: false, notificationTarget, closedTarget: { handler: null } };
+      serverRequestTarget.handler = rejectIdleServerRequest;
+      const entry = {
+        client,
+        threadId,
+        busy: false,
+        notificationTarget,
+        serverRequestTarget,
+        closedTarget: { handler: null },
+      };
       codexSessions.set(threadId, entry, { idleTimeoutMs: sessionTtlMs });
       client.closed.then(() => {
         codexSessions.delete(threadId);
@@ -2614,6 +2630,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     if (resumeEntry) {
       resumeEntry.busy = false;
       resumeEntry.notificationTarget.handler = noopNotificationHandler;
+      resumeEntry.serverRequestTarget.handler = rejectIdleServerRequest;
       resumeEntry.closedTarget.handler = null;
     }
     if (!sessionRetained) await closeCodexClient(client);
