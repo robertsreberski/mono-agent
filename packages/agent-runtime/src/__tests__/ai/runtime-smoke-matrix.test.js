@@ -1,8 +1,7 @@
 // Smoke matrix for the built-in provider bridges.
 //
 // The plan's Phase 7 verification calls for confirming that the runtime path
-// goes through the package for each of: claude-sdk, claude-cli, pi-native, codex-app,
-// opencode-app.
+// goes through the package for each built-in bridge, including ACP v1.
 // We don't spin up the real providers (no API keys, no subprocess); we just
 // resolve each bridge through the public API and assert it loads and exposes
 // the expected execute() entry point.
@@ -17,7 +16,7 @@ import {
 describe("runtime smoke matrix", () => {
   it("registers all built-in bridges", () => {
     const ids = listRuntimeBridges().map((bridge) => bridge.id).sort();
-    expect(ids).toEqual(["claude", "claude-code", "codex-app", "opencode-app", "pi"]);
+    expect(ids).toEqual(["acp-stdio", "claude", "claude-code", "codex-app", "opencode-app", "pi"]);
   });
 
   it("exposes capabilities for each kernel-level sdk family", () => {
@@ -29,9 +28,15 @@ describe("runtime smoke matrix", () => {
       supports_session_resume: false,
       supports_mcp: false,
     });
+    expect(runtimeCapabilities("acp")).toMatchObject({
+      runtime: "acp-stdio",
+      supports_session_resume: true,
+      supports_builtin_tools: false,
+    });
   });
 
   it.each([
+    { case: "ACP v1", model: { sdk: "acp", model: "personal-agent" }, options: { executionMode: "acp" }, expectedId: "acp-stdio" },
     { case: "claude SDK", model: { sdk: "claude", model: "claude-sonnet-4-6" }, options: { executionMode: "sdk" }, expectedId: "claude" },
     { case: "claude CLI", model: { sdk: "claude", model: "claude-sonnet-4-6" }, options: { executionMode: "cli" }, expectedId: "claude-code" },
     { case: "pi SDK", model: { sdk: "pi", provider: "openai", model: "gpt-5.5" }, options: { executionMode: "sdk" }, expectedId: "pi" },

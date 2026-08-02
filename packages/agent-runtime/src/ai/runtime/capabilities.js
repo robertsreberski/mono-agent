@@ -57,6 +57,18 @@ export const RUNTIME_CAPABILITIES = {
     supports_native_subagents: false,
     tool_policy: TOOL_POLICY_ALLOW_ALL_ONLY,
   },
+  acp: {
+    runtime: "acp-stdio",
+    ...COMMON_CAPABILITIES,
+    structured_output: false,
+    supports_session_resume: true,
+    supports_skills: false,
+    supports_builtin_tools: false,
+    supports_live_input: false,
+    supports_native_subagents: false,
+    supports_request_tool_environment: false,
+    tool_policy: TOOL_POLICY_ALLOW_ALL_ONLY,
+  },
 };
 
 export function runtimeCapabilities(sdkOrModel) {

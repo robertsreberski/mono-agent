@@ -8,7 +8,7 @@ import {
 describe("AI runtime bridge registry", () => {
   it("registers SDK and CLI bridges for both provider families", () => {
     expect(listRuntimeBridges().map((bridge) => bridge.id).sort())
-      .toEqual(["claude", "claude-code", "codex-app", "opencode-app", "pi"]);
+      .toEqual(["acp-stdio", "claude", "claude-code", "codex-app", "opencode-app", "pi"]);
   });
 
   it("resolves canonical Pi and Claude model references to SDK bridges by default", async () => {
@@ -33,7 +33,11 @@ describe("AI runtime bridge registry", () => {
     expect(ignoresKnob.execute).toBe(piNativeRuntimeBridge.execute);
   });
 
-  it("routes to CLI bridges when execution_mode='cli'", async () => {
+  it("routes ACP profiles to ACP mode and CLI providers to CLI mode", async () => {
+    await expect(resolveRuntimeBridge({ sdk: "acp", model: "personal-agent" }, { executionMode: "acp" }))
+      .resolves.toMatchObject({ id: "acp-stdio" });
+    await expect(resolveRuntimeBridge({ sdk: "acp", model: "personal-agent" }, { executionMode: "cli" }))
+      .rejects.toThrow(/unsupported sdk/i);
     await expect(resolveRuntimeBridge({ sdk: "claude", model: "claude-sonnet-4-6" }, { executionMode: "cli" }))
       .resolves.toMatchObject({ id: "claude-code" });
     await expect(resolveRuntimeBridge({ sdk: "codex", model: "gpt-5.5" }, { executionMode: "cli" }))
@@ -50,6 +54,14 @@ describe("AI runtime bridge registry", () => {
   });
 
   it("exposes bridge-owned capabilities", () => {
+    expect(runtimeCapabilities("acp")).toMatchObject({
+      kind: "acp",
+      runtime: "acp-stdio",
+      structured_output: false,
+      supports_session_resume: true,
+      supports_builtin_tools: false,
+      tool_policy: "allow_all_only",
+    });
     expect(runtimeCapabilities("pi")).toMatchObject({
       kind: "pi",
       runtime: "pi-agent",
