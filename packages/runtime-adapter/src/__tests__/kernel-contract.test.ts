@@ -143,6 +143,27 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
       .toEqualTypeOf<boolean | undefined>();
   });
 
+  it("types per-attempt tool-policy projection without opening other request fields", () => {
+    const resolution = {
+      policyOptions: {
+        allowedTools: ["*"],
+        disallowedTools: [],
+        permissionMode: "plan",
+      },
+    } satisfies MonoRuntimeAttemptResolution;
+    assertAssignable<MonoRuntimeAttemptResolution>(resolution);
+
+    if (false) {
+      const invalid = {
+        policyOptions: {
+          // @ts-expect-error attempt policy projection cannot replace messages.
+          messages: [],
+        },
+      } satisfies MonoRuntimeAttemptResolution;
+      assertAssignable<MonoRuntimeAttemptResolution>(invalid);
+    }
+  });
+
   it("documents the canonical parent id separately from provider-native subagent ids", () => {
     const event = {
       type: "subagent_activity",
