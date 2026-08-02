@@ -1647,6 +1647,63 @@ describe("codex-app persistent sessions", () => {
     });
   });
 
+  it("binds every receiver before replaying queued child completions", async () => {
+    const factory = stubClientFactory({ threadId: "thread-parent-queued" });
+    factory.turnPlan.push("manual");
+    const pending = generateCodexAppResponse("SYS", runOptions(factory));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    // App-server frames can race ahead of the parent spawn result. Queue both
+    // child terminals first, then reveal that they belong to one spawn group.
+    client.notify("item/completed", {
+      threadId: "thread-primary-queued",
+      turnId: "turn-primary-queued",
+      item: { id: "msg-primary-queued", type: "agentMessage", text: "primary queued" },
+    });
+    client.notify("turn/completed", {
+      threadId: "thread-primary-queued",
+      turn: { id: "turn-primary-queued", status: "completed" },
+    });
+    client.notify("turn/completed", {
+      threadId: "thread-secondary-queued",
+      turn: { id: "turn-secondary-queued", status: "completed" },
+    });
+    client.notify("item/completed", {
+      threadId: "thread-parent-queued",
+      turnId: "turn-1",
+      item: {
+        id: "spawn-queued",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        status: "completed",
+        receiverAgents: [
+          { threadId: "thread-primary-queued", name: "primary" },
+          { threadId: "thread-secondary-queued", name: "secondary" },
+        ],
+      },
+    });
+    client.finishTurn({ text: "PARENT_DONE" });
+    const result = await pending;
+
+    const activity = result.events.filter((event) => event.type === "subagent_activity");
+    expect(activity.map((event) => event.phase)).toEqual([
+      "agent_started",
+      "message",
+      "message",
+      "agent_completed",
+    ]);
+    expect(activity.find((event) => event.kind === "status")).toMatchObject({
+      subagent: { nativeId: "thread-secondary-queued", name: "secondary" },
+      kind: "status",
+    });
+    expect(activity.at(-1)).toMatchObject({
+      subagent: { nativeId: "thread-primary-queued", name: "primary" },
+      phase: "agent_completed",
+      content: "primary queued",
+    });
+  });
+
   it("keeps root live-input steering pinned when a child turn starts", async () => {
     const factory = stubClientFactory({ threadId: "thread-parent-steer" });
     factory.turnPlan.push("manual");
