@@ -8,6 +8,8 @@ import { validateAcpProviderSessionId } from "../../ai/providers/acp-client.js";
 
 const fixture = fileURLToPath(new URL("../fixtures/fake-acp-agent.js", import.meta.url));
 const root = mkdtempSync(join(tmpdir(), "agent-runtime-acp-bridge-"));
+const TOKEN_KEY = Buffer.alloc(32, 0x41);
+const OTHER_TOKEN_KEY = Buffer.alloc(32, 0x42);
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 function descriptor(mode = "normal", overrides = {}) {
@@ -39,6 +41,7 @@ function runOptions(resolveAcpProfile, overrides = {}) {
     messages: [{ role: "user", content: "hello" }],
     abortSignal: new AbortController().signal,
     resolveAcpProfile,
+    acpSessionTokenKey: TOKEN_KEY,
     ...overrides,
   };
 }
@@ -100,8 +103,8 @@ describe("ACP runtime bridge", () => {
     expect(result.thinking).toBe("thinking");
     expect(result.sdk).toBe("acp");
     expect(result.usage).toEqual({ total_tokens: 12, context_window: 1000, cost: null });
-    expect(result.providerSessionId).toMatch(/^acp:v1:personal-agent:/);
-    expect(validateAcpProviderSessionId(result.providerSessionId, "personal-agent"))
+    expect(result.providerSessionId).toMatch(/^acp:v2:personal-agent:/);
+    expect(validateAcpProviderSessionId(result.providerSessionId, "personal-agent", TOKEN_KEY))
       .toBe(result.providerSessionId);
     expect(result.diagnostics).toMatchObject({
       acp_profile_id: "personal-agent",
@@ -135,11 +138,40 @@ describe("ACP runtime bridge", () => {
     );
     expect(JSON.stringify(interaction.mock.calls)).not.toContain("session-1");
     expect(interaction.mock.calls[0][1].requestId).toMatch(/^acp-request:personal-agent:/);
-    expect(interaction.mock.calls[0][1].providerSessionId).toBe(result.providerSessionId);
+    expect(validateAcpProviderSessionId(
+      interaction.mock.calls[0][1].providerSessionId,
+      "personal-agent",
+      TOKEN_KEY,
+    )).toBe(interaction.mock.calls[0][1].providerSessionId);
     expect(resolveAcpProfile).toHaveBeenCalledWith(
       "personal-agent",
       expect.objectContaining({ operation: "run", profileId: "personal-agent" }),
     );
+    expect(resolveAcpProfile.mock.calls[0][1]).not.toHaveProperty("acpSessionTokenKey");
+  });
+
+  it("binds the session-token key from host options", async () => {
+    const resolveAcpProfile = vi.fn(async () => descriptor());
+    const options = runOptions(resolveAcpProfile);
+    delete options.acpSessionTokenKey;
+
+    const result = await createRuntime({ acpSessionTokenKey: TOKEN_KEY }).run("System", options);
+
+    expect(result.error).toBeNull();
+    expect(validateAcpProviderSessionId(result.providerSessionId, "personal-agent", TOKEN_KEY))
+      .toBe(result.providerSessionId);
+  });
+
+  it("rejects a missing session-token key before profile resolution", async () => {
+    const resolveAcpProfile = vi.fn(async () => descriptor());
+    const result = await createRuntime().run("System", runOptions(resolveAcpProfile, {
+      acpSessionTokenKey: undefined,
+    }));
+
+    expect(result.failureKind).toBe("provider_protocol");
+    expect(result.errorDetails).toMatchObject({ acp_error_code: "invalid_token_key" });
+    expect(result.providerSessionId).toBeNull();
+    expect(resolveAcpProfile).not.toHaveBeenCalled();
   });
 
   it("preserves caller content-block order when a resource link precedes text", async () => {
@@ -178,6 +210,26 @@ describe("ACP runtime bridge", () => {
     expect(result.providerSessionId).toBeNull();
     expect(result.diagnostics.acp_session_id_encoded).toBe(false);
     expect(JSON.stringify(result)).not.toContain(raw);
+    expect(resolveAcpProfile).not.toHaveBeenCalled();
+  });
+
+  it("rejects legacy and wrong-key handles before profile resolution", async () => {
+    const first = await createRuntime().run("System", runOptions(async () => descriptor()));
+    const resolveAcpProfile = vi.fn(async () => descriptor());
+    const legacy = `acp:v1:personal-agent:${Buffer.from("session-1").toString("base64url")}`;
+
+    for (const [providerSessionId, acpSessionTokenKey] of [
+      [first.providerSessionId, OTHER_TOKEN_KEY],
+      [legacy, TOKEN_KEY],
+    ]) {
+      const result = await createRuntime().run("System", runOptions(resolveAcpProfile, {
+        providerSessionId,
+        acpSessionTokenKey,
+      }));
+      expect(result.failureKind).toBe("provider_protocol");
+      expect(result.errorDetails).toMatchObject({ acp_error_code: "invalid_session_id" });
+      expect(result.providerSessionId).toBeNull();
+    }
     expect(resolveAcpProfile).not.toHaveBeenCalled();
   });
 

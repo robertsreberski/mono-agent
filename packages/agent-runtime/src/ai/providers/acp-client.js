@@ -21,10 +21,12 @@ import {
   encodeAcpSessionCursor,
   validateAcpProfileId,
   validateAcpProviderSessionId,
+  validateAcpSessionTokenKey,
 } from "./acp-session-tokens.js";
 
 const OWNERS = new Set(["client", "agent"]);
 const RESUME_STRATEGIES = new Set(["auto", "load", "resume"]);
+const TOKEN_FREE_OPERATIONS = new Set(["probe", "authenticate", "logout"]);
 const DEFAULT_PROCESS_POLICY = Object.freeze({
   startupTimeoutMs: 10_000,
   requestTimeoutMs: 60_000,
@@ -136,6 +138,7 @@ const DEFAULT_PROCESS_POLICY = Object.freeze({
  * @property {string} [cwd]
  * @property {AbortSignal} [signal]
  * @property {Record<string, unknown>} [context]
+ * @property {Uint8Array} [acpSessionTokenKey] Host-owned 32-byte key required by operations that emit or consume opaque session handles.
  */
 
 export {
@@ -528,6 +531,9 @@ export async function connectAcpProfile(profileId, options) {
   validateAcpProfileId(profileId);
   throwIfAborted(options?.signal);
   const operation = options?.operation || "connect";
+  if (!TOKEN_FREE_OPERATIONS.has(operation)) {
+    validateAcpSessionTokenKey(options?.acpSessionTokenKey);
+  }
   const descriptor = await resolveProfile(profileId, { ...options, operation });
   throwIfAborted(options?.signal);
   const capabilities = clientCapabilities(descriptor);
@@ -576,7 +582,13 @@ export async function connectAcpProfile(profileId, options) {
   const safeCallbackContext = (context, rawSessionId) => ({
     ...context,
     ...(typeof rawSessionId === "string"
-      ? { providerSessionId: encodeAcpProviderSessionId(profileId, rawSessionId) }
+      ? {
+          providerSessionId: encodeAcpProviderSessionId(
+            profileId,
+            rawSessionId,
+            /** @type {Uint8Array} */ (options.acpSessionTokenKey),
+          ),
+        }
       : {}),
     ...(context.requestId === undefined
       ? {}
@@ -1013,15 +1025,15 @@ function validateMcpServers(servers, descriptor, initializeResult) {
   });
 }
 
-/** @param {string} profileId @param {any} request */
-function protocolSessionListRequest(profileId, request) {
+/** @param {string} profileId @param {any} request @param {Uint8Array} key */
+function protocolSessionListRequest(profileId, request, key) {
   if (!request || typeof request !== "object" || Array.isArray(request)) {
     throw new AcpClientError("invalid_request", "ACP session/list request must be an object.");
   }
   const { cursor, _meta: _meta, ...rest } = request;
   return {
     ...rest,
-    ...(cursor == null ? {} : { cursor: decodeAcpSessionCursor(profileId, cursor) }),
+    ...(cursor == null ? {} : { cursor: decodeAcpSessionCursor(profileId, cursor, key) }),
   };
 }
 
@@ -1093,7 +1105,8 @@ export async function logoutAcpProfile(profileId, options) {
  * @returns {Promise<AcpSessionListResult>}
  */
 export async function listAcpSessions(profileId, request = {}, options = /** @type {any} */ ({})) {
-  const protocolRequest = protocolSessionListRequest(profileId, request);
+  const key = validateAcpSessionTokenKey(options?.acpSessionTokenKey);
+  const protocolRequest = protocolSessionListRequest(profileId, request, key);
   const connection = await connectAcpProfile(profileId, { ...options, operation: "list_sessions" });
   try {
     const result = await connection.listSessions(protocolRequest);
@@ -1101,10 +1114,10 @@ export async function listAcpSessions(profileId, request = {}, options = /** @ty
       profileId,
       sessions: (result.sessions || []).map((session) => ({
         ...sanitizeAcpHostValue(session, [session.sessionId, result.nextCursor]),
-        providerSessionId: encodeAcpProviderSessionId(profileId, session.sessionId),
+        providerSessionId: encodeAcpProviderSessionId(profileId, session.sessionId, key),
       })),
       nextCursor: typeof result.nextCursor === "string"
-        ? encodeAcpSessionCursor(profileId, result.nextCursor)
+        ? encodeAcpSessionCursor(profileId, result.nextCursor, key)
         : null,
     };
   } finally {
@@ -1114,7 +1127,8 @@ export async function listAcpSessions(profileId, request = {}, options = /** @ty
 
 /** @param {string} providerSessionId @param {AcpClientHostOptions} options */
 export async function deleteAcpSession(providerSessionId, options) {
-  const { profileId, sessionId } = decodeAcpProviderSessionId(providerSessionId);
+  const key = validateAcpSessionTokenKey(options?.acpSessionTokenKey);
+  const { profileId, sessionId } = decodeAcpProviderSessionId(providerSessionId, key);
   const connection = await connectAcpProfile(profileId, { ...options, operation: "delete_session" });
   try {
     await connection.deleteSession(sessionId);

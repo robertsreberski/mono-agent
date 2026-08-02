@@ -11,6 +11,7 @@ import {
   decodeAcpProviderSessionId,
   encodeAcpProviderSessionId,
   validateAcpProviderSessionId,
+  validateAcpSessionTokenKey,
 } from "./acp-session-tokens.js";
 import {
   ownAcpSessionUpdateKind,
@@ -288,8 +289,8 @@ function selectValues(options) {
   return values;
 }
 
-/** @param {any} connection @param {any} descriptor @param {any} req @param {string} profileId @param {(notification:any)=>void} onUpdate */
-async function openSession(connection, descriptor, req, profileId, onUpdate) {
+/** @param {any} connection @param {any} descriptor @param {any} req @param {string} profileId @param {Uint8Array} key @param {(notification:any)=>void} onUpdate */
+async function openSession(connection, descriptor, req, profileId, key, onUpdate) {
   const cwd = workspaceFor(descriptor, req);
   const config = sessionConfig(descriptor);
   const baseRequest = { cwd, ...config };
@@ -297,7 +298,7 @@ async function openSession(connection, descriptor, req, profileId, onUpdate) {
     const response = await connection.newSession(baseRequest);
     return { sessionId: response.sessionId, response, resumed: false, resumeMethod: null };
   }
-  const decoded = decodeAcpProviderSessionId(req.providerSessionId);
+  const decoded = decodeAcpProviderSessionId(req.providerSessionId, key);
   if (decoded.profileId !== profileId) {
     throw new AcpClientError("invalid_session_id", "ACP provider session belongs to a different profile.");
   }
@@ -369,8 +370,13 @@ export async function generateAcpResponse(systemPrompt, req) {
   let setup = null;
   let configuration = { modeApplied: false, configOptionsApplied: [] };
   try {
+    const sessionTokenKey = validateAcpSessionTokenKey(req?.acpSessionTokenKey);
     if (req?.providerSessionId != null) {
-      providerSessionId = validateAcpProviderSessionId(req.providerSessionId, profileId);
+      providerSessionId = validateAcpProviderSessionId(
+        req.providerSessionId,
+        profileId,
+        sessionTokenKey,
+      );
     }
     connection = await connectAcpProfile(profileId, {
       resolveAcpProfile: req.resolveAcpProfile,
@@ -382,6 +388,7 @@ export async function generateAcpResponse(systemPrompt, req) {
       signal: req.abortSignal,
       context: { operation: "run", model: reference },
       operation: "run",
+      acpSessionTokenKey: sessionTokenKey,
     });
     capture({
       type: "capabilities_resolved",
@@ -395,9 +402,18 @@ export async function generateAcpResponse(systemPrompt, req) {
     const onUpdate = (notification) => {
       for (const event of normalizeUpdate(notification, state)) capture(event);
     };
-    setup = await openSession(connection, connection.descriptor, req, profileId, onUpdate);
+    setup = await openSession(
+      connection,
+      connection.descriptor,
+      req,
+      profileId,
+      sessionTokenKey,
+      onUpdate,
+    );
     sessionId = setup.sessionId;
-    providerSessionId = encodeAcpProviderSessionId(profileId, sessionId);
+    providerSessionId = setup.resumed && providerSessionId
+      ? providerSessionId
+      : encodeAcpProviderSessionId(profileId, sessionId, sessionTokenKey);
     configuration = await applyClientConfiguration(
       connection,
       sessionId,

@@ -14,9 +14,12 @@ import {
   probeAcpProfile,
   validateAcpProviderSessionId,
 } from "../../ai/providers/acp-client.js";
+import { encodeAcpSessionCursor } from "../../ai/providers/acp-session-tokens.js";
 
 const fixture = fileURLToPath(new URL("../fixtures/fake-acp-agent.js", import.meta.url));
 const root = mkdtempSync(join(tmpdir(), "agent-runtime-acp-client-"));
+const TOKEN_KEY = Buffer.alloc(32, 0x31);
+const OTHER_TOKEN_KEY = Buffer.alloc(32, 0x32);
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 function profile(mode = "normal", overrides = {}) {
@@ -41,16 +44,23 @@ function profile(mode = "normal", overrides = {}) {
 }
 
 function host(descriptor) {
-  return { resolveAcpProfile: vi.fn(async () => descriptor) };
+  return {
+    resolveAcpProfile: vi.fn(async () => descriptor),
+    acpSessionTokenKey: TOKEN_KEY,
+  };
 }
 
 describe("ACP provider session ids", () => {
-  it("validates exact canonical acp:v1 handles without exposing the raw id", () => {
-    const encoded = encodeAcpProviderSessionId("personal-agent", "session:/with unicode/Ł");
-    expect(encoded).toMatch(/^acp:v1:personal-agent:[A-Za-z0-9_-]+$/);
+  it("validates authenticated acp:v2 handles without exposing the raw id", () => {
+    const encoded = encodeAcpProviderSessionId(
+      "personal-agent",
+      "session:/with unicode/Ł",
+      TOKEN_KEY,
+    );
+    expect(encoded).toMatch(/^acp:v2:personal-agent:[A-Za-z0-9_-]+$/);
     expect(encoded).not.toContain("session:/with unicode/Ł");
-    expect(validateAcpProviderSessionId(encoded, "personal-agent")).toBe(encoded);
-    expect(() => validateAcpProviderSessionId(encoded, "another-agent"))
+    expect(validateAcpProviderSessionId(encoded, "personal-agent", TOKEN_KEY)).toBe(encoded);
+    expect(() => validateAcpProviderSessionId(encoded, "another-agent", TOKEN_KEY))
       .toThrow(AcpClientError);
   });
 
@@ -60,11 +70,19 @@ describe("ACP provider session ids", () => {
     "acp:v2:profile:c2Vzc2lvbg",
     "session",
   ])("rejects non-canonical composite id %s", (value) => {
-    expect(() => validateAcpProviderSessionId(value, "profile")).toThrow(AcpClientError);
+    expect(() => validateAcpProviderSessionId(value, "profile", TOKEN_KEY)).toThrow(AcpClientError);
   });
 });
 
 describe("ACP v1 client lifecycle", () => {
+  it("requires a token key before resolving profiles for handle-bearing connections", async () => {
+    const resolveAcpProfile = vi.fn(async () => profile());
+
+    await expect(connectAcpProfile("personal-agent", { resolveAcpProfile }))
+      .rejects.toMatchObject({ code: "invalid_token_key" });
+    expect(resolveAcpProfile).not.toHaveBeenCalled();
+  });
+
   it("rejects relative profile commands before spawning", async () => {
     await expect(connectAcpProfile("invalid", host(profile("normal", { command: "node" }))))
       .rejects.toMatchObject({ code: "invalid_profile" });
@@ -77,6 +95,7 @@ describe("ACP v1 client lifecycle", () => {
     const controller = new AbortController();
     const connection = connectAcpProfile("cancelled-resolve", {
       resolveAcpProfile,
+      acpSessionTokenKey: TOKEN_KEY,
       signal: controller.signal,
       sandbox: { prepareCommand },
     });
@@ -190,7 +209,7 @@ describe("ACP v1 client lifecycle", () => {
       expect(requestPermission.mock.calls[0][0]).not.toHaveProperty("_meta");
       expect(requestPermission.mock.calls[0][1].requestId).toMatch(/^acp-request:personal-agent:/);
       expect(requestPermission.mock.calls[0][1].providerSessionId)
-        .toMatch(/^acp:v1:personal-agent:/);
+        .toMatch(/^acp:v2:personal-agent:/);
       expect(createElicitation).toHaveBeenCalledWith(
         expect.objectContaining({
           mode: "form",
@@ -200,7 +219,7 @@ describe("ACP v1 client lifecycle", () => {
           profileId: "personal-agent",
           operation: "elicitation",
           requestId: expect.stringMatching(/^acp-request:personal-agent:/),
-          providerSessionId: expect.stringMatching(/^acp:v1:personal-agent:/),
+          providerSessionId: expect.stringMatching(/^acp:v2:personal-agent:/),
         }),
       );
       expect(sessionUpdate).toHaveBeenCalled();
@@ -209,12 +228,12 @@ describe("ACP v1 client lifecycle", () => {
       }));
       expect(sessionUpdate.mock.calls[0][0]).not.toHaveProperty("providerSessionId");
       expect(sessionUpdate.mock.calls[0][1].providerSessionId)
-        .toMatch(/^acp:v1:personal-agent:/);
+        .toMatch(/^acp:v2:personal-agent:/);
       expect(writeTextFile).toHaveBeenCalledWith(
         expect.objectContaining({ path: "/tmp/[redacted]", content: "callback content" }),
         expect.objectContaining({
           operation: "write_text_file",
-          providerSessionId: expect.stringMatching(/^acp:v1:personal-agent:/),
+          providerSessionId: expect.stringMatching(/^acp:v2:personal-agent:/),
           requestId: expect.stringMatching(/^acp-request:personal-agent:/),
         }),
       );
@@ -230,7 +249,7 @@ describe("ACP v1 client lifecycle", () => {
         expect(callback).toHaveBeenCalledWith(
           expect.objectContaining({ terminalId: "terminal-1" }),
           expect.objectContaining({
-            providerSessionId: expect.stringMatching(/^acp:v1:personal-agent:/),
+            providerSessionId: expect.stringMatching(/^acp:v2:personal-agent:/),
             requestId: expect.stringMatching(/^acp-request:personal-agent:/),
           }),
         );
@@ -293,7 +312,7 @@ describe("ACP v1 client lifecycle", () => {
       sessions: [],
       nextCursor: null,
     });
-    const providerSessionId = encodeAcpProviderSessionId("personal-agent", "session-1");
+    const providerSessionId = encodeAcpProviderSessionId("personal-agent", "session-1", TOKEN_KEY);
     await expect(deleteAcpSession(providerSessionId, options)).resolves.toEqual({
       profileId: "personal-agent",
       providerSessionId,
@@ -364,19 +383,19 @@ describe("ACP v1 client lifecycle", () => {
     const first = await listAcpSessions("personal-agent", {}, options);
 
     expect(first.sessions).toEqual([expect.objectContaining({
-      providerSessionId: expect.stringMatching(/^acp:v1:personal-agent:/),
+      providerSessionId: expect.stringMatching(/^acp:v2:personal-agent:/),
       cwd: "/tmp/[redacted]",
       title: "First [redacted]",
     })]);
     expect(first.sessions[0]).not.toHaveProperty("sessionId");
     expect(first.sessions[0]).not.toHaveProperty("_meta");
-    expect(first.nextCursor).toMatch(/^acp-cursor:v1:personal-agent:/);
+    expect(first.nextCursor).toMatch(/^acp-cursor:v2:personal-agent:/);
     expect(JSON.stringify(first)).not.toContain("raw-private-session-1");
     expect(JSON.stringify(first)).not.toContain("raw-private-cursor-1");
 
     const second = await listAcpSessions("personal-agent", { cursor: first.nextCursor }, options);
     expect(second.sessions).toEqual([expect.objectContaining({
-      providerSessionId: expect.stringMatching(/^acp:v1:personal-agent:/),
+      providerSessionId: expect.stringMatching(/^acp:v2:personal-agent:/),
       cwd: "/tmp/[redacted]",
       title: "Second [redacted]",
     })]);
@@ -388,12 +407,35 @@ describe("ACP v1 client lifecycle", () => {
     const resolveAcpProfile = vi.fn(async () => profile("privacy-list"));
     for (const cursor of [
       "raw-private-cursor-1",
-      "acp-cursor:v1:other-agent:bmV4dA",
+      encodeAcpSessionCursor("other-agent", "next", TOKEN_KEY),
       "acp-cursor:v1:personal-agent:bmV4dA==",
     ]) {
-      await expect(listAcpSessions("personal-agent", { cursor }, { resolveAcpProfile }))
+      await expect(listAcpSessions("personal-agent", { cursor }, {
+        resolveAcpProfile,
+        acpSessionTokenKey: TOKEN_KEY,
+      }))
         .rejects.toMatchObject({ code: "invalid_cursor" });
     }
+    expect(resolveAcpProfile).not.toHaveBeenCalled();
+  });
+
+  it("rejects wrong-key and legacy session handles before delete spawns", async () => {
+    const resolveAcpProfile = vi.fn(async () => profile());
+    const providerSessionId = encodeAcpProviderSessionId(
+      "personal-agent",
+      "session-1",
+      TOKEN_KEY,
+    );
+    const legacy = `acp:v1:personal-agent:${Buffer.from("session-1").toString("base64url")}`;
+
+    await expect(deleteAcpSession(providerSessionId, {
+      resolveAcpProfile,
+      acpSessionTokenKey: OTHER_TOKEN_KEY,
+    })).rejects.toMatchObject({ code: "invalid_session_id" });
+    await expect(deleteAcpSession(legacy, {
+      resolveAcpProfile,
+      acpSessionTokenKey: TOKEN_KEY,
+    })).rejects.toMatchObject({ code: "invalid_session_id" });
     expect(resolveAcpProfile).not.toHaveBeenCalled();
   });
 
