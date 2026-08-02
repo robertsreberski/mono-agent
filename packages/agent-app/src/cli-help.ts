@@ -234,7 +234,7 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     signature: "mono-agent bridge acp --source-id <id> [--require-tool-environment]\n" +
       "                  bridge acp --discover",
     lines: [
-      "Run a stable ACP v1 stdio adapter for one exact running trace source.",
+      "Run the ACP v1 core-session profile for one exact running trace source.",
       "The selected instance keeps its own model, workspace, sandbox, tools, MCP",
       "servers, and durable conversation history. Diagnostics use stderr; stdout",
       "is reserved for newline-delimited ACP JSON-RPC messages.",
