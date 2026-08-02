@@ -89,8 +89,7 @@ the [architecture guide](https://github.com/robertsreberski/mono-agent/blob/main
 | API | Use it for |
 | --- | --- |
 | `createRuntime()` | Run one model bridge with host-owned credentials, observers, tools, and lifecycle callbacks |
-| `connectAcpProfile()` | Open one strict, bounded ACP v1 stdio client connection from a host-resolved profile |
-| `probeAcpProfile()` / ACP management helpers | Probe, authenticate, log out, list sessions, or delete an encoded ACP provider session |
+| `probeAcpProfile()` / ACP management helpers | Probe, authenticate, log out, list sessions, validate opaque handles, or delete an ACP provider session |
 | `createRouterRuntime()` | Retry an ordered model chain while preserving explicit route-safety contracts |
 | `parseRuntimeModelReference()` | Convert a canonical `acp:`, `claude:`, `codex:`, `opencode:`, or `pi:` string into the object required by `run()` |
 | `listRuntimeBridges()` / `runtimeCapabilities()` | Inspect the six built-in bridge descriptors without loading provider implementations |
@@ -120,7 +119,9 @@ AcpCallbackContext
 AcpClientError
 AcpClientHostOptions
 AcpInteractionRequest
+AcpListedSession
 AcpProfileDescriptor
+AcpSessionListResult
 BINARY_BLOAT_TOOLS
 BridgeSpec
 CLAUDE_SDK_CATALOG_VERSION
@@ -141,7 +142,6 @@ buildCapabilitiesUsed
 buildTranscriptTailSnapshot
 canonicalizeLegacyModelReference
 configureToolRuntime
-connectAcpProfile
 createApprovalManager
 createClaudeSdkDiscoveryIsolation
 createMetricsObserver
@@ -151,12 +151,10 @@ createRouterRuntime
 createRuntime
 createSessionRegistry
 curatedClaudeSdkModels
-decodeAcpProviderSessionId
 deleteAcpSession
 discoverClaudeSdkModels
 disposeAllProviderSessions
 disposeProviderSession
-encodeAcpProviderSessionId
 executionModeIncompatibilityReason
 generateAcpResponse
 generatePiNativeResponse
@@ -197,6 +195,7 @@ storedAllowlistMode
 syncProviderSession
 toolCompactionAppliedFromWarnings
 validateAcpProfileId
+validateAcpProviderSessionId
 wrapToolsWithApprovalGate
 ```
 
@@ -327,7 +326,9 @@ AcpCallbackContext
 AcpClientError
 AcpClientHostOptions
 AcpInteractionRequest
+AcpListedSession
 AcpProfileDescriptor
+AcpSessionListResult
 BridgeSpec
 CLAUDE_SDK_CATALOG_VERSION
 RESERVED_RUNTIME_KINDS
@@ -341,18 +342,15 @@ acpRuntimeBridge
 authenticateAcpProfile
 buildCapabilitiesUsed
 canonicalizeLegacyModelReference
-connectAcpProfile
 createClaudeSdkDiscoveryIsolation
 createMetricsObserver
 createObserverHub
 createSessionRegistry
 curatedClaudeSdkModels
-decodeAcpProviderSessionId
 deleteAcpSession
 discoverClaudeSdkModels
 disposeAllProviderSessions
 disposeProviderSession
-encodeAcpProviderSessionId
 executionModeIncompatibilityReason
 generateAcpResponse
 generatePiNativeResponse
@@ -379,6 +377,7 @@ sdkFromModelReference
 syncProviderSession
 toolCompactionAppliedFromWarnings
 validateAcpProfileId
+validateAcpProviderSessionId
 ```
 
 **`@mono-agent/agent-runtime/ai/cost.js`**
@@ -424,26 +423,6 @@ statsForCompletedChange
 
 ```text
 formatLiveInputGuidance
-```
-
-**`@mono-agent/agent-runtime/ai/providers/acp-client.js`**
-
-```text
-ACP_PROTOCOL_VERSION
-AcpCallbackContext
-AcpClientError
-AcpClientHostOptions
-AcpInteractionRequest
-AcpProfileDescriptor
-authenticateAcpProfile
-connectAcpProfile
-decodeAcpProviderSessionId
-deleteAcpSession
-encodeAcpProviderSessionId
-listAcpSessions
-logoutAcpProfile
-probeAcpProfile
-validateAcpProfileId
 ```
 
 **`@mono-agent/agent-runtime/ai/providers/acp.js`**
@@ -627,12 +606,15 @@ facade injects mono-agent's real sandbox implementation; direct kernel callers
 must provide their own when policy requires it. Every owned stdio bridge is
 closed after the operation with stdin close, TERM, then bounded KILL escalation.
 
-ACP provider sessions use
-`acp:v1:<profile-id>:<base64url-session-id>`. Under the default `auto` recovery
-policy, the client prefers `session/resume`, then `session/load`, and finally a
-fresh session when neither capability is advertised. Explicit `resume` or
-`load` policies fail closed if missing. Stable usage comes from the latest
-typed `usage_update` notification; unstable `PromptResponse.usage` is ignored.
+ACP provider-session ids and list cursors are opaque, profile-bound runtime
+handles. Preserve them byte-for-byte and pass them back only to the matching
+high-level resume, list, validation, or delete operation; raw protocol session
+ids, cursors, and transport connections are private runtime state. Under the
+default `auto` recovery policy, the client prefers `session/resume`, then
+`session/load`, and finally a fresh session when neither capability is
+advertised. Explicit `resume` or `load` policies fail closed if missing. Stable
+usage comes from the latest typed `usage_update` notification; unstable
+`PromptResponse.usage` is ignored.
 
 ### `createRuntime(host)`
 
@@ -1092,7 +1074,6 @@ import { classifyFailure, FAILURE_KINDS } from "@mono-agent/agent-runtime/ai/fai
 import { resolvePricing, estimateCost } from "@mono-agent/agent-runtime/ai/cost.js";
 import { resolveAgentCompactionPolicy, isLikelyContextTermination } from "@mono-agent/agent-runtime/agent/compaction.js";
 import { configureToolRuntime, readToolRuntime } from "@mono-agent/agent-runtime/agent/tools/shared/runtime-context.js";
-import { connectAcpProfile, probeAcpProfile } from "@mono-agent/agent-runtime/ai/providers/acp-client.js";
 // see package.json "exports" for the full mapped set
 ```
 
