@@ -70,29 +70,36 @@ function runtimePrompt(systemPrompt, messages, options) {
       })();
   /** @type {any[]} */
   const blocks = [];
-  const preface = [];
-  if (options.includeSystem && systemPrompt.trim()) preface.push(`[System]\n${systemPrompt}`);
+  if (options.includeSystem && systemPrompt.trim()) {
+    blocks.push({ type: "text", text: `[System]\n${systemPrompt}` });
+  }
 
   selected.forEach((message, messageIndex) => {
     const role = typeof message?.role === "string" ? message.role : "user";
     const content = message?.content;
     if (Array.isArray(content)) {
-      const textBlocks = content.filter((block) => block?.type === "text");
-      if (textBlocks.length > 0) {
-        const joined = textBlocks.map((block) => block.text || "").join("");
-        preface.push(`[${role}]\n${joined}`);
-      }
+      let labelled = false;
       for (const block of content) {
-        if (block?.type === "text") continue;
         const normalized = normalizePromptBlock(block, options.promptCapabilities);
-        if (normalized) blocks.push(normalized);
+        if (!normalized) continue;
+        if (normalized.type === "text") {
+          blocks.push({
+            ...normalized,
+            text: `${labelled ? "" : `[${role}]\n`}${normalized.text}`,
+          });
+          labelled = true;
+        } else {
+          blocks.push(normalized);
+        }
       }
+      if (content.length === 0) blocks.push({ type: "text", text: `[${role}]\n` });
       return;
     }
     const text = textFromContent(content);
-    if (text || messageIndex === selected.length - 1) preface.push(`[${role}]\n${text}`);
+    if (text || messageIndex === selected.length - 1) {
+      blocks.push({ type: "text", text: `[${role}]\n${text}` });
+    }
   });
-  if (preface.length > 0) blocks.unshift({ type: "text", text: preface.join("\n\n") });
   if (blocks.length === 0) blocks.push({ type: "text", text: "" });
   return blocks;
 }

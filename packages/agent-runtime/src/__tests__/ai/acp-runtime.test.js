@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -126,6 +126,31 @@ describe("ACP runtime bridge", () => {
       "personal-agent",
       expect.objectContaining({ operation: "run", profileId: "personal-agent" }),
     );
+  });
+
+  it("preserves caller content-block order when a resource link precedes text", async () => {
+    const promptFile = join(root, "ordered-prompt.json");
+    const result = await createRuntime().run("System", runOptions(async () => descriptor("normal", {
+      env: {
+        FAKE_ACP_MODE: "normal",
+        FAKE_ACP_PROMPT_FILE: promptFile,
+      },
+    }), {
+      messages: [{
+        role: "user",
+        content: [
+          { type: "resource_link", uri: "file:///tmp/first.txt", name: "first" },
+          { type: "text", text: "second" },
+        ],
+      }],
+    }));
+
+    expect(result.error).toBeNull();
+    expect(JSON.parse(readFileSync(promptFile, "utf8"))).toEqual([
+      { type: "text", text: "[System]\nSystem" },
+      { type: "resource_link", uri: "file:///tmp/first.txt", name: "first" },
+      { type: "text", text: "[user]\nsecond" },
+    ]);
   });
 
   it("capability-gates and resumes the decoded provider session on a fresh stdio bridge", async () => {
