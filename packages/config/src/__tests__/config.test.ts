@@ -854,6 +854,34 @@ describe("loadMonoAgentConfig", () => {
     }));
   });
 
+  it.each([
+    ["explicitly disabled", false],
+    ["disabled by default", undefined],
+  ])("ignores ACP routes in a $label subagent block", (_label, enabled) => {
+    const subagents = {
+      ...(enabled === undefined ? {} : { enabled }),
+      definitions: [{
+        name: "acp-helper",
+        description: "Dormant external ACP profile.",
+        prompt: "Help with the task.",
+        model: "acp:worklab-profile",
+      }],
+    };
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_SUBAGENTS_JSON: JSON.stringify(subagents),
+      },
+    });
+
+    expect(config.subagents?.enabled).toBe(enabled);
+    expect(config.subagents?.definitions?.[0]?.model).toMatchObject({
+      sdk: "acp",
+      model: "worklab-profile",
+    });
+  });
+
   it("redacts core config without adapter-specific sections", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",

@@ -716,13 +716,15 @@ function assertNoStaticAcpRoutes(
       env: "MONO_AGENT_FALLBACKS_JSON",
     })),
   ];
-  for (const [index, definition] of (subagents?.definitions || []).entries()) {
-    if (definition.model === undefined) continue;
-    routes.push({
-      model: definition.model,
-      path: `subagents.definitions[${index}].model`,
-      env: "MONO_AGENT_SUBAGENTS_JSON",
-    });
+  if (subagents?.enabled === true) {
+    for (const [index, definition] of (subagents.definitions || []).entries()) {
+      if (definition.model === undefined) continue;
+      routes.push({
+        model: definition.model,
+        path: `subagents.definitions[${index}].model`,
+        env: "MONO_AGENT_SUBAGENTS_JSON",
+      });
+    }
   }
   const route = routes.find((candidate) => candidate.model.sdk === "acp");
   if (route === undefined) return;
