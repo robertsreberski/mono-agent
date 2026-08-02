@@ -63,6 +63,10 @@ settings remain in force. For Codex app-server runs,
 document defaults; omitted/false disables automatic discovery with
 `project_doc_max_bytes=0`. Explicit `codexAppServerArgs` remain authoritative.
 
+For heterogeneous fallback chains, `resolveAttempt().policyOptions` may project
+only `allowedTools`, `disallowedTools`, and `permissionMode` for the runtime
+actually being attempted. Other logical request fields remain protected.
+
 ## Architecture
 
 `runtime-adapter` is the typed boundary between harness code and the JavaScript

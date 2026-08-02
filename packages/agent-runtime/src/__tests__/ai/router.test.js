@@ -830,6 +830,41 @@ describe("createRouterRuntime — production fallback contracts", () => {
     expect(JSON.stringify(result)).not.toContain("wrong-secret");
   });
 
+  it("projects the logical tool policy separately for each attempted provider", async () => {
+    executeMock
+      .mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false })
+      .mockResolvedValueOnce({ text: "fallback ok", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "codex", model: "gpt-5.5" },
+        { sdk: "claude", model: "claude-sonnet-4-6" },
+      ],
+      resolveAttempt: ({ model }) => ({
+        policyOptions: model.sdk === "codex"
+          ? { allowedTools: ["*"], disallowedTools: [], permissionMode: "plan" }
+          : { allowedTools: ["Read", "Agent"], disallowedTools: ["Write"], permissionMode: undefined },
+      }),
+    });
+
+    const result = await router.run("sys", {
+      messages: [],
+      allowedTools: ["Read", "Agent"],
+      disallowedTools: ["Write"],
+    });
+
+    expect(result.text).toBe("fallback ok");
+    expect(executeMock.mock.calls[0][1]).toMatchObject({
+      allowedTools: ["*"],
+      disallowedTools: [],
+      permissionMode: "plan",
+    });
+    expect(executeMock.mock.calls[1][1]).toMatchObject({
+      allowedTools: ["Read", "Agent"],
+      disallowedTools: ["Write"],
+    });
+    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("permissionMode");
+  });
+
   it("keeps primary run-level custom metadata for compatibility but scrubs every fallback without a resolver", async () => {
     executeMock
       .mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false })

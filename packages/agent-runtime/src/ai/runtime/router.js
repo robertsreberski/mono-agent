@@ -85,6 +85,9 @@ import { instrumentLiveInputAppliedEvents } from "./live-input-events.js";
  * Returned options are never copied into router telemetry.
  * @property {AgentRuntimeInstance} [runtime]
  * @property {Object<string, *>} [options]
+ * @property {{allowedTools?: ReadonlyArray<string>, disallowedTools?: ReadonlyArray<string>, permissionMode?: string}} [policyOptions]
+ * Provider-specific projection of the logical tool policy. This deliberately
+ * cannot replace any other protected request field.
  * @property {() => (void|Promise<void>)} [cleanup]
  */
 
@@ -243,6 +246,7 @@ export function createRouterRuntime({ host = {}, chain = [], routeSafety = "unif
             attemptCleanup = resolution?.cleanup;
             if (resolveAttempt !== undefined) {
               callOptions = mergeAttemptOptions(callOptions, resolution?.options);
+              callOptions = mergeAttemptPolicyOptions(callOptions, resolution?.policyOptions);
             }
             if (routeSafety === "per-route-native") {
               callOptions = projectPerRouteNativeOptions(entry, callOptions);
@@ -804,6 +808,33 @@ function normalizeAttemptResolution(value) {
   if (value.cleanup !== undefined && typeof value.cleanup !== "function") {
     throw new Error("route attempt resolver cleanup must be a function");
   }
+  return {
+    ...value,
+    ...(value.policyOptions === undefined
+      ? {}
+      : { policyOptions: normalizeAttemptPolicyOptions(value.policyOptions) }),
+  };
+}
+
+const ATTEMPT_POLICY_OPTION_KEYS = new Set(["allowedTools", "disallowedTools", "permissionMode"]);
+
+function normalizeAttemptPolicyOptions(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("route attempt resolver policyOptions must be an object");
+  }
+  for (const key of Object.keys(value)) {
+    if (!ATTEMPT_POLICY_OPTION_KEYS.has(key)) {
+      throw new Error(`route attempt resolver policyOptions cannot override ${key}`);
+    }
+  }
+  for (const key of ["allowedTools", "disallowedTools"]) {
+    if (value[key] !== undefined && !Array.isArray(value[key])) {
+      throw new Error(`route attempt resolver policyOptions.${key} must be an array or undefined`);
+    }
+  }
+  if (value.permissionMode !== undefined && typeof value.permissionMode !== "string") {
+    throw new Error("route attempt resolver policyOptions.permissionMode must be a string or undefined");
+  }
   return value;
 }
 
@@ -822,6 +853,17 @@ function mergeAttemptOptions(base, resolved) {
       throw new Error(`route attempt resolver cannot override ${key}`);
     }
     if (value !== undefined) merged[key] = value;
+  }
+  return merged;
+}
+
+function mergeAttemptPolicyOptions(base, policyOptions) {
+  if (policyOptions === undefined) return base;
+  const merged = { ...base };
+  for (const key of ATTEMPT_POLICY_OPTION_KEYS) {
+    if (!Object.hasOwn(policyOptions, key)) continue;
+    if (policyOptions[key] === undefined) delete merged[key];
+    else merged[key] = policyOptions[key];
   }
   return merged;
 }

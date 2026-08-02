@@ -992,6 +992,10 @@ Behaviour:
 - `resolveAttempt` runs once per attempt — including every same-model retry — and
   receives `{ attemptIndex, retryIndex }`, where `attemptIndex` stays the chain
   index. Its `cleanup` runs after each attempt.
+- `resolveAttempt().policyOptions` is the narrow host seam for translating one
+  logical tool policy into the active provider's representation. It may replace
+  only `allowedTools`, `disallowedTools`, and `permissionMode`; the resolver's
+  general `options` bag still cannot replace protected request fields.
 
 Chain entries can require backend capabilities via `requires: { structured_output: true, supports_mcp: true, ... }`; entries that don't satisfy the requirements are skipped (logged in `failoverHistory` as `failureKind: "skipped_capability_mismatch"`).
 
