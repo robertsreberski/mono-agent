@@ -120,7 +120,6 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const fallbackModels = readFallbackModels(input.env);
   const fallbacks = readFallbacks(input.env);
   const retry = readRetryConfig(input.env);
-  assertNoStaticAcpRoutes(model, fallbackModels, fallbacks);
   assertUniqueFallbackRoutes(model, fallbackModels, fallbacks);
   const executionMode = parseExecutionMode(input.env.MONO_AGENT_EXECUTION_MODE, model);
   const maxTurns = readMaxTurns(input.env.MONO_AGENT_MAX_TURNS);
@@ -168,6 +167,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const permissionMode = readPermissionMode(input.env.MONO_AGENT_PERMISSION_MODE);
   const concurrency = readConcurrencyConfig(input.env);
   const subagents = readSubagentsConfig(input.env, cwd);
+  assertNoStaticAcpRoutes(model, fallbackModels, fallbacks, subagents);
   const runtime: MonoAgentConfig["runtime"] = {
     model,
     ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
@@ -697,8 +697,13 @@ function assertNoStaticAcpRoutes(
   primary: MonoAgentConfig["runtime"]["model"],
   legacy: readonly MonoAgentConfig["runtime"]["model"][],
   canonical: readonly RuntimeFallbackConfig[],
+  subagents: MonoAgentConfig["subagents"],
 ): void {
-  const routes = [
+  const routes: Array<{
+    model: MonoAgentConfig["runtime"]["model"];
+    path: string;
+    env: string;
+  }> = [
     { model: primary, path: "runtime.model", env: "MONO_AGENT_MODEL" },
     ...legacy.map((model, index) => ({
       model,
@@ -711,6 +716,14 @@ function assertNoStaticAcpRoutes(
       env: "MONO_AGENT_FALLBACKS_JSON",
     })),
   ];
+  for (const [index, definition] of (subagents?.definitions || []).entries()) {
+    if (definition.model === undefined) continue;
+    routes.push({
+      model: definition.model,
+      path: `subagents.definitions[${index}].model`,
+      env: "MONO_AGENT_SUBAGENTS_JSON",
+    });
+  }
   const route = routes.find((candidate) => candidate.model.sdk === "acp");
   if (route === undefined) return;
   throw new MonoAgentConfigError(

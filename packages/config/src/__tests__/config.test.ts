@@ -829,6 +829,21 @@ describe("loadMonoAgentConfig", () => {
       source: "MONO_AGENT_FALLBACKS_JSON",
       path: "runtime.fallbacks[0]",
     },
+    {
+      env: {
+        MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({
+          enabled: true,
+          definitions: [{
+            name: "acp-helper",
+            description: "Delegates to an external ACP profile.",
+            prompt: "Help with the task.",
+            model: "acp:worklab-profile",
+          }],
+        }),
+      },
+      source: "MONO_AGENT_SUBAGENTS_JSON",
+      path: "subagents.definitions[0].model",
+    },
   ])("rejects app-configured ACP routes from $source without a host resolver", ({ env, source, path }) => {
     expect(() => loadMonoAgentConfig({
       cwd: "/repo",
