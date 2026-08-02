@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+## 0.18.2 — Provider-native subagent visibility and isolation (2026-08-03)
+
+### Native subagents
+
+- Claude SDK and Claude Code CLI runs now normalize live native child events
+  into one `subagent_activity` contract. Child prose, tools, usage, and
+  structured output stay out of the parent answer while the harness, TUI, and
+  web console can render the complete nested lifecycle.
+- Claude SDK filesystem settings remain disabled by default. Hosts can opt into
+  trusted user, project, or local settings with `settingSources`; the CLI keeps
+  its native discovery behavior. The live normalizer handles delayed task
+  identities, background completion, concurrent launches, and unfinished
+  tools without transcript-file replay.
+- Codex app-server collaboration remains provider-owned. The runtime observes
+  nested child threads, isolates them from the root turn, binds configured MCP
+  approvals to the active child turn, and fails stale retained-session
+  callbacks closed. Caller-defined Codex teammate profiles are rejected as a
+  capability mismatch; `codexLoadProjectDocs` separately enables repository
+  instructions for Codex and its native agents.
+- The built-in Pi `general-purpose` helper now intersects its read-only default
+  tools with the host's inline allowlist and fails closed when that intersection
+  is empty. Explicit configured profiles keep their authored contracts.
+
+### Routing and public contracts
+
+- `@mono-agent/runtime-adapter` exports the exact native-subagent identity,
+  phase, event, and type-guard contract used by every consumer.
+- Router attempt resolvers may return the narrow `policyOptions` bag to project
+  `allowedTools`, `disallowedTools`, and `permissionMode` for the provider
+  actually attempted without replacing other protected request fields.
+
+### Release coordination
+
+- All 22 catalog-publishable packages move together to 0.18.2. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.18.1 — ACP handle confidentiality and lifecycle hardening (2026-08-02)
 
 ### Agent Client Protocol
