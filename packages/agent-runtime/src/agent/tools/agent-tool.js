@@ -309,7 +309,7 @@ export function createAgentTool(subagents, context = {}) {
       }
       const { profile, droppedTools } = authored
         ? buildInlineProfile(params, ceiling, names)
-        : { profile: resolveProfile(definitions, params?.name), droppedTools: [] };
+        : { profile: resolveProfile(definitions, params?.name, ceiling), droppedTools: [] };
       if (profile === null) {
         const available = [...names, GENERAL_PURPOSE_SUBAGENT].join(", ");
         throw new Error(`Error: unknown subagent "${params?.name}". Available: ${available}.`);
@@ -548,14 +548,25 @@ function buildInlineProfile(params, ceiling, configuredNames) {
 /**
  * @param {ReadonlyArray<RuntimeSubagentDefinition>} definitions
  * @param {string|undefined} name
+ * @param {ReadonlyArray<string>|null} ceiling Tool ceiling for the runtime-owned general-purpose profile.
  * @returns {RuntimeSubagentDefinition|null}
  */
-function resolveProfile(definitions, name) {
+function resolveProfile(definitions, name, ceiling) {
   if (name === undefined || name === null || name === GENERAL_PURPOSE_SUBAGENT) {
+    const allowedTools = ceiling === null
+      ? DEFAULT_SUBAGENT_TOOLS
+      : DEFAULT_SUBAGENT_TOOLS.filter((tool) => ceiling.includes(tool));
+    // `normalizeProfile` treats an empty allow-list as "use the read-only
+    // default", which would silently widen this runtime-owned helper past a
+    // parent-policy ceiling that contains only write-capable tools.
+    if (allowedTools.length === 0) {
+      throw new Error(`Error: no read-only tools available to ${GENERAL_PURPOSE_SUBAGENT} within this agent's subagent ceiling (${ceiling?.join(", ") || "none"}). Use a configured profile, or do this yourself.`);
+    }
     return normalizeProfile({
       name: GENERAL_PURPOSE_SUBAGENT,
       description: "Read-only researcher inheriting the main model.",
       systemPrompt: "You are a focused research subagent. Work only from the task you were given — you cannot see the parent conversation and cannot ask anyone anything. Investigate with the tools you have, then finish with a written answer in exactly the shape the task requested. Cite file:line where relevant. Never modify files.",
+      allowedTools,
     });
   }
   const found = definitions.find((definition) => definition.name === name);
