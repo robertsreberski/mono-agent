@@ -76,7 +76,7 @@ describe("operator discovery", () => {
         workspace: { path: workspace, owner: "agent" },
         ownership: { configuration: "agent", workspace: "agent", mcp: "agent" },
         constraints: {
-          promptContent: ["text"],
+          promptContent: ["text", "resource_link"],
           clientMcp: false,
           clientFilesystem: false,
           clientTerminal: false,

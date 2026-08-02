@@ -123,7 +123,7 @@ async function buildAcpSourceDescriptor(
       mcp: "agent",
     },
     constraints: {
-      promptContent: ["text"],
+      promptContent: ["text", "resource_link"],
       clientMcp: false,
       clientFilesystem: false,
       clientTerminal: false,

@@ -29,7 +29,7 @@ export interface AcpBridgeSourceDescriptor {
     readonly mcp: "agent";
   };
   readonly constraints: {
-    readonly promptContent: readonly ["text"];
+    readonly promptContent: readonly ["text", "resource_link"];
     readonly clientMcp: false;
     readonly clientFilesystem: false;
     readonly clientTerminal: false;
