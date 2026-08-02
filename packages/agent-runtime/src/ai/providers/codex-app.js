@@ -2149,10 +2149,10 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     }
   }
 
-  function rejectUnsupportedChildServerRequest(request, method) {
+  function rejectUnsupportedChildServerRequest(request, method, binding) {
+    if (!binding) return false;
     const params = request?.params || {};
     const sourceThreadId = notificationThreadId(params);
-    if (!threadId || !sourceThreadId || sourceThreadId === threadId) return false;
     handleChildNotification({
       method: "error",
       params: {
@@ -2287,6 +2287,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   let sessionRetained = false;
   let abortRequested = false;
   let interruptSent = false;
+  let unownedChildRequestObserved = false;
   // Mutable holder so keep-alive clients can outlive this run: each run
   // installs its own notification and server-request handlers. The bridge
   // restores idle handlers once the session is no longer executing a turn.
@@ -2308,6 +2309,23 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         `Codex app-server request does not match the active turn: ${method}`,
       );
     }
+    // A foreign thread id is not enough to establish child ownership. Retained
+    // app-server processes can still deliver work from an earlier logical run;
+    // only a live binding created by this run's root/descendant spawn records
+    // may inherit configured-MCP approval.
+    const currentChildBinding = isChildRequest
+      ? subagentBindingsByThread.get(sourceThreadId)
+      : null;
+    if (isChildRequest && (
+      !currentChildBinding
+      || currentChildBinding.terminal
+      || currentChildBinding.group.finished
+      || !sourceTurnId
+      || currentChildBinding.turnStates.get(sourceTurnId) !== "running"
+    )) {
+      unownedChildRequestObserved = true;
+      throw new Error(`Unsupported Codex app-server request: ${method}`);
+    }
     const approval = noToolsProbe
       ? null
       : codexConfiguredMcpApprovalResponse(request, configuredMcpServerNames);
@@ -2315,7 +2333,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     // A child turn can fail an interaction it cannot service without
     // terminating the still-active root turn. The app-server receives the
     // JSON-RPC error and reports the child lifecycle separately.
-    if (rejectUnsupportedChildServerRequest(request, method)) {
+    if (rejectUnsupportedChildServerRequest(request, method, currentChildBinding)) {
       throw new Error(`Unsupported Codex app-server request: ${method}`);
     }
     failUnsupportedServerRequest(method);
@@ -2726,14 +2744,32 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       failureKind = "provider_unavailable";
       codexErrorCode = codexErrorCode || "codex_app_server_no_output";
     }
+    // The app-server owns native descendants. If a known descendant remains
+    // open, or an unowned/stale descendant requests work, retaining this
+    // process would let old execution cross into another logical turn. Close
+    // the provider session after the unaffected root finishes; the host can
+    // replay history on a fresh process.
+    const hasUnfinishedProviderDescendants = [...subagentGroupsBySpawnId.values()]
+      .some((group) => !group.finished);
+    const providerSessionHasUnsafeDescendants = hasUnfinishedProviderDescendants
+      || unownedChildRequestObserved;
     if (resumeEntry) {
       // A failed turn or a closed transport leaves the thread untrustworthy,
-      // but an interrupt is normal steering: the aborted session survives.
+      // but an interrupt is normal steering only when no provider descendant
+      // remains live.
       const aborted = !!options.abortSignal?.aborted;
-      sessionRetained = (aborted && !prematureClose) || (!errorMessage && !failureKind);
+      sessionRetained = !providerSessionHasUnsafeDescendants
+        && ((aborted && !prematureClose) || (!errorMessage && !failureKind));
       if (sessionRetained) codexSessions.touch(resumeSessionId, { idleTimeoutMs: sessionTtlMs });
       else codexSessions.delete(resumeSessionId);
-    } else if (keepAlive && threadId && !errorMessage && !failureKind && !options.abortSignal?.aborted) {
+    } else if (
+      keepAlive
+      && threadId
+      && !errorMessage
+      && !failureKind
+      && !options.abortSignal?.aborted
+      && !providerSessionHasUnsafeDescendants
+    ) {
       sessionRetained = true;
       notificationTarget.handler = noopNotificationHandler;
       serverRequestTarget.handler = rejectIdleServerRequest;
