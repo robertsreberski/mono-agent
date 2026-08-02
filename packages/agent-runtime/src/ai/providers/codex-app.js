@@ -600,6 +600,22 @@ const CODEX_NO_TOOL_REQUEST_METHODS = new Set([
   "execCommandApproval",
 ]);
 
+// These protocol items are conversation or lifecycle records rather than
+// actionable child work. Keep them out of the unknown-item fallback: message
+// and reasoning content has dedicated handling, while the remaining records
+// would otherwise create misleading tool rows.
+const CODEX_PASSIVE_CHILD_ITEM_TYPES = new Set([
+  "userMessage",
+  "hookPrompt",
+  "agentMessage",
+  "plan",
+  "reasoning",
+  "enteredReviewMode",
+  "exitedReviewMode",
+  "contextCompaction",
+  "subAgentActivity",
+]);
+
 function codexMcpConfig(mcpServers = {}) {
   const servers = {};
   const invalidNames = [];
@@ -1204,6 +1220,14 @@ function codexChildToolName(item) {
 function codexItemDurationMs(item) {
   const value = Number(item?.durationMs ?? item?.duration_ms);
   return Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function boundedCodexActivityItemId(value, limit = 256) {
+  const id = String(value || "item");
+  if (Buffer.byteLength(id) <= limit) return id;
+  const digest = createHash("sha256").update(id).digest("hex");
+  const suffix = `:${digest}`;
+  return `${utf8Head(id, Math.max(0, limit - Buffer.byteLength(suffix)))}${suffix}`;
 }
 
 function usageFromTokenUsage(tokenUsage) {
@@ -1915,7 +1939,96 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
             content: safeDiagnostic(codexActivityContent(item.results || item.result || item.status), 2_000),
           }),
       });
+      return;
     }
+    if (item.type === "sleep") {
+      const phase = method === "item/started" ? "started" : "completed";
+      const durationMs = codexItemDurationMs(item);
+      emitSubagentActivity(group, binding, {
+        phase,
+        id: subagentActivityId(group, binding, item.id),
+        name: `${metadataForSubagent(group, binding).name}▸sleep`,
+        ...(phase === "started"
+          ? { arguments: durationMs === undefined ? {} : { durationMs } }
+          : {
+            isError: codexItemFailed(item),
+            content: safeDiagnostic(codexActivityContent({
+              ...(durationMs === undefined ? {} : { durationMs }),
+              ...(item.status === undefined ? {} : { status: item.status }),
+              ...(item.error === undefined ? {} : { error: item.error }),
+            }), 2_000),
+          }),
+      });
+      return;
+    }
+    if (item.type === "imageGeneration") {
+      const phase = method === "item/started" ? "started" : "completed";
+      const startedDetails = {
+        ...(item.status === undefined ? {} : { status: safeDiagnostic(item.status, 128) }),
+        ...(item.revisedPrompt === undefined
+          ? {}
+          : {
+            revisedPrompt: item.revisedPrompt === null
+              ? null
+              : safeDiagnostic(item.revisedPrompt, 1_000),
+          }),
+      };
+      const details = {
+        ...(item.status === undefined ? {} : { status: safeDiagnostic(item.status, 128) }),
+        ...(item.savedPath === undefined ? {} : { savedPath: safeDiagnostic(item.savedPath, 512) }),
+        ...(item.revisedPrompt === undefined
+          ? {}
+          : {
+            revisedPrompt: item.revisedPrompt === null
+              ? null
+              : safeDiagnostic(item.revisedPrompt, 1_000),
+          }),
+        ...(item.result === undefined
+          ? {}
+          : { resultBytes: Buffer.byteLength(String(item.result)) }),
+        ...(item.error === undefined ? {} : { error: safeDiagnostic(item.error, 512) }),
+      };
+      emitSubagentActivity(group, binding, {
+        phase,
+        id: subagentActivityId(group, binding, item.id),
+        name: `${metadataForSubagent(group, binding).name}▸imageGeneration`,
+        ...(phase === "started"
+          ? { arguments: startedDetails }
+          : {
+            isError: codexItemFailed(item),
+            content: safeDiagnostic(codexActivityContent(details), 2_000),
+          }),
+      });
+      return;
+    }
+    if (
+      CODEX_PASSIVE_CHILD_ITEM_TYPES.has(item.type)
+      || typeof item.type !== "string"
+      || !item.type.trim()
+      || typeof item.id !== "string"
+      || !item.id.trim()
+    ) {
+      return;
+    }
+    // The protocol has no action/category discriminator. Favor visibility for
+    // unknown non-passive items until the bridge gains a first-class mapper;
+    // bound opaque details so a new provider payload cannot inflate the stream.
+    const phase = method === "item/started" ? "started" : "completed";
+    const executionMs = codexItemDurationMs(item);
+    const itemId = boundedCodexActivityItemId(item.id);
+    const itemType = safeDiagnostic(item.type, 128);
+    emitSubagentActivity(group, binding, {
+      phase,
+      id: subagentActivityId(group, binding, itemId),
+      name: `${metadataForSubagent(group, binding).name}▸${itemType}`,
+      ...(phase === "started"
+        ? { arguments: { item: safeDiagnostic(item, 1_000) } }
+        : {
+          isError: codexItemFailed(item),
+          ...(executionMs === undefined ? {} : { executionMs }),
+          content: safeDiagnostic(item, 2_000),
+        }),
+    });
   }
 
   function handleChildNotification(notification) {

@@ -1407,6 +1407,315 @@ describe("codex-app persistent sessions", () => {
   });
 
   it.each([
+    {
+      label: "sleep",
+      key: "sleep",
+      startedItem: { id: "sleep-child", type: "sleep", durationMs: 125 },
+      completedItem: { id: "sleep-child", type: "sleep", durationMs: 125 },
+      expectedName: "codex▸sleep",
+      expectedStartedArguments: { durationMs: 125 },
+      expectedCompletion: {
+        isError: false,
+        content: '{"durationMs":125}',
+      },
+    },
+    {
+      label: "image generation",
+      key: "image",
+      startedItem: {
+        id: "image-child",
+        type: "imageGeneration",
+        status: "inProgress",
+        revisedPrompt: null,
+        result: "",
+      },
+      completedItem: {
+        id: "image-child",
+        type: "imageGeneration",
+        status: "completed",
+        revisedPrompt: "Draw a blue square",
+        result: "a".repeat(3_000),
+        savedPath: "/tmp/blue.png",
+      },
+      expectedName: "codex▸imageGeneration",
+      expectedStartedArguments: { status: "inProgress", revisedPrompt: null },
+      expectedCompletion: {
+        isError: false,
+        content: '{"status":"completed","savedPath":"/tmp/blue.png","revisedPrompt":"Draw a blue square","resultBytes":3000}',
+      },
+    },
+    {
+      label: "failed image generation",
+      key: "image-failed",
+      startedItem: {
+        id: "image-failed-child",
+        type: "imageGeneration",
+        status: "inProgress",
+        revisedPrompt: null,
+        result: "",
+      },
+      completedItem: {
+        id: "image-failed-child",
+        type: "imageGeneration",
+        status: "failed",
+        revisedPrompt: null,
+        result: "",
+      },
+      expectedName: "codex▸imageGeneration",
+      expectedStartedArguments: { status: "inProgress", revisedPrompt: null },
+      expectedCompletion: {
+        isError: true,
+        content: '{"status":"failed","revisedPrompt":null,"resultBytes":0}',
+      },
+    },
+    {
+      label: "a future actionable item",
+      key: "future",
+      startedItem: {
+        id: "future-child",
+        type: "futureAction",
+        status: "inProgress",
+        input: { topic: "native tools" },
+        opaque: "x".repeat(3_000),
+      },
+      completedItem: {
+        id: "future-child",
+        type: "futureAction",
+        status: "completed",
+        result: { count: 2 },
+        durationMs: 37,
+        opaque: "x".repeat(3_000),
+      },
+      expectedName: "codex▸futureAction",
+      expectedStartedArguments: {
+        item: expect.stringMatching(/\n\[truncated \d+ later bytes\]$/u),
+      },
+      expectedCompletion: {
+        isError: false,
+        executionMs: 37,
+        content: expect.stringMatching(/\n\[truncated \d+ later bytes\]$/u),
+      },
+    },
+  ])("maps child $label activity without leaking it into the root answer", async ({
+    key,
+    startedItem,
+    completedItem,
+    expectedName,
+    expectedStartedArguments,
+    expectedCompletion,
+  }) => {
+    const parentThreadId = `thread-parent-${key}`;
+    const childThreadId = `thread-child-${key}`;
+    const spawnId = `spawn-${key}`;
+    const factory = stubClientFactory({ threadId: parentThreadId });
+    factory.turnPlan.push("manual");
+    const pending = generateCodexAppResponse("SYS", runOptions(factory));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.notify("item/completed", {
+      threadId: parentThreadId,
+      turnId: "turn-1",
+      item: {
+        id: spawnId,
+        type: "collabToolCall",
+        tool: "spawn_agent",
+        status: "completed",
+        senderThreadId: parentThreadId,
+        newThreadId: childThreadId,
+      },
+    });
+    client.notify("item/started", {
+      threadId: childThreadId,
+      turnId: `turn-${key}`,
+      item: startedItem,
+    });
+    client.notify("item/completed", {
+      threadId: childThreadId,
+      turnId: `turn-${key}`,
+      item: completedItem,
+    });
+    client.notify("turn/completed", {
+      threadId: childThreadId,
+      turn: { id: `turn-${key}`, status: "completed" },
+    });
+    client.finishTurn({ text: "PARENT_DONE" });
+    const result = await pending;
+
+    const subagent = {
+      id: spawnId,
+      nativeId: childThreadId,
+      name: "codex",
+      callIndex: 0,
+    };
+    expect(result.events.filter((event) => event.type === "subagent_activity")).toEqual([
+      {
+        type: "subagent_activity",
+        subagent,
+        phase: "agent_started",
+        id: `agent:${spawnId}`,
+        name: "Agent(codex)",
+        arguments: { name: "codex" },
+      },
+      {
+        type: "subagent_activity",
+        subagent,
+        phase: "started",
+        id: `agent:${spawnId}:${childThreadId}:${startedItem.id}`,
+        name: expectedName,
+        arguments: expectedStartedArguments,
+      },
+      {
+        type: "subagent_activity",
+        subagent,
+        phase: "completed",
+        id: `agent:${spawnId}:${childThreadId}:${completedItem.id}`,
+        name: expectedName,
+        ...expectedCompletion,
+      },
+      {
+        type: "subagent_activity",
+        subagent,
+        phase: "agent_completed",
+        id: `agent:${spawnId}`,
+        name: "Agent(codex)",
+        isError: false,
+        content: "completed",
+      },
+    ]);
+    if (key === "future") {
+      const mapped = result.events.filter((event) => event.type === "subagent_activity"
+        && event.id.includes("future-child"));
+      expect(Buffer.byteLength(mapped[0].arguments.item)).toBeLessThanOrEqual(1_000);
+      expect(Buffer.byteLength(mapped[1].content)).toBeLessThanOrEqual(2_000);
+    }
+    expect(result).toMatchObject({ text: "PARENT_DONE", error: null, failureKind: null });
+    expect(result.events.filter((event) => event.type === "assistant")).toEqual([
+      { type: "assistant", message: { content: [{ type: "text", text: "PARENT_DONE" }] } },
+    ]);
+  });
+
+  it("keeps bounded fallback ids distinct when future item ids share a long prefix", async () => {
+    const factory = stubClientFactory({ threadId: "thread-parent-future-ids" });
+    factory.turnPlan.push("manual");
+    const pending = generateCodexAppResponse("SYS", runOptions(factory));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.notify("item/completed", {
+      threadId: "thread-parent-future-ids",
+      turnId: "turn-1",
+      item: {
+        id: "spawn-future-ids",
+        type: "collabToolCall",
+        tool: "spawn_agent",
+        status: "completed",
+        senderThreadId: "thread-parent-future-ids",
+        newThreadId: "thread-child-future-ids",
+      },
+    });
+    const sharedPrefix = `future-${"i".repeat(300)}`;
+    for (const id of [`${sharedPrefix}-a`, `${sharedPrefix}-b`]) {
+      client.notify("item/started", {
+        threadId: "thread-child-future-ids",
+        turnId: "turn-future-ids",
+        item: { id, type: "futureAction", status: "inProgress" },
+      });
+      client.notify("item/completed", {
+        threadId: "thread-child-future-ids",
+        turnId: "turn-future-ids",
+        item: { id, type: "futureAction", status: "completed" },
+      });
+    }
+    client.notify("turn/completed", {
+      threadId: "thread-child-future-ids",
+      turn: { id: "turn-future-ids", status: "completed" },
+    });
+    client.finishTurn({ text: "PARENT_DONE" });
+    const result = await pending;
+
+    const mapped = result.events.filter((event) => event.type === "subagent_activity"
+      && (event.phase === "started" || event.phase === "completed"));
+    expect(mapped.map((event) => event.phase)).toEqual([
+      "started",
+      "completed",
+      "started",
+      "completed",
+    ]);
+    expect(mapped.every((event) => event.name === "codex▸futureAction")).toBe(true);
+    expect(mapped[0].id).toBe(mapped[1].id);
+    expect(mapped[2].id).toBe(mapped[3].id);
+    expect(mapped[0].id).not.toBe(mapped[2].id);
+    const activityPrefix = "agent:spawn-future-ids:thread-child-future-ids:";
+    expect(mapped.every((event) => Buffer.byteLength(event.id)
+      <= Buffer.byteLength(activityPrefix) + 256)).toBe(true);
+    expect(result.text).toBe("PARENT_DONE");
+  });
+
+  it("does not turn passive child thread items into duplicate tool activity", async () => {
+    const factory = stubClientFactory({ threadId: "thread-parent-passive-items" });
+    factory.turnPlan.push("manual");
+    const pending = generateCodexAppResponse("SYS", runOptions(factory));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.notify("item/completed", {
+      threadId: "thread-parent-passive-items",
+      turnId: "turn-1",
+      item: {
+        id: "spawn-passive-items",
+        type: "collabToolCall",
+        tool: "spawn_agent",
+        status: "completed",
+        senderThreadId: "thread-parent-passive-items",
+        newThreadId: "thread-child-passive-items",
+      },
+    });
+    const passiveItems = [
+      { id: "user-child", type: "userMessage", content: [] },
+      { id: "hook-child", type: "hookPrompt", fragments: [] },
+      { id: "message-child", type: "agentMessage", text: "CHILD_DONE" },
+      { id: "plan-child", type: "plan", text: "Inspect it" },
+      { id: "reasoning-child", type: "reasoning", summary: ["checking"], content: [] },
+      { id: "review-enter-child", type: "enteredReviewMode", review: "review" },
+      { id: "review-exit-child", type: "exitedReviewMode", review: "review" },
+      { id: "compact-child", type: "contextCompaction" },
+    ];
+    for (const item of passiveItems) {
+      client.notify("item/started", {
+        threadId: "thread-child-passive-items",
+        turnId: "turn-passive-items",
+        item,
+      });
+      client.notify("item/completed", {
+        threadId: "thread-child-passive-items",
+        turnId: "turn-passive-items",
+        item,
+      });
+    }
+    client.notify("turn/completed", {
+      threadId: "thread-child-passive-items",
+      turn: { id: "turn-passive-items", status: "completed" },
+    });
+    client.finishTurn({ text: "PARENT_DONE" });
+    const result = await pending;
+
+    const activity = result.events.filter((event) => event.type === "subagent_activity");
+    expect(activity.map((event) => event.phase)).toEqual([
+      "agent_started",
+      "message",
+      "message",
+      "agent_completed",
+    ]);
+    expect(activity.filter((event) => event.phase === "started" || event.phase === "completed")).toEqual([]);
+    expect(activity.filter((event) => event.phase === "message")).toEqual([
+      expect.objectContaining({ kind: "text", content: "CHILD_DONE" }),
+      expect.objectContaining({ kind: "thinking", content: "checking" }),
+    ]);
+    expect(result.text).toBe("PARENT_DONE");
+  });
+
+  it.each([
     [
       "legacy collabAgentToolCall",
       (client) => {
