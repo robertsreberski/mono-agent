@@ -125,7 +125,7 @@ describe("createClaudeSubagentTracker", () => {
     const open = tracker.observe(started);
     expect(open).toEqual([{
       type: "subagent_activity",
-      subagent: { id: "a700", name: "reviewer", callIndex: 0, label: "Review the diff" },
+      subagent: { id: "a700", name: "reviewer", callIndex: 0, toolUseId: "toolu_parent", label: "Review the diff" },
       phase: "agent_started",
       id: "agent:a700",
       name: "Agent(reviewer)",
@@ -179,6 +179,32 @@ describe("createClaudeSubagentTracker", () => {
       summary: "done",
     });
     expect(done).toMatchObject({ phase: "agent_completed", id: "agent:orphan", name: "Agent(orphan)" });
+  });
+
+  it("carries the parent tool_use_id so a host can attach the group to its Agent call", () => {
+    const tracker = createClaudeSubagentTracker(stubIo({}));
+    tracker.observe(started);
+    const [done] = tracker.observe({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "a700",
+      tool_use_id: "toolu_parent",
+      status: "completed",
+      summary: "ok",
+    });
+    expect(done.subagent.toolUseId).toBe("toolu_parent");
+  });
+
+  it("falls back to the notification's tool_use_id when the start was never seen", () => {
+    const tracker = createClaudeSubagentTracker(stubIo({}));
+    const [done] = tracker.observe({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "orphan",
+      tool_use_id: "toolu_late",
+      status: "completed",
+    });
+    expect(done.subagent.toolUseId).toBe("toolu_late");
   });
 
   it("gives concurrent delegations distinct ids so hosts cannot collapse them", () => {
