@@ -98,6 +98,36 @@ describe("createClaudeSubagentActivityNormalizer", () => {
     expect(normalizer.observe({ ...terminal, uuid: "different-terminal-uuid" }).events).toEqual([]);
   });
 
+  it("consumes a background launch acknowledgement without completing the child", () => {
+    const normalizer = createClaudeSubagentActivityNormalizer();
+    const launchIndex = cliFixture.findIndex((event) => event.uuid === "cli-parent-launch-result");
+    observeAll(normalizer, cliFixture.slice(0, launchIndex));
+
+    expect(normalizer.observe(cliFixture[launchIndex])).toEqual({ consumed: true, events: [] });
+    expect(normalizer.observe(cliFixture[launchIndex + 1]).events).toEqual([
+      expect.objectContaining({
+        phase: "agent_completed",
+        id: "agent:toolu_cli_parent",
+        isError: false,
+      }),
+    ]);
+  });
+
+  it("does not suppress launch-like text for an uncorrelated tool result", () => {
+    const normalizer = createClaudeSubagentActivityNormalizer();
+    expect(normalizer.observe({
+      type: "user",
+      uuid: "unrelated-launch-like-result",
+      message: {
+        content: [{
+          type: "tool_result",
+          tool_use_id: "toolu_unknown",
+          content: "Async agent launched successfully. The agent is working in the background.",
+        }],
+      },
+    })).toEqual({ consumed: false, events: [] });
+  });
+
   it("delays a native-only start until a child frame reveals the canonical parent id", () => {
     const normalizer = createClaudeSubagentActivityNormalizer();
     const events = [];
