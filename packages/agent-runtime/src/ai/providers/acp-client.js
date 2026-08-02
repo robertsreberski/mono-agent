@@ -60,17 +60,17 @@ const DEFAULT_PROCESS_POLICY = Object.freeze({
  * @property {string} [sessionConfig.modeId]
  * @property {Record<string, string|boolean>} [sessionConfig.configOptions]
  * @property {Object} [clientCallbacks]
- * @property {(request: import("@agentclientprotocol/sdk").RequestPermissionRequest, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").RequestPermissionResponse>|import("@agentclientprotocol/sdk").RequestPermissionResponse} [clientCallbacks.requestPermission]
- * @property {(request: import("@agentclientprotocol/sdk").CreateElicitationRequest, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").CreateElicitationResponse>|import("@agentclientprotocol/sdk").CreateElicitationResponse} [clientCallbacks.createElicitation]
- * @property {(request: import("@agentclientprotocol/sdk").ReadTextFileRequest, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").ReadTextFileResponse>|import("@agentclientprotocol/sdk").ReadTextFileResponse} [clientCallbacks.readTextFile]
- * @property {(request: import("@agentclientprotocol/sdk").WriteTextFileRequest, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").WriteTextFileResponse>|import("@agentclientprotocol/sdk").WriteTextFileResponse} [clientCallbacks.writeTextFile]
- * @property {(request: import("@agentclientprotocol/sdk").CreateTerminalRequest, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").CreateTerminalResponse>|import("@agentclientprotocol/sdk").CreateTerminalResponse} [clientCallbacks.createTerminal]
- * @property {(request: import("@agentclientprotocol/sdk").TerminalOutputRequest, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").TerminalOutputResponse>|import("@agentclientprotocol/sdk").TerminalOutputResponse} [clientCallbacks.terminalOutput]
- * @property {(request: import("@agentclientprotocol/sdk").WaitForTerminalExitRequest, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").WaitForTerminalExitResponse>|import("@agentclientprotocol/sdk").WaitForTerminalExitResponse} [clientCallbacks.waitForTerminalExit]
- * @property {(request: import("@agentclientprotocol/sdk").KillTerminalRequest, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").KillTerminalResponse>|import("@agentclientprotocol/sdk").KillTerminalResponse} [clientCallbacks.killTerminal]
- * @property {(request: import("@agentclientprotocol/sdk").ReleaseTerminalRequest, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").ReleaseTerminalResponse>|import("@agentclientprotocol/sdk").ReleaseTerminalResponse} [clientCallbacks.releaseTerminal]
- * @property {(notification: import("@agentclientprotocol/sdk").SessionNotification, context: AcpCallbackContext) => Promise<void>|void} [clientCallbacks.sessionUpdate]
- * @property {(notification: import("@agentclientprotocol/sdk").CompleteElicitationNotification, context: AcpCallbackContext) => Promise<void>|void} [clientCallbacks.elicitationComplete]
+ * @property {(request: AcpHostSessionPayload<import("@agentclientprotocol/sdk").RequestPermissionRequest>, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").RequestPermissionResponse>|import("@agentclientprotocol/sdk").RequestPermissionResponse} [clientCallbacks.requestPermission]
+ * @property {(request: AcpHostElicitationPayload, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").CreateElicitationResponse>|import("@agentclientprotocol/sdk").CreateElicitationResponse} [clientCallbacks.createElicitation]
+ * @property {(request: AcpHostSessionPayload<import("@agentclientprotocol/sdk").ReadTextFileRequest>, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").ReadTextFileResponse>|import("@agentclientprotocol/sdk").ReadTextFileResponse} [clientCallbacks.readTextFile]
+ * @property {(request: AcpHostSessionPayload<import("@agentclientprotocol/sdk").WriteTextFileRequest>, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").WriteTextFileResponse>|import("@agentclientprotocol/sdk").WriteTextFileResponse} [clientCallbacks.writeTextFile]
+ * @property {(request: AcpHostSessionPayload<import("@agentclientprotocol/sdk").CreateTerminalRequest>, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").CreateTerminalResponse>|import("@agentclientprotocol/sdk").CreateTerminalResponse} [clientCallbacks.createTerminal]
+ * @property {(request: AcpHostSessionPayload<import("@agentclientprotocol/sdk").TerminalOutputRequest>, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").TerminalOutputResponse>|import("@agentclientprotocol/sdk").TerminalOutputResponse} [clientCallbacks.terminalOutput]
+ * @property {(request: AcpHostSessionPayload<import("@agentclientprotocol/sdk").WaitForTerminalExitRequest>, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").WaitForTerminalExitResponse>|import("@agentclientprotocol/sdk").WaitForTerminalExitResponse} [clientCallbacks.waitForTerminalExit]
+ * @property {(request: AcpHostSessionPayload<import("@agentclientprotocol/sdk").KillTerminalRequest>, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").KillTerminalResponse>|import("@agentclientprotocol/sdk").KillTerminalResponse} [clientCallbacks.killTerminal]
+ * @property {(request: AcpHostSessionPayload<import("@agentclientprotocol/sdk").ReleaseTerminalRequest>, context: AcpCallbackContext) => Promise<import("@agentclientprotocol/sdk").ReleaseTerminalResponse>|import("@agentclientprotocol/sdk").ReleaseTerminalResponse} [clientCallbacks.releaseTerminal]
+ * @property {(notification: AcpHostSessionPayload<import("@agentclientprotocol/sdk").SessionNotification>, context: AcpCallbackContext) => Promise<void>|void} [clientCallbacks.sessionUpdate]
+ * @property {(notification: Omit<import("@agentclientprotocol/sdk").CompleteElicitationNotification, "_meta">, context: AcpCallbackContext) => Promise<void>|void} [clientCallbacks.elicitationComplete]
  * @property {Object} [process]
  * @property {number} [process.startupTimeoutMs]
  * @property {number} [process.requestTimeoutMs]
@@ -91,6 +91,12 @@ const DEFAULT_PROCESS_POLICY = Object.freeze({
  */
 
 /** @template T @typedef {T extends unknown ? Omit<T, "sessionId"> : never} WithoutSessionId */
+/** @template T @typedef {T extends unknown ? Omit<T, "sessionId"|"_meta"> & {providerSessionId: string} : never} AcpHostSessionPayload */
+/**
+ * @typedef {WithoutSessionId<import("@agentclientprotocol/sdk").CreateElicitationRequest>
+ *   & Pick<import("@agentclientprotocol/sdk").CreateElicitationRequest, "message" | "mode">
+ *   & {providerSessionId?: string}} AcpHostElicitationPayload
+ */
 /**
  * @typedef {Object} AcpListedSession
  * @property {string} providerSessionId Opaque runtime handle for resume/delete.
@@ -484,6 +490,24 @@ function hostElicitationPayload(value) {
   return /** @type {AcpElicitationInteractionPayload} */ (hostInteractionPayload(value));
 }
 
+/** @template {object} T @param {T & {sessionId: string}} value @param {string} profileId */
+function descriptorSessionPayload(value, profileId) {
+  return /** @type {AcpHostSessionPayload<T>} */ ({
+    ...sanitizeAcpHostValue(value, [value.sessionId]),
+    providerSessionId: encodeAcpProviderSessionId(profileId, value.sessionId),
+  });
+}
+
+/** @param {import("@agentclientprotocol/sdk").CreateElicitationRequest} value @param {string} profileId */
+function descriptorElicitationPayload(value, profileId) {
+  const sessionScoped = /** @type {{sessionId?: unknown}} */ (value);
+  const rawSessionId = typeof sessionScoped.sessionId === "string" ? sessionScoped.sessionId : null;
+  return /** @type {AcpHostElicitationPayload} */ ({
+    ...sanitizeAcpHostValue(value, [rawSessionId]),
+    ...(rawSessionId ? { providerSessionId: encodeAcpProviderSessionId(profileId, rawSessionId) } : {}),
+  });
+}
+
 /** @param {any} descriptor @param {AcpClientHostOptions} options @param {string} profileId @param {string} operation */
 function callbackContext(descriptor, options, profileId, operation, extra = {}) {
   return {
@@ -547,6 +571,10 @@ export async function connectAcpProfile(profileId, options) {
   const updates = new Map();
   const activePromptSessions = new Set();
   let hostRequestSequence = 0;
+  /** @param {AcpCallbackContext} context */
+  const safeCallbackContext = (context) => context.requestId === undefined
+    ? context
+    : { ...context, requestId: `acp-request:${profileId}:${++hostRequestSequence}` };
   let closed = false;
 
   const app = client({ name: "mono-agent-agent-runtime-acp" });
@@ -558,11 +586,14 @@ export async function connectAcpProfile(profileId, options) {
         requestId: ctx.requestId,
       });
       if (typeof descriptor.clientCallbacks?.requestPermission === "function") {
-        result = await descriptor.clientCallbacks.requestPermission(ctx.params, context);
+        result = await descriptor.clientCallbacks.requestPermission(
+          descriptorSessionPayload(ctx.params, profileId),
+          safeCallbackContext(context),
+        );
       } else if (typeof options.onAcpInteractionRequest === "function") {
         result = await options.onAcpInteractionRequest(
           { kind: "permission", profileId, payload: hostInteractionPayload(ctx.params) },
-          { ...context, requestId: `acp-request:${profileId}:${++hostRequestSequence}` },
+          safeCallbackContext(context),
         );
       }
     } catch {
@@ -579,21 +610,21 @@ export async function connectAcpProfile(profileId, options) {
     }
     try {
       await descriptor.clientCallbacks?.sessionUpdate?.(
-        ctx.params,
-        callbackContext(descriptor, options, profileId, "session_update", { signal: ctx.signal }),
+        descriptorSessionPayload(ctx.params, profileId),
+        safeCallbackContext(callbackContext(descriptor, options, profileId, "session_update", { signal: ctx.signal })),
       );
     } catch { /* profile notification callbacks are observational */ }
   });
   if (descriptor.capabilityPolicy?.filesystem?.readTextFile === true) {
     app.onRequest(methods.client.fs.readTextFile, (ctx) => descriptor.clientCallbacks.readTextFile(
-      ctx.params,
-      callbackContext(descriptor, options, profileId, "read_text_file", { signal: ctx.signal, requestId: ctx.requestId }),
+      descriptorSessionPayload(ctx.params, profileId),
+      safeCallbackContext(callbackContext(descriptor, options, profileId, "read_text_file", { signal: ctx.signal, requestId: ctx.requestId })),
     ));
   }
   if (descriptor.capabilityPolicy?.filesystem?.writeTextFile === true) {
     app.onRequest(methods.client.fs.writeTextFile, (ctx) => descriptor.clientCallbacks.writeTextFile(
-      ctx.params,
-      callbackContext(descriptor, options, profileId, "write_text_file", { signal: ctx.signal, requestId: ctx.requestId }),
+      descriptorSessionPayload(ctx.params, profileId),
+      safeCallbackContext(callbackContext(descriptor, options, profileId, "write_text_file", { signal: ctx.signal, requestId: ctx.requestId })),
     ));
   }
   if (descriptor.capabilityPolicy?.terminal === true) {
@@ -606,8 +637,8 @@ export async function connectAcpProfile(profileId, options) {
     ];
     for (const [method, callback, callbackOperation] of terminalHandlers) {
       app.onRequest(/** @type {any} */ (method), (ctx) => descriptor.clientCallbacks[callback](
-        ctx.params,
-        callbackContext(descriptor, options, profileId, callbackOperation, { signal: ctx.signal, requestId: ctx.requestId }),
+        descriptorSessionPayload(ctx.params, profileId),
+        safeCallbackContext(callbackContext(descriptor, options, profileId, callbackOperation, { signal: ctx.signal, requestId: ctx.requestId })),
       ));
     }
   }
@@ -620,11 +651,14 @@ export async function connectAcpProfile(profileId, options) {
           requestId: ctx.requestId,
         });
         if (typeof descriptor.clientCallbacks?.createElicitation === "function") {
-          result = await descriptor.clientCallbacks.createElicitation(ctx.params, context);
+          result = await descriptor.clientCallbacks.createElicitation(
+            descriptorElicitationPayload(ctx.params, profileId),
+            safeCallbackContext(context),
+          );
         } else if (typeof options.onAcpInteractionRequest === "function") {
           result = await options.onAcpInteractionRequest(
             { kind: "elicitation", profileId, payload: hostElicitationPayload(ctx.params) },
-            { ...context, requestId: `acp-request:${profileId}:${++hostRequestSequence}` },
+            safeCallbackContext(context),
           );
         }
       } catch {
@@ -635,8 +669,8 @@ export async function connectAcpProfile(profileId, options) {
     app.onNotification(methods.client.elicitation.complete, async (ctx) => {
       try {
         await descriptor.clientCallbacks?.elicitationComplete?.(
-          ctx.params,
-          callbackContext(descriptor, options, profileId, "elicitation_complete", { signal: ctx.signal }),
+          sanitizeAcpHostValue(ctx.params),
+          safeCallbackContext(callbackContext(descriptor, options, profileId, "elicitation_complete", { signal: ctx.signal })),
         );
       } catch { /* observational */ }
     });

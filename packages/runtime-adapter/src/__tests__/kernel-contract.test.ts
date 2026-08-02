@@ -24,6 +24,7 @@ import { createMonoRuntime } from "../runtime-adapter.js";
 import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptResolution } from "../runtime-adapter.js";
 import type {
   MonoAcpInteractionRequest,
+  MonoAcpProfileResolver,
   MonoRuntimeBackendCapabilities,
   MonoRuntimeHostOptions,
   RuntimeModelReference,
@@ -41,6 +42,10 @@ type KernelBridgeDescriptor = ReturnType<typeof listRuntimeBridges>[number];
 type KernelBridgeCapabilities = ReturnType<KernelBridgeDescriptor["capabilities"]>;
 type MonoAcpElicitationInteraction = Extract<MonoAcpInteractionRequest, { kind: "elicitation" }>;
 type MonoAcpFormPayload = Extract<MonoAcpElicitationInteraction["payload"], { mode: "form" }>;
+type MonoAcpResolvedProfile = NonNullable<Awaited<ReturnType<MonoAcpProfileResolver>>>;
+type MonoAcpProfileCallbacks = NonNullable<MonoAcpResolvedProfile["clientCallbacks"]>;
+type MonoAcpPermissionCallbackPayload = Parameters<NonNullable<MonoAcpProfileCallbacks["requestPermission"]>>[0];
+type MonoAcpSessionUpdatePayload = Parameters<NonNullable<MonoAcpProfileCallbacks["sessionUpdate"]>>[0];
 type RuntimeRunComparableKeys =
   | "model"
   | "messages"
@@ -165,5 +170,21 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
     };
 
     expectTypeOf(assertInteractionContract).parameter(0).toEqualTypeOf<MonoAcpInteractionRequest>();
+  });
+
+  it("keeps raw protocol ids out of profile callbacks", () => {
+    if (false) {
+      const permission = null as unknown as MonoAcpPermissionCallbackPayload;
+      assertAssignable<string>(permission.providerSessionId);
+      assertAssignable<readonly unknown[]>(permission.options);
+      // @ts-expect-error profile callbacks receive the opaque provider handle, never the raw protocol id.
+      assertAssignable<string>(permission.sessionId);
+
+      const update = null as unknown as MonoAcpSessionUpdatePayload;
+      assertAssignable<string>(update.providerSessionId);
+      assertAssignable<object>(update.update);
+      // @ts-expect-error streamed profile callbacks also hide the raw protocol id.
+      assertAssignable<string>(update.sessionId);
+    }
   });
 });
