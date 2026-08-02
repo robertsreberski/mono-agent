@@ -18,6 +18,7 @@ import {
   claudeSandboxCapabilityMismatchResult,
   claudeSandboxPolicyProblem,
 } from "./claude-sandbox.js";
+import { createClaudeSubagentActivityNormalizer } from "./claude-subagent-activity.js";
 
 const CLAUDE_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const CLAUDE_SETTING_SOURCES = new Set(["user", "project", "local"]);
@@ -669,6 +670,14 @@ export async function generateClaudeResponse(systemPrompt, options) {
     onEvent(event);
   }
 
+  const subagentNormalizer = createClaudeSubagentActivityNormalizer();
+  function emitSubagentEvents(activityEvents) {
+    for (const activity of activityEvents) emitEvent(activity);
+  }
+  function drainSubagents(reason) {
+    emitSubagentEvents(subagentNormalizer.drain(reason));
+  }
+
   // Deprecated `settings` fallback for the tool_result byte cap was consumed;
   // surface the one-per-run deprecation warning (the typed `toolLimits` object
   // is the supported path). mono-agent never passes `settings`, so this never
@@ -814,6 +823,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
 
   const abortHandler = () => {
     cancelled = true;
+    drainSubagents("subagent cancelled with the parent run");
     internalAbortController.abort();
     try { stream?.close?.(); } catch { /* best effort; finally closes again */ }
   };
@@ -827,6 +837,15 @@ export async function generateClaudeResponse(systemPrompt, options) {
     for await (const event of stream) {
       const nextSessionId = sessionIdFromEvent(event);
       if (nextSessionId) providerSessionId = nextSessionId;
+      const observation = subagentNormalizer.observe(event);
+      emitSubagentEvents(observation.events);
+      // Child records are represented exclusively as subagent_activity. In
+      // particular, their text, errors, tools, usage, and structured output
+      // must never mutate the parent's result state below.
+      if (observation.consumed) {
+        if (cancelled) break;
+        continue;
+      }
       emitEvent(event);
       if (event?.type === "tool_progress" && event.tool_name) noteToolUse(event.tool_name);
       for (const toolUse of structuredOutputToolUses(event)) {
@@ -979,6 +998,11 @@ export async function generateClaudeResponse(systemPrompt, options) {
       }
     }
   } finally {
+    drainSubagents(cancelled
+      ? "subagent cancelled with the parent run"
+      : errorMessage || structuredTerminalFailure
+        ? "subagent stopped because the Claude SDK stream failed"
+        : "subagent stream closed before completion");
     try { stream?.close?.(); } catch { /* best effort after every terminal path */ }
     if (abortSignal) abortSignal.removeEventListener?.("abort", abortHandler);
   }
@@ -1041,19 +1065,14 @@ export async function generateClaudeResponse(systemPrompt, options) {
     },
   });
 
-  const configuredSubagents = Array.isArray(options.nativeSubagents?.teammates)
-    ? options.nativeSubagents.teammates.map((entry) => entry?.name).filter(Boolean)
-    : [];
+  const observedSubagents = subagentNormalizer.nativeSubagentsUsed();
   const capabilitiesUsed = buildCapabilitiesUsed({
     promptCacheActive: cachedTokens > 0 || cacheCreationTokens > 0,
     thinkingEnabled: thinkingObserved ? true : null,
     structuredOutputEnforced: !!options.outputSchema,
-    // Claude SDK doesn't surface a per-call "subagent was invoked" signal,
-    // so we report null when subagents were configured (unknown) and false
-    // when none were configured (definitely not).
-    subagentInvoked: configuredSubagents.length > 0 ? null : false,
+    subagentInvoked: subagentNormalizer.subagentInvoked(),
     mcpServersUsed: Object.keys(mcpServers || {}),
-    nativeSubagentsUsed: configuredSubagents,
+    nativeSubagentsUsed: observedSubagents,
     toolCompactionApplied: toolCompactionAppliedFromWarnings(runtimeWarnings),
     contextCompactionApplied: null, // Claude SDK doesn't use the runtime compaction layer
   });

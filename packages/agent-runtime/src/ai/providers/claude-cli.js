@@ -25,7 +25,7 @@ import {
   claudeSandboxPolicyProblem,
 } from "./claude-sandbox.js";
 import { resolveSandboxPolicy } from "../../agent/tools/shared/tool-context.js";
-import { createClaudeSubagentTracker } from "./claude-subagent-transcript.js";
+import { createClaudeSubagentActivityNormalizer } from "./claude-subagent-activity.js";
 
 const CODEX_CLI_SANDBOX_POLICY_UNSUPPORTED =
   "Direct Codex CLI cannot enforce mono-agent's native srt sandbox scopes. Remove the mono-agent sandbox policy or use a Pi runtime for exact readableRoots, writableRoots, denyWrite, and network rules.";
@@ -616,11 +616,29 @@ export async function generateCliResponse(systemPrompt, options = {}) {
     fileChangeSnapshots: new Map(),
     thinkingBuffer: createThinkingBuffer(),
   };
-  // Native subagents stream nothing into this stdout; their work is recoverable
-  // only by replaying the transcript that task_notification points at.
-  const subagentTracker = resolved.sdk === "claude-code" ? createClaudeSubagentTracker() : null;
+  const subagentNormalizer = resolved.sdk === "claude-code"
+    ? createClaudeSubagentActivityNormalizer()
+    : null;
+  function emitSubagentEvents(activityEvents) {
+    for (const activity of activityEvents) {
+      events.push(activity);
+      options.onEvent?.(activity);
+    }
+  }
+  function drainSubagents(reason) {
+    if (!subagentNormalizer) return;
+    emitSubagentEvents(subagentNormalizer.drain(reason));
+  }
+  function observedSubagentCapabilities() {
+    if (!subagentNormalizer) return { invoked: null, names: [] };
+    return {
+      invoked: subagentNormalizer.subagentInvoked(),
+      names: subagentNormalizer.nativeSubagentsUsed(),
+    };
+  }
 
   const stderrTail = createStderrTail({ limit: 8 * 1024 });
+  let abortHandler = null;
   try {
     const child = spawn(commandSpec.command, commandSpec.args, {
       cwd: commandSpec.cwd,
@@ -642,14 +660,21 @@ export async function generateCliResponse(systemPrompt, options = {}) {
         options.onEvent?.(ev);
         return;
       }
+      // Capture the provider session before a child event is consumed. Claude
+      // uses the same session id on parent and child records.
+      const candidateSessionId = raw.session_id ?? raw.sessionId ?? raw.thread_id ?? null;
+      if (typeof candidateSessionId === "string" && candidateSessionId.trim().length > 0) {
+        providerSessionId = candidateSessionId.trim();
+      }
+      const observation = subagentNormalizer?.observe(raw);
+      if (observation) emitSubagentEvents(observation.events);
+      // Child messages must not be normalized, added to parent text, counted as
+      // parent usage, or considered for the parent's StructuredOutput result.
+      if (observation?.consumed) return;
       const ev = normalizeCliEvent(raw, cliEventContext);
       if (ev) {
         events.push(ev);
         options.onEvent?.(ev);
-      }
-      for (const activity of subagentTracker?.observe(raw) ?? []) {
-        events.push(activity);
-        options.onEvent?.(activity);
       }
       if (!isCodexReasoningEvent(raw)) {
         const text = textFromEvent(raw);
@@ -657,32 +682,41 @@ export async function generateCliResponse(systemPrompt, options = {}) {
       }
       captureStructuredOutputFromRaw(raw);
       if (raw.usage) usage = raw.usage;
-      // intelligence-ramp Phase 5.1: capture session_id from CLI events so the
-      // coordinator can chain it on the next continuation. Claude Code emits
-      // session_id on the init system message and again on the result event.
-      const candidateSessionId = raw.session_id ?? raw.sessionId ?? raw.thread_id ?? null;
-      if (typeof candidateSessionId === "string" && candidateSessionId.trim().length > 0) {
-        providerSessionId = candidateSessionId.trim();
-      }
       if (raw.type === "error") {
         const rawError = raw.message || raw.error || "cli error";
         errorMessage = typeof rawError === "string" ? rawError : JSON.stringify(rawError);
         failureKind = "provider_unavailable";
+        drainSubagents("subagent stopped because the Claude CLI stream failed");
       }
       const resultError = resultEventError(raw, commandSpec.command);
       if (resultError) {
         errorMessage = resultError.message;
         failureKind = resultError.failureKind;
+        drainSubagents("subagent stopped because the Claude CLI stream failed");
       }
     });
 
+    child.on("error", (error) => {
+      if (!errorMessage) errorMessage = error?.message || String(error);
+      failureKind ||= "provider_unavailable";
+      drainSubagents("subagent stopped because the Claude CLI process failed");
+    });
+
     if (options.abortSignal) {
-      const abort = () => child.kill("SIGTERM");
-      if (options.abortSignal.aborted) abort();
-      else options.abortSignal.addEventListener("abort", abort, { once: true });
+      abortHandler = () => {
+        drainSubagents("subagent cancelled with the parent run");
+        child.kill("SIGTERM");
+      };
+      if (options.abortSignal.aborted) abortHandler();
+      else options.abortSignal.addEventListener("abort", abortHandler, { once: true });
     }
 
     const exitCode = await new Promise((resolve) => child.on("close", resolve));
+    drainSubagents(options.abortSignal?.aborted
+      ? "subagent cancelled with the parent run"
+      : exitCode === 0
+        ? "subagent stream closed before completion"
+        : "subagent stopped because the Claude CLI process failed");
     const stderrText = stderrTail.toString().trim();
     let cliErrorCode = null;
     if (exitCode !== 0 && !errorMessage) errorMessage = stderrText || `${commandSpec.command} exited ${exitCode}`;
@@ -714,6 +748,7 @@ export async function generateCliResponse(systemPrompt, options = {}) {
       cache_creation_tokens: cacheCreationTokens || null,
       cost_usd: costUsd,
     };
+    const subagentCapabilities = observedSubagentCapabilities();
     return {
       text,
       structuredResult,
@@ -741,14 +776,18 @@ export async function generateCliResponse(systemPrompt, options = {}) {
         promptCacheActive: (cachedTokens || 0) > 0 || (cacheCreationTokens || 0) > 0,
         thinkingEnabled: null,
         structuredOutputEnforced: !!options.outputSchema,
-        subagentInvoked: null,
+        subagentInvoked: subagentCapabilities.invoked,
         mcpServersUsed: Object.keys(options.mcpServers || {}),
-        nativeSubagentsUsed: [],
+        nativeSubagentsUsed: subagentCapabilities.names,
         toolCompactionApplied: false,
         contextCompactionApplied: null,
       }),
     };
   } catch (err) {
+    drainSubagents(options.abortSignal?.aborted
+      ? "subagent cancelled with the parent run"
+      : "subagent stopped because the Claude CLI process failed");
+    const subagentCapabilities = observedSubagentCapabilities();
     return {
       text: texts[texts.length - 1] || null,
       structuredResult,
@@ -774,14 +813,17 @@ export async function generateCliResponse(systemPrompt, options = {}) {
         promptCacheActive: null,
         thinkingEnabled: null,
         structuredOutputEnforced: !!options.outputSchema,
-        subagentInvoked: null,
+        subagentInvoked: subagentCapabilities.invoked,
         mcpServersUsed: Object.keys(options.mcpServers || {}),
-        nativeSubagentsUsed: [],
+        nativeSubagentsUsed: subagentCapabilities.names,
         toolCompactionApplied: false,
         contextCompactionApplied: null,
       }),
     };
   } finally {
+    if (abortHandler && options.abortSignal) {
+      options.abortSignal.removeEventListener?.("abort", abortHandler);
+    }
     try { rmSync(dir, { recursive: true, force: true }); } catch {}
   }
 }

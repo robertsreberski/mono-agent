@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import sdkSubagentFixture from "./fixtures/claude-sdk-subagent-events.json";
 
 const queryMock = vi.hoisted(() => vi.fn());
 
@@ -212,6 +213,37 @@ describe("Claude Agent SDK 0.3 effort and query contract", () => {
 });
 
 describe("Claude Agent SDK terminal handling", () => {
+  it("uses the shared live normalizer without leaking child text into the parent result", async () => {
+    installStream([
+      ...sdkSubagentFixture,
+      resultEvent({ result: "PARENT_ONLY_TEXT", session_id: "sdk-session" }),
+    ]);
+    const emitted = [];
+    const result = await generateClaudeResponse("system", options({ onEvent: (event) => emitted.push(event) }));
+
+    expect(result).toMatchObject({
+      text: "PARENT_ONLY_TEXT",
+      providerSessionId: "sdk-session",
+      capabilitiesUsed: {
+        subagent_invoked: true,
+        native_subagents_used: ["code-reviewer"],
+      },
+    });
+    expect(result.text).not.toContain("CHILD_ONLY_TEXT");
+    expect(result.events.some((event) => event.parent_tool_use_id === "toolu_sdk_parent")).toBe(false);
+    expect(result.events.filter((event) => event.type === "subagent_activity").map((event) => event.phase)).toEqual([
+      "agent_started",
+      "message",
+      "message",
+      "started",
+      "completed",
+      "message",
+      "agent_completed",
+    ]);
+    expect(emitted).toEqual(result.events);
+    expect(queryMock.mock.calls[0][0].options).not.toHaveProperty("forwardSubagentText");
+  });
+
   it.each([
     ["authentication_failed", "provider_auth", "authentication", false],
     ["overloaded", "provider_unavailable", "provider_unavailable", true],
@@ -298,19 +330,39 @@ describe("Claude Agent SDK terminal handling", () => {
       if (!queryOptions) return undefined;
       captured = queryOptions;
       const stream = (async function* () {
+        yield sdkSubagentFixture[0];
+        yield sdkSubagentFixture[1];
+        yield sdkSubagentFixture[2];
         await new Promise((resolve) => queryOptions.abortController.signal.addEventListener("abort", resolve, { once: true }));
       })();
       stream.close = close;
       return stream;
     });
     const caller = new AbortController();
-    const pending = generateClaudeResponse("system", options({ abortSignal: caller.signal }));
-    await vi.waitFor(() => expect(captured).toBeDefined());
+    const emitted = [];
+    const pending = generateClaudeResponse("system", options({
+      abortSignal: caller.signal,
+      onEvent: (event) => emitted.push(event),
+    }));
+    await vi.waitFor(() => {
+      expect(captured).toBeDefined();
+      expect(emitted.some((event) => event.phase === "started" && event.name === "code-reviewer▸Read")).toBe(true);
+    });
     caller.abort();
     const result = await pending;
     expect(captured.abortController).not.toBe(caller);
     expect(captured.abortController.signal.aborted).toBe(true);
     expect(close).toHaveBeenCalled();
     expect(result.cancelled).toBe(true);
+    expect(result.events.filter((event) => event.phase === "completed")).toEqual([
+      expect.objectContaining({
+        id: "agent:toolu_sdk_parent:toolu_sdk_child",
+        isError: true,
+        content: "subagent cancelled with the parent run",
+      }),
+    ]);
+    expect(result.events.filter((event) => event.phase === "agent_completed")).toEqual([
+      expect.objectContaining({ isError: true, content: "subagent cancelled with the parent run" }),
+    ]);
   });
 });
