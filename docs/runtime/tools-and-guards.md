@@ -58,12 +58,16 @@ back in the result so the model stops asking for it:
 }
 ```
 
-Omitting `inline.allowedTools` caps authored subagents at the parent agent's own
-built-ins (its `tools.allowedTools` minus `tools.disallowedTools`), so a helper
-never reaches further than the agent that built it. Omitting `tools` on the call
-gives a read-only helper. Set `"inline": { "enabled": false }` to allow only
-pre-declared profiles; the `Agent` tool then takes exactly `{prompt, name?,
-description?}` with `name` restricted to the configured profiles.
+The same ceiling clamps the built-in general-purpose profile to the intersection
+of its read-only defaults; configured profiles retain their explicit contracts,
+and a ceiling with no read-only tools rejects general-purpose instead of widening
+it. Omitting `inline.allowedTools` caps authored subagents and general-purpose at
+the parent agent's own built-ins (its `tools.allowedTools` minus
+`tools.disallowedTools`), so a helper never reaches further than the agent that
+built it. Omitting `tools` on the call gives a read-only helper. Set `"inline": {
+"enabled": false }` to allow only pre-declared profiles; the `Agent` tool then
+takes exactly `{prompt, name?, description?}` with `name` restricted to the
+configured profiles.
 
 **What comes back.** The main agent receives the subagent's final answer plus a
 compact log — one line per tool call with a short argument summary, ok/error,
