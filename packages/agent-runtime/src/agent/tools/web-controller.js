@@ -1,6 +1,8 @@
 // @ts-check
 
 import { randomUUID } from "node:crypto";
+import { readToolRuntime } from "./shared/runtime-context.js";
+import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { performWebFetch } from "./web-fetch.js";
 import { performWebSearch } from "./web-search.js";
 
@@ -108,11 +110,20 @@ export function createWebToolController({
     namespace,
 
     async search(params, execution = {}) {
-      // The key must pin the backend, the endpoint AND the sandbox policy. The
-      // old params-only key was safe while the cache lived and died with one
-      // run; process-wide it would let controllers with different backends — or
-      // a stricter network policy — read each other's results.
-      const key = stableKey({ params, searchConfig, sandboxPolicy });
+      // The key must pin the backend, the endpoint AND the network policy the
+      // search actually ran under. A params-only key was safe while the cache
+      // lived and died with one run; process-wide it would let controllers with
+      // different backends read each other's results.
+      //
+      // The policy has to be the RESOLVED one, computed exactly as
+      // performWebSearch computes it: the effective policy is the context
+      // policy merged with the request policy, so keying on the request half
+      // alone would let a run whose context denies network read entries a
+      // network-allowed run had populated. Resolved per call because
+      // readToolRuntime() is mutable process state.
+      const resolvedCtx = ctx ?? readToolRuntime();
+      const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
+      const key = stableKey({ params, searchConfig, policy });
       return cachedSearch(key, async () => performWebSearch(params, {
         searchConfig,
         sandboxPolicy,

@@ -257,9 +257,7 @@ async function searchOneQuery(query, options) {
         emptySuccess = result;
         continue;
       }
-      if (result.rateLimited) {
-        backendCooldownUntil.set(backend, Date.now() + keylessThrottle.cooldownMs);
-      }
+      // The cooldown is already open — rateLimited() sets it at detection.
       failures.push(result);
     }
     if (emptySuccess) return { ...emptySuccess, failures };
@@ -414,6 +412,19 @@ async function keylessHtmlSearch(spec, options) {
   try {
     const waitMs = reserveKeylessSlot(spec.backend);
     if (waitMs > 0) await sleep(waitMs, options.signal);
+    // Query variants all clear the cooldown check together and then queue here,
+    // so by the time this one is admitted a sibling may already have been
+    // blocked. Without this second look the very first block still costs a full
+    // round of requests against a backend we know is refusing them.
+    if (backendInCooldown(spec.backend)) {
+      return {
+        ok: false,
+        backend: spec.backend,
+        message: `${spec.backend} skipped: cooling down after rate limiting.`,
+        retryable: true,
+        cooldown: true,
+      };
+    }
     const response = await options.fetchImpl(spec.url, {
       // "manual", not "error": these engines answer a throttled query with a
       // redirect to a captcha page, and "error" collapses that into an opaque
@@ -502,7 +513,12 @@ function searchStartpage(query, options) {
   }, options);
 }
 
+// Opens the cooldown at the moment of detection rather than letting the caller
+// do it. The semaphore slot is released before this result reaches the caller,
+// so a queued sibling would otherwise be admitted and re-check the cooldown
+// while it was still closed, and every variant in flight would hit the wire.
 function rateLimited(spec, detail) {
+  backendCooldownUntil.set(spec.backend, Date.now() + keylessThrottle.cooldownMs);
   return {
     ok: false,
     backend: spec.backend,

@@ -272,6 +272,28 @@ describe("WebSearch", () => {
     expect(secondRoundUrls.some((url) => url.includes("duckduckgo"))).toBe(false);
   });
 
+  it("stops queued query variants once a sibling has been blocked", async () => {
+    // All four variants clear the cooldown check together, then queue behind the
+    // concurrency bound. The first block must stop the ones still waiting.
+    __resetWebSearchThrottleForTests({ minSpacingMs: 0, maxConcurrency: 1 });
+    const duckCalls = [];
+    const fetchImpl = vi.fn(async (url) => {
+      if (String(url).includes("duckduckgo")) {
+        duckCalls.push(String(url));
+        return new Response("<html>anomaly</html>", { status: 202 });
+      }
+      return new Response('<div class="result"><a class="result-link" href="https://example.com/a">A</a></div>');
+    });
+
+    await performWebSearch({
+      query: "one",
+      alternate_queries: ["two", "three", "four"],
+    }, { searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext() });
+
+    // Only the variant that discovered the block should have reached the wire.
+    expect(duckCalls).toHaveLength(1);
+  });
+
   it("classifies a captcha redirect as rate limiting instead of a transport fault", async () => {
     const fetchImpl = vi.fn(async (url, init) => {
       expect(init.redirect).toBe("manual");
@@ -343,24 +365,33 @@ describe("WebSearch", () => {
     __resetWebSearchThrottleForTests({ minSpacingMs: 0, maxConcurrency: 2 });
     let inFlight = 0;
     let peak = 0;
+    let admitAll;
+    // Every request parks here, so the bound is observed by construction rather
+    // than by racing a timer — under CPU contention a sleep-based version can
+    // let requests finish before their siblings start and read as "bounded".
+    const gate = new Promise((resolvePromise) => { admitAll = resolvePromise; });
     const fetchImpl = vi.fn(async () => {
       inFlight += 1;
       peak = Math.max(peak, inFlight);
-      await new Promise((resolvePromise) => { setTimeout(resolvePromise, 10); });
+      await gate;
       inFlight -= 1;
       // DuckDuckGo markup, so every query is answered by the first backend and
       // the call count reflects the fan-out alone.
       return new Response('<div class="result"><a class="result__a" href="https://example.com/a">A</a></div>');
     });
 
-    await performWebSearch({
+    const search = performWebSearch({
       query: "one",
       alternate_queries: ["two", "three", "four"],
     }, { searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext() });
 
-    expect(fetchImpl.mock.calls.length).toBe(4);
-    // Exactly 2, not "at most 2": a lower peak would mean the fan-out had
-    // silently become serial and the bound was never actually exercised.
+    // Two run, two stay queued: proves the fan-out is concurrent AND capped.
+    await vi.waitFor(() => { expect(inFlight).toBe(2); });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+    admitAll();
+    await search;
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
     expect(peak).toBe(2);
   });
 
@@ -699,6 +730,37 @@ describe("run-scoped web controller and browser isolation", () => {
     expect(searxngResult.outcome.cacheHit).toBe(false);
     expect(searxngResult.outcome.backend).toBe("searxng");
     expect(fetchImpl.mock.calls.length).toBeGreaterThan(callsAfterKeyless);
+  });
+
+  it("does not serve cached searches to a run whose context denies network", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      '<div class="result"><a class="result__a" href="https://example.com/a">A</a></div>',
+    ));
+    const searchConfig = { backend: "keyless" };
+    const workspace = tempWorkspace();
+    // The effective policy is the CONTEXT policy merged with the request
+    // policy, so two controllers can share a request policy (here: none) and
+    // still run under different network rules.
+    const allowed = createWebToolController({
+      searchConfig,
+      fetchImpl,
+      ctx: { workspace, sandbox: passthroughSandbox },
+    });
+    await allowed.search({ query: "policy" });
+
+    const denied = createWebToolController({
+      searchConfig,
+      fetchImpl,
+      ctx: {
+        workspace,
+        sandbox: passthroughSandbox,
+        sandboxPolicy: { mode: "strict", network: { mode: "none", allowlist: [] } },
+      },
+    });
+    const deniedResult = await denied.search({ query: "policy" });
+
+    expect(deniedResult.outcome.cacheHit).toBe(false);
+    expect(deniedResult).toMatchObject({ error: true, outcome: { code: "network_denied" } });
   });
 
   it("uses a fresh locked agent-browser session and removes its temporary config", async () => {
