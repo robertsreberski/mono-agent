@@ -17,6 +17,31 @@ the configuration schema.
 
 ---
 
+## 0.18.2
+
+- **Normalized native-subagent activity:** Claude SDK/CLI and Codex app-server
+  children now emit the exact `subagent_activity` lifecycle. Treat
+  `subagent.id` as the parent attachment key, `nativeId` only as provider
+  correlation metadata, and `phase: "message"` as child prose rather than
+  parent answer text or a completed tool call.
+- **Explicit native configuration trust:** Claude SDK filesystem settings stay
+  disabled unless `settingSources` opts into `user`, `project`, or `local`.
+  Those sources may execute hooks and plugins, not only load agents. Codex
+  repository instructions remain disabled unless `codexLoadProjectDocs` is
+  true; explicit app-server arguments remain authoritative.
+- **Provider-owned Codex agents:** non-empty caller-defined `nativeSubagents`
+  teammates now fail direct Codex startup with `skipped_capability_mismatch` so
+  a router may continue to Claude. Do not synthesize `collaborationMode` or
+  assume Claude profile definitions are portable to Codex.
+- **Per-attempt policy projection:** `resolveAttempt().policyOptions` may replace
+  only `allowedTools`, `disallowedTools`, and `permissionMode` for the active
+  route. General resolver `options` still cannot replace protected request
+  fields.
+- **Pi inline helper ceiling:** the runtime-owned `general-purpose` profile is
+  limited to its read-only defaults intersected with `subagents.inline.allowedTools`.
+  An empty intersection disables that fallback profile rather than restoring
+  wider defaults.
+
 ## 0.15.2
 
 - **Tool-policy capability discovery:** built-in bridge capabilities now report
