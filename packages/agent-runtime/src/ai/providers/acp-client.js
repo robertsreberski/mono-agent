@@ -462,7 +462,7 @@ export async function connectAcpProfile(profileId, options) {
   const capabilities = clientCapabilities(descriptor);
   const sandbox = options.sandbox || passthroughSandbox;
   const commandCwd = descriptor.cwd || descriptor.workspacePath || options.cwd || process.cwd();
-  if (!isAbsolute(commandCwd)) {
+  if (typeof commandCwd !== "string" || !isAbsolute(commandCwd)) {
     throw new AcpClientError("invalid_profile", "ACP child cwd must be absolute.");
   }
   let prepared;
@@ -742,23 +742,23 @@ export async function connectAcpProfile(profileId, options) {
       return request(methods.agent.session.new, validateSessionRequest(params, descriptor, initializeResult));
     },
     async loadSession(params) {
+      const requestParams = validateSessionRequest(params, descriptor, initializeResult);
       requireCapability("load", "session/load");
-      return request(methods.agent.session.load, validateSessionRequest(params, descriptor, initializeResult));
+      return request(methods.agent.session.load, requestParams);
     },
     async resumeSession(params) {
+      const requestParams = validateSessionRequest(params, descriptor, initializeResult);
       requireCapability("resume", "session/resume");
-      return request(methods.agent.session.resume, validateSessionRequest(params, descriptor, initializeResult));
+      return request(methods.agent.session.resume, requestParams);
     },
     async closeSession(sessionId) {
       requireCapability("close", "session/close");
       return request(methods.agent.session.close, { sessionId });
     },
     async listSessions(params = {}) {
+      const requestParams = validateSessionListRequest(params);
       requireCapability("list", "session/list");
-      if (params.cwd != null && !isAbsolute(params.cwd)) {
-        throw new AcpClientError("invalid_request", "ACP session/list cwd must be absolute.");
-      }
-      return request(methods.agent.session.list, params);
+      return request(methods.agent.session.list, requestParams);
     },
     async deleteSession(sessionId) {
       requireCapability("delete", "session/delete");
@@ -829,19 +829,38 @@ function validateSessionRequest(params, descriptor, initializeResult) {
   if (!params || typeof params !== "object" || Array.isArray(params)) {
     throw new AcpClientError("invalid_request", "ACP session request must be an object.");
   }
-  if (!isAbsolute(params.cwd || "")) {
+  if (typeof params.cwd !== "string" || !isAbsolute(params.cwd)) {
     throw new AcpClientError("invalid_request", "ACP session cwd must be absolute.");
   }
-  const additionalDirectories = params.additionalDirectories || [];
-  if (!Array.isArray(additionalDirectories) || additionalDirectories.some((value) => !isAbsolute(value))) {
+  const additionalDirectories = params.additionalDirectories === undefined
+    ? []
+    : params.additionalDirectories;
+  if (!Array.isArray(additionalDirectories)
+    || additionalDirectories.some((value) => typeof value !== "string" || !isAbsolute(value))) {
     throw new AcpClientError("invalid_request", "ACP additionalDirectories must contain absolute paths.");
   }
   if (additionalDirectories.length > 0
     && initializeResult.agentCapabilities?.sessionCapabilities?.additionalDirectories == null) {
     throw new AcpClientError("capability_missing", "ACP agent did not advertise additionalDirectories.");
   }
-  const mcpServers = validateMcpServers(params.mcpServers || [], descriptor, initializeResult);
+  const mcpServers = validateMcpServers(
+    params.mcpServers === undefined ? [] : params.mcpServers,
+    descriptor,
+    initializeResult,
+  );
   return { ...params, additionalDirectories, mcpServers };
+}
+
+/** @param {any} params */
+function validateSessionListRequest(params) {
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    throw new AcpClientError("invalid_request", "ACP session/list request must be an object.");
+  }
+  if (params.cwd !== undefined
+    && (typeof params.cwd !== "string" || !isAbsolute(params.cwd))) {
+    throw new AcpClientError("invalid_request", "ACP session/list cwd must be absolute.");
+  }
+  return params;
 }
 
 /** @param {any[]} servers @param {any} descriptor @param {any} initializeResult */
@@ -862,7 +881,7 @@ function validateMcpServers(servers, descriptor, initializeResult) {
     const type = server.type || "stdio";
     if (type === "stdio") {
       if (policy.stdio !== true) throw new AcpClientError("capability_missing", "ACP stdio MCP is disabled by profile policy.");
-      if (!isAbsolute(server.command || "")) {
+      if (typeof server.command !== "string" || !isAbsolute(server.command)) {
         throw new AcpClientError("invalid_request", "ACP stdio MCP command must be absolute.");
       }
       stringArray(server.args, "ACP MCP args");

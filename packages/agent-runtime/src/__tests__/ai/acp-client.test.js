@@ -158,6 +158,28 @@ describe("ACP v1 client lifecycle", () => {
     });
   });
 
+  it("returns invalid_request for malformed session path inputs", async () => {
+    const connection = await connectAcpProfile("personal-agent", host(profile()));
+    try {
+      const requests = [
+        () => connection.newSession({ cwd: 42, mcpServers: [] }),
+        () => connection.loadSession({ sessionId: "session-1", cwd: {}, mcpServers: [] }),
+        () => connection.resumeSession({ sessionId: "session-1", cwd: root, additionalDirectories: [42], mcpServers: [] }),
+        () => connection.listSessions(null),
+        () => connection.listSessions({ cwd: 42 }),
+      ];
+      for (const request of requests) {
+        await expect(request()).rejects.toMatchObject({
+          name: "AcpClientError",
+          code: "invalid_request",
+          details: { code: "invalid_request" },
+        });
+      }
+    } finally {
+      await connection.close();
+    }
+  });
+
   it("accepts a valid inbound JSON-RPC frame above the old 10 MiB scanner ceiling", async () => {
     const descriptor = profile("large-frame", {
       process: {

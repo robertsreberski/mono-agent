@@ -190,7 +190,9 @@ function normalizeUpdate(update, state) {
 function workspaceFor(descriptor, req) {
   if (descriptor.workspaceOwner === "agent") return descriptor.workspacePath;
   const cwd = req.cwd || descriptor.workspacePath || descriptor.cwd || process.cwd();
-  if (!isAbsolute(cwd)) throw new AcpClientError("invalid_request", "ACP runtime cwd must be absolute.");
+  if (typeof cwd !== "string" || !isAbsolute(cwd)) {
+    throw new AcpClientError("invalid_request", "ACP runtime cwd must be absolute.");
+  }
   return cwd;
 }
 
