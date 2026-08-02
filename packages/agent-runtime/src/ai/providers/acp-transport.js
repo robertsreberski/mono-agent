@@ -1,11 +1,108 @@
 // @ts-check
 
+import { AsyncLocalStorage } from "node:async_hooks";
+
 // Strict, bounded ACP v1 newline transport for an owned stdio child process.
 // The SDK's stock ndJsonStream intentionally tolerates malformed input and its
 // line buffer is unbounded, which is a poor fit for a long-lived host boundary.
 
 const DEFAULT_MAX_LINE_BYTES = 1024 * 1024;
 const MAX_MAX_LINE_BYTES = 16 * 1024 * 1024;
+
+// @agentclientprotocol/sdk 1.3.0 sends the trailing arguments of these
+// diagnostics directly to console. Those values include raw JSON-RPC payloads
+// (and, for malformed notifications, Zod error details derived from them).
+// Preserve the useful classification while dropping payload-bearing details.
+const ACP_SDK_PAYLOAD_DIAGNOSTICS = Object.freeze({
+  error: new Set([
+    "Invalid message",
+    "Error handling notification",
+    "Got response to unknown request",
+    "Failed to parse JSON message:",
+    "ACP connection router stopped unexpectedly:",
+  ]),
+  warn: new Set([
+    "Skipping JSON line that is not an object:",
+  ]),
+});
+const acpSdkDiagnosticScope = new AsyncLocalStorage();
+let activeAcpSdkDiagnosticGuards = 0;
+/** @type {null|{
+ *   originalError: typeof console.error,
+ *   originalWarn: typeof console.warn,
+ *   guardedError: typeof console.error,
+ *   guardedWarn: typeof console.warn,
+ * }} */
+let acpSdkConsoleGuard = null;
+
+function installAcpSdkConsoleGuard() {
+  activeAcpSdkDiagnosticGuards += 1;
+  if (acpSdkConsoleGuard) return;
+
+  const originalError = console.error;
+  const originalWarn = console.warn;
+  /** @type {typeof console.error} */
+  const guardedError = (...args) => {
+    const contentFree = args[0];
+    if (acpSdkDiagnosticScope.getStore() === true
+      && typeof contentFree === "string"
+      && ACP_SDK_PAYLOAD_DIAGNOSTICS.error.has(contentFree)) {
+      Reflect.apply(originalError, console, [contentFree]);
+      return;
+    }
+    Reflect.apply(originalError, console, args);
+  };
+  /** @type {typeof console.warn} */
+  const guardedWarn = (...args) => {
+    const contentFree = args[0];
+    if (acpSdkDiagnosticScope.getStore() === true
+      && typeof contentFree === "string"
+      && ACP_SDK_PAYLOAD_DIAGNOSTICS.warn.has(contentFree)) {
+      Reflect.apply(originalWarn, console, [contentFree]);
+      return;
+    }
+    Reflect.apply(originalWarn, console, args);
+  };
+
+  acpSdkConsoleGuard = { originalError, originalWarn, guardedError, guardedWarn };
+  console.error = guardedError;
+  console.warn = guardedWarn;
+}
+
+function releaseAcpSdkConsoleGuard() {
+  activeAcpSdkDiagnosticGuards = Math.max(0, activeAcpSdkDiagnosticGuards - 1);
+  if (activeAcpSdkDiagnosticGuards !== 0 || !acpSdkConsoleGuard) return;
+  const guard = acpSdkConsoleGuard;
+  acpSdkConsoleGuard = null;
+  if (console.error === guard.guardedError) console.error = guard.originalError;
+  if (console.warn === guard.guardedWarn) console.warn = guard.originalWarn;
+}
+
+/**
+ * Open one SDK connection inside an async context that strips payload-bearing
+ * SDK console arguments. The SDK starts its detached receive loop during
+ * `connect`, so descendants retain this scope without muting concurrent host
+ * work or other ACP connections.
+ *
+ * @template {{closed: Promise<unknown>}} T
+ * @param {() => T} connect
+ * @returns {T}
+ */
+export function connectWithSafeAcpSdkDiagnostics(connect) {
+  installAcpSdkConsoleGuard();
+  let connection;
+  try {
+    connection = acpSdkDiagnosticScope.run(true, connect);
+  } catch (error) {
+    releaseAcpSdkConsoleGuard();
+    throw error;
+  }
+  void Promise.resolve(connection.closed).then(
+    releaseAcpSdkConsoleGuard,
+    releaseAcpSdkConsoleGuard,
+  );
+  return connection;
+}
 
 export class AcpTransportError extends Error {
   /**

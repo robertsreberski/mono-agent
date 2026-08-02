@@ -129,6 +129,7 @@ MonoAcpInteractionHandler
 MonoAcpInteractionRequest
 MonoAcpListSessionsRequest
 MonoAcpProfileResolver
+MonoAcpSessionControlOptions
 MonoRuntimeApprovalDecision
 MonoRuntimeApprovalRequest
 MonoRuntimeAttemptContext
@@ -257,13 +258,21 @@ ACP is a dedicated transport mode, not a CLI alias: persist and pass the tuple
 `sdk: "acp"`, model `acp:<profile-id>`, and `executionMode: "acp"`. Supply a
 typed `resolveAcpProfile` callback to `createMonoRuntime()` or the individual
 run. `onAcpInteractionRequest` handles host permission and elicitation requests
-when a profile-specific callback is absent.
+when a profile-specific callback is absent. Bind one host-owned exact 32-byte
+binary `acpSessionTokenKey` at `createMonoRuntime()` (or on each ACP run) and
+keep it stable across restarts. The key is required for every ACP task run and
+for every operation that emits or consumes a session handle.
 
 The exported `probeAcpProfile`, `authenticateAcpProfile`, `logoutAcpProfile`,
 `listAcpSessions`, and `deleteAcpSession` wrappers accept the same resolver and
-policy context. They deliberately do not accept a caller-provided sandbox
-implementation: runtime-adapter injects its owned implementation before calling
-the product-neutral kernel. The underlying agent service is never managed or
+policy context. `listAcpSessions` and `deleteAcpSession` require
+`MonoAcpSessionControlOptions`, including `acpSessionTokenKey`; probe,
+authentication, and logout do not consume handles and leave the key optional.
+The confidential authenticated v2 handles must be preserved byte-for-byte and
+must not be compared for equality. Legacy v1 handles are rejected. The wrappers
+deliberately do not accept a caller-provided sandbox implementation:
+runtime-adapter injects its owned implementation before calling the
+product-neutral kernel. The underlying agent service is never managed or
 stopped; only the operation-owned stdio bridge process is reaped.
 
 ### Local Pi providers

@@ -111,6 +111,7 @@ export type {
   MonoAcpInteractionRequest,
   MonoAcpListSessionsRequest,
   MonoAcpProfileResolver,
+  MonoAcpSessionControlOptions,
   MonoRuntimeApprovalDecision,
   MonoRuntimeApprovalRequest,
   MonoRuntimeBackendCapabilities,

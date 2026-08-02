@@ -41,6 +41,8 @@ export type MonoAcpInteractionHandler = (
 export interface MonoAcpControlOptions {
   readonly resolveAcpProfile: MonoAcpProfileResolver;
   readonly onAcpInteractionRequest?: MonoAcpInteractionHandler;
+  /** Optional for probe/auth/logout; handle-bearing operations require it. */
+  readonly acpSessionTokenKey?: Uint8Array;
   readonly sandboxPolicy?: SandboxPolicy;
   readonly sandboxEngine?: MonoRuntimeSandboxEngine;
   readonly cwd?: string;
@@ -48,6 +50,11 @@ export interface MonoAcpControlOptions {
   readonly context?: Readonly<Record<string, unknown>>;
   /** The sandbox implementation is owned and injected by runtime-adapter. */
   readonly sandbox?: never;
+}
+
+export interface MonoAcpSessionControlOptions extends MonoAcpControlOptions {
+  /** Host-owned exact 32-byte key for confidential authenticated ACP handles. */
+  readonly acpSessionTokenKey: Uint8Array;
 }
 
 export interface MonoAcpListSessionsRequest {
@@ -243,6 +250,8 @@ export interface RuntimeRunOptions {
   readonly resolveAcpProfile?: MonoAcpProfileResolver;
   /** Per-run permission/elicitation callback; wins over the host default. */
   readonly onAcpInteractionRequest?: MonoAcpInteractionHandler;
+  /** Host-owned exact 32-byte key required for ACP task runs. */
+  readonly acpSessionTokenKey?: Uint8Array;
   /** In-flight user guidance consumed by a provider's native steering API. */
   readonly liveInput?: AsyncIterable<RuntimeLiveInputMessage>;
   // Pi-native provider knobs (optional; ignored by other bridges).
@@ -358,6 +367,8 @@ export interface MonoRuntimeHostOptions extends RuntimeToolOptions {
   readonly resolveAcpProfile?: MonoAcpProfileResolver;
   /** Optional default; a per-run interaction callback wins. */
   readonly onAcpInteractionRequest?: MonoAcpInteractionHandler;
+  /** Optional default host-owned exact 32-byte key for ACP task runs. */
+  readonly acpSessionTokenKey?: Uint8Array;
   readonly persistArtifact?: (artifact: {
     readonly filename: string;
     readonly buffer: Buffer;

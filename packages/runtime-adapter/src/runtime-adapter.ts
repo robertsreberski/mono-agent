@@ -15,6 +15,7 @@ import { monoSandboxImpl } from "./sandbox-impl.js";
 import type {
   MonoAcpControlOptions,
   MonoAcpListSessionsRequest,
+  MonoAcpSessionControlOptions,
   MonoRuntimeBackendCapabilities,
   MonoRuntimeBackendDescriptor,
   MonoRuntimeBackendId,
@@ -115,25 +116,28 @@ export async function logoutAcpProfile(profileId: string, options: MonoAcpContro
 
 export function listAcpSessions(
   profileId: string,
-  options: MonoAcpControlOptions,
+  options: MonoAcpSessionControlOptions,
 ): ReturnType<typeof listKernelAcpSessions>;
 export function listAcpSessions(
   profileId: string,
   request: MonoAcpListSessionsRequest,
-  options: MonoAcpControlOptions,
+  options: MonoAcpSessionControlOptions,
 ): ReturnType<typeof listKernelAcpSessions>;
 export function listAcpSessions(
   profileId: string,
-  requestOrOptions: MonoAcpListSessionsRequest | MonoAcpControlOptions,
-  maybeOptions?: MonoAcpControlOptions,
+  requestOrOptions: MonoAcpListSessionsRequest | MonoAcpSessionControlOptions,
+  maybeOptions?: MonoAcpSessionControlOptions,
 ) {
   const twoArgumentForm = maybeOptions === undefined;
   const request = twoArgumentForm ? {} : requestOrOptions;
-  const options = twoArgumentForm ? requestOrOptions as MonoAcpControlOptions : maybeOptions;
+  const options = twoArgumentForm ? requestOrOptions as MonoAcpSessionControlOptions : maybeOptions;
   return listKernelAcpSessions(profileId, request, acpControlOptions(options));
 }
 
-export async function deleteAcpSession(providerSessionId: string, options: MonoAcpControlOptions) {
+export async function deleteAcpSession(
+  providerSessionId: string,
+  options: MonoAcpSessionControlOptions,
+) {
   return deleteKernelAcpSession(providerSessionId, acpControlOptions(options));
 }
 

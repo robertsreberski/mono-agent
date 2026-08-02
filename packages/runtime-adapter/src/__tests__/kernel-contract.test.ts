@@ -25,6 +25,7 @@ import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptResolution } from "../
 import type {
   MonoAcpInteractionRequest,
   MonoAcpProfileResolver,
+  MonoAcpSessionControlOptions,
   MonoRuntimeBackendCapabilities,
   MonoRuntimeHostOptions,
   RuntimeModelReference,
@@ -62,7 +63,8 @@ type RuntimeRunComparableKeys =
   | "sandboxPolicy"
   | "toolLimits"
   | "compaction"
-  | "prompts";
+  | "prompts"
+  | "acpSessionTokenKey";
 type RuntimeRunComparableOptions = Pick<RuntimeRunOptions, RuntimeRunComparableKeys>;
 type KnownKeys<T> = {
   [K in keyof T]: string extends K
@@ -171,6 +173,17 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
     };
 
     expectTypeOf(assertInteractionContract).parameter(0).toEqualTypeOf<MonoAcpInteractionRequest>();
+  });
+
+  it("requires a binary token key for ACP session management options", () => {
+    expectTypeOf<MonoAcpSessionControlOptions["acpSessionTokenKey"]>()
+      .toEqualTypeOf<Uint8Array>();
+
+    if (false) {
+      // @ts-expect-error list/delete options require the host-owned token key.
+      const missingKey: MonoAcpSessionControlOptions = { resolveAcpProfile: async () => null };
+      assertAssignable<MonoAcpSessionControlOptions>(missingKey);
+    }
   });
 
   it("keeps raw protocol ids out of profile callbacks", () => {

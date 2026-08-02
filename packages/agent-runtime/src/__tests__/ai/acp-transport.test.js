@@ -1,6 +1,9 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { createBoundedAcpStdioStream } from "../../ai/providers/acp-transport.js";
+import {
+  connectWithSafeAcpSdkDiagnostics,
+  createBoundedAcpStdioStream,
+} from "../../ai/providers/acp-transport.js";
 
 function createTransport() {
   const stdin = new PassThrough();
@@ -13,6 +16,50 @@ function createTransport() {
 }
 
 describe("bounded ACP stdio transport", () => {
+  it("drops SDK payload arguments only within the connection async context", async () => {
+    const originalError = console.error;
+    const originalWarn = console.warn;
+    const errors = [];
+    const warnings = [];
+    console.error = (...args) => errors.push(args);
+    console.warn = (...args) => warnings.push(args);
+
+    let closeConnection;
+    let scopedDiagnostics;
+    const closed = new Promise((resolve) => { closeConnection = resolve; });
+    try {
+      connectWithSafeAcpSdkDiagnostics(() => {
+        scopedDiagnostics = new Promise((resolve) => {
+          queueMicrotask(() => {
+            console.error("Error handling notification", { secret: "private-form-value" });
+            console.warn("Skipping JSON line that is not an object:", "private-url-value");
+            resolve();
+          });
+        });
+        return { closed };
+      });
+
+      await scopedDiagnostics;
+      console.error("Error handling notification", { outside: "unchanged" });
+      console.warn("Skipping JSON line that is not an object:", "outside-unchanged");
+
+      expect(errors).toEqual([
+        ["Error handling notification"],
+        ["Error handling notification", { outside: "unchanged" }],
+      ]);
+      expect(warnings).toEqual([
+        ["Skipping JSON line that is not an object:"],
+        ["Skipping JSON line that is not an object:", "outside-unchanged"],
+      ]);
+    } finally {
+      closeConnection();
+      await closed;
+      await Promise.resolve();
+      console.error = originalError;
+      console.warn = originalWarn;
+    }
+  });
+
   it("destroys child stdin on abort without emitting the Web Stream reason as a Node error", async () => {
     const transport = createTransport();
     const errors = [];
