@@ -213,6 +213,39 @@ if (mode === "malformed" || mode === "oversize" || mode === "unterminated" || mo
           },
         });
       }
+      if (text.includes("all-client-callbacks")) {
+        const copiedMeta = { copiedSessionId: ctx.params.sessionId };
+        await ctx.client.request(methods.client.fs.writeTextFile, {
+          sessionId: ctx.params.sessionId,
+          path: `/tmp/${ctx.params.sessionId}`,
+          content: "callback content",
+          _meta: copiedMeta,
+        });
+        await ctx.client.request(methods.client.fs.readTextFile, {
+          sessionId: ctx.params.sessionId,
+          path: `/tmp/${ctx.params.sessionId}`,
+          _meta: copiedMeta,
+        });
+        const terminal = await ctx.client.request(methods.client.terminal.create, {
+          sessionId: ctx.params.sessionId,
+          command: `echo-${ctx.params.sessionId}`,
+          args: [ctx.params.sessionId],
+          _meta: copiedMeta,
+        });
+        const terminalRequest = {
+          sessionId: ctx.params.sessionId,
+          terminalId: terminal.terminalId,
+          _meta: copiedMeta,
+        };
+        await ctx.client.request(methods.client.terminal.output, terminalRequest);
+        await ctx.client.request(methods.client.terminal.waitForExit, terminalRequest);
+        await ctx.client.request(methods.client.terminal.kill, terminalRequest);
+        await ctx.client.request(methods.client.terminal.release, terminalRequest);
+        await ctx.client.notify(methods.client.elicitation.complete, {
+          elicitationId: "elicitation-1",
+          _meta: copiedMeta,
+        });
+      }
       const resource = ctx.params.prompt.find((block) => block.type === "resource_link");
       const answer = process.env.ACP_SHOULD_NOT_LEAK
         ? "environment leaked"

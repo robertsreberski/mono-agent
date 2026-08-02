@@ -85,17 +85,18 @@ const DEFAULT_PROCESS_POLICY = Object.freeze({
  * @typedef {Object} AcpCallbackContext
  * @property {string} profileId
  * @property {string} operation
+ * @property {string} [providerSessionId] Opaque profile-bound session handle when the callback is session-scoped.
  * @property {AbortSignal} [signal]
  * @property {unknown} [requestId]
  * @property {Record<string, unknown>} [hostContext]
  */
 
 /** @template T @typedef {T extends unknown ? Omit<T, "sessionId"> : never} WithoutSessionId */
-/** @template T @typedef {T extends unknown ? Omit<T, "sessionId"|"_meta"> & {providerSessionId: string} : never} AcpHostSessionPayload */
+/** @template T @typedef {T extends unknown ? Omit<T, "sessionId"|"_meta"> : never} AcpHostSessionPayload */
 /**
  * @typedef {WithoutSessionId<import("@agentclientprotocol/sdk").CreateElicitationRequest>
  *   & Pick<import("@agentclientprotocol/sdk").CreateElicitationRequest, "message" | "mode">
- *   & {providerSessionId?: string}} AcpHostElicitationPayload
+ *   } AcpHostElicitationPayload
  */
 /**
  * @typedef {Object} AcpListedSession
@@ -490,22 +491,21 @@ function hostElicitationPayload(value) {
   return /** @type {AcpElicitationInteractionPayload} */ (hostInteractionPayload(value));
 }
 
-/** @template {object} T @param {T & {sessionId: string}} value @param {string} profileId */
-function descriptorSessionPayload(value, profileId) {
-  return /** @type {AcpHostSessionPayload<T>} */ ({
-    ...sanitizeAcpHostValue(value, [value.sessionId]),
-    providerSessionId: encodeAcpProviderSessionId(profileId, value.sessionId),
-  });
+/** @template {object} T @param {T & {sessionId: string}} value */
+function descriptorSessionPayload(value) {
+  return /** @type {AcpHostSessionPayload<T>} */ (sanitizeAcpHostValue(value, [value.sessionId]));
 }
 
-/** @param {import("@agentclientprotocol/sdk").CreateElicitationRequest} value @param {string} profileId */
-function descriptorElicitationPayload(value, profileId) {
-  const sessionScoped = /** @type {{sessionId?: unknown}} */ (value);
-  const rawSessionId = typeof sessionScoped.sessionId === "string" ? sessionScoped.sessionId : null;
-  return /** @type {AcpHostElicitationPayload} */ ({
-    ...sanitizeAcpHostValue(value, [rawSessionId]),
-    ...(rawSessionId ? { providerSessionId: encodeAcpProviderSessionId(profileId, rawSessionId) } : {}),
-  });
+/** @param {unknown} value */
+function callbackSessionId(value) {
+  const candidate = /** @type {{sessionId?: unknown}} */ (value);
+  return typeof candidate?.sessionId === "string" ? candidate.sessionId : undefined;
+}
+
+/** @param {import("@agentclientprotocol/sdk").CreateElicitationRequest} value */
+function descriptorElicitationPayload(value) {
+  const rawSessionId = callbackSessionId(value);
+  return /** @type {AcpHostElicitationPayload} */ (sanitizeAcpHostValue(value, [rawSessionId]));
 }
 
 /** @param {any} descriptor @param {AcpClientHostOptions} options @param {string} profileId @param {string} operation */
@@ -571,10 +571,16 @@ export async function connectAcpProfile(profileId, options) {
   const updates = new Map();
   const activePromptSessions = new Set();
   let hostRequestSequence = 0;
-  /** @param {AcpCallbackContext} context */
-  const safeCallbackContext = (context) => context.requestId === undefined
-    ? context
-    : { ...context, requestId: `acp-request:${profileId}:${++hostRequestSequence}` };
+  /** @param {AcpCallbackContext} context @param {unknown} [rawSessionId] */
+  const safeCallbackContext = (context, rawSessionId) => ({
+    ...context,
+    ...(typeof rawSessionId === "string"
+      ? { providerSessionId: encodeAcpProviderSessionId(profileId, rawSessionId) }
+      : {}),
+    ...(context.requestId === undefined
+      ? {}
+      : { requestId: `acp-request:${profileId}:${++hostRequestSequence}` }),
+  });
   let closed = false;
 
   const app = client({ name: "mono-agent-agent-runtime-acp" });
@@ -587,13 +593,13 @@ export async function connectAcpProfile(profileId, options) {
       });
       if (typeof descriptor.clientCallbacks?.requestPermission === "function") {
         result = await descriptor.clientCallbacks.requestPermission(
-          descriptorSessionPayload(ctx.params, profileId),
-          safeCallbackContext(context),
+          descriptorSessionPayload(ctx.params),
+          safeCallbackContext(context, ctx.params.sessionId),
         );
       } else if (typeof options.onAcpInteractionRequest === "function") {
         result = await options.onAcpInteractionRequest(
           { kind: "permission", profileId, payload: hostInteractionPayload(ctx.params) },
-          safeCallbackContext(context),
+          safeCallbackContext(context, ctx.params.sessionId),
         );
       }
     } catch {
@@ -610,21 +616,30 @@ export async function connectAcpProfile(profileId, options) {
     }
     try {
       await descriptor.clientCallbacks?.sessionUpdate?.(
-        descriptorSessionPayload(ctx.params, profileId),
-        safeCallbackContext(callbackContext(descriptor, options, profileId, "session_update", { signal: ctx.signal })),
+        descriptorSessionPayload(ctx.params),
+        safeCallbackContext(
+          callbackContext(descriptor, options, profileId, "session_update", { signal: ctx.signal }),
+          ctx.params.sessionId,
+        ),
       );
     } catch { /* profile notification callbacks are observational */ }
   });
   if (descriptor.capabilityPolicy?.filesystem?.readTextFile === true) {
     app.onRequest(methods.client.fs.readTextFile, (ctx) => descriptor.clientCallbacks.readTextFile(
-      descriptorSessionPayload(ctx.params, profileId),
-      safeCallbackContext(callbackContext(descriptor, options, profileId, "read_text_file", { signal: ctx.signal, requestId: ctx.requestId })),
+      descriptorSessionPayload(ctx.params),
+      safeCallbackContext(
+        callbackContext(descriptor, options, profileId, "read_text_file", { signal: ctx.signal, requestId: ctx.requestId }),
+        ctx.params.sessionId,
+      ),
     ));
   }
   if (descriptor.capabilityPolicy?.filesystem?.writeTextFile === true) {
     app.onRequest(methods.client.fs.writeTextFile, (ctx) => descriptor.clientCallbacks.writeTextFile(
-      descriptorSessionPayload(ctx.params, profileId),
-      safeCallbackContext(callbackContext(descriptor, options, profileId, "write_text_file", { signal: ctx.signal, requestId: ctx.requestId })),
+      descriptorSessionPayload(ctx.params),
+      safeCallbackContext(
+        callbackContext(descriptor, options, profileId, "write_text_file", { signal: ctx.signal, requestId: ctx.requestId }),
+        ctx.params.sessionId,
+      ),
     ));
   }
   if (descriptor.capabilityPolicy?.terminal === true) {
@@ -637,8 +652,11 @@ export async function connectAcpProfile(profileId, options) {
     ];
     for (const [method, callback, callbackOperation] of terminalHandlers) {
       app.onRequest(/** @type {any} */ (method), (ctx) => descriptor.clientCallbacks[callback](
-        descriptorSessionPayload(ctx.params, profileId),
-        safeCallbackContext(callbackContext(descriptor, options, profileId, callbackOperation, { signal: ctx.signal, requestId: ctx.requestId })),
+        descriptorSessionPayload(ctx.params),
+        safeCallbackContext(
+          callbackContext(descriptor, options, profileId, callbackOperation, { signal: ctx.signal, requestId: ctx.requestId }),
+          ctx.params.sessionId,
+        ),
       ));
     }
   }
@@ -652,13 +670,13 @@ export async function connectAcpProfile(profileId, options) {
         });
         if (typeof descriptor.clientCallbacks?.createElicitation === "function") {
           result = await descriptor.clientCallbacks.createElicitation(
-            descriptorElicitationPayload(ctx.params, profileId),
-            safeCallbackContext(context),
+            descriptorElicitationPayload(ctx.params),
+            safeCallbackContext(context, callbackSessionId(ctx.params)),
           );
         } else if (typeof options.onAcpInteractionRequest === "function") {
           result = await options.onAcpInteractionRequest(
             { kind: "elicitation", profileId, payload: hostElicitationPayload(ctx.params) },
-            safeCallbackContext(context),
+            safeCallbackContext(context, callbackSessionId(ctx.params)),
           );
         }
       } catch {

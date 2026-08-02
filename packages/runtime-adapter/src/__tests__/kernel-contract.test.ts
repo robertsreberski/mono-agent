@@ -44,8 +44,9 @@ type MonoAcpElicitationInteraction = Extract<MonoAcpInteractionRequest, { kind: 
 type MonoAcpFormPayload = Extract<MonoAcpElicitationInteraction["payload"], { mode: "form" }>;
 type MonoAcpResolvedProfile = NonNullable<Awaited<ReturnType<MonoAcpProfileResolver>>>;
 type MonoAcpProfileCallbacks = NonNullable<MonoAcpResolvedProfile["clientCallbacks"]>;
-type MonoAcpPermissionCallbackPayload = Parameters<NonNullable<MonoAcpProfileCallbacks["requestPermission"]>>[0];
-type MonoAcpSessionUpdatePayload = Parameters<NonNullable<MonoAcpProfileCallbacks["sessionUpdate"]>>[0];
+type MonoAcpCallback<K extends keyof MonoAcpProfileCallbacks> = NonNullable<MonoAcpProfileCallbacks[K]>;
+type MonoAcpCallbackPayload<K extends keyof MonoAcpProfileCallbacks> = Parameters<MonoAcpCallback<K>>[0];
+type MonoAcpCallbackContext<K extends keyof MonoAcpProfileCallbacks> = Parameters<MonoAcpCallback<K>>[1];
 type RuntimeRunComparableKeys =
   | "model"
   | "messages"
@@ -174,17 +175,58 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
 
   it("keeps raw protocol ids out of profile callbacks", () => {
     if (false) {
-      const permission = null as unknown as MonoAcpPermissionCallbackPayload;
-      assertAssignable<string>(permission.providerSessionId);
+      const permission = null as unknown as MonoAcpCallbackPayload<"requestPermission">;
       assertAssignable<readonly unknown[]>(permission.options);
+      // @ts-expect-error opaque correlation belongs in AcpCallbackContext, not the protocol-derived payload.
+      assertAssignable<string>(permission.providerSessionId);
       // @ts-expect-error profile callbacks receive the opaque provider handle, never the raw protocol id.
       assertAssignable<string>(permission.sessionId);
 
-      const update = null as unknown as MonoAcpSessionUpdatePayload;
-      assertAssignable<string>(update.providerSessionId);
+      const context = null as unknown as MonoAcpCallbackContext<"requestPermission">;
+      assertAssignable<string | undefined>(context.providerSessionId);
+
+      const elicitation = null as unknown as MonoAcpCallbackPayload<"createElicitation">;
+      assertAssignable<string>(elicitation.message);
+      assertAssignable<string>(elicitation.mode);
+      // @ts-expect-error elicitation callbacks hide raw protocol ids too.
+      assertAssignable<string>(elicitation.sessionId);
+
+      const read = null as unknown as MonoAcpCallbackPayload<"readTextFile">;
+      assertAssignable<string>(read.path);
+      // @ts-expect-error filesystem callbacks hide raw protocol ids.
+      assertAssignable<string>(read.sessionId);
+
+      const write = null as unknown as MonoAcpCallbackPayload<"writeTextFile">;
+      assertAssignable<string>(write.path);
+      assertAssignable<string>(write.content);
+      // @ts-expect-error filesystem callbacks discard protocol metadata.
+      assertAssignable<object>(write._meta);
+
+      const createTerminal = null as unknown as MonoAcpCallbackPayload<"createTerminal">;
+      assertAssignable<string>(createTerminal.command);
+      // @ts-expect-error terminal callbacks hide raw protocol ids.
+      assertAssignable<string>(createTerminal.sessionId);
+
+      const terminalOutput = null as unknown as MonoAcpCallbackPayload<"terminalOutput">;
+      assertAssignable<string>(terminalOutput.terminalId);
+      const terminalWait = null as unknown as MonoAcpCallbackPayload<"waitForTerminalExit">;
+      assertAssignable<string>(terminalWait.terminalId);
+      const terminalKill = null as unknown as MonoAcpCallbackPayload<"killTerminal">;
+      assertAssignable<string>(terminalKill.terminalId);
+      const terminalRelease = null as unknown as MonoAcpCallbackPayload<"releaseTerminal">;
+      assertAssignable<string>(terminalRelease.terminalId);
+
+      const update = null as unknown as MonoAcpCallbackPayload<"sessionUpdate">;
       assertAssignable<object>(update.update);
+      // @ts-expect-error opaque correlation belongs in AcpCallbackContext, not the protocol-derived payload.
+      assertAssignable<string>(update.providerSessionId);
       // @ts-expect-error streamed profile callbacks also hide the raw protocol id.
       assertAssignable<string>(update.sessionId);
+
+      const complete = null as unknown as MonoAcpCallbackPayload<"elicitationComplete">;
+      assertAssignable<string>(complete.elicitationId);
+      // @ts-expect-error notification callbacks discard protocol metadata.
+      assertAssignable<object>(complete._meta);
     }
   });
 });

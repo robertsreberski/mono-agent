@@ -126,6 +126,7 @@ describe("ACP runtime bridge", () => {
     );
     expect(JSON.stringify(interaction.mock.calls)).not.toContain("session-1");
     expect(interaction.mock.calls[0][1].requestId).toMatch(/^acp-request:personal-agent:/);
+    expect(interaction.mock.calls[0][1].providerSessionId).toBe(result.providerSessionId);
     expect(resolveAcpProfile).toHaveBeenCalledWith(
       "personal-agent",
       expect.objectContaining({ operation: "run", profileId: "personal-agent" }),

@@ -125,6 +125,14 @@ describe("ACP v1 client lifecycle", () => {
       content: { answer: "yes" },
     }));
     const sessionUpdate = vi.fn();
+    const readTextFile = vi.fn(() => ({ content: "callback content" }));
+    const writeTextFile = vi.fn(() => ({}));
+    const createTerminal = vi.fn(() => ({ terminalId: "terminal-1" }));
+    const terminalOutput = vi.fn(() => ({ output: "done", truncated: false }));
+    const waitForTerminalExit = vi.fn(() => ({ exitCode: 0 }));
+    const killTerminal = vi.fn(() => ({}));
+    const releaseTerminal = vi.fn(() => ({}));
+    const elicitationComplete = vi.fn();
     const descriptor = profile("normal", {
       env: {
         FAKE_ACP_MODE: "normal",
@@ -134,8 +142,22 @@ describe("ACP v1 client lifecycle", () => {
       capabilityPolicy: {
         sessionConfig: { boolean: true },
         elicitation: { form: true },
+        filesystem: { readTextFile: true, writeTextFile: true },
+        terminal: true,
       },
-      clientCallbacks: { requestPermission, createElicitation, sessionUpdate },
+      clientCallbacks: {
+        requestPermission,
+        createElicitation,
+        sessionUpdate,
+        readTextFile,
+        writeTextFile,
+        createTerminal,
+        terminalOutput,
+        waitForTerminalExit,
+        killTerminal,
+        releaseTerminal,
+        elicitationComplete,
+      },
     });
     const connection = await connectAcpProfile("personal-agent", host(descriptor));
     const updates = [];
@@ -146,7 +168,7 @@ describe("ACP v1 client lifecycle", () => {
       });
       const session = await connection.newSession({ cwd: root, mcpServers: [] });
       const response = await connection.prompt(session.sessionId, [
-        { type: "text", text: "permission and elicit privacy-copy please" },
+        { type: "text", text: "permission and elicit privacy-copy all-client-callbacks please" },
         { type: "resource_link", uri: "file:///tmp/context.txt", name: "context" },
       ], { onUpdate: (notification) => updates.push(notification) });
 
@@ -161,33 +183,84 @@ describe("ACP v1 client lifecycle", () => {
       expect(updates[0].update.rawInput).toEqual(expect.objectContaining({ permission: "cancelled" }));
       expect(requestPermission).toHaveBeenCalledOnce();
       expect(requestPermission.mock.calls[0][0]).toEqual(expect.objectContaining({
-        providerSessionId: expect.stringMatching(/^acp:v1:personal-agent:/),
         options: expect.any(Array),
       }));
+      expect(requestPermission.mock.calls[0][0]).not.toHaveProperty("providerSessionId");
       expect(requestPermission.mock.calls[0][0]).not.toHaveProperty("sessionId");
       expect(requestPermission.mock.calls[0][0]).not.toHaveProperty("_meta");
       expect(requestPermission.mock.calls[0][1].requestId).toMatch(/^acp-request:personal-agent:/);
+      expect(requestPermission.mock.calls[0][1].providerSessionId)
+        .toMatch(/^acp:v1:personal-agent:/);
       expect(createElicitation).toHaveBeenCalledWith(
         expect.objectContaining({
           mode: "form",
           message: "Need fake input",
-          providerSessionId: expect.stringMatching(/^acp:v1:personal-agent:/),
         }),
         expect.objectContaining({
           profileId: "personal-agent",
           operation: "elicitation",
           requestId: expect.stringMatching(/^acp-request:personal-agent:/),
+          providerSessionId: expect.stringMatching(/^acp:v1:personal-agent:/),
         }),
       );
       expect(sessionUpdate).toHaveBeenCalled();
       expect(sessionUpdate.mock.calls[0][0]).toEqual(expect.objectContaining({
-        providerSessionId: expect.stringMatching(/^acp:v1:personal-agent:/),
         update: expect.any(Object),
       }));
+      expect(sessionUpdate.mock.calls[0][0]).not.toHaveProperty("providerSessionId");
+      expect(sessionUpdate.mock.calls[0][1].providerSessionId)
+        .toMatch(/^acp:v1:personal-agent:/);
+      expect(writeTextFile).toHaveBeenCalledWith(
+        expect.objectContaining({ path: "/tmp/[redacted]", content: "callback content" }),
+        expect.objectContaining({
+          operation: "write_text_file",
+          providerSessionId: expect.stringMatching(/^acp:v1:personal-agent:/),
+          requestId: expect.stringMatching(/^acp-request:personal-agent:/),
+        }),
+      );
+      expect(readTextFile).toHaveBeenCalledWith(
+        expect.objectContaining({ path: "/tmp/[redacted]" }),
+        expect.objectContaining({ operation: "read_text_file" }),
+      );
+      expect(createTerminal).toHaveBeenCalledWith(
+        expect.objectContaining({ command: "echo-[redacted]", args: ["[redacted]"] }),
+        expect.objectContaining({ operation: "terminal_create" }),
+      );
+      for (const callback of [terminalOutput, waitForTerminalExit, killTerminal, releaseTerminal]) {
+        expect(callback).toHaveBeenCalledWith(
+          expect.objectContaining({ terminalId: "terminal-1" }),
+          expect.objectContaining({
+            providerSessionId: expect.stringMatching(/^acp:v1:personal-agent:/),
+            requestId: expect.stringMatching(/^acp-request:personal-agent:/),
+          }),
+        );
+      }
+      expect(elicitationComplete).toHaveBeenCalledWith(
+        { elicitationId: "elicitation-1" },
+        expect.objectContaining({ operation: "elicitation_complete" }),
+      );
+      expect(elicitationComplete.mock.calls[0][1]).not.toHaveProperty("providerSessionId");
+      const allProfileCallbacks = [
+        requestPermission,
+        createElicitation,
+        sessionUpdate,
+        readTextFile,
+        writeTextFile,
+        createTerminal,
+        terminalOutput,
+        waitForTerminalExit,
+        killTerminal,
+        releaseTerminal,
+        elicitationComplete,
+      ];
+      for (const callback of allProfileCallbacks) {
+        for (const [payload] of callback.mock.calls) {
+          expect(payload).not.toHaveProperty("sessionId");
+          expect(payload).not.toHaveProperty("_meta");
+        }
+      }
       expect(JSON.stringify({
-        permission: requestPermission.mock.calls,
-        elicitation: createElicitation.mock.calls,
-        updates: sessionUpdate.mock.calls,
+        callbacks: allProfileCallbacks.map((callback) => callback.mock.calls),
       })).not.toContain("session-1");
       expect(JSON.parse(readFileSync(promptFile, "utf8"))).toContainEqual(expect.objectContaining({
         type: "resource_link",
