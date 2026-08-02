@@ -25,6 +25,7 @@ import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptResolution } from "../
 import type {
   MonoRuntimeBackendCapabilities,
   MonoRuntimeHostOptions,
+  RuntimeEventLike,
   RuntimeModelReference,
   RuntimeResult,
   RuntimeRunOptions,
@@ -53,7 +54,9 @@ type RuntimeRunComparableKeys =
   | "sandboxPolicy"
   | "toolLimits"
   | "compaction"
-  | "prompts";
+  | "prompts"
+  | "settingSources"
+  | "codexLoadProjectDocs";
 type RuntimeRunComparableOptions = Pick<RuntimeRunOptions, RuntimeRunComparableKeys>;
 type KnownKeys<T> = {
   [K in keyof T]: string extends K
@@ -114,6 +117,33 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
   it("the facade RuntimeRunOptions is assignable to createRuntime(...).run's options parameter", () => {
     const facade = null as unknown as RuntimeRunComparableOptions;
     assertAssignable<KernelRunOptions>(facade);
+  });
+
+  it("keeps provider project-discovery controls typed at the facade/kernel seam", () => {
+    expectTypeOf<RuntimeRunOptions["settingSources"]>()
+      .toEqualTypeOf<readonly ("user" | "project" | "local")[] | undefined>();
+    expectTypeOf<RuntimeRunOptions["codexLoadProjectDocs"]>()
+      .toEqualTypeOf<boolean | undefined>();
+    expectTypeOf<KernelRunOptions["settingSources"]>()
+      .toEqualTypeOf<readonly ("user" | "project" | "local")[] | undefined>();
+    expectTypeOf<KernelRunOptions["codexLoadProjectDocs"]>()
+      .toEqualTypeOf<boolean | undefined>();
+  });
+
+  it("documents the canonical parent id separately from provider-native subagent ids", () => {
+    const event = {
+      type: "subagent_activity",
+      phase: "agent_started",
+      id: "agent:toolu_parent",
+      subagent: {
+        id: "toolu_parent",
+        nativeId: "provider-task-42",
+        name: "researcher",
+        callIndex: 0,
+        agentPath: "root/researcher",
+      },
+    } satisfies RuntimeEventLike;
+    assertAssignable<RuntimeEventLike>(event);
   });
 
   it("the facade RuntimeToolOptions is assignable to createRuntime(...).configureTools options except for the concrete sandbox engine", () => {

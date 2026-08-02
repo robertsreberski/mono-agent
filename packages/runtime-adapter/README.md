@@ -55,6 +55,14 @@ tool must serialize, or leave the default `"safe-parallel"` mode to overlap
 only independent read-only built-ins. Stateful, mutating, and MCP tools remain
 sequential in the default mode.
 
+Provider-owned project discovery is opt-in at this facade. For Claude SDK runs,
+`RuntimeRunOptions.settingSources` accepts `"user"`, `"project"`, and `"local"`;
+omitted/empty disables those filesystem sources while Anthropic managed
+settings remain in force. For Codex app-server runs,
+`RuntimeRunOptions.codexLoadProjectDocs: true` restores Codex's native project
+document defaults; omitted/false disables automatic discovery with
+`project_doc_max_bytes=0`. Explicit `codexAppServerArgs` remain authoritative.
+
 ## Architecture
 
 `runtime-adapter` is the typed boundary between harness code and the JavaScript
@@ -235,6 +243,21 @@ Supported backend seams are exposed as data:
 | Codex app CLI | `codex:<model>` | `cli` | Codex app-server bridge through `@mono-agent/agent-runtime` |
 | OpenCode app CLI | `opencode:<provider>:<model>` | `cli` | OpenCode app-server bridge through `@mono-agent/agent-runtime` |
 | Pi SDK provider | `pi:<provider>:<model>` | `sdk` | Pi SDK gateway, including provider ids such as `openai-codex` or Copilot-style provider ids |
+
+Claude Code CLI settings discovery is provider-owned and does not consume
+`settingSources`. Claude-native teammate definitions add `Task` to an explicit
+allowlist automatically; callers using only filesystem `.claude/agents`
+profiles must include `Task` themselves. The kernel's in-process delegation
+surface similarly requires `Agent`. Direct Codex accepts only an effective
+allow-all policy, so restrictive named allowlists fail before provider startup.
+
+Native and in-process delegation paths emit one normalized `subagent_activity`
+shape through `RuntimeEventLike`: `subagent.id` is the canonical parent
+attachment key (normally the initiating parent tool-use id, with a stable
+synthetic fallback for orphan lifecycle records), while optional `nativeId` and
+`agentPath` retain provider correlation metadata. Its phases are
+`agent_started`, `started`, `completed`, `message`, and `agent_completed`;
+child `message` activity is never parent answer text or a tool completion.
 
 ### Local Pi providers
 

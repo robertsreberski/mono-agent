@@ -87,6 +87,23 @@ export interface RuntimeMessage {
 
 export interface RuntimeEventLike {
   readonly type?: string;
+  /**
+   * Present on `subagent_activity`. `id` is the canonical parent attachment
+   * key: normally the initiating parent tool-use id, with a stable synthetic
+   * fallback only for an orphan lifecycle record. `nativeId` and `agentPath`
+   * are provider correlation metadata, never replacement keys.
+   */
+  readonly subagent?: {
+    readonly id: string;
+    readonly nativeId?: string;
+    readonly name: string;
+    readonly callIndex: number;
+    readonly label?: string;
+    readonly agentPath?: string;
+    readonly costUsd?: number;
+  };
+  /** Normalized `subagent_activity` lifecycle/activity phase. */
+  readonly phase?: "agent_started" | "started" | "completed" | "message" | "agent_completed";
   readonly [key: string]: unknown;
 }
 
@@ -205,6 +222,16 @@ export interface RuntimeRunOptions {
   readonly prompts?: RuntimePromptOverrides;
   /** In-flight user guidance consumed by a provider's native steering API. */
   readonly liveInput?: AsyncIterable<RuntimeLiveInputMessage>;
+  /**
+   * Claude Agent SDK filesystem setting sources. Omitted/empty disables user,
+   * project, and local sources; Anthropic managed settings still apply.
+   */
+  readonly settingSources?: readonly ("user" | "project" | "local")[];
+  /**
+   * Restore Codex app-server's native project-document loading defaults.
+   * Omitted/false disables automatic discovery; explicit app-server args win.
+   */
+  readonly codexLoadProjectDocs?: boolean;
   // Pi-native provider knobs (optional; ignored by other bridges).
   readonly piTransport?: PiTransport;
   readonly piMaxRetries?: number;

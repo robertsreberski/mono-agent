@@ -124,7 +124,14 @@ export class TurnPresenter implements AgentMessageStream {
         break;
       }
       case "tool_call_completed": {
-        const panel = this.toolPanels.get(event.id);
+        const subagent = subagentOf(event);
+        // A lifecycle row has its own namespaced activity id, but settles the
+        // parent Agent panel identified by canonical subagent.id. Native task
+        // ids remain diagnostic metadata and must never become panel keys.
+        const panelId = subagent !== undefined && event.metadata?.subagentLifecycle === true
+          ? subagent.id
+          : event.id;
+        const panel = this.toolPanels.get(panelId);
         if (panel !== undefined) {
           panel.complete({
             ...(event.isError === undefined ? {} : { isError: event.isError }),
@@ -367,12 +374,14 @@ function normalizeForCompare(text: string): string {
  * panel instead of keying the panel map on a non-string.
  */
 function subagentOf(
-  event: Extract<AgentStreamEvent, { type: "tool_call_started" }>,
+  event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
 ): { readonly id: string } | undefined {
   const subagent = event.metadata?.subagent;
   if (typeof subagent !== "object" || subagent === null || Array.isArray(subagent)) {
     return undefined;
   }
-  const id = (subagent as Record<string, unknown>).id;
-  return typeof id === "string" && id.length > 0 ? { id } : undefined;
+  const canonicalId = (subagent as Record<string, unknown>).id;
+  return typeof canonicalId === "string" && canonicalId.length > 0
+    ? { id: canonicalId }
+    : undefined;
 }

@@ -657,6 +657,9 @@ Per-call options (a non-exhaustive selection):
 | `cwd` | `string` | Working directory for the agent's tools. |
 | `allowedTools` | `string[]` | Built-in tool allowlist. Default: all. |
 | `disallowedTools` | `string[]` | Block list. |
+| `nativeSubagents` | `object` | Provider-native teammate definitions for capable Claude and Codex bridges. |
+| `settingSources` | `("user" \| "project" \| "local")[]` | Claude Agent SDK filesystem settings opt-in. Omitted/empty disables those three sources; Anthropic managed settings still apply. |
+| `codexLoadProjectDocs` | `boolean` | Codex app-server repository-instruction opt-in. Omitted/false sets `project_doc_max_bytes=0`; true restores Codex defaults. Explicit `codexAppServerArgs` wins. |
 | `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http); on direct Codex, each forwarded server authorizes its own tool calls. |
 | `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
 | `webSearchConfig` | `{ backend?, endpoint? }` | Run-scoped local SearXNG/keyless WebSearch backend selection. |
@@ -694,6 +697,40 @@ instrumented input stream, so replay or duplicate acknowledgement cannot emit a
 second applied event. A throwing host `acknowledge` or `reject` callback cannot
 change the native steering outcome; the Codex bridge reports it as a bounded
 `live_input_callback_failed` runtime warning.
+
+### Provider-native subagents and project instructions
+
+Claude SDK runs are filesystem-isolated by default: mono-agent passes
+`settingSources: []`, which disables user, project, and local settings sources,
+including their `CLAUDE.md`, hooks, plugins, and `.claude/agents` profiles.
+Anthropic managed settings remain in force and may still configure hooks or
+plugins; `settingSources` is not a managed-policy bypass. Opt into only the
+needed sources, for example `settingSources: ["project"]`. This option is SDK
+only. The Claude Code CLI performs its own settings discovery, and mono-agent
+does not pass it a `--setting-sources` value.
+
+Codex app-server runs disable automatic repository-instruction discovery by
+default with `project_doc_max_bytes=0`. Set `codexLoadProjectDocs: true` to use
+Codex's native project-document defaults. If `codexAppServerArgs` is supplied,
+that explicit argument vector is authoritative and `codexLoadProjectDocs` does
+not alter it.
+
+Provider-native and in-process delegation share `subagent_activity` telemetry.
+`subagent.id` is the canonical parent attachment key: the initiating parent
+tool-use id whenever the provider exposes it, or a stable synthetic key for an
+orphan lifecycle record. `nativeId` is an optional provider task/thread id for
+correlation only and never replaces that key.
+The normalized phases are `agent_started`, `started`, `completed`, `message`,
+and `agent_completed`. A `message` belongs to the child and must not be treated
+as parent answer text or as a completed tool call.
+
+Restrictive allowlists must still authorize the delegation surface. Include
+`Agent` for the in-process built-in. Claude-native teammate definitions add
+`Task` to an explicit allowed list automatically; filesystem profiles enabled
+only through `settingSources` require callers to include `Task` themselves.
+An explicit deny still wins. Direct Codex remains an allow-all-only bridge, so
+a named restrictive allowlist fails before provider startup rather than being
+silently widened.
 
 Returns:
 

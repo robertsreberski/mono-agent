@@ -40,10 +40,54 @@
  */
 
 /**
- * @typedef {{type: string, [key: string]: *}} RuntimeEvent
- * Structured runtime/telemetry event. `type` is the only required field;
- * every event kind (tool_approval_pending, provider_failover_started,
- * context_compaction_applied, ...) adds its own extra fields.
+ * @typedef {Object} RuntimeSubagentIdentity
+ * Provider-neutral identity attached to every `subagent_activity` event.
+ * @property {string} id The canonical parent attachment key: the initiating
+ *   parent tool-use id when the provider exposes it, or a stable synthetic key
+ *   for an orphan lifecycle record. A provider-native task/thread id never replaces it.
+ * @property {string} [nativeId] Provider-native task or thread id, retained only
+ *   as diagnostic/correlation metadata.
+ * @property {string} name Provider-neutral profile/agent name.
+ * @property {number} callIndex Provider call-order ordinal; consumers must not
+ *   use it as an identity key.
+ * @property {string} [label] Short task label or description.
+ * @property {string} [agentPath] Provider-reported ancestry for a
+ *   nested native agent. Informational only; `id` remains the attachment key.
+ * @property {number} [costUsd] Priced delegation cost, when the runtime can
+ *   attribute it to this subagent.
+ */
+
+/**
+ * @typedef {"agent_started"|"started"|"completed"|"message"|"agent_completed"} RuntimeSubagentActivityPhase
+ * `agent_started`/`agent_completed` bracket the delegation; `started`/`completed`
+ * bracket one child tool call; `message` carries optional child-only prose or
+ * thinking and must never be treated as parent answer text or a completed tool.
+ */
+
+/**
+ * @typedef {Object} RuntimeSubagentActivityEvent
+ * One normalized native or in-process subagent activity event.
+ * @property {"subagent_activity"} type
+ * @property {RuntimeSubagentIdentity} subagent
+ * @property {RuntimeSubagentActivityPhase} phase
+ * @property {string} id Unique activity-row id, namespaced from the canonical
+ *   `subagent.id` for lifecycle and tool rows.
+ * @property {string} [name]
+ * @property {*} [arguments]
+ * @property {*} [content]
+ * @property {"text"|"thinking"|"status"|"warning"|"error"} [kind] Present on a
+ *   `message` phase when known.
+ * @property {"assistant"|"user"} [role] Present on a `message` phase when known.
+ * @property {boolean} [isError]
+ * @property {number} [executionMs]
+ * @property {number} [totalTokens]
+ */
+
+/**
+ * @typedef {RuntimeSubagentActivityEvent | {type: string, [key: string]: *}} RuntimeEvent
+ * Structured runtime/telemetry event. Subagent activity uses the normalized
+ * shape above; every other event kind (tool_approval_pending,
+ * provider_failover_started, context_compaction, ...) adds its own fields.
  */
 
 /** @typedef {"uniform"|"per-route-native"} RuntimeRouteSafetyMode */
@@ -169,11 +213,15 @@
  * @property {"one-at-a-time"|"all"} [piToolParallelismMode] DEPRECATED. Compatibility alias mapped to piToolExecutionMode.
  * @property {Object} [settings] DEPRECATED. Legacy flat settings bag; consumed only as a per-group FALLBACK when the corresponding typed object (`toolLimits` / `compaction`) is absent. Consuming any key emits one `deprecated_settings_option` runtime_warning per run. Migrate via resolveRuntimePolicies (@mono-agent/runtime-adapter).
  * @property {ReadonlyArray<"user" | "project" | "local">} [settingSources] Claude Agent SDK only. Filesystem
- *   settings the SDK may load for this run. Omitted/empty keeps the default isolation (no host CLAUDE.md, hooks,
- *   plugins, or on-disk agent profiles). Include `"project"`/`"user"` to let the native `Task` tool discover
- *   `.claude/agents` definitions. Unrecognized entries are dropped. The Claude Code CLI bridge does not take this
- *   option: that binary performs its own settings discovery and mono-agent passes no `--setting-sources`, so a CLI
- *   run already reads the host config regardless of this value.
+ *   settings the SDK may load for this run. Omitted/empty disables user, project, and local sources, including their
+ *   CLAUDE.md, hooks, plugins, and on-disk agent profiles. Anthropic managed settings remain in force and may still
+ *   configure hooks or plugins; this option is not a managed-policy bypass. Include `"project"`/`"user"` to let the
+ *   native `Task` tool discover `.claude/agents` definitions. Unrecognized entries are dropped. The Claude Code CLI
+ *   bridge does not take this option: that binary performs its own settings discovery and mono-agent passes no
+ *   `--setting-sources`, so a CLI run already reads the host config regardless of this value.
+ * @property {boolean} [codexLoadProjectDocs] Codex app-server only. Omitted/false starts the managed app-server with
+ *   `project_doc_max_bytes=0`, preventing automatic repository-instruction discovery. True restores Codex's native
+ *   project-doc loading defaults. An explicit `codexAppServerArgs` array wins over this convenience option.
  * @property {Object} [nativeSubagents] Same-runtime teammate helpers exposed through native provider subagent surfaces.
  * @property {RuntimeSubagentsOptions} [subagents] In-process `Agent` built-in: profiles, caps, and the nested-run callback.
  * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when
