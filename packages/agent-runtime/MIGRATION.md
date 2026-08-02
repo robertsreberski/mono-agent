@@ -63,6 +63,27 @@ the configuration schema.
   authoritative and the runtime emits a bounded
   `live_input_callback_failed` warning.
 
+## 0.18.x
+
+- `acp:<profile-id>` is now a canonical runtime model reference when paired
+  with `executionMode: "acp"`. Hosts must provide `resolveAcpProfile`; profiles
+  define direct argv/environment values, client-versus-agent ownership,
+  capability policy, session configuration, and bounded process policy.
+- `onAcpInteractionRequest` is the host rendezvous for ACP permission and
+  elicitation requests. Hosts must echo only advertised permission option ids,
+  keep submitted form values out of durable logs, and fail closed on abort.
+- ACP provider-session ids are opaque encoded values. Preserve the complete
+  value returned by the runtime for resume and delete operations; do not parse
+  or substitute the remote agent's raw session id.
+- The stable ACP update stream is preserved as typed `acp_session_update`
+  events and normalized assistant, thought, tool, plan, and cumulative usage
+  events. Stable usage comes from `usage_update`, not experimental prompt
+  response fields.
+- ACP management helpers (`probeAcpProfile`, `authenticateAcpProfile`,
+  `logoutAcpProfile`, `listAcpSessions`, and `deleteAcpSession`) use the same
+  resolver and callback boundary as turns. Authentication always requires an
+  explicitly selected advertised method id.
+
 ## 0.17.x baseline
 
 This is the current published baseline. It carries the 0.16.x contract forward
