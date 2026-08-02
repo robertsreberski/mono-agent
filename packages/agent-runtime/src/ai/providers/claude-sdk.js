@@ -20,7 +20,24 @@ import {
 } from "./claude-sandbox.js";
 
 const CLAUDE_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const CLAUDE_SETTING_SOURCES = new Set(["user", "project", "local"]);
 const MAX_CLAUDE_ERROR_CHARS = 2_000;
+
+/**
+ * Filesystem settings the Agent SDK may load for this run. The SDK's own default
+ * is "load nothing", and mono-agent keeps that default so a hosted run stays
+ * reproducible: no host CLAUDE.md, hooks, or plugins leak in unless the caller
+ * asks for them. A host that *wants* on-disk discovery — typically to reach
+ * `.claude/agents` so the native `Task` tool has profiles to deploy — opts in per
+ * run. Unrecognized entries are dropped rather than forwarded, so a typo cannot
+ * silently widen what the SDK reads off disk.
+ * @param {unknown} value
+ * @returns {Array<"user" | "project" | "local">}
+ */
+function normalizeClaudeSettingSources(value) {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.filter((entry) => CLAUDE_SETTING_SOURCES.has(entry))));
+}
 
 /**
  * Preserve the provider default when effort is omitted. The current Agent SDK
@@ -716,7 +733,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
     disallowedTools,
     mcpServers: mcpServers || {},
     strictMcpConfig: true,
-    settingSources: [],
+    settingSources: normalizeClaudeSettingSources(options.settingSources),
     env: createClaudeSdkEnvironment(options.env, options.providerEnv),
     abortController: internalAbortController,
     ...(disposableSession ? { persistSession: false } : options.persistSession === true ? { persistSession: true } : {}),
