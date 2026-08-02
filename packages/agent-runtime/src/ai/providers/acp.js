@@ -32,7 +32,9 @@ function textFromContent(content) {
 
 /** @param {any} block @param {any} promptCapabilities */
 function normalizePromptBlock(block, promptCapabilities) {
-  if (!block || typeof block !== "object" || Array.isArray(block)) return null;
+  if (!block || typeof block !== "object" || Array.isArray(block)) {
+    throw new AcpClientError("invalid_request", "ACP prompt content blocks must be objects.");
+  }
   if (block.type === "text" && typeof block.text === "string") {
     return { type: "text", text: block.text };
   }
@@ -81,7 +83,6 @@ function runtimePrompt(systemPrompt, messages, options) {
       let labelled = false;
       for (const block of content) {
         const normalized = normalizePromptBlock(block, options.promptCapabilities);
-        if (!normalized) continue;
         if (normalized.type === "text") {
           blocks.push({
             ...normalized,

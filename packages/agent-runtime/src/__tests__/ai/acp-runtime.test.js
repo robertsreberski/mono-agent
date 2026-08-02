@@ -153,6 +153,16 @@ describe("ACP runtime bridge", () => {
     ]);
   });
 
+  it.each([null, "not-a-block", 42, []])("rejects malformed prompt block %j", async (block) => {
+    const result = await createRuntime().run("System", runOptions(async () => descriptor(), {
+      messages: [{ role: "user", content: [block] }],
+    }));
+
+    expect(result.failureKind).toBe("provider_protocol");
+    expect(result.error).toBe("ACP prompt content blocks must be objects.");
+    expect(result.errorDetails).toMatchObject({ acp_error_code: "invalid_request" });
+  });
+
   it("capability-gates and resumes the decoded provider session on a fresh stdio bridge", async () => {
     const resolveAcpProfile = async () => descriptor();
     const first = await createRuntime().run("System", runOptions(resolveAcpProfile));
