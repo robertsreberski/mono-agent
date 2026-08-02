@@ -25,6 +25,7 @@ import {
   claudeSandboxPolicyProblem,
 } from "./claude-sandbox.js";
 import { resolveSandboxPolicy } from "../../agent/tools/shared/tool-context.js";
+import { createClaudeSubagentTracker } from "./claude-subagent-transcript.js";
 
 const CODEX_CLI_SANDBOX_POLICY_UNSUPPORTED =
   "Direct Codex CLI cannot enforce mono-agent's native srt sandbox scopes. Remove the mono-agent sandbox policy or use a Pi runtime for exact readableRoots, writableRoots, denyWrite, and network rules.";
@@ -615,6 +616,9 @@ export async function generateCliResponse(systemPrompt, options = {}) {
     fileChangeSnapshots: new Map(),
     thinkingBuffer: createThinkingBuffer(),
   };
+  // Native subagents stream nothing into this stdout; their work is recoverable
+  // only by replaying the transcript that task_notification points at.
+  const subagentTracker = resolved.sdk === "claude-code" ? createClaudeSubagentTracker() : null;
 
   const stderrTail = createStderrTail({ limit: 8 * 1024 });
   try {
@@ -642,6 +646,10 @@ export async function generateCliResponse(systemPrompt, options = {}) {
       if (ev) {
         events.push(ev);
         options.onEvent?.(ev);
+      }
+      for (const activity of subagentTracker?.observe(raw) ?? []) {
+        events.push(activity);
+        options.onEvent?.(activity);
       }
       if (!isCodexReasoningEvent(raw)) {
         const text = textFromEvent(raw);
