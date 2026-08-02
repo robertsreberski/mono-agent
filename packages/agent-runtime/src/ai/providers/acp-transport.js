@@ -248,8 +248,8 @@ export function createBoundedAcpStdioStream(child, options = {}) {
     close() {
       if (!output.destroyed && !output.writableEnded) output.end();
     },
-    abort(error) {
-      output.destroy(error instanceof Error ? error : undefined);
+    abort() {
+      output.destroy();
     },
   });
 

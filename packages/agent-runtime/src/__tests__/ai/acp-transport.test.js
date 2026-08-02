@@ -13,6 +13,19 @@ function createTransport() {
 }
 
 describe("bounded ACP stdio transport", () => {
+  it("destroys child stdin on abort without emitting the Web Stream reason as a Node error", async () => {
+    const transport = createTransport();
+    const errors = [];
+    transport.stdin.on("error", (error) => errors.push(error));
+
+    await transport.writable.abort(new Error("cancelled"));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(transport.stdin.destroyed).toBe(true);
+    expect(errors).toEqual([]);
+    transport.stdout.destroy();
+  });
+
   it("pauses child stdout instead of enqueueing a burst beyond Web Stream demand", async () => {
     const transport = createTransport();
     const messages = Array.from({ length: 1_000 }, (_, id) => ({
