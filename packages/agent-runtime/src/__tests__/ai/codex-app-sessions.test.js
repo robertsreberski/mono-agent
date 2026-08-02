@@ -110,6 +110,36 @@ describe("codex-app persistent sessions", () => {
     expect(result.model).toBe(`codex:${modelId}`);
   });
 
+  it.each([
+    ["omitted", undefined, ["app-server", "--listen", "stdio://", "-c", "project_doc_max_bytes=0"]],
+    ["disabled", false, ["app-server", "--listen", "stdio://", "-c", "project_doc_max_bytes=0"]],
+    ["enabled", true, ["app-server", "--listen", "stdio://"]],
+  ])("uses the expected project-document loading args when codexLoadProjectDocs is %s", async (
+    _label,
+    codexLoadProjectDocs,
+    expectedArgs,
+  ) => {
+    const factory = stubClientFactory({ threadId: `thread-project-docs-${_label}` });
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, { codexLoadProjectDocs }));
+
+    expect(result.error).toBeNull();
+    expect(factory.mock.calls[0]?.[0]?.args).toEqual(expectedArgs);
+  });
+
+  it("lets explicit codexAppServerArgs override codexLoadProjectDocs", async () => {
+    const factory = stubClientFactory({ threadId: "thread-explicit-app-server-args" });
+    const explicitArgs = ["custom-app-server", "--flag"];
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, {
+      codexLoadProjectDocs: true,
+      codexAppServerArgs: explicitArgs,
+    }));
+
+    expect(result.error).toBeNull();
+    expect(factory.mock.calls[0]?.[0]?.args).toBe(explicitArgs);
+  });
+
   it("clamps effort max to xhigh across the app-server thread and turn payloads", async () => {
     const factory = stubClientFactory({ threadId: "thread-effort" });
 
@@ -1092,6 +1122,467 @@ describe("codex-app persistent sessions", () => {
     expect(result.error).toContain("codex app-server transport died");
     expect(iterator.return).toHaveBeenCalledTimes(1);
     expect(emitted.some((event) => event.warning_kind === "live_input_failed")).toBe(false);
+  });
+
+  it("keeps current collabToolCall child output isolated until the root turn completes", async () => {
+    const factory = stubClientFactory({ threadId: "thread-parent-current" });
+    factory.turnPlan.push("manual");
+    const emitted = [];
+    let settled = false;
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, {
+      onEvent: (event) => emitted.push(event),
+    }));
+    void pending.then(() => { settled = true; });
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.notify("item/started", {
+      threadId: "thread-parent-current",
+      turnId: "turn-1",
+      item: {
+        id: "spawn-current",
+        type: "collabToolCall",
+        tool: "spawn_agent",
+        status: "inProgress",
+        senderThreadId: "thread-parent-current",
+        prompt: "Inspect the child surface",
+      },
+    });
+    client.notify("item/completed", {
+      threadId: "thread-parent-current",
+      turnId: "turn-1",
+      item: {
+        id: "spawn-current",
+        type: "collabToolCall",
+        tool: "spawn_agent",
+        status: "completed",
+        senderThreadId: "thread-parent-current",
+        newThreadId: "thread-child-current",
+        prompt: "Inspect the child surface",
+        agentStatus: { status: "running" },
+      },
+    });
+    client.notify("turn/started", {
+      threadId: "thread-child-current",
+      turn: { id: "turn-child-current", status: "inProgress" },
+    });
+    client.notify("item/reasoning/summaryTextDelta", {
+      threadId: "thread-child-current",
+      turnId: "turn-child-current",
+      itemId: "reason-child",
+      delta: "checking",
+    });
+    client.notify("item/started", {
+      threadId: "thread-child-current",
+      turnId: "turn-child-current",
+      item: { id: "cmd-child", type: "commandExecution", command: "pwd", status: "inProgress" },
+    });
+    client.notify("item/completed", {
+      threadId: "thread-child-current",
+      turnId: "turn-child-current",
+      item: {
+        id: "cmd-child",
+        type: "commandExecution",
+        command: "pwd",
+        status: "completed",
+        aggregatedOutput: "/workspace\n",
+        exitCode: 0,
+        durationMs: 4,
+      },
+    });
+    client.notify("item/started", {
+      threadId: "thread-child-current",
+      turnId: "turn-child-current",
+      item: { id: "file-child", type: "fileChange", changes: [], status: "inProgress" },
+    });
+    client.notify("item/completed", {
+      threadId: "thread-child-current",
+      turnId: "turn-child-current",
+      item: { id: "file-child", type: "fileChange", changes: [], status: "completed" },
+    });
+    client.notify("item/started", {
+      threadId: "thread-child-current",
+      turnId: "turn-child-current",
+      item: {
+        id: "mcp-child",
+        type: "mcpToolCall",
+        server: "docs",
+        tool: "lookup",
+        arguments: { id: "one" },
+        status: "inProgress",
+      },
+    });
+    client.notify("item/completed", {
+      threadId: "thread-child-current",
+      turnId: "turn-child-current",
+      item: {
+        id: "mcp-child",
+        type: "mcpToolCall",
+        server: "docs",
+        tool: "lookup",
+        arguments: { id: "one" },
+        result: { content: [{ type: "text", text: "found" }] },
+        status: "completed",
+      },
+    });
+    client.notify("item/started", {
+      threadId: "thread-child-current",
+      turnId: "turn-child-current",
+      item: {
+        id: "dynamic-child",
+        type: "dynamicToolCall",
+        namespace: "tickets",
+        tool: "lookup",
+        arguments: { id: "ABC" },
+        status: "inProgress",
+      },
+    });
+    client.notify("item/completed", {
+      threadId: "thread-child-current",
+      turnId: "turn-child-current",
+      item: {
+        id: "dynamic-child",
+        type: "dynamicToolCall",
+        namespace: "tickets",
+        tool: "lookup",
+        contentItems: [{ type: "inputText", text: "open" }],
+        success: true,
+        status: "completed",
+      },
+    });
+    client.notify("item/completed", {
+      threadId: "thread-child-current",
+      turnId: "turn-child-current",
+      item: { id: "msg-child", type: "agentMessage", text: "CHILD_DONE" },
+    });
+    client.notify("turn/completed", {
+      threadId: "thread-child-current",
+      turn: { id: "turn-child-current", status: "completed" },
+    });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    client.finishTurn({ text: "PARENT_DONE" });
+    const result = await pending;
+
+    expect(result).toMatchObject({ text: "PARENT_DONE", error: null, failureKind: null });
+    expect(result.events).not.toContainEqual(expect.objectContaining({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "CHILD_DONE" }] },
+    }));
+    const activity = emitted.filter((event) => event.type === "subagent_activity");
+    expect(activity.map((event) => event.phase)).toEqual([
+      "agent_started",
+      "message",
+      "started",
+      "completed",
+      "started",
+      "completed",
+      "started",
+      "completed",
+      "started",
+      "completed",
+      "message",
+      "agent_completed",
+    ]);
+    expect(activity.every((event) => event.subagent.id === "spawn-current")).toBe(true);
+    expect(activity.slice(1).every((event) => event.subagent.nativeId === "thread-child-current")).toBe(true);
+    expect(activity.find((event) => event.phase === "agent_completed")).toMatchObject({
+      id: "agent:spawn-current",
+      isError: false,
+      content: "CHILD_DONE",
+    });
+    expect(activity.find((event) => event.id.includes("cmd-child") && event.phase === "started")).toMatchObject({
+      name: "codex▸command_execution",
+      arguments: { command: "pwd" },
+    });
+    expect(activity.find((event) => event.id.includes("file-child") && event.phase === "completed")).toMatchObject({
+      name: "codex▸file_change",
+      isError: false,
+    });
+    expect(activity.find((event) => event.id.includes("mcp-child") && event.phase === "started")).toMatchObject({
+      name: "codex▸mcp__docs__lookup",
+      arguments: { id: "one" },
+    });
+  });
+
+  it.each([
+    [
+      "legacy collabAgentToolCall",
+      (client) => {
+        client.notify("item/started", {
+          threadId: "thread-parent-schema",
+          turnId: "turn-1",
+          item: {
+            id: "spawn-schema",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            status: "inProgress",
+            senderThreadId: "thread-parent-schema",
+            receiverThreadIds: [],
+          },
+        });
+        client.notify("item/completed", {
+          threadId: "thread-parent-schema",
+          turnId: "turn-1",
+          item: {
+            id: "spawn-schema",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            status: "completed",
+            senderThreadId: "thread-parent-schema",
+            receiverThreadIds: ["thread-child-schema"],
+            agentsStates: { "thread-child-schema": { status: "running" } },
+          },
+        });
+      },
+      undefined,
+    ],
+    [
+      "local subAgentActivity",
+      (client) => {
+        const params = {
+          threadId: "thread-parent-schema",
+          turnId: "turn-1",
+          item: {
+            id: "spawn-schema",
+            type: "subAgentActivity",
+            kind: "started",
+            agentThreadId: "thread-child-schema",
+            agentPath: "/root/research",
+          },
+        };
+        client.notify("item/started", params);
+        client.notify("item/completed", params);
+      },
+      "/root/research",
+    ],
+  ])("normalizes %s into the canonical spawn group", async (_label, emitSpawn, agentPath) => {
+    const factory = stubClientFactory({ threadId: "thread-parent-schema" });
+    factory.turnPlan.push("manual");
+    const pending = generateCodexAppResponse("SYS", runOptions(factory));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    emitSpawn(client);
+    client.notify("item/completed", {
+      threadId: "thread-child-schema",
+      turnId: "turn-child-schema",
+      item: { id: "msg-child-schema", type: "agentMessage", text: "schema child" },
+    });
+    client.notify("turn/completed", {
+      threadId: "thread-child-schema",
+      turn: { id: "turn-child-schema", status: "completed" },
+    });
+    client.finishTurn({ text: "PARENT_DONE" });
+    const result = await pending;
+
+    const activity = result.events.filter((event) => event.type === "subagent_activity");
+    expect(activity.filter((event) => event.phase === "agent_started")).toHaveLength(1);
+    expect(activity.at(-1)).toMatchObject({
+      phase: "agent_completed",
+      subagent: {
+        id: "spawn-schema",
+        nativeId: "thread-child-schema",
+        ...(agentPath === undefined ? {} : { name: "research", label: agentPath, agentPath }),
+      },
+    });
+    expect(result.text).toBe("PARENT_DONE");
+  });
+
+  it("keeps nested Codex descendants in the initiating root spawn group", async () => {
+    const factory = stubClientFactory({ threadId: "thread-parent-nested" });
+    factory.turnPlan.push("manual");
+    const pending = generateCodexAppResponse("SYS", runOptions(factory));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.notify("item/completed", {
+      threadId: "thread-parent-nested",
+      turnId: "turn-1",
+      item: {
+        id: "spawn-root",
+        type: "subAgentActivity",
+        kind: "started",
+        agentThreadId: "thread-child",
+        agentPath: "/root/research",
+      },
+    });
+    client.notify("item/completed", {
+      threadId: "thread-child",
+      turnId: "turn-child",
+      item: {
+        id: "spawn-nested",
+        type: "subAgentActivity",
+        kind: "started",
+        agentThreadId: "thread-grandchild",
+        agentPath: "/root/research/audit",
+      },
+    });
+    client.notify("item/started", {
+      threadId: "thread-grandchild",
+      turnId: "turn-grandchild",
+      item: { id: "nested-read", type: "commandExecution", command: "git diff", status: "inProgress" },
+    });
+    client.notify("item/completed", {
+      threadId: "thread-grandchild",
+      turnId: "turn-grandchild",
+      item: {
+        id: "nested-read",
+        type: "commandExecution",
+        command: "git diff",
+        status: "completed",
+        aggregatedOutput: "clean",
+        exitCode: 0,
+      },
+    });
+    client.notify("turn/completed", {
+      threadId: "thread-grandchild",
+      turn: { id: "turn-grandchild", status: "completed" },
+    });
+    client.notify("item/completed", {
+      threadId: "thread-child",
+      turnId: "turn-child",
+      item: { id: "msg-child", type: "agentMessage", text: "nested complete" },
+    });
+    client.notify("turn/completed", {
+      threadId: "thread-child",
+      turn: { id: "turn-child", status: "completed" },
+    });
+    client.finishTurn({ text: "PARENT_DONE" });
+    const result = await pending;
+
+    const nestedTool = result.events.find((event) => event.type === "subagent_activity"
+      && event.id.includes("nested-read") && event.phase === "started");
+    expect(nestedTool).toMatchObject({
+      subagent: {
+        id: "spawn-root",
+        nativeId: "thread-grandchild",
+        name: "audit",
+        label: "/root/research/audit",
+        agentPath: "/root/research/audit",
+      },
+    });
+    expect(result.events.filter((event) => event.type === "subagent_activity" && event.phase === "agent_completed"))
+      .toHaveLength(1);
+    expect(result.text).toBe("PARENT_DONE");
+  });
+
+  it("keeps root live-input steering pinned when a child turn starts", async () => {
+    const factory = stubClientFactory({ threadId: "thread-parent-steer" });
+    factory.turnPlan.push("manual");
+    let releaseInput = () => {};
+    const inputReady = new Promise((resolve) => { releaseInput = resolve; });
+    const liveInput = (async function* () {
+      await inputReady;
+      yield { body: "steer the parent only" };
+    })();
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, { liveInput }));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.notify("item/completed", {
+      threadId: "thread-parent-steer",
+      turnId: "turn-1",
+      item: {
+        id: "spawn-steer",
+        type: "collabToolCall",
+        tool: "spawn_agent",
+        status: "completed",
+        senderThreadId: "thread-parent-steer",
+        newThreadId: "thread-child-steer",
+      },
+    });
+    client.notify("turn/started", {
+      threadId: "thread-child-steer",
+      turn: { id: "turn-child-steer", status: "inProgress" },
+    });
+    releaseInput();
+    await vi.waitFor(() => expect(
+      client.requests.some((request) => request.method === "turn/steer"),
+    ).toBe(true));
+    expect(client.requests.find((request) => request.method === "turn/steer")?.params).toMatchObject({
+      threadId: "thread-parent-steer",
+      expectedTurnId: "turn-1",
+    });
+
+    client.notify("turn/completed", {
+      threadId: "thread-child-steer",
+      turn: { id: "turn-child-steer", status: "completed" },
+    });
+    client.finishTurn({ text: "PARENT_DONE" });
+    await expect(pending).resolves.toMatchObject({ text: "PARENT_DONE", error: null });
+  });
+
+  it("reports child failure without failing or completing the root turn", async () => {
+    const factory = stubClientFactory({ threadId: "thread-parent-child-failure" });
+    factory.turnPlan.push("manual");
+    let settled = false;
+    const pending = generateCodexAppResponse("SYS", runOptions(factory));
+    void pending.then(() => { settled = true; });
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.notify("item/completed", {
+      threadId: "thread-parent-child-failure",
+      turnId: "turn-1",
+      item: {
+        id: "spawn-failed-child",
+        type: "collabAgentToolCall",
+        tool: "spawnAgent",
+        status: "completed",
+        senderThreadId: "thread-parent-child-failure",
+        receiverThreadIds: ["thread-failed-child"],
+      },
+    });
+    client.notify("turn/completed", {
+      threadId: "thread-failed-child",
+      turn: {
+        id: "turn-failed-child",
+        status: "failed",
+        error: { message: "child failed safely" },
+      },
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    client.finishTurn({ text: "PARENT_DONE" });
+    const result = await pending;
+    expect(result).toMatchObject({ text: "PARENT_DONE", error: null, failureKind: null });
+    expect(result.events.find((event) => event.type === "subagent_activity" && event.phase === "agent_completed"))
+      .toMatchObject({ isError: true, content: "child failed safely" });
+  });
+
+  it("closes an active Codex subagent group when the parent is aborted", async () => {
+    const factory = stubClientFactory({ threadId: "thread-parent-subagent-abort" });
+    factory.turnPlan.push("manual");
+    const controller = new AbortController();
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, { abortSignal: controller.signal }));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.notify("item/completed", {
+      threadId: "thread-parent-subagent-abort",
+      turnId: "turn-1",
+      item: {
+        id: "spawn-aborted",
+        type: "subAgentActivity",
+        kind: "started",
+        agentThreadId: "thread-child-aborted",
+        agentPath: "/root/aborted",
+      },
+    });
+    controller.abort();
+    const result = await pending;
+
+    expect(result.cancelled).toBe(true);
+    const terminal = result.events.filter((event) => event.type === "subagent_activity"
+      && event.phase === "agent_completed");
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]).toMatchObject({
+      isError: true,
+      content: "Parent Codex turn was cancelled before the subagent completed.",
+    });
   });
 
   it("runs the dedicated no-tool probe read-only and interrupts the first tool action", async () => {
