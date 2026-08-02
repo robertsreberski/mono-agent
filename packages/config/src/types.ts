@@ -187,9 +187,10 @@ export interface RuntimeRetryConfig {
 
 /**
  * One named subagent the `Agent` tool can deploy. Shaped to project onto the
- * provider-native subagent definitions (`{name, description, helperSystemPrompt,
+ * Claude-native `Task` definitions (`{name, description, helperSystemPrompt,
  * allowedTools, disallowedTools, modelRef, mcpServers}`) so one config block can
- * drive both the in-process pi tool and a native Task-style surface.
+ * drive both the in-process Pi tool and Claude's native surface. Codex owns its
+ * collaboration-agent definitions instead of accepting this projection.
  */
 export interface MonoAgentSubagentConfig {
   /** Model-visible identifier and the `Agent` tool's `name` enum value. */

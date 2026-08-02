@@ -457,6 +457,9 @@ const CODEX_APP_CAPABILITIES = {
   supports_skills: true,
   supports_builtin_tools: true,
   supports_live_input: true,
+  // Codex owns its collaboration agents and exposes their lifecycle through
+  // app-server. This does not mean the bridge can inject caller-defined
+  // nativeSubagents profiles; that richer request contract is rejected below.
   supports_native_subagents: true,
   supports_fast_mode: true,
   tool_policy: TOOL_POLICY_ALLOW_ALL_ONLY,
@@ -729,36 +732,6 @@ function withoutCodexRequestErrorDiagnostics(diagnostics) {
     ...rest
   } = diagnostics || {};
   return rest;
-}
-
-function codexNativeTeammates(nativeSubagents) {
-  if (nativeSubagents?.provider !== "codex" || !Array.isArray(nativeSubagents.teammates)) return [];
-  return nativeSubagents.teammates.map((agent) => {
-    const name = String(agent?.name || "").trim();
-    if (!name) return null;
-    return {
-      name,
-      displayName: agent.displayName || name,
-      description: agent.description || "",
-      model: agent.model?.model || agent.modelRef || null,
-      reasoningEffort: agent.effort || null,
-      instructions: agent.helperSystemPrompt || agent.instructions || "",
-    };
-  }).filter(Boolean);
-}
-
-function codexCollaborationModePayload(nativeSubagents, { model, effort, systemPrompt }) {
-  const teammates = codexNativeTeammates(nativeSubagents);
-  if (!teammates.length) return null;
-  return {
-    mode: "default",
-    teammates,
-    settings: {
-      model,
-      reasoningEffort: effort || null,
-      developerInstructions: systemPrompt,
-    },
-  };
 }
 
 /**
@@ -2544,6 +2517,17 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     };
   }
 
+  if (
+    Array.isArray(options.nativeSubagents?.teammates)
+    && options.nativeSubagents.teammates.length > 0
+  ) {
+    return sessionUnavailableResult(
+      "skipped_capability_mismatch",
+      "Direct Codex owns its native collaboration agents and does not accept mono-agent nativeSubagents teammate/profile definitions. Remove nativeSubagents, use codexLoadProjectDocs for repository instructions, or route this run to Claude.",
+      "codex_native_subagent_definitions_unsupported",
+    );
+  }
+
   const mcpServerNameProblem = codexMcpServerNameProblem(invalidMcpServerNames);
   if (mcpServerNameProblem) {
     return sessionUnavailableResult(
@@ -2620,27 +2604,6 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       else options.abortSignal.addEventListener("abort", abortHandler, { once: true });
     }
     if (!resumeEntry) await initializeClient(client);
-    let collaborationMode = noToolsProbe
-      ? null
-      : codexCollaborationModePayload(options.nativeSubagents, {
-        model: resolved.model,
-        effort: normalizedEffort,
-        systemPrompt,
-      });
-    if (collaborationMode) {
-      try {
-        await client.request("collaborationMode/list", {}, { timeoutMs: 5_000 });
-      } catch (err) {
-        emitEvent({
-          type: "runtime_warning",
-          warning_kind: "codex_collaboration_mode_unavailable",
-          message: safeDiagnostic(codexErrorMessage(
-            err?.responseError ? safeResponseError(err.responseError) : err,
-          )),
-        });
-        collaborationMode = null;
-      }
-    }
     const fastMode = codexModelSupportsFastMode(resolved.model) && normalizeFastMode(options.fastMode, true);
     if (!resumeEntry) {
       const mcpServers = noToolsProbe ? {} : configuredMcpServers;
@@ -2703,26 +2666,9 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       effort: normalizedEffort,
       summary: normalizedEffort && normalizedEffort !== "none" ? "auto" : "none",
       outputSchema: options.outputSchema,
-      ...(collaborationMode ? { collaborationMode } : {}),
     };
-    let turn;
-    try {
-      turn = await client.request("turn/start", turnParams);
-      assertNoUnsupportedServerRequest();
-    } catch (err) {
-      if (!collaborationMode) throw err;
-      emitEvent({
-        type: "runtime_warning",
-        warning_kind: "codex_collaboration_mode_rejected",
-        message: safeDiagnostic(codexErrorMessage(
-          err?.responseError ? safeResponseError(err.responseError) : err,
-        )),
-      });
-      const fallbackParams = { ...turnParams };
-      delete fallbackParams.collaborationMode;
-      turn = await client.request("turn/start", fallbackParams);
-      assertNoUnsupportedServerRequest();
-    }
+    const turn = await client.request("turn/start", turnParams);
+    assertNoUnsupportedServerRequest();
     setActiveTurnId(turn?.turn?.id);
 
     let prematureClose = false;

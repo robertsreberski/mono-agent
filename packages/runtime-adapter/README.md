@@ -64,6 +64,12 @@ while running in an untrusted checkout. For Codex app-server runs,
 `RuntimeRunOptions.codexLoadProjectDocs: true` restores Codex's native project
 document defaults; omitted/false disables automatic discovery with
 `project_doc_max_bytes=0`. Explicit `codexAppServerArgs` remain authoritative.
+Codex owns its native collaboration agents and their profiles: the facade
+normalizes their activity but does not inject `nativeSubagents` definitions.
+`RuntimeRunOptions.nativeSubagents` is the typed Claude-native `Task` profile
+contract; a non-empty list on a direct Codex attempt returns a capability
+mismatch so a fallback router can continue. Use `codexLoadProjectDocs` to let
+Codex and its own agents load repository instructions.
 
 For heterogeneous fallback chains, `resolveAttempt().policyOptions` may project
 only `allowedTools`, `disallowedTools`, and `permissionMode` for the runtime

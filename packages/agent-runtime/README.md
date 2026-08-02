@@ -750,7 +750,7 @@ Per-call options (a non-exhaustive selection):
 | `cwd` | `string` | Working directory for the agent's tools. |
 | `allowedTools` | `string[]` | Built-in tool allowlist. Default: all. |
 | `disallowedTools` | `string[]` | Block list. |
-| `nativeSubagents` | `object` | Provider-native teammate definitions for capable Claude and Codex bridges. |
+| `nativeSubagents` | `object` | Caller-defined Claude native `Task` profiles. Direct Codex rejects configured teammate definitions because Codex owns its collaboration agents. |
 | `settingSources` | `("user" \| "project" \| "local")[]` | Claude Agent SDK filesystem settings opt-in. Omitted/empty disables those three sources; Anthropic managed settings still apply. |
 | `codexLoadProjectDocs` | `boolean` | Codex app-server repository-instruction opt-in. Omitted/false sets `project_doc_max_bytes=0`; true restores Codex defaults. Explicit `codexAppServerArgs` wins. |
 | `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http); on direct Codex, each forwarded server authorizes its own tool calls. |
@@ -805,11 +805,18 @@ settings and avoid opting in while running in an untrusted checkout. This
 option is SDK only. The Claude Code CLI performs its own settings discovery,
 and mono-agent does not pass it a `--setting-sources` value.
 
+Codex app-server owns its native collaboration agents and their profiles. The
+bridge observes and normalizes their lifecycle, but it does not synthesize a
+`collaborationMode` payload or inject caller-defined `nativeSubagents`
+teammates. A non-empty configured teammate list fails before app-server startup
+with `skipped_capability_mismatch`, allowing a fallback router to continue to a
+Claude route.
+
 Codex app-server runs disable automatic repository-instruction discovery by
-default with `project_doc_max_bytes=0`. Set `codexLoadProjectDocs: true` to use
-Codex's native project-document defaults. If `codexAppServerArgs` is supplied,
-that explicit argument vector is authoritative and `codexLoadProjectDocs` does
-not alter it.
+default with `project_doc_max_bytes=0`. Set `codexLoadProjectDocs: true` when
+Codex and its own collaboration agents should load repository instructions. If
+`codexAppServerArgs` is supplied, that explicit argument vector is authoritative
+and `codexLoadProjectDocs` does not alter it.
 
 Provider-native and in-process delegation share `subagent_activity` telemetry.
 `subagent.id` is the canonical parent attachment key: the initiating parent
