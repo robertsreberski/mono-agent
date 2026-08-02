@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { sanitizeAcpHostValue } from "../../ai/providers/acp-privacy.js";
+import {
+  ownAcpSessionUpdateKind,
+  sanitizeAcpHostValue,
+  sanitizeAcpHostValueWithStatus,
+} from "../../ai/providers/acp-privacy.js";
 
 describe("ACP host-value privacy sanitizer", () => {
   it("drops protocol metadata and redacts raw-id copies in keys and values", () => {
@@ -36,9 +40,28 @@ describe("ACP host-value privacy sanitizer", () => {
 
   it("stops walking wide agent values at a fixed node budget", () => {
     const wide = Array.from({ length: 10_000 }, (_, index) => ({ index }));
-    const result = sanitizeAcpHostValue(wide);
+    const { value: result, truncated } = sanitizeAcpHostValueWithStatus(wide);
 
+    expect(truncated).toBe(true);
     expect(result.length).toBeLessThan(wide.length);
     expect(result.length).toBeGreaterThan(0);
+  });
+
+  it("copies __proto__ as inert own data on null-prototype objects", () => {
+    const source = JSON.parse('{"__proto__":{"polluted":true},"visible":"ok"}');
+    const result = sanitizeAcpHostValue(source);
+
+    expect(Object.getPrototypeOf(result)).toBeNull();
+    expect(Object.hasOwn(result, "__proto__")).toBe(true);
+    expect(result.__proto__).toEqual({ polluted: true });
+    expect({}.polluted).toBeUndefined();
+  });
+
+  it("never accepts an inherited session-update discriminator", () => {
+    const inherited = Object.create({ sessionUpdate: "tool_call" });
+    inherited.rawInput = { command: "unsafe" };
+
+    expect(ownAcpSessionUpdateKind(inherited)).toBeNull();
+    expect(ownAcpSessionUpdateKind({ sessionUpdate: "tool_call" })).toBe("tool_call");
   });
 });

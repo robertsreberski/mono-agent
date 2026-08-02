@@ -83,7 +83,7 @@ describe("ACP runtime bridge", () => {
         messages: [{
           role: "user",
           content: [
-            { type: "text", text: "permission privacy-copy and resource" },
+            { type: "text", text: "permission privacy-copy prototype-copy and resource" },
             { type: "resource_link", uri: "file:///tmp/runtime-context.txt", name: "runtime context" },
           ],
         }],
@@ -115,6 +115,15 @@ describe("ACP runtime bridge", () => {
       expect.objectContaining({ type: "user" }),
       expect.objectContaining({ type: "context_usage" }),
     ]));
+    const toolUse = result.events
+      .flatMap((event) => event?.message?.content || [])
+      .find((content) => content?.type === "tool_use");
+    expect(Object.hasOwn(toolUse.input, "__proto__")).toBe(true);
+    expect(toolUse.input.__proto__).toEqual({
+      polluted: true,
+      copiedSessionId: "[redacted]",
+    });
+    expect({}.polluted).toBeUndefined();
     expect(streamed).toHaveLength(result.events.length);
     const sessionUpdates = result.events.filter((event) => event.type === "acp_session_update");
     expect(sessionUpdates.length).toBeGreaterThan(0);
@@ -170,6 +179,43 @@ describe("ACP runtime bridge", () => {
     expect(result.diagnostics.acp_session_id_encoded).toBe(false);
     expect(JSON.stringify(result)).not.toContain(raw);
     expect(resolveAcpProfile).not.toHaveBeenCalled();
+  });
+
+  it("fails explicitly instead of dispatching a partially sanitized oversized update", async () => {
+    const result = await createRuntime().run("System", runOptions(async () => descriptor(), {
+      messages: [{ role: "user", content: "oversize-update" }],
+    }));
+
+    expect(result.failureKind).toBe("provider_protocol");
+    expect(result.error).toBe("ACP session update exceeded safe host normalization limits.");
+    expect(result.errorDetails).toMatchObject({ acp_error_code: "protocol" });
+    expect(result.events).toContainEqual({
+      type: "acp_session_update_rejected",
+      reason: "normalization_limit",
+    });
+    expect(result.events.flatMap((event) => event?.message?.content || []))
+      .not.toContainEqual(expect.objectContaining({ id: "tool-oversize" }));
+  });
+
+  it("dispatches on typed protocol fields even when a raw id collides with a field name", async () => {
+    const result = await createRuntime().run("System", runOptions(async () => descriptor("normal", {
+      env: {
+        FAKE_ACP_MODE: "normal",
+        FAKE_ACP_SESSION_ID: "rawInput",
+      },
+    }), {
+      messages: [{ role: "user", content: "permission" }],
+      onAcpInteractionRequest: () => ({
+        outcome: { outcome: "selected", optionId: "allow-once" },
+      }),
+    }));
+
+    expect(result.error).toBeNull();
+    expect(result.events.flatMap((event) => event?.message?.content || []))
+      .toContainEqual(expect.objectContaining({
+        type: "tool_use",
+        input: { permission: "selected" },
+      }));
   });
 
   it.each([null, "not-a-block", 42, []])("rejects malformed prompt block %j", async (block) => {

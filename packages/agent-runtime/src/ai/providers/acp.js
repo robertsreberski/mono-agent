@@ -12,7 +12,10 @@ import {
   encodeAcpProviderSessionId,
   validateAcpProviderSessionId,
 } from "./acp-session-tokens.js";
-import { sanitizeAcpHostValue } from "./acp-privacy.js";
+import {
+  ownAcpSessionUpdateKind,
+  sanitizeAcpHostValueWithStatus,
+} from "./acp-privacy.js";
 
 /** @param {any} callback @param {any} event */
 function emit(callback, event) {
@@ -109,24 +112,48 @@ function runtimePrompt(systemPrompt, messages, options) {
   return blocks;
 }
 
+/** @param {unknown} value @param {string} key */
+function ownValue(value, key) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !Object.hasOwn(value, key)) {
+    return undefined;
+  }
+  return /** @type {Record<string, unknown>} */ (value)[key];
+}
+
 /** @param {any} update @param {any} state */
 function normalizeUpdate(update, state) {
-  const body = sanitizeAcpHostValue(update.update || {}, [update.sessionId]);
+  const protocolBody = update.update;
+  const updateKind = ownAcpSessionUpdateKind(protocolBody);
+  if (updateKind === null) {
+    state.protocolError ||= new AcpClientError("protocol", "ACP session update has no valid own discriminator.");
+    return [{ type: "acp_session_update_rejected", reason: "invalid_discriminator" }];
+  }
+  const sanitized = sanitizeAcpHostValueWithStatus(protocolBody, [update.sessionId]);
+  if (sanitized.truncated) {
+    state.protocolError ||= new AcpClientError(
+      "protocol",
+      "ACP session update exceeded safe host normalization limits.",
+    );
+    return [{ type: "acp_session_update_rejected", reason: "normalization_limit" }];
+  }
+  const publicBody = sanitized.value;
+  /** @param {unknown} value */
+  const publicValue = (value) => sanitizeAcpHostValueWithStatus(value, [update.sessionId]).value;
   const raw = {
     type: "acp_session_update",
-    update: jsonSafe(body),
+    update: jsonSafe({ ...publicBody, sessionUpdate: updateKind }),
   };
   /** @type {any[]} */
   const events = [raw];
-  switch (body.sessionUpdate) {
+  switch (updateKind) {
     case "agent_message_chunk": {
-      const content = body.content;
+      const content = publicValue(ownValue(protocolBody, "content"));
       if (content?.type === "text" && typeof content.text === "string") state.text.push(content.text);
       events.push({ type: "assistant", message: { content: [jsonSafe(content)] } });
       break;
     }
     case "agent_thought_chunk": {
-      const content = body.content;
+      const content = publicValue(ownValue(protocolBody, "content"));
       if (content?.type === "text" && typeof content.text === "string") state.thinking.push(content.text);
       events.push({
         type: "assistant",
@@ -140,25 +167,27 @@ function normalizeUpdate(update, state) {
         message: {
           content: [{
             type: "tool_use",
-            id: body.toolCallId,
-            name: body.name || body.title || "acp_tool",
-            input: jsonSafe(body.rawInput ?? {}),
+            id: publicValue(ownValue(protocolBody, "toolCallId")),
+            name: publicValue(ownValue(protocolBody, "name"))
+              || publicValue(ownValue(protocolBody, "title"))
+              || "acp_tool",
+            input: jsonSafe(publicValue(ownValue(protocolBody, "rawInput") ?? {})),
           }],
         },
       });
       break;
     case "tool_call_update":
-      if (["completed", "failed"].includes(body.status)) {
+      if (["completed", "failed"].includes(/** @type {any} */ (ownValue(protocolBody, "status")))) {
+        const rawOutput = ownValue(protocolBody, "rawOutput") ?? ownValue(protocolBody, "content") ?? "";
+        const output = publicValue(rawOutput);
         events.push({
           type: "user",
           message: {
             content: [{
               type: "tool_result",
-              tool_use_id: body.toolCallId,
-              content: typeof body.rawOutput === "string"
-                ? body.rawOutput
-                : JSON.stringify(jsonSafe(body.rawOutput ?? body.content ?? "")),
-              is_error: body.status === "failed",
+              tool_use_id: publicValue(ownValue(protocolBody, "toolCallId")),
+              content: typeof output === "string" ? output : JSON.stringify(jsonSafe(output)),
+              is_error: ownValue(protocolBody, "status") === "failed",
             }],
           },
         });
@@ -166,22 +195,29 @@ function normalizeUpdate(update, state) {
       break;
     case "usage_update":
       state.usage = {
-        totalTokens: Number(body.used) || 0,
-        contextWindow: Number(body.size) || 0,
-        cost: body.cost || null,
+        totalTokens: Number(ownValue(protocolBody, "used")) || 0,
+        contextWindow: Number(ownValue(protocolBody, "size")) || 0,
+        cost: publicValue(ownValue(protocolBody, "cost")) || null,
       };
       events.push({
         type: "context_usage",
         model: state.model,
         source: "acp",
-        context: { used: Number(body.used) || 0, window: Number(body.size) || 0 },
-        cost: body.cost || null,
+        context: {
+          used: Number(ownValue(protocolBody, "used")) || 0,
+          window: Number(ownValue(protocolBody, "size")) || 0,
+        },
+        cost: publicValue(ownValue(protocolBody, "cost")) || null,
       });
       break;
     case "plan":
     case "plan_update":
     case "plan_removed":
-      events.push({ type: "plan", source: "acp", update: jsonSafe(body) });
+      events.push({
+        type: "plan",
+        source: "acp",
+        update: jsonSafe({ ...publicBody, sessionUpdate: updateKind }),
+      });
       break;
     default:
       break;
@@ -320,7 +356,7 @@ export async function generateAcpResponse(systemPrompt, req) {
   const profileId = req?.model?.model;
   const reference = req?.model?.reference || `acp:${profileId || "unknown"}`;
   const events = [];
-  const state = { text: [], thinking: [], model: reference, usage: null };
+  const state = { text: [], thinking: [], model: reference, usage: null, protocolError: null };
   const onEvent = req?.onEvent;
   const capture = (event) => {
     events.push(event);
@@ -383,6 +419,7 @@ export async function generateAcpResponse(systemPrompt, req) {
     } finally {
       remove();
     }
+    if (state.protocolError) throw state.protocolError;
     // PromptResponse.usage is explicitly unstable in ACP 1.3.0. The stable
     // cumulative source is the latest top-level usage_update notification.
     const usage = state.usage;

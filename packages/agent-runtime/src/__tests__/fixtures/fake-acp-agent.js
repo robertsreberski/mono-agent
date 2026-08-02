@@ -82,7 +82,7 @@ if (mode === "malformed" || mode === "oversize" || mode === "unterminated" || mo
     .onRequest(methods.agent.authenticate, () => ({}))
     .onRequest(methods.agent.logout, () => ({}))
     .onRequest(methods.agent.session.new, (ctx) => {
-      const sessionId = `session-${sessions.size + 1}`;
+      const sessionId = process.env.FAKE_ACP_SESSION_ID || `session-${sessions.size + 1}`;
       sessions.set(sessionId, { sessionId, cwd: ctx.params.cwd, title: "Fake session" });
       return { sessionId, modes, configOptions: configOptions() };
     })
@@ -174,6 +174,18 @@ if (mode === "malformed" || mode === "oversize" || mode === "unterminated" || mo
             _meta: { copiedSessionId: ctx.params.sessionId },
           } : {}),
         });
+        const rawInput = text.includes("privacy-copy")
+          ? {
+              permission: permission.outcome.outcome,
+              copiedSessionId: ctx.params.sessionId,
+            }
+          : { permission: permission.outcome.outcome };
+        if (text.includes("prototype-copy")) {
+          Object.defineProperty(rawInput, "__proto__", {
+            value: { polluted: true, copiedSessionId: ctx.params.sessionId },
+            enumerable: true,
+          });
+        }
         await ctx.client.notify(methods.client.session.update, {
           sessionId: ctx.params.sessionId,
           update: {
@@ -182,13 +194,9 @@ if (mode === "malformed" || mode === "oversize" || mode === "unterminated" || mo
             title: "Fake tool",
             name: "fake_tool",
             status: "in_progress",
-            rawInput: { permission: permission.outcome.outcome },
+            rawInput,
             ...(text.includes("privacy-copy") ? {
               _meta: { copiedSessionId: ctx.params.sessionId },
-              rawInput: {
-                permission: permission.outcome.outcome,
-                copiedSessionId: ctx.params.sessionId,
-              },
             } : {}),
           },
         });
@@ -200,6 +208,19 @@ if (mode === "malformed" || mode === "oversize" || mode === "unterminated" || mo
             status: "completed",
             rawOutput: "done",
           },
+        });
+      }
+      if (text.includes("oversize-update")) {
+        const update = {
+          toolCallId: "tool-oversize",
+          title: "Oversize tool",
+          status: "in_progress",
+          rawInput: Array.from({ length: 5_000 }, (_, index) => ({ index })),
+          sessionUpdate: "tool_call",
+        };
+        await ctx.client.notify(methods.client.session.update, {
+          sessionId: ctx.params.sessionId,
+          update,
         });
       }
       if (text.includes("elicit")) {

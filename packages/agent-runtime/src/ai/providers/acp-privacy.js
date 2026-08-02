@@ -12,9 +12,9 @@ const MAX_HOST_VALUE_NODES = 4_096;
  *
  * @param {unknown} value
  * @param {ReadonlyArray<unknown>} [rawSecrets]
- * @returns {any}
+ * @returns {{value: any, truncated: boolean}}
  */
-export function sanitizeAcpHostValue(value, rawSecrets = []) {
+export function sanitizeAcpHostValueWithStatus(value, rawSecrets = []) {
   const secrets = rawSecrets
     .filter((secret) => typeof secret === "string" && secret.length > 0)
     .sort((left, right) => /** @type {string} */ (right).length - /** @type {string} */ (left).length);
@@ -29,36 +29,78 @@ export function sanitizeAcpHostValue(value, rawSecrets = []) {
   };
 
   let nodes = 0;
+  let truncated = false;
 
   /** @param {unknown} item @param {WeakSet<object>} ancestors @param {number} depth @returns {any} */
   const visit = (item, ancestors, depth) => {
     nodes += 1;
-    if (nodes > MAX_HOST_VALUE_NODES || depth > MAX_HOST_VALUE_DEPTH) return null;
+    if (nodes > MAX_HOST_VALUE_NODES || depth > MAX_HOST_VALUE_DEPTH) {
+      truncated = true;
+      return null;
+    }
     if (typeof item === "string") return redact(item);
     if (Array.isArray(item)) {
-      if (ancestors.has(item)) return null;
+      if (ancestors.has(item)) {
+        truncated = true;
+        return null;
+      }
       ancestors.add(item);
       const result = [];
       for (const entry of item) {
-        if (nodes >= MAX_HOST_VALUE_NODES) break;
+        if (nodes >= MAX_HOST_VALUE_NODES) {
+          truncated = true;
+          break;
+        }
         result.push(visit(entry, ancestors, depth + 1));
       }
       ancestors.delete(item);
       return result;
     }
     if (!item || typeof item !== "object") return item;
-    if (ancestors.has(item)) return null;
+    if (ancestors.has(item)) {
+      truncated = true;
+      return null;
+    }
     ancestors.add(item);
     /** @type {Record<string, unknown>} */
-    const result = {};
+    const result = Object.create(null);
     for (const [key, entry] of Object.entries(item)) {
-      if (nodes >= MAX_HOST_VALUE_NODES) break;
+      if (nodes >= MAX_HOST_VALUE_NODES) {
+        truncated = true;
+        break;
+      }
       if (PRIVATE_PROTOCOL_KEYS.has(key)) continue;
-      result[redact(key)] = visit(entry, ancestors, depth + 1);
+      Object.defineProperty(result, redact(key), {
+        value: visit(entry, ancestors, depth + 1),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
     ancestors.delete(item);
     return result;
   };
 
-  return visit(value, new WeakSet(), 0);
+  return { value: visit(value, new WeakSet(), 0), truncated };
+}
+
+/**
+ * Compatibility wrapper for callback/list surfaces that intentionally accept
+ * a bounded representation. Protocol normalization should use the status form
+ * above so it can fail explicitly instead of consuming partial data.
+ *
+ * @param {unknown} value
+ * @param {ReadonlyArray<unknown>} [rawSecrets]
+ * @returns {any}
+ */
+export function sanitizeAcpHostValue(value, rawSecrets = []) {
+  return sanitizeAcpHostValueWithStatus(value, rawSecrets).value;
+}
+
+/** @param {unknown} value @returns {string|null} */
+export function ownAcpSessionUpdateKind(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (!Object.hasOwn(value, "sessionUpdate")) return null;
+  const kind = /** @type {{sessionUpdate?: unknown}} */ (value).sessionUpdate;
+  return typeof kind === "string" ? kind : null;
 }
