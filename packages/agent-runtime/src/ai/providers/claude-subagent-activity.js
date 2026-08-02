@@ -420,18 +420,25 @@ export function createClaudeSubagentActivityNormalizer() {
 
     // A synchronous native child settles through the parent's Task tool_result,
     // not task_notification. Background launches also produce a parent result,
-    // but it is launch metadata rather than completion; leave those open for the
-    // task notification (or terminal drain).
+    // but it is launch metadata rather than completion. Consume a pure launch
+    // acknowledgement so ordinary tool-call consumers cannot close the group;
+    // the task notification (or terminal drain) owns that lifecycle transition.
     if (raw.type === "user" && !nonEmptyString(raw.parent_tool_use_id)) {
       const events = [];
-      for (const block of Array.isArray(raw?.message?.content) ? raw.message.content : []) {
-        if (block?.type !== "tool_result" || !nonEmptyString(block.tool_use_id)) continue;
+      const blocks = Array.isArray(raw?.message?.content) ? raw.message.content : [];
+      let pureLaunchAcknowledgement = blocks.length > 0;
+      for (const block of blocks) {
+        if (block?.type !== "tool_result" || !nonEmptyString(block.tool_use_id)) {
+          pureLaunchAcknowledgement = false;
+          continue;
+        }
         const entry = byParentToolUseId.get(nonEmptyString(block.tool_use_id));
-        if (!entry || entry.terminal) continue;
-        const launchOnly = entry.backgroundRequested
+        const launchOnly = entry !== undefined && (entry.backgroundRequested
           || entry.nativeId !== undefined
-          || indicatesBackgroundLaunch(block.content);
+          || indicatesBackgroundLaunch(block.content));
         if (launchOnly && block.is_error !== true) continue;
+        pureLaunchAcknowledgement = false;
+        if (!entry || entry.terminal) continue;
         const isError = block.is_error === true;
         events.push(...finish(entry, {
           status: isError ? "failed" : "completed",
@@ -441,7 +448,7 @@ export function createClaudeSubagentActivityNormalizer() {
             : "subagent ended before this tool returned",
         }));
       }
-      return { consumed: false, events };
+      return { consumed: pureLaunchAcknowledgement, events };
     }
 
     if ((raw.type === "assistant" || raw.type === "user") && nonEmptyString(raw.parent_tool_use_id)) {

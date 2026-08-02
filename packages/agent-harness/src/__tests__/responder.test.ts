@@ -1050,6 +1050,62 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     expect(toolCall.metadata).not.toHaveProperty("subagentLifecycle");
   });
 
+  it("keeps a background delegation open in stream order until agent_completed", () => {
+    const subagent = { id: "call-1", nativeId: "native-1", name: "researcher", callIndex: 0 };
+    const events = [
+      {
+        type: "assistant",
+        message: {
+          content: [{
+            type: "tool_use",
+            id: "call-1",
+            name: "Agent",
+            input: { subagent_type: "researcher", run_in_background: true },
+          }],
+        },
+      },
+      {
+        type: "subagent_activity",
+        phase: "agent_started",
+        id: "agent:call-1",
+        name: "Agent(researcher)",
+        subagent,
+      },
+      {
+        type: "subagent_activity",
+        phase: "started",
+        id: "agent:call-1:read-1",
+        name: "researcher▸Read",
+        subagent,
+      },
+      {
+        type: "subagent_activity",
+        phase: "completed",
+        id: "agent:call-1:read-1",
+        name: "researcher▸Read",
+        subagent,
+      },
+      {
+        type: "subagent_activity",
+        phase: "agent_completed",
+        id: "agent:call-1",
+        name: "Agent(researcher)",
+        subagent,
+      },
+    ].map((event) => streamEventFromRuntimeEvent(event)).filter((event) => event !== undefined);
+
+    expect(events.map((event) => [event.type, "id" in event ? event.id : undefined])).toEqual([
+      ["tool_call_started", "call-1"],
+      ["tool_call_started", "agent:call-1"],
+      ["tool_call_started", "agent:call-1:read-1"],
+      ["tool_call_completed", "agent:call-1:read-1"],
+      ["tool_call_completed", "agent:call-1"],
+    ]);
+    const groupTerminal = events.filter((event) => event.type === "tool_call_completed"
+      && event.metadata?.subagentLifecycle === true);
+    expect(groupTerminal).toEqual([events.at(-1)]);
+  });
+
   it("drops malformed subagent activity instead of throwing", () => {
     expect(streamEventFromRuntimeEvent({ type: "subagent_activity", phase: "started" })).toBeUndefined();
     expect(streamEventFromRuntimeEvent({ type: "subagent_activity", id: "agent:c1:t1" })).toBeUndefined();

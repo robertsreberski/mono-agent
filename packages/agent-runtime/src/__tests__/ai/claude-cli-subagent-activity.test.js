@@ -77,6 +77,13 @@ describe("Claude CLI live subagent activity", () => {
     ]);
     expect(activity.every((event) => event.subagent.id === "toolu_cli_parent")).toBe(true);
     expect(result.events.some((event) => event.parent_tool_use_id === "toolu_cli_parent")).toBe(false);
+    // The parent's successful Task result only acknowledges that the
+    // background child launched. It must not escape as an ordinary completion
+    // before the native task_notification closes the lifecycle.
+    expect(result.events.some((event) => event.uuid === "cli-parent-launch-result")).toBe(false);
+    expect(result.events.some((event) => event.type === "user" && event.message?.content?.some(
+      (block) => block?.type === "tool_result" && block.tool_use_id === "toolu_cli_parent",
+    ))).toBe(false);
     expect(result.events.some((event) => JSON.stringify(event).includes("I am inspecting the changes."))).toBe(true);
     expect(result.events.filter((event) => event.type === "assistant").flatMap(
       (event) => event.message?.content ?? [],

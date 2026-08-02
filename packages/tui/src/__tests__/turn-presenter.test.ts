@@ -510,6 +510,36 @@ describe("TurnPresenter subagent panels", () => {
     expect(rendered()).not.toContain("Agent(researcher)");
   });
 
+  it("keeps a background Agent panel running until its lifecycle terminal arrives", async () => {
+    const { presenter, rendered } = setup();
+    const subagent = { id: "call-1", nativeId: "native-1", name: "researcher", callIndex: 0 };
+
+    await presenter.event(launch("call-1", "researcher"));
+    await presenter.event({
+      type: "tool_call_started",
+      id: "agent:call-1",
+      name: "Agent(researcher)",
+      metadata: { subagent, synthetic: true, subagentLifecycle: true },
+    });
+    await presenter.event(childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }));
+
+    expect(rendered()).toContain("◐ Agent");
+    expect(rendered()).not.toContain("✓ Agent");
+
+    await presenter.event({
+      type: "tool_call_completed",
+      id: "agent:call-1",
+      name: "Agent(researcher)",
+      content: "Review complete",
+      metadata: { subagent, synthetic: true, subagentLifecycle: true },
+    });
+    presenter.settle();
+
+    expect(rendered()).toContain("✓ Agent");
+    expect(rendered()).toContain("Review complete");
+    expect(rendered()).not.toContain("◐ Agent");
+  });
+
   it("creates and settles the canonical Agent panel from lifecycle bookends alone", async () => {
     const { presenter, rendered, transcript } = setup();
     const canonicalId = "codex-spawn-1";
