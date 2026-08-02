@@ -13,6 +13,26 @@ function createTransport() {
 }
 
 describe("bounded ACP stdio transport", () => {
+  it("pauses child stdout instead of enqueueing a burst beyond Web Stream demand", async () => {
+    const transport = createTransport();
+    const messages = Array.from({ length: 1_000 }, (_, id) => ({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: { id },
+    }));
+    const reader = transport.readable.getReader();
+
+    transport.stdout.end(`${messages.map((message) => JSON.stringify(message)).join("\n")}\n`);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(transport.stdout.isPaused()).toBe(true);
+    for (const message of messages) {
+      await expect(reader.read()).resolves.toEqual({ done: false, value: message });
+    }
+    await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+    transport.stdin.destroy();
+  });
+
   it("accepts valid JSON-RPC requests, notifications, success responses, and error responses", async () => {
     const transport = createTransport();
     const messages = [

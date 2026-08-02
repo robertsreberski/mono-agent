@@ -116,72 +116,116 @@ export function createBoundedAcpStdioStream(child, options = {}) {
   const input = child.stdout;
   const output = child.stdin;
 
+  let pending = Buffer.alloc(0);
+  let settled = false;
+  let inputEnded = false;
+  /** @type {ReadableStreamDefaultController<any>|null} */
+  let readableController = null;
+
+  const cleanupReadable = () => {
+    input.off("data", onData);
+    input.off("end", onEnd);
+    input.off("error", onError);
+  };
+  const failReadable = (error) => {
+    if (settled) return;
+    settled = true;
+    input.pause();
+    cleanupReadable();
+    readableController?.error(error instanceof Error
+      ? error
+      : new AcpTransportError("transport_failed", "ACP stdout failed."));
+  };
+  const firstPendingLineIsTooLarge = () => {
+    const newline = pending.indexOf(0x0a);
+    if (newline !== -1) {
+      const contentBytes = newline > 0 && pending[newline - 1] === 0x0d ? newline - 1 : newline;
+      return contentBytes > maxLineBytes;
+    }
+    if (pending.length <= maxLineBytes) return false;
+    return pending.length > maxLineBytes + 1 || pending[pending.length - 1] !== 0x0d;
+  };
+  const finishReadableIfEnded = () => {
+    if (!inputEnded || settled || !readableController) return false;
+    if (pending.length === 0) {
+      settled = true;
+      cleanupReadable();
+      readableController.close();
+      return true;
+    }
+    if (pending.indexOf(0x0a) === -1) {
+      failReadable(new AcpTransportError(
+        "unterminated_line",
+        "ACP peer closed stdout with an unterminated JSON-RPC line.",
+      ));
+      return true;
+    }
+    return false;
+  };
+  const drainPending = () => {
+    if (settled || !readableController) return;
+    while (readableController.desiredSize !== null && readableController.desiredSize > 0) {
+      const newline = pending.indexOf(0x0a);
+      if (newline === -1) break;
+      let line = pending.subarray(0, newline);
+      pending = pending.subarray(newline + 1);
+      if (line.length > 0 && line[line.length - 1] === 0x0d) line = line.subarray(0, line.length - 1);
+      if (line.length > maxLineBytes) {
+        failReadable(new AcpTransportError("line_too_large", "ACP peer exceeded the inbound line limit."));
+        return;
+      }
+      try {
+        readableController.enqueue(decodeLine(line));
+      } catch (error) {
+        failReadable(error);
+        return;
+      }
+    }
+    if (firstPendingLineIsTooLarge()) {
+      failReadable(new AcpTransportError("line_too_large", "ACP peer exceeded the inbound line limit."));
+      return;
+    }
+    if (finishReadableIfEnded()) return;
+    if (readableController.desiredSize !== null
+      && readableController.desiredSize > 0
+      && pending.indexOf(0x0a) === -1) {
+      input.resume();
+    }
+  };
+  const onData = (chunk) => {
+    if (settled) return;
+    input.pause();
+    const next = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    pending = pending.length === 0 ? next : Buffer.concat([pending, next]);
+    drainPending();
+  };
+  const onEnd = () => {
+    if (settled) return;
+    inputEnded = true;
+    drainPending();
+  };
+  const onError = () => failReadable(new AcpTransportError("transport_failed", "ACP stdout failed."));
+
   const readable = new ReadableStream({
     start(controller) {
-      let pending = Buffer.alloc(0);
-      let settled = false;
-
-      const cleanup = () => {
-        input.off("data", onData);
-        input.off("end", onEnd);
-        input.off("error", onError);
-      };
-      const fail = (error) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        controller.error(error instanceof Error
-          ? error
-          : new AcpTransportError("transport_failed", "ACP stdout failed."));
-      };
-      const onData = (chunk) => {
-        if (settled) return;
-        const next = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        pending = pending.length === 0 ? next : Buffer.concat([pending, next]);
-        for (;;) {
-          const newline = pending.indexOf(0x0a);
-          if (newline === -1) break;
-          let line = pending.subarray(0, newline);
-          pending = pending.subarray(newline + 1);
-          if (line.length > 0 && line[line.length - 1] === 0x0d) line = line.subarray(0, line.length - 1);
-          if (line.length > maxLineBytes) {
-            fail(new AcpTransportError("line_too_large", "ACP peer exceeded the inbound line limit."));
-            return;
-          }
-          try {
-            controller.enqueue(decodeLine(line));
-          } catch (error) {
-            fail(error);
-            return;
-          }
-        }
-        if (pending.length > maxLineBytes + 1) {
-          fail(new AcpTransportError("line_too_large", "ACP peer exceeded the inbound line limit."));
-        }
-      };
-      const onEnd = () => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        if (pending.length > 0) {
-          controller.error(new AcpTransportError(
-            "unterminated_line",
-            "ACP peer closed stdout with an unterminated JSON-RPC line.",
-          ));
-          return;
-        }
-        controller.close();
-      };
-      const onError = () => fail(new AcpTransportError("transport_failed", "ACP stdout failed."));
-
+      readableController = controller;
+      input.pause();
       input.on("data", onData);
       input.once("end", onEnd);
       input.once("error", onError);
+      drainPending();
+    },
+    pull() {
+      drainPending();
     },
     cancel() {
+      if (!settled) {
+        settled = true;
+        cleanupReadable();
+      }
       input.destroy();
     },
-  });
+  }, { highWaterMark: 1 });
 
   const writable = new WritableStream({
     async write(message) {
