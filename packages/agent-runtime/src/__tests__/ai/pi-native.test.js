@@ -283,6 +283,7 @@ describe("failureKindForPiError", () => {
   it("classifies Pi credential errors as provider_auth", () => {
     expect(failureKindForPiError("No API key for provider: openai-codex", {}, {})).toBe("provider_auth");
     expect(failureKindForPiError("OAuth refresh failed for openai-codex", {}, {})).toBe("provider_auth");
+    expect(failureKindForPiError("Provider is not configured: openai-codex", {}, {})).toBe("provider_auth");
   });
 
   it("classifies the OpenAI Codex input overflow as context_limit", () => {
@@ -368,6 +369,25 @@ function runOptions(model, overrides = {}) {
 describe("pi-native AgentHarness bridge", () => {
   const sessionsRoot = mkdtempSync(join(tmpdir(), "pi-native-sessions-"));
   afterAll(() => rmSync(sessionsRoot, { recursive: true, force: true }));
+
+  it("classifies a configured Pi provider with no resolved credential as provider_auth", async () => {
+    const result = await generatePiNativeResponse("system", {
+      model: {
+        sdk: "pi",
+        provider: "openai-codex",
+        model: "gpt-5.6-sol",
+        reference: "pi:openai-codex:gpt-5.6-sol",
+      },
+      messages: [{ role: "user", content: "hello" }],
+      effort: "none",
+      allowedTools: [],
+      resolvePiApiKey: async () => null,
+      piSessionsRoot: sessionsRoot,
+    });
+
+    expect(result.error).toBe("Provider is not configured: openai-codex");
+    expect(result.failureKind).toBe("provider_auth");
+  });
 
   it("wires native max through the AgentHarness stream options when advertised", async () => {
     const model = setup({ reasoning: true });
