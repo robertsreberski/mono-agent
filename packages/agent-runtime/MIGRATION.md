@@ -72,6 +72,9 @@ the configuration schema.
 - `onAcpInteractionRequest` is the host rendezvous for ACP permission and
   elicitation requests. Hosts must echo only advertised permission option ids,
   keep submitted form values out of durable logs, and fail closed on abort.
+- ACP profile callbacks never receive raw protocol `sessionId`, `_meta`, or
+  copied raw-id strings. Use the optional opaque
+  `AcpCallbackContext.providerSessionId` for safe session correlation.
 - ACP provider-session ids and session-list cursors are opaque, profile-bound
   runtime handles. Preserve the complete value returned by the runtime for
   resume, pagination, validation, and delete operations; do not parse or

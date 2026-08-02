@@ -605,6 +605,11 @@ provided as callbacks and is advertised only when enabled. The runtime-adapter
 facade injects mono-agent's real sandbox implementation; direct kernel callers
 must provide their own when policy requires it. Every owned stdio bridge is
 closed after the operation with stdin close, TERM, then bounded KILL escalation.
+Callback payloads retain their typed operation fields but omit raw protocol
+session ids, extension metadata, and copied raw-id strings. Session-scoped
+callbacks receive the corresponding opaque handle as
+`AcpCallbackContext.providerSessionId`; request ids are opaque host correlation
+tokens as well.
 
 ACP provider-session ids and list cursors are opaque, profile-bound runtime
 handles. Preserve them byte-for-byte and pass them back only to the matching
