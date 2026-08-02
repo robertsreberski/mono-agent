@@ -3,7 +3,8 @@
 /** @typedef {import('../types.js').RuntimeModelRef} RuntimeModelRef */
 
 const RESERVED_RUNTIME_IDS = new Set(["openai", "vercel", "claude-code", "codex-cli"]);
-const ACTIVE_RUNTIME_IDS = new Set(["claude", "pi", "codex", "opencode"]);
+const ACTIVE_RUNTIME_IDS = new Set(["claude", "pi", "codex", "opencode", "acp"]);
+const ACP_PROFILE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 function requirePart(value, message) {
   if (!value || typeof value !== "string" || value.trim() !== value) {
@@ -74,6 +75,14 @@ export function sdkFromModelReference(value) {
 export function parseRuntimeModelReference(value) {
   if (!value || typeof value !== "string") throw new Error("model reference required");
 
+  if (value.startsWith("acp:")) {
+    const profileId = requirePart(value.slice("acp:".length), "ACP profile id required");
+    if (!ACP_PROFILE_ID_RE.test(profileId)) {
+      throw new Error("invalid acp model reference; expected acp:<profile-id>");
+    }
+    return { sdk: "acp", model: profileId, reference: value };
+  }
+
   if (value.startsWith("pi:")) {
     const rest = value.slice("pi:".length);
     const i = rest.indexOf(":");
@@ -120,6 +129,7 @@ export const ACTIVE_RUNTIME_KINDS = [...ACTIVE_RUNTIME_IDS];
 export const RESERVED_RUNTIME_KINDS = [...RESERVED_RUNTIME_IDS];
 
 // intelligence-ramp: which model refs can run under which execution_mode.
+//   sdk='acp'      → ACP only (dedicated stdio client mode)
 //   sdk='claude'   → CLI (claude binary) or SDK (Anthropic)
 //   sdk='codex'    → CLI only (codex app-server)
 //   sdk='opencode' → CLI only (opencode server via @opencode-ai/sdk)
@@ -143,6 +153,11 @@ export function executionModeIncompatibilityReason(modelRefOrParsed, executionMo
   }
   if (!parsed) return null;
   if (!executionMode) return null;
+  if (executionMode === "acp") {
+    return parsed.sdk === "acp"
+      ? null
+      : `sdk \`${parsed.sdk}\` is not supported under ACP execution mode.`;
+  }
   if (executionMode === "sdk") {
     if (parsed.sdk === "codex") {
       return "Codex CLI requires CLI execution mode.";
@@ -150,12 +165,16 @@ export function executionModeIncompatibilityReason(modelRefOrParsed, executionMo
     if (parsed.sdk === "opencode") {
       return "OpenCode CLI requires CLI execution mode.";
     }
+    if (parsed.sdk === "acp") {
+      return "ACP profiles require ACP execution mode.";
+    }
     return null;
   }
   if (executionMode !== "cli") return null;
   if (parsed.sdk === "claude") return null;
   if (parsed.sdk === "codex") return null;
   if (parsed.sdk === "opencode") return null;
+  if (parsed.sdk === "acp") return "ACP profiles require ACP execution mode.";
   if (parsed.sdk === "pi") {
     const provider = parsed.provider || "unknown";
     const suffix = provider === "openai-codex" ? "; use codex:<model> for Codex CLI" : "";

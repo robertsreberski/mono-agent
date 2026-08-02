@@ -1,0 +1,213 @@
+import { appendFileSync, writeFileSync } from "node:fs";
+import { Readable, Writable } from "node:stream";
+import { agent, methods, ndJsonStream, PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
+
+const mode = process.env.FAKE_ACP_MODE || "normal";
+const marker = process.env.FAKE_ACP_EXIT_FILE;
+const promptLog = process.env.FAKE_ACP_PROMPT_FILE;
+
+function markExit(value) {
+  if (!marker) return;
+  try { appendFileSync(marker, `${value}\n`); } catch { /* test diagnostic only */ }
+}
+
+process.once("exit", () => markExit("exit"));
+process.once("SIGTERM", () => {
+  markExit("sigterm");
+  process.exit(0);
+});
+
+if (mode === "malformed" || mode === "oversize" || mode === "unterminated" || mode === "silent") {
+  process.stdin.once("data", () => {
+    if (mode === "malformed") process.stdout.write("{malformed}\n");
+    if (mode === "oversize") process.stdout.write(`${"x".repeat(4096)}\n`);
+    if (mode === "unterminated") {
+      process.stdout.write('{"jsonrpc":"2.0","id":0,"result":{}}');
+      process.stdout.end();
+    }
+    // silent deliberately keeps stdin open and never responds.
+  });
+} else {
+  let booleanConfig = false;
+  let cancelled = false;
+  let cancelPrompt;
+  const sessions = new Map();
+  const modes = {
+    currentModeId: "code",
+    availableModes: [
+      { id: "code", name: "Code" },
+      { id: "ask", name: "Ask" },
+    ],
+  };
+  const configOptions = () => [
+    {
+      type: "select",
+      id: "model",
+      name: "Model",
+      currentValue: "default",
+      options: [
+        { value: "default", name: "Default" },
+        { value: "fast", name: "Fast" },
+      ],
+    },
+    ...(booleanConfig ? [{ type: "boolean", id: "verbose", name: "Verbose", currentValue: false }] : []),
+  ];
+
+  const app = agent({ name: "fake-acp-agent" })
+    .onRequest(methods.agent.initialize, (ctx) => {
+      booleanConfig = ctx.params.clientCapabilities?.session?.configOptions?.boolean != null;
+      return {
+        protocolVersion: PROTOCOL_VERSION,
+        agentInfo: {
+          name: "fake-acp-agent",
+          title: mode === "large-frame" ? "x".repeat(11 * 1024 * 1024) : "Fake ACP Agent",
+          version: "1.0.0",
+        },
+        agentCapabilities: {
+          loadSession: mode !== "no-resume",
+          promptCapabilities: { image: true, audio: true, embeddedContext: true },
+          mcpCapabilities: { http: true, sse: true },
+          sessionCapabilities: {
+            list: {},
+            delete: {},
+            additionalDirectories: {},
+            ...(mode !== "no-resume" ? { resume: {} } : {}),
+            close: {},
+          },
+          auth: { logout: {} },
+        },
+        authMethods: [{ id: "fake-login", name: "Fake login" }],
+      };
+    })
+    .onRequest(methods.agent.authenticate, () => ({}))
+    .onRequest(methods.agent.logout, () => ({}))
+    .onRequest(methods.agent.session.new, (ctx) => {
+      const sessionId = `session-${sessions.size + 1}`;
+      sessions.set(sessionId, { sessionId, cwd: ctx.params.cwd, title: "Fake session" });
+      return { sessionId, modes, configOptions: configOptions() };
+    })
+    .onRequest(methods.agent.session.load, (ctx) => {
+      sessions.set(ctx.params.sessionId, {
+        sessionId: ctx.params.sessionId,
+        cwd: ctx.params.cwd,
+        title: "Loaded fake session",
+      });
+      return { modes, configOptions: configOptions() };
+    })
+    .onRequest(methods.agent.session.resume, (ctx) => {
+      sessions.set(ctx.params.sessionId, {
+        sessionId: ctx.params.sessionId,
+        cwd: ctx.params.cwd,
+        title: "Resumed fake session",
+      });
+      return { modes, configOptions: configOptions() };
+    })
+    .onRequest(methods.agent.session.list, () => ({
+      sessions: [...sessions.values()],
+      nextCursor: null,
+    }))
+    .onRequest(methods.agent.session.delete, (ctx) => {
+      sessions.delete(ctx.params.sessionId);
+      return {};
+    })
+    .onRequest(methods.agent.session.close, () => ({}))
+    .onRequest(methods.agent.session.setMode, () => ({}))
+    .onRequest(methods.agent.session.setConfigOption, () => ({ configOptions: configOptions() }))
+    .onNotification(methods.agent.session.cancel, async (ctx) => {
+      cancelled = true;
+      await ctx.client.notify(methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "cancelled tail" },
+        },
+      });
+      cancelPrompt?.();
+      cancelPrompt = undefined;
+    })
+    .onRequest(methods.agent.session.prompt, async (ctx) => {
+      if (promptLog) writeFileSync(promptLog, JSON.stringify(ctx.params.prompt));
+      const text = ctx.params.prompt
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("\n");
+      if (text.includes("hang")) {
+        await new Promise((resolve) => { cancelPrompt = resolve; });
+        return { stopReason: cancelled ? "cancelled" : "end_turn" };
+      }
+      if (text.includes("permission")) {
+        const permission = await ctx.client.request(methods.client.session.requestPermission, {
+          sessionId: ctx.params.sessionId,
+          toolCall: { toolCallId: "tool-1", title: "Fake tool", status: "pending" },
+          options: [
+            { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+            { optionId: "reject-once", name: "Reject", kind: "reject_once" },
+          ],
+        });
+        await ctx.client.notify(methods.client.session.update, {
+          sessionId: ctx.params.sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "tool-1",
+            title: "Fake tool",
+            name: "fake_tool",
+            status: "in_progress",
+            rawInput: { permission: permission.outcome.outcome },
+          },
+        });
+        await ctx.client.notify(methods.client.session.update, {
+          sessionId: ctx.params.sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "tool-1",
+            status: "completed",
+            rawOutput: "done",
+          },
+        });
+      }
+      if (text.includes("elicit")) {
+        await ctx.client.request(methods.client.elicitation.create, {
+          sessionId: ctx.params.sessionId,
+          mode: "form",
+          message: "Need fake input",
+          requestedSchema: {
+            type: "object",
+            properties: { answer: { type: "string" } },
+          },
+        });
+      }
+      const resource = ctx.params.prompt.find((block) => block.type === "resource_link");
+      const answer = process.env.ACP_SHOULD_NOT_LEAK
+        ? "environment leaked"
+        : resource ? `saw ${resource.uri}` : "fake answer";
+      await ctx.client.notify(methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: {
+          sessionUpdate: "agent_thought_chunk",
+          content: { type: "text", text: "thinking" },
+        },
+      });
+      await ctx.client.notify(methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: answer },
+        },
+      });
+      await ctx.client.notify(methods.client.session.update, {
+        sessionId: ctx.params.sessionId,
+        update: {
+          sessionUpdate: "usage_update",
+          used: 12,
+          size: 1000,
+        },
+      });
+      return { stopReason: "end_turn" };
+    });
+
+  const connection = app.connect(ndJsonStream(
+    Writable.toWeb(process.stdout),
+    Readable.toWeb(process.stdin),
+  ));
+  await connection.closed;
+}

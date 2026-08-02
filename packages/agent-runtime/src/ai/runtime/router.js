@@ -20,7 +20,7 @@
 //     so the router is a drop-in replacement for createRuntime(host).
 //
 //   chain entries:
-//     { model: ModelRef, executionMode?: "sdk" | "cli", effort?: string|null,
+//     { model: ModelRef, executionMode?: "sdk" | "cli" | "acp", effort?: string|null,
 //       requires?: Capabilities }
 //   shorthand: a bare ModelRef is also accepted (no requirements).
 //   effort string = fixed for that route, undefined = inherit the legacy run
