@@ -168,6 +168,12 @@
  * @property {"sequential"|"safe-parallel"} [piToolExecutionMode] Pi built-in tool scheduling mode. Safe parallelism is the default.
  * @property {"one-at-a-time"|"all"} [piToolParallelismMode] DEPRECATED. Compatibility alias mapped to piToolExecutionMode.
  * @property {Object} [settings] DEPRECATED. Legacy flat settings bag; consumed only as a per-group FALLBACK when the corresponding typed object (`toolLimits` / `compaction`) is absent. Consuming any key emits one `deprecated_settings_option` runtime_warning per run. Migrate via resolveRuntimePolicies (@mono-agent/runtime-adapter).
+ * @property {ReadonlyArray<"user" | "project" | "local">} [settingSources] Claude Agent SDK only. Filesystem
+ *   settings the SDK may load for this run. Omitted/empty keeps the default isolation (no host CLAUDE.md, hooks,
+ *   plugins, or on-disk agent profiles). Include `"project"`/`"user"` to let the native `Task` tool discover
+ *   `.claude/agents` definitions. Unrecognized entries are dropped. The Claude Code CLI bridge does not take this
+ *   option: that binary performs its own settings discovery and mono-agent passes no `--setting-sources`, so a CLI
+ *   run already reads the host config regardless of this value.
  * @property {Object} [nativeSubagents] Same-runtime teammate helpers exposed through native provider subagent surfaces.
  * @property {RuntimeSubagentsOptions} [subagents] In-process `Agent` built-in: profiles, caps, and the nested-run callback.
  * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when

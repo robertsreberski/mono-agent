@@ -108,6 +108,26 @@ describe("Claude Agent SDK 0.3 effort and query contract", () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it("forwards opted-in setting sources and drops unrecognized ones", async () => {
+    installStream([resultEvent()]);
+    await generateClaudeResponse("system", options({ settingSources: ["project", "user"] }));
+    expect(queryMock.mock.calls[0][0].options.settingSources).toEqual(["project", "user"]);
+
+    queryMock.mockClear();
+    installStream([resultEvent()]);
+    // A typo must not widen what the SDK reads off disk, and duplicates collapse.
+    await generateClaudeResponse("system", options({
+      settingSources: ["project", "Project", "workspace", "project"],
+    }));
+    expect(queryMock.mock.calls[0][0].options.settingSources).toEqual(["project"]);
+
+    queryMock.mockClear();
+    installStream([resultEvent()]);
+    // Anything that is not an array falls back to full isolation.
+    await generateClaudeResponse("system", options({ settingSources: "project" }));
+    expect(queryMock.mock.calls[0][0].options.settingSources).toEqual([]);
+  });
+
   it("uses an injected query implementation without calling the pinned SDK query", async () => {
     const close = vi.fn();
     const injectedQuery = vi.fn(() => {
