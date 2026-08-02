@@ -8,6 +8,7 @@ import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 import {
   ACP_DEFAULT_MAX_LINE_BYTES,
   AcpTransportError,
+  connectWithSafeAcpSdkDiagnostics,
   createBoundedAcpStdioStream,
   normalizeAcpMaxLineBytes,
 } from "./acp-transport.js";
@@ -696,9 +697,11 @@ export async function connectAcpProfile(profileId, options) {
 
   let connection;
   try {
-    connection = app.connect(createBoundedAcpStdioStream(child, {
-      maxLineBytes: descriptor.process.maxLineBytes,
-    }));
+    connection = connectWithSafeAcpSdkDiagnostics(() => app.connect(
+      createBoundedAcpStdioStream(child, {
+        maxLineBytes: descriptor.process.maxLineBytes,
+      }),
+    ));
   } catch (error) {
     child.kill("SIGTERM");
     const exited = await waitForExit(exitPromise, descriptor.process.killGraceMs);

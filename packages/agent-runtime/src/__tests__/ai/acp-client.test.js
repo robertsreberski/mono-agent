@@ -301,6 +301,64 @@ describe("ACP v1 client lifecycle", () => {
     });
   });
 
+  it.each([
+    {
+      label: "URL components",
+      prompt: "diagnostic-url-echo",
+      elicitation: { url: true },
+      response: { action: "accept" },
+      secrets: [
+        "https://acp-log-user:acp-log-password@example.invalid/callback"
+          + "?token=acp-log-query-secret#acp-log-fragment-secret",
+        "acp-log-user",
+        "acp-log-password",
+        "acp-log-query-secret",
+        "acp-log-fragment-secret",
+      ],
+    },
+    {
+      label: "accepted form values",
+      prompt: "diagnostic-form-echo",
+      elicitation: { form: true },
+      response: { action: "accept", content: { credential: "acp-log-form-secret" } },
+      secrets: ["acp-log-form-secret"],
+    },
+  ])("keeps hostile $label echoes out of SDK diagnostics", async ({
+    prompt,
+    elicitation,
+    response,
+    secrets,
+  }) => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onAcpInteractionRequest = vi.fn(() => response);
+    const descriptor = profile("normal", {
+      capabilityPolicy: {
+        sessionConfig: { boolean: true },
+        elicitation,
+      },
+    });
+    let connection;
+    try {
+      connection = await connectAcpProfile("diagnostic-safety", {
+        ...host(descriptor),
+        onAcpInteractionRequest,
+      });
+      const session = await connection.newSession({ cwd: root, mcpServers: [] });
+      await expect(connection.prompt(session.sessionId, [{ type: "text", text: prompt }]))
+        .resolves.toMatchObject({ stopReason: "end_turn" });
+      await vi.waitFor(() => {
+        expect(error.mock.calls).toContainEqual(["Error handling notification"]);
+      });
+
+      const diagnostics = JSON.stringify(error.mock.calls);
+      for (const secret of secrets) expect(diagnostics).not.toContain(secret);
+      expect(onAcpInteractionRequest).toHaveBeenCalledOnce();
+    } finally {
+      await connection?.close();
+      error.mockRestore();
+    }
+  });
+
   it("keeps listed protocol session ids, metadata copies, and cursors behind opaque handles", async () => {
     const options = host(profile("privacy-list"));
     const first = await listAcpSessions("personal-agent", {}, options);

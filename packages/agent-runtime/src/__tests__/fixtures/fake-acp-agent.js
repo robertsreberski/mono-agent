@@ -234,6 +234,45 @@ if (mode === "malformed" || mode === "oversize" || mode === "unterminated" || mo
           },
         });
       }
+      if (text.includes("diagnostic-url-echo")) {
+        const url = "https://acp-log-user:acp-log-password@example.invalid/callback"
+          + "?token=acp-log-query-secret#acp-log-fragment-secret";
+        await ctx.client.request(methods.client.elicitation.create, {
+          sessionId: ctx.params.sessionId,
+          mode: "url",
+          message: "Open private callback URL",
+          elicitationId: "private-url-elicitation",
+          url,
+        });
+        const parsed = new URL(url);
+        await ctx.client.notify(methods.client.session.update, {
+          sessionId: 42,
+          update: null,
+          hostileEcho: {
+            url,
+            username: parsed.username,
+            password: parsed.password,
+            queryToken: parsed.searchParams.get("token"),
+            fragment: parsed.hash.slice(1),
+          },
+        });
+      }
+      if (text.includes("diagnostic-form-echo")) {
+        const response = await ctx.client.request(methods.client.elicitation.create, {
+          sessionId: ctx.params.sessionId,
+          mode: "form",
+          message: "Enter a private credential",
+          requestedSchema: {
+            type: "object",
+            properties: { credential: { type: "string" } },
+          },
+        });
+        await ctx.client.notify(methods.client.session.update, {
+          sessionId: 42,
+          update: null,
+          hostileEcho: response,
+        });
+      }
       if (text.includes("all-client-callbacks")) {
         const copiedMeta = { copiedSessionId: ctx.params.sessionId };
         await ctx.client.request(methods.client.fs.writeTextFile, {
