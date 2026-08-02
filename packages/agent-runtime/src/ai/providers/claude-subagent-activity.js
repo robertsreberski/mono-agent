@@ -137,14 +137,100 @@ export function createClaudeSubagentActivityNormalizer() {
     if (entry.name !== "subagent" && entry.name !== entry.nativeId) usedNames.add(entry.name);
   }
 
+  /** @param {any} entry */
+  function authoredName(entry) {
+    return entry.name === "subagent" || entry.name === entry.nativeId
+      ? undefined
+      : entry.name;
+  }
+
+  /**
+   * Claude can announce a native task before it includes the parent tool-use id
+   * that is the public delegation identity. Match the two one-sided records by
+   * their authored metadata, then by arrival order when Claude omitted it. The
+   * latter is deliberately limited to entries missing the opposite identity;
+   * a resolved task is never eligible for a second parent.
+   *
+   * @param {{parentToolUseId?: string, nativeId?: string, name?: string, label?: string, prompt?: string}} input
+   */
+  function pendingCorrelation(input) {
+    const candidates = [...active].filter((entry) => {
+      if (entry.terminal) return false;
+      if (input.parentToolUseId !== undefined && input.nativeId === undefined) {
+        return entry.parentToolUseId === undefined && entry.nativeId !== undefined;
+      }
+      if (input.nativeId !== undefined && input.parentToolUseId === undefined) {
+        return entry.nativeId === undefined && entry.parentToolUseId !== undefined;
+      }
+      return false;
+    });
+    if (candidates.length === 0) return undefined;
+
+    const scored = candidates.map((entry) => {
+      let score = 0;
+      const entryName = authoredName(entry);
+      if (input.name !== undefined && entryName !== undefined) {
+        if (input.name !== entryName) return { entry, score: -1 };
+        score += 8;
+      }
+      if (input.label !== undefined && entry.label !== undefined) {
+        if (input.label !== entry.label) return { entry, score: -1 };
+        score += 4;
+      }
+      if (input.prompt !== undefined && entry.prompt !== undefined) {
+        if (input.prompt !== entry.prompt) return { entry, score: -1 };
+        score += 2;
+      }
+      return { entry, score };
+    }).filter(({ score }) => score >= 0);
+    scored.sort((left, right) => right.score - left.score
+      || left.entry.callIndex - right.entry.callIndex);
+    return scored[0]?.entry;
+  }
+
+  /** @param {any} entry @param {any} duplicate */
+  function mergeEntries(entry, duplicate) {
+    if (entry === duplicate) return entry;
+    active.delete(duplicate);
+    for (const [toolId, tool] of duplicate.openTools) {
+      if (!entry.openTools.has(toolId)) entry.openTools.set(toolId, tool);
+    }
+    for (const toolId of duplicate.settledToolIds) entry.settledToolIds.add(toolId);
+    entry.toolCount += duplicate.toolCount;
+    entry.backgroundRequested ||= duplicate.backgroundRequested;
+    entry.label ??= duplicate.label;
+    entry.prompt ??= duplicate.prompt;
+    if (authoredName(entry) === undefined && authoredName(duplicate) !== undefined) {
+      entry.name = duplicate.name;
+    }
+    if (duplicate.parentToolUseId !== undefined) {
+      entry.parentToolUseId ??= duplicate.parentToolUseId;
+      byParentToolUseId.set(duplicate.parentToolUseId, entry);
+    }
+    if (duplicate.nativeId !== undefined) {
+      entry.nativeId ??= duplicate.nativeId;
+      byNativeId.set(duplicate.nativeId, entry);
+    }
+    return entry;
+  }
+
   /**
    * @param {{parentToolUseId?: string, nativeId?: string, name?: string, label?: string, prompt?: string, backgroundRequested?: boolean}} input
    */
   function entryFor(input) {
-    let entry = input.parentToolUseId === undefined
+    const parentEntry = input.parentToolUseId === undefined
       ? undefined
       : byParentToolUseId.get(input.parentToolUseId);
-    if (!entry && input.nativeId !== undefined) entry = byNativeId.get(input.nativeId);
+    const nativeEntry = input.nativeId === undefined
+      ? undefined
+      : byNativeId.get(input.nativeId);
+    let entry = parentEntry ?? nativeEntry;
+    if (parentEntry && nativeEntry && parentEntry !== nativeEntry) {
+      // Prefer the parent-keyed entry: its id is already the public canonical
+      // id, while native-only entries have deliberately emitted no lifecycle.
+      entry = mergeEntries(parentEntry, nativeEntry);
+    }
+    if (!entry) entry = pendingCorrelation(input);
     if (!entry) {
       const id = input.parentToolUseId ?? orphanId(input.nativeId ?? `unknown-${callIndex}`);
       entry = {
@@ -167,6 +253,10 @@ export function createClaudeSubagentActivityNormalizer() {
 
     if (input.parentToolUseId !== undefined) {
       entry.parentToolUseId ??= input.parentToolUseId;
+      // Native-only task_started records remain silent until this correlation,
+      // so changing the provisional orphan id here cannot invalidate an event
+      // already sent to consumers.
+      if (!entry.started) entry.id = entry.parentToolUseId;
       byParentToolUseId.set(input.parentToolUseId, entry);
     }
     if (input.nativeId !== undefined) {
@@ -401,7 +491,13 @@ export function createClaudeSubagentActivityNormalizer() {
         label: nonEmptyString(raw.description),
         prompt: boundedText(raw.prompt),
       });
-      return { consumed: true, events: ensureStarted(entry) };
+      // A native id is diagnostic metadata, not the public delegation key.
+      // Wait for a parent frame (or a terminal orphan fallback) instead of
+      // publishing a second, provisional group that cannot later be renamed.
+      return {
+        consumed: true,
+        events: entry.parentToolUseId === undefined ? [] : ensureStarted(entry),
+      };
     }
 
     if (ignoredNativeIds.has(nativeId)) return { consumed: true, events: [] };
@@ -417,7 +513,10 @@ export function createClaudeSubagentActivityNormalizer() {
         });
       }
       if (!entry) return { consumed: false, events: [] };
-      return { consumed: true, events: ensureStarted(entry) };
+      return {
+        consumed: true,
+        events: entry.parentToolUseId === undefined ? [] : ensureStarted(entry),
+      };
     }
 
     if (raw.subtype === "task_updated") {

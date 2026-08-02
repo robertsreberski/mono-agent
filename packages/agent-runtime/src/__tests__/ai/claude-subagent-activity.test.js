@@ -98,6 +98,112 @@ describe("createClaudeSubagentActivityNormalizer", () => {
     expect(normalizer.observe({ ...terminal, uuid: "different-terminal-uuid" }).events).toEqual([]);
   });
 
+  it("delays a native-only start until a child frame reveals the canonical parent id", () => {
+    const normalizer = createClaudeSubagentActivityNormalizer();
+    const events = [];
+    const started = normalizer.observe({
+      type: "system",
+      subtype: "task_started",
+      task_id: "native-delayed",
+      task_type: "local_agent",
+      subagent_type: "reviewer",
+      description: "Review the delayed task",
+      uuid: "delayed-start",
+    });
+    events.push(...started.events);
+    expect(started).toEqual({ consumed: true, events: [] });
+
+    events.push(...normalizer.observe({
+      type: "assistant",
+      parent_tool_use_id: "toolu_delayed_parent",
+      subagent_type: "reviewer",
+      task_description: "Review the delayed task",
+      uuid: "delayed-child",
+      message: { content: [{ type: "text", text: "Reviewing now" }] },
+    }).events);
+    events.push(...normalizer.observe({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "native-delayed",
+      status: "completed",
+      output_file: "/tmp/native-delayed.output",
+      summary: "Review complete",
+      uuid: "delayed-done",
+    }).events);
+
+    expect(events.map((event) => event.phase)).toEqual([
+      "agent_started",
+      "message",
+      "agent_completed",
+    ]);
+    expect(events.every((event) => event.subagent.id === "toolu_delayed_parent")).toBe(true);
+    expect(events.every((event) => event.subagent.nativeId === "native-delayed")).toBe(true);
+    expect(events.filter((event) => event.phase === "agent_started")).toHaveLength(1);
+    expect(events.filter((event) => event.phase === "agent_completed")).toHaveLength(1);
+    expect(normalizer.drain()).toEqual([]);
+  });
+
+  it("correlates concurrent unresolved native tasks without merging their groups", () => {
+    const normalizer = createClaudeSubagentActivityNormalizer();
+    const events = [];
+    for (const [taskId, description] of [
+      ["native-first", "Review the API"],
+      ["native-second", "Review the UI"],
+    ]) {
+      expect(normalizer.observe({
+        type: "system",
+        subtype: "task_started",
+        task_id: taskId,
+        task_type: "local_agent",
+        subagent_type: "reviewer",
+        description,
+        uuid: `${taskId}-start`,
+      })).toEqual({ consumed: true, events: [] });
+    }
+
+    // Claude may interleave child frames independently from task_started. The
+    // description disambiguates two otherwise-identical reviewer profiles.
+    for (const [parentId, taskId, description] of [
+      ["toolu_second", "native-second", "Review the UI"],
+      ["toolu_first", "native-first", "Review the API"],
+    ]) {
+      events.push(...normalizer.observe({
+        type: "assistant",
+        parent_tool_use_id: parentId,
+        subagent_type: "reviewer",
+        task_description: description,
+        uuid: `${taskId}-child`,
+        message: { content: [{ type: "text", text: description }] },
+      }).events);
+      events.push(...normalizer.observe({
+        type: "system",
+        subtype: "task_notification",
+        task_id: taskId,
+        status: "completed",
+        output_file: `/tmp/${taskId}.output`,
+        summary: `${description} complete`,
+        uuid: `${taskId}-done`,
+      }).events);
+    }
+
+    const lifecycle = events.filter((event) => event.phase === "agent_started"
+      || event.phase === "agent_completed");
+    expect(lifecycle.map((event) => [
+      event.phase,
+      event.subagent.id,
+      event.subagent.nativeId,
+    ])).toEqual([
+      ["agent_started", "toolu_second", "native-second"],
+      ["agent_completed", "toolu_second", "native-second"],
+      ["agent_started", "toolu_first", "native-first"],
+      ["agent_completed", "toolu_first", "native-first"],
+    ]);
+    expect(new Set(lifecycle.map((event) => event.subagent.id))).toEqual(
+      new Set(["toolu_first", "toolu_second"]),
+    );
+    expect(normalizer.drain()).toEqual([]);
+  });
+
   it("filters local_bash and skip_transcript background tasks", () => {
     const normalizer = createClaudeSubagentActivityNormalizer();
     const bashStart = {
