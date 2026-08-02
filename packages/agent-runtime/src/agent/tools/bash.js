@@ -15,7 +15,7 @@ import {
   runPreparedProcess,
 } from "./shared/process-runner.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
-import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { requestToolProcessEnvironment, resolveSandboxPolicy } from "./shared/tool-context.js";
 
 const DEFAULT_BASH_TIMEOUT_MS = 120_000;
 const BASH_STARTUP_ENV_KEYS = new Set([
@@ -120,7 +120,7 @@ export async function bashToolRun(
         command: "/bin/bash",
         args: ["--noprofile", "--norc", "-c", command],
         cwd,
-        env: cleanBashEnvironment(),
+        env: requestToolProcessEnvironment(resolvedCtx, cleanBashEnvironment()),
       },
     });
   } catch (error) {

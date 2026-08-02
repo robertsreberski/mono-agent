@@ -2,6 +2,7 @@ import {
   fieldSpecMappings,
   layerJsonOntoEnv,
   readBoolean,
+  readCsv,
   readInteger,
   readJsonSection,
   readSettingsJson,
@@ -21,6 +22,12 @@ export interface TuiAdapterConfig {
   readonly basePath: string;
   readonly allowNonLoopback: boolean;
   readonly apiKey?: string;
+  readonly requestToolEnvironment?: RequestToolEnvironmentConfig;
+}
+
+export interface RequestToolEnvironmentConfig {
+  readonly allowedKeys: readonly string[];
+  readonly allowPathPrepend: boolean;
 }
 
 export interface RedactedTuiAdapterConfig extends Omit<TuiAdapterConfig, "apiKey"> {
@@ -51,6 +58,7 @@ export async function loadTuiAdapterConfig(
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
   const env = layerTuiJsonOntoEnv(json, input.env);
   const apiKey = normalizeOptionalString(env.MONO_AGENT_TUI_API_KEY);
+  const requestToolEnvironment = readRequestToolEnvironmentConfig(env);
   return {
     enabled: readBoolean(env.MONO_AGENT_TUI_ENABLED, "MONO_AGENT_TUI_ENABLED", DEFAULT_ENABLED, invalidConfig),
     host: readString(env.MONO_AGENT_TUI_HOST, DEFAULT_HOST),
@@ -58,6 +66,7 @@ export async function loadTuiAdapterConfig(
     basePath: readBasePath(env.MONO_AGENT_TUI_BASE_PATH),
     allowNonLoopback: readBoolean(env.MONO_AGENT_TUI_ALLOW_NON_LOOPBACK, "MONO_AGENT_TUI_ALLOW_NON_LOOPBACK", false, invalidConfig),
     ...(apiKey === undefined ? {} : { apiKey }),
+    ...(requestToolEnvironment === undefined ? {} : { requestToolEnvironment }),
   };
 }
 
@@ -69,6 +78,9 @@ export function redactTuiAdapterConfig(config: TuiAdapterConfig): RedactedTuiAda
     basePath: config.basePath,
     allowNonLoopback: config.allowNonLoopback,
     apiKey: redactedSecret(config.apiKey),
+    ...(config.requestToolEnvironment === undefined
+      ? {}
+      : { requestToolEnvironment: config.requestToolEnvironment }),
   };
 }
 
@@ -86,7 +98,66 @@ export const TUI_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "tui.basePath", env: "MONO_AGENT_TUI_BASE_PATH", fromJson: (s) => s.basePath },
   { id: "tui.allowNonLoopback", env: "MONO_AGENT_TUI_ALLOW_NON_LOOPBACK", kind: "boolean", fromJson: (s) => s.allowNonLoopback },
   { id: "tui.apiKey", env: "MONO_AGENT_TUI_API_KEY", secret: true, fromJson: (s) => s.apiKey },
+  {
+    id: "tui.requestToolEnvironment.allowedKeys",
+    env: "MONO_AGENT_TUI_REQUEST_TOOL_ENVIRONMENT_ALLOWED_KEYS",
+    kind: "csv",
+    fromJson: (s) => nestedRecord(s.requestToolEnvironment)?.allowedKeys,
+  },
+  {
+    id: "tui.requestToolEnvironment.allowPathPrepend",
+    env: "MONO_AGENT_TUI_REQUEST_TOOL_ENVIRONMENT_ALLOW_PATH_PREPEND",
+    kind: "boolean",
+    fromJson: (s) => nestedRecord(s.requestToolEnvironment)?.allowPathPrepend,
+  },
 ];
+
+const MAX_REQUEST_TOOL_ENVIRONMENT_KEYS = 32;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+const DENIED_ENVIRONMENT_KEYS = new Set([
+  "PATH", "HOME", "TMPDIR", "TMP", "TEMP", "NODE_OPTIONS", "NODE_PATH",
+  "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PROMPT_COMMAND", "CDPATH",
+  "GLOBIGNORE", "POSIXLY_CORRECT", "ZDOTDIR",
+]);
+
+function readRequestToolEnvironmentConfig(
+  env: Record<string, string | undefined>,
+): RequestToolEnvironmentConfig | undefined {
+  const allowedKeys = readCsv(env.MONO_AGENT_TUI_REQUEST_TOOL_ENVIRONMENT_ALLOWED_KEYS);
+  const allowPathPrepend = readBoolean(
+    env.MONO_AGENT_TUI_REQUEST_TOOL_ENVIRONMENT_ALLOW_PATH_PREPEND,
+    "MONO_AGENT_TUI_REQUEST_TOOL_ENVIRONMENT_ALLOW_PATH_PREPEND",
+    false,
+    invalidConfig,
+  );
+  if (allowedKeys.length > MAX_REQUEST_TOOL_ENVIRONMENT_KEYS) {
+    throw invalidConfig(`Request tool environment supports at most ${String(MAX_REQUEST_TOOL_ENVIRONMENT_KEYS)} keys.`);
+  }
+  if (new Set(allowedKeys).size !== allowedKeys.length) {
+    throw invalidConfig("Request tool environment allowedKeys must not contain duplicates.");
+  }
+  for (const key of allowedKeys) {
+    const upper = key.toUpperCase();
+    if (
+      !ENV_NAME.test(key)
+      || DENIED_ENVIRONMENT_KEYS.has(upper)
+      || upper.startsWith("BASH_FUNC_")
+      || upper.startsWith("DYLD_")
+      || upper.startsWith("LD_")
+    ) {
+      throw invalidConfig(`Request tool environment key '${key}' is not allowed.`);
+    }
+  }
+  return allowedKeys.length === 0 && !allowPathPrepend
+    ? undefined
+    : { allowedKeys, allowPathPrepend };
+}
+
+function nestedRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
 
 function layerTuiJsonOntoEnv(
   json: SettingsJson,

@@ -243,6 +243,14 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.yes === true ? { yes: true } : {}),
       });
     }
+    case "bridge": {
+      const { runAcpBridge } = await import("./acp-bridge.js");
+      return await runAcpBridge({
+        sourceId: args.sourceId as string,
+        ...(args.requireToolEnvironment === true ? { requireToolEnvironment: true } : {}),
+        env: process.env,
+      });
+    }
     case "install-skill":
       return await runInstallSkill(args);
     case "continuations": {
@@ -290,7 +298,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
 }
 
 export function shouldLoadCommandDotenv(command: ParsedCliArgs["command"]): boolean {
-  return command !== "web";
+  return command !== "web" && command !== "bridge";
 }
 
 function sanitizeManagedLaunchdLogMaintenanceEnvironment(

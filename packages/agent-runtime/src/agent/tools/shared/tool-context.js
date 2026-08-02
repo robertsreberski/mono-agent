@@ -38,6 +38,8 @@
 
 // @ts-check
 
+import { delimiter } from "node:path";
+
 import { passthroughSandbox } from "../../sandbox-seam.js";
 import { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } from "../../../runtime-brand.js";
 
@@ -58,6 +60,7 @@ import { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } from "../../../runtime-bra
  * @property {RuntimeSandboxEngine} [sandboxEngine]
  * @property {RuntimeSandbox} sandbox
  * @property {RuntimeBrand} runtimeBrand
+ * @property {{schema: 1, values: Readonly<Record<string, string>>, pathPrepend?: readonly string[]}} [toolEnvironment]
  */
 
 // The data keys (everything except the always-resolved runtimeBrand). A fixed
@@ -154,4 +157,23 @@ export function resolveSandboxPolicy(ctx, requestPolicy = undefined) {
   const sandbox = ctx?.sandbox ?? passthroughSandbox;
   const merged = sandbox.mergePolicies(ctx?.sandboxPolicy ?? undefined, requestPolicy ?? undefined);
   return merged && merged.mode !== "off" ? merged : undefined;
+}
+
+/**
+ * Compose the process environment overlay for Bash/Exec. The caller-supplied
+ * base carries each tool's own hardening values; request values are applied
+ * only at this final process boundary. No global environment is mutated.
+ *
+ * @param {ToolContext|undefined} ctx
+ * @param {Record<string, string|undefined>} [base]
+ * @returns {Record<string, string|undefined>|undefined}
+ */
+export function requestToolProcessEnvironment(ctx, base = undefined) {
+  const request = ctx?.toolEnvironment;
+  if (request === undefined) return base;
+  const env = { ...(base ?? {}), ...request.values };
+  if (Array.isArray(request.pathPrepend) && request.pathPrepend.length > 0) {
+    env.PATH = [...request.pathPrepend, process.env.PATH].filter(Boolean).join(delimiter);
+  }
+  return env;
 }

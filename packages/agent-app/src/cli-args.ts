@@ -10,7 +10,7 @@ import type { InstallSkillTarget } from "./install-skill.js";
 import { INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND } from "./launchd.js";
 import type { CodexLoginMode } from "./provider-setup.js";
 
-const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "install-skill", "backfill", "runs", "memory", "continuations"] as const;
+const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "bridge", "install-skill", "backfill", "runs", "memory", "continuations"] as const;
 const KNOWN_COMMANDS = [...PUBLIC_COMMANDS, INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND] as const;
 
 // Canonical (post-normalization) commands that emit a `--json` envelope. This is
@@ -156,6 +156,10 @@ export interface ParsedCliArgs {
   readonly port?: number;
   /** web: narrow the default LAN bind to 127.0.0.1. */
   readonly loopback?: boolean;
+  /** bridge acp: exact trace-source id to expose. */
+  readonly sourceId?: string;
+  /** bridge acp: fail initialization unless request tool env is enabled. */
+  readonly requireToolEnvironment?: boolean;
 }
 
 interface CliFallbackArg {
@@ -261,6 +265,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let host: string | undefined;
   let port: number | undefined;
   let loopback = false;
+  let sourceId: string | undefined;
+  let requireToolEnvironment = false;
 
   for (let i = 0; i < rest.length; i += 1) {
     const flag = rest[i];
@@ -382,6 +388,13 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       }
       case "--loopback":
         loopback = true;
+        break;
+      case "--source-id":
+        sourceId = requireValue(rest, ++i, flag).trim();
+        if (sourceId.length === 0) throw new Error("--source-id must not be empty.");
+        break;
+      case "--require-tool-environment":
+        requireToolEnvironment = true;
         break;
       case "--model":
         model = requireValue(rest, ++i, flag);
@@ -578,6 +591,17 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if ((host !== undefined || port !== undefined || loopback) && cmd !== "web") {
     throw new Error("--host, --port, and --loopback are only supported for `mono-agent web`.");
   }
+  if ((sourceId !== undefined || requireToolEnvironment) && cmd !== "bridge") {
+    throw new Error("--source-id and --require-tool-environment are only supported for `mono-agent bridge acp`.");
+  }
+  if (cmd === "bridge") {
+    if (positionals.length !== 1 || positionals[0] !== "acp") {
+      throw new Error("`mono-agent bridge` currently requires the exact subcommand `acp`.");
+    }
+    if (sourceId === undefined) {
+      throw new Error("`mono-agent bridge acp` requires --source-id <id>.");
+    }
+  }
   if (cmd === "web" && (configPath !== undefined || envFile !== undefined)) {
     throw new Error("The machine-wide `mono-agent web` console does not load an agent --config or --env-file.");
   }
@@ -748,6 +772,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(host === undefined ? {} : { host }),
     ...(port === undefined ? {} : { port }),
     ...(loopback ? { loopback } : {}),
+    ...(sourceId === undefined ? {} : { sourceId }),
+    ...(requireToolEnvironment ? { requireToolEnvironment } : {}),
   };
 }
 

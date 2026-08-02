@@ -16,7 +16,7 @@ import {
   runPreparedProcess,
 } from "./shared/process-runner.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
-import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { requestToolProcessEnvironment, resolveSandboxPolicy } from "./shared/tool-context.js";
 
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 const MAX_EXEC_ARGS = 256;
@@ -75,6 +75,7 @@ export async function execToolRun(
   const maxChars = positiveInteger(max_output_chars, DEFAULT_MAX_BASH_OUTPUT_CHARS);
   let prepared;
   try {
+    const requestEnvironment = requestToolProcessEnvironment(resolvedCtx);
     prepared = await sandbox.prepareCommand({
       policy,
       engine: sandboxEngine ?? resolvedCtx.sandboxEngine ?? undefined,
@@ -82,6 +83,7 @@ export async function execToolRun(
         command: executable,
         args: [...args],
         cwd,
+        ...(requestEnvironment === undefined ? {} : { env: requestEnvironment }),
       },
     });
   } catch (error) {

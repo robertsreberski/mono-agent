@@ -241,6 +241,7 @@ export function createAgentResponder(options: {
       abortSignal: request.abortSignal,
       ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
       ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
+      ...(request.toolEnvironment === undefined ? {} : { toolEnvironment: request.toolEnvironment }),
       ...(request.sender === undefined ? {} : { sender: request.sender }),
       // An empty array collapses to `undefined` so every downstream reader is a
       // single presence check rather than a length check.

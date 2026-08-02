@@ -227,6 +227,19 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     ],
   },
   {
+    command: "bridge",
+    group: "Console",
+    short: "bridge acp",
+    summary: "Expose one running mono-agent instance over ACP stdio.",
+    signature: "mono-agent bridge acp --source-id <id> [--require-tool-environment]",
+    lines: [
+      "Run a stable ACP v1 stdio adapter for one exact running trace source.",
+      "The selected instance keeps its own model, workspace, sandbox, tools, MCP",
+      "servers, and durable conversation history. Diagnostics use stderr; stdout",
+      "is reserved for newline-delimited ACP JSON-RPC messages.",
+    ],
+  },
+  {
     command: "runs",
     group: "Observe",
     short: "runs [report|audit]",

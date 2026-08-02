@@ -468,6 +468,7 @@ interface SubagentRunRequest {
   /** The parent turn's disclosed skills, offered by the `Agent` tool. */
   readonly skills?: readonly SkillIndexSummary[];
   readonly skillsRoot?: string;
+  readonly toolEnvironment?: RuntimeRunOptions["toolEnvironment"];
   readonly abortSignal: AbortSignal;
   readonly onEvent: (event: unknown) => void;
 }
@@ -604,6 +605,7 @@ function subagentsRuntimeOptions(
       // attached, so dropping it would leave the child entirely unsandboxed.
       ...(request.sandboxPolicy === undefined ? {} : { sandboxPolicy: request.sandboxPolicy }),
       ...(request.sandboxEngine === undefined ? {} : { sandboxEngine: request.sandboxEngine }),
+      ...(request.toolEnvironment === undefined ? {} : { toolEnvironment: request.toolEnvironment }),
       // Both keys or neither: pi-bridge builds ReadSkill only when it has the
       // names AND the root, and a half-set pair fails by silently omitting the
       // tool rather than erroring.

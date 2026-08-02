@@ -53,6 +53,19 @@ describe("createRuntime", () => {
     expect(toolContext.unrelated).toBeUndefined();
   });
 
+  it("clones request tool environment into one run without contaminating the shared context", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
+    const runtime = createRuntime({ workspace: "/tmp/work" });
+    const toolEnvironment = { schema: 1, values: { MULTICA_TASK_ID: "task-1" } };
+
+    await runtime.run("first", { model: { sdk: "pi", model: "x" }, toolEnvironment });
+    await runtime.run("second", { model: { sdk: "pi", model: "x" } });
+
+    expect(executeMock.mock.calls[0][1].toolContext).toMatchObject({ toolEnvironment });
+    expect(executeMock.mock.calls[1][1].toolContext).not.toHaveProperty("toolEnvironment");
+    expect(executeMock.mock.calls[0][1].toolContext).not.toBe(executeMock.mock.calls[1][1].toolContext);
+  });
+
   it("does not touch the global default tool runtime, regardless of host tool keys", () => {
     createRuntime({ workspace: "/tmp/work", ripgrepPath: "/usr/bin/rg" });
     expect(readToolRuntime().workspace).toBeUndefined();

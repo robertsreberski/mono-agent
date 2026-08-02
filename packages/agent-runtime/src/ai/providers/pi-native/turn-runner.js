@@ -141,6 +141,7 @@ export async function buildTurnTools(runState, {
         // them is the host's decision, not this layer's.
         skills: options.skills,
         skillsRoot: options.skillsRoot,
+        toolEnvironment: options.toolEnvironment,
       },
       ctx: runCtx,
     }));

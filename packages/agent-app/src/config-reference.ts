@@ -1298,6 +1298,8 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "tui.port": 0,
     "tui.basePath": "/gui",
     "tui.allowNonLoopback": false,
+    "tui.requestToolEnvironment.allowedKeys": [],
+    "tui.requestToolEnvironment.allowPathPrepend": false,
   };
   return defaults[id];
 }
@@ -1360,6 +1362,7 @@ function exampleFor(id: string): SettingsJsonValue {
     "slack.threadContext.includeBotMessages": true,
     "webhook.apiKey": "set-via-MONO_AGENT_WEBHOOK_API_KEY",
     "openaiApi.apiKey": "env:MONO_AGENT_OPENAI_API_KEY",
+    "tui.requestToolEnvironment.allowedKeys": ["MULTICA_TOKEN", "MULTICA_TASK_ID"],
   };
   if (examples[id] !== undefined) {
     return examples[id];
@@ -1385,6 +1388,12 @@ function exampleFor(id: string): SettingsJsonValue {
 function descriptionFor(id: string): string {
   const section = id.split(".")[0] ?? "config";
   const name = id.split(".").slice(1).join(".");
+  if (id === "tui.requestToolEnvironment.allowedKeys") {
+    return "Explicit environment-variable names an ACP request may pass to Bash, Exec, and nested subagents for one turn. Disabled when empty; dangerous process-loader, shell-startup, home, temp, and PATH keys are rejected.";
+  }
+  if (id === "tui.requestToolEnvironment.allowPathPrepend") {
+    return "Allows an ACP request to prepend up to four absolute directories to process-tool PATH for one turn. The caller cannot replace PATH.";
+  }
   if (id === "slack.stripMentionText") {
     return "When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`.";
   }

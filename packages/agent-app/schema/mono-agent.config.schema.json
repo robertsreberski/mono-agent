@@ -2794,6 +2794,34 @@
             "example"
           ],
           "type": "string"
+        },
+        "requestToolEnvironment": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allowedKeys": {
+              "description": "Explicit environment-variable names an ACP request may pass to Bash, Exec, and nested subagents for one turn. Disabled when empty; dangerous process-loader, shell-startup, home, temp, and PATH keys are rejected.",
+              "examples": [
+                [
+                  "MULTICA_TOKEN",
+                  "MULTICA_TASK_ID"
+                ]
+              ],
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "allowPathPrepend": {
+              "description": "Allows an ACP request to prepend up to four absolute directories to process-tool PATH for one turn. The caller cannot replace PATH.",
+              "examples": [
+                "false"
+              ],
+              "type": "boolean",
+              "default": false
+            }
+          }
         }
       }
     }
