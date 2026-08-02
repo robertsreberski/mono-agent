@@ -51,9 +51,9 @@ function isAgentToolName(value) {
 }
 
 /** @param {unknown} value */
-function indicatesBackgroundLaunch(value) {
-  const content = wireContent(value) ?? "";
-  return /async agent launched|running in the background|\bagentId:/i.test(content);
+function isExplicitBackgroundLaunchAcknowledgement(value) {
+  const content = typeof value === "string" ? value.trim() : "";
+  return /^Async agent launched successfully\. The agent is working in the background\.?$/iu.test(content);
 }
 
 /** @param {Record<string, any>} raw */
@@ -96,6 +96,8 @@ export function createClaudeSubagentActivityNormalizer() {
   const byNativeId = new Map();
   /** @type {Set<any>} */
   const active = new Set();
+  /** @type {Set<any>} */
+  const ambiguousCohorts = new Set();
   const ignoredNativeIds = new Set();
   const seenRawEvents = new Set();
   const usedNames = new Set();
@@ -108,7 +110,7 @@ export function createClaudeSubagentActivityNormalizer() {
       id: entry.id,
       name: entry.name,
       callIndex: entry.callIndex,
-      ...(entry.nativeId === undefined ? {} : { nativeId: entry.nativeId }),
+      ...(entry.nativeId === undefined || entry.ambiguousNativeIdentity ? {} : { nativeId: entry.nativeId }),
       ...(entry.label === undefined ? {} : { label: entry.label }),
     };
   }
@@ -142,6 +144,29 @@ export function createClaudeSubagentActivityNormalizer() {
     return entry.name === "subagent" || entry.name === entry.nativeId
       ? undefined
       : entry.name;
+  }
+
+  /** @param {any[]} entries */
+  function ambiguousCohortFor(entries) {
+    const existing = [...new Set(entries.map((entry) => entry.ambiguousCohort).filter(Boolean))];
+    const cohort = existing[0] ?? { entries: new Set(), outcomes: new Map() };
+    ambiguousCohorts.add(cohort);
+    for (const duplicateCohort of existing.slice(1)) {
+      for (const member of duplicateCohort.entries) {
+        cohort.entries.add(member);
+        member.ambiguousCohort = cohort;
+      }
+      for (const [member, outcome] of duplicateCohort.outcomes) {
+        cohort.outcomes.set(member, outcome);
+      }
+      ambiguousCohorts.delete(duplicateCohort);
+    }
+    for (const entry of entries) {
+      cohort.entries.add(entry);
+      entry.ambiguousCohort = cohort;
+      entry.ambiguousNativeIdentity = true;
+    }
+    return cohort;
   }
 
   /**
@@ -185,12 +210,27 @@ export function createClaudeSubagentActivityNormalizer() {
     }).filter(({ score }) => score >= 0);
     scored.sort((left, right) => right.score - left.score
       || left.entry.callIndex - right.entry.callIndex);
+    const bestScore = scored[0]?.score;
+    const tied = bestScore === undefined
+      ? []
+      : scored.filter(({ score }) => score === bestScore).map(({ entry }) => entry);
+    if (tied.length > 1) ambiguousCohortFor(tied);
     return scored[0]?.entry;
   }
 
   /** @param {any} entry @param {any} duplicate */
   function mergeEntries(entry, duplicate) {
     if (entry === duplicate) return entry;
+    if (entry.ambiguousCohort || duplicate.ambiguousCohort) {
+      const cohort = ambiguousCohortFor([entry, duplicate]);
+      const duplicateOutcome = cohort.outcomes.get(duplicate);
+      if (duplicateOutcome !== undefined && !cohort.outcomes.has(entry)) {
+        cohort.outcomes.set(entry, duplicateOutcome);
+      }
+      cohort.outcomes.delete(duplicate);
+      cohort.entries.delete(duplicate);
+      cohort.entries.add(entry);
+    }
     active.delete(duplicate);
     for (const [toolId, tool] of duplicate.openTools) {
       if (!entry.openTools.has(toolId)) entry.openTools.set(toolId, tool);
@@ -214,6 +254,25 @@ export function createClaudeSubagentActivityNormalizer() {
     return entry;
   }
 
+  /** @param {any} parentEntry @param {any} nativeEntry */
+  function correctAmbiguousPair(parentEntry, nativeEntry) {
+    const cohort = parentEntry.ambiguousCohort;
+    const previousParentNativeId = parentEntry.nativeId;
+    const requestedNativeId = nativeEntry.nativeId;
+    const previousParentOutcome = cohort.outcomes.get(parentEntry);
+    const requestedNativeOutcome = cohort.outcomes.get(nativeEntry);
+    cohort.outcomes.delete(parentEntry);
+    cohort.outcomes.delete(nativeEntry);
+
+    parentEntry.nativeId = requestedNativeId;
+    nativeEntry.nativeId = previousParentNativeId;
+    if (requestedNativeId !== undefined) byNativeId.set(requestedNativeId, parentEntry);
+    if (previousParentNativeId !== undefined) byNativeId.set(previousParentNativeId, nativeEntry);
+    if (requestedNativeOutcome !== undefined) cohort.outcomes.set(parentEntry, requestedNativeOutcome);
+    if (previousParentOutcome !== undefined) cohort.outcomes.set(nativeEntry, previousParentOutcome);
+    return parentEntry;
+  }
+
   /**
    * @param {{parentToolUseId?: string, nativeId?: string, name?: string, label?: string, prompt?: string, backgroundRequested?: boolean}} input
    */
@@ -226,9 +285,16 @@ export function createClaudeSubagentActivityNormalizer() {
       : byNativeId.get(input.nativeId);
     let entry = parentEntry ?? nativeEntry;
     if (parentEntry && nativeEntry && parentEntry !== nativeEntry) {
-      // Prefer the parent-keyed entry: its id is already the public canonical
-      // id, while native-only entries have deliberately emitted no lifecycle.
-      entry = mergeEntries(parentEntry, nativeEntry);
+      if (parentEntry.ambiguousCohort
+        && parentEntry.ambiguousCohort === nativeEntry.ambiguousCohort) {
+        // A later notification carrying both ids is authoritative. Correct the
+        // provisional pair without merging away the other canonical group.
+        entry = correctAmbiguousPair(parentEntry, nativeEntry);
+      } else {
+        // Prefer the parent-keyed entry: its id is already the public canonical
+        // id, while native-only entries have deliberately emitted no lifecycle.
+        entry = mergeEntries(parentEntry, nativeEntry);
+      }
     }
     if (!entry) entry = pendingCorrelation(input);
     if (!entry) {
@@ -324,6 +390,54 @@ export function createClaudeSubagentActivityNormalizer() {
       content: boundedText(outcome.summary) ?? `${status} · ${toolUses} tool call${toolUses === 1 ? "" : "s"}`,
       ...(Number.isFinite(Number(usage.total_tokens)) ? { totalTokens: Number(usage.total_tokens) } : {}),
     }));
+    return events;
+  }
+
+  /**
+   * Multiple metadata-identical native starts cannot be safely attributed when
+   * their child frames omit task_description. Keep each canonical parent group
+   * open until the whole tied cohort settles, then close every parent exactly
+   * once with an aggregate outcome instead of attaching the wrong native
+   * terminal to whichever child frame happened to arrive first.
+   *
+   * @param {any} cohort
+   * @param {string} [fallbackReason]
+   */
+  function settleAmbiguousCohort(cohort, fallbackReason) {
+    const nativeEntries = [...cohort.entries].filter((entry) => entry.nativeId !== undefined);
+    if (fallbackReason !== undefined) {
+      for (const entry of nativeEntries) {
+        if (!cohort.outcomes.has(entry)) {
+          cohort.outcomes.set(entry, {
+            status: "stopped",
+            summary: fallbackReason,
+            reason: fallbackReason,
+          });
+        }
+      }
+    }
+    if (nativeEntries.some((entry) => !cohort.outcomes.has(entry))) return [];
+
+    const outcomes = nativeEntries.map((entry) => cohort.outcomes.get(entry));
+    const statuses = outcomes.map((outcome) => outcome?.status ?? "ended");
+    const allCompleted = statuses.every((status) => status === "completed");
+    const status = allCompleted ? "completed" : statuses.find((value) => value !== "completed") ?? "ended";
+    const count = nativeEntries.length;
+    const summary = allCompleted
+      ? `${count} concurrent subagent${count === 1 ? "" : "s"} completed`
+      : fallbackReason ?? `concurrent subagents settled: ${[...new Set(statuses)].join(", ")}`;
+    const events = [];
+    for (const entry of cohort.entries) {
+      if (entry.parentToolUseId !== undefined) {
+        events.push(...finish(entry, { status, summary, reason: fallbackReason }));
+      } else {
+        // The native-only placeholder never published a lifecycle. Discard it
+        // rather than inventing an orphan group alongside the canonical ones.
+        entry.terminal = true;
+        active.delete(entry);
+      }
+    }
+    ambiguousCohorts.delete(cohort);
     return events;
   }
 
@@ -426,18 +540,21 @@ export function createClaudeSubagentActivityNormalizer() {
     if (raw.type === "user" && !nonEmptyString(raw.parent_tool_use_id)) {
       const events = [];
       const blocks = Array.isArray(raw?.message?.content) ? raw.message.content : [];
-      let pureLaunchAcknowledgement = blocks.length > 0;
+      const forwardedBlocks = [];
+      let launchAcknowledgements = 0;
       for (const block of blocks) {
         if (block?.type !== "tool_result" || !nonEmptyString(block.tool_use_id)) {
-          pureLaunchAcknowledgement = false;
+          forwardedBlocks.push(block);
           continue;
         }
         const entry = byParentToolUseId.get(nonEmptyString(block.tool_use_id));
         const launchOnly = entry !== undefined && (entry.backgroundRequested
-          || entry.nativeId !== undefined
-          || indicatesBackgroundLaunch(block.content));
-        if (launchOnly && block.is_error !== true) continue;
-        pureLaunchAcknowledgement = false;
+          || isExplicitBackgroundLaunchAcknowledgement(block.content));
+        if (launchOnly && block.is_error !== true) {
+          launchAcknowledgements += 1;
+          continue;
+        }
+        forwardedBlocks.push(block);
         if (!entry || entry.terminal) continue;
         const isError = block.is_error === true;
         events.push(...finish(entry, {
@@ -448,7 +565,16 @@ export function createClaudeSubagentActivityNormalizer() {
             : "subagent ended before this tool returned",
         }));
       }
-      return { consumed: pureLaunchAcknowledgement, events };
+      if (launchAcknowledgements === 0) return { consumed: false, events };
+      if (forwardedBlocks.length === 0) return { consumed: true, events };
+      return {
+        consumed: false,
+        events,
+        forwarded: {
+          ...raw,
+          message: { ...raw.message, content: forwardedBlocks },
+        },
+      };
     }
 
     if ((raw.type === "assistant" || raw.type === "user") && nonEmptyString(raw.parent_tool_use_id)) {
@@ -556,13 +682,21 @@ export function createClaudeSubagentActivityNormalizer() {
       name: nonEmptyString(raw.subagent_type),
       label: nonEmptyString(raw.description),
     });
+    const outcome = {
+      status: nonEmptyString(raw.status),
+      summary: nonEmptyString(raw.summary),
+      usage: raw.usage,
+    };
+    if (entry.ambiguousCohort) {
+      entry.ambiguousCohort.outcomes.set(entry, outcome);
+      return {
+        consumed: true,
+        events: settleAmbiguousCohort(entry.ambiguousCohort),
+      };
+    }
     return {
       consumed: true,
-      events: finish(entry, {
-        status: nonEmptyString(raw.status),
-        summary: nonEmptyString(raw.summary),
-        usage: raw.usage,
-      }),
+      events: finish(entry, outcome),
     };
   }
 
@@ -571,6 +705,9 @@ export function createClaudeSubagentActivityNormalizer() {
     /** Close every still-open child and its tools exactly once. */
     drain(reason = "subagent stream closed before completion") {
       const events = [];
+      for (const cohort of [...ambiguousCohorts]) {
+        events.push(...settleAmbiguousCohort(cohort, reason));
+      }
       for (const entry of [...active]) {
         events.push(...finish(entry, { status: "stopped", reason, summary: reason }));
       }

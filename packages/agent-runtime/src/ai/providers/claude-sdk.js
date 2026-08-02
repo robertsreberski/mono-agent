@@ -838,10 +838,10 @@ export async function generateClaudeResponse(systemPrompt, options) {
 
   try {
     stream = claudeAgentQuery({ prompt: /** @type {any} */ (prompt), options: queryOptions });
-    for await (const event of stream) {
-      const nextSessionId = sessionIdFromEvent(event);
+    for await (const rawEvent of stream) {
+      const nextSessionId = sessionIdFromEvent(rawEvent);
       if (nextSessionId) providerSessionId = nextSessionId;
-      const observation = subagentNormalizer.observe(event);
+      const observation = subagentNormalizer.observe(rawEvent);
       emitSubagentEvents(observation.events);
       // Child records are represented exclusively as subagent_activity. In
       // particular, their text, errors, tools, usage, and structured output
@@ -850,6 +850,9 @@ export async function generateClaudeResponse(systemPrompt, options) {
         if (cancelled) break;
         continue;
       }
+      // Preserve unrelated blocks when a root user message batches them with a
+      // background Agent launch acknowledgement.
+      const event = /** @type {any} */ (observation.forwarded ?? rawEvent);
       emitEvent(event);
       if (event?.type === "tool_progress" && event.tool_name) noteToolUse(event.tool_name);
       for (const toolUse of structuredOutputToolUses(event)) {

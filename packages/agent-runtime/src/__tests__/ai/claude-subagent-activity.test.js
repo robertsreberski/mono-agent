@@ -113,6 +113,30 @@ describe("createClaudeSubagentActivityNormalizer", () => {
     ]);
   });
 
+  it("removes only a launch acknowledgement from a mixed root tool-result frame", () => {
+    const normalizer = createClaudeSubagentActivityNormalizer();
+    normalizer.observe(cliFixture[0]);
+    const launch = cliFixture.find((event) => event.uuid === "cli-parent-launch-result");
+    const unrelated = {
+      type: "tool_result",
+      tool_use_id: "toolu_unrelated",
+      content: "unrelated result",
+    };
+    const mixed = {
+      ...launch,
+      message: { ...launch.message, content: [...launch.message.content, unrelated] },
+    };
+
+    expect(normalizer.observe(mixed)).toEqual({
+      consumed: false,
+      events: [],
+      forwarded: {
+        ...mixed,
+        message: { ...mixed.message, content: [unrelated] },
+      },
+    });
+  });
+
   it("does not suppress launch-like text for an uncorrelated tool result", () => {
     const normalizer = createClaudeSubagentActivityNormalizer();
     expect(normalizer.observe({
@@ -126,6 +150,56 @@ describe("createClaudeSubagentActivityNormalizer", () => {
         }],
       },
     })).toEqual({ consumed: false, events: [] });
+  });
+
+  it("does not treat incidental foreground result prose as a launch acknowledgement", () => {
+    const normalizer = createClaudeSubagentActivityNormalizer();
+    normalizer.observe({
+      type: "assistant",
+      uuid: "foreground-parent",
+      message: {
+        content: [{
+          type: "tool_use",
+          id: "toolu_foreground",
+          name: "Task",
+          input: { subagent_type: "reviewer", prompt: "Inspect the daemon" },
+        }],
+      },
+    });
+    expect(normalizer.observe({
+      type: "system",
+      subtype: "task_started",
+      task_id: "native-foreground",
+      tool_use_id: "toolu_foreground",
+      task_type: "local_agent",
+      subagent_type: "reviewer",
+      uuid: "foreground-native-start",
+    }).events).toEqual([
+      expect.objectContaining({ phase: "agent_started", id: "agent:toolu_foreground" }),
+    ]);
+    const result = {
+      type: "user",
+      uuid: "foreground-result",
+      message: {
+        content: [{
+          type: "tool_result",
+          tool_use_id: "toolu_foreground",
+          content: "The daemon is running in the background and healthy; agentId: local-7",
+        }],
+      },
+    };
+
+    expect(normalizer.observe(result)).toEqual({
+      consumed: false,
+      events: [
+        expect.objectContaining({
+          phase: "agent_completed",
+          id: "agent:toolu_foreground",
+          isError: false,
+        }),
+      ],
+    });
+    expect(normalizer.drain()).toEqual([]);
   });
 
   it("delays a native-only start until a child frame reveals the canonical parent id", () => {
@@ -231,6 +305,73 @@ describe("createClaudeSubagentActivityNormalizer", () => {
     expect(new Set(lifecycle.map((event) => event.subagent.id))).toEqual(
       new Set(["toolu_first", "toolu_second"]),
     );
+    expect(normalizer.drain()).toEqual([]);
+  });
+
+  it.each([
+    ["without terminal parent ids", false],
+    ["when terminal parent ids correct the provisional pairing", true],
+  ])("settles metadata-identical concurrent tasks as a cohort %s", (_label, terminalHasParentIds) => {
+    const normalizer = createClaudeSubagentActivityNormalizer();
+    for (const taskId of ["native-first", "native-second"]) {
+      expect(normalizer.observe({
+        type: "system",
+        subtype: "task_started",
+        task_id: taskId,
+        task_type: "local_agent",
+        subagent_type: "reviewer",
+        description: "Review the same area",
+        uuid: `${taskId}-start`,
+      })).toEqual({ consumed: true, events: [] });
+    }
+
+    const events = [];
+    // Child frames for identical profiles can arrive in the opposite order and
+    // omit task_description, leaving no truthful native-to-parent attribution.
+    for (const parentId of ["toolu_second", "toolu_first"]) {
+      events.push(...normalizer.observe({
+        type: "assistant",
+        parent_tool_use_id: parentId,
+        subagent_type: "reviewer",
+        uuid: `${parentId}-child`,
+        message: { content: [{ type: "text", text: `work from ${parentId}` }] },
+      }).events);
+    }
+
+    expect(normalizer.observe({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "native-second",
+      ...(terminalHasParentIds ? { tool_use_id: "toolu_second" } : {}),
+      status: "completed",
+      output_file: "/tmp/native-second.output",
+      summary: "Second complete",
+      uuid: "native-second-done",
+    }).events).toEqual([]);
+    events.push(...normalizer.observe({
+      type: "system",
+      subtype: "task_notification",
+      task_id: "native-first",
+      ...(terminalHasParentIds ? { tool_use_id: "toolu_first" } : {}),
+      status: "completed",
+      output_file: "/tmp/native-first.output",
+      summary: "First complete",
+      uuid: "native-first-done",
+    }).events);
+
+    const lifecycle = events.filter((event) => event.phase === "agent_started"
+      || event.phase === "agent_completed");
+    expect(lifecycle.map((event) => [event.phase, event.subagent.id])).toEqual([
+      ["agent_started", "toolu_second"],
+      ["agent_started", "toolu_first"],
+      ["agent_completed", "toolu_second"],
+      ["agent_completed", "toolu_first"],
+    ]);
+    expect(lifecycle.every((event) => !("nativeId" in event.subagent))).toBe(true);
+    expect(lifecycle.filter((event) => event.phase === "agent_completed").every(
+      (event) => event.content === "2 concurrent subagents completed",
+    )).toBe(true);
+    expect(events.some((event) => event.subagent.id.startsWith("claude-task:"))).toBe(false);
     expect(normalizer.drain()).toEqual([]);
   });
 

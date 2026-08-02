@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import cliSubagentFixture from "./fixtures/claude-cli-subagent-events.json";
 import sdkSubagentFixture from "./fixtures/claude-sdk-subagent-events.json";
 
 const queryMock = vi.hoisted(() => vi.fn());
@@ -242,6 +243,31 @@ describe("Claude Agent SDK terminal handling", () => {
     ]);
     expect(emitted).toEqual(result.events);
     expect(queryMock.mock.calls[0][0].options.forwardSubagentText).toBe(true);
+  });
+
+  it("forwards unrelated SDK results batched with a suppressed background launch acknowledgement", async () => {
+    const mixed = structuredClone(cliSubagentFixture).filter((event) => event.type !== "result");
+    const launch = mixed.find((event) => event.uuid === "cli-parent-launch-result");
+    launch.message.content.push({
+      type: "tool_result",
+      tool_use_id: "toolu_unrelated",
+      content: "unrelated result",
+    });
+    installStream([...mixed, resultEvent({ result: "PARENT_DONE" })]);
+
+    const result = await generateClaudeResponse("system", options());
+    const forwarded = result.events.find((event) => event.uuid === "cli-parent-launch-result");
+    expect(forwarded).toMatchObject({
+      type: "user",
+      message: {
+        content: [{
+          type: "tool_result",
+          tool_use_id: "toolu_unrelated",
+          content: "unrelated result",
+        }],
+      },
+    });
+    expect(forwarded.message.content).toHaveLength(1);
   });
 
   it.each([
