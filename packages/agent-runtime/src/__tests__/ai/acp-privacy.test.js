@@ -57,11 +57,13 @@ describe("ACP host-value privacy sanitizer", () => {
     expect({}.polluted).toBeUndefined();
   });
 
-  it("never accepts an inherited session-update discriminator", () => {
+  it("accepts only own ACP v1 session-update discriminators", () => {
     const inherited = Object.create({ sessionUpdate: "tool_call" });
     inherited.rawInput = { command: "unsafe" };
+    const rawSessionId = "raw-private-session-as-unknown-update";
 
     expect(ownAcpSessionUpdateKind(inherited)).toBeNull();
     expect(ownAcpSessionUpdateKind({ sessionUpdate: "tool_call" })).toBe("tool_call");
+    expect(ownAcpSessionUpdateKind({ sessionUpdate: rawSessionId })).toBeNull();
   });
 });

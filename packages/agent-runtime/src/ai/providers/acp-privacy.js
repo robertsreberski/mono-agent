@@ -4,6 +4,24 @@ const PRIVATE_PROTOCOL_KEYS = new Set(["_meta", "sessionId", "session_id"]);
 const REDACTED = "[redacted]";
 const MAX_HOST_VALUE_DEPTH = 32;
 const MAX_HOST_VALUE_NODES = 4_096;
+// ACP v1's SessionUpdate union is closed. Never carry an arbitrary peer
+// discriminator onto a host-facing event, even when the SDK boundary is
+// bypassed or becomes more permissive.
+const ACP_SESSION_UPDATE_KINDS = new Set([
+  "user_message_chunk",
+  "agent_message_chunk",
+  "agent_thought_chunk",
+  "tool_call",
+  "tool_call_update",
+  "plan",
+  "plan_update",
+  "plan_removed",
+  "available_commands_update",
+  "current_mode_update",
+  "config_option_update",
+  "session_info_update",
+  "usage_update",
+]);
 
 /**
  * ACP protocol session ids are connection state, not host-facing metadata.
@@ -102,5 +120,5 @@ export function ownAcpSessionUpdateKind(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   if (!Object.hasOwn(value, "sessionUpdate")) return null;
   const kind = /** @type {{sessionUpdate?: unknown}} */ (value).sessionUpdate;
-  return typeof kind === "string" ? kind : null;
+  return typeof kind === "string" && ACP_SESSION_UPDATE_KINDS.has(kind) ? kind : null;
 }
