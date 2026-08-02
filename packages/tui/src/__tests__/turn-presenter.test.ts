@@ -508,6 +508,51 @@ describe("TurnPresenter subagent panels", () => {
     expect(rendered()).not.toContain("Agent(researcher)");
   });
 
+  it("attaches native activity to the canonical parent id when the provider task id differs", async () => {
+    const { presenter, rendered } = setup();
+    const canonicalId = "toolu_parent";
+    const nativeId = "provider-task-42";
+    const subagent = {
+      id: canonicalId,
+      nativeId,
+      name: "researcher",
+      callIndex: 0,
+      agentPath: "root/researcher",
+    };
+
+    await presenter.event(launch(canonicalId, "researcher"));
+    await presenter.event({
+      type: "tool_call_started",
+      id: `agent:${canonicalId}`,
+      name: "Agent(researcher)",
+      metadata: { subagent, synthetic: true, subagentLifecycle: true },
+    });
+    await presenter.event({
+      type: "tool_call_started",
+      id: `agent:${canonicalId}:read-1`,
+      name: "researcher▸Read",
+      arguments: { file_path: "/repo/a.ts" },
+      metadata: { subagent, synthetic: true },
+    });
+    await presenter.event({
+      type: "tool_call_completed",
+      id: `agent:${canonicalId}`,
+      name: "Agent(researcher)",
+      content: "done",
+      metadata: { subagent, synthetic: true, subagentLifecycle: true },
+    });
+    presenter.settle();
+
+    const text = rendered();
+    const lines = text.split("\n").filter((line) => line.trim().length > 0);
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toContain("✓ Agent");
+    expect(lines[1]).toContain("done");
+    expect(lines[2]).toContain("Read");
+    expect(indentOf(lines[2] ?? "")).toBeGreaterThan(indentOf(lines[0] ?? ""));
+    expect(text).not.toContain(nativeId);
+  });
+
   it("keeps concurrent subagents' calls under their own parents", async () => {
     const { presenter, rendered } = setup();
 

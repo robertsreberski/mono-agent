@@ -488,24 +488,42 @@ export function streamEventFromRuntimeEvent(
   // Subagent activity rides the existing tool-call events rather than a new
   // union variant: only four event types are field-reducible on the operator
   // wire, so a new variant would collapse to an `oversized_event` marker on
-  // exactly the payloads worth seeing. The tool ids arrive pre-namespaced
-  // (`agent:<callId>:<toolUseId>`) because both the TUI and the web store key
-  // tool state flatly on the id. This branch is required rather than optional:
+  // exactly the payloads worth seeing. `subagent.id` is the canonical parent
+  // tool-use id, while a provider's own task/thread id stays in `nativeId`.
+  // Activity ids arrive pre-namespaced from that canonical id because both the
+  // TUI and the web store key tool state flatly on the id. This branch is
+  // required rather than optional:
   // the pi-shaped mapping below reconstructs events from raw blocks and copies
   // no metadata, so `metadata.subagent` has no other way through.
   if (event.type === "subagent_activity") {
-    const id = stringField(event, "id");
     const phase = stringField(event, "phase");
-    if (id === undefined || phase === undefined) {
+    // Child prose/thinking is optional operator telemetry. It is neither a
+    // tool completion nor parent answer text, so the shared tool-call stream
+    // deliberately ignores it until a dedicated UI contract is justified.
+    if (phase === "message") {
       return undefined;
     }
-    const name = stringField(event, "name") ?? "subagent";
+    if (
+      phase !== "agent_started"
+      && phase !== "started"
+      && phase !== "completed"
+      && phase !== "agent_completed"
+    ) {
+      return undefined;
+    }
+    const id = stringField(event, "id");
+    if (id === undefined || !isRecord(event.subagent) || stringField(event.subagent, "id") === undefined) {
+      return undefined;
+    }
+    const name = stringField(event, "name") ?? stringField(event.subagent, "name") ?? "subagent";
     // The two bookends describe the subagent itself, not a tool it ran. Flag
     // them here so every renderer can tell a lifecycle event from real activity
     // by reading one field, instead of pattern-matching the `agent:<callId>` id
     // format in four packages that would each drift independently.
     const lifecycle = phase === "agent_started" || phase === "agent_completed";
     const metadata = {
+      // Preserve the complete provider-neutral object, including optional
+      // nativeId/agentPath metadata; consumers group only by its canonical id.
       subagent: event.subagent,
       synthetic: true,
       ...(lifecycle ? { subagentLifecycle: true } : {}),

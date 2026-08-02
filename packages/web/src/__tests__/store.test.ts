@@ -975,6 +975,52 @@ describe("WebStore subagent parts", () => {
     });
   });
 
+  it("groups native activity by the parent tool id when the provider task id differs", async () => {
+    const canonicalId = "toolu_parent";
+    const nativeId = "provider-task-42";
+    const nativeMetadata = {
+      subagent: {
+        id: canonicalId,
+        nativeId,
+        name: "researcher",
+        callIndex: 0,
+        agentPath: "root/researcher",
+      },
+      synthetic: true,
+    };
+    const parts = await turnWith([
+      launch(canonicalId, "researcher"),
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_started",
+          id: `agent:${canonicalId}`,
+          name: "Agent(researcher)",
+          metadata: { ...nativeMetadata, subagentLifecycle: true },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_started",
+          id: `agent:${canonicalId}:read-1`,
+          name: "researcher▸Read",
+          arguments: { file_path: "/repo/a.ts" },
+          metadata: nativeMetadata,
+        },
+      },
+    ]);
+
+    const groups = parts.filter((part) => part.type === "subagent");
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      type: "subagent",
+      toolCallId: canonicalId,
+      calls: [{ toolCallId: `agent:${canonicalId}:read-1`, toolName: "Read" }],
+    });
+    expect(parts.some((part) => "toolCallId" in part && part.toolCallId === nativeId)).toBe(false);
+  });
+
   it("keeps concurrent subagents in separate groups as their events interleave", async () => {
     const parts = await turnWith([
       launch("a", "researcher"),
