@@ -75,11 +75,16 @@ the configuration schema.
 - ACP profile callbacks never receive raw protocol `sessionId`, `_meta`, or
   copied raw-id strings. Use the optional opaque
   `AcpCallbackContext.providerSessionId` for safe session correlation.
-- ACP provider-session ids and session-list cursors are opaque, profile-bound
-  runtime handles. Preserve the complete value returned by the runtime for
-  resume, pagination, validation, and delete operations; do not parse or
-  substitute the remote agent's raw session id or cursor. Raw ACP transport
-  connections are internal; use the high-level management helpers.
+- ACP provider-session ids and session-list cursors are confidential,
+  authenticated v2 handles. Hosts must persist one exact 32-byte binary
+  `acpSessionTokenKey` and pass it to ACP task runs, list/delete helpers, and
+  `validateAcpProviderSessionId(value, expectedProfileId, key)`. A changed or
+  missing key fails before profile resolution or process spawn. Existing v1
+  handles are rejected; discard them and obtain fresh v2 handles. Preserve the
+  complete returned value for resume, pagination, validation, and delete, but
+  do not compare ciphertexts for equality or parse/substitute the remote
+  agent's raw session id or cursor. Raw ACP transport connections are internal;
+  use the high-level management helpers.
 - The stable ACP update stream is preserved as typed `acp_session_update`
   events and normalized assistant, thought, tool, plan, and cumulative usage
   events. Stable usage comes from `usage_update`, not experimental prompt

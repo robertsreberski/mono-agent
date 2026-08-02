@@ -615,19 +615,30 @@ transport frame is too structurally complex for the bounded host sanitizer,
 the turn fails explicitly as `provider_protocol` instead of emitting a partial
 tool, plan, or message event.
 
-ACP provider-session ids and list cursors are opaque, profile-bound runtime
-handles. Preserve them byte-for-byte and pass them back only to the matching
-high-level resume, list, validation, or delete operation; raw protocol session
-ids, cursors, and transport connections are private runtime state. Under the
-default `auto` recovery policy, the client prefers `session/resume`, then
-`session/load`, and finally a fresh session when neither capability is
-advertised. Explicit `resume` or `load` policies fail closed if missing. Stable
-usage comes from the latest typed `usage_update` notification; unstable
-`PromptResponse.usage` is ignored.
+ACP provider-session ids and list cursors are confidential, authenticated v2
+handles bound to their token kind and profile. The host must supply an exact
+32-byte binary `acpSessionTokenKey` for every task run, list, validation, and
+delete operation. Call
+`validateAcpProviderSessionId(handle, expectedProfileId, key)` at untrusted
+ingress. Keep the key stable and secret across host restarts; changing it
+invalidates every outstanding handle. Legacy `acp:v1:` and `acp-cursor:v1:`
+values are rejected.
+
+Preserve each returned handle byte-for-byte and pass it back only to the
+matching high-level resume, list, validation, or delete operation. Encryption
+uses a fresh nonce, so two handles for the same remote id are not equality
+keys. Raw protocol session ids, cursors, token keys, and transport connections
+remain private runtime state and are omitted from profile resolver context,
+callbacks, and diagnostics. Under the default `auto` recovery policy, the
+client prefers `session/resume`, then `session/load`, and finally a fresh
+session when neither capability is advertised. Explicit `resume` or `load`
+policies fail closed if missing. Stable usage comes from the latest typed
+`usage_update` notification; unstable `PromptResponse.usage` is ignored.
 
 ### `createRuntime(host)`
 
-Pass host-level integration once at boot. All keys are optional.
+Pass host-level integration once at boot. Keys are optional unless the selected
+backend contract requires them.
 
 ```js
 createRuntime({
@@ -636,6 +647,7 @@ createRuntime({
   resolvePiApiKey,         // async (provider) => string | undefined
   resolveAcpProfile,       // async (profileId, context) => AcpProfileDescriptor
   onAcpInteractionRequest, // async permission/elicitation fallback callback
+  acpSessionTokenKey,      // Uint8Array(32), required for ACP task/session-handle operations
   persistArtifact,         // ({ filename, buffer, toolName, toolUseId }) => path | null
   onCompactionRecorded,    // (compactionRow) => void — fired when the pi bridge
                            // runs an automatic compaction (proactive or reactive
@@ -751,6 +763,7 @@ Per-call options (a non-exhaustive selection):
 | `onEvent` | `(event) => void` | Fired for every runtime event (assistant text, tool calls/results, applied live input, runtime warnings, structured output). |
 | `runId` | `string` | Tag this run for downstream callbacks (e.g. `onCompactionRecorded`). |
 | `providerSessionId` | `string` | Resume a prior provider session. |
+| `acpSessionTokenKey` | `Uint8Array(32)` | Required for ACP task runs when not bound at `createRuntime()`; keep it secret and stable across restarts. |
 | `runArtifactDir` | `string` | Used by some providers as the Playwright MCP filename target. |
 | `codexAppServerCommand` | `string` | Override the Codex CLI binary. |
 | `codexAppServerArgs` | `string[]` | Override the Codex CLI arguments. |
