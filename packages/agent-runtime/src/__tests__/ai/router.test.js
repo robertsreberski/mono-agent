@@ -548,7 +548,6 @@ describe("createRouterRuntime — capability filtering", () => {
     ["skills", { skills: [{ name: "deploy" }] }],
     ["live input", { liveInput: true }],
     ["fast mode", { fastMode: true }],
-    ["native subagents", { nativeSubagents: { teammates: [{ name: "researcher" }] } }],
   ])("skips OpenCode and reaches a capable fallback for request-required %s", async (_label, required) => {
     executeMock.mockResolvedValueOnce({ text: "capable", events: [], failureKind: null });
     const router = createRouterRuntime({
@@ -567,6 +566,48 @@ describe("createRouterRuntime — capability filtering", () => {
     });
     expect(executeMock).toHaveBeenCalledTimes(1);
     expect(executeMock.mock.calls[0][1].model.sdk).toBe("codex");
+  });
+
+  it("continues from Codex to Claude when configured teammate definitions mismatch", async () => {
+    executeMock
+      .mockResolvedValueOnce({
+        text: null,
+        error: "Direct Codex owns its native collaboration agents and does not accept configured teammate definitions.",
+        failureKind: "skipped_capability_mismatch",
+        diagnostics: { codex_error_code: "codex_native_subagent_definitions_unsupported" },
+        events: [],
+        cancelled: false,
+      })
+      .mockResolvedValueOnce({ text: "claude delegated", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "opencode", provider: "github-copilot", model: "gpt-5.1" },
+        { sdk: "codex", model: "gpt-5.5" },
+        { sdk: "claude", model: "claude-sonnet-4-6" },
+      ],
+    });
+
+    const result = await router.run("sys", {
+      messages: [],
+      nativeSubagents: {
+        provider: "claude",
+        teammates: [{ name: "researcher", helperSystemPrompt: "Research this." }],
+      },
+    });
+
+    expect(result.text).toBe("claude delegated");
+    expect(result.failoverHistory).toMatchObject([
+      {
+        model: expect.objectContaining({ sdk: "opencode" }),
+        failureKind: "skipped_capability_mismatch",
+      },
+      {
+        model: expect.objectContaining({ sdk: "codex" }),
+        failureKind: "skipped_capability_mismatch",
+      },
+    ]);
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(executeMock.mock.calls.map((call) => call[1].model.sdk)).toEqual(["codex", "claude"]);
   });
 
   it("skips non-Pi routes when a request tool environment is present", async () => {
@@ -828,6 +869,41 @@ describe("createRouterRuntime — production fallback contracts", () => {
     expect(executeMock.mock.calls[1][1]).not.toHaveProperty("customModel");
     expect(JSON.stringify(result)).not.toContain("route-secret");
     expect(JSON.stringify(result)).not.toContain("wrong-secret");
+  });
+
+  it("projects the logical tool policy separately for each attempted provider", async () => {
+    executeMock
+      .mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false })
+      .mockResolvedValueOnce({ text: "fallback ok", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      chain: [
+        { sdk: "codex", model: "gpt-5.5" },
+        { sdk: "claude", model: "claude-sonnet-4-6" },
+      ],
+      resolveAttempt: ({ model }) => ({
+        policyOptions: model.sdk === "codex"
+          ? { allowedTools: ["*"], disallowedTools: [], permissionMode: "plan" }
+          : { allowedTools: ["Read", "Agent"], disallowedTools: ["Write"], permissionMode: undefined },
+      }),
+    });
+
+    const result = await router.run("sys", {
+      messages: [],
+      allowedTools: ["Read", "Agent"],
+      disallowedTools: ["Write"],
+    });
+
+    expect(result.text).toBe("fallback ok");
+    expect(executeMock.mock.calls[0][1]).toMatchObject({
+      allowedTools: ["*"],
+      disallowedTools: [],
+      permissionMode: "plan",
+    });
+    expect(executeMock.mock.calls[1][1]).toMatchObject({
+      allowedTools: ["Read", "Agent"],
+      disallowedTools: ["Write"],
+    });
+    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("permissionMode");
   });
 
   it("keeps primary run-level custom metadata for compatibility but scrubs every fallback without a resolver", async () => {

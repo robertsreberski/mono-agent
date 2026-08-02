@@ -18,9 +18,27 @@ import {
   claudeSandboxCapabilityMismatchResult,
   claudeSandboxPolicyProblem,
 } from "./claude-sandbox.js";
+import { createClaudeSubagentActivityNormalizer } from "./claude-subagent-activity.js";
 
 const CLAUDE_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const CLAUDE_SETTING_SOURCES = new Set(["user", "project", "local"]);
 const MAX_CLAUDE_ERROR_CHARS = 2_000;
+
+/**
+ * Filesystem settings the Agent SDK may load for this run. The SDK's own default
+ * is "load nothing", and mono-agent keeps that default so a hosted run stays
+ * reproducible: no host CLAUDE.md, hooks, or plugins leak in unless the caller
+ * asks for them. A host that *wants* on-disk discovery — typically to reach
+ * `.claude/agents` so the native `Task` tool has profiles to deploy — opts in per
+ * run. Unrecognized entries are dropped rather than forwarded, so a typo cannot
+ * silently widen what the SDK reads off disk.
+ * @param {unknown} value
+ * @returns {Array<"user" | "project" | "local">}
+ */
+function normalizeClaudeSettingSources(value) {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.filter((entry) => CLAUDE_SETTING_SOURCES.has(entry))));
+}
 
 /**
  * Preserve the provider default when effort is omitted. The current Agent SDK
@@ -652,6 +670,14 @@ export async function generateClaudeResponse(systemPrompt, options) {
     onEvent(event);
   }
 
+  const subagentNormalizer = createClaudeSubagentActivityNormalizer();
+  function emitSubagentEvents(activityEvents) {
+    for (const activity of activityEvents) emitEvent(activity);
+  }
+  function drainSubagents(reason) {
+    emitSubagentEvents(subagentNormalizer.drain(reason));
+  }
+
   // Deprecated `settings` fallback for the tool_result byte cap was consumed;
   // surface the one-per-run deprecation warning (the typed `toolLimits` object
   // is the supported path). mono-agent never passes `settings`, so this never
@@ -716,7 +742,11 @@ export async function generateClaudeResponse(systemPrompt, options) {
     disallowedTools,
     mcpServers: mcpServers || {},
     strictMcpConfig: true,
-    settingSources: [],
+    settingSources: normalizeClaudeSettingSources(options.settingSources),
+    // The SDK otherwise forwards child tool frames but suppresses child prose.
+    // Request it explicitly so the live normalizer can preserve the complete
+    // nested transcript without ever merging it into the parent answer.
+    forwardSubagentText: true,
     env: createClaudeSdkEnvironment(options.env, options.providerEnv),
     abortController: internalAbortController,
     ...(disposableSession ? { persistSession: false } : options.persistSession === true ? { persistSession: true } : {}),
@@ -797,6 +827,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
 
   const abortHandler = () => {
     cancelled = true;
+    drainSubagents("subagent cancelled with the parent run");
     internalAbortController.abort();
     try { stream?.close?.(); } catch { /* best effort; finally closes again */ }
   };
@@ -807,9 +838,21 @@ export async function generateClaudeResponse(systemPrompt, options) {
 
   try {
     stream = claudeAgentQuery({ prompt: /** @type {any} */ (prompt), options: queryOptions });
-    for await (const event of stream) {
-      const nextSessionId = sessionIdFromEvent(event);
+    for await (const rawEvent of stream) {
+      const nextSessionId = sessionIdFromEvent(rawEvent);
       if (nextSessionId) providerSessionId = nextSessionId;
+      const observation = subagentNormalizer.observe(rawEvent);
+      emitSubagentEvents(observation.events);
+      // Child records are represented exclusively as subagent_activity. In
+      // particular, their text, errors, tools, usage, and structured output
+      // must never mutate the parent's result state below.
+      if (observation.consumed) {
+        if (cancelled) break;
+        continue;
+      }
+      // Preserve unrelated blocks when a root user message batches them with a
+      // background Agent launch acknowledgement.
+      const event = /** @type {any} */ (observation.forwarded ?? rawEvent);
       emitEvent(event);
       if (event?.type === "tool_progress" && event.tool_name) noteToolUse(event.tool_name);
       for (const toolUse of structuredOutputToolUses(event)) {
@@ -962,6 +1005,11 @@ export async function generateClaudeResponse(systemPrompt, options) {
       }
     }
   } finally {
+    drainSubagents(cancelled
+      ? "subagent cancelled with the parent run"
+      : errorMessage || structuredTerminalFailure
+        ? "subagent stopped because the Claude SDK stream failed"
+        : "subagent stream closed before completion");
     try { stream?.close?.(); } catch { /* best effort after every terminal path */ }
     if (abortSignal) abortSignal.removeEventListener?.("abort", abortHandler);
   }
@@ -1024,19 +1072,14 @@ export async function generateClaudeResponse(systemPrompt, options) {
     },
   });
 
-  const configuredSubagents = Array.isArray(options.nativeSubagents?.teammates)
-    ? options.nativeSubagents.teammates.map((entry) => entry?.name).filter(Boolean)
-    : [];
+  const observedSubagents = subagentNormalizer.nativeSubagentsUsed();
   const capabilitiesUsed = buildCapabilitiesUsed({
     promptCacheActive: cachedTokens > 0 || cacheCreationTokens > 0,
     thinkingEnabled: thinkingObserved ? true : null,
     structuredOutputEnforced: !!options.outputSchema,
-    // Claude SDK doesn't surface a per-call "subagent was invoked" signal,
-    // so we report null when subagents were configured (unknown) and false
-    // when none were configured (definitely not).
-    subagentInvoked: configuredSubagents.length > 0 ? null : false,
+    subagentInvoked: subagentNormalizer.subagentInvoked(),
     mcpServersUsed: Object.keys(mcpServers || {}),
-    nativeSubagentsUsed: configuredSubagents,
+    nativeSubagentsUsed: observedSubagents,
     toolCompactionApplied: toolCompactionAppliedFromWarnings(runtimeWarnings),
     contextCompactionApplied: null, // Claude SDK doesn't use the runtime compaction layer
   });

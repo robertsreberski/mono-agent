@@ -272,6 +272,11 @@ export interface MonoRuntimeAttemptResolution {
     /** The sandbox implementation is owned by createMonoRuntime. */
     readonly sandbox?: never;
   };
+  /** Provider-specific projection of the logical tool policy for this attempt. */
+  readonly policyOptions?: Readonly<Pick<
+    RuntimeRunOptions,
+    "allowedTools" | "disallowedTools" | "permissionMode"
+  >>;
   readonly cleanup?: () => void | Promise<void>;
 }
 

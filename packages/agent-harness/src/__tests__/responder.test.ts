@@ -962,18 +962,24 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     });
   });
 
-  it("maps subagent activity onto namespaced tool-call events", () => {
-    const subagent = { id: "call-1", name: "researcher", callIndex: 1 };
+  it("maps subagent activity by its canonical parent id and preserves a distinct provider-native id", () => {
+    const subagent = {
+      id: "toolu_parent",
+      nativeId: "provider-task-42",
+      name: "researcher",
+      callIndex: 1,
+      agentPath: "root/researcher",
+    };
     expect(streamEventFromRuntimeEvent({
       type: "subagent_activity",
       phase: "started",
-      id: "agent:call-1:t1",
+      id: "agent:toolu_parent:t1",
       name: "researcher▸Read",
       arguments: { file_path: "/a/b.ts" },
       subagent,
     })).toEqual({
       type: "tool_call_started",
-      id: "agent:call-1:t1",
+      id: "agent:toolu_parent:t1",
       name: "researcher▸Read",
       arguments: { file_path: "/a/b.ts" },
       metadata: { subagent, synthetic: true },
@@ -982,7 +988,7 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     expect(streamEventFromRuntimeEvent({
       type: "subagent_activity",
       phase: "completed",
-      id: "agent:call-1:t1",
+      id: "agent:toolu_parent:t1",
       name: "researcher▸Read",
       isError: false,
       executionMs: 12,
@@ -990,13 +996,32 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
       subagent,
     })).toEqual({
       type: "tool_call_completed",
-      id: "agent:call-1:t1",
+      id: "agent:toolu_parent:t1",
       name: "researcher▸Read",
       content: "file body",
       isError: false,
       executionMs: 12,
       metadata: { subagent, synthetic: true },
     });
+  });
+
+  it("ignores subagent message phases without creating a phantom tool or parent text", () => {
+    const message = {
+      type: "subagent_activity",
+      phase: "message",
+      id: "agent:toolu_parent:provider-message-1",
+      kind: "text",
+      content: "private child narration",
+      subagent: {
+        id: "toolu_parent",
+        nativeId: "provider-task-42",
+        name: "researcher",
+        callIndex: 1,
+      },
+    };
+
+    expect(streamEventFromRuntimeEvent(message)).toBeUndefined();
+    expect(assistantTextFromRuntimeEvent(message)).toBe("");
   });
 
   it("flags the lifecycle bookends so renderers need not parse the id format", () => {
@@ -1025,9 +1050,71 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     expect(toolCall.metadata).not.toHaveProperty("subagentLifecycle");
   });
 
+  it("keeps a background delegation open in stream order until agent_completed", () => {
+    const subagent = { id: "call-1", nativeId: "native-1", name: "researcher", callIndex: 0 };
+    const events = [
+      {
+        type: "assistant",
+        message: {
+          content: [{
+            type: "tool_use",
+            id: "call-1",
+            name: "Agent",
+            input: { subagent_type: "researcher", run_in_background: true },
+          }],
+        },
+      },
+      {
+        type: "subagent_activity",
+        phase: "agent_started",
+        id: "agent:call-1",
+        name: "Agent(researcher)",
+        subagent,
+      },
+      {
+        type: "subagent_activity",
+        phase: "started",
+        id: "agent:call-1:read-1",
+        name: "researcher▸Read",
+        subagent,
+      },
+      {
+        type: "subagent_activity",
+        phase: "completed",
+        id: "agent:call-1:read-1",
+        name: "researcher▸Read",
+        subagent,
+      },
+      {
+        type: "subagent_activity",
+        phase: "agent_completed",
+        id: "agent:call-1",
+        name: "Agent(researcher)",
+        subagent,
+      },
+    ].map((event) => streamEventFromRuntimeEvent(event)).filter((event) => event !== undefined);
+
+    expect(events.map((event) => [event.type, "id" in event ? event.id : undefined])).toEqual([
+      ["tool_call_started", "call-1"],
+      ["tool_call_started", "agent:call-1"],
+      ["tool_call_started", "agent:call-1:read-1"],
+      ["tool_call_completed", "agent:call-1:read-1"],
+      ["tool_call_completed", "agent:call-1"],
+    ]);
+    const groupTerminal = events.filter((event) => event.type === "tool_call_completed"
+      && event.metadata?.subagentLifecycle === true);
+    expect(groupTerminal).toEqual([events.at(-1)]);
+  });
+
   it("drops malformed subagent activity instead of throwing", () => {
     expect(streamEventFromRuntimeEvent({ type: "subagent_activity", phase: "started" })).toBeUndefined();
     expect(streamEventFromRuntimeEvent({ type: "subagent_activity", id: "agent:c1:t1" })).toBeUndefined();
+    expect(streamEventFromRuntimeEvent({
+      type: "subagent_activity",
+      phase: "started",
+      id: "agent:c1:t1",
+      subagent: { id: 42, name: "researcher" },
+    })).toBeUndefined();
   });
 
   it("keeps two concurrent subagents' identical tools on distinct ids", () => {
