@@ -8,6 +8,9 @@ import { basename } from "node:path";
  */
 export function delegatedCliArgs(invocationPath: string | undefined, args: readonly string[]): readonly string[] {
   const invocation = invocationPath === undefined ? "" : basename(invocationPath);
+  if (invocation === "create-mono-agent" && args.length === 1 && ["--help", "-h"].includes(args[0] ?? "")) {
+    return ["help", "init"];
+  }
   if (invocation === "create-mono-agent" && (args.length === 0 || args[0]?.startsWith("-") === true)) {
     return ["init", ...args];
   }

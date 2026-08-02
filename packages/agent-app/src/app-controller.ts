@@ -4,7 +4,11 @@ import { resolve } from "node:path";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import type { TraceSourceHandle, TraceSourceMemoryHealth } from "@mono-agent/observability";
-import type { MonoRuntimeLike, RuntimeModelReference } from "@mono-agent/runtime-adapter";
+import type {
+  MonoRuntimeLike,
+  RuntimeExecutionMode,
+  RuntimeModelReference,
+} from "@mono-agent/runtime-adapter";
 import { createSrtSandboxEngine } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 
@@ -565,7 +569,7 @@ export class MonoAgentAppController implements MonoAgentApp {
    */
   buildRuntimeForModel(
     coreConfig: MonoAgentConfig,
-  ): (model: RuntimeModelReference, executionMode?: string) => MonoRuntimeLike { return responderOperations.buildRuntimeForModel(this, coreConfig); }
+  ): (model: RuntimeModelReference, executionMode?: RuntimeExecutionMode) => MonoRuntimeLike { return responderOperations.buildRuntimeForModel(this, coreConfig); }
 
   /**
    * Run-identifying context threaded onto exported spans (Phoenix shows the same

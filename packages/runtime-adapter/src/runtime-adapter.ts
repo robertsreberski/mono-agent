@@ -1,9 +1,20 @@
-import { createPiOAuthApiKeyResolver, createRouterRuntime, createRuntime } from "@mono-agent/agent-runtime";
+import {
+  authenticateAcpProfile as authenticateKernelAcpProfile,
+  createPiOAuthApiKeyResolver,
+  createRouterRuntime,
+  createRuntime,
+  deleteAcpSession as deleteKernelAcpSession,
+  listAcpSessions as listKernelAcpSessions,
+  logoutAcpProfile as logoutKernelAcpProfile,
+  probeAcpProfile as probeKernelAcpProfile,
+} from "@mono-agent/agent-runtime";
 import { executionModeIncompatibilityReason, parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
 import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
 import { monoSandboxImpl } from "./sandbox-impl.js";
 
 import type {
+  MonoAcpControlOptions,
+  MonoAcpListSessionsRequest,
   MonoRuntimeBackendCapabilities,
   MonoRuntimeBackendDescriptor,
   MonoRuntimeBackendId,
@@ -64,12 +75,66 @@ export function parseMonoRuntimeModelReference(value: string): RuntimeModelRefer
 }
 
 export function isRuntimeExecutionMode(value: unknown): value is RuntimeExecutionMode {
-  return value === "sdk" || value === "cli";
+  return value === "sdk" || value === "cli" || value === "acp";
 }
 
 export function defaultExecutionModeForModel(model: RuntimeModelReference): RuntimeExecutionMode {
   assertParsedRuntimeModelReference(model);
+  if (model.sdk === "acp") return "acp";
   return model.sdk === "codex" || model.sdk === "opencode" ? "cli" : "sdk";
+}
+
+function acpControlOptions(options: MonoAcpControlOptions): any {
+  if (!options || typeof options !== "object" || typeof options.resolveAcpProfile !== "function") {
+    throw new RuntimeAdapterError(
+      "invalid_runtime_options",
+      "ACP control operations require resolveAcpProfile.",
+    );
+  }
+  return {
+    ...withoutCallerSandbox(options as unknown as Readonly<Record<string, unknown>>),
+    sandbox: monoSandboxImpl,
+  };
+}
+
+export async function probeAcpProfile(profileId: string, options: MonoAcpControlOptions) {
+  return probeKernelAcpProfile(profileId, acpControlOptions(options));
+}
+
+export async function authenticateAcpProfile(
+  profileId: string,
+  methodId: string,
+  options: MonoAcpControlOptions,
+) {
+  return authenticateKernelAcpProfile(profileId, methodId, acpControlOptions(options));
+}
+
+export async function logoutAcpProfile(profileId: string, options: MonoAcpControlOptions) {
+  return logoutKernelAcpProfile(profileId, acpControlOptions(options));
+}
+
+export function listAcpSessions(
+  profileId: string,
+  options: MonoAcpControlOptions,
+): ReturnType<typeof listKernelAcpSessions>;
+export function listAcpSessions(
+  profileId: string,
+  request: MonoAcpListSessionsRequest,
+  options: MonoAcpControlOptions,
+): ReturnType<typeof listKernelAcpSessions>;
+export function listAcpSessions(
+  profileId: string,
+  requestOrOptions: MonoAcpListSessionsRequest | MonoAcpControlOptions,
+  maybeOptions?: MonoAcpControlOptions,
+) {
+  const twoArgumentForm = maybeOptions === undefined;
+  const request = twoArgumentForm ? {} : requestOrOptions;
+  const options = twoArgumentForm ? requestOrOptions as MonoAcpControlOptions : maybeOptions;
+  return listKernelAcpSessions(profileId, request, acpControlOptions(options));
+}
+
+export async function deleteAcpSession(providerSessionId: string, options: MonoAcpControlOptions) {
+  return deleteKernelAcpSession(providerSessionId, acpControlOptions(options));
 }
 
 /**
@@ -121,7 +186,7 @@ export function describeMonoRuntimeSupport(
       model,
       executionMode: resolvedExecutionMode,
       compatible: false,
-      incompatibilityReason: "Execution mode must be sdk or cli.",
+      incompatibilityReason: "Execution mode must be sdk, cli, or acp.",
     };
   }
 
@@ -149,7 +214,7 @@ export function assertExecutionModeCompatible(
 ): void {
   assertParsedRuntimeModelReference(model);
   if (!isRuntimeExecutionMode(executionMode)) {
-    throw new RuntimeAdapterError("invalid_execution_mode", "Execution mode must be sdk or cli.", {
+    throw new RuntimeAdapterError("invalid_execution_mode", "Execution mode must be sdk, cli, or acp.", {
       executionMode,
     });
   }
@@ -278,6 +343,9 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       assertParsedRuntimeModelReference(runOptions.model);
       const executionMode = runOptions.executionMode ?? defaultExecutionModeForModel(runOptions.model);
       assertExecutionModeCompatible(runOptions.model, executionMode);
+      if (chain === undefined) {
+        assertDirectAcpRunOptions(runOptions.model, runOptions);
+      }
 
       const result = await runtime.run(systemPrompt, {
         ...withoutCallerSandbox(runOptions),
@@ -323,6 +391,21 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       await runtime.disposeAllSessions?.();
     },
   };
+}
+
+function assertDirectAcpRunOptions(
+  model: RuntimeModelReference,
+  runOptions: RuntimeRunOptions,
+): void {
+  if (model.sdk !== "acp") return;
+  const mcpServers = runOptions.mcpServers;
+  if (mcpServers === undefined || mcpServers === null) return;
+  if (isRecord(mcpServers) && !Array.isArray(mcpServers) && Object.keys(mcpServers).length === 0) return;
+  throw new RuntimeAdapterError(
+    "invalid_runtime_options",
+    "Direct ACP runs do not support request-scoped mcpServers; configure MCP ownership in the resolved ACP profile.",
+    { option: "mcpServers", model: redactedModelReference(model) },
+  );
 }
 
 /**
@@ -465,13 +548,24 @@ interface RuntimeBackendDefinition {
   readonly label: string;
   readonly sdk: RuntimeModelReference["sdk"];
   readonly executionMode: RuntimeExecutionMode;
-  readonly transport: "sdk" | "cli";
+  readonly transport: "sdk" | "cli" | "acp";
   readonly providerBoundary: string;
   readonly modelReferenceExamples: readonly string[];
   readonly acceptsProviderIds: boolean;
 }
 
 const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
+  {
+    id: "acp-stdio",
+    runtimeBridgeId: "acp-stdio",
+    label: "ACP v1 stdio agent",
+    sdk: "acp",
+    executionMode: "acp",
+    transport: "acp",
+    providerBoundary: "ACP v1 stdio bridge via @mono-agent/agent-runtime",
+    modelReferenceExamples: ["acp:personal-agent"],
+    acceptsProviderIds: false,
+  },
   {
     id: "claude-sdk",
     runtimeBridgeId: "claude",
@@ -536,6 +630,7 @@ const RUNTIME_BACKEND_DEFINITIONS: readonly RuntimeBackendDefinition[] = [
  * backend descriptor; later entries may be accepted legacy spellings.
  */
 const RUNTIME_SELECTION_TABLE: readonly MonoRuntimeSelectionEntry[] = [
+  { sdk: "acp", sdkAliases: ["acp"], executionMode: "acp", backendId: "acp-stdio" },
   { sdk: "claude", sdkAliases: ["claude"], executionMode: "sdk", backendId: "claude-sdk" },
   { sdk: "claude", sdkAliases: ["claude"], executionMode: "cli", backendId: "claude-code-cli" },
   { sdk: "codex", sdkAliases: ["codex"], executionMode: "cli", backendId: "codex-app-cli" },
@@ -581,6 +676,9 @@ function backendIdForModel(
   model: RuntimeModelReference,
   executionMode: RuntimeExecutionMode,
 ): MonoRuntimeBackendId {
+  if (model.sdk === "acp" && executionMode === "acp") {
+    return "acp-stdio";
+  }
   if (model.sdk === "claude" && executionMode === "cli") {
     return "claude-code-cli";
   }

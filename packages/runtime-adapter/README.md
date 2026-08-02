@@ -88,6 +88,7 @@ provider kernel:
 | API | Use it for |
 | --- | --- |
 | `createMonoRuntime()` | Construct the typed runtime facade and inject mono-agent's sandbox implementation |
+| `probeAcpProfile()` / ACP management helpers | Operate a host-resolved ACP profile while injecting the same sandbox implementation |
 | `parseMonoRuntimeModelReference()` | Parse and validate a canonical model string |
 | `listMonoRuntimeBackends()` / `describeMonoRuntimeSupport()` / `monoRuntimeSupportsLiveInput()` | Present backend capabilities and compatibility without starting a provider |
 | `createSandboxPolicy()` / `failClosedSandboxPolicy()` | Build explicit filesystem and network policy data |
@@ -105,6 +106,9 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/runtime-adapter`**
 
 ```text
+AcpCallbackContext
+AcpInteractionRequest
+AcpProfileDescriptor
 AgentRuntimeCustomModel
 AgentRuntimeCustomProvider
 CodedError
@@ -120,6 +124,11 @@ LocalProviderRuntimeOptions
 LocalProviderType
 MANAGED_SRT_TREE_SHA256
 ModelEffortLevels
+MonoAcpControlOptions
+MonoAcpInteractionHandler
+MonoAcpInteractionRequest
+MonoAcpListSessionsRequest
+MonoAcpProfileResolver
 MonoRuntimeApprovalDecision
 MonoRuntimeApprovalRequest
 MonoRuntimeAttemptContext
@@ -186,11 +195,13 @@ SrtSandboxEngineOptions
 SrtSettings
 assertExecutionModeCompatible
 assertParsedRuntimeModelReference
+authenticateAcpProfile
 createMonoRuntime
 createPiOAuthApiKeyResolver
 createSandboxPolicy
 createSrtSandboxEngine
 defaultExecutionModeForModel
+deleteAcpSession
 describeMonoRuntimeSupport
 describeSandboxEffectiveState
 discoverClaudeSdkModels
@@ -201,7 +212,9 @@ isPlainObject
 isPrivateBaseUrl
 isRuntimeExecutionMode
 isValidMcpServerName
+listAcpSessions
 listMonoRuntimeBackends
+logoutAcpProfile
 managedSrtInstallRoot
 mergeSandboxPolicies
 modelReferenceKey
@@ -211,6 +224,7 @@ networkPolicyAllowsUrl
 parseMcpServers
 parseMonoRuntimeModelReference
 prepareSandboxedCommand
+probeAcpProfile
 resolveModelEffortLevels
 resolveRuntimePolicies
 resolveSandboxEffectiveState
@@ -230,11 +244,27 @@ Supported backend seams are exposed as data:
 
 | Backend | Model refs | Execution mode | Boundary |
 | --- | --- | --- | --- |
+| ACP v1 stdio | `acp:<profile-id>` | `acp` | Strict bounded ACP client through `@mono-agent/agent-runtime` |
 | Claude SDK | `claude:<model>` | `sdk` | Claude SDK through `@mono-agent/agent-runtime` |
 | Claude Code CLI | `claude:<model>` | `cli` | Claude Code CLI bridge through `@mono-agent/agent-runtime` |
 | Codex app CLI | `codex:<model>` | `cli` | Codex app-server bridge through `@mono-agent/agent-runtime` |
 | OpenCode app CLI | `opencode:<provider>:<model>` | `cli` | OpenCode app-server bridge through `@mono-agent/agent-runtime` |
 | Pi SDK provider | `pi:<provider>:<model>` | `sdk` | Pi SDK gateway, including provider ids such as `openai-codex` or Copilot-style provider ids |
+
+### ACP v1 profiles
+
+ACP is a dedicated transport mode, not a CLI alias: persist and pass the tuple
+`sdk: "acp"`, model `acp:<profile-id>`, and `executionMode: "acp"`. Supply a
+typed `resolveAcpProfile` callback to `createMonoRuntime()` or the individual
+run. `onAcpInteractionRequest` handles host permission and elicitation requests
+when a profile-specific callback is absent.
+
+The exported `probeAcpProfile`, `authenticateAcpProfile`, `logoutAcpProfile`,
+`listAcpSessions`, and `deleteAcpSession` wrappers accept the same resolver and
+policy context. They deliberately do not accept a caller-provided sandbox
+implementation: runtime-adapter injects its owned implementation before calling
+the product-neutral kernel. The underlying agent service is never managed or
+stopped; only the operation-owned stdio bridge process is reaped.
 
 ### Local Pi providers
 

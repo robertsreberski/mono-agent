@@ -565,7 +565,16 @@ describe("parseCliArgs", () => {
       sourceId: "personal-agent",
       requireToolEnvironment: true,
     });
+    expect(parseCliArgs(["bridge", "acp", "--discover"])).toMatchObject({
+      command: "bridge",
+      positionals: ["acp"],
+      discover: true,
+    });
     expect(() => parseCliArgs(["bridge", "acp"])).toThrow(/requires --source-id/u);
+    expect(() => parseCliArgs(["bridge", "acp", "--discover", "--source-id", "personal-agent"]))
+      .toThrow(/cannot be combined/u);
+    expect(() => parseCliArgs(["bridge", "acp", "--discover", "--require-tool-environment"]))
+      .toThrow(/cannot be combined/u);
     expect(() => parseCliArgs(["bridge", "http", "--source-id", "personal-agent"])).toThrow(/exact subcommand `acp`/u);
     expect(() => parseCliArgs(["status", "--source-id", "personal-agent"])).toThrow(/only supported.*bridge acp/u);
   });

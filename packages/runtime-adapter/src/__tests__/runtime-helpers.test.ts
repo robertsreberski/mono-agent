@@ -55,6 +55,7 @@ describe("parseMcpServers", () => {
 
 describe("(sdk, executionMode) selection table", () => {
   it("includes a row per backend and resolves backend ids alias-aware", () => {
+    expect(selectMonoRuntimeBackendId("acp", "acp")).toBe("acp-stdio");
     expect(selectMonoRuntimeBackendId("claude", "sdk")).toBe("claude-sdk");
     expect(selectMonoRuntimeBackendId("anthropic", "sdk")).toBeUndefined();
     expect(selectMonoRuntimeBackendId("claude", "cli")).toBe("claude-code-cli");
@@ -66,7 +67,7 @@ describe("(sdk, executionMode) selection table", () => {
 
   it("exposes only agent-runtime-backed runtime descriptors", () => {
     for (const backend of listMonoRuntimeBackends()) {
-      expect(backend.runtimeBridgeId).not.toBe(backend.id);
+      if (backend.id !== "acp-stdio") expect(backend.runtimeBridgeId).not.toBe(backend.id);
       expect(backend.providerBoundary).toContain("@mono-agent/agent-runtime");
     }
   });

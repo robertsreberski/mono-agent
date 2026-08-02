@@ -244,6 +244,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       });
     }
     case "bridge": {
+      if (args.discover === true) {
+        const { runAcpDiscovery } = await import("./acp-discovery-command.js");
+        return await runAcpDiscovery({ env: process.env });
+      }
       const { runAcpBridge } = await import("./acp-bridge.js");
       return await runAcpBridge({
         sourceId: args.sourceId as string,

@@ -1,3 +1,6 @@
+import { realpath } from "node:fs/promises";
+import { resolve } from "node:path";
+
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
   TuiAdapterConfig,
@@ -16,9 +19,15 @@ import type {
   LocalProviderDefinition,
   RuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
+import {
+  ACP_BRIDGE_SOURCE_SCHEMA,
+  ACP_BRIDGE_VERSION,
+  ACP_PROTOCOL_VERSION,
+} from "@mono-agent/web";
 
 import { buildChannelConfigView } from "../channel-config-view.js";
 import type { ChannelDriver } from "../channels.js";
+import { agentAppPackageVersion } from "../package-version.js";
 import { configuredRuntimeModels } from "../runtime-routes.js";
 
 type TuiAdapterModule = typeof import("@mono-agent/operator-adapter");
@@ -189,10 +198,29 @@ export function createTuiChannelDriver(
         onServerError: (reason) => input.onFailure(reason),
         ...(input.logger === undefined ? {} : { logger: input.logger }),
       });
+      const workspacePath = await canonicalPath(input.coreConfig.runtime.workspace);
       return {
-        summary: { baseUrl: adapter.baseUrl },
+        summary: {
+          baseUrl: adapter.baseUrl,
+          acpBridge: {
+            schema: ACP_BRIDGE_SOURCE_SCHEMA,
+            bridgeVersion: ACP_BRIDGE_VERSION,
+            protocolVersion: ACP_PROTOCOL_VERSION,
+            installedVersion: agentAppPackageVersion() ?? "unknown",
+            workspacePath,
+          },
+        },
         stop: () => adapter.stop(),
       };
     },
   };
+}
+
+async function canonicalPath(path: string): Promise<string> {
+  const absolute = resolve(path);
+  try {
+    return await realpath(absolute);
+  } catch {
+    return absolute;
+  }
 }
