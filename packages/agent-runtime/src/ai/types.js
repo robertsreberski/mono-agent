@@ -305,11 +305,14 @@
 
 /**
  * @typedef {Object} RuntimeInlineSubagentsOptions
- * Policy for subagents the model authors at call time rather than picking from
- * `definitions`. Absent suppresses authoring entirely.
+ * Policy for the runtime-owned general-purpose helper and subagents the model
+ * authors at call time rather than picking from `definitions`. Absent
+ * suppresses authoring entirely and leaves general-purpose on its safe default.
  * @property {boolean} [enabled] Only `false` turns authoring off.
- * @property {ReadonlyArray<string>} [allowedTools] Ceiling on what an authored subagent may
- *   request. Absent means the safe read-only default set, never every built-in.
+ * @property {ReadonlyArray<string>} [allowedTools] Ceiling on general-purpose's
+ *   read-only tools and what an authored subagent may request. Configured
+ *   definitions keep their explicit contracts. Absent means the safe read-only
+ *   default set, never every built-in.
  */
 
 /**

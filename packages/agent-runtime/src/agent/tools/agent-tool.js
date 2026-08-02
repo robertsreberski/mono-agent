@@ -84,7 +84,7 @@ State exactly what you want back ("return a bullet list of file:line and a one-l
 /**
  * @param {RuntimeSubagentsOptions} subagents
  * @param {ReadonlyArray<RuntimeSubagentDefinition>} definitions
- * @param {ReadonlyArray<string>|null} ceiling Tools an authored subagent may request, or null when authoring is off.
+ * @param {ReadonlyArray<string>|null} ceiling Tools available to the runtime-owned general-purpose or authored profiles, or null when authoring is off.
  * @returns {string}
  */
 function toolDescription(subagents, definitions, ceiling) {
@@ -482,7 +482,8 @@ export function createAgentTool(subagents, context = {}) {
 }
 
 /**
- * The tools an authored subagent may be granted, or null when authoring is off.
+ * The ceiling for the runtime-owned general-purpose helper and authored
+ * subagents, or null when authoring is off.
  *
  * A host that enables authoring without stating a ceiling gets the read-only
  * default rather than every built-in: the same reasoning as `normalizeProfile`,
