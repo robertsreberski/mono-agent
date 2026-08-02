@@ -27,7 +27,7 @@ import {
 
 import { buildChannelConfigView } from "../channel-config-view.js";
 import type { ChannelDriver } from "../channels.js";
-import { monoAgentVersion } from "../cli-help.js";
+import { agentAppPackageVersion } from "../package-version.js";
 import { configuredRuntimeModels } from "../runtime-routes.js";
 
 type TuiAdapterModule = typeof import("@mono-agent/operator-adapter");
@@ -206,7 +206,7 @@ export function createTuiChannelDriver(
             schema: ACP_BRIDGE_SOURCE_SCHEMA,
             bridgeVersion: ACP_BRIDGE_VERSION,
             protocolVersion: ACP_PROTOCOL_VERSION,
-            installedVersion: monoAgentVersion(),
+            installedVersion: agentAppPackageVersion() ?? "unknown",
             workspacePath,
           },
         },
