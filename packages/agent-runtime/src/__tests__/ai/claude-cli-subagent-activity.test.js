@@ -94,6 +94,31 @@ describe("Claude CLI live subagent activity", () => {
     expect(args).toContain("--forward-subagent-text");
   });
 
+  it("forwards unrelated results batched with a suppressed background launch acknowledgement", async () => {
+    const mixed = structuredClone(cliFixture);
+    const launch = mixed.find((event) => event.uuid === "cli-parent-launch-result");
+    launch.message.content.push({
+      type: "tool_result",
+      tool_use_id: "toolu_unrelated",
+      content: "unrelated result",
+    });
+    spawnMock.mockImplementationOnce(() => fakeChild(mixed));
+
+    const result = await generateCliResponse("system", options());
+    const forwarded = result.events.find((event) => event.uuid === "cli-parent-launch-result");
+    expect(forwarded).toMatchObject({
+      type: "user",
+      message: {
+        content: [{
+          type: "tool_result",
+          tool_use_id: "toolu_unrelated",
+          content: "unrelated result",
+        }],
+      },
+    });
+    expect(forwarded.message.content).toHaveLength(1);
+  });
+
   it("drains an open child exactly once when the parent run is cancelled", async () => {
     const openEvents = cliFixture.slice(0, 4);
     let child;

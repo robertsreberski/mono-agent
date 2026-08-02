@@ -672,24 +672,28 @@ export async function generateCliResponse(systemPrompt, options = {}) {
       // Child messages must not be normalized, added to parent text, counted as
       // parent usage, or considered for the parent's StructuredOutput result.
       if (observation?.consumed) return;
-      const ev = normalizeCliEvent(raw, cliEventContext);
+      // A root user message may batch a background Agent launch acknowledgement
+      // with unrelated tool results. The normalizer removes only that launch
+      // block so the remaining parent activity still flows normally.
+      const parentRaw = observation?.forwarded ?? raw;
+      const ev = normalizeCliEvent(parentRaw, cliEventContext);
       if (ev) {
         events.push(ev);
         options.onEvent?.(ev);
       }
-      if (!isCodexReasoningEvent(raw)) {
-        const text = textFromEvent(raw);
+      if (!isCodexReasoningEvent(parentRaw)) {
+        const text = textFromEvent(parentRaw);
         pushUniqueText(texts, text);
       }
-      captureStructuredOutputFromRaw(raw);
-      if (raw.usage) usage = raw.usage;
-      if (raw.type === "error") {
-        const rawError = raw.message || raw.error || "cli error";
+      captureStructuredOutputFromRaw(parentRaw);
+      if (parentRaw.usage) usage = parentRaw.usage;
+      if (parentRaw.type === "error") {
+        const rawError = parentRaw.message || parentRaw.error || "cli error";
         errorMessage = typeof rawError === "string" ? rawError : JSON.stringify(rawError);
         failureKind = "provider_unavailable";
         drainSubagents("subagent stopped because the Claude CLI stream failed");
       }
-      const resultError = resultEventError(raw, commandSpec.command);
+      const resultError = resultEventError(parentRaw, commandSpec.command);
       if (resultError) {
         errorMessage = resultError.message;
         failureKind = resultError.failureKind;
