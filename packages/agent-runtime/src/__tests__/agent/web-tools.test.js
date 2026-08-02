@@ -1,14 +1,19 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 import { renderWithAgentBrowser } from "../../agent/tools/web-browser-render.js";
-import { createWebToolController } from "../../agent/tools/web-controller.js";
+import {
+  __resetSharedSearchCacheForTests,
+  createWebToolController,
+} from "../../agent/tools/web-controller.js";
 import { performWebFetch } from "../../agent/tools/web-fetch.js";
 import {
+  __resetWebSearchThrottleForTests,
   canonicalizeSearchUrl,
   mergeRankedResults,
+  parseStartpageResults,
   performWebSearch,
 } from "../../agent/tools/web-search.js";
 
@@ -24,8 +29,18 @@ function runtimeContext(workspace = tempWorkspace(), sandbox = passthroughSandbo
   return { workspace, sandbox };
 }
 
+// The throttle, the backend cooldowns and the search cache are module state so
+// that they bind every subagent in the process. Tests must therefore reset them,
+// and drop the inter-request spacing so the suite does not pay for it.
+beforeEach(() => {
+  __resetWebSearchThrottleForTests({ minSpacingMs: 0 });
+  __resetSharedSearchCacheForTests();
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
+  __resetWebSearchThrottleForTests();
+  __resetSharedSearchCacheForTests();
   while (tempDirs.length) rmSync(tempDirs.pop(), { recursive: true, force: true });
 });
 
@@ -156,6 +171,208 @@ describe("WebSearch", () => {
     });
     expect(result.text).toContain("No results.");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to Startpage over a form POST when DuckDuckGo is rate-limited", async () => {
+    const calls = [];
+    const fetchImpl = vi.fn(async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (String(url).includes("duckduckgo")) {
+        // What DuckDuckGo actually serves once it decides you are a bot: a 202,
+        // which is `response.ok`, carrying an interstitial instead of results.
+        return new Response("<html><body>anomaly detected</body></html>", { status: 202 });
+      }
+      return new Response(`
+        <div class="result">
+          <a class="result-link" href="https://example.com/japan">Japan Guide</a>
+          <p class="result-description">Month by month.</p>
+        </div>
+      `);
+    });
+
+    const result = await performWebSearch({ query: "best time to visit japan" }, {
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    expect(result).toMatchObject({ error: false, outcome: { status: "ok", backend: "startpage" } });
+    expect(result.text).toContain("https://example.com/japan");
+
+    const startpageCall = calls.find((call) => call.url.includes("startpage"));
+    expect(startpageCall.url).toBe("https://www.startpage.com/sp/search");
+    expect(startpageCall.init.method).toBe("POST");
+    expect(new URLSearchParams(startpageCall.init.body).get("query")).toBe("best time to visit japan");
+    // Startpage bot-gates a POST that arrives without a browser User-Agent, so
+    // the backend's Content-Type must not displace the shared headers.
+    expect(startpageCall.init.headers["User-Agent"]).toContain("Mozilla/5.0");
+    expect(startpageCall.init.headers["Content-Type"]).toContain("x-www-form-urlencoded");
+    // The degradation is still reported even though the query succeeded.
+    expect(result.outcome.rateLimited).toBe(true);
+  });
+
+  it("maps time_range onto the Startpage with_date form field", async () => {
+    const calls = [];
+    const fetchImpl = vi.fn(async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (String(url).includes("duckduckgo")) return new Response("", { status: 503 });
+      return new Response('<div class="result"><a class="result-link" href="https://example.com/a">A</a></div>');
+    });
+
+    await performWebSearch({ query: "tokyo news", time_range: "day" }, {
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    const startpageCall = calls.find((call) => call.url.includes("startpage"));
+    expect(new URLSearchParams(startpageCall.init.body).get("with_date")).toBe("d");
+  });
+
+  it("reports a challenge page as an error instead of an empty result set", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      "<html><body>unusual traffic from your network</body></html>",
+      { status: 202 },
+    ));
+
+    const result = await performWebSearch({ query: "kyoto" }, {
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: { status: "error", code: "rate_limited", rateLimited: true, retryable: true },
+    });
+    // The old behaviour turned a ban into a confident "No results." answer.
+    expect(result.text).not.toContain("No results.");
+    expect(result.text).toContain("DuckDuckGo rate-limited");
+    expect(result.text).toContain("Startpage rate-limited");
+  });
+
+  it("puts a backend into cooldown on a 403 block, not just a 202 challenge", async () => {
+    // DuckDuckGo escalates from a 202 challenge to an outright 403. Treating
+    // that as an ordinary HTTP error would leave it in the rotation and get it
+    // re-hit on every subsequent search.
+    const fetchImpl = vi.fn(async (url) => (String(url).includes("duckduckgo")
+      ? new Response("", { status: 403 })
+      : new Response('<div class="result"><a class="result-link" href="https://example.com/a">A</a></div>')));
+
+    const first = await performWebSearch({ query: "first" }, {
+      searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext(),
+    });
+    expect(first.outcome.cooldownBackends).toContain("duckduckgo");
+
+    const callsAfterFirst = fetchImpl.mock.calls.length;
+    await performWebSearch({ query: "second" }, {
+      searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext(),
+    });
+    const secondRoundUrls = fetchImpl.mock.calls.slice(callsAfterFirst).map(([url]) => String(url));
+    expect(secondRoundUrls.some((url) => url.includes("duckduckgo"))).toBe(false);
+  });
+
+  it("classifies a captcha redirect as rate limiting instead of a transport fault", async () => {
+    const fetchImpl = vi.fn(async (url, init) => {
+      expect(init.redirect).toBe("manual");
+      return new Response("", {
+        status: 303,
+        headers: { location: "https://www.startpage.com/sp/captcha-block?bc=NL" },
+      });
+    });
+
+    const result = await performWebSearch({ query: "kyoto" }, {
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    expect(result.outcome).toMatchObject({ code: "rate_limited", rateLimited: true });
+    expect(result.text).toContain("captcha redirect");
+    // Following the hop only fetches the block page, so it must not happen.
+    expect(fetchImpl.mock.calls.every(([callUrl]) => !String(callUrl).includes("captcha-block"))).toBe(true);
+  });
+
+  it("names every failed backend and preserves the underlying fetch cause", async () => {
+    const fetchImpl = vi.fn(async (url) => {
+      if (String(url).includes("duckduckgo")) {
+        return new Response("", { status: 503 });
+      }
+      throw Object.assign(new TypeError("fetch failed"), {
+        cause: new Error("unexpected redirect"),
+      });
+    });
+
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    expect(result.outcome).toMatchObject({ status: "error", code: "backend_unavailable" });
+    expect(result.text).toContain("DuckDuckGo HTTP 503");
+    // Previously only the last failure survived, and `cause` was dropped — so
+    // this read as "startpage request failed: fetch failed" and nothing else.
+    expect(result.text).toContain("Startpage request failed: fetch failed (unexpected redirect)");
+  });
+
+  it("skips a rate-limited backend on later searches instead of re-hitting it", async () => {
+    const fetchImpl = vi.fn(async (url) => {
+      if (String(url).includes("duckduckgo")) {
+        return new Response("<html>anomaly</html>", { status: 202 });
+      }
+      return new Response('<div class="result"><a class="result-link" href="https://example.com/a">A</a></div>');
+    });
+
+    await performWebSearch({ query: "first" }, {
+      searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext(),
+    });
+    const callsAfterFirst = fetchImpl.mock.calls.length;
+
+    const second = await performWebSearch({ query: "second" }, {
+      searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext(),
+    });
+
+    const secondRoundUrls = fetchImpl.mock.calls.slice(callsAfterFirst).map(([url]) => String(url));
+    expect(secondRoundUrls.some((url) => url.includes("duckduckgo"))).toBe(false);
+    expect(second).toMatchObject({ error: false, outcome: { backend: "startpage" } });
+    expect(second.outcome.cooldownBackends).toContain("duckduckgo");
+  });
+
+  it("bounds concurrent keyless requests across the whole process", async () => {
+    __resetWebSearchThrottleForTests({ minSpacingMs: 0, maxConcurrency: 2 });
+    let inFlight = 0;
+    let peak = 0;
+    const fetchImpl = vi.fn(async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolvePromise) => { setTimeout(resolvePromise, 10); });
+      inFlight -= 1;
+      // DuckDuckGo markup, so every query is answered by the first backend and
+      // the call count reflects the fan-out alone.
+      return new Response('<div class="result"><a class="result__a" href="https://example.com/a">A</a></div>');
+    });
+
+    await performWebSearch({
+      query: "one",
+      alternate_queries: ["two", "three", "four"],
+    }, { searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext() });
+
+    expect(fetchImpl.mock.calls.length).toBe(4);
+    // Exactly 2, not "at most 2": a lower peak would mean the fan-out had
+    // silently become serial and the bound was never actually exercised.
+    expect(peak).toBe(2);
+  });
+
+  it("strips inline stylesheets out of Startpage titles", () => {
+    const results = parseStartpageResults(`
+      <div class="result">
+        <a class="result-link" href="https://example.com/japan"><style>.css-i3irj7{line-height:18px;}</style>Best time to visit Japan</a>
+        <p class="result-description">A guide.</p>
+      </div>
+    `);
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toBe("Best time to visit Japan");
   });
 
   it("uses deterministic reciprocal-rank fusion and canonical URL identity", () => {
@@ -437,6 +654,51 @@ describe("run-scoped web controller and browser isolation", () => {
     await controller.close();
     await expect(controller.fetch({ url: "https://example.com" }))
       .resolves.toMatchObject({ error: true, outcome: { code: "controller_closed" } });
+  });
+
+  it("shares cached searches across controllers so sibling runs skip the network", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      '<div class="result"><a class="result__a" href="https://example.com/a">A</a></div>',
+    ));
+    const options = { searchConfig: { backend: "keyless" }, fetchImpl, ctx: runtimeContext() };
+
+    const first = createWebToolController(options);
+    const firstResult = await first.search({ query: "shared" });
+    const callsAfterFirst = fetchImpl.mock.calls.length;
+    // A run ending must not throw away results the next turn will ask for again.
+    await first.close();
+
+    const second = createWebToolController(options);
+    const secondResult = await second.search({ query: "shared" });
+
+    expect(firstResult.outcome.cacheHit).toBe(false);
+    expect(secondResult.outcome.cacheHit).toBe(true);
+    expect(fetchImpl.mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it("keys the shared search cache by backend config so controllers cannot cross-read", async () => {
+    const fetchImpl = vi.fn(async (url) => {
+      if (String(url).startsWith("http://127.0.0.1")) {
+        return new Response(JSON.stringify({ results: [{ title: "S", url: "https://example.com/s" }] }));
+      }
+      return new Response('<div class="result"><a class="result__a" href="https://example.com/a">A</a></div>');
+    });
+    const ctx = runtimeContext();
+
+    const keyless = createWebToolController({ searchConfig: { backend: "keyless" }, fetchImpl, ctx });
+    await keyless.search({ query: "same" });
+    const callsAfterKeyless = fetchImpl.mock.calls.length;
+
+    const searxng = createWebToolController({
+      searchConfig: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+      fetchImpl,
+      ctx,
+    });
+    const searxngResult = await searxng.search({ query: "same" });
+
+    expect(searxngResult.outcome.cacheHit).toBe(false);
+    expect(searxngResult.outcome.backend).toBe("searxng");
+    expect(fetchImpl.mock.calls.length).toBeGreaterThan(callsAfterKeyless);
   });
 
   it("uses a fresh locked agent-browser session and removes its temporary config", async () => {

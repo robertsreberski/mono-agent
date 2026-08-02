@@ -78,6 +78,51 @@ every eligible backend failed or policy blocked every request; the result keeps
 that distinction so the model does not waste another reasoning round repeating
 the same call.
 
+### Keyless rate limiting
+
+The keyless engines are free HTML endpoints that throttle by source IP, and they
+announce it in ways that look like success or like a network fault:
+
+| Signal | Engine | Treated as |
+| --- | --- | --- |
+| `HTTP 202`, `403`, or `429` | DuckDuckGo | `rate_limited` |
+| `3xx` to a captcha or block page | Startpage | `rate_limited` |
+| `2xx` that parses to nothing but carries challenge markers | either | `rate_limited` |
+| `2xx` that parses to nothing | either | genuine `No results.` |
+
+No credentials are ever sent to these endpoints, so a `403` can only mean
+"blocked", never "unauthorized".
+
+Redirects are never followed for search: on these engines a redirect *is* the
+block, so following it only costs a round trip and still yields no results.
+
+Three bounds keep an agent from provoking the block in the first place. All are
+process-wide, because a single turn can fan out four query variants per search
+and every subagent runs its own web controller:
+
+- at most **3** keyless requests in flight at once;
+- at least **1.5 s** between two requests to the same engine (only a multi-query
+  fan-out pays this; a single-query search never waits);
+- an engine that signals throttling is **skipped for 5 minutes**, so the chain
+  falls through to the next backend instead of re-hitting a blocked one.
+
+Successful searches are cached process-wide for **15 minutes**, keyed by the
+query parameters *and* the backend configuration, so sibling subagents and later
+turns reuse a result instead of re-querying. Failures are never cached.
+
+`outcome.rateLimited` and `outcome.cooldownBackends` report throttling even when
+a fallback backend rescued the query, so a silent degradation stays visible.
+
+### Search-heavy agents should not rely on the keyless chain
+
+The keyless engines are a fallback, not a budget. An agent that issues tens of
+searches per turn — subagent fan-out especially — will eventually be blocked no
+matter how politely it is throttled. Point such an agent at a local SearXNG:
+
+```json
+{ "tools": { "web": { "search": { "backend": "searxng", "endpoint": "http://127.0.0.1:8088" } } } }
+```
+
 For the copyable local companion, see
 [`demos/searxng`](https://github.com/robertsreberski/mono-agent/tree/main/demos/searxng).
 Its Compose service is loopback-only and enables SearXNG's JSON format.

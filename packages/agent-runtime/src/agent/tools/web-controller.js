@@ -5,10 +5,26 @@ import { performWebFetch } from "./web-fetch.js";
 import { performWebSearch } from "./web-search.js";
 
 const MAX_CACHE_ENTRIES = 64;
+const MAX_SHARED_SEARCH_ENTRIES = 256;
+const SHARED_SEARCH_TTL_MS = 15 * 60_000;
+
+// Search results are shared process-wide rather than per model run. A run-scoped
+// cache dies at the end of every turn and is invisible to sibling subagents, so
+// an agent that keeps circling the same topic re-hits the network every time —
+// which is exactly the request volume that gets keyless engines to rate-limit.
+// One process is one agent instance, so the sharing stays inside one tenant.
+//
+// Only completed results are shared. In-flight promises stay per-controller on
+// purpose: they carry the originating run's AbortSignal, and handing that to a
+// sibling would let one turn's cancellation fail another turn's search.
+/** @type {Map<string, {value: any, expiresAt: number}>} */
+const sharedSearchCache = new Map();
 
 /**
  * One ephemeral web-tool controller for one model run. It owns in-memory
- * deduplication, result caches, anonymous browser namespaces, and cleanup.
+ * deduplication, the fetch result cache, anonymous browser namespaces, and
+ * cleanup. Search results are the exception: they live in the process-wide
+ * cache above so sibling subagents and later turns can reuse them.
  *
  * @param {{searchConfig?: any, fetchConfig?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, fetchImpl?: typeof fetch, browserRenderer?: any}} [options]
  */
@@ -22,7 +38,6 @@ export function createWebToolController({
   browserRenderer,
 } = {}) {
   const namespace = `mono-agent-web-${randomUUID()}`;
-  const searchCache = new Map();
   const fetchCache = new Map();
   const searchInFlight = new Map();
   const fetchInFlight = new Map();
@@ -66,12 +81,39 @@ export function createWebToolController({
     }
   }
 
+  /**
+   * @param {string} key
+   * @param {() => Promise<any>} execute
+   */
+  async function cachedSearch(key, execute) {
+    if (closed) return closedResult();
+    const cached = readSharedSearch(key);
+    if (cached) return withCacheHit(cached);
+    const active = searchInFlight.get(key);
+    if (active) return withCacheHit(await active);
+    const task = Promise.resolve().then(execute);
+    searchInFlight.set(key, task);
+    try {
+      const result = await task;
+      // Failures stay uncached; the backend cooldown in web-search.js is what
+      // stops a rate-limited engine from being hammered again.
+      if (!result.error) writeSharedSearch(key, cloneResult(result));
+      return result;
+    } finally {
+      searchInFlight.delete(key);
+    }
+  }
+
   return {
     namespace,
 
     async search(params, execution = {}) {
-      const key = stableKey(params);
-      return cachedRun(searchCache, searchInFlight, key, async () => performWebSearch(params, {
+      // The key must pin the backend, the endpoint AND the sandbox policy. The
+      // old params-only key was safe while the cache lived and died with one
+      // run; process-wide it would let controllers with different backends — or
+      // a stricter network policy — read each other's results.
+      const key = stableKey({ params, searchConfig, sandboxPolicy });
+      return cachedSearch(key, async () => performWebSearch(params, {
         searchConfig,
         sandboxPolicy,
         ctx,
@@ -101,12 +143,41 @@ export function createWebToolController({
       const pending = [...cleanups];
       cleanups.clear();
       await Promise.allSettled(pending.map((cleanup) => Promise.resolve().then(cleanup)));
-      searchCache.clear();
+      // The shared search cache deliberately outlives the controller; only
+      // run-owned state (browser namespaces, fetch results, in-flight work) is
+      // dropped here.
       fetchCache.clear();
       searchInFlight.clear();
       fetchInFlight.clear();
     },
   };
+}
+
+function readSharedSearch(key) {
+  const entry = sharedSearchCache.get(key);
+  if (!entry) return null;
+  if (Date.now() >= entry.expiresAt) {
+    sharedSearchCache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function writeSharedSearch(key, value) {
+  sharedSearchCache.set(key, { value, expiresAt: Date.now() + SHARED_SEARCH_TTL_MS });
+  // Drop expired entries before falling back to insertion-order eviction, so a
+  // burst of stale keys cannot push a live one out.
+  for (const [entryKey, entry] of sharedSearchCache) {
+    if (Date.now() >= entry.expiresAt) sharedSearchCache.delete(entryKey);
+  }
+  while (sharedSearchCache.size > MAX_SHARED_SEARCH_ENTRIES) {
+    sharedSearchCache.delete(sharedSearchCache.keys().next().value);
+  }
+}
+
+/** Test hook: the shared cache is module state and would leak between cases. */
+export function __resetSharedSearchCacheForTests() {
+  sharedSearchCache.clear();
 }
 
 function stableKey(value) {
