@@ -248,6 +248,50 @@ describe("codex-app persistent sessions", () => {
     expect(factory).toHaveBeenCalledTimes(1);
   });
 
+  it("fails closed before starting Codex when an MCP server name cannot be represented", async () => {
+    const factory = stubClientFactory();
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, {
+      mcpServers: {
+        valid_server: { command: "valid-mcp" },
+        "invalid.server": { command: "invalid-mcp" },
+      },
+    }));
+
+    expect(result).toMatchObject({
+      failureKind: "skipped_capability_mismatch",
+      diagnostics: { codex_error_code: "codex_mcp_server_name_invalid" },
+      capabilitiesUsed: { mcp_servers_used: [] },
+    });
+    expect(result.error).toContain('MCP server name "invalid.server"');
+    expect(result.error).toContain('only ASCII letters, numbers, "_", or "-"');
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("sends and reports valid Codex MCP server names unchanged", async () => {
+    const factory = stubClientFactory({ threadId: "thread-valid-mcp-names" });
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, {
+      mcpServers: {
+        valid_stdio_1: { command: "stdio-mcp" },
+        "valid-http-2": { url: "https://mcp.invalid/rpc" },
+      },
+    }));
+
+    expect(result).toMatchObject({
+      error: null,
+      failureKind: null,
+      capabilitiesUsed: {
+        mcp_servers_used: ["valid_stdio_1", "valid-http-2"],
+      },
+    });
+    const threadStart = factory.clients[0].requests.find((request) => request.method === "thread/start");
+    expect(threadStart?.params.config.mcp_servers).toMatchObject({
+      valid_stdio_1: { command: "stdio-mcp", enabled: true, required: false },
+      "valid-http-2": { url: "https://mcp.invalid/rpc", enabled: true, required: false },
+    });
+  });
+
   it("fails closed before starting Codex when a native mono-agent sandbox is supplied", async () => {
     const factory = stubClientFactory();
 
@@ -1987,6 +2031,7 @@ describe("codex-app persistent sessions", () => {
 
     expect(result.cancelled).toBe(false);
     expect(result.failureKind).toBe("tool_policy_violation");
+    expect(result.capabilitiesUsed.mcp_servers_used).toEqual([]);
     expect(result.diagnostics).toMatchObject({
       codex_error_code: "codex_no_tools_violation",
       codex_tool_action: "commandExecution",
