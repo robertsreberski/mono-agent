@@ -185,6 +185,8 @@ RuntimeExecutionMode
 RuntimeLiveInputMessage
 RuntimeMessage
 RuntimeModelReference
+RuntimeNativeSubagentDefinition
+RuntimeNativeSubagentsOptions
 RuntimePolicies
 RuntimePromptOverrides
 RuntimeResult
