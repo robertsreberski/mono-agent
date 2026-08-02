@@ -152,7 +152,7 @@ export function subagentActivityFromTranscript(entries, { taskId, subagentType }
  * @param {{maxBytes?: number, readFile?: (p: string) => string, statFile?: (p: string) => {size: number}}} [io]
  */
 export function createClaudeSubagentTracker(io = {}) {
-  /** @type {Map<string, {subagentType: string, description?: string, callIndex: number}>} */
+  /** @type {Map<string, {subagentType: string, description?: string, callIndex: number, toolUseId?: string}>} */
   const tasks = new Map();
   let callIndex = 0;
 
@@ -168,11 +168,21 @@ export function createClaudeSubagentTracker(io = {}) {
       if (raw.subtype === "task_started") {
         const subagentType = String(raw.subagent_type ?? "subagent");
         const description = typeof raw.description === "string" ? raw.description : undefined;
-        const entry = { subagentType, description, callIndex: callIndex++ };
+        // The parent's own Agent tool_use id. Without it a host cannot attach
+        // this delegation to the tool call that started it, and the child's rows
+        // would float loose in the parent's timeline.
+        const toolUseId = typeof raw.tool_use_id === "string" ? raw.tool_use_id : undefined;
+        const entry = { subagentType, description, callIndex: callIndex++, toolUseId };
         tasks.set(taskId, entry);
         return [{
           type: "subagent_activity",
-          subagent: { id: taskId, name: subagentType, callIndex: entry.callIndex, ...(description === undefined ? {} : { label: description }) },
+          subagent: {
+            id: taskId,
+            name: subagentType,
+            callIndex: entry.callIndex,
+            ...(toolUseId === undefined ? {} : { toolUseId }),
+            ...(description === undefined ? {} : { label: description }),
+          },
           phase: "agent_started",
           id: `agent:${taskId}`,
           name: `Agent(${subagentType})`,
@@ -188,10 +198,13 @@ export function createClaudeSubagentTracker(io = {}) {
       const entry = tasks.get(taskId);
       tasks.delete(taskId);
       const subagentType = entry?.subagentType ?? taskId;
+      const notificationToolUseId = typeof raw.tool_use_id === "string" ? raw.tool_use_id : undefined;
+      const toolUseId = entry?.toolUseId ?? notificationToolUseId;
       const subagent = {
         id: taskId,
         name: subagentType,
         callIndex: entry?.callIndex ?? callIndex++,
+        ...(toolUseId === undefined ? {} : { toolUseId }),
         ...(entry?.description === undefined ? {} : { label: entry.description }),
       };
       const wrap = (payload) => ({ type: "subagent_activity", subagent, ...payload });
