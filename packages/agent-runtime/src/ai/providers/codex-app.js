@@ -1635,7 +1635,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     for (const notification of queued) handleChildNotification(notification);
   }
 
-  function bindSubagentThread(group, receiver, { primary = false } = {}) {
+  function bindSubagentThread(group, receiver, { primary = false, flush = true } = {}) {
     const nativeId = typeof receiver?.nativeId === "string" ? receiver.nativeId.trim() : "";
     if (!nativeId) return null;
     let binding = subagentBindingsByThread.get(nativeId);
@@ -1667,7 +1667,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
       group.primaryThreadId = nativeId;
     }
     ensureSubagentStarted(group, binding);
-    flushPendingChildNotifications(nativeId);
+    if (flush) flushPendingChildNotifications(nativeId);
     return binding;
   }
 
@@ -1675,9 +1675,18 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     const isRootSpawn = sourceBinding === null;
     const group = sourceBinding?.group || ensureSubagentGroup(item.id, item);
     const receivers = codexCollabReceiverEntries(item);
+    const bindings = [];
     for (const receiver of receivers) {
-      bindSubagentThread(group, receiver, { primary: isRootSpawn });
+      const binding = bindSubagentThread(group, receiver, {
+        primary: isRootSpawn,
+        // Bind the complete receiver set before replaying out-of-order child
+        // frames, otherwise the first queued completion can close the group
+        // before later receivers are known to it.
+        flush: false,
+      });
+      if (binding) bindings.push(binding);
     }
+    for (const binding of bindings) flushPendingChildNotifications(binding.nativeId);
     if (sourceBinding) {
       const phase = method === "item/started" ? "started" : "completed";
       emitSubagentActivity(group, sourceBinding, {
