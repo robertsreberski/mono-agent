@@ -23,6 +23,7 @@ import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registr
 import { createMonoRuntime } from "../runtime-adapter.js";
 import type { CreateMonoRuntimeOptions, MonoRuntimeAttemptResolution } from "../runtime-adapter.js";
 import type {
+  MonoAcpInteractionRequest,
   MonoRuntimeBackendCapabilities,
   MonoRuntimeHostOptions,
   RuntimeModelReference,
@@ -38,6 +39,8 @@ type KernelToolOptions = Parameters<KernelRuntimeInstance["configureTools"]>[0];
 type KernelRunResult = Awaited<ReturnType<KernelRuntimeInstance["run"]>>;
 type KernelBridgeDescriptor = ReturnType<typeof listRuntimeBridges>[number];
 type KernelBridgeCapabilities = ReturnType<KernelBridgeDescriptor["capabilities"]>;
+type MonoAcpElicitationInteraction = Extract<MonoAcpInteractionRequest, { kind: "elicitation" }>;
+type MonoAcpFormPayload = Extract<MonoAcpElicitationInteraction["payload"], { mode: "form" }>;
 type RuntimeRunComparableKeys =
   | "model"
   | "messages"
@@ -141,5 +144,26 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
   it("createPiOAuthApiKeyResolver keeps its real (path in, provider resolver out) signature", () => {
     expectTypeOf(createPiOAuthApiKeyResolver).toBeCallableWith({ path: "/tmp/auth.json" });
     expectTypeOf(createPiOAuthApiKeyResolver).returns.toBeFunction();
+  });
+
+  it("keeps typed ACP interaction payloads while hiding protocol session ids", () => {
+    const assertInteractionContract = (request: MonoAcpInteractionRequest): void => {
+      if (request.kind === "permission") {
+        assertAssignable<readonly unknown[]>(request.payload.options);
+        assertAssignable<object>(request.payload.toolCall);
+        // @ts-expect-error protocol session ids are private connection state.
+        assertAssignable<string>(request.payload.sessionId);
+      } else {
+        assertAssignable<string>(request.payload.message);
+        assertAssignable<string>(request.payload.mode);
+      }
+
+      const formPayload = null as unknown as MonoAcpFormPayload;
+      assertAssignable<object>(formPayload.requestedSchema);
+      // @ts-expect-error known elicitation variants also hide protocol session ids.
+      assertAssignable<string>(formPayload.sessionId);
+    };
+
+    expectTypeOf(assertInteractionContract).parameter(0).toEqualTypeOf<MonoAcpInteractionRequest>();
   });
 });

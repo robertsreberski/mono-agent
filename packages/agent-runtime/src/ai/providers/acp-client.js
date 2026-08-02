@@ -82,9 +82,18 @@ const DEFAULT_PROCESS_POLICY = Object.freeze({
  * @property {Record<string, unknown>} [hostContext]
  */
 
+/** @template T @typedef {T extends unknown ? Omit<T, "sessionId"> : never} WithoutSessionId */
+/** @typedef {WithoutSessionId<import("@agentclientprotocol/sdk").RequestPermissionRequest>} AcpPermissionInteractionPayload */
 /**
- * @typedef {{kind: "permission", profileId: string, payload: Record<string, unknown>}
- *   | {kind: "elicitation", profileId: string, payload: Record<string, unknown>}} AcpInteractionRequest
+ * `CreateElicitationRequest` includes a future-mode string index signature.
+ * Plain `Omit` preserves that openness but widens its named common fields to
+ * unknown, so restore the protocol's concrete common-field types explicitly.
+ * @typedef {WithoutSessionId<import("@agentclientprotocol/sdk").CreateElicitationRequest>
+ *   & Pick<import("@agentclientprotocol/sdk").CreateElicitationRequest, "message" | "mode" | "_meta">} AcpElicitationInteractionPayload
+ */
+/**
+ * @typedef {{kind: "permission", profileId: string, payload: AcpPermissionInteractionPayload}
+ *   | {kind: "elicitation", profileId: string, payload: AcpElicitationInteractionPayload}} AcpInteractionRequest
  */
 
 /**
@@ -451,13 +460,23 @@ function elicitationResponse(value) {
  * the pending callback, so exposing the raw id in UI-facing interaction
  * payloads adds persistence risk without enabling any supported response.
  * Low-level descriptor callbacks still receive the native SDK request.
- * @param {unknown} value
- * @returns {Record<string, unknown>}
+ * @template {object} T
+ * @param {T} value
+ * @returns {WithoutSessionId<T>}
  */
 function hostInteractionPayload(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const { sessionId: _sessionId, ...payload } = /** @type {Record<string, unknown>} */ (value);
-  return payload;
+  const { sessionId: _sessionId, ...payload } = /** @type {T & {sessionId?: unknown}} */ (value);
+  return /** @type {WithoutSessionId<T>} */ (payload);
+}
+
+/**
+ * Preserve the named common fields that TypeScript widens through ACP's open
+ * future-mode index signature.
+ * @param {import("@agentclientprotocol/sdk").CreateElicitationRequest} value
+ * @returns {AcpElicitationInteractionPayload}
+ */
+function hostElicitationPayload(value) {
+  return /** @type {AcpElicitationInteractionPayload} */ (hostInteractionPayload(value));
 }
 
 /** @param {any} descriptor @param {AcpClientHostOptions} options @param {string} profileId @param {string} operation */
@@ -598,7 +617,7 @@ export async function connectAcpProfile(profileId, options) {
           result = await descriptor.clientCallbacks.createElicitation(ctx.params, context);
         } else if (typeof options.onAcpInteractionRequest === "function") {
           result = await options.onAcpInteractionRequest(
-            { kind: "elicitation", profileId, payload: hostInteractionPayload(ctx.params) },
+            { kind: "elicitation", profileId, payload: hostElicitationPayload(ctx.params) },
             context,
           );
         }
