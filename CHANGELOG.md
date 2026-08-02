@@ -59,6 +59,24 @@
   references as objects while the responder read them as strings, so both fields
   were silently dropped and the TUI rendered `failover ? -> ?`.
 
+## 0.17.1 — Pi authentication fallback recovery (2026-08-02)
+
+### Runtime routing
+
+- Pi's `Provider is not configured: <provider>` error is classified as
+  `provider_auth` when credential resolution returns no usable credential.
+  Router chains now advance to their next provider instead of stopping on a
+  non-retryable `provider_unavailable` result.
+- The regression guard exercises the real Pi `openai-codex` harness path with a
+  null credential resolver, in addition to the shared failure classifier.
+
+### Safety and compatibility
+
+- The new signature is narrow and remains non-retryable on the same route;
+  only configured fallback entries may run next.
+- All catalog-publishable packages move together to 0.17.1. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.15.3 — Configured Codex MCP approvals (2026-07-28)
 
 ### Direct Codex MCP calls

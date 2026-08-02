@@ -72,6 +72,11 @@ the runtime applies them only when Bash, Exec, or a nested subagent process is
 spawned. It does not mutate `process.env` or persist the values in prompts,
 metadata, history, traces, or long-lived tool context.
 
+- **0.17.1 Pi auth classification:** Pi 0.83 may report a missing credential as
+  `Provider is not configured: <provider>`. The runtime now classifies that
+  exact signature as `provider_auth`, allowing a configured fallback route to
+  run while avoiding a same-route retry that cannot repair absent credentials.
+
 ## 0.16.x
 
 This baseline carries the whole 0.15.x contract forward and adds:
