@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { createRuntime } from "../../runtime.js";
-import { decodeAcpProviderSessionId } from "../../ai/providers/acp-client.js";
+import { validateAcpProviderSessionId } from "../../ai/providers/acp-client.js";
 
 const fixture = fileURLToPath(new URL("../fixtures/fake-acp-agent.js", import.meta.url));
 const root = mkdtempSync(join(tmpdir(), "agent-runtime-acp-bridge-"));
@@ -83,7 +83,7 @@ describe("ACP runtime bridge", () => {
         messages: [{
           role: "user",
           content: [
-            { type: "text", text: "permission and resource" },
+            { type: "text", text: "permission privacy-copy and resource" },
             { type: "resource_link", uri: "file:///tmp/runtime-context.txt", name: "runtime context" },
           ],
         }],
@@ -101,10 +101,8 @@ describe("ACP runtime bridge", () => {
     expect(result.sdk).toBe("acp");
     expect(result.usage).toEqual({ total_tokens: 12, context_window: 1000, cost: null });
     expect(result.providerSessionId).toMatch(/^acp:v1:personal-agent:/);
-    expect(decodeAcpProviderSessionId(result.providerSessionId)).toEqual({
-      profileId: "personal-agent",
-      sessionId: "session-1",
-    });
+    expect(validateAcpProviderSessionId(result.providerSessionId, "personal-agent"))
+      .toBe(result.providerSessionId);
     expect(result.diagnostics).toMatchObject({
       acp_profile_id: "personal-agent",
       acp_stop_reason: "end_turn",
@@ -127,6 +125,7 @@ describe("ACP runtime bridge", () => {
       expect.objectContaining({ profileId: "personal-agent", operation: "permission" }),
     );
     expect(JSON.stringify(interaction.mock.calls)).not.toContain("session-1");
+    expect(interaction.mock.calls[0][1].requestId).toMatch(/^acp-request:personal-agent:/);
     expect(resolveAcpProfile).toHaveBeenCalledWith(
       "personal-agent",
       expect.objectContaining({ operation: "run", profileId: "personal-agent" }),
@@ -156,6 +155,20 @@ describe("ACP runtime bridge", () => {
       { type: "resource_link", uri: "file:///tmp/first.txt", name: "first" },
       { type: "text", text: "[user]\nsecond" },
     ]);
+  });
+
+  it("does not echo an unvalidated provider-session id from an early failure", async () => {
+    const resolveAcpProfile = vi.fn(async () => descriptor());
+    const raw = "caller-controlled-raw-session";
+    const result = await createRuntime().run("System", runOptions(resolveAcpProfile, {
+      providerSessionId: raw,
+    }));
+
+    expect(result.failureKind).toBe("provider_protocol");
+    expect(result.providerSessionId).toBeNull();
+    expect(result.diagnostics.acp_session_id_encoded).toBe(false);
+    expect(JSON.stringify(result)).not.toContain(raw);
+    expect(resolveAcpProfile).not.toHaveBeenCalled();
   });
 
   it.each([null, "not-a-block", 42, []])("rejects malformed prompt block %j", async (block) => {

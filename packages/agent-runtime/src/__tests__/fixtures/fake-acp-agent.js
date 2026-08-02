@@ -102,10 +102,37 @@ if (mode === "malformed" || mode === "oversize" || mode === "unterminated" || mo
       });
       return { modes, configOptions: configOptions() };
     })
-    .onRequest(methods.agent.session.list, () => ({
-      sessions: [...sessions.values()],
-      nextCursor: null,
-    }))
+    .onRequest(methods.agent.session.list, (ctx) => {
+      if (mode === "privacy-list") {
+        if (ctx.params.cursor === "raw-private-cursor-1") {
+          return {
+            sessions: [{
+              sessionId: "raw-private-session-2",
+              cwd: "/tmp/raw-private-session-2",
+              title: "Second raw-private-session-2",
+              _meta: { copiedSessionId: "raw-private-session-2" },
+            }],
+            nextCursor: null,
+          };
+        }
+        return {
+          sessions: [{
+            sessionId: "raw-private-session-1",
+            cwd: "/tmp/raw-private-session-1",
+            title: "First raw-private-session-1",
+            _meta: {
+              copiedSessionId: "raw-private-session-1",
+              nested: { sessionId: "raw-private-session-1" },
+            },
+          }],
+          nextCursor: "raw-private-cursor-1",
+        };
+      }
+      return {
+        sessions: [...sessions.values()],
+        nextCursor: null,
+      };
+    })
     .onRequest(methods.agent.session.delete, (ctx) => {
       sessions.delete(ctx.params.sessionId);
       return {};
@@ -143,6 +170,9 @@ if (mode === "malformed" || mode === "oversize" || mode === "unterminated" || mo
             { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
             { optionId: "reject-once", name: "Reject", kind: "reject_once" },
           ],
+          ...(text.includes("privacy-copy") ? {
+            _meta: { copiedSessionId: ctx.params.sessionId },
+          } : {}),
         });
         await ctx.client.notify(methods.client.session.update, {
           sessionId: ctx.params.sessionId,
@@ -153,6 +183,13 @@ if (mode === "malformed" || mode === "oversize" || mode === "unterminated" || mo
             name: "fake_tool",
             status: "in_progress",
             rawInput: { permission: permission.outcome.outcome },
+            ...(text.includes("privacy-copy") ? {
+              _meta: { copiedSessionId: ctx.params.sessionId },
+              rawInput: {
+                permission: permission.outcome.outcome,
+                copiedSessionId: ctx.params.sessionId,
+              },
+            } : {}),
           },
         });
         await ctx.client.notify(methods.client.session.update, {

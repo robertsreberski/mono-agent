@@ -6,9 +6,13 @@ import { resolveSandboxPolicy } from "../../agent/tools/shared/tool-context.js";
 import {
   AcpClientError,
   connectAcpProfile,
+} from "./acp-client.js";
+import {
   decodeAcpProviderSessionId,
   encodeAcpProviderSessionId,
-} from "./acp-client.js";
+  validateAcpProviderSessionId,
+} from "./acp-session-tokens.js";
+import { sanitizeAcpHostValue } from "./acp-privacy.js";
 
 /** @param {any} callback @param {any} event */
 function emit(callback, event) {
@@ -107,11 +111,11 @@ function runtimePrompt(systemPrompt, messages, options) {
 
 /** @param {any} update @param {any} state */
 function normalizeUpdate(update, state) {
+  const body = sanitizeAcpHostValue(update.update || {}, [update.sessionId]);
   const raw = {
     type: "acp_session_update",
-    update: jsonSafe(update.update),
+    update: jsonSafe(body),
   };
-  const body = update.update || {};
   /** @type {any[]} */
   const events = [raw];
   switch (body.sessionUpdate) {
@@ -325,10 +329,13 @@ export async function generateAcpResponse(systemPrompt, req) {
   capture({ type: "provider_request_started", sdk: "acp", model: reference, runtime: "acp-stdio", timestamp: start });
   let connection;
   let sessionId = null;
-  let providerSessionId = req?.providerSessionId || null;
+  let providerSessionId = null;
   let setup = null;
   let configuration = { modeApplied: false, configOptionsApplied: [] };
   try {
+    if (req?.providerSessionId != null) {
+      providerSessionId = validateAcpProviderSessionId(req.providerSessionId, profileId);
+    }
     connection = await connectAcpProfile(profileId, {
       resolveAcpProfile: req.resolveAcpProfile,
       onAcpInteractionRequest: req.onAcpInteractionRequest,

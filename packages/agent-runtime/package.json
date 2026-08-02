@@ -87,10 +87,6 @@
       "types": "./types/ai/providers/opencode-discovery.d.ts",
       "default": "./src/ai/providers/opencode-discovery.js"
     },
-    "./ai/providers/acp-client.js": {
-      "types": "./types/ai/providers/acp-client.d.ts",
-      "default": "./src/ai/providers/acp-client.js"
-    },
     "./ai/providers/acp.js": {
       "types": "./types/ai/providers/acp.d.ts",
       "default": "./src/ai/providers/acp.js"

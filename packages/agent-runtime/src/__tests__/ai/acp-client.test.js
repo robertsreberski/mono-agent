@@ -7,12 +7,12 @@ import {
   AcpClientError,
   authenticateAcpProfile,
   connectAcpProfile,
-  decodeAcpProviderSessionId,
   deleteAcpSession,
   encodeAcpProviderSessionId,
   listAcpSessions,
   logoutAcpProfile,
   probeAcpProfile,
+  validateAcpProviderSessionId,
 } from "../../ai/providers/acp-client.js";
 
 const fixture = fileURLToPath(new URL("../fixtures/fake-acp-agent.js", import.meta.url));
@@ -45,13 +45,13 @@ function host(descriptor) {
 }
 
 describe("ACP provider session ids", () => {
-  it("round-trips the exact canonical acp:v1 composite encoding", () => {
+  it("validates exact canonical acp:v1 handles without exposing the raw id", () => {
     const encoded = encodeAcpProviderSessionId("personal-agent", "session:/with unicode/Ł");
     expect(encoded).toMatch(/^acp:v1:personal-agent:[A-Za-z0-9_-]+$/);
-    expect(decodeAcpProviderSessionId(encoded)).toEqual({
-      profileId: "personal-agent",
-      sessionId: "session:/with unicode/Ł",
-    });
+    expect(encoded).not.toContain("session:/with unicode/Ł");
+    expect(validateAcpProviderSessionId(encoded, "personal-agent")).toBe(encoded);
+    expect(() => validateAcpProviderSessionId(encoded, "another-agent"))
+      .toThrow(AcpClientError);
   });
 
   it.each([
@@ -60,7 +60,7 @@ describe("ACP provider session ids", () => {
     "acp:v2:profile:c2Vzc2lvbg",
     "session",
   ])("rejects non-canonical composite id %s", (value) => {
-    expect(() => decodeAcpProviderSessionId(value)).toThrow(AcpClientError);
+    expect(() => validateAcpProviderSessionId(value, "profile")).toThrow(AcpClientError);
   });
 });
 
@@ -200,6 +200,44 @@ describe("ACP v1 client lifecycle", () => {
       providerSessionId,
       deleted: true,
     });
+  });
+
+  it("keeps listed protocol session ids, metadata copies, and cursors behind opaque handles", async () => {
+    const options = host(profile("privacy-list"));
+    const first = await listAcpSessions("personal-agent", {}, options);
+
+    expect(first.sessions).toEqual([expect.objectContaining({
+      providerSessionId: expect.stringMatching(/^acp:v1:personal-agent:/),
+      cwd: "/tmp/[redacted]",
+      title: "First [redacted]",
+    })]);
+    expect(first.sessions[0]).not.toHaveProperty("sessionId");
+    expect(first.sessions[0]).not.toHaveProperty("_meta");
+    expect(first.nextCursor).toMatch(/^acp-cursor:v1:personal-agent:/);
+    expect(JSON.stringify(first)).not.toContain("raw-private-session-1");
+    expect(JSON.stringify(first)).not.toContain("raw-private-cursor-1");
+
+    const second = await listAcpSessions("personal-agent", { cursor: first.nextCursor }, options);
+    expect(second.sessions).toEqual([expect.objectContaining({
+      providerSessionId: expect.stringMatching(/^acp:v1:personal-agent:/),
+      cwd: "/tmp/[redacted]",
+      title: "Second [redacted]",
+    })]);
+    expect(second.nextCursor).toBeNull();
+    expect(JSON.stringify(second)).not.toContain("raw-private-session-2");
+  });
+
+  it("rejects raw, malformed, and cross-profile list cursors before spawning", async () => {
+    const resolveAcpProfile = vi.fn(async () => profile("privacy-list"));
+    for (const cursor of [
+      "raw-private-cursor-1",
+      "acp-cursor:v1:other-agent:bmV4dA",
+      "acp-cursor:v1:personal-agent:bmV4dA==",
+    ]) {
+      await expect(listAcpSessions("personal-agent", { cursor }, { resolveAcpProfile }))
+        .rejects.toMatchObject({ code: "invalid_cursor" });
+    }
+    expect(resolveAcpProfile).not.toHaveBeenCalled();
   });
 
   it("returns invalid_request for malformed session path inputs", async () => {

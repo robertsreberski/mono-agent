@@ -11,9 +11,17 @@ import {
   createBoundedAcpStdioStream,
   normalizeAcpMaxLineBytes,
 } from "./acp-transport.js";
+import { sanitizeAcpHostValue } from "./acp-privacy.js";
+import {
+  AcpClientError,
+  decodeAcpProviderSessionId,
+  decodeAcpSessionCursor,
+  encodeAcpProviderSessionId,
+  encodeAcpSessionCursor,
+  validateAcpProfileId,
+  validateAcpProviderSessionId,
+} from "./acp-session-tokens.js";
 
-const PROFILE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const BASE64URL_RE = /^[A-Za-z0-9_-]+$/;
 const OWNERS = new Set(["client", "agent"]);
 const RESUME_STRATEGIES = new Set(["auto", "load", "resume"]);
 const DEFAULT_PROCESS_POLICY = Object.freeze({
@@ -83,6 +91,20 @@ const DEFAULT_PROCESS_POLICY = Object.freeze({
  */
 
 /** @template T @typedef {T extends unknown ? Omit<T, "sessionId"> : never} WithoutSessionId */
+/**
+ * @typedef {Object} AcpListedSession
+ * @property {string} providerSessionId Opaque runtime handle for resume/delete.
+ * @property {string} cwd
+ * @property {ReadonlyArray<string>} [additionalDirectories]
+ * @property {string|null} [title]
+ * @property {string|null} [updatedAt]
+ */
+/**
+ * @typedef {Object} AcpSessionListResult
+ * @property {string} profileId
+ * @property {AcpListedSession[]} sessions
+ * @property {string|null} nextCursor Opaque runtime cursor; pass it back unchanged.
+ */
 /** @typedef {WithoutSessionId<import("@agentclientprotocol/sdk").RequestPermissionRequest>} AcpPermissionInteractionPayload */
 /**
  * `CreateElicitationRequest` includes a future-mode string index signature.
@@ -108,19 +130,12 @@ const DEFAULT_PROCESS_POLICY = Object.freeze({
  * @property {Record<string, unknown>} [context]
  */
 
-export class AcpClientError extends Error {
-  /**
-   * @param {string} code
-   * @param {string} message
-   * @param {Record<string, unknown>} [details]
-   */
-  constructor(code, message, details = {}) {
-    super(message);
-    this.name = "AcpClientError";
-    this.code = code;
-    this.details = { ...details, code };
-  }
-}
+export {
+  AcpClientError,
+  encodeAcpProviderSessionId,
+  validateAcpProfileId,
+  validateAcpProviderSessionId,
+};
 
 /** @param {unknown} value @param {string} label @returns {string} */
 function requiredString(value, label) {
@@ -128,17 +143,6 @@ function requiredString(value, label) {
     throw new AcpClientError("invalid_profile", `${label} must be a non-empty trimmed string without NUL bytes.`);
   }
   return value;
-}
-
-/** @param {string} profileId @returns {string} */
-export function validateAcpProfileId(profileId) {
-  if (typeof profileId !== "string" || !PROFILE_ID_RE.test(profileId)) {
-    throw new AcpClientError(
-      "invalid_profile_id",
-      "ACP profile id must use 1-128 ASCII letters, digits, dots, underscores, or hyphens and start alphanumeric.",
-    );
-  }
-  return profileId;
 }
 
 /** @param {unknown} value @param {string} label @param {number} fallback @returns {number} */
@@ -465,8 +469,9 @@ function elicitationResponse(value) {
  * @returns {WithoutSessionId<T>}
  */
 function hostInteractionPayload(value) {
-  const { sessionId: _sessionId, ...payload } = /** @type {T & {sessionId?: unknown}} */ (value);
-  return /** @type {WithoutSessionId<T>} */ (payload);
+  return /** @type {WithoutSessionId<T>} */ (
+    sanitizeAcpHostValue(value, [/** @type {T & {sessionId?: unknown}} */ (value).sessionId])
+  );
 }
 
 /**
@@ -541,6 +546,7 @@ export async function connectAcpProfile(profileId, options) {
   const exitPromise = childTermination(child);
   const updates = new Map();
   const activePromptSessions = new Set();
+  let hostRequestSequence = 0;
   let closed = false;
 
   const app = client({ name: "mono-agent-agent-runtime-acp" });
@@ -556,7 +562,7 @@ export async function connectAcpProfile(profileId, options) {
       } else if (typeof options.onAcpInteractionRequest === "function") {
         result = await options.onAcpInteractionRequest(
           { kind: "permission", profileId, payload: hostInteractionPayload(ctx.params) },
-          context,
+          { ...context, requestId: `acp-request:${profileId}:${++hostRequestSequence}` },
         );
       }
     } catch {
@@ -618,7 +624,7 @@ export async function connectAcpProfile(profileId, options) {
         } else if (typeof options.onAcpInteractionRequest === "function") {
           result = await options.onAcpInteractionRequest(
             { kind: "elicitation", profileId, payload: hostElicitationPayload(ctx.params) },
-            context,
+            { ...context, requestId: `acp-request:${profileId}:${++hostRequestSequence}` },
           );
         }
       } catch {
@@ -952,41 +958,16 @@ function validateMcpServers(servers, descriptor, initializeResult) {
   });
 }
 
-/** @param {string} profileId @param {string} sessionId */
-export function encodeAcpProviderSessionId(profileId, sessionId) {
-  validateAcpProfileId(profileId);
-  requiredString(sessionId, "ACP session id");
-  if (Buffer.byteLength(sessionId, "utf8") > 4096) {
-    throw new AcpClientError("invalid_session_id", "ACP session id exceeds 4096 bytes.");
+/** @param {string} profileId @param {any} request */
+function protocolSessionListRequest(profileId, request) {
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    throw new AcpClientError("invalid_request", "ACP session/list request must be an object.");
   }
-  return `acp:v1:${profileId}:${Buffer.from(sessionId, "utf8").toString("base64url")}`;
-}
-
-/** @param {string} providerSessionId */
-export function decodeAcpProviderSessionId(providerSessionId) {
-  if (typeof providerSessionId !== "string") {
-    throw new AcpClientError("invalid_session_id", "ACP provider session id must be a string.");
-  }
-  if (providerSessionId.length > 5_600) {
-    throw new AcpClientError("invalid_session_id", "ACP provider session id exceeds the supported length.");
-  }
-  const match = /^acp:v1:([^:]+):([^:]+)$/.exec(providerSessionId);
-  if (!match) throw new AcpClientError("invalid_session_id", "Invalid ACP provider session id.");
-  const profileId = validateAcpProfileId(match[1]);
-  const encoded = match[2];
-  if (!BASE64URL_RE.test(encoded)) throw new AcpClientError("invalid_session_id", "Invalid ACP session encoding.");
-  const bytes = Buffer.from(encoded, "base64url");
-  if (bytes.length === 0 || bytes.toString("base64url") !== encoded) {
-    throw new AcpClientError("invalid_session_id", "Non-canonical ACP session encoding.");
-  }
-  let sessionId;
-  try {
-    sessionId = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    throw new AcpClientError("invalid_session_id", "ACP session id is not valid UTF-8.");
-  }
-  requiredString(sessionId, "ACP session id");
-  return { profileId, sessionId };
+  const { cursor, _meta: _meta, ...rest } = request;
+  return {
+    ...rest,
+    ...(cursor == null ? {} : { cursor: decodeAcpSessionCursor(profileId, cursor) }),
+  };
 }
 
 /** Remove extension metadata recursively from operation results. @param {any} value */
@@ -1050,18 +1031,26 @@ export async function logoutAcpProfile(profileId, options) {
   }
 }
 
-/** @param {string} profileId @param {any} [request] @param {AcpClientHostOptions} [options] */
+/**
+ * @param {string} profileId
+ * @param {{cwd?: string|null, cursor?: string|null}} [request]
+ * @param {AcpClientHostOptions} [options]
+ * @returns {Promise<AcpSessionListResult>}
+ */
 export async function listAcpSessions(profileId, request = {}, options = /** @type {any} */ ({})) {
+  const protocolRequest = protocolSessionListRequest(profileId, request);
   const connection = await connectAcpProfile(profileId, { ...options, operation: "list_sessions" });
   try {
-    const result = await connection.listSessions(request);
+    const result = await connection.listSessions(protocolRequest);
     return {
       profileId,
       sessions: (result.sessions || []).map((session) => ({
-        ...withoutMeta(session),
+        ...sanitizeAcpHostValue(session, [session.sessionId, result.nextCursor]),
         providerSessionId: encodeAcpProviderSessionId(profileId, session.sessionId),
       })),
-      nextCursor: result.nextCursor ?? null,
+      nextCursor: typeof result.nextCursor === "string"
+        ? encodeAcpSessionCursor(profileId, result.nextCursor)
+        : null,
     };
   } finally {
     await connection.close();
