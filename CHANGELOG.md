@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## 0.18.1 — ACP handle confidentiality and lifecycle hardening (2026-08-02)
+
+### Agent Client Protocol
+
+- ACP provider-session ids and pagination cursors are now confidential,
+  authenticated v2 handles. Hosts supply one persistent 32-byte binary key;
+  the runtime encrypts raw remote values, binds every token to its profile and
+  kind, and rejects missing-key, legacy-v1, tampered, wrong-key, cross-profile,
+  and cross-kind values before profile resolution or process launch.
+- ACP SDK payload-bearing diagnostics are guarded only while an owned ACP
+  transport processes input. Malformed or hostile notifications can no longer
+  copy form responses or URL credentials into process-wide console output, and
+  concurrent non-ACP console behavior remains unchanged.
+- `@mono-agent/runtime-adapter` now exposes the ACP handle key on its host and
+  run contracts, and requires it for session list/delete controls. Key material
+  is defensively snapshotted across asynchronous callbacks and derived cipher
+  keys are cleared after construction.
+
+### Release coordination
+
+- All 22 catalog-publishable packages move together to 0.18.1. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.18.0 — ACP clients and mono-agent exposure (2026-08-02)
 
 ### Agent Client Protocol
