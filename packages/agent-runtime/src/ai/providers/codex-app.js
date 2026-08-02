@@ -602,8 +602,12 @@ const CODEX_NO_TOOL_REQUEST_METHODS = new Set([
 
 function codexMcpConfig(mcpServers = {}) {
   const servers = {};
+  const invalidNames = [];
   for (const [name, cfg] of Object.entries(mcpServers || {})) {
-    if (!/^[A-Za-z0-9_-]+$/.test(name)) continue;
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+      invalidNames.push(name);
+      continue;
+    }
     if (cfg?.command) {
       servers[name] = {
         command: cfg.command,
@@ -622,7 +626,13 @@ function codexMcpConfig(mcpServers = {}) {
       };
     }
   }
-  return servers;
+  return { servers, invalidNames };
+}
+
+function codexMcpServerNameProblem(invalidNames) {
+  if (!invalidNames.length) return null;
+  const names = invalidNames.map((name) => JSON.stringify(name)).join(", ");
+  return `Direct Codex cannot configure MCP server ${invalidNames.length === 1 ? "name" : "names"} ${names}. Rename ${invalidNames.length === 1 ? "it" : "them"} to use only ASCII letters, numbers, "_", or "-".`;
 }
 
 function stableConfigJson(value) {
@@ -1271,8 +1281,12 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   const makeClient = options.codexClientFactory || createCodexAppServerClient;
   const keepAlive = options.sessionKeepAlive === true;
   const noToolsProbe = options.codexNoToolsProbe === true;
-  const configuredMcpServers = codexMcpConfig(options.mcpServers);
-  const configuredMcpServerNames = new Set(Object.keys(configuredMcpServers));
+  const {
+    servers: configuredMcpServers,
+    invalidNames: invalidMcpServerNames,
+  } = codexMcpConfig(options.mcpServers);
+  const configuredMcpServerNameList = Object.keys(configuredMcpServers);
+  const configuredMcpServerNames = new Set(configuredMcpServerNameList);
   const mcpConfigFingerprint = codexMcpConfigFingerprint(configuredMcpServers);
   // The bridge TTL is a backstop behind the host's session policy; the grace
   // keeps the host's lazy expiry firing first so eviction stays host-driven.
@@ -1313,6 +1327,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   let codexDiagnostics = {};
   let noToolsViolation = null;
   let serverRequestViolation = null;
+  let sentMcpServerNames = [];
   let resolveTurn;
   let resolveTurnReady;
   let resolveLiveInputStop;
@@ -2408,12 +2423,21 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         thinkingEnabled: null,
         structuredOutputEnforced: !!options.outputSchema,
         subagentInvoked: subagentCapabilities.invoked,
-        mcpServersUsed: Object.keys(options.mcpServers || {}),
+        mcpServersUsed: sentMcpServerNames,
         nativeSubagentsUsed: subagentCapabilities.names,
         toolCompactionApplied: false,
         contextCompactionApplied: null,
       }),
     };
+  }
+
+  const mcpServerNameProblem = codexMcpServerNameProblem(invalidMcpServerNames);
+  if (mcpServerNameProblem) {
+    return sessionUnavailableResult(
+      "skipped_capability_mismatch",
+      mcpServerNameProblem,
+      "codex_mcp_server_name_invalid",
+    );
   }
 
   if (resolveSandboxPolicy(options.toolContext, options.sandboxPolicy) !== undefined) {
@@ -2463,6 +2487,8 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         "codex_session_config_mismatch",
       );
     }
+    // A retained thread keeps the MCP configuration sent with thread/start.
+    sentMcpServerNames = noToolsProbe ? [] : configuredMcpServerNameList;
   }
 
   try {
@@ -2520,6 +2546,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         config.model_reasoning_effort = normalizedEffort;
         if (normalizedEffort !== "none") config.model_reasoning_summary = "auto";
       }
+      sentMcpServerNames = Object.keys(mcpServers);
       // The codex app-server protocol exposes thread/start but no thread/load
       // primitive, so cold continuations always start a fresh thread; a
       // thread is only resumable while its subprocess stays live in
@@ -2718,7 +2745,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         thinkingEnabled: null,
         structuredOutputEnforced: !!options.outputSchema,
         subagentInvoked: subagentCapabilities.invoked,
-        mcpServersUsed: Object.keys(options.mcpServers || {}),
+        mcpServersUsed: sentMcpServerNames,
         nativeSubagentsUsed: subagentCapabilities.names,
         toolCompactionApplied: false,
         contextCompactionApplied: null,
@@ -2753,7 +2780,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         thinkingEnabled: null,
         structuredOutputEnforced: !!options.outputSchema,
         subagentInvoked: subagentCapabilities.invoked,
-        mcpServersUsed: Object.keys(options.mcpServers || {}),
+        mcpServersUsed: sentMcpServerNames,
         nativeSubagentsUsed: subagentCapabilities.names,
         toolCompactionApplied: false,
         contextCompactionApplied: null,
