@@ -4,6 +4,7 @@ import {
   type AgentLiveInputUnavailableReason,
   type AgentAttachment,
   type AgentStreamWireFrame,
+  type AgentToolEnvironment,
   type ChannelAskAnswer,
   type ChannelAskSnapshot,
   type ChannelAskSubmissionResult,
@@ -36,6 +37,7 @@ export interface OperatorInfo {
   readonly supportsHistoryAppend: boolean;
   readonly supportsAskUser: boolean;
   readonly supportsLiveInput: boolean;
+  readonly supportsToolEnvironment?: boolean;
 }
 
 export type OperatorLiveInputResult =
@@ -55,6 +57,8 @@ export interface OperatorTurnInput {
   readonly text: string;
   readonly attachments: readonly AgentAttachment[];
   readonly metadata: Readonly<Record<string, unknown>>;
+  readonly client?: "web" | "acp";
+  readonly toolEnvironment?: AgentToolEnvironment;
   readonly signal: AbortSignal;
   readonly onFrame: (frame: AgentStreamWireFrame) => void | Promise<void>;
 }
@@ -115,6 +119,7 @@ export class OperatorClient {
       supportsHistoryAppend: capabilities?.historyAppend === true,
       supportsAskUser: capabilities?.askUser === true,
       supportsLiveInput: capabilities?.liveInput === true,
+      ...(capabilities?.toolEnvironment === true ? { supportsToolEnvironment: true } : {}),
     };
   }
 
@@ -126,8 +131,9 @@ export class OperatorClient {
       body: JSON.stringify({
         conversationId: input.conversationId,
         text: input.text,
-        client: "web",
+        client: input.client ?? "web",
         metadata: input.metadata,
+        ...(input.toolEnvironment === undefined ? {} : { toolEnvironment: input.toolEnvironment }),
         ...(input.attachments.length === 0 ? {} : { attachments: input.attachments }),
       }),
     });

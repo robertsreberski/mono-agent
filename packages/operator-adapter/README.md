@@ -134,6 +134,7 @@ DEFAULT_TUI_PORT
 LoadTuiAdapterConfigInput
 MAX_FRAME_BYTES
 RedactedTuiAdapterConfig
+RequestToolEnvironmentConfig
 TUI_CONFIG_FIELDS
 TUI_WIRE_SCHEMA
 TuiAdapterConfig

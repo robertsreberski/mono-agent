@@ -13,6 +13,7 @@ export const COMMON_CAPABILITIES = {
   supports_builtin_tools: true,
   supports_live_input: true,
   supports_native_subagents: true,
+  supports_request_tool_environment: false,
   supports_fast_mode: false,
   tool_policy: TOOL_POLICY_PROJECTED,
 };
@@ -34,6 +35,7 @@ export const RUNTIME_CAPABILITIES = {
     // The pi-native bridge does not (yet) wire native subagents / an AskAgent
     // tool, so advertise no support rather than letting callers expect it.
     supports_native_subagents: false,
+    supports_request_tool_environment: true,
   },
   codex: {
     runtime: "cli",

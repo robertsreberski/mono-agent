@@ -424,6 +424,13 @@ export interface AgentRequestBase {
   readonly metadata?: AgentRequestMetadata;
   readonly attachments?: readonly AgentAttachment[];
   /**
+   * Host-only environment passed to process tools for this one request. It is
+   * deliberately kept out of metadata, prompts, history, traces, and MCP
+   * server startup. Adapters must validate this boundary before constructing
+   * it; runtimes still treat it as immutable per-run data.
+   */
+  readonly toolEnvironment?: AgentToolEnvironment;
+  /**
    * Who is speaking this turn. EXPLICITLY MODEL-VISIBLE (name and handle only;
    * `sender.id` stays host-only) -- contrast `replyTo`/`continuation` below.
    * Channels with no human identity (cron, webhook, single-user CLI) omit it and
@@ -447,6 +454,12 @@ export interface AgentRequestBase {
   readonly replyTo?: AgentReplyTarget;
   /** Host-only continuation synthesis controls; never model-visible. */
   readonly continuation?: AgentContinuationTurn;
+}
+
+export interface AgentToolEnvironment {
+  readonly schema: 1;
+  readonly values: Readonly<Record<string, string>>;
+  readonly pathPrepend?: readonly string[];
 }
 
 export interface AgentResponse {

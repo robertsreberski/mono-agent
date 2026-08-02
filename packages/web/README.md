@@ -200,6 +200,12 @@ DeliverWebNotificationOptions
 DeliverWebNotificationResult
 DiscoverOperatorAgentsOptions
 DiscoveredOperatorAgent
+OperatorClient
+OperatorClientOptions
+OperatorConnection
+OperatorInfo
+OperatorTurnInput
+OperatorTurnResult
 PatchWebAgentInput
 PatchWebThreadInput
 StartWebLiveInputInput

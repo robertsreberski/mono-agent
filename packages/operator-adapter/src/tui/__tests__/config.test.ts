@@ -69,6 +69,33 @@ describe("loadTuiAdapterConfig", () => {
     expect((await loadTuiAdapterConfig({ env: { MONO_AGENT_TUI_ENABLED: "false" } })).enabled).toBe(false);
   });
 
+  it("loads an explicit request-scoped tool environment allowlist", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(path, `${JSON.stringify({
+      tui: {
+        requestToolEnvironment: {
+          allowedKeys: ["MULTICA_TOKEN", "MULTICA_TASK_ID"],
+          allowPathPrepend: true,
+        },
+      },
+    })}\n`, "utf8");
+
+    await expect(loadTuiAdapterConfig({ env: {}, jsonPath: path })).resolves.toMatchObject({
+      requestToolEnvironment: {
+        allowedKeys: ["MULTICA_TOKEN", "MULTICA_TASK_ID"],
+        allowPathPrepend: true,
+      },
+    });
+  });
+
+  it("rejects dangerous request tool environment names", async () => {
+    for (const key of ["PATH", "HOME", "NODE_OPTIONS", "DYLD_INSERT_LIBRARIES", "BASH_ENV"]) {
+      await expect(loadTuiAdapterConfig({
+        env: { MONO_AGENT_TUI_REQUEST_TOOL_ENVIRONMENT_ALLOWED_KEYS: key },
+      })).rejects.toMatchObject({ code: "invalid_config" });
+    }
+  });
+
   it("rejects a malformed base path", async () => {
     await expect(loadTuiAdapterConfig({ env: { MONO_AGENT_TUI_BASE_PATH: "no-slash" } }))
       .rejects.toMatchObject({ code: "invalid_config" });

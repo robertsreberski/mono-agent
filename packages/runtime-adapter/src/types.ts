@@ -1,3 +1,5 @@
+import type { AgentToolEnvironment } from "@mono-agent/agent-contracts";
+
 import type { PreparedSandboxCommand, SandboxCommandSpec, SandboxPolicy } from "./sandbox.js";
 
 export interface MonoRuntimeSandboxEngine {
@@ -50,6 +52,7 @@ export interface MonoRuntimeBackendCapabilities {
   readonly supports_builtin_tools?: boolean;
   readonly supports_live_input?: boolean;
   readonly supports_native_subagents?: boolean;
+  readonly supports_request_tool_environment?: boolean;
   readonly tool_policy?: "projected" | "allow_all_only";
   readonly [key: string]: unknown;
 }
@@ -179,6 +182,8 @@ export interface RuntimeRunOptions {
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];
   readonly abortSignal: AbortSignal;
+  /** Host-only environment applied to Bash, Exec, and their nested subagents for this run. */
+  readonly toolEnvironment?: AgentToolEnvironment;
   readonly executionMode?: string;
   readonly onEvent?: (event: RuntimeEventLike) => void;
   readonly effort?: string;

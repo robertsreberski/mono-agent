@@ -24,6 +24,29 @@ afterEach(() => {
 });
 
 describe("Exec", () => {
+  it("applies a request environment and PATH prepend only to the current tool run", async () => {
+    const workspace = tempWorkspace();
+    const ctx = {
+      workspace,
+      sandbox: passthroughSandbox,
+      toolEnvironment: {
+        schema: 1,
+        values: { MULTICA_TASK_ID: "task-fixture" },
+        pathPrepend: [workspace],
+      },
+    };
+    const injected = await execToolRun({
+      executable: process.execPath,
+      args: ["--eval", "process.stdout.write(JSON.stringify({task:process.env.MULTICA_TASK_ID,path:process.env.PATH?.split(require('node:path').delimiter)[0]}))"],
+    }, { ctx });
+    expect(JSON.parse(injected.text)).toEqual({ task: "task-fixture", path: workspace });
+
+    const clean = await execToolRun({
+      executable: process.execPath,
+      args: ["--eval", "process.stdout.write(process.env.MULTICA_TASK_ID ?? 'absent')"],
+    }, options(workspace));
+    expect(clean.text).toBe("absent");
+  });
   it("passes argv literally without shell expansion", async () => {
     const workspace = tempWorkspace();
     const marker = resolve(workspace, "must-not-exist");
@@ -95,6 +118,17 @@ describe("Exec", () => {
 });
 
 describe("Bash process outcomes and Pi bridge metadata", () => {
+  it("makes the request environment available to Bash without enabling profiles", async () => {
+    const workspace = tempWorkspace();
+    const result = await bashToolRun({ command: "printf %s \"$MULTICA_AGENT_ID\"" }, {
+      ctx: {
+        workspace,
+        sandbox: passthroughSandbox,
+        toolEnvironment: { schema: 1, values: { MULTICA_AGENT_ID: "agent-fixture" } },
+      },
+    });
+    expect(result.text).toBe("agent-fixture");
+  });
   it("rejects non-string and NUL-containing commands before sandbox preparation", async () => {
     const workspace = tempWorkspace();
     const prepareCommand = vi.fn();

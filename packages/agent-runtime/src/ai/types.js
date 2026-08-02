@@ -156,6 +156,7 @@
  * @property {Object} [outputSchema]
  * @property {string} [runArtifactDir]
  * @property {AbortSignal} [abortSignal]
+ * @property {{schema: 1, values: Readonly<Record<string, string>>, pathPrepend?: readonly string[]}} [toolEnvironment] Host-only environment for Bash, Exec, and nested subagents in this run.
  * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy] Per-run sandbox policy; merged monotonically with the host policy (see resolveSandboxPolicy, agent/tools/shared/tool-context.js).
  * @property {import('../agent/sandbox-seam.js').RuntimeSandboxEngine} [sandboxEngine] Per-run concrete sandbox engine handed to the active sandbox implementation.
  * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Per-run sandbox IMPLEMENTATION override; when set it enforces this run's tools instead of the host/ToolContext impl (precedence run > host > passthrough). Policy DATA still merges monotonically (I13); this overrides only the enforcing code.
@@ -279,6 +280,7 @@
  * @property {boolean} [supports_builtin_tools]
  * @property {boolean} [supports_live_input]
  * @property {boolean} [supports_native_subagents]
+ * @property {boolean} [supports_request_tool_environment]
  * @property {boolean} [supports_fast_mode]
  * @property {"projected"|"allow_all_only"} [tool_policy] Whether the bridge can
  *   project named allow/deny policies or accepts only a semantically unrestricted
