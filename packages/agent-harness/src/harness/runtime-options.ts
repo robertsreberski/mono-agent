@@ -92,12 +92,12 @@ export function sameRuntimeModel(a: RuntimeModelReference, b: RuntimeModelRefere
  */
 export function executionModeForOverride(
   model: RuntimeModelReference,
-  hostMode: string | undefined,
+  hostMode: RuntimeExecutionMode | undefined,
 ): RuntimeExecutionMode {
   if (hostMode !== undefined) {
     try {
       assertExecutionModeCompatible(model, hostMode);
-      return hostMode as RuntimeExecutionMode;
+      return hostMode;
     } catch {
       // Host mode is incompatible with the override model — use the model default.
     }

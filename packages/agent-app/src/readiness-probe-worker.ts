@@ -1,10 +1,16 @@
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 
-import { createMonoRuntime, createPiOAuthApiKeyResolver, PI_TRANSPORTS } from "@mono-agent/runtime-adapter";
+import {
+  createMonoRuntime,
+  createPiOAuthApiKeyResolver,
+  isRuntimeExecutionMode,
+  PI_TRANSPORTS,
+} from "@mono-agent/runtime-adapter";
 import type {
   CreateMonoRuntimeOptions,
   MonoRuntimeLike,
   PiTransport,
+  RuntimeExecutionMode,
   RuntimeEventLike,
   RuntimeModelReference,
   RuntimeResult,
@@ -35,7 +41,7 @@ export interface ReadinessWorkerData {
   readonly cwd: string;
   readonly runtime: {
     readonly model: RuntimeModelReference;
-    readonly executionMode?: string;
+    readonly executionMode?: RuntimeExecutionMode;
     readonly effort?: string;
     readonly workspace: string;
     readonly artifactDir: string;
@@ -112,7 +118,7 @@ export function readWorkerData(value: unknown): ReadinessWorkerData | undefined 
   const runtime = record.runtime;
   if (
     !isRuntimeModelReference(runtime.model)
-    || (runtime.executionMode !== undefined && typeof runtime.executionMode !== "string")
+    || (runtime.executionMode !== undefined && !isRuntimeExecutionMode(runtime.executionMode))
     || (runtime.effort !== undefined && typeof runtime.effort !== "string")
     || typeof runtime.workspace !== "string"
     || typeof runtime.artifactDir !== "string"

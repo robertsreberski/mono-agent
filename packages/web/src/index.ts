@@ -26,12 +26,14 @@ export type {
 } from "./notification-client.js";
 
 export {
+  discoverAcpBridgeAgents,
   defaultTraceRegistryDir,
   discoverOperatorAgents,
   isTrustedOperatorBaseUrl,
   operatorBaseUrlFromMetadata,
 } from "./discovery.js";
 export type {
+  DiscoverAcpBridgeAgentsOptions,
   DiscoverOperatorAgentsOptions,
   DiscoveredOperatorAgent,
 } from "./discovery.js";
@@ -46,6 +48,10 @@ export type {
 } from "./operator-client.js";
 
 export {
+  ACP_BRIDGE_DISCOVERY_SCHEMA,
+  ACP_BRIDGE_SOURCE_SCHEMA,
+  ACP_BRIDGE_VERSION,
+  ACP_PROTOCOL_VERSION,
   WEB_API_VERSION,
   WEB_MAX_CONCURRENT_UPLOADS,
   WEB_MAX_ACTIVE_ATTACHMENT_TURN_BYTES,
@@ -58,6 +64,9 @@ export {
   WEB_STAGED_UPLOAD_TTL_MS,
 } from "./contracts.js";
 export type {
+  AcpBridgeDiscovery,
+  AcpBridgeSourceDescriptor,
+  AcpBridgeSourceHealth,
   CreateWebThreadInput,
   CreateWebUploadInput,
   PatchWebAgentInput,

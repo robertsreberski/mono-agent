@@ -167,6 +167,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const permissionMode = readPermissionMode(input.env.MONO_AGENT_PERMISSION_MODE);
   const concurrency = readConcurrencyConfig(input.env);
   const subagents = readSubagentsConfig(input.env, cwd);
+  assertNoStaticAcpRoutes(model, fallbackModels, fallbacks, subagents);
   const runtime: MonoAgentConfig["runtime"] = {
     model,
     ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
@@ -690,6 +691,52 @@ function assertUniqueFallbackRoutes(
     }
     seen.set(key, route.path);
   }
+}
+
+function assertNoStaticAcpRoutes(
+  primary: MonoAgentConfig["runtime"]["model"],
+  legacy: readonly MonoAgentConfig["runtime"]["model"][],
+  canonical: readonly RuntimeFallbackConfig[],
+  subagents: MonoAgentConfig["subagents"],
+): void {
+  const routes: Array<{
+    model: MonoAgentConfig["runtime"]["model"];
+    path: string;
+    env: string;
+  }> = [
+    { model: primary, path: "runtime.model", env: "MONO_AGENT_MODEL" },
+    ...legacy.map((model, index) => ({
+      model,
+      path: `runtime.fallbackModels[${index}]`,
+      env: "MONO_AGENT_FALLBACK_MODELS",
+    })),
+    ...canonical.map((entry, index) => ({
+      model: entry.model,
+      path: `runtime.fallbacks[${index}]`,
+      env: "MONO_AGENT_FALLBACKS_JSON",
+    })),
+  ];
+  if (subagents?.enabled === true) {
+    for (const [index, definition] of (subagents.definitions || []).entries()) {
+      if (definition.model === undefined) continue;
+      routes.push({
+        model: definition.model,
+        path: `subagents.definitions[${index}].model`,
+        env: "MONO_AGENT_SUBAGENTS_JSON",
+      });
+    }
+  }
+  const route = routes.find((candidate) => candidate.model.sdk === "acp");
+  if (route === undefined) return;
+  throw new MonoAgentConfigError(
+    "incompatible_execution_mode",
+    "Static mono-agent configuration cannot consume an ACP profile because the app has no host profile resolver. Use the programmatic runtime adapter from a host that supplies resolveAcpProfile.",
+    {
+      env: route.env,
+      path: route.path,
+      model: modelReferenceKey(route.model),
+    },
+  );
 }
 
 function readAgentName(raw: string | undefined): string | undefined {

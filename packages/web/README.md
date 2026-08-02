@@ -19,6 +19,8 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 
 - Discover local agents through the shared trace-source registry and probe their
   loopback operator endpoints.
+- Publish a separate sanitized ACP import contract with canonical agent-owned
+  workspace and compatibility metadata, never operator credentials or paths.
 - Persist agents, threads, messages, structured reasoning/tool/telemetry parts,
   revisions, turns, attachments, and agent pin preferences under
   `~/.mono-agent/web`.
@@ -180,6 +182,7 @@ the turn also cancels its pending form.
 | `prepareWebState` / `prepareWebStatePaths` | Create and validate the owner-private state layout before starting a custom service. |
 | `resetWebState` | Perform the explicit whole-store reset used by host lifecycle commands. |
 | `deliverWebNotification` | Deliver one idempotent cron/webhook result through the private loopback ingress. |
+| `discoverAcpBridgeAgents` | Discover Worklab-importable ACP sources through a credential-free, versioned ownership contract. |
 | `discoverOperatorAgents` | Read trusted operator endpoints from trace-source manifests. |
 | `WebBootstrap`, `WebThreadDetail`, `WebEvent`, and related `Web*` DTOs | Build another client against the versioned browser API. |
 
@@ -191,6 +194,13 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/web`**
 
 ```text
+ACP_BRIDGE_DISCOVERY_SCHEMA
+ACP_BRIDGE_SOURCE_SCHEMA
+ACP_BRIDGE_VERSION
+ACP_PROTOCOL_VERSION
+AcpBridgeDiscovery
+AcpBridgeSourceDescriptor
+AcpBridgeSourceHealth
 CreateWebThreadInput
 CreateWebUploadInput
 DEFAULT_WEB_HOST
@@ -198,6 +208,7 @@ DEFAULT_WEB_PORT
 DeliverWebNotificationInput
 DeliverWebNotificationOptions
 DeliverWebNotificationResult
+DiscoverAcpBridgeAgentsOptions
 DiscoverOperatorAgentsOptions
 DiscoveredOperatorAgent
 OperatorClient
@@ -246,6 +257,7 @@ WebThreadTrigger
 defaultTraceRegistryDir
 defaultWebStateDir
 deliverWebNotification
+discoverAcpBridgeAgents
 discoverOperatorAgents
 isTrustedOperatorBaseUrl
 operatorBaseUrlFromMetadata
@@ -259,8 +271,9 @@ startWebServer
 <!-- public-api-inventory:end -->
 
 The primary exports are `startWebServer`, `prepareWebState`, `resetWebState`,
-`defaultWebStateDir`, the versioned `Web*` DTOs, API/upload limit constants, and
-the trace-registry discovery helpers. `startWebServer()` returns a handle with
+`defaultWebStateDir`, the versioned `Web*` DTOs, API/upload limit constants,
+the credential-bearing internal operator discovery helper, and the sanitized
+`discoverAcpBridgeAgents` import contract. `startWebServer()` returns a handle with
 the actual bound address/port plus idempotent `stop()` and `close()` methods.
 
 The browser API is rooted at `/api/v1`:

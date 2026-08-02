@@ -80,7 +80,7 @@ export const packageCatalog = [
     dir: "agent-runtime",
     name: "@mono-agent/agent-runtime",
     category: "runtime",
-    responsibility: "Provides five runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, OpenCode app-server, Pi SDK); direct OpenCode requires stable CLI >=1.15.0 on PATH.",
+    responsibility: "Provides six runtime bridges (ACP v1, Claude SDK, Claude Code CLI, Codex app-server, OpenCode app-server, Pi SDK); direct OpenCode requires stable CLI >=1.15.0 on PATH.",
     allowedDependencyCategories: ["runtime"],
     publishable: true,
   },

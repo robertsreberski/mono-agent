@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+## 0.18.1 — ACP handle confidentiality and lifecycle hardening (2026-08-02)
+
+### Agent Client Protocol
+
+- ACP provider-session ids and pagination cursors are now confidential,
+  authenticated v2 handles. Hosts supply one persistent 32-byte binary key;
+  the runtime encrypts raw remote values, binds every token to its profile and
+  kind, and rejects missing-key, legacy-v1, tampered, wrong-key, cross-profile,
+  and cross-kind values before profile resolution or process launch.
+- ACP SDK payload-bearing diagnostics are guarded only while an owned ACP
+  transport processes input. Malformed or hostile notifications can no longer
+  copy form responses or URL credentials into process-wide console output, and
+  concurrent non-ACP console behavior remains unchanged.
+- `@mono-agent/runtime-adapter` now exposes the ACP handle key on its host and
+  run contracts, and requires it for session list/delete controls. Key material
+  is defensively snapshotted across asynchronous callbacks and derived cipher
+  keys are cleared after construction.
+
+### Release coordination
+
+- All 22 catalog-publishable packages move together to 0.18.1. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
+## 0.18.0 — ACP clients and mono-agent exposure (2026-08-02)
+
+### Agent Client Protocol
+
+- `@mono-agent/agent-runtime` adds a product-neutral ACP v1 stdio client and a
+  sixth runtime bridge. Hosts resolve `acp:<profile-id>` references into exact
+  argv, environment, ownership, capability, session, and process policies; the
+  runtime handles initialize, new/load/resume, prompt updates, semantic
+  cancellation, permissions, elicitation, authentication, logout, and session
+  management without persisting host interaction values.
+- `@mono-agent/runtime-adapter` exposes the same ACP connection, management,
+  profile-id, and provider-session helpers through its supported facade.
+- `mono-agent bridge acp --discover` returns sanitized, versioned descriptors
+  for installed agents, and `mono-agent bridge acp --source-id <id>` exposes a
+  selected running instance as an ACP v1 core-session bridge. It supports text
+  and resource-link input, updates, cancellation, and form elicitation while
+  keeping configuration, workspace, MCP, tools, and credentials agent-owned.
+  Client-supplied MCP servers, client filesystem/terminal methods, media
+  attachments, and additional directories remain explicitly unsupported.
+
+### Release reliability
+
+- The `create-mono-agent --help` delegator now maps to the supported init help
+  command, so the published-CLI release smoke tests the actual bin symlink and
+  exits successfully.
+- All 22 catalog-publishable packages move together to 0.18.0. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ### Subagents: the `Agent` tool
 
 - The main agent can now deploy independent subagents on the pi runtime. `Agent`

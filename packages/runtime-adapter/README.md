@@ -96,6 +96,7 @@ provider kernel:
 | API | Use it for |
 | --- | --- |
 | `createMonoRuntime()` | Construct the typed runtime facade and inject mono-agent's sandbox implementation |
+| `probeAcpProfile()` / ACP management helpers | Operate a host-resolved ACP profile while injecting the same sandbox implementation |
 | `parseMonoRuntimeModelReference()` | Parse and validate a canonical model string |
 | `listMonoRuntimeBackends()` / `describeMonoRuntimeSupport()` / `monoRuntimeSupportsLiveInput()` | Present backend capabilities and compatibility without starting a provider |
 | `createSandboxPolicy()` / `failClosedSandboxPolicy()` | Build explicit filesystem and network policy data |
@@ -113,6 +114,9 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/runtime-adapter`**
 
 ```text
+AcpCallbackContext
+AcpInteractionRequest
+AcpProfileDescriptor
 AgentRuntimeCustomModel
 AgentRuntimeCustomProvider
 CodedError
@@ -128,6 +132,12 @@ LocalProviderRuntimeOptions
 LocalProviderType
 MANAGED_SRT_TREE_SHA256
 ModelEffortLevels
+MonoAcpControlOptions
+MonoAcpInteractionHandler
+MonoAcpInteractionRequest
+MonoAcpListSessionsRequest
+MonoAcpProfileResolver
+MonoAcpSessionControlOptions
 MonoRuntimeApprovalDecision
 MonoRuntimeApprovalRequest
 MonoRuntimeAttemptContext
@@ -194,11 +204,13 @@ SrtSandboxEngineOptions
 SrtSettings
 assertExecutionModeCompatible
 assertParsedRuntimeModelReference
+authenticateAcpProfile
 createMonoRuntime
 createPiOAuthApiKeyResolver
 createSandboxPolicy
 createSrtSandboxEngine
 defaultExecutionModeForModel
+deleteAcpSession
 describeMonoRuntimeSupport
 describeSandboxEffectiveState
 discoverClaudeSdkModels
@@ -209,7 +221,9 @@ isPlainObject
 isPrivateBaseUrl
 isRuntimeExecutionMode
 isValidMcpServerName
+listAcpSessions
 listMonoRuntimeBackends
+logoutAcpProfile
 managedSrtInstallRoot
 mergeSandboxPolicies
 modelReferenceKey
@@ -219,6 +233,7 @@ networkPolicyAllowsUrl
 parseMcpServers
 parseMonoRuntimeModelReference
 prepareSandboxedCommand
+probeAcpProfile
 resolveModelEffortLevels
 resolveRuntimePolicies
 resolveSandboxEffectiveState
@@ -238,6 +253,7 @@ Supported backend seams are exposed as data:
 
 | Backend | Model refs | Execution mode | Boundary |
 | --- | --- | --- | --- |
+| ACP v1 stdio | `acp:<profile-id>` | `acp` | Strict bounded ACP client through `@mono-agent/agent-runtime` |
 | Claude SDK | `claude:<model>` | `sdk` | Claude SDK through `@mono-agent/agent-runtime` |
 | Claude Code CLI | `claude:<model>` | `cli` | Claude Code CLI bridge through `@mono-agent/agent-runtime` |
 | Codex app CLI | `codex:<model>` | `cli` | Codex app-server bridge through `@mono-agent/agent-runtime` |
@@ -258,6 +274,29 @@ synthetic fallback for orphan lifecycle records), while optional `nativeId` and
 `agentPath` retain provider correlation metadata. Its phases are
 `agent_started`, `started`, `completed`, `message`, and `agent_completed`;
 child `message` activity is never parent answer text or a tool completion.
+
+### ACP v1 profiles
+
+ACP is a dedicated transport mode, not a CLI alias: persist and pass the tuple
+`sdk: "acp"`, model `acp:<profile-id>`, and `executionMode: "acp"`. Supply a
+typed `resolveAcpProfile` callback to `createMonoRuntime()` or the individual
+run. `onAcpInteractionRequest` handles host permission and elicitation requests
+when a profile-specific callback is absent. Bind one host-owned exact 32-byte
+binary `acpSessionTokenKey` at `createMonoRuntime()` (or on each ACP run) and
+keep it stable across restarts. The key is required for every ACP task run and
+for every operation that emits or consumes a session handle.
+
+The exported `probeAcpProfile`, `authenticateAcpProfile`, `logoutAcpProfile`,
+`listAcpSessions`, and `deleteAcpSession` wrappers accept the same resolver and
+policy context. `listAcpSessions` and `deleteAcpSession` require
+`MonoAcpSessionControlOptions`, including `acpSessionTokenKey`; probe,
+authentication, and logout do not consume handles and leave the key optional.
+The confidential authenticated v2 handles must be preserved byte-for-byte and
+must not be compared for equality. Legacy v1 handles are rejected. The wrappers
+deliberately do not accept a caller-provided sandbox implementation:
+runtime-adapter injects its owned implementation before calling the
+product-neutral kernel. The underlying agent service is never managed or
+stopped; only the operation-owned stdio bridge process is reaped.
 
 ### Local Pi providers
 

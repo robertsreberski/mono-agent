@@ -813,6 +813,75 @@ describe("loadMonoAgentConfig", () => {
     })).toThrow(/incompatible/u);
   });
 
+  it.each([
+    {
+      env: { MONO_AGENT_MODEL: "acp:worklab-profile" },
+      source: "MONO_AGENT_MODEL",
+      path: "runtime.model",
+    },
+    {
+      env: { MONO_AGENT_FALLBACK_MODELS: "acp:worklab-profile" },
+      source: "MONO_AGENT_FALLBACK_MODELS",
+      path: "runtime.fallbackModels[0]",
+    },
+    {
+      env: { MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "acp:worklab-profile" }]) },
+      source: "MONO_AGENT_FALLBACKS_JSON",
+      path: "runtime.fallbacks[0]",
+    },
+    {
+      env: {
+        MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({
+          enabled: true,
+          definitions: [{
+            name: "acp-helper",
+            description: "Delegates to an external ACP profile.",
+            prompt: "Help with the task.",
+            model: "acp:worklab-profile",
+          }],
+        }),
+      },
+      source: "MONO_AGENT_SUBAGENTS_JSON",
+      path: "subagents.definitions[0].model",
+    },
+  ])("rejects app-configured ACP routes from $source without a host resolver", ({ env, source, path }) => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, ...env },
+    })).toThrowError(expect.objectContaining({
+      code: "incompatible_execution_mode",
+      details: expect.objectContaining({ env: source, path }),
+    }));
+  });
+
+  it.each([
+    ["explicitly disabled", false],
+    ["disabled by default", undefined],
+  ])("ignores ACP routes in a $label subagent block", (_label, enabled) => {
+    const subagents = {
+      ...(enabled === undefined ? {} : { enabled }),
+      definitions: [{
+        name: "acp-helper",
+        description: "Dormant external ACP profile.",
+        prompt: "Help with the task.",
+        model: "acp:worklab-profile",
+      }],
+    };
+    const config = loadMonoAgentConfig({
+      cwd: "/repo",
+      env: {
+        ...baseEnv,
+        MONO_AGENT_SUBAGENTS_JSON: JSON.stringify(subagents),
+      },
+    });
+
+    expect(config.subagents?.enabled).toBe(enabled);
+    expect(config.subagents?.definitions?.[0]?.model).toMatchObject({
+      sdk: "acp",
+      model: "worklab-profile",
+    });
+  });
+
   it("redacts core config without adapter-specific sections", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",

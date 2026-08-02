@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  discoverAcpBridgeAgents,
   discoverOperatorAgents,
   isTrustedOperatorBaseUrl,
   operatorBaseUrlFromMetadata,
@@ -18,6 +19,112 @@ afterEach(async () => {
 });
 
 describe("operator discovery", () => {
+  it("publishes a canonical, secret-free ACP bridge discovery contract", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const registry = join(base, "registry");
+    const workspace = join(base, "workspace");
+    await mkdir(registry);
+    await mkdir(workspace);
+    const configPath = join(base, "mono-agent.config.json");
+    await writeFile(configPath, JSON.stringify({
+      runtime: { workspace: "workspace" },
+      tui: { apiKey: "must-never-leak" },
+      mcp: { servers: { private: { env: { TOKEN: "also-secret" } } } },
+    }));
+    await writeFile(join(registry, "agent-one.json"), JSON.stringify({
+      schema: "agent-runtime.trace-source.v1",
+      sourceId: "agent-one",
+      label: "Agent One",
+      artifactDir: join(base, "artifacts"),
+      status: "running",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      configPath,
+      metadata: {
+        channels: {
+          tui: {
+            kind: "running",
+            baseUrl: "http://127.0.0.1:5555/gui",
+            acpBridge: {
+              schema: "mono-agent.acp-source.v1",
+              bridgeVersion: 1,
+              protocolVersion: 1,
+              installedVersion: "0.18.0",
+              workspacePath: workspace,
+            },
+          },
+        },
+      },
+    }));
+
+    const found = await discoverAcpBridgeAgents({ registryDirs: [registry], env: {} });
+
+    expect(found).toEqual({
+      schema: "mono-agent.acp-discovery.v1",
+      bridgeVersion: 1,
+      protocolVersion: 1,
+      sources: [{
+        schema: "mono-agent.acp-source.v1",
+        bridgeVersion: 1,
+        protocolVersion: 1,
+        installedVersion: "0.18.0",
+        sourceId: "agent-one",
+        label: "Agent One",
+        health: "running",
+        compatible: true,
+        workspace: { path: workspace, owner: "agent" },
+        ownership: { configuration: "agent", workspace: "agent", mcp: "agent" },
+        constraints: {
+          promptContent: ["text", "resource_link"],
+          clientMcp: false,
+          clientFilesystem: false,
+          clientTerminal: false,
+          attachments: false,
+          additionalDirectories: false,
+        },
+        warnings: [],
+      }],
+    });
+    expect(JSON.stringify(found)).not.toMatch(/must-never-leak|also-secret|apiKey|baseUrl|configPath/u);
+  });
+
+  it("marks sources without the current bridge metadata as incompatible", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const registry = join(base, "registry");
+    await mkdir(registry);
+    const configPath = join(base, "mono-agent.config.json");
+    await writeFile(configPath, JSON.stringify({ runtime: { workspace: "." } }));
+    await writeFile(join(registry, "older-agent.json"), JSON.stringify({
+      schema: "agent-runtime.trace-source.v1",
+      sourceId: "older-agent",
+      label: "Older Agent",
+      artifactDir: join(base, "artifacts"),
+      status: "running",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      configPath,
+      metadata: {
+        channels: {
+          tui: { kind: "running", baseUrl: "http://127.0.0.1:5555/gui" },
+        },
+      },
+    }));
+
+    const found = await discoverAcpBridgeAgents({ registryDirs: [registry], env: {} });
+
+    expect(found.sources[0]).toMatchObject({
+      sourceId: "older-agent",
+      bridgeVersion: 0,
+      protocolVersion: 0,
+      installedVersion: "unknown",
+      compatible: false,
+      workspace: { path: base, owner: "agent" },
+      warnings: ["bridge_metadata_missing_or_invalid", "workspace_resolved_from_configuration"],
+    });
+  });
+
   it("accepts only credential-free loopback HTTP(S) operator URLs", () => {
     expect(isTrustedOperatorBaseUrl("http://127.0.0.1:4321/gui")).toBe(true);
     expect(isTrustedOperatorBaseUrl("https://[::1]:4321/gui")).toBe(true);

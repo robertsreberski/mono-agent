@@ -1,8 +1,7 @@
-import { createRequire } from "node:module";
-
 import { EFFORT_LEVELS } from "@mono-agent/config";
 
 import { REMOVED_COMMANDS } from "./cli-args.js";
+import { agentAppPackageVersion } from "./package-version.js";
 import { readinessProbeTimeoutDescription } from "./readiness-probe.js";
 import * as ui from "./ui.js";
 
@@ -231,12 +230,15 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     group: "Console",
     short: "bridge acp",
     summary: "Expose one running mono-agent instance over ACP stdio.",
-    signature: "mono-agent bridge acp --source-id <id> [--require-tool-environment]",
+    signature: "mono-agent bridge acp --source-id <id> [--require-tool-environment]\n" +
+      "                  bridge acp --discover",
     lines: [
-      "Run a stable ACP v1 stdio adapter for one exact running trace source.",
+      "Run the ACP v1 core-session profile for one exact running trace source.",
       "The selected instance keeps its own model, workspace, sandbox, tools, MCP",
       "servers, and durable conversation history. Diagnostics use stderr; stdout",
       "is reserved for newline-delimited ACP JSON-RPC messages.",
+      "--discover prints a credential-free JSON compatibility contract for local",
+      "ACP clients; it never prints endpoints, API keys, or configuration paths.",
     ],
   },
   {
@@ -452,10 +454,5 @@ function renderHelpEntryDetail(entry: HelpEntry, aliasNote: string | undefined):
  * "unknown" rather than crashing `--version`.
  */
 export function monoAgentVersion(): string {
-  try {
-    const pkg = createRequire(import.meta.url)("../package.json") as { version?: unknown };
-    return typeof pkg.version === "string" && pkg.version.length > 0 ? pkg.version : "unknown";
-  } catch {
-    return "unknown";
-  }
+  return agentAppPackageVersion() ?? "unknown";
 }

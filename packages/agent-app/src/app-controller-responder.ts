@@ -4,7 +4,12 @@ import { loadToolPolicyFromJsonFileSync } from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 import { modelReferenceKey } from "@mono-agent/runtime-adapter";
-import type { MonoRuntimeLike, RuntimeModelReference, SandboxEngine } from "@mono-agent/runtime-adapter";
+import type {
+  MonoRuntimeLike,
+  RuntimeExecutionMode,
+  RuntimeModelReference,
+  SandboxEngine,
+} from "@mono-agent/runtime-adapter";
 
 import { resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
@@ -77,7 +82,7 @@ export interface ResponderControllerPort {
   };
   buildRuntimeForModel(
     coreConfig: MonoAgentConfig,
-  ): (model: RuntimeModelReference, executionMode?: string) => MonoRuntimeLike;
+  ): (model: RuntimeModelReference, executionMode?: RuntimeExecutionMode) => MonoRuntimeLike;
   observabilityContext(): Promise<{
     readonly sourceId?: string;
     readonly sourceLabel?: string;
@@ -281,7 +286,7 @@ export function requestModelOverrideRuntimeOptions(
 export function buildRuntimeForModel(
   controller: ResponderControllerPort,
   coreConfig: MonoAgentConfig,
-): (model: RuntimeModelReference, executionMode?: string) => MonoRuntimeLike {
+): (model: RuntimeModelReference, executionMode?: RuntimeExecutionMode) => MonoRuntimeLike {
   const cache = new Map<string, MonoRuntimeLike>();
   const sandboxEngine = controller.sandboxEngineFor(coreConfig);
   return (model, executionMode) => {

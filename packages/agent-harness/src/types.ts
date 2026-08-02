@@ -12,7 +12,12 @@ import type {
   MemoryStore,
 } from "@mono-agent/agent-contracts";
 import type { RunRecorder, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
-import type { MonoRuntimeLike, RuntimeModelReference, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
+import type {
+  MonoRuntimeLike,
+  RuntimeExecutionMode,
+  RuntimeModelReference,
+  RuntimeRunOptions,
+} from "@mono-agent/runtime-adapter";
 import type { SandboxPolicy } from "@mono-agent/runtime-adapter";
 
 import type { BuiltAgentContext, HistoryMessage } from "./context/index.js";
@@ -378,7 +383,7 @@ export interface AgentHarnessOptions {
   readonly attachmentsDir?: string;
   readonly runtime: MonoRuntimeLike;
   readonly model: RuntimeModelReference;
-  readonly executionMode?: string;
+  readonly executionMode?: RuntimeExecutionMode;
   readonly cwd?: string;
   readonly effort?: string;
   readonly maxTurns?: number;
@@ -403,7 +408,10 @@ export interface AgentHarnessOptions {
    * When unset, an override still sets the per-run model but cannot reshape a
    * frozen fallback chain (the router would ignore it).
    */
-  readonly runtimeForModel?: (model: RuntimeModelReference, executionMode?: string) => MonoRuntimeLike;
+  readonly runtimeForModel?: (
+    model: RuntimeModelReference,
+    executionMode?: RuntimeExecutionMode,
+  ) => MonoRuntimeLike;
   readonly memory?: MemoryStore;
   readonly memoryWriteMode?: MemoryWriteMode;
   /** Best-effort post-provider persistence warning sink (host log/metric). */

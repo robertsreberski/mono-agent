@@ -6,18 +6,35 @@ const kernelMocks = vi.hoisted(() => {
     configureTools: vi.fn(),
   });
   return {
+    authenticateAcpProfile: vi.fn(),
     createRuntime: vi.fn((_host?: unknown) => createKernelRuntime()),
     createRouterRuntime: vi.fn((_options?: unknown) => createKernelRuntime()),
+    deleteAcpSession: vi.fn(),
+    listAcpSessions: vi.fn(),
+    logoutAcpProfile: vi.fn(),
+    probeAcpProfile: vi.fn(),
   };
 });
 
 vi.mock("@mono-agent/agent-runtime", () => ({
+  authenticateAcpProfile: kernelMocks.authenticateAcpProfile,
   createPiOAuthApiKeyResolver: vi.fn(),
   createRuntime: kernelMocks.createRuntime,
   createRouterRuntime: kernelMocks.createRouterRuntime,
+  deleteAcpSession: kernelMocks.deleteAcpSession,
+  listAcpSessions: kernelMocks.listAcpSessions,
+  logoutAcpProfile: kernelMocks.logoutAcpProfile,
+  probeAcpProfile: kernelMocks.probeAcpProfile,
 }));
 
-import { createMonoRuntime } from "../runtime-adapter.js";
+import {
+  authenticateAcpProfile,
+  createMonoRuntime,
+  deleteAcpSession,
+  listAcpSessions,
+  logoutAcpProfile,
+  probeAcpProfile,
+} from "../runtime-adapter.js";
 import type {
   CreateMonoRuntimeOptions,
   MonoRuntimeAttemptContext,
@@ -32,6 +49,7 @@ const model = {
   model: "sandbox-test",
   reference: "pi:faux:sandbox-test",
 };
+const ACP_SESSION_TOKEN_KEY = Buffer.alloc(32, 0x51);
 
 function adversarialSandbox(label = "caller") {
   return {
@@ -45,6 +63,57 @@ describe("createMonoRuntime sandbox injection", () => {
   beforeEach(() => {
     kernelMocks.createRuntime.mockClear();
     kernelMocks.createRouterRuntime.mockClear();
+    kernelMocks.authenticateAcpProfile.mockClear();
+    kernelMocks.deleteAcpSession.mockClear();
+    kernelMocks.listAcpSessions.mockClear();
+    kernelMocks.logoutAcpProfile.mockClear();
+    kernelMocks.probeAcpProfile.mockClear();
+  });
+
+  it("injects the owned sandbox into every ACP management wrapper", async () => {
+    const resolveAcpProfile = vi.fn();
+    const options = { resolveAcpProfile };
+    const sessionOptions = { ...options, acpSessionTokenKey: ACP_SESSION_TOKEN_KEY };
+
+    await authenticateAcpProfile("profile", "login", options);
+    await logoutAcpProfile("profile", options);
+    await listAcpSessions("profile", sessionOptions);
+    await listAcpSessions("profile", { cursor: "next" }, sessionOptions);
+    await deleteAcpSession("acp:v2:profile:opaque", sessionOptions);
+
+    const expectedOptions = { resolveAcpProfile, sandbox: monoSandboxImpl };
+    const expectedSessionOptions = {
+      resolveAcpProfile,
+      acpSessionTokenKey: ACP_SESSION_TOKEN_KEY,
+      sandbox: monoSandboxImpl,
+    };
+    expect(kernelMocks.authenticateAcpProfile).toHaveBeenCalledWith("profile", "login", expectedOptions);
+    expect(kernelMocks.logoutAcpProfile).toHaveBeenCalledWith("profile", expectedOptions);
+    expect(kernelMocks.listAcpSessions).toHaveBeenNthCalledWith(1, "profile", {}, expectedSessionOptions);
+    expect(kernelMocks.listAcpSessions).toHaveBeenNthCalledWith(2, "profile", { cursor: "next" }, expectedSessionOptions);
+    expect(kernelMocks.deleteAcpSession).toHaveBeenCalledWith(
+      "acp:v2:profile:opaque",
+      expectedSessionOptions,
+    );
+  });
+
+  it("injects the real sandbox into ACP control operations without accepting a caller implementation", async () => {
+    kernelMocks.probeAcpProfile.mockResolvedValue({ profileId: "personal-agent", protocolVersion: 1 });
+    const resolveAcpProfile = vi.fn();
+    const options = Object.freeze({
+      resolveAcpProfile,
+      context: Object.freeze({ source: "test" }),
+    });
+
+    await expect(probeAcpProfile("personal-agent", options)).resolves.toMatchObject({
+      profileId: "personal-agent",
+    });
+    expect(kernelMocks.probeAcpProfile).toHaveBeenCalledWith("personal-agent", {
+      resolveAcpProfile,
+      context: options.context,
+      sandbox: monoSandboxImpl,
+    });
+    expect(options).not.toHaveProperty("sandbox");
   });
 
   it.each([
@@ -54,6 +123,7 @@ describe("createMonoRuntime sandbox injection", () => {
   ])("ignores an adversarial constructor sandbox (%s) without mutating its input", (_label, callerSandbox) => {
     const callerOptions = Object.freeze({
       workspace: "/repo/workspace",
+      acpSessionTokenKey: ACP_SESSION_TOKEN_KEY,
       sandbox: callerSandbox,
     });
 
@@ -62,6 +132,7 @@ describe("createMonoRuntime sandbox injection", () => {
     expect(kernelMocks.createRuntime).toHaveBeenCalledOnce();
     const host = kernelMocks.createRuntime.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(host.workspace).toBe("/repo/workspace");
+    expect(host.acpSessionTokenKey).toBe(ACP_SESSION_TOKEN_KEY);
     expect(host.sandbox).toBe(monoSandboxImpl);
     expect(host.sandbox).not.toBe(callerSandbox);
     expect(callerOptions.sandbox).toBe(callerSandbox);
@@ -84,6 +155,7 @@ describe("createMonoRuntime sandbox injection", () => {
       sandbox: callerSandbox,
       sandboxPolicy,
       sandboxEngine,
+      acpSessionTokenKey: ACP_SESSION_TOKEN_KEY,
       pluginSentinel: "preserved-request-extension",
     });
 
@@ -97,6 +169,7 @@ describe("createMonoRuntime sandbox injection", () => {
       cwd: "/request/workspace",
       sandboxPolicy,
       sandboxEngine,
+      acpSessionTokenKey: ACP_SESSION_TOKEN_KEY,
       pluginSentinel: "preserved-request-extension",
       executionMode: "sdk",
     });

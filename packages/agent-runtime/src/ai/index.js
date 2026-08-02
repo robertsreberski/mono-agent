@@ -12,6 +12,8 @@ export {
 } from "./runtime/sessions.js";
 export { createMetricsObserver, createObserverHub } from "./observer.js";
 export { generatePiNativeResponse, piNativeRuntimeBridge } from "./providers/pi-native.js";
+export { generateAcpResponse, acpRuntimeBridge } from "./providers/acp.js";
+export * from "./providers/acp-public.js";
 export {
   getPiBuiltinModel,
   listPiBuiltinModels,

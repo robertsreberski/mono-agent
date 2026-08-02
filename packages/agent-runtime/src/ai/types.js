@@ -16,13 +16,13 @@
 // documents the values active runtimes currently produce.
 
 /**
- * @typedef {"claude" | "pi" | "codex" | "opencode" | (string & {})} RuntimeSdkId
+ * @typedef {"claude" | "pi" | "codex" | "opencode" | "acp" | (string & {})} RuntimeSdkId
  * Canonical active runtime id. See ACTIVE_RUNTIME_KINDS (model-refs.js) for
  * the enforced-at-runtime vocabulary.
  */
 
 /**
- * @typedef {"claude" | "claude-code" | "codex-app" | "opencode-app" | "pi" | (string & {})} RuntimeBridgeId
+ * @typedef {"claude" | "claude-code" | "codex-app" | "opencode-app" | "pi" | "acp-stdio" | (string & {})} RuntimeBridgeId
  * Registry bridge id (distinct from RuntimeSdkId: a single sdk can be served
  * by more than one bridge, e.g. sdk "claude" is served by both the "claude"
  * SDK bridge and the "claude-code" CLI bridge). See
@@ -177,7 +177,7 @@
  * @typedef {Object} RuntimeRunOptions
  * The options object a host passes to `createRuntime(host).run(systemPrompt, options)`.
  * @property {RuntimeModelRef} model                     Resolved model reference; see parseRuntimeModelReference.
- * @property {string} [executionMode]                     "sdk" (default) or "cli"; selects which bridge variant handles the model.
+ * @property {"sdk"|"cli"|"acp"} [executionMode]       "sdk" (default), "cli", or "acp"; selects which bridge variant handles the model.
  * @property {string} [sessionId]                         Host conversation/session key for resumable bridges.
  * @property {string} [providerSessionId]                 Provider-owned resume id for resumable bridges.
  * @property {typeof import("@anthropic-ai/claude-agent-sdk").query} [claudeAgentQuery] Advanced programmatic/test seam for the Claude SDK route; omitted runs use the runtime's pinned SDK query implementation.
@@ -207,6 +207,9 @@
  * @property {RuntimeToolLimits} [toolLimits] Typed per-run tool-output limits (supported replacement for the deprecated `settings` tool keys).
  * @property {RuntimeCompactionPolicy} [compaction] Typed per-run compaction policy (supported replacement for the deprecated `settings` compaction keys).
  * @property {RuntimePromptOverrides} [prompts] Per-run prompt-fragment overrides (run wins over the host default).
+ * @property {import('./providers/acp-client.js').AcpClientHostOptions["resolveAcpProfile"]} [resolveAcpProfile] Per-run ACP profile resolver; wins over the host default.
+ * @property {import('./providers/acp-client.js').AcpClientHostOptions["onAcpInteractionRequest"]} [onAcpInteractionRequest] Per-run ACP permission/elicitation callback; wins over the host default.
+ * @property {Uint8Array} [acpSessionTokenKey] Host-owned 32-byte key for confidential authenticated ACP session handles. Required for every ACP task run.
  * @property {{backend?: "auto"|"searxng"|"keyless", endpoint?: string}} [webSearchConfig] Run-scoped WebSearch backend configuration.
  * @property {{render?: "never"|"auto", browserCommand?: string}} [webFetchConfig] Run-scoped WebFetch extraction/render configuration.
  * @property {"sequential"|"safe-parallel"} [piToolExecutionMode] Pi built-in tool scheduling mode. Safe parallelism is the default.
@@ -234,7 +237,7 @@
 
 /**
  * @typedef {RuntimeRunOptions
- *   & Pick<AgentRuntimeHostOptions, "resolveCustomPricing" | "resolvePiApiKey" | "persistArtifact" | "onCompactionRecorded" | "onToolApprovalRequest" | "toolRiskTiers" | "approvalDefaultRiskTier" | "approvalTimeoutMs" | "approvalAlwaysAllowTools">
+ *   & Pick<AgentRuntimeHostOptions, "resolveCustomPricing" | "resolvePiApiKey" | "resolveAcpProfile" | "onAcpInteractionRequest" | "acpSessionTokenKey" | "persistArtifact" | "onCompactionRecorded" | "onToolApprovalRequest" | "toolRiskTiers" | "approvalDefaultRiskTier" | "approvalTimeoutMs" | "approvalAlwaysAllowTools">
  *   & {runtimeBrand: import('../runtime-brand.js').RuntimeBrand, toolContext?: import('../agent/tools/shared/tool-context.js').ToolContext, observerHub: {emit: (event: RuntimeEvent) => void, flush: () => Promise<void>}}
  * } RuntimeRequest
  * The request shape a bridge's `execute(systemPrompt, req)` receives as its
@@ -414,6 +417,9 @@
  * @property {*} [runtimeBrand] See resolveRuntimeBrand (runtime-brand.js); accepts a partial RuntimeBrand.
  * @property {(parsed: {sdk: (string|null), provider?: string, model: string}) => (import('./cost.js').NormalizedPricing|null)} [resolveCustomPricing] See resolvePricing (ai/cost.js).
  * @property {import('../pi-auth.js').PiApiKeyResolver} [resolvePiApiKey] See createPiOAuthApiKeyResolver (pi-auth.js) for a ready-made implementation.
+ * @property {import('./providers/acp-client.js').AcpClientHostOptions["resolveAcpProfile"]} [resolveAcpProfile] Default ACP profile resolver; a per-run callback wins.
+ * @property {import('./providers/acp-client.js').AcpClientHostOptions["onAcpInteractionRequest"]} [onAcpInteractionRequest] Default ACP interaction callback; a per-run callback wins.
+ * @property {Uint8Array} [acpSessionTokenKey] Default host-owned 32-byte key for confidential authenticated ACP session handles.
  * @property {(artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: (string|null)}) => (string|null)} [persistArtifact]
  * @property {(record: CompactionRecordedPayload) => void} [onCompactionRecorded]
  * @property {(payload: ApprovalRequestPayload) => Promise<ApprovalDecision>} [onToolApprovalRequest]
@@ -449,4 +455,4 @@
  * @property {() => Promise<void>} disposeAllSessions
  */
 
-export const PROVIDER_KIND_VALUES = ["claude", "pi", "codex", "opencode"];
+export const PROVIDER_KIND_VALUES = ["claude", "pi", "codex", "opencode", "acp"];

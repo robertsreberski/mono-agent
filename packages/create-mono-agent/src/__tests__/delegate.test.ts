@@ -155,6 +155,13 @@ describe("delegatedCliArgs", () => {
       .toEqual(["init", "--preset", "starter", "--yes"]);
   });
 
+  it("maps create-bin help onto the supported init help command", () => {
+    expect(delegatedCliArgs("/tmp/node_modules/.bin/create-mono-agent", ["--help"]))
+      .toEqual(["help", "init"]);
+    expect(delegatedCliArgs("/tmp/node_modules/.bin/create-mono-agent", ["-h"]))
+      .toEqual(["help", "init"]);
+  });
+
   it("preserves the mono-agent bin and explicit create subcommands", () => {
     expect(delegatedCliArgs("/tmp/node_modules/.bin/mono-agent", [])).toEqual([]);
     expect(delegatedCliArgs("/tmp/node_modules/.bin/create-mono-agent", ["validate", "--json"]))

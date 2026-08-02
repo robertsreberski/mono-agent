@@ -158,6 +158,8 @@ export interface ParsedCliArgs {
   readonly loopback?: boolean;
   /** bridge acp: exact trace-source id to expose. */
   readonly sourceId?: string;
+  /** bridge acp: emit the sanitized machine-readable discovery contract. */
+  readonly discover?: boolean;
   /** bridge acp: fail initialization unless request tool env is enabled. */
   readonly requireToolEnvironment?: boolean;
 }
@@ -266,6 +268,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let port: number | undefined;
   let loopback = false;
   let sourceId: string | undefined;
+  let discover = false;
   let requireToolEnvironment = false;
 
   for (let i = 0; i < rest.length; i += 1) {
@@ -392,6 +395,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--source-id":
         sourceId = requireValue(rest, ++i, flag).trim();
         if (sourceId.length === 0) throw new Error("--source-id must not be empty.");
+        break;
+      case "--discover":
+        discover = true;
         break;
       case "--require-tool-environment":
         requireToolEnvironment = true;
@@ -591,14 +597,17 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if ((host !== undefined || port !== undefined || loopback) && cmd !== "web") {
     throw new Error("--host, --port, and --loopback are only supported for `mono-agent web`.");
   }
-  if ((sourceId !== undefined || requireToolEnvironment) && cmd !== "bridge") {
-    throw new Error("--source-id and --require-tool-environment are only supported for `mono-agent bridge acp`.");
+  if ((sourceId !== undefined || discover || requireToolEnvironment) && cmd !== "bridge") {
+    throw new Error("--source-id, --discover, and --require-tool-environment are only supported for `mono-agent bridge acp`.");
   }
   if (cmd === "bridge") {
     if (positionals.length !== 1 || positionals[0] !== "acp") {
       throw new Error("`mono-agent bridge` currently requires the exact subcommand `acp`.");
     }
-    if (sourceId === undefined) {
+    if (discover && (sourceId !== undefined || requireToolEnvironment)) {
+      throw new Error("`mono-agent bridge acp --discover` cannot be combined with --source-id or --require-tool-environment.");
+    }
+    if (sourceId === undefined && !discover) {
       throw new Error("`mono-agent bridge acp` requires --source-id <id>.");
     }
   }
@@ -773,6 +782,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(port === undefined ? {} : { port }),
     ...(loopback ? { loopback } : {}),
     ...(sourceId === undefined ? {} : { sourceId }),
+    ...(discover ? { discover } : {}),
     ...(requireToolEnvironment ? { requireToolEnvironment } : {}),
   };
 }
