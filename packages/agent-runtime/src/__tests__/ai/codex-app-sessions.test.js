@@ -327,6 +327,31 @@ describe("codex-app persistent sessions", () => {
     }));
   });
 
+  it("rejects same-batch server requests after turn completion without mutating the result", async () => {
+    const factory = stubClientFactory({ threadId: "thread-terminal-request" });
+    factory.turnPlan.push("manual");
+    const pending = generateCodexAppResponse("SYS", runOptions(factory, {
+      permissionMode: "plan",
+      mcpServers: { worklab: { command: "worklab-mcp" } },
+    }));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+
+    client.finishTurn({ text: "done" });
+    expect(() => client.serverRequest("mcpServer/elicitation/request", {
+      threadId: "thread-terminal-request",
+      turnId: "turn-1",
+      serverName: "worklab",
+      _meta: { codex_approval_kind: "mcp_tool_call" },
+    })).toThrow("provider session was idle");
+
+    const result = await pending;
+    expect(result).toMatchObject({ text: "done", error: null, failureKind: null });
+    expect(result.events).not.toContainEqual(expect.objectContaining({
+      warning_kind: "codex_server_request_unsupported",
+    }));
+  });
+
   it.each([
     [
       "an unconfigured Codex server",
@@ -2020,7 +2045,7 @@ describe("codex-app persistent sessions", () => {
     const first = await generateCodexAppResponse("SYS", runOptions(factory, {
       sessionKeepAlive: true,
       permissionMode: "plan",
-      mcpServers: { first: { command: "first-mcp" } },
+      mcpServers: { worklab: { command: "worklab-mcp" } },
     }));
     expect(first.error).toBeNull();
 
@@ -2028,7 +2053,7 @@ describe("codex-app persistent sessions", () => {
     expect(() => client.serverRequest("mcpServer/elicitation/request", {
       threadId: "thread-request-target",
       turnId: "turn-idle",
-      serverName: "first",
+      serverName: "worklab",
       _meta: { codex_approval_kind: "mcp_tool_call" },
     })).toThrow("provider session was idle");
 
@@ -2036,15 +2061,31 @@ describe("codex-app persistent sessions", () => {
     const resumed = generateCodexAppResponse("SYS", runOptions(factory, {
       sessionId: "thread-request-target",
       permissionMode: "plan",
-      mcpServers: { second: { command: "second-mcp" } },
+      mcpServers: { worklab: { command: "worklab-mcp" } },
       messages: [{ role: "user", content: "follow up" }],
     }));
     await vi.waitFor(() => expect(client.finishTurn).toBeTruthy());
 
+    expect(() => client.serverRequest("mcpServer/elicitation/request", {
+      threadId: "thread-request-target",
+      turnId: "turn-1",
+      serverName: "worklab",
+      _meta: { codex_approval_kind: "mcp_tool_call" },
+    })).toThrow("does not match the active turn");
+    expect(() => client.serverRequest("item/tool/requestUserInput", {
+      threadId: "thread-request-target",
+      turnId: "turn-1",
+    })).toThrow("does not match the active turn");
+    expect(() => client.serverRequest("mcpServer/elicitation/request", {
+      threadId: "thread-request-target",
+      serverName: "worklab",
+      _meta: { codex_approval_kind: "mcp_tool_call" },
+    })).toThrow("does not match the active turn");
+
     expect(client.serverRequest("mcpServer/elicitation/request", {
       threadId: "thread-request-target",
       turnId: "turn-2",
-      serverName: "second",
+      serverName: "worklab",
       _meta: { codex_approval_kind: "mcp_tool_call" },
     })).toEqual({ action: "accept", content: {}, _meta: null });
     client.finishTurn({ text: "resumed" });
@@ -2059,6 +2100,50 @@ describe("codex-app persistent sessions", () => {
       turnId: "turn-idle-again",
     })).toThrow("provider session was idle");
     expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalidates a retained session when its MCP configuration changes", async () => {
+    const factory = stubClientFactory({ threadId: "thread-mcp-config-change" });
+    const first = await generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionKeepAlive: true,
+      mcpServers: {
+        worklab: {
+          command: "worklab-mcp",
+          args: ["--profile", "first"],
+          env: { WORKLAB_MODE: "safe", WORKLAB_REGION: "local" },
+        },
+      },
+    }));
+    expect(first.error).toBeNull();
+    const client = factory.clients[0];
+
+    const mismatch = await generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionId: "thread-mcp-config-change",
+      mcpServers: {
+        worklab: {
+          command: "worklab-mcp",
+          args: ["--profile", "second"],
+          // Key order differs too; the semantic value change is what matters.
+          env: { WORKLAB_REGION: "local", WORKLAB_MODE: "safe" },
+        },
+      },
+    }));
+
+    expect(mismatch).toMatchObject({
+      failureKind: "session_not_found",
+      diagnostics: { codex_error_code: "codex_session_config_mismatch" },
+    });
+    expect(mismatch.error).toContain("MCP configuration changed");
+    expect(client.close).toHaveBeenCalledTimes(1);
+    expect(factory).toHaveBeenCalledTimes(1);
+
+    const evicted = await generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionId: "thread-mcp-config-change",
+    }));
+    expect(evicted).toMatchObject({
+      failureKind: "session_not_found",
+      diagnostics: { codex_error_code: "codex_session_not_found" },
+    });
   });
 
   it("fails fast with session_not_found instead of starting fresh", async () => {

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 import { normalizeCodexItemEvent } from "../streaming/codex-events.js";
 import { createFileChangePayload } from "../file-change-stats.js";
@@ -622,6 +623,20 @@ function codexMcpConfig(mcpServers = {}) {
     }
   }
   return servers;
+}
+
+function stableConfigJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((entry) => stableConfigJson(entry)).join(",")}]`;
+  return `{${Object.keys(value)
+    .filter((key) => value[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableConfigJson(value[key])}`)
+    .join(",")}}`;
+}
+
+function codexMcpConfigFingerprint(config) {
+  return createHash("sha256").update(stableConfigJson(config)).digest("hex");
 }
 
 function codexConfiguredMcpApprovalResponse(request, configuredMcpServerNames) {
@@ -1256,7 +1271,9 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   const makeClient = options.codexClientFactory || createCodexAppServerClient;
   const keepAlive = options.sessionKeepAlive === true;
   const noToolsProbe = options.codexNoToolsProbe === true;
-  const configuredMcpServerNames = new Set(Object.keys(codexMcpConfig(options.mcpServers)));
+  const configuredMcpServers = codexMcpConfig(options.mcpServers);
+  const configuredMcpServerNames = new Set(Object.keys(configuredMcpServers));
+  const mcpConfigFingerprint = codexMcpConfigFingerprint(configuredMcpServers);
   // The bridge TTL is a backstop behind the host's session policy; the grace
   // keeps the host's lazy expiry firing first so eviction stays host-driven.
   const sessionTtlMs = Number.isFinite(Number(options.sessionIdleTimeoutMs))
@@ -2175,6 +2192,21 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
   const notificationTarget = { handler: handleNotification };
   function handleServerRequest(request) {
     const method = typeof request?.method === "string" ? request.method : "unknown";
+    // A same-batch request can arrive after turn/completed but before the
+    // generate promise reaches finally. Never let that frame approve work or
+    // mutate the already-final provider result.
+    if (turnCompleted || abortRequested) return rejectIdleServerRequest(request);
+    const params = request?.params || {};
+    const sourceThreadId = notificationThreadId(params);
+    const sourceTurnId = notificationTurnId(params);
+    const isChildRequest = Boolean(
+      threadId && sourceThreadId && sourceThreadId !== threadId,
+    );
+    if (!isChildRequest && (!activeTurnId || sourceTurnId !== activeTurnId)) {
+      throw new Error(
+        `Codex app-server request does not match the active turn: ${method}`,
+      );
+    }
     const approval = noToolsProbe
       ? null
       : codexConfiguredMcpApprovalResponse(request, configuredMcpServerNames);
@@ -2423,6 +2455,14 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         );
     }
     resumeEntry = claimed.entry;
+    if (resumeEntry.mcpConfigFingerprint !== mcpConfigFingerprint) {
+      await codexSessions.dispose(resumeSessionId);
+      return sessionUnavailableResult(
+        "session_not_found",
+        `Codex session ${resumeSessionId} was invalidated because its MCP configuration changed; retry without the provider session to replay history`,
+        "codex_session_config_mismatch",
+      );
+    }
   }
 
   try {
@@ -2464,7 +2504,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     }
     const fastMode = codexModelSupportsFastMode(resolved.model) && normalizeFastMode(options.fastMode, true);
     if (!resumeEntry) {
-      const mcpServers = noToolsProbe ? {} : codexMcpConfig(options.mcpServers);
+      const mcpServers = noToolsProbe ? {} : configuredMcpServers;
       // Incrementally assembled config handed across the codex app-server
       // boundary; the reasoning fields below are attached conditionally.
       const config = /** @type {any} */ ({
@@ -2617,6 +2657,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         busy: false,
         notificationTarget,
         serverRequestTarget,
+        mcpConfigFingerprint,
         closedTarget: { handler: null },
       };
       codexSessions.set(threadId, entry, { idleTimeoutMs: sessionTtlMs });
