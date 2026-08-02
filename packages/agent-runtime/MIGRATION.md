@@ -63,7 +63,23 @@ the configuration schema.
   authoritative and the runtime emits a bounded
   `live_input_callback_failed` warning.
 
-## 0.18.x
+## 0.18.1
+
+- ACP provider-session ids and session-list cursors are now confidential,
+  authenticated v2 handles. Hosts must persist one exact 32-byte binary
+  `acpSessionTokenKey` and pass it to ACP task runs, list/delete helpers, and
+  `validateAcpProviderSessionId(value, expectedProfileId, key)`. A changed or
+  missing key fails before profile resolution or process spawn. Existing v1
+  handles are rejected; discard them and obtain fresh v2 handles. Preserve the
+  complete returned value for resume, pagination, validation, and delete, but
+  do not compare ciphertexts for equality or parse/substitute the remote
+  agent's raw session id or cursor.
+- Payload-bearing diagnostics from the pinned ACP SDK are scoped to the owned
+  ACP receive loop and reduced to content-free labels. Malformed or hostile
+  agent notifications cannot copy elicitation values or URL secrets into
+  process-wide console diagnostics.
+
+## 0.18.0
 
 - `acp:<profile-id>` is now a canonical runtime model reference when paired
   with `executionMode: "acp"`. Hosts must provide `resolveAcpProfile`; profiles

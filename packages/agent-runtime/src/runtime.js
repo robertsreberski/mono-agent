@@ -55,6 +55,7 @@ const HOST_KEYS = [
   "resolvePiApiKey",
   "resolveAcpProfile",
   "onAcpInteractionRequest",
+  "acpSessionTokenKey",
   "persistArtifact",
   "onCompactionRecorded",
   "onToolApprovalRequest",
