@@ -610,6 +610,10 @@ session ids, extension metadata, and copied raw-id strings. Session-scoped
 callbacks receive the corresponding opaque handle as
 `AcpCallbackContext.providerSessionId`; request ids are opaque host correlation
 tokens as well.
+Session-update dispatch reads only validated own protocol fields. If a valid
+transport frame is too structurally complex for the bounded host sanitizer,
+the turn fails explicitly as `provider_protocol` instead of emitting a partial
+tool, plan, or message event.
 
 ACP provider-session ids and list cursors are opaque, profile-bound runtime
 handles. Preserve them byte-for-byte and pass them back only to the matching
