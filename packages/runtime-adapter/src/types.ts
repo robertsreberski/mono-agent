@@ -222,6 +222,11 @@ export interface RuntimeRunOptions {
   readonly maxTurns?: number;
   readonly allowedTools?: readonly string[];
   readonly disallowedTools?: readonly string[];
+  /**
+   * Request-scoped MCP servers. Direct ACP runs reject a non-empty map because
+   * ACP MCP ownership belongs to the resolved profile descriptor; routed ACP
+   * entries are capability-skipped instead of silently dropping these servers.
+   */
   readonly mcpServers?: Record<string, unknown>;
   readonly mcpConfigPath?: string;
   readonly sandboxPolicy?: SandboxPolicy;

@@ -856,7 +856,7 @@ function validateSessionListRequest(params) {
   if (!params || typeof params !== "object" || Array.isArray(params)) {
     throw new AcpClientError("invalid_request", "ACP session/list request must be an object.");
   }
-  if (params.cwd !== undefined
+  if (params.cwd != null
     && (typeof params.cwd !== "string" || !isAbsolute(params.cwd))) {
     throw new AcpClientError("invalid_request", "ACP session/list cwd must be absolute.");
   }

@@ -343,6 +343,9 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       assertParsedRuntimeModelReference(runOptions.model);
       const executionMode = runOptions.executionMode ?? defaultExecutionModeForModel(runOptions.model);
       assertExecutionModeCompatible(runOptions.model, executionMode);
+      if (chain === undefined) {
+        assertDirectAcpRunOptions(runOptions.model, runOptions);
+      }
 
       const result = await runtime.run(systemPrompt, {
         ...withoutCallerSandbox(runOptions),
@@ -388,6 +391,21 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
       await runtime.disposeAllSessions?.();
     },
   };
+}
+
+function assertDirectAcpRunOptions(
+  model: RuntimeModelReference,
+  runOptions: RuntimeRunOptions,
+): void {
+  if (model.sdk !== "acp") return;
+  const mcpServers = runOptions.mcpServers;
+  if (mcpServers === undefined || mcpServers === null) return;
+  if (isRecord(mcpServers) && !Array.isArray(mcpServers) && Object.keys(mcpServers).length === 0) return;
+  throw new RuntimeAdapterError(
+    "invalid_runtime_options",
+    "Direct ACP runs do not support request-scoped mcpServers; configure MCP ownership in the resolved ACP profile.",
+    { option: "mcpServers", model: redactedModelReference(model) },
+  );
 }
 
 /**

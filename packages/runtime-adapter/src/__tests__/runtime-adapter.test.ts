@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   assertExecutionModeCompatible,
@@ -90,6 +90,7 @@ describe("runtime adapter model references", () => {
       capabilities: expect.objectContaining({
         kind: "acp",
         supports_session_resume: true,
+        supports_mcp: false,
         tool_policy: "allow_all_only",
       }),
     });
@@ -201,6 +202,46 @@ describe("runtime adapter provider sessions", () => {
     await expect(runtime.disposeSession?.("no-such-session")).resolves.toBeFalsy();
     await expect(runtime.invalidateSession?.("no-such-session")).resolves.toBeFalsy();
     await expect(runtime.disposeAllSessions?.()).resolves.toBeUndefined();
+  });
+});
+
+describe("runtime adapter ACP run contracts", () => {
+  it("rejects request-scoped MCP servers before resolving a direct ACP profile", async () => {
+    const resolveAcpProfile = vi.fn();
+    const runtime = createMonoRuntime();
+
+    await expect(runtime.run("SYSTEM", {
+      model: parseMonoRuntimeModelReference("acp:personal-agent"),
+      messages: [{ role: "user", content: "hi" }],
+      abortSignal: new AbortController().signal,
+      resolveAcpProfile,
+      mcpServers: { filesystem: { command: "/absolute/mcp-server" } },
+    })).rejects.toMatchObject({
+      name: "RuntimeAdapterError",
+      code: "invalid_runtime_options",
+      details: expect.objectContaining({ option: "mcpServers" }),
+    });
+    expect(resolveAcpProfile).not.toHaveBeenCalled();
+  });
+
+  it("capability-skips an ACP-only route chain carrying request-scoped MCP servers", async () => {
+    const resolveAcpProfile = vi.fn();
+    const resolveAttempt = vi.fn(() => ({ options: { resolveAcpProfile } }));
+    const runtime = createMonoRuntime({
+      fallbackChain: [{ model: parseMonoRuntimeModelReference("acp:personal-agent") }],
+      resolveAttempt,
+    });
+
+    const result = await runtime.run("SYSTEM", {
+      model: parseMonoRuntimeModelReference("acp:personal-agent"),
+      messages: [{ role: "user", content: "hi" }],
+      abortSignal: new AbortController().signal,
+      mcpServers: { filesystem: { command: "/absolute/mcp-server" } },
+    });
+
+    expect(result.failureKind).toBe("skipped_capability_mismatch");
+    expect(resolveAttempt).not.toHaveBeenCalled();
+    expect(resolveAcpProfile).not.toHaveBeenCalled();
   });
 });
 
