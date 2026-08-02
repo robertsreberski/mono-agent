@@ -226,7 +226,9 @@ async function runPrompt(
       attachments: [],
       metadata: {},
       client: "acp",
-      toolEnvironment: requestToolEnvironment(options.env),
+      ...(target.info.supportsToolEnvironment === true
+        ? { toolEnvironment: requestToolEnvironment(options.env) }
+        : {}),
       signal,
       onFrame: async (frame) => {
         if (frame.kind === "append") {

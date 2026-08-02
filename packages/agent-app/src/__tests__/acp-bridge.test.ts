@@ -24,7 +24,18 @@ afterEach(async () => {
 });
 
 describe("ACP bridge", () => {
-  it("targets one registered operator and forwards only the request tool environment", async () => {
+  it.each([
+    {
+      name: "forwards only the request tool environment when advertised",
+      advertisesToolEnvironment: true,
+      requireToolEnvironment: true,
+    },
+    {
+      name: "omits the request tool environment for an older operator",
+      advertisesToolEnvironment: false,
+      requireToolEnvironment: false,
+    },
+  ])("$name", async ({ advertisesToolEnvironment, requireToolEnvironment }) => {
     let turnBody: Record<string, unknown> | undefined;
     const server = createServer(async (request, response) => {
       if (request.method === "GET" && request.url === "/gui/v1/info") {
@@ -32,7 +43,7 @@ describe("ACP bridge", () => {
         response.end(JSON.stringify({
           schema: 1,
           label: "Bridge Fixture",
-          capabilities: { toolEnvironment: true },
+          capabilities: advertisesToolEnvironment ? { toolEnvironment: true } : {},
         }));
         return;
       }
@@ -88,7 +99,7 @@ describe("ACP bridge", () => {
     const frames = lines[Symbol.asyncIterator]();
     const bridge = runAcpBridge({
       sourceId: "personal-agent",
-      requireToolEnvironment: true,
+      requireToolEnvironment,
       env: {
         MONO_AGENT_TRACE_REGISTRY_DIR: registry,
         MULTICA_TOKEN: "task-token",
@@ -163,15 +174,21 @@ describe("ACP bridge", () => {
       text: "work from Multica",
       client: "acp",
       metadata: {},
-      toolEnvironment: {
-        schema: 1,
-        values: {
-          MULTICA_TOKEN: "task-token",
-          MULTICA_AGENT_ID: "agent-1",
-        },
-        pathPrepend: [artifactDir],
-      },
     });
+    if (advertisesToolEnvironment) {
+      expect(turnBody).toMatchObject({
+        toolEnvironment: {
+          schema: 1,
+          values: {
+            MULTICA_TOKEN: "task-token",
+            MULTICA_AGENT_ID: "agent-1",
+          },
+          pathPrepend: [artifactDir],
+        },
+      });
+    } else {
+      expect(turnBody).not.toHaveProperty("toolEnvironment");
+    }
     expect(JSON.stringify(turnBody)).not.toContain("UNRELATED_SECRET");
 
     input.end();
