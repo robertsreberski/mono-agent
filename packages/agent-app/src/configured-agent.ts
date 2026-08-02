@@ -70,7 +70,7 @@ type StaticRuntimeOptions = NonNullable<AgentHarnessOptions["runtimeOptions"]>;
 export interface ConfiguredAgentRuntimeOptions {
   readonly config: MonoAgentConfig;
   readonly model?: RuntimeModelReference;
-  readonly executionMode?: string;
+  readonly executionMode?: RuntimeExecutionMode;
   readonly sandboxEngine?: SandboxEngine;
 }
 
@@ -106,7 +106,7 @@ export interface ConfiguredAgentHarnessOptions {
   readonly cwd?: string;
   readonly runtime?: MonoRuntimeLike;
   readonly model?: RuntimeModelReference;
-  readonly executionMode?: string;
+  readonly executionMode?: RuntimeExecutionMode;
   readonly memory?: MemoryStore;
   readonly historyStore?: ConversationHistoryStore;
   /** App-owned run-scoped interaction details to add only to replay history. */
@@ -950,9 +950,9 @@ function hasConfiguredFallback(config: MonoAgentConfig): boolean {
     || (config.runtime.fallbackModels?.length ?? 0) > 0;
 }
 
-function supportsSessionResume(model: RuntimeModelReference, executionMode: string): boolean {
+function supportsSessionResume(model: RuntimeModelReference, executionMode: RuntimeExecutionMode): boolean {
   try {
-    return monoRuntimeSupportsSessionResume(model, executionMode as RuntimeExecutionMode);
+    return monoRuntimeSupportsSessionResume(model, executionMode);
   } catch {
     return false;
   }

@@ -20,7 +20,7 @@
 //     so the router is a drop-in replacement for createRuntime(host).
 //
 //   chain entries:
-//     { model: ModelRef, executionMode?: "sdk" | "cli", effort?: string|null,
+//     { model: ModelRef, executionMode?: "sdk" | "cli" | "acp", effort?: string|null,
 //       requires?: Capabilities }
 //   shorthand: a bare ModelRef is also accepted (no requirements).
 //   effort string = fixed for that route, undefined = inherit the legacy run
@@ -683,6 +683,8 @@ function routeSafetyContract(mode, entry, piSandboxPolicy) {
       return { mode, sandbox: "codex-native", tools: "exact-allow-all" };
     case "opencode":
       return { mode, sandbox: "provider-native", tools: "exact-allow-all" };
+    case "acp":
+      return { mode, sandbox: "provider-native", tools: "exact-allow-all" };
     default:
       return { mode, sandbox: "unsupported", tools: "unsupported" };
   }
@@ -852,6 +854,7 @@ function projectPerRouteNativeOptions(entry, options) {
       return projected;
     case "codex":
     case "opencode":
+    case "acp":
       delete projected.sandboxPolicy;
       delete projected.sandboxEngine;
       projected.allowedTools = ["*"];

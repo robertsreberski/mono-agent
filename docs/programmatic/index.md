@@ -131,4 +131,5 @@ Only the `env` record passed to `loadMonoAgentConfigWithSources` participates in
 - [Approval and Structured Output](/programmatic/approval-and-structured-output/) — gating tool calls and returning typed results from a responder.
 - [Multi-Agent](/programmatic/multi-agent/) — `@mono-agent/agent-orchestrator`: one runtime calling named collaborator responders through a bounded MCP tool.
 - [A2A Consumer](/programmatic/a2a-consumer/) — calling another agent's Agent Card from your host with `@mono-agent/a2a-adapter`.
+- [Worklab ACP bridge](/programmatic/acp-bridge/) — discovering and importing a running mono-agent without transferring configuration, credentials, MCP, or workspace ownership.
 - [Write your own channel adapter](/programmatic/custom-channels/) — writing a `ChannelDriver` package or composing an edge adapter directly to feed your own transport into a responder.

@@ -57,6 +57,22 @@ export const RUNTIME_CAPABILITIES = {
     supports_native_subagents: false,
     tool_policy: TOOL_POLICY_ALLOW_ALL_ONLY,
   },
+  acp: {
+    runtime: "acp-stdio",
+    ...COMMON_CAPABILITIES,
+    structured_output: false,
+    supports_session_resume: true,
+    // Runtime request-scoped MCP servers are not projected into ACP sessions.
+    // Profiles may own static ACP MCP configuration, but that is not the
+    // supports_mcp contract advertised to the route capability gate.
+    supports_mcp: false,
+    supports_skills: false,
+    supports_builtin_tools: false,
+    supports_live_input: false,
+    supports_native_subagents: false,
+    supports_request_tool_environment: false,
+    tool_policy: TOOL_POLICY_ALLOW_ALL_ONLY,
+  },
 };
 
 export function runtimeCapabilities(sdkOrModel) {

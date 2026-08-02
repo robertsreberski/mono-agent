@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+## 0.18.0 — ACP clients and mono-agent exposure (2026-08-02)
+
+### Agent Client Protocol
+
+- `@mono-agent/agent-runtime` adds a product-neutral ACP v1 stdio client and a
+  sixth runtime bridge. Hosts resolve `acp:<profile-id>` references into exact
+  argv, environment, ownership, capability, session, and process policies; the
+  runtime handles initialize, new/load/resume, prompt updates, semantic
+  cancellation, permissions, elicitation, authentication, logout, and session
+  management without persisting host interaction values.
+- `@mono-agent/runtime-adapter` exposes the same ACP connection, management,
+  profile-id, and provider-session helpers through its supported facade.
+- `mono-agent bridge acp --discover` returns sanitized, versioned descriptors
+  for installed agents, and `mono-agent bridge acp --source-id <id>` exposes a
+  selected running instance as an ACP v1 core-session bridge. It supports text
+  and resource-link input, updates, cancellation, and form elicitation while
+  keeping configuration, workspace, MCP, tools, and credentials agent-owned.
+  Client-supplied MCP servers, client filesystem/terminal methods, media
+  attachments, and additional directories remain explicitly unsupported.
+
+### Release reliability
+
+- The `create-mono-agent --help` delegator now maps to the supported init help
+  command, so the published-CLI release smoke tests the actual bin symlink and
+  exits successfully.
+- All 22 catalog-publishable packages move together to 0.18.0. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ### Subagents: the `Agent` tool
 
 - The main agent can now deploy independent subagents on the pi runtime. `Agent`

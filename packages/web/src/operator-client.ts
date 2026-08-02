@@ -227,10 +227,13 @@ export class OperatorClient {
     });
   }
 
-  async pendingAsk(conversationId: string): Promise<ChannelAskSnapshot | undefined> {
+  async pendingAsk(conversationId: string, signal?: AbortSignal): Promise<ChannelAskSnapshot | undefined> {
     const response = await this.request(
       `${this.baseUrl}/v1/conversations/${encodeURIComponent(conversationId)}/ask`,
-      { headers: this.headers(false) },
+      {
+        headers: this.headers(false),
+        ...(signal === undefined ? {} : { signal }),
+      },
     );
     const body = record(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_ask_too_large")));
     return body?.ask === null ? undefined : body?.ask as ChannelAskSnapshot | undefined;
@@ -240,12 +243,14 @@ export class OperatorClient {
     conversationId: string,
     interactionId: string,
     answers: readonly ChannelAskAnswer[],
+    signal?: AbortSignal,
   ): Promise<ChannelAskSubmissionResult> {
     const response = await this.request(
       `${this.baseUrl}/v1/conversations/${encodeURIComponent(conversationId)}/ask`,
       {
         method: "POST",
         headers: this.headers(true),
+        ...(signal === undefined ? {} : { signal }),
         body: JSON.stringify({ interactionId, answers }),
       },
     );

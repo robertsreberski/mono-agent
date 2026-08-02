@@ -10,7 +10,7 @@
 /**
  * @typedef {"spawn" | "timeout" | "stall" | "context_limit" | "usage_limit" | "invalid_result"
  *   | "invalid_delegation" | "tool_failure" | "provider_unavailable"
- *   | "provider_unavailable_exhausted" | "provider_auth"
+ *   | "provider_unavailable_exhausted" | "provider_auth" | "provider_protocol"
  *   | "skipped_capability_mismatch" | "cancelled" | "cancelled_user"
  *   | "cancelled_shutdown" | "cancelled_signal" | "abandoned"
  *   | "session_not_found" | "session_busy" | (string & {})} FailureKind
@@ -49,6 +49,7 @@ export const FAILURE_KINDS = [
   "provider_unavailable",
   "provider_unavailable_exhausted",
   "provider_auth",
+  "provider_protocol",
   "skipped_capability_mismatch",
   "child_failed",
   "budget_exceeded",

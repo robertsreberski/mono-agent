@@ -107,6 +107,7 @@ describe("classifyFailure", () => {
     expect(FAILURE_KINDS).toEqual(expect.arrayContaining([
       "budget_exceeded", "child_failed", "cancelled", "cancelled_user", "cancelled_stale", "cancelled_signal",
       "context_limit", "invalid_delegation", "provider_unavailable_exhausted",
+      "provider_protocol",
     ]));
   });
 

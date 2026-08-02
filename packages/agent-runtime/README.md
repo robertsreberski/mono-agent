@@ -1,7 +1,7 @@
 # @mono-agent/agent-runtime
 
 Use this package when you need direct, capability-aware access to mono-agent's
-five built-in model runtime bridges.
+six built-in model runtime bridges, including product-neutral ACP v1 agents.
 
 ## Category
 
@@ -10,13 +10,13 @@ five built-in model runtime bridges.
 
 Category: `runtime`
 Tier: `core`
-Catalog responsibility: Provides five runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, OpenCode app-server, Pi SDK); direct OpenCode requires stable CLI >=1.15.0 on PATH.
+Catalog responsibility: Provides six runtime bridges (ACP v1, Claude SDK, Claude Code CLI, Codex app-server, OpenCode app-server, Pi SDK); direct OpenCode requires stable CLI >=1.15.0 on PATH.
 
 <!-- package-metadata:end -->
 
 ## Responsibility
 
-Provides five runtime bridges (Claude SDK, Claude Code CLI, Codex app-server, OpenCode app-server, Pi SDK), with capabilities declared per bridge. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind runtime contracts. Pi enforces optional mono-agent sandbox policy for runtime-owned tools through an injectable `RuntimeSandbox` seam (a fail-closed passthrough by default; `@mono-agent/runtime-adapter` injects the real implementation). The router supports a compatibility-preserving uniform contract or explicit isolated per-route-native contracts; no provider route silently drops required capabilities.
+Provides six runtime bridges (ACP v1, Claude SDK, Claude Code CLI, Codex app-server, OpenCode app-server, Pi SDK), with capabilities declared per bridge. This is the runtime layer that `@mono-agent/runtime-adapter` wraps behind runtime contracts. Pi and ACP-owned stdio children enforce optional mono-agent sandbox policy through an injectable `RuntimeSandbox` seam (a fail-closed passthrough by default; `@mono-agent/runtime-adapter` injects the real implementation). The router supports a compatibility-preserving uniform contract or explicit isolated per-route-native contracts; no provider route silently drops required capabilities.
 
 ## Install / Usage
 
@@ -61,7 +61,7 @@ only after a run selects a matching model reference and execution mode:
 ### Data flow
 
 1. `createRuntime()` binds host callbacks and creates an isolated tool context.
-2. `resolveRuntimeBridge()` checks the five static bridge descriptors in order.
+2. `resolveRuntimeBridge()` checks the six static bridge descriptors in order.
 3. The selected descriptor lazily imports its provider implementation.
 4. The bridge prepares the runtime inputs it supports, including managed or MCP
    tools only where that bridge can represent them, streams normalized events,
@@ -75,7 +75,7 @@ only after a run selects a matching model reference and execution mode:
 | --- | --- |
 | `src/runtime.js` | Host binding, per-instance tool context, bridge dispatch, and observer flushing |
 | `src/ai/runtime/` | Model-reference parsing, the lazy bridge registry, capabilities, sessions, and fallback routing |
-| `src/ai/providers/` | Claude SDK/CLI, Codex app-server, OpenCode app-server, and Pi SDK integrations |
+| `src/ai/providers/` | ACP v1, Claude SDK/CLI, Codex app-server, OpenCode app-server, and Pi SDK integrations |
 | `src/agent/tools/` | Managed tools, MCP adaptation, output limits, and the injectable sandbox seam |
 | `src/agent/` | Approvals, allowlists, transcript snapshots, and compaction policy helpers |
 
@@ -89,9 +89,10 @@ the [architecture guide](https://github.com/robertsreberski/mono-agent/blob/main
 | API | Use it for |
 | --- | --- |
 | `createRuntime()` | Run one model bridge with host-owned credentials, observers, tools, and lifecycle callbacks |
+| `probeAcpProfile()` / ACP management helpers | Probe, authenticate, log out, list sessions, validate opaque handles, or delete an ACP provider session |
 | `createRouterRuntime()` | Retry an ordered model chain while preserving explicit route-safety contracts |
-| `parseRuntimeModelReference()` | Convert a canonical `claude:`, `codex:`, `opencode:`, or `pi:` string into the object required by `run()` |
-| `listRuntimeBridges()` / `runtimeCapabilities()` | Inspect the five built-in bridge descriptors without loading provider implementations |
+| `parseRuntimeModelReference()` | Convert a canonical `acp:`, `claude:`, `codex:`, `opencode:`, or `pi:` string into the object required by `run()` |
+| `listRuntimeBridges()` / `runtimeCapabilities()` | Inspect the six built-in bridge descriptors without loading provider implementations |
 | `createPiOAuthApiKeyResolver()` | Bind a host-owned Pi auth file with refresh-safe writes |
 | `listPiBuiltinModels()` / `getPiBuiltinModel()` | Read cloned snapshots from the runtime-owned, exact-pinned Pi model catalog without importing Pi directly |
 | `resolvePiOAuthApiKey()` / `loginPiOAuth()` | Use the runtime-owned Pi OAuth implementation without importing Pi's mutable provider registry |
@@ -109,10 +110,18 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/agent-runtime`**
 
 ```text
+ACP_PROTOCOL_VERSION
 ACTIVE_RUNTIME_KINDS
 ALLOWLIST_MODE_ALL
 ALLOWLIST_MODE_CUSTOM
 APPROVAL_DECISIONS
+AcpCallbackContext
+AcpClientError
+AcpClientHostOptions
+AcpInteractionRequest
+AcpListedSession
+AcpProfileDescriptor
+AcpSessionListResult
 BINARY_BLOAT_TOOLS
 BridgeSpec
 CLAUDE_SDK_CATALOG_VERSION
@@ -127,6 +136,8 @@ RuntimeBridgeDescriptor
 RuntimeBridgeId
 RuntimeModelRef
 UNKNOWN_CAPABILITY
+acpRuntimeBridge
+authenticateAcpProfile
 buildCapabilitiesUsed
 buildTranscriptTailSnapshot
 canonicalizeLegacyModelReference
@@ -140,19 +151,23 @@ createRouterRuntime
 createRuntime
 createSessionRegistry
 curatedClaudeSdkModels
+deleteAcpSession
 discoverClaudeSdkModels
 disposeAllProviderSessions
 disposeProviderSession
 executionModeIncompatibilityReason
+generateAcpResponse
 generatePiNativeResponse
 getPiBuiltinModel
 inferAllowlistMode
 invalidateProviderSession
 isLikelyContextTermination
 isModelCompatibleWithExecutionMode
+listAcpSessions
 listPiBuiltinModels
 listRuntimeBridges
 loginPiOAuth
+logoutAcpProfile
 normalizeAllowlistMode
 normalizeClaudeSdkCatalog
 normalizeClaudeSdkModelId
@@ -161,6 +176,7 @@ normalizeRuntimeModelReference
 parseRuntimeModelReference
 parseStoredAllowlist
 piNativeRuntimeBridge
+probeAcpProfile
 readRuntimeBrand
 readToolRuntime
 reasoningLevelsForPiModel
@@ -178,6 +194,8 @@ sdkFromModelReference
 storedAllowlistMode
 syncProviderSession
 toolCompactionAppliedFromWarnings
+validateAcpProfileId
+validateAcpProviderSessionId
 wrapToolsWithApprovalGate
 ```
 
@@ -302,7 +320,15 @@ renderResumeSnapshot
 **`@mono-agent/agent-runtime/ai`**
 
 ```text
+ACP_PROTOCOL_VERSION
 ACTIVE_RUNTIME_KINDS
+AcpCallbackContext
+AcpClientError
+AcpClientHostOptions
+AcpInteractionRequest
+AcpListedSession
+AcpProfileDescriptor
+AcpSessionListResult
 BridgeSpec
 CLAUDE_SDK_CATALOG_VERSION
 RESERVED_RUNTIME_KINDS
@@ -312,6 +338,8 @@ RuntimeBridgeDescriptor
 RuntimeBridgeId
 RuntimeModelRef
 UNKNOWN_CAPABILITY
+acpRuntimeBridge
+authenticateAcpProfile
 buildCapabilitiesUsed
 canonicalizeLegacyModelReference
 createClaudeSdkDiscoveryIsolation
@@ -319,22 +347,27 @@ createMetricsObserver
 createObserverHub
 createSessionRegistry
 curatedClaudeSdkModels
+deleteAcpSession
 discoverClaudeSdkModels
 disposeAllProviderSessions
 disposeProviderSession
 executionModeIncompatibilityReason
+generateAcpResponse
 generatePiNativeResponse
 getPiBuiltinModel
 invalidateProviderSession
 isModelCompatibleWithExecutionMode
+listAcpSessions
 listPiBuiltinModels
 listRuntimeBridges
 loginPiOAuth
+logoutAcpProfile
 normalizeClaudeSdkCatalog
 normalizeClaudeSdkModelId
 normalizeRuntimeModelReference
 parseRuntimeModelReference
 piNativeRuntimeBridge
+probeAcpProfile
 reasoningLevelsForPiModel
 refreshProviderSession
 resolvePiOAuthApiKey
@@ -343,6 +376,8 @@ runtimeCapabilities
 sdkFromModelReference
 syncProviderSession
 toolCompactionAppliedFromWarnings
+validateAcpProfileId
+validateAcpProviderSessionId
 ```
 
 **`@mono-agent/agent-runtime/ai/cost.js`**
@@ -388,6 +423,13 @@ statsForCompletedChange
 
 ```text
 formatLiveInputGuidance
+```
+
+**`@mono-agent/agent-runtime/ai/providers/acp.js`**
+
+```text
+acpRuntimeBridge
+generateAcpResponse
 ```
 
 **`@mono-agent/agent-runtime/ai/providers/claude-cli.js`**
@@ -499,7 +541,7 @@ normalizeCodexItemType
 `@mono-agent/agent-runtime` is purpose-built for **autonomous, long-running agent work** with provider portability and operational resilience as first-class concerns. It is *not* a streaming-chat UI kit. Where each peer fits:
 
 - **Vercel AI SDK** — best when you're building a chat / generative-UI experience inside a React or Next.js app. `useChat`, `useCompletion`, streaming server components, and edge-runtime compatibility are their strengths. Their provider list is curated (Anthropic, OpenAI, Google, etc., via `@ai-sdk/*` packages); there's no Pi gateway, no Claude Code CLI, no Codex CLI app-server, and no per-call provider fallback. If you're rendering a streaming chat into a browser, use them. If you're orchestrating multi-turn autonomous work that must survive a rate-limited primary provider, use us.
-- **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) — first-party Anthropic SDK. Tight integration with Claude features (canUseTool, sub-agents, hooks, MCP). We *wrap* it as one of our five bridges and add transcript-resume across provider drops, a structured failure taxonomy, a tool-bloat guard with artifact persistence, and a provider fallback router. Context/window handling remains bridge-specific; the pi-native bridge drives its own compaction recovery. Reach for the bare Anthropic SDK when you only ever talk to Claude and don't need cross-provider portability or resume.
+- **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) — first-party Anthropic SDK. Tight integration with Claude features (canUseTool, sub-agents, hooks, MCP). We *wrap* it as one of our six bridges and add transcript-resume across provider drops, a structured failure taxonomy, a tool-bloat guard with artifact persistence, and a provider fallback router. Context/window handling remains bridge-specific; the pi-native bridge drives its own compaction recovery. Reach for the bare Anthropic SDK when you only ever talk to Claude and don't need cross-provider portability or resume.
 - **Mastra** — a workflow engine + memory + RAG stack. Different category: it's the layer *above* a runtime. You can layer Mastra workflows on top of `@mono-agent/agent-runtime` if you want both.
 - **OpenAI Agents SDK** — first-party OpenAI SDK. Same trade-off as the Claude Agent SDK: tight integration with OpenAI, no other providers. Pi providers in our runtime cover OpenAI plus a dozen others through a single API.
 - **LangChain.js** — kitchen sink with deep abstraction stacks. We're deliberately lean; if you want chains, agents, vector stores, and parsers under one umbrella, LangChain is built for that. If you want a focused runtime kernel, use us.
@@ -510,6 +552,7 @@ normalizeCodexItemType
 - Anthropic Claude via the `claude` Code CLI binary.
 - OpenAI's Codex via the `codex` app-server CLI.
 - OpenCode providers via an isolated, password-authenticated `opencode` app-server.
+- Any ACP v1 stdio agent resolved by the host from an `acp:<profile-id>` reference.
 - OpenAI, Google Gemini, AWS Bedrock, OpenRouter, xAI, Groq, Mistral, Perplexity, DeepSeek, Ollama, LlamaCPP, GLM, Vercel AI Gateway, GitHub Copilot, Gemini CLI — all through the Pi (`@earendil-works/pi-ai`) provider gateway, which our SDK adapter speaks directly.
 
 **At-a-glance:**
@@ -517,7 +560,7 @@ normalizeCodexItemType
 | Need | Use this | Use Vercel AI SDK | Use Claude Agent SDK |
 |---|---|---|---|
 | Streaming chat UI in React/Next | ✗ | ✓ | ✗ |
-| Multi-provider portability | ✓ (5 bridges, 15+ providers) | partial | ✗ |
+| Multi-provider portability | ✓ (6 bridges, 15+ providers) | partial | ✗ |
 | CLI providers (claude/codex/opencode binaries) | ✓ | ✗ | ✗ |
 | Provider fallback on rate limit / overload | ✓ (`createRouterRuntime`) | ✗ | ✗ |
 | Context handling delegated to the provider (no host auto-summarization) | ✓ | ✓ | ✓ |
@@ -541,10 +584,46 @@ The runtime picks a backend from `options.model` + `options.executionMode`:
 | `"pi"` | `"sdk"` (or omitted) | Pi SDK |
 | `"codex"` | `"cli"` | Codex app-server CLI |
 | `"opencode"` | `"cli"` | Isolated OpenCode app-server CLI |
+| `"acp"` | `"acp"` | ACP v1 stdio client |
 
 A `model` is a parsed `{ sdk, model, provider? }` object. Convert canonical
 strings such as `"pi:openai:gpt-5.5"` with
 `parseRuntimeModelReference()` before calling `run()`.
+
+#### ACP v1 host contract
+
+ACP references are canonical `acp:<profile-id>` strings and always use the
+dedicated `executionMode: "acp"`. The host supplies
+`resolveAcpProfile(profileId, context)` either to `createRuntime()` or per run;
+per-run callbacks win. A profile contains an absolute executable command,
+literal arguments, an exact child environment, ownership declarations for
+configuration/workspace/MCP, explicit capability policy, and bounded process
+limits. The runtime never invokes a shell or inherits `process.env`.
+
+Client-owned filesystem, terminal, permission, and elicitation behavior must be
+provided as callbacks and is advertised only when enabled. The runtime-adapter
+facade injects mono-agent's real sandbox implementation; direct kernel callers
+must provide their own when policy requires it. Every owned stdio bridge is
+closed after the operation with stdin close, TERM, then bounded KILL escalation.
+Callback payloads retain their typed operation fields but omit raw protocol
+session ids, extension metadata, and copied raw-id strings. Session-scoped
+callbacks receive the corresponding opaque handle as
+`AcpCallbackContext.providerSessionId`; request ids are opaque host correlation
+tokens as well.
+Session-update dispatch reads only validated own protocol fields. If a valid
+transport frame is too structurally complex for the bounded host sanitizer,
+the turn fails explicitly as `provider_protocol` instead of emitting a partial
+tool, plan, or message event.
+
+ACP provider-session ids and list cursors are opaque, profile-bound runtime
+handles. Preserve them byte-for-byte and pass them back only to the matching
+high-level resume, list, validation, or delete operation; raw protocol session
+ids, cursors, and transport connections are private runtime state. Under the
+default `auto` recovery policy, the client prefers `session/resume`, then
+`session/load`, and finally a fresh session when neither capability is
+advertised. Explicit `resume` or `load` policies fail closed if missing. Stable
+usage comes from the latest typed `usage_update` notification; unstable
+`PromptResponse.usage` is ignored.
 
 ### `createRuntime(host)`
 
@@ -555,6 +634,8 @@ createRuntime({
   // -- host callbacks --
   resolveCustomPricing,    // (parsed) => NormalizedPricing | null
   resolvePiApiKey,         // async (provider) => string | undefined
+  resolveAcpProfile,       // async (profileId, context) => AcpProfileDescriptor
+  onAcpInteractionRequest, // async permission/elicitation fallback callback
   persistArtifact,         // ({ filename, buffer, toolName, toolUseId }) => path | null
   onCompactionRecorded,    // (compactionRow) => void — fired when the pi bridge
                            // runs an automatic compaction (proactive or reactive
@@ -652,7 +733,7 @@ Per-call options (a non-exhaustive selection):
 | Option | Type | Notes |
 |---|---|---|
 | `model` | `RuntimeModelRef` | **Required.** Pass the object returned by `parseRuntimeModelReference()`; `run()` does not parse strings. |
-| `executionMode` | `"sdk" \| "cli"` | Default `"sdk"`. |
+| `executionMode` | `"sdk" \| "cli" \| "acp"` | Default `"sdk"`; ACP references require `"acp"`. |
 | `messages` | `Message[]` | Conversation history. |
 | `cwd` | `string` | Working directory for the agent's tools. |
 | `allowedTools` | `string[]` | Built-in tool allowlist. Default: all. |
@@ -1010,7 +1091,7 @@ These are stable but treated as advanced API. Most consumers should reach for `c
 ## Dependency Boundary
 
 This package has zero `@mono-agent/*` workspace dependencies. Its runtime
-dependencies are `@anthropic-ai/claude-agent-sdk`, `@anthropic-ai/sdk`,
+dependencies are `@agentclientprotocol/sdk`, `@anthropic-ai/claude-agent-sdk`, `@anthropic-ai/sdk`,
 `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`,
 `@modelcontextprotocol/sdk`, `@opencode-ai/sdk`, `@vscode/ripgrep`,
 `cross-spawn`, and `zod`.
@@ -1047,7 +1128,7 @@ runtime fails closed.
 - [Runtime and providers](https://mono-agent-docs.vercel.app/runtime/) explains the
   config-first model and backend choices.
 - [Backends and model references](https://mono-agent-docs.vercel.app/runtime/backends/)
-  documents all five bridges and their execution modes.
+  documents the built-in bridges and their execution modes.
 - [Programmatic approvals and structured output](https://mono-agent-docs.vercel.app/programmatic/approval-and-structured-output/)
   shows the code-only host hooks.
 - [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
