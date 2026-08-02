@@ -84,7 +84,7 @@ describe("Claude CLI live subagent activity", () => {
     expect(emitted).toEqual(result.events);
 
     const [, args] = spawnMock.mock.calls[0];
-    expect(args).not.toContain("--forward-subagent-text");
+    expect(args).toContain("--forward-subagent-text");
   });
 
   it("drains an open child exactly once when the parent run is cancelled", async () => {

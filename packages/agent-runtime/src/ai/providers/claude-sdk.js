@@ -743,6 +743,10 @@ export async function generateClaudeResponse(systemPrompt, options) {
     mcpServers: mcpServers || {},
     strictMcpConfig: true,
     settingSources: normalizeClaudeSettingSources(options.settingSources),
+    // The SDK otherwise forwards child tool frames but suppresses child prose.
+    // Request it explicitly so the live normalizer can preserve the complete
+    // nested transcript without ever merging it into the parent answer.
+    forwardSubagentText: true,
     env: createClaudeSdkEnvironment(options.env, options.providerEnv),
     abortController: internalAbortController,
     ...(disposableSession ? { persistSession: false } : options.persistSession === true ? { persistSession: true } : {}),

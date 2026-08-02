@@ -450,6 +450,7 @@ export function buildCliCommand({
       "-p",
       "--output-format", "stream-json",
       "--include-partial-messages",
+      "--forward-subagent-text",
       "--verbose",
       ...(outputSchema ? ["--json-schema", JSON.stringify(outputSchema)] : []),
       "--model", modelWithContextWindow(model, contextWindow),
