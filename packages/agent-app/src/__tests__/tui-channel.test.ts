@@ -1,3 +1,5 @@
+import { realpath } from "node:fs/promises";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
@@ -32,6 +34,7 @@ function baseInput(options: BuildInputOptions = {}): ChannelStartInput<TuiAdapte
     coreConfig: {
       runtime: {
         model: { sdk: "claude", model: "claude-fable-5" },
+        workspace: "/tmp",
         ...(options.effort === undefined ? {} : { effort: options.effort }),
         ...(options.fallbackModels === undefined ? {} : { fallbackModels: options.fallbackModels }),
       },
@@ -84,6 +87,35 @@ async function resolveInfo(captured: TuiAdapterOptions): Promise<TuiAdapterInfo>
 }
 
 describe("tui channel driver — info composition", () => {
+  it("publishes a secret-free ACP bridge compatibility summary", async () => {
+    const driver = createTuiChannelDriver({
+      adapterFactory: async (): Promise<TuiAdapterStartResult> => ({
+        url: "http://127.0.0.1:0",
+        baseUrl: "http://127.0.0.1:0/gui",
+        infoUrl: "http://127.0.0.1:0/gui/v1/info",
+        turnsUrl: "http://127.0.0.1:0/gui/v1/turns",
+        host: "127.0.0.1",
+        port: 0,
+        stop: async () => {},
+      }),
+      discoverModels: async () => [],
+    });
+
+    const started = await driver.start(baseInput());
+
+    expect(started.summary).toEqual({
+      baseUrl: "http://127.0.0.1:0/gui",
+      acpBridge: {
+        schema: "mono-agent.acp-source.v1",
+        bridgeVersion: 1,
+        protocolVersion: 1,
+        installedVersion: "0.17.0",
+        workspacePath: await realpath("/tmp"),
+      },
+    });
+    expect(JSON.stringify(started.summary)).not.toMatch(/apiKey|credential|configPath/u);
+  });
+
   it("passes the configured runtime effort through to the adapter's info", async () => {
     const captured = await startCapturingTui({ effort: "high" });
     const info = await resolveInfo(captured);

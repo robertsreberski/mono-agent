@@ -1,5 +1,51 @@
 import { AGENT_LIVE_INPUT_MAX_MESSAGES } from "@mono-agent/agent-contracts";
 
+/** Machine-readable discovery contract consumed by local ACP clients such as Worklab. */
+export const ACP_BRIDGE_DISCOVERY_SCHEMA = "mono-agent.acp-discovery.v1" as const;
+export const ACP_BRIDGE_SOURCE_SCHEMA = "mono-agent.acp-source.v1" as const;
+export const ACP_BRIDGE_VERSION = 1 as const;
+export const ACP_PROTOCOL_VERSION = 1 as const;
+
+export type AcpBridgeSourceHealth = "running" | "stale" | "stopped" | "failed";
+
+export interface AcpBridgeSourceDescriptor {
+  readonly schema: typeof ACP_BRIDGE_SOURCE_SCHEMA;
+  /** Version published by this running source; clients compare it with ACP_BRIDGE_VERSION. */
+  readonly bridgeVersion: number;
+  /** ACP protocol version published by this running source. */
+  readonly protocolVersion: number;
+  readonly installedVersion: string;
+  readonly sourceId: string;
+  readonly label: string;
+  readonly health: AcpBridgeSourceHealth;
+  readonly compatible: boolean;
+  readonly workspace: {
+    readonly path: string;
+    readonly owner: "agent";
+  };
+  readonly ownership: {
+    readonly configuration: "agent";
+    readonly workspace: "agent";
+    readonly mcp: "agent";
+  };
+  readonly constraints: {
+    readonly promptContent: readonly ["text"];
+    readonly clientMcp: false;
+    readonly clientFilesystem: false;
+    readonly clientTerminal: false;
+    readonly attachments: false;
+    readonly additionalDirectories: false;
+  };
+  readonly warnings: readonly string[];
+}
+
+export interface AcpBridgeDiscovery {
+  readonly schema: typeof ACP_BRIDGE_DISCOVERY_SCHEMA;
+  readonly bridgeVersion: typeof ACP_BRIDGE_VERSION;
+  readonly protocolVersion: typeof ACP_PROTOCOL_VERSION;
+  readonly sources: readonly AcpBridgeSourceDescriptor[];
+}
+
 /** Version of the browser-facing JSON and SSE contract. */
 export const WEB_API_VERSION = 1 as const;
 
