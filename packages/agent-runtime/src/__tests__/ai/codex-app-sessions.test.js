@@ -2146,6 +2146,54 @@ describe("codex-app persistent sessions", () => {
     });
   });
 
+  it("rejects child requests while a resumed session has no active turn", async () => {
+    const factory = stubClientFactory({ threadId: "thread-resume-setup" });
+    const mcpServers = { worklab: { command: "worklab-mcp" } };
+    const first = await generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionKeepAlive: true,
+      mcpServers,
+    }));
+    expect(first.error).toBeNull();
+
+    const client = factory.clients[0];
+    const requestImplementation = client.request.getMockImplementation();
+    let setupRequestResult;
+    let setupRequestError;
+    client.request.mockImplementation(async (method, params) => {
+      if (method === "collaborationMode/list") {
+        try {
+          setupRequestResult = client.serverRequest("mcpServer/elicitation/request", {
+            threadId: "thread-stale-child",
+            turnId: "turn-stale-child",
+            serverName: "worklab",
+            _meta: { codex_approval_kind: "mcp_tool_call" },
+          });
+        } catch (error) {
+          setupRequestError = error;
+        }
+      }
+      return requestImplementation(method, params);
+    });
+
+    const resumed = await generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionId: "thread-resume-setup",
+      mcpServers,
+      nativeSubagents: {
+        provider: "codex",
+        teammates: [{ name: "reviewer", description: "Review the change" }],
+      },
+    }));
+
+    expect(resumed).toMatchObject({ error: null, failureKind: null });
+    expect(setupRequestResult).toBeUndefined();
+    expect(setupRequestError).toMatchObject({
+      message: expect.stringContaining("provider session was idle"),
+    });
+    expect(resumed.events).not.toContainEqual(expect.objectContaining({
+      warning_kind: "codex_server_request_unsupported",
+    }));
+  });
+
   it("fails fast with session_not_found instead of starting fresh", async () => {
     const factory = stubClientFactory();
     const result = await generateCodexAppResponse("SYS", runOptions(factory, { sessionId: "nope" }));

@@ -2195,14 +2195,14 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     // A same-batch request can arrive after turn/completed but before the
     // generate promise reaches finally. Never let that frame approve work or
     // mutate the already-final provider result.
-    if (turnCompleted || abortRequested) return rejectIdleServerRequest(request);
+    if (turnCompleted || abortRequested || !activeTurnId) return rejectIdleServerRequest(request);
     const params = request?.params || {};
     const sourceThreadId = notificationThreadId(params);
     const sourceTurnId = notificationTurnId(params);
     const isChildRequest = Boolean(
       threadId && sourceThreadId && sourceThreadId !== threadId,
     );
-    if (!isChildRequest && (!activeTurnId || sourceTurnId !== activeTurnId)) {
+    if (!isChildRequest && sourceTurnId !== activeTurnId) {
       throw new Error(
         `Codex app-server request does not match the active turn: ${method}`,
       );
