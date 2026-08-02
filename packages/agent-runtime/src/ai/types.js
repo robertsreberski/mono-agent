@@ -218,10 +218,11 @@
  * @property {ReadonlyArray<"user" | "project" | "local">} [settingSources] Claude Agent SDK only. Filesystem
  *   settings the SDK may load for this run. Omitted/empty disables user, project, and local sources, including their
  *   CLAUDE.md, hooks, plugins, and on-disk agent profiles. Anthropic managed settings remain in force and may still
- *   configure hooks or plugins; this option is not a managed-policy bypass. Include `"project"`/`"user"` to let the
- *   native `Task` tool discover `.claude/agents` definitions. Unrecognized entries are dropped. The Claude Code CLI
- *   bridge does not take this option: that binary performs its own settings discovery and mono-agent passes no
- *   `--setting-sources`, so a CLI run already reads the host config regardless of this value.
+ *   configure hooks or plugins; this option is not a managed-policy bypass. Each opted-in source may execute configured
+ *   hooks and plugins, so enable only trusted settings and avoid these sources in an untrusted checkout. Include
+ *   `"project"`/`"user"` to let the native `Task` tool discover `.claude/agents` definitions. Unrecognized entries are
+ *   dropped. The Claude Code CLI bridge does not take this option: that binary performs its own settings discovery and
+ *   mono-agent passes no `--setting-sources`, so a CLI run already reads the host config regardless of this value.
  * @property {boolean} [codexLoadProjectDocs] Codex app-server only. Omitted/false starts the managed app-server with
  *   `project_doc_max_bytes=0`, preventing automatic repository-instruction discovery. True restores Codex's native
  *   project-doc loading defaults. An explicit `codexAppServerArgs` array wins over this convenience option.

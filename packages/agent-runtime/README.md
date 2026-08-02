@@ -799,9 +799,11 @@ Claude SDK runs are filesystem-isolated by default: mono-agent passes
 including their `CLAUDE.md`, hooks, plugins, and `.claude/agents` profiles.
 Anthropic managed settings remain in force and may still configure hooks or
 plugins; `settingSources` is not a managed-policy bypass. Opt into only the
-needed sources, for example `settingSources: ["project"]`. This option is SDK
-only. The Claude Code CLI performs its own settings discovery, and mono-agent
-does not pass it a `--setting-sources` value.
+needed sources, for example `settingSources: ["project"]`. User, project, and
+local settings may execute configured hooks and plugins, so enable only trusted
+settings and avoid opting in while running in an untrusted checkout. This
+option is SDK only. The Claude Code CLI performs its own settings discovery,
+and mono-agent does not pass it a `--setting-sources` value.
 
 Codex app-server runs disable automatic repository-instruction discovery by
 default with `project_doc_max_bytes=0`. Set `codexLoadProjectDocs: true` to use
