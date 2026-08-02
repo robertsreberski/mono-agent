@@ -813,6 +813,32 @@ describe("loadMonoAgentConfig", () => {
     })).toThrow(/incompatible/u);
   });
 
+  it.each([
+    {
+      env: { MONO_AGENT_MODEL: "acp:worklab-profile" },
+      source: "MONO_AGENT_MODEL",
+      path: "runtime.model",
+    },
+    {
+      env: { MONO_AGENT_FALLBACK_MODELS: "acp:worklab-profile" },
+      source: "MONO_AGENT_FALLBACK_MODELS",
+      path: "runtime.fallbackModels[0]",
+    },
+    {
+      env: { MONO_AGENT_FALLBACKS_JSON: JSON.stringify([{ model: "acp:worklab-profile" }]) },
+      source: "MONO_AGENT_FALLBACKS_JSON",
+      path: "runtime.fallbacks[0]",
+    },
+  ])("rejects app-configured ACP routes from $source without a host resolver", ({ env, source, path }) => {
+    expect(() => loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, ...env },
+    })).toThrowError(expect.objectContaining({
+      code: "incompatible_execution_mode",
+      details: expect.objectContaining({ env: source, path }),
+    }));
+  });
+
   it("redacts core config without adapter-specific sections", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",

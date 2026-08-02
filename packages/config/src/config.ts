@@ -120,6 +120,7 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const fallbackModels = readFallbackModels(input.env);
   const fallbacks = readFallbacks(input.env);
   const retry = readRetryConfig(input.env);
+  assertNoStaticAcpRoutes(model, fallbackModels, fallbacks);
   assertUniqueFallbackRoutes(model, fallbackModels, fallbacks);
   const executionMode = parseExecutionMode(input.env.MONO_AGENT_EXECUTION_MODE, model);
   const maxTurns = readMaxTurns(input.env.MONO_AGENT_MAX_TURNS);
@@ -690,6 +691,37 @@ function assertUniqueFallbackRoutes(
     }
     seen.set(key, route.path);
   }
+}
+
+function assertNoStaticAcpRoutes(
+  primary: MonoAgentConfig["runtime"]["model"],
+  legacy: readonly MonoAgentConfig["runtime"]["model"][],
+  canonical: readonly RuntimeFallbackConfig[],
+): void {
+  const routes = [
+    { model: primary, path: "runtime.model", env: "MONO_AGENT_MODEL" },
+    ...legacy.map((model, index) => ({
+      model,
+      path: `runtime.fallbackModels[${index}]`,
+      env: "MONO_AGENT_FALLBACK_MODELS",
+    })),
+    ...canonical.map((entry, index) => ({
+      model: entry.model,
+      path: `runtime.fallbacks[${index}]`,
+      env: "MONO_AGENT_FALLBACKS_JSON",
+    })),
+  ];
+  const route = routes.find((candidate) => candidate.model.sdk === "acp");
+  if (route === undefined) return;
+  throw new MonoAgentConfigError(
+    "incompatible_execution_mode",
+    "Static mono-agent configuration cannot consume an ACP profile because the app has no host profile resolver. Use the programmatic runtime adapter from a host that supplies resolveAcpProfile.",
+    {
+      env: route.env,
+      path: route.path,
+      model: modelReferenceKey(route.model),
+    },
+  );
 }
 
 function readAgentName(raw: string | undefined): string | undefined {
