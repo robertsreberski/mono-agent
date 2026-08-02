@@ -45,9 +45,33 @@ function isIndividualJsonRpcMessage(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = /** @type {Record<string, unknown>} */ (value);
   if (record.jsonrpc !== "2.0") return false;
-  if (typeof record.method === "string" && record.method.length > 0) return true;
-  if (!("id" in record)) return false;
-  return ("result" in record) !== ("error" in record);
+
+  const hasId = Object.hasOwn(record, "id");
+  const hasMethod = Object.hasOwn(record, "method");
+  const hasParams = Object.hasOwn(record, "params");
+  const hasResult = Object.hasOwn(record, "result");
+  const hasError = Object.hasOwn(record, "error");
+
+  const validId = !hasId
+    || record.id === null
+    || typeof record.id === "string"
+    || (typeof record.id === "number" && Number.isFinite(record.id));
+  if (!validId) return false;
+
+  if (hasMethod) {
+    if (typeof record.method !== "string" || record.method.length === 0) return false;
+    if (hasParams) {
+      const params = record.params;
+      if (!params || typeof params !== "object") return false;
+    }
+    return !hasResult && !hasError;
+  }
+
+  if (!hasId || hasParams || hasResult === hasError) return false;
+  if (!hasError) return true;
+  if (!record.error || typeof record.error !== "object" || Array.isArray(record.error)) return false;
+  const error = /** @type {Record<string, unknown>} */ (record.error);
+  return Number.isInteger(error.code) && typeof error.message === "string";
 }
 
 /**
