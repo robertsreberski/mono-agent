@@ -531,9 +531,9 @@ export async function connectAcpProfile(profileId, options) {
   validateAcpProfileId(profileId);
   throwIfAborted(options?.signal);
   const operation = options?.operation || "connect";
-  if (!TOKEN_FREE_OPERATIONS.has(operation)) {
-    validateAcpSessionTokenKey(options?.acpSessionTokenKey);
-  }
+  const sessionTokenKey = TOKEN_FREE_OPERATIONS.has(operation)
+    ? undefined
+    : validateAcpSessionTokenKey(options?.acpSessionTokenKey);
   const descriptor = await resolveProfile(profileId, { ...options, operation });
   throwIfAborted(options?.signal);
   const capabilities = clientCapabilities(descriptor);
@@ -586,7 +586,7 @@ export async function connectAcpProfile(profileId, options) {
           providerSessionId: encodeAcpProviderSessionId(
             profileId,
             rawSessionId,
-            /** @type {Uint8Array} */ (options.acpSessionTokenKey),
+            /** @type {Uint8Array} */ (sessionTokenKey),
           ),
         }
       : {}),
@@ -1107,7 +1107,11 @@ export async function logoutAcpProfile(profileId, options) {
 export async function listAcpSessions(profileId, request = {}, options = /** @type {any} */ ({})) {
   const key = validateAcpSessionTokenKey(options?.acpSessionTokenKey);
   const protocolRequest = protocolSessionListRequest(profileId, request, key);
-  const connection = await connectAcpProfile(profileId, { ...options, operation: "list_sessions" });
+  const connection = await connectAcpProfile(profileId, {
+    ...options,
+    operation: "list_sessions",
+    acpSessionTokenKey: key,
+  });
   try {
     const result = await connection.listSessions(protocolRequest);
     return {
@@ -1129,7 +1133,11 @@ export async function listAcpSessions(profileId, request = {}, options = /** @ty
 export async function deleteAcpSession(providerSessionId, options) {
   const key = validateAcpSessionTokenKey(options?.acpSessionTokenKey);
   const { profileId, sessionId } = decodeAcpProviderSessionId(providerSessionId, key);
-  const connection = await connectAcpProfile(profileId, { ...options, operation: "delete_session" });
+  const connection = await connectAcpProfile(profileId, {
+    ...options,
+    operation: "delete_session",
+    acpSessionTokenKey: key,
+  });
   try {
     await connection.deleteSession(sessionId);
     return { profileId, providerSessionId, deleted: true };

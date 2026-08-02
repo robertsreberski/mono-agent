@@ -291,6 +291,31 @@ describe("ACP v1 client lifecycle", () => {
     expect(existsSync(exitFile)).toBe(true);
   });
 
+  it("snapshots a mutable token key before callback handles are emitted", async () => {
+    const mutableKey = Buffer.from(TOKEN_KEY);
+    const originalKey = Buffer.from(mutableKey);
+    const requestPermission = vi.fn(() => ({ outcome: { outcome: "cancelled" } }));
+    const connection = await connectAcpProfile("personal-agent", {
+      resolveAcpProfile: async () => profile("normal", {
+        clientCallbacks: { requestPermission },
+      }),
+      acpSessionTokenKey: mutableKey,
+    });
+    try {
+      mutableKey.fill(0);
+      const session = await connection.newSession({ cwd: root, mcpServers: [] });
+      await connection.prompt(session.sessionId, [{ type: "text", text: "permission" }]);
+
+      const callbackHandle = requestPermission.mock.calls[0][1].providerSessionId;
+      expect(validateAcpProviderSessionId(callbackHandle, "personal-agent", originalKey))
+        .toBe(callbackHandle);
+      expect(() => validateAcpProviderSessionId(callbackHandle, "personal-agent", mutableKey))
+        .toThrowError(/Invalid ACP provider session id/);
+    } finally {
+      await connection.close();
+    }
+  });
+
   it("supports capability-gated probe/auth/logout/list/delete management operations", async () => {
     const options = host(profile());
     await expect(probeAcpProfile("personal-agent", options)).resolves.toMatchObject({
@@ -401,6 +426,28 @@ describe("ACP v1 client lifecycle", () => {
     })]);
     expect(second.nextCursor).toBeNull();
     expect(JSON.stringify(second)).not.toContain("raw-private-session-2");
+  });
+
+  it("snapshots a mutable token key before list profile resolution", async () => {
+    const mutableKey = Buffer.from(TOKEN_KEY);
+    const originalKey = Buffer.from(mutableKey);
+    const first = await listAcpSessions("personal-agent", {}, {
+      resolveAcpProfile: async () => {
+        mutableKey.fill(0);
+        return profile("privacy-list");
+      },
+      acpSessionTokenKey: mutableKey,
+    });
+
+    expect(validateAcpProviderSessionId(
+      first.sessions[0].providerSessionId,
+      "personal-agent",
+      originalKey,
+    )).toBe(first.sessions[0].providerSessionId);
+    await expect(listAcpSessions("personal-agent", { cursor: first.nextCursor }, {
+      resolveAcpProfile: async () => profile("privacy-list"),
+      acpSessionTokenKey: originalKey,
+    })).resolves.toMatchObject({ nextCursor: null });
   });
 
   it("rejects raw, malformed, and cross-profile list cursors before spawning", async () => {

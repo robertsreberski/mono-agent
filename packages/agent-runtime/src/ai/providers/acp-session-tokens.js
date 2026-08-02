@@ -75,10 +75,9 @@ function sessionTokenKey(value) {
   return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
 }
 
-/** @param {unknown} key @returns {Uint8Array} */
+/** @param {unknown} key @returns {Buffer} */
 export function validateAcpSessionTokenKey(key) {
-  sessionTokenKey(key);
-  return /** @type {Uint8Array} */ (key);
+  return Buffer.from(sessionTokenKey(key));
 }
 
 /** @param {ReadonlyArray<Uint8Array>} parts */
@@ -138,7 +137,13 @@ function sealToken(kind, profileId, raw, key, code, label) {
   const plaintext = rawTokenBytes(profileId, raw, code, label);
   const aad = tokenAad(kind, profileId);
   const nonce = randomBytes(NONCE_BYTES);
-  const cipher = createCipheriv("aes-256-gcm", encryptionKey(key), nonce);
+  const derivedKey = encryptionKey(key);
+  let cipher;
+  try {
+    cipher = createCipheriv("aes-256-gcm", derivedKey, nonce);
+  } finally {
+    derivedKey.fill(0);
+  }
   cipher.setAAD(aad);
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   return Buffer.concat([nonce, ciphertext, cipher.getAuthTag()]).toString("base64url");
@@ -184,9 +189,14 @@ function openToken(kind, profileId, encoded, key, code, label) {
   const ciphertext = sealed.subarray(NONCE_BYTES, -AUTH_TAG_BYTES);
   const authTag = sealed.subarray(-AUTH_TAG_BYTES);
   const derivedKey = encryptionKey(key);
+  let decipher;
+  try {
+    decipher = createDecipheriv("aes-256-gcm", derivedKey, nonce);
+  } finally {
+    derivedKey.fill(0);
+  }
   let plaintext;
   try {
-    const decipher = createDecipheriv("aes-256-gcm", derivedKey, nonce);
     decipher.setAAD(aad);
     decipher.setAuthTag(authTag);
     plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
