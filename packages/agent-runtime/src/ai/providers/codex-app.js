@@ -1472,6 +1472,7 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
         completedTurns: new Set(),
         bindings: new Set(),
         openActivities: new Map(),
+        settledActivities: new Set(),
         primaryOutcome: null,
       };
       subagentGroupsBySpawnId.set(id, group);
@@ -1515,13 +1516,16 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     // append more activity to that group.
     if (group.finished && activity.phase !== "agent_completed") return;
     if (activity.phase === "started" && typeof activity.id === "string") {
+      if (group.openActivities.has(activity.id) || group.settledActivities.has(activity.id)) return;
       group.openActivities.set(activity.id, {
         binding,
         name: activity.name,
         startedAt: Date.now(),
       });
     } else if (activity.phase === "completed" && typeof activity.id === "string") {
+      if (group.settledActivities.has(activity.id)) return;
       group.openActivities.delete(activity.id);
+      group.settledActivities.add(activity.id);
     }
     emitEvent({
       type: "subagent_activity",
@@ -2716,6 +2720,17 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     };
   } finally {
     stopLiveInput();
+    // The returned result is already being finalized. Park every transport
+    // callback before lifecycle drains or close() so shutdown-time frames
+    // cannot mutate its event array or stale per-run state.
+    if (resumeEntry) {
+      resumeEntry.notificationTarget.handler = noopNotificationHandler;
+      resumeEntry.serverRequestTarget.handler = rejectIdleServerRequest;
+      resumeEntry.closedTarget.handler = null;
+    } else {
+      notificationTarget.handler = noopNotificationHandler;
+      serverRequestTarget.handler = rejectIdleServerRequest;
+    }
     if ([...subagentGroupsBySpawnId.values()].some((group) => !group.finished)) {
       const cancelled = !!options.abortSignal?.aborted;
       const failed = Boolean(errorMessage || failureKind);
@@ -2738,9 +2753,6 @@ export async function generateCodexAppResponse(systemPrompt, options = {}) {
     options.abortSignal?.removeEventListener?.("abort", abortHandler);
     if (resumeEntry) {
       resumeEntry.busy = false;
-      resumeEntry.notificationTarget.handler = noopNotificationHandler;
-      resumeEntry.serverRequestTarget.handler = rejectIdleServerRequest;
-      resumeEntry.closedTarget.handler = null;
     }
     if (!sessionRetained) await closeCodexClient(client);
   }

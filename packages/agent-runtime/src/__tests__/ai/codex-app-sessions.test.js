@@ -866,6 +866,37 @@ describe("codex-app persistent sessions", () => {
     expect(returned).toBe(true);
   });
 
+  it("parks request handling before disposable client shutdown", async () => {
+    const factory = stubClientFactory({ threadId: "thread-shutdown-request" });
+    factory.turnPlan.push("manual");
+    const pending = generateCodexAppResponse("SYS", runOptions(factory));
+    await vi.waitFor(() => expect(factory.clients[0]?.finishTurn).toBeTruthy());
+    const client = factory.clients[0];
+    let shutdownRequestError = null;
+    client.close = vi.fn(async () => {
+      try {
+        client.serverRequest("item/tool/requestUserInput", {
+          threadId: "thread-shutdown-request",
+          turnId: "turn-1",
+        });
+      } catch (error) {
+        shutdownRequestError = error;
+      }
+      client.resolveClosed(new Error("codex app-server closed"));
+    });
+
+    client.finishTurn({ text: "done" });
+    const result = await pending;
+
+    expect(shutdownRequestError).toMatchObject({
+      message: expect.stringContaining("provider session was idle"),
+    });
+    expect(result).toMatchObject({ text: "done", error: null, failureKind: null });
+    expect(result.events).not.toContainEqual(expect.objectContaining({
+      warning_kind: "codex_server_request_unsupported",
+    }));
+  });
+
   it("acknowledges live input only after turn/steer accepts it", async () => {
     const factory = stubClientFactory({ threadId: "thread-live-input" });
     factory.turnPlan.push("manual");
@@ -1424,6 +1455,12 @@ describe("codex-app persistent sessions", () => {
       turnId: "turn-grandchild",
       item: { id: "nested-read", type: "commandExecution", command: "git diff", status: "inProgress" },
     });
+    client.notify("turn/completed", {
+      threadId: "thread-grandchild",
+      turn: { id: "turn-grandchild", status: "completed" },
+    });
+    // A delayed real completion after the synthesized terminal must not create
+    // a second row for the same child activity while the primary is still open.
     client.notify("item/completed", {
       threadId: "thread-grandchild",
       turnId: "turn-grandchild",
@@ -1435,10 +1472,6 @@ describe("codex-app persistent sessions", () => {
         aggregatedOutput: "clean",
         exitCode: 0,
       },
-    });
-    client.notify("turn/completed", {
-      threadId: "thread-grandchild",
-      turn: { id: "turn-grandchild", status: "completed" },
     });
     client.notify("item/completed", {
       threadId: "thread-child",
@@ -1463,8 +1496,15 @@ describe("codex-app persistent sessions", () => {
         agentPath: "/root/research/audit",
       },
     });
+    expect(result.events.filter((event) => event.type === "subagent_activity"
+      && event.id.includes("nested-read"))).toEqual([
+      expect.objectContaining({ phase: "started" }),
+      expect.objectContaining({ phase: "completed", isError: true }),
+    ]);
     expect(result.events.filter((event) => event.type === "subagent_activity" && event.phase === "agent_completed"))
       .toHaveLength(1);
+    expect(result.events.filter((event) => event.type === "subagent_activity").at(-1)?.phase)
+      .toBe("agent_completed");
     expect(result.capabilitiesUsed).toMatchObject({
       subagent_invoked: true,
       native_subagents_used: ["research", "audit"],
