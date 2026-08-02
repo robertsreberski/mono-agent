@@ -35,7 +35,7 @@ import {
   type OperatorInfo,
 } from "@mono-agent/web";
 
-import { monoAgentVersion } from "./cli-help.js";
+import { agentAppPackageVersion } from "./package-version.js";
 
 const FORWARDED_TOOL_ENVIRONMENT_KEYS = [
   "MULTICA_TOKEN",
@@ -127,7 +127,7 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
       agentInfo: {
         name: "mono-agent-acp-bridge",
         title: target.info.label ?? options.sourceId,
-        version: monoAgentVersion(),
+        version: agentAppPackageVersion() ?? "unknown",
       },
       _meta: { "mono-agent": target.descriptor },
     };

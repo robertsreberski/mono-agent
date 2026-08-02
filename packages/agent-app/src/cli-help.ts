@@ -1,8 +1,7 @@
-import { createRequire } from "node:module";
-
 import { EFFORT_LEVELS } from "@mono-agent/config";
 
 import { REMOVED_COMMANDS } from "./cli-args.js";
+import { agentAppPackageVersion } from "./package-version.js";
 import { readinessProbeTimeoutDescription } from "./readiness-probe.js";
 import * as ui from "./ui.js";
 
@@ -455,10 +454,5 @@ function renderHelpEntryDetail(entry: HelpEntry, aliasNote: string | undefined):
  * "unknown" rather than crashing `--version`.
  */
 export function monoAgentVersion(): string {
-  try {
-    const pkg = createRequire(import.meta.url)("../package.json") as { version?: unknown };
-    return typeof pkg.version === "string" && pkg.version.length > 0 ? pkg.version : "unknown";
-  } catch {
-    return "unknown";
-  }
+  return agentAppPackageVersion() ?? "unknown";
 }
