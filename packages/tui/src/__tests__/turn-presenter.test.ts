@@ -478,6 +478,7 @@ describe("TurnPresenter subagent panels", () => {
     type: "tool_call_started" as const,
     id: `agent:${id}`,
     name: `Agent(${name})`,
+    arguments: { name, prompt: "find X" },
     metadata: { subagent: { id, name, callIndex: 0 }, synthetic: true, subagentLifecycle: true },
   });
   const childCall = (id: string, name: string, toolId: string, tool: string, args: unknown) => ({
@@ -488,11 +489,12 @@ describe("TurnPresenter subagent panels", () => {
     metadata: { subagent: { id, name, callIndex: 0 }, synthetic: true },
   });
 
-  it("nests a subagent's tool calls under its Agent panel and drops the bookend", async () => {
-    const { presenter, rendered } = setup();
+  it("nests a subagent's tool calls under its Agent panel without duplicating it for the bookend", async () => {
+    const { presenter, rendered, transcript } = setup();
 
     await presenter.event(launch("call-1", "researcher"));
     await presenter.event(bookend("call-1", "researcher"));
+    expect(transcript.children).toHaveLength(1);
     await presenter.event(childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }));
     presenter.settle();
 
@@ -506,6 +508,40 @@ describe("TurnPresenter subagent panels", () => {
     expect(indentOf(lines[1] ?? "")).toBeGreaterThan(indentOf(lines[0] ?? ""));
     // The lifecycle bookend must not become a second panel.
     expect(rendered()).not.toContain("Agent(researcher)");
+  });
+
+  it("creates and settles the canonical Agent panel from lifecycle bookends alone", async () => {
+    const { presenter, rendered, transcript } = setup();
+    const canonicalId = "codex-spawn-1";
+    const subagent = { id: canonicalId, name: "codex", callIndex: 0 };
+
+    // Codex-native delegation can begin with only agent_started: there is no
+    // ordinary parent Agent tool event to create the transcript panel first.
+    await presenter.event(bookend(canonicalId, "codex"));
+    expect(transcript.children).toHaveLength(1);
+    expect(rendered()).toContain("◐ Agent");
+
+    await presenter.event(childCall(canonicalId, "codex", "read-1", "Read", {
+      file_path: "/repo/a.ts",
+    }));
+    await presenter.event({
+      type: "tool_call_completed",
+      id: `agent:${canonicalId}`,
+      name: "Agent(codex)",
+      content: "done",
+      executionMs: 125,
+      metadata: { subagent, synthetic: true, subagentLifecycle: true },
+    });
+    presenter.settle();
+
+    const lines = rendered().split("\n").filter((line) => line.trim().length > 0);
+    expect(transcript.children).toHaveLength(1);
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toContain("✓ Agent");
+    expect(lines[0]).toContain("125ms");
+    expect(lines[1]).toContain("done");
+    expect(lines[2]).toContain("Read");
+    expect(indentOf(lines[2] ?? "")).toBeGreaterThan(indentOf(lines[0] ?? ""));
   });
 
   it("attaches native activity to the canonical parent id when the provider task id differs", async () => {

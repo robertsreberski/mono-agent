@@ -91,10 +91,17 @@ export class TurnPresenter implements AgentMessageStream {
       }
       case "tool_call_started": {
         const subagent = subagentOf(event);
-        // The bookends only announce the subagent; its parent `Agent` panel is
-        // already on the transcript and carries the same lifecycle, so a second
-        // panel for them would just be noise.
+        // A lifecycle bookend normally follows the parent `Agent` call, but
+        // provider-native delegation can emit the bookend without that call.
+        // Ensure the canonical parent exists in either case: child activity and
+        // the closing bookend both attach through `subagent.id`.
         if (subagent !== undefined && event.metadata?.subagentLifecycle === true) {
+          if (!this.toolPanels.has(subagent.id)) {
+            this.sealStreamingCells();
+            const panel = new ToolPanel(subagent.id, "Agent", event.arguments);
+            this.toolPanels.set(subagent.id, panel);
+            this.options.transcript.addChild(panel);
+          }
           break;
         }
         const parent = subagent === undefined ? undefined : this.toolPanels.get(subagent.id);
