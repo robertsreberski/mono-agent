@@ -86,7 +86,7 @@ the configuration schema.
 
 ## 0.17.x baseline
 
-This is the current published baseline. It carries the 0.16.x contract forward
+This prior baseline carries the 0.16.x contract forward
 and adds a host-only, request-scoped `toolEnvironment` boundary. Hosts may pass
 validated values and PATH prefixes through the request, harness, and runtime;
 the runtime applies them only when Bash, Exec, or a nested subagent process is
@@ -430,7 +430,7 @@ a compatibility subpath.
 
 ## Version
 
-This guide describes the published `0.17.x` package contract. Keep
+This guide describes the published `0.18.x` package contract. Keep
 `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, and other
 `@mono-agent/*` packages on the same lockstep version when upgrading. The paired
 runtime adapter no longer exposes `piReasoningSummary` in its run-options type.
