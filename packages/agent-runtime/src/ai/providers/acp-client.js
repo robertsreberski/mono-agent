@@ -285,6 +285,12 @@ function asClientError(error) {
   );
 }
 
+/** @param {AbortSignal|undefined} signal */
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  throw new AcpClientError("cancelled", "ACP operation was cancelled.");
+}
+
 /** @param {Promise<any>} promise @param {number} timeoutMs @param {string} operation @param {() => void} [onTimeout] */
 async function withTimeout(promise, timeoutMs, operation, onTimeout) {
   if (timeoutMs === 0) return promise;
@@ -457,8 +463,10 @@ function callbackContext(descriptor, options, profileId, operation, extra = {}) 
  */
 export async function connectAcpProfile(profileId, options) {
   validateAcpProfileId(profileId);
+  throwIfAborted(options?.signal);
   const operation = options?.operation || "connect";
   const descriptor = await resolveProfile(profileId, { ...options, operation });
+  throwIfAborted(options?.signal);
   const capabilities = clientCapabilities(descriptor);
   const sandbox = options.sandbox || passthroughSandbox;
   const commandCwd = descriptor.cwd || descriptor.workspacePath || options.cwd || process.cwd();
@@ -479,6 +487,13 @@ export async function connectAcpProfile(profileId, options) {
     });
   } catch (error) {
     throw asClientError(error);
+  }
+  if (options?.signal?.aborted) {
+    try {
+      await prepared.cleanup?.();
+    } finally {
+      throwIfAborted(options.signal);
+    }
   }
 
   const child = spawn(prepared.command, [...(prepared.args || [])], {

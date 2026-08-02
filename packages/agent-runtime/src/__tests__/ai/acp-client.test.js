@@ -70,6 +70,50 @@ describe("ACP v1 client lifecycle", () => {
       .rejects.toMatchObject({ code: "invalid_profile" });
   });
 
+  it("does not prepare or spawn after cancellation during profile resolution", async () => {
+    let resolveDescriptor;
+    const resolveAcpProfile = vi.fn(() => new Promise((resolve) => { resolveDescriptor = resolve; }));
+    const prepareCommand = vi.fn();
+    const controller = new AbortController();
+    const connection = connectAcpProfile("cancelled-resolve", {
+      resolveAcpProfile,
+      signal: controller.signal,
+      sandbox: { prepareCommand },
+    });
+    await vi.waitFor(() => expect(resolveAcpProfile).toHaveBeenCalledOnce());
+
+    controller.abort(new Error("cancel during resolve"));
+    resolveDescriptor(profile());
+
+    await expect(connection).rejects.toMatchObject({ code: "cancelled" });
+    expect(prepareCommand).not.toHaveBeenCalled();
+  });
+
+  it("cleans prepared resources without spawning after cancellation during sandbox preparation", async () => {
+    let resolvePrepared;
+    const cleanup = vi.fn(async () => {});
+    const prepareCommand = vi.fn(() => new Promise((resolve) => { resolvePrepared = resolve; }));
+    const controller = new AbortController();
+    const connection = connectAcpProfile("cancelled-prepare", {
+      ...host(profile()),
+      signal: controller.signal,
+      sandbox: { prepareCommand },
+    });
+    await vi.waitFor(() => expect(prepareCommand).toHaveBeenCalledOnce());
+
+    controller.abort(new Error("cancel during prepare"));
+    resolvePrepared({
+      command: join(root, "must-not-spawn"),
+      args: [],
+      cwd: root,
+      env: {},
+      cleanup,
+    });
+
+    await expect(connection).rejects.toMatchObject({ code: "cancelled" });
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
   it("initializes, preserves resource links, validates permission choices, streams typed updates, and cleans up", async () => {
     const exitFile = join(root, "happy-exit.txt");
     const promptFile = join(root, "happy-prompt.json");
