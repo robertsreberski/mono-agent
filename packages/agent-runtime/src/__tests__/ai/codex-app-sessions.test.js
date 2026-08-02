@@ -1720,6 +1720,52 @@ describe("codex-app persistent sessions", () => {
     expect(client.close).not.toHaveBeenCalled();
   });
 
+  it("routes server requests to the active resumed turn and rejects them while idle", async () => {
+    const factory = stubClientFactory({ threadId: "thread-request-target" });
+    const first = await generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionKeepAlive: true,
+      permissionMode: "plan",
+      mcpServers: { first: { command: "first-mcp" } },
+    }));
+    expect(first.error).toBeNull();
+
+    const client = factory.clients[0];
+    expect(() => client.serverRequest("mcpServer/elicitation/request", {
+      threadId: "thread-request-target",
+      turnId: "turn-idle",
+      serverName: "first",
+      _meta: { codex_approval_kind: "mcp_tool_call" },
+    })).toThrow("provider session was idle");
+
+    factory.turnPlan.push("manual");
+    const resumed = generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionId: "thread-request-target",
+      permissionMode: "plan",
+      mcpServers: { second: { command: "second-mcp" } },
+      messages: [{ role: "user", content: "follow up" }],
+    }));
+    await vi.waitFor(() => expect(client.finishTurn).toBeTruthy());
+
+    expect(client.serverRequest("mcpServer/elicitation/request", {
+      threadId: "thread-request-target",
+      turnId: "turn-2",
+      serverName: "second",
+      _meta: { codex_approval_kind: "mcp_tool_call" },
+    })).toEqual({ action: "accept", content: {}, _meta: null });
+    client.finishTurn({ text: "resumed" });
+    await expect(resumed).resolves.toMatchObject({
+      text: "resumed",
+      error: null,
+      failureKind: null,
+    });
+
+    expect(() => client.serverRequest("item/tool/requestUserInput", {
+      threadId: "thread-request-target",
+      turnId: "turn-idle-again",
+    })).toThrow("provider session was idle");
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
   it("fails fast with session_not_found instead of starting fresh", async () => {
     const factory = stubClientFactory();
     const result = await generateCodexAppResponse("SYS", runOptions(factory, { sessionId: "nope" }));
