@@ -62,6 +62,10 @@ export const RUNTIME_CAPABILITIES = {
     ...COMMON_CAPABILITIES,
     structured_output: false,
     supports_session_resume: true,
+    // Runtime request-scoped MCP servers are not projected into ACP sessions.
+    // Profiles may own static ACP MCP configuration, but that is not the
+    // supports_mcp contract advertised to the route capability gate.
+    supports_mcp: false,
     supports_skills: false,
     supports_builtin_tools: false,
     supports_live_input: false,

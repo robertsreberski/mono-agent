@@ -31,6 +31,7 @@ describe("runtime smoke matrix", () => {
     expect(runtimeCapabilities("acp")).toMatchObject({
       runtime: "acp-stdio",
       supports_session_resume: true,
+      supports_mcp: false,
       supports_builtin_tools: false,
     });
   });

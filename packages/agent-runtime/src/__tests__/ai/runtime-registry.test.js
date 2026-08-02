@@ -59,6 +59,7 @@ describe("AI runtime bridge registry", () => {
       runtime: "acp-stdio",
       structured_output: false,
       supports_session_resume: true,
+      supports_mcp: false,
       supports_builtin_tools: false,
       tool_policy: "allow_all_only",
     });

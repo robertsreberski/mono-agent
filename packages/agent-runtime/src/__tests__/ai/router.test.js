@@ -913,6 +913,49 @@ describe("createRouterRuntime — production fallback contracts", () => {
     });
   });
 
+  it("projects ACP per-route-native safety as provider-owned with an exact allow-all tool contract", async () => {
+    const sandboxPolicy = { mode: "native", engine: "srt", root: "/repo" };
+    const events = [];
+    executeMock.mockResolvedValueOnce({ text: "acp", events: [], failureKind: null });
+    const router = createRouterRuntime({
+      host: { sandboxPolicy, sandboxEngine: { name: "srt" } },
+      routeSafety: "per-route-native",
+      chain: [{ sdk: "acp", model: "worklab" }],
+    });
+
+    const result = await router.run("sys", {
+      messages: [],
+      sandboxPolicy,
+      sandboxEngine: { name: "request-srt" },
+      allowedTools: ["Read"],
+      disallowedTools: ["Write"],
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(result.text).toBe("acp");
+    expect(executeMock).toHaveBeenCalledOnce();
+    expect(executeMock.mock.calls[0][1]).toMatchObject({
+      model: { sdk: "acp", model: "worklab" },
+      allowedTools: ["*"],
+      disallowedTools: [],
+    });
+    expect(executeMock.mock.calls[0][1]).not.toHaveProperty("sandboxPolicy");
+    expect(executeMock.mock.calls[0][1]).not.toHaveProperty("sandboxEngine");
+    expect(executeMock.mock.calls[0][1].toolContext.sandboxPolicy).toBeUndefined();
+    expect(executeMock.mock.calls[0][1].toolContext.sandboxEngine).toBeUndefined();
+    const expectedContract = {
+      mode: "per-route-native",
+      sandbox: "provider-native",
+      tools: "exact-allow-all",
+    };
+    expect(result.routeSafetyHistory).toEqual([expect.objectContaining({
+      status: "attempted",
+      safetyContract: expectedContract,
+    })]);
+    expect(events.find((event) => event.type === "provider_route_safety")?.safetyContract)
+      .toEqual(expectedContract);
+  });
+
   it.each([
     ["absent", undefined],
     ["explicitly off", { mode: "off" }],
