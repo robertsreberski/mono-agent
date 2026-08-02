@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { delimiter, isAbsolute } from "node:path";
+import { realpath } from "node:fs/promises";
+import { delimiter, isAbsolute, resolve } from "node:path";
 import process from "node:process";
 import { Readable, Writable } from "node:stream";
 
@@ -10,16 +11,26 @@ import {
   methods,
   ndJsonStream,
   type AgentRequestContext,
+  type ClientCapabilities,
+  type CreateElicitationResponse,
+  type ElicitationPropertySchema,
   type PromptRequest,
   type PromptResponse,
   type SessionUpdate,
   type ToolKind,
-  type Usage,
 } from "@agentclientprotocol/sdk";
-import type { AgentStreamEvent, AgentToolEnvironment } from "@mono-agent/agent-contracts";
+import type {
+  AgentStreamEvent,
+  AgentToolEnvironment,
+  ChannelAskAnswer,
+  ChannelAskQuestion,
+  ChannelAskSnapshot,
+} from "@mono-agent/agent-contracts";
 import {
   OperatorClient,
+  discoverAcpBridgeAgents,
   discoverOperatorAgents,
+  type AcpBridgeSourceDescriptor,
   type DiscoveredOperatorAgent,
   type OperatorInfo,
 } from "@mono-agent/web";
@@ -44,6 +55,10 @@ const FORWARDED_TOOL_ENVIRONMENT_KEYS = [
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const BRIDGE_ERROR_CODE = -32000;
 const MAX_TOOL_CONTENT_CHARS = 64 * 1024;
+const ASK_DISCOVERY_TIMEOUT_MS = 2_000;
+const ASK_DISCOVERY_INTERVAL_MS = 25;
+const CUSTOM_OPTION_ID = "__mono_agent_custom__";
+const SENSITIVE_ASK_PATTERN = /\b(?:api[ _-]?key|credential|password|passphrase|private[ _-]?key|secret|token)\b/iu;
 
 export interface RunAcpBridgeOptions {
   readonly sourceId: string;
@@ -56,7 +71,7 @@ export interface RunAcpBridgeOptions {
 }
 
 interface BridgeTarget {
-  readonly discovered: DiscoveredOperatorAgent;
+  readonly descriptor: AcpBridgeSourceDescriptor;
   readonly client: OperatorClient;
   readonly info: OperatorInfo;
 }
@@ -72,7 +87,7 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
   const output = options.output ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const resolveTarget = async (signal?: AbortSignal): Promise<BridgeTarget> => {
-    const discovered = await resolveExactSource(options.sourceId, env);
+    const { discovered, descriptor } = await resolveExactSource(options.sourceId, env);
     const client = new OperatorClient({
       baseUrl: discovered.baseUrl as string,
       ...(discovered.apiKey === undefined ? {} : { apiKey: discovered.apiKey }),
@@ -84,7 +99,7 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
         `mono-agent source '${options.sourceId}' does not advertise request tool environment support.`,
       );
     }
-    return { discovered, client, info };
+    return { descriptor, client, info };
   };
 
   try {
@@ -95,16 +110,18 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
   }
 
   const activeTurns = new Map<string, ActiveTurn>();
+  const sessions = new Set<string>();
+  let clientSupportsFormElicitation = false;
   const app = agent({ name: `mono-agent ACP bridge (${options.sourceId})` });
 
-  app.onRequest(methods.agent.initialize, async ({ signal }) => {
+  app.onRequest(methods.agent.initialize, async ({ params, signal }) => {
+    rejectUnsupportedClientCapabilities(params.clientCapabilities);
+    clientSupportsFormElicitation = params.clientCapabilities?.elicitation?.form != null;
     const target = await requestTarget(resolveTarget, signal);
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentCapabilities: {
-        loadSession: true,
         promptCapabilities: { image: false, audio: false, embeddedContext: false },
-        sessionCapabilities: { resume: {} },
       },
       authMethods: [],
       agentInfo: {
@@ -112,27 +129,17 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
         title: target.info.label ?? options.sourceId,
         version: monoAgentVersion(),
       },
+      _meta: { "mono-agent": target.descriptor },
     };
   });
 
   app.onRequest(methods.agent.session.new, async ({ params, signal }) => {
     rejectUnsupportedSessionInputs(params.mcpServers, params.additionalDirectories);
-    await requestTarget(resolveTarget, signal);
-    return { sessionId: newSessionId(options.sourceId) };
-  });
-
-  app.onRequest(methods.agent.session.load, async ({ params, signal }) => {
-    validateSessionId(params.sessionId, options.sourceId);
-    rejectUnsupportedSessionInputs(params.mcpServers, params.additionalDirectories);
-    await requestTarget(resolveTarget, signal);
-    return {};
-  });
-
-  app.onRequest(methods.agent.session.resume, async ({ params, signal }) => {
-    validateSessionId(params.sessionId, options.sourceId);
-    rejectUnsupportedSessionInputs(params.mcpServers ?? [], params.additionalDirectories);
-    await requestTarget(resolveTarget, signal);
-    return {};
+    const target = await requestTarget(resolveTarget, signal);
+    await assertAgentWorkspace(params.cwd, target.descriptor.workspace.path);
+    const sessionId = newSessionId(options.sourceId);
+    sessions.add(sessionId);
+    return { sessionId };
   });
 
   app.onRequest(methods.agent.session.prompt, async (context) => {
@@ -141,11 +148,14 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
       env,
       resolveTarget,
       activeTurns,
+      sessions,
+      clientSupportsFormElicitation: () => clientSupportsFormElicitation,
     });
   });
 
   app.onNotification(methods.agent.session.cancel, async ({ params }) => {
     validateSessionId(params.sessionId, options.sourceId);
+    if (!sessions.has(params.sessionId)) return;
     const active = activeTurns.get(params.sessionId);
     if (active === undefined) return;
     active.controller.abort(new Error("ACP client cancelled the session."));
@@ -172,11 +182,19 @@ async function runPrompt(
     readonly env: Readonly<Record<string, string | undefined>>;
     readonly resolveTarget: (signal?: AbortSignal) => Promise<BridgeTarget>;
     readonly activeTurns: Map<string, ActiveTurn>;
+    readonly sessions: ReadonlySet<string>;
+    readonly clientSupportsFormElicitation: () => boolean;
   },
 ): Promise<PromptResponse> {
   const { params } = context;
   validateSessionId(params.sessionId, options.sourceId);
-  const text = textPrompt(params.prompt);
+  if (!options.sessions.has(params.sessionId)) {
+    throw RequestError.invalidParams(
+      { code: "unknown_session_id" },
+      "The ACP session was not created by this bridge connection.",
+    );
+  }
+  const text = promptText(params.prompt);
   if (options.activeTurns.has(params.sessionId)) {
     throw bridgeError("session_busy", `ACP session '${params.sessionId}' already has an active turn.`);
   }
@@ -186,7 +204,7 @@ async function runPrompt(
   const active = { controller, client: target.client };
   options.activeTurns.set(params.sessionId, active);
   let publishedText = "";
-  let usage: Usage | undefined;
+  let interactionStopReason: "refusal" | "cancelled" | undefined;
   const toolNames = new Map<string, string>();
   const messageId = `mono-agent:${String(context.requestId)}`;
   const cancelOperator = (): void => {
@@ -247,27 +265,45 @@ async function runPrompt(
           return;
         }
         if (frame.kind === "event") {
-          usage = await publishEvent(context, params.sessionId, frame.event, target.info, toolNames, usage);
-          const toolName = toolNameFromEvent(frame.event, toolNames);
-          if (toolName?.toLowerCase() === "askuser") {
-            await target.client.cancel(params.sessionId).catch(() => undefined);
-            controller.abort(new Error("AskUser requires an interactive client."));
-            throw bridgeError(
-              "interaction_required",
-              "mono-agent requested AskUser, but the Multica ACP bridge is non-interactive.",
-            );
+          await publishEvent(context, params.sessionId, frame.event, target.info, toolNames);
+          if (
+            frame.event.type === "tool_call_started"
+            && frame.event.name.toLowerCase() === "askuser"
+          ) {
+            let action: CreateElicitationResponse["action"];
+            try {
+              action = await handleAskUser(context, {
+                target,
+                sessionId: params.sessionId,
+                toolCallId: frame.event.id,
+                signal,
+                clientSupportsFormElicitation: options.clientSupportsFormElicitation(),
+              });
+            } catch (error) {
+              await target.client.cancel(params.sessionId).catch(() => undefined);
+              controller.abort(new Error("AskUser ACP interaction failed."));
+              throw error;
+            }
+            if (action !== "accept") {
+              interactionStopReason = action === "decline" ? "refusal" : "cancelled";
+              await target.client.cancel(params.sessionId).catch(() => undefined);
+              controller.abort(new Error(`ACP client ${action}d AskUser.`));
+            }
           }
         }
       },
     });
     if (result.finalText !== undefined) await publishText(result.finalText);
     return {
-      stopReason: signal.aborted ? "cancelled" : "end_turn",
-      ...(usage === undefined ? {} : { usage }),
+      stopReason: interactionStopReason ?? (signal.aborted ? "cancelled" : "end_turn"),
     };
   } catch (error) {
     if (error instanceof RequestError) throw error;
-    if (signal.aborted) return { stopReason: "cancelled", ...(usage === undefined ? {} : { usage }) };
+    if (signal.aborted) {
+      return {
+        stopReason: interactionStopReason ?? "cancelled",
+      };
+    }
     const code = codedErrorCode(error) ?? "operator_turn_failed";
     throw bridgeError(code, `mono-agent operator turn failed: ${errorMessage(error)}`);
   } finally {
@@ -276,20 +312,230 @@ async function runPrompt(
   }
 }
 
+interface AskFormField {
+  readonly question: ChannelAskQuestion;
+  readonly answerKey: string;
+  readonly customKey: string;
+  readonly customOptionId: string;
+}
+
+async function handleAskUser(
+  context: AgentRequestContext<PromptRequest>,
+  options: {
+    readonly target: BridgeTarget;
+    readonly sessionId: string;
+    readonly toolCallId: string;
+    readonly signal: AbortSignal;
+    readonly clientSupportsFormElicitation: boolean;
+  },
+): Promise<CreateElicitationResponse["action"]> {
+  if (!options.clientSupportsFormElicitation || !options.target.info.supportsAskUser) {
+    await options.target.client.cancel(options.sessionId).catch(() => undefined);
+    throw bridgeError(
+      "interaction_required",
+      "mono-agent requested AskUser, but this ACP client/source pair does not support form elicitation.",
+    );
+  }
+
+  const ask = await waitForPendingAsk(options.target.client, options.sessionId, options.signal);
+  if (ask === undefined) {
+    await options.target.client.cancel(options.sessionId).catch(() => undefined);
+    throw bridgeError(
+      "interaction_unavailable",
+      "mono-agent requested AskUser, but its pending interaction was not available.",
+    );
+  }
+  if (containsSensitiveAsk(ask)) {
+    await options.target.client.cancel(options.sessionId).catch(() => undefined);
+    throw bridgeError(
+      "sensitive_elicitation_unsupported",
+      "mono-agent AskUser requested potentially sensitive input; the ACP form bridge refuses secret collection.",
+    );
+  }
+
+  const form = buildAskForm(ask);
+  const response = await context.client.request(methods.client.elicitation.create, {
+    mode: "form",
+    sessionId: options.sessionId,
+    toolCallId: options.toolCallId,
+    message: ask.message?.trim() || "mono-agent needs your input to continue.",
+    requestedSchema: {
+      type: "object",
+      properties: form.properties,
+      required: form.fields.map((field) => field.answerKey),
+    },
+  }, { cancellationSignal: options.signal });
+
+  if (response.action === "decline" || response.action === "cancel") return response.action;
+  if (response.action !== "accept") {
+    throw bridgeError("invalid_elicitation_response", `Unsupported ACP elicitation action '${response.action}'.`);
+  }
+  const answers = answersFromElicitation(
+    response as Extract<CreateElicitationResponse, { action: "accept" }>,
+    form.fields,
+  );
+  const submitted = await options.target.client.submitAsk(
+    options.sessionId,
+    ask.interactionId,
+    answers,
+    options.signal,
+  );
+  if (!submitted.accepted) {
+    throw bridgeError(
+      "ask_submission_rejected",
+      `mono-agent rejected the ACP AskUser response (${submitted.code ?? "unknown"}).`,
+    );
+  }
+  return "accept";
+}
+
+async function waitForPendingAsk(
+  client: OperatorClient,
+  sessionId: string,
+  signal: AbortSignal,
+): Promise<ChannelAskSnapshot | undefined> {
+  const deadline = Date.now() + ASK_DISCOVERY_TIMEOUT_MS;
+  for (;;) {
+    signal.throwIfAborted();
+    const ask = await client.pendingAsk(sessionId, signal);
+    if (ask !== undefined) return ask;
+    if (Date.now() >= deadline) return undefined;
+    await abortableDelay(ASK_DISCOVERY_INTERVAL_MS, signal);
+  }
+}
+
+function buildAskForm(ask: ChannelAskSnapshot): {
+  readonly fields: readonly AskFormField[];
+  readonly properties: Readonly<Record<string, ElicitationPropertySchema>>;
+} {
+  const questions = ask.questions.slice(ask.activeQuestionIndex);
+  if (questions.length === 0) {
+    throw bridgeError("invalid_ask_snapshot", "mono-agent returned an AskUser interaction with no pending questions.");
+  }
+  const properties: Record<string, ElicitationPropertySchema> = {};
+  const fields = questions.map((question, index): AskFormField => {
+    const answerKey = `question_${String(index + 1)}`;
+    const customKey = `${answerKey}_other`;
+    let customOptionId = CUSTOM_OPTION_ID;
+    while (question.options.some((option) => option.id === customOptionId)) customOptionId += "_";
+    const options = [
+      ...question.options.map((option) => ({
+        const: option.id,
+        title: option.label,
+        ...(option.description.trim().length === 0 ? {} : { description: option.description }),
+      })),
+      {
+        const: customOptionId,
+        title: "Other",
+        description: `Provide a custom response in “${customKey}”.`,
+      },
+    ];
+    properties[answerKey] = question.multiSelect
+      ? {
+          type: "array",
+          title: question.header,
+          description: question.question,
+          minItems: 1,
+          items: { anyOf: options },
+        }
+      : {
+          type: "string",
+          title: question.header,
+          description: question.question,
+          oneOf: options,
+        };
+    properties[customKey] = {
+      type: "string",
+      title: `${question.header} — Other response`,
+      description: `Complete only when “Other” is selected for “${answerKey}”.`,
+    };
+    return { question, answerKey, customKey, customOptionId };
+  });
+  return { fields, properties };
+}
+
+function answersFromElicitation(
+  response: Extract<CreateElicitationResponse, { action: "accept" }>,
+  fields: readonly AskFormField[],
+): readonly ChannelAskAnswer[] {
+  const content = response.content;
+  if (content === undefined || content === null) {
+    throw bridgeError("invalid_elicitation_response", "ACP accepted AskUser without form content.");
+  }
+  return fields.map((field): ChannelAskAnswer => {
+    const raw = content[field.answerKey];
+    const selected = field.question.multiSelect
+      ? (Array.isArray(raw) && raw.every((value): value is string => typeof value === "string") ? raw : undefined)
+      : (typeof raw === "string" ? [raw] : undefined);
+    if (selected === undefined || selected.length === 0 || new Set(selected).size !== selected.length) {
+      throw bridgeError("invalid_elicitation_response", `ACP form field '${field.answerKey}' is invalid.`);
+    }
+    const allowed = new Set([
+      ...field.question.options.map((option) => option.id),
+      field.customOptionId,
+    ]);
+    if (selected.some((value) => !allowed.has(value))) {
+      throw bridgeError("invalid_elicitation_response", `ACP form field '${field.answerKey}' selected an unknown option.`);
+    }
+    const rawCustom = content[field.customKey];
+    if (rawCustom !== undefined && typeof rawCustom !== "string") {
+      throw bridgeError("invalid_elicitation_response", `ACP form field '${field.customKey}' must be text.`);
+    }
+    const customReply = typeof rawCustom === "string" ? rawCustom.trim() : "";
+    const usesCustom = selected.includes(field.customOptionId);
+    if (usesCustom !== (customReply.length > 0)) {
+      throw bridgeError(
+        "invalid_elicitation_response",
+        `ACP form fields '${field.answerKey}' and '${field.customKey}' disagree about the custom response.`,
+      );
+    }
+    return {
+      questionId: field.question.id,
+      selectedOptionIds: selected.filter((value) => value !== field.customOptionId),
+      ...(customReply.length === 0 ? {} : { customReply }),
+    };
+  });
+}
+
+function containsSensitiveAsk(ask: ChannelAskSnapshot): boolean {
+  return [
+    ask.message ?? "",
+    ...ask.questions.flatMap((question) => [
+      question.header,
+      question.question,
+      ...question.options.flatMap((option) => [option.label, option.description]),
+    ]),
+  ].some((value) => SENSITIVE_ASK_PATTERN.test(value));
+}
+
+async function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  await new Promise<void>((resolveDelay, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolveDelay();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 async function publishEvent(
   context: AgentRequestContext<PromptRequest>,
   sessionId: string,
   event: AgentStreamEvent,
   info: OperatorInfo,
   toolNames: Map<string, string>,
-  currentUsage: Usage | undefined,
-): Promise<Usage | undefined> {
+): Promise<void> {
   if (event.type === "assistant_thought") {
     await notifyUpdate(context, sessionId, {
       sessionUpdate: "agent_thought_chunk",
       content: { type: "text", text: event.text },
     });
-    return currentUsage;
+    return;
   }
   if (event.type === "tool_call_started") {
     toolNames.set(event.id, event.name);
@@ -297,29 +543,28 @@ async function publishEvent(
       sessionUpdate: "tool_call",
       toolCallId: event.id,
       title: event.name,
-      name: event.name,
       kind: toolKind(event.name),
       status: "in_progress",
       ...(event.arguments === undefined ? {} : { rawInput: event.arguments }),
     });
-    return currentUsage;
+    return;
   }
   if (event.type === "tool_call_progress") {
     await notifyUpdate(context, sessionId, {
       sessionUpdate: "tool_call_update",
       toolCallId: event.id,
-      ...(event.name === undefined ? {} : { title: event.name, name: event.name }),
+      ...(event.name === undefined ? {} : { title: event.name }),
       status: "in_progress",
       ...(event.partialResult === undefined ? {} : { rawOutput: event.partialResult }),
     });
-    return currentUsage;
+    return;
   }
   if (event.type === "tool_call_completed") {
     const name = event.name ?? toolNames.get(event.id);
     await notifyUpdate(context, sessionId, {
       sessionUpdate: "tool_call_update",
       toolCallId: event.id,
-      ...(name === undefined ? {} : { title: name, name }),
+      ...(name === undefined ? {} : { title: name }),
       status: event.isError === true ? "failed" : "completed",
       ...(event.content === undefined
         ? {}
@@ -331,9 +576,9 @@ async function publishEvent(
             }],
           }),
     });
-    return currentUsage;
+    return;
   }
-  if (event.type !== "usage_update" || event.tokens === undefined) return currentUsage;
+  if (event.type !== "usage_update" || event.tokens === undefined) return;
   const tokens = event.tokens;
   const inputTokens = tokens.input + tokens.cacheRead + tokens.cacheCreation;
   const totalTokens = inputTokens + tokens.output;
@@ -348,13 +593,6 @@ async function publishEvent(
       ? {}
       : { cost: { amount: event.cumulativeUsd, currency: "USD" } }),
   });
-  return {
-    totalTokens,
-    inputTokens,
-    outputTokens: tokens.output,
-    cachedReadTokens: tokens.cacheRead,
-    cachedWriteTokens: tokens.cacheCreation,
-  };
 }
 
 async function notifyUpdate(
@@ -368,8 +606,14 @@ async function notifyUpdate(
 async function resolveExactSource(
   sourceId: string,
   env: Readonly<Record<string, string | undefined>>,
-): Promise<DiscoveredOperatorAgent> {
-  const sources = await discoverOperatorAgents({ env });
+): Promise<{
+  readonly discovered: DiscoveredOperatorAgent;
+  readonly descriptor: AcpBridgeSourceDescriptor;
+}> {
+  const [sources, discovery] = await Promise.all([
+    discoverOperatorAgents({ env }),
+    discoverAcpBridgeAgents({ env }),
+  ]);
   const discovered = sources.find((entry) => entry.source.sourceId === sourceId);
   if (discovered === undefined) {
     throw bridgeError("source_not_found", `No mono-agent operator source named '${sourceId}' is registered.`);
@@ -383,7 +627,17 @@ async function resolveExactSource(
   if (discovered.baseUrl === undefined) {
     throw bridgeError("operator_unavailable", `mono-agent source '${sourceId}' has no trusted loopback operator endpoint.`);
   }
-  return discovered;
+  const descriptor = discovery.sources.find((entry) => entry.sourceId === sourceId);
+  if (descriptor === undefined) {
+    throw bridgeError("bridge_metadata_unavailable", `mono-agent source '${sourceId}' has no ACP compatibility metadata.`);
+  }
+  if (!descriptor.compatible) {
+    throw bridgeError(
+      "bridge_version_unsupported",
+      `mono-agent source '${sourceId}' does not provide a compatible ACP bridge (reported bridge ${String(descriptor.bridgeVersion)}, protocol ${String(descriptor.protocolVersion)}).`,
+    );
+  }
+  return { discovered, descriptor };
 }
 
 function requestToolEnvironment(
@@ -402,24 +656,83 @@ function requestToolEnvironment(
   };
 }
 
-function textPrompt(blocks: PromptRequest["prompt"]): string {
+function promptText(blocks: PromptRequest["prompt"]): string {
   if (blocks.length === 0) {
     throw RequestError.invalidParams(
       { code: "unsupported_prompt_content" },
-      "mono-agent ACP v1 accepts one or more text blocks only.",
+      "mono-agent ACP v1 accepts one or more text or resource-link blocks.",
     );
   }
   const texts: string[] = [];
   for (const block of blocks) {
-    if (block.type !== "text") {
+    if (block.type === "text") {
+      texts.push(block.text);
+      continue;
+    }
+    if (block.type === "resource_link") {
+      texts.push([
+        "[ACP resource link]",
+        JSON.stringify({
+          name: block.name,
+          uri: block.uri,
+          ...(block.title === undefined || block.title === null ? {} : { title: block.title }),
+          ...(block.description === undefined || block.description === null
+            ? {}
+            : { description: block.description }),
+          ...(block.mimeType === undefined || block.mimeType === null ? {} : { mimeType: block.mimeType }),
+          ...(block.size === undefined || block.size === null ? {} : { size: block.size }),
+        }),
+      ].join("\n"));
+      continue;
+    }
+    {
       throw RequestError.invalidParams(
         { code: "unsupported_prompt_content" },
-        "mono-agent ACP v1 accepts one or more text blocks only.",
+        "mono-agent ACP v1 accepts text and resource-link blocks; embedded resources and media are unsupported.",
       );
     }
-    texts.push(block.text);
   }
   return texts.join("\n");
+}
+
+function rejectUnsupportedClientCapabilities(capabilities: ClientCapabilities | undefined): void {
+  if (capabilities?.fs?.readTextFile === true || capabilities?.fs?.writeTextFile === true) {
+    throw RequestError.invalidParams(
+      { code: "client_filesystem_unsupported" },
+      "mono-agent keeps filesystem access inside the selected agent workspace and sandbox; client filesystem capabilities are unsupported.",
+    );
+  }
+  if (capabilities?.terminal === true) {
+    throw RequestError.invalidParams(
+      { code: "client_terminal_unsupported" },
+      "mono-agent keeps command execution inside the selected agent tools and sandbox; client terminal capabilities are unsupported.",
+    );
+  }
+}
+
+async function assertAgentWorkspace(requested: string, expected: string): Promise<void> {
+  if (!isAbsolute(requested)) {
+    throw RequestError.invalidParams(
+      { code: "workspace_mismatch" },
+      "ACP session cwd must be the selected mono-agent's absolute workspace path.",
+    );
+  }
+  const canonicalRequested = await canonicalPath(requested);
+  if (canonicalRequested !== expected) {
+    throw RequestError.invalidParams(
+      { code: "workspace_mismatch", expected },
+      "ACP session cwd must match the selected mono-agent's configured workspace.",
+    );
+  }
+}
+
+async function canonicalPath(path: string): Promise<string> {
+  const absolute = resolve(path);
+  try {
+    return await realpath(absolute);
+  } catch {
+    return absolute;
+  }
 }
 
 function rejectUnsupportedSessionInputs(
