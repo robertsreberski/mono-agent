@@ -241,7 +241,7 @@ describe("Claude Agent SDK terminal handling", () => {
       "agent_completed",
     ]);
     expect(emitted).toEqual(result.events);
-    expect(queryMock.mock.calls[0][0].options).not.toHaveProperty("forwardSubagentText");
+    expect(queryMock.mock.calls[0][0].options.forwardSubagentText).toBe(true);
   });
 
   it.each([
