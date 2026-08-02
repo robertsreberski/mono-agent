@@ -1071,7 +1071,7 @@ describe("agent host composition helpers", () => {
       config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
       model: { sdk: "claude", model: "claude-opus-4-7" },
-      executionMode: "stream",
+      executionMode: "cli",
     });
 
     await harness.run({
@@ -1081,7 +1081,7 @@ describe("agent host composition helpers", () => {
     });
 
     expect(fake.calls[0]?.options.model).toEqual({ sdk: "claude", model: "claude-opus-4-7" });
-    expect(fake.calls[0]?.options.executionMode).toBe("stream");
+    expect(fake.calls[0]?.options.executionMode).toBe("cli");
   });
 
   it("falls back to config model and executionMode when no override is supplied", async () => {
