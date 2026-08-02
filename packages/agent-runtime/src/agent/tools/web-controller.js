@@ -121,13 +121,21 @@ export function createWebToolController({
       // alone would let a run whose context denies network read entries a
       // network-allowed run had populated. Resolved per call because
       // readToolRuntime() is mutable process state.
+      //
+      // The snapshot is then handed to performWebSearch as the request policy
+      // rather than letting it re-resolve. Execution is deferred by a microtask
+      // and updateToolContext mutates the context in place by design, so a
+      // re-resolve could enforce a policy the key never described — caching a
+      // network-allowed result under a denied key. Merging is monotonic, so
+      // passing the snapshot back in means enforcement can only be at least as
+      // strict as the key claims.
       const resolvedCtx = ctx ?? readToolRuntime();
       const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
       const key = stableKey({ params, searchConfig, policy });
       return cachedSearch(key, async () => performWebSearch(params, {
         searchConfig,
-        sandboxPolicy,
-        ctx,
+        sandboxPolicy: policy,
+        ctx: resolvedCtx,
         fetchImpl,
         signal: execution.signal,
       }));

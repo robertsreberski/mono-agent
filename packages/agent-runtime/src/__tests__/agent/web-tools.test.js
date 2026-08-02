@@ -763,6 +763,33 @@ describe("run-scoped web controller and browser isolation", () => {
     expect(deniedResult).toMatchObject({ error: true, outcome: { code: "network_denied" } });
   });
 
+  it("cannot cache a network-allowed result under a denied-policy key", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      '<div class="result"><a class="result__a" href="https://example.com/a">A</a></div>',
+    ));
+    const ctx = {
+      workspace: tempWorkspace(),
+      sandbox: passthroughSandbox,
+      sandboxPolicy: { mode: "strict", network: { mode: "none", allowlist: [] } },
+    };
+    const controller = createWebToolController({
+      searchConfig: { backend: "keyless" },
+      fetchImpl,
+      ctx,
+    });
+
+    const pending = controller.search({ query: "drift" });
+    // updateToolContext mutates the context in place by design, and execution is
+    // deferred by a microtask. Relaxing the policy inside that window must not
+    // let the search run under the looser policy while the cache key still
+    // describes the stricter one.
+    ctx.sandboxPolicy = undefined;
+    const result = await pending;
+
+    expect(result).toMatchObject({ error: true, outcome: { code: "network_denied" } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("uses a fresh locked agent-browser session and removes its temporary config", async () => {
     const workspace = tempWorkspace();
     const preparedCommands = [];
