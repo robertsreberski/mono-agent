@@ -323,6 +323,8 @@ export function buildDiagnostics(params) {
     lastToolName,
     structuredRetry,
     contextCompactionDiagnostics,
+    transportErrorCode,
+    transportErrorSource,
   } = params;
   return {
     provider_session_id: providerSessionId,
@@ -335,6 +337,15 @@ export function buildDiagnostics(params) {
     pi_max_retries: maxRetries,
     pi_transport_requested: piTransport,
     ...(lastToolName ? { last_tool_name: lastToolName } : {}),
+    // Present only when an opaque transport failure was resolved to a real
+    // reason. `provider_transport_error_source` says whether that came from the
+    // error's own cause chain (exact) or from process-wide correlation.
+    ...(transportErrorCode
+      ? {
+        provider_transport_error_code: transportErrorCode,
+        provider_transport_error_source: transportErrorSource,
+      }
+      : {}),
     ...structuredOutputRetryDiagnostics(
       structuredRetry.attempts,
       structuredRetry.reason,

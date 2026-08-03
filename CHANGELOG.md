@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Provider transport diagnostics
+
+- Opaque provider transport failures now name their real reason. Node's fetch
+  reports a cut response body as the single word `terminated`, keeping the
+  actual cause (`UND_ERR_BODY_TIMEOUT`, `ECONNRESET`, `other side closed`) only
+  on `error.cause` — which pi-agent-core discards before any runtime code sees
+  the Error. Such a run failed, retried, and exhausted its fallback chain with
+  no way to tell a stalled stream from a dropped socket.
+- The pi bridge now resolves the underlying code from the error's own cause
+  chain where the object survives, and otherwise from a bounded
+  `undici:request:error` diagnostics-channel probe. Messages become
+  `terminated (UND_ERR_BODY_TIMEOUT)`; correlated (rather than exact) matches
+  are labelled as such, and a window holding conflicting codes reports nothing
+  instead of guessing. Only contentless messages are annotated — descriptive
+  provider errors are left alone.
+- Run diagnostics gain `provider_transport_error_code` and
+  `provider_transport_error_source` when a cause was recovered. Failure
+  classification and retry subkinds are unchanged.
+
 ## 0.18.2 — Provider-native subagent visibility and isolation (2026-08-03)
 
 ### Native subagents
