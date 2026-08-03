@@ -44,6 +44,7 @@ import {
 } from "./pi-messages.js";
 import { emitCaptured } from "./pi-events.js";
 import { normalizePiErrorMessage } from "./pi-errors.js";
+import { annotateProviderErrorMessage, installTransportErrorProbe } from "./transport-errors.js";
 import {
   runStructuredOutputFinalizationRetry,
   shouldRetryStructuredOutputFinalization,
@@ -252,6 +253,10 @@ function splitUserContent(content) {
 }
 
 export async function generatePiNativeResponse(systemPrompt, options = {}) {
+  // Idempotent; arms the undici diagnostics-channel probe so a transport
+  // failure during this run can be resolved back to a real reason even after
+  // an intermediate layer flattens the Error to its message.
+  installTransportErrorProbe();
   const resolved = options.model;
   const start = Date.now();
   const events = [];
@@ -682,7 +687,15 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         : (stopReason === "error" || stopReason === "aborted"
           ? lastAssistant?.errorMessage || runError?.message || "Pi agent aborted before final output"
           : (runError ? runError.message || String(runError) : null));
-    const errorMessage = normalizePiErrorMessage(rawErrorMessage);
+    // pi-agent-core stores `error.message` on the failure assistant message and
+    // discards the cause, so `runError` is usually the only object still
+    // carrying one. When neither has a cause, fall back to the correlated
+    // transport probe rather than surfacing a bare "terminated".
+    const annotatedError = annotateProviderErrorMessage(
+      normalizePiErrorMessage(rawErrorMessage),
+      runError,
+    );
+    const errorMessage = annotatedError.message;
 
     const structuredRetry = {
       attempts: structuredOutputFinalizationRetryAttempts,
@@ -702,6 +715,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       lastToolName: runState.lastToolName,
       structuredRetry,
       contextCompactionDiagnostics: runState.compaction.diagnostics,
+      transportErrorCode: annotatedError.causeCode,
+      transportErrorSource: annotatedError.causeSource,
     });
     const errorDetails = buildErrorDetails({
       errorMessage,
@@ -812,7 +827,12 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // leaf for host/runtime-side throws that landed after the harness already
     // mutated the live session (guards preserved in cleanupSessionOnThrow).
     await cleanupSessionOnThrow(runState, { durableRepo });
-    const errorMessage = normalizePiErrorMessage(err?.message || String(err));
+    // The throw path still holds the original Error, so its cause chain is the
+    // authoritative source here — no correlation guesswork needed.
+    const errorMessage = annotateProviderErrorMessage(
+      normalizePiErrorMessage(err?.message || String(err)),
+      err,
+    ).message;
     const isRetryable = retryableProviderFailureInfo({
       errorText: errorMessage,
       failureKind: "provider_unavailable",
