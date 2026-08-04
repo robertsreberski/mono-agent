@@ -904,9 +904,7 @@ describe("ResilientMessageStream subagent activity", () => {
       metadata: { subagent: { id: "call-1", name: "researcher" }, synthetic: true, subagentLifecycle: true },
     });
 
-    expect(lastLedger(transport)).toBe(
-      ['🤖 Agent "researcher" · 1 tool call · 12.4s', "  ↳ 📖 Reading /repo/a.ts"].join("\n"),
-    );
+    expect(lastLedger(transport)).toBe('🤖 Agent "researcher" · 1 tool call · 12.4s');
   });
 
   it("marks a failed subagent in its header", async () => {
@@ -922,7 +920,7 @@ describe("ResilientMessageStream subagent activity", () => {
       executionMs: 800,
     });
 
-    expect(lastLedger(transport)).toBe('⚠️ Agent "researcher" · 0 tool calls · 800ms');
+    expect(lastLedger(transport)).toBe('⚠️ Agent "researcher" · failed · 0 tool calls · 800ms');
   });
 
   it("settles a launch the runtime rejected before the subagent existed", async () => {
@@ -948,7 +946,133 @@ describe("ResilientMessageStream subagent activity", () => {
       executionMs: 5,
     });
 
-    expect(lastLedger(transport)).toBe('⚠️ Agent "tracks-vigilante-timeline" · 0 tool calls · 5ms');
+    expect(lastLedger(transport)).toBe(
+      [
+        '⚠️ Agent "tracks-vigilante-timeline" · failed · 0 tool calls · 5ms',
+        '  ↳ Reason: Validation failed for tool "Agent": - root: must not have additional properties',
+      ].join("\n"),
+    );
+  });
+
+  it("enriches a collapsed success from the parent Agent completion", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event(launch("call-1", "researcher"));
+    await stream.event(childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }));
+    await stream.event({
+      type: "tool_call_completed",
+      id: "agent:call-1",
+      name: "Agent(researcher)",
+      content: "ok · 1 tool call",
+      executionMs: 12_400,
+      metadata: { subagent: { id: "call-1", name: "researcher" }, synthetic: true, subagentLifecycle: true },
+    });
+    expect(lastLedger(transport)).toBe('🤖 Agent "researcher" · 1 tool call · 12.4s');
+
+    await stream.event({
+      type: "tool_call_completed",
+      id: "call-1",
+      name: "Agent",
+      content: [
+        "<subagent: researcher · ok · 1 tool call · 12.4s>",
+        "",
+        "Found the owning delivery path.",
+        "",
+        "<activity>",
+        "Read file=/repo/a.ts ok 20ms",
+        "</activity>",
+      ].join("\n"),
+    });
+
+    expect(lastLedger(transport)).toBe(
+      [
+        '🤖 Agent "researcher" · 1 tool call · 12.4s',
+        "  ↳ Result: Found the owning delivery path.",
+      ].join("\n"),
+    );
+  });
+
+  it("enriches a collapsed failure with a redacted, bounded reason", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+    const secret = "sk-test-abcdefghijklmnopqrstuvwxyz1234567890";
+
+    await stream.event(launch("call-1", "researcher"));
+    await stream.event(childCall("call-1", "researcher", "t1", "Bash", { command: "exit 1" }));
+    await stream.event({
+      type: "tool_call_completed",
+      id: "agent:call-1",
+      name: "Agent(researcher)",
+      content: "timeout · 1 tool call",
+      isError: true,
+      executionMs: 30_000,
+      metadata: { subagent: { id: "call-1", name: "researcher" }, synthetic: true, subagentLifecycle: true },
+    });
+    await stream.event({
+      type: "tool_call_completed",
+      id: "call-1",
+      name: "Agent",
+      content: [
+        "<subagent: researcher · timeout · 1 tool call · 30.0s>",
+        `reason: Provider rejected ${secret} while ${"waiting ".repeat(30)}`,
+        "",
+        "<activity>",
+        "Bash command=exit 1 error 10ms",
+        "</activity>",
+      ].join("\n"),
+      isError: true,
+    });
+
+    const ledger = lastLedger(transport);
+    expect(ledger).toMatch(/^⚠️ Agent "researcher" · failed · 1 tool call · 30\.0s\n  ↳ Reason: Provider rejected \[redacted\]/u);
+    expect(ledger).not.toContain(secret);
+    expect(Array.from(ledger.split("Reason: ")[1] ?? "")).toHaveLength(120);
+    expect(ledger).not.toContain("Bash command=");
+  });
+
+  it("collapses only the subagent that has reached a terminal event", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event(launch("a", "researcher"));
+    await stream.event(launch("b", "reviewer"));
+    await stream.event(childCall("a", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }));
+    await stream.event(childCall("b", "reviewer", "t2", "Read", { file_path: "/repo/b.ts" }));
+    await stream.event({
+      type: "tool_call_completed",
+      id: "agent:a",
+      name: "Agent(researcher)",
+      content: "ok · 1 tool call",
+      executionMs: 1_200,
+      metadata: { subagent: { id: "a", name: "researcher" }, synthetic: true, subagentLifecycle: true },
+    });
+
+    expect(lastLedger(transport)).toBe(
+      [
+        '🤖 Agent "researcher" · 1 tool call · 1.2s',
+        '🤖 Starting agent "reviewer"',
+        "  ↳ 📖 Reading /repo/b.ts",
+      ].join("\n"),
+    );
+  });
+
+  it("does not re-expand a collapsed group when late child activity arrives", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event(launch("call-1", "researcher"));
+    await stream.event(childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }));
+    await stream.event({
+      type: "tool_call_completed",
+      id: "agent:call-1",
+      name: "Agent(researcher)",
+      content: "ok · 1 tool call",
+      metadata: { subagent: { id: "call-1", name: "researcher" }, synthetic: true, subagentLifecycle: true },
+    });
+    await stream.event(childCall("call-1", "researcher", "late", "Read", { file_path: "/repo/late.ts" }));
+
+    expect(lastLedger(transport)).toBe('🤖 Agent "researcher" · 1 tool call');
   });
 
   it("opens a group from child activity alone when the launch was never observed", async () => {
@@ -1016,6 +1140,15 @@ describe("ResilientMessageStream subagent activity", () => {
     // the newest work is what remains visible.
     expect(lines[0]).toBe('🤖 Starting agent "noisy"');
     expect(lines.at(-1)).toBe("  ↳ 📖 Reading /repo/f599.ts");
+
+    await stream.event({
+      type: "tool_call_completed",
+      id: "agent:a",
+      name: "Agent(noisy)",
+      content: "ok · 600 tool calls",
+      metadata: { subagent: { id: "a", name: "noisy" }, synthetic: true, subagentLifecycle: true },
+    });
+    expect(lastLedger(transport)).toBe('🤖 Agent "noisy" · 600 tool calls');
   });
 });
 

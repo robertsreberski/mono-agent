@@ -67,6 +67,7 @@ export function toolHintFor(toolName: string): string {
 }
 
 const TOOL_PREVIEW_CODE_POINTS = 40;
+const SUBAGENT_OUTCOME_PREVIEW_CODE_POINTS = 120;
 const TOOL_PREVIEW_SCAN_CODE_POINTS = 4_096;
 const REDACTED = "[redacted]";
 
@@ -264,6 +265,75 @@ export function formatLiveInputActivityLine(
   // Steering text is operator prose, not a shell line: no `cd` prefix to elide.
   const preview = sanitizePreview(text, { truncation: "head", shell: false, narrative: false }, options);
   return preview === undefined ? "↪️ Steered" : `↪️ Steered: “${preview}”`;
+}
+
+/**
+ * Format the one non-tool detail retained after a chat activity ledger collapses
+ * a completed subagent. Runtime-native completions can carry a direct summary;
+ * the in-process Agent tool carries a structured text envelope whose answer or
+ * `reason:` line precedes an `<activity>` block. Only that human-facing outcome
+ * survives — status/count boilerplate and the tool log never do.
+ */
+export function formatSubagentOutcomeActivityLine(
+  content: unknown,
+  isError: boolean,
+  options?: ToolActivityLineOptions,
+): string | undefined {
+  const candidate = subagentOutcomeCandidate(content, isError);
+  if (candidate === undefined) return undefined;
+  const preview = sanitizePreview(
+    candidate,
+    { truncation: "head", shell: false, narrative: true },
+    options,
+    SUBAGENT_OUTCOME_PREVIEW_CODE_POINTS,
+  );
+  return preview === undefined ? undefined : `${isError ? "Reason" : "Result"}: ${preview}`;
+}
+
+const SUBAGENT_STATUS_ONLY = /^(?:ok|complete|completed|failed|failure|timeout|timed out|cancelled|canceled|empty|stopped|ended)(?:\s*·\s*\d+\s+tool calls?)?(?:\s*·\s*\d+(?:\.\d+)?(?:ms|s))?$/iu;
+
+function subagentOutcomeCandidate(content: unknown, isError: boolean): string | undefined {
+  if (typeof content !== "string") return undefined;
+
+  const lines = truncateCodePoints(content, TOOL_PREVIEW_SCAN_CODE_POINTS)
+    .split(/\r?\n/u)
+    .map((rawLine) =>
+      rawLine
+        .replace(/[\p{Cc}\p{Cf}]+/gu, " ")
+        .replace(/\s+/gu, " ")
+        .trim());
+  const structured = lines.some((line) => /^<\/?subagent(?::[^>]*)?>$/iu.test(line)
+    || /^<\/?activity>$/iu.test(line));
+  if (!structured) {
+    const direct = lines.filter((line) => line.length > 0).join(" ");
+    if (direct.length === 0 || SUBAGENT_STATUS_ONLY.test(direct)) return undefined;
+    return /^reason:\s*(.+)$/iu.exec(direct)?.[1] ?? direct;
+  }
+
+  let insideActivity = false;
+  let reason: string | undefined;
+  let summary: string | undefined;
+  for (const line of lines) {
+    if (/^<activity>$/iu.test(line)) {
+      insideActivity = true;
+      continue;
+    }
+    if (/^<\/activity>$/iu.test(line)) {
+      insideActivity = false;
+      continue;
+    }
+    if (insideActivity || line.length === 0) continue;
+    if (/^<\/?subagent(?::[^>]*)?>$/iu.test(line)) continue;
+
+    const reasonMatch = /^reason:\s*(.+)$/iu.exec(line);
+    if (reasonMatch?.[1] !== undefined) {
+      reason ??= reasonMatch[1];
+      continue;
+    }
+    if (/^note:/iu.test(line) || SUBAGENT_STATUS_ONLY.test(line)) continue;
+    summary ??= line;
+  }
+  return isError ? reason ?? summary : summary;
 }
 
 /**
@@ -587,6 +657,7 @@ function sanitizePreview(
   value: string,
   shape: PreviewShape,
   options?: ToolActivityLineOptions,
+  maxCodePoints = TOOL_PREVIEW_CODE_POINTS,
 ): string | undefined {
   let sanitized = truncateCodePoints(value, TOOL_PREVIEW_SCAN_CODE_POINTS)
     .replace(/[\p{Cc}\p{Cf}]+/gu, " ")
@@ -615,7 +686,7 @@ function sanitizePreview(
   }
   sanitized = sanitized.replace(/\s+/gu, " ").trim();
   if (sanitized.length === 0) return undefined;
-  return truncatePreview(sanitized, TOOL_PREVIEW_CODE_POINTS, shape.truncation);
+  return truncatePreview(sanitized, maxCodePoints, shape.truncation);
 }
 
 function truncatePreview(value: string, maxCodePoints: number, mode: PreviewTruncation): string {

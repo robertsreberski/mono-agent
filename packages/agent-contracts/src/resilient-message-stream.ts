@@ -29,6 +29,7 @@ import {
 } from "./stream-text.js";
 import {
   formatProviderStatusLine,
+  formatSubagentOutcomeActivityLine,
   formatToolActivityLine,
   isSubagentLaunchToolName,
   toolHintFor,
@@ -240,6 +241,14 @@ type ActivityEntry =
        */
       readonly name: string;
       header: string;
+      /** Count every observed child start independently of rendered-line eviction. */
+      callCount: number;
+      /** Terminal groups retain only their header and optional outcome detail. */
+      terminal: boolean;
+      isError: boolean;
+      executionMs: number | undefined;
+      detail: string | undefined;
+      detailKind: "result" | "reason" | undefined;
       readonly children: ActivityLine[];
     };
 
@@ -485,6 +494,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
           this.completeSubagentGroup(finished.id, finished.name, {
             ...(event.isError === undefined ? {} : { isError: event.isError }),
             ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
+            content: event.content,
           });
           if (this.sentMessage !== undefined) this.scheduleEdit();
           return;
@@ -1051,6 +1061,10 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
    */
   private appendSubagentActivity(id: string, subagentName: string, line: string): void {
     const group = this.subagentGroup(id, subagentName);
+    // A terminal row is a collapse boundary. Providers promise stream order, but
+    // replayed or duplicated frames must not make a finished subagent expand again.
+    if (group.terminal) return;
+    group.callCount += 1;
     const last = group.children.at(-1);
     if (last?.line === line) {
       last.count += 1;
@@ -1072,6 +1086,12 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
       id,
       name: subagentName,
       header: formatToolActivityLine("Agent", { name: subagentName }),
+      callCount: 0,
+      terminal: false,
+      isError: false,
+      executionMs: undefined,
+      detail: undefined,
+      detailKind: undefined,
       children: [],
     };
     this.toolActivityEntries.push(group);
@@ -1083,16 +1103,33 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
   private completeSubagentGroup(
     id: string,
     subagentName: string,
-    outcome: { readonly isError?: boolean; readonly executionMs?: number },
+    outcome: { readonly isError?: boolean; readonly executionMs?: number; readonly content: unknown },
   ): void {
     const group = this.subagentGroup(id, subagentName);
-    const calls = group.children.reduce((total, child) => total + child.count, 0);
+    const becameError = !group.isError && outcome.isError === true;
+    group.terminal = true;
+    group.isError ||= outcome.isError === true;
+    group.executionMs ??= outcome.executionMs;
+    group.children.length = 0;
+
+    if (becameError && group.detailKind === "result") {
+      group.detail = undefined;
+      group.detailKind = undefined;
+    }
+    const detail = formatSubagentOutcomeActivityLine(outcome.content, group.isError);
+    if (detail !== undefined && group.detail === undefined) {
+      group.detail = detail;
+      group.detailKind = group.isError ? "reason" : "result";
+    }
+
     const parts = [
-      `${outcome.isError === true ? "⚠️" : "🤖"} Agent ${JSON.stringify(group.name)}`,
-      `${calls} tool call${calls === 1 ? "" : "s"}`,
-      ...(outcome.executionMs === undefined ? [] : [formatSeconds(outcome.executionMs)]),
+      `${group.isError ? "⚠️" : "🤖"} Agent ${JSON.stringify(group.name)}`,
+      ...(group.isError ? ["failed"] : []),
+      `${group.callCount} tool call${group.callCount === 1 ? "" : "s"}`,
+      ...(group.executionMs === undefined ? [] : [formatSeconds(group.executionMs)]),
     ];
     group.header = parts.join(" · ");
+    this.enforceLedgerBound();
     this.renderToolActivity();
   }
 
@@ -1116,7 +1153,9 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
 
   private renderedLineCount(): number {
     return this.toolActivityEntries.reduce(
-      (total, entry) => total + (entry.kind === "line" ? 1 : 1 + entry.children.length),
+      (total, entry) => total + (entry.kind === "line"
+        ? 1
+        : 1 + (entry.terminal ? (entry.detail === undefined ? 0 : 1) : entry.children.length)),
       0,
     );
   }
@@ -1127,7 +1166,12 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     this.statusText = this.toolActivityEntries
       .flatMap((entry) => entry.kind === "line"
         ? [withCount(entry)]
-        : [entry.header, ...entry.children.map((child) => `${SUBAGENT_LINE_INDENT}${withCount(child)}`)])
+        : [
+            entry.header,
+            ...(entry.terminal
+              ? (entry.detail === undefined ? [] : [`${SUBAGENT_LINE_INDENT}${entry.detail}`])
+              : entry.children.map((child) => `${SUBAGENT_LINE_INDENT}${withCount(child)}`)),
+          ])
       .join("\n");
   }
 

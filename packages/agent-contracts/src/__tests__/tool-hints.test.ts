@@ -3,12 +3,43 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   formatLiveInputActivityLine,
   formatProviderStatusLine,
+  formatSubagentOutcomeActivityLine,
   formatToolActivityLine,
   isSubagentLaunchToolName,
   setToolActivityPathRoots,
   splitSubagentToolName,
   toolHintFor,
 } from "../tool-hints.js";
+
+describe("formatSubagentOutcomeActivityLine", () => {
+  it("extracts only the answer from an Agent result envelope", () => {
+    expect(formatSubagentOutcomeActivityLine([
+      "<subagent: researcher · ok · 1 tool call · 1.2s>",
+      "note: one optional tool was unavailable",
+      "",
+      "The answer is on one line.",
+      "A second line is intentionally omitted.",
+      "",
+      "<activity>",
+      "Read file=/repo/a.ts ok 20ms",
+      "</activity>",
+    ].join("\n"), false)).toBe("Result: The answer is on one line.");
+  });
+
+  it("prefers the explicit failure reason and redacts secrets", () => {
+    expect(formatSubagentOutcomeActivityLine([
+      "<subagent: researcher · failed · 0 tool calls · 0.1s>",
+      "reason: token ghp_abcdefghijklmnopqrstuvwxyz1234567890 was rejected",
+      "",
+      "partial answer",
+    ].join("\n"), true)).toBe("Reason: token [redacted] was rejected");
+  });
+
+  it("suppresses lifecycle status boilerplate and non-string payloads", () => {
+    expect(formatSubagentOutcomeActivityLine("cancelled · 2 tool calls", true)).toBeUndefined();
+    expect(formatSubagentOutcomeActivityLine({ status: "ok" }, false)).toBeUndefined();
+  });
+});
 
 describe("subagent tool names", () => {
   it("splits a forwarded name into its profile and tool", () => {

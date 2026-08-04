@@ -137,6 +137,11 @@ Inbound turns do not stream answer tokens by default. Telegram first shows the
 `typing…` action; if tools run, one cumulative, secret-safe activity message is
 edited in place. Once the response is ready, Telegram posts it as a new message
 and deletes the activity message. Adjacent duplicates collapse as `(×N)`.
+A subagent stays expanded while it runs; at its first terminal event, Telegram
+removes all of that subagent's child tool lines while retaining its total call
+count and duration. The compact row may include one secret-redacted `Result` or
+`Reason` line capped at 120 Unicode code points. Concurrent subagents collapse
+independently, and late events cannot re-expand a completed group.
 Proactive deliveries suppress this message, and an
 acknowledged `/cancel` best-effort deletes it while retaining one `Cancelled.`
 acknowledgement. Programmatic drivers can set `stream.showHints: false` to keep
