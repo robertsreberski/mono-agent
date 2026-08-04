@@ -29,6 +29,7 @@ import {
 } from "./stream-text.js";
 import {
   formatProviderStatusLine,
+  formatSubagentOutcomeActivityLine,
   formatToolActivityLine,
   isSubagentLaunchToolName,
   toolHintFor,
@@ -240,6 +241,14 @@ type ActivityEntry =
        */
       readonly name: string;
       header: string;
+      /** Count every observed child start independently of rendered-line eviction. */
+      callCount: number;
+      /** Terminal groups retain only their header and optional outcome detail. */
+      terminal: boolean;
+      isError: boolean;
+      executionMs: number | undefined;
+      detail: string | undefined;
+      detailKind: "result" | "reason" | undefined;
       readonly children: ActivityLine[];
     };
 
@@ -279,6 +288,8 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
   private lastFlushedContentKind: ChannelMessageContentKind | undefined;
   private answerDeliveryAttempted = false;
   private readonly toolActivityEntries: ActivityEntry[] = [];
+  /** Bounded replay guard for terminal groups even after their rendered row is evicted. */
+  private readonly terminalSubagentIds = new Set<string>();
   private dismissPromise: Promise<void> | undefined;
   private finished = false;
 
@@ -433,15 +444,19 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
           // A subagent launch opens its own group rather than a flat line, so
           // the tool calls it goes on to make can nest beneath it.
           if (isSubagentLaunchToolName(event.name)) {
-            this.subagentGroup(event.id, subagentNameFromArguments(event.arguments));
-            this.renderToolActivity();
+            if (!this.terminalSubagentIds.has(event.id)) {
+              this.subagentGroup(event.id, subagentNameFromArguments(event.arguments));
+              this.renderToolActivity();
+            }
           } else {
             this.appendToolActivity(formatToolActivityLine(event.name, event.arguments));
           }
         } else if (isSubagentLifecycle(event)) {
           // The bookend only announces the subagent; its header already exists.
-          this.subagentGroup(subagent.id, subagent.name);
-          this.renderToolActivity();
+          if (!this.terminalSubagentIds.has(subagent.id)) {
+            this.subagentGroup(subagent.id, subagent.name);
+            this.renderToolActivity();
+          }
         } else {
           this.appendSubagentActivity(
             subagent.id,
@@ -485,6 +500,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
           this.completeSubagentGroup(finished.id, finished.name, {
             ...(event.isError === undefined ? {} : { isError: event.isError }),
             ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
+            content: event.content,
           });
           if (this.sentMessage !== undefined) this.scheduleEdit();
           return;
@@ -1050,7 +1066,12 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
    * `Agent` call was never observed (a truncated or replayed stream).
    */
   private appendSubagentActivity(id: string, subagentName: string, line: string): void {
+    if (this.terminalSubagentIds.has(id)) return;
     const group = this.subagentGroup(id, subagentName);
+    // A terminal row is a collapse boundary. Providers promise stream order, but
+    // replayed or duplicated frames must not make a finished subagent expand again.
+    if (group.terminal) return;
+    group.callCount += 1;
     const last = group.children.at(-1);
     if (last?.line === line) {
       last.count += 1;
@@ -1064,14 +1085,19 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
 
   /** Find or open the ledger group for one subagent launch. */
   private subagentGroup(id: string, subagentName: string): Extract<ActivityEntry, { kind: "agent" }> {
-    for (const entry of this.toolActivityEntries) {
-      if (entry.kind === "agent" && entry.id === id) return entry;
-    }
+    const existing = this.findSubagentGroup(id);
+    if (existing !== undefined) return existing;
     const group: Extract<ActivityEntry, { kind: "agent" }> = {
       kind: "agent",
       id,
       name: subagentName,
       header: formatToolActivityLine("Agent", { name: subagentName }),
+      callCount: 0,
+      terminal: false,
+      isError: false,
+      executionMs: undefined,
+      detail: undefined,
+      detailKind: undefined,
       children: [],
     };
     this.toolActivityEntries.push(group);
@@ -1079,21 +1105,59 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     return group;
   }
 
+  private findSubagentGroup(id: string): Extract<ActivityEntry, { kind: "agent" }> | undefined {
+    return this.toolActivityEntries.find(
+      (entry): entry is Extract<ActivityEntry, { kind: "agent" }> =>
+        entry.kind === "agent" && entry.id === id,
+    );
+  }
+
   /** Replace a subagent header once its outcome is known. */
   private completeSubagentGroup(
     id: string,
     subagentName: string,
-    outcome: { readonly isError?: boolean; readonly executionMs?: number },
+    outcome: { readonly isError?: boolean; readonly executionMs?: number; readonly content: unknown },
   ): void {
-    const group = this.subagentGroup(id, subagentName);
-    const calls = group.children.reduce((total, child) => total + child.count, 0);
+    const existing = this.findSubagentGroup(id);
+    // The group already completed and its rendered row aged out. A replayed
+    // completion must not resurrect it with zeroed metrics.
+    if (existing === undefined && this.terminalSubagentIds.has(id)) return;
+    const group = existing ?? this.subagentGroup(id, subagentName);
+    const becameError = !group.isError && outcome.isError === true;
+    group.terminal = true;
+    group.isError ||= outcome.isError === true;
+    group.executionMs ??= outcome.executionMs;
+    group.children.length = 0;
+
+    if (becameError && group.detailKind === "result") {
+      group.detail = undefined;
+      group.detailKind = undefined;
+    }
+    const detail = formatSubagentOutcomeActivityLine(outcome.content, group.isError);
+    if (detail !== undefined && group.detail === undefined) {
+      group.detail = detail;
+      group.detailKind = group.isError ? "reason" : "result";
+    }
+
     const parts = [
-      `${outcome.isError === true ? "⚠️" : "🤖"} Agent ${JSON.stringify(group.name)}`,
-      `${calls} tool call${calls === 1 ? "" : "s"}`,
-      ...(outcome.executionMs === undefined ? [] : [formatSeconds(outcome.executionMs)]),
+      `${group.isError ? "⚠️" : "🤖"} Agent ${JSON.stringify(group.name)}`,
+      ...(group.isError ? ["failed"] : []),
+      `${group.callCount} tool call${group.callCount === 1 ? "" : "s"}`,
+      ...(group.executionMs === undefined ? [] : [formatSeconds(group.executionMs)]),
     ];
     group.header = parts.join(" · ");
+    this.rememberTerminalSubagent(id);
+    this.enforceLedgerBound();
     this.renderToolActivity();
+  }
+
+  private rememberTerminalSubagent(id: string): void {
+    this.terminalSubagentIds.add(id);
+    while (this.terminalSubagentIds.size > MAX_ACTIVITY_LINES) {
+      const oldest = this.terminalSubagentIds.values().next().value as string | undefined;
+      if (oldest === undefined) return;
+      this.terminalSubagentIds.delete(oldest);
+    }
   }
 
   /**
@@ -1116,7 +1180,9 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
 
   private renderedLineCount(): number {
     return this.toolActivityEntries.reduce(
-      (total, entry) => total + (entry.kind === "line" ? 1 : 1 + entry.children.length),
+      (total, entry) => total + (entry.kind === "line"
+        ? 1
+        : 1 + (entry.terminal ? (entry.detail === undefined ? 0 : 1) : entry.children.length)),
       0,
     );
   }
@@ -1127,7 +1193,12 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     this.statusText = this.toolActivityEntries
       .flatMap((entry) => entry.kind === "line"
         ? [withCount(entry)]
-        : [entry.header, ...entry.children.map((child) => `${SUBAGENT_LINE_INDENT}${withCount(child)}`)])
+        : [
+            entry.header,
+            ...(entry.terminal
+              ? (entry.detail === undefined ? [] : [`${SUBAGENT_LINE_INDENT}${entry.detail}`])
+              : entry.children.map((child) => `${SUBAGENT_LINE_INDENT}${withCount(child)}`)),
+          ])
       .join("\n");
   }
 

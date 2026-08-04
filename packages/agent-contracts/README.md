@@ -90,7 +90,12 @@ caller supplies; concrete delivery policy remains with the adapter or host.
 starts in one transient cumulative status. Its shared formatter uses friendly
 tool-family copy, bounded allowlisted previews, and secret redaction; adapters
 can optionally delete a confirmed status during cancellation without risking an
-answer message. Skill disclosure renders the selected skill name as
+answer message. A subagent's child tools stay grouped while it runs, then its
+group collapses independently at the first terminal event: child lines are
+removed while the header retains its total call count and duration. A meaningful
+completion can add one secret-redacted, 120-code-point `Result` or `Reason` line;
+later completion bookends may enrich the row but cannot re-expand it. Skill
+disclosure renders the selected skill name as
 `📚 Reading "<skill>"` without exposing its path. Read-only memory recall is
 preview-free as `🧠 Recalling memory`; memory writes and ordinary file reads
 retain their distinct `🧠 Updating memory` and `📖 Reading` families. File

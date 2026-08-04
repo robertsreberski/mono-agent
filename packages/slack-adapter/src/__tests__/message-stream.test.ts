@@ -214,6 +214,49 @@ describe("SlackMessageStream", () => {
     ]);
   });
 
+  it("collapses completed subagent tools in the final-only Slack ledger", async () => {
+    const api = new FakeSlackApi();
+    const stream = new SlackMessageStream({
+      api,
+      channelId: "C1",
+      finalOnly: true,
+      editDebounceMs: 0,
+    });
+
+    await stream.event({
+      type: "tool_call_started",
+      id: "call-1",
+      name: "Agent",
+      arguments: { name: "researcher", prompt: "trace delivery" },
+    });
+    await stream.event({
+      type: "tool_call_started",
+      id: "agent:call-1:t1",
+      name: "researcher▸Read",
+      arguments: { file_path: "/repo/a.ts" },
+      metadata: { subagent: { id: "call-1", name: "researcher" }, synthetic: true },
+    });
+    await stream.event({
+      type: "tool_call_completed",
+      id: "agent:call-1",
+      name: "Agent(researcher)",
+      content: "Review complete",
+      executionMs: 1_200,
+      metadata: {
+        subagent: { id: "call-1", name: "researcher" },
+        synthetic: true,
+        subagentLifecycle: true,
+      },
+    });
+    await stream.dismissTransient();
+
+    expect(api.updateCalls.map((call) => call.text)).toEqual([
+      ['🤖 Starting agent "researcher"', "  ↳ 📖 Reading /repo/a.ts"].join("\n"),
+      ['🤖 Agent "researcher" · 1 tool call · 1.2s', "  ↳ Result: Review complete"].join("\n"),
+    ]);
+    expect(api.updateCalls.at(-1)?.text).not.toContain("Reading /repo/a.ts");
+  });
+
   it("moves the Slack tool ledger behind an applied live follow-up, then keeps final delivery fresh", async () => {
     const api = new FakeSlackApi();
     const stream = new SlackMessageStream({

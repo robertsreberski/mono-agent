@@ -116,7 +116,12 @@ the reaction instead — no configuration needed for the fallback.
 
 With final-only delivery, the first tool start posts one cumulative, secret-safe
 activity message. Later starts edit it in place, adjacent duplicates collapse as
-`(×N)`. On completion the adapter posts the final answer as a new message, then
+`(×N)`. A subagent stays expanded while it runs; at its first terminal event,
+Slack removes all of that subagent's child tool lines while retaining its total
+call count and duration. The compact row may include one secret-redacted
+`Result` or `Reason` line capped at 120 Unicode code points. Concurrent subagents
+collapse independently, and late events cannot re-expand a completed group. On
+completion the adapter posts the final answer as a new message, then
 best-effort deletes the activity message. A cleanup failure cannot duplicate or
 lose the final answer, though it can leave the stale activity message behind.
 Answer deltas and reasoning never enter that ledger. `ReadSkill` renders the
