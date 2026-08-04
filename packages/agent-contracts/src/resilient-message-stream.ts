@@ -288,6 +288,8 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
   private lastFlushedContentKind: ChannelMessageContentKind | undefined;
   private answerDeliveryAttempted = false;
   private readonly toolActivityEntries: ActivityEntry[] = [];
+  /** Bounded replay guard for terminal groups even after their rendered row is evicted. */
+  private readonly terminalSubagentIds = new Set<string>();
   private dismissPromise: Promise<void> | undefined;
   private finished = false;
 
@@ -442,15 +444,19 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
           // A subagent launch opens its own group rather than a flat line, so
           // the tool calls it goes on to make can nest beneath it.
           if (isSubagentLaunchToolName(event.name)) {
-            this.subagentGroup(event.id, subagentNameFromArguments(event.arguments));
-            this.renderToolActivity();
+            if (!this.terminalSubagentIds.has(event.id)) {
+              this.subagentGroup(event.id, subagentNameFromArguments(event.arguments));
+              this.renderToolActivity();
+            }
           } else {
             this.appendToolActivity(formatToolActivityLine(event.name, event.arguments));
           }
         } else if (isSubagentLifecycle(event)) {
           // The bookend only announces the subagent; its header already exists.
-          this.subagentGroup(subagent.id, subagent.name);
-          this.renderToolActivity();
+          if (!this.terminalSubagentIds.has(subagent.id)) {
+            this.subagentGroup(subagent.id, subagent.name);
+            this.renderToolActivity();
+          }
         } else {
           this.appendSubagentActivity(
             subagent.id,
@@ -1060,6 +1066,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
    * `Agent` call was never observed (a truncated or replayed stream).
    */
   private appendSubagentActivity(id: string, subagentName: string, line: string): void {
+    if (this.terminalSubagentIds.has(id)) return;
     const group = this.subagentGroup(id, subagentName);
     // A terminal row is a collapse boundary. Providers promise stream order, but
     // replayed or duplicated frames must not make a finished subagent expand again.
@@ -1078,9 +1085,8 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
 
   /** Find or open the ledger group for one subagent launch. */
   private subagentGroup(id: string, subagentName: string): Extract<ActivityEntry, { kind: "agent" }> {
-    for (const entry of this.toolActivityEntries) {
-      if (entry.kind === "agent" && entry.id === id) return entry;
-    }
+    const existing = this.findSubagentGroup(id);
+    if (existing !== undefined) return existing;
     const group: Extract<ActivityEntry, { kind: "agent" }> = {
       kind: "agent",
       id,
@@ -1099,13 +1105,24 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     return group;
   }
 
+  private findSubagentGroup(id: string): Extract<ActivityEntry, { kind: "agent" }> | undefined {
+    return this.toolActivityEntries.find(
+      (entry): entry is Extract<ActivityEntry, { kind: "agent" }> =>
+        entry.kind === "agent" && entry.id === id,
+    );
+  }
+
   /** Replace a subagent header once its outcome is known. */
   private completeSubagentGroup(
     id: string,
     subagentName: string,
     outcome: { readonly isError?: boolean; readonly executionMs?: number; readonly content: unknown },
   ): void {
-    const group = this.subagentGroup(id, subagentName);
+    const existing = this.findSubagentGroup(id);
+    // The group already completed and its rendered row aged out. A replayed
+    // completion must not resurrect it with zeroed metrics.
+    if (existing === undefined && this.terminalSubagentIds.has(id)) return;
+    const group = existing ?? this.subagentGroup(id, subagentName);
     const becameError = !group.isError && outcome.isError === true;
     group.terminal = true;
     group.isError ||= outcome.isError === true;
@@ -1129,8 +1146,18 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
       ...(group.executionMs === undefined ? [] : [formatSeconds(group.executionMs)]),
     ];
     group.header = parts.join(" · ");
+    this.rememberTerminalSubagent(id);
     this.enforceLedgerBound();
     this.renderToolActivity();
+  }
+
+  private rememberTerminalSubagent(id: string): void {
+    this.terminalSubagentIds.add(id);
+    while (this.terminalSubagentIds.size > MAX_ACTIVITY_LINES) {
+      const oldest = this.terminalSubagentIds.values().next().value as string | undefined;
+      if (oldest === undefined) return;
+      this.terminalSubagentIds.delete(oldest);
+    }
   }
 
   /**

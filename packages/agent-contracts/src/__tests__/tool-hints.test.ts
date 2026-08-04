@@ -39,6 +39,15 @@ describe("formatSubagentOutcomeActivityLine", () => {
     expect(formatSubagentOutcomeActivityLine("cancelled · 2 tool calls", true)).toBeUndefined();
     expect(formatSubagentOutcomeActivityLine({ status: "ok" }, false)).toBeUndefined();
   });
+
+  it("treats delimiter-looking lines in a raw result as answer text", () => {
+    expect(formatSubagentOutcomeActivityLine([
+      "<activity>",
+      "This is literal answer text, not an Agent result envelope.",
+    ].join("\n"), false)).toBe(
+      "Result: <activity> This is literal answer text, not an Agent result envelope.",
+    );
+  });
 });
 
 describe("subagent tool names", () => {

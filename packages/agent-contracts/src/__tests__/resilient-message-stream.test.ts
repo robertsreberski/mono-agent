@@ -1075,6 +1075,57 @@ describe("ResilientMessageStream subagent activity", () => {
     expect(lastLedger(transport)).toBe('🤖 Agent "researcher" · 1 tool call');
   });
 
+  it("does not recreate a terminal group after its rendered row is evicted", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 100_000 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+
+    await stream.event(launch("call-1", "researcher"));
+    await stream.event(childCall("call-1", "researcher", "t1", "Read", { file_path: "/repo/a.ts" }));
+    await stream.event({
+      type: "tool_call_completed",
+      id: "agent:call-1",
+      name: "Agent(researcher)",
+      content: "ok · 1 tool call",
+      metadata: {
+        subagent: { id: "call-1", name: "researcher" },
+        synthetic: true,
+        subagentLifecycle: true,
+      },
+    });
+
+    for (let index = 0; index < 512; index += 1) {
+      await stream.event({
+        type: "tool_call_started",
+        id: `own-${index}`,
+        name: "Read",
+        arguments: { file_path: `/repo/f${index}.ts` },
+      });
+    }
+    expect(lastLedger(transport)).not.toContain("researcher");
+
+    await stream.event(launch("call-1", "researcher"));
+    await stream.event(childCall(
+      "call-1",
+      "researcher",
+      "late",
+      "Read",
+      { file_path: "/repo/late.ts" },
+    ));
+    await stream.event({
+      type: "tool_call_completed",
+      id: "call-1",
+      name: "Agent",
+      content: "late replay",
+      executionMs: 2_000,
+    });
+
+    const ledger = lastLedger(transport);
+    expect(ledger.split("\n")).toHaveLength(512);
+    expect(ledger).not.toContain("researcher");
+    expect(ledger).not.toContain("late.ts");
+    expect(ledger).not.toContain("late replay");
+  });
+
   it("opens a group from child activity alone when the launch was never observed", async () => {
     const transport = new FakeTransport({ maxMessageChars: 500 });
     const stream = makeStream(transport, { finalOnly: true, showHints: true });

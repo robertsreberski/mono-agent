@@ -302,8 +302,9 @@ function subagentOutcomeCandidate(content: unknown, isError: boolean): string | 
         .replace(/[\p{Cc}\p{Cf}]+/gu, " ")
         .replace(/\s+/gu, " ")
         .trim());
-  const structured = lines.some((line) => /^<\/?subagent(?::[^>]*)?>$/iu.test(line)
-    || /^<\/?activity>$/iu.test(line));
+  const firstNonEmpty = lines.find((line) => line.length > 0);
+  const structured = firstNonEmpty !== undefined
+    && /^<subagent(?::[^>]*)?>$/iu.test(firstNonEmpty);
   if (!structured) {
     const direct = lines.filter((line) => line.length > 0).join(" ");
     if (direct.length === 0 || SUBAGENT_STATUS_ONLY.test(direct)) return undefined;
