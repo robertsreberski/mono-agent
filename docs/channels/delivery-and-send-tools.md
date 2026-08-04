@@ -47,7 +47,25 @@ An `Agent` call opens its own group in the ledger rather than adding a flat line
 
 Grouping is what keeps concurrent delegations readable: subagents run in parallel and their events interleave arbitrarily, so appending each child at the tail would shuffle several agents' work into one indistinguishable run. Each group is keyed on its own `Agent` call, so two launches of the same profile stay two headers instead of collapsing into `(×2)`.
 
-When a subagent finishes, its header settles in place to `🤖 Agent "researcher" · 4 tool calls · 12.4s`, or `⚠️ Agent "researcher" · …` when the delegation failed or timed out. Child lines collapse as `(×N)` within their own group only. The ledger is bounded at 512 rendered lines; a long-running group sheds its own oldest children first, so it can never evict unrelated top-level activity.
+When a subagent reaches a terminal state, its group collapses immediately and
+all of its child tool lines are removed. Other subagents that are still running
+remain expanded. The settled row keeps the total tool count and duration, with
+an optional second line derived from the result:
+
+```text
+🤖 Agent "researcher" · 4 tool calls · 12.4s
+  ↳ Result: Found the owning delivery path.
+⚠️ Agent "reviewer" · failed · 2 tool calls · 30.0s
+  ↳ Reason: The subagent exceeded its time budget.
+```
+
+`Result` and `Reason` are optional, secret-redacted, normalized to one line,
+and capped at 120 Unicode code points. A lifecycle completion can collapse the
+group first; a later parent `Agent` completion may then add the result or reason
+without restoring the child lines. While a group is running, adjacent child
+lines collapse as `(×N)` within that group only. The ledger is bounded at 512
+rendered lines; a long-running group sheds its own oldest children first, so it
+can never evict unrelated top-level activity or lose its eventual total count.
 
 Previews use at most one allowlisted scalar argument and are truncated to 40 Unicode code points after control-character and whitespace normalization. File paths use middle truncation weighted toward the suffix so the filename remains visible; commands and scripts retain a balanced prefix and suffix; other previews retain their beginning. Credential assignments, authorization schemes, URL user information, sensitive query parameters, and known token shapes are redacted before truncation. Arbitrary tool arguments are never serialized, getters and proxies are not inspected, and memory content/text is deliberately excluded. Unsafe or missing input falls back to action-only copy.
 
