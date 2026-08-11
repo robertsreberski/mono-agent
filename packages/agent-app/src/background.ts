@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
-import { type FileHandle, lstat, mkdir, open, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { type FileHandle, lstat, open, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import process from "node:process";
 
@@ -27,8 +27,10 @@ import {
   deriveLaunchdMaintenanceLabel,
   isLoaded,
   launchdManagedWorkerInfo,
+  launchdMaintenanceEntrypointPathForCli,
   launchdServiceInfo,
   launchdPathsFor,
+  launchdMaintenanceCalendarMinute,
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
   makeLaunchctlRunner,
 } from "./launchd.js";
@@ -43,7 +45,6 @@ import {
   beginLaunchdLogMaintenanceIntent,
   clearLaunchdLogMaintenanceIntent,
   inspectLaunchdLogs,
-  LAUNCHD_LOG_MAINTENANCE_INTERVAL_SECONDS,
   markLaunchdLogMaintenanceRestoring,
   markLaunchdLogMaintenanceStopped,
   markLaunchdLogMaintenanceStopping,
@@ -72,13 +73,23 @@ import {
 } from "./background-snapshot.js";
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { resolveConfiguredManagedRuntimePackages } from "./managed-runtime-packages.js";
+import { removeLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
 import { acquireManagedRuntimePublicationBarrier } from "./managed-runtime-publication.js";
-import {
-  processIncarnationFromJson,
-} from "./process-incarnation.js";
-import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incarnation.js";
-import { acquireOwnerPrivateLock, validateOwnerPrivateLockInputs } from "./owner-private-lock.js";
 import type { OwnerPrivateLock } from "./owner-private-lock.js";
+import { ensureOwnerPrivateLaunchdDirectory } from "./launchd-private-files.js";
+import {
+  acquireFilesystemLifecycleLock,
+  acquireSharedLaunchdLogLock,
+} from "./launchd-lifecycle-lock.js";
+import type {
+  BackgroundLifecycleTarget,
+  BackgroundLockAcquireOptions,
+} from "./launchd-lifecycle-lock.js";
+import {
+  assertLaunchdMaintenanceLifecycleLease,
+  withLaunchdMaintenanceControllerLock,
+} from "./launchd-maintenance-gate.js";
+import type { LaunchdMaintenanceLifecycleLease } from "./launchd-maintenance-gate.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
 import {
   lifecycleFailure,
@@ -90,11 +101,26 @@ import {
 import type { PollOptions } from "./background-lifecycle-utils.js";
 import {
   maintainLaunchdLogsOperation,
+  maintainLaunchdLogsWithLifecycleLockOperation,
   reportMaintenanceFailure,
 } from "./background-log-maintenance.js";
 import * as ui from "./ui.js";
 
 export type { PollOptions } from "./background-lifecycle-utils.js";
+export {
+  acquireFilesystemLifecycleLock,
+  acquireSharedLaunchdLogLock,
+  sharedLaunchdLogLockTarget,
+  SHARED_LAUNCHD_LOG_LOCK_POLL_MS,
+  SHARED_LAUNCHD_LOG_LOCK_WAIT_MS,
+} from "./launchd-lifecycle-lock.js";
+export type {
+  BackgroundLifecycleTarget,
+  BackgroundLockAcquireOptions,
+  FilesystemLifecycleLockOptions,
+} from "./launchd-lifecycle-lock.js";
+export { withLaunchdMaintenanceControllerLock } from "./launchd-maintenance-gate.js";
+export { ensureOwnerPrivateLaunchdDirectory } from "./launchd-private-files.js";
 
 export {
   acquireBackgroundWorkerLease,
@@ -148,11 +174,6 @@ export interface InstanceTarget {
   readonly requireTui?: boolean;
 }
 
-export interface BackgroundLifecycleTarget {
-  readonly label: string;
-  readonly paths: LaunchdPaths;
-}
-
 export interface ResolveInstanceTargetInput {
   readonly args: BackgroundCliArgs;
   readonly env: Record<string, string | undefined>;
@@ -175,7 +196,7 @@ export function managedBackgroundEnvironment(
   };
 }
 
-/** Exact non-secret environment for the scheduled one-shot log maintainer. */
+/** Exact non-secret environment for the scheduled recovery/rotation controller. */
 export function managedLaunchdLogMaintenanceEnvironment(
   env: Readonly<Record<string, string | undefined>>,
 ): Readonly<Record<string, string>> {
@@ -294,6 +315,7 @@ export interface BackgroundDeps {
     paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
     expected?: LaunchdLogMaintenanceIntent,
   ) => Promise<void>;
+  readonly removeLaunchdLogMonitorStatus?: (target: BackgroundLifecycleTarget) => Promise<void>;
   /** Read and fingerprint the exact owner-private plist without mutating it. */
   readonly verifyLaunchdPlist: (path: string) => Promise<string>;
   /** True when a pid is still alive (or alive but owned by another user). */
@@ -311,7 +333,10 @@ export interface BackgroundDeps {
     target: InstanceTarget,
   ) => Promise<readonly ManagedRuntimeAdditionalPackage[]>;
   /** Fail closed when another lifecycle command owns this config label. */
-  readonly acquireLifecycleLock: (target: BackgroundLifecycleTarget) => Promise<(() => Promise<void>) | undefined>;
+  readonly acquireLifecycleLock: (
+    target: BackgroundLifecycleTarget,
+    options?: BackgroundLockAcquireOptions,
+  ) => Promise<(() => Promise<void>) | undefined>;
   /** Hold KeepAlive respawns until the replacement runtime and plist are committed. */
   readonly acquireRuntimePublicationBarrier?: (target: BackgroundLifecycleTarget) => Promise<OwnerPrivateLock | undefined>;
   /** Prove a metadata-advertised TUI endpoint is actually reachable. */
@@ -352,6 +377,7 @@ export function defaultBackgroundDeps(): BackgroundDeps {
     clearLaunchdLogMaintenanceIntent: async (paths, expected) => {
       await clearLaunchdLogMaintenanceIntent(paths, expected);
     },
+    removeLaunchdLogMonitorStatus,
     verifyLaunchdPlist: inspectOwnerPrivateLaunchdPlist,
     isAlive: (pid) => {
       try {
@@ -408,7 +434,7 @@ export type BackgroundLaunchResult =
   | {
       readonly ok: false;
       readonly action: "start" | "restart";
-      readonly reason: "runtime" | "snapshot" | "preparation" | "ownership" | "launchctl" | "readiness" | "timeout";
+      readonly reason: "runtime" | "snapshot" | "preparation" | "ownership" | "shared-contention" | "launchctl" | "readiness" | "timeout";
     };
 
 export async function startBackground(
@@ -433,6 +459,8 @@ export interface LaunchdControllerOptions {
   readonly sourceAvailable: boolean;
   readonly controlPoll?: PollOptions;
   readonly readinessPoll?: PollOptions;
+  /** Full structural validation, invoked only after fast proof identifies recovery work. */
+  readonly recoveryPreflight?: () => Promise<number>;
 }
 
 /**
@@ -447,27 +475,23 @@ export async function maintainLaunchdController(
   target: InstanceTarget,
   deps: BackgroundDeps,
   options: LaunchdControllerOptions,
+  lifecycleLease?: LaunchdMaintenanceLifecycleLease,
 ): Promise<number> {
-  const helper = maintenancePathsForTarget(target);
-  const uid = deps.getuid();
-  const helperService = await launchdServiceInfo(deps.runner, helper.label, uid);
-  const helperPid = deps.currentPid();
-  if (!helperService.loaded || helperService.pid !== helperPid || !deps.isAlive(helperPid)) {
-    reportMaintenanceFailure(
-      target,
-      deps,
-      "authenticate the launchd-owned recovery controller",
-      new Error(`launchd does not own this helper pid ${helperPid}`),
-    );
-    return 1;
+  if (lifecycleLease !== undefined) {
+    assertLaunchdMaintenanceLifecycleLease(lifecycleLease, target);
+    return await maintainLaunchdControllerWithLifecycleLease(target, deps, options);
   }
+  return await withLaunchdMaintenanceControllerLock(target, deps, async (ownership) =>
+    await maintainLaunchdController(target, deps, options, ownership));
+}
 
-  const release = await deps.acquireLifecycleLock(target);
-  if (release === undefined) {
-    // A manual lifecycle command owns the label. The helper exits cleanly so
-    // that command can boot it out; StartInterval supplies the next retry.
-    return 0;
-  }
+/** Reconcile while the authenticated helper owns only this agent's lifecycle. */
+async function maintainLaunchdControllerWithLifecycleLease(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  options: LaunchdControllerOptions,
+): Promise<number> {
+  const uid = deps.getuid();
   let maintainLogsOnly = false;
   let resultCode = 1;
   try {
@@ -511,6 +535,8 @@ export async function maintainLaunchdController(
       maintainLogsOnly = true;
       resultCode = 0;
     } else {
+      const preflightCode = await options.recoveryPreflight?.() ?? 0;
+      if (preflightCode !== 0) return preflightCode;
       if (!options.sourceAvailable) {
         deps.stderr(ui.style.dim(
           `The original controller CLI is unavailable; recovering ${target.label} from the helper's private closure without claiming an upgrade.`,
@@ -521,22 +547,25 @@ export async function maintainLaunchdController(
         deps,
         options.controlPoll ?? DEFAULT_CONTROL_POLL,
         options.readinessPoll ?? DEFAULT_READINESS_POLL,
-        { preserveMaintenanceService: true, preserveDefinitionsOnFailure: true },
+        {
+          preserveMaintenanceService: true,
+          preserveDefinitionsOnFailure: true,
+          sharedLockMode: "automatic",
+        },
       );
-      resultCode = recovered.ok ? 0 : 1;
+      resultCode = recovered.ok || recovered.reason === "shared-contention" ? 0 : 1;
     }
   } catch (error) {
     reportMaintenanceFailure(target, deps, "reconcile the managed worker", error);
     resultCode = 1;
-  } finally {
-    await release().catch((error: unknown) => {
-      deps.stderr(ui.errorLine(
-        `Could not release lifecycle lock for ${target.label}: ${error instanceof Error ? error.message : String(error)}`,
-      ));
-    });
   }
   return maintainLogsOnly
-    ? await maintainLaunchdLogs(target, deps, options.controlPoll ?? DEFAULT_CONTROL_POLL)
+    ? await maintainLaunchdLogsWithLifecycleLockOperation(
+        target,
+        deps,
+        options.controlPoll ?? DEFAULT_CONTROL_POLL,
+        async () => await acquireSharedLaunchdLogLock(target, deps, "automatic"),
+      )
     : resultCode;
 }
 
@@ -624,7 +653,12 @@ export async function maintainLaunchdLogs(
   deps: BackgroundDeps,
   poll: PollOptions = DEFAULT_CONTROL_POLL,
 ): Promise<number> {
-  return await maintainLaunchdLogsOperation(target, deps, poll);
+  return await maintainLaunchdLogsOperation(
+    target,
+    deps,
+    poll,
+    async () => await acquireSharedLaunchdLogLock(target, deps, "automatic"),
+  );
 }
 
 /**
@@ -704,8 +738,10 @@ async function ensureBackgroundReadyUnlocked(
 interface BackgroundReadyInternalOptions {
   /** Recovery helpers cannot boot out and wait for their own launchd process. */
   readonly preserveMaintenanceService?: boolean;
-  /** Scheduled recovery keeps both definitions so StartInterval can retry. */
+  /** Scheduled recovery keeps both definitions so the calendar schedule can retry. */
   readonly preserveDefinitionsOnFailure?: boolean;
+  /** Helpers defer immediately; interactive lifecycle commands wait visibly. */
+  readonly sharedLockMode?: "automatic" | "interactive";
 }
 
 async function ensureBackgroundReadyWithPublicationBarrier(
@@ -795,17 +831,32 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
     return { ok: false, action: "start", reason: "ownership" };
   }
 
-  let sinceMs = deps.now();
+  let releaseSharedLogLock: (() => Promise<void>) | undefined;
   try {
-    await prepareLaunchdDirectories(launchTarget, deps);
+    releaseSharedLogLock = await acquireSharedLaunchdLogLock(
+      launchTarget,
+      deps,
+      options.sharedLockMode ?? "interactive",
+    );
   } catch (error) {
-    reportLifecycleException(launchTarget, deps, "prepare the LaunchAgent directories", error);
-    return { ok: false, action: "start", reason: "preparation" };
+    reportLifecycleException(launchTarget, deps, "acquire the shared launchd-log mutation lock", error);
+    return { ok: false, action: "start", reason: "ownership" };
   }
+  if (releaseSharedLogLock === undefined) {
+    if (options.sharedLockMode !== "automatic") {
+      deps.stderr(ui.errorLine(
+        "Shared launchd-log maintenance is already active for another agent on this account.",
+      ));
+    }
+    return { ok: false, action: "start", reason: "shared-contention" };
+  }
+
+  let sinceMs = deps.now();
   let outcome: LaunchOutcome;
   let prepared = false;
   deps.stdout(ui.hint("Replacing the managed worker…"));
   try {
+    await prepareLaunchdDirectories(launchTarget, deps);
     let interruptedMaintenance = await deps.readLaunchdLogMaintenanceIntent(launchTarget.paths);
     if (interruptedMaintenance?.phase === "stopping" || interruptedMaintenance?.phase === "restoring") {
       const current = await launchdServiceInfo(deps.runner, launchTarget.label, uid);
@@ -854,6 +905,12 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
       error,
     );
     return { ok: false, action: "start", reason: prepared ? "launchctl" : "preparation" };
+  } finally {
+    await releaseSharedLogLock?.().catch((error: unknown) => {
+      deps.stderr(ui.errorLine(
+        `Could not release the shared launchd-log mutation lock for ${launchTarget.label}: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+    });
   }
   const action = outcome.restarted ? "restart" as const : "start" as const;
   if (!outcome.ok) {
@@ -945,60 +1002,22 @@ async function writePlists(target: InstanceTarget, deps: BackgroundDeps): Promis
   const maintenanceXml = buildLaunchdMaintenancePlistXml({
     label: maintenance.label,
     nodePath: target.nodePath,
-    cliPath: target.cliPath,
+    cliPath: launchdMaintenanceEntrypointPathForCli(target.cliPath),
     configPath: target.configPath,
     controllerCliPath: target.controllerCliPath ?? target.cliPath,
     agentCwd: target.cwd,
     agentPath,
+    expectedManagedRuntimeLaunch: target.managedRuntimeLaunchProof,
     ...(target.envFile === undefined ? {} : { envFile: target.envFile }),
     // The agent folder may be renamed or removed while its already-running
     // worker still owns log descriptors. Keep the scheduler's cwd in the
     // durable account state tree; its config argument is already absolute.
     cwd: dirname(target.paths.logDir),
     environment: managedLaunchdLogMaintenanceEnvironment(target.environment),
-    intervalSeconds: LAUNCHD_LOG_MAINTENANCE_INTERVAL_SECONDS,
+    calendarMinute: launchdMaintenanceCalendarMinute(target.label),
   });
   await deps.writeFile(target.paths.plistPath, mainXml);
   await deps.writeFile(maintenance.plistPath, maintenanceXml);
-}
-
-export async function ensureOwnerPrivateLaunchdDirectory(path: string): Promise<void> {
-  const parent = dirname(path);
-  const parentDetails = await lstat(parent);
-  assertOwnerDirectory(parentDetails, parent, "LaunchAgent parent");
-  try {
-    await mkdir(path, { mode: 0o700 });
-  } catch (error) {
-    if (!isErrno(error, "EEXIST")) throw error;
-  }
-  const parentAfter = await lstat(parent);
-  assertOwnerDirectory(parentAfter, parent, "LaunchAgent parent");
-  if (!sameFilesystemIdentity(parentDetails, parentAfter)) {
-    throw new Error(`LaunchAgent parent ${parent} changed while ${path} was created.`);
-  }
-  const handle = await open(
-    path,
-    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
-  );
-  try {
-    const before = await handle.stat();
-    assertOwnerDirectory(before, path, "LaunchAgent directory");
-    await handle.chmod(0o700);
-    const secured = await handle.stat();
-    if (!sameFilesystemIdentity(before, secured)) {
-      throw new Error(`LaunchAgent directory ${path} changed while it was secured.`);
-    }
-    assertOwnerDirectory(secured, path, "LaunchAgent directory");
-    if ((secured.mode & 0o077) !== 0) {
-      throw new Error(`LaunchAgent directory ${path} must be owner-only.`);
-    }
-    const current = await lstat(path);
-    if (!sameFilesystemIdentity(secured, current)) {
-      throw new Error(`LaunchAgent directory ${path} changed while it was secured.`);
-    }
-  } finally {
-    await handle.close();
-  }
 }
 
 export async function writeOwnerPrivateLaunchdFile(path: string, data: string): Promise<void> {
@@ -1357,6 +1376,35 @@ async function stopBackgroundUnlocked(
   deps: BackgroundDeps,
   poll: PollOptions,
 ): Promise<number> {
+  let releaseSharedLogLock: (() => Promise<void>) | undefined;
+  try {
+    releaseSharedLogLock = await acquireSharedLaunchdLogLock(target, deps, "interactive");
+  } catch (error) {
+    reportLifecycleException(target, deps, "acquire the shared launchd-log mutation lock", error);
+    return 1;
+  }
+  if (releaseSharedLogLock === undefined) {
+    deps.stderr(ui.errorLine(
+      "Shared launchd-log maintenance is still active for another agent on this account.",
+    ));
+    return 1;
+  }
+  try {
+    return await stopBackgroundWithSharedLogLock(target, deps, poll);
+  } finally {
+    await releaseSharedLogLock().catch((error: unknown) => {
+      deps.stderr(ui.errorLine(
+        `Could not release the shared launchd-log mutation lock for ${target.label}: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+    });
+  }
+}
+
+async function stopBackgroundWithSharedLogLock(
+  target: InstanceTarget,
+  deps: BackgroundDeps,
+  poll: PollOptions,
+): Promise<number> {
   const uid = deps.getuid();
   const maintenance = maintenancePathsForTarget(target);
   const existing = await findInstances(target, deps);
@@ -1453,8 +1501,9 @@ async function stopBackgroundUnlocked(
       maintenanceIntent = await deps.markLaunchdLogMaintenanceStopped(target.paths, maintenanceIntent);
     }
     await deps.clearLaunchdLogMaintenanceIntent(target.paths, maintenanceIntent);
+    await deps.removeLaunchdLogMonitorStatus?.(target);
   } catch (error) {
-    deps.stderr(ui.errorLine(`Failed to clear pending launchd-log maintenance for ${target.label}.`));
+    deps.stderr(ui.errorLine(`Failed to clear pending launchd-log state for ${target.label}.`));
     deps.stderr(ui.style.dim(error instanceof Error ? error.message : String(error)) + "\n");
     deps.stderr(ui.hint("Both LaunchAgent plists were preserved; retry stop after the owner-private marker is inspectable."));
     return 1;
@@ -2134,90 +2183,6 @@ function commandFlags(target: InstanceTarget): string {
 
 function shellCommandArgument(value: string): string {
   return /^[a-zA-Z0-9_./:@%+=,-]+$/u.test(value) ? value : `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-export interface FilesystemLifecycleLockOptions {
-  readonly pid?: number;
-  readonly now?: () => number;
-  /**
-   * Permanent pre-v0.9.0 owner-record compatibility. v0.9.0 and later write
-   * process incarnation identity into every lifecycle-lock owner record.
-   */
-  readonly isProcessAlive?: (pid: number) => boolean;
-  readonly processIncarnation?: ProcessIncarnation;
-  readonly isSameProcessIncarnation?: SameProcessIncarnation;
-  readonly ownerlessGraceMs?: number;
-  readonly randomToken?: () => string;
-  /** Deterministic seam immediately after the final identity check. */
-  readonly beforeStaleLockRename?: () => Promise<void>;
-}
-
-export async function acquireFilesystemLifecycleLock(
-  target: BackgroundLifecycleTarget,
-  options: FilesystemLifecycleLockOptions = {},
-): Promise<(() => Promise<void>) | undefined> {
-  const pid = options.pid ?? process.pid;
-  const now = options.now ?? (() => Date.now());
-  const isProcessAlive = options.isProcessAlive ?? processIsAlive;
-  const ownerlessGraceMs = options.ownerlessGraceMs ?? 5 * 60_000;
-  const randomToken = options.randomToken ?? randomUUID;
-  validateOwnerPrivateLockInputs("Lifecycle lock", pid, ownerlessGraceMs);
-  const managedRoot = dirname(target.paths.logDir);
-  const locksDir = resolve(managedRoot, "locks");
-  for (const path of [managedRoot, locksDir]) {
-    await ensureOwnerPrivateLaunchdDirectory(path);
-  }
-
-  const lockDir = resolve(locksDir, `${target.label}.lock`);
-  const held = await acquireOwnerPrivateLock({
-    path: lockDir,
-    label: "Lifecycle lock",
-    schemaTag: "mono-agent.filesystem-lifecycle-lock.v1",
-    ownerlessGraceMs,
-    maxAcquireAttempts: 4,
-    pid,
-    now,
-    randomToken,
-    ...(options.processIncarnation === undefined ? {} : { processIncarnation: options.processIncarnation }),
-    ...(options.isSameProcessIncarnation === undefined
-      ? {}
-      : { isSameProcessIncarnation: options.isSameProcessIncarnation }),
-    parseLegacyOwner: (record) => {
-      if (typeof record.pid !== "number" || !Number.isSafeInteger(record.pid) || record.pid <= 0) return undefined;
-      const incarnation = processIncarnationFromJson(record.incarnation);
-      return {
-        pid: record.pid,
-        ...(incarnation === undefined ? {} : { incarnation }),
-      };
-    },
-    // Permanent pre-v0.9.0 compatibility: a skipped-version upgrade can
-    // encounter crash debris without incarnation identity indefinitely.
-    // All owner records written since v0.9.0 use the stronger shared schema.
-    allowCurrentUserLegacyOwnerMode: true,
-    isLegacyProcessAlive: isProcessAlive,
-    invalidOwner: "ownerless",
-    livenessError: () => "assume-live",
-    ...(options.beforeStaleLockRename === undefined
-      ? {}
-      : { beforeStaleRename: options.beforeStaleLockRename }),
-    staleRace: "return",
-    stalePath: ({ now: staleAt, pid: stalePid, token }) =>
-      resolve(locksDir, `${target.label}.stale-${staleAt}-${stalePid}-${token}`),
-    releasedPath: ({ now: releasedAt, pid: ownerPid, token }) =>
-      resolve(locksDir, `${target.label}.released-${releasedAt}-${ownerPid}-${token}`),
-    abandonedPath: ({ now: abandonedAt, pid: ownerPid, token }) =>
-      resolve(locksDir, `${target.label}.abandoned-${abandonedAt}-${ownerPid}-${token}`),
-  });
-  return held === undefined ? undefined : () => held.release();
-}
-
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return isErrno(error, "EPERM");
-  }
 }
 
 async function probeTuiEndpoint(source: TraceSourceListItem): Promise<boolean> {

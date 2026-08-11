@@ -9,7 +9,7 @@ import type { LaunchdPaths } from "./launchd.js";
 
 export const LAUNCHD_LOG_MAX_BYTES = 5 * 1024 * 1024;
 export const LAUNCHD_LOG_ROTATION_COUNT = 3;
-export const LAUNCHD_LOG_MAINTENANCE_INTERVAL_SECONDS = 5 * 60;
+export const LAUNCHD_LOG_MONITOR_INTERVAL_SECONDS = 5 * 60;
 
 export interface LaunchdLogPolicy {
   readonly maxBytes: number;
@@ -20,6 +20,14 @@ export const DEFAULT_LAUNCHD_LOG_POLICY: LaunchdLogPolicy = Object.freeze({
   maxBytes: LAUNCHD_LOG_MAX_BYTES,
   rotationCount: LAUNCHD_LOG_ROTATION_COUNT,
 });
+
+/** Source-audited callers which may repair the shared directory chain. */
+export const SHARED_LAUNCHD_LOG_MUTATION_CALLERS = Object.freeze([
+  "beginLaunchdLogMaintenanceIntent",
+  "replaceMaintenanceIntentPhase",
+  "clearLaunchdLogMaintenanceIntent",
+  "rotateStoppedLaunchdLogs",
+] as const);
 
 export type LaunchdLogFileState = "missing" | "ok" | "repairable" | "unsafe" | "unreadable";
 
@@ -47,10 +55,16 @@ export interface LaunchdLogInspection {
   readonly canMaintain: boolean;
   /** Oversized files or repairable owner-only permissions require a maintenance pass. */
   readonly needsMaintenance: boolean;
+  /** Safe per-agent file reasons which alone may wake this agent's helper. */
+  readonly perAgentFileReasons: readonly string[];
+  /** Shared directory repair is owned by scheduled maintenance, never a worker wake. */
+  readonly sharedDirectoryNeedsMaintenance: boolean;
   /** A durable journal proves a stopped-writer rotation began and must resume. */
   readonly pendingTransaction: boolean;
   /** A lifecycle marker exists; its authenticated phase decides whether rotation or restore recovery is safe. */
   readonly pendingMaintenance: boolean;
+  /** Incomplete next/stage artifacts are helper recovery state, never a worker wake. */
+  readonly pendingPreparation: boolean;
   readonly issues: readonly string[];
 }
 
@@ -171,6 +185,7 @@ export async function beginLaunchdLogMaintenanceIntent(
   const directories = await openValidatedDirectoryChain(paths.logDir, deps);
   if (directories === undefined) throw new Error("LaunchAgent log directory does not exist.");
   try {
+    // SHARED_LAUNCHD_LOG_LOCK_REQUIRED: beginLaunchdLogMaintenanceIntent
     for (const directory of directories) await secureDirectory(directory, deps);
     await assertDirectoryChainIdentity(directories, deps);
     const data = Buffer.from(`${JSON.stringify(intent)}\n`, "utf8");
@@ -256,6 +271,7 @@ async function replaceMaintenanceIntentPhase(
   const directories = await openValidatedDirectoryChain(paths.logDir, deps);
   if (directories === undefined) throw new Error("LaunchAgent log directory disappeared before lifecycle proof update.");
   try {
+    // SHARED_LAUNCHD_LOG_LOCK_REQUIRED: replaceMaintenanceIntentPhase
     for (const directory of directories) await secureDirectory(directory, deps);
     await assertDirectoryChainIdentity(directories, deps);
     const current = await loadMaintenanceIntent(paths, deps);
@@ -315,6 +331,7 @@ export async function clearLaunchdLogMaintenanceIntent(
     throw new Error("LaunchAgent log directory disappeared before intent cleanup.");
   }
   try {
+    // SHARED_LAUNCHD_LOG_LOCK_REQUIRED: clearLaunchdLogMaintenanceIntent
     for (const directory of directories) await secureDirectory(directory, deps);
     await assertDirectoryChainIdentity(directories, deps);
     let changed = await removeKnownArtifact(
@@ -374,18 +391,25 @@ export async function inspectLaunchdLogs(
     ...artifacts.issues,
   ];
   const unsafe = files.some((file) => file.state === "unsafe" || file.state === "unreadable");
-  const repairable = directory.state === "repairable"
-    || files.some((file) => file.state === "repairable");
-  const oversized = files.some((file) => file.bytes > policy.maxBytes);
+  const sharedDirectoryNeedsMaintenance = directory.state === "repairable";
+  const perAgentFileReasons = [
+    ...fileMaintenanceReasons("stdout", stdout, policy.maxBytes),
+    ...fileMaintenanceReasons("stderr", stderr, policy.maxBytes),
+  ];
 
   return {
     stdout,
     stderr,
     present: artifacts.present || files.some((file) => file.state !== "missing"),
     canMaintain: !unsafe && artifacts.canMaintain,
-    needsMaintenance: artifacts.present || repairable || oversized,
+    needsMaintenance: artifacts.present
+      || sharedDirectoryNeedsMaintenance
+      || perAgentFileReasons.length > 0,
+    perAgentFileReasons,
+    sharedDirectoryNeedsMaintenance,
     pendingTransaction: artifacts.pendingTransaction,
     pendingMaintenance: artifacts.pendingMaintenance,
+    pendingPreparation: artifacts.pendingPreparation,
     issues,
   };
 }
@@ -427,6 +451,7 @@ export async function rotateStoppedLaunchdLogs(
   const preparedReplacements: PreparedReplacement[] = [];
   let journalPublished = false;
   try {
+    // SHARED_LAUNCHD_LOG_LOCK_REQUIRED: rotateStoppedLaunchdLogs
     for (const currentDirectory of directories) {
       await secureDirectory(currentDirectory, deps);
     }
@@ -507,6 +532,7 @@ interface RotationArtifactInspection {
   readonly canMaintain: boolean;
   readonly pendingTransaction: boolean;
   readonly pendingMaintenance: boolean;
+  readonly pendingPreparation: boolean;
   readonly issues: readonly string[];
 }
 
@@ -627,6 +653,7 @@ async function inspectRotationArtifacts(
   let canMaintain = true;
   let pendingTransaction = false;
   let pendingMaintenance = false;
+  let pendingPreparation = false;
   const issues: string[] = [];
   for (const candidate of candidates) {
     const state = await inspectRotationArtifact(candidate.path, candidate.maxBytes, deps);
@@ -634,6 +661,7 @@ async function inspectRotationArtifacts(
     present = true;
     if (candidate.kind === "rotation") pendingTransaction = true;
     if (candidate.kind === "maintenance") pendingMaintenance = true;
+    if (candidate.kind === "preparation") pendingPreparation = true;
     if (state !== "ok") {
       canMaintain = false;
       issues.push(`rotation transaction artifact: ${state}`);
@@ -646,7 +674,23 @@ async function inspectRotationArtifacts(
       issues.push("interrupted launchd-log rotation preparation requires cleanup");
     }
   }
-  return { present, canMaintain, pendingTransaction, pendingMaintenance, issues };
+  return { present, canMaintain, pendingTransaction, pendingMaintenance, pendingPreparation, issues };
+}
+
+function fileMaintenanceReasons(
+  stream: string,
+  inspection: LaunchdLogStreamInspection,
+  maxBytes: number,
+): string[] {
+  return inspection.files.flatMap((file) => {
+    const generation = file.generation === 0 ? "active" : `retained generation ${file.generation}`;
+    const reasons: string[] = [];
+    if (file.state === "repairable") reasons.push(`${stream} ${generation} permissions`);
+    if (file.state !== "unsafe" && file.state !== "unreadable" && file.bytes > maxBytes) {
+      reasons.push(`${stream} ${generation} exceeds ${maxBytes} bytes`);
+    }
+    return reasons;
+  });
 }
 
 async function inspectRotationArtifact(
@@ -1772,8 +1816,11 @@ function emptyInspection(byteAccountingComplete = true): LaunchdLogInspection {
     present: false,
     canMaintain: true,
     needsMaintenance: false,
+    perAgentFileReasons: [],
+    sharedDirectoryNeedsMaintenance: false,
     pendingTransaction: false,
     pendingMaintenance: false,
+    pendingPreparation: false,
     issues: [],
   };
 }
