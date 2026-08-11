@@ -606,6 +606,14 @@ function subagentsRuntimeOptions(
       ...(request.sandboxPolicy === undefined ? {} : { sandboxPolicy: request.sandboxPolicy }),
       ...(request.sandboxEngine === undefined ? {} : { sandboxEngine: request.sandboxEngine }),
       ...(request.toolEnvironment === undefined ? {} : { toolEnvironment: request.toolEnvironment }),
+      // Inherited for the same reason as the sandbox policy above: a child runs
+      // outside the harness and builds its OWN web controller, so without these
+      // it gets `searchConfig: undefined` and silently falls back to keyless
+      // search — which rate-limits into a cooldown where every query fails in
+      // milliseconds. The parent keeps working, so the degradation is invisible
+      // until you read the child's activity log.
+      ...(config.tools.web?.search === undefined ? {} : { webSearchConfig: config.tools.web.search }),
+      ...(config.tools.web?.fetch === undefined ? {} : { webFetchConfig: config.tools.web.fetch }),
       // Both keys or neither: pi-bridge builds ReadSkill only when it has the
       // names AND the root, and a half-set pair fails by silently omitting the
       // tool rather than erroring.
