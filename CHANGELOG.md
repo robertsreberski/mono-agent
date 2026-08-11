@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Subagent web configuration
+
+- Subagents now inherit the parent's `tools.web.search` and `tools.web.fetch`
+  configuration. A child runs outside the harness and builds its own web
+  controller, so with nothing threaded it received `searchConfig: undefined`
+  and silently fell back to the keyless search backend — which rate-limits into
+  a cooldown where every subsequent query fails in milliseconds.
+- The failure was invisible from the parent, which kept using its configured
+  backend normally. In one run the parent completed 40 searches on a loopback
+  SearXNG endpoint with no errors while all 33 subagent searches failed on
+  DuckDuckGo/Startpage, and two subagents spent 150+ tool calls each exhausting
+  their whole time budget without returning anything.
+- Browser rendering (`tools.web.fetch`) is inherited by the same path, so a
+  child no longer loses `render: "auto"` and fall back to static-only
+  extraction on client-rendered pages.
+
 ### Provider transport diagnostics
 
 - Opaque provider transport failures now name their real reason. Node's fetch

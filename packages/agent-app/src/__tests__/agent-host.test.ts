@@ -1144,6 +1144,67 @@ describe("agent host composition helpers", () => {
     });
   });
 
+  it("threads the same WebSearch and WebFetch config into subagent runs", async () => {
+    // A subagent builds its OWN web controller outside the harness. When these
+    // two keys were not inherited, every child search silently fell back to the
+    // keyless backend and rate-limited itself into a cooldown while the parent
+    // kept working — so this asserts the child, not just the parent turn.
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    const baseConfig = monoConfig({ dir, identityPath, artifactDir });
+
+    const harness = await createConfiguredAgentHarness({
+      config: {
+        ...baseConfig,
+        tools: {
+          ...baseConfig.tools,
+          allowedTools: [...(baseConfig.tools.allowedTools ?? []), "Agent"],
+          web: {
+            search: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+            fetch: { render: "auto", browserCommand: "/opt/homebrew/bin/agent-browser" },
+          },
+        },
+        subagents: { enabled: true },
+      },
+      runtime: fake.runtime,
+    });
+
+    await harness.run({
+      conversationId: "conversation-subagent-web-tools",
+      userMessage: "Delegate this",
+      abortSignal: new AbortController().signal,
+    });
+
+    const subagentRun = (fake.calls[0]?.options as unknown as {
+      subagents?: { run?: (request: unknown) => Promise<unknown> };
+    }).subagents?.run;
+    expect(subagentRun).toBeTypeOf("function");
+
+    await subagentRun?.({
+      systemPrompt: "You are a researcher.",
+      prompt: "Find the current timetable.",
+      definition: { name: "researcher", allowedTools: ["WebSearch", "WebFetch"] },
+      maxTurns: 4,
+      depth: 0,
+      abortSignal: new AbortController().signal,
+      onEvent: () => {},
+    });
+
+    const childCall = fake.calls[1];
+    expect(childCall).toBeDefined();
+    expect(childCall?.options.webSearchConfig).toEqual({
+      backend: "searxng",
+      endpoint: "http://127.0.0.1:8088",
+    });
+    expect(childCall?.options.webFetchConfig).toEqual({
+      render: "auto",
+      browserCommand: "/opt/homebrew/bin/agent-browser",
+    });
+  });
+
   it("creates the default Mono runtime with config workspace and artifact directory", () => {
     const config = monoConfig({
       dir: "/tmp/mono-agent-host",
