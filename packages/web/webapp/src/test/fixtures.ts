@@ -68,6 +68,7 @@ export const bootstrap = (
   currentThreadId?: string,
 ): Bootstrap => ({
   version: 1,
+  console: { hostName: "test-host", theme: "evergreen" },
   agents,
   threads,
   currentThreadId,

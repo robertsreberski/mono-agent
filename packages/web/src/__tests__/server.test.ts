@@ -1,5 +1,6 @@
 import { lstat, readFile, readdir, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
+import { hostname } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -26,6 +27,13 @@ async function start(options: Partial<Parameters<typeof startWebServer>[0]> = {}
   const { mkdir } = await import("node:fs/promises");
   await mkdir(staticDir, { recursive: true });
   await writeFile(join(staticDir, "index.html"), "<!doctype html><title>web</title>");
+  await writeFile(join(staticDir, "manifest.webmanifest"), JSON.stringify({
+    name: "mono-agent Console",
+    short_name: "mono-agent",
+    start_url: "/",
+    scope: "/",
+    icons: [{ src: "icon.svg", sizes: "any", type: "image/svg+xml" }],
+  }));
   const handle = await startWebServer({
     port: 0,
     stateDir: join(root, "state"),
@@ -61,8 +69,31 @@ describe("web HTTP server", () => {
     expect(bootstrap.status).toBe(200);
     expect(bootstrap.headers.get("cache-control")).toBe("no-store");
     expect(bootstrap.headers.get("access-control-allow-origin")).toBeNull();
-    const body = await bootstrap.json() as { agents: unknown[] };
+    const body = await bootstrap.json() as { console: unknown; agents: unknown[] };
+    expect(body.console).toEqual({ hostName: hostname(), theme: "evergreen" });
     expect(body.agents[0]).toMatchObject({ sourceId: "agent-one", status: "online", supportsAttachments: true });
+  });
+
+  it("publishes the selected theme and host-specific install manifest", async () => {
+    const { baseUrl } = await start({ theme: "plum" });
+
+    expect(await json(await fetch(`${baseUrl}/api/v1/bootstrap`))).toMatchObject({
+      version: 1,
+      console: { hostName: hostname(), theme: "plum" },
+    });
+    const response = await fetch(`${baseUrl}/manifest.webmanifest`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/manifest+json");
+    expect(response.headers.get("cache-control")).toBe("no-cache, no-transform");
+    expect(await response.json()).toEqual(expect.objectContaining({
+      name: `${hostname()} · mono-agent Console`,
+      short_name: hostname(),
+      start_url: "/",
+      scope: "/",
+      theme_color: "#120f14",
+      background_color: "#120f14",
+      icons: [{ src: "icon.svg", sizes: "any", type: "image/svg+xml" }],
+    }));
   });
 
   it("publishes an owner-private loopback ingress and removes only its live record on stop", async () => {
@@ -192,6 +223,8 @@ describe("web HTTP server", () => {
 
     await expect(startWebServer({ ...options, allowedHosts: ["bad:host"] }))
       .rejects.toMatchObject({ code: "invalid_allowed_host" });
+    await expect(startWebServer({ ...options, theme: "neon" as never }))
+      .rejects.toMatchObject({ code: "invalid_theme" });
     const handle = await startWebServer(options);
     servers.push(handle);
     expect(handle.port).toBeGreaterThan(0);

@@ -114,11 +114,11 @@ To use it as a selected mono-agent skill instead, point `context.skillsRoot` at 
 Start the browser operator console once, then open it from this computer, the local network, or Tailscale:
 
 ```bash
-mono-agent web start
+mono-agent web start --theme ocean
 mono-agent web                 # status and exact URLs; does not start or change anything
 ```
 
-It binds `0.0.0.0:5050` by default, auto-discovers running agents, and keeps separate persistent conversations for each selected agent. The console has no application login: anyone who can reach the port can operate the discovered agents and see retained conversations, so expose it only on a trusted LAN or tailnet. When Tailscale Serve is available it adds an HTTPS route without replacing an existing handler; otherwise direct LAN/Tailscale HTTP remains available. Use `--loopback` when the service must stay on this computer.
+It binds `0.0.0.0:5050` by default, auto-discovers running agents, and keeps separate persistent conversations for each selected agent. The header, tab title, and installed PWA use the operating-system hostname. Pick `evergreen` (default), `ocean`, `plum`, or `terracotta` with `--theme`; managed restarts retain that selection and `web status` reports it. The console has no application login: anyone who can reach the port can operate the discovered agents and see retained conversations, so expose it only on a trusted LAN or tailnet. When Tailscale Serve is available it adds an HTTPS route without replacing an existing handler; otherwise direct LAN/Tailscale HTTP remains available. Use `--loopback` when the service must stay on this computer.
 
 Attachments come from the browser device's native file picker, not a browser over the host filesystem. The web transport uses the same `AgentAttachment` contract, MIME allowlist, 20 MiB per-file limit, image/document classification, text decoding, and harness persistence as Telegram; each turn additionally allows at most 10 files and 64 MiB total. See the [web console guide](./docs/observability/web-console.md) for lifecycle, security, retention, and current scope. The `mono-agent sessions` Session Recorder command was removed; use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console).
 

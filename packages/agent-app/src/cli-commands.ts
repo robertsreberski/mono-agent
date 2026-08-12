@@ -236,6 +236,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         env: process.env,
         ...(args.host === undefined ? {} : { host: args.host }),
         ...(args.port === undefined ? {} : { port: args.port }),
+        ...(args.theme === undefined ? {} : { theme: args.theme }),
         ...(args.loopback === true ? { loopback: true } : {}),
         ...(args.follow === true ? { follow: true } : {}),
         ...(args.lines === undefined ? {} : { lines: args.lines }),

@@ -49,6 +49,11 @@ export interface AcpBridgeDiscovery {
 /** Version of the browser-facing JSON and SSE contract. */
 export const WEB_API_VERSION = 1 as const;
 
+/** Curated console themes accepted by the server, CLI, and browser client. */
+export const WEB_THEMES = ["evergreen", "ocean", "plum", "terracotta"] as const;
+export type WebTheme = (typeof WEB_THEMES)[number];
+export const DEFAULT_WEB_THEME: WebTheme = "evergreen";
+
 export const WEB_MAX_FILES_PER_TURN = 10;
 export const WEB_MAX_TURN_ATTACHMENT_BYTES = 64 * 1024 * 1024;
 export const WEB_STAGED_UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
@@ -202,8 +207,14 @@ export interface WebThreadDetail {
   readonly messages: readonly WebMessage[];
 }
 
+export interface WebConsoleIdentity {
+  readonly hostName: string;
+  readonly theme: WebTheme;
+}
+
 export interface WebBootstrap {
   readonly version: typeof WEB_API_VERSION;
+  readonly console: WebConsoleIdentity;
   readonly agents: readonly WebAgentSummary[];
   readonly threads: readonly WebThread[];
   readonly currentThreadId?: string;

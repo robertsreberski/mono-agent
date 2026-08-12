@@ -52,6 +52,7 @@ export {
   ACP_BRIDGE_SOURCE_SCHEMA,
   ACP_BRIDGE_VERSION,
   ACP_PROTOCOL_VERSION,
+  DEFAULT_WEB_THEME,
   WEB_API_VERSION,
   WEB_MAX_CONCURRENT_UPLOADS,
   WEB_MAX_ACTIVE_ATTACHMENT_TURN_BYTES,
@@ -62,6 +63,7 @@ export {
   WEB_MAX_QUEUED_ATTACHMENT_TURNS,
   WEB_MAX_TURN_ATTACHMENT_BYTES,
   WEB_STAGED_UPLOAD_TTL_MS,
+  WEB_THEMES,
 } from "./contracts.js";
 export type {
   AcpBridgeDiscovery,
@@ -77,6 +79,7 @@ export type {
   WebAgentSummary,
   WebAttachment,
   WebBootstrap,
+  WebConsoleIdentity,
   WebEvent,
   WebEventType,
   WebLiveInputReceipt,
@@ -91,6 +94,7 @@ export type {
   WebThread,
   WebThreadDetail,
   WebThreadTrigger,
+  WebTheme,
 } from "./contracts.js";
 
 export { WebConsoleError } from "./errors.js";

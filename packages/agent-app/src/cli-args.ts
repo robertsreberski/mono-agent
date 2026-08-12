@@ -154,6 +154,8 @@ export interface ParsedCliArgs {
   readonly host?: string;
   /** web: bind port (defaults to 5050). */
   readonly port?: number;
+  /** web: curated visual theme for this host console. */
+  readonly theme?: string;
   /** web: narrow the default LAN bind to 127.0.0.1. */
   readonly loopback?: boolean;
   /** bridge acp: exact trace-source id to expose. */
@@ -266,6 +268,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let backupPath: string | undefined;
   let host: string | undefined;
   let port: number | undefined;
+  let theme: string | undefined;
   let loopback = false;
   let sourceId: string | undefined;
   let discover = false;
@@ -389,6 +392,10 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         port = parsed;
         break;
       }
+      case "--theme":
+        theme = requireValue(rest, ++i, flag).trim();
+        if (theme.length === 0) throw new Error("--theme must not be empty.");
+        break;
       case "--loopback":
         loopback = true;
         break;
@@ -594,8 +601,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     throw new Error("--no-docs-mcp is only supported for `mono-agent install-skill`.");
   }
 
-  if ((host !== undefined || port !== undefined || loopback) && cmd !== "web") {
-    throw new Error("--host, --port, and --loopback are only supported for `mono-agent web`.");
+  if ((host !== undefined || port !== undefined || theme !== undefined || loopback) && cmd !== "web") {
+    throw new Error("--host, --port, --theme, and --loopback are only supported for `mono-agent web`.");
   }
   if ((sourceId !== undefined || discover || requireToolEnvironment) && cmd !== "bridge") {
     throw new Error("--source-id, --discover, and --require-tool-environment are only supported for `mono-agent bridge acp`.");
@@ -708,8 +715,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 
   if (cmd === "web") {
     const action = positionals[0];
-    if ((host !== undefined || port !== undefined || loopback) && action !== "start" && action !== "restart" && action !== "run") {
-      throw new Error("--host, --port, and --loopback are only supported for `mono-agent web start`, `web restart`, or `web run`.");
+    if ((host !== undefined || port !== undefined || theme !== undefined || loopback) && action !== "start" && action !== "restart" && action !== "run") {
+      throw new Error("--host, --port, --theme, and --loopback are only supported for `mono-agent web start`, `web restart`, or `web run`.");
     }
     if ((follow || lines !== undefined) && action !== "logs") {
       throw new Error("--follow and --lines are only supported for `mono-agent web logs`.");
@@ -780,6 +787,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(noDocsMcp ? { noDocsMcp } : {}),
     ...(host === undefined ? {} : { host }),
     ...(port === undefined ? {} : { port }),
+    ...(theme === undefined ? {} : { theme }),
     ...(loopback ? { loopback } : {}),
     ...(sourceId === undefined ? {} : { sourceId }),
     ...(discover ? { discover } : {}),

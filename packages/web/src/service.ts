@@ -173,7 +173,7 @@ export class WebService {
     }
   }
 
-  async bootstrap(): Promise<WebBootstrap> {
+  async bootstrap(): Promise<Omit<WebBootstrap, "console">> {
     const currentThreadId = this.store.currentThreadId();
     return {
       version: WEB_API_VERSION,

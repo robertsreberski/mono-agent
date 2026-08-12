@@ -5,7 +5,7 @@ import "./styles.css";
 
 const storeMock = vi.hoisted(() => ({
   loading: false,
-  bootstrap: {},
+  bootstrap: { console: { hostName: "console-host", theme: "ocean" as const } },
   error: null,
   actionError: null,
   clearActionError: vi.fn(),
@@ -56,6 +56,7 @@ import { App } from "./App";
 
 beforeEach(() => {
   localStorage.clear();
+  document.title = "mono-agent";
 });
 
 describe("App agent sidebar toggle", () => {
@@ -88,5 +89,12 @@ describe("App viewport layout", () => {
 
     expect(shell).not.toBeNull();
     expect(getComputedStyle(shell!).gridTemplateRows).toBe("minmax(0, 1fr)");
+  });
+
+  it("applies the host identity and selected theme to browser chrome", () => {
+    render(<App />);
+
+    expect(document.title).toBe("console-host · mono-agent");
+    expect(document.documentElement).toHaveAttribute("data-console-theme", "ocean");
   });
 });

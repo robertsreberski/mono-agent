@@ -16,14 +16,14 @@ The web service does not run the terminal UI. Both consoles discover and connect
 On macOS, install and start the managed service:
 
 ```bash
-mono-agent web start
+mono-agent web start --theme ocean
 mono-agent web
 ```
 
 Bare `mono-agent web` is read-only: it prints service status, the usable URLs, and lifecycle help. It does not start, stop, or rewrite the service. The default listener is `0.0.0.0:5050`, so the same process is directly reachable from localhost, the trusted local network, and the machine's Tailscale address.
 
 ```bash
-mono-agent web start       # install/start the managed service
+mono-agent web start --theme ocean  # install/start with a distinctive shell
 mono-agent web stop
 mono-agent web restart
 mono-agent web status
@@ -31,7 +31,32 @@ mono-agent web logs
 mono-agent web run         # foreground service, including non-macOS hosts
 ```
 
-Use `--loopback` with `start` or `run` to bind `127.0.0.1` instead. Advanced `--host` and `--port` overrides are available when `0.0.0.0:5050` is not appropriate. The lifecycle status records the effective bind and any owned Tailscale route so later commands operate on the same service rather than guessing.
+Use `--loopback` with `start` or `run` to bind `127.0.0.1` instead. Advanced `--host` and `--port` overrides are available when `0.0.0.0:5050` is not appropriate. The lifecycle status records the effective bind, theme, and any owned Tailscale route so later commands operate on the same service rather than guessing.
+
+## Host identity and curated themes
+
+Every console identifies itself with the operating-system hostname. The desktop
+rail and mobile agent-picker header show that hostname, the browser title is
+`<host> · mono-agent`, and an installed PWA is named
+`<host> · mono-agent Console` with `<host>` as its short name. This makes tabs
+and home-screen installations distinguishable even before opening a thread.
+
+Choose one of four curated shell/accent themes on `start`, `restart`, or the
+foreground `run` command:
+
+```bash
+mono-agent web start --theme evergreen    # default green
+mono-agent web restart --theme ocean      # blue
+mono-agent web restart --theme plum       # purple
+mono-agent web restart --theme terracotta # warm orange
+```
+
+Managed lifecycle state persists the selection. A later restart without
+`--theme` retains it, while a pre-theme service record upgrades to `evergreen`.
+`mono-agent web status` prints the effective value. Themes intentionally affect
+the navigation shell, accent controls, browser chrome, and PWA background; text,
+online/degraded state, warnings, and destructive actions keep shared semantic
+colors. Theme choice is explicit rather than inferred from the hostname.
 
 ## Security boundary: trusted network, no login
 
@@ -205,7 +230,7 @@ Reset removes the web console's conversations, notification ledger and stale ing
 
 ## Current scope
 
-The web console covers discovery, persistent multi-conversation chat, marked cron/webhook notification conversations, structured `AskUser` forms, quoting, response notifications while the page/PWA is alive, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a PWA when served from a secure browser context.
+The web console covers discovery, hostname identity, curated host themes, persistent multi-conversation chat, marked cron/webhook notification conversations, structured `AskUser` forms, quoting, response notifications while the page/PWA is alive, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a host-named PWA when served from a secure browser context.
 
 Recorded-run replay, source-annotated config inspection, and managed conversational configuration remain in the TUI for now. Use:
 

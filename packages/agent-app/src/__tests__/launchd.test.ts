@@ -67,6 +67,7 @@ function webInput(overrides: Partial<WebPlistInput> = {}): WebPlistInput {
     cwd: "/home/u/.mono-agent/web",
     host: "0.0.0.0",
     port: 5050,
+    theme: "evergreen",
     stdoutPath: "/home/u/.mono-agent/web/logs/web.out.log",
     stderrPath: "/home/u/.mono-agent/web/logs/web.err.log",
     environment: { HOME: "/home/u", PATH: "/usr/bin:/bin" },
@@ -252,6 +253,8 @@ describe("buildWebPlistXml", () => {
       "0.0.0.0",
       "--port",
       "5050",
+      "--theme",
+      "evergreen",
     ]);
     expect(args).not.toContain("--env-file");
     expect(args).not.toContain("MONO_AGENT_WEB_AUTH_TOKEN");

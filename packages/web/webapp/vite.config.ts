@@ -11,23 +11,9 @@ export default defineConfig({
     VitePWA({
       registerType: "autoUpdate",
       includeAssets: ["icon.svg", "apple-touch-icon.png", "favicon.ico", "notification-sw.js"],
-      manifest: {
-        name: "mono-agent Console",
-        short_name: "mono-agent",
-        description: "Always-on local console for your mono-agent fleet.",
-        theme_color: "#111210",
-        background_color: "#111210",
-        display: "standalone",
-        orientation: "any",
-        start_url: "/",
-        scope: "/",
-        icons: [
-          { src: "icon-192.png", sizes: "192x192", type: "image/png" },
-          { src: "icon-512.png", sizes: "512x512", type: "image/png" },
-          { src: "icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
-          { src: "icon.svg", sizes: "any", type: "image/svg+xml" }
-        ]
-      },
+      // The server customizes this public template per host. Keeping manifest
+      // generation off also prevents Workbox from precaching a generic copy.
+      manifest: false,
       workbox: {
         importScripts: ["notification-sw.js"],
         globPatterns: ["**/*.{js,css,html,svg,png,ico,woff2}"],

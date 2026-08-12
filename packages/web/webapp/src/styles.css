@@ -9,6 +9,9 @@
   --surface-hover: #e9ebe6;
   --rail: #171a18;
   --rail-hover: #252a26;
+  --rail-active: #2b332e;
+  --rail-accent: #84cbb7;
+  --rail-accent-glow: rgba(132, 203, 183, 0.18);
   --text: #191d1a;
   --text-soft: #565d58;
   --text-muted: #7c847e;
@@ -19,6 +22,9 @@
   --on-accent: #ffffff;
   --accent-soft: #dcece6;
   --accent-glow: rgba(36, 114, 95, 0.16);
+  --brand-primary: #84cbb7;
+  --brand-secondary: #e6b566;
+  --brand-tail: #f0f3ee;
   --danger: #a3423b;
   --danger-soft: #f4dfdc;
   --warning: #a46618;
@@ -33,6 +39,54 @@
   -webkit-font-smoothing: antialiased;
 }
 
+:root[data-console-theme="ocean"] {
+  --app-bg: #edf1f4;
+  --panel: #f6f8fa;
+  --rail: #111a21;
+  --rail-hover: #1d2c37;
+  --rail-active: #233845;
+  --rail-accent: #72b5dc;
+  --rail-accent-glow: rgba(114, 181, 220, 0.2);
+  --accent: #266a91;
+  --accent-strong: #1b5477;
+  --accent-soft: #dcebf4;
+  --accent-glow: rgba(38, 106, 145, 0.16);
+  --brand-primary: #72b5dc;
+  --brand-secondary: #80cec2;
+}
+
+:root[data-console-theme="plum"] {
+  --app-bg: #f2eef3;
+  --panel: #faf7fa;
+  --rail: #1b151d;
+  --rail-hover: #302536;
+  --rail-active: #3a2b41;
+  --rail-accent: #c18dcc;
+  --rail-accent-glow: rgba(193, 141, 204, 0.2);
+  --accent: #7b4c87;
+  --accent-strong: #62396d;
+  --accent-soft: #eadfed;
+  --accent-glow: rgba(123, 76, 135, 0.16);
+  --brand-primary: #c18dcc;
+  --brand-secondary: #e3a0bd;
+}
+
+:root[data-console-theme="terracotta"] {
+  --app-bg: #f4efec;
+  --panel: #faf7f5;
+  --rail: #201611;
+  --rail-hover: #36241c;
+  --rail-active: #432d23;
+  --rail-accent: #df8e70;
+  --rail-accent-glow: rgba(223, 142, 112, 0.2);
+  --accent: #9b5037;
+  --accent-strong: #7d3c28;
+  --accent-soft: #f1e1da;
+  --accent-glow: rgba(155, 80, 55, 0.16);
+  --brand-primary: #df8e70;
+  --brand-secondary: #e5bd69;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --app-bg: #0f1110;
@@ -43,6 +97,7 @@
     --surface-hover: #272c28;
     --rail: #0b0d0c;
     --rail-hover: #202421;
+    --rail-active: #273029;
     --text: #f0f2ed;
     --text-soft: #b5bbb5;
     --text-muted: #818a82;
@@ -58,6 +113,51 @@
     --warning: #daa258;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25), 0 3px 12px rgba(0, 0, 0, 0.14);
     --shadow-lg: 0 24px 90px rgba(0, 0, 0, 0.55), 0 4px 24px rgba(0, 0, 0, 0.3);
+  }
+
+  :root[data-console-theme="ocean"] {
+    --app-bg: #0d1115;
+    --panel: #13191e;
+    --rail: #091017;
+    --rail-hover: #192733;
+    --rail-active: #203442;
+    --rail-accent: #72b5dc;
+    --rail-accent-glow: rgba(114, 181, 220, 0.2);
+    --accent: #72b5dc;
+    --accent-strong: #94c9e8;
+    --on-accent: #08151c;
+    --accent-soft: #193548;
+    --accent-glow: rgba(114, 181, 220, 0.13);
+  }
+
+  :root[data-console-theme="plum"] {
+    --app-bg: #120f14;
+    --panel: #18141a;
+    --rail: #0f0b11;
+    --rail-hover: #2b2030;
+    --rail-active: #38283f;
+    --rail-accent: #c18dcc;
+    --rail-accent-glow: rgba(193, 141, 204, 0.2);
+    --accent: #c18dcc;
+    --accent-strong: #d5a9dd;
+    --on-accent: #1b0c1e;
+    --accent-soft: #3a2640;
+    --accent-glow: rgba(193, 141, 204, 0.13);
+  }
+
+  :root[data-console-theme="terracotta"] {
+    --app-bg: #130f0d;
+    --panel: #191411;
+    --rail: #100b09;
+    --rail-hover: #2d1e18;
+    --rail-active: #3b2720;
+    --rail-accent: #df8e70;
+    --rail-accent-glow: rgba(223, 142, 112, 0.2);
+    --accent: #df8e70;
+    --accent-strong: #efa98f;
+    --on-accent: #22100a;
+    --accent-soft: #432a21;
+    --accent-glow: rgba(223, 142, 112, 0.13);
   }
 }
 
@@ -157,10 +257,10 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .rail-brand { width: 46px; height: 42px; display: flex; align-items: center; justify-content: center; gap: 10px; flex: none; margin-bottom: 4px; }
 .rail-brand-copy { display: none; overflow: hidden; color: #eef2ed; font-size: 13px; font-weight: 680; text-overflow: ellipsis; white-space: nowrap; }
 .brand-mark { position: relative; width: 28px; height: 28px; display: inline-block; }
-.brand-mark span { position: absolute; display: block; border-radius: 999px; background: #84cbb7; }
+.brand-mark span { position: absolute; display: block; border-radius: 999px; background: var(--brand-primary); }
 .brand-mark span:nth-child(1) { width: 9px; height: 9px; top: 2px; left: 2px; }
-.brand-mark span:nth-child(2) { width: 9px; height: 9px; top: 2px; right: 2px; background: #e6b566; }
-.brand-mark span:nth-child(3) { width: 22px; height: 9px; bottom: 2px; left: 3px; background: #f0f3ee; }
+.brand-mark span:nth-child(2) { width: 9px; height: 9px; top: 2px; right: 2px; background: var(--brand-secondary); }
+.brand-mark span:nth-child(3) { width: 22px; height: 9px; bottom: 2px; left: 3px; background: var(--brand-tail); }
 .agent-list { width: 100%; min-height: 0; flex: 1; display: flex; flex-direction: column; align-items: center; gap: 9px; padding-block-start: 5px; overflow-y: auto; scrollbar-width: none; }
 .agent-list::-webkit-scrollbar { display: none; }
 .agent-item { position: relative; width: 48px; display: flex; align-items: center; justify-content: center; flex: none; }
@@ -178,8 +278,8 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
   transition: background 150ms ease, transform 150ms ease;
 }
 .agent-button:hover { background: var(--rail-hover); transform: translateY(-1px); }
-.agent-button.is-active { background: #2b332e; box-shadow: inset 0 0 0 1px rgba(132, 203, 183, 0.18); }
-.agent-button.is-active::before { content: ""; position: absolute; left: -10px; width: 3px; height: 22px; border-radius: 0 4px 4px 0; background: #84cbb7; }
+.agent-button.is-active { background: var(--rail-active); box-shadow: inset 0 0 0 1px var(--rail-accent-glow); }
+.agent-button.is-active::before { content: ""; position: absolute; left: -10px; width: 3px; height: 22px; border-radius: 0 4px 4px 0; background: var(--rail-accent); }
 .agent-avatar-wrap { position: relative; width: 34px; height: 34px; display: grid; place-items: center; flex: none; }
 .agent-avatar { font-size: 12px; font-weight: 760; letter-spacing: 0.02em; }
 .agent-label { display: none; min-width: 0; overflow: hidden; color: #e1e6e1; font-size: 12px; font-weight: 620; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }

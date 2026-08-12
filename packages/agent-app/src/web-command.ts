@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { pruneTraceSources } from "@mono-agent/observability";
 import { isLoopbackHost } from "@mono-agent/agent-contracts";
+import type { WebTheme } from "@mono-agent/web";
 
 import { accountHomeDirectory } from "./account-home.js";
 import { resolveGlobalTraceRegistryDir } from "./app-config.js";
@@ -51,6 +52,8 @@ const TAILSCALE_FALLBACK_PORT_END = 8499;
 const TAILSCALE_STATUS_ATTEMPTS = 3;
 const TAILSCALE_STATUS_RETRY_MS = 200;
 const WEB_PACKAGE_NAME = "@mono-agent/web";
+const WEB_THEMES = ["evergreen", "ocean", "plum", "terracotta"] as const satisfies readonly WebTheme[];
+const DEFAULT_WEB_THEME: WebTheme = "evergreen";
 
 interface WebServerHandle {
   readonly url: string;
@@ -63,6 +66,7 @@ interface WebServerHandle {
 interface StartWebServerOptions {
   readonly host?: string;
   readonly port?: number;
+  readonly theme?: WebTheme;
   readonly registryDirs?: readonly string[];
   readonly stateDir?: string;
   readonly env?: Record<string, string | undefined>;
@@ -83,6 +87,7 @@ export interface RunWebCommandOptions {
   readonly env: Record<string, string | undefined>;
   readonly host?: string;
   readonly port?: number;
+  readonly theme?: string;
   readonly loopback?: boolean;
   readonly follow?: boolean;
   readonly lines?: number;
@@ -138,6 +143,8 @@ interface WebServiceRecord {
   readonly schema: typeof WEB_SERVICE_SCHEMA;
   readonly host: string;
   readonly port: number;
+  /** Optional only so pre-theme v1 records remain readable during upgrade. */
+  readonly theme?: WebTheme;
   readonly updatedAt: string;
 }
 
@@ -218,14 +225,15 @@ export function renderWebHelp(): string {
     "mono-agent web — always-on multi-agent web console",
     "",
     "  mono-agent web",
-    "  mono-agent web start [--host <addr> | --loopback] [--port <n>]",
-    "  mono-agent web restart [--host <addr> | --loopback] [--port <n>]",
+    "  mono-agent web start [--host <addr> | --loopback] [--port <n>] [--theme <name>]",
+    "  mono-agent web restart [--host <addr> | --loopback] [--port <n>] [--theme <name>]",
     "  mono-agent web stop | status",
     "  mono-agent web logs [--follow|-f] [--lines <n>]",
-    "  mono-agent web run [--host <addr> | --loopback] [--port <n>]",
+    "  mono-agent web run [--host <addr> | --loopback] [--port <n>] [--theme <name>]",
     "  mono-agent web reset --all --yes",
     "",
     `Default bind: ${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)} (LAN/Tailnet reachable; no app login).`,
+    `Themes: ${WEB_THEMES.join(", ")} (default: ${DEFAULT_WEB_THEME}).`,
     "--loopback narrows the bind to 127.0.0.1. start/restart claim a free Tailscale Serve HTTPS port without replacing existing handlers.",
     "",
   ].join("\n");
@@ -284,9 +292,12 @@ function validateWebFlags(action: string | undefined, options: RunWebCommandOpti
   if (options.port !== undefined && options.port === 0) {
     return "mono-agent web requires a stable --port between 1 and 65535.";
   }
-  if ((options.host !== undefined || options.port !== undefined || options.loopback === true)
+  if (options.theme !== undefined && !isWebTheme(options.theme)) {
+    return `--theme must be one of: ${WEB_THEMES.join(", ")}.`;
+  }
+  if ((options.host !== undefined || options.port !== undefined || options.theme !== undefined || options.loopback === true)
     && action !== "start" && action !== "restart" && action !== "run") {
-    return "--host, --port, and --loopback are only supported for web start, restart, or run.";
+    return "--host, --port, --theme, and --loopback are only supported for web start, restart, or run.";
   }
   if ((options.follow === true || options.lines !== undefined) && action !== "logs") {
     return "--follow and --lines are only supported for mono-agent web logs.";
@@ -305,6 +316,7 @@ async function runWebForeground(options: RunWebCommandOptions, deps: RunWebComma
   const stderr = deps.stderr ?? process.stderr;
   const host = effectiveHost(options);
   const port = options.port ?? DEFAULT_WEB_PORT;
+  const theme = selectedWebTheme(options.theme);
   const paths = webPaths(deps.homeDir);
   await (deps.prepareState ?? defaultPrepareWebState)({ stateDir: paths.stateDir, env: options.env });
   const registryDir = resolveGlobalTraceRegistryDir(options.env);
@@ -312,7 +324,7 @@ async function runWebForeground(options: RunWebCommandOptions, deps: RunWebComma
   let handle: WebServerHandle;
   try {
     const startServer = deps.startServer ?? defaultStartWebServer;
-    handle = await startServer({ host, port, registryDirs: [registryDir], stateDir: paths.stateDir, env: options.env });
+    handle = await startServer({ host, port, theme, registryDirs: [registryDir], stateDir: paths.stateDir, env: options.env });
   } catch (error) {
     stderr.write(ui.errorLine(`mono-agent web failed to start: ${errorMessage(error)}`));
     return 1;
@@ -421,6 +433,12 @@ async function startWebBackground(
     const uid = getuid();
     const existing = await launchdServiceInfo(launchctl, WEB_LAUNCHD_LABEL, uid);
     if (existing.loaded && !restart) {
+      if (options.theme !== undefined) {
+        stderr.write(ui.errorLine(
+          `mono-agent web is already managed by launchd; use \`mono-agent web restart --theme ${options.theme}\` to change its theme.`,
+        ));
+        return 1;
+      }
       stdout.write(ui.style.dim("mono-agent web is already managed by launchd.\n"));
       return await statusWeb(options, deps, true);
     }
@@ -458,6 +476,7 @@ async function startWebBackground(
     const priorRecord = recordRead.kind === "valid" ? recordRead.record : undefined;
     const host = effectiveHost(options, priorRecord?.host);
     const port = options.port ?? priorRecord?.port ?? DEFAULT_WEB_PORT;
+    const theme = selectedWebTheme(options.theme, priorRecord?.theme);
     await ensureWebDirectories(paths);
     const currentCliPath = fileURLToPath(new URL("./cli.js", import.meta.url));
     let runtime: ManagedRuntimeResult;
@@ -493,6 +512,7 @@ async function startWebBackground(
       schema: WEB_SERVICE_SCHEMA,
       host,
       port,
+      theme,
       updatedAt: new Date((deps.now ?? Date.now)()).toISOString(),
     };
     const plist = buildWebPlistXml({
@@ -502,6 +522,7 @@ async function startWebBackground(
       cwd: paths.stateDir,
       host,
       port,
+      theme,
       stdoutPath: paths.launchd.stdoutPath,
       stderrPath: paths.launchd.stderrPath,
       environment,
@@ -619,6 +640,7 @@ async function statusWeb(
   const record = recordRead.kind === "valid" ? recordRead.record : undefined;
   const host = record?.host ?? DEFAULT_WEB_HOST;
   const port = record?.port ?? DEFAULT_WEB_PORT;
+  const theme = record?.theme ?? DEFAULT_WEB_THEME;
   let service: LaunchdServiceInfo = { loaded: false };
   if ((deps.platform ?? process.platform) === "darwin") {
     service = await launchdServiceInfo(
@@ -634,6 +656,7 @@ async function statusWeb(
   stdout.write(ui.keyValue([
     ["service", service.loaded ? (healthy ? "running" : "loaded, not healthy") : "stopped"],
     ["bind", recordRead.kind === "invalid" ? "invalid service record" : `${host}:${String(port)}`],
+    ["theme", recordRead.kind === "invalid" ? "invalid service record" : theme],
     ["state", paths.stateDir],
     ["pid", service.pid === undefined ? "—" : String(service.pid)],
     ["authentication", "none (network reachability is the boundary)"],
@@ -737,6 +760,15 @@ async function defaultPrepareWebState(options: PrepareWebStateOptions): Promise<
 
 function effectiveHost(options: RunWebCommandOptions, priorHost?: string): string {
   return options.loopback === true ? "127.0.0.1" : options.host ?? priorHost ?? DEFAULT_WEB_HOST;
+}
+
+function isWebTheme(value: unknown): value is WebTheme {
+  return typeof value === "string" && (WEB_THEMES as readonly string[]).includes(value);
+}
+
+function selectedWebTheme(value?: string, priorTheme?: WebTheme): WebTheme {
+  if (value === undefined) return priorTheme ?? DEFAULT_WEB_THEME;
+  return value as WebTheme;
 }
 
 async function ensureWebDirectories(paths: WebPaths): Promise<void> {
@@ -1309,6 +1341,7 @@ async function readServiceRecord(path: string): Promise<WebServiceRecordRead> {
   }
   if (!isRecord(value) || value.schema !== WEB_SERVICE_SCHEMA || typeof value.host !== "string"
     || !Number.isSafeInteger(value.port) || (value.port as number) < 1 || (value.port as number) > 65_535
+    || (value.theme !== undefined && !isWebTheme(value.theme))
     || typeof value.updatedAt !== "string") {
     return { kind: "invalid", detail: "the web service record has an invalid schema; repair or remove ~/.mono-agent/web/service.json" };
   }

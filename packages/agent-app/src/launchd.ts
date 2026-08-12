@@ -77,6 +77,7 @@ export interface WebPlistInput {
   readonly cwd: string;
   readonly host: string;
   readonly port: number;
+  readonly theme: string;
   readonly stdoutPath: string;
   readonly stderrPath: string;
   /** Deliberately allowlisted, non-secret worker environment. */
@@ -281,6 +282,7 @@ export function buildWebPlistXml(input: WebPlistInput): string {
     ["web launchd label", input.label],
     ["web working directory", input.cwd],
     ["web bind host", input.host],
+    ["web console theme", input.theme],
     ["web stdout path", input.stdoutPath],
     ["web stderr path", input.stderrPath],
   ] as const) {
@@ -384,6 +386,8 @@ export function buildWebLaunchdProgramArguments(input: WebPlistInput): readonly 
     input.host,
     "--port",
     String(input.port),
+    "--theme",
+    input.theme,
   ];
   for (const argument of arguments_) assertControlFree(argument, "web launchd program argument");
   return arguments_;

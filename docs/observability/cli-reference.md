@@ -484,23 +484,23 @@ Operates the [always-on browser console](/observability/web-console/) for persis
 
 ```bash
 mono-agent web
-mono-agent web start
-mono-agent web restart --port 5051
+mono-agent web start --theme ocean
+mono-agent web restart --port 5051 --theme plum
 mono-agent web logs --follow
 mono-agent web run --loopback
 mono-agent web stop
 ```
 
-`start`, `restart`, `stop`, `status`, and `logs` manage the dedicated launchd service on macOS. `run` is the blocking foreground path on every supported platform. The default is `0.0.0.0:5050`; use `--loopback` to bind `127.0.0.1`. `--loopback` conflicts with `--host`.
+`start`, `restart`, `stop`, `status`, and `logs` manage the dedicated launchd service on macOS. `run` is the blocking foreground path on every supported platform. The default is `0.0.0.0:5050`; use `--loopback` to bind `127.0.0.1`. `--loopback` conflicts with `--host`. `--theme` accepts `evergreen` (default), `ocean`, `plum`, or `terracotta` on `start`, `restart`, and `run`.
 
 | Command / flag | Effect |
 | --- | --- |
-| `start [--host <addr> \| --loopback] [--port <n>]` | Install/start the managed macOS service. Defaults to `0.0.0.0:5050`. |
-| `restart [--host <addr> \| --loopback] [--port <n>]` | Restart with the stored bind or replace it with the supplied bind. |
+| `start [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Install/start the managed macOS service. Defaults to `0.0.0.0:5050` and `evergreen`; a stopped service retains its recorded theme unless replaced. |
+| `restart [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Restart with the stored bind/theme or replace either supplied value. |
 | `stop` | Stop the managed service and remove only the Tailscale Serve route it owns. |
-| `status` | Print process health, effective bind, local/LAN/Tailscale URLs, and Serve state. |
+| `status` | Print process health, effective bind and theme, local/LAN/Tailscale URLs, and Serve state. |
 | `logs [--follow\|-f] [--lines <n>]` | Print or follow the managed service logs. |
-| `run [--host <addr> \| --loopback] [--port <n>]` | Run the service in the foreground; cross-platform. |
+| `run [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Run the service in the foreground; cross-platform. The theme defaults to `evergreen`. |
 | `reset --all --yes` | With the service stopped, erase the whole web-console store and uploads. Both confirmations are mandatory. |
 
 There is no application authentication. Anyone who can reach the port can read conversations, upload files, and operate discovered agents. Keep the listener on a trusted LAN/tailnet or use `--loopback`; Host/Origin checks and the absence of CORS do not turn an untrusted network into a safe one.
