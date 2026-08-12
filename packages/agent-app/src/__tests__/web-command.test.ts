@@ -70,6 +70,7 @@ describe("runWebCommand", () => {
     expect(output).toContain("mono-agent web start");
     expect(output).toContain("service");
     expect(output).toContain("stopped");
+    expect(output).toContain("evergreen");
     expect(output).toContain("http://127.0.0.1:5050/");
     expect(output).toContain("http://192.168.2.42:5050/");
     expect(output).toContain("http://100.64.0.7:5050/");
@@ -129,6 +130,7 @@ describe("runWebCommand", () => {
     const code = await runWebCommand(
       {
         positionals: ["run"],
+        theme: "ocean",
         env: { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: registryDir },
       },
       {
@@ -145,6 +147,7 @@ describe("runWebCommand", () => {
     expect(startServer).toHaveBeenCalledWith(expect.objectContaining({
       host: DEFAULT_WEB_HOST,
       port: DEFAULT_WEB_PORT,
+      theme: "ocean",
       registryDirs: [registryDir],
     }));
     expect(startServer.mock.calls[0]?.[0]).not.toHaveProperty("authToken");
@@ -223,6 +226,23 @@ describe("runWebCommand", () => {
       { stderr: { write: (text) => { errors += text; } }, stdout: { write: () => undefined } },
     )).resolves.toBe(2);
     expect(errors).toContain("either --loopback or --host");
+  });
+
+  it("rejects unknown themes before starting a worker", async () => {
+    const startServer = vi.fn();
+    let errors = "";
+
+    await expect(runWebCommand(
+      { positionals: ["run"], env: {}, theme: "neon" },
+      {
+        startServer,
+        stdout: { write: () => undefined },
+        stderr: { write: (text) => { errors += text; } },
+      },
+    )).resolves.toBe(2);
+
+    expect(errors).toContain("evergreen, ocean, plum, terracotta");
+    expect(startServer).not.toHaveBeenCalled();
   });
 
   it("requires explicit double confirmation before reset", async () => {
@@ -503,7 +523,7 @@ describe("runWebCommand", () => {
     };
     const sleep = vi.fn(async () => undefined);
     const code = await runWebCommand(
-      { positionals: ["start"], env: { MONO_AGENT_WEB_ALLOWED_HOSTS: "console.home.arpa" } },
+      { positionals: ["start"], theme: "terracotta", env: { MONO_AGENT_WEB_ALLOWED_HOSTS: "console.home.arpa" } },
       {
         platform: "darwin",
         homeDir: home,
@@ -526,6 +546,58 @@ describe("runWebCommand", () => {
     expect(dnsReads).toBeGreaterThanOrEqual(2);
     const plist = await readFile(paths.launchd.plistPath, "utf8");
     expect(plist).toContain("<string>MONO_AGENT_WEB_ALLOWED_HOSTS=console.home.arpa,host.example.ts.net</string>");
+    expect(plist).toContain("<string>--theme</string>");
+    expect(plist).toContain("<string>terracotta</string>");
+    expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).toMatchObject({ theme: "terracotta" });
+  });
+
+  it("preserves the recorded theme when restart does not override it", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "old plist\n", { mode: 0o600 });
+    await writeFile(paths.recordPath, `${JSON.stringify({
+      schema: "mono-agent.web-service.v1",
+      host: "127.0.0.1",
+      port: 5050,
+      theme: "plum",
+      updatedAt: "2026-07-17T00:00:00.000Z",
+    })}\n`, { mode: 0o600 });
+    let loaded = true;
+    const launchctl = async (args: readonly string[]) => {
+      if (args[0] === "print") return { code: loaded ? 0 : 1, stdout: loaded ? "pid = 777\n" : "", stderr: "" };
+      if (args[0] === "bootout") {
+        loaded = false;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "bootstrap") {
+        loaded = true;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+
+    await expect(runWebCommand(
+      { positionals: ["restart"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl,
+        tailscale: unavailableTailscaleRunner(),
+        ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
+        healthcheck: async () => true,
+        isAlive: () => loaded,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    )).resolves.toBe(0);
+
+    expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).toMatchObject({ theme: "plum" });
+    expect(await readFile(paths.launchd.plistPath, "utf8")).toContain("<string>plum</string>");
   });
 
   it("retains an exact owned Tailscale hostname when LocalAPI status is transiently unavailable", async () => {

@@ -11,6 +11,7 @@ vi.mock("../console-store", () => ({
 import { AgentRail, MobileAgentPicker } from "./AgentRail";
 
 const createStore = () => ({
+  bootstrap: { console: { hostName: "fable", theme: "plum" as const } },
   agents: [
     agent("favorite", {
       label: "A complete favorite agent name",
@@ -49,6 +50,8 @@ describe("AgentRail", () => {
     render(<AgentRail expanded onToggleExpanded={onToggleExpanded} />);
     const store = storeMock.current as ReturnType<typeof createStore>;
 
+    expect(screen.getByText("fable")).toBeVisible();
+    expect(screen.getByTitle("fable")).toBeInTheDocument();
     expect(screen.getByText("A complete favorite agent name")).toBeVisible();
     expect(screen.getAllByRole("listitem")[0]).toHaveTextContent(
       "A complete favorite agent name",
@@ -91,6 +94,7 @@ describe("MobileAgentPicker", () => {
     render(<MobileAgentPicker onSelect={onSelect} />);
     const store = storeMock.current as ReturnType<typeof createStore>;
 
+    expect(screen.getByText("fable")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Pin Other agent" }));
 
     expect(store.setAgentPinned).toHaveBeenCalledWith("other", true);

@@ -60,7 +60,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   optional `agent-browser` renderer; the app never owns either companion's
   lifecycle.
 - Operate the machine-wide `@mono-agent/web` assistant-ui console through
-  `mono-agent web`; use `mono-agent tui` for bounded recorded-run replay.
+  `mono-agent web`, including persisted curated host themes and hostname
+  identity; use `mono-agent tui` for bounded recorded-run replay.
 - Discover and expose one exact running agent through the Worklab-oriented ACP
   core-session profile with `mono-agent bridge acp` while preserving agent-owned
   configuration, workspace, sandbox, tools, MCP servers, and credentials.
