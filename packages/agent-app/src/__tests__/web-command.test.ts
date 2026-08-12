@@ -245,6 +245,37 @@ describe("runWebCommand", () => {
     expect(startServer).not.toHaveBeenCalled();
   });
 
+  it("does not silently ignore a theme passed to start when the managed service is already loaded", async () => {
+    const home = await testHome();
+    const ensureManagedRuntime = vi.fn();
+    const launchctl = vi.fn(async (args: readonly string[]) => (
+      args[0] === "print"
+        ? { code: 0, stdout: "pid = 777\n", stderr: "" }
+        : { code: 1, stdout: "", stderr: "unexpected" }
+    ));
+    let errors = "";
+
+    await expect(runWebCommand(
+      { positionals: ["start"], env: {}, theme: "ocean" },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl,
+        ensureManagedRuntime,
+        stdout: { write: () => undefined },
+        stderr: { write: (text) => { errors += text; } },
+      },
+    )).resolves.toBe(1);
+
+    expect(errors).toContain("mono-agent web restart --theme ocean");
+    expect(ensureManagedRuntime).not.toHaveBeenCalled();
+    expect(launchctl).not.toHaveBeenCalledWith(expect.arrayContaining(["bootout"]));
+    expect(launchctl).not.toHaveBeenCalledWith(expect.arrayContaining(["bootstrap"]));
+  });
+
   it("requires explicit double confirmation before reset", async () => {
     const resetState = vi.fn();
     await expect(runWebCommand(

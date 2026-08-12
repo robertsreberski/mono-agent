@@ -433,6 +433,12 @@ async function startWebBackground(
     const uid = getuid();
     const existing = await launchdServiceInfo(launchctl, WEB_LAUNCHD_LABEL, uid);
     if (existing.loaded && !restart) {
+      if (options.theme !== undefined) {
+        stderr.write(ui.errorLine(
+          `mono-agent web is already managed by launchd; use \`mono-agent web restart --theme ${options.theme}\` to change its theme.`,
+        ));
+        return 1;
+      }
       stdout.write(ui.style.dim("mono-agent web is already managed by launchd.\n"));
       return await statusWeb(options, deps, true);
     }
