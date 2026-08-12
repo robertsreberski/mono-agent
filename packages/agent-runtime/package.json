@@ -150,9 +150,11 @@
     "@mozilla/readability": "0.6.0",
     "@opencode-ai/sdk": "^1.15.13",
     "@vscode/ripgrep": "1.18.0",
+    "bmp-ts": "1.0.9",
     "cross-spawn": "^7.0.6",
     "defuddle": "0.19.2",
     "linkedom": "0.18.13",
+    "sharp": "0.35.3",
     "unpdf": "1.8.0",
     "zod": "^4.3.6"
   }
