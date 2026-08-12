@@ -1094,6 +1094,8 @@ The kernel's tool-bloat guard (`agent/tool-bloat.js`, internal) enforces a 256 K
 
 Hosts that don't supply `persistArtifact` get the truncation summary but no on-disk capture.
 
+Before that byte cap runs, the builtin `Read` tool normalizes raster images with an edge longer than 8,000 px to fit within an 8,000 × 8,000 px box. Resizing preserves aspect ratio and the source format (resized BMP input becomes PNG), retains GIF/WebP animation, and never modifies the source file. Images already within the limit are embedded byte-for-byte unchanged.
+
 ### Context compaction
 
 The sole pi bridge runs on pi-agent-core's native `AgentHarness`. pi performs **no**

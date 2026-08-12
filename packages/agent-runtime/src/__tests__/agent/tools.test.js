@@ -3,6 +3,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { encode as encodeBmp } from "bmp-ts";
+import sharp from "sharp";
 import { createFakeSandbox, testSandboxPolicy as failClosedSandboxPolicy } from "../helpers/fake-sandbox.js";
 import {
   bashToolImpl,
@@ -159,8 +161,9 @@ describe("ai tool helpers", () => {
 
   it("reads PNG files as an image result instead of line-numbered text", async () => {
     const root = tempWorkspace();
-    // PNG signature + start of IHDR — binary bytes that are garbage as utf8.
-    const pngBytes = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+    const pngBytes = await sharp({
+      create: { width: 2, height: 2, channels: 4, background: { r: 20, g: 40, b: 60, alpha: 1 } },
+    }).png().toBuffer();
     writeFileSync(join(root, "shot.png"), pngBytes);
 
     const result = await readToolImpl({ file_path: "shot.png" });
@@ -173,7 +176,9 @@ describe("ai tool helpers", () => {
 
   it("reads JPEG files as image/jpeg content", async () => {
     const root = tempWorkspace();
-    const jpgBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
+    const jpgBytes = await sharp({
+      create: { width: 2, height: 2, channels: 3, background: { r: 80, g: 100, b: 120 } },
+    }).jpeg().toBuffer();
     writeFileSync(join(root, "photo.JPG"), jpgBytes);
 
     const result = await readToolImpl({ file_path: "photo.JPG" });
@@ -181,6 +186,97 @@ describe("ai tool helpers", () => {
     expect(result.kind).toBe("image");
     expect(result.mimeType).toBe("image/jpeg");
     expect(result.data).toBe(jpgBytes.toString("base64"));
+  });
+
+  it("normalizes image edges above 8,000 px without modifying the source file", async () => {
+    const root = tempWorkspace();
+    const sourcePath = join(root, "tall.png");
+    const pngBytes = await sharp({
+      create: { width: 4, height: 8_001, channels: 4, background: { r: 20, g: 40, b: 60, alpha: 1 } },
+    }).png().toBuffer();
+    writeFileSync(sourcePath, pngBytes);
+
+    const result = await readToolImpl({ file_path: "tall.png" });
+    const normalized = Buffer.from(result.data, "base64");
+    const metadata = await sharp(normalized).metadata();
+
+    expect(result.kind).toBe("image");
+    expect(result.mimeType).toBe("image/png");
+    expect(metadata.width).toBe(4);
+    expect(metadata.height).toBe(8_000);
+    expect(normalized.equals(pngBytes)).toBe(false);
+    expect(readFileSync(sourcePath).equals(pngBytes)).toBe(true);
+  });
+
+  it.each([
+    ["JPEG", "jpg", "jpeg", "image/jpeg"],
+    ["WebP", "webp", "webp", "image/webp"],
+  ])("preserves %s format when normalizing", async (_label, extension, format, mimeType) => {
+    const root = tempWorkspace();
+    const source = sharp({
+      create: { width: 2, height: 8_001, channels: 3, background: { r: 80, g: 100, b: 120 } },
+    });
+    const imageBytes = await source.toFormat(format).toBuffer();
+    writeFileSync(join(root, `tall.${extension}`), imageBytes);
+
+    const result = await readToolImpl({ file_path: `tall.${extension}` });
+    const metadata = await sharp(Buffer.from(result.data, "base64")).metadata();
+
+    expect(result.mimeType).toBe(mimeType);
+    expect(metadata.format).toBe(format);
+    expect(metadata.height).toBe(8_000);
+  });
+
+  it("preserves all frames when normalizing animated GIF images", async () => {
+    const root = tempWorkspace();
+    const firstFrame = await sharp({
+      create: { width: 2, height: 8_001, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 1 } },
+    }).png().toBuffer();
+    const secondFrame = await sharp({
+      create: { width: 2, height: 8_001, channels: 4, background: { r: 0, g: 0, b: 255, alpha: 1 } },
+    }).png().toBuffer();
+    const gifBytes = await sharp([firstFrame, secondFrame], { join: { animated: true } })
+      .gif({ delay: [50, 100], loop: 0 })
+      .toBuffer();
+    writeFileSync(join(root, "animated.gif"), gifBytes);
+
+    const result = await readToolImpl({ file_path: "animated.gif" });
+    const normalized = Buffer.from(result.data, "base64");
+    const metadata = await sharp(normalized, { animated: true }).metadata();
+
+    expect(result.mimeType).toBe("image/gif");
+    expect(metadata.pages).toBe(2);
+    expect(metadata.pageHeight).toBe(8_000);
+  });
+
+  it("converts resized BMP images to PNG", async () => {
+    const root = tempWorkspace();
+    const width = 2;
+    const height = 8_001;
+    const bmpBytes = encodeBmp({
+      width,
+      height,
+      data: Buffer.alloc(width * height * 4, 255),
+    }).data;
+    writeFileSync(join(root, "tall.bmp"), bmpBytes);
+
+    const result = await readToolImpl({ file_path: "tall.bmp" });
+    const normalized = Buffer.from(result.data, "base64");
+    const metadata = await sharp(normalized).metadata();
+
+    expect(result.mimeType).toBe("image/png");
+    expect(metadata.format).toBe("png");
+    expect(metadata.width).toBe(2);
+    expect(metadata.height).toBe(8_000);
+  });
+
+  it("returns an actionable Read error for undecodable image files", async () => {
+    const root = tempWorkspace();
+    writeFileSync(join(root, "broken.png"), Buffer.from("not an image"));
+
+    const result = await readToolImpl({ file_path: "broken.png" });
+
+    expect(result).toMatch(/^Error: Unable to read image broken\.png:/);
   });
 
   it("still reads non-image files as line-numbered text", async () => {
