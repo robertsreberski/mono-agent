@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.18.3 — Subagent web inheritance, ledger collapse, and transport causes (2026-08-12)
+
 ### Subagent web configuration
 
 - Subagents now inherit the parent's `tools.web.search` and `tools.web.fetch`
@@ -36,6 +38,23 @@
 - Run diagnostics gain `provider_transport_error_code` and
   `provider_transport_error_source` when a cause was recovered. Failure
   classification and retry subkinds are unchanged.
+
+### Chat ledger subagent groups
+
+- A subagent group in the Telegram/Slack activity ledger now collapses as soon
+  as that subagent reaches a terminal state: its child tool lines are removed
+  while the header keeps the total tool count and duration. Subagents that are
+  still running stay expanded, so one finished delegation no longer buries the
+  live ones.
+- A settled row may carry one optional secret-redacted `Result` or `Reason`
+  line, normalized to a single line and capped at 120 Unicode code points. A
+  lifecycle completion can collapse the group first and a later parent `Agent`
+  completion may enrich it, but a terminal group is never re-expanded.
+
+### Release coordination
+
+- All 22 catalog-publishable packages move together to 0.18.3. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
 
 ## 0.18.2 — Provider-native subagent visibility and isolation (2026-08-03)
 
