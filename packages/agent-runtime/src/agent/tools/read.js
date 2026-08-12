@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { extname } from "node:path";
+import { decode as decodeBmp } from "bmp-ts";
+import sharp from "sharp";
 import {
   DEFAULT_MAX_READ_CHARS,
   DEFAULT_READ_LINES,
@@ -20,6 +22,82 @@ const IMAGE_MIME_BY_EXT = {
   ".bmp": "image/bmp",
 };
 
+// Anthropic rejects images with an edge longer than 8,000 px. Normalize Read
+// results to that shared provider-safe ceiling before the tool-result byte cap
+// runs, while leaving the source file untouched.
+const MAX_INLINE_IMAGE_EDGE_PX = 8_000;
+const ANIMATED_IMAGE_MIME_TYPES = new Set(["image/gif", "image/webp"]);
+const OUTPUT_MIME_BY_FORMAT = {
+  png: "image/png",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+};
+
+/**
+ * @param {string} target
+ * @param {string} filePath
+ * @param {string} imageMime
+ */
+async function readImageForModel(target, filePath, imageMime) {
+  const source = readFileSync(target);
+  const inputOptions = { animated: ANIMATED_IMAGE_MIME_TYPES.has(imageMime) };
+
+  try {
+    let width;
+    let height;
+    let createPipeline;
+
+    if (imageMime === "image/bmp") {
+      // The prebuilt Sharp binaries do not include a BMP loader. Decode to raw
+      // RGBA first, then let Sharp handle the provider-safe resize and PNG output.
+      const decoded = decodeBmp(source, { toRGBA: true });
+      width = decoded.width;
+      height = Math.abs(decoded.height);
+      createPipeline = () => sharp(decoded.data, {
+        raw: { width, height, channels: 4 },
+      });
+    } else {
+      const metadata = await sharp(source, inputOptions).metadata();
+      width = metadata.width;
+      // Sharp exposes animated images as a vertical stack internally. Providers
+      // care about the dimensions of each frame, not the height of that stack.
+      height = metadata.pageHeight ?? metadata.height;
+      createPipeline = () => sharp(source, inputOptions);
+    }
+
+    if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
+      throw new Error("could not determine positive pixel dimensions");
+    }
+
+    if (width <= MAX_INLINE_IMAGE_EDGE_PX && height <= MAX_INLINE_IMAGE_EDGE_PX) {
+      return { data: source, mimeType: imageMime };
+    }
+
+    let pipeline = createPipeline()
+      .autoOrient()
+      .resize({
+        width: MAX_INLINE_IMAGE_EDGE_PX,
+        height: MAX_INLINE_IMAGE_EDGE_PX,
+        fit: "inside",
+        withoutEnlargement: true,
+      });
+
+    // Sharp cannot emit BMP, so resized BMP input becomes lossless PNG.
+    if (imageMime === "image/bmp") pipeline = pipeline.png();
+
+    const { data, info } = await pipeline.toBuffer({ resolveWithObject: true });
+    const mimeType = OUTPUT_MIME_BY_FORMAT[info.format];
+    if (mimeType === undefined) {
+      throw new Error(`unsupported normalized image format: ${info.format}`);
+    }
+    return { data, mimeType };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { error: `Error: Unable to read image ${filePath}: ${reason}` };
+  }
+}
+
 /**
  * @param {{file_path: string, offset?: number, start_line?: number, limit?: number, max_output_chars?: number, workdir?: string}} params
  * @param {{sandboxPolicy?: any, ctx?: any}} [options]
@@ -34,7 +112,9 @@ export async function readToolImpl({ file_path, offset = 0, start_line, limit, m
   // capped by the shared tool-result bloat guard.
   const imageMime = IMAGE_MIME_BY_EXT[extname(target).toLowerCase()];
   if (imageMime !== undefined) {
-    return { kind: "image", data: readFileSync(target).toString("base64"), mimeType: imageMime };
+    const image = await readImageForModel(target, file_path, imageMime);
+    if (image.error !== undefined) return image.error;
+    return { kind: "image", data: image.data.toString("base64"), mimeType: image.mimeType };
   }
   const content = readFileSync(target, "utf8");
   let lines = content.split("\n");

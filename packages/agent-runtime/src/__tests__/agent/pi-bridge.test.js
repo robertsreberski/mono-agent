@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import sharp from "sharp";
 import { createFakeSandbox, testSandboxPolicy as failClosedSandboxPolicy } from "../helpers/fake-sandbox.js";
 import {
   coerceMcpContent,
@@ -187,7 +188,9 @@ describe("pi MCP tool helpers", () => {
   it("returns image files read by the builtin Read tool as an image content block", async () => {
     const root = tempWorkspace();
     configureToolRuntime({ workspace: root });
-    const pngBytes = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+    const pngBytes = await sharp({
+      create: { width: 2, height: 2, channels: 4, background: { r: 20, g: 40, b: 60, alpha: 1 } },
+    }).png().toBuffer();
     writeFileSync(join(root, "shot.png"), pngBytes);
 
     const read = getPiBuiltinTools(["Read"], { cwd: root }).find((tool) => tool.name === "Read");
@@ -202,11 +205,25 @@ describe("pi MCP tool helpers", () => {
     });
   });
 
+  it("rejects corrupt Read images before creating image content blocks", async () => {
+    const root = tempWorkspace();
+    configureToolRuntime({ workspace: root });
+    writeFileSync(join(root, "broken.png"), Buffer.from("not an image"));
+
+    const read = getPiBuiltinTools(["Read"], { cwd: root }).find((tool) => tool.name === "Read");
+
+    await expect(read.execute("Read:broken", { file_path: "broken.png" }))
+      .rejects.toThrow(/^Error: Unable to read image .*broken\.png:/);
+  });
+
   it("caps oversize Read images through the shared tool-result bloat guard", async () => {
     const root = tempWorkspace();
     configureToolRuntime({ workspace: root });
     const runArtifactDir = join(root, ".mono-agent", "artifacts", "run-read-image");
-    writeFileSync(join(root, "big.png"), Buffer.alloc(2048, 7));
+    const big = await sharp({
+      create: { width: 64, height: 64, channels: 4, background: { r: 20, g: 40, b: 60, alpha: 1 } },
+    }).png({ compressionLevel: 0 }).toBuffer();
+    writeFileSync(join(root, "big.png"), big);
     const truncations = [];
 
     const read = getPiBuiltinTools(["Read"], {
@@ -231,7 +248,9 @@ describe("pi MCP tool helpers", () => {
     const root = tempWorkspace();
     configureToolRuntime({ workspace: root });
     // Larger than toolPayloadMaxBytes but within imageInlineMaxBytes.
-    const big = Buffer.alloc(4096, 7);
+    const big = await sharp({
+      create: { width: 64, height: 64, channels: 4, background: { r: 20, g: 40, b: 60, alpha: 1 } },
+    }).png({ compressionLevel: 0 }).toBuffer();
     writeFileSync(join(root, "big.png"), big);
 
     const read = getPiBuiltinTools(["Read"], {
