@@ -521,17 +521,18 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["web", "--max-runs", "500"])).toThrow(/Unknown flag/u);
   });
 
-  it("parses the web service namespace and LAN/loopback bind flags", () => {
+  it("parses the web service namespace and LAN/loopback/theme flags", () => {
     expect(parseCliArgs(["web"])).toMatchObject({ command: "web", positionals: [] });
     expect(parseCliArgs(["web", "start", "--port", "5050"])).toMatchObject({
       command: "web",
       positionals: ["start"],
       port: 5050,
     });
-    expect(parseCliArgs(["web", "run", "--loopback"])).toMatchObject({
+    expect(parseCliArgs(["web", "run", "--loopback", "--theme", "ocean"])).toMatchObject({
       command: "web",
       positionals: ["run"],
       loopback: true,
+      theme: "ocean",
     });
     expect(parseCliArgs(["web", "logs", "-f", "--lines", "25"])).toMatchObject({
       command: "web",
@@ -546,6 +547,9 @@ describe("parseCliArgs", () => {
       yes: true,
     });
     expect(() => parseCliArgs(["start", "--loopback"])).toThrow(/loopback/u);
+    expect(() => parseCliArgs(["status", "--theme", "plum"])).toThrow(/theme/u);
+    expect(() => parseCliArgs(["web", "status", "--theme", "plum"])).toThrow(/web start/u);
+    expect(() => parseCliArgs(["web", "start", "--theme", " "])).toThrow(/must not be empty/u);
     expect(() => parseCliArgs(["web", "run", "--env-file", ".env"])).toThrow(/does not load/u);
     expect(() => parseCliArgs(["web", "--config", "agent.json"])).toThrow(/does not load/u);
   });
@@ -638,6 +642,7 @@ describe("parseCliArgs", () => {
     const webDetail = helpTopicText("web");
     expect(webDetail).toContain("web reset --all --yes");
     expect(webDetail).toContain("0.0.0.0:5050");
+    expect(webDetail).toContain("evergreen (default), ocean, plum, and terracotta");
 
     const bridgeDetail = helpTopicText("bridge");
     expect(bridgeDetail).toContain("bridge acp --source-id <id>");

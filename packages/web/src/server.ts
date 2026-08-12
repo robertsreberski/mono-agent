@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { chmod, open, rename, unlink } from "node:fs/promises";
+import { chmod, open, readFile, rename, unlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isIP } from "node:net";
 import { hostname as systemHostname } from "node:os";
@@ -19,8 +19,10 @@ import {
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import {
+  DEFAULT_WEB_THEME,
   WEB_API_VERSION,
   WEB_MAX_TURN_TEXT_CHARACTERS,
+  WEB_THEMES,
   type CreateWebThreadInput,
   type CreateWebUploadInput,
   type PatchWebAgentInput,
@@ -28,6 +30,8 @@ import {
   type StartWebLiveInputInput,
   type StartWebTurnInput,
   type WebEvent,
+  type WebConsoleIdentity,
+  type WebTheme,
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
 import {
@@ -40,10 +44,17 @@ export const DEFAULT_WEB_HOST = "0.0.0.0";
 export const DEFAULT_WEB_PORT = 5050;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const MAX_SSE_CLIENTS = 64;
+const WEB_THEME_CHROME: Readonly<Record<WebTheme, { readonly light: string; readonly dark: string }>> = {
+  evergreen: { light: "#eeefeb", dark: "#0f1110" },
+  ocean: { light: "#edf1f4", dark: "#0d1115" },
+  plum: { light: "#f2eef3", dark: "#120f14" },
+  terracotta: { light: "#f4efec", dark: "#130f0d" },
+};
 
 export interface StartWebServerOptions extends CreateWebServiceOptions {
   readonly host?: string;
   readonly port?: number;
+  readonly theme?: WebTheme;
   readonly staticDir?: string;
   /** Exact additional DNS hostnames accepted at the browser boundary (for example this node's Tailscale DNSName). */
   readonly allowedHosts?: readonly string[];
@@ -63,6 +74,12 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   const host = normalizeHostForBind(options.host ?? DEFAULT_WEB_HOST);
   const port = normalizePort(options.port ?? DEFAULT_WEB_PORT);
   const staticDir = options.staticDir ?? defaultStaticDir();
+  const theme = resolveWebTheme(options.theme);
+  const consoleIdentity: WebConsoleIdentity = {
+    hostName: systemHostname().trim() || "localhost",
+    theme,
+  };
+  const webManifest = await loadWebManifest(staticDir, consoleIdentity);
   const logger = options.logger;
   // Validate all synchronous startup inputs before acquiring the persistent
   // service lease so an embedding typo cannot strand SQLite ownership.
@@ -93,8 +110,17 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   });
 
   app.get("/api/v1/bootstrap", (_req, res, next) => {
-    void service.bootstrap().then((bootstrap) => res.status(200).json(bootstrap)).catch(next);
+    void service.bootstrap()
+      .then((bootstrap) => res.status(200).json({ ...bootstrap, console: consoleIdentity }))
+      .catch(next);
   });
+
+  if (webManifest !== undefined) {
+    app.get("/manifest.webmanifest", (_req, res) => {
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.type("application/manifest+json").send(JSON.stringify(webManifest));
+    });
+  }
 
   app.patch("/api/v1/agents/:id", (req, res, next) => {
     try {
@@ -332,6 +358,50 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     await service.stop();
     throw error;
   }
+}
+
+function resolveWebTheme(value: unknown): WebTheme {
+  if (value === undefined) return DEFAULT_WEB_THEME;
+  if (typeof value === "string" && (WEB_THEMES as readonly string[]).includes(value)) {
+    return value as WebTheme;
+  }
+  throw new WebConsoleError(
+    "invalid_theme",
+    `Web console theme must be one of: ${WEB_THEMES.join(", ")}.`,
+    400,
+  );
+}
+
+async function loadWebManifest(
+  staticDir: string,
+  identity: WebConsoleIdentity,
+): Promise<Readonly<Record<string, unknown>> | undefined> {
+  let contents: string;
+  try {
+    contents = await readFile(resolve(staticDir, "manifest.webmanifest"), "utf8");
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+  let template: unknown;
+  try {
+    template = JSON.parse(contents) as unknown;
+  } catch {
+    throw new WebConsoleError("invalid_static_manifest", "The web console manifest is invalid JSON.", 500);
+  }
+  if (template === null || typeof template !== "object" || Array.isArray(template)) {
+    throw new WebConsoleError("invalid_static_manifest", "The web console manifest must be a JSON object.", 500);
+  }
+  const chrome = WEB_THEME_CHROME[identity.theme];
+  return {
+    ...(template as Readonly<Record<string, unknown>>),
+    name: `${identity.hostName} · mono-agent Console`,
+    short_name: identity.hostName,
+    theme_color: chrome.dark,
+    background_color: chrome.dark,
+  };
 }
 
 function trackOperation<T>(operation: Promise<T>, active: Set<Promise<unknown>>): Promise<T> {

@@ -17,6 +17,7 @@ import { Chat } from "./components/Chat";
 import { Icon, type IconName } from "./components/Icon";
 import { ThreadSidebar } from "./components/ThreadSidebar";
 import { useConsoleStore } from "./console-store";
+import { applyConsolePresentation } from "./theme";
 
 interface PaletteAction {
   readonly id: string;
@@ -329,6 +330,11 @@ export function App() {
     }, 6000);
     return () => window.clearTimeout(timer);
   }, [actionError, clearActionError, notice]);
+
+  useEffect(() => {
+    if (!bootstrap) return;
+    return applyConsolePresentation(bootstrap.console);
+  }, [bootstrap]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

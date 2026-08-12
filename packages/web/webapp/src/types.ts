@@ -1,5 +1,12 @@
 export const API_VERSION = 1 as const;
 
+export type WebTheme = "evergreen" | "ocean" | "plum" | "terracotta";
+
+export interface ConsoleIdentity {
+  readonly hostName: string;
+  readonly theme: WebTheme;
+}
+
 export type AgentStatus = "online" | "offline" | "degraded";
 export type NotificationTriggerKind = "cron" | "webhook";
 export type RunStatus =
@@ -173,6 +180,7 @@ export interface UploadLimits {
 
 export interface Bootstrap {
   readonly version: typeof API_VERSION;
+  readonly console: ConsoleIdentity;
   readonly agents: readonly AgentSummary[];
   readonly threads: readonly ThreadSummary[];
   readonly currentThreadId?: string;

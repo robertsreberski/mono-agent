@@ -214,7 +214,8 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
     group: "Console",
     short: "web [start|stop|status|...]",
     summary: "Always-on assistant-ui console for every local agent.",
-    signature: "mono-agent web [start|stop|restart|status|logs|run] [--host <addr>|--loopback] [--port <n>]\n" +
+    signature: "mono-agent web [start|restart|run] [--host <addr>|--loopback] [--port <n>] [--theme <name>]\n" +
+      "               web [stop|status|logs]\n" +
       "               web reset --all --yes",
     lines: [
       "Operate the always-on assistant-ui console for persistent conversations",
@@ -223,6 +224,8 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "narrows it to 127.0.0.1. There is no app login: network reachability is",
       "the access boundary. start/restart claim a conflict-free Tailscale Serve",
       "HTTPS port without replacing existing handlers; run stays in the foreground.",
+      "Themes: evergreen (default), ocean, plum, and terracotta. A managed",
+      "start/restart persists the selection and status reports the active theme.",
     ],
   },
   {
