@@ -106,7 +106,11 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   app.use("/api/v1", express.json({ limit: "256kb", strict: true }));
 
   app.get("/healthz", (_req, res) => {
-    res.status(200).json({ status: "ok", version: WEB_API_VERSION });
+    res.status(200).json({
+      status: "ok",
+      version: WEB_API_VERSION,
+      push: service.webPushDegraded() ? "degraded" : "ok",
+    });
   });
 
   app.get("/api/v1/bootstrap", (_req, res, next) => {
@@ -222,6 +226,66 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       ),
       activeOperations,
     ).then((result) => res.status(200).json(result)).catch(next);
+  });
+
+  app.put("/api/v1/push/subscriptions", (req, res, next) => {
+    let input: ReturnType<typeof parsePushSubscription>;
+    let siteOrigin: string;
+    try {
+      input = parsePushSubscription(req.body);
+      siteOrigin = exactRequestOrigin(req);
+    } catch (error) {
+      next(error);
+      return;
+    }
+    void trackOperation(service.registerWebPushSubscription({ ...input, siteOrigin }), activeOperations)
+      .then((subscription) => res.status(201).json({ subscription }))
+      .catch(next);
+  });
+
+  app.get("/api/v1/push/subscriptions/:id", (req, res, next) => {
+    try {
+      sameOriginRead(req);
+      res.status(200).json({ subscription: service.webPushSubscription(pathParam(req.params.id)) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/v1/push/subscriptions/:id", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      service.disableWebPushSubscription(pathParam(req.params.id));
+      res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/push/subscriptions/:id/test", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      res.status(202).json({ subscription: service.testWebPushSubscription(pathParam(req.params.id)) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/push/events/:eventId/ack", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const body = requireRecord(req.body);
+      service.acknowledgeWebPushEvent(
+        pathParam(req.params.eventId),
+        requireString(body.subscriptionId, "subscriptionId", 256),
+        requireString(body.ackToken, "ackToken", 128),
+      );
+      // Deliberately idempotent and non-enumerating: invalid, late, repeated,
+      // and successful acknowledgements are indistinguishable to callers.
+      res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/v1/uploads", (req, res, next) => {
@@ -704,6 +768,81 @@ function parseCreateUpload(value: unknown): CreateWebUploadInput {
     contentType: requireString(body.contentType, "contentType", 256),
     ...(sizeBytes === undefined ? {} : { sizeBytes: sizeBytes as number }),
   };
+}
+
+function parsePushSubscription(value: unknown): {
+  readonly endpoint: string;
+  readonly p256dh: string;
+  readonly auth: string;
+  readonly expirationTime?: number;
+  readonly previousSubscriptionId?: string;
+  readonly previousEndpoint?: string;
+} {
+  const body = requireRecord(value);
+  const keys = requireRecord(body.keys);
+  const expirationTime = body.expirationTime;
+  if (expirationTime !== undefined && expirationTime !== null && !Number.isSafeInteger(expirationTime)) {
+    throw invalidBody("expirationTime must be an integer timestamp or null.");
+  }
+  if (body.previousSubscriptionId !== undefined && body.previousEndpoint !== undefined) {
+    throw invalidBody("previousSubscriptionId and previousEndpoint are mutually exclusive.");
+  }
+  return {
+    endpoint: requireString(body.endpoint, "endpoint", 2_048),
+    p256dh: requireString(keys.p256dh, "keys.p256dh", 256),
+    auth: requireString(keys.auth, "keys.auth", 256),
+    ...(expirationTime === undefined || expirationTime === null ? {} : { expirationTime: expirationTime as number }),
+    ...(body.previousSubscriptionId === undefined
+      ? {}
+      : { previousSubscriptionId: requireString(body.previousSubscriptionId, "previousSubscriptionId", 256) }),
+    ...(body.previousEndpoint === undefined
+      ? {}
+      : { previousEndpoint: requireString(body.previousEndpoint, "previousEndpoint", 2_048) }),
+  };
+}
+
+function exactRequestOrigin(req: Request): string {
+  const claimedOrigin = req.headers["x-mono-agent-web-origin"];
+  if (claimedOrigin !== undefined && typeof claimedOrigin !== "string") {
+    throw new WebConsoleError("invalid_origin", "Request Origin is invalid.", 403);
+  }
+  const rawOrigin = req.headers.origin ?? claimedOrigin;
+  if (rawOrigin === undefined) {
+    throw new WebConsoleError("origin_required", "Push subscription changes require an exact same-origin request.", 403);
+  }
+  const origin = validateExactOrigin(req, rawOrigin);
+  if (req.headers.origin !== undefined && claimedOrigin !== undefined
+    && validateExactOrigin(req, claimedOrigin) !== origin) {
+    throw new WebConsoleError("origin_mismatch", "Push subscription changes must come from this exact console origin.", 403);
+  }
+  return origin;
+}
+
+function validateExactOrigin(req: Request, rawOrigin: string): string {
+  let origin: URL;
+  try {
+    origin = new URL(rawOrigin);
+  } catch {
+    throw new WebConsoleError("invalid_origin", "Request Origin is invalid.", 403);
+  }
+  const host = normalizedAuthority(req.headers.host);
+  if ((origin.protocol !== "http:" && origin.protocol !== "https:") || origin.host.toLowerCase() !== host.authority
+    || origin.username !== "" || origin.password !== "" || origin.pathname !== "/" || origin.search !== "" || origin.hash !== "") {
+    throw new WebConsoleError("origin_mismatch", "Push subscription changes must come from this exact console origin.", 403);
+  }
+  return origin.origin;
+}
+
+function sameOriginRead(req: Request): void {
+  const site = req.headers["sec-fetch-site"];
+  if (site === "cross-site" || site === "same-site") {
+    throw new WebConsoleError("cross_site_request", "Cross-origin push subscription reads are not allowed.", 403);
+  }
+  const claimedOrigin = req.headers["x-mono-agent-web-origin"];
+  if (typeof claimedOrigin !== "string") {
+    throw new WebConsoleError("origin_required", "Push subscription reads require the exact console origin.", 403);
+  }
+  validateExactOrigin(req, claimedOrigin);
 }
 
 function requireRecord(value: unknown): Record<string, unknown> {

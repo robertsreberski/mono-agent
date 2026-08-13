@@ -6,6 +6,7 @@ import type {
   AskSubmissionResult,
   Bootstrap,
   LiveInputReceipt,
+  PushSubscriptionStatus,
   StartTurnInput,
   ThreadDetail,
   ThreadSummary,
@@ -140,6 +141,59 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ interactionId, answers }),
     }),
+
+  registerPushSubscription: async (subscription: PushSubscription, previousSubscriptionId?: string) => {
+    const serialized = subscription.toJSON();
+    const p256dh = serialized.keys?.p256dh;
+    const auth = serialized.keys?.auth;
+    if (typeof p256dh !== "string" || typeof auth !== "string") {
+      throw new Error("The browser returned an incomplete push subscription.");
+    }
+    const result = await request<{ subscription: PushSubscriptionStatus }>("/api/v1/push/subscriptions", {
+      method: "PUT",
+      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      body: JSON.stringify({
+        endpoint: subscription.endpoint,
+        expirationTime: subscription.expirationTime,
+        keys: { p256dh, auth },
+        ...(previousSubscriptionId === undefined ? {} : { previousSubscriptionId }),
+      }),
+    });
+    return result.subscription;
+  },
+
+  pushSubscription: async (id: string) => {
+    const result = await request<{ subscription: PushSubscriptionStatus }>(
+      `/api/v1/push/subscriptions/${encodeURIComponent(id)}`,
+      { headers: { "X-Mono-Agent-Web-Origin": window.location.origin } },
+    );
+    return result.subscription;
+  },
+
+  deletePushSubscription: async (id: string) => {
+    const response = await fetch(`/api/v1/push/subscriptions/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) throw await readError(response);
+  },
+
+  testPushSubscription: async (id: string) => {
+    const result = await request<{ subscription: PushSubscriptionStatus }>(
+      `/api/v1/push/subscriptions/${encodeURIComponent(id)}/test`,
+      { method: "POST" },
+    );
+    return result.subscription;
+  },
+
+  acknowledgePushEvent: async (eventId: string, subscriptionId: string, ackToken: string) => {
+    const response = await fetch(`/api/v1/push/events/${encodeURIComponent(eventId)}/ack`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ subscriptionId, ackToken }),
+    });
+    if (!response.ok) throw await readError(response);
+  },
 
   createUpload: async (file: File) => {
     const result = await request<{ attachment: WebAttachment }>("/api/v1/uploads", {

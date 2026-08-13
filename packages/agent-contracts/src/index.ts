@@ -747,6 +747,7 @@ export {
   splitSubagentToolName,
   SUBAGENT_TOOL_SEPARATOR,
   toolHintFor,
+  toolNameLeaf,
 } from "./tool-hints.js";
 export type { ToolActivityLineOptions } from "./tool-hints.js";
 export {

@@ -9,6 +9,7 @@ import {
   setToolActivityPathRoots,
   splitSubagentToolName,
   toolHintFor,
+  toolNameLeaf,
 } from "../tool-hints.js";
 
 describe("formatSubagentOutcomeActivityLine", () => {
@@ -104,6 +105,15 @@ describe("toolHintFor", () => {
   it("falls back to a generic hint for unknown tools (never a raw name)", () => {
     expect(toolHintFor("SomethingWeird")).toBe("Working…");
     expect(toolHintFor("")).toBe("Working…");
+  });
+});
+
+describe("toolNameLeaf", () => {
+  it("normalizes built-in, MCP-qualified, dotted, and forwarded tool names", () => {
+    expect(toolNameLeaf("AskUser")).toBe("AskUser");
+    expect(toolNameLeaf("mcp__mono-agent-interaction__AskUser")).toBe("AskUser");
+    expect(toolNameLeaf("interaction.ask:AskUser")).toBe("AskUser");
+    expect(toolNameLeaf("researcher▸mcp__interaction__AskUser")).toBe("AskUser");
   });
 });
 

@@ -507,6 +507,9 @@ async function startWebBackground(
         ? {}
         : { MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: options.env.MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR }),
       ...(allowedHosts === undefined ? {} : { MONO_AGENT_WEB_ALLOWED_HOSTS: allowedHosts }),
+      ...(options.env.MONO_AGENT_WEB_PUSH_SUBJECT === undefined
+        ? {}
+        : { MONO_AGENT_WEB_PUSH_SUBJECT: options.env.MONO_AGENT_WEB_PUSH_SUBJECT }),
     };
     const record: WebServiceRecord = {
       schema: WEB_SERVICE_SCHEMA,
@@ -649,12 +652,17 @@ async function statusWeb(
       (deps.getuid ?? requiredUid)(),
     );
   }
-  const healthy = recordRead.kind !== "invalid"
-    && service.loaded
-    && await (deps.healthcheck ?? webHealthcheck)(healthUrl(host, port));
+  const healthState = recordRead.kind === "invalid" || !service.loaded
+    ? "unavailable"
+    : deps.healthcheck === undefined
+      ? await webHealthStatus(healthUrl(host, port))
+      : await deps.healthcheck(healthUrl(host, port)) ? "ok" : "unavailable";
+  const healthy = healthState === "ok";
   stdout.write(ui.rule("Web console status"));
   stdout.write(ui.keyValue([
-    ["service", service.loaded ? (healthy ? "running" : "loaded, not healthy") : "stopped"],
+    ["service", service.loaded
+      ? healthState === "degraded" ? "running, push degraded" : healthy ? "running" : "loaded, not healthy"
+      : "stopped"],
     ["bind", recordRead.kind === "invalid" ? "invalid service record" : `${host}:${String(port)}`],
     ["theme", recordRead.kind === "invalid" ? "invalid service record" : theme],
     ["state", paths.stateDir],
@@ -882,18 +890,30 @@ function healthUrl(host: string, port: number): string {
 }
 
 export async function webHealthcheck(url: string): Promise<boolean> {
+  return (await webHealthStatus(url)) !== "unavailable";
+}
+
+async function webHealthStatus(url: string): Promise<"ok" | "degraded" | "unavailable"> {
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
     if (!response.ok || response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-      return false;
+      return "unavailable";
     }
     const body = await response.json() as unknown;
-    return isRecord(body)
-      && hasExactKeys(body, ["status", "version"])
-      && body.status === "ok"
-      && body.version === 1;
+    if (!isRecord(body) || body.version !== 1) return "unavailable";
+    if (hasExactKeys(body, ["status", "version", "push"])) {
+      return body.status === "ok" && (body.push === "ok" || body.push === "degraded")
+        ? body.push
+        : "unavailable";
+    }
+    // Accept the pre-push health contract so a newer CLI can still manage an
+    // older installed web service during upgrades.
+    return hasExactKeys(body, ["status", "version"])
+      && (body.status === "ok" || body.status === "degraded")
+      ? body.status
+      : "unavailable";
   } catch {
-    return false;
+    return "unavailable";
   }
 }
 

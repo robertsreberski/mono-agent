@@ -415,6 +415,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         const webEvent = JSON.parse((event as MessageEvent<string>).data) as WebEvent;
         if (webEvent.version !== 1) return;
         eventType = webEvent.type;
+        if (webEvent.type === "push.pending") {
+          window.dispatchEvent(new CustomEvent("mono-agent:push-pending", { detail: webEvent.payload }));
+          setConnection("live");
+          return;
+        }
       } catch {
         // A ready ping without JSON still proves the stream is alive.
       }
@@ -432,6 +437,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       "message.changed",
       "turn.changed",
       "attachment.changed",
+      "push.pending",
     ];
     events.onopen = () => {
       setConnection("live");

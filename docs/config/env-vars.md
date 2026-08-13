@@ -339,6 +339,7 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_WEB_ALLOWED_HOSTS` | — (CLI-only) | Comma-separated additional exact DNS names accepted by `mono-agent web`; suffix wildcards are rejected. Managed `start`/`restart` preserves these names and adds this node's exact Tailscale DNS name when available. This changes Host admission only; it does not add authentication or make an untrusted network safe. |
+| `MONO_AGENT_WEB_PUSH_SUBJECT` | — (CLI-only) | VAPID contact subject for Web Push; defaults to `https://github.com/robertsreberski/mono-agent`. Accepts a `mailto:` address or a non-localhost HTTPS URL. Managed `web start`/`restart` passes it into the LaunchAgent; invalid values fail startup before notification delivery begins. |
 
 ### Operator stream endpoint
 

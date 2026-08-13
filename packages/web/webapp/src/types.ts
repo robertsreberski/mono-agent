@@ -7,6 +7,23 @@ export interface ConsoleIdentity {
   readonly theme: WebTheme;
 }
 
+export interface PushBootstrap {
+  readonly applicationServerKey: string;
+  readonly keyFingerprint: string;
+  readonly serviceWorkerVersion: 2;
+}
+
+export interface PushSubscriptionStatus {
+  readonly id: string;
+  readonly state: "active" | "disabled" | "expired";
+  readonly keyFingerprint: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly lastSuccessAt?: string;
+  readonly lastErrorAt?: string;
+  readonly lastErrorCode?: string;
+}
+
 export type AgentStatus = "online" | "offline" | "degraded";
 export type NotificationTriggerKind = "cron" | "webhook";
 export type RunStatus =
@@ -215,6 +232,7 @@ export interface UploadLimits {
 export interface Bootstrap {
   readonly version: typeof API_VERSION;
   readonly console: ConsoleIdentity;
+  readonly push: PushBootstrap;
   readonly agents: readonly AgentSummary[];
   readonly threads: readonly ThreadSummary[];
   readonly currentThreadId?: string;
@@ -231,7 +249,8 @@ export interface WebEvent {
     | "thread.changed"
     | "message.changed"
     | "turn.changed"
-    | "attachment.changed";
+    | "attachment.changed"
+    | "push.pending";
   readonly at: string;
   readonly threadId?: string;
   readonly payload?: unknown;

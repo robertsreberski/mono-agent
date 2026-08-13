@@ -235,9 +235,30 @@ export interface WebConsoleIdentity {
   readonly theme: WebTheme;
 }
 
+export interface WebPushBootstrap {
+  readonly applicationServerKey: string;
+  readonly keyFingerprint: string;
+  readonly serviceWorkerVersion: 2;
+}
+
+export type WebPushSubscriptionState = "active" | "disabled" | "expired";
+
+/** Secret-free projection returned by the subscription API. */
+export interface WebPushSubscriptionStatus {
+  readonly id: string;
+  readonly state: WebPushSubscriptionState;
+  readonly keyFingerprint: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly lastSuccessAt?: string;
+  readonly lastErrorAt?: string;
+  readonly lastErrorCode?: string;
+}
+
 export interface WebBootstrap {
   readonly version: typeof WEB_API_VERSION;
   readonly console: WebConsoleIdentity;
+  readonly push: WebPushBootstrap;
   readonly agents: readonly WebAgentSummary[];
   readonly threads: readonly WebThread[];
   readonly currentThreadId?: string;
@@ -256,7 +277,8 @@ export type WebEventType =
   | "thread.changed"
   | "message.changed"
   | "turn.changed"
-  | "attachment.changed";
+  | "attachment.changed"
+  | "push.pending";
 
 export interface WebEvent {
   readonly id: string;

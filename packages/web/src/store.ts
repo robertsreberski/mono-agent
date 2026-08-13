@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createECDH, createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, readdir, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -25,8 +25,11 @@ import {
   type WebThread,
   type WebToolCall,
   type WebThreadDetail,
+  type WebPushSubscriptionState,
+  type WebPushSubscriptionStatus,
 } from "./contracts.js";
 import { WebConsoleError } from "./errors.js";
+import { webPushPreview } from "./push-preview.js";
 import { prepareWebStatePaths, type WebStatePathOptions, type WebStatePaths } from "./state-paths.js";
 
 interface AgentRow {
@@ -135,6 +138,109 @@ interface AttachmentRow {
   updated_at: string;
 }
 
+interface PushSubscriptionRow {
+  id: string;
+  endpoint: string;
+  endpoint_sha256: string;
+  p256dh: string;
+  auth: string;
+  expiration_time: number | null;
+  site_origin: string;
+  key_fingerprint: string;
+  state: string;
+  created_at: string;
+  updated_at: string;
+  disabled_at: string | null;
+  last_success_at: string | null;
+  last_error_at: string | null;
+  last_error_code: string | null;
+}
+
+interface PushEventRow {
+  id: string;
+  logical_key: string;
+  kind: string;
+  thread_id: string | null;
+  source_id: string | null;
+  title: string;
+  body: string;
+  tag: string;
+  topic: string;
+  expires_at: string;
+  created_at: string;
+}
+
+interface PushDeliveryRow {
+  event_id: string;
+  subscription_id: string;
+  status: string;
+  attempts: number;
+  next_attempt_at: string;
+  last_status_code: number | null;
+  last_error_code: string | null;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+}
+
+export type WebPushEventKind =
+  | "response.ready"
+  | "input.required"
+  | "run.failed"
+  | "run.cancelled"
+  | "run.interrupted"
+  | "test";
+
+export interface WebPushIdentity {
+  readonly publicKey: string;
+  readonly privateKey: string;
+  readonly fingerprint: string;
+}
+
+export interface RegisterWebPushSubscriptionInput {
+  readonly endpoint: string;
+  readonly p256dh: string;
+  readonly auth: string;
+  readonly expirationTime?: number;
+  readonly siteOrigin: string;
+  readonly keyFingerprint: string;
+  readonly previousSubscriptionId?: string;
+  readonly previousEndpoint?: string;
+}
+
+export interface StoredWebPushSubscription extends WebPushSubscriptionStatus {
+  readonly endpoint: string;
+  readonly p256dh: string;
+  readonly auth: string;
+  readonly expirationTime?: number;
+  readonly siteOrigin: string;
+}
+
+export interface StoredWebPushEvent {
+  readonly id: string;
+  readonly logicalKey: string;
+  readonly kind: WebPushEventKind;
+  readonly threadId?: string;
+  readonly sourceId?: string;
+  readonly title: string;
+  readonly body: string;
+  readonly tag: string;
+  readonly topic: string;
+  readonly expiresAt: string;
+  readonly createdAt: string;
+}
+
+export interface ClaimedWebPushDelivery {
+  readonly event: StoredWebPushEvent;
+  readonly subscription: StoredWebPushSubscription;
+  readonly attempts: number;
+}
+
+const WEB_STORAGE_SCHEMA_VERSION = 4;
+const MAX_ACTIVE_PUSH_SUBSCRIPTIONS = 32;
+const MAX_PENDING_PUSH_DELIVERIES_PER_SUBSCRIPTION = 200;
+const PUSH_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+
 export interface OpenWebStoreOptions extends WebStatePathOptions {
   readonly clock?: () => Date;
 }
@@ -237,6 +343,7 @@ export class WebStore {
       ]);
       store.recoverInterruptedTurns();
       store.recoverLiveInputs();
+      store.recoverWebPushDeliveries();
       return store;
     } catch (error) {
       store.close();
@@ -410,6 +517,17 @@ export class WebStore {
         UPDATE notification_deliveries SET completed_at = ?
         WHERE source_id = ? AND delivery_key = ? AND completed_at IS NULL
       `).run(now, reservation.sourceId, reservation.deliveryKey);
+      const agent = this.getAgent(reservation.sourceId);
+      this.enqueueWebPushEventInTransaction({
+        logicalKey: `web-new:${reservation.threadId}`,
+        kind: "response.ready",
+        threadId: reservation.threadId,
+        sourceId: reservation.sourceId,
+        title: `${agent?.label ?? "mono-agent"} · ${reservation.triggerKind.toUpperCase()}`,
+        body: reservation.text,
+        expiresAt: new Date(new Date(now).getTime() + 24 * 60 * 60 * 1_000).toISOString(),
+        notBefore: new Date(new Date(now).getTime() + 3_000).toISOString(),
+      });
     });
     return { thread: this.requireThread(reservation.threadId), duplicate: false };
   }
@@ -507,6 +625,12 @@ export class WebStore {
     const attachments = this.database.prepare("SELECT * FROM attachments WHERE thread_id = ?")
       .all(id) as unknown as AttachmentRow[];
     this.transaction(() => {
+      const now = this.now();
+      this.database.prepare(`
+        UPDATE push_deliveries SET status = 'dropped', updated_at = ?, finished_at = ?, last_error_code = 'thread_deleted'
+        WHERE event_id IN (SELECT id FROM push_events WHERE thread_id = ?)
+          AND status IN ('pending', 'sending')
+      `).run(now, now, id);
       this.database.prepare("DELETE FROM notification_deliveries WHERE thread_id = ?").run(id);
       this.database.prepare("DELETE FROM revisions WHERE entity_kind = 'thread' AND entity_id = ?").run(id);
       this.database.prepare("DELETE FROM threads WHERE id = ?").run(id);
@@ -1009,21 +1133,397 @@ export class WebStore {
     return row?.thread_id;
   }
 
+  ensureWebPushIdentity(generate: () => { readonly publicKey: string; readonly privateKey: string }): WebPushIdentity {
+    const rows = this.database.prepare(`
+      SELECT key, value FROM settings
+      WHERE key IN ('web_push_public_key', 'web_push_private_key', 'web_push_key_fingerprint')
+    `).all() as unknown as Array<{ key: string; value: string }>;
+    const values = new Map(rows.map((row) => [row.key, row.value]));
+    const publicKey = values.get("web_push_public_key");
+    const privateKey = values.get("web_push_private_key");
+    const fingerprint = values.get("web_push_key_fingerprint");
+    const present = [publicKey, privateKey, fingerprint].filter((value) => value !== undefined).length;
+    if (present > 0 && present < 3) {
+      throw new WebConsoleError(
+        "web_push_identity_corrupt",
+        "The stored Web Push identity is incomplete. Reset web state before enabling notifications again.",
+        500,
+      );
+    }
+    if (publicKey !== undefined && privateKey !== undefined && fingerprint !== undefined) {
+      if (!isValidVapidKeyPair(publicKey, privateKey) || fingerprint !== pushKeyFingerprint(publicKey)) {
+        throw new WebConsoleError(
+          "web_push_identity_corrupt",
+          "The stored Web Push identity is invalid. Reset web state before enabling notifications again.",
+          500,
+        );
+      }
+      return { publicKey, privateKey, fingerprint };
+    }
+
+    const generated = generate();
+    if (!isValidVapidKeyPair(generated.publicKey, generated.privateKey)) {
+      throw new WebConsoleError("web_push_identity_generation_failed", "Unable to generate a valid Web Push identity.", 500);
+    }
+    const generatedFingerprint = pushKeyFingerprint(generated.publicKey);
+    this.transaction(() => {
+      this.setSetting("web_push_public_key", generated.publicKey);
+      this.setSetting("web_push_private_key", generated.privateKey);
+      this.setSetting("web_push_key_fingerprint", generatedFingerprint);
+    });
+    return { ...generated, fingerprint: generatedFingerprint };
+  }
+
+  registerWebPushSubscription(input: RegisterWebPushSubscriptionInput): WebPushSubscriptionStatus {
+    const endpointSha256 = createHash("sha256").update(input.endpoint).digest("hex");
+    const previousEndpointSha256 = input.previousEndpoint === undefined
+      ? undefined
+      : createHash("sha256").update(input.previousEndpoint).digest("hex");
+    return this.transaction(() => {
+      const existing = this.database.prepare("SELECT * FROM push_subscriptions WHERE endpoint_sha256 = ?")
+        .get(endpointSha256) as unknown as PushSubscriptionRow | undefined;
+      const replacements = new Set<string>();
+      if (input.previousSubscriptionId !== undefined) {
+        const row = this.database.prepare("SELECT id FROM push_subscriptions WHERE id = ? AND site_origin = ?")
+          .get(input.previousSubscriptionId, input.siteOrigin) as unknown as { id: string } | undefined;
+        if (row !== undefined) replacements.add(row.id);
+      }
+      if (previousEndpointSha256 !== undefined) {
+        const row = this.database.prepare("SELECT id FROM push_subscriptions WHERE endpoint_sha256 = ? AND site_origin = ?")
+          .get(previousEndpointSha256, input.siteOrigin) as unknown as { id: string } | undefined;
+        if (row !== undefined) replacements.add(row.id);
+      }
+      if (existing !== undefined) replacements.delete(existing.id);
+
+      const now = this.now();
+      for (const replacementId of replacements) {
+        this.database.prepare(`
+          UPDATE push_subscriptions SET state = 'expired', disabled_at = ?, updated_at = ?,
+            last_error_at = ?, last_error_code = 'subscription_rotated'
+          WHERE id = ? AND state = 'active'
+        `).run(now, now, now, replacementId);
+        this.database.prepare(`
+          UPDATE push_deliveries SET status = 'stale', updated_at = ?, finished_at = ?,
+            last_error_code = 'subscription_rotated'
+          WHERE subscription_id = ? AND status IN ('pending', 'sending')
+        `).run(now, now, replacementId);
+      }
+
+      if (existing?.state !== "active") {
+        const active = this.database.prepare("SELECT COUNT(*) AS count FROM push_subscriptions WHERE state = 'active'")
+          .get() as unknown as { count: number };
+        if (active.count >= MAX_ACTIVE_PUSH_SUBSCRIPTIONS) {
+          throw new WebConsoleError(
+            "push_subscription_limit",
+            `This console already has ${MAX_ACTIVE_PUSH_SUBSCRIPTIONS} active notification subscriptions.`,
+            409,
+          );
+        }
+      }
+      const id = existing?.id ?? randomUUID();
+      this.database.prepare(`
+        INSERT INTO push_subscriptions (
+          id, endpoint, endpoint_sha256, p256dh, auth, expiration_time, site_origin,
+          key_fingerprint, state, created_at, updated_at, disabled_at,
+          last_success_at, last_error_at, last_error_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, NULL, NULL, NULL)
+        ON CONFLICT(endpoint_sha256) DO UPDATE SET
+          endpoint = excluded.endpoint,
+          p256dh = excluded.p256dh,
+          auth = excluded.auth,
+          expiration_time = excluded.expiration_time,
+          site_origin = excluded.site_origin,
+          key_fingerprint = excluded.key_fingerprint,
+          state = 'active',
+          updated_at = excluded.updated_at,
+          disabled_at = NULL,
+          last_error_at = NULL,
+          last_error_code = NULL
+      `).run(
+        id,
+        input.endpoint,
+        endpointSha256,
+        input.p256dh,
+        input.auth,
+        input.expirationTime ?? null,
+        input.siteOrigin,
+        input.keyFingerprint,
+        now,
+        now,
+      );
+      return this.requirePushSubscriptionStatus(id);
+    });
+  }
+
+  getWebPushSubscription(id: string): WebPushSubscriptionStatus | undefined {
+    const row = this.database.prepare("SELECT * FROM push_subscriptions WHERE id = ?").get(id) as unknown as PushSubscriptionRow | undefined;
+    return row === undefined ? undefined : mapPushSubscriptionStatus(row);
+  }
+
+  disableWebPushSubscription(id: string): void {
+    const now = this.now();
+    const result = this.database.prepare(`
+      UPDATE push_subscriptions SET state = 'disabled', disabled_at = ?, updated_at = ?
+      WHERE id = ? AND state != 'disabled'
+    `).run(now, now, id);
+    if (result.changes === 0 && this.getWebPushSubscription(id) === undefined) {
+      throw new WebConsoleError("push_subscription_not_found", "Notification subscription not found.", 404);
+    }
+    this.database.prepare(`
+      UPDATE push_deliveries SET status = 'dropped', updated_at = ?, finished_at = ?, last_error_code = 'subscription_disabled'
+      WHERE subscription_id = ? AND status IN ('pending', 'sending')
+    `).run(now, now, id);
+  }
+
+  expireWebPushSubscription(id: string, reason: string): void {
+    const now = this.now();
+    this.transaction(() => {
+      this.database.prepare(`
+        UPDATE push_subscriptions SET state = 'expired', disabled_at = ?, updated_at = ?,
+          last_error_at = ?, last_error_code = ? WHERE id = ?
+      `).run(now, now, now, reason, id);
+      this.database.prepare(`
+        UPDATE push_deliveries SET status = 'stale', updated_at = ?, finished_at = ?, last_error_code = ?
+        WHERE subscription_id = ? AND status IN ('pending', 'sending')
+      `).run(now, now, reason, id);
+    });
+  }
+
+  enqueueWebPushEvent(input: {
+    readonly logicalKey: string;
+    readonly kind: WebPushEventKind;
+    readonly threadId?: string;
+    readonly sourceId?: string;
+    readonly title: string;
+    readonly body: string;
+    readonly expiresAt: string;
+    readonly notBefore?: string;
+    readonly subscriptionId?: string;
+  }): StoredWebPushEvent | undefined {
+    return this.transaction(() => this.enqueueWebPushEventInTransaction(input));
+  }
+
+  enqueueWebPushTest(subscriptionId: string): StoredWebPushEvent {
+    const subscription = this.requirePushSubscription(subscriptionId);
+    if (subscription.state !== "active") {
+      throw new WebConsoleError("push_subscription_inactive", "Notification subscription is not active.", 409);
+    }
+    const latest = this.database.prepare(`
+      SELECT e.created_at FROM push_events e
+      JOIN push_deliveries d ON d.event_id = e.id
+      WHERE d.subscription_id = ? AND e.kind = 'test'
+      ORDER BY e.created_at DESC LIMIT 1
+    `).get(subscriptionId) as unknown as { created_at: string } | undefined;
+    if (latest !== undefined && this.clock().getTime() - new Date(latest.created_at).getTime() < 10_000) {
+      throw new WebConsoleError("push_test_rate_limited", "Wait 10 seconds before sending another test notification.", 429);
+    }
+    const now = this.clock();
+    const event = this.enqueueWebPushEvent({
+      logicalKey: `test:${randomUUID()}`,
+      kind: "test",
+      title: "mono-agent notifications",
+      body: "Push notifications are connected.",
+      expiresAt: new Date(now.getTime() + 60_000).toISOString(),
+      notBefore: now.toISOString(),
+      subscriptionId,
+    });
+    if (event === undefined) throw new WebConsoleError("push_subscription_inactive", "Notification subscription is not active.", 409);
+    return event;
+  }
+
+  webPushEventByLogicalKey(logicalKey: string): StoredWebPushEvent | undefined {
+    const row = this.database.prepare("SELECT * FROM push_events WHERE logical_key = ?").get(logicalKey) as unknown as PushEventRow | undefined;
+    return row === undefined ? undefined : mapPushEvent(row);
+  }
+
+  acknowledgeWebPushEvent(eventId: string, subscriptionId: string): boolean {
+    const now = this.now();
+    const result = this.database.prepare(`
+      UPDATE push_deliveries SET status = 'suppressed', updated_at = ?, finished_at = ?, last_error_code = NULL
+      WHERE event_id = ? AND subscription_id = ? AND status = 'pending' AND attempts = 0
+    `).run(now, now, eventId, subscriptionId);
+    return result.changes > 0;
+  }
+
+  claimDueWebPushDeliveries(limit: number): ClaimedWebPushDelivery[] {
+    const now = this.now();
+    return this.transaction(() => {
+      this.database.prepare(`
+        UPDATE push_deliveries SET status = 'dropped', updated_at = ?, finished_at = ?, last_error_code = 'expired'
+        WHERE status IN ('pending', 'sending')
+          AND event_id IN (SELECT id FROM push_events WHERE expires_at <= ?)
+      `).run(now, now, now);
+      const rows = this.database.prepare(`
+        SELECT d.event_id, d.subscription_id, d.status, d.attempts, d.next_attempt_at,
+          d.last_status_code, d.last_error_code, d.created_at, d.updated_at, d.finished_at,
+          e.id AS e_id, e.logical_key, e.kind, e.thread_id, e.source_id, e.title, e.body,
+          e.tag, e.topic, e.expires_at, e.created_at AS e_created_at,
+          s.id AS s_id, s.endpoint, s.endpoint_sha256, s.p256dh, s.auth, s.expiration_time,
+          s.site_origin, s.key_fingerprint, s.state, s.created_at AS s_created_at,
+          s.updated_at AS s_updated_at, s.disabled_at, s.last_success_at, s.last_error_at, s.last_error_code AS s_last_error_code
+        FROM push_deliveries d
+        JOIN push_events e ON e.id = d.event_id
+        JOIN push_subscriptions s ON s.id = d.subscription_id
+        WHERE d.status = 'pending' AND d.next_attempt_at <= ? AND e.expires_at > ? AND s.state = 'active'
+        ORDER BY d.next_attempt_at, d.created_at, d.rowid
+        LIMIT ?
+      `).all(now, now, limit) as unknown as Array<Record<string, unknown>>;
+      const claim = this.database.prepare(`
+        UPDATE push_deliveries SET status = 'sending', updated_at = ?
+        WHERE event_id = ? AND subscription_id = ? AND status = 'pending'
+      `);
+      const claimed: ClaimedWebPushDelivery[] = [];
+      for (const row of rows) {
+        if (claim.run(now, row.event_id as string, row.subscription_id as string).changes === 0) continue;
+        claimed.push({
+          event: mapPushEvent({
+            id: row.e_id as string,
+            logical_key: row.logical_key as string,
+            kind: row.kind as string,
+            thread_id: row.thread_id as string | null,
+            source_id: row.source_id as string | null,
+            title: row.title as string,
+            body: row.body as string,
+            tag: row.tag as string,
+            topic: row.topic as string,
+            expires_at: row.expires_at as string,
+            created_at: row.e_created_at as string,
+          }),
+          subscription: mapPushSubscription({
+            id: row.s_id as string,
+            endpoint: row.endpoint as string,
+            endpoint_sha256: row.endpoint_sha256 as string,
+            p256dh: row.p256dh as string,
+            auth: row.auth as string,
+            expiration_time: row.expiration_time as number | null,
+            site_origin: row.site_origin as string,
+            key_fingerprint: row.key_fingerprint as string,
+            state: row.state as string,
+            created_at: row.s_created_at as string,
+            updated_at: row.s_updated_at as string,
+            disabled_at: row.disabled_at as string | null,
+            last_success_at: row.last_success_at as string | null,
+            last_error_at: row.last_error_at as string | null,
+            last_error_code: row.s_last_error_code as string | null,
+          }),
+          attempts: row.attempts as number,
+        });
+      }
+      return claimed;
+    });
+  }
+
+  settleWebPushDelivery(input: {
+    readonly eventId: string;
+    readonly subscriptionId: string;
+    readonly status: "accepted" | "stale" | "failed" | "config_error" | "dropped";
+    readonly statusCode?: number;
+    readonly errorCode?: string;
+  }): void {
+    const now = this.now();
+    this.transaction(() => {
+      this.database.prepare(`
+        UPDATE push_deliveries SET status = ?, attempts = attempts + 1, updated_at = ?, finished_at = ?,
+          last_status_code = ?, last_error_code = ?
+        WHERE event_id = ? AND subscription_id = ? AND status = 'sending'
+      `).run(
+        input.status,
+        now,
+        now,
+        input.statusCode ?? null,
+        input.errorCode ?? null,
+        input.eventId,
+        input.subscriptionId,
+      );
+      if (input.status === "accepted") {
+        this.database.prepare(`
+          UPDATE push_subscriptions SET last_success_at = ?, updated_at = ?, last_error_code = NULL
+          WHERE id = ?
+        `).run(now, now, input.subscriptionId);
+      } else {
+        this.database.prepare(`
+          UPDATE push_subscriptions SET last_error_at = ?, updated_at = ?, last_error_code = ?
+          WHERE id = ?
+        `).run(now, now, input.errorCode ?? input.status, input.subscriptionId);
+      }
+    });
+  }
+
+  retryWebPushDelivery(input: {
+    readonly eventId: string;
+    readonly subscriptionId: string;
+    readonly nextAttemptAt: string;
+    readonly statusCode?: number;
+    readonly errorCode: string;
+  }): void {
+    const now = this.now();
+    this.database.prepare(`
+      UPDATE push_deliveries SET status = 'pending', attempts = attempts + 1, next_attempt_at = ?,
+        updated_at = ?, last_status_code = ?, last_error_code = ?
+      WHERE event_id = ? AND subscription_id = ? AND status = 'sending'
+    `).run(
+      input.nextAttemptAt,
+      now,
+      input.statusCode ?? null,
+      input.errorCode,
+      input.eventId,
+      input.subscriptionId,
+    );
+  }
+
+  deferClaimedWebPushDelivery(eventId: string, subscriptionId: string, nextAttemptAt: string): void {
+    this.database.prepare(`
+      UPDATE push_deliveries SET status = 'pending', next_attempt_at = ?, updated_at = ?
+      WHERE event_id = ? AND subscription_id = ? AND status = 'sending'
+    `).run(nextAttemptAt, this.now(), eventId, subscriptionId);
+  }
+
+  staleWebPushEvent(logicalKey: string, reason = "resolved"): void {
+    const now = this.now();
+    this.database.prepare(`
+      UPDATE push_deliveries SET status = 'stale', updated_at = ?, finished_at = ?, last_error_code = ?
+      WHERE event_id = (SELECT id FROM push_events WHERE logical_key = ?)
+        AND status IN ('pending', 'sending')
+    `).run(now, now, reason, logicalKey);
+  }
+
+  webPushDueQueueDepth(): number {
+    const row = this.database.prepare(`
+      SELECT COUNT(*) AS count FROM push_deliveries
+      WHERE status = 'sending' OR (status = 'pending' AND next_attempt_at <= ?)
+    `).get(this.now()) as unknown as { count: number };
+    return row.count;
+  }
+
+  purgeWebPushState(): void {
+    const before = new Date(this.clock().getTime() - PUSH_RETENTION_MS).toISOString();
+    this.transaction(() => {
+      this.database.prepare(`
+        DELETE FROM push_subscriptions WHERE state IN ('disabled', 'expired') AND updated_at < ?
+      `).run(before);
+      this.database.prepare(`
+        DELETE FROM push_events WHERE created_at < ? AND NOT EXISTS (
+          SELECT 1 FROM push_deliveries d WHERE d.event_id = push_events.id AND d.status IN ('pending', 'sending')
+        )
+      `).run(before);
+    });
+  }
+
   private initialize(): void {
     try {
       this.database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
       const versionRow = this.database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
-      if (versionRow.user_version > 3) {
+      if (versionRow.user_version > WEB_STORAGE_SCHEMA_VERSION) {
         throw new WebConsoleError(
           "unsupported_storage_schema",
-          `Web state schema ${versionRow.user_version} is newer than supported schema 3.`,
+          `Web state schema ${versionRow.user_version} is newer than supported schema ${WEB_STORAGE_SCHEMA_VERSION}.`,
           500,
         );
       }
       if (versionRow.user_version < 0) {
         throw new WebConsoleError("storage_corrupt", "Web state schema version is invalid.", 500);
       }
-      const migrating = versionRow.user_version < 3;
+      const migrating = versionRow.user_version < WEB_STORAGE_SCHEMA_VERSION;
       if (migrating) this.database.exec("BEGIN IMMEDIATE");
       try {
         this.database.exec(`
@@ -1130,6 +1630,58 @@ export class WebStore {
         completed_at TEXT,
         PRIMARY KEY (source_id, delivery_key)
       );
+      CREATE TABLE IF NOT EXISTS push_subscriptions (
+        id TEXT PRIMARY KEY,
+        endpoint TEXT NOT NULL,
+        endpoint_sha256 TEXT NOT NULL UNIQUE,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        expiration_time INTEGER,
+        site_origin TEXT NOT NULL,
+        key_fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('active', 'disabled', 'expired')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        disabled_at TEXT,
+        last_success_at TEXT,
+        last_error_at TEXT,
+        last_error_code TEXT
+      );
+      CREATE INDEX IF NOT EXISTS push_subscriptions_by_state
+        ON push_subscriptions(state, updated_at);
+      CREATE TABLE IF NOT EXISTS push_events (
+        id TEXT PRIMARY KEY,
+        logical_key TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK (kind IN (
+          'response.ready', 'input.required', 'run.failed', 'run.cancelled', 'run.interrupted', 'test'
+        )),
+        thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL,
+        source_id TEXT,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        tag TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS push_events_by_expiry ON push_events(expires_at);
+      CREATE TABLE IF NOT EXISTS push_deliveries (
+        event_id TEXT NOT NULL REFERENCES push_events(id) ON DELETE CASCADE,
+        subscription_id TEXT NOT NULL REFERENCES push_subscriptions(id) ON DELETE CASCADE,
+        status TEXT NOT NULL CHECK (status IN (
+          'pending', 'sending', 'accepted', 'suppressed', 'stale', 'failed', 'config_error', 'dropped'
+        )),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT NOT NULL,
+        last_status_code INTEGER,
+        last_error_code TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        finished_at TEXT,
+        PRIMARY KEY (event_id, subscription_id)
+      );
+      CREATE INDEX IF NOT EXISTS push_deliveries_due
+        ON push_deliveries(status, next_attempt_at, created_at);
       `);
         if (versionRow.user_version === 1) {
           const columns = this.database.prepare("PRAGMA table_info(threads)").all() as unknown as Array<{ name: string }>;
@@ -1139,7 +1691,7 @@ export class WebStore {
             );
           }
         }
-        if (migrating) this.database.exec("PRAGMA user_version = 3; COMMIT");
+        if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
       } catch (error) {
         if (this.database.isTransaction) this.database.exec("ROLLBACK");
         throw error;
@@ -1166,6 +1718,9 @@ export class WebStore {
       "revisions",
       "settings",
       "notification_deliveries",
+      "push_subscriptions",
+      "push_events",
+      "push_deliveries",
     ]);
     const tables = this.database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as unknown as Array<{ name: string }>;
     for (const table of tables) requiredTables.delete(table.name);
@@ -1224,6 +1779,14 @@ export class WebStore {
     });
   }
 
+  private recoverWebPushDeliveries(): void {
+    const now = this.now();
+    this.database.prepare(`
+      UPDATE push_deliveries SET status = 'pending', next_attempt_at = ?, updated_at = ?
+      WHERE status = 'sending'
+    `).run(now, now);
+  }
+
   private finishTurn(
     turnId: string,
     status: Exclude<WebMessageStatus, "running">,
@@ -1243,6 +1806,8 @@ export class WebStore {
       parts.push({ type: "error", ...(errorCode === undefined ? {} : { code: errorCode }), message: errorMessage });
     }
     const now = this.now();
+    const thread = this.requireThread(turn.thread_id);
+    const agent = this.getAgent(thread.sourceId);
     this.transaction(() => {
       this.database.prepare(`
         UPDATE turns SET status = ?, finished_at = ?, error_code = ?, error_message = ?,
@@ -1265,6 +1830,43 @@ export class WebStore {
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, turn.thread_id);
       this.recordThreadRevision(turn.thread_id, `turn_${status}`, now);
+      const recentEnoughForRecoveredInterruption = status !== "interrupted"
+        || new Date(now).getTime() - new Date(existing.updatedAt).getTime() <= 60 * 60 * 1_000;
+      if (recentEnoughForRecoveredInterruption) {
+        const kind: WebPushEventKind = status === "complete"
+          ? "response.ready"
+          : status === "cancelled"
+            ? "run.cancelled"
+            : status === "interrupted"
+              ? "run.interrupted"
+              : "run.failed";
+        const label = agent?.label ?? "mono-agent";
+        const body = status === "complete"
+          ? parts.filter((part): part is Extract<WebMessagePart, { type: "text" }> => part.type === "text")
+            .map((part) => part.text)
+            .join(" ")
+          : status === "cancelled"
+            ? "The run was cancelled."
+            : status === "interrupted"
+              ? "The run was interrupted when the web service stopped."
+              : errorMessage ?? "The run failed.";
+        this.enqueueWebPushEventInTransaction({
+          logicalKey: `turn:${turnId}:terminal`,
+          kind,
+          threadId: turn.thread_id,
+          sourceId: thread.sourceId,
+          title: status === "complete"
+            ? `${label} replied`
+            : status === "cancelled"
+              ? `${label} run cancelled`
+              : status === "interrupted"
+                ? `${label} run interrupted`
+                : `${label} run failed`,
+          body,
+          expiresAt: new Date(new Date(now).getTime() + (status === "complete" ? 24 : 1) * 60 * 60 * 1_000).toISOString(),
+          notBefore: new Date(new Date(now).getTime() + 3_000).toISOString(),
+        });
+      }
     });
     return this.requireThreadDetail(turn.thread_id);
   }
@@ -1387,6 +1989,115 @@ export class WebStore {
     return attachment;
   }
 
+  private requirePushSubscription(id: string): StoredWebPushSubscription {
+    const row = this.database.prepare("SELECT * FROM push_subscriptions WHERE id = ?")
+      .get(id) as unknown as PushSubscriptionRow | undefined;
+    if (row === undefined) {
+      throw new WebConsoleError("push_subscription_not_found", "Notification subscription not found.", 404);
+    }
+    return mapPushSubscription(row);
+  }
+
+  private requirePushSubscriptionStatus(id: string): WebPushSubscriptionStatus {
+    const status = this.getWebPushSubscription(id);
+    if (status === undefined) {
+      throw new WebConsoleError("push_subscription_not_found", "Notification subscription not found.", 404);
+    }
+    return status;
+  }
+
+  private enqueueWebPushEventInTransaction(input: {
+    readonly logicalKey: string;
+    readonly kind: WebPushEventKind;
+    readonly threadId?: string;
+    readonly sourceId?: string;
+    readonly title: string;
+    readonly body: string;
+    readonly expiresAt: string;
+    readonly notBefore?: string;
+    readonly subscriptionId?: string;
+  }): StoredWebPushEvent | undefined {
+    const existing = this.database.prepare("SELECT * FROM push_events WHERE logical_key = ?")
+      .get(input.logicalKey) as unknown as PushEventRow | undefined;
+    if (existing !== undefined) return mapPushEvent(existing);
+
+    const targets = input.subscriptionId === undefined
+      ? this.database.prepare("SELECT id FROM push_subscriptions WHERE state = 'active' ORDER BY created_at, id")
+        .all() as unknown as Array<{ id: string }>
+      : this.database.prepare("SELECT id FROM push_subscriptions WHERE id = ? AND state = 'active'")
+        .all(input.subscriptionId) as unknown as Array<{ id: string }>;
+    if (targets.length === 0) return undefined;
+
+    const now = this.now();
+    const expiry = new Date(input.expiresAt);
+    if (!Number.isFinite(expiry.getTime()) || expiry.getTime() <= new Date(now).getTime()) {
+      throw new WebConsoleError("invalid_push_event", "Notification expiry must be in the future.", 500);
+    }
+    const nextAttemptAt = input.notBefore ?? new Date(new Date(now).getTime() + 3_000).toISOString();
+    const id = randomUUID();
+    const title = webPushPreview(input.title, "mono-agent");
+    const body = webPushPreview(input.body);
+    const topic = createHash("sha256")
+      .update(input.logicalKey)
+      .digest("base64url")
+      .slice(0, 32);
+    const tag = `mono-agent-${id}`;
+    this.database.prepare(`
+      INSERT INTO push_events (
+        id, logical_key, kind, thread_id, source_id, title, body, tag, topic, expires_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      input.logicalKey,
+      input.kind,
+      input.threadId ?? null,
+      input.sourceId ?? null,
+      title,
+      body,
+      tag,
+      topic,
+      expiry.toISOString(),
+      now,
+    );
+    const insert = this.database.prepare(`
+      INSERT INTO push_deliveries (
+        event_id, subscription_id, status, attempts, next_attempt_at,
+        last_status_code, last_error_code, created_at, updated_at, finished_at
+      ) VALUES (?, ?, 'pending', 0, ?, NULL, NULL, ?, ?, NULL)
+    `);
+    for (const target of targets) {
+      const pending = this.database.prepare(`
+        SELECT COUNT(*) AS count FROM push_deliveries
+        WHERE subscription_id = ? AND status IN ('pending', 'sending')
+      `).get(target.id) as unknown as { count: number };
+      const dropCount = Math.max(0, pending.count - MAX_PENDING_PUSH_DELIVERIES_PER_SUBSCRIPTION + 1);
+      if (dropCount > 0) {
+        this.database.prepare(`
+          UPDATE push_deliveries SET status = 'dropped', updated_at = ?, finished_at = ?, last_error_code = 'queue_limit'
+          WHERE rowid IN (
+            SELECT rowid FROM push_deliveries
+            WHERE subscription_id = ? AND status = 'pending'
+            ORDER BY created_at, rowid LIMIT ?
+          )
+        `).run(now, now, target.id, dropCount);
+      }
+      insert.run(id, target.id, nextAttemptAt, now, now);
+    }
+    return {
+      id,
+      logicalKey: input.logicalKey,
+      kind: input.kind,
+      ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+      ...(input.sourceId === undefined ? {} : { sourceId: input.sourceId }),
+      title,
+      body,
+      tag,
+      topic,
+      expiresAt: expiry.toISOString(),
+      createdAt: now,
+    };
+  }
+
   private recordThreadRevision(threadId: string, event: string, now: string): void {
     const row = this.database.prepare("SELECT revision FROM threads WHERE id = ?").get(threadId) as unknown as { revision: number };
     this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, ?, ?, ?)")
@@ -1412,6 +2123,83 @@ export class WebStore {
 
   private now(): string {
     return this.clock().toISOString();
+  }
+}
+
+function mapPushSubscriptionStatus(row: PushSubscriptionRow): WebPushSubscriptionStatus {
+  const state: WebPushSubscriptionState = row.state === "disabled" || row.state === "expired"
+    ? row.state
+    : "active";
+  return {
+    id: row.id,
+    state,
+    keyFingerprint: row.key_fingerprint,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    ...(row.last_success_at === null ? {} : { lastSuccessAt: row.last_success_at }),
+    ...(row.last_error_at === null ? {} : { lastErrorAt: row.last_error_at }),
+    ...(row.last_error_code === null ? {} : { lastErrorCode: row.last_error_code }),
+  };
+}
+
+function mapPushSubscription(row: PushSubscriptionRow): StoredWebPushSubscription {
+  return {
+    ...mapPushSubscriptionStatus(row),
+    endpoint: row.endpoint,
+    p256dh: row.p256dh,
+    auth: row.auth,
+    ...(row.expiration_time === null ? {} : { expirationTime: row.expiration_time }),
+    siteOrigin: row.site_origin,
+  };
+}
+
+function mapPushEvent(row: PushEventRow): StoredWebPushEvent {
+  const validKinds: readonly WebPushEventKind[] = [
+    "response.ready",
+    "input.required",
+    "run.failed",
+    "run.cancelled",
+    "run.interrupted",
+    "test",
+  ];
+  if (!validKinds.includes(row.kind as WebPushEventKind)) {
+    throw new WebConsoleError("storage_corrupt", `Push event ${row.id} has an invalid kind.`, 500);
+  }
+  return {
+    id: row.id,
+    logicalKey: row.logical_key,
+    kind: row.kind as WebPushEventKind,
+    ...(row.thread_id === null ? {} : { threadId: row.thread_id }),
+    ...(row.source_id === null ? {} : { sourceId: row.source_id }),
+    title: row.title,
+    body: row.body,
+    tag: row.tag,
+    topic: row.topic,
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+  };
+}
+
+function pushKeyFingerprint(publicKey: string): string {
+  return createHash("sha256").update(publicKey).digest("base64url");
+}
+
+function isBase64Url(value: string, minimum: number, maximum: number): boolean {
+  return value.length >= minimum && value.length <= maximum && /^[A-Za-z0-9_-]+$/u.test(value);
+}
+
+function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
+  if (!isBase64Url(publicKey, 32, 128) || !isBase64Url(privateKey, 24, 96)) return false;
+  try {
+    const decodedPublic = Buffer.from(publicKey, "base64url");
+    const decodedPrivate = Buffer.from(privateKey, "base64url");
+    if (decodedPublic.byteLength !== 65 || decodedPublic[0] !== 4 || decodedPrivate.byteLength !== 32) return false;
+    const ecdh = createECDH("prime256v1");
+    ecdh.setPrivateKey(decodedPrivate);
+    const derivedPublic = ecdh.getPublicKey();
+    return derivedPublic.byteLength === decodedPublic.byteLength && timingSafeEqual(derivedPublic, decodedPublic);
+  } catch {
+    return false;
   }
 }
 
