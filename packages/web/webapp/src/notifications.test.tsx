@@ -8,12 +8,20 @@ vi.mock("./console-store", () => ({
   useConsoleStore: () => storeMock.current,
 }));
 vi.mock("./api", () => ({
-  api: { thread: vi.fn() },
+  api: {
+    thread: vi.fn(),
+    pushSubscription: vi.fn(),
+    registerPushSubscription: vi.fn(),
+    deletePushSubscription: vi.fn(),
+    testPushSubscription: vi.fn(),
+    acknowledgePushEvent: vi.fn(),
+  },
 }));
 
 import { api } from "./api";
 import {
   NOTIFICATIONS_STORAGE_KEY,
+  PUSH_SUBSCRIPTION_ID_STORAGE_KEY,
   NotificationBell,
   NotificationsProvider,
   responseArrivals,
@@ -35,6 +43,7 @@ const createStore = (currentThread = running) => ({
   bootstrap: bootstrap([source], [currentThread]),
   agents: [source],
   threads: [currentThread],
+  selectedThread: currentThread,
   selectThread: vi.fn(),
 });
 
@@ -47,13 +56,53 @@ class FakeNotification {
 
 const showNotification = vi.fn().mockResolvedValue(undefined);
 const getNotifications = vi.fn().mockResolvedValue([]);
+const unsubscribe = vi.fn().mockResolvedValue(true);
+const browserSubscription = {
+  endpoint: "https://push.example.test/send/opaque",
+  expirationTime: null,
+  options: { userVisibleOnly: true },
+  getKey: vi.fn(),
+  unsubscribe,
+  toJSON: () => ({
+    endpoint: "https://push.example.test/send/opaque",
+    expirationTime: null,
+    keys: { p256dh: "p256dh", auth: "auth" },
+  }),
+};
+const getSubscription = vi.fn().mockResolvedValue(null);
+const subscribe = vi.fn().mockResolvedValue(browserSubscription);
 const serviceWorker = {
   ready: Promise.resolve({
     getNotifications,
     showNotification,
+    pushManager: { getSubscription, subscribe },
   }),
+  controller: null as null | { postMessage: (message: unknown, ports: readonly unknown[]) => void },
   addEventListener: vi.fn(),
   removeEventListener: vi.fn(),
+};
+
+class FakeMessageChannel {
+  readonly port1: { onmessage: ((event: { data: unknown }) => void) | null } = { onmessage: null };
+  readonly port2 = { reply: (data: unknown) => this.port1.onmessage?.({ data }) };
+}
+
+const activeServerSubscription = {
+  id: "subscription-1",
+  state: "active" as const,
+  keyFingerprint: "test-fingerprint",
+  createdAt: "2026-08-13T08:00:00.000Z",
+  updatedAt: "2026-08-13T08:00:00.000Z",
+};
+
+const enablePushSupport = () => {
+  vi.stubGlobal("PushManager", class FakePushManager {});
+  vi.stubGlobal("MessageChannel", FakeMessageChannel);
+  serviceWorker.controller = {
+    postMessage: (_message, ports) => {
+      (ports[0] as { reply: (data: unknown) => void }).reply({ version: 1 });
+    },
+  };
 };
 
 describe("response notifications", () => {
@@ -61,6 +110,15 @@ describe("response notifications", () => {
     vi.clearAllMocks();
     showNotification.mockResolvedValue(undefined);
     getNotifications.mockResolvedValue([]);
+    getSubscription.mockResolvedValue(null);
+    subscribe.mockResolvedValue(browserSubscription);
+    unsubscribe.mockResolvedValue(true);
+    serviceWorker.controller = null;
+    vi.mocked(api.pushSubscription).mockResolvedValue(activeServerSubscription);
+    vi.mocked(api.registerPushSubscription).mockResolvedValue(activeServerSubscription);
+    vi.mocked(api.deletePushSubscription).mockResolvedValue(undefined);
+    vi.mocked(api.testPushSubscription).mockResolvedValue(activeServerSubscription);
+    vi.mocked(api.acknowledgePushEvent).mockResolvedValue(undefined);
     FakeNotification.requestPermission.mockImplementation(async () =>
       FakeNotification.permission,
     );
@@ -169,7 +227,7 @@ describe("response notifications", () => {
       </NotificationsProvider>
     );
     const view = render(notificationTree());
-    expect(screen.getByRole("button", { name: "Disable response notifications" }))
+    expect(screen.getByRole("button", { name: "Disable push notifications" }))
       .toHaveAttribute("aria-pressed", "true");
     await waitFor(() => expect(serviceWorker.addEventListener).toHaveBeenCalled());
 
@@ -225,9 +283,84 @@ describe("response notifications", () => {
       FakeNotification.permission = "granted";
       return "granted";
     });
-    fireEvent.click(screen.getByRole("button", { name: "Enable response notifications" }));
+    fireEvent.click(screen.getByRole("button", { name: "Enable push notifications" }));
 
     await waitFor(() => expect(localStorage.getItem(NOTIFICATIONS_STORAGE_KEY)).toBe("1"));
     expect(FakeNotification.requestPermission).toHaveBeenCalledOnce();
+  });
+
+  it("subscribes and registers only after the explicit bell action, then queues a test", async () => {
+    enablePushSupport();
+    FakeNotification.permission = "default";
+    storeMock.current = createStore();
+    render(
+      <NotificationsProvider>
+        <NotificationBell />
+      </NotificationsProvider>,
+    );
+    FakeNotification.requestPermission.mockImplementationOnce(async () => {
+      FakeNotification.permission = "granted";
+      return "granted";
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Enable push notifications" }));
+
+    await waitFor(() => expect(subscribe).toHaveBeenCalledWith(expect.objectContaining({ userVisibleOnly: true })));
+    await waitFor(() => expect(api.registerPushSubscription).toHaveBeenCalledWith(browserSubscription));
+    await waitFor(() => expect(api.testPushSubscription).toHaveBeenCalledWith("subscription-1"));
+    expect(localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY)).toBe("subscription-1");
+    expect(screen.getByRole("button", { name: "Disable push notifications" }))
+      .toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("acknowledges a pending push only for the exact focused conversation", async () => {
+    enablePushSupport();
+    localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, "1");
+    localStorage.setItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY, "subscription-1");
+    getSubscription.mockResolvedValue(browserSubscription);
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    vi.mocked(document.hasFocus).mockReturnValue(true);
+    storeMock.current = createStore(complete);
+    render(
+      <NotificationsProvider>
+        <NotificationBell />
+      </NotificationsProvider>,
+    );
+    await waitFor(() => expect(api.pushSubscription).toHaveBeenCalledWith("subscription-1"));
+
+    window.dispatchEvent(new CustomEvent("mono-agent:push-pending", {
+      detail: { eventId: "wrong", threadId: "another-thread", ackToken: "a".repeat(32) },
+    }));
+    expect(api.acknowledgePushEvent).not.toHaveBeenCalled();
+    window.dispatchEvent(new CustomEvent("mono-agent:push-pending", {
+      detail: { eventId: "event-1", threadId: complete.id, ackToken: "b".repeat(32) },
+    }));
+    await waitFor(() => expect(api.acknowledgePushEvent).toHaveBeenCalledWith(
+      "event-1",
+      "subscription-1",
+      "b".repeat(32),
+    ));
+  });
+
+  it("disables the page-derived fallback after a push subscription is confirmed", async () => {
+    enablePushSupport();
+    localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, "1");
+    localStorage.setItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY, "subscription-1");
+    getSubscription.mockResolvedValue(browserSubscription);
+    storeMock.current = createStore(running);
+    const notificationTree = () => (
+      <NotificationsProvider>
+        <NotificationBell />
+      </NotificationsProvider>
+    );
+    const view = render(notificationTree());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Disable push notifications" })).toBeVisible());
+
+    storeMock.current = createStore(complete);
+    view.rerender(notificationTree());
+
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    expect(api.thread).not.toHaveBeenCalled();
+    expect(showNotification).not.toHaveBeenCalled();
   });
 });

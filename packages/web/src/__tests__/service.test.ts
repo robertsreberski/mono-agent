@@ -1,5 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -89,6 +90,159 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("announces suppressible terminal and AskUser push events without exposing Ask options", async () => {
+    const pendingAsk = {
+      interactionId: "ask-1",
+      message: "private framing",
+      questions: [{
+        id: "q1",
+        header: "Deploy",
+        question: "Ship the release?",
+        options: [
+          { id: "yes", label: "Yes", description: "Ship now." },
+          { id: "no", label: "No", description: "Wait." },
+        ],
+        multiSelect: false,
+      }],
+      answers: [],
+      activeQuestionIndex: 0,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    const send = vi.fn(async () => ({ statusCode: 201, headers: {} }));
+    const service = await createService({
+      pushDnsResolver: async () => [{ address: "203.0.114.10", family: 4 }],
+      pushSendImpl: send,
+      pushDispatchIntervalMs: 10,
+      fetchImpl: operatorFetch({
+        supportsAskUser: true,
+        pendingAsk,
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(`${JSON.stringify({
+              kind: "event",
+              event: { type: "tool_call_started", id: "ask-tool", name: "mcp__mono-agent-interaction__AskUser" },
+            })}\n`));
+            setTimeout(() => {
+              controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ kind: "finish", finalText: "Finished" })}\n`));
+              controller.close();
+            }, 350);
+          },
+        }),
+      }),
+    });
+    const publicKey = (await service.bootstrap()).push.applicationServerKey;
+    const key = Buffer.alloc(65);
+    key[0] = 4;
+    const subscription = await service.registerWebPushSubscription({
+      endpoint: "https://push.example.test/send/opaque",
+      p256dh: key.toString("base64url"),
+      auth: Buffer.alloc(16, 5).toString("base64url"),
+      siteOrigin: "https://console.example.test",
+    });
+    expect(publicKey).toHaveLength(87);
+    const pendingEvents: Array<{ eventId: string; threadId: string; ackToken: string }> = [];
+    service.subscribe((event) => {
+      if (event.type === "push.pending") {
+        pendingEvents.push(event.payload as { eventId: string; threadId: string; ackToken: string });
+      }
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "ask" });
+    await waitFor(() => pendingEvents.length >= 1);
+    const askEvent = service.store.webPushEventByLogicalKey("ask:ask-1");
+    expect(askEvent).toMatchObject({
+      kind: "input.required",
+      title: "Agent One needs input",
+      body: "Deploy: Ship the release?",
+    });
+    expect(JSON.stringify(askEvent)).not.toContain("private framing");
+    expect(JSON.stringify(askEvent)).not.toContain("Ship now");
+    service.acknowledgeWebPushEvent(pendingEvents[0]!.eventId, subscription.id, "x".repeat(32));
+    expect(service.store.acknowledgeWebPushEvent(pendingEvents[0]!.eventId, subscription.id)).toBe(true);
+    await service.submitAsk(thread.id, "ask-1", [{ questionId: "q1", selectedOptionIds: ["yes"] }]);
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    await waitFor(() => pendingEvents.length >= 2);
+    const terminal = pendingEvents.at(-1)!;
+    service.acknowledgeWebPushEvent(terminal.eventId, subscription.id, terminal.ackToken);
+    await service.stop();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("retries an AskUser delivery when its agent is temporarily offline", async () => {
+    let instant = new Date("2026-08-13T08:00:00.000Z");
+    let online = true;
+    const pendingAsk = {
+      interactionId: "ask-offline",
+      message: "private framing",
+      questions: [{
+        id: "q1",
+        header: "Review",
+        question: "Approve the change?",
+        options: [],
+        multiSelect: false,
+      }],
+      answers: [],
+      activeQuestionIndex: 0,
+      status: "pending",
+      createdAt: instant.toISOString(),
+      expiresAt: new Date(instant.getTime() + 10 * 60_000).toISOString(),
+    };
+    const send = vi.fn(async () => ({ statusCode: 201, headers: {} }));
+    const service = await createService({
+      clock: () => instant,
+      discoverImpl: async () => {
+        const discovered = fakeDiscoveredAgent();
+        if (online) return [discovered];
+        const { baseUrl: _baseUrl, ...offline } = discovered;
+        return [offline];
+      },
+      fetchImpl: operatorFetch({ supportsAskUser: true, pendingAsk }),
+      pushDnsResolver: async () => [{ address: "203.0.114.10", family: 4 }],
+      pushSendImpl: send,
+      pushDispatchIntervalMs: 5,
+      pushRandom: () => 0.5,
+    });
+    const identity = (await service.bootstrap()).push;
+    const key = Buffer.alloc(65);
+    key[0] = 4;
+    const subscription = await service.registerWebPushSubscription({
+      endpoint: "https://push.example.test/send/offline",
+      p256dh: key.toString("base64url"),
+      auth: Buffer.alloc(16, 6).toString("base64url"),
+      siteOrigin: "https://console.example.test",
+    });
+    expect(subscription.keyFingerprint).toBe(identity.keyFingerprint);
+    const thread = service.createThread("agent-one");
+    await service.pendingAsk(thread.id);
+    const event = service.store.webPushEventByLogicalKey("ask:ask-offline");
+    expect(event).toBeDefined();
+
+    online = false;
+    await service.refreshAgents();
+    instant = new Date("2026-08-13T08:00:03.000Z");
+    await waitFor(() => {
+      const database = new DatabaseSync(service.store.paths.database, { readOnly: true });
+      try {
+        const row = database.prepare(`
+          SELECT status, attempts, last_error_code FROM push_deliveries
+          WHERE event_id = ? AND subscription_id = ?
+        `).get(event!.id, subscription.id) as {
+          status: string;
+          attempts: number;
+          last_error_code: string | null;
+        } | undefined;
+        return row?.status === "pending" && row.attempts === 1
+          && row.last_error_code === "interaction_state_unknown";
+      } finally {
+        database.close();
+      }
+    });
+    expect(send).not.toHaveBeenCalled();
+    await service.stop();
+  });
+
   it("publishes persisted pin changes through bootstrap and agent invalidation events", async () => {
     const service = await createService();
     const events: unknown[] = [];
@@ -131,6 +285,26 @@ describe("WebService", () => {
     expect(Date.now() - startedAt).toBeLessThan(1_000);
     expect(first.store.getThread(thread.id)?.runState.status).toBe("running");
     await first.stop();
+  });
+
+  it("releases the service lease when Web Push startup configuration is invalid", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const common = {
+      stateDir,
+      discoveryIntervalMs: 0,
+      purgeIntervalMs: 0,
+      discoverImpl: async () => [],
+    };
+
+    await expect(WebService.create({
+      ...common,
+      env: { MONO_AGENT_WEB_PUSH_SUBJECT: "http://localhost/contact" },
+    })).rejects.toMatchObject({ code: "invalid_web_push_subject" });
+
+    const recovered = await WebService.create(common);
+    await recovered.stop();
   });
 
   it("coalesces a long stream, preserves interleaved part order/names, and reconciles finish metadata", async () => {

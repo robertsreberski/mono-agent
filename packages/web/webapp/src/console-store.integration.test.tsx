@@ -73,6 +73,7 @@ const renderStore = async () => {
 describe("ConsoleStoreProvider integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    FakeEventSource.latest = undefined;
     vi.stubGlobal("EventSource", FakeEventSource);
     vi.mocked(api.bootstrap).mockResolvedValue(
       bootstrap([
@@ -232,5 +233,25 @@ describe("ConsoleStoreProvider integration", () => {
       status: "loading",
       items: [],
     }));
+  });
+
+  it("dispatches push acknowledgements without a redundant bootstrap refresh", async () => {
+    await renderStore();
+    const pending = vi.fn();
+    window.addEventListener("mono-agent:push-pending", pending);
+    try {
+      await act(async () => {
+        FakeEventSource.latest?.emit("push.pending", {
+          version: 1,
+          type: "push.pending",
+          payload: { eventId: "event-1", threadId: "thread-1", ackToken: "token" },
+        });
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 350));
+      });
+      expect(pending).toHaveBeenCalledTimes(1);
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("mono-agent:push-pending", pending);
+    }
   });
 });

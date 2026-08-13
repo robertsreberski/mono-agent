@@ -1,16 +1,100 @@
-self.addEventListener("notificationclick", (event) => {
-  event.notification.close();
-  const data = event.notification.data ?? {};
-  const threadId = typeof data.threadId === "string" ? data.threadId : undefined;
-  const url = typeof data.url === "string" ? data.url : "/";
+const NOTIFICATION_SW_VERSION = 1;
+const SELECT_THREAD_MESSAGE = "mono-agent:select-thread";
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type !== "mono-agent:notification-sw-version") return;
+  event.ports[0]?.postMessage({ version: NOTIFICATION_SW_VERSION });
+});
+
+self.addEventListener("push", (event) => {
+  event.waitUntil((async () => {
+    let parsed;
+    try {
+      parsed = event.data?.json();
+    } catch {
+      parsed = undefined;
+    }
+    const notification = parsed?.web_push === 8030 && isRecord(parsed.notification)
+      ? parsed.notification
+      : {};
+    const title = boundedText(notification.title, "mono-agent update");
+    const body = boundedText(notification.body, "Open the console to view the update.");
+    const data = isRecord(notification.data) ? notification.data : {};
+    const threadId = typeof data.threadId === "string" ? data.threadId : undefined;
+    const navigate = sameOriginNavigate(notification.navigate, threadId);
+    await self.registration.showNotification(title, {
+      body,
+      tag: boundedText(notification.tag, `mono-agent-${Date.now()}`),
+      silent: notification.silent === true,
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      data: {
+        schema: "mono-agent.web-push.v1",
+        ...(typeof data.eventId === "string" ? { eventId: data.eventId } : {}),
+        ...(typeof data.kind === "string" ? { kind: data.kind } : {}),
+        ...(threadId === undefined ? {} : { threadId }),
+        url: navigate,
+      },
+    });
+  })());
+});
+
+self.addEventListener("pushsubscriptionchange", (event) => {
   event.waitUntil((async () => {
     const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-    const target = windows[0];
+    for (const client of windows) client.postMessage({ type: "mono-agent:push-subscription-change" });
+  })());
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const data = isRecord(event.notification.data) ? event.notification.data : {};
+  const threadId = typeof data.threadId === "string" ? data.threadId : undefined;
+  const url = sameOriginNavigate(data.url, threadId);
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    const sameOrigin = windows.filter((client) => {
+      try {
+        return new URL(client.url).origin === self.location.origin;
+      } catch {
+        return false;
+      }
+    });
+    const matching = threadId === undefined
+      ? undefined
+      : sameOrigin.find((client) => new URL(client.url).searchParams.get("thread") === threadId);
+    const target = matching ?? sameOrigin[0];
     if (target) {
       await target.focus();
-      if (threadId) target.postMessage({ type: "mono-agent:select-thread", threadId });
+      if (threadId) target.postMessage({ type: SELECT_THREAD_MESSAGE, threadId });
       return;
     }
     await self.clients.openWindow(url);
   })());
 });
+
+function sameOriginNavigate(value, threadId) {
+  let target;
+  try {
+    target = new URL(typeof value === "string" ? value : "/", self.location.origin);
+  } catch {
+    target = new URL("/", self.location.origin);
+  }
+  if (target.origin !== self.location.origin) target = new URL("/", self.location.origin);
+  if (threadId) target.searchParams.set("thread", threadId);
+  return target.href;
+}
+
+function boundedText(value, fallback) {
+  if (typeof value !== "string") return fallback;
+  const text = value.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (!text) return fallback;
+  const points = [...text];
+  return points.length <= 180 ? text : `${points.slice(0, 179).join("").trimEnd()}…`;
+}
+
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

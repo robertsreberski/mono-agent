@@ -49,9 +49,7 @@ export function toolHintFor(toolName: string): string {
   }
 
   // mcp__server__tool → use the tool segment (last) for matching + humanizing.
-  const segment = raw.startsWith("mcp__")
-    ? (raw.split("__").pop() ?? raw)
-    : raw;
+  const segment = toolNameLeaf(raw);
   const normalized = segment.toLowerCase();
 
   const builtin = BUILTIN_HINTS[normalized];
@@ -164,7 +162,7 @@ export const SUBAGENT_TOOL_SEPARATOR = "▸";
 /** Whether this tool name launches a subagent (case/namespace insensitive). */
 export function isSubagentLaunchToolName(toolName: string): boolean {
   const raw = typeof toolName === "string" ? toolName.trim() : "";
-  return SUBAGENT_LAUNCH_NAMES.has(toolLeaf(raw).toLowerCase().replace(/[^a-z0-9]+/gu, ""));
+  return SUBAGENT_LAUNCH_NAMES.has(toolNameLeaf(raw).toLowerCase().replace(/[^a-z0-9]+/gu, ""));
 }
 
 /**
@@ -243,7 +241,7 @@ export function formatToolActivityLine(
   // the profile the whole string normalizes to one unknown token and every
   // child renders as a generic "🔧 Researcher read".
   const rawName = splitSubagentToolName(typeof toolName === "string" ? toolName.trim() : "").tool;
-  const leaf = toolLeaf(rawName);
+  const leaf = toolNameLeaf(rawName);
   const normalized = leaf.toLowerCase().replace(/[^a-z0-9]+/gu, "");
   const spec = activitySpec(normalized, leaf);
   const result = previewFromArguments(toolArguments, spec, options);
@@ -441,9 +439,11 @@ function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
   };
 }
 
-function toolLeaf(toolName: string): string {
-  if (toolName.length === 0) return "Tool";
-  const mcpLeaf = toolName.split("__").at(-1) ?? toolName;
+/** Return the leaf action from built-in, MCP-qualified, or forwarded tool names. */
+export function toolNameLeaf(toolName: string): string {
+  const raw = splitSubagentToolName(typeof toolName === "string" ? toolName.trim() : "").tool;
+  if (raw.length === 0) return "Tool";
+  const mcpLeaf = raw.split("__").at(-1) ?? raw;
   const dottedLeaf = mcpLeaf.split(/[./:]/u).at(-1) ?? mcpLeaf;
   return dottedLeaf.length > 0 ? dottedLeaf : "Tool";
 }

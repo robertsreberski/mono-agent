@@ -189,6 +189,28 @@ describe("AskUser API", () => {
   });
 });
 
+describe("push subscription API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("binds the secret-free status read to the current browser origin", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      subscription: { id: "subscription/one", state: "active", keyFingerprint: "fingerprint" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.pushSubscription("subscription/one");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/push/subscriptions/subscription%2Fone",
+      expect.objectContaining({
+        headers: expect.objectContaining({ "X-Mono-Agent-Web-Origin": window.location.origin }),
+      }),
+    );
+  });
+});
+
 describe("agent favorites", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

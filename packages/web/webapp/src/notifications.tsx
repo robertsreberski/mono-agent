@@ -2,17 +2,23 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useR
 import { api } from "./api";
 import { Icon } from "./components/Icon";
 import { useConsoleStore } from "./console-store";
-import type { ThreadDetail, ThreadSummary } from "./types";
+import type { PushBootstrap, ThreadDetail, ThreadSummary } from "./types";
 
 export const NOTIFICATIONS_STORAGE_KEY = "mono-agent.web.notifications-enabled";
+export const PUSH_SUBSCRIPTION_ID_STORAGE_KEY = "mono-agent.web.push-subscription-id";
+const PUSH_PENDING_DELETE_STORAGE_KEY = "mono-agent.web.push-pending-delete";
 const NOTIFICATION_MESSAGE_TYPE = "mono-agent:select-thread";
+const PUSH_CHANGE_MESSAGE_TYPE = "mono-agent:push-subscription-change";
+const PUSH_PENDING_EVENT_TYPE = "mono-agent:push-pending";
+const SERVICE_WORKER_VERSION_REQUEST = "mono-agent:notification-sw-version";
 
 export type NotificationPreference =
   | "unsupported"
   | "prompt"
   | "disabled"
   | "enabled"
-  | "denied";
+  | "denied"
+  | "degraded";
 
 interface RunSnapshot {
   readonly id?: string;
@@ -22,6 +28,12 @@ interface RunSnapshot {
 export interface ResponseArrival {
   readonly thread: ThreadSummary;
   readonly turnId: string;
+}
+
+interface PendingPushDetail {
+  readonly eventId: string;
+  readonly threadId: string;
+  readonly ackToken: string;
 }
 
 const runSnapshots = (threads: readonly ThreadSummary[]): ReadonlyMap<string, RunSnapshot> =>
@@ -51,11 +63,8 @@ export const responsePreview = (detail: ThreadDetail, turnId: string): string | 
   );
   const text = message?.parts
     .flatMap((part) => part.type === "text" ? [part.text] : [])
-    .join(" ")
-    .replace(/\s+/gu, " ")
-    .trim();
-  if (!text) return undefined;
-  return text.length <= 180 ? text : `${text.slice(0, 179).trimEnd()}…`;
+    .join(" ");
+  return text ? plainNotificationPreview(text) : undefined;
 };
 
 export const responseNotificationTitle = (agentLabel: string, thread: ThreadSummary): string =>
@@ -63,13 +72,16 @@ export const responseNotificationTitle = (agentLabel: string, thread: ThreadSumm
     ? `${agentLabel} replied`
     : `${agentLabel} · ${thread.trigger.kind.toUpperCase()}`;
 
-const supported = (): boolean =>
+const pageNotificationsSupported = (): boolean =>
   window.isSecureContext === true &&
   typeof Notification !== "undefined" &&
   "serviceWorker" in navigator;
 
+const pushSupported = (): boolean =>
+  pageNotificationsSupported() && "PushManager" in window;
+
 const preference = (): NotificationPreference => {
-  if (!supported()) return "unsupported";
+  if (!pageNotificationsSupported()) return "unsupported";
   if (Notification.permission === "denied") return "denied";
   if (Notification.permission === "default") return "prompt";
   return localStorage.getItem(NOTIFICATIONS_STORAGE_KEY) === "1" ? "enabled" : "disabled";
@@ -89,14 +101,71 @@ const NotificationsContext = createContext<NotificationsValue | null>(null);
 export function NotificationsProvider({ children }: { readonly children: ReactNode }) {
   const store = useConsoleStore();
   const [currentPreference, setCurrentPreference] = useState<NotificationPreference>(preference);
+  const [pushActive, setPushActive] = useState(false);
   const previousRuns = useRef<ReadonlyMap<string, RunSnapshot> | null>(null);
   const notifiedTurns = useRef(new Set<string>());
   const handledDeepLink = useRef<string | null>(null);
   const pendingThreadSelection = useRef<string | null>(null);
+  const reconciling = useRef(false);
+
+  const reconcile = useCallback(async (allowCreate: boolean) => {
+    if (reconciling.current || !store.bootstrap || !pushSupported()) return;
+    if (localStorage.getItem(NOTIFICATIONS_STORAGE_KEY) !== "1" || Notification.permission !== "granted") {
+      setPushActive(false);
+      return;
+    }
+    reconciling.current = true;
+    try {
+      await finishPendingDeletion();
+      const registration = await navigator.serviceWorker.ready;
+      const controlled = await assertServiceWorkerVersion(store.bootstrap.push);
+      if (!controlled) {
+        setPushActive(false);
+        setCurrentPreference("degraded");
+        return;
+      }
+      let browserSubscription = await registration.pushManager.getSubscription();
+      let subscriptionId = localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY);
+      let serverSubscription = subscriptionId
+        ? await api.pushSubscription(subscriptionId).catch(() => undefined)
+        : undefined;
+      const stale = serverSubscription?.state !== "active"
+        || serverSubscription.keyFingerprint !== store.bootstrap.push.keyFingerprint;
+      if (browserSubscription && stale) {
+        await browserSubscription.unsubscribe().catch(() => false);
+        browserSubscription = null;
+        serverSubscription = undefined;
+        subscriptionId = null;
+        localStorage.removeItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY);
+      }
+      if (!browserSubscription && allowCreate) {
+        browserSubscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: applicationServerKey(store.bootstrap.push.applicationServerKey),
+        });
+      }
+      if (browserSubscription && (!serverSubscription || !subscriptionId)) {
+        serverSubscription = await api.registerPushSubscription(browserSubscription);
+        subscriptionId = serverSubscription.id;
+        localStorage.setItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY, subscriptionId);
+      }
+      const configError = serverSubscription?.lastErrorCode === "push_service_401"
+        || serverSubscription?.lastErrorCode === "push_service_403";
+      const active = Boolean(browserSubscription && serverSubscription?.state === "active" && !configError
+        && serverSubscription.keyFingerprint === store.bootstrap.push.keyFingerprint);
+      setPushActive(active);
+      setCurrentPreference(active ? "enabled" : "degraded");
+    } catch {
+      setPushActive(false);
+      setCurrentPreference("degraded");
+    } finally {
+      reconciling.current = false;
+    }
+  }, [store.bootstrap]);
 
   const toggle = useCallback(async () => {
-    if (!supported()) {
-      dispatchNotice("Response notifications require a secure browser context.");
+    if (!pageNotificationsSupported()) {
+      dispatchNotice("Push notifications require a secure browser context.");
       setCurrentPreference("unsupported");
       return;
     }
@@ -106,31 +175,78 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
       dispatchNotice("Notifications are blocked in this browser's site settings.");
       return;
     }
-    if (currentPreference === "enabled") {
+    if (currentPreference === "enabled" && localStorage.getItem(NOTIFICATIONS_STORAGE_KEY) === "1") {
       localStorage.removeItem(NOTIFICATIONS_STORAGE_KEY);
+      setPushActive(false);
       setCurrentPreference("disabled");
+      const id = localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY);
+      if (id) {
+        localStorage.setItem(PUSH_PENDING_DELETE_STORAGE_KEY, id);
+        await api.deletePushSubscription(id).then(() => {
+          localStorage.removeItem(PUSH_PENDING_DELETE_STORAGE_KEY);
+          localStorage.removeItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY);
+        }).catch(() => undefined);
+      }
+      const registration = await navigator.serviceWorker.ready;
+      await (await registration.pushManager.getSubscription())?.unsubscribe().catch(() => false);
       return;
     }
     const permission = Notification.permission === "granted"
       ? "granted"
       : await Notification.requestPermission();
-    if (permission === "granted") {
-      localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, "1");
-      setCurrentPreference("enabled");
-    } else {
+    if (permission !== "granted") {
       localStorage.removeItem(NOTIFICATIONS_STORAGE_KEY);
       setCurrentPreference(permission === "denied" ? "denied" : "prompt");
-      if (permission === "denied") {
-        dispatchNotice("Notifications are blocked in this browser's site settings.");
-      }
+      if (permission === "denied") dispatchNotice("Notifications are blocked in this browser's site settings.");
+      return;
     }
-  }, [currentPreference]);
+    localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, "1");
+    if (!pushSupported()) {
+      setPushActive(false);
+      setCurrentPreference("enabled");
+      dispatchNotice("Background push is unavailable here. On iPhone or iPad, add the console to the Home Screen over HTTPS; until then the page must remain open.");
+      return;
+    }
+    await reconcile(true);
+    const id = localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY);
+    if (id) {
+      await api.testPushSubscription(id).catch(() => {
+        dispatchNotice("Push was connected, but the test notification could not be queued.");
+      });
+    } else {
+      localStorage.removeItem(NOTIFICATIONS_STORAGE_KEY);
+      setCurrentPreference("degraded");
+      dispatchNotice("Push could not be connected. Reload after the service worker finishes updating and try again.");
+    }
+  }, [currentPreference, reconcile]);
+
+  useEffect(() => {
+    if (!store.bootstrap) return;
+    void reconcile(Notification.permission === "granted");
+  }, [reconcile, store.bootstrap]);
+
+  useEffect(() => {
+    const onPending = (event: Event) => {
+      if (!pushActive || document.visibilityState !== "visible" || !document.hasFocus()) return;
+      const detail = (event as CustomEvent<unknown>).detail;
+      if (!isPendingPushDetail(detail) || store.selectedThread?.id !== detail.threadId) return;
+      const subscriptionId = localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY);
+      if (!subscriptionId) return;
+      void api.acknowledgePushEvent(detail.eventId, subscriptionId, detail.ackToken).catch(() => undefined);
+    };
+    window.addEventListener(PUSH_PENDING_EVENT_TYPE, onPending);
+    return () => window.removeEventListener(PUSH_PENDING_EVENT_TYPE, onPending);
+  }, [pushActive, store.selectedThread?.id]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent<unknown>) => {
       const data = event.data;
       if (typeof data !== "object" || data === null || Array.isArray(data)) return;
       const payload = data as { type?: unknown; threadId?: unknown };
+      if (payload.type === PUSH_CHANGE_MESSAGE_TYPE) {
+        void reconcile(true);
+        return;
+      }
       if (payload.type !== NOTIFICATION_MESSAGE_TYPE || typeof payload.threadId !== "string") return;
       pendingThreadSelection.current = payload.threadId;
       if (store.threads.some((thread) => thread.id === payload.threadId)) {
@@ -140,7 +256,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
     };
     navigator.serviceWorker?.addEventListener("message", onMessage);
     return () => navigator.serviceWorker?.removeEventListener("message", onMessage);
-  }, [store]);
+  }, [reconcile, store]);
 
   useEffect(() => {
     const threadId = pendingThreadSelection.current;
@@ -160,6 +276,8 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
     window.history.replaceState(window.history.state, "", url);
   }, [store]);
 
+  // Keep the existing page-derived response path only as a compatibility
+  // fallback for browsers that do not yet have a confirmed server subscription.
   useEffect(() => {
     if (!store.bootstrap) return;
     const nextRuns = runSnapshots(store.bootstrap.threads);
@@ -171,7 +289,8 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
       if (notifiedTurns.current.has(arrival.turnId)) continue;
       notifiedTurns.current.add(arrival.turnId);
       if (
-        currentPreference !== "enabled" ||
+        pushActive ||
+        (currentPreference !== "enabled" && currentPreference !== "degraded") ||
         Notification.permission !== "granted" ||
         (document.visibilityState === "visible" && document.hasFocus())
       ) continue;
@@ -200,7 +319,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
         }
       })();
     }
-  }, [currentPreference, store]);
+  }, [currentPreference, pushActive, store]);
 
   return (
     <NotificationsContext.Provider value={{ preference: currentPreference, toggle }}>
@@ -211,23 +330,24 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
 
 export function NotificationBell() {
   const notifications = useContext(NotificationsContext);
-  if (!notifications) {
-    throw new Error("NotificationBell must be used inside NotificationsProvider.");
-  }
+  if (!notifications) throw new Error("NotificationBell must be used inside NotificationsProvider.");
   const enabled = notifications.preference === "enabled";
   const unavailable = notifications.preference === "unsupported";
   const blocked = notifications.preference === "denied";
+  const degraded = notifications.preference === "degraded";
   const label = enabled
-    ? "Disable response notifications"
+    ? "Disable push notifications"
     : blocked
-      ? "Response notifications blocked"
+      ? "Push notifications blocked"
       : unavailable
-        ? "Response notifications unavailable"
-        : "Enable response notifications";
+        ? "Push notifications unavailable"
+        : degraded
+          ? "Reconnect push notifications"
+          : "Enable push notifications";
   return (
     <button
       type="button"
-      className={`icon-button header-notifications${enabled ? " is-enabled" : ""}`}
+      className={`icon-button header-notifications${enabled ? " is-enabled" : ""}${degraded ? " is-degraded" : ""}`}
       aria-label={label}
       aria-pressed={enabled}
       title={label}
@@ -237,4 +357,64 @@ export function NotificationBell() {
       <Icon name={blocked ? "bell-off" : "bell"} size={17} />
     </button>
   );
+}
+
+async function assertServiceWorkerVersion(push: PushBootstrap): Promise<boolean> {
+  const controller = navigator.serviceWorker.controller;
+  if (!controller || typeof MessageChannel === "undefined") return false;
+  return await new Promise<boolean>((resolvePromise) => {
+    const channel = new MessageChannel();
+    const timer = window.setTimeout(() => resolvePromise(false), 1_000);
+    channel.port1.onmessage = (event: MessageEvent<unknown>) => {
+      window.clearTimeout(timer);
+      const data = event.data as { version?: unknown } | null;
+      resolvePromise(data?.version === push.serviceWorkerVersion);
+    };
+    controller.postMessage({ type: SERVICE_WORKER_VERSION_REQUEST }, [channel.port2]);
+  });
+}
+
+async function finishPendingDeletion(): Promise<void> {
+  const pending = localStorage.getItem(PUSH_PENDING_DELETE_STORAGE_KEY);
+  if (!pending) return;
+  await api.deletePushSubscription(pending);
+  localStorage.removeItem(PUSH_PENDING_DELETE_STORAGE_KEY);
+  if (localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY) === pending) {
+    localStorage.removeItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY);
+  }
+}
+
+function applicationServerKey(value: string): Uint8Array<ArrayBuffer> {
+  const normalized = value.replace(/-/gu, "+").replace(/_/gu, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const binary = atob(padded);
+  const bytes = new Uint8Array(new ArrayBuffer(binary.length));
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+function isPendingPushDetail(value: unknown): value is PendingPushDetail {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.eventId === "string"
+    && typeof record.threadId === "string"
+    && typeof record.ackToken === "string";
+}
+
+function plainNotificationPreview(value: string): string {
+  const text = value
+    .slice(0, 8_192)
+    .replace(/```[^\n]*\n?/gu, " ")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/gu, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/gu, "$1")
+    .replace(/<[^>]*>/gu, " ")
+    .replace(/^\s{0,3}(?:#{1,6}|>|[-+*]|\d+[.)])\s+/gmu, "")
+    .replace(/`+/gu, "")
+    .replace(/\b(authorization\s*:\s*)(?:basic|bearer|token)\s+[^\s,;]+/giu, "$1[redacted]")
+    .replace(/\b((?:api[_-]?key|access[_-]?token|password|secret|token)\s*[:=]\s*)[^\s,;]+/giu, "$1[redacted]")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  const points = [...text];
+  return points.length <= 180 ? text : `${points.slice(0, 179).join("").trimEnd()}…`;
 }
