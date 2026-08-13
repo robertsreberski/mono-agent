@@ -588,8 +588,22 @@ describe("Web Push safety and persistence", () => {
     expect(webPushPreview('{"password":"x"}')).toBe('{"password":"[redacted]"}');
     expect(webPushPreview('{"password":"two words"}')).toBe('{"password":"[redacted]"}');
     expect(webPushPreview("'password': 'another-secret-value'")).toBe("'password': '[redacted]'");
-    expect(webPushPreview('password: "two words"')).toBe('password: [redacted]');
-    expect(webPushPreview('--password "two words"')).toBe('--password [redacted]');
+    expect(webPushPreview('password: "two words"')).toBe('password: "[redacted]"');
+    expect(webPushPreview('--password "two words"')).toBe('--password "[redacted]"');
+    expect(webPushPreview('password: "prefix""secret suffix" tail')).toBe("password: [redacted] tail");
+    expect(webPushPreview('--token "prefix""secret suffix" tail')).toBe("--token [redacted] tail");
+    expect(webPushPreview('password=alpha"beta gamma" tail')).toBe("password=[redacted] tail");
+    expect(webPushPreview('password="alpha"beta gamma')).toBe("password=[redacted] gamma");
+    expect(webPushPreview("password=ab}cd tail")).toBe("password=[redacted] tail");
+    expect(webPushPreview("password=ab)cd tail")).toBe("password=[redacted] tail");
+    expect(webPushPreview("password=ab]cd tail")).toBe("password=[redacted] tail");
+    expect(webPushPreview("token: abc,secret: def")).toBe("token: [redacted],secret: [redacted]");
+    expect(webPushPreview("token: abc;password: def")).toBe("token: [redacted];password: [redacted]");
+    expect(webPushPreview("password=ab}token: leaked")).toBe("password=[redacted]}token: [redacted]");
+    expect(webPushPreview("password=ab)secret: leaked")).toBe("password=[redacted])secret: [redacted]");
+    expect(webPushPreview("password=ab]password: leaked")).toBe("password=[redacted]]password: [redacted]");
+    expect(webPushPreview('{"password":"alpha","host":"db.example"}')).toBe('{"password":"[redacted]","host":"db.example"}');
+    expect(webPushPreview('--password "two words" --port 5432')).toBe('--password "[redacted]" --port 5432');
     expect(webPushPreview("token\u202E: my-secret-value")).toBe("token: [redacted]");
     expect(webPushPreview("Bearer\u200B abcdefghijklmnop")).toBe("Bearer [redacted]");
     expect(webPushPreview("Authorization: Bearer abcdefgh\u200Bijklmnop")).toBe("Authorization: [redacted]");
@@ -601,6 +615,19 @@ describe("Web Push safety and persistence", () => {
     expect(webPushPreview("Bearer abcdefgh\u034Fijklmnop")).toBe("Bearer [redacted]");
     expect(webPushPreview("Bearer abcdefgh\u3164ijklmnop")).toBe("Bearer [redacted]");
     expect(webPushPreview("Bearer abcdefgh\uFFF9ijklmnop")).toBe("Bearer [redacted]");
+    expect(webPushPreview("Bearer\u200Babcdefghijklmnop")).toBe("Bearer [redacted]");
+    expect(webPushPreview("Authorization\u200B:\u200BBearer\u200Babcdefghijklmnop")).toBe("Authorization:[redacted]");
     expect(webPushPreview("token&#x202e;: encoded-secret-value")).toBe("token: [redacted]");
+    expect(webPushPreview(`password: "${"\\".repeat(7_000)}`)).toBe("password: [redacted]");
+
+    for (const source of [
+      '{"password":"alpha","host":"db.example"}',
+      '--token "prefix""secret suffix" --port 5432',
+      "Bearer\u200Babcdefghijklmnop",
+      `password: "${"\\".repeat(7_000)}`,
+    ]) {
+      const once = webPushPreview(source);
+      expect(webPushPreview(once)).toBe(once);
+    }
   });
 });

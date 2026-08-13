@@ -238,7 +238,7 @@ describe("response notifications", () => {
         role: "assistant",
         parts: [{
           type: "text",
-          text: 'password: "two words" Authorization: Bearer abcdefgh\u200Bijklmnop Bearer abcdefgh\uFEFFqrstuvwx token abcdefgh\u2060ijklmnop basic abcdefgh\u034Fqrstuvwx Bearer abcdefgh\uFFF9ijklmnop',
+          text: 'password: "two words" --token "prefix""secret suffix" --port 5432 Authorization\u200B:\u200BBearer\u200Babcdefghijklmnop Authorization: Bearer abcdefgh\u200Bijklmnop Bearer\u200Babcdefghijklmnop',
         }],
         attachments: [],
         createdAt: "2026-07-20T10:00:00.000Z",
@@ -246,8 +246,75 @@ describe("response notifications", () => {
         status: "complete",
       }],
     }, "turn-separator");
-    expect(embeddedSeparator).toBe("password: [redacted] Authorization: [redacted] Bearer [redacted] token [redacted] basic [redacted] Bearer [redacted]");
-    expect(embeddedSeparator).not.toMatch(/two words|abcdefgh|ijklmnop|qrstuvwx|[\u00ad\u034f\u200b-\u200f\u2060-\u2064\u3164\ufeff\ufff9]/u);
+    expect(embeddedSeparator).toBe('password: "[redacted]" --token [redacted] --port 5432 Authorization:[redacted] Authorization: [redacted] Bearer [redacted]');
+    expect(embeddedSeparator).not.toMatch(/two words|prefix|secret suffix|abcdefgh|ijklmnop|qrstuvwx|[\u00ad\u034f\u200b-\u200f\u2060-\u2064\u3164\ufeff\ufff9]/u);
+
+    const formatVariants = responsePreview({
+      thread: complete,
+      messages: [{
+        id: "format-response",
+        threadId: complete.id,
+        turnId: "turn-format",
+        role: "assistant",
+        parts: [{
+          type: "text",
+          text: "Bearer abcdefgh\uFEFFqrstuvwx token abcdefgh\u2060ijklmnop basic abcdefgh\u034Fqrstuvwx Bearer abcdefgh\uFFF9ijklmnop",
+        }],
+        attachments: [],
+        createdAt: "2026-07-20T10:00:00.000Z",
+        updatedAt: "2026-07-20T10:00:00.000Z",
+        status: "complete",
+      }],
+    }, "turn-format");
+    expect(formatVariants).toBe("Bearer [redacted] token [redacted] basic [redacted] Bearer [redacted]");
+
+    const punctuatedPasswords = responsePreview({
+      thread: complete,
+      messages: [{
+        id: "punctuated-response",
+        threadId: complete.id,
+        turnId: "turn-punctuated",
+        role: "assistant",
+        parts: [{ type: "text", text: "password=ab}cd password=ab)cd password=ab]cd tail" }],
+        attachments: [],
+        createdAt: "2026-07-20T10:00:00.000Z",
+        updatedAt: "2026-07-20T10:00:00.000Z",
+        status: "complete",
+      }],
+    }, "turn-punctuated");
+    expect(punctuatedPasswords).toBe("password=[redacted] password=[redacted] password=[redacted] tail");
+
+    const chainedCredentials = responsePreview({
+      thread: complete,
+      messages: [{
+        id: "chained-response",
+        threadId: complete.id,
+        turnId: "turn-chained",
+        role: "assistant",
+        parts: [{ type: "text", text: "token: abc,secret: def token: ghi;password: jkl password=ab}token: leaked" }],
+        attachments: [],
+        createdAt: "2026-07-20T10:00:00.000Z",
+        updatedAt: "2026-07-20T10:00:00.000Z",
+        status: "complete",
+      }],
+    }, "turn-chained");
+    expect(chainedCredentials).toBe("token: [redacted],secret: [redacted] token: [redacted];password: [redacted] password=[redacted]}token: [redacted]");
+
+    const malformed = responsePreview({
+      thread: complete,
+      messages: [{
+        id: "malformed-response",
+        threadId: complete.id,
+        turnId: "turn-malformed",
+        role: "assistant",
+        parts: [{ type: "text", text: `password: "${"\\".repeat(7_000)}` }],
+        attachments: [],
+        createdAt: "2026-07-20T10:00:00.000Z",
+        updatedAt: "2026-07-20T10:00:00.000Z",
+        status: "complete",
+      }],
+    }, "turn-malformed");
+    expect(malformed).toBe("password: [redacted]");
   });
 
   it("marks cron and webhook arrivals in browser notification titles", () => {
