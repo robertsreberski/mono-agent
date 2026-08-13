@@ -287,6 +287,7 @@ splitTextByCodePoints
 splitTextForChat
 suppressesNotification
 toolHintFor
+toolNameLeaf
 writeSettingsJson
 ```
 

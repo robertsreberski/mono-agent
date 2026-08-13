@@ -52,13 +52,26 @@ async function json(response: Response): Promise<Record<string, unknown>> {
   return response.json() as Promise<Record<string, unknown>>;
 }
 
+function pushSubscriptionBody(endpoint = "https://push.example.test/send/opaque") {
+  const key = Buffer.alloc(65);
+  key[0] = 4;
+  return {
+    endpoint,
+    expirationTime: null,
+    keys: {
+      p256dh: key.toString("base64url"),
+      auth: Buffer.alloc(16, 9).toString("base64url"),
+    },
+  };
+}
+
 describe("web HTTP server", () => {
   it("defaults to a LAN bind with no application auth or CORS grant", async () => {
     const { handle, baseUrl } = await start();
     expect(handle.host).toBe("0.0.0.0");
     const health = await fetch(`${baseUrl}/healthz`);
     expect(health.status).toBe(200);
-    expect(await health.json()).toEqual({ status: "ok", version: 1 });
+    expect(await health.json()).toEqual({ status: "ok", version: 1, push: "ok" });
     const root = await fetch(`${baseUrl}/`);
     expect(root.status).toBe(200);
     expect(await root.text()).toContain("<title>web</title>");
@@ -72,6 +85,155 @@ describe("web HTTP server", () => {
     const body = await bootstrap.json() as { console: unknown; agents: unknown[] };
     expect(body.console).toEqual({ hostName: hostname(), theme: "evergreen" });
     expect(body.agents[0]).toMatchObject({ sourceId: "agent-one", status: "online", supportsAttachments: true });
+    expect(body).toMatchObject({
+      push: {
+        applicationServerKey: expect.any(String),
+        keyFingerprint: expect.any(String),
+        serviceWorkerVersion: 2,
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("privateKey");
+  });
+
+  it("registers only exact-origin public push endpoints and never returns endpoint secrets", async () => {
+    const { baseUrl } = await start({
+      pushDnsResolver: async () => [{ address: "203.0.114.10", family: 4 }],
+      pushSendImpl: async () => ({ statusCode: 201, headers: {} }),
+      pushDispatchIntervalMs: 5,
+    });
+    const missingOrigin = await fetch(`${baseUrl}/api/v1/push/subscriptions`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(pushSubscriptionBody()),
+    });
+    expect(missingOrigin.status).toBe(403);
+
+    const registered = await fetch(`${baseUrl}/api/v1/push/subscriptions`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify(pushSubscriptionBody()),
+    });
+    expect(registered.status).toBe(201);
+    const registeredBody = await json(registered) as { subscription: { id: string } };
+    expect(registeredBody.subscription).toMatchObject({
+      id: expect.any(String),
+      state: "active",
+      keyFingerprint: expect.any(String),
+    });
+    expect(JSON.stringify(registeredBody)).not.toContain("push.example.test");
+    expect(JSON.stringify(registeredBody)).not.toContain(pushSubscriptionBody().keys.auth);
+
+    const status = await fetch(`${baseUrl}/api/v1/push/subscriptions/${registeredBody.subscription.id}`, {
+      headers: { "x-mono-agent-web-origin": baseUrl },
+    });
+    expect(status.status).toBe(200);
+    expect(JSON.stringify(await status.json())).not.toContain("endpoint");
+    const missingReadOrigin = await fetch(`${baseUrl}/api/v1/push/subscriptions/${registeredBody.subscription.id}`);
+    expect(missingReadOrigin.status).toBe(403);
+    const crossSiteStatus = await fetch(`${baseUrl}/api/v1/push/subscriptions/${registeredBody.subscription.id}`, {
+      headers: { "sec-fetch-site": "cross-site", "x-mono-agent-web-origin": baseUrl },
+    });
+    expect(crossSiteStatus.status).toBe(403);
+
+    const test = await fetch(`${baseUrl}/api/v1/push/subscriptions/${registeredBody.subscription.id}/test`, {
+      method: "POST",
+      headers: { origin: baseUrl },
+    });
+    expect(test.status).toBe(202);
+    const rateLimited = await fetch(`${baseUrl}/api/v1/push/subscriptions/${registeredBody.subscription.id}/test`, {
+      method: "POST",
+      headers: { origin: baseUrl },
+    });
+    expect(rateLimited.status).toBe(429);
+
+    const ack = await fetch(`${baseUrl}/api/v1/push/events/not-enumerated/ack`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({ subscriptionId: registeredBody.subscription.id, ackToken: "x".repeat(32) }),
+    });
+    expect(ack.status).toBe(204);
+
+    const deleted = await fetch(`${baseUrl}/api/v1/push/subscriptions/${registeredBody.subscription.id}`, {
+      method: "DELETE",
+      headers: { origin: baseUrl },
+    });
+    expect(deleted.status).toBe(204);
+  });
+
+  it("accepts the worker origin claim and atomically retires rotated subscriptions", async () => {
+    const { baseUrl } = await start({
+      pushDnsResolver: async () => [{ address: "203.0.114.10", family: 4 }],
+    });
+    const oldEndpoint = "https://push.example.test/send/old";
+    const oldResponse = await fetch(`${baseUrl}/api/v1/push/subscriptions`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify(pushSubscriptionBody(oldEndpoint)),
+    });
+    const old = (await json(oldResponse) as { subscription: { id: string } }).subscription;
+
+    const workerReplacement = await fetch(`${baseUrl}/api/v1/push/subscriptions`, {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        "x-mono-agent-web-origin": baseUrl,
+      },
+      body: JSON.stringify({
+        ...pushSubscriptionBody("https://push.example.test/send/worker-rotated"),
+        previousEndpoint: oldEndpoint,
+      }),
+    });
+    expect(workerReplacement.status).toBe(201);
+    const worker = (await json(workerReplacement) as { subscription: { id: string } }).subscription;
+    expect(await json(await fetch(`${baseUrl}/api/v1/push/subscriptions/${old.id}`, {
+      headers: { "x-mono-agent-web-origin": baseUrl },
+    }))).toMatchObject({ subscription: { state: "expired", lastErrorCode: "subscription_rotated" } });
+
+    const pageReplacement = await fetch(`${baseUrl}/api/v1/push/subscriptions`, {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        "x-mono-agent-web-origin": baseUrl,
+      },
+      body: JSON.stringify({
+        ...pushSubscriptionBody("https://push.example.test/send/page-rotated"),
+        previousSubscriptionId: worker.id,
+      }),
+    });
+    expect(pageReplacement.status).toBe(201);
+    expect(await json(await fetch(`${baseUrl}/api/v1/push/subscriptions/${worker.id}`, {
+      headers: { "x-mono-agent-web-origin": baseUrl },
+    }))).toMatchObject({ subscription: { state: "expired", lastErrorCode: "subscription_rotated" } });
+    expect(await json(pageReplacement)).toMatchObject({ subscription: { state: "active" } });
+  });
+
+  it("rejects push endpoints that resolve to local, Tailscale, or mixed addresses", async () => {
+    const { baseUrl } = await start({
+      pushDnsResolver: async () => [
+        { address: "203.0.114.10", family: 4 },
+        { address: "100.64.103.59", family: 4 },
+      ],
+    });
+    const response = await fetch(`${baseUrl}/api/v1/push/subscriptions`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify(pushSubscriptionBody()),
+    });
+    expect(response.status).toBe(400);
+    expect(await json(response)).toMatchObject({ error: { code: "invalid_push_subscription" } });
+  });
+
+  it("returns a retryable service error when push endpoint DNS is temporarily unavailable", async () => {
+    const { baseUrl } = await start({
+      pushDnsResolver: async () => { throw new Error("EAI_AGAIN"); },
+    });
+    const response = await fetch(`${baseUrl}/api/v1/push/subscriptions`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify(pushSubscriptionBody()),
+    });
+    expect(response.status).toBe(503);
+    expect(await json(response)).toMatchObject({ error: { code: "push_endpoint_unresolvable" } });
   });
 
   it("publishes the selected theme and host-specific install manifest", async () => {

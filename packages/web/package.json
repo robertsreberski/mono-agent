@@ -37,10 +37,12 @@
     "@mono-agent/agent-contracts": "workspace:0.18.3",
     "@mono-agent/config": "workspace:0.18.3",
     "@mono-agent/observability": "workspace:0.18.3",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "web-push": "3.6.7"
   },
   "devDependencies": {
-    "@types/express": "^5.0.2"
+    "@types/express": "^5.0.2",
+    "@types/web-push": "3.6.4"
   },
   "publishConfig": {
     "access": "public"

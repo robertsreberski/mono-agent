@@ -554,7 +554,14 @@ describe("runWebCommand", () => {
     };
     const sleep = vi.fn(async () => undefined);
     const code = await runWebCommand(
-      { positionals: ["start"], theme: "terracotta", env: { MONO_AGENT_WEB_ALLOWED_HOSTS: "console.home.arpa" } },
+      {
+        positionals: ["start"],
+        theme: "terracotta",
+        env: {
+          MONO_AGENT_WEB_ALLOWED_HOSTS: "console.home.arpa",
+          MONO_AGENT_WEB_PUSH_SUBJECT: "mailto:owner@example.test",
+        },
+      },
       {
         platform: "darwin",
         homeDir: home,
@@ -577,6 +584,7 @@ describe("runWebCommand", () => {
     expect(dnsReads).toBeGreaterThanOrEqual(2);
     const plist = await readFile(paths.launchd.plistPath, "utf8");
     expect(plist).toContain("<string>MONO_AGENT_WEB_ALLOWED_HOSTS=console.home.arpa,host.example.ts.net</string>");
+    expect(plist).toContain("<string>MONO_AGENT_WEB_PUSH_SUBJECT=mailto:owner@example.test</string>");
     expect(plist).toContain("<string>--theme</string>");
     expect(plist).toContain("<string>terracotta</string>");
     expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).toMatchObject({ theme: "terracotta" });
@@ -883,17 +891,37 @@ describe("webHealthcheck", () => {
     fetchMock.mockResolvedValueOnce(new Response("unrelated service", { status: 200, headers: { "content-type": "text/plain" } }));
     await expect(webHealthcheck("http://127.0.0.1:5050/healthz")).resolves.toBe(false);
 
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: "ok", version: 1, extra: true }), {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: "ok", version: 1, push: "ok", extra: true }), {
       status: 200,
       headers: { "content-type": "application/json" },
     }));
     await expect(webHealthcheck("http://127.0.0.1:5050/healthz")).resolves.toBe(false);
 
-    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: "ok", version: 1 }), {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: "ok", version: 1, push: "ok" }), {
       status: 200,
       headers: { "content-type": "application/json; charset=utf-8" },
     }));
     await expect(webHealthcheck("http://127.0.0.1:5050/healthz")).resolves.toBe(true);
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: "ok", version: 1, push: "degraded" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    await expect(webHealthcheck("http://127.0.0.1:5050/healthz")).resolves.toBe(true);
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status: "ok", version: 1, push: "unknown" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    await expect(webHealthcheck("http://127.0.0.1:5050/healthz")).resolves.toBe(false);
+
+    for (const status of ["ok", "degraded"]) {
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ status, version: 1 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+      await expect(webHealthcheck("http://127.0.0.1:5050/healthz")).resolves.toBe(true);
+    }
   });
 });
 

@@ -137,14 +137,34 @@ receives one completed `↪️ Steered: “<safe preview>”` tool row with resu
 `Applied to current run`. The original follow-up remains the full human message;
 the synthetic activity carries only a one-line, redacted, 40-code-point preview.
 
-The header bell explicitly enables browser notifications for successful
-responses that arrive while the console is hidden or unfocused. Notifications
-include a short response preview and open the exact conversation. Permission
-is requested only from the bell, the preference is browser-origin-local, and
-the page/PWA must remain alive: this is not a Web Push subscription and does
-not notify after the application is fully closed. Cron/webhook notification
-threads use the same bell and are marked `CRON` / `WEBHOOK` in the sidebar,
-header, and browser notification title.
+The header bell explicitly enables standards-based Web Push. Permission and
+subscription creation happen only after that click; the server keeps one
+owner-private VAPID identity, subscription secrets, and a durable SQLite
+outbox. Completed responses, cron/webhook `web:new` results, blocking `AskUser`
+questions, and failed/cancelled/interrupted runs can therefore notify an
+installed PWA even after the console is closed. Payloads contain only a
+redacted, plain-text, 180-code-point preview and open the exact same-origin
+conversation. A focused browser suppresses an unattempted push only after an
+SSE HMAC acknowledgement for the exact visible conversation and the
+subscription id stored by that origin. This is origin-scoped suppression, not
+device authentication; LAN/tailnet reachability remains the console access
+boundary. Late or lost acknowledgements fail open and deliver. Browsers without a confirmed push
+subscription retain the older hidden/unfocused page-notification fallback.
+
+The web service and its outbox remain self-hosted. As required by the Web Push
+standard, the encrypted request is relayed by the push service selected by the
+browser vendor. The server validates and re-resolves public push endpoints,
+pins each HTTPS request to a validated address, never follows redirects, and
+never returns or logs endpoint/key material. On iPhone and iPad, use the HTTPS
+installed-PWA form (Add to Home Screen) before enabling the bell.
+
+The browser stores only the opaque server subscription id and a one-way
+endpoint digest. A service-worker rotation atomically swaps the old server row
+even when no console window is open, with bounded retries for transient repair
+failures; load-time reconciliation repairs the same case on browsers that do
+not emit that lifecycle event or outlive the retry window. Transient status or
+DNS failures retain the current subscription for retry, while confirmed expiry,
+application-key rotation, and explicit disable replace or retire it.
 
 An app-managed cron job or webhook endpoint can set `notify: true` with the
 exact destination `notifyConversationId: "web:new"`. Each distinct result gets
@@ -166,14 +186,16 @@ the turn also cancels its pending form.
 1. `server.ts` accepts the versioned browser API, staged uploads, and SSE
    subscriptions, then delegates stateful work to `WebConsoleService`.
 2. The service discovers agents from the trace-source registry, persists agent,
-   thread, message, part, turn, live-input, upload, and preference records through the
-   SQLite store, and drives each agent over its loopback operator endpoint.
+   thread, message, part, turn, live-input, upload, preference, Web Push
+   subscription, event, and delivery records through the SQLite store, and
+   drives each agent over its loopback operator endpoint.
 3. Service mutations publish invalidations. Browsers consume `/api/v1/events`
    and refetch authoritative projections, including the selected agent's
    memory-only live skill registry, so reloads and concurrent tabs do not own or
    interrupt upstream turns.
 4. The bundled assistant-ui webapp maps those DTOs into its external store,
-   thread list, messages, composer, attachments, activity, and notification UI.
+   thread list, messages, composer, attachments, activity, and push-subscription
+   UI; its service worker handles background delivery and same-origin clicks.
 5. `deliverWebNotification` reads the owner-private live ingress record and
    performs one bearer-authenticated loopback delivery. The service first
    appends the result to agent history, then atomically exposes an idempotent
@@ -267,6 +289,9 @@ WebMessagePart
 WebMessageStatus
 WebModelOption
 WebNotificationTriggerKind
+WebPushBootstrap
+WebPushSubscriptionState
+WebPushSubscriptionStatus
 WebQuote
 WebRunState
 WebRunStatus
@@ -312,9 +337,15 @@ The browser API is rooted at `/api/v1`:
 - `GET /threads/:id/ask` and `POST /threads/:id/ask` for the current structured
   `AskUser` snapshot and atomic answer submission
 - `POST /uploads`, `PUT/GET /uploads/:id/content`, and `DELETE /uploads/:id`
+- `PUT/GET/DELETE /push/subscriptions[/:id]`, `POST /push/subscriptions/:id/test`,
+  and `POST /push/events/:eventId/ack`; the status read carries the exact
+  `X-Mono-Agent-Web-Origin` browser-origin claim and returns no endpoint or key
+  material
 - `GET /events` (SSE)
 
 `GET /healthz` is intentionally outside the versioned API for service probes.
+Its compatibility-stable `status` remains `ok` while the additive `push` field
+reports `ok` or `degraded`.
 The additive `WebBootstrap.console` object carries the server-derived
 `hostName` and effective `theme`; the browser API remains version `1`.
 `POST /threads/:id/turns` accepts optional

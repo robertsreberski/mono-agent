@@ -304,7 +304,7 @@ up after cache expiry and the next scan completes.
 
 The owning channel's allowlist is the destination boundary for Telegram/Slack: a delivery outside `telegram.allowedChatIds` / `slack.allowedChannelIds` (or `allowAllChats` / `allowAllChannels`) is refused. WhatsApp is not notify-capable. `web:new` is explicit-only and talks to the active local web service through an owner-private loopback ingress. The service records the delivered answer into the generated thread's agent history before exposing the completed thread, marks it **CRON** or **WEBHOOK**, and leaves the currently selected thread unchanged. Duplicate delivery keys return the existing thread; conflicting reuse fails. If the web service is unavailable, delivery is skipped after one five-second attempt—there is no retry or outbox. Delivery remains best-effort: a skipped or failed notification does not change the cron job result or the webhook's HTTP response / async stored status.
 
-When the web console's existing header bell is enabled, a new marked conversation also uses the same response-arrival browser notification path. As with ordinary web responses, the page/PWA must still be alive and hidden or unfocused; this is not background Web Push.
+When the web console's header bell is enabled, a new marked conversation is committed to the durable Web Push outbox in the same transaction that exposes the history-backed thread. It can notify an installed PWA after the console closes. The payload is a bounded, redacted plain-text preview; the full result remains only in conversation history. Browsers without a confirmed push subscription retain the hidden/unfocused page-notification fallback.
 
 ### Staying silent ("nothing to report")
 

@@ -57,7 +57,7 @@
     "@mono-agent/tui": "workspace:0.18.3",
     "@mono-agent/web": "workspace:0.18.3",
     "@mono-agent/webhook-adapter": "workspace:0.18.3",
-    "undici": "8.7.0",
+    "undici": "8.9.0",
     "zod": "^4.4.3"
   },
   "publishConfig": {
