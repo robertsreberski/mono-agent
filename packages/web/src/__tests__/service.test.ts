@@ -159,6 +159,8 @@ describe("WebService", () => {
     });
     expect(JSON.stringify(askEvent)).not.toContain("private framing");
     expect(JSON.stringify(askEvent)).not.toContain("Ship now");
+    // A forged token is intentionally a no-op; the direct store call proves
+    // the delivery remained suppressible.
     service.acknowledgeWebPushEvent(pendingEvents[0]!.eventId, subscription.id, "x".repeat(32));
     expect(service.store.acknowledgeWebPushEvent(pendingEvents[0]!.eventId, subscription.id)).toBe(true);
     await service.submitAsk(thread.id, "ask-1", [{ questionId: "q1", selectedOptionIds: ["yes"] }]);
@@ -166,8 +168,109 @@ describe("WebService", () => {
     await waitFor(() => pendingEvents.length >= 2);
     const terminal = pendingEvents.at(-1)!;
     service.acknowledgeWebPushEvent(terminal.eventId, subscription.id, terminal.ackToken);
+    expect(service.store.acknowledgeWebPushEvent(terminal.eventId, subscription.id)).toBe(false);
     await service.stop();
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("skips expired pending AskUser snapshots instead of failing the read", async () => {
+    const instant = new Date("2026-08-13T08:00:00.000Z");
+    const pendingAsk = {
+      interactionId: "ask-expired",
+      message: "private framing",
+      questions: [{
+        id: "q1",
+        header: "Review",
+        question: "Approve the change?",
+        options: [],
+        multiSelect: false,
+      }],
+      answers: [],
+      activeQuestionIndex: 0,
+      status: "pending",
+      createdAt: "2026-08-13T07:00:00.000Z",
+      expiresAt: "2026-08-13T07:59:59.000Z",
+    };
+    const service = await createService({
+      clock: () => instant,
+      fetchImpl: operatorFetch({ supportsAskUser: true, pendingAsk }),
+      pushDnsResolver: async () => [{ address: "203.0.114.10", family: 4 }],
+    });
+    const key = Buffer.alloc(65);
+    key[0] = 4;
+    await service.registerWebPushSubscription({
+      endpoint: "https://push.example.test/send/expired-ask",
+      p256dh: key.toString("base64url"),
+      auth: Buffer.alloc(16, 4).toString("base64url"),
+      siteOrigin: "https://console.example.test",
+    });
+    const thread = service.createThread("agent-one");
+
+    await expect(service.pendingAsk(thread.id)).resolves.toMatchObject({ interactionId: "ask-expired" });
+    expect(service.store.webPushEventByLogicalKey("ask:ask-expired")).toBeUndefined();
+    await service.stop();
+  });
+
+  it("aborts and awaits an AskUser watcher before closing the store", async () => {
+    let markAskStarted: (() => void) | undefined;
+    const askStarted = new Promise<void>((resolvePromise) => { markAskStarted = resolvePromise; });
+    let askAborted = false;
+    const snapshot = {
+      interactionId: "ask-shutdown",
+      message: "private framing",
+      questions: [{
+        id: "q1",
+        header: "Deploy",
+        question: "Ship now?",
+        options: [],
+        multiSelect: false,
+      }],
+      answers: [],
+      activeQuestionIndex: 0,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    const baseFetch = operatorFetch({
+      supportsAskUser: true,
+      turns: () => new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`${JSON.stringify({
+            kind: "event",
+            event: { type: "tool_call_started", id: "ask-tool", name: "AskUser" },
+          })}\n`));
+          setTimeout(() => {
+            controller.enqueue(new TextEncoder().encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+            controller.close();
+          }, 25);
+        },
+      }),
+    });
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/v1/conversations/") && url.endsWith("/ask") && init?.method !== "POST") {
+        markAskStarted?.();
+        return await new Promise<Response>((resolvePromise) => {
+          const finish = () => {
+            askAborted = true;
+            resolvePromise(Response.json({ ask: snapshot }));
+          };
+          if (init?.signal?.aborted === true) finish();
+          else init?.signal?.addEventListener("abort", finish, { once: true });
+        });
+      }
+      return await baseFetch(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    const enqueue = vi.spyOn(service.store, "enqueueWebPushEvent");
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "ask" });
+    await askStarted;
+
+    await service.stop();
+
+    expect(askAborted).toBe(true);
+    expect(enqueue.mock.calls.some(([input]) => input.logicalKey === "ask:ask-shutdown")).toBe(false);
   });
 
   it("retries an AskUser delivery when its agent is temporarily offline", async () => {

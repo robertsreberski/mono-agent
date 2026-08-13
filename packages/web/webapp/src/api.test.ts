@@ -209,6 +209,36 @@ describe("push subscription API", () => {
       }),
     );
   });
+
+  it("registers a rotated browser subscription with an exact-origin replacement claim", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      subscription: { id: "subscription-two", state: "active", keyFingerprint: "fingerprint" },
+    }, { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const subscription = {
+      endpoint: "https://push.example.test/send/new",
+      expirationTime: null,
+      toJSON: () => ({
+        endpoint: "https://push.example.test/send/new",
+        expirationTime: null,
+        keys: { p256dh: "public-key", auth: "auth-secret" },
+      }),
+    } as unknown as PushSubscription;
+
+    await api.registerPushSubscription(subscription, "subscription-one");
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/push/subscriptions", expect.objectContaining({
+      method: "PUT",
+      headers: expect.objectContaining({ "X-Mono-Agent-Web-Origin": window.location.origin }),
+    }));
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(init.body))).toEqual({
+      endpoint: "https://push.example.test/send/new",
+      expirationTime: null,
+      keys: { p256dh: "public-key", auth: "auth-secret" },
+      previousSubscriptionId: "subscription-one",
+    });
+  });
 });
 
 describe("agent favorites", () => {

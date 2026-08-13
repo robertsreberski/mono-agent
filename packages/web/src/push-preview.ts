@@ -19,6 +19,13 @@ export function webPushPreview(value: unknown, fallback = "Update available."): 
   const source = typeof value === "string" ? value : "";
   let text = [...source].slice(0, MAX_SCAN_CODE_POINTS).join("");
 
+  // Decode first because entities can introduce bidi/control characters, then
+  // remove every invisible separator before Markdown removal or redaction.
+  // Replacing with a space keeps adjacent words and credential labels from
+  // being joined into a new, misleading token.
+  text = decodeEntities(text)
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/gu, " ");
+
   text = text
     .replace(/```[^\n]*\n?/gu, " ")
     .replace(/~~~[^\n]*\n?/gu, " ")
@@ -30,12 +37,13 @@ export function webPushPreview(value: unknown, fallback = "Update available."): 
     .replace(/(^|\s)[*_~]{1,3}([^\s][\s\S]*?)[*_~]{1,3}(?=\s|$|[.,!?;:])/gu, "$1$2")
     .replace(/`+/gu, "");
 
-  text = decodeEntities(text);
   text = redactSecrets(text);
   text = text
-    .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
+  // Keep this second pass: whitespace/Markdown normalization can reveal a
+  // credential shape that was not contiguous in the source text.
+  text = redactSecrets(text);
 
   const safe = text.length > 0 ? text : fallback;
   const points = [...safe];
@@ -65,6 +73,10 @@ function redactSecrets(value: string): string {
     // Authorization headers and common command-line/config assignments.
     .replace(/\b(authorization\s*:\s*)(?:basic|bearer|token)\s+[^\s,;]+/giu, "$1[redacted]")
     .replace(/\b(basic|bearer|token)\s+[a-z\d._~+\/-]{8,}={0,2}\b/giu, "$1 [redacted]")
+    // JSON/config fields may quote both the key and the value. A quoted,
+    // credential-labelled field is explicit enough to redact even when short.
+    .replace(/(^|[\s{[(,])(["'](?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)["']\s*[:=]\s*)(["'])(?:\\.|(?!\3)[\s\S])*\3/gimu, "$1$2$3[redacted]$3")
+    .replace(/(^|[\s{[(,])(["'](?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)["']\s*[:=]\s*)[^\s"',;}]+/gimu, "$1$2[redacted]")
     .replace(/\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)\s*[:=]\s*)[^\s,;]+/giu, "$1[redacted]")
     .replace(/(--(?:api[_-]?key|token|password|secret)(?:=|\s+))[^\s]+/giu, "$1[redacted]")
     // Well-known token families that are dangerous even without a label.

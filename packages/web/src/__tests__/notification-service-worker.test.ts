@@ -75,4 +75,60 @@ describe("Web Push service worker", () => {
     });
     expect(openWindow).not.toHaveBeenCalled();
   });
+
+  it("repairs a rotated subscription even when no console window is open", async () => {
+    const handlers = new Map<string, WorkerHandler>();
+    const getSubscription = vi.fn(async () => null);
+    const fetchMock = vi.fn(async (_input: string, _init?: RequestInit) =>
+      new Response(null, { status: 201 }));
+    const worker = {
+      location: { origin: "https://console.example.test" },
+      registration: {
+        pushManager: { getSubscription },
+        showNotification: vi.fn(async () => undefined),
+      },
+      clients: {
+        matchAll: vi.fn(async () => []),
+        openWindow: vi.fn(async () => undefined),
+      },
+      addEventListener: (type: string, handler: WorkerHandler) => handlers.set(type, handler),
+    };
+    const source = await readFile(new URL("../../webapp/public/notification-sw.js", import.meta.url), "utf8");
+    runInNewContext(source, { self: worker, URL, Date, fetch: fetchMock });
+    const oldSubscription = { endpoint: "https://push.example.test/send/old" };
+    const newSubscription = {
+      endpoint: "https://push.example.test/send/new",
+      expirationTime: null,
+      toJSON: () => ({
+        endpoint: "https://push.example.test/send/new",
+        expirationTime: null,
+        keys: { p256dh: "public-key", auth: "auth-secret" },
+      }),
+    };
+
+    let changeWork: Promise<unknown> | undefined;
+    handlers.get("pushsubscriptionchange")?.({
+      oldSubscription,
+      newSubscription,
+      waitUntil: (work: Promise<unknown>) => { changeWork = work; },
+    });
+    await changeWork;
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/push/subscriptions", expect.objectContaining({
+      method: "PUT",
+      credentials: "same-origin",
+      headers: expect.objectContaining({
+        "X-Mono-Agent-Web-Origin": "https://console.example.test",
+      }),
+    }));
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toEqual({
+      endpoint: "https://push.example.test/send/new",
+      expirationTime: null,
+      keys: { p256dh: "public-key", auth: "auth-secret" },
+      previousEndpoint: "https://push.example.test/send/old",
+    });
+    expect(worker.clients.matchAll).toHaveBeenCalledWith({ type: "window", includeUncontrolled: true });
+    expect(getSubscription).not.toHaveBeenCalled();
+  });
 });

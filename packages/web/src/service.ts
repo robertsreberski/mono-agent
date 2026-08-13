@@ -49,6 +49,7 @@ import { errorCode, errorMessage, WebConsoleError } from "./errors.js";
 import { OperatorClient, type OperatorInfo } from "./operator-client.js";
 import {
   generateWebPushIdentity,
+  normalizeWebPushEndpoint,
   resolveWebPushSubject,
   validateWebPushEndpoint,
   validateWebPushKeys,
@@ -123,6 +124,11 @@ interface AgentConnection {
   readonly info: OperatorInfo;
 }
 
+interface AskWatch {
+  readonly controller: AbortController;
+  readonly promise: Promise<void>;
+}
+
 export interface DeliverWebNotificationInput {
   readonly sourceId: string;
   readonly triggerKind: WebNotificationTriggerKind;
@@ -156,7 +162,7 @@ export class WebService {
   private readonly pushIdentity: WebPushIdentity;
   private readonly pushDispatcher: WebPushDispatcher;
   private readonly pushAckKey = randomBytes(32);
-  private readonly askWatches = new Set<string>();
+  private readonly askWatches = new Map<string, AskWatch>();
   private connections = new Map<string, AgentConnection>();
   private discoveryTimer: ReturnType<typeof setInterval> | undefined;
   private purgeTimer: ReturnType<typeof setInterval> | undefined;
@@ -188,7 +194,7 @@ export class WebService {
       ...(options.pushRandom === undefined ? {} : { random: options.pushRandom }),
       ...(options.clock === undefined ? {} : { clock: options.clock }),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
-      beforeSend: (event) => this.pushEventStillRelevant(event),
+      beforeSend: (event, signal) => this.pushEventStillRelevant(event, signal),
     });
   }
 
@@ -268,9 +274,21 @@ export class WebService {
     readonly auth: string;
     readonly expirationTime?: number;
     readonly siteOrigin: string;
+    readonly previousSubscriptionId?: string;
+    readonly previousEndpoint?: string;
   }): Promise<WebPushSubscriptionStatus> {
+    if (input.previousSubscriptionId !== undefined && input.previousEndpoint !== undefined) {
+      throw new WebConsoleError(
+        "invalid_push_subscription",
+        "A replacement may identify the previous subscription by id or endpoint, but not both.",
+        400,
+      );
+    }
     validateWebPushKeys(input.p256dh, input.auth);
     const endpoint = await validateWebPushEndpoint(input.endpoint, this.options.pushDnsResolver);
+    const previousEndpoint = input.previousEndpoint === undefined
+      ? undefined
+      : normalizeWebPushEndpoint(input.previousEndpoint);
     if (input.expirationTime !== undefined
       && (!Number.isSafeInteger(input.expirationTime) || input.expirationTime <= this.currentDate().getTime())) {
       throw new WebConsoleError("invalid_push_subscription", "The push subscription expiration is invalid.", 400);
@@ -282,6 +300,8 @@ export class WebService {
       ...(input.expirationTime === undefined ? {} : { expirationTime: input.expirationTime }),
       siteOrigin: input.siteOrigin,
       keyFingerprint: this.pushIdentity.fingerprint,
+      ...(input.previousSubscriptionId === undefined ? {} : { previousSubscriptionId: input.previousSubscriptionId }),
+      ...(previousEndpoint === undefined ? {} : { previousEndpoint }),
     });
   }
 
@@ -318,8 +338,13 @@ export class WebService {
     const connection = this.connections.get(thread.sourceId);
     if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
     if (!connection.info.supportsAskUser) return undefined;
-    const snapshot = await connection.client.pendingAsk(`web:${threadId}`);
-    if (snapshot?.status === "pending") this.enqueueAskPush(threadId, snapshot);
+    const snapshot = await connection.client.pendingAsk(
+      `web:${threadId}`,
+      AbortSignal.timeout(INFO_TIMEOUT_MS),
+    );
+    if (!this.stopped && snapshot !== undefined && isFuturePendingAsk(snapshot, this.currentDate())) {
+      this.enqueueAskPush(threadId, snapshot);
+    }
     return snapshot;
   }
 
@@ -586,6 +611,8 @@ export class WebService {
     const pendingRefresh = this.refreshPromise;
     const pendingPurge = this.purgePromise;
     this.refreshController?.abort(new Error("Web service is stopping."));
+    const askWatches = [...this.askWatches.values()];
+    for (const watch of askWatches) watch.controller.abort(new Error("Web service is stopping."));
     const active = [...this.activeTurns.values()];
     const activeLiveInputs = [...this.activeLiveInputs.entries()];
     const activeNotifications = [...this.activeNotifications.values()];
@@ -604,6 +631,7 @@ export class WebService {
     await Promise.allSettled(active.map((turn) => turn.completion));
     await Promise.allSettled(activeLiveInputs.map(([, input]) => input.completion));
     await Promise.allSettled(activeNotifications);
+    await Promise.allSettled(askWatches.map((watch) => watch.promise));
     await this.pushDispatcher.stopAndDrain(5_000);
     if (pendingRefresh !== undefined) await pendingRefresh.catch(() => undefined);
     if (pendingPurge !== undefined) await pendingPurge.catch(() => undefined);
@@ -924,48 +952,54 @@ export class WebService {
   }
 
   private observeAskUserFrame(threadId: string, turnId: string, frame: AgentStreamWireFrame): void {
-    if (frame.kind !== "event" || frame.event.type !== "tool_call_started"
+    if (this.stopped || frame.kind !== "event" || frame.event.type !== "tool_call_started"
       || toolNameLeaf(frame.event.name).toLowerCase().replace(/[^a-z0-9]+/gu, "") !== "askuser") return;
     const key = `${threadId}\0${turnId}`;
     if (this.askWatches.has(key)) return;
-    this.askWatches.add(key);
-    void this.watchForPendingAsk(threadId, turnId).finally(() => this.askWatches.delete(key));
+    const controller = new AbortController();
+    let promise: Promise<void>;
+    promise = this.watchForPendingAsk(threadId, turnId, controller.signal).finally(() => {
+      if (this.askWatches.get(key)?.promise === promise) this.askWatches.delete(key);
+    });
+    this.askWatches.set(key, { controller, promise });
   }
 
-  private async watchForPendingAsk(threadId: string, turnId: string): Promise<void> {
+  private async watchForPendingAsk(threadId: string, turnId: string, signal: AbortSignal): Promise<void> {
     const deadline = Date.now() + ASK_DISCOVERY_TIMEOUT_MS;
     let delayMs = 100;
-    while (!this.stopped && Date.now() < deadline) {
+    while (!this.stopped && !signal.aborted && Date.now() < deadline) {
       if (this.store.activeTurn(threadId)?.id !== turnId) return;
       const thread = this.store.getThread(threadId);
       const connection = thread === undefined ? undefined : this.connections.get(thread.sourceId);
       if (connection !== undefined && connection.info.supportsAskUser) {
         try {
-          const snapshot = await connection.client.pendingAsk(`web:${threadId}`);
+          const snapshot = await connection.client.pendingAsk(
+            `web:${threadId}`,
+            AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]),
+          );
           if (snapshot !== undefined) {
-            if (snapshot.status === "pending" && new Date(snapshot.expiresAt).getTime() > this.currentDate().getTime()) {
+            if (isFuturePendingAsk(snapshot, this.currentDate())) {
+              if (this.stopped || signal.aborted) return;
               this.enqueueAskPush(threadId, snapshot);
             }
             return;
           }
         } catch (error) {
+          if (signal.aborted || this.stopped) return;
           this.options.logger?.debug?.("Web Push AskUser discovery retry failed.", {
             threadId,
             error: errorMessage(error),
           });
         }
       }
-      await new Promise<void>((resolvePromise) => {
-        const timer = setTimeout(resolvePromise, delayMs);
-        timer.unref();
-      });
+      await abortableDelay(delayMs, signal);
       delayMs = Math.min(1_000, delayMs * 2);
     }
   }
 
   private enqueueAskPush(threadId: string, snapshot: ChannelAskSnapshot): void {
     const question = snapshot.questions[snapshot.activeQuestionIndex];
-    if (question === undefined || snapshot.status !== "pending") return;
+    if (this.stopped || question === undefined || !isFuturePendingAsk(snapshot, this.currentDate())) return;
     const thread = this.store.getThread(threadId);
     if (thread === undefined) return;
     const agent = this.store.getAgent(thread.sourceId);
@@ -981,7 +1015,10 @@ export class WebService {
     if (event !== undefined) this.announcePushEvent(event.logicalKey);
   }
 
-  private async pushEventStillRelevant(event: StoredWebPushEvent): Promise<"current" | "stale" | "unknown"> {
+  private async pushEventStillRelevant(
+    event: StoredWebPushEvent,
+    signal: AbortSignal,
+  ): Promise<"current" | "stale" | "unknown"> {
     if (event.kind !== "input.required") return "current";
     if (event.threadId === undefined || !event.logicalKey.startsWith("ask:")) return "stale";
     const interactionId = event.logicalKey.slice("ask:".length);
@@ -989,7 +1026,10 @@ export class WebService {
     const connection = thread === undefined ? undefined : this.connections.get(thread.sourceId);
     if (connection === undefined || !connection.info.supportsAskUser) return "unknown";
     try {
-      const snapshot = await connection.client.pendingAsk(`web:${event.threadId}`);
+      const snapshot = await connection.client.pendingAsk(
+        `web:${event.threadId}`,
+        AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]),
+      );
       return snapshot?.interactionId === interactionId
         && snapshot.status === "pending"
         && new Date(snapshot.expiresAt).getTime() > this.currentDate().getTime()
@@ -1032,6 +1072,25 @@ export class WebService {
     for (const bytes of this.activeUploads.values()) total += bytes;
     return total;
   }
+}
+
+function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolvePromise) => {
+    const done = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolvePromise();
+    };
+    const timer = setTimeout(done, delayMs);
+    timer.unref();
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
+
+function isFuturePendingAsk(snapshot: ChannelAskSnapshot, now: Date): boolean {
+  const expiresAt = new Date(snapshot.expiresAt).getTime();
+  return snapshot.status === "pending" && Number.isFinite(expiresAt) && expiresAt > now.getTime();
 }
 
 const STREAM_FLUSH_INTERVAL_MS = 50;

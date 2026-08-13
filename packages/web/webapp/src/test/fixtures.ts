@@ -72,7 +72,7 @@ export const bootstrap = (
   push: {
     applicationServerKey: "B".repeat(87),
     keyFingerprint: "test-fingerprint",
-    serviceWorkerVersion: 1,
+    serviceWorkerVersion: 2,
   },
   agents,
   threads,

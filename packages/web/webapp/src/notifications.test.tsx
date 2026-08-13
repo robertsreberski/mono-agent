@@ -1,3 +1,5 @@
+import { webcrypto } from "node:crypto";
+
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, bootstrap, thread } from "./test/fixtures";
@@ -7,20 +9,26 @@ const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> |
 vi.mock("./console-store", () => ({
   useConsoleStore: () => storeMock.current,
 }));
-vi.mock("./api", () => ({
-  api: {
-    thread: vi.fn(),
-    pushSubscription: vi.fn(),
-    registerPushSubscription: vi.fn(),
-    deletePushSubscription: vi.fn(),
-    testPushSubscription: vi.fn(),
-    acknowledgePushEvent: vi.fn(),
-  },
-}));
+vi.mock("./api", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./api")>();
+  return {
+    ...original,
+    api: {
+      thread: vi.fn(),
+      pushSubscription: vi.fn(),
+      registerPushSubscription: vi.fn(),
+      deletePushSubscription: vi.fn(),
+      testPushSubscription: vi.fn(),
+      acknowledgePushEvent: vi.fn(),
+    },
+  };
+});
 
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import {
   NOTIFICATIONS_STORAGE_KEY,
+  PUSH_PENDING_DELETE_STORAGE_KEY,
+  PUSH_SUBSCRIPTION_ENDPOINT_DIGEST_STORAGE_KEY,
   PUSH_SUBSCRIPTION_ID_STORAGE_KEY,
   NotificationBell,
   NotificationsProvider,
@@ -100,14 +108,23 @@ const enablePushSupport = () => {
   vi.stubGlobal("MessageChannel", FakeMessageChannel);
   serviceWorker.controller = {
     postMessage: (_message, ports) => {
-      (ports[0] as { reply: (data: unknown) => void }).reply({ version: 1 });
+      (ports[0] as { reply: (data: unknown) => void }).reply({ version: 2 });
     },
   };
+};
+
+const endpointDigest = async (endpoint: string): Promise<string> => {
+  const digest = await webcrypto.subtle.digest("SHA-256", new TextEncoder().encode(endpoint));
+  return btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/gu, "-")
+    .replace(/\//gu, "_")
+    .replace(/=+$/gu, "");
 };
 
 describe("response notifications", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
     showNotification.mockResolvedValue(undefined);
     getNotifications.mockResolvedValue([]);
     getSubscription.mockResolvedValue(null);
@@ -124,6 +141,7 @@ describe("response notifications", () => {
     );
     FakeNotification.permission = "granted";
     vi.stubGlobal("Notification", FakeNotification);
+    vi.stubGlobal("crypto", webcrypto);
     Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
     Object.defineProperty(navigator, "serviceWorker", {
       configurable: true,
@@ -190,6 +208,26 @@ describe("response notifications", () => {
         status: "complete",
       }],
     }, "turn-1")).toMatch(/^Ready .*…$/u);
+
+    const sanitized = responsePreview({
+      thread: complete,
+      messages: [{
+        id: "safe-response",
+        threadId: complete.id,
+        turnId: "turn-safe",
+        role: "assistant",
+        parts: [{
+          type: "text",
+          text: '# **Ready** [open](https://example.test) {"apiKey":"my-secret-value"} token\u202E: another-secret-value',
+        }],
+        attachments: [],
+        createdAt: "2026-07-20T10:00:00.000Z",
+        updatedAt: "2026-07-20T10:00:00.000Z",
+        status: "complete",
+      }],
+    }, "turn-safe");
+    expect(sanitized).toContain('Ready open {"apiKey":"[redacted]"} token : [redacted]');
+    expect(sanitized).not.toMatch(/https:\/\/|my-secret|another-secret|\u202E|\*\*/u);
   });
 
   it("marks cron and webhook arrivals in browser notification titles", () => {
@@ -306,11 +344,151 @@ describe("response notifications", () => {
     fireEvent.click(screen.getByRole("button", { name: "Enable push notifications" }));
 
     await waitFor(() => expect(subscribe).toHaveBeenCalledWith(expect.objectContaining({ userVisibleOnly: true })));
-    await waitFor(() => expect(api.registerPushSubscription).toHaveBeenCalledWith(browserSubscription));
+    await waitFor(() => expect(api.registerPushSubscription).toHaveBeenCalledWith(browserSubscription, undefined));
     await waitFor(() => expect(api.testPushSubscription).toHaveBeenCalledWith("subscription-1"));
     expect(localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY)).toBe("subscription-1");
     expect(screen.getByRole("button", { name: "Disable push notifications" }))
       .toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("keeps a browser subscription intact when the status request fails transiently", async () => {
+    enablePushSupport();
+    localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, "1");
+    localStorage.setItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY, "subscription-1");
+    getSubscription.mockResolvedValue(browserSubscription);
+    vi.mocked(api.pushSubscription).mockRejectedValue(new ApiError("temporarily unavailable", 503));
+    storeMock.current = createStore();
+
+    render(
+      <NotificationsProvider>
+        <NotificationBell />
+      </NotificationsProvider>,
+    );
+
+    await waitFor(() => expect(api.pushSubscription).toHaveBeenCalledWith("subscription-1"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reconnect push notifications" })).toBeVisible());
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(api.registerPushSubscription).not.toHaveBeenCalled();
+    expect(localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY)).toBe("subscription-1");
+  });
+
+  it("re-registers an existing browser subscription only after a confirmed 404", async () => {
+    enablePushSupport();
+    localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, "1");
+    localStorage.setItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY, "missing-subscription");
+    localStorage.setItem(
+      PUSH_SUBSCRIPTION_ENDPOINT_DIGEST_STORAGE_KEY,
+      await endpointDigest(browserSubscription.endpoint),
+    );
+    getSubscription.mockResolvedValue(browserSubscription);
+    vi.mocked(api.pushSubscription).mockRejectedValue(new ApiError("not found", 404));
+    storeMock.current = createStore();
+
+    render(
+      <NotificationsProvider>
+        <NotificationBell />
+      </NotificationsProvider>,
+    );
+
+    await waitFor(() => expect(api.registerPushSubscription).toHaveBeenCalledWith(
+      browserSubscription,
+      "missing-subscription",
+    ));
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY)).toBe("subscription-1");
+  });
+
+  it("detects browser subscription rotation and atomically replaces the stale server id", async () => {
+    enablePushSupport();
+    localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, "1");
+    localStorage.setItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY, "subscription-1");
+    localStorage.setItem(PUSH_SUBSCRIPTION_ENDPOINT_DIGEST_STORAGE_KEY, "old-endpoint-digest");
+    getSubscription.mockResolvedValue(browserSubscription);
+    vi.mocked(api.registerPushSubscription).mockResolvedValue({
+      ...activeServerSubscription,
+      id: "subscription-2",
+    });
+    storeMock.current = createStore();
+
+    render(
+      <NotificationsProvider>
+        <NotificationBell />
+      </NotificationsProvider>,
+    );
+
+    await waitFor(() => expect(api.registerPushSubscription).toHaveBeenCalledWith(
+      browserSubscription,
+      "subscription-1",
+    ));
+    expect(unsubscribe).not.toHaveBeenCalled();
+    expect(localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY)).toBe("subscription-2");
+    expect(localStorage.getItem(PUSH_SUBSCRIPTION_ENDPOINT_DIGEST_STORAGE_KEY))
+      .toBe(await endpointDigest(browserSubscription.endpoint));
+  });
+
+  it("replaces a browser subscription when its matching server row is expired", async () => {
+    enablePushSupport();
+    localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, "1");
+    localStorage.setItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY, "subscription-1");
+    localStorage.setItem(
+      PUSH_SUBSCRIPTION_ENDPOINT_DIGEST_STORAGE_KEY,
+      await endpointDigest(browserSubscription.endpoint),
+    );
+    getSubscription.mockResolvedValue(browserSubscription);
+    vi.mocked(api.pushSubscription).mockResolvedValue({
+      ...activeServerSubscription,
+      state: "expired",
+    });
+    storeMock.current = createStore();
+
+    render(
+      <NotificationsProvider>
+        <NotificationBell />
+      </NotificationsProvider>,
+    );
+
+    await waitFor(() => expect(unsubscribe).toHaveBeenCalledOnce());
+    await waitFor(() => expect(subscribe).toHaveBeenCalledOnce());
+    await waitFor(() => expect(api.registerPushSubscription).toHaveBeenCalledWith(
+      browserSubscription,
+      "subscription-1",
+    ));
+  });
+
+  it("retries pending server deletion while notifications remain disabled", async () => {
+    enablePushSupport();
+    localStorage.setItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY, "subscription-1");
+    localStorage.setItem(PUSH_PENDING_DELETE_STORAGE_KEY, "subscription-1");
+    storeMock.current = createStore();
+
+    render(
+      <NotificationsProvider>
+        <NotificationBell />
+      </NotificationsProvider>,
+    );
+
+    await waitFor(() => expect(api.deletePushSubscription).toHaveBeenCalledWith("subscription-1"));
+    expect(localStorage.getItem(PUSH_PENDING_DELETE_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY)).toBeNull();
+    expect(api.pushSubscription).not.toHaveBeenCalled();
+  });
+
+  it("treats an already-deleted pending subscription as completed cleanup", async () => {
+    enablePushSupport();
+    localStorage.setItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY, "subscription-1");
+    localStorage.setItem(PUSH_PENDING_DELETE_STORAGE_KEY, "subscription-1");
+    vi.mocked(api.deletePushSubscription).mockRejectedValue(new ApiError("not found", 404));
+    storeMock.current = createStore();
+
+    render(
+      <NotificationsProvider>
+        <NotificationBell />
+      </NotificationsProvider>,
+    );
+
+    await waitFor(() => expect(localStorage.getItem(PUSH_PENDING_DELETE_STORAGE_KEY)).toBeNull());
+    expect(localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY)).toBeNull();
+    expect(screen.getByRole("button", { name: "Enable push notifications" })).toBeVisible();
   });
 
   it("acknowledges a pending push only for the exact focused conversation", async () => {

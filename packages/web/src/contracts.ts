@@ -238,7 +238,7 @@ export interface WebConsoleIdentity {
 export interface WebPushBootstrap {
   readonly applicationServerKey: string;
   readonly keyFingerprint: string;
-  readonly serviceWorkerVersion: 1;
+  readonly serviceWorkerVersion: 2;
 }
 
 export type WebPushSubscriptionState = "active" | "disabled" | "expired";

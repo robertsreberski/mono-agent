@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createECDH, createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, readdir, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -204,6 +204,8 @@ export interface RegisterWebPushSubscriptionInput {
   readonly expirationTime?: number;
   readonly siteOrigin: string;
   readonly keyFingerprint: string;
+  readonly previousSubscriptionId?: string;
+  readonly previousEndpoint?: string;
 }
 
 export interface StoredWebPushSubscription extends WebPushSubscriptionStatus {
@@ -1174,52 +1176,83 @@ export class WebStore {
 
   registerWebPushSubscription(input: RegisterWebPushSubscriptionInput): WebPushSubscriptionStatus {
     const endpointSha256 = createHash("sha256").update(input.endpoint).digest("hex");
-    const existing = this.database.prepare("SELECT * FROM push_subscriptions WHERE endpoint_sha256 = ?")
-      .get(endpointSha256) as unknown as PushSubscriptionRow | undefined;
-    const now = this.now();
-    if (existing?.state !== "active") {
-      const active = this.database.prepare("SELECT COUNT(*) AS count FROM push_subscriptions WHERE state = 'active'")
-        .get() as unknown as { count: number };
-      if (active.count >= MAX_ACTIVE_PUSH_SUBSCRIPTIONS) {
-        throw new WebConsoleError(
-          "push_subscription_limit",
-          `This console already has ${MAX_ACTIVE_PUSH_SUBSCRIPTIONS} active notification subscriptions.`,
-          409,
-        );
+    const previousEndpointSha256 = input.previousEndpoint === undefined
+      ? undefined
+      : createHash("sha256").update(input.previousEndpoint).digest("hex");
+    return this.transaction(() => {
+      const existing = this.database.prepare("SELECT * FROM push_subscriptions WHERE endpoint_sha256 = ?")
+        .get(endpointSha256) as unknown as PushSubscriptionRow | undefined;
+      const replacements = new Set<string>();
+      if (input.previousSubscriptionId !== undefined) {
+        const row = this.database.prepare("SELECT id FROM push_subscriptions WHERE id = ? AND site_origin = ?")
+          .get(input.previousSubscriptionId, input.siteOrigin) as unknown as { id: string } | undefined;
+        if (row !== undefined) replacements.add(row.id);
       }
-    }
-    const id = existing?.id ?? randomUUID();
-    this.database.prepare(`
-      INSERT INTO push_subscriptions (
-        id, endpoint, endpoint_sha256, p256dh, auth, expiration_time, site_origin,
-        key_fingerprint, state, created_at, updated_at, disabled_at,
-        last_success_at, last_error_at, last_error_code
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, NULL, NULL, NULL)
-      ON CONFLICT(endpoint_sha256) DO UPDATE SET
-        endpoint = excluded.endpoint,
-        p256dh = excluded.p256dh,
-        auth = excluded.auth,
-        expiration_time = excluded.expiration_time,
-        site_origin = excluded.site_origin,
-        key_fingerprint = excluded.key_fingerprint,
-        state = 'active',
-        updated_at = excluded.updated_at,
-        disabled_at = NULL,
-        last_error_at = NULL,
-        last_error_code = NULL
-    `).run(
-      id,
-      input.endpoint,
-      endpointSha256,
-      input.p256dh,
-      input.auth,
-      input.expirationTime ?? null,
-      input.siteOrigin,
-      input.keyFingerprint,
-      now,
-      now,
-    );
-    return this.requirePushSubscriptionStatus(id);
+      if (previousEndpointSha256 !== undefined) {
+        const row = this.database.prepare("SELECT id FROM push_subscriptions WHERE endpoint_sha256 = ? AND site_origin = ?")
+          .get(previousEndpointSha256, input.siteOrigin) as unknown as { id: string } | undefined;
+        if (row !== undefined) replacements.add(row.id);
+      }
+      if (existing !== undefined) replacements.delete(existing.id);
+
+      const now = this.now();
+      for (const replacementId of replacements) {
+        this.database.prepare(`
+          UPDATE push_subscriptions SET state = 'expired', disabled_at = ?, updated_at = ?,
+            last_error_at = ?, last_error_code = 'subscription_rotated'
+          WHERE id = ? AND state = 'active'
+        `).run(now, now, now, replacementId);
+        this.database.prepare(`
+          UPDATE push_deliveries SET status = 'stale', updated_at = ?, finished_at = ?,
+            last_error_code = 'subscription_rotated'
+          WHERE subscription_id = ? AND status IN ('pending', 'sending')
+        `).run(now, now, replacementId);
+      }
+
+      if (existing?.state !== "active") {
+        const active = this.database.prepare("SELECT COUNT(*) AS count FROM push_subscriptions WHERE state = 'active'")
+          .get() as unknown as { count: number };
+        if (active.count >= MAX_ACTIVE_PUSH_SUBSCRIPTIONS) {
+          throw new WebConsoleError(
+            "push_subscription_limit",
+            `This console already has ${MAX_ACTIVE_PUSH_SUBSCRIPTIONS} active notification subscriptions.`,
+            409,
+          );
+        }
+      }
+      const id = existing?.id ?? randomUUID();
+      this.database.prepare(`
+        INSERT INTO push_subscriptions (
+          id, endpoint, endpoint_sha256, p256dh, auth, expiration_time, site_origin,
+          key_fingerprint, state, created_at, updated_at, disabled_at,
+          last_success_at, last_error_at, last_error_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, NULL, NULL, NULL)
+        ON CONFLICT(endpoint_sha256) DO UPDATE SET
+          endpoint = excluded.endpoint,
+          p256dh = excluded.p256dh,
+          auth = excluded.auth,
+          expiration_time = excluded.expiration_time,
+          site_origin = excluded.site_origin,
+          key_fingerprint = excluded.key_fingerprint,
+          state = 'active',
+          updated_at = excluded.updated_at,
+          disabled_at = NULL,
+          last_error_at = NULL,
+          last_error_code = NULL
+      `).run(
+        id,
+        input.endpoint,
+        endpointSha256,
+        input.p256dh,
+        input.auth,
+        input.expirationTime ?? null,
+        input.siteOrigin,
+        input.keyFingerprint,
+        now,
+        now,
+      );
+      return this.requirePushSubscriptionStatus(id);
+    });
   }
 
   getWebPushSubscription(id: string): WebPushSubscriptionStatus | undefined {
@@ -2005,9 +2038,7 @@ export class WebStore {
     const title = webPushPreview(input.title, "mono-agent");
     const body = webPushPreview(input.body);
     const topic = createHash("sha256")
-      .update(input.threadId ?? "global")
-      .update(":")
-      .update(input.kind)
+      .update(input.logicalKey)
       .digest("base64url")
       .slice(0, 32);
     const tag = `mono-agent-${id}`;
@@ -2162,7 +2193,11 @@ function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
   try {
     const decodedPublic = Buffer.from(publicKey, "base64url");
     const decodedPrivate = Buffer.from(privateKey, "base64url");
-    return decodedPublic.byteLength === 65 && decodedPublic[0] === 4 && decodedPrivate.byteLength === 32;
+    if (decodedPublic.byteLength !== 65 || decodedPublic[0] !== 4 || decodedPrivate.byteLength !== 32) return false;
+    const ecdh = createECDH("prime256v1");
+    ecdh.setPrivateKey(decodedPrivate);
+    const derivedPublic = ecdh.getPublicKey();
+    return derivedPublic.byteLength === decodedPublic.byteLength && timingSafeEqual(derivedPublic, decodedPublic);
   } catch {
     return false;
   }

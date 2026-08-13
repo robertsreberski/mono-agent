@@ -17,7 +17,7 @@ import {
   type WebStore,
 } from "./store.js";
 
-export const WEB_PUSH_SERVICE_WORKER_VERSION = 1 as const;
+export const WEB_PUSH_SERVICE_WORKER_VERSION = 2 as const;
 export const DEFAULT_WEB_PUSH_SUBJECT = "https://github.com/robertsreberski/mono-agent";
 const MAX_ENDPOINT_LENGTH = 2_048;
 const MAX_ENCRYPTED_PAYLOAD_BYTES = 4_096;
@@ -48,7 +48,10 @@ export type WebPushSend = (
 export interface WebPushDispatcherOptions {
   readonly send?: WebPushSend;
   readonly resolve?: WebPushDnsResolver;
-  readonly beforeSend?: (event: StoredWebPushEvent) => Promise<"current" | "stale" | "unknown">;
+  readonly beforeSend?: (
+    event: StoredWebPushEvent,
+    signal: AbortSignal,
+  ) => Promise<"current" | "stale" | "unknown">;
   readonly logger?: {
     debug?(message: string, metadata?: Readonly<Record<string, unknown>>): void;
     warn?(message: string, metadata?: Readonly<Record<string, unknown>>): void;
@@ -105,6 +108,23 @@ export async function validateWebPushEndpoint(
   value: string,
   resolver: WebPushDnsResolver = defaultWebPushDnsResolver,
 ): Promise<ValidatedWebPushEndpoint> {
+  const endpoint = normalizeWebPushEndpoint(value);
+  const url = new URL(endpoint);
+  let addresses: readonly LookupAddress[];
+  try {
+    addresses = await resolver(url.hostname);
+  } catch {
+    throw endpointUnresolvable();
+  }
+  if (addresses.length === 0) throw endpointUnresolvable();
+  if (addresses.some((address) => !isPublicAddress(address.address))) {
+    throw invalidSubscription("The push endpoint must resolve only to public Internet addresses.");
+  }
+  return { endpoint, url, addresses };
+}
+
+/** Canonicalize an endpoint without resolving it or making an outbound request. */
+export function normalizeWebPushEndpoint(value: string): string {
   if (value.length === 0 || value.length > MAX_ENDPOINT_LENGTH) {
     throw invalidSubscription("The push endpoint has an invalid length.");
   }
@@ -118,16 +138,7 @@ export async function validateWebPushEndpoint(
     || url.hash !== "" || isIP(url.hostname) !== 0) {
     throw invalidSubscription("The push endpoint must use HTTPS on port 443 with a public DNS hostname.");
   }
-  let addresses: readonly LookupAddress[];
-  try {
-    addresses = await resolver(url.hostname);
-  } catch {
-    throw invalidSubscription("The push endpoint hostname could not be resolved safely.");
-  }
-  if (addresses.length === 0 || addresses.some((address) => !isPublicAddress(address.address))) {
-    throw invalidSubscription("The push endpoint must resolve only to public Internet addresses.");
-  }
-  return { endpoint: url.href, url, addresses };
+  return url.href;
 }
 
 export function validateWebPushKeys(p256dh: string, auth: string): void {
@@ -329,7 +340,7 @@ export class WebPushDispatcher {
     if (delivery.event.kind === "input.required" && this.options.beforeSend !== undefined) {
       let relevance: "current" | "stale" | "unknown";
       try {
-        relevance = await this.options.beforeSend(delivery.event);
+        relevance = await this.options.beforeSend(delivery.event, signal);
       } catch {
         relevance = "unknown";
       }
@@ -366,6 +377,10 @@ export class WebPushDispatcher {
       if (error instanceof WebConsoleError) {
         if (error.code === "invalid_push_subscription") {
           this.store.expireWebPushSubscription(delivery.subscription.id, "unsafe_endpoint");
+          return;
+        }
+        if (error.code === "push_endpoint_unresolvable") {
+          this.retry(delivery, undefined, error.code);
           return;
         }
         this.store.settleWebPushDelivery({
@@ -593,10 +608,10 @@ function createUnsafeAddressBlockList(): BlockList {
     ["240.0.0.0", 4],
   ] as const) list.addSubnet(network, prefix, "ipv4");
   for (const [network, prefix] of [
-    ["::", 128],
-    ["::1", 128],
+    ["::", 96],
     ["100::", 64],
     ["64:ff9b::", 96],
+    ["2001::", 32],
     ["2002::", 16],
     ["2001:db8::", 32],
     ["fc00::", 7],
@@ -652,6 +667,14 @@ function hasSubscriptionMismatchReason(body: string | undefined): boolean {
 
 function invalidSubscription(message: string): WebConsoleError {
   return new WebConsoleError("invalid_push_subscription", message, 400);
+}
+
+function endpointUnresolvable(): WebConsoleError {
+  return new WebConsoleError(
+    "push_endpoint_unresolvable",
+    "The push endpoint hostname could not be resolved right now.",
+    503,
+  );
 }
 
 function safeErrorCode(error: unknown): string {

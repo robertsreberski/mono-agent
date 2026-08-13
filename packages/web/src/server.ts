@@ -775,6 +775,8 @@ function parsePushSubscription(value: unknown): {
   readonly p256dh: string;
   readonly auth: string;
   readonly expirationTime?: number;
+  readonly previousSubscriptionId?: string;
+  readonly previousEndpoint?: string;
 } {
   const body = requireRecord(value);
   const keys = requireRecord(body.keys);
@@ -782,20 +784,38 @@ function parsePushSubscription(value: unknown): {
   if (expirationTime !== undefined && expirationTime !== null && !Number.isSafeInteger(expirationTime)) {
     throw invalidBody("expirationTime must be an integer timestamp or null.");
   }
+  if (body.previousSubscriptionId !== undefined && body.previousEndpoint !== undefined) {
+    throw invalidBody("previousSubscriptionId and previousEndpoint are mutually exclusive.");
+  }
   return {
     endpoint: requireString(body.endpoint, "endpoint", 2_048),
     p256dh: requireString(keys.p256dh, "keys.p256dh", 256),
     auth: requireString(keys.auth, "keys.auth", 256),
     ...(expirationTime === undefined || expirationTime === null ? {} : { expirationTime: expirationTime as number }),
+    ...(body.previousSubscriptionId === undefined
+      ? {}
+      : { previousSubscriptionId: requireString(body.previousSubscriptionId, "previousSubscriptionId", 256) }),
+    ...(body.previousEndpoint === undefined
+      ? {}
+      : { previousEndpoint: requireString(body.previousEndpoint, "previousEndpoint", 2_048) }),
   };
 }
 
 function exactRequestOrigin(req: Request): string {
-  const rawOrigin = req.headers.origin;
+  const claimedOrigin = req.headers["x-mono-agent-web-origin"];
+  if (claimedOrigin !== undefined && typeof claimedOrigin !== "string") {
+    throw new WebConsoleError("invalid_origin", "Request Origin is invalid.", 403);
+  }
+  const rawOrigin = req.headers.origin ?? claimedOrigin;
   if (rawOrigin === undefined) {
     throw new WebConsoleError("origin_required", "Push subscription changes require an exact same-origin request.", 403);
   }
-  return validateExactOrigin(req, rawOrigin);
+  const origin = validateExactOrigin(req, rawOrigin);
+  if (req.headers.origin !== undefined && claimedOrigin !== undefined
+    && validateExactOrigin(req, claimedOrigin) !== origin) {
+    throw new WebConsoleError("origin_mismatch", "Push subscription changes must come from this exact console origin.", 403);
+  }
+  return origin;
 }
 
 function validateExactOrigin(req: Request, rawOrigin: string): string {

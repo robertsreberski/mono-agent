@@ -1,4 +1,4 @@
-const NOTIFICATION_SW_VERSION = 1;
+const NOTIFICATION_SW_VERSION = 2;
 const SELECT_THREAD_MESSAGE = "mono-agent:select-thread";
 
 self.addEventListener("message", (event) => {
@@ -41,8 +41,17 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("pushsubscriptionchange", (event) => {
   event.waitUntil((async () => {
+    let registrationFailure;
+    try {
+      const subscription = event.newSubscription
+        ?? await self.registration.pushManager.getSubscription();
+      if (subscription) await registerChangedSubscription(subscription, event.oldSubscription);
+    } catch (error) {
+      registrationFailure = error;
+    }
     const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     for (const client of windows) client.postMessage({ type: "mono-agent:push-subscription-change" });
+    if (registrationFailure) throw registrationFailure;
   })());
 });
 
@@ -87,12 +96,37 @@ function sameOriginNavigate(value, threadId) {
 
 function boundedText(value, fallback) {
   if (typeof value !== "string") return fallback;
-  const text = value.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, " ")
+  const text = value.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
   if (!text) return fallback;
   const points = [...text];
   return points.length <= 180 ? text : `${points.slice(0, 179).join("").trimEnd()}…`;
+}
+
+async function registerChangedSubscription(subscription, oldSubscription) {
+  const serialized = subscription.toJSON();
+  if (typeof serialized?.keys?.p256dh !== "string" || typeof serialized.keys.auth !== "string") {
+    throw new Error("The rotated push subscription is incomplete.");
+  }
+  const response = await fetch("/api/v1/push/subscriptions", {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Mono-Agent-Web-Origin": self.location.origin,
+    },
+    body: JSON.stringify({
+      endpoint: subscription.endpoint,
+      expirationTime: subscription.expirationTime,
+      keys: { p256dh: serialized.keys.p256dh, auth: serialized.keys.auth },
+      ...(typeof oldSubscription?.endpoint === "string"
+        ? { previousEndpoint: oldSubscription.endpoint }
+        : {}),
+    }),
+  });
+  if (!response.ok) throw new Error(`Push subscription repair failed with status ${response.status}.`);
 }
 
 function isRecord(value) {

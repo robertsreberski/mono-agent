@@ -142,7 +142,7 @@ export const api = {
       body: JSON.stringify({ interactionId, answers }),
     }),
 
-  registerPushSubscription: async (subscription: PushSubscription) => {
+  registerPushSubscription: async (subscription: PushSubscription, previousSubscriptionId?: string) => {
     const serialized = subscription.toJSON();
     const p256dh = serialized.keys?.p256dh;
     const auth = serialized.keys?.auth;
@@ -151,10 +151,12 @@ export const api = {
     }
     const result = await request<{ subscription: PushSubscriptionStatus }>("/api/v1/push/subscriptions", {
       method: "PUT",
+      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
       body: JSON.stringify({
         endpoint: subscription.endpoint,
         expirationTime: subscription.expirationTime,
         keys: { p256dh, auth },
+        ...(previousSubscriptionId === undefined ? {} : { previousSubscriptionId }),
       }),
     });
     return result.subscription;

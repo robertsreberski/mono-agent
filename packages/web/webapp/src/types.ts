@@ -10,7 +10,7 @@ export interface ConsoleIdentity {
 export interface PushBootstrap {
   readonly applicationServerKey: string;
   readonly keyFingerprint: string;
-  readonly serviceWorkerVersion: 1;
+  readonly serviceWorkerVersion: 2;
 }
 
 export interface PushSubscriptionStatus {

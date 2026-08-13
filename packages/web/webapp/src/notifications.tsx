@@ -1,12 +1,13 @@
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { Icon } from "./components/Icon";
 import { useConsoleStore } from "./console-store";
-import type { PushBootstrap, ThreadDetail, ThreadSummary } from "./types";
+import type { PushBootstrap, PushSubscriptionStatus, ThreadDetail, ThreadSummary } from "./types";
 
 export const NOTIFICATIONS_STORAGE_KEY = "mono-agent.web.notifications-enabled";
 export const PUSH_SUBSCRIPTION_ID_STORAGE_KEY = "mono-agent.web.push-subscription-id";
-const PUSH_PENDING_DELETE_STORAGE_KEY = "mono-agent.web.push-pending-delete";
+export const PUSH_SUBSCRIPTION_ENDPOINT_DIGEST_STORAGE_KEY = "mono-agent.web.push-endpoint-sha256";
+export const PUSH_PENDING_DELETE_STORAGE_KEY = "mono-agent.web.push-pending-delete";
 const NOTIFICATION_MESSAGE_TYPE = "mono-agent:select-thread";
 const PUSH_CHANGE_MESSAGE_TYPE = "mono-agent:push-subscription-change";
 const PUSH_PENDING_EVENT_TYPE = "mono-agent:push-pending";
@@ -110,13 +111,15 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
 
   const reconcile = useCallback(async (allowCreate: boolean) => {
     if (reconciling.current || !store.bootstrap || !pushSupported()) return;
-    if (localStorage.getItem(NOTIFICATIONS_STORAGE_KEY) !== "1" || Notification.permission !== "granted") {
-      setPushActive(false);
-      return;
-    }
     reconciling.current = true;
+    const wantsPush = localStorage.getItem(NOTIFICATIONS_STORAGE_KEY) === "1"
+      && Notification.permission === "granted";
     try {
       await finishPendingDeletion();
+      if (!wantsPush) {
+        setPushActive(false);
+        return;
+      }
       const registration = await navigator.serviceWorker.ready;
       const controlled = await assertServiceWorkerVersion(store.bootstrap.push);
       if (!controlled) {
@@ -126,28 +129,57 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
       }
       let browserSubscription = await registration.pushManager.getSubscription();
       let subscriptionId = localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY);
-      let serverSubscription = subscriptionId
-        ? await api.pushSubscription(subscriptionId).catch(() => undefined)
-        : undefined;
-      const stale = serverSubscription?.state !== "active"
-        || serverSubscription.keyFingerprint !== store.bootstrap.push.keyFingerprint;
-      if (browserSubscription && stale) {
+      const previousSubscriptionId = subscriptionId ?? undefined;
+      let serverSubscription: PushSubscriptionStatus | undefined;
+      if (subscriptionId) {
+        try {
+          serverSubscription = await api.pushSubscription(subscriptionId);
+        } catch (error) {
+          if (!isNotFound(error)) throw error;
+        }
+      }
+      let endpointDigest = browserSubscription === null
+        ? undefined
+        : await pushEndpointDigest(browserSubscription.endpoint);
+      const storedEndpointDigest = localStorage.getItem(PUSH_SUBSCRIPTION_ENDPOINT_DIGEST_STORAGE_KEY);
+      const rotated = browserSubscription !== null
+        && storedEndpointDigest !== null
+        && endpointDigest !== storedEndpointDigest;
+      const keyChanged = serverSubscription !== undefined
+        && serverSubscription.keyFingerprint !== store.bootstrap.push.keyFingerprint;
+      const currentEndpointInactive = serverSubscription !== undefined
+        && serverSubscription.state !== "active"
+        && !rotated;
+      if (browserSubscription && (keyChanged || currentEndpointInactive)) {
         await browserSubscription.unsubscribe().catch(() => false);
         browserSubscription = null;
         serverSubscription = undefined;
-        subscriptionId = null;
-        localStorage.removeItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY);
+        endpointDigest = undefined;
       }
       if (!browserSubscription && allowCreate) {
         browserSubscription = await registration.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey: applicationServerKey(store.bootstrap.push.applicationServerKey),
         });
+        endpointDigest = await pushEndpointDigest(browserSubscription.endpoint);
       }
-      if (browserSubscription && (!serverSubscription || !subscriptionId)) {
-        serverSubscription = await api.registerPushSubscription(browserSubscription);
+      const registrationNeeded = browserSubscription !== null && (
+        serverSubscription === undefined
+        || subscriptionId === null
+        || rotated
+        || storedEndpointDigest === null
+        || serverSubscription.state !== "active"
+        || keyChanged
+      );
+      if (browserSubscription && registrationNeeded) {
+        serverSubscription = await api.registerPushSubscription(browserSubscription, previousSubscriptionId);
         subscriptionId = serverSubscription.id;
         localStorage.setItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY, subscriptionId);
+      }
+      if (browserSubscription && endpointDigest !== undefined) {
+        localStorage.setItem(PUSH_SUBSCRIPTION_ENDPOINT_DIGEST_STORAGE_KEY, endpointDigest);
+      } else {
+        localStorage.removeItem(PUSH_SUBSCRIPTION_ENDPOINT_DIGEST_STORAGE_KEY);
       }
       const configError = serverSubscription?.lastErrorCode === "push_service_401"
         || serverSubscription?.lastErrorCode === "push_service_403";
@@ -157,7 +189,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
       setCurrentPreference(active ? "enabled" : "degraded");
     } catch {
       setPushActive(false);
-      setCurrentPreference("degraded");
+      if (wantsPush) setCurrentPreference("degraded");
     } finally {
       reconciling.current = false;
     }
@@ -182,13 +214,11 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
       const id = localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY);
       if (id) {
         localStorage.setItem(PUSH_PENDING_DELETE_STORAGE_KEY, id);
-        await api.deletePushSubscription(id).then(() => {
-          localStorage.removeItem(PUSH_PENDING_DELETE_STORAGE_KEY);
-          localStorage.removeItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY);
-        }).catch(() => undefined);
+        await finishPendingDeletion().catch(() => undefined);
       }
       const registration = await navigator.serviceWorker.ready;
       await (await registration.pushManager.getSubscription())?.unsubscribe().catch(() => false);
+      localStorage.removeItem(PUSH_SUBSCRIPTION_ENDPOINT_DIGEST_STORAGE_KEY);
       return;
     }
     const permission = Notification.permission === "granted"
@@ -377,11 +407,27 @@ async function assertServiceWorkerVersion(push: PushBootstrap): Promise<boolean>
 async function finishPendingDeletion(): Promise<void> {
   const pending = localStorage.getItem(PUSH_PENDING_DELETE_STORAGE_KEY);
   if (!pending) return;
-  await api.deletePushSubscription(pending);
+  try {
+    await api.deletePushSubscription(pending);
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+  }
   localStorage.removeItem(PUSH_PENDING_DELETE_STORAGE_KEY);
   if (localStorage.getItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY) === pending) {
     localStorage.removeItem(PUSH_SUBSCRIPTION_ID_STORAGE_KEY);
   }
+}
+
+function isNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404;
+}
+
+async function pushEndpointDigest(endpoint: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(endpoint));
+  return btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/gu, "-")
+    .replace(/\//gu, "_")
+    .replace(/=+$/gu, "");
 }
 
 function applicationServerKey(value: string): Uint8Array<ArrayBuffer> {
@@ -402,19 +448,50 @@ function isPendingPushDetail(value: unknown): value is PendingPushDetail {
 }
 
 function plainNotificationPreview(value: string): string {
-  const text = value
-    .slice(0, 8_192)
+  let text = decodeNotificationEntities([...value].slice(0, 8_192).join(""))
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/gu, " ")
     .replace(/```[^\n]*\n?/gu, " ")
+    .replace(/~~~[^\n]*\n?/gu, " ")
     .replace(/!\[([^\]]*)\]\([^)]*\)/gu, "$1")
     .replace(/\[([^\]]+)\]\([^)]*\)/gu, "$1")
+    .replace(/<https?:\/\/[^>]+>/giu, " ")
     .replace(/<[^>]*>/gu, " ")
     .replace(/^\s{0,3}(?:#{1,6}|>|[-+*]|\d+[.)])\s+/gmu, "")
-    .replace(/`+/gu, "")
-    .replace(/\b(authorization\s*:\s*)(?:basic|bearer|token)\s+[^\s,;]+/giu, "$1[redacted]")
-    .replace(/\b((?:api[_-]?key|access[_-]?token|password|secret|token)\s*[:=]\s*)[^\s,;]+/giu, "$1[redacted]")
-    .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/gu, " ")
+    .replace(/(^|\s)[*_~]{1,3}([^\s][\s\S]*?)[*_~]{1,3}(?=\s|$|[.,!?;:])/gu, "$1$2")
+    .replace(/`+/gu, "");
+  text = redactNotificationSecrets(text)
     .replace(/\s+/gu, " ")
     .trim();
+  text = redactNotificationSecrets(text);
   const points = [...text];
   return points.length <= 180 ? text : `${points.slice(0, 179).join("").trimEnd()}…`;
+}
+
+function redactNotificationSecrets(value: string): string {
+  return value
+    .replace(/(https?:\/\/)[^\s/@:]+(?::[^\s/@]*)?@/giu, "$1[redacted]@")
+    .replace(/([?&](?:access_token|api[_-]?key|auth|key|password|secret|signature|token)=)[^&#\s]*/giu, "$1[redacted]")
+    .replace(/\b(authorization\s*:\s*)(?:basic|bearer|token)\s+[^\s,;]+/giu, "$1[redacted]")
+    .replace(/\b(basic|bearer|token)\s+[a-z\d._~+\/-]{8,}={0,2}\b/giu, "$1 [redacted]")
+    .replace(/(^|[\s{[(,])(["'](?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)["']\s*[:=]\s*)(["'])(?:\\.|(?!\3)[\s\S])*\3/gimu, "$1$2$3[redacted]$3")
+    .replace(/(^|[\s{[(,])(["'](?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)["']\s*[:=]\s*)[^\s"',;}]+/gimu, "$1$2[redacted]")
+    .replace(/\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)\s*[:=]\s*)[^\s,;]+/giu, "$1[redacted]")
+    .replace(/(--(?:api[_-]?key|token|password|secret)(?:=|\s+))[^\s]+/giu, "$1[redacted]")
+    .replace(/\b(?:gh[opusr]_[a-z\d]{20,}|sk-[a-z\d_-]{20,}|xox[baprs]-[a-z\d-]{20,})\b/giu, "[redacted]");
+}
+
+function decodeNotificationEntities(value: string): string {
+  const named: Readonly<Record<string, string>> = {
+    amp: "&", apos: "'", gt: ">", lt: "<", nbsp: " ", quot: "\"",
+  };
+  return value.replace(/&(?:#(\d{1,7})|#x([\da-f]{1,6})|([a-z]+));/giu, (match, decimal, hex, name) => {
+    if (typeof name === "string") return named[name.toLowerCase()] ?? match;
+    const codePoint = Number.parseInt((decimal ?? hex) as string, decimal === undefined ? 16 : 10);
+    if (!Number.isSafeInteger(codePoint) || codePoint <= 0 || codePoint > 0x10ffff) return " ";
+    try {
+      return String.fromCodePoint(codePoint);
+    } catch {
+      return " ";
+    }
+  });
 }

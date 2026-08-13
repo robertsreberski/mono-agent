@@ -104,8 +104,17 @@ describe("Web Push safety and persistence", () => {
     store.close();
 
     const database = new DatabaseSync(path);
-    database.prepare("DELETE FROM settings WHERE key = 'web_push_private_key'").run();
+    database.prepare("UPDATE settings SET value = ? WHERE key = 'web_push_private_key'")
+      .run(generateWebPushIdentity().privateKey);
     database.close();
+    const mismatched = await WebStore.open({ stateDir: join(path, ".."), clock: now });
+    expect(() => mismatched.ensureWebPushIdentity(generateWebPushIdentity))
+      .toThrowError(expect.objectContaining({ code: "web_push_identity_corrupt" }));
+    mismatched.close();
+
+    const partialDatabase = new DatabaseSync(path);
+    partialDatabase.prepare("DELETE FROM settings WHERE key = 'web_push_private_key'").run();
+    partialDatabase.close();
     const corrupted = await WebStore.open({ stateDir: join(path, ".."), clock: now });
     expect(() => corrupted.ensureWebPushIdentity(generateWebPushIdentity))
       .toThrowError(expect.objectContaining({ code: "web_push_identity_corrupt" }));
@@ -136,6 +145,36 @@ describe("Web Push safety and persistence", () => {
       ...subscriptionInput(identity.fingerprint),
       endpoint: "https://push.example.test/send/0",
     })).toThrowError(expect.objectContaining({ code: "push_subscription_limit" }));
+    store.close();
+  });
+
+  it("atomically replaces a rotated subscription without leaking an active slot", async () => {
+    const now = () => new Date("2026-08-13T08:00:00.000Z");
+    const store = await storeAt(now);
+    const identity = store.ensureWebPushIdentity(generateWebPushIdentity);
+    const oldEndpoint = "https://push.example.test/send/old";
+    const old = store.registerWebPushSubscription(subscriptionInput(identity.fingerprint, oldEndpoint));
+    for (let index = 0; index < 31; index += 1) {
+      store.registerWebPushSubscription(subscriptionInput(
+        identity.fingerprint,
+        `https://push.example.test/send/filler-${String(index)}`,
+      ));
+    }
+
+    const replacement = store.registerWebPushSubscription({
+      ...subscriptionInput(identity.fingerprint, "https://push.example.test/send/new"),
+      previousEndpoint: oldEndpoint,
+    });
+    expect(store.getWebPushSubscription(old.id)).toMatchObject({
+      state: "expired",
+      lastErrorCode: "subscription_rotated",
+    });
+    expect(replacement).toMatchObject({ state: "active" });
+    const database = new DatabaseSync(store.paths.database, { readOnly: true });
+    const active = database.prepare("SELECT COUNT(*) AS count FROM push_subscriptions WHERE state = 'active'")
+      .get() as { count: number };
+    database.close();
+    expect(active.count).toBe(32);
     store.close();
   });
 
@@ -182,10 +221,19 @@ describe("Web Push safety and persistence", () => {
     ])).rejects.toMatchObject({ code: "invalid_push_subscription" });
     await expect(validateWebPushEndpoint("https://127.0.0.1/send", async () => []))
       .rejects.toMatchObject({ code: "invalid_push_subscription" });
+    await expect(validateWebPushEndpoint("https://push.example.test/send", async () => {
+      throw new Error("temporary resolver outage");
+    })).rejects.toMatchObject({ code: "push_endpoint_unresolvable", status: 503 });
     await expect(validateWebPushEndpoint("https://push.example.test:443/send", async () => [
       { address: "203.0.114.10", family: 4 },
     ])).resolves.toMatchObject({ endpoint: "https://push.example.test/send" });
-    for (const address of ["64:ff9b::a00:1", "2002:0a00:0001::", "192.88.99.1"]) {
+    for (const address of [
+      "::192.168.1.1",
+      "64:ff9b::a00:1",
+      "2001:0000:4136:e378:8000:63bf:3fff:fdd2",
+      "2002:0a00:0001::",
+      "192.88.99.1",
+    ]) {
       await expect(validateWebPushEndpoint("https://push.example.test/send", async () => [
         { address, family: address.includes(":") ? 6 : 4 },
       ])).rejects.toMatchObject({ code: "invalid_push_subscription" });
@@ -195,6 +243,32 @@ describe("Web Push safety and persistence", () => {
     expect(() => validateWebPushKeys("not+base64", valid.auth)).toThrowError(
       expect.objectContaining({ code: "invalid_push_subscription" }),
     );
+  });
+
+  it("gives every durable logical event its own Web Push topic", async () => {
+    const now = () => new Date("2026-08-13T08:00:00.000Z");
+    const store = await storeAt(now);
+    const identity = store.ensureWebPushIdentity(generateWebPushIdentity);
+    store.registerWebPushSubscription(subscriptionInput(identity.fingerprint));
+    const thread = store.createThread("agent-one");
+    const first = store.enqueueWebPushEvent({
+      logicalKey: "turn:first:terminal",
+      kind: "response.ready",
+      threadId: thread.id,
+      title: "Ready",
+      body: "First response",
+      expiresAt: "2026-08-13T09:00:00.000Z",
+    });
+    const second = store.enqueueWebPushEvent({
+      logicalKey: "turn:second:terminal",
+      kind: "response.ready",
+      threadId: thread.id,
+      title: "Ready",
+      body: "Second response",
+      expiresAt: "2026-08-13T09:00:00.000Z",
+    });
+    expect(first?.topic).not.toBe(second?.topic);
+    store.close();
   });
 
   it("builds a same-origin declarative payload without exposing subscription secrets", async () => {
@@ -448,6 +522,60 @@ describe("Web Push safety and persistence", () => {
     store.close();
   });
 
+  it("retries transient DNS failures but expires a resolved unsafe endpoint", async () => {
+    const now = () => new Date("2026-08-13T08:00:00.000Z");
+    const store = await storeAt(now);
+    const identity = store.ensureWebPushIdentity(generateWebPushIdentity);
+    const transient = store.registerWebPushSubscription(subscriptionInput(
+      identity.fingerprint,
+      "https://push.example.test/send/transient",
+    ));
+    const transientEvent = store.enqueueWebPushEvent({
+      logicalKey: "dns-transient",
+      kind: "run.failed",
+      title: "Run failed",
+      body: "Safe failure",
+      expiresAt: "2026-08-13T09:00:00.000Z",
+      notBefore: "2026-08-13T08:00:00.000Z",
+      subscriptionId: transient.id,
+    });
+    const transientDispatcher = new WebPushDispatcher(store, identity, "mailto:owner@example.test", {
+      resolve: async () => { throw new Error("EAI_AGAIN"); },
+      clock: now,
+      intervalMs: 5,
+      random: () => 0.5,
+    });
+    transientDispatcher.start();
+    await waitFor(() => deliveryRecord(store, transientEvent!.id)?.attempts === 1);
+    expect(store.getWebPushSubscription(transient.id)).toMatchObject({ state: "active" });
+    expect(deliveryRecord(store, transientEvent!.id)).toMatchObject({ status: "pending", attempts: 1 });
+    await transientDispatcher.stopAndDrain(50);
+
+    const unsafe = store.registerWebPushSubscription(subscriptionInput(
+      identity.fingerprint,
+      "https://unsafe.example.test/send/opaque",
+    ));
+    store.enqueueWebPushEvent({
+      logicalKey: "dns-unsafe",
+      kind: "run.failed",
+      title: "Run failed",
+      body: "Safe failure",
+      expiresAt: "2026-08-13T09:00:00.000Z",
+      notBefore: "2026-08-13T08:00:00.000Z",
+      subscriptionId: unsafe.id,
+    });
+    const unsafeDispatcher = new WebPushDispatcher(store, identity, "mailto:owner@example.test", {
+      resolve: async () => [{ address: "::192.168.1.1", family: 6 }],
+      clock: now,
+      intervalMs: 5,
+    });
+    unsafeDispatcher.start();
+    await waitFor(() => store.getWebPushSubscription(unsafe.id)?.state === "expired");
+    expect(store.getWebPushSubscription(unsafe.id)).toMatchObject({ lastErrorCode: "unsafe_endpoint" });
+    await unsafeDispatcher.stopAndDrain(50);
+    store.close();
+  });
+
   it("removes Markdown, bidi controls, and obvious credentials before truncating by code point", () => {
     const preview = webPushPreview(
       `# Result\n> **Ready** [open](https://example.test) Authorization: Bearer abcdefghijklmnop \u202E ${"🙂".repeat(200)}`,
@@ -456,5 +584,12 @@ describe("Web Push safety and persistence", () => {
     expect(preview).not.toContain("https://");
     expect(preview).not.toContain("\u202E");
     expect([...preview].length).toBeLessThanOrEqual(180);
+    expect(webPushPreview('{"apiKey":"my-secret-value"}')).toBe('{"apiKey":"[redacted]"}');
+    expect(webPushPreview('{"password":"x"}')).toBe('{"password":"[redacted]"}');
+    expect(webPushPreview('{"password":"two words"}')).toBe('{"password":"[redacted]"}');
+    expect(webPushPreview("'password': 'another-secret-value'")).toBe("'password': '[redacted]'");
+    expect(webPushPreview("token\u202E: my-secret-value")).toBe("token : [redacted]");
+    expect(webPushPreview("Bearer\u200B abcdefghijklmnop")).toBe("Bearer [redacted]");
+    expect(webPushPreview("token&#x202e;: encoded-secret-value")).toBe("token : [redacted]");
   });
 });
