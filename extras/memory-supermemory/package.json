@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/memory-supermemory",
-  "version": "0.19.0",
+  "version": "0.19.1",
   "description": "Supermemory external memory backend: a MemoryStore over Supermemory's REST API (local OSS binary or hosted cloud).",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -35,7 +35,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.19.0"
+    "@mono-agent/agent-contracts": "workspace:0.19.1"
   },
   "publishConfig": {
     "access": "public"
