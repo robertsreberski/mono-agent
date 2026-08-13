@@ -12,7 +12,7 @@ import {
   runVerifyAll,
 } from "../verify-all.mjs";
 
-const EXPECTED_CI_NODE_MATRIX = Object.freeze([MINIMUM_NODE_VERSION, "24"]);
+const EXPECTED_CI_NODE_MATRIX = Object.freeze([MINIMUM_NODE_VERSION, "24.18.0"]);
 const CI_CHECKOUT_STEP = [
   "      - name: Checkout",
   "        uses: actions/checkout@v4",
@@ -293,7 +293,7 @@ describe("verify-all", () => {
     ].join("\n");
     const mutated = [
       "      - name: Install packed consumer at the minimum Node version",
-      "        if: ${{ matrix.node-version == '24' }}",
+      "        if: ${{ matrix.node-version == '24.18.0' }}",
     ].join("\n");
     const mutatedSource = replaceExactly(source, original, mutated);
 
@@ -754,7 +754,7 @@ describe("verify-all", () => {
 
   it("rejects every noncanonical CI Node matrix value", () => {
     const source = readCiWorkflow();
-    const matrix = "        node-version: [\"22.19.0\", \"24\"]";
+    const matrix = "        node-version: [\"22.19.0\", \"24.18.0\"]";
 
     for (const replacement of ["20", "99", "future"]) {
       const mutation = replaceExactly(

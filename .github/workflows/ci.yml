@@ -23,7 +23,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ["22.19.0", "24"]
+        # Node 24.19.0 regressed native ObjectWrap teardown. Restore the
+        # floating "24" lane after https://github.com/nodejs/node/pull/65042 ships.
+        node-version: ["22.19.0", "24.18.0"]
 
     steps:
       - name: Checkout
