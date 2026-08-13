@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+## 0.19.0 — Web Push, console discovery, and host themes (2026-08-13)
+
+### Reliable Web Push
+
+- The web console now delivers standards-based Web Push notifications after
+  the page is closed. A server-owned VAPID identity and SQLite outbox cover
+  completed responses, input requests, terminal failures, cancellations,
+  interruptions, and explicit test sends while keeping notification previews
+  plain-text, redacted, and bounded.
+- Foreground acknowledgements suppress redundant pushes for the console a user
+  is actively viewing. Subscription repair, bounded retry, per-subscription
+  circuit breaking, stale cleanup, and shutdown draining make delivery
+  recoverable without creating a historical backlog.
+- Push mutation APIs bind to the exact browser origin, public push endpoints
+  must use HTTPS, and endpoint or key material is never returned by the API.
+  The server and outbox remain self-hosted; browser delivery necessarily uses
+  the browser vendor's push relay.
+
+### Console discovery and identity
+
+- Agents expose a bounded live skill registry to the console. The composer now
+  autocompletes canonical `$skill-name` references and provides a searchable,
+  keyboard-, pointer-, touch-, mobile-, and screen-reader-friendly skill
+  browser that inserts a reference without sending the message.
+- The web console shows its operating-system host name in the shell, browser
+  title, and installable PWA identity. Managed consoles can select evergreen,
+  ocean, plum, or terracotta with `mono-agent web --theme`, and retain the
+  chosen theme across restarts.
+
+### Read image normalization
+
+- Built-in `Read` image results with an edge above 8,000 pixels are normalized
+  before provider embedding. Resizing preserves aspect ratio, source files,
+  safe existing bytes, image formats, and GIF/WebP animation; resized BMP
+  input becomes PNG and undecodable images fail before an image block is made.
+
+### Release coordination
+
+- All 22 catalog-publishable packages move together to 0.19.0. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
+
 ## 0.18.3 — Subagent web inheritance, ledger collapse, and transport causes (2026-08-12)
 
 ### Subagent web configuration

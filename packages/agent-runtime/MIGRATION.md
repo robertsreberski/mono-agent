@@ -17,6 +17,14 @@ the configuration schema.
 
 ---
 
+## 0.19.0
+
+- **Oversized `Read` images:** raster image results with an edge above 8,000
+  pixels are now normalized before provider embedding. Source files are never
+  modified; safe images retain their exact bytes, resized GIF/WebP input keeps
+  its animation, and resized BMP input becomes PNG. Undecodable image data now
+  fails before the runtime creates an image content block.
+
 ## 0.18.2
 
 - **Normalized native-subagent activity:** Claude SDK/CLI and Codex app-server
@@ -482,7 +490,7 @@ a compatibility subpath.
 
 ## Version
 
-This guide describes the published `0.18.x` package contract. Keep
+This guide describes the published `0.19.x` package contract. Keep
 `@mono-agent/agent-runtime`, `@mono-agent/runtime-adapter`, and other
 `@mono-agent/*` packages on the same lockstep version when upgrading. The paired
 runtime adapter no longer exposes `piReasoningSummary` in its run-options type.
