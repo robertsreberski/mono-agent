@@ -84,4 +84,12 @@ describe("insertSkillReference", () => {
       selectionEnd: 17,
     });
   });
+
+  it("uses punctuation as a token boundary without moving the caret past it", () => {
+    expect(insertSkillReference("Use .", 4, 4, "$research")).toEqual({
+      text: "Use $research.",
+      selectionStart: 13,
+      selectionEnd: 13,
+    });
+  });
 });

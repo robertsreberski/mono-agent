@@ -23,6 +23,8 @@ interface SkillMatch {
 
 const SKILL_QUERY = /^[A-Za-z0-9_-]*$/u;
 const SKILL_REFERENCE = /^\$[A-Za-z0-9][A-Za-z0-9_-]*$/u;
+const TOKEN_AT_END = /[\p{L}\p{N}_$-]$/u;
+const TOKEN_AT_START = /^[\p{L}\p{N}_$-]/u;
 
 /** Mirrors assistant-ui trigger boundaries while enforcing the canonical skill-name grammar. */
 export function detectSkillQuery(
@@ -82,11 +84,11 @@ export function insertSkillReference(
   const end = Math.max(start, Math.min(selectionEnd, text.length));
   const before = text.slice(0, start);
   const after = text.slice(end);
-  const prefix = before.length > 0 && !/\s$/u.test(before) ? " " : "";
-  const suffix = after.length === 0 || !/^\s/u.test(after) ? " " : "";
+  const prefix = TOKEN_AT_END.test(before) ? " " : "";
+  const suffix = after.length === 0 || TOKEN_AT_START.test(after) ? " " : "";
   const nextText = `${before}${prefix}${reference}${suffix}${after}`;
   const referenceEnd = before.length + prefix.length + reference.length;
-  const caret = referenceEnd + (suffix.length > 0 ? suffix.length : after.length > 0 ? 1 : 0);
+  const caret = referenceEnd + (suffix.length > 0 ? suffix.length : /^\s/u.test(after) ? 1 : 0);
   return { text: nextText, selectionStart: caret, selectionEnd: caret };
 }
 
