@@ -1,5 +1,7 @@
 import { createECDH } from "node:crypto";
+import { once } from "node:events";
 import { rm } from "node:fs/promises";
+import { connect, createServer } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -9,6 +11,7 @@ import webPush from "web-push";
 import type { WebAgentSummary } from "../contracts.js";
 import { webPushPreview } from "../push-preview.js";
 import {
+  createWebPushPinnedLookup,
   generateWebPushIdentity,
   validateWebPushEndpoint,
   validateWebPushKeys,
@@ -92,6 +95,29 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<voi
 }
 
 describe("Web Push safety and persistence", () => {
+  it("returns an address array when Node auto-family lookup requests all pinned addresses", async () => {
+    const server = createServer((socket) => socket.end());
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("Expected a TCP test address.");
+
+    const socket = connect({
+      host: "push.example.test",
+      port: address.port,
+      autoSelectFamily: true,
+      lookup: createWebPushPinnedLookup({ address: "127.0.0.1", family: 4 }),
+    });
+    try {
+      await once(socket, "connect");
+    } finally {
+      socket.destroy();
+      await new Promise<void>((resolvePromise, reject) => {
+        server.close((error) => error === undefined ? resolvePromise() : reject(error));
+      });
+    }
+  });
+
   it("persists one VAPID identity and fails closed on partial state", async () => {
     const now = () => new Date("2026-08-13T08:00:00.000Z");
     const store = await storeAt(now);
