@@ -109,7 +109,13 @@ threads show `Context —` instead of deriving a percentage from aggregate work.
 Structured reasoning, routine tools, and one update-in-place row per compaction
 share the stream-aware Activity disclosure, which collapses at every terminal
 message state without reordering answer parts.
-Typing `/` in an empty composer opens the available command triggers.
+Typing `/` in an empty composer opens the available command triggers. Typing
+`$` opens deterministic name/description autocomplete for usable skills from
+the active agent's live registry. The adjacent browse control also shows
+unavailable entries disabled with their status. Keyboard, pointer, and touch
+selection only inserts the canonical `$skill-name` token at the caret; it never
+sends the draft. Loading, stale, empty, unsupported, offline, and registry-error
+states leave normal composition available.
 
 Select rendered message text to quote it into the composer. One quote is kept
 with the authored user message and supplied to the operator as Markdown
@@ -163,8 +169,9 @@ the turn also cancels its pending form.
    thread, message, part, turn, live-input, upload, and preference records through the
    SQLite store, and drives each agent over its loopback operator endpoint.
 3. Service mutations publish invalidations. Browsers consume `/api/v1/events`
-   and refetch authoritative projections, so reloads and concurrent tabs do not
-   own or interrupt upstream turns.
+   and refetch authoritative projections, including the selected agent's
+   memory-only live skill registry, so reloads and concurrent tabs do not own or
+   interrupt upstream turns.
 4. The bundled assistant-ui webapp maps those DTOs into its external store,
    thread list, messages, composer, attachments, activity, and notification UI.
 5. `deliverWebNotification` reads the owner-private live ingress record and
@@ -264,6 +271,10 @@ WebQuote
 WebRunState
 WebRunStatus
 WebServerHandle
+WebSkillAvailability
+WebSkillInfo
+WebSkillRegistry
+WebSkillUnavailableReason
 WebStatePathOptions
 WebStatePaths
 WebTheme

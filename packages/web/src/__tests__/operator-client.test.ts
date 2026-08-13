@@ -31,6 +31,16 @@ describe("OperatorClient", () => {
             contextWindow: 128_000,
           },
         },
+        skills: {
+          status: "ready",
+          items: [{
+            name: "research",
+            description: "Find sources.",
+            availability: "on-demand",
+            reference: "$research",
+          }],
+          total: 1,
+        },
         capabilities: { attachments: true, askUser: true },
       })) as typeof fetch,
     });
@@ -47,10 +57,160 @@ describe("OperatorClient", () => {
           contextWindow: 128_000,
         },
       },
+      skills: {
+        status: "ready",
+        items: [{
+          name: "research",
+          description: "Find sources.",
+          availability: "on-demand",
+          reference: "$research",
+        }],
+        total: 1,
+      },
       supportsAttachments: true,
       supportsHistoryAppend: false,
       supportsAskUser: true,
       supportsLiveInput: false,
+    });
+  });
+
+  it("drops malformed optional skill metadata without taking the agent offline", async () => {
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        schema: 1,
+        skills: {
+          status: "ready",
+          items: [{
+            name: "research",
+            description: "Find sources.",
+            availability: "on-demand",
+            reference: "/wrong",
+          }],
+          total: 1,
+        },
+        capabilities: {},
+      })) as typeof fetch,
+    });
+
+    await expect(client.info()).resolves.toMatchObject({
+      skills: { status: "ready", items: [], total: 1, truncated: true },
+      supportsAttachments: false,
+    });
+  });
+
+  it.each([
+    {
+      label: "an oversized description",
+      item: {
+        name: "research",
+        description: "x".repeat(257),
+        availability: "on-demand",
+        reference: "$research",
+      },
+    },
+    {
+      label: "a non-canonical available name",
+      item: {
+        name: "plugin:research",
+        description: "Find sources.",
+        availability: "on-demand",
+        reference: "$plugin:research",
+      },
+    },
+  ])("drops $label while preserving a usable registry", async ({ item }) => {
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        schema: 1,
+        skills: { status: "ready", items: [item], total: 1 },
+        capabilities: {},
+      })) as typeof fetch,
+    });
+
+    await expect(client.info()).resolves.toMatchObject({
+      skills: { status: "ready", items: [], total: 1, truncated: true },
+    });
+  });
+
+  it("drops an individually malformed skill while preserving valid registry entries", async () => {
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        schema: 1,
+        skills: {
+          status: "ready",
+          items: [
+            {
+              name: "research",
+              description: "Find sources.",
+              availability: "on-demand",
+              reference: "$research",
+            },
+            {
+              name: "future-skill",
+              description: "Uses a future wire status.",
+              availability: "future",
+            },
+          ],
+          total: 2,
+        },
+        capabilities: {},
+      })) as typeof fetch,
+    });
+
+    await expect(client.info()).resolves.toMatchObject({
+      skills: {
+        status: "ready",
+        items: [expect.objectContaining({ name: "research" })],
+        total: 2,
+        truncated: true,
+      },
+    });
+  });
+
+  it.each([
+    {
+      label: "duplicate names",
+      registry: {
+        status: "ready",
+        items: [
+          {
+            name: "research",
+            description: "Find sources.",
+            availability: "on-demand",
+            reference: "$research",
+          },
+          {
+            name: "Research",
+            description: "Find other sources.",
+            availability: "inlined",
+            reference: "$Research",
+          },
+        ],
+        total: 2,
+      },
+    },
+    {
+      label: "inconsistent truncation",
+      registry: {
+        status: "ready",
+        items: [],
+        total: 1,
+      },
+    },
+  ])("contains $label in optional skill metadata", async ({ registry }) => {
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        schema: 1,
+        skills: registry,
+        capabilities: {},
+      })) as typeof fetch,
+    });
+
+    await expect(client.info()).resolves.toMatchObject({
+      skills: { status: "error", items: [] },
     });
   });
 

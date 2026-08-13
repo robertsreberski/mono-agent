@@ -13,6 +13,7 @@ import { DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
   AgentSummary,
   Bootstrap,
+  SkillRegistryState,
   StartTurnInput,
   ThreadDetail,
   ThreadSummary,
@@ -44,6 +45,7 @@ interface ConsoleStoreValue {
   readonly effort: string;
   readonly modelOptions: readonly string[];
   readonly effortOptions: readonly string[];
+  readonly skillRegistry: SkillRegistryState;
   readonly selectAgent: (sourceId: string) => void;
   readonly setAgentPinned: (sourceId: string, pinned: boolean) => Promise<void>;
   readonly selectThread: (threadId: string) => void;
@@ -252,6 +254,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnectionState>("connecting");
+  const [skillRegistryState, setSkillRegistryState] = useState<{
+    readonly sourceId: string | null;
+    readonly registry: SkillRegistryState;
+  }>({ sourceId: null, registry: { status: "loading", items: [] } });
+  const [skillRefreshToken, setSkillRefreshToken] = useState(0);
   const [showArchived, setShowArchived] = useState(false);
   const [showOfflineAgents, setShowOfflineAgents] = useState(false);
   const [modelByContext, setModelByContext] = useState<Record<string, string>>(() =>
@@ -266,6 +273,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   );
   const selectedThreadRef = useRef<string | null>(null);
   const selectedAgentRef = useRef<string | null>(selectedAgentId);
+  const skillRequestGenerationRef = useRef(0);
+  const skillRegistryStateRef = useRef(skillRegistryState);
   const refreshTimerRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
@@ -292,6 +301,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   useEffect(() => {
     selectedAgentRef.current = selectedAgentId;
   }, [selectedAgentId]);
+
+  useEffect(() => {
+    skillRegistryStateRef.current = skillRegistryState;
+  }, [skillRegistryState]);
 
   const applyBootstrap = useCallback((next: Bootstrap) => {
     setBootstrap(next);
@@ -397,13 +410,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   useEffect(() => {
     const events = new EventSource("/api/v1/events");
     const handleEvent = (event: Event) => {
+      let eventType: WebEvent["type"] | undefined;
       try {
         const webEvent = JSON.parse((event as MessageEvent<string>).data) as WebEvent;
         if (webEvent.version !== 1) return;
+        eventType = webEvent.type;
       } catch {
         // A ready ping without JSON still proves the stream is alive.
       }
       setConnection("live");
+      if (eventType === "ready" || eventType === "agents.changed") {
+        setSkillRefreshToken((value) => value + 1);
+      }
       queueRefresh();
     };
     const eventTypes: WebEvent["type"][] = [
@@ -415,12 +433,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       "turn.changed",
       "attachment.changed",
     ];
-    events.onopen = () => setConnection("live");
+    events.onopen = () => {
+      setConnection("live");
+      setSkillRefreshToken((value) => value + 1);
+    };
     events.onmessage = handleEvent;
     for (const type of eventTypes) events.addEventListener(type, handleEvent);
     events.onerror = () => setConnection(navigator.onLine ? "reconnecting" : "offline");
     const onOnline = () => {
       setConnection("reconnecting");
+      setSkillRefreshToken((value) => value + 1);
       queueRefresh();
     };
     const onOffline = () => setConnection("offline");
@@ -442,6 +464,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const threads = bootstrap?.threads ?? [];
   const selectedAgent =
     agents.find((agent) => agent.sourceId === selectedAgentId) ?? null;
+  const skillRegistry = skillRegistryState.sourceId === selectedAgentId
+    ? skillRegistryState.registry
+    : { status: "loading" as const, items: [] as const };
   const { visibleAgents, hiddenOfflineAgentCount } = useMemo(
     () => agentVisibility(agents, selectedAgentId, showOfflineAgents),
     [agents, selectedAgentId, showOfflineAgents],
@@ -458,6 +483,60 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         .sort(byMostRecent),
     [selectedAgentId, showArchived, threads],
   );
+
+  useEffect(() => {
+    const generation = ++skillRequestGenerationRef.current;
+    const sourceId = selectedAgentId;
+    const prior = skillRegistryStateRef.current;
+    const retainAsStale = (): SkillRegistryState => {
+      if (
+        prior.sourceId === sourceId
+        && (prior.registry.status === "ready" || prior.registry.status === "stale")
+      ) {
+        return {
+          status: "stale",
+          items: prior.registry.items,
+          total: prior.registry.total,
+          ...(prior.registry.truncated === true ? { truncated: true } : {}),
+        };
+      }
+      return selectedAgent?.status === "offline"
+        ? { status: "offline", items: [] }
+        : { status: "loading", items: [] };
+    };
+
+    if (sourceId === null) {
+      setSkillRegistryState({ sourceId: null, registry: { status: "loading", items: [] } });
+      return;
+    }
+    if (selectedAgent?.status === "offline" || connection !== "live") {
+      setSkillRegistryState({ sourceId, registry: retainAsStale() });
+      return;
+    }
+
+    const controller = new AbortController();
+    setSkillRegistryState({
+      sourceId,
+      registry: prior.sourceId === sourceId
+        && (prior.registry.status === "ready" || prior.registry.status === "stale")
+        ? retainAsStale()
+        : { status: "loading", items: [] },
+    });
+    void api.agentSkills(sourceId, controller.signal).then((registry) => {
+      if (controller.signal.aborted || generation !== skillRequestGenerationRef.current) return;
+      setSkillRegistryState({ sourceId, registry });
+    }).catch(() => {
+      if (controller.signal.aborted || generation !== skillRequestGenerationRef.current) return;
+      setSkillRegistryState({
+        sourceId,
+        registry: prior.sourceId === sourceId
+          && (prior.registry.status === "ready" || prior.registry.status === "stale")
+          ? retainAsStale()
+          : { status: "error", items: [] },
+      });
+    });
+    return () => controller.abort();
+  }, [connection, selectedAgent?.status, selectedAgentId, skillRefreshToken]);
 
   const selectAgent = useCallback(
     (sourceId: string) => {
@@ -816,6 +895,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       effort,
       modelOptions,
       effortOptions,
+      skillRegistry,
       selectAgent,
       setAgentPinned,
       selectThread,
@@ -857,6 +937,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loading,
       model,
       modelOptions,
+      skillRegistry,
       renameThread,
       selectAgent,
       selectThread,

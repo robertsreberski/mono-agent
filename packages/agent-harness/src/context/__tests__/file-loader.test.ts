@@ -42,7 +42,7 @@ describe('loadContextFromFiles', () => {
       userMessage: 'Load fixture context.',
     });
 
-    expect(context.prompt).toContain('call `ReadSkill` with its name');
+    expect(context.prompt).toContain('call `ReadSkill` with its exact name');
     expect(context.prompt).toContain('Do not use `Read` to open a skill\'s `SKILL.md`');
     expect(context.prompt).not.toContain(join(skillsRoot, 'research', 'SKILL.md'));
     expect(context.metadata.sources).toContain(join(skillsRoot, 'research', 'SKILL.md'));

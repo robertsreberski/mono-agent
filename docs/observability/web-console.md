@@ -105,6 +105,14 @@ The service, not the browser tab, owns the upstream operator connection. A brows
 
 During a turn the transcript shows streamed GitHub-Flavored Markdown, reasoning, tool calls and results, context-compaction lifecycle rows, user-facing errors, and the final outcome. Tables, task lists, strikethrough, autolinks, and footnotes render as real elements; a table wider than the transcript keeps its column alignment and scrolls horizontally inside its own keyboard-focusable region, and links to external sites open outside the console window. Raw HTML in a reply is never rendered. Other raw runtime, provider, and usage telemetry remains internal; measured token and cost data appears only through the context control. The composer exposes the selected agent's available model and effort controls. Copy, cancel, archive, unarchive, and steering a running turn are supported; edit/regenerate/branch and browser-defined client tools are deliberately not enabled.
 
+### Discover and reference skills
+
+Typing `$` at a token boundary opens a keyboard-navigable list of skills available to the selected agent. Search ranks exact and prefix name matches first, then token prefixes, partial/fuzzy names, and description terms. The separate **Browse skills** composer control exposes the same live registry without requiring the trigger character; unavailable entries remain visible there with their reason but cannot be selected.
+
+Choosing a result by keyboard, mouse, or touch inserts its exact `$skill-name` reference at the saved caret and returns focus to the draft. It does not submit the message or execute the skill. A sent reference is ordinary turn text plus model-facing intent; the agent prompt defines exact `$skill-name` tokens as explicit requests to use matching instructions. See [Selected skills](/context/skills/#canonical-skill-references) for the syntax and availability rules.
+
+The registry is scoped to the active agent and comes from that running agent's `skillsRoot`, disclosure mode, selected skills, and `ReadSkill` policy. The agent refreshes its in-memory snapshot every five seconds when installed skill files change; the web service never persists a second skill list. Agent switches, registry invalidations, and event-stream reconnects refetch the active snapshot. Loading, empty, unsupported, offline, refresh-error, and stale states leave ordinary composition usable; stale entries are visible but cannot be inserted until a live refresh succeeds.
+
 ### Steer a running turn
 
 The composer remains sendable while a response is running. A text-only send is
@@ -196,7 +204,7 @@ An `Agent` call is one foldable row inside Activity — profile name, the model'
 
 Below 560px the tree adapts rather than clipping: each row keeps its tool name and status on the first line and wraps the argument preview onto a second, the nesting rails narrow, and the settled Activity list scrolls with the page instead of inside its own box. Individual tool payloads stay height-capped and selectable so their output can still be copied on a phone.
 
-Type `/` in an empty composer to open the keyboard-friendly command popover for available actions such as run settings, starting a new conversation, or stopping an active response.
+Type `/` in an empty composer to open the keyboard-friendly command popover for available actions such as run settings, starting a new conversation, or stopping an active response. Type `$` to find an available skill, or use **Browse skills** without entering a trigger.
 
 ## Attachments use the browser device picker
 

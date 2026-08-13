@@ -245,7 +245,7 @@ describe("subagent confinement and context inheritance", () => {
     expect(prompt.startsWith("You research.")).toBe(true);
     expect(prompt).toContain("## Skill Index");
     expect(prompt).toContain("- **a8c-context** — Read Automattic work context.");
-    expect(prompt).toContain("call `ReadSkill` with its name");
+    expect(prompt).toContain("call `ReadSkill` with its exact name");
   });
 
   it("stays inert when the parent disclosed no skills", async () => {

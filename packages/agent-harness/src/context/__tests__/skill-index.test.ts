@@ -4,7 +4,11 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { ContextValidationError } from '../errors.js';
-import { buildSkillIndex, loadSkillIndexFromDirectory } from '../skill-index.js';
+import {
+  buildSkillIndex,
+  isReadSkillCompatibleName,
+  loadSkillIndexFromDirectory,
+} from '../skill-index.js';
 
 const fixturesRoot = fileURLToPath(new URL('../__fixtures__/', import.meta.url));
 const validSkillsRoot = join(fixturesRoot, 'skills-valid');
@@ -30,6 +34,18 @@ describe('buildSkillIndex', () => {
         { name: 'Research', description: 'Two', mainFile: '/two/SKILL.md' },
       ]),
     ).toThrow(ContextValidationError);
+  });
+});
+
+describe('isReadSkillCompatibleName', () => {
+  it('accepts only names that can be referenced as an exact global $ token', () => {
+    expect(isReadSkillCompatibleName('research')).toBe(true);
+    expect(isReadSkillCompatibleName('review_2')).toBe(true);
+    expect(isReadSkillCompatibleName('2d-map')).toBe(true);
+    expect(isReadSkillCompatibleName('figma:use')).toBe(false);
+    expect(isReadSkillCompatibleName('space name')).toBe(false);
+    expect(isReadSkillCompatibleName('-leading')).toBe(false);
+    expect(isReadSkillCompatibleName('')).toBe(false);
   });
 });
 

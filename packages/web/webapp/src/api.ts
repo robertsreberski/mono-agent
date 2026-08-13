@@ -1,5 +1,6 @@
 import type {
   AgentSummary,
+  AgentSkillRegistry,
   AskAnswer,
   AskSnapshot,
   AskSubmissionResult,
@@ -82,6 +83,12 @@ export const api = {
     );
     return result.agent;
   },
+
+  agentSkills: (sourceId: string, signal?: AbortSignal) =>
+    request<AgentSkillRegistry>(
+      `/api/v1/agents/${encodeURIComponent(sourceId)}/skills`,
+      { signal },
+    ),
 
   patchThread: async (
     threadId: string,

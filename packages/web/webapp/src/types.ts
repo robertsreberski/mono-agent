@@ -77,6 +77,40 @@ export interface AgentSummary {
   readonly updatedAt: string;
 }
 
+export type SkillAvailability = "inlined" | "on-demand" | "unavailable";
+export type SkillUnavailableReason = "not-selected" | "read-skill-disabled" | "unsupported-name";
+
+export interface SkillInfo {
+  readonly name: string;
+  readonly description: string;
+  readonly availability: SkillAvailability;
+  readonly reference?: string;
+  readonly unavailableReason?: SkillUnavailableReason;
+}
+
+export type AgentSkillRegistry =
+  | {
+      readonly status: "ready";
+      readonly items: readonly SkillInfo[];
+      readonly total: number;
+      readonly truncated?: true;
+    }
+  | {
+      readonly status: "error" | "unsupported" | "offline";
+      readonly items: readonly [];
+    };
+
+/** Browser-derived states wrap the live endpoint while a refresh is in flight. */
+export type SkillRegistryState =
+  | AgentSkillRegistry
+  | { readonly status: "loading"; readonly items: readonly [] }
+  | {
+      readonly status: "stale";
+      readonly items: readonly SkillInfo[];
+      readonly total: number;
+      readonly truncated?: true;
+    };
+
 export interface RunState {
   readonly id?: string;
   readonly status: RunStatus;

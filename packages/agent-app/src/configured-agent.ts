@@ -63,6 +63,7 @@ import {
   MemoryRetrievalService,
 } from "./memory-retrieval.js";
 import { composeRuntimeOptionExtensions } from "./runtime-option-extensions.js";
+import { isReadSkillDenied } from "./skill-registry.js";
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
 type StaticRuntimeOptions = NonNullable<AgentHarnessOptions["runtimeOptions"]>;
@@ -549,9 +550,7 @@ function subagentsRuntimeOptions(
   // An operator who denied ReadSkill agent-wide must not get it back through a
   // child. Both spellings, because pi-bridge's deny gate honors the legacy alias
   // and a policy that only blocks one of them is not a policy.
-  const skillsDeniedGlobally = config.tools.disallowedTools
-    .map(canonicalToolName)
-    .some((tool) => tool === "ReadSkill" || tool === "read_skill");
+  const skillsDeniedGlobally = isReadSkillDenied(config.tools.disallowedTools);
 
   const run = async (request: SubagentRunRequest): Promise<RuntimeResult> => {
     // A profile model must go through `runtimeForModel`: the router overrides
@@ -575,9 +574,7 @@ function subagentsRuntimeOptions(
     // entries, the config's deny list, the profile's, and the child's RESOLVED
     // route. Undefined means the child runs exactly as it did before — the
     // prompt is untouched and neither run option is set.
-    const profileDeniesSkills = (request.definition.disallowedTools ?? [])
-      .map(canonicalToolName)
-      .some((tool) => tool === "ReadSkill" || tool === "read_skill");
+    const profileDeniesSkills = isReadSkillDenied(request.definition.disallowedTools ?? []);
     const childSkills = request.skillsRoot !== undefined
       && (request.skills?.length ?? 0) > 0
       && !skillsDeniedGlobally

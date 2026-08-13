@@ -29,6 +29,7 @@ import { buildChannelConfigView } from "../channel-config-view.js";
 import type { ChannelDriver } from "../channels.js";
 import { agentAppPackageVersion } from "../package-version.js";
 import { configuredRuntimeModels } from "../runtime-routes.js";
+import { createSkillRegistryMonitor } from "../skill-registry.js";
 
 type TuiAdapterModule = typeof import("@mono-agent/operator-adapter");
 
@@ -109,6 +110,20 @@ export function createTuiChannelDriver(
       const adapterFactory = overrides.adapterFactory ?? adapterModule.startTuiAdapter;
       const discoverModels = overrides.discoverModels ?? discoverLocalProviderModels;
       const localProviders = input.coreConfig.providers?.local;
+      const skillRegistry = createSkillRegistryMonitor({
+        ...(input.coreConfig.context.skillsRoot === undefined
+          ? {}
+          : { skillsRoot: input.coreConfig.context.skillsRoot }),
+        selectedSkills: input.coreConfig.context.selectedSkills,
+        ...(input.coreConfig.context.skillDisclosure === undefined
+          ? {}
+          : { skillDisclosure: input.coreConfig.context.skillDisclosure }),
+        disallowedTools: input.coreConfig.tools.disallowedTools,
+        ...(input.logger === undefined ? {} : { logger: input.logger }),
+      });
+      // Establish a complete first snapshot before the adapter starts listening.
+      // Subsequent /v1/info reads are memory-only and cannot block on skill I/O.
+      await skillRegistry.prime();
 
       const configModelKeys: string[] = [];
       for (const ref of configuredRuntimeModels(input.coreConfig.runtime)) {
@@ -173,6 +188,7 @@ export function createTuiChannelDriver(
           ...(input.coreConfig.runtime.effort === undefined ? {} : { effort: input.coreConfig.runtime.effort }),
           models,
           ...(Object.keys(modelOptions).length === 0 ? {} : { modelOptions }),
+          skills: skillRegistry.snapshot(),
         };
       };
 
@@ -198,6 +214,7 @@ export function createTuiChannelDriver(
         onServerError: (reason) => input.onFailure(reason),
         ...(input.logger === undefined ? {} : { logger: input.logger }),
       });
+      skillRegistry.start();
       const workspacePath = await canonicalPath(input.coreConfig.runtime.workspace);
       return {
         summary: {
@@ -210,7 +227,10 @@ export function createTuiChannelDriver(
             workspacePath,
           },
         },
-        stop: () => adapter.stop(),
+        stop: async () => {
+          skillRegistry.stop();
+          await adapter.stop();
+        },
       };
     },
   };

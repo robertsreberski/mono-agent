@@ -55,6 +55,7 @@ const createStore = (
   effort: "",
   modelOptions: [],
   effortOptions: [],
+  skillRegistry: { status: "ready", items: [], total: 0 },
   selectAgent: vi.fn(),
   selectThread: vi.fn(),
   createThread: vi.fn(),
@@ -273,7 +274,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
       sendLiveInput,
     });
     const { runtime } = await renderComposerRuntime();
-    const input = screen.getByRole("textbox", { name: "Message" });
+    const input = screen.getByRole("combobox", { name: "Message" });
     const send = screen.getByRole("button", { name: "Send live follow-up" });
 
     expect(send).toBeDisabled();
@@ -299,7 +300,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
       sendLiveInput,
     });
     const { runtime } = await renderComposerRuntime();
-    const input = screen.getByRole("textbox", { name: "Message" });
+    const input = screen.getByRole("combobox", { name: "Message" });
 
     fireEvent.change(input, { target: { value: "Use Enter" } });
     fireEvent.keyDown(input, { key: "Enter", code: "Enter", shiftKey: true });
@@ -310,6 +311,222 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Use Enter"));
     expect(sendTurn).not.toHaveBeenCalled();
     expect(runtime.thread.composer.getState().text).toBe("");
+  });
+
+  it("inserts a keyboard-selected $ skill without sending and restores the caret", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn, {
+      skillRegistry: {
+        status: "ready",
+        items: [
+          {
+            name: "research",
+            description: "Find primary sources",
+            availability: "on-demand",
+            reference: "$research",
+          },
+          {
+            name: "review",
+            description: "Review the final patch",
+            availability: "inlined",
+            reference: "$review",
+          },
+        ],
+        total: 2,
+      },
+    });
+    const { runtime } = await renderComposerRuntime();
+    const input = screen.getByRole("combobox", { name: "Message" }) as HTMLTextAreaElement;
+
+    input.focus();
+    fireEvent.change(input, { target: { value: "Use $re" } });
+    const firstOption = await screen.findByRole("option", { name: /\$review/u });
+    const option = screen.getByRole("option", { name: /\$research/u });
+    expect(input).toHaveAttribute("aria-expanded", "true");
+    expect(firstOption).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(input, { key: "ArrowDown", code: "ArrowDown" });
+    expect(option).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => expect(runtime.thread.composer.getState().text).toBe("Use $research "));
+    expect(sendTurn).not.toHaveBeenCalled();
+    await waitFor(() => expect(input.selectionStart).toBe("Use $research ".length));
+    await waitFor(() => expect(document.activeElement).toBe(input));
+  });
+
+  it("dismisses $ skill autocomplete without changing or sending the draft", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn, {
+      skillRegistry: {
+        status: "ready",
+        items: [{
+          name: "research",
+          description: "Find primary sources",
+          availability: "on-demand",
+          reference: "$research",
+        }],
+        total: 1,
+      },
+    });
+    const { runtime } = await renderComposerRuntime();
+    const input = screen.getByRole("combobox", { name: "Message" });
+
+    fireEvent.change(input, { target: { value: "$res" } });
+    expect(await screen.findByRole("option", { name: /\$research/u })).toBeInTheDocument();
+    expect(screen.getByText("1 skill suggestion available.")).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Escape", code: "Escape" });
+
+    await waitFor(() => expect(screen.queryByRole("listbox", { name: "Skills" })).not.toBeInTheDocument());
+    expect(screen.queryByText("1 skill suggestion available.")).not.toBeInTheDocument();
+    expect(runtime.thread.composer.getState().text).toBe("$res");
+    expect(sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("inserts a pointer-selected $ skill without sending", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn, {
+      skillRegistry: {
+        status: "ready",
+        items: [{
+          name: "research",
+          description: "Find primary sources",
+          availability: "on-demand",
+          reference: "$research",
+        }],
+        total: 1,
+      },
+    });
+    const { runtime } = await renderComposerRuntime();
+    const input = screen.getByRole("combobox", { name: "Message" });
+
+    fireEvent.change(input, { target: { value: "$res" } });
+    fireEvent.click(await screen.findByRole("option", { name: /\$research/u }));
+
+    await waitFor(() => expect(runtime.thread.composer.getState().text).toBe("$research "));
+    expect(sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("opens autocomplete for a $ skill pasted in the middle of a draft", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn, {
+      skillRegistry: {
+        status: "ready",
+        items: [{
+          name: "research",
+          description: "Find primary sources",
+          availability: "on-demand",
+          reference: "$research",
+        }],
+        total: 1,
+      },
+    });
+    const { runtime } = await renderComposerRuntime();
+    const input = screen.getByRole("combobox", { name: "Message" }) as HTMLTextAreaElement;
+
+    input.focus();
+    fireEvent.change(input, {
+      target: {
+        value: "Use $res later",
+        selectionStart: 8,
+        selectionEnd: 8,
+      },
+    });
+
+    const option = await screen.findByRole("option", { name: /\$research/u });
+    expect(input).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(option);
+    await waitFor(() => expect(runtime.thread.composer.getState().text).toBe("Use $research later"));
+    expect(sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("does not mount a zero-result $ picker that would capture normal Enter submission", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn, {
+      skillRegistry: {
+        status: "ready",
+        items: [{
+          name: "research",
+          description: "Find primary sources",
+          availability: "on-demand",
+          reference: "$research",
+        }],
+        total: 1,
+      },
+    });
+    await renderComposerRuntime();
+    const input = screen.getByRole("combobox", { name: "Message" });
+
+    fireEvent.change(input, { target: { value: "$20" } });
+    expect(screen.queryByRole("listbox", { name: "Skills" })).not.toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "$20" }),
+      expect.any(Function),
+    ));
+  });
+
+  it("browses by description, shows unavailable skills disabled, and inserts without sending", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn, {
+      skillRegistry: {
+        status: "ready",
+        items: [
+          {
+            name: "research",
+            description: "Find primary sources",
+            availability: "on-demand",
+            reference: "$research",
+          },
+          {
+            name: "private",
+            description: "Internal notes",
+            availability: "unavailable",
+            unavailableReason: "not-selected",
+          },
+        ],
+        total: 2,
+      },
+    });
+    const { runtime } = await renderComposerRuntime();
+    const input = screen.getByRole("combobox", { name: "Message" }) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "Draft" } });
+    input.setSelectionRange(5, 5);
+    fireEvent.select(input);
+
+    const browse = screen.getByRole("button", { name: "Browse skills" });
+    fireEvent.pointerDown(browse);
+    fireEvent.click(browse);
+    expect(await screen.findByRole("dialog", { name: "Skills" })).toBeInTheDocument();
+    const unavailable = screen.getByRole("option", { name: /private, Not selected/u });
+    expect(unavailable).toHaveAttribute("data-disabled", "true");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Search skills" }), {
+      target: { value: "primary sources" },
+    });
+    const available = await screen.findByRole("option", { name: /\$research, On demand/u });
+    expect(screen.queryByRole("option", { name: /private/u })).not.toBeInTheDocument();
+    fireEvent.click(available);
+
+    await waitFor(() => expect(runtime.thread.composer.getState().text).toBe("Draft $research "));
+    expect(sendTurn).not.toHaveBeenCalled();
+    await waitFor(() => expect(document.activeElement).toBe(input));
+  });
+
+  it.each([
+    [{ status: "loading", items: [] }, "Loading skills…"],
+    [{ status: "ready", items: [], total: 0 }, "No skills are installed for this agent."],
+    [{ status: "error", items: [] }, "The agent could not load its skill registry."],
+    [{ status: "unsupported", items: [] }, "This agent version does not expose skill discovery."],
+    [{ status: "offline", items: [] }, "This agent is offline."],
+  ] as const)("keeps composition usable for the %s registry state", async (skillRegistry, message) => {
+    storeMock.current = createStore(vi.fn<SendTurn>().mockResolvedValue(undefined), { skillRegistry });
+    await renderComposerRuntime();
+    fireEvent.click(screen.getByRole("button", { name: "Browse skills" }));
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close skills" }));
+    expect(screen.getByRole("combobox", { name: "Message" })).toBeEnabled();
   });
 
   it("restores an attachment-only rejected turn into its exact created thread without re-uploading", async () => {
