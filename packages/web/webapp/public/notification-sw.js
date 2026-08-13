@@ -1,5 +1,6 @@
 const NOTIFICATION_SW_VERSION = 2;
 const SELECT_THREAD_MESSAGE = "mono-agent:select-thread";
+const SUBSCRIPTION_REPAIR_DELAYS_MS = [0, 1_000, 3_000];
 
 self.addEventListener("message", (event) => {
   if (event.data?.type !== "mono-agent:notification-sw-version") return;
@@ -45,7 +46,7 @@ self.addEventListener("pushsubscriptionchange", (event) => {
     try {
       const subscription = event.newSubscription
         ?? await self.registration.pushManager.getSubscription();
-      if (subscription) await registerChangedSubscription(subscription, event.oldSubscription);
+      if (subscription) await repairChangedSubscription(subscription, event.oldSubscription);
     } catch (error) {
       registrationFailure = error;
     }
@@ -96,7 +97,9 @@ function sameOriginNavigate(value, threadId) {
 
 function boundedText(value, fallback) {
   if (typeof value !== "string") return fallback;
-  const text = value.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/gu, " ")
+  const text = value
+    .replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "")
+    .replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
   if (!text) return fallback;
@@ -107,7 +110,9 @@ function boundedText(value, fallback) {
 async function registerChangedSubscription(subscription, oldSubscription) {
   const serialized = subscription.toJSON();
   if (typeof serialized?.keys?.p256dh !== "string" || typeof serialized.keys.auth !== "string") {
-    throw new Error("The rotated push subscription is incomplete.");
+    const error = new Error("The rotated push subscription is incomplete.");
+    error.retryable = false;
+    throw error;
   }
   const response = await fetch("/api/v1/push/subscriptions", {
     method: "PUT",
@@ -126,7 +131,42 @@ async function registerChangedSubscription(subscription, oldSubscription) {
         : {}),
     }),
   });
-  if (!response.ok) throw new Error(`Push subscription repair failed with status ${response.status}.`);
+  if (!response.ok) {
+    const error = new Error(`Push subscription repair failed with status ${response.status}.`);
+    error.retryable = response.status === 408
+      || response.status === 425
+      || response.status === 429
+      || response.status >= 500;
+    throw error;
+  }
+}
+
+async function repairChangedSubscription(subscription, oldSubscription) {
+  let lastError;
+  let currentSubscription = subscription;
+  for (const delay of SUBSCRIPTION_REPAIR_DELAYS_MS) {
+    if (delay > 0) {
+      await wait(delay);
+      try {
+        currentSubscription = await self.registration.pushManager.getSubscription()
+          ?? currentSubscription;
+      } catch {
+        // The event-provided subscription remains a usable fallback.
+      }
+    }
+    try {
+      await registerChangedSubscription(currentSubscription, oldSubscription);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (isRecord(error) && error.retryable === false) break;
+    }
+  }
+  throw lastError ?? new Error("Push subscription repair failed.");
+}
+
+function wait(delay) {
+  return new Promise((resolve) => setTimeout(resolve, delay));
 }
 
 function isRecord(value) {

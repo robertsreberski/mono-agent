@@ -160,9 +160,10 @@ installed-PWA form (Add to Home Screen) before enabling the bell.
 
 The browser stores only the opaque server subscription id and a one-way
 endpoint digest. A service-worker rotation atomically swaps the old server row
-even when no console window is open; load-time reconciliation repairs the same
-case on browsers that do not emit that lifecycle event. Transient status or DNS
-failures retain the current subscription for retry, while confirmed expiry,
+even when no console window is open, with bounded retries for transient repair
+failures; load-time reconciliation repairs the same case on browsers that do
+not emit that lifecycle event or outlive the retry window. Transient status or
+DNS failures retain the current subscription for retry, while confirmed expiry,
 application-key rotation, and explicit disable replace or retire it.
 
 An app-managed cron job or webhook endpoint can set `notify: true` with the

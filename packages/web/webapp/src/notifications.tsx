@@ -449,7 +449,7 @@ function isPendingPushDetail(value: unknown): value is PendingPushDetail {
 
 function plainNotificationPreview(value: string): string {
   let text = decodeNotificationEntities([...value].slice(0, 8_192).join(""))
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/gu, " ")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "")
     .replace(/```[^\n]*\n?/gu, " ")
     .replace(/~~~[^\n]*\n?/gu, " ")
     .replace(/!\[([^\]]*)\]\([^)]*\)/gu, "$1")
@@ -475,8 +475,8 @@ function redactNotificationSecrets(value: string): string {
     .replace(/\b(basic|bearer|token)\s+[a-z\d._~+\/-]{8,}={0,2}\b/giu, "$1 [redacted]")
     .replace(/(^|[\s{[(,])(["'](?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)["']\s*[:=]\s*)(["'])(?:\\.|(?!\3)[\s\S])*\3/gimu, "$1$2$3[redacted]$3")
     .replace(/(^|[\s{[(,])(["'](?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)["']\s*[:=]\s*)[^\s"',;}]+/gimu, "$1$2[redacted]")
-    .replace(/\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)\s*[:=]\s*)[^\s,;]+/giu, "$1[redacted]")
-    .replace(/(--(?:api[_-]?key|token|password|secret)(?:=|\s+))[^\s]+/giu, "$1[redacted]")
+    .replace(/\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)\s*[:=]\s*)(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|"(?:\\.|[^,;\n])*|'(?:\\.|[^,;\n])*|[^\s,;]+)/giu, "$1[redacted]")
+    .replace(/(--(?:api[_-]?key|token|password|secret)(?:=|\s+))(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|"(?:\\.|[^,;\n])*|'(?:\\.|[^,;\n])*|[^\s,;]+)/giu, "$1[redacted]")
     .replace(/\b(?:gh[opusr]_[a-z\d]{20,}|sk-[a-z\d_-]{20,}|xox[baprs]-[a-z\d-]{20,})\b/giu, "[redacted]");
 }
 

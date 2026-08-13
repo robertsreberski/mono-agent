@@ -20,11 +20,11 @@ export function webPushPreview(value: unknown, fallback = "Update available."): 
   let text = [...source].slice(0, MAX_SCAN_CODE_POINTS).join("");
 
   // Decode first because entities can introduce bidi/control characters, then
-  // remove every invisible separator before Markdown removal or redaction.
-  // Replacing with a space keeps adjacent words and credential labels from
-  // being joined into a new, misleading token.
+  // delete invisible format and control separators before any redaction pass.
+  // Redacting first could consume only the visible prefix of one credential
+  // and strand its suffix after the separator is removed.
   text = decodeEntities(text)
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/gu, " ");
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "");
 
   text = text
     .replace(/```[^\n]*\n?/gu, " ")
@@ -77,8 +77,8 @@ function redactSecrets(value: string): string {
     // credential-labelled field is explicit enough to redact even when short.
     .replace(/(^|[\s{[(,])(["'](?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)["']\s*[:=]\s*)(["'])(?:\\.|(?!\3)[\s\S])*\3/gimu, "$1$2$3[redacted]$3")
     .replace(/(^|[\s{[(,])(["'](?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)["']\s*[:=]\s*)[^\s"',;}]+/gimu, "$1$2[redacted]")
-    .replace(/\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)\s*[:=]\s*)[^\s,;]+/giu, "$1[redacted]")
-    .replace(/(--(?:api[_-]?key|token|password|secret)(?:=|\s+))[^\s]+/giu, "$1[redacted]")
+    .replace(/\b((?:api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)\s*[:=]\s*)(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|"(?:\\.|[^,;\n])*|'(?:\\.|[^,;\n])*|[^\s,;]+)/giu, "$1[redacted]")
+    .replace(/(--(?:api[_-]?key|token|password|secret)(?:=|\s+))(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|"(?:\\.|[^,;\n])*|'(?:\\.|[^,;\n])*|[^\s,;]+)/giu, "$1[redacted]")
     // Well-known token families that are dangerous even without a label.
     .replace(/\b(?:gh[opusr]_[a-z\d]{20,}|sk-[a-z\d_-]{20,}|xox[baprs]-[a-z\d-]{20,})\b/giu, "[redacted]");
 }

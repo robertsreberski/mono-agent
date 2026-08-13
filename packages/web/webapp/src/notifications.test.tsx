@@ -226,8 +226,28 @@ describe("response notifications", () => {
         status: "complete",
       }],
     }, "turn-safe");
-    expect(sanitized).toContain('Ready open {"apiKey":"[redacted]"} token : [redacted]');
+    expect(sanitized).toContain('Ready open {"apiKey":"[redacted]"} token: [redacted]');
     expect(sanitized).not.toMatch(/https:\/\/|my-secret|another-secret|\u202E|\*\*/u);
+
+    const embeddedSeparator = responsePreview({
+      thread: complete,
+      messages: [{
+        id: "separator-response",
+        threadId: complete.id,
+        turnId: "turn-separator",
+        role: "assistant",
+        parts: [{
+          type: "text",
+          text: 'password: "two words" Authorization: Bearer abcdefgh\u200Bijklmnop Bearer abcdefgh\uFEFFqrstuvwx token abcdefgh\u2060ijklmnop basic abcdefgh\u034Fqrstuvwx Bearer abcdefgh\uFFF9ijklmnop',
+        }],
+        attachments: [],
+        createdAt: "2026-07-20T10:00:00.000Z",
+        updatedAt: "2026-07-20T10:00:00.000Z",
+        status: "complete",
+      }],
+    }, "turn-separator");
+    expect(embeddedSeparator).toBe("password: [redacted] Authorization: [redacted] Bearer [redacted] token [redacted] basic [redacted] Bearer [redacted]");
+    expect(embeddedSeparator).not.toMatch(/two words|abcdefgh|ijklmnop|qrstuvwx|[\u00ad\u034f\u200b-\u200f\u2060-\u2064\u3164\ufeff\ufff9]/u);
   });
 
   it("marks cron and webhook arrivals in browser notification titles", () => {
@@ -532,7 +552,10 @@ describe("response notifications", () => {
       </NotificationsProvider>
     );
     const view = render(notificationTree());
-    await waitFor(() => expect(screen.getByRole("button", { name: "Disable push notifications" })).toBeVisible());
+    await waitFor(() => expect(api.pushSubscription).toHaveBeenCalledWith("subscription-1"));
+    const expectedDigest = await endpointDigest(browserSubscription.endpoint);
+    await waitFor(() => expect(localStorage.getItem(PUSH_SUBSCRIPTION_ENDPOINT_DIGEST_STORAGE_KEY))
+      .toBe(expectedDigest));
 
     storeMock.current = createStore(complete);
     view.rerender(notificationTree());
