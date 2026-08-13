@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-mono-agent loads skills the way it loads identity and soul: explicitly. You name the skills you want, and each is read from `<skillsRoot>/<name>/SKILL.md` and folded into the assembled context. There is **no auto-selection, ranking, or fuzzy matching** — the set you list is the set the agent gets, in order. This page covers `context.skillsRoot`, `context.selectedSkills`, the per-skill byte cap, and how the bundled `mono-agent-composer` skill itself is installed or reused.
+mono-agent loads skill bodies the way it loads identity and soul: explicitly. You name the skills you want inlined, and each is read from `<skillsRoot>/<name>/SKILL.md` and folded into the assembled context. There is **no automatic body selection by description** — the set you list is the set inlined, in order. With index disclosure, other installed skills are discoverable and can be loaded on demand through `ReadSkill`. This page covers `context.skillsRoot`, `context.selectedSkills`, the per-skill byte cap, canonical references, and how the bundled `mono-agent-composer` skill itself is installed or reused.
 
 For how skills sit alongside identity/soul/memory in the final prompt, see [Context assembly](/context/assembly/).
 
@@ -23,7 +23,7 @@ Skills are a `config`-coverage feature. You set a root directory and a list of e
 }
 ```
 
-For each entry `name` in `selectedSkills`, mono-agent reads `<skillsRoot>/<name>/SKILL.md`. With the config above it loads `./skills/research/SKILL.md` and `./skills/incident-response/SKILL.md`. Names must match the directory exactly — there is no discovery of skills you did not list, and a missing `SKILL.md` surfaces as a load error rather than being silently skipped.
+For each entry `name` in `selectedSkills`, mono-agent reads `<skillsRoot>/<name>/SKILL.md`. With the config above it loads `./skills/research/SKILL.md` and `./skills/incident-response/SKILL.md`. Names must match the directory exactly. A missing selected `SKILL.md` surfaces as a load error rather than being silently skipped. The Skill Index separately discovers immediate child directories under `skillsRoot`; in `index` mode, `ReadSkill` can load those indexed bodies on demand even when they are not in `selectedSkills`.
 
 | Key | Purpose | Default | Env var |
 | --- | --- | --- | --- |
@@ -46,6 +46,20 @@ The folder convention is part of the standard [agent folder layout](/config/fold
 Generated agents use `skillDisclosure: "index"`, so their names/descriptions enter the prompt while the bodies load on demand through `ReadSkill`. `ReadSkill` is shown separately from action-tool allowlists because disabling file/shell/web actions does not disable skill disclosure.
 
 In index mode, the model-facing Skill Index contains names and descriptions but not filesystem paths to each `SKILL.md`. The prompt tells the agent to call `ReadSkill` with the selected name before following that skill; ordinary `Read` remains available for supporting files referenced by the loaded instructions. Skill paths remain in host-side context metadata for diagnostics.
+
+## Canonical skill references
+
+Use an exact `$skill-name` token to explicitly request a skill listed in the current agent's Skill Index. Reference names are case-sensitive and must match `[A-Za-z0-9][A-Za-z0-9_-]*`; for example, `$research` and `$incident-response` are valid. Other dollar-prefixed text remains ordinary user text.
+
+The token is model-visible intent, not a server-side command. Sending a draft that contains `$research` starts the normal turn; the prompt tells the agent to apply the matching instructions already in context or load them through `ReadSkill`. If the instructions are unavailable, the agent must say so rather than improvise them.
+
+The web console derives its picker from the running agent's authoritative skill index:
+
+- **In prompt** means the selected body is already in context.
+- **On demand** means index disclosure and `ReadSkill` make the installed body available.
+- Unselected full-disclosure skills, skills blocked by tool policy, and names outside the reference grammar are unavailable. They are omitted from autocomplete and shown disabled in the browse view.
+
+Typing `$` filters available skills by exact, prefix, fuzzy-name, and description matches. Choosing a result only inserts the canonical reference at the caret; it never sends the draft. The runtime refreshes its bounded registry snapshot after installed skill files change, so the console does not need a rebuild.
 
 The file `skills/.mono-agent-managed.json` records the installed version and SHA-256 of each managed copy. Check drift without writing, or update only unchanged managed copies:
 

@@ -66,7 +66,11 @@ console.log(response.text);
 
 Hosts wire identity/context paths, runtime, model, execution mode, tool policy, sandbox policy, history, memory, skills, and recorder factory explicitly.
 Hosts that need request-scoped runtime setup can provide `runtimeOptionsForRequest`; the harness merges those options into the runtime call, keeps configured sandbox policy monotonic, and runs the returned cleanup after execution.
-With `skillDisclosure: "index"`, the model-facing Skill Index lists names and descriptions without filesystem paths and directs the agent to load applicable instructions through `ReadSkill`; full disclosure does not emit guidance for that tool.
+The model-facing Skill Index defines exact `$skill-name` tokens as explicit
+requests to apply a matching skill; other dollar-prefixed text remains ordinary
+user text. With `skillDisclosure: "index"`, it lists names and descriptions
+without filesystem paths and directs the agent to load applicable instructions
+through `ReadSkill`; full disclosure does not emit guidance for that tool.
 
 `createAgentResponder()` exposes `offerLiveInput()` for an ordinary active turn.
 Its bounded mailbox delivers follow-ups only when the selected backend supports
@@ -230,6 +234,7 @@ createRuntimeSessionStore
 createSkillsCache
 createToolPolicy
 failClosedToolPolicy
+isReadSkillCompatibleName
 isStdioMcpServerSpec
 loadContextFromFiles
 loadSelectedSkills
