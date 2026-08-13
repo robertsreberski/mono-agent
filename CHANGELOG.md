@@ -2,9 +2,18 @@
 
 ## Unreleased
 
+## 0.19.1 — Web Push delivery fix (2026-08-13)
+
+### Web Push reliability
+
 - Fixed Web Push delivery on supported Node releases by honoring the
   all-address DNS lookup callback contract while still pinning each request to
   one previously validated public address.
+
+### Release coordination
+
+- All 22 catalog-publishable packages move together to 0.19.1. Keep every
+  `@mono-agent/*` package and `create-mono-agent` on the same exact version.
 
 ## 0.19.0 — Web Push, console discovery, and host themes (2026-08-13)
 
