@@ -275,14 +275,17 @@ describe("response notifications", () => {
         threadId: complete.id,
         turnId: "turn-punctuated",
         role: "assistant",
-        parts: [{ type: "text", text: "password=ab}cd password=ab)cd password=ab]cd tail" }],
+        parts: [{
+          type: "text",
+          text: "password=ab}cd password=ab)cd password=ab]cd password=}leading-secret password=)leading-secret password=]leading-secret password=[redacted]suffix tail",
+        }],
         attachments: [],
         createdAt: "2026-07-20T10:00:00.000Z",
         updatedAt: "2026-07-20T10:00:00.000Z",
         status: "complete",
       }],
     }, "turn-punctuated");
-    expect(punctuatedPasswords).toBe("password=[redacted] password=[redacted] password=[redacted] tail");
+    expect(punctuatedPasswords).toBe("password=[redacted] password=[redacted] password=[redacted] password=[redacted] password=[redacted] password=[redacted] password=[redacted] tail");
 
     const chainedCredentials = responsePreview({
       thread: complete,

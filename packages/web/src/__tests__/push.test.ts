@@ -597,6 +597,11 @@ describe("Web Push safety and persistence", () => {
     expect(webPushPreview("password=ab}cd tail")).toBe("password=[redacted] tail");
     expect(webPushPreview("password=ab)cd tail")).toBe("password=[redacted] tail");
     expect(webPushPreview("password=ab]cd tail")).toBe("password=[redacted] tail");
+    expect(webPushPreview("password=}leading-secret tail")).toBe("password=[redacted] tail");
+    expect(webPushPreview("password=)leading-secret tail")).toBe("password=[redacted] tail");
+    expect(webPushPreview("password=]leading-secret tail")).toBe("password=[redacted] tail");
+    expect(webPushPreview("password=[redacted]suffix tail")).toBe("password=[redacted] tail");
+    expect(webPushPreview("password=[redacted] tail")).toBe("password=[redacted] tail");
     expect(webPushPreview("token: abc,secret: def")).toBe("token: [redacted],secret: [redacted]");
     expect(webPushPreview("token: abc;password: def")).toBe("token: [redacted];password: [redacted]");
     expect(webPushPreview("password=ab}token: leaked")).toBe("password=[redacted]}token: [redacted]");
@@ -624,6 +629,7 @@ describe("Web Push safety and persistence", () => {
       '{"password":"alpha","host":"db.example"}',
       '--token "prefix""secret suffix" --port 5432',
       "Bearer\u200Babcdefghijklmnop",
+      "password=[redacted]suffix tail",
       `password: "${"\\".repeat(7_000)}`,
     ]) {
       const once = webPushPreview(source);

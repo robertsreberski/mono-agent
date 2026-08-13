@@ -493,7 +493,6 @@ function redactNotificationValuesAfterPrefixes(value: string, pattern: RegExp): 
   for (let match = pattern.exec(value); match !== null; match = pattern.exec(value)) {
     if (match.index < cursor) continue;
     const valueStart = match.index + match[0].length;
-    if (value.startsWith("[redacted]", valueStart)) continue;
     const scanned = scanNotificationCredentialValue(value, valueStart, anchoredPattern);
     if (scanned.end === valueStart) continue;
     output += value.slice(cursor, valueStart);
@@ -514,7 +513,7 @@ function scanNotificationCredentialValue(
   let soleClosedQuote: "\"" | "'" | undefined;
   while (cursor < value.length) {
     const character = value[cursor]!;
-    if (/\s/u.test(character) || /[,;}\])]/u.test(character)) break;
+    if (/\s/u.test(character) || /[,;]/u.test(character) || (segmentCount > 0 && /[}\])]/u.test(character))) break;
     segmentCount += 1;
     if (character !== "\"" && character !== "'") {
       soleClosedQuote = undefined;
