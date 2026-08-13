@@ -3,6 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { DiscoveredOperatorAgent } from "../discovery.js";
+import type { WebSkillRegistry } from "../contracts.js";
+
+type OperatorSkillRegistry =
+  | Extract<WebSkillRegistry, { readonly status: "ready" }>
+  | { readonly status: "error"; readonly items: readonly [] };
 
 export async function temporaryRoot(prefix = "mono-agent-web-"): Promise<string> {
   return realpath(await mkdtemp(join(tmpdir(), prefix)));
@@ -33,6 +38,7 @@ export function operatorFetch(options: {
   readonly supportsHistoryAppend?: boolean;
   readonly supportsAskUser?: boolean;
   readonly supportsLiveInput?: boolean;
+  readonly skills?: OperatorSkillRegistry;
   readonly pendingAsk?: Record<string, unknown> | null;
   readonly onAskSubmit?: (body: Record<string, unknown>) => void;
   readonly onTurn?: (body: Record<string, unknown>) => void;
@@ -59,6 +65,7 @@ export function operatorFetch(options: {
           },
           "provider/fallback": { effortLevels: ["low", "high"], reasoning: true },
         },
+        ...(options.skills === undefined ? {} : { skills: options.skills }),
         capabilities: {
           attachments: options.supportsAttachments ?? true,
           ...(options.supportsHistoryAppend === true ? { historyAppend: true } : {}),

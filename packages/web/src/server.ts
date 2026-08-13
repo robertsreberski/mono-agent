@@ -131,6 +131,14 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.get("/api/v1/agents/:id/skills", (req, res, next) => {
+    try {
+      res.status(200).json(service.agentSkills(pathParam(req.params.id)));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/v1/threads", (req, res, next) => {
     try {
       const input = parseCreateThread(req.body);

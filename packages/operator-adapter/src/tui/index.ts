@@ -6,6 +6,10 @@ export type {
   TuiAdapterLogger,
   TuiAdapterOptions,
   TuiAdapterStartResult,
+  TuiSkillAvailability,
+  TuiSkillInfo,
+  TuiSkillRegistry,
+  TuiSkillUnavailableReason,
 } from "./server.js";
 export {
   loadTuiAdapterConfig,

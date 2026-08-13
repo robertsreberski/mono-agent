@@ -64,8 +64,10 @@ Keep bearer values out of source config when possible. Set
   `capabilities.askUser` are advertised additively when their routes are
   supported. The response also
   includes `label`, default `model`, default `effort`, candidate `models`, and
-  per-model `modelOptions` when the host supplies them. `info` may be a function
-  so local-model choices can refresh without restarting the endpoint.
+  per-model `modelOptions` when the host supplies them. A host may additionally
+  expose a bounded `skills` snapshot with ready/error state and per-item
+  inlined/on-demand/unavailable status. `info` may be a function so local-model
+  choices and skills can refresh without restarting the endpoint.
 - `POST {basePath}/v1/turns` accepts
   `{ conversationId, text, attachments?, metadata? }`; attachment-only web
   turns are valid. Web model/effort metadata is preserved and mirrored into the
@@ -98,9 +100,10 @@ are reduced and remeasured; an event that still cannot fit becomes a bounded
 
 1. The host passes an `AgentResponder` to `startTuiAdapter` and publishes the
    returned conversational base URL through its trace-source metadata.
-2. A TUI or web client reads `/v1/info`, submits a turn, consumes structured
-   NDJSON frames until `finish` or `error`, and may offer live input while that
-   turn is active; disconnecting the turn stream aborts the request.
+2. A TUI or web client reads `/v1/info` (including additive live skill metadata
+   when provided), submits a turn, consumes structured NDJSON frames until
+   `finish` or `error`, and may offer live input while that turn is active;
+   disconnecting the turn stream aborts the request.
 
 ### Package structure
 
@@ -117,7 +120,7 @@ are reduced and remeasured; an event that still cannot fit becomes a bounded
 | API | Use it for |
 | --- | --- |
 | `startTuiAdapter` | Expose a structural responder over the conversational operator protocol. |
-| `TuiAdapterInfo` | Advertise identity, model choices, model-specific effort support, and context windows. |
+| `TuiAdapterInfo` | Advertise identity, model choices, model-specific effort support, context windows, and an optional bounded skill registry. |
 | `loadTuiAdapterConfig` / `TUI_CONFIG_FIELDS` | Reuse the config-first host's `tui.*` validation and provenance metadata. |
 
 <!-- public-api-inventory:start -->
@@ -145,6 +148,10 @@ TuiAdapterInfo
 TuiAdapterLogger
 TuiAdapterOptions
 TuiAdapterStartResult
+TuiSkillAvailability
+TuiSkillInfo
+TuiSkillRegistry
+TuiSkillUnavailableReason
 loadTuiAdapterConfig
 redactTuiAdapterConfig
 startTuiAdapter

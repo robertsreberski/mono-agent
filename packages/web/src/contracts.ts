@@ -95,6 +95,29 @@ export interface WebAgentSummary {
   readonly updatedAt: string;
 }
 
+export type WebSkillAvailability = "inlined" | "on-demand" | "unavailable";
+export type WebSkillUnavailableReason = "not-selected" | "read-skill-disabled" | "unsupported-name";
+
+export interface WebSkillInfo {
+  readonly name: string;
+  readonly description: string;
+  readonly availability: WebSkillAvailability;
+  readonly reference?: string;
+  readonly unavailableReason?: WebSkillUnavailableReason;
+}
+
+export type WebSkillRegistry =
+  | {
+      readonly status: "ready";
+      readonly items: readonly WebSkillInfo[];
+      readonly total: number;
+      readonly truncated?: true;
+    }
+  | {
+      readonly status: "error" | "unsupported" | "offline";
+      readonly items: readonly [];
+    };
+
 export type WebRunStatus =
   | "idle"
   | "running"

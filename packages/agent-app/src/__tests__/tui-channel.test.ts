@@ -38,6 +38,8 @@ function baseInput(options: BuildInputOptions = {}): ChannelStartInput<TuiAdapte
         ...(options.effort === undefined ? {} : { effort: options.effort }),
         ...(options.fallbackModels === undefined ? {} : { fallbackModels: options.fallbackModels }),
       },
+      context: { identityPath: "/tmp/IDENTITY.md", selectedSkills: [] },
+      tools: { disallowedTools: [] },
       ...(options.localProviders === undefined ? {} : { providers: { local: options.localProviders } }),
     } as never,
     responder: noopResponder,
@@ -125,6 +127,7 @@ describe("tui channel driver — info composition", () => {
       effort: "high",
       models: ["claude:claude-fable-5"],
       modelOptions: { "claude:claude-fable-5": { reasoning: true } },
+      skills: { status: "ready", items: [], total: 0 },
     });
   });
 
@@ -136,6 +139,7 @@ describe("tui channel driver — info composition", () => {
       model: "claude:claude-fable-5",
       models: ["claude:claude-fable-5"],
       modelOptions: { "claude:claude-fable-5": { reasoning: true } },
+      skills: { status: "ready", items: [], total: 0 },
     });
   });
 

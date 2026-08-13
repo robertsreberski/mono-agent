@@ -125,7 +125,7 @@ describe('buildAgentContext', () => {
     const skills = context.sections.find((section) => section.id === 'skills');
     expect(context.metadata.skillCount).toBe(2);
     expect(skills?.content).toBe(
-      '- **research** — Find sources\n- **writing** — Write plans',
+      "An exact `$skill-name` token is an explicit request to apply a skill only when `skill-name` matches `[A-Za-z0-9][A-Za-z0-9_-]*` and exactly matches a skill name below. Other `$`-prefixed text is ordinary user text. Apply only complete skill instructions already present in context; if they are unavailable, say so rather than improvising them.\n\n- **research** — Find sources\n- **writing** — Write plans",
     );
     expect(context.metadata.sources).toEqual(['/skills/research/SKILL.md', '/skills/writing/SKILL.md']);
   });
@@ -148,12 +148,12 @@ describe('buildAgentContext', () => {
     });
 
     expect(indexed.sections.find((section) => section.id === 'skills')?.content).toBe(
-      "When a skill applies, call `ReadSkill` with its name before acting in that domain. Do not use `Read` to open a skill's `SKILL.md`; reserve ordinary file reads for files referenced by the loaded skill.\n\n- **research** — Find sources",
+      "An exact `$skill-name` token is an explicit request to apply a skill only when `skill-name` matches `[A-Za-z0-9][A-Za-z0-9_-]*` and exactly matches a skill name below. Other `$`-prefixed text is ordinary user text. Apply only complete skill instructions already present in context; if they are unavailable, say so rather than improvising them.\n\nWhen a listed skill applies and its complete instructions are not already present, call `ReadSkill` with its exact name when that tool is available. Do not use `Read` to open a skill's `SKILL.md`; reserve ordinary file reads for files referenced by the loaded skill.\n\n- **research** — Find sources",
     );
     expect(indexed.prompt).not.toContain('/skills/research/SKILL.md');
     expect(indexed.metadata.sources).toEqual(['/skills/research/SKILL.md']);
     expect(full.sections.find((section) => section.id === 'skills')?.content).toBe(
-      '- **research** — Find sources',
+      "An exact `$skill-name` token is an explicit request to apply a skill only when `skill-name` matches `[A-Za-z0-9][A-Za-z0-9_-]*` and exactly matches a skill name below. Other `$`-prefixed text is ordinary user text. Apply only complete skill instructions already present in context; if they are unavailable, say so rather than improvising them.\n\n- **research** — Find sources",
     );
   });
 
@@ -193,7 +193,7 @@ describe('buildAgentContext', () => {
 
     expect(buildSpy).toHaveBeenCalledTimes(1);
     expect(context.sections.find((section) => section.id === 'skills')?.content).toBe(
-      '- **research** — Find sources\n- **writing** — Write plans',
+      "An exact `$skill-name` token is an explicit request to apply a skill only when `skill-name` matches `[A-Za-z0-9][A-Za-z0-9_-]*` and exactly matches a skill name below. Other `$`-prefixed text is ordinary user text. Apply only complete skill instructions already present in context; if they are unavailable, say so rather than improvising them.\n\n- **research** — Find sources\n- **writing** — Write plans",
     );
   });
 

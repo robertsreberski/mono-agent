@@ -33,6 +33,7 @@ import {
   type WebLiveInputReceipt,
   type WebModelOption,
   type WebNotificationTriggerKind,
+  type WebSkillRegistry,
   type WebThread,
   type WebThreadDetail,
 } from "./contracts.js";
@@ -250,6 +251,16 @@ export class WebService {
     const agent = this.store.setAgentPinned(sourceId, patch.pinned);
     this.emit("agents.changed", undefined, { agents: this.store.listAgents() });
     return agent;
+  }
+
+  agentSkills(sourceId: string): WebSkillRegistry {
+    const agent = this.store.getAgent(sourceId);
+    if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const connection = this.connections.get(sourceId);
+    if (connection === undefined || agent.status === "offline") {
+      return { status: "offline", items: [] };
+    }
+    return connection.info.skills ?? { status: "unsupported", items: [] };
   }
 
   async deliverNotification(input: DeliverWebNotificationInput): Promise<DeliverWebNotificationResult> {

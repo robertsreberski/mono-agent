@@ -127,6 +127,39 @@ describe("startTuiAdapter", () => {
     });
   });
 
+  it("passes through a bounded skill registry without exposing it when absent", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      info: {
+        skills: {
+          status: "ready",
+          items: [{
+            name: "research",
+            description: "Find sources.",
+            availability: "on-demand",
+            reference: "$research",
+          }],
+          total: 1,
+        },
+      },
+    });
+
+    await expect((await fetch(running.infoUrl)).json()).resolves.toMatchObject({
+      skills: {
+        status: "ready",
+        items: [{ name: "research", reference: "$research" }],
+        total: 1,
+      },
+    });
+    await running.stop();
+
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+    });
+    const legacy = await (await fetch(running.infoUrl)).json() as Record<string, unknown>;
+    expect("skills" in legacy).toBe(false);
+  });
+
   it("advertises and serves structured AskUser state through the operator boundary", async () => {
     const snapshot = {
       interactionId: "ask-test",

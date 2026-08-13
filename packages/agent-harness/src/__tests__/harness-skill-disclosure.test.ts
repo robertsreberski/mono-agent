@@ -72,7 +72,7 @@ describe("AgentHarness progressive skill disclosure wiring", () => {
       { name: "writing", description: "The writing skill body." },
     ]);
     expect(options.skillsRoot).toBe(skillsRoot);
-    expect(fake.calls[0]?.prompt).toContain("call `ReadSkill` with its name");
+    expect(fake.calls[0]?.prompt).toContain("call `ReadSkill` with its exact name");
     expect(fake.calls[0]?.prompt).not.toContain(join(skillsRoot, "research", "SKILL.md"));
   });
 
@@ -118,6 +118,6 @@ describe("AgentHarness progressive skill disclosure wiring", () => {
     const options = fake.calls[0]?.options as Record<string, unknown>;
     expect(options.skills).toBeUndefined();
     expect(options.skillsRoot).toBeUndefined();
-    expect(fake.calls[0]?.prompt).not.toContain("call `ReadSkill` with its name");
+    expect(fake.calls[0]?.prompt).not.toContain("call `ReadSkill` with its exact name");
   });
 });

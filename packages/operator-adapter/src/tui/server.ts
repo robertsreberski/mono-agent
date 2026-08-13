@@ -47,6 +47,30 @@ export interface TuiAdapterLogger {
   error?(message: string, metadata?: Record<string, unknown>): void;
 }
 
+export type TuiSkillAvailability = "inlined" | "on-demand" | "unavailable";
+export type TuiSkillUnavailableReason = "not-selected" | "read-skill-disabled" | "unsupported-name";
+
+export interface TuiSkillInfo {
+  readonly name: string;
+  readonly description: string;
+  readonly availability: TuiSkillAvailability;
+  /** Canonical composer reference. Present only when this skill can be inserted. */
+  readonly reference?: string;
+  readonly unavailableReason?: TuiSkillUnavailableReason;
+}
+
+export type TuiSkillRegistry =
+  | {
+      readonly status: "ready";
+      readonly items: readonly TuiSkillInfo[];
+      readonly total: number;
+      readonly truncated?: true;
+    }
+  | {
+      readonly status: "error";
+      readonly items: readonly [];
+    };
+
 /** Static facts surfaced by GET /v1/info so the TUI can label the session. */
 export interface TuiAdapterInfo {
   readonly label?: string;
@@ -79,6 +103,8 @@ export interface TuiAdapterInfo {
     /** Known model context capacity, in tokens. Omitted when unknown. */
     readonly contextWindow?: number;
   }>;
+  /** Bounded active-agent skill registry. Absent only on older producers. */
+  readonly skills?: TuiSkillRegistry;
 }
 
 export interface TuiAdapterOptions {
@@ -193,6 +219,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
           ...(info?.modelOptions === undefined || Object.keys(info.modelOptions).length === 0
             ? {}
             : { modelOptions: info.modelOptions }),
+          ...(info?.skills === undefined ? {} : { skills: info.skills }),
         });
       })
       .catch((error: unknown) => {

@@ -96,6 +96,50 @@ describe("web HTTP server", () => {
     }));
   });
 
+  it("serves live agent-scoped skills without persisting them in bootstrap", async () => {
+    const { baseUrl } = await start({
+      fetchImpl: operatorFetch({
+        skills: {
+          status: "ready",
+          items: [{
+            name: "research",
+            description: "Find sources.",
+            availability: "inlined",
+            reference: "$research",
+          }],
+          total: 1,
+        },
+      }),
+    });
+
+    const bootstrap = await json(await fetch(`${baseUrl}/api/v1/bootstrap`));
+    expect(JSON.stringify(bootstrap)).not.toContain("research");
+    await expect(json(await fetch(`${baseUrl}/api/v1/agents/agent-one/skills`)))
+      .resolves.toEqual({
+        status: "ready",
+        items: [{
+          name: "research",
+          description: "Find sources.",
+          availability: "inlined",
+          reference: "$research",
+        }],
+        total: 1,
+      });
+    expect((await fetch(`${baseUrl}/api/v1/agents/missing/skills`)).status).toBe(404);
+  });
+
+  it("distinguishes unsupported and offline agent skill registries", async () => {
+    const legacy = await start();
+    await expect(json(await fetch(`${legacy.baseUrl}/api/v1/agents/agent-one/skills`)))
+      .resolves.toEqual({ status: "unsupported", items: [] });
+
+    const discovered = fakeDiscoveredAgent();
+    const { baseUrl: _baseUrl, ...offlineAgent } = discovered;
+    const offline = await start({ discoverImpl: async () => [offlineAgent] });
+    await expect(json(await fetch(`${offline.baseUrl}/api/v1/agents/agent-one/skills`)))
+      .resolves.toEqual({ status: "offline", items: [] });
+  });
+
   it("publishes an owner-private loopback ingress and removes only its live record on stop", async () => {
     const recorded: unknown[] = [];
     const { handle, baseUrl } = await start({

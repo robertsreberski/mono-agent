@@ -1,7 +1,17 @@
-import { ComposerPrimitive, useAuiState } from "@assistant-ui/react";
-import { useMemo } from "react";
+import {
+  ComposerPrimitive,
+  unstable_useComposerInput,
+  useAuiState,
+} from "@assistant-ui/react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { canUploadInConsole } from "../capabilities";
 import { useConsoleStore } from "../console-store";
+import {
+  detectSkillQuery,
+  insertSkillReference,
+  isUsableSkill,
+  rankSkills,
+} from "../skill-discovery";
 import { AttachmentErrorListener, ComposerAttachments } from "./Attachments";
 import {
   ComposerTriggerPopover,
@@ -9,6 +19,7 @@ import {
 } from "./assistant-ui/ComposerTriggerPopover";
 import { Icon } from "./Icon";
 import { ComposerQuotePreview } from "./assistant-ui/Quote";
+import { SkillAutocomplete, SkillBrowser } from "./assistant-ui/SkillPicker";
 
 interface BuildComposerCommandsOptions {
   readonly attachmentCount: number;
@@ -61,6 +72,10 @@ export const buildComposerCommands = ({
 export function Composer() {
   const store = useConsoleStore();
   const { connection, selectedAgent, selectedThread } = store;
+  const composer = unstable_useComposerInput();
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [selection, setSelection] = useState({ start: composer.value.length, end: composer.value.length });
+  const savedBrowseSelection = useRef(selection);
   const isRunning = useAuiState((state) => state.thread.isRunning);
   const canUpload = !isRunning && canUploadInConsole(connection, selectedAgent, selectedThread);
   const canSend = useAuiState((state) => state.composer.canSend);
@@ -80,11 +95,80 @@ export function Composer() {
       : selectedThread?.archivedAt
         ? "Conversation archived"
         : undefined;
+  const skillQuery = useMemo(
+    () => detectSkillQuery(composer.value, selection.start, selection.end),
+    [composer.value, selection.end, selection.start],
+  );
+  const autocompleteSkills = useMemo(
+    () => store.skillRegistry.status === "ready" && skillQuery !== null
+      ? rankSkills(store.skillRegistry.items, skillQuery.query)
+      : [],
+    [skillQuery, store.skillRegistry],
+  );
+
+  const captureSelection = useCallback((input = inputRef.current) => {
+    if (input === null) return;
+    const next = {
+      start: input.selectionStart ?? input.value.length,
+      end: input.selectionEnd ?? input.value.length,
+    };
+    setSelection(next);
+    savedBrowseSelection.current = next;
+  }, []);
+
+  const restoreSelection = useCallback((start: number, end: number) => {
+    window.requestAnimationFrame(() => {
+      const input = inputRef.current;
+      if (input === null) return;
+      input.focus({ preventScroll: true });
+      input.setSelectionRange(start, end);
+      setSelection({ start, end });
+      savedBrowseSelection.current = { start, end };
+    });
+  }, []);
+
+  const insertSkill = useCallback((name: string, source: "autocomplete" | "browse") => {
+    if (store.skillRegistry.status !== "ready") return;
+    const skill = store.skillRegistry.items.find((candidate) => candidate.name === name);
+    if (skill === undefined || !isUsableSkill(skill)) return;
+    const currentText = composer.value;
+    let range = source === "browse"
+      ? savedBrowseSelection.current
+      : {
+          start: inputRef.current?.selectionStart ?? selection.start,
+          end: inputRef.current?.selectionEnd ?? selection.end,
+        };
+    if (source === "autocomplete") {
+      const currentQuery = detectSkillQuery(currentText, range.start, range.end);
+      if (
+        currentQuery === null
+        || !rankSkills(store.skillRegistry.items, currentQuery.query)
+          .some((candidate) => candidate.name === name)
+      ) return;
+      range = { start: currentQuery.offset, end: currentQuery.cursor };
+    }
+    const inserted = insertSkillReference(
+      currentText,
+      range.start,
+      range.end,
+      skill.reference,
+    );
+    composer.setText(inserted.text);
+    restoreSelection(inserted.selectionStart, inserted.selectionEnd);
+  }, [composer, restoreSelection, selection.end, selection.start, store.skillRegistry]);
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <ComposerPrimitive.Root className="composer-root">
         <ComposerTriggerPopover commands={commands} />
+        {skillQuery !== null && autocompleteSkills.length > 0 && (
+          <SkillAutocomplete
+            skills={store.skillRegistry.items}
+            query={skillQuery.query}
+            cursor={skillQuery.cursor}
+            onSelect={(name) => insertSkill(name, "autocomplete")}
+          />
+        )}
         <ComposerQuotePreview />
         <ComposerPrimitive.AttachmentDropzone
           className="composer-dropzone"
@@ -94,12 +178,16 @@ export function Composer() {
           <ComposerAttachments />
           <div className="composer-input-row">
             <ComposerPrimitive.Input
+              ref={inputRef}
               id="composer-input"
               className="composer-input"
               placeholder={statusText ?? (isRunning
                 ? `Steer ${selectedAgent?.label ?? "the agent"} while it works…`
                 : `Message ${selectedAgent?.label ?? "an agent"}…`)}
               aria-label="Message"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={false}
               rows={1}
               addAttachmentOnPaste={canUpload}
               submitMode="enter"
@@ -107,6 +195,10 @@ export function Composer() {
               unstable_focusOnRunStart={false}
               unstable_focusOnScrollToBottom={false}
               unstable_focusOnThreadSwitched={false}
+              onChange={(event) => captureSelection(event.currentTarget)}
+              onSelect={(event) => captureSelection(event.currentTarget)}
+              onKeyUp={(event) => captureSelection(event.currentTarget)}
+              onClick={(event) => captureSelection(event.currentTarget)}
             />
           </div>
           <div className="composer-toolbar">
@@ -121,8 +213,14 @@ export function Composer() {
                   <Icon name="attach" size={17} />
                 </ComposerPrimitive.AddAttachment>
               )}
+              <SkillBrowser
+                agentLabel={selectedAgent?.label}
+                registry={store.skillRegistry}
+                onBeforeOpen={() => captureSelection()}
+                onSelect={(name) => insertSkill(name, "browse")}
+              />
               <span className="composer-hint">
-                {statusText ?? (isRunning ? "Enter to steer this run" : "Enter to send · / for commands")}
+                {statusText ?? (isRunning ? "Enter to steer this run" : "Enter to send · / commands · $ skills")}
               </span>
             </div>
             <div className="composer-actions">

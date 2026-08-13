@@ -64,6 +64,7 @@ export type { ContextValidationErrorCode, ContextValidationErrorDetails } from "
 export { loadContextFromFiles } from "./context/file-loader.js";
 export {
   buildSkillIndex,
+  isReadSkillCompatibleName,
   loadSkillFilesFromDirectory,
   loadSkillIndexFromDirectory,
   renderSkillIndexEntries,

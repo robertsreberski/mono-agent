@@ -10,7 +10,7 @@ import {
   type ChannelAskSubmissionResult,
 } from "@mono-agent/agent-contracts";
 
-import type { WebModelOption } from "./contracts.js";
+import type { WebModelOption, WebSkillInfo, WebSkillRegistry } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
 import { isTrustedOperatorBaseUrl } from "./discovery.js";
 
@@ -20,6 +20,15 @@ const MAX_ERROR_BODY_BYTES = 64 * 1024;
 const MAX_NDJSON_FRAME_BYTES = 8 * 1024 * 1024;
 const CANCEL_TIMEOUT_MS = 2_000;
 const HISTORY_APPEND_TIMEOUT_MS = 5_000;
+const MAX_SKILL_ITEMS = 256;
+const MAX_SKILL_DESCRIPTION_BYTES = 256;
+const MAX_SKILL_NAME_BYTES = 256;
+const MAX_SKILL_REGISTRY_BYTES = 256 * 1024;
+const SKILL_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/u;
+
+type OperatorSkillRegistry =
+  | Extract<WebSkillRegistry, { readonly status: "ready" }>
+  | { readonly status: "error"; readonly items: readonly [] };
 
 export interface OperatorConnection {
   readonly baseUrl: string;
@@ -33,6 +42,8 @@ export interface OperatorInfo {
   readonly effort?: string;
   readonly models?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, WebModelOption>>;
+  /** Live registry snapshot. Absent when the producer predates skill discovery. */
+  readonly skills?: OperatorSkillRegistry;
   readonly supportsAttachments: boolean;
   readonly supportsHistoryAppend: boolean;
   readonly supportsAskUser: boolean;
@@ -107,6 +118,7 @@ export class OperatorClient {
     }
     const models = stringArray(body.models);
     const modelOptions = parseModelOptions(body.modelOptions);
+    const skills = parseSkillRegistry(body.skills);
     const capabilities = record(body.capabilities);
     return {
       schema: body.schema,
@@ -115,6 +127,7 @@ export class OperatorClient {
       ...(typeof body.effort === "string" ? { effort: body.effort } : {}),
       ...(models === undefined ? {} : { models }),
       ...(modelOptions === undefined ? {} : { modelOptions }),
+      ...(skills === undefined ? {} : { skills }),
       supportsAttachments: capabilities?.attachments === true,
       supportsHistoryAppend: capabilities?.historyAppend === true,
       supportsAskUser: capabilities?.askUser === true,
@@ -286,6 +299,94 @@ export class OperatorClient {
     }
     return response;
   }
+}
+
+function parseSkillRegistry(
+  value: unknown,
+): OperatorSkillRegistry | undefined {
+  if (value === undefined) return undefined;
+  const registry = record(value);
+  if (
+    registry !== undefined
+    && Buffer.byteLength(JSON.stringify(registry), "utf8") > MAX_SKILL_REGISTRY_BYTES
+  ) {
+    return { status: "error", items: [] };
+  }
+  if (registry?.status === "error") return { status: "error", items: [] };
+  if (registry?.status !== "ready" || !Array.isArray(registry.items)) {
+    return { status: "error", items: [] };
+  }
+  if (
+    !Number.isSafeInteger(registry.total)
+    || (registry.total as number) < registry.items.length
+    || registry.items.length > MAX_SKILL_ITEMS
+    || (registry.truncated !== undefined && registry.truncated !== true)
+    || (registry.truncated === true) !== ((registry.total as number) > registry.items.length)
+  ) {
+    return { status: "error", items: [] };
+  }
+  const items: WebSkillInfo[] = [];
+  const names = new Set<string>();
+  for (const value of registry.items) {
+    const item = parseSkillInfo(value);
+    if (item === undefined) continue;
+    const key = item.name.toLowerCase();
+    if (names.has(key)) {
+      return { status: "error", items: [] };
+    }
+    names.add(key);
+    items.push(item);
+  }
+  return {
+    status: "ready",
+    items,
+    total: registry.total as number,
+    ...(registry.truncated === true || items.length < registry.items.length
+      ? { truncated: true }
+      : {}),
+  };
+}
+
+function parseSkillInfo(value: unknown): WebSkillInfo | undefined {
+  const item = record(value);
+  if (
+    item === undefined
+    || typeof item.name !== "string"
+    || item.name.length === 0
+    || Buffer.byteLength(item.name, "utf8") > MAX_SKILL_NAME_BYTES
+    || typeof item.description !== "string"
+    || Buffer.byteLength(item.description, "utf8") > MAX_SKILL_DESCRIPTION_BYTES
+    || !["inlined", "on-demand", "unavailable"].includes(String(item.availability))
+  ) {
+    return undefined;
+  }
+  if (item.availability === "inlined" || item.availability === "on-demand") {
+    if (
+      !SKILL_NAME.test(item.name)
+      || item.reference !== `$${item.name}`
+      || item.unavailableReason !== undefined
+    ) return undefined;
+    return {
+      name: item.name,
+      description: item.description,
+      availability: item.availability,
+      reference: item.reference,
+    };
+  }
+  if (
+    item.reference !== undefined
+    || !["not-selected", "read-skill-disabled", "unsupported-name"]
+      .includes(String(item.unavailableReason))
+    || (item.unavailableReason === "unsupported-name") === SKILL_NAME.test(item.name)
+  ) {
+    return undefined;
+  }
+  return {
+    name: item.name,
+    description: item.description,
+    availability: "unavailable",
+    unavailableReason: item.unavailableReason as NonNullable<WebSkillInfo["unavailableReason"]>,
+  };
 }
 
 async function readBoundedBody(response: Response, maxBytes: number, code: string): Promise<string> {

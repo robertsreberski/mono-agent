@@ -61,7 +61,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   lifecycle.
 - Operate the machine-wide `@mono-agent/web` assistant-ui console through
   `mono-agent web`, including persisted curated host themes and hostname
-  identity; use `mono-agent tui` for bounded recorded-run replay.
+  identity; publish a bounded, refreshable skill registry through each running
+  operator endpoint so the web composer can discover valid `$skill-name`
+  references; use `mono-agent tui` for bounded recorded-run replay.
 - Discover and expose one exact running agent through the Worklab-oriented ACP
   core-session profile with `mono-agent bridge acp` while preserving agent-owned
   configuration, workspace, sandbox, tools, MCP servers, and credentials.
@@ -493,7 +495,9 @@ path:
    composes the runtime, harness, memory, tool/MCP policy, conversation history,
    recorder, and request-scoped extensions.
 3. Start every driver in parallel. Each driver normalizes transport input into
-   the shared request/stream contract and returns a `RunningChannel` handle.
+   the shared request/stream contract and returns a `RunningChannel` handle. The
+   TUI driver primes its skill registry before binding and refreshes changed
+   `SKILL.md` metadata in memory while it runs.
 4. Publish traceability, exporter, sandbox, continuation, and memory-health
    state while the controller tracks channel states as `disabled`,
    `waiting_for_config`, `running`, `degraded`, or `failed`.

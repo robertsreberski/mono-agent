@@ -7,8 +7,13 @@ import { fileReadError, resolveRequiredPath } from './fs-paths.js';
 import { normalizeInlineText } from './text.js';
 import type { SkillIndexEntry, SkillIndexSummary } from './types.js';
 
+const SKILL_REFERENCE_GUIDANCE =
+  "An exact `$skill-name` token is an explicit request to apply a skill only when `skill-name` matches `[A-Za-z0-9][A-Za-z0-9_-]*` and exactly matches a skill name below. Other `$`-prefixed text is ordinary user text. Apply only complete skill instructions already present in context; if they are unavailable, say so rather than improvising them.";
+
 const READ_SKILL_GUIDANCE =
-  "When a skill applies, call `ReadSkill` with its name before acting in that domain. Do not use `Read` to open a skill's `SKILL.md`; reserve ordinary file reads for files referenced by the loaded skill.";
+  "When a listed skill applies and its complete instructions are not already present, call `ReadSkill` with its exact name when that tool is available. Do not use `Read` to open a skill's `SKILL.md`; reserve ordinary file reads for files referenced by the loaded skill.";
+
+const READ_SKILL_COMPATIBLE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/u;
 
 export interface LoadedSkillFile {
   readonly entry: SkillIndexEntry;
@@ -91,6 +96,11 @@ export async function loadSkillFilesFromDirectory(root: string): Promise<readonl
   }));
 }
 
+/** Matches the conservative name grammar accepted by the runtime's shared-root ReadSkill tool. */
+export function isReadSkillCompatibleName(name: unknown): name is string {
+  return typeof name === 'string' && READ_SKILL_COMPATIBLE_NAME.test(name);
+}
+
 export function renderSkillIndex(
   entries: readonly SkillIndexEntry[],
   skillDisclosure?: 'index' | 'full',
@@ -110,7 +120,10 @@ export function renderSkillIndexEntries(
   skillDisclosure?: 'index' | 'full',
 ): string {
   const index = entries.map((entry) => `- **${entry.name}** — ${entry.description}`).join('\n');
-  return skillDisclosure === 'index' ? `${READ_SKILL_GUIDANCE}\n\n${index}` : index;
+  const guidance = skillDisclosure === 'index'
+    ? `${SKILL_REFERENCE_GUIDANCE}\n\n${READ_SKILL_GUIDANCE}`
+    : SKILL_REFERENCE_GUIDANCE;
+  return `${guidance}\n\n${index}`;
 }
 
 /**
