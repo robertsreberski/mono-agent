@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fixed Web Push delivery on supported Node releases by honoring the
+  all-address DNS lookup callback contract while still pinning each request to
+  one previously validated public address.
+
 ## 0.19.0 — Web Push, console discovery, and host themes (2026-08-13)
 
 ### Reliable Web Push

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { LookupAddress } from "node:dns";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
-import { BlockList, isIP } from "node:net";
+import { BlockList, isIP, type LookupFunction } from "node:net";
 
 import webPush, {
   type Headers as WebPushHeaders,
@@ -550,9 +550,7 @@ function performPinnedRequest(
       signal,
       // Keep TLS hostname verification on the original host while pinning the
       // validated address. Node's HTTPS client does not follow redirects.
-      lookup: ((_hostname: string, _options: unknown, callback: (error: Error | null, address: string, family: number) => void) => {
-        callback(null, pinned.address, pinned.family);
-      }) as never,
+      lookup: createWebPushPinnedLookup(pinned),
     }, (response) => {
       const chunks: Buffer[] = [];
       let captured = 0;
@@ -574,6 +572,17 @@ function performPinnedRequest(
     request.once("error", (error) => finish(error));
     request.end(body);
   });
+}
+
+/** Preserve one validated address while honoring both Node lookup callback modes. */
+export function createWebPushPinnedLookup(pinned: LookupAddress): LookupFunction {
+  return (_hostname, options, callback) => {
+    if (options.all === true) {
+      callback(null, [pinned]);
+      return;
+    }
+    callback(null, pinned.address, pinned.family);
+  };
 }
 
 function retryAfterMs(
