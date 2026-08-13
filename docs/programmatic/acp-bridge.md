@@ -29,7 +29,7 @@ The command prints one JSON line and nothing else on stdout. It calls the same p
       "schema": "mono-agent.acp-source.v1",
       "bridgeVersion": 1,
       "protocolVersion": 1,
-      "installedVersion": "0.18.3",
+      "installedVersion": "0.19.0",
       "sourceId": "personal-agent",
       "label": "Personal Agent",
       "health": "running",
