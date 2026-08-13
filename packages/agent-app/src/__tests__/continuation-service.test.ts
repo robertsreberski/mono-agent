@@ -642,7 +642,11 @@ describe("durable continuation service", () => {
       deliver,
       now: () => now,
     });
-    const claim = await issueAndClaim(service, "synthesis-preflight-task");
+    const claim = await issueAndClaim(
+      service,
+      "synthesis-preflight-task",
+      new Date(now.getTime() + 60_000).toISOString(),
+    );
     await putResult(claim, { final: true });
 
     await service.processDue();
@@ -680,7 +684,11 @@ describe("durable continuation service", () => {
       .mockResolvedValueOnce({ text: "Prepared after origin commit" });
     const deliver = vi.fn(async () => ({ kind: "delivered" as const, code: "delivered" as const }));
     const service = await start({ stateDir: fixtureDir("history-race"), synthesize, deliver, now: () => now });
-    const claim = await issueAndClaim(service, "history-race-task");
+    const claim = await issueAndClaim(
+      service,
+      "history-race-task",
+      new Date(now.getTime() + 60_000).toISOString(),
+    );
     await putResult(claim, { final: true });
 
     await service.processDue();
@@ -792,7 +800,11 @@ describe("durable continuation service", () => {
       leaseMs: 10,
       limits: { synthesisTimeoutMs: 60_000 },
     });
-    const claim = await issueAndClaim(service, "local-lease-supervision-task");
+    const claim = await issueAndClaim(
+      service,
+      "local-lease-supervision-task",
+      new Date(now.getTime() + 60_000).toISOString(),
+    );
     await putResult(claim, { final: true });
     const processing = service.processDue();
     await vi.waitFor(() => expect(synthesize).toHaveBeenCalledOnce());
@@ -1371,14 +1383,18 @@ async function start(overrides: Partial<Parameters<typeof startContinuationServi
   return service;
 }
 
-async function issueAndClaim(service: ContinuationServiceHandle, taskKey: string): Promise<ClaimResponse> {
+async function issueAndClaim(
+  service: ContinuationServiceHandle,
+  taskKey: string,
+  deadline?: string,
+): Promise<ClaimResponse> {
   const capability = service.issueContinuationClaimCapability({
     runId: `run-${taskKey}`,
     serverName: "a8c-control",
     conversationId: "slack:D1:1.1#2026-07-14",
     replyTo: { conversationId: "slack:D1:1.1" },
   });
-  const claim = await claimContinuation(capability, taskKey, hash(taskKey));
+  const claim = await claimContinuation(capability, taskKey, hash(taskKey), deadline);
   await capability.release();
   expect(await capability.requiresOriginContext()).toBe(true);
   await capability.finalizeOriginContext(originContext(`run-${taskKey}`, "slack:D1:1.1#2026-07-14"));
