@@ -115,5 +115,62 @@ jobs:
           "$TMP_ROOT/app/bin/mono-agent" --help
 
           retry npm install -g --prefix "$TMP_ROOT/create" --prefer-online "create-mono-agent@${VERSION}"
-          "$TMP_ROOT/create/bin/create-mono-agent" --help
+          run_create_info_smoke() {
+            local label="$1"
+            local kind="$2"
+            local flag="$3"
+            local run_dir="$TMP_ROOT/create-${label}-cwd"
+            local before_file="$TMP_ROOT/create-${label}-before.txt"
+            local after_file="$TMP_ROOT/create-${label}-after.txt"
+            local stdout_file="$TMP_ROOT/create-${label}-stdout.txt"
+            local stderr_file="$TMP_ROOT/create-${label}-stderr.txt"
+            local expected_help='mono-agent init [--preset <id>]'
+            local status=0
+
+            mkdir "$run_dir"
+            find "$run_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort > "$before_file"
+            test ! -s "$before_file"
+            (
+              cd "$run_dir"
+              "$TMP_ROOT/create/bin/create-mono-agent" "$flag"
+            ) > "$stdout_file" 2> "$stderr_file" || status=$?
+            find "$run_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort > "$after_file"
+
+            diff -u "$before_file" "$after_file"
+            test "$status" -eq 0
+            if test "$kind" = "help"; then
+              if ! grep -Fq "$expected_help" "$stdout_file"; then
+                {
+                  printf 'Expected stdout to contain:\n%s\n' "$expected_help"
+                  printf '%s\n' 'Actual stdout:'
+                  cat "$stdout_file"
+                  printf '\n%s\n' 'Actual stderr:'
+                  cat "$stderr_file"
+                  printf '\n'
+                } >&2
+                return 1
+              fi
+            else
+              local expected_file="$TMP_ROOT/create-${label}-expected.txt"
+              printf 'mono-agent %s\n' "$VERSION" > "$expected_file"
+              if ! cmp -s "$expected_file" "$stdout_file"; then
+                {
+                  printf '%s\n' 'Expected stdout exactly:'
+                  cat "$expected_file"
+                  printf '%s\n' 'Actual stdout:'
+                  cat "$stdout_file"
+                  printf '\n%s\n' 'Actual stderr:'
+                  cat "$stderr_file"
+                  printf '\n'
+                } >&2
+                return 1
+              fi
+            fi
+            rm -rf -- "$run_dir"
+          }
+
+          run_create_info_smoke help-long help --help
+          run_create_info_smoke help-short help -h
+          run_create_info_smoke version-long version --version
+          run_create_info_smoke version-short version -v
           "$TMP_ROOT/create/bin/mono-agent" --help

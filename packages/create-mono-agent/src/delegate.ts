@@ -4,12 +4,18 @@ import { basename } from "node:path";
 /**
  * npm's `create-*` convention treats arguments as init options. Keep the
  * separately exposed `mono-agent` bin byte-for-byte compatible, while a bare
- * `create-mono-agent` (or one followed directly by flags) enters init.
+ * `create-mono-agent` (or one followed directly by flags) enters init. A lone
+ * informational flag remains non-mutating: help resolves to the init topic
+ * while version reaches agent-app unchanged.
  */
 export function delegatedCliArgs(invocationPath: string | undefined, args: readonly string[]): readonly string[] {
   const invocation = invocationPath === undefined ? "" : basename(invocationPath);
-  if (invocation === "create-mono-agent" && args.length === 1 && ["--help", "-h"].includes(args[0] ?? "")) {
+  const singletonArg = args.length === 1 ? args[0] : undefined;
+  if (invocation === "create-mono-agent" && ["--help", "-h"].includes(singletonArg ?? "")) {
     return ["help", "init"];
+  }
+  if (invocation === "create-mono-agent" && ["--version", "-v"].includes(singletonArg ?? "")) {
+    return args;
   }
   if (invocation === "create-mono-agent" && (args.length === 0 || args[0]?.startsWith("-") === true)) {
     return ["init", ...args];

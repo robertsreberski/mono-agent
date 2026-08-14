@@ -149,21 +149,59 @@ describe("delegateSignals", () => {
 });
 
 describe("delegatedCliArgs", () => {
-  it("starts init for the create bin, including direct init flags", () => {
-    expect(delegatedCliArgs("/tmp/node_modules/.bin/create-mono-agent", [])).toEqual(["init"]);
-    expect(delegatedCliArgs("/tmp/node_modules/.bin/create-mono-agent", ["--preset", "starter", "--yes"]))
-      .toEqual(["init", "--preset", "starter", "--yes"]);
+  const createInstallPaths = [
+    "create-mono-agent",
+    "/usr/local/bin/create-mono-agent",
+    "/tmp/node_modules/.bin/create-mono-agent",
+  ];
+
+  it.each(createInstallPaths)("starts init for the create-bin basename at %s", (invocationPath) => {
+    expect(delegatedCliArgs(invocationPath, [])).toEqual(["init"]);
   });
 
-  it("maps create-bin help onto the supported init help command", () => {
-    expect(delegatedCliArgs("/tmp/node_modules/.bin/create-mono-agent", ["--help"]))
-      .toEqual(["help", "init"]);
-    expect(delegatedCliArgs("/tmp/node_modules/.bin/create-mono-agent", ["-h"]))
-      .toEqual(["help", "init"]);
+  it("starts init for every other leading create-bin flag shape", () => {
+    for (const args of [
+      ["--preset", "starter", "--yes"],
+      ["-x"],
+      ["-"],
+      ["--"],
+    ]) {
+      expect(delegatedCliArgs("/tmp/node_modules/.bin/create-mono-agent", args))
+        .toEqual(["init", ...args]);
+    }
+  });
+
+  it("maps singleton create-bin help onto the supported init help command", () => {
+    for (const helpFlag of ["--help", "-h"]) {
+      expect(delegatedCliArgs("/tmp/node_modules/.bin/create-mono-agent", [helpFlag]))
+        .toEqual(["help", "init"]);
+    }
+  });
+
+  it("passes singleton create-bin version flags through to the global CLI", () => {
+    for (const versionFlag of ["--version", "-v"]) {
+      expect(delegatedCliArgs("/tmp/node_modules/.bin/create-mono-agent", [versionFlag]))
+        .toEqual([versionFlag]);
+    }
+  });
+
+  it("keeps non-singleton informational flags on the implicit init path", () => {
+    for (const args of [
+      ["--help", "extra"],
+      ["-h", "extra"],
+      ["--version", "extra"],
+      ["-v", "extra"],
+    ]) {
+      expect(delegatedCliArgs("/tmp/node_modules/.bin/create-mono-agent", args))
+        .toEqual(["init", ...args]);
+    }
   });
 
   it("preserves the mono-agent bin and explicit create subcommands", () => {
-    expect(delegatedCliArgs("/tmp/node_modules/.bin/mono-agent", [])).toEqual([]);
+    const monoArgs = ["--preset", "starter", "--yes"];
+    expect(delegatedCliArgs("/tmp/node_modules/.bin/mono-agent", monoArgs)).toEqual(monoArgs);
+    expect(delegatedCliArgs("/usr/local/bin/mono-agent", ["--help"])).toEqual(["--help"]);
+    expect(delegatedCliArgs("/usr/local/bin/mono-agent", ["-v"])).toEqual(["-v"]);
     expect(delegatedCliArgs("/tmp/node_modules/.bin/create-mono-agent", ["validate", "--json"]))
       .toEqual(["validate", "--json"]);
   });
