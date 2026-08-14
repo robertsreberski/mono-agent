@@ -630,13 +630,50 @@ function parseSlackAskActionValue(value: string): {
   return { interactionId, questionIndex, action: { kind: "option", optionIndex: Number(match[4]) } };
 }
 
+function resolveSlackAskAnswer(
+  snapshot: ChannelAskSnapshot,
+  answer: ChannelAskSnapshot["answers"][number],
+): { readonly header: string; readonly labels: readonly string[] } | undefined {
+  const question = snapshot.questions.find((candidate) => candidate.id === answer.questionId);
+  if (question === undefined) return undefined;
+  return {
+    header: question.header,
+    labels: answer.selectedOptionIds.flatMap((optionId) => {
+      const option = question.options.find((candidate) => candidate.id === optionId);
+      return option === undefined ? [] : [option.label];
+    }),
+  };
+}
+
+function renderSlackAnsweredAsk(snapshot: ChannelAskSnapshot): string {
+  if (snapshot.answers.length === 1) {
+    const answer = snapshot.answers[0]!;
+    const resolved = resolveSlackAskAnswer(snapshot, answer);
+    return resolved !== undefined && resolved.labels.length > 0
+      ? `Answer recorded: ${resolved.labels.join(", ")}`
+      : "Answer recorded.";
+  }
+
+  const lines = ["Answer recorded."];
+  for (const answer of snapshot.answers) {
+    const resolved = resolveSlackAskAnswer(snapshot, answer);
+    if (resolved === undefined) continue;
+    if (resolved.labels.length > 0) {
+      lines.push(`${resolved.header}: ${resolved.labels.join(", ")}`);
+    } else if (answer.customReply !== undefined) {
+      lines.push(`${resolved.header}: custom answer`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function renderSlackAsk(snapshot: ChannelAskSnapshot, selectedOptionIds: ReadonlySet<string>): {
   readonly text: string;
   readonly blocks: readonly unknown[];
 } {
   if (snapshot.status !== "pending") {
     const text = snapshot.status === "answered"
-      ? "Answer recorded."
+      ? renderSlackAnsweredAsk(snapshot)
       : snapshot.status === "expired"
         ? "This question expired."
         : "This question was cancelled.";
@@ -1079,6 +1116,7 @@ export class SlackAdapter {
       ts: presentation.messageTs,
       text: rendered.text,
       blocks: rendered.blocks,
+      ...(snapshot.status === "answered" ? { mrkdwn: false } : {}),
     });
     if (snapshot.status !== "pending") this.askPresentations.delete(snapshot.interactionId);
   }

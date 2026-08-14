@@ -218,6 +218,14 @@ the same thread is consumed as the custom answer before normal turn admission,
 so the blocked model run resumes without deadlocking. Stale actions expire and
 the configured Slack channel allowlist remains authoritative.
 
+After the answer is recorded, Slack removes the interactive blocks and replaces
+the question with the original labels for the selected options. A single answer
+is summarized inline; multiple answers are listed by question header in answer
+order. Unknown question or option IDs are omitted. A custom-only answer is shown
+as `custom answer` in a multi-answer summary, while its text is never echoed; a
+single custom-only or otherwise unresolved answer keeps the generic
+`Answer recorded.` confirmation.
+
 ### Thread and channel context
 
 An in-thread trigger reads that thread (`conversations.replies`); a top-level
