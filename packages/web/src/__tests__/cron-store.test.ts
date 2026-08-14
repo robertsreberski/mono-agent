@@ -301,6 +301,73 @@ describe("WebStore first-class cron channels", () => {
     store.close();
   });
 
+  it("keeps omitted historical channels byte-stable after one configured job disappears", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockCalls = 0;
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => {
+        clockCalls += 1;
+        return new Date(Date.parse("2026-08-14T10:00:00.000Z") + clockCalls * 1_000);
+      },
+    });
+    store.replaceAgents([agent()]);
+    const job = (jobId: string) => ({
+      jobId,
+      expression: "*/5 * * * *",
+      timezone: "Europe/Amsterdam",
+      conversationId: `cron:${jobId}`,
+      configured: true,
+      declaredEnabled: true,
+      effectiveEnabled: true,
+      nextRunAt: "2026-08-14T10:05:00.000Z",
+      health: "healthy" as const,
+    });
+    const retained = job("daily:brief");
+    const removed = job("weekly:report");
+    const overview = (generatedAt: string, jobs: readonly ReturnType<typeof job>[]) => ({
+      sourceId: "agent-one",
+      generatedAt,
+      actionsEnabled: true,
+      jobs,
+    });
+
+    expect(store.syncCronOverviewResult(overview(
+      "2026-08-14T10:00:00.000Z",
+      [retained, removed],
+    )).changed).toBe(true);
+    expect(store.syncCronOverviewResult(overview(
+      "2026-08-14T10:01:00.000Z",
+      [retained],
+    )).changed).toBe(true);
+    expect(store.storedCronOverview("agent-one")?.jobs).toEqual([
+      expect.objectContaining({ jobId: "daily:brief", configured: true }),
+      expect.objectContaining({ jobId: "weekly:report", configured: false }),
+    ]);
+
+    const database = new DatabaseSync(store.paths.database, { readOnly: true });
+    const cronState = () => JSON.stringify({
+      overviews: database.prepare("SELECT * FROM cron_overviews ORDER BY source_id").all(),
+      channels: database.prepare("SELECT * FROM cron_channels ORDER BY source_id, job_id").all(),
+      deletions: database.prepare("SELECT * FROM cron_channel_deletions ORDER BY source_id, job_id").all(),
+      snapshots: database.prepare("SELECT * FROM cron_job_snapshots ORDER BY source_id, job_id").all(),
+      runMessages: database.prepare("SELECT * FROM cron_run_messages ORDER BY source_id, job_id, run_id").all(),
+    });
+    const beforePolls = cronState();
+    const clockCallsBeforePolls = clockCalls;
+
+    const second = store.syncCronOverviewResult(overview("2026-08-14T10:02:00.000Z", [retained]));
+    const third = store.syncCronOverviewResult(overview("2026-08-14T10:03:00.000Z", [retained]));
+    expect(second).toMatchObject({ changed: false, overview: { jobs: [{ jobId: "daily:brief" }] } });
+    expect(third).toMatchObject({ changed: false, overview: { jobs: [{ jobId: "daily:brief" }] } });
+    expect(clockCalls).toBe(clockCallsBeforePolls);
+    expect(cronState()).toBe(beforePolls);
+
+    database.close();
+    store.close();
+  });
+
   it("turns an in-flight delivery into a completed threadless tombstone when its historical channel is deleted", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

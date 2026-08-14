@@ -349,6 +349,46 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("emits no refresh events when repeated overview polls omit a historical cron channel", async () => {
+    const digest = (operatorCronOverview().jobs as Record<string, unknown>[])[0]!;
+    const report = {
+      ...digest,
+      jobId: "report",
+      conversationId: "cron:report",
+    };
+    let currentOverview = operatorCronOverview({ jobs: [digest, report] });
+    const delegated = operatorFetch({ cronOverview: currentOverview });
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/v1/cron")) return Response.json(currentOverview);
+      return await delegated(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    expect((await service.cronOverview("agent-one")).jobs.map(({ jobId }) => jobId)).toEqual(["digest", "report"]);
+    const events: string[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event.type); });
+
+    currentOverview = operatorCronOverview({
+      generatedAt: "2026-08-14T10:01:00.000Z",
+      jobs: [digest],
+    });
+    expect((await service.cronOverview("agent-one")).jobs.map(({ jobId }) => jobId)).toEqual(["digest"]);
+    expect(events).toEqual(["cron.changed", "threads.changed"]);
+    expect(service.store.storedCronOverview("agent-one")?.jobs).toEqual([
+      expect.objectContaining({ jobId: "digest", configured: true }),
+      expect.objectContaining({ jobId: "report", configured: false }),
+    ]);
+    events.length = 0;
+
+    for (const generatedAt of ["2026-08-14T10:02:00.000Z", "2026-08-14T10:03:00.000Z"]) {
+      currentOverview = operatorCronOverview({ generatedAt, jobs: [digest] });
+      expect((await service.cronOverview("agent-one")).jobs.map(({ jobId }) => jobId)).toEqual(["digest"]);
+    }
+    expect(events).toEqual([]);
+
+    unsubscribe();
+    await service.stop();
+  });
+
   it("reads terminal AskUser state by interaction id after another destination consumes the pending ask", async () => {
     const answered = {
       interactionId: "ask-old",

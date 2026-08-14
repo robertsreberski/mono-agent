@@ -918,7 +918,9 @@ export class WebStore {
       const { threadId: _threadId, ...currentPayload } = current;
       if (!isDeepStrictEqual(currentPayload, incoming)) return false;
     }
-    return overview.jobsTruncated === true || stored.jobs.length === effectiveJobs.length;
+    if (overview.jobsTruncated === true) return true;
+    const incomingIds = new Set(effectiveJobs.map((job) => job.jobId));
+    return stored.jobs.every((job) => incomingIds.has(job.jobId) || job.configured === false);
   }
 
   storedCronOverview(sourceId: string): WebCronOverview | undefined {
