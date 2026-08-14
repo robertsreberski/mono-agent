@@ -262,6 +262,14 @@ The answer resumes the same in-flight model run. Slash commands remain commands,
 and stale buttons never start a new turn. The chat allowlist remains the
 destination boundary.
 
+Once recorded, the same question message loses its buttons and summarizes
+resolved selections with their original option labels. A single answer is shown
+inline; multiple answers are listed by question header in recorded order.
+Unknown question and option IDs are omitted. A custom-only entry in a
+multi-answer summary appears as `custom answer`, never as the channel user's
+text. A single custom-only or otherwise unresolved answer remains the generic
+`Answer recorded.` confirmation.
+
 For a non-blocking prompt whose later button tap should become a fresh user turn,
 use `TelegramSendMessage.reply_options` with two to eight labels. Those buttons
 are intentionally separate from `AskUser`: they do not pause or resume the

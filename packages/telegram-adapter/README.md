@@ -207,6 +207,14 @@ answer to that same tool call, while slash commands remain commands. Separately,
 non-blocking `TelegramSendMessage.reply_options` buttons start a new user turn
 when tapped.
 
+After an answer is recorded, Telegram removes the buttons and edits the question
+message with the original labels for resolved selections. One answer is shown
+inline; multiple answers are attributed by question header in recorded order.
+Unknown question and option IDs are omitted. Multi-answer custom-only entries use
+the placeholder `custom answer`, while Telegram never echoes the custom reply
+text; a single custom-only or otherwise unresolved answer keeps the generic
+`Answer recorded.` confirmation.
+
 ## Architecture
 
 ### Data flow

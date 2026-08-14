@@ -298,6 +298,14 @@ different logical producer conversation for history. The normal Slack channel
 allowlist applies throughout. See [Delivery and Send Tools](/channels/delivery-and-send-tools/)
 for the strict input contract and timeout behavior.
 
+When the interaction finishes, Slack removes the buttons and summarizes the
+recorded selections with their original option labels. One answer is shown
+inline; multiple answers are listed in recorded order under their question
+headers. Unknown question or option IDs are omitted. Multi-answer custom-only
+entries use the placeholder `custom answer`, and Slack never echoes the custom
+reply text. A single custom-only or otherwise unresolved answer remains the
+generic `Answer recorded.` confirmation.
+
 ### Silent delivery and quiet hours
 
 Slack does not expose a bot-controlled notification-suppression field on

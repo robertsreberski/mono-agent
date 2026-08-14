@@ -355,6 +355,212 @@ describe("SlackAdapter", () => {
     });
   });
 
+  it("renders one answered AskUser from selected labels and cleans up the presentation once", async () => {
+    const api = new FakeSlackApi();
+    const pending = askSnapshot();
+    const answered: ChannelAskSnapshot = {
+      ...pending,
+      questions: [...pending.questions, toneAskQuestion()],
+      answers: [{
+        questionId: "q0",
+        selectedOptionIds: ["q0o0", "stale-option", "q0o2"],
+      }],
+      status: "answered",
+    };
+    const adapter = new SlackAdapter({
+      api,
+      responder: { respond: vi.fn() },
+      allowAllChannels: true,
+    });
+
+    await adapter.presentAsk("D123", "171.000001", {
+      ...answered,
+      answers: [],
+      status: "pending",
+    });
+    await adapter.updateAsk("D123", answered);
+    await adapter.updateAsk("D123", answered);
+
+    expect(api.updateCalls).toEqual([{
+      channel: "D123",
+      ts: "201.000001",
+      text: "Answer recorded: Send, Revise",
+      blocks: [],
+      mrkdwn: false,
+    }]);
+  });
+
+  it("attributes multiple answered AskUser labels in snapshot answer order", async () => {
+    const api = new FakeSlackApi();
+    const pending = askSnapshot();
+    const answered: ChannelAskSnapshot = {
+      ...pending,
+      questions: [...pending.questions, toneAskQuestion()],
+      answers: [
+        {
+          questionId: "q1",
+          selectedOptionIds: ["q1o1", "stale-option", "q1o0"],
+        },
+        {
+          questionId: "stale-question",
+          selectedOptionIds: ["q0o0"],
+          customReply: "never render this",
+        },
+        {
+          questionId: "q0",
+          selectedOptionIds: ["q0o2"],
+        },
+      ],
+      status: "answered",
+    };
+    const adapter = new SlackAdapter({
+      api,
+      responder: { respond: vi.fn() },
+      allowAllChannels: true,
+    });
+
+    await adapter.presentAsk("D123", undefined, {
+      ...answered,
+      answers: [],
+      status: "pending",
+    });
+    await adapter.updateAsk("D123", answered);
+
+    expect(api.updateCalls[0]?.text).toBe([
+      "Answer recorded.",
+      "Tone: Friendly, Formal",
+      "Delivery: Revise",
+    ].join("\n"));
+    expect(api.updateCalls[0]?.text).not.toContain("stale-option");
+    expect(api.updateCalls[0]?.text).not.toContain("never render this");
+  });
+
+  it("uses a custom-answer placeholder only when an answered AskUser has no resolved labels", async () => {
+    const api = new FakeSlackApi();
+    const pending = askSnapshot();
+    const answered: ChannelAskSnapshot = {
+      ...pending,
+      questions: [...pending.questions, toneAskQuestion()],
+      answers: [
+        {
+          questionId: "q0",
+          selectedOptionIds: ["stale-option"],
+          customReply: "private custom delivery instruction",
+        },
+        {
+          questionId: "q1",
+          selectedOptionIds: ["q1o0"],
+          customReply: "private custom tone instruction",
+        },
+      ],
+      status: "answered",
+    };
+    const adapter = new SlackAdapter({
+      api,
+      responder: { respond: vi.fn() },
+      allowAllChannels: true,
+    });
+
+    await adapter.presentAsk("D123", undefined, {
+      ...answered,
+      answers: [],
+      status: "pending",
+    });
+    await adapter.updateAsk("D123", answered);
+
+    expect(api.updateCalls[0]?.text).toBe([
+      "Answer recorded.",
+      "Delivery: custom answer",
+      "Tone: Formal",
+    ].join("\n"));
+    expect(api.updateCalls[0]?.text).not.toContain("private custom delivery instruction");
+    expect(api.updateCalls[0]?.text).not.toContain("private custom tone instruction");
+  });
+
+  it("falls back to the generic terminal text for one unresolved or custom AskUser answer", async () => {
+    const api = new FakeSlackApi();
+    const pending = askSnapshot();
+    const answered: ChannelAskSnapshot = {
+      ...pending,
+      answers: [{
+        questionId: "q0",
+        selectedOptionIds: ["stale-option"],
+        customReply: "private custom answer",
+      }],
+      status: "answered",
+    };
+    const adapter = new SlackAdapter({
+      api,
+      responder: { respond: vi.fn() },
+      allowAllChannels: true,
+    });
+
+    await adapter.presentAsk("D123", undefined, pending);
+    await adapter.updateAsk("D123", answered);
+
+    expect(api.updateCalls[0]).toMatchObject({
+      text: "Answer recorded.",
+      blocks: [],
+      mrkdwn: false,
+    });
+    expect(api.updateCalls[0]?.text).not.toContain("stale-option");
+    expect(api.updateCalls[0]?.text).not.toContain("private custom answer");
+  });
+
+  it("keeps pending, expired, cancelled, and missing-question AskUser updates unchanged", async () => {
+    const pending = askSnapshot();
+    const cases = [
+      {
+        name: "pending",
+        snapshot: pending,
+        text: undefined,
+        blocks: undefined,
+      },
+      {
+        name: "expired",
+        snapshot: { ...pending, status: "expired" },
+        text: "This question expired.",
+        blocks: [],
+      },
+      {
+        name: "cancelled",
+        snapshot: { ...pending, status: "cancelled" },
+        text: "This question was cancelled.",
+        blocks: [],
+      },
+      {
+        name: "missing question",
+        snapshot: { ...pending, activeQuestionIndex: 1 },
+        text: "Answer recorded.",
+        blocks: [],
+      },
+    ] satisfies ReadonlyArray<{
+      readonly name: string;
+      readonly snapshot: ChannelAskSnapshot;
+      readonly text: string | undefined;
+      readonly blocks: readonly unknown[] | undefined;
+    }>;
+
+    for (const testCase of cases) {
+      const api = new FakeSlackApi();
+      const adapter = new SlackAdapter({
+        api,
+        responder: { respond: vi.fn() },
+        allowAllChannels: true,
+      });
+      await adapter.presentAsk("D123", undefined, pending);
+      const pendingPost = api.postMessageCalls.at(-1)!;
+
+      await adapter.updateAsk("D123", testCase.snapshot);
+
+      const update = api.updateCalls[0];
+      expect(update, testCase.name).toBeDefined();
+      expect(update, testCase.name).not.toHaveProperty("mrkdwn");
+      expect(update?.text, testCase.name).toBe(testCase.text ?? pendingPost.text);
+      expect(update?.blocks, testCase.name).toEqual(testCase.blocks ?? pendingPost.blocks);
+    }
+  });
+
   it("consumes a threaded custom AskUser reply before normal turn admission", async () => {
     const api = new FakeSlackApi();
     const snapshot = askSnapshot();
@@ -3943,6 +4149,19 @@ function askSnapshot(): ChannelAskSnapshot {
     status: "pending",
     createdAt: "2026-07-21T09:00:00.000Z",
     expiresAt: "2026-07-21T09:10:00.000Z",
+  };
+}
+
+function toneAskQuestion(): ChannelAskSnapshot["questions"][number] {
+  return {
+    id: "q1",
+    header: "Tone",
+    question: "Which tone should the draft use?",
+    options: [
+      { id: "q1o0", label: "Formal", description: "Keep it formal." },
+      { id: "q1o1", label: "Friendly", description: "Make it warmer." },
+    ],
+    multiSelect: true,
   };
 }
 

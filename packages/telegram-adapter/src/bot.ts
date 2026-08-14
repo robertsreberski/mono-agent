@@ -88,6 +88,42 @@ interface TelegramAskPresentation {
   readonly selectedOptionIds: Set<string>;
 }
 
+function resolveTelegramAskAnswer(
+  snapshot: ChannelAskSnapshot,
+  answer: ChannelAskSnapshot["answers"][number],
+): { readonly header: string; readonly labels: readonly string[] } | undefined {
+  const question = snapshot.questions.find((candidate) => candidate.id === answer.questionId);
+  if (question === undefined) return undefined;
+  return {
+    header: question.header,
+    labels: answer.selectedOptionIds.flatMap((optionId) => {
+      const option = question.options.find((candidate) => candidate.id === optionId);
+      return option === undefined ? [] : [option.label];
+    }),
+  };
+}
+
+function renderTelegramAnsweredAsk(snapshot: ChannelAskSnapshot): string {
+  if (snapshot.answers.length === 1) {
+    const resolved = resolveTelegramAskAnswer(snapshot, snapshot.answers[0]!);
+    return resolved !== undefined && resolved.labels.length > 0
+      ? `Answer recorded: ${resolved.labels.join(", ")}`
+      : "Answer recorded.";
+  }
+
+  const lines = ["Answer recorded."];
+  for (const answer of snapshot.answers) {
+    const resolved = resolveTelegramAskAnswer(snapshot, answer);
+    if (resolved === undefined || resolved.header.trim().length === 0) continue;
+    if (resolved.labels.length > 0) {
+      lines.push(`${resolved.header}: ${resolved.labels.join(", ")}`);
+    } else if (answer.customReply !== undefined) {
+      lines.push(`${resolved.header}: custom answer`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function renderTelegramAsk(
   snapshot: ChannelAskSnapshot,
   selectedOptionIds: ReadonlySet<string>,
@@ -97,7 +133,7 @@ function renderTelegramAsk(
 } {
   if (snapshot.status !== "pending") {
     const terminal = snapshot.status === "answered"
-      ? "Answer recorded."
+      ? renderTelegramAnsweredAsk(snapshot)
       : snapshot.status === "expired"
         ? "This question expired."
         : "This question was cancelled.";

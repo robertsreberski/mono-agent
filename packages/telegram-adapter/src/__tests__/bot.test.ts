@@ -473,6 +473,26 @@ function askSnapshot(multiSelect = false): ChannelAskSnapshot {
   };
 }
 
+function multiQuestionAskSnapshot(): ChannelAskSnapshot {
+  const snapshot = askSnapshot();
+  return {
+    ...snapshot,
+    questions: [
+      ...snapshot.questions,
+      {
+        id: "q1",
+        header: "Follow-up",
+        question: "Which follow-ups should be included?",
+        options: [
+          { id: "q1o0", label: "Owner", description: "Name the owner." },
+          { id: "q1o1", label: "Deadline", description: "Include the deadline." },
+        ],
+        multiSelect: true,
+      },
+    ],
+  };
+}
+
 /** The sequence of reaction emojis applied (undefined = a cleared reaction). */
 function reactionEmojis(calls: RecordedCall[]): Array<string | undefined> {
   return calls
@@ -2601,17 +2621,177 @@ describe("createTelegramBot pending asks and status posts", () => {
     ]);
   });
 
-  it("presents AskUser context and controls, then updates the same message", async () => {
+  it("renders one answered AskUser from ordered labels and cleans up the presentation once", async () => {
     const { controller, calls } = buildTestBot({
       responder: responderFrom(async () => ({ text: "turn" })),
     });
-    const snapshot = askSnapshot();
+    const pending = multiQuestionAskSnapshot();
+    const answered: ChannelAskSnapshot = {
+      ...pending,
+      answers: [{
+        questionId: "q0",
+        selectedOptionIds: ["q0o2", "stale-option", "q0o0"],
+        customReply: "never render this",
+      }],
+      status: "answered",
+    };
 
-    await controller.presentAsk(42, snapshot);
-    await controller.updateAsk(42, { ...snapshot, status: "answered", answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }] });
+    await controller.presentAsk(42, pending);
+    await controller.updateAsk(42, answered);
+    await controller.updateAsk(42, answered);
 
-    expect(texts(calls, "sendMessage")).toEqual(["Draft reply", expect.stringContaining("Delivery · 1/1")]);
+    expect(texts(calls, "sendMessage")).toEqual(["Draft reply", expect.stringContaining("Delivery · 1/2")]);
+    const edits = calls.filter((call) => call.method === "editMessageText");
+    expect(edits).toHaveLength(1);
+    expect(edits[0]?.payload.text).toBe("Answer recorded: Revise, Send");
+    expect(edits[0]?.payload.text).not.toContain("stale-option");
+    expect(edits[0]?.payload.text).not.toContain("never render this");
+    expect(edits[0]?.payload).not.toHaveProperty("reply_markup");
+    expect(edits[0]?.payload).not.toHaveProperty("parse_mode");
+  });
+
+  it("attributes multiple answered AskUser entries in answer and selection order", async () => {
+    const { controller, calls } = buildTestBot({
+      responder: responderFrom(async () => ({ text: "turn" })),
+    });
+    const pending = multiQuestionAskSnapshot();
+    const answered: ChannelAskSnapshot = {
+      ...pending,
+      answers: [
+        {
+          questionId: "q1",
+          selectedOptionIds: ["q1o1", "stale-option", "q1o0"],
+          customReply: "private follow-up answer",
+        },
+        {
+          questionId: "stale-question",
+          selectedOptionIds: ["q0o0"],
+          customReply: "private stale answer",
+        },
+        {
+          questionId: "q0",
+          selectedOptionIds: ["stale-option"],
+          customReply: "private delivery answer",
+        },
+      ],
+      status: "answered",
+    };
+
+    await controller.presentAsk(42, pending);
+    await controller.updateAsk(42, answered);
+
+    expect(texts(calls, "editMessageText")).toEqual([[
+      "Answer recorded.",
+      "Follow-up: Deadline, Owner",
+      "Delivery: custom answer",
+    ].join("\n")]);
+    const terminalText = String(texts(calls, "editMessageText")[0]);
+    expect(terminalText).not.toContain("stale-option");
+    expect(terminalText).not.toContain("stale-question");
+    expect(terminalText).not.toContain("private follow-up answer");
+    expect(terminalText).not.toContain("private stale answer");
+    expect(terminalText).not.toContain("private delivery answer");
+  });
+
+  it("keeps the generic terminal text for one unresolved or custom AskUser answer", async () => {
+    const { controller, calls } = buildTestBot({
+      responder: responderFrom(async () => ({ text: "turn" })),
+    });
+    const pending = multiQuestionAskSnapshot();
+
+    await controller.presentAsk(42, pending);
+    await controller.updateAsk(42, {
+      ...pending,
+      answers: [{
+        questionId: "q0",
+        selectedOptionIds: ["stale-option"],
+        customReply: "private custom answer",
+      }],
+      status: "answered",
+    });
+
     expect(texts(calls, "editMessageText")).toEqual(["Answer recorded."]);
+  });
+
+  it("keeps the generic terminal text when every multiple AskUser entry is unresolvable", async () => {
+    const { controller, calls } = buildTestBot({
+      responder: responderFrom(async () => ({ text: "turn" })),
+    });
+    const pending = multiQuestionAskSnapshot();
+
+    await controller.presentAsk(42, pending);
+    await controller.updateAsk(42, {
+      ...pending,
+      answers: [
+        {
+          questionId: "stale-question",
+          selectedOptionIds: ["q0o0"],
+          customReply: "private stale answer",
+        },
+        {
+          questionId: "q0",
+          selectedOptionIds: ["stale-option"],
+        },
+      ],
+      status: "answered",
+    });
+
+    expect(texts(calls, "editMessageText")).toEqual(["Answer recorded."]);
+  });
+
+  it("keeps pending, expired, cancelled, and missing-question AskUser rendering unchanged", async () => {
+    const pending = askSnapshot();
+    const cases = [
+      {
+        name: "pending",
+        snapshot: pending,
+        expectedText: undefined,
+        retainsReplyMarkup: true,
+      },
+      {
+        name: "expired",
+        snapshot: { ...pending, status: "expired" },
+        expectedText: "This question expired.",
+        retainsReplyMarkup: false,
+      },
+      {
+        name: "cancelled",
+        snapshot: { ...pending, status: "cancelled" },
+        expectedText: "This question was cancelled.",
+        retainsReplyMarkup: false,
+      },
+      {
+        name: "missing question",
+        snapshot: { ...pending, activeQuestionIndex: 1 },
+        expectedText: "Answer recorded.",
+        retainsReplyMarkup: false,
+      },
+    ] satisfies ReadonlyArray<{
+      readonly name: string;
+      readonly snapshot: ChannelAskSnapshot;
+      readonly expectedText: string | undefined;
+      readonly retainsReplyMarkup: boolean;
+    }>;
+
+    for (const testCase of cases) {
+      const { controller, calls } = buildTestBot({
+        responder: responderFrom(async () => ({ text: "turn" })),
+      });
+      await controller.presentAsk(42, pending);
+      const pendingCall = calls.filter((call) => call.method === "sendMessage").at(-1)!;
+
+      await controller.updateAsk(42, testCase.snapshot);
+
+      const edit = calls.find((call) => call.method === "editMessageText");
+      expect(edit, testCase.name).toBeDefined();
+      expect(edit?.payload.text, testCase.name).toBe(testCase.expectedText ?? pendingCall.payload.text);
+      expect(edit?.payload, testCase.name).not.toHaveProperty("parse_mode");
+      if (testCase.retainsReplyMarkup) {
+        expect(edit?.payload.reply_markup, testCase.name).toEqual(pendingCall.payload.reply_markup);
+      } else {
+        expect(edit?.payload, testCase.name).not.toHaveProperty("reply_markup");
+      }
+    }
   });
 
   it("edits a keyed status message in place and starts fresh after a terminal state", async () => {
