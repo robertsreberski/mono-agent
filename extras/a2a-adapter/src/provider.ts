@@ -190,6 +190,7 @@ export async function startA2AProvider(
         delegate: baseRequestHandler,
         taskStore,
         options: options.idempotency,
+        wasTaskCanceledByShutdown: (taskId) => executor.wasTaskCanceledByShutdown(taskId),
         ...(options.logger === undefined ? {} : { logger: options.logger }),
       });
     } catch (error) {
@@ -253,11 +254,13 @@ export async function startA2AProvider(
   };
 }
 
-class MonoA2AExecutor implements AgentExecutor {
+/** @internal Exported only for deterministic provider cancellation-ownership tests. */
+export class MonoA2AExecutor implements AgentExecutor {
   private readonly responder: AgentResponder<A2AAgentRequest, AgentMessageStream, AgentResponse>;
   private readonly sourceUrl: string | undefined;
   private readonly logger: A2AProviderLogger | undefined;
   private readonly activeRuns = new Map<string, ActiveRun>();
+  private readonly shutdownCanceledTaskIds = new Set<string>();
   private stopping = false;
 
   constructor(
@@ -292,6 +295,7 @@ class MonoA2AExecutor implements AgentExecutor {
     })));
 
     if (this.stopping) {
+      this.shutdownCanceledTaskIds.add(active.taskId);
       controller.abort(new AgentResponseCancelledError("A2A provider is stopping."));
       publishCanceled(active, "Task canceled because the provider is stopping.");
       this.activeRuns.delete(requestContext.taskId);
@@ -398,9 +402,15 @@ class MonoA2AExecutor implements AgentExecutor {
     this.stopping = true;
     for (const active of this.activeRuns.values()) {
       if (active.cancellationPublished) continue;
+      // Mark ownership before abort/publish so every shutdown observer sees the attribution.
+      this.shutdownCanceledTaskIds.add(active.taskId);
       active.controller.abort(new AgentResponseCancelledError(reason));
       publishCanceled(active, reason);
     }
+  }
+
+  wasTaskCanceledByShutdown(taskId: string): boolean {
+    return this.shutdownCanceledTaskIds.has(taskId);
   }
 }
 
