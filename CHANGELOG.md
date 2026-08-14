@@ -20,6 +20,7 @@
 - Migration: configurations that supplied only `botUserIds` previously enabled
   stripping implicitly. Set `stripMentionText: true` to retain that output;
   omission now selects readable-marker preservation.
+
 ### Cron operator controls
 
 - Added an opt-in, authenticated cron control console with confirmed run-now

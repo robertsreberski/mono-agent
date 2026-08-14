@@ -536,7 +536,7 @@ function AskUserTool({
         <div className="ask-user-context">{snapshot?.message ?? String(input.message)}</div>
       )}
       {snapshot === undefined ? terminalStatus !== undefined ? (
-        <p className="ask-user-complete">{terminalStatus === "answered" ? "Answers submitted." : `Question ${terminalStatus}.`}</p>
+        <p className="ask-user-complete" role="status">{terminalStatus === "answered" ? "Answers submitted." : `Question ${terminalStatus}.`}</p>
       ) : cardState?.unavailable === true ? (
         <p className="ask-user-complete">Question unavailable. It may have expired, been evicted, or the agent may be offline.</p>
       ) : (

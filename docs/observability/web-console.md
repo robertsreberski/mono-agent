@@ -297,7 +297,7 @@ VAPID identity, push subscriptions/outbox, committed uploads, staged uploads,
 and server settings, including agent pins. It does not clear browser-local
 preferences such as rail expansion or notification opt-in, and it does not
 remove an agent's config, durable conversation history, memory, or recorded run
-artifacts or agent-owned `.mono-agent/cron-control-v1/` runtime overrides,
+artifacts, or agent-owned `.mono-agent/cron-control-v1/` runtime overrides,
 audit, and idempotency state. After reset, browsers reconcile the missing or
 rotated application-server key and subscribe again when permission permits;
 cron channels rebuild from the running agents.

@@ -367,7 +367,7 @@ describe("AskUser web form", () => {
       </AskReconciliationProvider>,
     );
 
-    expect(await screen.findByText("Answers submitted.")).toBeVisible();
+    expect(await screen.findByRole("status")).toHaveTextContent("Answers submitted.");
     await waitFor(() => expect(api.ask).toHaveBeenCalledWith("thread-1", "ask-test", expect.any(AbortSignal)));
     expect(screen.queryByRole("button", { name: /Submit/u })).not.toBeInTheDocument();
   });
