@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { realpath } from "node:fs/promises";
-import { delimiter, isAbsolute, resolve } from "node:path";
+import { delimiter, isAbsolute } from "node:path";
 import process from "node:process";
 import { Readable, Writable } from "node:stream";
 
@@ -11,7 +10,6 @@ import {
   methods,
   ndJsonStream,
   type AgentRequestContext,
-  type ClientCapabilities,
   type CreateElicitationResponse,
   type ElicitationPropertySchema,
   type PromptRequest,
@@ -36,6 +34,11 @@ import {
 } from "@mono-agent/web";
 
 import { agentAppPackageVersion } from "./package-version.js";
+import {
+  createAcpSessionAuthorization,
+  loadAcpSessionAuthorization,
+  type AcpSessionAuthorization,
+} from "./acp-session-store.js";
 
 const FORWARDED_TOOL_ENVIRONMENT_KEYS = [
   "MULTICA_TOKEN",
@@ -74,6 +77,7 @@ interface BridgeTarget {
   readonly descriptor: AcpBridgeSourceDescriptor;
   readonly client: OperatorClient;
   readonly info: OperatorInfo;
+  readonly artifactDir: string;
 }
 
 interface ActiveTurn {
@@ -99,7 +103,7 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
         `mono-agent source '${options.sourceId}' does not advertise request tool environment support.`,
       );
     }
-    return { descriptor, client, info };
+    return { descriptor, client, info, artifactDir: discovered.source.artifactDir };
   };
 
   try {
@@ -115,13 +119,13 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
   const app = agent({ name: `mono-agent ACP bridge (${options.sourceId})` });
 
   app.onRequest(methods.agent.initialize, async ({ params, signal }) => {
-    rejectUnsupportedClientCapabilities(params.clientCapabilities);
     clientSupportsFormElicitation = params.clientCapabilities?.elicitation?.form != null;
     const target = await requestTarget(resolveTarget, signal);
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentCapabilities: {
         promptCapabilities: { image: false, audio: false, embeddedContext: false },
+        sessionCapabilities: { resume: {} },
       },
       authMethods: [],
       agentInfo: {
@@ -136,10 +140,23 @@ export async function runAcpBridge(options: RunAcpBridgeOptions): Promise<number
   app.onRequest(methods.agent.session.new, async ({ params, signal }) => {
     rejectUnsupportedSessionInputs(params.mcpServers, params.additionalDirectories);
     const target = await requestTarget(resolveTarget, signal);
-    await assertAgentWorkspace(params.cwd, target.descriptor.workspace.path);
     const sessionId = newSessionId(options.sourceId);
+    await persistSessionAuthorization(target, {
+      sessionId,
+      sourceId: options.sourceId,
+      workspace: target.descriptor.workspace.path,
+    });
     sessions.add(sessionId);
-    return { sessionId };
+    return { sessionId, _meta: sessionResponseMeta(target, sessionId) };
+  });
+
+  app.onRequest(methods.agent.session.resume, async ({ params, signal }) => {
+    rejectUnsupportedSessionInputs(params.mcpServers, params.additionalDirectories);
+    validateSessionId(params.sessionId, options.sourceId);
+    const target = await requestTarget(resolveTarget, signal);
+    await requireSessionAuthorization(target, params.sessionId, options.sourceId);
+    sessions.add(params.sessionId);
+    return { _meta: sessionResponseMeta(target, params.sessionId) };
   });
 
   app.onRequest(methods.agent.session.prompt, async (context) => {
@@ -199,6 +216,7 @@ async function runPrompt(
     throw bridgeError("session_busy", `ACP session '${params.sessionId}' already has an active turn.`);
   }
   const target = await requestTarget(options.resolveTarget, context.signal);
+  await requireSessionAuthorization(target, params.sessionId, options.sourceId);
   const controller = new AbortController();
   const signal = AbortSignal.any([context.signal, controller.signal]);
   const active = { controller, client: target.client };
@@ -695,51 +713,11 @@ function promptText(blocks: PromptRequest["prompt"]): string {
   return texts.join("\n");
 }
 
-function rejectUnsupportedClientCapabilities(capabilities: ClientCapabilities | undefined): void {
-  if (capabilities?.fs?.readTextFile === true || capabilities?.fs?.writeTextFile === true) {
-    throw RequestError.invalidParams(
-      { code: "client_filesystem_unsupported" },
-      "mono-agent keeps filesystem access inside the selected agent workspace and sandbox; client filesystem capabilities are unsupported.",
-    );
-  }
-  if (capabilities?.terminal === true) {
-    throw RequestError.invalidParams(
-      { code: "client_terminal_unsupported" },
-      "mono-agent keeps command execution inside the selected agent tools and sandbox; client terminal capabilities are unsupported.",
-    );
-  }
-}
-
-async function assertAgentWorkspace(requested: string, expected: string): Promise<void> {
-  if (!isAbsolute(requested)) {
-    throw RequestError.invalidParams(
-      { code: "workspace_mismatch" },
-      "ACP session cwd must be the selected mono-agent's absolute workspace path.",
-    );
-  }
-  const canonicalRequested = await canonicalPath(requested);
-  if (canonicalRequested !== expected) {
-    throw RequestError.invalidParams(
-      { code: "workspace_mismatch", expected },
-      "ACP session cwd must match the selected mono-agent's configured workspace.",
-    );
-  }
-}
-
-async function canonicalPath(path: string): Promise<string> {
-  const absolute = resolve(path);
-  try {
-    return await realpath(absolute);
-  } catch {
-    return absolute;
-  }
-}
-
 function rejectUnsupportedSessionInputs(
-  mcpServers: readonly unknown[],
+  mcpServers: readonly unknown[] | undefined,
   additionalDirectories: readonly string[] | undefined,
 ): void {
-  if (mcpServers.length > 0) {
+  if ((mcpServers?.length ?? 0) > 0) {
     throw RequestError.invalidParams(
       { code: "client_mcp_unsupported" },
       "mono-agent ACP sessions use the selected instance's configured MCP servers; client MCP servers are unsupported.",
@@ -755,6 +733,59 @@ function rejectUnsupportedSessionInputs(
 
 function newSessionId(sourceId: string): string {
   return `acp:${sourceId}:${randomUUID()}`;
+}
+
+async function persistSessionAuthorization(
+  target: BridgeTarget,
+  input: Omit<AcpSessionAuthorization, "schema" | "createdAt">,
+): Promise<void> {
+  try {
+    await createAcpSessionAuthorization(target.artifactDir, input);
+  } catch {
+    throw bridgeError(
+      "session_persistence_failed",
+      "mono-agent could not persist the durable ACP session authorization.",
+    );
+  }
+}
+
+async function requireSessionAuthorization(
+  target: BridgeTarget,
+  sessionId: string,
+  sourceId: string,
+): Promise<AcpSessionAuthorization> {
+  let record: AcpSessionAuthorization | undefined;
+  try {
+    record = await loadAcpSessionAuthorization(target.artifactDir, sessionId);
+  } catch {
+    throw bridgeError(
+      "session_authorization_corrupt",
+      "The durable ACP session authorization is corrupt or unsafe.",
+    );
+  }
+  if (record === undefined) {
+    throw RequestError.invalidParams(
+      { code: "unknown_session_id" },
+      "The ACP session is not authorized for this mono-agent source.",
+    );
+  }
+  if (
+    record.sourceId !== sourceId
+    || record.workspace !== target.descriptor.workspace.path
+  ) {
+    throw RequestError.invalidParams(
+      { code: "session_authorization_mismatch" },
+      "The ACP session authorization does not match this mono-agent source and workspace.",
+    );
+  }
+  return record;
+}
+
+function sessionResponseMeta(target: BridgeTarget, sessionId: string): Record<string, unknown> {
+  return {
+    agentSessionId: sessionId,
+    "mono-agent": target.descriptor,
+  };
 }
 
 function validateSessionId(sessionId: string, sourceId: string): void {

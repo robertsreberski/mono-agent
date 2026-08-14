@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { resolveAppArtifactDir, resolveAppSessionsRoot } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
+import { acpSessionAuthorizationsRoot } from "./acp-session-store.js";
 
 export interface PurgeSessionsResult {
   /** The resolved sessions root, or undefined when sessions are in-memory only. */
@@ -22,9 +23,19 @@ export interface PurgeConversationHistoryResult {
   readonly files: number;
 }
 
+export interface PurgeAcpSessionAuthorizationsResult {
+  /** The durable ACP session-authorization root beside conversation history. */
+  readonly root: string;
+  /** True when an on-disk authorization store existed and was removed. */
+  readonly removed: boolean;
+  /** Count of removed `*.json` authorization records. */
+  readonly files: number;
+}
+
 export interface PurgeConversationStateResult {
   readonly sessions: PurgeSessionsResult;
   readonly history: PurgeConversationHistoryResult;
+  readonly acpSessions: PurgeAcpSessionAuthorizationsResult;
 }
 
 /**
@@ -79,13 +90,31 @@ export async function purgeConversationHistory(
   return { root, removed: true, files };
 }
 
+/** Revoke every durable ACP session id associated with the configured responder. */
+export async function purgeAcpSessionAuthorizations(
+  input: MonoAgentAppConfigInput,
+): Promise<PurgeAcpSessionAuthorizationsResult> {
+  const artifactDir = await resolveAppArtifactDir(input);
+  const root = acpSessionAuthorizationsRoot(artifactDir);
+  let files = 0;
+  try {
+    files = await countFilesWithSuffix(root, ".json");
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return { root, removed: false, files: 0 };
+    throw error;
+  }
+  await rm(root, { recursive: true, force: true });
+  return { root, removed: true, files };
+}
+
 /** Clear every persisted conversation-continuity store while preserving memory and run artifacts. */
 export async function purgeConversationState(
   input: MonoAgentAppConfigInput,
 ): Promise<PurgeConversationStateResult> {
   const sessions = await purgeSessions(input);
+  const acpSessions = await purgeAcpSessionAuthorizations(input);
   const history = await purgeConversationHistory(input);
-  return { sessions, history };
+  return { sessions, history, acpSessions };
 }
 
 /** Recursively count `*.jsonl` session files under a sessions root. */
