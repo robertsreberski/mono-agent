@@ -10,8 +10,8 @@ import type {
 
 /**
  * Per-request runtime-options extension that applies a per-turn model/effort
- * override carried on webhook (`metadata.webhook`), cron (`metadata.cron`), or
- * web console (`metadata.web`), interactive TUI (`metadata.tui`), Telegram
+ * override carried on advisor (`metadata.advisor`), webhook (`metadata.webhook`),
+ * cron (`metadata.cron`), web console (`metadata.web`), interactive TUI (`metadata.tui`), Telegram
  * (`metadata.telegram`), or Slack (`metadata.slack`) request metadata — an operator can pick model/effort
  * just as a trigger can pin one. The
  * adapters carry the override as raw strings; this is the
@@ -378,8 +378,9 @@ function applyLocalProviderBlock(
 }
 
 /**
- * Read model/effort from webhook, cron, web-console, TUI, Telegram, or Slack request metadata.
- * Webhook takes precedence, then cron, then the web block, then its optional TUI
+ * Read model/effort from advisor, webhook, cron, web-console, TUI, Telegram, or
+ * Slack request metadata.
+ * Advisor takes precedence, then webhook, then cron, then the web block, then its optional TUI
  * compatibility mirror, then Telegram, then Slack. A turn carrying none of these blocks
  * returns `{}`, leaving only the keyword escalation scan.
  */
@@ -390,19 +391,21 @@ function readOverride(metadata: Record<string, unknown> | undefined): {
   if (!isRecord(metadata)) {
     return {};
   }
-  const source = isRecord(metadata.webhook)
-    ? metadata.webhook
-    : isRecord(metadata.cron)
-      ? metadata.cron
-      : isRecord(metadata.web)
-        ? metadata.web
-        : isRecord(metadata.tui)
-          ? metadata.tui
-          : isRecord(metadata.telegram)
-            ? metadata.telegram
-            : isRecord(metadata.slack)
-              ? metadata.slack
-              : undefined;
+  const source = isRecord(metadata.advisor)
+    ? metadata.advisor
+    : isRecord(metadata.webhook)
+      ? metadata.webhook
+      : isRecord(metadata.cron)
+        ? metadata.cron
+        : isRecord(metadata.web)
+          ? metadata.web
+          : isRecord(metadata.tui)
+            ? metadata.tui
+            : isRecord(metadata.telegram)
+              ? metadata.telegram
+              : isRecord(metadata.slack)
+                ? metadata.slack
+                : undefined;
   if (source === undefined) {
     return {};
   }

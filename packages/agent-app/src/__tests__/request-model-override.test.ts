@@ -59,6 +59,20 @@ const OLLAMA_PROVIDER: LocalProviderDefinition = {
 };
 
 describe("createRequestModelOverrideRuntimeExtension", () => {
+  it("applies an advisor model + effort override", async () => {
+    const result = await run({ advisor: { model: "claude:claude-opus-4-8", effort: "xhigh" } });
+    expect(result.runtimeOptions.model).toEqual(expect.objectContaining({ sdk: "claude", model: "claude-opus-4-8" }));
+    expect(result.runtimeOptions.effort).toBe("xhigh");
+  });
+
+  it("prefers advisor metadata over unrelated channel metadata", async () => {
+    const result = await run({
+      advisor: { model: "claude:claude-opus-4-8" },
+      webhook: { model: "codex:gpt-5.5" },
+    });
+    expect(result.runtimeOptions.model).toEqual(expect.objectContaining({ sdk: "claude" }));
+  });
+
   it("applies a webhook model + effort override (executionMode is left to the harness)", async () => {
     const result = await run({ webhook: { model: "claude:claude-opus-4-8", effort: "high" } });
     expect(result.runtimeOptions.model).toEqual(expect.objectContaining({ sdk: "claude", model: "claude-opus-4-8" }));
