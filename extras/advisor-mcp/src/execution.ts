@@ -1,5 +1,6 @@
 import type { AdvisorConfig } from "./config.js";
 import { abortAdvisorRun, advisorStopReason } from "./cancellation.js";
+import type { AdvisorAdmissionGate } from "./concurrency.js";
 import type { AdvisorContinuityResolver } from "./continuity.js";
 import {
   advisorFailure,
@@ -19,14 +20,49 @@ export interface ExecuteReviewIterationOptions {
   readonly abortSignal: AbortSignal;
   readonly shutdownSignal?: AbortSignal;
   readonly continuity?: AdvisorContinuityResolver;
+  readonly admission?: AdvisorAdmissionGate;
 }
+
+export const ADVISOR_CLEANUP_STEP_TIMEOUT_MS = 5_000;
 
 export async function executeReviewIteration(
   options: ExecuteReviewIterationOptions,
 ): Promise<AdvisorReviewResponse> {
   const { model, effort } = requireExecutionSelection(options.config);
+  const deterministicContinuityId = continuityIdForSessionKey(options.input.session_key, options.config.namespace);
+  const preCancelled = immediateCancellationReason(options.abortSignal, options.shutdownSignal);
+  if (preCancelled !== undefined) {
+    return cancellationResponse(preCancelled, deterministicContinuityId, model, effort);
+  }
+  const lease = options.admission?.tryAcquire(deterministicContinuityId);
+  if (options.admission !== undefined && lease === undefined) {
+    const cancelled = immediateCancellationReason(options.abortSignal, options.shutdownSignal);
+    if (cancelled !== undefined) {
+      return cancellationResponse(cancelled, deterministicContinuityId, model, effort);
+    }
+    return advisorFailure({
+      status: "busy",
+      code: "advisor_busy",
+      message: "The advisor server has reached its concurrent review limit.",
+      continuityId: deterministicContinuityId,
+      model,
+      effort,
+    });
+  }
+  try {
+    return await executeAdmittedReview(options, model, effort);
+  } finally {
+    lease?.release();
+  }
+}
+
+async function executeAdmittedReview(
+  options: ExecuteReviewIterationOptions,
+  model: string,
+  effort: NonNullable<AdvisorConfig["effort"]>,
+): Promise<AdvisorReviewResponse> {
   const continuityId = options.continuity?.resolve(options.input.session_key)
-    ?? continuityIdForSessionKey(options.input.session_key);
+    ?? continuityIdForSessionKey(options.input.session_key, options.config.namespace);
   const cancellation = createCancellationState({
     abortSignal: options.abortSignal,
     ...(options.shutdownSignal === undefined ? {} : { shutdownSignal: options.shutdownSignal }),
@@ -36,9 +72,8 @@ export async function executeReviewIteration(
     cancellation.cleanup();
     return cancellationResponse(cancellation.reason, continuityId, model, effort);
   }
-  let run: AdvisorRunHandle;
-  try {
-    run = await options.runFactory.start({
+  const startAttempt = Promise.resolve().then(async () => {
+    const started = await options.runFactory.start({
       continuityId,
       prompt: buildAdvisorPrompt(options.input, options.config),
       model,
@@ -47,8 +82,36 @@ export async function executeReviewIteration(
       abortSignal: cancellation.abortSignal,
       maxOutputChars: options.config.maxOutputChars,
     });
-    assertRunHandle(run);
-  } catch {
+    assertRunHandle(started);
+    return started;
+  });
+  void startAttempt.catch(() => undefined);
+  const startOutcome = await Promise.race([
+    startAttempt.then(
+      (run) => ({ kind: "started" as const, run }),
+      () => ({ kind: "start_failed" as const }),
+    ),
+    cancellation.cancelled.then((reason) => ({ kind: "cancelled" as const, reason })),
+  ]);
+  if (startOutcome.kind === "cancelled") {
+    cancellation.cleanup();
+    const lateStart = await settleStartWithin(startAttempt, ADVISOR_CLEANUP_STEP_TIMEOUT_MS);
+    if (lateStart.kind === "started") {
+      return await settleCancellation(
+        new AdvisorRunLifecycle(lateStart.run),
+        startOutcome.reason,
+        continuityId,
+        model,
+        effort,
+      );
+    }
+    if (lateStart.kind === "start_failed") {
+      return cancellationResponse(startOutcome.reason, continuityId, model, effort);
+    }
+    cleanupLateStartedRun(startAttempt, startOutcome.reason);
+    return cleanupFailure(continuityId, model, effort);
+  }
+  if (startOutcome.kind === "start_failed") {
     const reason = cancellation.reason;
     cancellation.cleanup();
     if (reason !== undefined) {
@@ -62,6 +125,7 @@ export async function executeReviewIteration(
       effort,
     });
   }
+  const run = startOutcome.run;
 
   const lifecycle = new AdvisorRunLifecycle(run);
   if (cancellation.reason !== undefined) {
@@ -121,17 +185,22 @@ export async function executeReviewIteration(
   }
 
   try {
-    await lifecycle.drain();
+    if (!await settleWithin(lifecycle.drain(), ADVISOR_CLEANUP_STEP_TIMEOUT_MS)) {
+      throw new Error("Advisor run drain timed out.");
+    }
   } catch {
-    return advisorFailure({
-      code: "advisor_cleanup_failed",
-      message: "The advisor run cleanup did not complete.",
-      continuityId,
-      model,
-      effort,
-    });
+    return cleanupFailure(continuityId, model, effort);
   }
   return response;
+}
+
+function immediateCancellationReason(
+  abortSignal: AbortSignal,
+  shutdownSignal: AbortSignal | undefined,
+): AdvisorStopReason | undefined {
+  if (shutdownSignal?.aborted === true) return "server_shutdown";
+  if (abortSignal.aborted) return advisorStopReason(abortSignal.reason);
+  return undefined;
 }
 
 class AdvisorRunLifecycle {
@@ -162,27 +231,76 @@ async function settleCancellation(
   model: string,
   effort: NonNullable<AdvisorConfig["effort"]>,
 ): Promise<AdvisorReviewResponse> {
-  let cleanupFailed = false;
-  try {
-    await lifecycle.stop(reason);
-  } catch {
-    cleanupFailed = true;
-  }
-  try {
-    await lifecycle.drain();
-  } catch {
-    cleanupFailed = true;
-  }
+  const stopSettled = await settleWithin(lifecycle.stop(reason), ADVISOR_CLEANUP_STEP_TIMEOUT_MS);
+  const drainSettled = await settleWithin(lifecycle.drain(), ADVISOR_CLEANUP_STEP_TIMEOUT_MS);
+  const cleanupFailed = !stopSettled || !drainSettled;
   if (cleanupFailed) {
-    return advisorFailure({
-      code: "advisor_cleanup_failed",
-      message: "The advisor run cleanup did not complete.",
-      continuityId,
-      model,
-      effort,
-    });
+    return cleanupFailure(continuityId, model, effort);
   }
   return cancellationResponse(reason, continuityId, model, effort);
+}
+
+type AdvisorStartSettlement =
+  | { readonly kind: "started"; readonly run: AdvisorRunHandle }
+  | { readonly kind: "start_failed" }
+  | { readonly kind: "timed_out" };
+
+async function settleStartWithin(
+  task: Promise<AdvisorRunHandle>,
+  timeoutMs: number,
+): Promise<AdvisorStartSettlement> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<AdvisorStartSettlement>((resolvePromise) => {
+    timeout = setTimeout(() => resolvePromise({ kind: "timed_out" }), timeoutMs);
+  });
+  const settled = await Promise.race([
+    task.then(
+      (run) => ({ kind: "started" as const, run }),
+      () => ({ kind: "start_failed" as const }),
+    ),
+    timedOut,
+  ]);
+  if (timeout !== undefined) clearTimeout(timeout);
+  return settled;
+}
+
+function cleanupLateStartedRun(
+  task: Promise<AdvisorRunHandle>,
+  reason: AdvisorStopReason,
+): void {
+  void task.then(async (run) => {
+    const lifecycle = new AdvisorRunLifecycle(run);
+    await settleWithin(lifecycle.stop(reason), ADVISOR_CLEANUP_STEP_TIMEOUT_MS);
+    await settleWithin(lifecycle.drain(), ADVISOR_CLEANUP_STEP_TIMEOUT_MS);
+  }, () => undefined);
+}
+
+function cleanupFailure(
+  continuityId: string,
+  model: string,
+  effort: NonNullable<AdvisorConfig["effort"]>,
+): AdvisorReviewResponse {
+  return advisorFailure({
+    code: "advisor_cleanup_failed",
+    message: "The advisor run cleanup did not complete.",
+    continuityId,
+    model,
+    effort,
+  });
+}
+
+async function settleWithin(task: Promise<void>, timeoutMs: number): Promise<boolean> {
+  void task.catch(() => undefined);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<false>((resolvePromise) => {
+    timeout = setTimeout(() => resolvePromise(false), timeoutMs);
+  });
+  const settled = await Promise.race([
+    task.then(() => true as const, () => false as const),
+    timedOut,
+  ]);
+  if (timeout !== undefined) clearTimeout(timeout);
+  return settled;
 }
 
 function cancellationResponse(

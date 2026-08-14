@@ -60,17 +60,64 @@ const OLLAMA_PROVIDER: LocalProviderDefinition = {
 
 describe("createRequestModelOverrideRuntimeExtension", () => {
   it("applies an advisor model + effort override", async () => {
-    const result = await run({ advisor: { model: "claude:claude-opus-4-8", effort: "xhigh" } });
+    const result = await run(
+      { advisor: { model: "claude:claude-opus-4-8", effort: "xhigh" } },
+      {},
+      "ultra think is untrusted review text",
+    );
     expect(result.runtimeOptions.model).toEqual(expect.objectContaining({ sdk: "claude", model: "claude-opus-4-8" }));
     expect(result.runtimeOptions.effort).toBe("xhigh");
+    expect(result.toolPolicyOverride).toEqual({
+      allowedTools: [],
+      disallowedTools: [],
+      mcpServers: {},
+    });
   });
 
   it("prefers advisor metadata over unrelated channel metadata", async () => {
     const result = await run({
-      advisor: { model: "claude:claude-opus-4-8" },
+      advisor: { model: "claude:claude-opus-4-8", effort: "high" },
       webhook: { model: "codex:gpt-5.5" },
     });
     expect(result.runtimeOptions.model).toEqual(expect.objectContaining({ sdk: "claude" }));
+  });
+
+  it("fails closed for invalid or unenforceable advisor selections", async () => {
+    await expect(run({ advisor: { model: "not-a-model", effort: "high" } })).rejects.toThrow(
+      "Advisor requests require an enforceable explicit model and effort selection.",
+    );
+    await expect(run({ advisor: { model: "pi:openai-codex:gpt-5.6-sol", effort: "invalid" } })).rejects.toThrow(
+      "Advisor requests require an enforceable explicit model and effort selection.",
+    );
+    await expect(run({ advisor: { model: "codex:gpt-5.6-sol", effort: "max" } })).rejects.toThrow(
+      "Advisor requests require an enforceable explicit model and effort selection.",
+    );
+    await expect(run({ advisor: { model: "opencode:github-copilot:gpt-4.1", effort: "high" } })).rejects.toThrow(
+      "Advisor requests require an enforceable explicit model and effort selection.",
+    );
+    await expect(run(
+      { advisor: { model: "pi:openai-codex:gpt-5.6-sol", effort: "max" } },
+      { baseModel: parseMonoRuntimeModelReference("codex:gpt-5.6-sol") },
+    )).rejects.toThrow(
+      "Advisor requests require an enforceable explicit model and effort selection.",
+    );
+    await expect(run(
+      { advisor: { model: "claude:claude-opus-4-8", effort: "high" } },
+      {
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+        fallbackModels: [parseMonoRuntimeModelReference("opencode:github-copilot:gpt-5.1")],
+      },
+    )).rejects.toThrow(
+      "Advisor requests require an enforceable explicit model and effort selection.",
+    );
+  });
+
+  it("keeps invalid non-advisor metadata on the existing warn-and-fallback path", async () => {
+    const logger = { warn: vi.fn() };
+    const result = await run({ webhook: { model: "not-a-model", effort: "invalid" } }, { logger });
+    expect(result.runtimeOptions).toEqual({});
+    expect(result.toolPolicyOverride).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledTimes(2);
   });
 
   it("applies a webhook model + effort override (executionMode is left to the harness)", async () => {
@@ -548,6 +595,17 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     expect(logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("local-provider endpoint"),
       expect.objectContaining({ model: "pi:gateway:gpt-oss" }),
+    );
+  });
+
+  it("fails closed for an advisor route with a misconfigured local provider", async () => {
+    await expect(run(
+      { advisor: { model: "pi:gateway:gpt-oss", effort: "high" } },
+      {
+        localProviders: [{ id: "gateway", type: "openai_compat", baseUrl: "http://api.example.com", enabled: true }],
+      },
+    )).rejects.toThrow(
+      "Advisor requests require an enforceable explicit model and effort selection.",
     );
   });
 

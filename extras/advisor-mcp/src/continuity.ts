@@ -15,6 +15,7 @@ export interface AdvisorContinuityMetadata {
 export interface AdvisorContinuityCacheOptions {
   readonly maxSessions: number;
   readonly ttlMs: number;
+  readonly namespace?: string;
   readonly now?: () => number;
 }
 
@@ -26,6 +27,7 @@ export class AdvisorContinuityCache implements AdvisorContinuityResolver {
   readonly #entries = new Map<string, AdvisorContinuityMetadata>();
   readonly #maxSessions: number;
   readonly #ttlMs: number;
+  readonly #namespace: string;
   readonly #now: () => number;
 
   constructor(options: AdvisorContinuityCacheOptions) {
@@ -37,6 +39,7 @@ export class AdvisorContinuityCache implements AdvisorContinuityResolver {
     }
     this.#maxSessions = options.maxSessions;
     this.#ttlMs = options.ttlMs;
+    this.#namespace = options.namespace ?? "default";
     this.#now = options.now ?? Date.now;
   }
 
@@ -45,7 +48,7 @@ export class AdvisorContinuityCache implements AdvisorContinuityResolver {
   }
 
   touch(sessionKey: string): AdvisorContinuityMetadata {
-    const continuityId = continuityIdForSessionKey(sessionKey);
+    const continuityId = continuityIdForSessionKey(sessionKey, this.#namespace);
     const now = this.#readNow();
     this.#prune(now);
     const current = this.#entries.get(continuityId);
@@ -97,12 +100,13 @@ export class AdvisorContinuityCache implements AdvisorContinuityResolver {
 }
 
 export function createAdvisorContinuityCache(
-  config: Pick<AdvisorConfig, "maxSessions" | "sessionTtlMs">,
+  config: Pick<AdvisorConfig, "maxSessions" | "sessionTtlMs" | "namespace">,
   now?: () => number,
 ): AdvisorContinuityCache {
   return new AdvisorContinuityCache({
     maxSessions: config.maxSessions,
     ttlMs: config.sessionTtlMs,
+    namespace: config.namespace,
     ...(now === undefined ? {} : { now }),
   });
 }

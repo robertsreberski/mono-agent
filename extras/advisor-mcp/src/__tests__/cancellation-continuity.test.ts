@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import { AdvisorCancellationError } from "../cancellation.js";
 import { loadAdvisorConfig } from "../config.js";
+import { AdvisorConcurrencyGate } from "../concurrency.js";
 import { AdvisorContinuityCache } from "../continuity.js";
-import { executeReviewIteration } from "../execution.js";
+import { ADVISOR_CLEANUP_STEP_TIMEOUT_MS, executeReviewIteration } from "../execution.js";
 import { continuityIdForSessionKey } from "../protocol.js";
 import type { AdvisorRunFactory, AdvisorRunResult, AdvisorStopReason } from "../run.js";
 
@@ -137,6 +138,55 @@ describe("advisor cancellation", () => {
     expect(factory.start).not.toHaveBeenCalled();
   });
 
+  it("stops and drains a handle that becomes available after cancellation wins start", async () => {
+    const run = cancellableRun();
+    const lateHandle = await run.factory.start({} as never);
+    let resolveStart: (handle: typeof lateHandle) => void = () => {};
+    const start = vi.fn(async () => await new Promise<typeof lateHandle>((resolvePromise) => {
+      resolveStart = resolvePromise;
+    }));
+    const controller = new AbortController();
+    const pending = executeReviewIteration({
+      input,
+      config: await config(0),
+      runFactory: { start },
+      abortSignal: controller.signal,
+    });
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    controller.abort(new AdvisorCancellationError("client_disconnected"));
+    await Promise.resolve();
+    resolveStart(lateHandle);
+    await expect(pending).resolves.toMatchObject({ code: "advisor_cancelled" });
+    expect(run.stop).toHaveBeenCalledTimes(1);
+    expect(run.stop).toHaveBeenCalledWith("client_disconnected");
+    expect(run.drain).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds a start that ignores cancellation and releases admission", async () => {
+    const activeConfig = await config(0);
+    const admission = new AdvisorConcurrencyGate(1);
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const start = vi.fn(async () => await new Promise<never>(() => {}));
+      const pending = executeReviewIteration({
+        input,
+        config: activeConfig,
+        runFactory: { start },
+        abortSignal: controller.signal,
+        admission,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(start).toHaveBeenCalledTimes(1);
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(ADVISOR_CLEANUP_STEP_TIMEOUT_MS);
+      await expect(pending).resolves.toMatchObject({ code: "advisor_cleanup_failed" });
+      expect(admission.active).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not stop a completed run and drains it once", async () => {
     const stop = vi.fn(async () => {});
     const drain = vi.fn(async () => {});
@@ -153,6 +203,72 @@ describe("advisor cancellation", () => {
     expect(response.code).toBe("ok");
     expect(stop).not.toHaveBeenCalled();
     expect(drain).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds a completed run whose drain never settles", async () => {
+    const activeConfig = await config(0);
+    vi.useFakeTimers();
+    try {
+      const pending = executeReviewIteration({
+        input,
+        config: activeConfig,
+        runFactory: {
+          async start() {
+            return {
+              result: Promise.resolve({ text: "review" }),
+              async stop() {},
+              drain: () => new Promise<void>(() => {}),
+            };
+          },
+        },
+        abortSignal: new AbortController().signal,
+      });
+      await vi.advanceTimersByTimeAsync(ADVISOR_CLEANUP_STEP_TIMEOUT_MS);
+      await expect(pending).resolves.toMatchObject({ code: "advisor_cleanup_failed" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("attempts drain after a cancelled run's stop deadline", async () => {
+    const activeConfig = await config(0);
+    vi.useFakeTimers();
+    try {
+      const controller = new AbortController();
+      const drain = vi.fn(async () => {});
+      const pending = executeReviewIteration({
+        input,
+        config: activeConfig,
+        runFactory: {
+          async start() {
+            return {
+              result: new Promise<AdvisorRunResult>(() => {}),
+              stop: () => new Promise<void>(() => {}),
+              drain,
+            };
+          },
+        },
+        abortSignal: controller.signal,
+      });
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(ADVISOR_CLEANUP_STEP_TIMEOUT_MS);
+      await expect(pending).resolves.toMatchObject({ code: "advisor_cleanup_failed" });
+      expect(drain).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("admits distinct sessions but never overlaps the same continuity", () => {
+    const gate = new AdvisorConcurrencyGate(2);
+    const first = gate.tryAcquire("advisor:same");
+    expect(first).toBeDefined();
+    expect(gate.tryAcquire("advisor:same")).toBeUndefined();
+    const other = gate.tryAcquire("advisor:other");
+    expect(other).toBeDefined();
+    first?.release();
+    expect(gate.tryAcquire("advisor:same")).toBeDefined();
+    other?.release();
   });
 });
 
@@ -190,5 +306,11 @@ describe("advisor continuity cache", () => {
     expect(cache.get(c)).toBeDefined();
     now = 130;
     expect(cache.snapshot()).toEqual([]);
+  });
+
+  it("isolates identical caller keys across configured namespaces", () => {
+    const first = new AdvisorContinuityCache({ maxSessions: 2, ttlMs: 100, namespace: "first" });
+    const second = new AdvisorContinuityCache({ maxSessions: 2, ttlMs: 100, namespace: "second" });
+    expect(first.resolve("shared key")).not.toBe(second.resolve("shared key"));
   });
 });

@@ -16,9 +16,11 @@ import type {
  * just as a trigger can pin one. The
  * adapters carry the override as raw strings; this is the
  * first place with both the model parser and the effort enum, so validation
- * lives here. An invalid value is WARNED and IGNORED (the turn falls back to the
- * harness default) rather than failing — a bad dynamic webhook `model` must not
- * 500 the request.
+ * lives here. An invalid value is WARNED and IGNORED for ordinary interactive
+ * or trigger metadata (a bad dynamic webhook `model` must not 500 the request).
+ * Advisor metadata is the exception: its public contract promises one explicit
+ * model and effort, so an invalid or unenforceable selection fails closed rather
+ * than silently running the host default.
  *
  * The extension ALSO scans every turn's message text for effort trigger
  * phrases ("think"/"extra think"/"ultra think") and escalates the turn's
@@ -110,6 +112,11 @@ interface RequestModelOverrideResult {
     modelCapabilities?: LocalProviderRuntimeOptions["modelCapabilities"] | null;
     isPrivateProvider?: LocalProviderRuntimeOptions["isPrivateProvider"] | null;
   };
+  readonly toolPolicyOverride?: {
+    readonly allowedTools: readonly string[];
+    readonly disallowedTools: readonly string[];
+    readonly mcpServers: Record<string, unknown>;
+  };
   readonly cleanup: () => Promise<void>;
 }
 
@@ -123,21 +130,40 @@ export function createRequestModelOverrideRuntimeExtension(
   const baseModel = options?.baseModel;
   const fallbackModels = options?.fallbackModels ?? [];
   return async (input) => {
-    const { rawModel, rawEffort, model } = resolveAcceptedModelOverride(
+    const resolution = resolveAcceptedModelOverride(
       input.request.metadata,
       options,
       logger,
     );
+    const { rawModel, rawEffort, model } = resolution;
+    if (resolution.source === "advisor"
+      && (rawModel === undefined
+        || rawEffort === undefined
+        || !EFFORT_SET.has(rawEffort)
+        || model === undefined
+        || resolution.rejected === true)) {
+      throw new Error("Advisor requests require an enforceable explicit model and effort selection.");
+    }
     const runtimeOptions: RequestModelOverrideResult["runtimeOptions"] = {};
     const effectiveModelForEffort = model ?? baseModel;
     // Shared by the metadata effort override AND keyword escalation below: any
     // direct OpenCode model in the resulting chain means no run-level effort.
     const directOpenCodeModels = [effectiveModelForEffort, ...fallbackModels]
       .filter((entry): entry is RuntimeModelReference => entry?.sdk === "opencode");
+    if (resolution.source === "advisor" && directOpenCodeModels.length > 0) {
+      throw new Error("Advisor requests require an enforceable explicit model and effort selection.");
+    }
 
     if (model !== undefined && rawModel !== undefined) {
       runtimeOptions.model = model;
-      applyLocalProviderBlock(runtimeOptions, model, rawModel, localProviders, logger);
+      applyLocalProviderBlock(
+        runtimeOptions,
+        model,
+        rawModel,
+        localProviders,
+        logger,
+        resolution.source === "advisor",
+      );
     }
 
     if (rawEffort !== undefined) {
@@ -159,15 +185,31 @@ export function createRequestModelOverrideRuntimeExtension(
       }
     }
 
-    applyEffortKeywordEscalation(
-      runtimeOptions,
-      input.request.userMessage,
-      options?.baseEffort,
-      directOpenCodeModels,
-      logger,
-    );
+    // Advisor input is untrusted review material. It must never change the
+    // endpoint-owned effort (or its cost) through ordinary chat keywords.
+    if (resolution.source !== "advisor") {
+      applyEffortKeywordEscalation(
+        runtimeOptions,
+        input.request.userMessage,
+        options?.baseEffort,
+        directOpenCodeModels,
+        logger,
+      );
+    }
 
-    return { runtimeOptions, cleanup: async () => {} };
+    return {
+      runtimeOptions,
+      ...(resolution.source === "advisor"
+        ? {
+            toolPolicyOverride: {
+              allowedTools: [],
+              disallowedTools: [],
+              mcpServers: {},
+            },
+          }
+        : {}),
+      cleanup: async () => {},
+    };
   };
 }
 
@@ -233,9 +275,11 @@ export function requestModelOverrideTargetsDirectOpenCode(
 }
 
 interface ModelOverrideResolution {
+  readonly source?: OverrideSource;
   readonly rawModel?: string;
   readonly rawEffort?: string;
   readonly model?: RuntimeModelReference;
+  readonly rejected?: true;
 }
 
 function resolveAcceptedModelOverride(
@@ -243,9 +287,12 @@ function resolveAcceptedModelOverride(
   options: RequestModelOverrideOptions | undefined,
   logger: RequestModelOverrideLogger | undefined,
 ): ModelOverrideResolution {
-  const { model: rawModel, effort: rawEffort } = readOverride(metadata);
+  const { source, model: rawModel, effort: rawEffort } = readOverride(metadata);
   if (rawModel === undefined) {
-    return { ...(rawEffort === undefined ? {} : { rawEffort }) };
+    return {
+      ...(source === undefined ? {} : { source }),
+      ...(rawEffort === undefined ? {} : { rawEffort }),
+    };
   }
 
   let parsed: RuntimeModelReference;
@@ -256,7 +303,12 @@ function resolveAcceptedModelOverride(
       model: rawModel,
       reason: error instanceof Error ? error.message : String(error),
     });
-    return { rawModel, ...(rawEffort === undefined ? {} : { rawEffort }) };
+    return {
+      ...(source === undefined ? {} : { source }),
+      rawModel,
+      ...(rawEffort === undefined ? {} : { rawEffort }),
+      ...(source === "advisor" ? { rejected: true as const } : {}),
+    };
   }
 
   const baseModel = options?.baseModel;
@@ -274,7 +326,13 @@ function resolveAcceptedModelOverride(
   const directOpenCodeWouldReceiveMcp = parsed.sdk === "opencode" && mcpSources.length > 0;
   const directOpenCodeWouldReceiveIndexSkills = parsed.sdk === "opencode" && options?.indexSkillsActive === true;
 
-  if (baseModel !== undefined && isDirectCodex(parsed) !== isDirectCodex(baseModel)) {
+  if (source === "advisor" && (parsed.sdk === "codex" || parsed.sdk === "opencode")) {
+    logger?.warn?.("Rejecting advisor model selection that cannot enforce the advisor tool-free boundary.", {
+      model: rawModel,
+      runtime: parsed.sdk,
+      reason: "Use an enforcing SDK runtime such as pi:* or Claude SDK.",
+    });
+  } else if (baseModel !== undefined && isDirectCodex(parsed) !== isDirectCodex(baseModel)) {
     logger?.warn?.("Ignoring per-request model override across the direct-Codex runtime boundary.", {
       model: rawModel,
       baseModel: baseModel.reference ?? `${baseModel.sdk}:${baseModel.model}`,
@@ -316,13 +374,19 @@ function resolveAcceptedModelOverride(
     });
   } else {
     return {
+      ...(source === undefined ? {} : { source }),
       rawModel,
       ...(rawEffort === undefined ? {} : { rawEffort }),
       model: parsed,
     };
   }
 
-  return { rawModel, ...(rawEffort === undefined ? {} : { rawEffort }) };
+  return {
+    ...(source === undefined ? {} : { source }),
+    rawModel,
+    ...(rawEffort === undefined ? {} : { rawEffort }),
+    ...(source === "advisor" ? { rejected: true as const } : {}),
+  };
 }
 
 function isDirectCodex(model: RuntimeModelReference): boolean {
@@ -351,8 +415,10 @@ function isAllowAllOnlyToolPolicy(policy: NonNullable<RequestModelOverrideOption
  * reads that as an explicit CLEAR of the host default's local block (undefined
  * would silently inherit it and mis-route the run to localhost). A genuinely
  * MISCONFIGURED provider (e.g. an untrusted public HTTP baseUrl) throws; that is
- * warned-and-ignored and treated as non-local (block cleared) so a bad override
- * never fails the turn — the model ref still applies.
+ * warned-and-ignored and treated as non-local (block cleared) so an ordinary
+ * dynamic override keeps its existing fallback behavior. Advisor selection is
+ * stricter and fails closed because silently changing its endpoint would break
+ * the exact-backend contract.
  */
 function applyLocalProviderBlock(
   runtimeOptions: RequestModelOverrideResult["runtimeOptions"],
@@ -360,6 +426,7 @@ function applyLocalProviderBlock(
   rawModel: string,
   localProviders: readonly LocalProviderDefinition[] | undefined,
   logger: RequestModelOverrideLogger | undefined,
+  failClosed: boolean,
 ): void {
   let local: LocalProviderRuntimeOptions;
   try {
@@ -369,6 +436,9 @@ function applyLocalProviderBlock(
       model: rawModel,
       reason: error instanceof Error ? error.message : String(error),
     });
+    if (failClosed) {
+      throw new Error("Advisor requests require an enforceable explicit model and effort selection.");
+    }
     local = {};
   }
   runtimeOptions.customProvider = local.customProvider ?? null;
@@ -384,34 +454,39 @@ function applyLocalProviderBlock(
  * compatibility mirror, then Telegram, then Slack. A turn carrying none of these blocks
  * returns `{}`, leaving only the keyword escalation scan.
  */
+type OverrideSource = "advisor" | "webhook" | "cron" | "web" | "tui" | "telegram" | "slack";
+
 function readOverride(metadata: Record<string, unknown> | undefined): {
+  readonly source?: OverrideSource;
   readonly model?: string;
   readonly effort?: string;
 } {
   if (!isRecord(metadata)) {
     return {};
   }
-  const source = isRecord(metadata.advisor)
-    ? metadata.advisor
-    : isRecord(metadata.webhook)
-      ? metadata.webhook
-      : isRecord(metadata.cron)
-        ? metadata.cron
-        : isRecord(metadata.web)
-          ? metadata.web
-          : isRecord(metadata.tui)
-            ? metadata.tui
-            : isRecord(metadata.telegram)
-              ? metadata.telegram
-              : isRecord(metadata.slack)
-                ? metadata.slack
-                : undefined;
-  if (source === undefined) {
+  const selected: { readonly name: OverrideSource; readonly value: Record<string, unknown> } | undefined =
+    isRecord(metadata.advisor)
+      ? { name: "advisor", value: metadata.advisor }
+      : isRecord(metadata.webhook)
+        ? { name: "webhook", value: metadata.webhook }
+        : isRecord(metadata.cron)
+          ? { name: "cron", value: metadata.cron }
+          : isRecord(metadata.web)
+            ? { name: "web", value: metadata.web }
+            : isRecord(metadata.tui)
+              ? { name: "tui", value: metadata.tui }
+              : isRecord(metadata.telegram)
+                ? { name: "telegram", value: metadata.telegram }
+                : isRecord(metadata.slack)
+                  ? { name: "slack", value: metadata.slack }
+                  : undefined;
+  if (selected === undefined) {
     return {};
   }
   return {
-    ...(typeof source.model === "string" ? { model: source.model } : {}),
-    ...(typeof source.effort === "string" ? { effort: source.effort } : {}),
+    source: selected.name,
+    ...(typeof selected.value.model === "string" ? { model: selected.value.model } : {}),
+    ...(typeof selected.value.effort === "string" ? { effort: selected.value.effort } : {}),
   };
 }
 

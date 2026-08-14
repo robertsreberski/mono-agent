@@ -32,6 +32,12 @@ const ADAPTER_ENV_PREFIXES = {
   "webhook-adapter": ["MONO_AGENT_WEBHOOK_"],
   "whatsapp-adapter": ["MONO_AGENT_WHATSAPP_"],
 } as const;
+const PLUGIN_ENV_CONFIGS = {
+  "advisor-mcp": {
+    prefixes: ["MONO_AGENT_ADVISOR_"],
+    source: "extras/advisor-mcp/src/config.ts",
+  },
+} as const;
 const JSON_ONLY_ADAPTER_FIELDS = [
   {
     jsonPath: "slack.shortcuts",
@@ -113,6 +119,7 @@ function codeEnvKeys(root: string): Set<string> {
     // they are real runtime env, although operators do not configure them.
     join(root, "packages/agent-harness/src/harness.ts"),
     join(root, "packages/agent-harness/src/harness/mcp-context.ts"),
+    ...Object.values(PLUGIN_ENV_CONFIGS).map(({ source }) => join(root, source)),
   ];
   for (const workspaceRoot of ["packages", "extras"]) {
     const workspaceDir = join(root, workspaceRoot);
@@ -203,6 +210,10 @@ describe("env-vars.md <-> code parity", () => {
   const code = codeEnvKeys(root);
   const adapterCode = adapterCodeEnvKeys(root);
   const adapterPrefixes = Object.values(ADAPTER_ENV_PREFIXES).flat().sort();
+  const pluginPrefixes = Object.values(PLUGIN_ENV_CONFIGS)
+    .flatMap(({ prefixes }) => prefixes)
+    .sort();
+  const documentedPrefixes = [...adapterPrefixes, ...pluginPrefixes].sort();
   // Both the canonical docs tree and the published website mirror must stay honest.
   const docPaths = [
     join(root, "docs/config/env-vars.md"),
@@ -224,6 +235,20 @@ describe("env-vars.md <-> code parity", () => {
     ).toEqual([]);
     for (const prefix of adapterPrefixes) {
       expect([...adapterCode].filter((key) => key.startsWith(prefix)), prefix).not.toEqual([]);
+    }
+  });
+
+  it("registers every config-bearing plugin env prefix", () => {
+    for (const [plugin, { prefixes, source }] of Object.entries(PLUGIN_ENV_CONFIGS)) {
+      const keys = concreteEnvKeys([join(root, source)]);
+      expect(keys.size, plugin).toBeGreaterThan(0);
+      expect(
+        [...keys].filter((key) => !prefixes.some((prefix) => key.startsWith(prefix))),
+        `${plugin} code keys without a registered plugin prefix`,
+      ).toEqual([]);
+      for (const prefix of prefixes) {
+        expect([...keys].filter((key) => key.startsWith(prefix)), prefix).not.toEqual([]);
+      }
     }
   });
 
@@ -277,7 +302,7 @@ describe("env-vars.md <-> code parity", () => {
       expect(unknown).toEqual([]);
     });
 
-    for (const prefix of adapterPrefixes) {
+    for (const prefix of documentedPrefixes) {
       it(`documents every ${prefix} env key in ${docPath.slice(root.length + 1)}`, () => {
         const tableKeys = envTableKeysIn(readFileSync(docPath, "utf8"));
         const adapterKeys = [...code].filter((key) => key.startsWith(prefix)).sort();

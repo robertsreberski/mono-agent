@@ -3,12 +3,15 @@ import { createHash } from "node:crypto";
 import * as z from "zod/v4";
 
 import type { AdvisorConfig, AdvisorEffort } from "./config.js";
+import { redactAdvisorResponse } from "./redaction.js";
 
 export const REVIEW_ITERATION_TOOL_NAME = "review_iteration";
 export const ADVISOR_RESPONSE_SCHEMA = "mono-agent.advisor.v1";
 
 export const ADVISOR_SESSION_KEY_MAX_CHARS = 512;
 export const ADVISOR_SESSION_KEY_MAX_BYTES = 2_048;
+export const ADVISOR_NAMESPACE_MAX_CHARS = 128;
+export const ADVISOR_NAMESPACE_MAX_BYTES = 512;
 export const ADVISOR_METADATA_MAX_ENTRIES = 32;
 export const ADVISOR_METADATA_KEY_MAX_CHARS = 64;
 export const ADVISOR_METADATA_STRING_MAX_CHARS = 2_048;
@@ -58,10 +61,6 @@ export interface AdvisorReviewResponse {
   readonly error?: AdvisorResponseError;
 }
 
-const metadataKeySchema = z.string()
-  .min(1)
-  .max(ADVISOR_METADATA_KEY_MAX_CHARS)
-  .regex(/^[A-Za-z0-9_.:-]+$/u, "metadata keys may contain only letters, digits, dot, underscore, colon, and hyphen");
 const metadataStringSchema = z.string().max(ADVISOR_METADATA_STRING_MAX_CHARS);
 const metadataValueSchema = z.union([
   metadataStringSchema,
@@ -69,8 +68,17 @@ const metadataValueSchema = z.union([
   z.boolean(),
   z.array(z.string().max(ADVISOR_METADATA_ARRAY_ITEM_MAX_CHARS)).max(ADVISOR_METADATA_ARRAY_MAX_ITEMS),
 ]);
-const metadataSchema = z.record(metadataKeySchema, metadataValueSchema).superRefine((value, context) => {
-  if (Object.keys(value).length > ADVISOR_METADATA_MAX_ENTRIES) {
+const metadataSchema = z.record(z.string(), metadataValueSchema).superRefine((value, context) => {
+  const keys = Object.keys(value);
+  if (keys.some((key) => key.length < 1
+    || key.length > ADVISOR_METADATA_KEY_MAX_CHARS
+    || !/^[A-Za-z0-9_.:-]+$/u.test(key)
+    || key === "__proto__"
+    || key === "constructor"
+    || key === "prototype")) {
+    context.addIssue({ code: "custom", message: "metadata contains an invalid key" });
+  }
+  if (keys.length > ADVISOR_METADATA_MAX_ENTRIES) {
     context.addIssue({
       code: "custom",
       message: `metadata may contain at most ${ADVISOR_METADATA_MAX_ENTRIES} entries`,
@@ -79,6 +87,7 @@ const metadataSchema = z.record(metadataKeySchema, metadataValueSchema).superRef
 });
 
 export function createReviewIterationInputSchema(config: AdvisorConfig) {
+  const knownKeys = new Set(["session_key", "intent", "patch", "verification", "metadata"]);
   return z.object({
     session_key: z.string()
       .min(1)
@@ -97,7 +106,10 @@ export function createReviewIterationInputSchema(config: AdvisorConfig) {
     patch: z.string().min(1).max(config.maxPatchChars),
     verification: z.string().max(config.maxVerificationChars).optional(),
     metadata: metadataSchema.optional(),
-  }).strict().superRefine((value, context) => {
+  }).passthrough().superRefine((value, context) => {
+    if (Object.keys(value).some((key) => !knownKeys.has(key))) {
+      context.addIssue({ code: "custom", message: "review_iteration contains an unknown argument" });
+    }
     if (Buffer.byteLength(JSON.stringify(value), "utf8") > config.maxRequestBytes) {
       context.addIssue({
         code: "custom",
@@ -146,8 +158,24 @@ export function normalizeAdvisorSessionKey(value: string): string {
   return normalized;
 }
 
-export function continuityIdForSessionKey(sessionKey: string): string {
+export function normalizeAdvisorNamespace(value: string): string {
+  if (typeof value !== "string") {
+    throw new TypeError("advisor namespace must be a string");
+  }
+  const normalized = value.normalize("NFKC").trim().replace(/\s+/gu, " ");
+  if (normalized.length === 0
+    || normalized.length > ADVISOR_NAMESPACE_MAX_CHARS
+    || Buffer.byteLength(normalized, "utf8") > ADVISOR_NAMESPACE_MAX_BYTES
+    || /[\u0000-\u001f\u007f]/u.test(normalized)) {
+    throw new TypeError("advisor namespace must contain bounded visible text without control characters");
+  }
+  return normalized;
+}
+
+export function continuityIdForSessionKey(sessionKey: string, namespace = "default"): string {
   const digest = createHash("sha256")
+    .update(normalizeAdvisorNamespace(namespace), "utf8")
+    .update("\0", "utf8")
     .update(normalizeAdvisorSessionKey(sessionKey), "utf8")
     .digest("hex")
     .slice(0, 32);
@@ -200,7 +228,17 @@ export function advisorToolResult(
   readonly structuredContent: Record<string, unknown>;
   readonly isError?: true;
 } {
-  const fitted = fitResponse(response, config);
+  const redacted = redactAdvisorResponse(response);
+  const safeResponse = redacted.code === "ok" && (redacted.review?.trim().length ?? 0) === 0
+    ? advisorFailure({
+        code: "advisor_empty_output",
+        message: "The advisor run returned no review text.",
+        continuityId: redacted.continuity_id,
+        model: redacted.model,
+        effort: redacted.effort,
+      })
+    : redacted;
+  const fitted = fitResponse(safeResponse, config);
   const text = fitted.review ?? `Advisor review failed (${fitted.code}): ${fitted.error?.message ?? "The review did not complete."}`;
   return {
     content: [{ type: "text" as const, text }],
@@ -255,7 +293,11 @@ function boundText(value: string, maxChars: number): { readonly text: string; re
   if (sanitized.length <= maxChars) {
     return { text: sanitized, truncated: false };
   }
-  return { text: Array.from(sanitized).slice(0, maxChars).join(""), truncated: true };
+  const truncated = sanitized.slice(0, maxChars);
+  return {
+    text: /[\uD800-\uDBFF]$/u.test(truncated) ? truncated.slice(0, -1) : truncated,
+    truncated: true,
+  };
 }
 
 function configuredEfforts(): [AdvisorEffort, ...AdvisorEffort[]] {

@@ -247,7 +247,7 @@ export interface AgentHarnessRecorderFactoryInput {
   readonly userInput?: string;
   /**
    * Originating channel/trigger kind for this run, e.g. "tui" | "telegram" |
-   * "slack" | "cron" | "webhook", derived from the request metadata (falling
+   * "slack" | "advisor" | "cron" | "webhook", derived from the request metadata (falling
    * back to a conversationId-prefix guess). Forwarded to the recorder so
    * summaries/exports can classify the run without re-deriving it.
    */

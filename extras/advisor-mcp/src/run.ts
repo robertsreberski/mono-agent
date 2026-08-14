@@ -48,6 +48,7 @@ export function createAdvisorRunFactoryFromResponder(responder: AgentResponder):
     async start(input) {
       let streamed = "";
       let streamedTruncated = false;
+      let modelFailoverObserved = false;
       const stream: AgentMessageStream = {
         async append(delta) {
           if (typeof delta !== "string" || streamed.length >= input.maxOutputChars) {
@@ -57,6 +58,12 @@ export function createAdvisorRunFactoryFromResponder(responder: AgentResponder):
           const remaining = input.maxOutputChars - streamed.length;
           streamed += delta.slice(0, remaining);
           streamedTruncated ||= delta.length > remaining;
+        },
+        async event(event) {
+          if (event.type === "provider_status"
+            && (event.kind === "failover_started" || event.kind === "failover_completed")) {
+            modelFailoverObserved = true;
+          }
         },
       };
       const metadata: AgentRequestMetadata = {
@@ -75,6 +82,9 @@ export function createAdvisorRunFactoryFromResponder(responder: AgentResponder):
         metadata,
       }, stream));
       const result = responsePromise.then((response) => {
+        if (modelFailoverObserved) {
+          throw new Error("Advisor exact model selection was not preserved.");
+        }
         const responseText = typeof response?.text === "string" && response.text.trim().length > 0
           ? response.text
           : streamed;

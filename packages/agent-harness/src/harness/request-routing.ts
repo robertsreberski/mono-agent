@@ -17,10 +17,11 @@ export function createDefaultRunId(): string {
  * metadata, for the recorder factory input. Priority order mirrors how each
  * channel/trigger stamps `request.metadata`:
  *  1. `metadata.source === "web"` or `"tui"` (the operator endpoint injects this)
- *  2. `metadata.cron` present → "cron", detail = `metadata.cron.jobId` (string)
- *  3. `metadata.webhook` present → "webhook", detail = `metadata.webhook.endpointName` (string)
- *  4. `metadata.slack` / `metadata.telegram` present → that channel name
- *  5. otherwise falls back to {@link deriveRunSource}'s conversationId-prefix
+ *  2. `metadata.advisor` present → "advisor"
+ *  3. `metadata.cron` present → "cron", detail = `metadata.cron.jobId` (string)
+ *  4. `metadata.webhook` present → "webhook", detail = `metadata.webhook.endpointName` (string)
+ *  5. `metadata.slack` / `metadata.telegram` present → that channel name
+ *  6. otherwise falls back to {@link deriveRunSource}'s conversationId-prefix
  *     derivation, so unrecognized/legacy metadata still gets a best-effort source.
  * Never throws — `metadata` is `Record<string, unknown> | undefined` and any
  * unexpected shape (e.g. `cron` not itself a record) just falls through.
@@ -35,6 +36,9 @@ export function runSourceFromRequest(
     }
     if (metadata.source === "tui") {
       return { source: "tui" };
+    }
+    if (isRecord(metadata.advisor)) {
+      return { source: "advisor" };
     }
     if (isRecord(metadata.cron)) {
       const jobId = metadata.cron.jobId;
@@ -65,9 +69,9 @@ export function isCronRequest(request: AgentHarnessRequest): boolean {
 
 /**
  * Whether the request carries a per-turn MODEL override that resolves to a
- * model DIFFERENT from the harness default. The override may be pinned by a
- * trigger (`metadata.webhook`/`metadata.cron`) or picked interactively from the
- * web console (`metadata.web`), TUI (`metadata.tui`), or Telegram
+ * model DIFFERENT from the harness default. The override may be pinned by an
+ * advisor/trigger (`metadata.advisor`/`metadata.webhook`/`metadata.cron`) or
+ * picked interactively from the web console (`metadata.web`), TUI (`metadata.tui`), or Telegram
  * (`metadata.telegram`). Only a different model
  * forces session isolation — it
  * runs on a different model (often a different runtime), and the provider session
@@ -89,17 +93,19 @@ export function requestOverridesModel(request: AgentHarnessRequest, defaultModel
   if (!isRecord(metadata)) {
     return false;
   }
-  const source = isRecord(metadata.webhook)
-    ? metadata.webhook
-    : isRecord(metadata.cron)
-      ? metadata.cron
-      : isRecord(metadata.web)
-        ? metadata.web
-        : isRecord(metadata.tui)
-          ? metadata.tui
-          : isRecord(metadata.telegram)
-            ? metadata.telegram
-            : undefined;
+  const source = isRecord(metadata.advisor)
+    ? metadata.advisor
+    : isRecord(metadata.webhook)
+      ? metadata.webhook
+      : isRecord(metadata.cron)
+        ? metadata.cron
+        : isRecord(metadata.web)
+          ? metadata.web
+          : isRecord(metadata.tui)
+            ? metadata.tui
+            : isRecord(metadata.telegram)
+              ? metadata.telegram
+              : undefined;
   if (source === undefined || typeof source.model !== "string" || source.model.trim().length === 0) {
     return false;
   }

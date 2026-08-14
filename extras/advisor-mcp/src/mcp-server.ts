@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { AdvisorConfig } from "./config.js";
+import type { AdvisorAdmissionGate } from "./concurrency.js";
 import type { AdvisorContinuityResolver } from "./continuity.js";
 import { executeReviewIteration } from "./execution.js";
 import {
@@ -16,6 +17,8 @@ export interface CreateAdvisorMcpServerOptions {
   readonly runFactory: AdvisorRunFactory;
   readonly shutdownSignal?: AbortSignal;
   readonly continuity?: AdvisorContinuityResolver;
+  readonly admission?: AdvisorAdmissionGate;
+  readonly requestSignal?: AbortSignal;
 }
 
 export function createAdvisorMcpServer(options: CreateAdvisorMcpServerOptions): McpServer {
@@ -47,9 +50,12 @@ export function createAdvisorMcpServer(options: CreateAdvisorMcpServerOptions): 
       },
       config: options.config,
       runFactory: options.runFactory,
-      abortSignal: extra.signal,
+      abortSignal: options.requestSignal === undefined
+        ? extra.signal
+        : AbortSignal.any([extra.signal, options.requestSignal]),
       ...(options.shutdownSignal === undefined ? {} : { shutdownSignal: options.shutdownSignal }),
       ...(options.continuity === undefined ? {} : { continuity: options.continuity }),
+      ...(options.admission === undefined ? {} : { admission: options.admission }),
     }), options.config),
   );
   return server;

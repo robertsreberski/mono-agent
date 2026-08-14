@@ -99,6 +99,12 @@ describe("runSourceFromRequest", () => {
     expect(runSourceFromRequest(req({ telegram: { chatId: 1 } }))).toEqual({ source: "telegram" });
   });
 
+  it("derives 'advisor' from trusted advisor metadata", () => {
+    expect(runSourceFromRequest(req({ advisor: { model: "pi:openai-codex:gpt-5.6-sol" } }))).toEqual({
+      source: "advisor",
+    });
+  });
+
   it("falls back to conversationId-prefix derivation for absent/unknown metadata", () => {
     expect(runSourceFromRequest(req(undefined, "telegram:123"))).toEqual({ source: "telegram" });
     expect(runSourceFromRequest(req({ somethingElse: true }, "webhook:my-endpoint"))).toEqual({ source: "webhook" });
@@ -120,6 +126,11 @@ describe("requestOverridesModel", () => {
 
   it("returns true for a tui model override that differs from the default", () => {
     expect(requestOverridesModel(req({ tui: { model: "claude:claude-opus-4-8" } }), defaultModel)).toBe(true);
+  });
+
+  it("isolates a different advisor model and keeps a same-model advisor session", () => {
+    expect(requestOverridesModel(req({ advisor: { model: "claude:claude-opus-4-8" } }), defaultModel)).toBe(true);
+    expect(requestOverridesModel(req({ advisor: { model: "claude:claude-fable-5" } }), defaultModel)).toBe(false);
   });
 
   it("returns true for a web model override that differs from the default", () => {

@@ -130,6 +130,19 @@ describe("advisor config", () => {
     });
   });
 
+  it("adds a configured loopback literal to the default Host allowlist", async () => {
+    const config = await loadAdvisorConfig({
+      env: {
+        MONO_AGENT_ADVISOR_ENABLED: "true",
+        MONO_AGENT_ADVISOR_HOST: "127.0.0.2",
+        MONO_AGENT_ADVISOR_MODEL: "pi:openai-codex:gpt-5.6-sol",
+        MONO_AGENT_ADVISOR_EFFORT: "max",
+      },
+      json: {},
+    });
+    expect(config.allowedHosts).toContain("127.0.0.2");
+  });
+
   it("requires a bearer token when loopback auth is requested", async () => {
     await expect(loadAdvisorConfig({
       env: {
@@ -210,5 +223,13 @@ describe("advisor config", () => {
       env: { MONO_AGENT_ADVISOR_ALLOWED_HOSTS: Array.from({ length: 65 }, (_, index) => `h${index}`).join(",") },
       json: {},
     })).rejects.toThrow("at most 64 entries");
+    await expect(loadAdvisorConfig({
+      env: { MONO_AGENT_ADVISOR_ALLOWED_HOSTS: "advisor.example.test:443" },
+      json: {},
+    })).rejects.toMatchObject({ code: "invalid_config" });
+    await expect(loadAdvisorConfig({
+      env: { MONO_AGENT_ADVISOR_NAMESPACE: "ﷺ".repeat(128) },
+      json: {},
+    })).rejects.toMatchObject({ code: "invalid_config" });
   });
 });

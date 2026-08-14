@@ -1,3 +1,5 @@
+import { isIP } from "node:net";
+
 import {
   fieldSpecMappings,
   isLoopbackHost,
@@ -150,7 +152,9 @@ export async function loadAdvisorConfig(
   const allowedHostsExplicit = env.MONO_AGENT_ADVISOR_ALLOWED_HOSTS !== undefined;
   const allowedHosts = allowedHostsExplicit
     ? readCsv(env.MONO_AGENT_ADVISOR_ALLOWED_HOSTS)
-    : [...DEFAULT_ADVISOR_ALLOWED_HOSTS];
+    : isLoopbackHost(host)
+      ? [...new Set([...DEFAULT_ADVISOR_ALLOWED_HOSTS, hostHeaderName(host)])]
+      : [...DEFAULT_ADVISOR_ALLOWED_HOSTS];
   const allowedOrigins = readCsv(env.MONO_AGENT_ADVISOR_ALLOWED_ORIGINS);
   const model = normalizeOptionalString(env.MONO_AGENT_ADVISOR_MODEL);
   const rawEffort = normalizeOptionalString(env.MONO_AGENT_ADVISOR_EFFORT);
@@ -261,18 +265,40 @@ function validateAllowedHosts(hosts: readonly string[]): void {
       env: "MONO_AGENT_ADVISOR_ALLOWED_HOSTS",
     });
   }
-  const invalid = hosts.find((host) =>
-    host.length === 0
-    || host.length > 255
-    || /[\u0000-\u0020\u007f/\\?#]/u.test(host)
-    || host.includes("://")
-  );
+  const invalid = hosts.find((host) => !isAllowedHostname(host));
   if (invalid !== undefined) {
     throw invalidConfig(
       "MONO_AGENT_ADVISOR_ALLOWED_HOSTS must contain host names or IP literals without schemes, paths, or control characters.",
       { env: "MONO_AGENT_ADVISOR_ALLOWED_HOSTS" },
     );
   }
+  if (new Set(hosts.map((host) => host.toLowerCase())).size !== hosts.length) {
+    throw invalidConfig(
+      "MONO_AGENT_ADVISOR_ALLOWED_HOSTS must not contain duplicate entries.",
+      { env: "MONO_AGENT_ADVISOR_ALLOWED_HOSTS" },
+    );
+  }
+}
+
+function isAllowedHostname(host: string): boolean {
+  if (host.length === 0
+    || host.length > 255
+    || /[\u0000-\u0020\u007f/\\?#]/u.test(host)
+    || host.includes("://")) {
+    return false;
+  }
+  if (host.startsWith("[") || host.endsWith("]")) {
+    return host.startsWith("[") && host.endsWith("]") && isIP(host.slice(1, -1)) === 6;
+  }
+  if (host.includes(":")) return false;
+  if (isIP(host) === 4) return true;
+  return host === "localhost"
+    || (host.length <= 253
+      && host.split(".").every((label) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/u.test(label)));
+}
+
+function hostHeaderName(host: string): string {
+  return isIP(host) === 6 ? `[${host}]` : host.toLowerCase();
 }
 
 function validateAllowedOrigins(origins: readonly string[]): void {
@@ -310,7 +336,9 @@ function validateAllowedOrigins(origins: readonly string[]): void {
 }
 
 function validateNamespace(namespace: string): void {
-  if (/^[\u0000-\u001f\u007f]*$/u.test(namespace) || /[\u0000-\u001f\u007f]/u.test(namespace)) {
+  if (/^[\u0000-\u001f\u007f]*$/u.test(namespace)
+    || /[\u0000-\u001f\u007f]/u.test(namespace)
+    || Buffer.byteLength(namespace.normalize("NFKC"), "utf8") > 512) {
     throw invalidConfig(
       "MONO_AGENT_ADVISOR_NAMESPACE must contain visible text without control characters.",
       { env: "MONO_AGENT_ADVISOR_NAMESPACE" },

@@ -64,13 +64,13 @@ describe("advisor execution", () => {
   it("maps start and runtime failures without leaking raw errors", async () => {
     const startFailure: AdvisorRunFactory = {
       async start() {
-        throw new Error("Bearer top-secret from /Users/private/repo");
+        throw new Error("Bearer top-secret from /Users/example/private/repo");
       },
     };
     const runFailure: AdvisorRunFactory = {
       async start() {
         return {
-          result: Promise.reject(new Error("Bearer top-secret from /Users/private/repo")),
+          result: Promise.reject(new Error("Bearer top-secret from /Users/example/private/repo")),
           async stop() {},
           async drain() {},
         };
@@ -91,7 +91,7 @@ describe("advisor execution", () => {
     });
     expect(first.code).toBe("advisor_run_start_failed");
     expect(second.code).toBe("advisor_run_failed");
-    expect(JSON.stringify([first, second])).not.toMatch(/top-secret|\/Users\/private/u);
+    expect(JSON.stringify([first, second])).not.toMatch(/top-secret|\/Users\/example/u);
   });
 
   it("adapts one responder turn without claiming a separate agent", async () => {
@@ -129,6 +129,32 @@ describe("advisor execution", () => {
     await Promise.all([run.stop("timeout"), run.stop("server_shutdown")]);
     await Promise.all([run.drain(), run.drain()]);
     expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails visibly instead of accepting a host fallback model's review", async () => {
+    const responder: AgentResponder = {
+      async respond(_input, stream) {
+        await stream.event?.({
+          type: "provider_status",
+          kind: "failover_started",
+          from: "configured-model",
+          to: "fallback-model",
+          attemptIndex: 1,
+        });
+        await stream.append("Review from the fallback route.");
+        return { text: "Review from the fallback route." };
+      },
+    };
+    const run = await createAdvisorRunFactoryFromResponder(responder).start({
+      continuityId: continuityIdForSessionKey("session"),
+      prompt: "Review payload",
+      model: "pi:openai-codex:gpt-5.6-sol",
+      effort: "max",
+      abortSignal: new AbortController().signal,
+      maxOutputChars: 1_000,
+    });
+    await expect(run.result).rejects.toThrow("exact model selection was not preserved");
+    await expect(run.drain()).resolves.toBeUndefined();
   });
 
   it("registers exactly one public MCP tool and returns structured content", async () => {
