@@ -44,6 +44,49 @@ export type {
   ExplicitMemoryForgetRestoreResult,
   RestoreExplicitMemoryForgetOptions,
 } from "./explicit-forget.js";
+export { exportMemoryBundle, MemoryBundleExportError } from "./bundle-export.js";
+export type {
+  ExportMemoryBundleOptions,
+  MemoryBundleExportErrorCode,
+  MemoryBundleExportHooks,
+  MemoryBundleExportResult,
+} from "./bundle-export.js";
+export {
+  MEMORY_BUNDLE_EXTRAS_DIR,
+  MEMORY_BUNDLE_MANIFEST_FILE,
+  MEMORY_BUNDLE_SCHEMA_VERSION,
+  MEMORY_BUNDLE_SOURCE_DIR,
+  parseMemoryExportBundleManifest,
+} from "./bundle-format.js";
+export type {
+  MemoryBundleCounts,
+  MemoryBundleScope,
+  MemoryExportBundleManifest,
+} from "./bundle-format.js";
+export {
+  applyMemoryBundleImport,
+  MemoryBundleImportError,
+  prepareMemoryBundleImport,
+  resolveMemoryBundleImportRoot,
+  restoreMemoryBundleImport,
+} from "./bundle-import.js";
+export type {
+  ApplyMemoryBundleImportOptions,
+  MemoryBundleImportApplyResult,
+  MemoryBundleImportErrorCode,
+  MemoryBundleImportHooks,
+  MemoryBundleImportPolicy,
+  MemoryBundleImportPreview,
+  MemoryBundleImportRestoreResult,
+  PrepareMemoryBundleImportOptions,
+  RestoreMemoryBundleImportOptions,
+} from "./bundle-import.js";
+export type {
+  MemoryBundleEntityConflictPolicy,
+  MemoryBundleEntityDiscard,
+  MemoryBundleIdConflictPolicy,
+  MemoryBundleMergeCounts,
+} from "./bundle-merge.js";
 export {
   DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS,
   DEFAULT_MEMORY_FORGET_BACKUP_MAX_COUNT,

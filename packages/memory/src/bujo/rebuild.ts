@@ -28,6 +28,7 @@ import {
   projectCanonicalGraph,
   readGraph,
   type CanonicalGraphProjection,
+  type CanonicalGraphRecords,
 } from "./graph.js";
 import {
   assertNoPendingCaptureIntent,
@@ -256,6 +257,96 @@ export function readCanonicalGraphAuditSourceSnapshot(
   // owned by strict index health and must not turn an otherwise exact graph
   // comparison into a graph parse failure.
   return { fingerprint: snapshot.fingerprint, graph: buildPlan(snapshot, tier, emptyReplayProjection()).graph };
+}
+
+/** One canonical daily source file, exactly as the rebuild planner reads it. */
+export interface CanonicalDailySource {
+  readonly relativePath: string;
+  readonly bytes: Buffer;
+}
+
+/**
+ * Everything a provider-free canonical merge needs, read through the same
+ * identity-pinned path safe rebuild uses.
+ *
+ * `records` is the fully planned inventory (replay lifecycle already applied),
+ * while `graph` is the *raw* append-log projection input rather than the
+ * derived projection — a merge concatenates canonical graph records and lets
+ * `projectCanonicalGraph` re-derive name matches afterwards.
+ */
+export interface CanonicalMergeSnapshot {
+  readonly fingerprint: string;
+  readonly daily: readonly CanonicalDailySource[];
+  readonly graphBytes?: Buffer;
+  readonly replayBytes?: Buffer;
+  readonly records: readonly MemoryRecord[];
+  readonly graph: CanonicalGraphRecords;
+  readonly replay: ReplayProjectionV1;
+}
+
+/**
+ * Read the canonical corpus of a BuJo memory root (or an export bundle's
+ * identically shaped `source/` directory) without opening SQLite or an
+ * embedding provider.
+ */
+export function readCanonicalMergeSnapshot(root: string): CanonicalMergeSnapshot {
+  const snapshot = snapshotCanonicalSources(root, "bujo");
+  const plan = buildPlan(snapshot, "bujo");
+  return {
+    fingerprint: snapshot.fingerprint,
+    daily: snapshot.daily.map((source) => ({ relativePath: source.relativePath, bytes: source.bytes })),
+    ...(snapshot.graph === undefined ? {} : { graphBytes: snapshot.graph.bytes }),
+    ...(snapshot.replay === undefined ? {} : { replayBytes: snapshot.replay.bytes }),
+    records: plan.records,
+    graph: parseCanonicalGraphStrict(snapshot.graph?.bytes.toString("utf8")),
+    replay: plan.replay,
+  };
+}
+
+/** Counts proving a canonical corpus is rebuildable, with no memory text. */
+export interface CanonicalCorpusValidation {
+  readonly fingerprint: string;
+  readonly memories: number;
+  readonly entities: number;
+  readonly relations: number;
+  readonly associations: number;
+  readonly derivedLegacyAssociations: number;
+  readonly replayTerminals: number;
+  readonly replaySupersedes: number;
+  readonly replayThreads: number;
+  readonly skippedRawRecords: number;
+  readonly skippedUnstructuredRecords: number;
+  readonly skippedMissingIdentityRecords: number;
+  readonly skippedLegacySourceRecords: number;
+}
+
+/**
+ * Prove a canonical corpus would plan cleanly, without a database or provider.
+ *
+ * This runs the full planner — duplicate ids, malformed bullets, graph orphans,
+ * and every replay topology rule — so a merge can be validated in staging
+ * before any canonical byte is written. `readCanonicalGraphAuditSourceSnapshot`
+ * deliberately substitutes an empty replay projection and therefore cannot
+ * catch the replay failures, which are the unrecoverable ones.
+ */
+export function validateCanonicalCorpus(root: string, tier: BujoTier): CanonicalCorpusValidation {
+  const snapshot = snapshotCanonicalSources(root, tier);
+  const plan = buildPlan(snapshot, tier);
+  return {
+    fingerprint: snapshot.fingerprint,
+    memories: plan.records.length,
+    entities: plan.graph.entities.length,
+    relations: plan.graph.relations.length,
+    associations: plan.graph.associations.length,
+    derivedLegacyAssociations: plan.graph.derivedLegacyAssociations,
+    replayTerminals: plan.replay.terminals.length,
+    replaySupersedes: plan.replay.supersedes.length,
+    replayThreads: plan.replay.threads.length,
+    skippedRawRecords: plan.skippedRawRecords,
+    skippedUnstructuredRecords: plan.skippedUnstructuredRecords,
+    skippedMissingIdentityRecords: plan.skippedMissingIdentityRecords,
+    skippedLegacySourceRecords: plan.skippedLegacySourceRecords,
+  };
 }
 
 /**

@@ -328,6 +328,14 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         ...(args.reason === undefined ? {} : { reason: args.reason }),
         ...(args.planPath === undefined ? {} : { planPath: args.planPath }),
         ...(args.backupPath === undefined ? {} : { backupPath: args.backupPath }),
+        ...(args.bundlePath === undefined ? {} : { bundlePath: args.bundlePath }),
+        ...(args.includeExtras === undefined ? {} : { includeExtras: args.includeExtras }),
+        ...(args.allowPending === undefined ? {} : { allowPending: args.allowPending }),
+        ...(args.onConflict === undefined ? {} : { onConflict: args.onConflict }),
+        ...(args.entityConflict === undefined ? {} : { entityConflict: args.entityConflict }),
+        ...(args.acceptDerivedAssociationDrift === undefined
+          ? {}
+          : { acceptDerivedAssociationDrift: args.acceptDerivedAssociationDrift }),
       });
     }
   }

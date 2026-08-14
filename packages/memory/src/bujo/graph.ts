@@ -603,7 +603,14 @@ function entityRecordsEqual(a: EntityRecord, b: EntityRecord): boolean {
   );
 }
 
-function mergeEntityRecord(current: EntityRecord, next: EntityRecord): EntityRecord {
+/**
+ * Fold a later append-log entity record over an earlier one.
+ *
+ * `createdAt` always stays with the earlier record so a merge can never make an
+ * entity look younger than its oldest evidence; `updatedAt` advances only when
+ * a visible field actually changed.
+ */
+export function mergeEntityRecord(current: EntityRecord, next: EntityRecord): EntityRecord {
   const type = next.type ?? current.type;
   const summary = next.summary ?? current.summary;
   const merged: EntityRecord = {

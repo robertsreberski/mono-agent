@@ -232,12 +232,15 @@ per-decision mutator is intentionally not exported from `@mono-agent/memory/bujo
 
 The app's artifact-retention scheduler calls `pruneExplicitMemoryForgetBackups`
 at startup and hourly. The fixed rollback window keeps the three newest
-root-bound managed or conventional `operator/forget-*` snapshots and expires
-them after 30 days. The sweep shares the stopped-store maintenance lease,
-defers during recovery, refuses symlinks or foreign manifests, and supports the
-memory-artifact dry-run boundary. Before deletion it atomically renames each
-selected directory to another reserved retention name, so an interrupted sweep
-leaves a claim that the next sweep can discover and finish.
+snapshots **total** across root-bound managed forget backups, managed import
+backups, and conventional `operator/forget-*` snapshots; forget and import do
+not receive separate three-slot budgets. Snapshots also expire after 30 days.
+The sweep shares the stopped-store maintenance lease, defers during recovery,
+refuses symlinks or foreign manifests, and supports the memory-artifact dry-run
+boundary. Before deletion it atomically renames each selected directory to
+another reserved retention name, so an interrupted sweep leaves a claim that
+the next sweep can discover and finish. Copy any backup that needs longer
+retention outside all reserved managed backup and retention-claim names.
 
 One legacy case needs an explicit trust decision: a stopped built-in BuJo root,
 managed or still using the legacy unmanaged `memory.db`, may contain
@@ -315,6 +318,7 @@ AUTO_RECALL_MAX_HITS
 AUTO_RECALL_MIN_SCORE
 AUTO_RECALL_RELATIVE_SCORE
 ApplyExplicitMemoryForgetOptions
+ApplyMemoryBundleImportOptions
 BUJO_MEMORY_HEALTH_SCHEMA_VERSION
 BUJO_RUNTIME_SNAPSHOT_SCHEMA_VERSION
 BUJO_RUNTIME_SNAPSHOT_STALE_AFTER_MS
@@ -350,6 +354,7 @@ ExplicitMemoryForgetError
 ExplicitMemoryForgetErrorCode
 ExplicitMemoryForgetHooks
 ExplicitMemoryForgetRestoreResult
+ExportMemoryBundleOptions
 ExtractedEntity
 ExtractedRelation
 Extraction
@@ -364,10 +369,32 @@ MAX_CAPTURE_ENTITIES
 MAX_CAPTURE_MEMORIES
 MAX_CAPTURE_RELATIONS
 MAX_KNOWN_ENTITY_HINTS
+MEMORY_BUNDLE_EXTRAS_DIR
+MEMORY_BUNDLE_MANIFEST_FILE
+MEMORY_BUNDLE_SCHEMA_VERSION
+MEMORY_BUNDLE_SOURCE_DIR
 MEMORY_HEALTH_ISSUE_CODES
 MEMORY_REBUILD_POLICY_VERSION
 ManagedGeneration
 ManagedIndexManifest
+MemoryBundleCounts
+MemoryBundleEntityConflictPolicy
+MemoryBundleEntityDiscard
+MemoryBundleExportError
+MemoryBundleExportErrorCode
+MemoryBundleExportHooks
+MemoryBundleExportResult
+MemoryBundleIdConflictPolicy
+MemoryBundleImportApplyResult
+MemoryBundleImportError
+MemoryBundleImportErrorCode
+MemoryBundleImportHooks
+MemoryBundleImportPolicy
+MemoryBundleImportPreview
+MemoryBundleImportRestoreResult
+MemoryBundleMergeCounts
+MemoryBundleScope
+MemoryExportBundleManifest
 MemoryForgetBackupRetentionOptions
 MemoryForgetBackupRetentionResult
 MemoryHealthCounts
@@ -378,9 +405,11 @@ MemoryModelKind
 MemoryModelOutputError
 MigrateDeps
 MigrateResult
+PrepareMemoryBundleImportOptions
 ReconcileAction
 ReconcileDeps
 RestoreExplicitMemoryForgetOptions
+RestoreMemoryBundleImportOptions
 SafeMemoryIndexOptions
 SafeMemoryIndexResult
 SafeMemoryRebuildHooks
@@ -389,6 +418,7 @@ appendAssociation
 appendBullet
 appendGraphBatch
 applyExplicitMemoryForget
+applyMemoryBundleImport
 auditBujoMemoryHealth
 auditCanonicalGraphParity
 auditCompletedTurnIntake
@@ -399,6 +429,7 @@ createBujoMemoryStore
 createIdFactory
 createOllamaLlm
 dailyFilePath
+exportMemoryBundle
 extractCapturePlan
 extractCapturePlanStrict
 inspectCompletedTurnIntake
@@ -406,6 +437,8 @@ isConversationRelativeQuery
 migrate
 parseBullet
 parseDailyFile
+parseMemoryExportBundleManifest
+prepareMemoryBundleImport
 previewCanonicalExplicitForgetMemories
 pruneExplicitMemoryForgetBackups
 readBujoCanonicalSourceFingerprint
@@ -419,7 +452,9 @@ renderKnownEntityHints
 resolveActiveMemoryDbPath
 resolveCompletedTurnIntake
 resolveExplicitMemoryForgetRoot
+resolveMemoryBundleImportRoot
 restoreExplicitMemoryForget
+restoreMemoryBundleImport
 retryCompletedTurnIntake
 rollbackMemoryIndex
 safeRebuildMemoryIndex
