@@ -257,6 +257,25 @@ const AskReconciliationContext = createContext<AskReconciliationValue | null>(nu
 const ASK_POLL_MIN_MS = 250;
 const ASK_POLL_MAX_MS = 2_000;
 
+const waitForAskPollDelay = async (delayMs: number, signal: AbortSignal): Promise<void> => {
+  if (signal.aborted) return;
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    let timer = 0;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    const onAbort = (): void => settle();
+    timer = window.setTimeout(settle, delayMs);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) settle();
+  });
+};
+
 const expiredSnapshot = (snapshot: AskSnapshot): AskSnapshot =>
   snapshot.status === "pending" && Date.parse(snapshot.expiresAt) <= Date.now()
     ? { ...snapshot, status: "expired" }
@@ -428,13 +447,7 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
         }
 
         if (!pollAgain || controller.signal.aborted) return;
-        await new Promise<void>((resolve) => {
-          const timer = window.setTimeout(resolve, delayMs);
-          controller.signal.addEventListener("abort", () => {
-            window.clearTimeout(timer);
-            resolve();
-          }, { once: true });
-        });
+        await waitForAskPollDelay(delayMs, controller.signal);
         delayMs = Math.min(ASK_POLL_MAX_MS, delayMs * 2);
       }
     };
@@ -740,6 +753,7 @@ export function CronRunPart({ data }: DataMessagePartProps) {
     <div
       id={cronRunAnchor(runId)}
       className={`cron-run-row is-${status}`}
+      role="group"
       aria-label={`Cron run ${runId}, ${trigger}, ${stateLabel}`}
     >
       <a className="cron-run-link" href={`#${cronRunAnchor(runId)}`} title={runId}>

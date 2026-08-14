@@ -31,6 +31,9 @@ describe("CronRunPart", () => {
       .toHaveAttribute("role", "status");
     expect(screen.getByText("Run text, error are truncated in this view."))
       .toHaveAttribute("role", "status");
+    expect(screen.getByRole("group", {
+      name: "Cron run cron:digest:one, scheduled, completed",
+    })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Load activity" })).not.toBeInTheDocument();
   });
 

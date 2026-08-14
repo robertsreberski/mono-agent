@@ -302,6 +302,53 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("emits no refresh events for repeated polls of a tombstoned historical cron channel", async () => {
+    let currentOverview = operatorCronOverview();
+    const delegated = operatorFetch({ cronOverview: currentOverview });
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/v1/cron")) return Response.json(currentOverview);
+      return await delegated(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    const threadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId;
+    currentOverview = operatorCronOverview({
+      generatedAt: "2026-08-14T10:01:00.000Z",
+      jobs: [{
+        ...(operatorCronOverview().jobs as Record<string, unknown>[])[0],
+        configured: false,
+        effectiveEnabled: false,
+        health: "disabled",
+      }],
+    });
+    await service.refreshAgents();
+    service.patchThread(threadId, { archived: true });
+    await service.deleteThread(threadId);
+
+    const database = new DatabaseSync(service.store.paths.database, { readOnly: true });
+    const snapshot = () => ({
+      overviews: database.prepare("SELECT * FROM cron_overviews ORDER BY source_id").all(),
+      channels: database.prepare("SELECT * FROM cron_channels ORDER BY source_id, job_id").all(),
+      snapshots: database.prepare("SELECT * FROM cron_job_snapshots ORDER BY source_id, job_id").all(),
+      deletions: database.prepare("SELECT * FROM cron_channel_deletions ORDER BY source_id, job_id").all(),
+      revisions: database.prepare("SELECT * FROM revisions ORDER BY entity_kind, entity_id, revision").all(),
+      pushEvents: database.prepare("SELECT * FROM push_events ORDER BY id").all(),
+    });
+    const beforePolls = snapshot();
+    const events: string[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event.type); });
+
+    currentOverview = operatorCronOverview({ ...currentOverview, generatedAt: "2026-08-14T10:02:00.000Z" });
+    await service.refreshAgents();
+    currentOverview = operatorCronOverview({ ...currentOverview, generatedAt: "2026-08-14T10:03:00.000Z" });
+    await service.refreshAgents();
+
+    expect(events).toEqual([]);
+    expect(snapshot()).toEqual(beforePolls);
+    unsubscribe();
+    database.close();
+    await service.stop();
+  });
+
   it("reads terminal AskUser state by interaction id after another destination consumes the pending ask", async () => {
     const answered = {
       interactionId: "ask-old",

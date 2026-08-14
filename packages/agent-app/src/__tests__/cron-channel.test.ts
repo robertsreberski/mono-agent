@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentResponder } from "@mono-agent/agent-contracts";
+import { MAX_CRON_OPERATOR_DEGRADED_REASON_BYTES, type AgentResponder } from "@mono-agent/agent-contracts";
 import type {
   CronAdapterConfig,
   CronAdapterOptions,
@@ -822,6 +822,47 @@ describe("cron channel driver — durable effective state", () => {
     expect(running.summary).toEqual({ jobs: 1, configuredJobs: 1 });
   });
 
+  it("disables operator actions immediately when the running scheduler degrades", async () => {
+    let captured: CronAdapterOptions | undefined;
+    const onDegraded = vi.fn();
+    const registry = new CronOperatorRegistry();
+    const driver = createCronChannelDriver({
+      inspectControlStore: async () => ({ status: "absent" }),
+      openControlStore: async () => testControlStore,
+      adapterFactory: (options) => {
+        captured = options;
+        return adapterResult(options);
+      },
+    }, registry);
+    const config = {
+      jobs: [{ id: "j", expression: "* * * * *", timezone: "UTC", prompt: "p", enabled: true }],
+      operatorActionsEnabled: true,
+      controlInspection: { status: "absent" as const },
+      effectiveEnabledByJobId: new Map([["j", true]]),
+    };
+    await driver.start({ ...baseInput, config, onDegraded });
+    expect(registry.overview()).toMatchObject({ actionsEnabled: true, jobs: [{ health: "unknown" }] });
+
+    const runtimeReason = `runtime store failed: ${"x".repeat(MAX_CRON_OPERATOR_DEGRADED_REASON_BYTES * 2)}`;
+    captured?.onDegraded?.(runtimeReason);
+
+    const degraded = registry.overview();
+    if (degraded instanceof Promise) throw new Error("synchronous registry expected");
+    expect(degraded).toMatchObject({
+      actionsEnabled: false,
+      degradedReason: expect.stringContaining("runtime store failed"),
+      jobs: [{ health: "unknown" }],
+    });
+    expect(Buffer.byteLength(degraded.degradedReason!, "utf8"))
+      .toBeLessThanOrEqual(MAX_CRON_OPERATOR_DEGRADED_REASON_BYTES);
+    expect(() => registry.runNow("j", { idempotencyKey: "degraded-runtime" }))
+      .toThrowError(expect.objectContaining({
+        code: "actions_disabled",
+        message: expect.stringContaining("runtime store failed"),
+      }));
+    expect(onDegraded).toHaveBeenCalledWith(runtimeReason);
+  });
+
   it("halts every job, logs at error level, and exposes degraded operator state on control corruption", async () => {
     const error = vi.fn();
     const onDegraded = vi.fn();
@@ -860,7 +901,7 @@ describe("cron channel driver — durable effective state", () => {
     );
     expect(registry.overview()).toMatchObject({
       actionsEnabled: false,
-      degradedReason: "state marker is corrupt",
+      degradedReason: "runtime store failed",
       jobs: [{ jobId: "j", effectiveEnabled: false, health: "unknown" }],
     });
   });

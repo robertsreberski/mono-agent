@@ -118,6 +118,56 @@ describe("cron operator service", () => {
     expect(runNow).toHaveBeenCalledOnce();
   });
 
+  it("terminally reconciles a committed run-now receipt when adapter dispatch throws", async () => {
+    const { store, adapter, runNow } = await fixture();
+    runNow.mockImplementationOnce(() => { throw new Error("adapter stopped after admission"); });
+    const error = vi.fn();
+    const service = createCronOperatorService({
+      config: config(),
+      store,
+      adapter,
+      configView: () => ({ id: "cron", label: "Cron", status: "active", fields: [] }),
+      now: () => new Date("2026-08-14T10:00:00.000Z"),
+      logger: { error },
+    });
+    const first = service.runNow("digest", { idempotencyKey: "manual-dispatch-failure" });
+    if (first instanceof Promise || first.kind !== "confirmation_required") throw new Error("confirmation required");
+
+    const failed = service.runNow("digest", {
+      idempotencyKey: "manual-dispatch-failure",
+      confirmationToken: first.confirmation.token,
+    });
+    if (failed instanceof Promise) throw new Error("synchronous fixture expected");
+    expect(failed).toMatchObject({
+      kind: "completed",
+      replayed: false,
+      value: {
+        run: {
+          runId: "cron:digest:2026-08-14T10:00:00.000Z:m1",
+          status: "failed",
+          completedAt: "2026-08-14T10:00:00.000Z",
+          error: "Cron manual run could not be dispatched.",
+          failureKind: "operator_dispatch_failed",
+        },
+      },
+    });
+    expect(store.lastRun("digest")).toMatchObject({
+      status: "failed",
+      failureKind: "operator_dispatch_failed",
+    });
+    const replay = service.runNow("digest", { idempotencyKey: "manual-dispatch-failure" });
+    if (replay instanceof Promise) throw new Error("synchronous fixture expected");
+    expect(replay).toEqual({ ...failed, replayed: true });
+    expect(runNow).toHaveBeenCalledOnce();
+    expect(error).toHaveBeenCalledWith(
+      "Cron operator run-now dispatch failed.",
+      expect.objectContaining({
+        runId: "cron:digest:2026-08-14T10:00:00.000Z:m1",
+        failureKind: "operator_dispatch_failed",
+      }),
+    );
+  });
+
   it("persists effective enable state only after confirmation and reports it authoritatively", async () => {
     const { store, adapter, setEffectiveEnabled } = await fixture();
     const changed = vi.fn();

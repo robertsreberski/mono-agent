@@ -18,7 +18,11 @@ import {
   type CronControlInspection,
   type CronControlStore,
 } from "../cron-control-store.js";
-import { createCronOperatorService, CronOperatorRegistry } from "../cron-operator-service.js";
+import {
+  createCronOperatorDegradationController,
+  createCronOperatorService,
+  CronOperatorRegistry,
+} from "../cron-operator-service.js";
 import { findTriggerOverrideIssues } from "../trigger-overrides.js";
 import { deliverNativeCronNotification, inferUniqueNotifyDestination } from "./native-notify.js";
 import { unconfiguredChannelView } from "./shared.js";
@@ -133,6 +137,11 @@ export function createCronChannelDriver(
     async start(input) {
       let store: CronControlStore | undefined;
       let degradedReason: string | undefined;
+      const degradation = createCronOperatorDegradationController();
+      const reportDegraded = (reason: string): void => {
+        degradation.degrade(reason);
+        input.onDegraded?.(reason);
+      };
       try {
         store = await (overrides.openControlStore ?? openCronControlStore)(
           input.cwd,
@@ -144,7 +153,7 @@ export function createCronChannelDriver(
         input.logger?.error?.("Cron control state is unavailable; no cron jobs will be armed.", {
           reason: degradedReason,
         });
-        input.onDegraded?.(degradedReason);
+        reportDegraded(degradedReason);
       }
       const overridesByJobId = store?.overrides() ?? new Map<string, boolean>();
       const effectiveEnabledByJobId = new Map(input.config.jobs.map((job) => [
@@ -184,7 +193,7 @@ export function createCronChannelDriver(
           onRunStarted: (firing, startedAt) => store.markStarted(firing, startedAt),
           onEvent: (firing, event) => store.appendEvent(firing, event),
         }),
-        onDegraded: (reason) => input.onDegraded?.(reason),
+        onDegraded: reportDegraded,
         ...(resolveNotifyFallbackConversationId === undefined ? {} : { resolveNotifyFallbackConversationId }),
         onResult: async (result) => {
           store?.recordResult(result);
@@ -217,8 +226,8 @@ export function createCronChannelDriver(
         effectiveEnabledByJobId,
         ...(store === undefined ? {} : { store }),
         adapter,
+        degradation,
         configView: currentConfigView ?? (async () => unconfiguredChannelView("cron", "Cron")),
-        ...(degradedReason === undefined ? {} : { degradedReason }),
         ...(overrides.now === undefined ? {} : { now: overrides.now }),
         ...(input.logger === undefined ? {} : { logger: input.logger }),
         onEffectiveEnabledChanged: () => {

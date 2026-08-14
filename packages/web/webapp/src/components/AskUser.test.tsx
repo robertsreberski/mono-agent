@@ -1,5 +1,5 @@
 import type { ToolCallMessagePartProps } from "@assistant-ui/react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api";
@@ -80,6 +80,7 @@ async function renderAnsweredSnapshot(answered: AskSnapshot) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -369,5 +370,54 @@ describe("AskUser web form", () => {
     expect(await screen.findByText("Answers submitted.")).toBeVisible();
     await waitFor(() => expect(api.ask).toHaveBeenCalledWith("thread-1", "ask-test", expect.any(AbortSignal)));
     expect(screen.queryByRole("button", { name: /Submit/u })).not.toBeInTheDocument();
+  });
+
+  it("removes every abort listener after normal poll delays and provider teardown", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(api, "ask").mockResolvedValue(snapshot);
+    const addEventListener = vi.spyOn(AbortSignal.prototype, "addEventListener");
+    const removeEventListener = vi.spyOn(AbortSignal.prototype, "removeEventListener");
+    const rendered = render(
+      <AskReconciliationProvider>
+        <ToolFallback
+          type="tool-call"
+          toolName="AskUser"
+          toolCallId="tool-listener-cleanup"
+          args={{}}
+          argsText="{}"
+          result={{ structuredContent: { interactionId: snapshot.interactionId } }}
+          isError={false}
+          status={{ type: "complete" }}
+          addResult={vi.fn()}
+          resume={vi.fn()}
+          respondToApproval={vi.fn()}
+        />
+      </AskReconciliationProvider>,
+    );
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    const pollListeners = () => addEventListener.mock.calls
+      .filter(([type, , options]) => type === "abort"
+        && typeof options === "object"
+        && options !== null
+        && "once" in options
+        && options.once === true)
+      .map(([, listener]) => listener);
+    const removedListeners = () => removeEventListener.mock.calls
+      .filter(([type]) => type === "abort")
+      .map(([, listener]) => listener);
+    const outstandingListeners = () => pollListeners()
+      .filter((listener) => !removedListeners().includes(listener));
+    const beforeTimer = outstandingListeners();
+    const callsBeforeTimer = vi.mocked(api.ask).mock.calls.length;
+    expect(beforeTimer).toHaveLength(1);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    expect(api.ask).toHaveBeenCalledTimes(callsBeforeTimer + 1);
+    expect(removedListeners()).toContain(beforeTimer[0]);
+    expect(outstandingListeners()).toHaveLength(1);
+
+    rendered.unmount();
+    expect(outstandingListeners()).toEqual([]);
   });
 });

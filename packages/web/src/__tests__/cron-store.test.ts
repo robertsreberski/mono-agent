@@ -240,6 +240,67 @@ describe("WebStore first-class cron channels", () => {
     store.close();
   });
 
+  it("keeps repeated overview polls non-writing after a historical channel is tombstoned", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockCalls = 0;
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => {
+        clockCalls += 1;
+        return new Date(Date.parse("2026-08-14T10:00:00.000Z") + clockCalls * 1_000);
+      },
+    });
+    store.replaceAgents([agent()]);
+    const overview = (configured: boolean, generatedAt: string) => ({
+      sourceId: "agent-one",
+      generatedAt,
+      actionsEnabled: true,
+      jobs: [{
+        jobId: "daily:brief",
+        expression: "*/5 * * * *",
+        timezone: "Europe/Amsterdam",
+        conversationId: "cron:daily:brief",
+        configured,
+        declaredEnabled: true,
+        effectiveEnabled: configured,
+        nextRunAt: "2026-08-14T10:05:00.000Z",
+        health: configured ? "healthy" as const : "disabled" as const,
+      }],
+    });
+
+    const initial = store.syncCronOverviewResult(overview(true, "2026-08-14T10:00:00.000Z"));
+    expect(initial.changed).toBe(true);
+    expect(store.syncCronOverviewResult(overview(true, "2026-08-14T10:00:01.000Z")).changed).toBe(false);
+    const threadId = initial.overview.jobs[0]!.threadId;
+    expect(store.syncCronOverviewResult(overview(false, "2026-08-14T10:01:00.000Z")).changed).toBe(true);
+    store.patchThread(threadId, { archived: true });
+    await store.deleteArchivedThread(threadId);
+
+    const database = new DatabaseSync(store.paths.database, { readOnly: true });
+    const snapshot = () => ({
+      overviews: database.prepare("SELECT * FROM cron_overviews ORDER BY source_id").all(),
+      channels: database.prepare("SELECT * FROM cron_channels ORDER BY source_id, job_id").all(),
+      jobSnapshots: database.prepare("SELECT * FROM cron_job_snapshots ORDER BY source_id, job_id").all(),
+      deletions: database.prepare("SELECT * FROM cron_channel_deletions ORDER BY source_id, job_id").all(),
+      threads: database.prepare("SELECT id, revision, updated_at FROM threads ORDER BY id").all(),
+      revisions: database.prepare("SELECT * FROM revisions ORDER BY entity_kind, entity_id, revision").all(),
+      pushEvents: database.prepare("SELECT * FROM push_events ORDER BY id").all(),
+    });
+    const beforePolls = snapshot();
+    const clockCallsBeforePolls = clockCalls;
+
+    const second = store.syncCronOverviewResult(overview(false, "2026-08-14T10:02:00.000Z"));
+    const third = store.syncCronOverviewResult(overview(false, "2026-08-14T10:03:00.000Z"));
+    expect(second).toMatchObject({ changed: false, overview: { jobs: [] } });
+    expect(third).toMatchObject({ changed: false, overview: { jobs: [] } });
+    expect(clockCalls).toBe(clockCallsBeforePolls);
+    expect(snapshot()).toEqual(beforePolls);
+
+    database.close();
+    store.close();
+  });
+
   it("turns an in-flight delivery into a completed threadless tombstone when its historical channel is deleted", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

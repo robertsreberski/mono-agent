@@ -107,6 +107,12 @@ export interface CronOverviewSyncResult {
   readonly changed: boolean;
 }
 
+type IncomingCronJob = Omit<WebCronJob, "threadId">;
+type IncomingCronOverview = Omit<WebCronOverview, "jobs"> & {
+  readonly sourceId: string;
+  readonly jobs: readonly IncomingCronJob[];
+};
+
 interface MessagePageRow extends MessageRow {
   ordered_at: string;
   role_rank: number;
@@ -742,11 +748,9 @@ export class WebStore {
   }
 
   /** Persist an agent-authoritative overview without deriving scheduler facts in the console. */
-  syncCronOverviewResult(overview: Omit<WebCronOverview, "jobs"> & {
-    readonly sourceId: string;
-    readonly jobs: readonly Omit<WebCronJob, "threadId">[];
-  }): CronOverviewSyncResult {
-    if (this.cronOverviewMatches(overview)) {
+  syncCronOverviewResult(overview: IncomingCronOverview): CronOverviewSyncResult {
+    const effectiveJobs = this.effectiveIncomingCronJobs(overview.sourceId, overview.jobs);
+    if (this.cronOverviewMatches(overview, effectiveJobs)) {
       const stored = this.storedCronOverview(overview.sourceId);
       if (stored === undefined) {
         throw new WebConsoleError("storage_corrupt", "Matched cron overview disappeared.", 500);
@@ -756,7 +760,7 @@ export class WebStore {
         overview: {
           generatedAt: overview.generatedAt,
           actionsEnabled: overview.actionsEnabled,
-          jobs: overview.jobs.map((job) => {
+          jobs: effectiveJobs.map((job) => {
             const threadId = threadByJobId.get(job.jobId);
             if (threadId === undefined) {
               throw new WebConsoleError("storage_corrupt", "Matched cron channel is missing.", 500);
@@ -772,13 +776,11 @@ export class WebStore {
     return { overview: this.syncCronOverview(overview), changed: true };
   }
 
-  syncCronOverview(overview: Omit<WebCronOverview, "jobs"> & {
-    readonly sourceId: string;
-    readonly jobs: readonly Omit<WebCronJob, "threadId">[];
-  }): WebCronOverview {
+  syncCronOverview(overview: IncomingCronOverview): WebCronOverview {
     if (this.getAgent(overview.sourceId) === undefined) {
       throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     }
+    const effectiveJobs = this.effectiveIncomingCronJobs(overview.sourceId, overview.jobs);
     const now = this.now();
     const jobs: WebCronJob[] = [];
     this.transaction(() => {
@@ -807,14 +809,10 @@ export class WebStore {
           snapshot.job_id,
         );
       }
-      for (const job of overview.jobs) {
+      for (const job of effectiveJobs) {
         if (job.configured) {
           this.database.prepare("DELETE FROM cron_channel_deletions WHERE source_id = ? AND job_id = ?")
             .run(overview.sourceId, job.jobId);
-        } else if (this.database.prepare(`
-          SELECT 1 FROM cron_channel_deletions WHERE source_id = ? AND job_id = ?
-        `).get(overview.sourceId, job.jobId) !== undefined) {
-          continue;
         }
         const current = this.cronChannel(overview.sourceId, job.jobId);
         const threadId = current?.thread_id ?? cronChannelThreadId(overview.sourceId, job.jobId);
@@ -894,23 +892,33 @@ export class WebStore {
     };
   }
 
-  private cronOverviewMatches(overview: Omit<WebCronOverview, "jobs"> & {
-    readonly sourceId: string;
-    readonly jobs: readonly Omit<WebCronJob, "threadId">[];
-  }): boolean {
+  private effectiveIncomingCronJobs(
+    sourceId: string,
+    jobs: readonly IncomingCronJob[],
+  ): readonly IncomingCronJob[] {
+    const tombstoned = this.database.prepare(`
+      SELECT 1 FROM cron_channel_deletions WHERE source_id = ? AND job_id = ?
+    `);
+    return jobs.filter((job) => job.configured || tombstoned.get(sourceId, job.jobId) === undefined);
+  }
+
+  private cronOverviewMatches(
+    overview: IncomingCronOverview,
+    effectiveJobs: readonly IncomingCronJob[],
+  ): boolean {
     const stored = this.storedCronOverview(overview.sourceId);
     if (stored === undefined
       || stored.actionsEnabled !== overview.actionsEnabled
       || stored.degradedReason !== overview.degradedReason
       || (stored.jobsTruncated === true) !== (overview.jobsTruncated === true)) return false;
     const storedById = new Map(stored.jobs.map((job) => [job.jobId, job]));
-    for (const incoming of overview.jobs) {
+    for (const incoming of effectiveJobs) {
       const current = storedById.get(incoming.jobId);
       if (current === undefined) return false;
       const { threadId: _threadId, ...currentPayload } = current;
       if (!isDeepStrictEqual(currentPayload, incoming)) return false;
     }
-    return overview.jobsTruncated === true || stored.jobs.length === overview.jobs.length;
+    return overview.jobsTruncated === true || stored.jobs.length === effectiveJobs.length;
   }
 
   storedCronOverview(sourceId: string): WebCronOverview | undefined {

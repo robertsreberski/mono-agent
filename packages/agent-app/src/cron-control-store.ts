@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
-import { chmod, lstat, mkdir, open, readFile, realpath } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -31,7 +31,13 @@ const CONTROL_SCHEMA = 1;
 const CONTROL_MARKER = ".mono-agent-cron-control";
 const CONTROL_DATABASE = "state.sqlite";
 const CONTROL_LEASE = "lease.sqlite";
+const CONTROL_INITIALIZING_SUFFIX = ".initializing";
 const MARKER_CONTENT = `${JSON.stringify({ kind: "mono-agent-cron-control", schema: CONTROL_SCHEMA })}\n`;
+const INITIALIZING_MARKER_CONTENT = `${JSON.stringify({
+  kind: "mono-agent-cron-control",
+  schema: CONTROL_SCHEMA,
+  state: "initializing",
+})}\n`;
 const MAX_RUNS_PER_JOB = 500;
 const RUN_RETENTION_MS = 90 * 24 * 60 * 60 * 1_000;
 const IDEMPOTENCY_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -64,8 +70,30 @@ export interface CronControlPaths {
 
 export type CronControlInspection =
   | { readonly status: "absent" }
+  | { readonly status: "initializing" }
   | { readonly status: "ready"; readonly overrides: ReadonlyMap<string, boolean> }
   | { readonly status: "degraded"; readonly reason: string };
+
+export type CronControlInitializationCheckpoint =
+  | "parent_ready"
+  | "initializing_root_ready"
+  | "initializing_marker_file_ready"
+  | "initializing_marker_ready"
+  | "database_file_ready"
+  | "database_schema_ready"
+  | "lease_file_ready"
+  | "lease_schema_ready"
+  | "permissions_ready"
+  | "ready_marker_ready"
+  | "published";
+
+export interface OpenCronControlStoreOptions {
+  readonly now?: () => Date;
+  /** Test seam for simulating process death after one durable initialization boundary. */
+  readonly onInitializationCheckpoint?: (
+    checkpoint: CronControlInitializationCheckpoint,
+  ) => void | Promise<void>;
+}
 
 export class CronControlStoreError extends Error {
   readonly kind: "corrupt" | "insecure" | "lease_conflict" | "idempotency_conflict" | "replay_expired";
@@ -144,37 +172,21 @@ export function resolveCronControlPaths(cwd: string): CronControlPaths {
 export async function inspectCronControlStore(cwd: string): Promise<CronControlInspection> {
   try {
     const paths = await resolveCanonicalCronControlPaths(cwd);
-    const root = await lstat(paths.root).catch((error: unknown) => missing(error) ? undefined : Promise.reject(error));
-    if (root === undefined) return { status: "absent" };
-    assertOwnedDirectory(root, paths.root);
-    if (await realpath(paths.root) !== paths.root) {
-      throw new CronControlStoreError("insecure", `Cron control state contains a symbolic-link hop: ${paths.root}`);
+    const initializingPaths = initializationPaths(paths);
+    const root = await lstatIfPresent(paths.root);
+    if (root === undefined) {
+      const initializingRoot = await lstatIfPresent(initializingPaths.root);
+      if (initializingRoot === undefined) return { status: "absent" };
+      await assertRecoverableInitialization(initializingPaths, initializingRoot);
+      return { status: "initializing" };
     }
-    await assertOwnedFile(paths.marker, "Cron control marker");
-    if (await readFile(paths.marker, "utf8") !== MARKER_CONTENT) {
-      throw new CronControlStoreError("corrupt", `Cron control marker is invalid: ${paths.marker}`);
+    if (await lstatIfPresent(initializingPaths.root) !== undefined) {
+      throw new CronControlStoreError(
+        "corrupt",
+        `Cron control state has an ambiguous completed and initializing root: ${paths.root}`,
+      );
     }
-    await assertOwnedFile(paths.database, "Cron control database");
-    await assertOwnedFile(paths.lease, "Cron control lease database");
-    const database = new DatabaseSync(paths.database, {
-      readOnly: true,
-      timeout: INSPECTION_BUSY_TIMEOUT_MS,
-    });
-    try {
-      // Config inspection reads only the bounded state needed to decide which
-      // jobs may arm. The lease-owning open below is the one lifecycle boundary
-      // that performs the whole-database quick_check before scheduler startup.
-      assertSupportedDatabaseSchema(database);
-      const overrides = new Map<string, boolean>();
-      for (const row of database.prepare(
-        "SELECT job_id, runtime_enabled FROM job_controls WHERE runtime_enabled IS NOT NULL ORDER BY job_id",
-      ).all() as Array<{ job_id: string; runtime_enabled: number }>) {
-        overrides.set(row.job_id, row.runtime_enabled === 1);
-      }
-      return { status: "ready", overrides };
-    } finally {
-      database.close();
-    }
+    return { status: "ready", overrides: await inspectReadyControlStore(paths, root) };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     return { status: "degraded", reason };
@@ -183,7 +195,7 @@ export async function inspectCronControlStore(cwd: string): Promise<CronControlI
 
 export async function openCronControlStore(
   cwd: string,
-  options: { readonly now?: () => Date } = {},
+  options: OpenCronControlStoreOptions = {},
 ): Promise<CronControlStore> {
   // The caller-selected agent cwd is the trust boundary. Canonicalize that
   // boundary once so platform aliases above it (notably macOS /var ->
@@ -193,8 +205,8 @@ export async function openCronControlStore(
   const canonicalCwd = await realpath(resolve(cwd));
   const paths = resolveCronControlPaths(canonicalCwd);
   const initial = await inspectCronControlStore(canonicalCwd);
-  if (initial.status === "absent") {
-    await initializeControlStore(paths);
+  if (initial.status === "absent" || initial.status === "initializing") {
+    await initializeControlStore(paths, options.onInitializationCheckpoint);
   } else if (initial.status === "degraded") {
     throw new CronControlStoreError("corrupt", initial.reason);
   }
@@ -556,43 +568,289 @@ async function resolveCanonicalCronControlPaths(cwd: string): Promise<CronContro
   return resolveCronControlPaths(await realpath(resolve(cwd)));
 }
 
-async function initializeControlStore(paths: CronControlPaths): Promise<void> {
+function initializationPaths(paths: CronControlPaths): CronControlPaths {
+  const root = `${paths.root}${CONTROL_INITIALIZING_SUFFIX}`;
+  return {
+    root,
+    marker: join(root, CONTROL_MARKER),
+    database: join(root, CONTROL_DATABASE),
+    lease: join(root, CONTROL_LEASE),
+  };
+}
+
+async function lstatIfPresent(path: string): Promise<Stats | undefined> {
+  return await lstat(path).catch((error: unknown) => missing(error) ? undefined : Promise.reject(error));
+}
+
+async function inspectReadyControlStore(paths: CronControlPaths, root: Stats): Promise<ReadonlyMap<string, boolean>> {
+  assertOwnedDirectory(root, paths.root);
+  if (await realpath(paths.root) !== paths.root) {
+    throw new CronControlStoreError("insecure", `Cron control state contains a symbolic-link hop: ${paths.root}`);
+  }
+  await assertOwnedFile(paths.marker, "Cron control marker");
+  if (await readFile(paths.marker, "utf8") !== MARKER_CONTENT) {
+    throw new CronControlStoreError("corrupt", `Cron control marker is invalid: ${paths.marker}`);
+  }
+  await assertOwnedFile(paths.database, "Cron control database");
+  await assertOwnedFile(paths.lease, "Cron control lease database");
+  const database = new DatabaseSync(paths.database, {
+    readOnly: true,
+    timeout: INSPECTION_BUSY_TIMEOUT_MS,
+  });
+  try {
+    // Config inspection reads only the bounded state needed to decide which
+    // jobs may arm. The lease-owning open below is the one lifecycle boundary
+    // that performs the whole-database quick_check before scheduler startup.
+    assertSupportedDatabaseSchema(database);
+    const overrides = new Map<string, boolean>();
+    for (const row of database.prepare(
+      "SELECT job_id, runtime_enabled FROM job_controls WHERE runtime_enabled IS NOT NULL ORDER BY job_id",
+    ).all() as Array<{ job_id: string; runtime_enabled: number }>) {
+      overrides.set(row.job_id, row.runtime_enabled === 1);
+    }
+    return overrides;
+  } finally {
+    database.close();
+  }
+}
+
+async function assertRecoverableInitialization(paths: CronControlPaths, root: Stats): Promise<void> {
+  assertOwnedDirectory(root, paths.root);
+  if (await realpath(paths.root) !== paths.root) {
+    throw new CronControlStoreError(
+      "insecure",
+      `Cron control initialization contains a symbolic-link hop: ${paths.root}`,
+    );
+  }
+  const allowedEntries = new Set([
+    CONTROL_MARKER,
+    CONTROL_DATABASE,
+    CONTROL_LEASE,
+    `${CONTROL_DATABASE}-journal`,
+    `${CONTROL_DATABASE}-shm`,
+    `${CONTROL_DATABASE}-wal`,
+    `${CONTROL_LEASE}-journal`,
+    `${CONTROL_LEASE}-shm`,
+    `${CONTROL_LEASE}-wal`,
+  ]);
+  const entries = await readdir(paths.root);
+  for (const entry of entries) {
+    if (!allowedEntries.has(entry)) {
+      throw new CronControlStoreError(
+        "corrupt",
+        `Cron control initialization contains an unexpected entry: ${join(paths.root, entry)}`,
+      );
+    }
+    await assertOwnedFile(join(paths.root, entry), "Cron control initialization entry");
+  }
+  if (entries.includes(CONTROL_MARKER)) {
+    const marker = await readFile(paths.marker, "utf8");
+    const recoverableMarker = marker.length === 0
+      || INITIALIZING_MARKER_CONTENT.startsWith(marker)
+      || MARKER_CONTENT.startsWith(marker);
+    if (!recoverableMarker) {
+      throw new CronControlStoreError("corrupt", `Cron control initialization marker is invalid: ${paths.marker}`);
+    }
+  }
+}
+
+async function initializeControlStore(
+  paths: CronControlPaths,
+  onCheckpoint?: (checkpoint: CronControlInitializationCheckpoint) => void | Promise<void>,
+): Promise<void> {
+  const checkpoint = async (value: CronControlInitializationCheckpoint): Promise<void> => {
+    await onCheckpoint?.(value);
+  };
   const parent = dirname(paths.root);
   await mkdir(parent, { recursive: true, mode: 0o700 });
   const parentInfo = await lstat(parent);
-  if (!parentInfo.isDirectory() || parentInfo.isSymbolicLink()) {
-    throw new CronControlStoreError("insecure", `Cron control parent is not a real directory: ${parent}`);
-  }
-  assertOwner(parentInfo, parent);
-  await mkdir(paths.root, { mode: 0o700 });
-  const rootInfo = await lstat(paths.root);
-  assertOwnedDirectory(rootInfo, paths.root);
+  assertOwnedDirectory(parentInfo, parent);
   const canonicalParent = await realpath(parent);
   if (canonicalParent !== parent) {
     throw new CronControlStoreError("insecure", `Cron control parent contains a symbolic-link hop: ${parent}`);
   }
+  await checkpoint("parent_ready");
 
-  const state = new DatabaseSync(paths.database, { timeout: 5_000 });
-  try {
-    createSchema(state);
-  } finally {
-    state.close();
+  if (await lstatIfPresent(paths.root) !== undefined) {
+    throw new CronControlStoreError("corrupt", `Cron control state appeared during initialization: ${paths.root}`);
   }
-  const lease = new DatabaseSync(paths.lease, { timeout: 5_000 });
+  const initializing = initializationPaths(paths);
+  let initializingRoot = await lstatIfPresent(initializing.root);
+  if (initializingRoot === undefined) {
+    await mkdir(initializing.root, { mode: 0o700 });
+    initializingRoot = await lstat(initializing.root);
+    await syncDirectory(parent);
+  }
+  await assertRecoverableInitialization(initializing, initializingRoot);
+  await checkpoint("initializing_root_ready");
+
+  await writeInitializationMarker(initializing.marker, initializing.root, checkpoint);
+  await syncDirectory(initializing.root);
+  await checkpoint("initializing_marker_ready");
+
+  await prepareInitializationControlDatabase(initializing.database, initializing.root, checkpoint);
+  await prepareInitializationLeaseDatabase(initializing.lease, initializing.root, checkpoint);
+  if (process.platform !== "win32") {
+    await Promise.all([
+      chmod(initializing.root, 0o700),
+      chmod(initializing.marker, 0o600),
+      chmod(initializing.database, 0o600),
+      chmod(initializing.lease, 0o600),
+    ]);
+  }
+  await checkpoint("permissions_ready");
+
+  await writeExactOwnerFile(initializing.marker, MARKER_CONTENT);
+  await checkpoint("ready_marker_ready");
+  await inspectReadyControlStore(initializing, await lstat(initializing.root));
+  assertInitializationLeaseSchema(initializing.lease);
+
+  if (await lstatIfPresent(paths.root) !== undefined) {
+    throw new CronControlStoreError("corrupt", `Cron control state appeared during initialization: ${paths.root}`);
+  }
+  await rename(initializing.root, paths.root);
+  await syncDirectory(parent);
+  await checkpoint("published");
+}
+
+async function createOwnerFile(path: string): Promise<boolean> {
+  if (await lstatIfPresent(path) !== undefined) return false;
+  const file = await open(path, "wx", 0o600);
   try {
-    lease.exec("PRAGMA journal_mode=DELETE; CREATE TABLE lease_guard (id INTEGER PRIMARY KEY CHECK (id = 1));");
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  return true;
+}
+
+async function writeInitializationMarker(
+  path: string,
+  root: string,
+  checkpoint: (checkpoint: CronControlInitializationCheckpoint) => Promise<void>,
+): Promise<void> {
+  await createOwnerFile(path);
+  await assertOwnedFile(path, "Cron control initialization marker");
+  await syncDirectory(root);
+  await checkpoint("initializing_marker_file_ready");
+  await writeExactOwnerFile(path, INITIALIZING_MARKER_CONTENT);
+}
+
+async function writeExactOwnerFile(path: string, content: string): Promise<void> {
+  await assertOwnedFile(path, "Cron control initialization marker");
+  const file = await open(path, "r+");
+  try {
+    await file.truncate(0);
+    await file.writeFile(content, "utf8");
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+}
+
+async function prepareInitializationControlDatabase(
+  path: string,
+  root: string,
+  checkpoint: (checkpoint: CronControlInitializationCheckpoint) => Promise<void>,
+): Promise<void> {
+  await createOwnerFile(path);
+  await assertOwnedFile(path, "Cron control initialization database");
+  await syncDirectory(root);
+  await checkpoint("database_file_ready");
+  const database = new DatabaseSync(path, { timeout: 5_000 });
+  try {
+    const version = database.prepare("PRAGMA user_version").get() as { user_version?: unknown } | undefined;
+    const tables = userTableNames(database);
+    if (version?.user_version === 0 && tables.length === 0) createSchema(database);
+    else assertInitializationControlSchema(database);
+  } finally {
+    database.close();
+  }
+  await syncFile(path);
+  await checkpoint("database_schema_ready");
+}
+
+async function prepareInitializationLeaseDatabase(
+  path: string,
+  root: string,
+  checkpoint: (checkpoint: CronControlInitializationCheckpoint) => Promise<void>,
+): Promise<void> {
+  await createOwnerFile(path);
+  await assertOwnedFile(path, "Cron control initialization lease database");
+  await syncDirectory(root);
+  await checkpoint("lease_file_ready");
+  const lease = new DatabaseSync(path, { timeout: 5_000 });
+  try {
+    const tables = userTableNames(lease);
+    if (tables.length === 0) {
+      lease.exec("PRAGMA journal_mode=DELETE; CREATE TABLE lease_guard (id INTEGER PRIMARY KEY CHECK (id = 1));");
+    } else {
+      assertInitializationLeaseDatabase(lease);
+    }
   } finally {
     lease.close();
   }
-  if (process.platform !== "win32") {
-    await Promise.all([chmod(paths.database, 0o600), chmod(paths.lease, 0o600)]);
+  await syncFile(path);
+  await checkpoint("lease_schema_ready");
+}
+
+function userTableNames(database: DatabaseSync): readonly string[] {
+  return (database.prepare(`
+    SELECT name FROM sqlite_schema
+    WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name
+  `).all() as Array<{ name: string }>).map((row) => row.name);
+}
+
+function assertInitializationControlSchema(database: DatabaseSync): void {
+  assertHealthyDatabase(database);
+  const expected = [
+    "action_idempotency",
+    "cron_audit",
+    "cron_jobs",
+    "cron_run_events",
+    "cron_runs",
+    "job_controls",
+    "job_sequences",
+  ];
+  if (JSON.stringify(userTableNames(database)) !== JSON.stringify(expected)) {
+    throw new CronControlStoreError("corrupt", "Cron control initialization database has an ambiguous schema.");
   }
-  const marker = await open(paths.marker, "wx", 0o600);
+}
+
+function assertInitializationLeaseDatabase(database: DatabaseSync): void {
+  const check = database.prepare("PRAGMA quick_check(1)").get() as Record<string, unknown> | undefined;
+  if (check === undefined || Object.values(check)[0] !== "ok"
+    || JSON.stringify(userTableNames(database)) !== JSON.stringify(["lease_guard"])) {
+    throw new CronControlStoreError("corrupt", "Cron control initialization lease database is corrupt.");
+  }
+  database.prepare("SELECT id FROM lease_guard LIMIT 1").get();
+}
+
+function assertInitializationLeaseSchema(path: string): void {
+  const database = new DatabaseSync(path, { readOnly: true, timeout: INSPECTION_BUSY_TIMEOUT_MS });
   try {
-    await marker.writeFile(MARKER_CONTENT, "utf8");
-    await marker.sync();
+    assertInitializationLeaseDatabase(database);
   } finally {
-    await marker.close();
+    database.close();
+  }
+}
+
+async function syncFile(path: string): Promise<void> {
+  const file = await open(path, "r");
+  try {
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  if (process.platform === "win32") return;
+  const directory = await open(path, "r");
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
   }
 }
 

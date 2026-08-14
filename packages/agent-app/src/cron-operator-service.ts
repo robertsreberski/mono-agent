@@ -49,9 +49,27 @@ export interface CronOperatorServiceInput {
   readonly adapter?: CronAdapterStartResult;
   readonly effectiveEnabledByJobId?: ReadonlyMap<string, boolean>;
   readonly degradedReason?: string;
+  readonly degradation?: CronOperatorDegradationController;
   readonly onEffectiveEnabledChanged?: () => void;
   readonly now?: () => Date;
   readonly logger?: MonoAgentAppLogger;
+}
+
+export interface CronOperatorDegradationController {
+  reason(): string | undefined;
+  degrade(reason: string): void;
+}
+
+export function createCronOperatorDegradationController(
+  initialReason?: string,
+): CronOperatorDegradationController {
+  let current = initialReason;
+  return {
+    reason: () => current,
+    degrade(reason) {
+      current = reason.trim().length === 0 ? "Cron runtime state became unavailable." : reason;
+    },
+  };
 }
 
 /** Build the agent-owned service shared by every operator UI (web now, TUI later). */
@@ -59,10 +77,16 @@ export function createCronOperatorService(input: CronOperatorServiceInput): Cron
   const now = input.now ?? (() => new Date());
   const configuredById = new Map(input.config.jobs.map((job) => [job.id, job]));
   const confirmations = new Map<string, ConfirmationEntry>();
-  const actionsEnabled = input.config.operatorActionsEnabled === true
+  const currentDegradedReason = (): string | undefined =>
+    input.degradation?.reason() ?? input.degradedReason;
+  const boundedDegradedReason = (): string | undefined => {
+    const reason = currentDegradedReason();
+    return reason === undefined ? undefined : truncateUtf8WithMarker(reason, MAX_DEGRADED_REASON_BYTES);
+  };
+  const actionsEnabled = (): boolean => input.config.operatorActionsEnabled === true
     && input.store !== undefined
     && input.adapter !== undefined
-    && input.degradedReason === undefined;
+    && currentDegradedReason() === undefined;
 
   const requireConfigured = (jobId: string): CronJobConfig => {
     const job = configuredById.get(jobId);
@@ -72,12 +96,13 @@ export function createCronOperatorService(input: CronOperatorServiceInput): Cron
     return job;
   };
   const requireActions = (): { readonly store: CronControlStore; readonly adapter: CronAdapterStartResult } => {
-    if (!actionsEnabled || input.store === undefined || input.adapter === undefined) {
+    const degradedReason = boundedDegradedReason();
+    if (!actionsEnabled() || input.store === undefined || input.adapter === undefined) {
       throw new CronOperatorError(
         "actions_disabled",
-        input.degradedReason === undefined
+        degradedReason === undefined
           ? "Cron operator actions are disabled by configuration."
-          : `Cron operator actions are unavailable while state is degraded: ${input.degradedReason}`,
+          : `Cron operator actions are unavailable while state is degraded: ${degradedReason}`,
         403,
       );
     }
@@ -99,7 +124,7 @@ export function createCronOperatorService(input: CronOperatorServiceInput): Cron
       health: healthOf({
         effectiveEnabled: runtime?.effectiveEnabled ?? input.effectiveEnabledByJobId?.get(jobId) ?? false,
         lastRun,
-        degraded: input.degradedReason !== undefined,
+        degraded: currentDegradedReason() !== undefined,
       }),
       ...(lastRun === undefined ? {} : { lastRun }),
       ...(runtime?.activeRunId === undefined ? {} : { activeRunId: runtime.activeRunId }),
@@ -116,13 +141,14 @@ export function createCronOperatorService(input: CronOperatorServiceInput): Cron
   };
   const overview = (): CronOperatorOverview => {
     const jobIds = allJobIds();
+    const degradedReason = boundedDegradedReason();
     return {
       generatedAt: now().toISOString(),
-      actionsEnabled,
+      actionsEnabled: actionsEnabled(),
       jobs: jobIds.ids.map(snapshot),
-      ...(input.degradedReason === undefined
+      ...(degradedReason === undefined
         ? {}
-        : { degradedReason: truncateUtf8WithMarker(input.degradedReason, MAX_DEGRADED_REASON_BYTES) }),
+        : { degradedReason }),
       ...(jobIds.truncated ? { jobsTruncated: true as const } : {}),
     };
   };
@@ -214,7 +240,38 @@ export function createCronOperatorService(input: CronOperatorServiceInput): Cron
           requestHash,
           observedAt: now().toISOString(),
         });
-        if (!accepted.replayed) adapter.runNow(jobId, accepted.firing);
+        if (!accepted.replayed) {
+          try {
+            adapter.runNow(jobId, accepted.firing);
+          } catch {
+            const completedAt = now().toISOString();
+            store.recordResult({
+              cronRunId: accepted.firing.runId,
+              jobId: accepted.firing.jobId,
+              scheduledAt: accepted.firing.scheduledAt,
+              orderedAt: accepted.firing.orderedAt,
+              sequence: accepted.firing.sequence,
+              trigger: accepted.firing.trigger,
+              kind: "failed",
+              startedAt: accepted.firing.orderedAt,
+              completedAt,
+              error: "Cron manual run could not be dispatched.",
+              failureKind: "operator_dispatch_failed",
+            });
+            const failed = store.getRunSummary(accepted.firing.runId);
+            if (failed === undefined) {
+              throw new CronControlStoreError("corrupt", "Failed cron run dispatch is missing.");
+            }
+            input.logger?.error?.("Cron operator run-now dispatch failed.", {
+              action: "run_now",
+              jobId,
+              runId: failed.runId,
+              idempotencyKey: action.idempotencyKey,
+              failureKind: "operator_dispatch_failed",
+            });
+            return { kind: "completed", value: { run: failed }, replayed: false };
+          }
+        }
         const run = accepted.run ?? store.getRunSummary(accepted.firing.runId);
         if (run === undefined) throw new CronControlStoreError("corrupt", "Accepted cron run is missing.");
         input.logger?.info?.("Cron operator action completed.", {

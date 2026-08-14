@@ -20,6 +20,7 @@ import {
   inspectCronControlStore,
   openCronControlStore,
   resolveCronControlPaths,
+  type CronControlInitializationCheckpoint,
   type CronControlStore,
 } from "../cron-control-store.js";
 
@@ -92,6 +93,73 @@ function succeeded(firing: CronFiringIdentity, text = "done"): CronJobResult {
 }
 
 describe("cron control store", () => {
+  it("resumes every durable first-initialization boundary after an injected crash", async () => {
+    const checkpoints: readonly CronControlInitializationCheckpoint[] = [
+      "parent_ready",
+      "initializing_root_ready",
+      "initializing_marker_file_ready",
+      "initializing_marker_ready",
+      "database_file_ready",
+      "database_schema_ready",
+      "lease_file_ready",
+      "lease_schema_ready",
+      "permissions_ready",
+      "ready_marker_ready",
+      "published",
+    ];
+
+    for (const crashAt of checkpoints) {
+      const cwd = await mkdtemp(join(tmpdir(), `mono-agent-cron-control-crash-${crashAt}-`));
+      roots.push(cwd);
+      let injected = false;
+      await expect(openCronControlStore(cwd, {
+        onInitializationCheckpoint(checkpoint) {
+          if (!injected && checkpoint === crashAt) {
+            injected = true;
+            throw new Error(`injected crash at ${checkpoint}`);
+          }
+        },
+      })).rejects.toThrow(`injected crash at ${crashAt}`);
+      expect(injected).toBe(true);
+      expect(await inspectCronControlStore(cwd)).toMatchObject({
+        status: crashAt === "parent_ready"
+          ? "absent"
+          : crashAt === "published"
+            ? "ready"
+            : "initializing",
+      });
+
+      const reopened = await openCronControlStore(cwd);
+      stores.push(reopened);
+      expect(await inspectCronControlStore(cwd)).toMatchObject({ status: "ready" });
+      await reopened.close();
+      stores.splice(stores.indexOf(reopened), 1);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("rejects an unsafe path injected into incomplete initialization", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "mono-agent-cron-control-incomplete-link-"));
+    const target = await mkdtemp(join(tmpdir(), "mono-agent-cron-control-incomplete-target-"));
+    roots.push(cwd, target);
+    await expect(openCronControlStore(cwd, {
+      onInitializationCheckpoint(checkpoint) {
+        if (checkpoint === "initializing_marker_ready") throw new Error("injected crash");
+      },
+    })).rejects.toThrow("injected crash");
+
+    const paths = resolveCronControlPaths(await realpath(cwd));
+    const initializingRoot = `${paths.root}.initializing`;
+    const targetFile = join(target, "outside.sqlite");
+    await writeFile(targetFile, "outside", { mode: 0o600 });
+    await symlink(targetFile, join(initializingRoot, "state.sqlite"));
+
+    expect(await inspectCronControlStore(cwd)).toMatchObject({
+      status: "degraded",
+      reason: expect.stringMatching(/single-link|regular file/iu),
+    });
+    await expect(openCronControlStore(cwd)).rejects.toMatchObject({ kind: "corrupt" });
+  });
+
   it("distinguishes an absent first-run store from corrupt and insecure state", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "mono-agent-cron-control-"));
     roots.push(cwd);
@@ -112,6 +180,20 @@ describe("cron control store", () => {
       await chmod(paths.database, 0o644);
       expect(await inspectCronControlStore(cwd)).toMatchObject({ status: "degraded", reason: expect.stringContaining("owner-only") });
     }
+  });
+
+  it("never treats a completed store with a missing marker as recoverable initialization", async () => {
+    const { cwd, store } = await fixture();
+    await store.close();
+    stores.splice(stores.indexOf(store), 1);
+    const paths = resolveCronControlPaths(await realpath(cwd));
+    await rm(paths.marker);
+
+    expect(await inspectCronControlStore(cwd)).toMatchObject({
+      status: "degraded",
+      reason: expect.stringContaining("marker"),
+    });
+    await expect(openCronControlStore(cwd)).rejects.toMatchObject({ kind: "corrupt" });
   });
 
   it("canonicalizes the trusted cwd while keeping the managed control subtree owner-private", async () => {
