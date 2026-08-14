@@ -21,6 +21,9 @@ importers:
       '@mono-agent/a2a-adapter':
         specifier: workspace:0.19.1
         version: link:extras/a2a-adapter
+      '@mono-agent/advisor-mcp':
+        specifier: workspace:0.19.1
+        version: link:extras/advisor-mcp
       '@mono-agent/agent-app':
         specifier: workspace:0.19.1
         version: link:packages/agent-app
@@ -105,6 +108,25 @@ importers:
       express:
         specifier: ^5.1.0
         version: 5.2.1(supports-color@7.2.0)
+    devDependencies:
+      '@types/express':
+        specifier: ^5.0.2
+        version: 5.0.6
+
+  extras/advisor-mcp:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3)
+      '@mono-agent/agent-contracts':
+        specifier: workspace:0.19.1
+        version: link:../../packages/agent-contracts
+      express:
+        specifier: ^5.1.0
+        version: 5.2.1(supports-color@7.2.0)
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@types/express':
         specifier: ^5.0.2

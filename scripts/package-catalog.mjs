@@ -35,6 +35,17 @@ export const packageCatalog = [
     tier: "plugin",
   },
   {
+    dir: "advisor-mcp",
+    name: "@mono-agent/advisor-mcp",
+    path: "extras/advisor-mcp",
+    category: "communication",
+    channelIds: ["advisor"],
+    responsibility: "Serves one long-lived Streamable HTTP MCP endpoint that exposes a bounded review_iteration advisor tool backed by the configured responder.",
+    allowedDependencyCategories: ["core"],
+    publishable: true,
+    tier: "plugin",
+  },
+  {
     dir: "agent-app",
     name: "@mono-agent/agent-app",
     category: "app",
