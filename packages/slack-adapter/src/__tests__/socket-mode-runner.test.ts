@@ -2,7 +2,11 @@ import { EventEmitter } from "node:events";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { SlackSocketModeRunner } from "../socket-mode-runner.js";
+import type { SlackEventHandlingResult } from "../adapter.js";
+import {
+  SlackSocketModeRunner,
+  type SlackSocketModeRunnerOptions,
+} from "../socket-mode-runner.js";
 import type {
   SlackChatPostMessageParams,
   SlackChatUpdateParams,
@@ -45,6 +49,7 @@ class FakeSlackApi implements SlackWebApi {
 
 class FakeWebSocket extends EventEmitter {
   readonly sent: string[] = [];
+  sendError: unknown = undefined;
   closed = false;
   pings = 0;
   terminated = false;
@@ -54,6 +59,9 @@ class FakeWebSocket extends EventEmitter {
   silentTerminate = false;
 
   send(data: string): void {
+    if (this.sendError !== undefined) {
+      throw this.sendError;
+    }
     this.sent.push(data);
   }
 
@@ -124,6 +132,398 @@ describe("SlackSocketModeRunner", () => {
       { envelope_id: "E1" },
     ]);
     expect(handled[0]?.event_id).toBe("Ev1");
+  });
+
+  it("acknowledges a concurrent duplicate but admits it only once while the handler is unresolved", async () => {
+    const held = createDeferred<SlackEventHandlingResult>();
+    const handler = vi.fn(async () => await held.promise);
+    const onEventResult = vi.fn();
+    const { runner, sockets } = buildTestRunner({
+      handler: { handleEventCallback: handler },
+      onEventResult,
+    });
+    const controller = new AbortController();
+    const started = runner.start({ signal: controller.signal });
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0]!;
+      socket.emitMessage(socketEnvelope("E-first", eventCallback("Ev-concurrent")));
+      socket.emitMessage(socketEnvelope("E-retry", eventCallback("Ev-concurrent")));
+
+      expect(socket.sent.map((raw) => JSON.parse(raw) as unknown)).toEqual([
+        { envelope_id: "E-first" },
+        { envelope_id: "E-retry" },
+      ]);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(onEventResult).not.toHaveBeenCalled();
+
+      held.resolve(handledResult("Ev-concurrent"));
+      await vi.waitFor(() => expect(onEventResult).toHaveBeenCalledTimes(1));
+    } finally {
+      controller.abort();
+      await started;
+    }
+  });
+
+  it("keys exact event ids and treats retry metadata as logging context, never admission input", async () => {
+    const handled: string[] = [];
+    const info = vi.fn();
+    const { runner, sockets } = buildTestRunner({
+      handler: {
+        async handleEventCallback(callback) {
+          handled.push(callback.event_id);
+          return handledResult(callback.event_id);
+        },
+      },
+      logger: { info },
+    });
+    const controller = new AbortController();
+    const started = runner.start({ signal: controller.signal });
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0]!;
+      socket.emitMessage(socketEnvelope("E-1", eventCallback("Ev-exact")));
+      socket.emitMessage({
+        ...socketEnvelope("E-2", eventCallback("Ev-exact")),
+        retry_attempt: 1,
+        retry_reason: "http_timeout",
+      });
+      socket.emitMessage({
+        ...socketEnvelope("E-3", eventCallback(" Ev-exact ")),
+        retry_attempt: 1,
+        retry_reason: "http_timeout",
+      });
+      socket.emitMessage({
+        ...socketEnvelope("E-4", eventCallback("Ev-distinct")),
+        retry_attempt: 1,
+        retry_reason: "http_timeout",
+      });
+      socket.emitMessage({
+        ...socketEnvelope("E-5", eventCallback("Ev-distinct")),
+        retry_attempt: "2",
+        retry_reason: 2,
+      });
+
+      await vi.waitFor(() => expect(handled).toEqual([
+        "Ev-exact",
+        " Ev-exact ",
+        "Ev-distinct",
+      ]));
+      expect(info.mock.calls).toEqual([
+        [
+          "Suppressed duplicate Slack event callback.",
+          { eventId: "Ev-exact", retryAttempt: 1, retryReason: "http_timeout" },
+        ],
+        [
+          "Suppressed duplicate Slack event callback.",
+          { eventId: "Ev-distinct" },
+        ],
+      ]);
+    } finally {
+      controller.abort();
+      await started;
+    }
+  });
+
+  it("admits an event again at the exact ten-minute boundary without refreshing TTL on a hit", async () => {
+    let now = 100;
+    const handled: string[] = [];
+    const { runner, sockets } = buildTestRunner({
+      handler: {
+        async handleEventCallback(callback) {
+          handled.push(callback.event_id);
+          return handledResult(callback.event_id);
+        },
+      },
+      eventDedupeNow: () => now,
+    });
+    const controller = new AbortController();
+    const started = runner.start({ signal: controller.signal });
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0]!;
+      socket.emitMessage(socketEnvelope("E-1", eventCallback("Ev-ttl")));
+      now += 10 * 60_000 - 1;
+      socket.emitMessage(socketEnvelope("E-2", eventCallback("Ev-ttl")));
+      expect(handled).toEqual(["Ev-ttl"]);
+
+      now += 1;
+      socket.emitMessage(socketEnvelope("E-3", eventCallback("Ev-ttl")));
+      expect(handled).toEqual(["Ev-ttl", "Ev-ttl"]);
+    } finally {
+      controller.abort();
+      await started;
+    }
+  });
+
+  it("evicts the oldest event at the 10,000-entry FIFO cap and warns only once", async () => {
+    let handled = 0;
+    const warn = vi.fn();
+    const { runner, sockets } = buildTestRunner({
+      handler: {
+        async handleEventCallback(callback) {
+          handled += 1;
+          return handledResult(callback.event_id);
+        },
+      },
+      eventDedupeNow: () => 0,
+      logger: { warn },
+    });
+    const controller = new AbortController();
+    const started = runner.start({ signal: controller.signal });
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0]!;
+      for (let index = 0; index < 10_000; index += 1) {
+        socket.emitMessage(socketEnvelope(`E-${String(index)}`, eventCallback(`Ev-${String(index)}`)));
+      }
+      expect(handled).toBe(10_000);
+      expect(warn).not.toHaveBeenCalled();
+
+      socket.emitMessage(socketEnvelope("E-newest", eventCallback("Ev-newest")));
+      expect(handled).toBe(10_001);
+      expect(warn.mock.calls).toEqual([[
+        "Slack event callback dedupe cache reached its cap; bounded at-most-once guarantee is degraded.",
+        { maxEntries: 10_000 },
+      ]]);
+
+      socket.emitMessage(socketEnvelope("E-oldest-replay", eventCallback("Ev-0")));
+      socket.emitMessage(socketEnvelope("E-newest-replay", eventCallback("Ev-newest")));
+      expect(handled).toBe(10_002);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.abort();
+      await started;
+    }
+  });
+
+  it("retains admitted ids across a reconnect", async () => {
+    const handler = vi.fn(async (callback: SlackEventCallback) => handledResult(callback.event_id));
+    const { runner, sockets } = buildTestRunner(
+      { handler: { handleEventCallback: handler } },
+      ["wss://slack.test/1", "wss://slack.test/2"],
+    );
+    const controller = new AbortController();
+    const started = runner.start({ signal: controller.signal });
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      sockets[0]?.emitMessage(socketEnvelope("E-original", eventCallback("Ev-reconnect")));
+      expect(handler).toHaveBeenCalledTimes(1);
+      sockets[0]?.emitMessage({ type: "disconnect", reason: "refresh_requested" });
+      await vi.waitFor(() => expect(sockets).toHaveLength(2));
+
+      sockets[1]?.emitMessage(socketEnvelope("E-replay", eventCallback("Ev-reconnect")));
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(sockets[1]?.sent.map((raw) => JSON.parse(raw) as unknown)).toEqual([
+        { envelope_id: "E-replay" },
+      ]);
+    } finally {
+      controller.abort();
+      await started;
+    }
+  });
+
+  it("retains admitted ids across repeated start calls while a fresh runner starts empty", async () => {
+    const handler = vi.fn(async (callback: SlackEventCallback) => handledResult(callback.event_id));
+    const reused = buildTestRunner({ handler: { handleEventCallback: handler } });
+    const firstController = new AbortController();
+    const firstStart = reused.runner.start({ signal: firstController.signal });
+    await vi.waitFor(() => expect(reused.sockets).toHaveLength(1));
+    reused.sockets[0]?.emitMessage(socketEnvelope("E-first", eventCallback("Ev-reused")));
+    expect(handler).toHaveBeenCalledTimes(1);
+    firstController.abort();
+    await firstStart;
+
+    const secondController = new AbortController();
+    const secondStart = reused.runner.start({ signal: secondController.signal });
+    try {
+      await vi.waitFor(() => expect(reused.sockets).toHaveLength(2));
+      reused.sockets[1]?.emitMessage(socketEnvelope("E-second", eventCallback("Ev-reused")));
+      expect(handler).toHaveBeenCalledTimes(1);
+    } finally {
+      secondController.abort();
+      await secondStart;
+    }
+
+    const fresh = buildTestRunner({ handler: { handleEventCallback: handler } });
+    const freshController = new AbortController();
+    const freshStart = fresh.runner.start({ signal: freshController.signal });
+    try {
+      await vi.waitFor(() => expect(fresh.sockets).toHaveLength(1));
+      fresh.sockets[0]?.emitMessage(socketEnvelope("E-fresh", eventCallback("Ev-reused")));
+      expect(handler).toHaveBeenCalledTimes(2);
+    } finally {
+      freshController.abort();
+      await freshStart;
+    }
+  });
+
+  it("leaves an event eligible after ack failure", async () => {
+    const handler = vi.fn(async (callback: SlackEventCallback) => handledResult(callback.event_id));
+    const error = vi.fn();
+    const { runner, sockets } = buildTestRunner({
+      handler: { handleEventCallback: handler },
+      logger: { error },
+    });
+    const controller = new AbortController();
+    const started = runner.start({ signal: controller.signal });
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0]!;
+      socket.sendError = new Error("ack failed");
+      socket.emitMessage(socketEnvelope("E-failed-ack", eventCallback("Ev-ack")));
+      await vi.waitFor(() => expect(error).toHaveBeenCalledTimes(1));
+      expect(handler).not.toHaveBeenCalled();
+
+      socket.sendError = undefined;
+      socket.emitMessage(socketEnvelope("E-successful-ack", eventCallback("Ev-ack")));
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(socket.sent.map((raw) => JSON.parse(raw) as unknown)).toEqual([
+        { envelope_id: "E-successful-ack" },
+      ]);
+    } finally {
+      controller.abort();
+      await started;
+    }
+  });
+
+  it("retains admission after handler and event-result failures", async () => {
+    const handler = vi.fn(async (callback: SlackEventCallback) => {
+      if (callback.event_id === "Ev-handler-failure") {
+        throw new Error("handler failed");
+      }
+      return handledResult(callback.event_id);
+    });
+    const onEventResult = vi.fn(async () => {
+      throw new Error("event result failed");
+    });
+    const error = vi.fn();
+    const { runner, sockets } = buildTestRunner({
+      handler: { handleEventCallback: handler },
+      onEventResult,
+      logger: { error },
+    });
+    const controller = new AbortController();
+    const started = runner.start({ signal: controller.signal });
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0]!;
+      socket.emitMessage(socketEnvelope("E-handler-1", eventCallback("Ev-handler-failure")));
+      await vi.waitFor(() => expect(error).toHaveBeenCalledTimes(1));
+      socket.emitMessage(socketEnvelope("E-handler-2", eventCallback("Ev-handler-failure")));
+      expect(handler).toHaveBeenCalledTimes(1);
+
+      socket.emitMessage(socketEnvelope("E-result-1", eventCallback("Ev-result-failure")));
+      await vi.waitFor(() => expect(error).toHaveBeenCalledTimes(2));
+      socket.emitMessage(socketEnvelope("E-result-2", eventCallback("Ev-result-failure")));
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(onEventResult).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.abort();
+      await started;
+    }
+  });
+
+  it("fails open for blank string ids but keeps missing and non-string ids on the existing non-dispatch path", async () => {
+    const handled: string[] = [];
+    const debug = vi.fn();
+    const info = vi.fn();
+    const { runner, sockets } = buildTestRunner({
+      handler: {
+        async handleEventCallback(callback) {
+          handled.push(callback.event_id);
+          return handledResult(callback.event_id);
+        },
+      },
+      logger: { debug, info },
+    });
+    const controller = new AbortController();
+    const started = runner.start({ signal: controller.signal });
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0]!;
+      for (const [index, eventId] of ["", "", "   ", "   "].entries()) {
+        socket.emitMessage(socketEnvelope(`E-blank-${String(index)}`, eventCallback(eventId)));
+      }
+      const missingId: Partial<SlackEventCallback> = { ...eventCallback("unused") };
+      delete missingId.event_id;
+      socket.emitMessage({ envelope_id: "E-missing", type: "events_api", payload: missingId });
+      socket.emitMessage({
+        envelope_id: "E-non-string",
+        type: "events_api",
+        payload: { ...eventCallback("unused"), event_id: 42 },
+      });
+
+      await vi.waitFor(() => expect(handled).toEqual(["", "", "   ", "   "]));
+      expect(socket.sent).toHaveLength(6);
+      expect(debug.mock.calls).toEqual(Array.from({ length: 4 }, () => [
+        "Slack event callback has no usable event ID; bypassing dedupe.",
+        { hasEventId: false },
+      ]));
+      expect(info).not.toHaveBeenCalled();
+    } finally {
+      controller.abort();
+      await started;
+    }
+  });
+
+  it("logs suppressed duplicates with only the permitted transport metadata", async () => {
+    const info = vi.fn();
+    const { runner, sockets } = buildTestRunner({
+      handler: {
+        async handleEventCallback(callback) {
+          return handledResult(callback.event_id);
+        },
+      },
+      logger: { info },
+    });
+    const controller = new AbortController();
+    const started = runner.start({ signal: controller.signal });
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const callback: SlackEventCallback = {
+        ...eventCallback("Ev-safe"),
+        team_id: "TEAM_SENTINEL",
+        event_time: 987_654_321,
+        event: {
+          type: "message",
+          channel: "CHANNEL_SENTINEL",
+          user: "USER_SENTINEL",
+          text: "PAYLOAD_TEXT_SENTINEL",
+          ts: "TIMESTAMP_SENTINEL",
+        },
+      };
+      sockets[0]?.emitMessage(socketEnvelope("ENVELOPE_SENTINEL_1", callback));
+      sockets[0]?.emitMessage({
+        ...socketEnvelope("ENVELOPE_SENTINEL_2", callback),
+        retry_attempt: 3,
+        retry_reason: "http_timeout",
+      });
+
+      expect(info.mock.calls).toEqual([[
+        "Suppressed duplicate Slack event callback.",
+        { eventId: "Ev-safe", retryAttempt: 3, retryReason: "http_timeout" },
+      ]]);
+      const serialized = JSON.stringify(info.mock.calls);
+      expect(serialized).not.toContain("TEAM_SENTINEL");
+      expect(serialized).not.toContain("CHANNEL_SENTINEL");
+      expect(serialized).not.toContain("USER_SENTINEL");
+      expect(serialized).not.toContain("PAYLOAD_TEXT_SENTINEL");
+      expect(serialized).not.toContain("TIMESTAMP_SENTINEL");
+      expect(serialized).not.toContain("ENVELOPE_SENTINEL");
+    } finally {
+      controller.abort();
+      await started;
+    }
   });
 
   it("acknowledges unsupported envelopes without dispatching", async () => {
@@ -777,4 +1177,47 @@ function eventCallback(eventId: string): SlackEventCallback {
       event_ts: "171.000001",
     },
   };
+}
+
+function handledResult(eventId: string): SlackEventHandlingResult {
+  return {
+    kind: "handled",
+    eventId,
+    channelId: "C1",
+    action: "responded",
+    trigger: "direct",
+  };
+}
+
+function buildTestRunner(
+  options: Omit<SlackSocketModeRunnerOptions, "api" | "webSocketFactory">,
+  urls: readonly string[] = ["wss://slack.test/1"],
+): {
+  readonly runner: SlackSocketModeRunner;
+  readonly sockets: FakeWebSocket[];
+} {
+  const sockets: FakeWebSocket[] = [];
+  const runner = new SlackSocketModeRunner({
+    api: new FakeSlackApi(urls),
+    reconnect: { initialMs: 0, maxMs: 0, gracefulReconnectFloorMs: 0 },
+    heartbeat: { intervalMs: 0, timeoutMs: 0 },
+    webSocketFactory: () => {
+      const socket = new FakeWebSocket();
+      sockets.push(socket);
+      return socket;
+    },
+    ...options,
+  });
+  return { runner, sockets };
+}
+
+function createDeferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
 }

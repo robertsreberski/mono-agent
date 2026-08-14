@@ -383,6 +383,8 @@ export interface SlackSocketModeEnvelope {
   accepts_response_payload?: boolean;
   payload?: unknown;
   reason?: string;
+  retry_attempt?: number;
+  retry_reason?: string;
   [key: string]: unknown;
 }
 

@@ -1,5 +1,9 @@
 import { EventEmitter } from "node:events";
 
+import type {
+  AgentLiveInputRequest,
+  AgentLiveInputSettlement,
+} from "@mono-agent/agent-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import { startSlackAdapter, type SlackAdapterStartOptions } from "../start.js";
@@ -141,6 +145,122 @@ describe("startSlackAdapter", () => {
     expect(sockets[0]?.closed).toBe(true);
   });
 
+  it("suppresses a replay before live input while a distinct same-thread follow-up still steers", async () => {
+    const api = new FakeSlackApi();
+    const sockets: FakeWebSocket[] = [];
+    const response = createDeferred<{ text: string }>();
+    const liveInputSettlement = createDeferred<AgentLiveInputSettlement>();
+    const offered: AgentLiveInputRequest[] = [];
+    const respond = vi.fn(async () => await response.promise);
+    const onEventResult = vi.fn();
+    const started = await startSlackAdapter(buildOptions({
+      createApi: () => api,
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      responder: {
+        respond,
+        offerLiveInput(request) {
+          offered.push(request);
+          return request.id === "Ev-follow-up"
+            ? { status: "accepted", settled: liveInputSettlement.promise }
+            : { status: "unavailable", reason: "inactive" };
+        },
+      },
+      onEventResult,
+    }));
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0];
+      if (socket === undefined) throw new Error("expected a socket");
+      socket.emitOpen();
+
+      const initial = directMessage("long task", {
+        eventId: "Ev-initial",
+        ts: "171.000001",
+      });
+      socket.emitMessage(socketEnvelope("E-initial", initial));
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(api.reactionsAddCalls).toEqual([{
+        channel: "D1",
+        timestamp: "171.000001",
+        name: "eyes",
+      }]));
+
+      const offersBeforeReplay = offered.length;
+      const reactionsBeforeReplay = api.reactionsAddCalls.length;
+      socket.emitMessage({
+        ...socketEnvelope("E-replay", initial),
+        retry_attempt: 1,
+        retry_reason: "http_timeout",
+      });
+      await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+      expect(respond).toHaveBeenCalledTimes(1);
+      expect(offered).toHaveLength(offersBeforeReplay);
+      expect(api.reactionsAddCalls).toHaveLength(reactionsBeforeReplay);
+      expect(onEventResult).not.toHaveBeenCalled();
+
+      socket.emitMessage(socketEnvelope(
+        "E-follow-up",
+        directMessage("apply this follow-up", {
+          eventId: "Ev-follow-up",
+          ts: "171.000002",
+          threadTs: "171.000001",
+        }),
+      ));
+      await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
+      await vi.waitFor(() => expect(offered).toHaveLength(offersBeforeReplay + 1));
+      expect(offered.at(-1)).toMatchObject({
+        conversationId: "slack:D1:171.000001",
+        id: "Ev-follow-up",
+        text: "apply this follow-up",
+      });
+      await vi.waitFor(() => expect(api.reactionsAddCalls).toEqual([
+        {
+          channel: "D1",
+          timestamp: "171.000001",
+          name: "eyes",
+        },
+        {
+          channel: "D1",
+          timestamp: "171.000002",
+          name: "eyes",
+        },
+      ]));
+      await vi.waitFor(() => expect(onEventResult).toHaveBeenCalledTimes(1));
+      expect(onEventResult.mock.calls[0]?.[0]).toMatchObject({
+        eventId: "Ev-follow-up",
+        metadata: { liveInput: true },
+      });
+
+      liveInputSettlement.resolve({ status: "applied", runId: "run-1" });
+      response.resolve({ text: "one final answer" });
+      await vi.waitFor(() => expect(api.postMessageCalls).toHaveLength(1));
+      await vi.waitFor(() => expect(onEventResult).toHaveBeenCalledTimes(2));
+
+      expect(respond).toHaveBeenCalledTimes(1);
+      expect(api.postMessageCalls[0]).toMatchObject({
+        channel: "D1",
+        text: "one final answer",
+        thread_ts: "171.000001",
+      });
+      expect(onEventResult.mock.calls.map(([result]) => result.eventId).sort()).toEqual([
+        "Ev-follow-up",
+        "Ev-initial",
+      ]);
+      expect(socket.sent.map((raw) => JSON.parse(raw) as unknown)).toEqual([
+        { envelope_id: "E-initial" },
+        { envelope_id: "E-replay" },
+        { envelope_id: "E-follow-up" },
+      ]);
+    } finally {
+      await started.stop();
+    }
+  });
+
   it("discovers the bot identity and recognizes mention-prefixed runtime commands", async () => {
     const api = new FakeSlackApi({ ok: true, user: "mickey", user_id: "U_MICKEY" });
     const sockets: FakeWebSocket[] = [];
@@ -177,7 +297,10 @@ describe("startSlackAdapter", () => {
       );
       expect(seen).toEqual([]);
 
-      socket.emitMessage(socketEnvelope("E-prompt", directMessage("<@U_MICKEY> keep this mention")));
+      socket.emitMessage(socketEnvelope("E-prompt", directMessage(
+        "<@U_MICKEY> keep this mention",
+        { eventId: "Ev-prompt" },
+      )));
       await vi.waitFor(() => expect(seen).toHaveLength(1));
       expect(seen[0]?.text).toBe("<@U_MICKEY> keep this mention");
     } finally {
@@ -687,12 +810,20 @@ function socketEnvelope(
   };
 }
 
-function directMessage(text: string): SlackEventCallback {
+function directMessage(
+  text: string,
+  overrides?: {
+    readonly eventId?: string;
+    readonly ts?: string;
+    readonly threadTs?: string;
+  },
+): SlackEventCallback {
+  const ts = overrides?.ts ?? "171.000001";
   return {
     type: "event_callback",
     team_id: "T1",
     api_app_id: "A1",
-    event_id: "Ev1",
+    event_id: overrides?.eventId ?? "Ev1",
     event_time: 171,
     event: {
       type: "message",
@@ -700,8 +831,9 @@ function directMessage(text: string): SlackEventCallback {
       channel_type: "im",
       user: "U1",
       text,
-      ts: "171.000001",
-      event_ts: "171.000001",
+      ts,
+      event_ts: ts,
+      ...(overrides?.threadTs === undefined ? {} : { thread_ts: overrides.threadTs }),
     },
   };
 }
@@ -722,4 +854,15 @@ function sharedMention(text: string): SlackEventCallback {
       event_ts: "172.000001",
     },
   };
+}
+
+function createDeferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolve: (value: T) => void = () => undefined;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
 }
