@@ -199,6 +199,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     try {
       expect((schema.prepare("PRAGMA table_info(tool_calls)").all() as Array<{ readonly name: string }>)
         .map((column) => column.name)).not.toContain("parent_tool_call_id");
+      expect(indexColumns(schema, "tombstones_run_idx")).toEqual(["conversation_id", "run_id"]);
     } finally {
       schema.close();
     }
@@ -590,20 +591,48 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     expect(reader.stats()).toMatchObject({ calls: 1, records: 2 });
   });
 
-  it("uses the maintenance deadline to reset 35,000 retained calls and still reports real failures", async () => {
+  it("upgrades the tombstone child-key index and resets 4,000 target runs with 10,000 foreign tombstones inside the maintenance deadline", async () => {
     const root = await tempRoot();
     const initialized = await ToolHistoryWriter.open({ root });
     await initialized.close();
-    seedCompletedToolCalls(root, 35_000);
+    const existing = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE));
+    try {
+      expect(indexColumns(existing, "tombstones_run_idx")).toEqual(["conversation_id", "run_id"]);
+      existing.exec("DROP INDEX tombstones_run_idx");
+      expect(indexColumns(existing, "tombstones_run_idx")).toEqual([]);
+    } finally {
+      existing.close();
+    }
+    seedResetScaleHistory(root, 4_000, 10, 10_000);
 
     const writer = await ToolHistoryWriter.open({ root, persistenceCeilingMs: 1 });
     try {
-      await expect(writer.stats()).resolves.toMatchObject({ calls: 35_000, records: 70_000 });
+      const upgraded = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE), { readOnly: true });
+      try {
+        expect(indexColumns(upgraded, "tombstones_run_idx")).toEqual(["conversation_id", "run_id"]);
+      } finally {
+        upgraded.close();
+      }
+      await expect(writer.stats()).resolves.toMatchObject({ calls: 40_000, records: 0, tombstones: 10_000 });
+      const started = performance.now();
       await expect(writer.resetConversation("slack:C1")).resolves.toBeUndefined();
-      await expect(writer.stats()).resolves.toMatchObject({ calls: 0, records: 0 });
+      expect(performance.now() - started).toBeLessThan(2_000);
+      await expect(writer.stats()).resolves.toMatchObject({ calls: 0, records: 0, tombstones: 10_000 });
       await expect(writer.resetConversation("")).rejects.toMatchObject({ code: "history_write_failed" });
     } finally {
       await writer.close();
+    }
+
+    const preserved = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE), { readOnly: true });
+    try {
+      expect(preserved.prepare("SELECT count(*) count FROM runs WHERE logical_id='slack:C1'").get())
+        .toMatchObject({ count: 0 });
+      expect(preserved.prepare("SELECT count(*) count FROM runs WHERE logical_id='slack:C2'").get())
+        .toMatchObject({ count: 1 });
+      expect(preserved.prepare("SELECT count(*) count FROM tombstones WHERE conversation_id='slack:C2#2026-08-14'").get())
+        .toMatchObject({ count: 10_000 });
+    } finally {
+      preserved.close();
     }
   }, 20_000);
 
@@ -628,6 +657,72 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       currentRunId: "current",
     }).items).toMatchObject([{ toolName: "Read", state: "success" }]);
     expect(new ToolHistoryReader(root).stats()).toMatchObject({ idempotencyConflicts: 0 });
+  });
+
+  it("durably deduplicates a changed run binding until the canonical binding succeeds", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    const canonical = binding("stable-binding");
+    const changed = { ...canonical, logicalConversationId: "slack:C2" };
+    try {
+      await expect(writer.persist(canonical, {
+        phase: "invocation", toolCallId: "bound-call", toolName: "Read", arguments: {},
+      })).resolves.toMatchObject({ persistence: "persisted" });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await expect(writer.persist(changed, {
+          phase: "result", toolCallId: "bound-call", state: "success", content: "changed binding",
+        })).resolves.toEqual({ persistence: "failed", errorCode: "history_idempotency_conflict" });
+      }
+      await expect(writer.stats()).resolves.toMatchObject({ idempotencyConflicts: 1, writeFailures: 0 });
+
+      const unrelated = binding("unrelated-binding");
+      await writer.persist(unrelated, {
+        phase: "invocation", toolCallId: "unrelated-call", toolName: "Read", arguments: {},
+      });
+      await expect(writer.stats()).resolves.toMatchObject({ idempotencyConflicts: 1 });
+
+      await expect(writer.persist(canonical, {
+        phase: "result", toolCallId: "bound-call", state: "success", content: "canonical binding",
+      })).resolves.toMatchObject({ persistence: "persisted" });
+      await expect(writer.stats()).resolves.toMatchObject({ idempotencyConflicts: 0 });
+    } finally {
+      await writer.close();
+    }
+  });
+
+  it("keeps phase-scoped write incidents visible until each missing phase is recovered", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    const run = binding("lost-phases");
+    try {
+      await expect(writer.persist(run, {
+        phase: "invocation", toolCallId: "lost-invocation", toolName: "", arguments: {},
+      })).resolves.toEqual({ persistence: "failed", errorCode: "history_write_failed" });
+      await expect(writer.persist(run, {
+        phase: "result", toolCallId: "lost-result", state: "success", executionMs: -1, content: "invalid duration",
+      })).resolves.toEqual({ persistence: "failed", errorCode: "history_write_failed" });
+      await expect(writer.stats()).resolves.toMatchObject({ calls: 0, records: 0, writeFailures: 2 });
+
+      await writer.finishRun(run, "succeeded");
+      await writer.persist(binding("unrelated-success"), {
+        phase: "invocation", toolCallId: "unrelated", toolName: "Read", arguments: {},
+      });
+      await writer.persist(binding("unrelated-success"), {
+        phase: "result", toolCallId: "unrelated", state: "success", content: "ok",
+      });
+      await expect(writer.stats()).resolves.toMatchObject({ writeFailures: 2 });
+
+      await writer.persist(run, {
+        phase: "invocation", toolCallId: "lost-invocation", toolName: "Read", arguments: {},
+      });
+      await expect(writer.stats()).resolves.toMatchObject({ writeFailures: 1 });
+      await writer.persist(run, {
+        phase: "result", toolCallId: "lost-result", state: "success", executionMs: 1, content: "recovered",
+      });
+      await expect(writer.stats()).resolves.toMatchObject({ writeFailures: 0 });
+    } finally {
+      await writer.close();
+    }
   });
 
   it("excludes isolated/proactive runs by default and includes them only when explicitly requested", async () => {
@@ -1007,7 +1102,7 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     expect(new ToolHistoryReader(root).stats()).toMatchObject({ recovered: 1, dangling: 0 });
   }, 10_000);
 
-  it("keeps message append, retention, and stats green while the sidecar directory, owner DB, and DELETE journal coexist, and bounds a slow write at 250 ms", async () => {
+  it("keeps message append, retention, and stats green while the sidecar directory, owner DB, and DELETE journal coexist, and recognizes a late-committed timed-out write", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
     const contentPath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
@@ -1038,10 +1133,13 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
         await new Promise((resolveDelay) => setTimeout(resolveDelay, 350));
       }
 
-      await expect(writer.stats()).resolves.toMatchObject({ writeFailures: 1 });
-      await expect(writer.persist(binding("recovered-write"), {
-        phase: "invocation", toolCallId: "recovered-call", toolName: "Read", arguments: {},
+      await expect(writer.stats()).resolves.toMatchObject({ calls: 1, records: 1, writeFailures: 0 });
+      await expect(writer.persist(binding("unrelated-write"), {
+        phase: "invocation", toolCallId: "unrelated-call", toolName: "Read", arguments: {},
       })).resolves.toMatchObject({ persistence: "persisted" });
+      await expect(writer.persist(binding("slow-run"), {
+        phase: "invocation", toolCallId: "slow-call", toolName: "Read", arguments: {},
+      })).resolves.toMatchObject({ persistence: "persisted", sequence: 1 });
       await expect(writer.stats()).resolves.toMatchObject({ writeFailures: 0 });
     } finally {
       await writer.close();
@@ -1050,17 +1148,18 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
   }, 10_000);
 });
 
-function seedCompletedToolCalls(root: string, count: number): void {
+function seedResetScaleHistory(
+  root: string,
+  targetRuns: number,
+  callsPerRun: number,
+  foreignTombstones: number,
+): void {
   const database = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE));
   try {
     database.exec("PRAGMA foreign_keys=ON; BEGIN IMMEDIATE");
     const now = Date.now();
-    database.prepare(`
-      INSERT INTO runs (conversation_id,logical_id,run_id,isolated,status,next_seq,started_at_ms,terminal_at_ms)
-      VALUES (?,?,?,?,?,?,?,?)
-    `).run("slack:C1#2026-08-14", "slack:C1", "seeded-run", 0, "succeeded", count * 2 + 1, now, now);
     database.exec("CREATE TEMP TABLE seed_numbers (value INTEGER PRIMARY KEY)");
-    database.prepare(`
+    database.exec(`
       WITH digits(value) AS (
         VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)
       )
@@ -1069,41 +1168,36 @@ function seedCompletedToolCalls(root: string, count: number): void {
         + tens.value * 10
         + hundreds.value * 100
         + thousands.value * 1000
-        + ten_thousands.value * 10000
       FROM digits AS ones
       CROSS JOIN digits AS tens
       CROSS JOIN digits AS hundreds
       CROSS JOIN digits AS thousands
-      CROSS JOIN digits AS ten_thousands
-      WHERE ones.value
-        + tens.value * 10
-        + hundreds.value * 100
-        + thousands.value * 1000
-        + ten_thousands.value * 10000 < ?
-    `).run(count);
+    `);
+    database.prepare("CREATE TEMP TABLE target_runs AS SELECT value FROM seed_numbers WHERE value < ?").run(targetRuns);
+    database.prepare("CREATE TEMP TABLE target_calls AS SELECT value FROM seed_numbers WHERE value < ?").run(callsPerRun);
+    database.prepare(`
+      INSERT INTO runs (conversation_id,logical_id,run_id,isolated,status,next_seq,started_at_ms,terminal_at_ms)
+      SELECT 'slack:C1#2026-08-14','slack:C1','target-run-' || value,0,'succeeded',?,?,?
+      FROM target_runs
+    `).run(callsPerRun * 2 + 1, now, now);
+    database.prepare(`
+      INSERT INTO runs (conversation_id,logical_id,run_id,isolated,status,next_seq,started_at_ms,terminal_at_ms)
+      VALUES ('slack:C2#2026-08-14','slack:C2','foreign-run',0,'succeeded',1,?,?)
+    `).run(now, now);
     database.prepare(`
       INSERT INTO tool_calls (
         conversation_id,run_id,tool_call_id,tool_name,start_seq,end_seq,state,started_at_ms,ended_at_ms
       )
-      SELECT 'slack:C1#2026-08-14','seeded-run','seeded-call-' || value,'Read',
-             value * 2 + 1,value * 2 + 2,'success',?,?
-      FROM seed_numbers
+      SELECT 'slack:C1#2026-08-14','target-run-' || runs.value,'target-call-' || calls.value,'Read',
+             calls.value * 2 + 1,calls.value * 2 + 2,'success',?,?
+      FROM target_runs AS runs CROSS JOIN target_calls AS calls
     `).run(now, now);
-    database.exec(`
-      INSERT INTO tool_records (
-        record_id,conversation_id,run_id,tool_call_id,phase,seq,payload_json,payload_sha256,
-        search_text,original_bytes,retained_bytes,truncated
-      )
-      SELECT 'seeded-invocation-' || value,'slack:C1#2026-08-14','seeded-run',
-             'seeded-call-' || value,'invocation',value * 2 + 1,'{}',
-             'invocation-' || value,'seeded',2,2,0
-      FROM seed_numbers
-      UNION ALL
-      SELECT 'seeded-result-' || value,'slack:C1#2026-08-14','seeded-run',
-             'seeded-call-' || value,'result',value * 2 + 2,'{}',
-             'result-' || value,'seeded',2,2,0
-      FROM seed_numbers
-    `);
+    database.prepare(`
+      INSERT INTO tombstones (record_id,conversation_id,run_id,tool_call_id,phase,reason,removed_at_ms)
+      SELECT 'foreign-tombstone-' || value,'slack:C2#2026-08-14','foreign-run',
+             'foreign-call-' || value,'result','count',?
+      FROM seed_numbers WHERE value < ?
+    `).run(now, foreignTombstones);
     database.exec("COMMIT");
   } catch (error) {
     try { database.exec("ROLLBACK"); } catch { /* preserve the seeding failure */ }
@@ -1111,6 +1205,11 @@ function seedCompletedToolCalls(root: string, count: number): void {
   } finally {
     database.close();
   }
+}
+
+function indexColumns(database: DatabaseSync, indexName: string): string[] {
+  return (database.prepare(`PRAGMA index_info(${indexName})`).all() as Array<{ readonly name: string }>)
+    .map((column) => column.name);
 }
 
 function startChild(

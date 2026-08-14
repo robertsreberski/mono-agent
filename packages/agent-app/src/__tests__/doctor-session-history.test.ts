@@ -65,15 +65,23 @@ describe("sessionToolHistorySection", () => {
 
   it("reports unresolved writer incidents and returns to healthy after matching operations succeed", async () => {
     const root = await tempRoot();
-    const initialized = await ToolHistoryWriter.open({ root });
-    await initialized.close();
+    const writer = await ToolHistoryWriter.open({ root });
+    await writer.persist(binding, {
+      phase: "invocation", toolCallId: "conflicted-call", toolName: "Read", arguments: { path: "README.md" },
+    });
+    await writer.persist(binding, {
+      phase: "invocation", toolCallId: "conflicted-call", toolName: "Bash", arguments: {},
+    });
+    await writer.persist(binding, {
+      phase: "invocation", toolCallId: "missing-call", toolName: "", arguments: {},
+    });
+    await writer.close();
+
     const database = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE));
     const insertStat = database.prepare(`
       INSERT INTO writer_stats (key,value,last_detail,updated_at_ms) VALUES (?,?,?,?)
     `);
     try {
-      insertStat.run("write_failures", 2, "prior write outage", Date.now());
-      insertStat.run("idempotency_conflicts", 1, "prior conflict", Date.now());
       insertStat.run("maintenance_failures", 1, "prior retention outage", Date.now());
       insertStat.run("recovery_failures", 1, "prior recovery outage", Date.now());
     } finally {
@@ -82,24 +90,39 @@ describe("sessionToolHistorySection", () => {
 
     const degraded = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
     expect(degraded.status, degraded.details.join("\n")).toBe("error");
-    expect(degraded.details.join("\n")).toContain("2 lifecycle write failure(s) remain");
-    expect(degraded.details.join("\n")).toContain("1 lifecycle idempotency conflict(s) remain");
+    expect(degraded.details.join("\n")).toContain("1 unresolved lifecycle write incident(s); only the matching tool-phase retry or a retry of the failed run finalization clears that incident.");
+    expect(degraded.details.join("\n")).toContain("1 unresolved lifecycle idempotency conflict(s); only the matching tool-phase retry or canonical run-binding retry clears that incident.");
     expect(degraded.details.join("\n")).toContain("1 retention failure(s) remain");
     expect(degraded.details.join("\n")).toContain("1 recovery failure(s) remain");
 
-    const writer = await ToolHistoryWriter.open({ root });
-    await writer.persist(binding, {
+    const unrelated = await ToolHistoryWriter.open({ root });
+    await unrelated.persist({ ...binding, runId: "unrelated-run" }, {
       phase: "invocation", toolCallId: "healthy-call", toolName: "Read", arguments: { path: "README.md" },
     });
-    await writer.persist(binding, {
+    await unrelated.persist({ ...binding, runId: "unrelated-run" }, {
       phase: "result", toolCallId: "healthy-call", state: "success", content: "ok",
     });
-    await writer.close();
+    await unrelated.close();
+
+    const stillDegraded = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(stillDegraded.status, stillDegraded.details.join("\n")).toBe("error");
+    expect(stillDegraded.details.join("\n")).toContain("1 unresolved lifecycle write incident(s)");
+    expect(stillDegraded.details.join("\n")).toContain("1 unresolved lifecycle idempotency conflict(s)");
+    expect(stillDegraded.details.join("\n")).not.toContain("retention failure(s) remain");
+    expect(stillDegraded.details.join("\n")).not.toContain("recovery failure(s) remain");
+
+    const recoveredWriter = await ToolHistoryWriter.open({ root });
+    await recoveredWriter.persist(binding, {
+      phase: "invocation", toolCallId: "conflicted-call", toolName: "Read", arguments: { path: "README.md" },
+    });
+    await recoveredWriter.persist(binding, {
+      phase: "invocation", toolCallId: "missing-call", toolName: "Read", arguments: {},
+    });
+    await recoveredWriter.close();
 
     const recovered = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
     expect(recovered.status, recovered.details.join("\n")).toBe("ok");
-    expect(recovered.details.join("\n")).not.toContain(" failure(s) remain");
-    expect(recovered.details.join("\n")).not.toContain(" conflict(s) remain");
+    expect(recovered.details.join("\n")).not.toContain("unresolved lifecycle");
   });
 
   it("does not classify a graceful close of a dangling invocation as crash recovery", async () => {

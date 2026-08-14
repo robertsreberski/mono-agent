@@ -307,8 +307,11 @@ releases in time, and otherwise fails deterministically with
 Incremental lifecycle writes retain their 250 ms streaming ceiling. Reset,
 statistics, and close are bounded maintenance operations with a separate 2 s
 deadline; reset still fails closed on a real worker error. Writer-health
-counters describe unresolved incidents and clear only after the corresponding
-lifecycle write, retention pass, or startup recovery succeeds.
+counters describe distinct unresolved incidents. Identical failed retries do
+not increment them, unrelated lifecycle success and run finalization do not
+clear them, and only the matching tool phase or canonical run-binding retry
+resolves a write/conflict incident. Retention and startup-recovery incidents
+clear after their corresponding pass succeeds.
 
 Keys are `(conversationId, runId, toolCallId)`; each run has monotonic
 writer-assigned start/end sequences, while timestamps remain metadata. Repeating

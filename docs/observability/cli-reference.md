@@ -307,7 +307,10 @@ from tool calls, records, tombstones, retained payload bytes, and physical tool
 database bytes. It checks the owner-only directory/database modes, exact schema,
 `DELETE` journal mode, integrity, live/dead writer ownership, surviving journals,
 dangling or synthetic pairs, recovered interruptions, fail-soft write and
-maintenance counters, idempotency conflicts, and retention quota pressure. A
+maintenance incidents, idempotency conflicts, and retention quota pressure.
+Lifecycle write/conflict counts represent distinct unresolved tool phases or run
+bindings: identical failed retries deduplicate, unrelated success does not clear
+them, and the matching phase or canonical binding retry resolves them. A
 direct OpenCode or ACP route reports `unsupported_route`: lifecycle records still
 persist and cold-project, but that route has no host-tool seam for the
 request-scoped `SessionHistory` tool.

@@ -104,8 +104,8 @@ export async function sessionToolHistorySection(
           if (stats.dangling > 0) worsen(owner.live === true ? "waiting" : "error", `${String(stats.dangling)} dangling invocation(s) await terminal recovery.`);
           if (stats.orphanResults > 0) worsen("waiting", `${String(stats.orphanResults)} result(s) required a synthetic invocation because the provider start was missing.`);
           if (stats.recovered > 0) worsen("waiting", `${String(stats.recovered)} invocation(s) were recovered as interrupted without rerun.`);
-          if (stats.writeFailures > 0) worsen("waiting", `${String(stats.writeFailures)} lifecycle write failure(s) remain since the latest successful lifecycle write.`);
-          if (stats.idempotencyConflicts > 0) worsen("error", `${String(stats.idempotencyConflicts)} lifecycle idempotency conflict(s) remain since the latest successful lifecycle write.`);
+          if (stats.writeFailures > 0) worsen("waiting", `${String(stats.writeFailures)} unresolved lifecycle write incident(s); only the matching tool-phase retry or a retry of the failed run finalization clears that incident.`);
+          if (stats.idempotencyConflicts > 0) worsen("error", `${String(stats.idempotencyConflicts)} unresolved lifecycle idempotency conflict(s); only the matching tool-phase retry or canonical run-binding retry clears that incident.`);
           if (stats.maintenanceFailures > 0) worsen("waiting", `${String(stats.maintenanceFailures)} retention failure(s) remain since the latest successful retention pass.`);
           if (stats.recoveryFailures > 0) worsen("error", `${String(stats.recoveryFailures)} recovery failure(s) remain since the latest successful writer recovery.`);
           if (stats.retainedBytes > stats.limits.maxBytes) worsen("error", "Tool-history retained payload bytes exceed the configured byte ceiling.");

@@ -108,11 +108,14 @@ actually supplies:
 | OpenCode app-server | `success` / `error`; shared approval/abort rules still apply | Undistinguished failed result → `error` |
 | ACP v1 | `completed` → `success`, `failed` → `error`; shared approval/abort rules still apply | ACP exposes no tool-level signal/exit/timeout distinction, so failed → `error` |
 
-The runtime never derives a state from result prose. Explicit provider state and
-timing win over a later outer abort, so a completed success cannot be rewritten
-as cancellation. A started call with no result is closed by the harness as
-`cancelled`, `error`, or `interrupted` from the run boundary; process-startup
-recovery specifically uses `interrupted` and does not rerun the tool.
+The runtime never derives a state from result prose. Structured timeout, signal,
+non-zero exit, completed success, and a specific non-runtime provider failure
+win over a later outer abort. For an aborted failed result, cancellation wins
+over a provider bridge's otherwise generic `error` / `runtime_error` fallback
+and preserves the host cancellation kind. A started call with no result is
+closed by the harness as `cancelled`, `error`, or `interrupted` from the run
+boundary; process-startup recovery specifically uses `interrupted` and does not
+rerun the tool.
 
 Terminal states reuse the observability taxonomy: `success` has no failure kind;
 `signal` and `interrupted` map to `process_death`; `cancelled` preserves a known

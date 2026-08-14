@@ -292,7 +292,38 @@ describe("tool lifecycle persistence gate", () => {
     expect(forged.message.content[0]).not.toHaveProperty("tool_lifecycle");
   });
 
-  it("keeps an explicit provider error when a later host abort is also visible", async () => {
+  it("classifies a host-aborted generic provider failure as user cancellation", async () => {
+    const abort = new AbortController();
+    abort.abort({ kind: "user" });
+    const persisted = [];
+    const gate = createToolLifecycleEventGate({
+      abortSignal: abort.signal,
+      sink: async (event) => {
+        persisted.push(event);
+        return { persistence: "persisted", recordId: "result-record", sequence: 2 };
+      },
+    });
+    gate.emit({
+      type: "user",
+      message: { content: [{
+        type: "tool_result",
+        tool_use_id: "call-cancelled",
+        content: "provider stopped after host cancellation",
+        is_error: true,
+        tool_lifecycle: toolLifecycleMetadata({ state: "error", failure_kind: "runtime_error", detail_code: "claude_sdk_tool_error" }),
+      }] },
+    });
+    await gate.flush();
+
+    expect(persisted).toMatchObject([{
+      phase: "result",
+      state: "cancelled",
+      failureKind: "cancelled_user",
+      detailCode: "abort_signal",
+    }]);
+  });
+
+  it("keeps a specific explicit provider error when a later host abort is also visible", async () => {
     const abort = new AbortController();
     abort.abort("late cancellation");
     const persisted = [];

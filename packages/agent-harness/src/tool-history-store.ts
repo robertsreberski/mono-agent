@@ -167,9 +167,9 @@ export interface ToolHistoryStats {
   readonly dangling: number;
   readonly orphanResults: number;
   readonly recovered: number;
-  /** Unresolved incidents since the latest successful lifecycle write. */
+  /** Distinct unresolved lifecycle-write incidents; the matching phase/run retry clears each one. */
   readonly writeFailures: number;
-  /** Unresolved conflicts since the latest successful lifecycle write. */
+  /** Distinct unresolved conflicts; the matching canonical binding/phase retry clears each one. */
   readonly idempotencyConflicts: number;
   /** Unresolved failures since the latest successful retention pass. */
   readonly maintenanceFailures: number;
@@ -350,7 +350,15 @@ export class ToolHistoryWriter {
     } catch (error) {
       const code = error instanceof ToolHistoryWriterError ? error.code : "history_write_failed";
       this.warnOnce(code, `Tool lifecycle persistence failed (${code}); streaming continues with an explicit failure marker.`);
-      this.postBestEffort("write_failure", { code, message: reasonOf(error) });
+      if (code !== "history_idempotency_conflict") {
+        this.postBestEffort("write_failure", {
+          binding,
+          phase: event.phase,
+          toolCallId: event.toolCallId,
+          code,
+          message: reasonOf(error),
+        });
+      }
       return { persistence: "failed", errorCode: code };
     }
   }
@@ -358,7 +366,13 @@ export class ToolHistoryWriter {
   async finishRun(binding: ToolHistoryRunBinding, status: string, failureKind?: string): Promise<void> {
     await this.request("finish_run", { binding, status, failureKind }, this.persistenceCeilingMs).catch((error) => {
       this.warnOnce("run_finalize_failed", `Tool history run finalization failed: ${reasonOf(error)}`);
-      this.postBestEffort("write_failure", { code: "run_finalize_failed", message: reasonOf(error) });
+      this.postBestEffort("write_failure", {
+        binding,
+        phase: "finish_run",
+        status,
+        code: "run_finalize_failed",
+        message: reasonOf(error),
+      });
     });
   }
 
@@ -892,8 +906,8 @@ function readStats(database: DatabaseSync, path: string): ToolHistoryStats {
       (SELECT count(*) FROM tool_calls WHERE synthetic_start=1) orphan_results,
       (SELECT count(*) FROM tool_calls WHERE recovered=1) recovered,
       (SELECT coalesce(sum(retained_bytes),0) FROM tool_records) retained_bytes,
-      (SELECT coalesce(sum(value),0) FROM writer_stats WHERE key='write_failures') write_failures,
-      (SELECT coalesce(sum(value),0) FROM writer_stats WHERE key='idempotency_conflicts') idempotency_conflicts,
+      (SELECT coalesce(sum(value),0) FROM writer_stats WHERE key='write_failures' OR key GLOB 'write_failures:*') write_failures,
+      (SELECT coalesce(sum(value),0) FROM writer_stats WHERE key='idempotency_conflicts' OR key GLOB 'idempotency_conflicts:*') idempotency_conflicts,
       (SELECT coalesce(sum(value),0) FROM writer_stats WHERE key='maintenance_failures') maintenance_failures,
       (SELECT coalesce(sum(value),0) FROM writer_stats WHERE key='recovery_failures') recovery_failures
   `).get() as Record<string, unknown>;

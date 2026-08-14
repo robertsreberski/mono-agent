@@ -91,6 +91,17 @@ class WorkerHistoryError extends Error {
   }
 }
 
+class RunBindingConflictError extends WorkerHistoryError {
+  readonly incidentKey: string;
+  readonly detail: string;
+
+  constructor(incidentKey: string, detail: string) {
+    super("history_idempotency_conflict", "Run binding changed after tool history opened.");
+    this.incidentKey = incidentKey;
+    this.detail = detail;
+  }
+}
+
 const input = workerData as WorkerInput;
 const root = resolve(input.root);
 const artifactRoot = canonicalToolArtifactRoot(input.artifactRoot);
@@ -186,7 +197,7 @@ parentPort.on("message", (request: WorkerRequest) => {
           transaction(database, () => {
             database.prepare(`UPDATE runs SET status=?, terminal_at_ms=? WHERE conversation_id=? AND run_id=?`)
               .run(status, Date.now(), binding.conversationId, binding.runId);
-            clearStat(database, "write_failures");
+            clearIncident(database, "write_failures", finishRunIncidentKey(binding));
           });
           respond(request.id, null);
           break;
@@ -203,7 +214,7 @@ parentPort.on("message", (request: WorkerRequest) => {
           break;
         }
         case "write_failure": {
-          incrementStat(database, "write_failures", 1, reasonOf(recordOf(request.payload).message));
+          recordWriteFailure(database, request.payload);
           // A timed-out request no longer has a waiter; replying is harmless.
           respond(request.id, null);
           break;
@@ -240,7 +251,7 @@ function recordInvocation(database: DatabaseSync, payload: LifecyclePayload): Ru
   const toolCallId = normalizeId(event.toolCallId, "toolCallId");
   const toolName = normalizeId(event.toolName, "toolName");
   const bounded = boundedPayload(event.arguments ?? null, ARGUMENT_MAX_BYTES);
-  return transaction(database, () => {
+  return lifecycleTransaction(database, () => {
     ensureRun(database, binding);
     const recordId = toolHistoryRecordId(binding.conversationId, binding.runId, toolCallId, "invocation");
     if (isCallTombstoned(database, binding, toolCallId)) {
@@ -258,10 +269,10 @@ function recordInvocation(database: DatabaseSync, payload: LifecyclePayload): Ru
         existing.payload_sha256 !== bounded.sha256
         || existing.tool_name !== toolName
       ) {
-        incrementStat(database, "idempotency_conflicts", 1, `${binding.runId}:${toolCallId}:invocation`);
+        recordIncident(database, "idempotency_conflicts", recordId, `${binding.runId}:${toolCallId}:invocation`);
         return { persistence: "failed", errorCode: "history_idempotency_conflict" };
       }
-      markLifecycleHealthy(database);
+      resolveLifecycleIncidents(database, recordId);
       return persistenceFromRow(existing);
     }
     const sequence = takeSequence(database, binding);
@@ -282,7 +293,7 @@ function recordInvocation(database: DatabaseSync, payload: LifecyclePayload): Ru
     insertRecord(database, {
       recordId, binding, toolCallId, phase: "invocation", sequence, bounded,
     });
-    markLifecycleHealthy(database);
+    resolveLifecycleIncidents(database, recordId);
     return persistence(recordId, sequence, bounded);
   });
 }
@@ -298,7 +309,7 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
   const executionMs = event.executionMs === undefined ? null : nonNegativeInteger(event.executionMs);
   const artifactIds = normalizedArtifactIds(event.artifacts ?? [], binding);
   const bounded = boundedPayload(event.content ?? null, RESULT_MAX_BYTES);
-  return transaction(database, () => {
+  return lifecycleTransaction(database, () => {
     ensureRun(database, binding);
     const recordId = toolHistoryRecordId(binding.conversationId, binding.runId, toolCallId, "result");
     if (isCallTombstoned(database, binding, toolCallId)) {
@@ -333,7 +344,7 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
     }
     const resultToolName = event.toolName === undefined ? call.tool_name : normalizeId(event.toolName, "toolName");
     if (call.tool_name !== resultToolName) {
-      incrementStat(database, "idempotency_conflicts", 1, `${binding.runId}:${toolCallId}:result-tool-name`);
+      recordIncident(database, "idempotency_conflicts", recordId, `${binding.runId}:${toolCallId}:result-tool-name`);
       return { persistence: "failed", errorCode: "history_idempotency_conflict" };
     }
     const existing = database.prepare(`
@@ -351,10 +362,10 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
         || call.tool_name !== resultToolName
         || persistedArtifactIds.join("\u0000") !== artifactIds.join("\u0000")
       ) {
-        incrementStat(database, "idempotency_conflicts", 1, `${binding.runId}:${toolCallId}:result`);
+        recordIncident(database, "idempotency_conflicts", recordId, `${binding.runId}:${toolCallId}:result`);
         return { persistence: "failed", errorCode: "history_idempotency_conflict" };
       }
-      markLifecycleHealthy(database);
+      resolveLifecycleIncidents(database, recordId);
       return persistenceFromRow(existing, artifactRefs(database, binding, toolCallId));
     }
     const sequence = takeSequence(database, binding);
@@ -377,7 +388,7 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
       recordId, binding, toolCallId, phase: "result", sequence, bounded,
     });
     const artifacts = insertArtifacts(database, binding, toolCallId, event.artifacts ?? [], now);
-    markLifecycleHealthy(database);
+    resolveLifecycleIncidents(database, recordId);
     return persistence(recordId, sequence, bounded, artifacts);
   }, () => applyRetention(database, retention));
 }
@@ -442,9 +453,9 @@ function ensureRun(database: DatabaseSync, binding: ToolHistoryRunBinding): void
   const row = database.prepare("SELECT logical_id,isolated FROM runs WHERE conversation_id=? AND run_id=?")
     .get(binding.conversationId, binding.runId) as Record<string, unknown>;
   if (row.logical_id !== binding.logicalConversationId || Number(row.isolated) !== (binding.isolated ? 1 : 0)) {
-    incrementStat(database, "idempotency_conflicts", 1, `${binding.runId}:binding`);
-    throw new WorkerHistoryError("history_idempotency_conflict", "Run binding changed after tool history opened.");
+    throw new RunBindingConflictError(runBindingIncidentKey(binding), `${binding.runId}:binding`);
   }
+  clearIncident(database, "idempotency_conflicts", runBindingIncidentKey(binding));
 }
 
 function takeSequence(database: DatabaseSync, binding: ToolHistoryRunBinding): number {
@@ -726,6 +737,7 @@ function openContentDatabase(
     CREATE INDEX IF NOT EXISTS tool_calls_terminal_idx ON tool_calls(ended_at_ms,state,tool_name);
     CREATE INDEX IF NOT EXISTS runs_logical_idx ON runs(logical_id,isolated,started_at_ms);
     CREATE INDEX IF NOT EXISTS records_call_idx ON tool_records(conversation_id,run_id,tool_call_id,phase);
+    CREATE INDEX IF NOT EXISTS tombstones_run_idx ON tombstones(conversation_id,run_id);
     CREATE INDEX IF NOT EXISTS tombstones_removed_idx ON tombstones(removed_at_ms);
     `);
     const metadata = database.prepare("INSERT OR REPLACE INTO metadata (key,value) VALUES (?,?)");
@@ -1030,6 +1042,67 @@ function transaction<T>(database: DatabaseSync, operation: () => T, afterCommit?
   }
 }
 
+function lifecycleTransaction<T>(database: DatabaseSync, operation: () => T, afterCommit?: () => void): T {
+  try {
+    return transaction(database, operation, afterCommit);
+  } catch (error) {
+    if (error instanceof RunBindingConflictError) {
+      try {
+        transaction(database, () => {
+          recordIncident(database, "idempotency_conflicts", error.incidentKey, error.detail);
+        });
+      } catch {
+        // The binding conflict remains the authoritative failure when the
+        // database cannot persist its own diagnostic.
+      }
+    }
+    throw error;
+  }
+}
+
+function recordWriteFailure(database: DatabaseSync, payload: unknown): void {
+  const value = recordOf(payload);
+  const binding = bindingOf(value.binding);
+  const phase = value.phase;
+  const detail = `${boundedCode(typeof value.code === "string" ? value.code : "history_write_failed")}:${reasonOf(value.message)}`;
+  transaction(database, () => {
+    if (phase === "invocation" || phase === "result") {
+      const toolCallId = normalizeId(value.toolCallId, "toolCallId");
+      const recordId = toolHistoryRecordId(binding.conversationId, binding.runId, toolCallId, phase);
+      const persisted = database.prepare("SELECT 1 FROM tool_records WHERE record_id=?").get(recordId);
+      if (persisted === undefined) recordIncident(database, "write_failures", recordId, detail);
+      else clearIncident(database, "write_failures", recordId);
+      return;
+    }
+    if (phase === "finish_run") {
+      const status = typeof value.status === "string" ? value.status : "interrupted";
+      const incidentKey = finishRunIncidentKey(binding);
+      const row = database.prepare(`
+        SELECT status,terminal_at_ms FROM runs WHERE conversation_id=? AND run_id=?
+      `).get(binding.conversationId, binding.runId) as Record<string, unknown> | undefined;
+      if (row?.status === status && row.terminal_at_ms !== null && row.terminal_at_ms !== undefined) {
+        clearIncident(database, "write_failures", incidentKey);
+      } else {
+        recordIncident(database, "write_failures", incidentKey, detail);
+      }
+      return;
+    }
+    throw new WorkerHistoryError("history_phase_invalid", "Unsupported tool history write-failure phase.");
+  });
+}
+
+function runBindingIncidentKey(binding: ToolHistoryRunBinding): string {
+  return hashedIncidentKey("run_binding", [binding.conversationId, binding.runId]);
+}
+
+function finishRunIncidentKey(binding: ToolHistoryRunBinding): string {
+  return hashedIncidentKey("finish_run", [binding.conversationId, binding.runId]);
+}
+
+function hashedIncidentKey(kind: string, identity: readonly string[]): string {
+  return `${kind}_${createHash("sha256").update(JSON.stringify(identity)).digest("base64url")}`;
+}
+
 function prepareSecureJournal(): boolean {
   // SQLite creates the DELETE journal at the first write inside a transaction.
   // Materialize it with its final mode before BEGIN so doctor and a concurrent
@@ -1069,18 +1142,44 @@ function incrementStat(database: DatabaseSync, key: string, amount: number, deta
   `).run(key, amount, detail?.slice(0, 1_000) ?? null, Date.now());
 }
 
+function recordIncident(
+  database: DatabaseSync,
+  kind: "write_failures" | "idempotency_conflicts",
+  incidentKey: string,
+  detail?: string,
+): void {
+  database.prepare(`
+    INSERT INTO writer_stats (key,value,last_detail,updated_at_ms) VALUES (?,1,?,?)
+    ON CONFLICT(key) DO UPDATE SET value=1,last_detail=excluded.last_detail,updated_at_ms=excluded.updated_at_ms
+  `).run(`${kind}:${incidentKey}`, detail?.slice(0, 1_000) ?? null, Date.now());
+}
+
+function clearIncident(
+  database: DatabaseSync,
+  kind: "write_failures" | "idempotency_conflicts",
+  incidentKey: string,
+): void {
+  database.prepare("DELETE FROM writer_stats WHERE key=?").run(`${kind}:${incidentKey}`);
+}
+
 function clearStat(database: DatabaseSync, key: string): void {
   database.prepare("DELETE FROM writer_stats WHERE key=?").run(key);
 }
 
-function markLifecycleHealthy(database: DatabaseSync): void {
-  clearStat(database, "write_failures");
-  clearStat(database, "idempotency_conflicts");
+function resolveLifecycleIncidents(database: DatabaseSync, recordId: string): void {
+  clearIncident(database, "write_failures", recordId);
+  clearIncident(database, "idempotency_conflicts", recordId);
 }
 
 function statValue(database: DatabaseSync, key: string): number {
   const row = database.prepare("SELECT value FROM writer_stats WHERE key=?").get(key) as Record<string, unknown> | undefined;
   return Number(row?.value ?? 0);
+}
+
+function incidentStatValue(database: DatabaseSync, kind: "write_failures" | "idempotency_conflicts"): number {
+  const row = database.prepare("SELECT coalesce(sum(value),0) value FROM writer_stats WHERE key=? OR key GLOB ?")
+    .get(kind, `${kind}:*`) as Record<string, unknown>;
+  return Number(row.value ?? 0);
 }
 
 function workerStats(database: DatabaseSync): Record<string, unknown> {
@@ -1096,8 +1195,8 @@ function workerStats(database: DatabaseSync): Record<string, unknown> {
   `).get() as Record<string, unknown>;
   return {
     ...counts,
-    writeFailures: statValue(database, "write_failures"),
-    idempotencyConflicts: statValue(database, "idempotency_conflicts"),
+    writeFailures: incidentStatValue(database, "write_failures"),
+    idempotencyConflicts: incidentStatValue(database, "idempotency_conflicts"),
     maintenanceFailures: statValue(database, "maintenance_failures"),
     recoveryFailures: statValue(database, "recovery_failures"),
     bytes: pragmaNumber(database, "page_count") * pragmaNumber(database, "page_size"),

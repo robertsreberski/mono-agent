@@ -177,11 +177,15 @@ function classifyGenericResult(block, timing, approval, abortSignal) {
   if (Number.isFinite(Number(timing?.exit_code)) && Number(timing.exit_code) !== 0) {
     return terminal("exit_nonzero", "runtime_error", `exit_${String(Number(timing.exit_code))}`);
   }
+  if (
+    abortSignal?.aborted
+    && block.is_error === true
+    && (!record(explicit) || explicit.state !== "error" || failureKind(explicit.failure_kind) === "runtime_error")
+  ) {
+    return terminal("cancelled", cancellationFailureKind(abortSignal), "abort_signal");
+  }
   if (record(explicit) && explicit.state === "error") {
     return terminal("error", failureKind(explicit.failure_kind), boundedCode(explicit.detail_code || "provider_error"));
-  }
-  if (abortSignal?.aborted && block.is_error === true) {
-    return terminal("cancelled", cancellationFailureKind(abortSignal), "abort_signal");
   }
   if (block.is_error === true || timing?.is_error === true) return terminal("error", failureKind(explicit?.failure_kind), boundedCode(explicit?.detail_code || "provider_error"));
   return terminal("success", undefined, undefined);
