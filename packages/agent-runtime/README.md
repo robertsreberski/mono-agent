@@ -753,6 +753,7 @@ Per-call options (a non-exhaustive selection):
 | `nativeSubagents` | `object` | Caller-defined Claude native `Task` profiles. Direct Codex rejects configured teammate definitions because Codex owns its collaboration agents. |
 | `settingSources` | `("user" \| "project" \| "local")[]` | Claude Agent SDK filesystem settings opt-in. Omitted/empty disables those three sources; Anthropic managed settings still apply. |
 | `codexLoadProjectDocs` | `boolean` | Codex app-server repository-instruction opt-in. Omitted/false sets `project_doc_max_bytes=0`; true restores Codex defaults. Explicit `codexAppServerArgs` wins. |
+| `codexSandboxNetworkAccess` | `boolean` | Code-only Codex app-server per-turn network control. Only strict `true` enables it for plan/default/acceptEdits; omitted or any other value disables it. |
 | `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http); on direct Codex, each forwarded server authorizes its own tool calls. |
 | `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
 | `webSearchConfig` | `{ backend?, endpoint? }` | Run-scoped local SearXNG/keyless WebSearch backend selection. |
@@ -817,6 +818,15 @@ default with `project_doc_max_bytes=0`. Set `codexLoadProjectDocs: true` when
 Codex and its own collaboration agents should load repository instructions. If
 `codexAppServerArgs` is supplied, that explicit argument vector is authoritative
 and `codexLoadProjectDocs` does not alter it.
+
+`codexSandboxNetworkAccess` is a separate code-only, provider-native control.
+It is unrelated to `RuntimeRunOptions.sandboxPolicy`, which controls
+mono-agent's own sandbox and is not consumed by Codex's provider-owned tool
+loop. Only strict `true` enables network access for plan/read-only and
+default/acceptEdits/workspace-write turns; the no-tools probe remains offline
+and bypass remains danger-full-access. Combining workspace-write with network
+access grants repository read and network egress in the same turn. Prefer
+`permissionMode: "plan"` when only read-only browsing is needed.
 
 Provider-native and in-process delegation share `subagent_activity` telemetry.
 `subagent.id` is the canonical parent attachment key: the initiating parent

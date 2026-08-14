@@ -271,6 +271,8 @@ export interface MonoRuntimeAttemptResolution {
   readonly options?: Readonly<Record<string, unknown>> & {
     /** The sandbox implementation is owned by createMonoRuntime. */
     readonly sandbox?: never;
+    /** Logical Codex network policy is caller-owned and resolver-protected. */
+    readonly codexSandboxNetworkAccess?: never;
   };
   /** Provider-specific projection of the logical tool policy for this attempt. */
   readonly policyOptions?: Readonly<Pick<

@@ -406,6 +406,17 @@ export interface RuntimeRunOptions {
    * Omitted/false disables automatic discovery; explicit app-server args win.
    */
   readonly codexLoadProjectDocs?: boolean;
+  /**
+   * Code-only Codex app-server network control. Only strict `true` enables
+   * network access for plan/read-only and default/acceptEdits/workspace-write
+   * turns. No-tool probes and danger-full-access retain their fixed behavior.
+   * This is unrelated to RuntimeRunOptions.sandboxPolicy, which controls
+   * mono-agent's own sandbox and is not consumed by Codex's provider-owned tool
+   * loop. Default/acceptEdits workspace-write plus network true grants
+   * repository read and network egress in the same turn; prefer plan when only
+   * read-only browsing is needed.
+   */
+  readonly codexSandboxNetworkAccess?: boolean;
   /** Caller-defined Claude native `Task` profiles. Direct Codex rejects these definitions. */
   readonly nativeSubagents?: RuntimeNativeSubagentsOptions;
   // Pi-native provider knobs (optional; ignored by other bridges).
