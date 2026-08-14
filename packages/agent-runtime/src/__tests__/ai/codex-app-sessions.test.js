@@ -179,21 +179,28 @@ describe("codex-app persistent sessions", () => {
   });
 
   it.each([
-    ["default (unset)", undefined, "workspace-write", "workspaceWrite"],
-    ["default", "default", "workspace-write", "workspaceWrite"],
-    ["plan", "plan", "read-only", "readOnly"],
-    ["acceptEdits", "acceptEdits", "workspace-write", "workspaceWrite"],
-    ["bypassPermissions", "bypassPermissions", "danger-full-access", "dangerFullAccess"],
-  ])("maps %s permission mode into supported app-server payload policy", async (
+    ["default with the option omitted", undefined, undefined, "workspace-write", "workspaceWrite", false],
+    ["default with false", "default", false, "workspace-write", "workspaceWrite", false],
+    ["default with true", "default", true, "workspace-write", "workspaceWrite", true],
+    ["plan with the option omitted", "plan", undefined, "read-only", "readOnly", false],
+    ["plan with false", "plan", false, "read-only", "readOnly", false],
+    ["plan with true", "plan", true, "read-only", "readOnly", true],
+    ["acceptEdits with false", "acceptEdits", false, "workspace-write", "workspaceWrite", false],
+    ["acceptEdits with true", "acceptEdits", true, "workspace-write", "workspaceWrite", true],
+    ["bypassPermissions with true", "bypassPermissions", true, "danger-full-access", "dangerFullAccess", undefined],
+  ])("maps %s into the supported app-server sandbox policy", async (
     _label,
     permissionMode,
+    codexSandboxNetworkAccess,
     sandbox,
     sandboxPolicyType,
+    expectedNetworkAccess,
   ) => {
     const factory = stubClientFactory({ threadId: `thread-${_label}` });
     const result = await generateCodexAppResponse("SYS", runOptions(factory, {
       permissionMode,
       cwd: "/workspace",
+      ...(codexSandboxNetworkAccess === undefined ? {} : { codexSandboxNetworkAccess }),
     }));
     expect(result.error).toBeNull();
 
@@ -204,15 +211,50 @@ describe("codex-app persistent sessions", () => {
     expect(threadStart?.params.approvalPolicy).toBe("never");
     expect(threadStart?.params.sandbox).toBe(sandbox);
     expect(turnStart?.params.approvalPolicy).toBe("never");
-    expect(turnStart?.params.sandboxPolicy).toMatchObject({ type: sandboxPolicyType });
-    if (sandboxPolicyType === "workspaceWrite") {
-      expect(turnStart?.params.sandboxPolicy).toMatchObject({
+    if (sandboxPolicyType === "dangerFullAccess") {
+      expect(turnStart?.params.sandboxPolicy).toEqual({ type: "dangerFullAccess" });
+    } else if (sandboxPolicyType === "readOnly") {
+      expect(turnStart?.params.sandboxPolicy).toEqual({
+        type: "readOnly",
+        networkAccess: expectedNetworkAccess,
+      });
+    } else {
+      expect(turnStart?.params.sandboxPolicy).toEqual({
+        type: "workspaceWrite",
         writableRoots: ["/workspace"],
-        networkAccess: false,
+        networkAccess: expectedNetworkAccess,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
       });
     }
     expect(threadStart?.params.approvalPolicy).not.toBe("on-failure");
     expect(turnStart?.params.approvalPolicy).not.toBe("on-failure");
+  });
+
+  it.each([
+    ["false", false],
+    ["null", null],
+    ["zero", 0],
+    ["one", 1],
+    ["empty string", ""],
+    ["string true", "true"],
+  ])("treats non-true codexSandboxNetworkAccess value %s as false", async (_label, value) => {
+    const factory = stubClientFactory({ threadId: `thread-network-${_label}` });
+
+    const result = await generateCodexAppResponse("SYS", runOptions(factory, {
+      cwd: "/workspace",
+      codexSandboxNetworkAccess: value,
+    }));
+
+    expect(result.error).toBeNull();
+    const turnStart = factory.clients[0].requests.find((request) => request.method === "turn/start");
+    expect(turnStart?.params.sandboxPolicy).toEqual({
+      type: "workspaceWrite",
+      writableRoots: ["/workspace"],
+      networkAccess: false,
+      excludeTmpdirEnvVar: false,
+      excludeSlashTmp: false,
+    });
   });
 
   it("fails closed before starting Codex when a restrictive tool policy cannot be enforced", async () => {
@@ -2363,6 +2405,7 @@ describe("codex-app persistent sessions", () => {
       disallowedTools: [],
       mcpServers: {},
       codexNoToolsProbe: true,
+      codexSandboxNetworkAccess: true,
       sessionKeepAlive: false,
       onEvent: (event) => emitted.push(event),
     }));
@@ -2433,6 +2476,42 @@ describe("codex-app persistent sessions", () => {
     expect(resumedTurn.params.threadId).toBe("thread-keep");
     expect(resumedTurn.params.input).toEqual([{ type: "text", text: "follow up", text_elements: [] }]);
     expect(client.close).not.toHaveBeenCalled();
+  });
+
+  it("updates networkAccess in both directions without rotating a retained thread", async () => {
+    const factory = stubClientFactory({ threadId: "thread-network-transitions" });
+    const first = await generateCodexAppResponse("SYS", runOptions(factory, {
+      permissionMode: "plan",
+      codexSandboxNetworkAccess: false,
+      sessionKeepAlive: true,
+    }));
+    expect(first.error).toBeNull();
+
+    const second = await generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionId: "thread-network-transitions",
+      permissionMode: "plan",
+      codexSandboxNetworkAccess: true,
+      sessionKeepAlive: true,
+    }));
+    expect(second.error).toBeNull();
+
+    const third = await generateCodexAppResponse("SYS", runOptions(factory, {
+      sessionId: "thread-network-transitions",
+      permissionMode: "plan",
+      codexSandboxNetworkAccess: false,
+    }));
+    expect(third.error).toBeNull();
+
+    expect(factory).toHaveBeenCalledTimes(1);
+    const client = factory.clients[0];
+    expect(client.requests.filter((request) => request.method === "thread/start")).toHaveLength(1);
+    expect(client.requests
+      .filter((request) => request.method === "turn/start")
+      .map((request) => request.params.sandboxPolicy)).toEqual([
+      { type: "readOnly", networkAccess: false },
+      { type: "readOnly", networkAccess: true },
+      { type: "readOnly", networkAccess: false },
+    ]);
   });
 
   it("routes server requests to the active resumed turn and rejects them while idle", async () => {

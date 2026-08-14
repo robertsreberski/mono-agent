@@ -252,6 +252,12 @@
  * @property {boolean} [codexLoadProjectDocs] Codex app-server only. Omitted/false starts the managed app-server with
  *   `project_doc_max_bytes=0`, preventing automatic repository-instruction discovery. True restores Codex's native
  *   project-doc loading defaults. An explicit `codexAppServerArgs` array wins over this convenience option.
+ * @property {boolean} [codexSandboxNetworkAccess] Codex app-server only, code-only. Strict `true` enables native
+ *   network access for plan/read-only and default/acceptEdits/workspace-write turns; omitted or any other runtime
+ *   value denies it. No-tool probes always deny network access, and bypass/danger-full-access remains unchanged. This
+ *   is unrelated to `RuntimeRunOptions.sandboxPolicy`, which controls mono-agent's own sandbox and is not consumed by
+ *   Codex's provider-owned tool loop. Default/acceptEdits workspace-write plus network true grants repository read and
+ *   network egress in the same turn; prefer plan when only read-only browsing is needed.
  * @property {RuntimeNativeSubagentsOptions} [nativeSubagents] Caller-defined Claude native `Task` profiles. Direct
  *   Codex owns its collaboration agents and rejects configured teammate definitions; `codexLoadProjectDocs` controls
  *   whether Codex loads repository instructions for its own agents.

@@ -535,6 +535,9 @@ function delay(ms, signal) {
   });
 }
 
+// `thread/start.sandbox` selects only the thread-level filesystem class; it
+// does not own network. `sandboxPolicyForRun()` supplies authoritative per-turn
+// networkAccess, per the app-server 0.147.0 / gpt-5.6-sol retained-thread matrix.
 function sandboxForRun(options) {
   if (options.codexNoToolsProbe === true) return "read-only";
   if (options.permissionMode === "bypassPermissions") return "danger-full-access";
@@ -553,11 +556,14 @@ function approvalPolicyForRun(options) {
 function sandboxPolicyForRun(options) {
   if (options.codexNoToolsProbe === true) return { type: "readOnly", networkAccess: false };
   if (options.permissionMode === "bypassPermissions") return { type: "dangerFullAccess" };
-  if (options.permissionMode === "plan") return { type: "readOnly", networkAccess: false };
+  // App-server 0.147.0 / gpt-5.6-sol retained-thread matrix proved per-turn
+  // networkAccess authoritative in both directions.
+  const networkAccess = options.codexSandboxNetworkAccess === true;
+  if (options.permissionMode === "plan") return { type: "readOnly", networkAccess };
   return {
     type: "workspaceWrite",
     writableRoots: [options.cwd || process.cwd()],
-    networkAccess: false,
+    networkAccess,
     excludeTmpdirEnvVar: false,
     excludeSlashTmp: false,
   };

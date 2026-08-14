@@ -68,6 +68,8 @@ GPT-5.6 Sol is available through `codex:gpt-5.6-sol` or the separate Pi route `p
 
 The Codex app-server does not currently project arbitrary mono-agent allow/deny lists. Normal direct `codex:*` runs therefore require effective allow-all: `tools.allowedTools` is omitted or contains `"*"`, and `disallowedTools` is empty. A named-only list, `[]`, or any denylist fails validation rather than being silently widened. The guided readiness probe is a separate, unchanged internal contract: read-only sandbox, approval policy `never`, exact no-tool input, no MCP/dynamic tools, disposable session, and failure on the first command/file/MCP/tool event.
 
+For code-defined hosts, `runtimeOptions.codexSandboxNetworkAccess: true` enables Codex's native network access on each `plan`, `default`, or `acceptEdits` turn without rotating a retained thread. Omitted and all non-`true` values keep network access disabled. This provider-native flag is separate from mono-agent's `sandboxPolicy`; it has no config key, never opens network access for the guided no-tools probe, and does not change `bypassPermissions` danger-full-access behavior. See [Execution, effort, and permissions](/runtime/execution-effort-permissions/) for the security boundary.
+
 Codex also owns its native collaboration agents and their profiles. Mono-agent
 normalizes the activity those agents emit, but it does not inject configured
 teammate definitions into Codex. A direct Codex attempt with caller-defined
