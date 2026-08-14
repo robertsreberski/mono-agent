@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  readFileSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -227,6 +234,22 @@ describe("memory bundle import", { timeout: 60_000 }, () => {
 
       expect(() => prepareMemoryBundleImport({ root: destination.root, bundlePath }))
         .toThrow(MemoryBundleImportError);
+    });
+
+    it("refuses a symlinked manifest without reading its target or changing the destination", async () => {
+      const source = await sourceStore();
+      const destination = await destinationStore();
+      const bundlePath = await bundleFrom(source);
+      const before = readBujoCanonicalSourceFingerprint(destination.root);
+      const manifestPath = join(bundlePath, MEMORY_BUNDLE_MANIFEST_FILE);
+      const outsideManifest = join(scratchDirectory("bundle-import-outside-manifest"), "owner.json");
+      writeFileSync(outsideManifest, readFileSync(manifestPath), { mode: 0o600 });
+      unlinkSync(manifestPath);
+      symlinkSync(outsideManifest, manifestPath);
+
+      expect(() => prepareMemoryBundleImport({ root: destination.root, bundlePath }))
+        .toThrow(MemoryBundleImportError);
+      expect(readBujoCanonicalSourceFingerprint(destination.root)).toBe(before);
     });
 
     it("refuses a bundle whose manifest counts were edited", async () => {

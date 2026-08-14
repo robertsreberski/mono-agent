@@ -712,13 +712,24 @@ export function replaceJsonDurable(path: string, value: unknown): void {
   }
 }
 
-export function readOwnerJson(path: string): unknown {
+interface ReadOwnerJsonHooks {
+  /** Deterministic race seam; production callers leave this unset. */
+  readonly afterInitialStat?: () => void;
+}
+
+export function readOwnerJson(path: string, hooks: ReadOwnerJsonHooks = {}): unknown {
   const before = lstatSync(path);
   assertDurableSwapPrivateArtifactInfo(before);
+  hooks.afterInitialStat?.();
   const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const opened = fstatSync(fd);
+    // Revalidate the opened handle, including its size, before allocating from
+    // mutable filesystem metadata. The snapshot comparison then rejects even
+    // an otherwise-safe in-place change between lstat and open.
+    assertDurableSwapPrivateArtifactInfo(opened);
     assertSameDurableSwapFile(before, opened, path);
+    assertSameDurableSwapSnapshot(before, opened, path);
     const data = Buffer.alloc(opened.size);
     let offset = 0;
     while (offset < data.length) {
@@ -736,7 +747,8 @@ export function readOwnerJson(path: string): unknown {
 
 export function assertDurableSwapPrivateArtifactInfo(info: Stats): void {
   if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1
-    || info.size > MAX_ARTIFACT_BYTES || (info.mode & 0o077) !== 0
+    || !Number.isSafeInteger(info.size) || info.size < 0 || info.size > MAX_ARTIFACT_BYTES
+    || (info.mode & 0o077) !== 0
     || (typeof process.getuid === "function" && info.uid !== process.getuid())) {
     throw new Error(`${LABEL}: private artifact is unsafe`);
   }

@@ -40,6 +40,10 @@ export interface MemoryForgetBackupRetentionOptions {
   readonly shouldContinue?: () => boolean;
   /** Deterministic race/cancellation seams; production leaves these unset. */
   readonly hooks?: {
+    readonly afterManifestStat?: (input: {
+      readonly path: string;
+      readonly operation: string;
+    }) => void | Promise<void>;
     readonly beforeClaim?: (candidate: CandidateHookInput) => void | Promise<void>;
     readonly afterClaim?: (candidate: CandidateHookInput & { readonly claimedPath: string }) => void | Promise<void>;
   };
@@ -211,6 +215,7 @@ async function collectCandidates(
           retentionRoot,
           warnings,
           shape.operation,
+          options.hooks?.afterManifestStat,
         );
         if (candidate !== undefined) candidates.push(candidate);
         return true;
@@ -272,11 +277,16 @@ async function inspectManagedCandidate(
   retentionRoot: RetentionRoot,
   warnings: string[],
   operation: DurableRootSwapOperation,
+  afterManifestStat?: (input: { readonly path: string; readonly operation: string }) => void | Promise<void>,
 ): Promise<Candidate | undefined> {
   try {
     const directoryInfo = await lstat(absolutePath);
     assertDurableRootSwapBackupDirectoryInfo(directoryInfo);
-    const manifest = await readManagedManifest(join(absolutePath, "manifest.json"), operation);
+    const manifest = await readManagedManifest(
+      join(absolutePath, "manifest.json"),
+      operation,
+      afterManifestStat,
+    );
     if (manifest.rootFingerprint !== rootFingerprint(retentionRoot.root)
       || !manifest.planDigest.startsWith(nameDigest)) {
       throw new Error("invalid or foreign manifest");
@@ -306,6 +316,7 @@ async function inspectManagedCandidate(
 async function readManagedManifest(
   manifestPath: string,
   operation: DurableRootSwapOperation,
+  afterManifestStat?: (input: { readonly path: string; readonly operation: string }) => void | Promise<void>,
 ): Promise<DurableRootSwapBackupManifest> {
   const before = await lstat(manifestPath);
   assertDurableSwapPrivateArtifactInfo(before);
@@ -314,8 +325,11 @@ async function readManagedManifest(
     const opened = await handle.stat();
     assertDurableSwapPrivateArtifactInfo(opened);
     assertSameDurableSwapFile(before, opened, manifestPath);
+    await afterManifestStat?.({ path: manifestPath, operation: operation.transactionOperation });
     const data = await handle.readFile();
-    if (data.length !== opened.size) throw new Error("memory-forget: short artifact read");
+    if (data.length !== opened.size) {
+      throw new Error(`${operation.transactionOperation}: short artifact read`);
+    }
     assertSameDurableSwapSnapshot(opened, await handle.stat(), manifestPath);
     assertSameDurableSwapFile(opened, await lstat(manifestPath), manifestPath);
     return parseDurableRootSwapBackupManifest(JSON.parse(data.toString("utf8")) as unknown, operation);

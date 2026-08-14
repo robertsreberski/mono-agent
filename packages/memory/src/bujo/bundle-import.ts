@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
 import type { EmbeddingProvider } from "../search/index.js";
@@ -32,6 +32,7 @@ import {
   readDurableRootSwapBackup,
   readDurableRootSwapTransaction,
   readDurableRootSwapTransactionOptional,
+  readOwnerJson,
   replaceJsonDurable,
   resolveMemoryRootForMaintenance,
   restoreFromDurableRootSwapTransaction,
@@ -459,7 +460,7 @@ function verifyBundle(bundlePath: string): VerifiedBundle {
   const manifestPath = join(resolved, MEMORY_BUNDLE_MANIFEST_FILE);
   let manifest: MemoryExportBundleManifest;
   try {
-    manifest = parseMemoryExportBundleManifest(JSON.parse(readFileSync(manifestPath, "utf8")) as unknown);
+    manifest = parseMemoryExportBundleManifest(readOwnerJson(manifestPath));
   } catch (error) {
     throw new MemoryBundleImportError("import_bundle_invalid", undefined, error);
   }

@@ -135,6 +135,43 @@ describe("runCli memory", () => {
     expect(stdout).toContain("No memory configured");
   });
 
+  it("surfaces a typed export destination failure without changing canonical memory", async () => {
+    const memoryRoot = join(await tempDir(), "memory");
+    const dir = await agentDir({
+      memory: {
+        mode: "bujo",
+        path: memoryRoot,
+        writeMode: "capture",
+        embeddings: { provider: "ollama", model: "test-embed", dim: 8 },
+        llm: { provider: "ollama", model: "test-capture" },
+      },
+    });
+    await seedLocalStore(memoryRoot);
+    await safeRebuildMemoryIndex({
+      root: memoryRoot,
+      tier: "bujo",
+      embeddings: deterministicEmbeddings("ollama:test-embed", 8),
+      dim: 8,
+    });
+    const existingBundlePath = await tempDir();
+    const before = bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot);
+
+    const result = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
+      "memory", "export", "--bundle", existingBundlePath, "--json",
+    ]))));
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual({
+      schemaVersion: 1,
+      operation: "memory-export",
+      status: "failed",
+      code: "export_destination_invalid",
+      message: "The bundle destination must be a new directory outside the memory root.",
+    });
+    expect(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot)).toBe(before);
+  }, 15_000);
+
   it("emits the closed strict-health JSON contract for unconfigured and remote memory", async () => {
     const unconfiguredDir = await agentDir({ memory: undefined });
     const unconfigured = await captureCli(() => withCwd(unconfiguredDir, () => withCleanMonoAgentEnv(() =>

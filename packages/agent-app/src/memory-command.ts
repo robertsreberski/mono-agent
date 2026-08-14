@@ -24,6 +24,8 @@ import type {
   BujoMemoryHealthReport,
   CompletedTurnIntakeInspection,
   LegacyReplayAdoptionResult,
+  MemoryBundleExportErrorCode,
+  MemoryBundleImportErrorCode,
 } from "@mono-agent/memory/bujo";
 
 import {
@@ -351,11 +353,18 @@ function memoryCommandUsageError(input: RunMemoryCommandInput): string | undefin
 
 const MEMORY_BUNDLE_CLI_SCHEMA_VERSION = 1;
 const MAX_IMPORT_PLAN_BYTES = 64 * 1024;
+const MAX_MEMORY_BUNDLE_CAUSE_DEPTH = 8;
+
+type BujoModule = typeof import("@mono-agent/memory/bujo");
 
 type MemoryBundleFailureCode =
   | "export_requires_bujo"
   | "export_usage"
   | "export_config_invalid"
+  | "export_destination_invalid"
+  | "export_pending_work"
+  | "export_source_changed"
+  | "export_source_invalid"
   | "export_failed"
   | "import_requires_bujo"
   | "import_usage"
@@ -364,6 +373,7 @@ type MemoryBundleFailureCode =
   | "import_derived_drift"
   | "import_conflict"
   | "import_prepare_failed"
+  | "import_pending_work"
   | "import_stale_plan"
   | "import_apply_failed"
   | "import_apply_failed_recovered"
@@ -378,6 +388,10 @@ const MEMORY_BUNDLE_FAILURE_MESSAGES: Readonly<Record<MemoryBundleFailureCode, s
   export_requires_bujo: "Memory export requires a configured built-in BuJo store with embeddings.",
   export_usage: "Memory export arguments are invalid.",
   export_config_invalid: "Memory export requires a valid private configuration.",
+  export_destination_invalid: "The bundle destination must be a new directory outside the memory root.",
+  export_pending_work: "The memory store has unreplayed durable work; let it drain or re-run with --allow-pending.",
+  export_source_changed: "The memory store kept changing during export; retry with the agent idle.",
+  export_source_invalid: "The canonical memory source is invalid; repair it before exporting.",
   export_failed: "Memory export failed; no bundle was published.",
   import_requires_bujo: "Memory import requires a configured built-in BuJo store with embeddings.",
   import_usage: "Memory import arguments are invalid.",
@@ -386,6 +400,7 @@ const MEMORY_BUNDLE_FAILURE_MESSAGES: Readonly<Record<MemoryBundleFailureCode, s
   import_derived_drift: "Importing these entities would remove derived associations from existing memories; re-run with --accept-derived-association-drift to proceed.",
   import_conflict: "Incoming memory ids already exist with different content; re-run with --on-conflict skip to keep this store's versions.",
   import_prepare_failed: "Import-plan preparation failed without changing the memory store.",
+  import_pending_work: "The memory store has unreplayed durable work; let it drain, stop the agent, and prepare a fresh plan.",
   import_stale_plan: "The import plan no longer matches this memory store or bundle; prepare a fresh plan.",
   import_apply_failed: "Import application failed before a recoverable backup was available.",
   import_apply_failed_recovered: "Import application failed and the complete pre-import backup was restored.",
@@ -441,8 +456,15 @@ async function runMemoryBundleExport(
     writeMemoryBundleFailure(input.json, "export", "export_requires_bujo");
     return 1;
   }
+  let bujo: BujoModule;
   try {
-    const bujo = await loadBujoModule();
+    bujo = await loadBujoModule();
+  } catch {
+    writeMemoryBundleFailure(input.json, "export", "export_failed");
+    return 1;
+  }
+  const { MemoryBundleExportError } = bujo;
+  try {
     const root = resolve(context.cwd, memory.path);
     const bundlePath = await canonicalProspectivePath(resolve(context.cwd, input.bundlePath!));
     const result = await bujo.exportMemoryBundle({
@@ -468,8 +490,12 @@ async function runMemoryBundleExport(
     };
     write(input.json, published, () => renderMemoryBundleExport(published));
     return 0;
-  } catch {
-    writeMemoryBundleFailure(input.json, "export", "export_failed");
+  } catch (error) {
+    writeMemoryBundleFailure(
+      input.json,
+      "export",
+      classifyMemoryBundleExportFailure(MemoryBundleExportError, error),
+    );
     return 1;
   }
 }
@@ -487,18 +513,19 @@ async function runMemoryBundleImport(
     return 1;
   }
   try {
+    const bujo = await loadBujoModule();
     const root = resolve(context.cwd, memory.path);
     if (operation === "prepare") {
-      const result = await prepareMemoryImportPlan(context, root, input);
+      const result = await prepareMemoryImportPlan(context, root, input, bujo);
       write(input.json, result, () => renderMemoryBundleImport(result));
       return 0;
     }
     if (operation === "apply") {
-      const result = await applyMemoryImportPlan(context, root, input.planPath!);
+      const result = await applyMemoryImportPlan(context, root, input.planPath!, bujo);
       write(input.json, result, () => renderMemoryBundleImport(result));
       return 0;
     }
-    const result = await restoreMemoryImportBackup(context, root, input.backupPath!);
+    const result = await restoreMemoryImportBackup(context, root, input.backupPath!, bujo);
     write(input.json, result, () => renderMemoryBundleImport(result));
     return 0;
   } catch (error) {
@@ -520,13 +547,13 @@ async function prepareMemoryImportPlan(
   context: MemoryCommandContext,
   root: string,
   input: RunMemoryCommandInput,
+  bujo: BujoModule,
 ) {
   const planPath = await canonicalProspectivePath(resolve(context.cwd, input.planPath!));
   if (isSameOrUnderDirectory(root, planPath)) {
     throw new MemoryBundleOperationError("import_prepare_failed");
   }
   const bundlePath = resolve(context.cwd, input.bundlePath!);
-  const bujo = await loadBujoModule();
   let preview;
   try {
     preview = bujo.prepareMemoryBundleImport({
@@ -537,7 +564,7 @@ async function prepareMemoryImportPlan(
       acceptDerivedAssociationDrift: input.acceptDerivedAssociationDrift === true,
     });
   } catch (error) {
-    throw new MemoryBundleOperationError(classifyImportPrepareFailure(error));
+    throw new MemoryBundleOperationError(classifyImportPrepareFailure(bujo.MemoryBundleImportError, error));
   }
 
   const payload: MemoryImportPlanPayload = {
@@ -576,13 +603,13 @@ async function applyMemoryImportPlan(
   context: MemoryCommandContext,
   root: string,
   rawPlanPath: string,
+  bujo: BujoModule,
 ) {
   const planPath = resolve(context.cwd, rawPlanPath);
   if (isSameOrUnderDirectory(root, await canonicalProspectivePath(planPath))) {
     throw new MemoryBundleOperationError("import_apply_failed");
   }
   const plan = await readMemoryImportPlan(planPath);
-  const bujo = await loadBujoModule();
   if (plan.rootFingerprint !== memoryRootFingerprint(root)) {
     throw new MemoryBundleOperationError("import_stale_plan");
   }
@@ -631,9 +658,9 @@ async function restoreMemoryImportBackup(
   context: MemoryCommandContext,
   root: string,
   rawBackupPath: string,
+  bujo: BujoModule,
 ) {
   const backupPath = resolve(context.cwd, rawBackupPath);
-  const bujo = await loadBujoModule();
   await assertNoLiveConfiguredAgent(context.configPath, await memoryRegistryDirs(context));
   try {
     const result = await bujo.restoreMemoryBundleImport({
@@ -654,34 +681,119 @@ async function restoreMemoryImportBackup(
   }
 }
 
-function classifyImportPrepareFailure(error: unknown): MemoryBundleFailureCode {
-  const code = (error as { readonly code?: unknown }).code;
-  if (code === "import_derived_drift") return "import_derived_drift";
-  if (code === "import_bundle_invalid" || code === "import_bundle_incompatible") return "import_bundle_invalid";
-  if (code === "id_conflict") return "import_conflict";
-  const cause = (error as { readonly cause?: { readonly code?: unknown } }).cause;
-  if (cause?.code === "id_conflict") return "import_conflict";
+export function classifyMemoryBundleExportFailure(
+  MemoryBundleExportError: BujoModule["MemoryBundleExportError"],
+  error: unknown,
+): MemoryBundleFailureCode {
+  if (!(error instanceof MemoryBundleExportError)) return "export_failed";
+  return classifyMemoryBundleExportCode(error.code);
+}
+
+function classifyMemoryBundleExportCode(code: MemoryBundleExportErrorCode): MemoryBundleFailureCode {
+  switch (code) {
+    case "export_destination_invalid":
+    case "export_pending_work":
+    case "export_source_changed":
+    case "export_source_invalid":
+    case "export_failed":
+      return code;
+    default:
+      return unexpectedMemoryBundleExportCode(code);
+  }
+}
+
+function unexpectedMemoryBundleExportCode(_code: never): "export_failed" {
+  return "export_failed";
+}
+
+export function classifyImportPrepareFailure(
+  MemoryBundleImportError: BujoModule["MemoryBundleImportError"],
+  error: unknown,
+): MemoryBundleFailureCode {
+  if (!(error instanceof MemoryBundleImportError)) return "import_prepare_failed";
+  const code: MemoryBundleImportErrorCode = error.code;
+  switch (code) {
+    case "import_derived_drift":
+      return "import_derived_drift";
+    case "import_bundle_invalid":
+    case "import_bundle_incompatible":
+      return "import_bundle_invalid";
+    case "import_prepare_failed":
+      return hasExplicitCauseCode(error, "id_conflict") ? "import_conflict" : "import_prepare_failed";
+    case "import_pending_work":
+    case "import_stale_plan":
+    case "import_apply_failed":
+    case "import_apply_failed_recovered":
+    case "import_apply_recovery_failed":
+    case "import_restore_failed":
+      return "import_prepare_failed";
+    default:
+      return unexpectedImportPrepareCode(code);
+  }
+}
+
+function unexpectedImportPrepareCode(_code: never): "import_prepare_failed" {
   return "import_prepare_failed";
 }
 
-function classifyImportApplyFailure(
-  bujo: Awaited<ReturnType<typeof loadBujoModule>>,
+export function classifyImportApplyFailure(
+  bujo: Pick<BujoModule, "MemoryBundleImportError">,
   error: unknown,
 ): [MemoryBundleFailureCode, boolean, string | undefined] {
   if (error instanceof bujo.MemoryBundleImportError) {
-    if (error.code === "import_apply_failed_recovered") {
-      return ["import_apply_failed_recovered", true, error.backupPath];
-    }
-    if (error.code === "import_apply_recovery_failed") {
-      return ["import_apply_recovery_failed", false, error.backupPath];
-    }
-    if (error.code === "import_stale_plan") return ["import_stale_plan", false, undefined];
-    if (error.code === "import_derived_drift") return ["import_derived_drift", false, undefined];
-    if (error.code === "import_bundle_invalid" || error.code === "import_bundle_incompatible") {
-      return ["import_bundle_invalid", false, undefined];
+    const code: MemoryBundleImportErrorCode = error.code;
+    switch (code) {
+      case "import_apply_failed_recovered":
+        return ["import_apply_failed_recovered", true, error.backupPath];
+      case "import_apply_recovery_failed":
+        return ["import_apply_recovery_failed", false, error.backupPath];
+      case "import_stale_plan":
+        return ["import_stale_plan", false, undefined];
+      case "import_derived_drift":
+        return ["import_derived_drift", false, undefined];
+      case "import_bundle_invalid":
+      case "import_bundle_incompatible":
+        return ["import_bundle_invalid", false, undefined];
+      case "import_pending_work":
+        return ["import_pending_work", false, undefined];
+      case "import_apply_failed":
+      case "import_prepare_failed":
+      case "import_restore_failed":
+        return ["import_apply_failed", false, undefined];
+      default:
+        return unexpectedImportApplyCode(code);
     }
   }
   return ["import_apply_failed", false, undefined];
+}
+
+function unexpectedImportApplyCode(
+  _code: never,
+): ["import_apply_failed", false, undefined] {
+  return ["import_apply_failed", false, undefined];
+}
+
+function hasExplicitCauseCode(error: Error, expectedCode: string): boolean {
+  const seen = new Set<Error>();
+  let current = readErrorProperty(error, "cause");
+  for (let depth = 0; depth < MAX_MEMORY_BUNDLE_CAUSE_DEPTH; depth += 1) {
+    if (!current.ok || !isIntrinsicError(current.value) || seen.has(current.value)) return false;
+    const candidate = current.value;
+    seen.add(candidate);
+    const code = readOwnErrorCode(candidate);
+    if (code.ok && code.value === expectedCode) return true;
+    current = readErrorProperty(candidate, "cause");
+  }
+  return false;
+}
+
+function readOwnErrorCode(error: Error): ErrorPropertyRead {
+  try {
+    if (!Object.prototype.hasOwnProperty.call(error, "code")) return { ok: true, value: undefined };
+  } catch {
+    return { ok: false };
+  }
+  return readErrorProperty(error, "code");
 }
 
 async function readMemoryImportPlan(path: string): Promise<MemoryImportPlan> {
