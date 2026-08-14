@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import type { Server } from "node:http";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -717,6 +717,37 @@ describe("ACP bridge", () => {
       error: { data: { code: "unknown_session_id" } },
     });
     await purgedBridge.close();
+
+    if (process.platform !== "win32") {
+      const redirectedRoot = join(root, "redirected-acp-sessions");
+      await rm(authorizationRoot, { recursive: true, force: true });
+      await mkdir(redirectedRoot, { mode: 0o700 });
+      await writeFile(
+        join(redirectedRoot, authorizationFiles[0] as string),
+        `${JSON.stringify(authorization)}\n`,
+        { mode: 0o600 },
+      );
+      await symlink(redirectedRoot, authorizationRoot, "dir");
+      const redirectedBridge = startBridgeHarness({ sourceId: "personal-agent", registry });
+      redirectedBridge.send({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "acpx", version: "1" } },
+      });
+      await redirectedBridge.next();
+      redirectedBridge.send({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/resume",
+        params: { sessionId, cwd: canonicalRoot, mcpServers: [] },
+      });
+      await expect(redirectedBridge.next()).resolves.toMatchObject({
+        id: 2,
+        error: { data: { code: "session_authorization_corrupt" } },
+      });
+      await redirectedBridge.close();
+    }
   });
 
   it.each([

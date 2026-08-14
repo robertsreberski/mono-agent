@@ -47,6 +47,7 @@ export async function loadAcpSessionAuthorization(
   sessionId: string,
 ): Promise<AcpSessionAuthorization | undefined> {
   const root = acpSessionAuthorizationsRoot(artifactDir);
+  await ensureOwnerOnlyDirectory(root);
   const path = acpSessionAuthorizationPath(root, sessionId);
   let raw: string;
   try {
