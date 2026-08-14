@@ -351,17 +351,38 @@ The request lifecycle is:
    channel authorization, interaction bindings, and resilience tuning.
 2. `start.ts` creates the authenticated Web API client, discovers the bot user,
    wires the adapter to the Socket Mode runner, and starts the reconnect loop.
-3. `socket-mode-runner.ts` acknowledges envelopes and routes events,
-   interactivity, and slash commands; `adapter.ts` authorizes and normalizes them
-   into structural agent requests with per-conversation admission and live-input
-   fallback reservation. Just before a turn is submitted, `user-directory.ts`
-   resolves the speaker's model-visible name and `thread-context.ts` selects the
-   preceding messages from one bounded conversation read; the phase is
-   best-effort, raced against its own deadline, and cannot fail or delay the turn.
+3. `socket-mode-runner.ts` acknowledges envelopes, admits each exact nonblank
+   Events API `event_id` at most once within its bounded instance-local window,
+   and routes events, interactivity, and slash commands; `adapter.ts` authorizes
+   and normalizes them into structural agent requests with per-conversation
+   admission and live-input fallback reservation. Just before a turn is
+   submitted, `user-directory.ts` resolves the speaker's model-visible name and
+   `thread-context.ts` selects the preceding messages from one bounded
+   conversation read; the phase is best-effort, raced against its own deadline,
+   and cannot fail or delay the turn.
 4. The host responder emits standard stream events. `message-stream.ts` converts
    them into Slack posts/updates/deletes, while `slack-markdown.ts` translates
    standard Markdown at the transport boundary.
 5. `stop()` aborts the runner and waits for the connection loop to settle.
+
+### Event callback admission
+
+`SlackSocketModeRunner` acknowledges a valid Events API envelope before checking
+and synchronously recording its exact, nonblank `event_id`. The in-memory cache
+uses a fixed 10-minute TTL, does not refresh a hit, and retains at most 10,000
+entries in insertion-order FIFO. Its state belongs to the runner instance: it
+survives Socket Mode reconnects and repeated `start()` calls on that runner, but
+a fresh runner or process starts empty. There is no persistent or distributed
+dedupe state.
+
+The guarantee is intentionally bounded. A delivery outside the 10-minute window
+or whose ID was evicted at the cap can be admitted again; the runner warns once
+when the cap forces that degradation. A blank or whitespace-only string ID fails
+open after acknowledgement and is dispatched with a safe debug record, while
+the existing malformed-callback guard continues to acknowledge and ignore an
+absent or non-string ID. A custom connection runner that calls
+`SlackEventCallbackHandler.handleEventCallback` must perform equivalent
+at-most-once admission first.
 
 ### Package structure
 
@@ -371,7 +392,7 @@ The request lifecycle is:
 | [`start.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/start.ts) | Recommended programmatic composition root. |
 | [`adapter.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/adapter.ts) | Authorization, event normalization, structured-ask presentation and pre-admission replies, commands, shortcuts, App Home, and admission. |
 | [`runtime-controls.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/runtime-controls.ts) | Validated model/effort catalogs, callback tokens, menu blocks, and slash-command routing helpers. |
-| [`socket-mode-runner.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/socket-mode-runner.ts) | Socket Mode acknowledgements, heartbeat, degradation, and reconnect lifecycle. |
+| [`socket-mode-runner.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/socket-mode-runner.ts) | Socket Mode acknowledgements, bounded event callback admission, heartbeat, degradation, and reconnect lifecycle. |
 | [`slack-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/slack-client.ts) | Typed Slack Web API boundary and private-file downloads. |
 | [`message-stream.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/message-stream.ts) | Final-only delivery, transient status, retry classification, and message limits. |
 | [`slack-markdown.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/slack-markdown.ts) | Standard Markdown to Slack `mrkdwn` conversion and normalization. |

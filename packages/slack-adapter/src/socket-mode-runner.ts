@@ -10,6 +10,12 @@ import type {
 } from "./types.js";
 import type { SlackEventHandlingResult } from "./adapter.js";
 
+/**
+ * Handles a Slack Events API callback after the built-in Socket Mode runner has
+ * acknowledged and admitted it at most once within that runner's bounded
+ * instance-local window. Custom connection runners must provide equivalent
+ * at-most-once admission before calling {@link handleEventCallback}.
+ */
 export interface SlackEventCallbackHandler {
   handleEventCallback(callback: SlackEventCallback): Promise<SlackEventHandlingResult>;
 }
@@ -127,6 +133,8 @@ export interface SlackSocketModeRunnerOptions {
   onConnectionRestored?: () => void;
   /** Injected RNG in [0, 1) for backoff jitter; defaults to `Math.random`. */
   random?: () => number;
+  /** Injectable clock for event callback dedupe; defaults to `Date.now`. */
+  eventDedupeNow?: () => number;
   logger?: SlackSocketModeRunnerLogger;
 }
 
@@ -193,6 +201,12 @@ const DEFAULT_BACKOFF_JITTER_RATIO = 0.2;
 // Small floor between graceful reconnects so a pathological refresh/warning storm
 // cannot busy-loop. Far below the failure backoff, so a routine refresh is unaffected.
 const DEFAULT_GRACEFUL_RECONNECT_FLOOR_MS = 250;
+const EVENT_DEDUPE_TTL_MS = 10 * 60_000;
+const EVENT_DEDUPE_MAX_ENTRIES = 10_000;
+
+interface SlackEventDedupeEntry {
+  readonly expiresAt: number;
+}
 
 // Slack `disconnect` reasons that are a planned, graceful refresh: Slack is (or is
 // about to be) closing this socket as routine maintenance. `warning` is the courtesy
@@ -214,6 +228,7 @@ export class SlackSocketModeRunner {
   private readonly gracefulReconnectFloorMs: number;
   private readonly jitterRatio: number;
   private readonly random: () => number;
+  private readonly eventDedupeNow: () => number;
   private readonly webSocketFactory: SlackWebSocketFactory;
   private readonly onEventResult:
     | ((result: SlackEventHandlingResult) => void | Promise<void>)
@@ -231,6 +246,12 @@ export class SlackSocketModeRunner {
   private connectionDegraded = false;
   private hasEverConnected = false;
   private startedAt = 0;
+  // Runner-instance state by design: reconnects and repeated start() calls keep
+  // admitted ids, while a fresh runner (and therefore a fresh process) starts
+  // empty. Map iteration order is the FIFO eviction order; duplicate hits never
+  // refresh it.
+  private readonly admittedEventIds = new Map<string, SlackEventDedupeEntry>();
+  private eventDedupeCapacityWarned = false;
 
   constructor(options: SlackSocketModeRunnerOptions) {
     this.api = options.api;
@@ -246,6 +267,7 @@ export class SlackSocketModeRunner {
       options.reconnect?.gracefulReconnectFloorMs ?? DEFAULT_GRACEFUL_RECONNECT_FLOOR_MS;
     this.jitterRatio = options.reconnect?.jitterRatio ?? DEFAULT_BACKOFF_JITTER_RATIO;
     this.random = options.random ?? Math.random;
+    this.eventDedupeNow = options.eventDedupeNow ?? (() => Date.now());
     this.webSocketFactory = options.webSocketFactory ?? ((url) => new WebSocket(url) as SlackWebSocketLike);
     this.onEventResult = options.onEventResult;
     this.onInteraction = options.onInteraction;
@@ -597,8 +619,81 @@ export class SlackSocketModeRunner {
       return;
     }
 
+    if (this.suppressDuplicateEventCallback(envelope, envelope.payload)) {
+      return;
+    }
+
     const result = await this.handler.handleEventCallback(envelope.payload);
     await this.onEventResult?.(result);
+  }
+
+  /**
+   * Admit an exact, nonblank callback event id synchronously after ack. Returns
+   * true when the callback is still inside its original admission window.
+   */
+  private suppressDuplicateEventCallback(
+    envelope: SlackSocketModeEnvelope,
+    callback: SlackEventCallback,
+  ): boolean {
+    const eventId = callback.event_id;
+    if (eventId.trim().length === 0) {
+      this.logger?.debug?.(
+        "Slack event callback has no usable event ID; bypassing dedupe.",
+        { hasEventId: false },
+      );
+      return false;
+    }
+
+    const now = this.eventDedupeNow();
+    const existing = this.admittedEventIds.get(eventId);
+    if (existing !== undefined) {
+      if (existing.expiresAt > now) {
+        this.logger?.info?.(
+          "Suppressed duplicate Slack event callback.",
+          {
+            eventId,
+            ...(envelope.retry_attempt === undefined
+              ? {}
+              : { retryAttempt: envelope.retry_attempt }),
+            ...(envelope.retry_reason === undefined
+              ? {}
+              : { retryReason: envelope.retry_reason }),
+          },
+        );
+        return true;
+      }
+      this.admittedEventIds.delete(eventId);
+    }
+
+    if (this.admittedEventIds.size >= EVENT_DEDUPE_MAX_ENTRIES) {
+      this.pruneExpiredEventDedupePrefix(now);
+    }
+    if (this.admittedEventIds.size >= EVENT_DEDUPE_MAX_ENTRIES) {
+      if (!this.eventDedupeCapacityWarned) {
+        this.eventDedupeCapacityWarned = true;
+        this.logger?.warn?.(
+          "Slack event callback dedupe cache reached its cap; bounded at-most-once guarantee is degraded.",
+          { maxEntries: EVENT_DEDUPE_MAX_ENTRIES },
+        );
+      }
+      const oldest = this.admittedEventIds.keys().next();
+      if (oldest.done !== true) {
+        this.admittedEventIds.delete(oldest.value);
+      }
+    }
+    this.admittedEventIds.set(eventId, { expiresAt: now + EVENT_DEDUPE_TTL_MS });
+    return false;
+  }
+
+  /** Remove only the expired insertion-order prefix; never scan or refresh hits. */
+  private pruneExpiredEventDedupePrefix(now: number): void {
+    while (this.admittedEventIds.size > 0) {
+      const oldest = this.admittedEventIds.entries().next();
+      if (oldest.done === true || oldest.value[1].expiresAt > now) {
+        return;
+      }
+      this.admittedEventIds.delete(oldest.value[0]);
+    }
   }
 }
 
@@ -631,6 +726,16 @@ function parseSocketEnvelope(data: unknown): SlackSocketModeEnvelope | undefined
     }
     if (typeof parsed.reason === "string") {
       envelope.reason = parsed.reason;
+    }
+    if (
+      typeof parsed.retry_attempt === "number"
+      && Number.isSafeInteger(parsed.retry_attempt)
+      && parsed.retry_attempt >= 0
+    ) {
+      envelope.retry_attempt = parsed.retry_attempt;
+    }
+    if (typeof parsed.retry_reason === "string") {
+      envelope.retry_reason = parsed.retry_reason;
     }
     return envelope;
   } catch {
