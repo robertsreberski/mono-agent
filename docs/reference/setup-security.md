@@ -192,6 +192,44 @@ deadline); monotonic in-process state remains the cooldown authority. Existing
 loaded helpers keep their old schedule until each agent is explicitly restarted:
 `launchctl print` is authoritative, and no fleet restart is implied by upgrade.
 
+The managed web console uses a parallel, deliberately isolated controller:
+`com.mono-agent-web-maintenance`. Its one-shot plist has `RunAtLoad`, a stable
+hourly minute, deterministic 0–119-second pre-import dispersion, no `KeepAlive`,
+`/dev/null` output, and only the fixed marker plus system `PATH`. It runs from
+the same attested managed-runtime closure as the web worker. Before importing
+the heavy controller it proves its exact launchd PID and cached private argv;
+the controller then verifies the on-disk helper and the main web plist's
+composite `dev:ino:size:sha256` identity again after taking the web lifecycle
+lock. The main plist is always written first and the helper is regenerated from
+that fresh identity after every publication or restoration write. A partial or
+stale pair is never bootstrapped.
+
+Web log mutation uses only the web lifecycle lock under
+`~/.mono-agent/web/locks/`. The web directory is outside the shared configured-
+agent log chain, so the helper never acquires or writes ownership into the
+agents' shared log lock. The worker is wake-only; only the helper may rotate.
+The same durable `stopping` → `stopped` → `restoring` proof guards the fixed
+5 MiB active-plus-three-generations policy. Exact pre-helper
+`web.{out,err}.log.{rollover,retiring}-<uuid>` leftovers are removed only after
+stopped-writer proof and only when they remain current-user-owned, regular, and
+single-link; unsafe or merely similar files are preserved and reported.
+
+Start and restart stop helper before worker, perform any proven stopped-window
+maintenance, publish the paired definitions, then bootstrap helper before
+worker. Stop proves both PIDs dead before removing both plists. Reset takes the
+same lifecycle lock and requires both jobs stopped and both definitions absent.
+The helper never resurrects a console without durable restoration authority.
+Because an authorized rotation restarts the web service, in-flight turns and
+SSE streams can be interrupted; this availability cost is why safe oversize
+logs waiting for the next hourly pass are reported as `due` rather than rotated
+more eagerly. Missing or stale authority, unsafe inventory, refused legacy
+files, and abandoned recovery remain durable nonzero `web status` problems.
+Proven stopped/restoring recovery uses `mono-agent web restart`. An unproven
+`stopping` intent or a fingerprint tied to an older main plist cannot safely be
+promoted by restart; status instead directs `mono-agent web stop` followed by
+`mono-agent web start`, and stop clears the stale intent only after both jobs
+are proven down.
+
 ### Frozen inputs and startup proof
 
 Before app or channel loading, managed startup freezes the attested config, Identity, optional Soul, and external MCP authority file into private read-only runtime inputs. Trace and status records still identify the canonical operator-facing config path.

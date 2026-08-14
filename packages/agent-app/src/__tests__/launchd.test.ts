@@ -10,6 +10,8 @@ import {
   buildPlistXml,
   buildLaunchdProgramArguments,
   buildWebLaunchdProgramArguments,
+  buildWebMaintenancePlistXml,
+  buildWebMaintenanceProgramArguments,
   buildWebPlistXml,
   defaultPathEnv,
   deriveLaunchdLabel,
@@ -23,11 +25,22 @@ import {
   launchdPathsFor,
   LAUNCHD_MAINTENANCE_DISPERSION_SECONDS,
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
+  MANAGED_WEB_LOG_MAINTENANCE_ENV,
   parseLaunchdManagedWorkerDefinition,
   parseLaunchdServicePid,
+  parseLaunchdWebMaintenanceDefinition,
   serviceTarget,
+  WEB_LAUNCHD_LABEL,
+  WEB_MAINTENANCE_LAUNCHD_LABEL,
+  webMaintenanceCalendarMinute,
+  webMaintenanceDispersionSeconds,
 } from "../launchd.js";
-import type { MaintenancePlistInput, PlistInput, WebPlistInput } from "../launchd.js";
+import type {
+  MaintenancePlistInput,
+  PlistInput,
+  WebMaintenancePlistInput,
+  WebPlistInput,
+} from "../launchd.js";
 
 function plistInput(overrides: Partial<PlistInput> = {}): PlistInput {
   return {
@@ -77,6 +90,25 @@ function webInput(overrides: Partial<WebPlistInput> = {}): WebPlistInput {
     stdoutPath: "/home/u/.mono-agent/web/logs/web.out.log",
     stderrPath: "/home/u/.mono-agent/web/logs/web.err.log",
     environment: { HOME: "/home/u", PATH: "/usr/bin:/bin" },
+    ...overrides,
+  };
+}
+
+function webMaintenanceInput(
+  overrides: Partial<WebMaintenancePlistInput> = {},
+): WebMaintenancePlistInput {
+  return {
+    label: WEB_MAINTENANCE_LAUNCHD_LABEL,
+    nodePath: "/managed/bin/node",
+    cliPath: "/managed/agent-app/dist/launchd-maintenance-entry.js",
+    cwd: "/home/u/.mono-agent/web",
+    expectedManagedRuntimeLaunch: "cHJvb2Y",
+    expectedWebPlistIdentity: `1:2:345:${"a".repeat(64)}`,
+    environment: {
+      [MANAGED_WEB_LOG_MAINTENANCE_ENV]: "1",
+      PATH: "/usr/bin:/bin",
+    },
+    calendarMinute: webMaintenanceCalendarMinute(),
     ...overrides,
   };
 }
@@ -357,6 +389,51 @@ describe("buildLaunchdMaintenancePlistXml", () => {
   });
 });
 
+describe("buildWebMaintenancePlistXml", () => {
+  it("publishes the exact paired composite identity through a closed one-shot helper", () => {
+    const input = webMaintenanceInput();
+    expect(buildWebMaintenanceProgramArguments(input)).toEqual([
+      "/usr/bin/env",
+      "-i",
+      `${MANAGED_WEB_LOG_MAINTENANCE_ENV}=1`,
+      "PATH=/usr/bin:/bin",
+      "/managed/bin/node",
+      "/managed/agent-app/dist/launchd-maintenance-entry.js",
+      "__web-log-maintenance",
+      "--expected-managed-runtime-launch",
+      "cHJvb2Y",
+      "--expected-web-plist-identity",
+      `1:2:345:${"a".repeat(64)}`,
+    ]);
+    const xml = buildWebMaintenancePlistXml(input);
+    expect(xml).toContain("<key>RunAtLoad</key>\n  <true/>");
+    expect(xml).toContain("<integer>8</integer>");
+    expect(xml).toContain("<string>/dev/null</string>");
+    expect(xml).not.toContain("<key>KeepAlive</key>");
+    expect(xml).not.toContain("--expected-web-plist-fingerprint");
+  });
+
+  it("rejects content-only digests, alternate labels, and agent schedule labels", () => {
+    expect(() => buildWebMaintenancePlistXml(webMaintenanceInput({
+      expectedWebPlistIdentity: "a".repeat(64),
+    }))).toThrow(/dev:ino:size:sha256/u);
+    expect(() => buildWebMaintenancePlistXml({
+      ...webMaintenanceInput(),
+      label: "com.mono-agent-web-maintenance-evil" as typeof WEB_MAINTENANCE_LAUNCHD_LABEL,
+    })).toThrow(/exact private LaunchAgent label/u);
+    expect(() => webMaintenanceCalendarMinute("com.mono-agent.demo-0a1b2c3d"))
+      .toThrow(/exact managed web/u);
+    expect(() => launchdMaintenanceCalendarMinute(WEB_LAUNCHD_LABEL))
+      .toThrow(/canonical mono-agent label/u);
+  });
+
+  it("uses a deterministic web-only hourly minute and 120-second dispersion", () => {
+    expect(webMaintenanceCalendarMinute()).toBe(8);
+    expect(webMaintenanceDispersionSeconds()).toBe(68);
+    expect(LAUNCHD_MAINTENANCE_DISPERSION_SECONDS).toBe(120);
+  });
+});
+
 describe("parseLaunchdServicePid", () => {
   it("extracts a positive top-level pid from launchctl print output", () => {
     expect(parseLaunchdServicePid("service = {\n\tpid = 4321\n\tlast exit code = 0\n}\n")).toBe(4321);
@@ -366,6 +443,45 @@ describe("parseLaunchdServicePid", () => {
     expect(parseLaunchdServicePid("state = waiting\n")).toBeUndefined();
     expect(parseLaunchdServicePid("pid = 0\n")).toBeUndefined();
     expect(parseLaunchdServicePid("note = pid = 999\n")).toBeUndefined();
+  });
+});
+
+describe("parseLaunchdWebMaintenanceDefinition", () => {
+  function launchctlPrint(input: WebMaintenancePlistInput): string {
+    const args = buildWebMaintenanceProgramArguments(input)
+      .map((argument) => `\t\t${argument}`)
+      .join("\n");
+    return `gui/501/${input.label} = {\n`
+      + `\tpath = /home/u/Library/LaunchAgents/${input.label}.plist\n`
+      + "\tprogram = /usr/bin/env\n"
+      + `\targuments = {\n${args}\n\t}\n`
+      + `\tworking directory = ${input.cwd}\n`
+      + "\tpid = 4321\n}\n";
+  }
+
+  it("reads only the exact cached composite-identity helper definition", () => {
+    const input = webMaintenanceInput();
+    expect(parseLaunchdWebMaintenanceDefinition(launchctlPrint(input))).toEqual({
+      plistPath: "/home/u/Library/LaunchAgents/com.mono-agent-web-maintenance.plist",
+      nodePath: input.nodePath,
+      cliPath: input.cliPath,
+      cwd: input.cwd,
+      expectedManagedRuntimeLaunch: input.expectedManagedRuntimeLaunch,
+      expectedWebPlistIdentity: input.expectedWebPlistIdentity,
+    });
+    const valid = launchctlPrint(input);
+    expect(parseLaunchdWebMaintenanceDefinition(valid.replace(
+      `${MANAGED_WEB_LOG_MAINTENANCE_ENV}=1`,
+      "MONO_AGENT_MANAGED_LOG_MAINTENANCE=1",
+    ))).toBeUndefined();
+    expect(parseLaunchdWebMaintenanceDefinition(valid.replace(
+      input.expectedWebPlistIdentity,
+      "a".repeat(64),
+    ))).toBeUndefined();
+    expect(parseLaunchdWebMaintenanceDefinition(valid.replace(
+      "\t\tPATH=/usr/bin:/bin",
+      "\t\tPRIVATE_TOKEN=secret\n\t\tPATH=/usr/bin:/bin",
+    ))).toBeUndefined();
   });
 });
 
