@@ -104,10 +104,10 @@ export async function sessionToolHistorySection(
           if (stats.dangling > 0) worsen(owner.live === true ? "waiting" : "error", `${String(stats.dangling)} dangling invocation(s) await terminal recovery.`);
           if (stats.orphanResults > 0) worsen("waiting", `${String(stats.orphanResults)} result(s) required a synthetic invocation because the provider start was missing.`);
           if (stats.recovered > 0) worsen("waiting", `${String(stats.recovered)} invocation(s) were recovered as interrupted without rerun.`);
-          if (stats.writeFailures > 0) worsen("waiting", `${String(stats.writeFailures)} fail-soft lifecycle write failure(s) were recorded.`);
-          if (stats.idempotencyConflicts > 0) worsen("error", `${String(stats.idempotencyConflicts)} lifecycle idempotency conflict(s) were rejected.`);
-          if (stats.maintenanceFailures > 0) worsen("waiting", `${String(stats.maintenanceFailures)} retention maintenance failure(s) were recorded.`);
-          if (stats.recoveryFailures > 0) worsen("error", `${String(stats.recoveryFailures)} lifecycle recovery failure(s) were recorded.`);
+          if (stats.writeFailures > 0) worsen("waiting", `${String(stats.writeFailures)} lifecycle write failure(s) remain since the latest successful lifecycle write.`);
+          if (stats.idempotencyConflicts > 0) worsen("error", `${String(stats.idempotencyConflicts)} lifecycle idempotency conflict(s) remain since the latest successful lifecycle write.`);
+          if (stats.maintenanceFailures > 0) worsen("waiting", `${String(stats.maintenanceFailures)} retention failure(s) remain since the latest successful retention pass.`);
+          if (stats.recoveryFailures > 0) worsen("error", `${String(stats.recoveryFailures)} recovery failure(s) remain since the latest successful writer recovery.`);
           if (stats.retainedBytes > stats.limits.maxBytes) worsen("error", "Tool-history retained payload bytes exceed the configured byte ceiling.");
           else if (stats.retainedBytes >= Math.floor(stats.limits.maxBytes * 0.9)) worsen("waiting", "Tool-history retained payload bytes have reached 90% of the configured ceiling.");
         }

@@ -590,6 +590,23 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     expect(reader.stats()).toMatchObject({ calls: 1, records: 2 });
   });
 
+  it("uses the maintenance deadline to reset 35,000 retained calls and still reports real failures", async () => {
+    const root = await tempRoot();
+    const initialized = await ToolHistoryWriter.open({ root });
+    await initialized.close();
+    seedCompletedToolCalls(root, 35_000);
+
+    const writer = await ToolHistoryWriter.open({ root, persistenceCeilingMs: 1 });
+    try {
+      await expect(writer.stats()).resolves.toMatchObject({ calls: 35_000, records: 70_000 });
+      await expect(writer.resetConversation("slack:C1")).resolves.toBeUndefined();
+      await expect(writer.stats()).resolves.toMatchObject({ calls: 0, records: 0 });
+      await expect(writer.resetConversation("")).rejects.toMatchObject({ code: "history_write_failed" });
+    } finally {
+      await writer.close();
+    }
+  }, 20_000);
+
   it("rejects an initial result whose tool name conflicts with the stable invocation", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
@@ -600,6 +617,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     expect(await writer.persist(run, {
       phase: "result", toolCallId: "same-call", toolName: "Bash", state: "success", content: "spoofed",
     })).toEqual({ persistence: "failed", errorCode: "history_idempotency_conflict" });
+    await expect(writer.stats()).resolves.toMatchObject({ idempotencyConflicts: 1 });
     expect(await writer.persist(run, {
       phase: "result", toolCallId: "same-call", toolName: "Read", state: "success", content: "ok",
     })).toMatchObject({ persistence: "persisted", sequence: 2 });
@@ -609,7 +627,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       logicalConversationId: "slack:C1",
       currentRunId: "current",
     }).items).toMatchObject([{ toolName: "Read", state: "success" }]);
-    expect(new ToolHistoryReader(root).stats()).toMatchObject({ idempotencyConflicts: 1 });
+    expect(new ToolHistoryReader(root).stats()).toMatchObject({ idempotencyConflicts: 0 });
   });
 
   it("excludes isolated/proactive runs by default and includes them only when explicitly requested", async () => {
@@ -657,7 +675,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     }
     const reader = new ToolHistoryReader(root);
     const stats = reader.stats();
-    expect(stats?.calls).toBeLessThanOrEqual(1);
+    expect(stats?.calls).toBe(1);
     expect(stats?.retainedBytes).toBeLessThanOrEqual(700);
     expect(stats?.tombstones).toBeLessThanOrEqual(4);
     expect(stats?.bytes).toBeGreaterThan(stats?.retainedBytes ?? 0);
@@ -999,29 +1017,101 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     blocker.prepare("INSERT OR REPLACE INTO writer_stats(key,value,updated_at_ms) VALUES('test_blocker',0,?)").run(Date.now());
     await chmod(journalPath, 0o600);
     try {
-      const messages = createDurableHistoryStore({ root, maxConversations: 1 });
-      await messages.append("conversation-old", [{ role: "user", content: "old" }]);
-      await messages.append("conversation-new", [{ role: "assistant", content: "new" }]);
-      await expect(messages.load("conversation-new")).resolves.toEqual([{ role: "assistant", content: "new" }]);
-      await expect(messages.stats()).resolves.toMatchObject({ conversations: 1 });
+      try {
+        const messages = createDurableHistoryStore({ root, maxConversations: 1 });
+        await messages.append("conversation-old", [{ role: "user", content: "old" }]);
+        await messages.append("conversation-new", [{ role: "assistant", content: "new" }]);
+        await expect(messages.load("conversation-new")).resolves.toEqual([{ role: "assistant", content: "new" }]);
+        await expect(messages.stats()).resolves.toMatchObject({ conversations: 1 });
 
-      const started = performance.now();
-      const persisted = await writer.persist(binding("slow-run"), {
-        phase: "invocation", toolCallId: "slow-call", toolName: "Read", arguments: {},
-      });
-      const elapsed = performance.now() - started;
-      expect(persisted).toEqual({ persistence: "failed", errorCode: "history_persistence_timeout" });
-      expect(elapsed).toBeGreaterThanOrEqual(200);
-      expect(elapsed).toBeLessThan(750);
+        const started = performance.now();
+        const persisted = await writer.persist(binding("slow-run"), {
+          phase: "invocation", toolCallId: "slow-call", toolName: "Read", arguments: {},
+        });
+        const elapsed = performance.now() - started;
+        expect(persisted).toEqual({ persistence: "failed", errorCode: "history_persistence_timeout" });
+        expect(elapsed).toBeGreaterThanOrEqual(200);
+        expect(elapsed).toBeLessThan(750);
+      } finally {
+        blocker.exec("ROLLBACK");
+        blocker.close();
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 350));
+      }
+
+      await expect(writer.stats()).resolves.toMatchObject({ writeFailures: 1 });
+      await expect(writer.persist(binding("recovered-write"), {
+        phase: "invocation", toolCallId: "recovered-call", toolName: "Read", arguments: {},
+      })).resolves.toMatchObject({ persistence: "persisted" });
+      await expect(writer.stats()).resolves.toMatchObject({ writeFailures: 0 });
     } finally {
-      blocker.exec("ROLLBACK");
-      blocker.close();
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 350));
       await writer.close();
     }
-    expect(new ToolHistoryReader(root).stats()).toMatchObject({ writeFailures: 1 });
+    expect(new ToolHistoryReader(root).stats()).toMatchObject({ writeFailures: 0 });
   }, 10_000);
 });
+
+function seedCompletedToolCalls(root: string, count: number): void {
+  const database = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE));
+  try {
+    database.exec("PRAGMA foreign_keys=ON; BEGIN IMMEDIATE");
+    const now = Date.now();
+    database.prepare(`
+      INSERT INTO runs (conversation_id,logical_id,run_id,isolated,status,next_seq,started_at_ms,terminal_at_ms)
+      VALUES (?,?,?,?,?,?,?,?)
+    `).run("slack:C1#2026-08-14", "slack:C1", "seeded-run", 0, "succeeded", count * 2 + 1, now, now);
+    database.exec("CREATE TEMP TABLE seed_numbers (value INTEGER PRIMARY KEY)");
+    database.prepare(`
+      WITH digits(value) AS (
+        VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)
+      )
+      INSERT INTO seed_numbers (value)
+      SELECT ones.value
+        + tens.value * 10
+        + hundreds.value * 100
+        + thousands.value * 1000
+        + ten_thousands.value * 10000
+      FROM digits AS ones
+      CROSS JOIN digits AS tens
+      CROSS JOIN digits AS hundreds
+      CROSS JOIN digits AS thousands
+      CROSS JOIN digits AS ten_thousands
+      WHERE ones.value
+        + tens.value * 10
+        + hundreds.value * 100
+        + thousands.value * 1000
+        + ten_thousands.value * 10000 < ?
+    `).run(count);
+    database.prepare(`
+      INSERT INTO tool_calls (
+        conversation_id,run_id,tool_call_id,tool_name,start_seq,end_seq,state,started_at_ms,ended_at_ms
+      )
+      SELECT 'slack:C1#2026-08-14','seeded-run','seeded-call-' || value,'Read',
+             value * 2 + 1,value * 2 + 2,'success',?,?
+      FROM seed_numbers
+    `).run(now, now);
+    database.exec(`
+      INSERT INTO tool_records (
+        record_id,conversation_id,run_id,tool_call_id,phase,seq,payload_json,payload_sha256,
+        search_text,original_bytes,retained_bytes,truncated
+      )
+      SELECT 'seeded-invocation-' || value,'slack:C1#2026-08-14','seeded-run',
+             'seeded-call-' || value,'invocation',value * 2 + 1,'{}',
+             'invocation-' || value,'seeded',2,2,0
+      FROM seed_numbers
+      UNION ALL
+      SELECT 'seeded-result-' || value,'slack:C1#2026-08-14','seeded-run',
+             'seeded-call-' || value,'result',value * 2 + 2,'{}',
+             'result-' || value,'seeded',2,2,0
+      FROM seed_numbers
+    `);
+    database.exec("COMMIT");
+  } catch (error) {
+    try { database.exec("ROLLBACK"); } catch { /* preserve the seeding failure */ }
+    throw error;
+  } finally {
+    database.close();
+  }
+}
 
 function startChild(
   root: string,

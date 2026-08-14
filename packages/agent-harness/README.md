@@ -223,7 +223,6 @@ SkillsStat
 TOOL_HISTORY_APPLICATION_ID
 TOOL_HISTORY_DATABASE
 TOOL_HISTORY_DIRECTORY
-TOOL_HISTORY_MODEL_TEXT_MAX_CHARS
 TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS
 TOOL_HISTORY_OWNER_DATABASE
 TOOL_HISTORY_PERSISTENCE_CEILING_MS
@@ -304,6 +303,12 @@ processes. Acquisition retries for at most 10 seconds, reaps a proven-dead PID
 using the durable-history liveness pattern, succeeds when a normal old writer
 releases in time, and otherwise fails deterministically with
 `history_writer_in_use`.
+
+Incremental lifecycle writes retain their 250 ms streaming ceiling. Reset,
+statistics, and close are bounded maintenance operations with a separate 2 s
+deadline; reset still fails closed on a real worker error. Writer-health
+counters describe unresolved incidents and clear only after the corresponding
+lifecycle write, retention pass, or startup recovery succeeds.
 
 Keys are `(conversationId, runId, toolCallId)`; each run has monotonic
 writer-assigned start/end sequences, while timestamps remain metadata. Repeating

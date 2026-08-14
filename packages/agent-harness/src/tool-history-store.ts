@@ -27,7 +27,7 @@ export const TOOL_HISTORY_APPLICATION_ID = 0x4d415448;
 export const TOOL_HISTORY_USER_VERSION = 1;
 export const TOOL_HISTORY_PERSISTENCE_CEILING_MS = 250;
 export const TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS = 10_000;
-export const TOOL_HISTORY_MODEL_TEXT_MAX_CHARS = 10_000;
+const TOOL_HISTORY_MAINTENANCE_CEILING_MS = 2_000;
 
 export interface ToolHistoryRetentionOptions {
   readonly maxCompletedCalls?: number;
@@ -167,9 +167,13 @@ export interface ToolHistoryStats {
   readonly dangling: number;
   readonly orphanResults: number;
   readonly recovered: number;
+  /** Unresolved incidents since the latest successful lifecycle write. */
   readonly writeFailures: number;
+  /** Unresolved conflicts since the latest successful lifecycle write. */
   readonly idempotencyConflicts: number;
+  /** Unresolved failures since the latest successful retention pass. */
   readonly maintenanceFailures: number;
+  /** Unresolved failures since the latest successful writer recovery. */
   readonly recoveryFailures: number;
   /** Bytes of bounded payload counted by the retention contract. */
   readonly retainedBytes: number;
@@ -362,18 +366,18 @@ export class ToolHistoryWriter {
     await this.request(
       "reset_conversation",
       { logicalConversationId },
-      this.persistenceCeilingMs,
+      TOOL_HISTORY_MAINTENANCE_CEILING_MS,
     );
   }
 
   async stats(): Promise<ToolHistoryStats> {
-    return await this.request("stats", undefined, 2_000) as ToolHistoryStats;
+    return await this.request("stats", undefined, TOOL_HISTORY_MAINTENANCE_CEILING_MS) as ToolHistoryStats;
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    await this.request("close", undefined, 2_000).catch(() => undefined);
+    await this.request("close", undefined, TOOL_HISTORY_MAINTENANCE_CEILING_MS).catch(() => undefined);
     await this.worker.terminate().catch(() => undefined);
   }
 

@@ -518,8 +518,9 @@ SessionHistory, and cold projection can expose. A custom history store used with
 daily rollover must implement logical-session reset or the reset fails closed.
 `restart --clear-sessions` purges all provider transcripts, message history, and
 tool history while reporting message/tool counts and bytes separately. Doctor
-audits schema, ownership, journal/integrity state, recovery, quota, and fail-soft
-counters. A newer tool-history schema hard-fails downgrade until persisted
+audits schema, ownership, journal/integrity state, recovery, quota, and current
+fail-soft health counters that clear after the matching writer operation
+recovers. A newer tool-history schema hard-fails downgrade until persisted
 conversation state is purged.
 
 ### Channel interactions and conversation history

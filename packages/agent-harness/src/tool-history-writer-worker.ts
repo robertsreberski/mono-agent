@@ -129,6 +129,10 @@ try {
   database = openContentDatabase(databasePath, retention, artifactRoot);
   closeDangling(database, undefined, "interrupted", "process_death", "recovered_after_writer_restart", true);
   applyRetention(database, retention);
+  const recoveredDatabase = database;
+  if (statValue(recoveredDatabase, "recovery_failures") > 0) {
+    transaction(recoveredDatabase, () => clearStat(recoveredDatabase, "recovery_failures"));
+  }
 } catch (error) {
   try { if (database !== undefined) incrementStat(database, "recovery_failures", 1, reasonOf(error)); } catch { /* preserve the original recovery failure */ }
   try { database?.close(); } catch { /* ownership release remains authoritative */ }
@@ -182,6 +186,7 @@ parentPort.on("message", (request: WorkerRequest) => {
           transaction(database, () => {
             database.prepare(`UPDATE runs SET status=?, terminal_at_ms=? WHERE conversation_id=? AND run_id=?`)
               .run(status, Date.now(), binding.conversationId, binding.runId);
+            clearStat(database, "write_failures");
           });
           respond(request.id, null);
           break;
@@ -192,7 +197,7 @@ parentPort.on("message", (request: WorkerRequest) => {
             "logicalConversationId",
           );
           transaction(database, () => {
-            database.prepare("DELETE FROM runs WHERE logical_id=?").run(logicalConversationId);
+            resetLogicalConversation(database, logicalConversationId);
           });
           respond(request.id, null);
           break;
@@ -256,6 +261,7 @@ function recordInvocation(database: DatabaseSync, payload: LifecyclePayload): Ru
         incrementStat(database, "idempotency_conflicts", 1, `${binding.runId}:${toolCallId}:invocation`);
         return { persistence: "failed", errorCode: "history_idempotency_conflict" };
       }
+      markLifecycleHealthy(database);
       return persistenceFromRow(existing);
     }
     const sequence = takeSequence(database, binding);
@@ -276,6 +282,7 @@ function recordInvocation(database: DatabaseSync, payload: LifecyclePayload): Ru
     insertRecord(database, {
       recordId, binding, toolCallId, phase: "invocation", sequence, bounded,
     });
+    markLifecycleHealthy(database);
     return persistence(recordId, sequence, bounded);
   });
 }
@@ -347,6 +354,7 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
         incrementStat(database, "idempotency_conflicts", 1, `${binding.runId}:${toolCallId}:result`);
         return { persistence: "failed", errorCode: "history_idempotency_conflict" };
       }
+      markLifecycleHealthy(database);
       return persistenceFromRow(existing, artifactRefs(database, binding, toolCallId));
     }
     const sequence = takeSequence(database, binding);
@@ -369,6 +377,7 @@ function recordResult(database: DatabaseSync, payload: LifecyclePayload): Runtim
       recordId, binding, toolCallId, phase: "result", sequence, bounded,
     });
     const artifacts = insertArtifacts(database, binding, toolCallId, event.artifacts ?? [], now);
+    markLifecycleHealthy(database);
     return persistence(recordId, sequence, bounded, artifacts);
   }, () => applyRetention(database, retention));
 }
@@ -407,6 +416,21 @@ function closeDangling(
       if (recovered) incrementStat(database, "recovered_calls", 1, `${rowBinding.runId}:${toolCallId}`);
     }
   });
+}
+
+function resetLogicalConversation(database: DatabaseSync, logicalConversationId: string): void {
+  for (const table of ["artifact_refs", "tool_records", "tombstones", "tool_calls"] as const) {
+    database.prepare(`
+      DELETE FROM ${table}
+      WHERE EXISTS (
+        SELECT 1 FROM runs
+        WHERE runs.logical_id=?
+          AND runs.conversation_id=${table}.conversation_id
+          AND runs.run_id=${table}.run_id
+      )
+    `).run(logicalConversationId);
+  }
+  database.prepare("DELETE FROM runs WHERE logical_id=?").run(logicalConversationId);
 }
 
 function ensureRun(database: DatabaseSync, binding: ToolHistoryRunBinding): void {
@@ -560,6 +584,7 @@ function applyRetention(database: DatabaseSync, limits: Required<ToolHistoryRete
         WHERE t.conversation_id=runs.conversation_id AND t.run_id=runs.run_id
       )
     `);
+    clearStat(database, "maintenance_failures");
   });
 }
 
@@ -1042,6 +1067,15 @@ function incrementStat(database: DatabaseSync, key: string, amount: number, deta
     INSERT INTO writer_stats (key,value,last_detail,updated_at_ms) VALUES (?,?,?,?)
     ON CONFLICT(key) DO UPDATE SET value=value+excluded.value,last_detail=excluded.last_detail,updated_at_ms=excluded.updated_at_ms
   `).run(key, amount, detail?.slice(0, 1_000) ?? null, Date.now());
+}
+
+function clearStat(database: DatabaseSync, key: string): void {
+  database.prepare("DELETE FROM writer_stats WHERE key=?").run(key);
+}
+
+function markLifecycleHealthy(database: DatabaseSync): void {
+  clearStat(database, "write_failures");
+  clearStat(database, "idempotency_conflicts");
 }
 
 function statValue(database: DatabaseSync, key: string): number {
