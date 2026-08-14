@@ -38,6 +38,10 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   conversation, independent of daily rollover buckets.
 - Expose the sibling request-scoped read-only `SessionHistory` tool over the
   harness's canonical retained managed-tool lifecycle sidecar.
+- Opt in to Pi-native Exec/Bash process jobs through `processJobs.*`: keep the
+  owner-private queue/store/process-group lifecycle, exact Slack/Telegram/web
+  wake, restart interruption, doctor section, operator routes, and
+  `mono-agent jobs` CLI at the app boundary.
 - Drive each channel through a uniform driver contract with per-channel
   `disabled` / `waiting_for_config` / `running` / `degraded` / `failed` status.
   `degraded` means a temporarily unavailable transport owns its recovery while
@@ -735,7 +739,7 @@ path:
    effective runtime-enabled subset; its operator service feeds the TUI/web
    capability lane. The TUI driver primes its skill registry before binding and
    refreshes changed `SKILL.md` metadata in memory while it runs.
-4. Publish traceability, exporter, sandbox, continuation, and memory-health
+4. Publish traceability, exporter, sandbox, process-job, continuation, and memory-health
    state while the controller tracks channel states as `disabled`,
    `waiting_for_config`, `running`, `degraded`, or `failed`.
 5. On stop or reload, stop the transport first, then dispose its responder so
@@ -753,8 +757,8 @@ path:
 | Configured agent | `configured-agent.ts`, `app-controller-responder.ts` | Runtime, harness, memory, history, tools, and recorder composition. |
 | Channel integration | `channels.ts`, `channel-drivers/` | Built-in drivers plus config-loaded plugin resolution. |
 | Interaction and send tools | `interaction-bridge.ts`, `adapter-send-tools*.ts` | Structured `AskUser` state, channel sinks, progress, adapter-send tools, and bounded interaction-history projection. |
-| Operator CLI | `cli*.ts`, `init.ts`, `doctor.ts`, `doctor-observability.ts`, `background*.ts`, `launchd*.ts`, `managed-web-logs.ts`, `web-*.ts` | Setup, focused validation sections, paired managed service/log lifecycle, and diagnostics. |
-| Host services | `run-history.ts`, `session-history.ts`, `request-scoped-mcp.ts`, `continuation*.ts`, `memory-*.ts` | Shared request-scoped guards, bounded prior-run/tool-lifecycle evidence, durable continuations, and memory operations. |
+| Operator CLI | `cli*.ts`, `jobs-command.ts`, `init.ts`, `doctor.ts`, `doctor-observability.ts`, `background*.ts`, `launchd*.ts`, `managed-web-logs.ts`, `web-*.ts` | Setup, focused validation sections, paired managed service/log lifecycle, process-job operation, and diagnostics. |
+| Host services | `run-history.ts`, `session-history.ts`, `request-scoped-mcp.ts`, `process-jobs*.ts`, `continuation*.ts`, `memory-*.ts` | Shared request-scoped guards, bounded prior-run/tool-lifecycle evidence, local process-job ownership/wake/recovery, durable continuations, and memory operations. |
 
 ## Public API
 
@@ -768,7 +772,7 @@ path:
 | Scaffold or validate an agent folder | `initMonoAgentFolder`, `validateMonoAgentFolder` |
 | Add bounded prior-run inspection | `createRunHistoryRuntimeExtension`, `isRunHistoryToolAllowed` |
 | Add bounded retained-tool inspection | `createSessionHistoryRuntimeExtension`, `isSessionHistoryToolAllowed` |
-| Operate the CLI programmatically, including the managed web lifecycle | `runCli`, `parseCliArgs`, `renderHelp` |
+| Operate the CLI programmatically, including process jobs and the managed web lifecycle | `runCli`, `runJobsCommand`, `parseCliArgs`, `renderHelp` |
 
 The web maintenance controller and publication helpers remain private CLI
 implementation details; this change adds no new package-level public API for
@@ -862,6 +866,7 @@ RunContinuationCommandOptions
 RunHistoryBinding
 RunHistoryRuntimeExtension
 RunHistoryRuntimeExtensionOptions
+RunJobsCommandOptions
 RunningChannel
 RunningRituals
 SESSION_HISTORY_MCP_SERVER_NAME
@@ -943,6 +948,7 @@ resolveChannelDrivers
 rule
 runCli
 runContinuationCommand
+runJobsCommand
 runSandboxCommand
 runtimeUsesFallbackRouter
 sandboxRuntimeStatus

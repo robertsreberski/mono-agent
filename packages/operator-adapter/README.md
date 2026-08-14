@@ -64,7 +64,8 @@ Keep bearer values out of source config when possible. Set
   `capabilities.askUser`, `capabilities.askById`, and `capabilities.cron` are
   advertised additively when their routes are supported. `capabilities.cron`
   reports `status: "ready" | "degraded"` and separates read support from
-  authenticated/agent-enabled actions. The wire
+  authenticated/agent-enabled actions. `jobs: true` is advertised only when a
+  process-job operator and its independent owner bearer are both present. The wire
   schema remains `1`; clients must feature-detect rather than reject an older
   agent. The response also
   includes `label`, default `model`, default `effort`, candidate `models`, and
@@ -125,6 +126,10 @@ including the already-visible job prompt; it does not expose arbitrary config
 keys, credentials, or the console host's copy of the config file. If the cron
 overview itself fails, `/v1/info` remains a `200` liveness response and advertises
 cron as degraded with reads and actions unavailable.
+- `GET {basePath}/v1/jobs` and `GET {basePath}/v1/jobs/:jobId` - strict bounded
+  process-job projections through an independent owner bearer.
+- `POST {basePath}/v1/jobs/:jobId/cancel` - cancel an owned process job and
+  return its resulting projection. This route uses the same independent bearer.
 
 Event NDJSON lines are capped at 256 KiB. Oversized thought and tool payloads
 are reduced and remeasured; an event that still cannot fit becomes a bounded
@@ -151,7 +156,7 @@ agent even though current producers emit at most 256 KiB per frame. See
 
 | Source module | Responsibility |
 | --- | --- |
-| [`tui/server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/tui/server.ts) | Conversational info, turn, live-input, cancel, pending/submitted `AskUser`, history-append, attachment, and NDJSON framing routes. |
+| [`tui/server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/tui/server.ts) | Conversational info, turn, live-input, cancel, pending/submitted `AskUser`, history-append, owner-authenticated process-job projection/cancel, attachment, and NDJSON framing routes. |
 | [`tui/config.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/tui/config.ts) | `tui.*` JSON/env layering, validation, and secret redaction. |
 | [`index.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/index.ts) | Supported public package surface for the operator endpoint. |
 

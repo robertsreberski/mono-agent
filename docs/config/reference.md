@@ -98,6 +98,19 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `openaiApi.host` | `string` | `MONO_AGENT_OPENAI_API_HOST` | 127.0.0.1 | `127.0.0.1` | Configures host for the openaiApi section. |
 | `openaiApi.modelId` | `string` | `MONO_AGENT_OPENAI_API_MODEL_ID` | agent | `agent` | Configures modelId for the openaiApi section. |
 | `openaiApi.port` | `integer` | `MONO_AGENT_OPENAI_API_PORT` | 0 | `0` | Configures port for the openaiApi section. |
+| `processJobs.enabled` | `boolean` | `--` | false | `true` | Opt in to owner-private Pi-native Exec/Bash background process jobs (unsupported on Windows). |
+| `processJobs.maxActivePerConversation` | `integer` | `--` | 2 | `2` | Maximum non-terminal process jobs admitted from one conversation (compiled cap 8). |
+| `processJobs.maxChainDepth` | `integer` | `--` | 4 | `4` | Maximum host-owned background wake chain depth (compiled cap 8). |
+| `processJobs.maxConcurrent` | `integer` | `--` | 4 | `4` | Maximum simultaneously running process jobs (compiled cap 32). |
+| `processJobs.maxOutputBytes` | `integer` | `--` | 1048576 | `1048576` | Combined retained process-output ceiling (compiled cap 8 MiB). |
+| `processJobs.maxQueueAgeMs` | `integer` | `--` | 300000 | `300000` | Maximum admission-to-spawn queue age (compiled cap one hour). |
+| `processJobs.maxQueued` | `integer` | `--` | 8 | `8` | Maximum queued process jobs after running capacity is full (compiled cap 64). |
+| `processJobs.maxRuntimeMs` | `integer` | `--` | 1800000 | `1800000` | Host runtime ceiling per spawned process tree (compiled cap 24 hours; calls may narrow it). |
+| `processJobs.previewChars` | `integer` | `--` | 2000 | `2000` | Bound for redacted wake/operator output previews (compiled cap 8000; calls may narrow it). |
+| `processJobs.retention.artifactMaxBytes` | `integer` | `--` | 268435456 | `268435456` | Aggregate retained terminal output artifact budget (compiled cap 1 GiB). |
+| `processJobs.retention.maxAgeMs` | `integer` | `--` | 604800000 | `604800000` | Maximum terminal process-job record age (compiled cap 30 days). |
+| `processJobs.retention.maxRecords` | `integer` | `--` | 1000 | `1000` | Maximum retained terminal process-job records (compiled cap 10000). |
+| `processJobs.stateDir` | `string` | `--` | .mono-agent/process-jobs | `.mono-agent/process-jobs` | Agent-root-confined owner-private process-job records and artifacts. |
 | `providers.local` | `array` | `MONO_AGENT_LOCAL_PROVIDERS_JSON` | unset | `[]` | Configures local for the providers section. |
 | `providers.piAuthPath` | `string` | `MONO_AGENT_PI_AUTH_PATH` | unset | `~/.pi/agent/auth.json` | Configures piAuthPath for the providers section. |
 | `providers.piNative.maxRetryDelayMs` | `integer` | `MONO_AGENT_MAX_RETRY_DELAY_MS` | 60000 | `60000` | Configures piNative.maxRetryDelayMs for the providers section. |

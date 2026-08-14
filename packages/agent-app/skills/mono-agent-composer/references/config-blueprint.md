@@ -21,6 +21,7 @@ my-agent/
     artifacts/             # JSONL run summaries + events
     workspace/             # runtime working directory (if not ".")
     memory/                # journal memory root (daily notes, graph.jsonl, index/)
+    process-jobs/          # opt-in owner-private Exec/Bash jobs and output
     whatsapp-auth/         # Baileys auth state (WhatsApp channel only)
     trace-sources/         # traceability registry (if kept folder-local)
 ```
@@ -167,6 +168,27 @@ new agent.
 
   // Exec is direct argv; use Bash only for shell syntax. NodeRepl shares state
   // only inside one run. All three use the same sandbox policy.
+
+  // Opt-in Pi-native Exec/Bash background jobs. The host owns the process tree,
+  // bounded output, exact Slack/Telegram/web wake, cancellation, and restart
+  // interruption. Unsupported on Windows; unknown keys are rejected.
+  "processJobs": {
+    "enabled": true,                       // default false
+    "stateDir": ".mono-agent/process-jobs", // relative child of the agent root
+    "maxConcurrent": 4,                   // cap 32
+    "maxActivePerConversation": 2,        // cap 8
+    "maxQueued": 8,                       // cap 64
+    "maxRuntimeMs": 1800000,              // 30 min; cap 24 h
+    "maxQueueAgeMs": 300000,              // 5 min; cap 1 h
+    "maxOutputBytes": 1048576,            // 1 MiB; cap 8 MiB
+    "previewChars": 2000,                 // cap 8000
+    "maxChainDepth": 4,                   // host-owned; cap 8
+    "retention": {
+      "maxRecords": 1000,                 // cap 10000
+      "maxAgeMs": 604800000,              // 7 d; cap 30 d
+      "artifactMaxBytes": 268435456        // 256 MiB; cap 1 GiB
+    }
+  },
 
   // Human-in-the-loop bridge: structured blocking AskUser plus
   // run-scoped project-MCP progress. It auto-starts when either ask tool is

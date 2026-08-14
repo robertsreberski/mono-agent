@@ -985,6 +985,17 @@ by one lazily started Node.js REPL child per run. You select them via
 - The runtime context's `workspace` / `repoRoot` allow-list (paths outside both, plus `/tmp` and `process.cwd()`, are rejected)
 - Output truncation with optional artifact persistence (`{toolArtifactDir}/tool-output/{runId}/...` when `toolArtifactDir` is configured)
 
+The Pi-native tool context may structurally receive a host process-job
+controller. Only then do Exec and Bash add optional `background`; with no
+controller their schemas and foreground path are unchanged. A background call
+hands the exact prepared command to the controller and stops awaiting it. The
+kernel first creates a command-agnostic detached POSIX group leader; only after
+the host durably records its PID, equal PGID, and process incarnation does the
+kernel release the exact target over an anonymous pipe. The kernel also owns
+whole-tree completion, while the host owns durable policy, persistence, wake
+delivery, and operator state. The kernel intentionally imports no workspace
+contract package for this boundary.
+
 `NodeRepl` uses Node's default `node:repl` evaluator, so variables, `_`, `_error`, and loaded modules persist across calls in the same run. It supports multiline input and top-level `await`, resolves workspace-installed packages, and is closed with the run. Its child is prepared through the same sandbox seam as `Exec`/`Bash` and communicates through token-authenticated, length-prefixed JSON frames on ordinary stdin/stdout; abort, the fixed 120-second timeout, child exit, or hard output overflow resets the session. It deliberately has no session ids, persistent history, terminal commands, or package-install surface.
 
 `WebSearch` uses a configured loopback SearXNG endpoint and/or deterministic

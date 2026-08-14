@@ -19,7 +19,7 @@ Catalog responsibility: Defines shared structural request/response contracts plu
 ## Responsibility
 
 Define the structural request, response, stream, in-flight follow-up,
-channel-driver, and memory contracts that packages can implement independently. It also owns
+channel-driver, process-job projection, and memory contracts that packages can implement independently. It also owns
 small dependency-free helpers for settings JSON, JSON-to-env mapping, safe
 network binding, bearer tokens, attachments, and stream framing.
 
@@ -134,6 +134,7 @@ Primary modules:
 | Channel lifecycle | `channel.ts` | Driver startup, running handles, status, notifications, and interaction hooks. |
 | Message delivery | `buffered-message-stream.ts`, `resilient-message-stream.ts`, `stream-text.ts`, `tool-hints.ts` | Collect or safely adapt incremental output and format bounded activity copy. |
 | Process transport | `stream-wire.ts` | NDJSON stream frames for operator clients. |
+| Process-job projection | `process-jobs.ts` | Neutral lifecycle/error enums, strict secret-free projection parsers, and the owner-authorized operator interface. |
 | Shared safety helpers | `host-safety.ts`, `bearer.ts`, `http-headers.ts`, `config-loader.ts`, `json-source.ts` | Safe binds, bounded HTTP shutdown/streaming, tokens, sanitized headers, layered config coercion, and settings files. |
 
 `ChannelId` is intentionally open so third-party drivers can choose an id.
@@ -182,6 +183,7 @@ editing in place and never changes final-answer delivery.
 | Format safe applied-steering activity | `formatLiveInputActivityLine` |
 | Sanitize or validate reply-part delivery outcomes | `sanitizeReplyPartDeliveryOutcomes`, `isAgentReplyPartDeliveryOutcomes` |
 | Carry stream events across a process boundary | `AgentStreamWireFrame`, `serializeAgentStreamFrame`, `parseAgentStreamFrame` |
+| Exchange process-job state without kernel/app coupling | `ProcessJobProjection`, `ProcessJobState`, `ProcessJobErrorCode`, `parseProcessJobProjection`, `ProcessJobOperator` |
 | Load adapter settings safely | `readSettingsJson`, `writeSettingsJson`, `layerJsonOntoEnv` |
 | Protect an HTTP listener | `assertSafeBind`, `listen`, `generateBearerToken`, `readAuthorizationBearer` |
 
@@ -329,6 +331,19 @@ NotifyDeliveryContext
 NotifyDeliveryResult
 NotifyDestination
 NotifySuppression
+PROCESS_JOB_ERROR_CODES
+PROCESS_JOB_STATES
+ProcessJobErrorCode
+ProcessJobOperator
+ProcessJobProjection
+ProcessJobProjectionError
+ProcessJobProjectionLimits
+ProcessJobProjectionOrigin
+ProcessJobProjectionOutput
+ProcessJobProjectionTimestamps
+ProcessJobProjectionWake
+ProcessJobState
+ProcessJobWakeState
 ReadSettingsJsonResult
 RedactedSecretValue
 ResilientAgentMessageStream
@@ -370,6 +385,8 @@ isChannelUserCancelReason
 isCodedError
 isDeliverableConversation
 isLoopbackHost
+isProcessJobErrorCode
+isProcessJobState
 isSubagentLaunchToolName
 isWildcardHost
 layerJsonOntoEnv
@@ -383,6 +400,8 @@ parseCronOperatorOverview
 parseCronOperatorRunDetail
 parseCronOperatorRunPage
 parseCronOperatorRunSummary
+parseProcessJobProjection
+parseProcessJobProjections
 readAuthorizationBearer
 readBoolean
 readChoice
