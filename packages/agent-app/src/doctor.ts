@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { access, lstat, mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isIP } from "node:net";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 
 // `BuiltinProvider`, not the root `KnownProvider`: since pi-ai 0.83.0 the
@@ -100,10 +100,12 @@ import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 import {
   DEFAULT_LAUNCHD_LOG_POLICY,
   inspectLaunchdLogs,
-  LAUNCHD_LOG_MAINTENANCE_INTERVAL_SECONDS,
+  LAUNCHD_LOG_MONITOR_INTERVAL_SECONDS,
   launchdLogPathsForConfig,
 } from "./launchd-logs.js";
 import type { LaunchdLogInspection, LaunchdLogStreamInspection } from "./launchd-logs.js";
+import { readLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
+import type { ManagedLaunchdLogMonitorStatus } from "./background-log-maintenance.js";
 import { exporterSection, runsSection } from "./doctor-observability.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor-types.js";
 
@@ -275,9 +277,19 @@ export async function validateMonoAgentFolder(
 /** Read-only launchd log inventory used by both `validate` and its `doctor` alias. */
 export async function launchdLogsSection(configPath: string): Promise<ValidationSection> {
   let inspection: LaunchdLogInspection;
+  let monitorStatus: ManagedLaunchdLogMonitorStatus | "unavailable" | undefined;
   try {
     const paths = await launchdLogPathsForConfig(configPath);
     inspection = await inspectLaunchdLogs(paths);
+    const stdoutName = basename(paths.stdoutPath);
+    const mainLabel = stdoutName.endsWith(".out.log")
+      ? stdoutName.slice(0, -".out.log".length)
+      : "";
+    try {
+      monitorStatus = await readLaunchdLogMonitorStatus(mainLabel, paths);
+    } catch {
+      monitorStatus = "unavailable";
+    }
   } catch {
     return {
       id: "launchd-logs",
@@ -287,18 +299,20 @@ export async function launchdLogsSection(configPath: string): Promise<Validation
     };
   }
 
-  return launchdLogsSectionFromInspection(inspection);
+  return launchdLogsSectionFromInspection(inspection, monitorStatus);
 }
 
 /** Pure renderer kept separate so exact byte accounting is deterministic in tests. */
 export function launchdLogsSectionFromInspection(
   inspection: LaunchdLogInspection,
+  monitorStatus?: ManagedLaunchdLogMonitorStatus | "unavailable",
 ): ValidationSection {
   const policy = DEFAULT_LAUNCHD_LOG_POLICY;
   const details = [
-    `Policy: ${policy.maxBytes} bytes per file, ${policy.rotationCount} retained generations, checked every ${LAUNCHD_LOG_MAINTENANCE_INTERVAL_SECONDS} seconds.`,
+    `Policy: ${policy.maxBytes} bytes per file, ${policy.rotationCount} retained generations, checked every ${LAUNCHD_LOG_MONITOR_INTERVAL_SECONDS} seconds.`,
     streamSizeDetail("stdout", inspection.stdout),
     streamSizeDetail("stderr", inspection.stderr),
+    ...monitorStatusDetails(monitorStatus),
     ...inspection.issues.map((issue) => `[WARN] ${issue}.`),
     ...oversizedLogDetails("stdout", inspection.stdout, policy.maxBytes),
     ...oversizedLogDetails("stderr", inspection.stderr, policy.maxBytes),
@@ -317,6 +331,21 @@ export function launchdLogsSectionFromInspection(
     status: inspection.canMaintain && !inspection.needsMaintenance ? "ok" : "waiting",
     details,
   };
+}
+
+function monitorStatusDetails(
+  status: ManagedLaunchdLogMonitorStatus | "unavailable" | undefined,
+): string[] {
+  if (status === "unavailable") {
+    return ["Monitor: owner-private status is unavailable or unsafe."];
+  }
+  if (status === undefined) return ["Monitor: no observational snapshot has been recorded yet."];
+  return [
+    `Monitor last inspection: ${status.lastInspectionAt}.`,
+    `Monitor wake count: ${status.wakeCount}.`,
+    `Monitor last outcome: ${status.lastOutcome}.`,
+    `Monitor cooldown deadline: ${status.cooldownDeadline}.`,
+  ];
 }
 
 function streamSizeDetail(label: string, stream: LaunchdLogStreamInspection): string {

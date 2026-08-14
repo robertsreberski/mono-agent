@@ -66,7 +66,8 @@ closed for operator inspection rather than being purged automatically.
 
 Each new worker also requires the plist's path-free finalized-runtime proof. It
 checks the canonical private layout, marker and manifest fingerprints, exact CLI
-bytes, and whole-second launch boundary before starting the app. The verified
+bytes, the sibling lightweight maintenance-entry digest, and whole-second launch
+boundary before starting the app. The verified
 install root is then an app-owned read-only SRT root. No config entry is needed,
 and the implicit grant does not include `~/.mono-agent/runtimes/agent-app/`, a
 version/ABI parent, or a historical closure.
@@ -80,20 +81,40 @@ Every worker must acquire one owner-only canonical per-config lifetime lease. Ca
 ### Recovery controller and bounded launchd logs
 
 The controller installs a separate one-shot LaunchAgent beside each managed
-worker. It runs at login and every five minutes, has no `KeepAlive`, sends its
-own output to `/dev/null`, and shares the worker's per-config lifecycle lock.
+worker. It retains `RunAtLoad` for login recovery and uses a deterministic
+hourly `StartCalendarInterval`: the unsigned big-endian first four bytes of
+SHA-256 of the canonical main label, modulo 60. The accepted once-per-login
+fleet start remains and every helper retains recovery coverage; recurring recovery
+is staggered. Before any PID query, lock, attestation, or dynamic controller import,
+the lightweight entry waits SHA-256(canonical main label)[0..3] unsigned-big-endian
+modulo 120 seconds. This 0–119-second deterministic dispersion shapes heavy work
+without an account-wide admission lock or stale-owner authority. Worker-requested
+wakes inherit the same maximum 119-second delay. It has no `KeepAlive`, sends
+its own output to `/dev/null`, and shares the worker's per-config lifecycle lock.
 Its private arguments retain the original controller CLI path, agent cwd,
 absolute config path, optional dotenv path, and the worker's non-secret durable
-`PATH`. The helper itself still executes with the closed `/usr/bin:/bin` path;
+`PATH`. Its plist targets the attested `dist/launchd-maintenance-entry.js`, not
+the eager public CLI graph. The helper itself still executes with the closed `/usr/bin:/bin` path;
 the worker path is rehydrated only for validation, snapshotting, and the worker
-definition. Before it can recover anything, the helper proves that its current
-PID is the exact process launchd owns.
+definition. After dispersion, the helper proves that its current PID is the
+exact process launchd owns. It then acquires the per-agent lifecycle
+lock without waiting, before attestation or importing the controller; a same-agent
+loser exits before expensive work. The winner verifies the entry against the
+shared runtime marker/proof and dynamically imports the heavy controller graph
+while retaining that per-agent lock.
 
 Each pass reconstructs the same durable dotenv-plus-operational environment,
-validates the config, and captures a fresh keyed snapshot. It strictly parses
+and captures a fresh keyed snapshot. It strictly parses
 the main definition launchd currently owns, verifies that definition's private
-runtime proof, and compares its package version and CLI digest with the original
-controller CLI as inert bytes. Mutable checkout code is never executed. When
+path-free launch proof, and compares its package version and CLI digest with the
+original controller CLI as inert bytes. This healthy fast path does not traverse
+the immutable closure or run the full structural validator. Only proven drift or
+inactivity invokes full validation and managed-runtime installation/verification,
+still under the per-agent lock. After installation and read-only ownership/snapshot
+rechecks, recovery takes the per-account shared-chain lock without waiting only
+around shared-directory and stopped-writer mutation. Automatic contention exits
+successfully without mutation; healthy log-only maintenance takes the same shared
+lock separately. Mutable checkout code is never executed. When
 that source path has disappeared, an inactive or snapshot-drifted worker can be
 recovered from the helper's already-private closure, but the pass does not claim
 an upgrade or downgrade a healthy newer worker.
@@ -103,19 +124,43 @@ proof, or available newer/different source closure triggers reconciliation. The
 old healthy worker remains loaded while the replacement closure is installed.
 Consumers sharing that closure wait up to five minutes on the existing
 PID/incarnation-aware install lock, so a slow first installation coalesces rather
-than causing the other consumers to fail after 30 seconds. Recovery then stops
-only the main job, commits refreshed worker and helper plists, bootstraps the
-main job, and waits through the normal 60-second readiness proof. The currently
+than causing the other consumers to fail after 30 seconds. Under the shared
+mutation lock, recovery then stops only the main job, repairs the shared chain,
+commits refreshed worker and helper plists, and bootstraps the main job. It releases
+the shared lock before the normal 60-second readiness proof. The currently
 running helper is preserved. A failed install, commit, bootstrap, or readiness
 check leaves both definitions and the helper available for the next scheduled
 retry; it does not create a `KeepAlive` crash loop. Explicit `mono-agent stop`
 still unloads the helper first and removes both definitions only after PID-death
 proof, so the controller cannot resurrect an intentionally stopped service.
+Recurring exit-0 refusal, runtime/config/snapshot/source drift, and shared-only
+repair have a worst-case 60-minute healing latency between logins. Explicit
+start/restart remain synchronous.
 
-The same helper checks a fixed log policy: the active stdout/stderr file and each
-of three retained generations may hold at most 5 MiB. A log-maintenance pass
-first verifies the owner-private main plist and read-only log inventory; only
-when maintenance is necessary does
+Once ready, the managed worker checks the fixed log policy immediately and every
+five minutes: the active stdout/stderr file and each of three retained generations
+may hold at most 5 MiB. This overlap-guarded path only reads the bounded metadata
+inventory. A healthy below-threshold result does not reconstruct the environment,
+validate config, capture a snapshot, or start another Node process. A concrete
+safe per-agent oversized or permission-repairable log may ask launchd to wake
+the authenticated controller, but not until the five-minute startup floor.
+Shared-directory repair and pending lifecycle, journal, or preparation artifacts
+never trigger a worker wake. The process-local monotonic cooldown is 5, 10, 20,
+40, then 60 minutes; unloaded/running helpers are skipped and backed off. A
+pathological worker crash loop can still request about once per five minutes per
+agent because each replacement process starts a fresh floor (11 requests per
+five minutes for an 11-agent pathological simultaneous loop).
+
+Every operation that can repair or mutate the shared log directory chain—helper
+maintenance, start/restart recovery, and stop—takes one per-account synthetic
+PID/incarnation-aware lock in `~/.mono-agent/locks/`, after the per-agent
+lifecycle lock. Helper/monitor paths defer immediately. Interactive
+start/restart/stop wait at most 18 seconds at 400 ms intervals and then fail
+visibly with holder PID, main label, incarnation, and acquisition time.
+Unauthenticated, foreign-owned, malformed, or uncreatable lock roots fail closed.
+
+A controller log-maintenance pass first verifies the owner-private main plist and
+read-only log inventory; only when maintenance is necessary does
 it atomically publish a bounded, owner-only, per-agent `stopping` intent, unload
 the main job, and prove every PID observed through launchd bootout dead. Only
 then does it atomically promote that intent to `stopped`. A pre-proof crash with
@@ -141,6 +186,11 @@ instead of claiming success or entering a restart loop. `validate` and `doctor`
 only read path metadata and report exact sizes for safely inspected files;
 unsafe or unreadable byte inventory is unavailable. They never repair
 permissions or rotate.
+The monitor writes only an owner-private, bounded informational snapshot for
+doctor (last inspection, cumulative wake count, last outcome, cooldown
+deadline); monotonic in-process state remains the cooldown authority. Existing
+loaded helpers keep their old schedule until each agent is explicitly restarted:
+`launchctl print` is authoritative, and no fleet restart is implied by upgrade.
 
 ### Frozen inputs and startup proof
 

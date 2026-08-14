@@ -30,6 +30,7 @@ import {
   markLaunchdLogMaintenanceStopping,
   readLaunchdLogMaintenanceIntent,
   rotateStoppedLaunchdLogs,
+  SHARED_LAUNCHD_LOG_MUTATION_CALLERS,
 } from "../launchd-logs.js";
 import type { LaunchdLogDependencies, LaunchdLogPolicy } from "../launchd-logs.js";
 import type { LaunchdPaths } from "../launchd.js";
@@ -118,6 +119,7 @@ describe("inspectLaunchdLogs", () => {
     await expect(inspectLaunchdLogs(paths, POLICY)).resolves.toMatchObject({
       pendingMaintenance: false,
       pendingTransaction: false,
+      pendingPreparation: true,
       needsMaintenance: true,
       canMaintain: true,
     });
@@ -278,6 +280,11 @@ describe("inspectLaunchdLogs", () => {
     const inspection = await inspectLaunchdLogs(paths, POLICY);
 
     expect(inspection.needsMaintenance).toBe(true);
+    expect(inspection.perAgentFileReasons).toEqual([
+      "stdout active exceeds 8 bytes",
+      "stderr retained generation 1 exceeds 8 bytes",
+    ]);
+    expect(inspection.sharedDirectoryNeedsMaintenance).toBe(false);
     expect(inspection.stdout.files[0]).toMatchObject({ generation: 0, bytes: 9 });
     expect(inspection.stderr.files[1]).toMatchObject({ generation: 1, bytes: 10 });
   });
@@ -291,6 +298,7 @@ describe("inspectLaunchdLogs", () => {
 
     expect(inspection.stdout.files[0]).toMatchObject({ state: "repairable", bytes: 7 });
     expect(inspection.needsMaintenance).toBe(true);
+    expect(inspection.perAgentFileReasons).toEqual(["stdout active permissions"]);
     expect((await lstat(paths.stdoutPath)).mode & 0o777).toBe(0o644);
     expect(await readFile(paths.stdoutPath, "utf8")).toBe("private");
   });
@@ -304,6 +312,8 @@ describe("inspectLaunchdLogs", () => {
       const inspection = await inspectLaunchdLogs(paths, POLICY);
 
       expect(inspection.needsMaintenance).toBe(true);
+      expect(inspection.sharedDirectoryNeedsMaintenance).toBe(true);
+      expect(inspection.perAgentFileReasons).toEqual(["stdout active permissions"]);
       expect(inspection.issues.join(" ")).toContain("owner-only read/write/search");
       expect(inspection.stdout.files[0]).toMatchObject({ state: "repairable", bytes: 7 });
       expect((await lstat(paths.logDir)).mode & 0o777).toBe(0o500);
@@ -312,6 +322,15 @@ describe("inspectLaunchdLogs", () => {
       await chmod(paths.logDir, 0o700);
       await chmod(paths.stdoutPath, 0o600);
     }
+  });
+
+  it("keeps every shared-directory repair caller in the lock inventory", async () => {
+    const source = await readFile(new URL("../launchd-logs.ts", import.meta.url), "utf8");
+    const markers = [...source.matchAll(/SHARED_LAUNCHD_LOG_LOCK_REQUIRED: ([A-Za-z0-9_]+)/gu)]
+      .map((match) => match[1]);
+    const mutationCalls = [...source.matchAll(/await secureDirectory\(/gu)];
+    expect(markers).toEqual([...SHARED_LAUNCHD_LOG_MUTATION_CALLERS]);
+    expect(mutationCalls).toHaveLength(markers.length);
   });
 
   it("rejects symlinks, hard links, and owner mismatches without reading their contents", async () => {

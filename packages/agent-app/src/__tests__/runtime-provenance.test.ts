@@ -7,6 +7,7 @@ import process from "node:process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { defaultManagedBackgroundRuntimeDeps, ensureManagedBackgroundRuntime } from "../background-runtime.js";
+import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "../launchd-maintenance-command.js";
 import { agentAppPackageVersion } from "../package-version.js";
 import { runtimeProvenanceDetail } from "../runtime-provenance.js";
 
@@ -31,6 +32,7 @@ interface ManagedFixture {
   readonly closureId: string;
   readonly dependencyPath: string;
   readonly dependencyRelativePath: string;
+  readonly maintenanceEntryPath: string;
 }
 
 async function managedFixture(
@@ -56,6 +58,11 @@ async function managedFixture(
   await writeFile(
     join(sourceRoot, "dist", "cli.js"),
     `import ${JSON.stringify(dependencyName)};\n// ${name}\n`,
+    "utf8",
+  );
+  await writeFile(
+    join(sourceRoot, "dist", MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE),
+    `// attested lightweight maintenance entry for ${name}\n`,
     "utf8",
   );
   await writeFile(join(dependencySource, "package.json"), JSON.stringify({
@@ -127,6 +134,7 @@ async function managedFixture(
     closureId: basename(installRoot),
     dependencyPath: join(installRoot, ...dependencyRelativePath.split("/")),
     dependencyRelativePath,
+    maintenanceEntryPath: join(packageRoot, "dist", MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE),
   };
 }
 
@@ -191,6 +199,13 @@ describe("runtimeProvenanceDetail", () => {
   it("does not claim a managed closure after a non-CLI closure file changes", async () => {
     const fixture = await managedFixture("tampered-closure");
     await writeFile(fixture.dependencyPath, "export const fixture = 'tampered';\n", "utf8");
+
+    await expect(runtimeProvenanceDetail(fixture.packageRoot)).resolves.toBe(UNMANAGED_DETAIL);
+  });
+
+  it("does not claim a managed closure when the attested maintenance entry is missing", async () => {
+    const fixture = await managedFixture("missing-maintenance-entry");
+    await unlink(fixture.maintenanceEntryPath);
 
     await expect(runtimeProvenanceDetail(fixture.packageRoot)).resolves.toBe(UNMANAGED_DETAIL);
   });

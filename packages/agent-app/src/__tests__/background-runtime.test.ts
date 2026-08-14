@@ -62,6 +62,11 @@ async function fixturePackage(version = "9.8.7"): Promise<{ root: string; cliPat
   const bytes = "#!/usr/bin/env node\nconsole.log('managed fixture');\n";
   await mkdir(dirname(cliPath), { recursive: true });
   await writeFile(cliPath, bytes, "utf8");
+  await writeFile(
+    join(root, "dist", "launchd-maintenance-entry.js"),
+    "#!/usr/bin/env node\nexport const maintenanceFixture = true;\n",
+    "utf8",
+  );
   await writeFile(join(root, "package.json"), `${JSON.stringify({
     name: "@mono-agent/agent-app",
     version,
@@ -87,6 +92,11 @@ async function workspaceFixture(): Promise<{
   await mkdir(dirname(cliPath), { recursive: true });
   await mkdir(dependencyRoot, { recursive: true });
   await writeFile(cliPath, "import { preserved } from '@fixture/workspace-dependency';\nconsole.log(preserved);\n", "utf8");
+  await writeFile(
+    join(appRoot, "dist", "launchd-maintenance-entry.js"),
+    "#!/usr/bin/env node\nexport const maintenanceFixture = true;\n",
+    "utf8",
+  );
   await writeFile(join(appRoot, "package.json"), `${JSON.stringify({
     name: "@mono-agent/agent-app",
     version: "9.8.7",
@@ -142,7 +152,9 @@ describe("ensureManagedBackgroundRuntime", () => {
       currentCliPath: source.cliPath,
       nodePath: process.execPath,
       homeDir,
-    });
+    }, fakeInstallerDeps(async (input) => {
+      await materializeInstalledPackage(input, await readFile(source.cliPath));
+    }));
 
     expect(runtime.installRoot).toContain(join(homeDir, ".mono-agent", "runtimes", "agent-app", "9.8.7"));
     expect(runtime.cliPath).not.toContain(source.root);
@@ -194,10 +206,16 @@ describe("ensureManagedBackgroundRuntime", () => {
       currentCliPath: source.cliPath,
       nodePath: process.execPath,
       homeDir,
-    });
+    }, fakeInstallerDeps(async (input) => {
+      await materializeInstalledPackage(input, await readFile(source.cliPath));
+    }));
 
     const proofJson = Buffer.from(runtime.launchProof, "base64url").toString("utf8");
     expect(proofJson).not.toContain(homeDir);
+    expect(JSON.parse(proofJson)).toMatchObject({
+      schema: "mono-agent.managed-runtime-launch.v2",
+      maintenanceEntrySha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    });
     await expect(verifyManagedRuntimeLaunch({
       currentCliPath: runtime.cliPath,
       launchProof: runtime.launchProof,
@@ -210,14 +228,16 @@ describe("ensureManagedBackgroundRuntime", () => {
     });
   });
 
-  it("rejects launch proof reuse after CLI or manifest corruption", async () => {
+  it("rejects launch proof reuse after CLI, helper entry, or manifest corruption", async () => {
     const source = await fixturePackage();
     const homeDir = await homeFixture();
     const runtime = await ensureManagedBackgroundRuntime({
       currentCliPath: source.cliPath,
       nodePath: process.execPath,
       homeDir,
-    });
+    }, fakeInstallerDeps(async (input) => {
+      await materializeInstalledPackage(input, await readFile(source.cliPath));
+    }));
 
     await writeFile(runtime.cliPath, "console.log('tampered');\n", "utf8");
     await expect(verifyManagedRuntimeLaunch({
@@ -227,6 +247,16 @@ describe("ensureManagedBackgroundRuntime", () => {
     })).rejects.toThrow(/CLI or package identity/u);
 
     await writeFile(runtime.cliPath, source.bytes, "utf8");
+    const maintenanceEntry = join(dirname(runtime.cliPath), "launchd-maintenance-entry.js");
+    const maintenanceSource = await readFile(join(source.root, "dist", "launchd-maintenance-entry.js"));
+    await writeFile(maintenanceEntry, "export const tampered = true;\n", "utf8");
+    await expect(verifyManagedRuntimeLaunch({
+      currentCliPath: runtime.cliPath,
+      launchProof: runtime.launchProof,
+      homeDir,
+    })).rejects.toThrow(/maintenance entry fingerprint/u);
+
+    await writeFile(maintenanceEntry, maintenanceSource);
     await writeFile(join(runtime.installRoot, ".mono-agent-closure.json"), "{}\n", { mode: 0o600 });
     await expect(verifyManagedRuntimeLaunch({
       currentCliPath: runtime.cliPath,
@@ -1136,6 +1166,10 @@ async function materializeInstalledPackage(input: ManagedRuntimeInstallInput, cl
   // sides; mirror the source root so the comparison is about content, not the caller's umask.
   await chmod(packageRoot, Number((await lstat(input.packageSource, { bigint: true })).mode & 0o777n));
   await writeFile(join(packageRoot, "dist", "cli.js"), cli);
+  await writeFile(
+    join(packageRoot, "dist", "launchd-maintenance-entry.js"),
+    await readFile(join(input.packageSource, "dist", "launchd-maintenance-entry.js")),
+  );
   await writeFile(
     join(packageRoot, "package.json"),
     await readFile(join(input.packageSource, "package.json")),

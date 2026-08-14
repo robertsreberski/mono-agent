@@ -71,6 +71,33 @@ describe("waitForShutdownSignal", () => {
     expect(app.stop).toHaveBeenCalledTimes(1);
   });
 
+  it("latches monitor shutdown before app.stop and runs the latch only once", async () => {
+    const events: string[] = [];
+    const app = { stop: vi.fn(async () => { events.push("app.stop"); }) };
+    const latch = vi.fn(() => { events.push("monitor.stop"); });
+    const pending = waitForShutdownSignal(app, latch);
+
+    process.emit("SIGTERM");
+    process.emit("SIGINT");
+
+    await expect(pending).resolves.toBe(0);
+    expect(events).toEqual(["monitor.stop", "app.stop"]);
+    expect(latch).toHaveBeenCalledTimes(1);
+    expect(app.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("still stops the app when the pre-stop latch throws", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const app = { stop: vi.fn(async () => {}) };
+    const pending = waitForShutdownSignal(app, () => { throw new Error("latch failed"); });
+
+    process.emit("SIGTERM");
+
+    await expect(pending).resolves.toBe(1);
+    expect(app.stop).toHaveBeenCalledTimes(1);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("shutdown latch failed"));
+  });
+
   it("resolves a failed shutdown so outer cleanup can release the worker lease", async () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const app = { stop: vi.fn(async () => { throw new Error("stop failed"); }) };
@@ -80,5 +107,17 @@ describe("waitForShutdownSignal", () => {
 
     await expect(pending).resolves.toBe(1);
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining("Foreground shutdown failed: stop failed"));
+  });
+
+  it("still resolves and stops once when shutdown reporters throw", async () => {
+    vi.spyOn(process.stdout, "write").mockImplementation(() => { throw new Error("stdout failed"); });
+    vi.spyOn(process.stderr, "write").mockImplementation(() => { throw new Error("stderr failed"); });
+    const app = { stop: vi.fn(async () => { throw new Error("stop failed"); }) };
+    const pending = waitForShutdownSignal(app);
+
+    process.emit("SIGTERM");
+
+    await expect(pending).resolves.toBe(1);
+    expect(app.stop).toHaveBeenCalledTimes(1);
   });
 });

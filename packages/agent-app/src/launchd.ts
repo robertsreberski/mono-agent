@@ -8,6 +8,7 @@ import {
   isBackgroundOperationalEnvName,
   MANAGED_BACKGROUND_WORKER_ENV,
 } from "./background-environment.js";
+import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "./launchd-maintenance-command.js";
 
 /**
  * Thin, side-effect-light helpers around macOS launchd. The `launchctl` runner
@@ -56,7 +57,7 @@ export interface PlistInput {
 export interface MaintenancePlistInput {
   readonly label: string;
   readonly nodePath: string;
-  /** Immutable CLI closure that executes the recovery controller itself. */
+  /** Attested lightweight executable in the immutable managed closure. */
   readonly cliPath: string;
   readonly configPath: string;
   readonly cwd: string;
@@ -64,10 +65,13 @@ export interface MaintenancePlistInput {
   readonly controllerCliPath: string;
   readonly agentCwd: string;
   readonly agentPath: string;
+  /** Path-free proof covering the managed marker, main CLI, and helper entry. */
+  readonly expectedManagedRuntimeLaunch: string;
   readonly envFile?: string;
   /** Deliberately allowlisted, non-secret maintenance environment. */
   readonly environment: Readonly<Record<string, string>>;
-  readonly intervalSeconds: number;
+  /** Minute in each hour derived from the canonical main LaunchAgent label. */
+  readonly calendarMinute: number;
 }
 
 export interface WebPlistInput {
@@ -161,6 +165,28 @@ export function deriveLaunchdMaintenanceLabel(mainLabel: string): string {
   return `${MAINTENANCE_LABEL_PREFIX}.${match[1]}`;
 }
 
+/** Deterministically stagger recurring helpers by the canonical main label. */
+export function launchdMaintenanceCalendarMinute(canonicalMainLabel: string): number {
+  return launchdMaintenanceHashBucket(canonicalMainLabel, 60);
+}
+
+export const LAUNCHD_MAINTENANCE_DISPERSION_SECONDS = 120;
+
+/** Spread login helpers before PID authentication, locking, or heavy import. */
+export function launchdMaintenanceDispersionSeconds(canonicalMainLabel: string): number {
+  return launchdMaintenanceHashBucket(
+    canonicalMainLabel,
+    LAUNCHD_MAINTENANCE_DISPERSION_SECONDS,
+  );
+}
+
+function launchdMaintenanceHashBucket(canonicalMainLabel: string, bucketCount: number): number {
+  // Reuse the canonical-label validator. Hashing a maintenance label would
+  // silently create a different schedule/dispersion and is therefore rejected.
+  deriveLaunchdMaintenanceLabel(canonicalMainLabel);
+  return createHash("sha256").update(canonicalMainLabel).digest().readUInt32BE(0) % bucketCount;
+}
+
 export function launchdMaintenancePathsFor(
   mainLabel: string,
   home: string = accountHomeDirectory(),
@@ -170,6 +196,15 @@ export function launchdMaintenancePathsFor(
     label,
     plistPath: resolve(home, "Library", "LaunchAgents", `${label}.plist`),
   };
+}
+
+/** Canonical lightweight helper next to the attested managed-runtime CLI. */
+export function launchdMaintenanceEntrypointPathForCli(cliPath: string): string {
+  const canonicalCliPath = resolve(cliPath);
+  if (basename(canonicalCliPath) !== "cli.js" || basename(dirname(canonicalCliPath)) !== "dist") {
+    throw new Error("Launchd maintenance requires the canonical dist/cli.js managed runtime layout.");
+  }
+  return resolve(dirname(canonicalCliPath), MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE);
 }
 
 export function escapeXml(value: string): string {
@@ -233,8 +268,10 @@ ${argsXml}
 
 /** Scheduled one-shot recovery controller. It owns no logs and never KeepAlives. */
 export function buildLaunchdMaintenancePlistXml(input: MaintenancePlistInput): string {
-  if (!Number.isSafeInteger(input.intervalSeconds) || input.intervalSeconds < 1) {
-    throw new Error("Launchd maintenance interval must be a positive safe integer.");
+  if (!Number.isSafeInteger(input.calendarMinute)
+    || input.calendarMinute < 0
+    || input.calendarMinute > 59) {
+    throw new Error("Launchd maintenance calendar minute must be an integer from 0 through 59.");
   }
   for (const [name, value] of [
     ["launchd maintenance label", input.label],
@@ -260,8 +297,11 @@ ${argsXml}
   <string>${escapeXml(input.cwd)}</string>
   <key>RunAtLoad</key>
   <true/>
-  <key>StartInterval</key>
-  <integer>${String(input.intervalSeconds)}</integer>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Minute</key>
+    <integer>${String(input.calendarMinute)}</integer>
+  </dict>
   <key>StandardOutPath</key>
   <string>/dev/null</string>
   <key>StandardErrorPath</key>
@@ -366,6 +406,8 @@ export function buildLaunchdMaintenanceProgramArguments(
     input.agentCwd,
     "--agent-path",
     input.agentPath,
+    "--expected-managed-runtime-launch",
+    input.expectedManagedRuntimeLaunch,
     ...(input.envFile === undefined ? [] : ["--env-file", input.envFile]),
   ];
   for (const argument of arguments_) assertControlFree(argument, "launchd maintenance program argument");
@@ -607,6 +649,11 @@ export function parseLaunchdServicePid(output: string): number | undefined {
 /** Bootstrap (load + RunAtLoad-launch) the plist. Caller tolerates "already bootstrapped". */
 export async function bootstrap(runner: LaunchctlRunner, plistPath: string, uid: number): Promise<LaunchctlResult> {
   return await runner(["bootstrap", domainTarget(uid), plistPath]);
+}
+
+/** Ask launchd to start a loaded one-shot service without replacing a running instance. */
+export async function kickstart(runner: LaunchctlRunner, label: string, uid: number): Promise<LaunchctlResult> {
+  return await runner(["kickstart", serviceTarget(label, uid)]);
 }
 
 /**

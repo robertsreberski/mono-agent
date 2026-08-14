@@ -41,8 +41,11 @@ describe("launchd log doctor section", () => {
       present: true,
       canMaintain: true,
       needsMaintenance: false,
+      perAgentFileReasons: [],
+      sharedDirectoryNeedsMaintenance: false,
       pendingTransaction: false,
       pendingMaintenance: false,
+      pendingPreparation: false,
       issues: [],
     };
 
@@ -74,8 +77,11 @@ describe("launchd log doctor section", () => {
       present: true,
       canMaintain: false,
       needsMaintenance: true,
+      perAgentFileReasons: ["stderr active exceeds 5242880 bytes"],
+      sharedDirectoryNeedsMaintenance: false,
       pendingTransaction: false,
       pendingMaintenance: false,
+      pendingPreparation: false,
       issues: ["stdout: symbolic link"],
     });
     expect(waiting.status).toBe("waiting");
@@ -92,12 +98,46 @@ describe("launchd log doctor section", () => {
       present: false,
       canMaintain: true,
       needsMaintenance: false,
+      perAgentFileReasons: [],
+      sharedDirectoryNeedsMaintenance: false,
       pendingTransaction: false,
       pendingMaintenance: false,
+      pendingPreparation: false,
       issues: [],
     });
     expect(disabled.status).toBe("disabled");
     expect(disabled.details).toContain("No managed launchd log files exist yet.");
+  });
+
+  it("renders bounded monitor observability and an unsafe-status fallback", () => {
+    const base: LaunchdLogInspection = {
+      stdout: { activeBytes: 0, retainedBytes: 0, totalBytes: 0, byteAccountingComplete: true, files: [] },
+      stderr: { activeBytes: 0, retainedBytes: 0, totalBytes: 0, byteAccountingComplete: true, files: [] },
+      present: false,
+      canMaintain: true,
+      needsMaintenance: false,
+      perAgentFileReasons: [],
+      sharedDirectoryNeedsMaintenance: false,
+      pendingTransaction: false,
+      pendingMaintenance: false,
+      pendingPreparation: false,
+      issues: [],
+    };
+    const section = launchdLogsSectionFromInspection(base, {
+      version: 1,
+      lastInspectionAt: "2026-08-14T08:00:00.000Z",
+      wakeCount: 7,
+      lastOutcome: "cooldown",
+      cooldownDeadline: "2026-08-14T08:10:00.000Z",
+    });
+    expect(section.details).toEqual(expect.arrayContaining([
+      "Monitor last inspection: 2026-08-14T08:00:00.000Z.",
+      "Monitor wake count: 7.",
+      "Monitor last outcome: cooldown.",
+      "Monitor cooldown deadline: 2026-08-14T08:10:00.000Z.",
+    ]));
+    expect(launchdLogsSectionFromInspection(base, "unavailable").details)
+      .toContain("Monitor: owner-private status is unavailable or unsafe.");
   });
 });
 
