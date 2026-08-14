@@ -7,7 +7,7 @@ sidebar:
 
 This page covers how to install the `mono-agent` CLI (including the terminal and browser operator consoles), the runtime prerequisites you need, and how to run an unreleased build straight from a clone of the repo.
 
-The shipped command line lives in `@mono-agent/agent-app` (the config-first host that reads one `mono-agent.config.json`), the terminal console lives in `@mono-agent/tui`, and the always-on browser console lives in `@mono-agent/web`. All publish under the `@mono-agent/*` scope on npm. For convenience there is also an unscoped **`create-mono-agent`** installer: run it with `npm create mono-agent@latest`, and a global install of it puts the natural `mono-agent` command on your `PATH`. Its bins just delegate to `@mono-agent/agent-app`.
+The shipped command line lives in `@mono-agent/agent-app` (the config-first host that reads one `mono-agent.config.json`), the terminal console lives in `@mono-agent/tui`, and the always-on browser console lives in `@mono-agent/web`. All publish under the `@mono-agent/*` scope on npm. For convenience there is also an unscoped **`create-mono-agent`** installer: run it with `npm create mono-agent@latest`, and a global install of it puts the natural `mono-agent` command on your `PATH`. Both installer bins delegate to `@mono-agent/agent-app`; only the `create-mono-agent` name adds the npm-init routing described below.
 
 :::note
 The bare `mono-agent` npm name isn't ours — npm rejects it as too similar to an unrelated `monoagent` package — so the installer follows npm's `create-*` convention (`create-mono-agent`), which `npm create mono-agent` resolves natively.
@@ -43,7 +43,7 @@ Install the `create-mono-agent` installer globally to get the `mono-agent` comma
 npm i -g create-mono-agent
 ```
 
-`create-mono-agent` ships both a `create-mono-agent` and a `mono-agent` bin, each forwarding every command to `@mono-agent/agent-app` (installed alongside it); behaviour is identical. Prefer the scoped host directly? It also puts `mono-agent` on your `PATH` and additionally installs the `mono-agent-memory-recall` helper bin used by the memory recall tool:
+`create-mono-agent` ships both a `create-mono-agent` and a `mono-agent` bin. The persistent `mono-agent` name forwards arguments unchanged to `@mono-agent/agent-app` (installed alongside it). The installer name treats a bare invocation or any invocation whose first argument is a flag as `init`, except that singleton `--help`/`-h` prints the `init` help topic and singleton `--version`/`-v` prints the shared `mono-agent <version>` identity. Explicit subcommands pass through. Prefer the scoped host directly? It also puts `mono-agent` on your `PATH` and additionally installs the `mono-agent-memory-recall` helper bin used by the memory recall tool:
 
 ```bash
 npm i -g @mono-agent/agent-app
@@ -58,15 +58,17 @@ npm exec --package @mono-agent/agent-app -- mono-agent --help
 
 ## Scaffold without installing
 
-If you only want to create an agent folder, run `init` with `npm create` (or the equivalent `npx`) — no global install needed:
+If you only want to create an agent folder, use the bare npm-init form or spell `init` explicitly — no global install needed:
 
 ```bash
+npm create mono-agent@latest
+# explicit equivalent:
 npm create mono-agent@latest init
 # equivalently:
 npx create-mono-agent init
 ```
 
-This downloads and runs the published CLI for that one scaffold command. It does not require a global install or the source-build workspace setup. The scoped equivalent is `npm exec --package @mono-agent/agent-app -- mono-agent init`.
+This downloads and runs the published CLI for that one scaffold command. It does not require a global install or the source-build workspace setup. `create-mono-agent --help` and `-h` show init-specific help without scaffolding; `--version` and `-v` print the exact shared CLI version without writing anything. The scoped equivalent is `npm exec --package @mono-agent/agent-app -- mono-agent init`.
 
 ## The TUI console
 

@@ -504,6 +504,34 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["web", "status", "--port", "5050"])).toThrow(/web start/u);
   });
 
+  it("rejects unknown short options while preserving known options and ordinary positionals", () => {
+    for (const flag of ["-h", "-v", "-x", "-1"]) {
+      expect(() => parseCliArgs(["init", flag])).toThrow(`Unknown flag \`${flag}\` for \`mono-agent init\`.`);
+    }
+    expect(parseCliArgs(["logs", "-f"])).toMatchObject({ command: "logs", follow: true });
+    expect(parseCliArgs(["presets", "show", "starter"])).toMatchObject({
+      command: "presets",
+      positionals: ["show", "starter"],
+    });
+    expect(parseCliArgs(["presets", "-"]).positionals).toEqual(["-"]);
+    expect(() => parseCliArgs(["presets", "--"])).toThrow("Unknown flag `--`");
+  });
+
+  it("lets option parsers consume dash-leading values before validating them", () => {
+    expect(parseCliArgs(["init", "--model", "-custom-model"])).toMatchObject({ model: "-custom-model" });
+    expect(() => parseCliArgs(["web", "start", "--port", "-1"]))
+      .toThrow("--port must be an integer between 0 and 65535.");
+    expect(() => parseCliArgs(["logs", "--lines", "-1"]))
+      .toThrow("--lines must be a positive integer between 1 and 100000.");
+  });
+
+  it("reports unknown short options through the existing usage-error path", async () => {
+    const result = await captureCli(() => runCli(["init", "-h"]));
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("Unknown flag `-h` for `mono-agent init`.");
+    expect(result.stdout).toContain("Run `mono-agent help <command>`");
+  });
+
   it("parses --version, -v, and the bare `version` command", () => {
     expect(parseCliArgs(["--version"]).command).toBe("version");
     expect(parseCliArgs(["-v"]).command).toBe("version");

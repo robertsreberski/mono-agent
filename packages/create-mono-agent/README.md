@@ -1,15 +1,22 @@
 # create-mono-agent
 
 The unscoped npm-init entry point for mono-agent. Use it for a one-off guided
-setup with `npm create mono-agent@latest init`, or install it globally when you want
+setup with `npm create mono-agent@latest`, or install it globally when you want
 the `mono-agent` command on `PATH`. Both shipped bins delegate to the CLI in
 [`@mono-agent/agent-app`](https://www.npmjs.com/package/@mono-agent/agent-app).
 
-Three equivalent entry points, one behaviour:
+Two installer forms and one persistent CLI:
 
-- `npm create mono-agent@latest` — npm's `create-*` convention resolves this package (no install).
-- `npx create-mono-agent` — the same, spelled explicitly.
+- `npm create mono-agent@latest` — npm's `create-*` convention resolves this package and enters `init` (no global install).
+- `npx create-mono-agent` — the same installer, spelled explicitly.
 - `npm i -g create-mono-agent` — a global install that puts the natural `mono-agent` command on your `PATH`.
+
+The installer name is deliberately init-oriented. Bare `create-mono-agent` and
+any invocation whose first argument is a flag enter `init`, except that a
+singleton `--help`/`-h` prints the `init` help topic and a singleton
+`--version`/`-v` prints the shared CLI version as `mono-agent <version>`.
+Explicit subcommands pass through. The same package's second bin, `mono-agent`,
+always passes its arguments through unchanged.
 
 On macOS, a one-off `npm create`/npx wizard may start the finished agent in the
 background. Before it does, `@mono-agent/agent-app` copies the already-resolved
@@ -42,17 +49,23 @@ core/plugin package counts and carries no library API.
 
 Provide the discoverable, unscoped `create-mono-agent` name on npm so
 `npm create mono-agent`/`npx create-mono-agent` and a global `mono-agent` command
-work, and forward every invocation, unchanged, to `@mono-agent/agent-app`'s
-`mono-agent` CLI. It owns no CLI behaviour of its own.
+work. It owns only the basename-aware npm-init routing described above, then
+delegates command parsing and execution to `@mono-agent/agent-app`'s
+`mono-agent` CLI.
 
 ## Install / Usage
 
 ```bash
-# Recommended: one-off guided setup (npm resolves create-mono-agent):
+# Recommended: one-off guided setup (bare create implies init):
+npm create mono-agent@latest
+
+# Spelling init explicitly is equivalent:
 npm create mono-agent@latest init
 
 # The explicit npx form is equivalent:
 npx create-mono-agent init
+npx create-mono-agent --help
+npx create-mono-agent --version
 
 # Or install globally for the persistent `mono-agent` command:
 npm i -g create-mono-agent
@@ -61,13 +74,13 @@ mono-agent validate
 mono-agent --version
 ```
 
-Every command, flag, and exit code is exactly what `@mono-agent/agent-app`
-provides — including interactive shutdown: Ctrl-C on `mono-agent start --foreground`
-runs the same graceful teardown and yields the same exit status as calling
-agent-app's bin directly (the bin forwards signals without double-signalling the
-child; see `delegateSignals`). This package adds nothing but the names. Prefer
+After the small create-name routing above, every command, flag, and exit code is
+exactly what `@mono-agent/agent-app` provides — including interactive shutdown:
+Ctrl-C on `mono-agent start --foreground` runs the same graceful teardown and
+yields the same exit status as calling agent-app's bin directly (the bin forwards
+signals without double-signalling the child; see `delegateSignals`). Prefer
 pinning the scoped host directly (`npm i -g @mono-agent/agent-app`) if you don't
-need the installer.
+need the installer name.
 
 ## Architecture
 
@@ -77,11 +90,14 @@ Both bin names point to `dist/bin/mono-agent.js` and follow one path:
 
 1. `resolveAgentAppCliEntry()` resolves the installed
    `@mono-agent/agent-app/package.json` and reads its declared `mono-agent` bin.
-2. The shim starts that exact CLI with the current Node executable, unchanged
+2. `delegatedCliArgs()` passes `mono-agent` arguments through; under the
+   `create-mono-agent` basename it supplies implicit `init`, init-topic help, or
+   singleton version passthrough as described above.
+3. The shim starts the resolved CLI with the current Node executable, those
    arguments, and inherited standard input/output.
-3. `delegateSignals()` lets group-delivered Ctrl-C reach the child once,
+4. `delegateSignals()` lets group-delivered Ctrl-C reach the child once,
    forwards a targeted `SIGTERM`, and mirrors the child's exit code or signal.
-4. From that point, `@mono-agent/agent-app` owns all command behavior, including
+5. From that point, `@mono-agent/agent-app` owns all command behavior, including
    any verified background-runtime publication.
 
 ### Package structure
@@ -90,7 +106,7 @@ Both bin names point to `dist/bin/mono-agent.js` and follow one path:
 | --- | --- |
 | `src/bin/mono-agent.ts` | Shared entry point for both bin names. |
 | `src/resolve-agent-app-cli.ts` | Finds the dependency's declared CLI without hard-coding its build path. |
-| `src/delegate.ts` | Preserves signal and exit semantics while the real CLI runs. |
+| `src/delegate.ts` | Selects the create-name argv route and preserves signal/exit semantics while the real CLI runs. |
 
 ## Public API
 
@@ -98,8 +114,10 @@ Both bin names point to `dist/bin/mono-agent.js` and follow one path:
 
 | Surface | Use |
 | --- | --- |
-| `npm create mono-agent@latest init` | One-off npm-init setup. |
+| `npm create mono-agent@latest` | One-off npm-init setup (`init` is implicit). |
 | `npx create-mono-agent init` | Explicit one-off setup. |
+| `npx create-mono-agent --help` | Init-specific help without writing scaffold files. |
+| `npx create-mono-agent --version` | Exact shared `mono-agent <version>` identity without writing files. |
 | Global `mono-agent` bin | Persistent command after `npm i -g create-mono-agent`. |
 | Library imports | None; import programmatic APIs from `@mono-agent/agent-app`. |
 
@@ -117,14 +135,15 @@ None. This package exports no library surface; it ships `create-mono-agent` and
 Depends only on `@mono-agent/agent-app` (category `app`) at the same lockstep
 version, resolved at runtime through its published `bin`. It must not depend on
 runtime, communication, memory, observability, or operator-surface packages, and
-it must not reimplement any CLI logic.
+it must not reimplement agent-app command parsing or execution.
 
 ## What This Package Does Not Own
 
-It does not parse args, load config, run models, scaffold files, or define any
-command — all of that lives in `@mono-agent/agent-app`. It is metadata plus a
-delegating bin, nothing more. If the installer ever needs behaviour, that
-behaviour belongs in `@mono-agent/agent-app`, not here.
+It does not parse command options, load config, run models, scaffold files, or
+define any command — all of that lives in `@mono-agent/agent-app`. Its only argv
+decision is whether the installer basename should request implicit `init`, the
+`init` help topic, or global version; additional CLI behaviour belongs in
+`@mono-agent/agent-app`, not here.
 
 ## Related Documentation
 

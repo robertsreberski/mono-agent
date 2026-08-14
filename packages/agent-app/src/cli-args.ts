@@ -570,10 +570,12 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         if (flag === undefined) {
           break;
         }
-        if (flag.startsWith("--")) {
+        if (/^-./u.test(flag)) {
           throw new Error(`Unknown flag \`${flag}\` for \`mono-agent ${command}\`.`);
         }
-        // Non-flag tokens are positional arguments (e.g. `presets show <id>`).
+        // Non-dash tokens are positional arguments (e.g. `presets show <id>`).
+        // Keep a lone `-` positional for compatibility; every longer dash-led
+        // token must be a recognized option or a value already consumed above.
         positionals.push(flag);
         break;
     }
