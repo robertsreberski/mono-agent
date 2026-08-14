@@ -31,6 +31,12 @@ import {
   tailLogs,
 } from "./background.js";
 import type { BackgroundDeps, InstanceTarget } from "./background.js";
+import type { LaunchdMaintenanceCommandArgs } from "./launchd-maintenance-command.js";
+import {
+  assertLaunchdMaintenanceLifecycleLease,
+  withLaunchdMaintenanceControllerLock,
+} from "./launchd-maintenance-gate.js";
+import type { LaunchdMaintenanceLifecycleLease } from "./launchd-maintenance-gate.js";
 import {
   captureBackgroundSnapshot,
   decodeBackgroundSnapshot,
@@ -40,6 +46,12 @@ import {
 import type { BackgroundSnapshot } from "./background-snapshot.js";
 import { verifyManagedRuntimeLaunch } from "./background-runtime.js";
 import type { ManagedRuntimeLaunchVerification } from "./background-runtime.js";
+import { startManagedLaunchdLogMonitor } from "./background-log-maintenance.js";
+import type {
+  ManagedLaunchdLogMonitor,
+  ManagedLaunchdLogMonitorDependencies,
+} from "./background-log-maintenance.js";
+import { writeLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
 import { formatChannelFactValue } from "./channel-fact-format.js";
 import { formatHumanChannelSections } from "./channel-status-display.js";
 import type { ChannelStatus } from "./channels.js";
@@ -101,7 +113,7 @@ type PreflightFailure = Extract<PreflightResult, { ok: false }>;
  * Ollama/Supermemory/Phoenix not up yet) is runtime-soft and never blocks.
  */
 export async function ensureStartable(
-  args: ParsedCliArgs,
+  args: Pick<ParsedCliArgs, "configPath">,
   env: Record<string, string | undefined> = process.env,
   options: {
     readonly cwd?: string;
@@ -232,6 +244,7 @@ async function runForeground(
 
   let runtimeInputs: Awaited<ReturnType<typeof materializeBackgroundRuntimeInputs>> | undefined;
   let app: MonoAgentApp | undefined;
+  let logMonitor: ReturnType<typeof startManagedLaunchdLogMonitor> | undefined;
   try {
     let backgroundSnapshot: BackgroundSnapshot | undefined;
     if (managedBackgroundWorker) {
@@ -300,8 +313,16 @@ async function runForeground(
     // process exit immediately whenever no channel owned a live handle — e.g. a
     // traceability-only config, now that the operator console is retired and the
     // trace heartbeat timer is unref'd.
-    return await waitForShutdownSignal(app);
+    if (managedBackgroundWorker) {
+      logMonitor = startManagedBackgroundLogMonitorForConfig(configPath, defaultBackgroundDeps());
+    }
+    const shutdown = waitForShutdownSignal(app, () => {
+      logMonitor?.stop();
+      logMonitor = undefined;
+    });
+    return await shutdown;
   } finally {
+    logMonitor?.stop();
     await app?.stop().catch(() => undefined);
     await runtimeInputs?.dispose().catch(() => undefined);
     await lease.release().catch((error) => {
@@ -310,6 +331,26 @@ async function runForeground(
       ) + "\n");
     });
   }
+}
+
+/** The exact managed-worker composition, exported for a real idle-path contract test. */
+export function startManagedBackgroundLogMonitorForConfig(
+  configPath: string,
+  deps: ManagedLaunchdLogMonitorDependencies,
+): ManagedLaunchdLogMonitor {
+  const label = deriveLaunchdLabel(configPath);
+  const monitorTarget = { label, paths: launchdPathsFor(label) };
+  return startManagedLaunchdLogMonitor(monitorTarget, {
+    inspectLaunchdLogs: deps.inspectLaunchdLogs,
+    runner: deps.runner,
+    getuid: deps.getuid,
+    stderr: deps.stderr,
+    ...(deps.monotonicNow === undefined ? {} : { monotonicNow: deps.monotonicNow }),
+    ...(deps.wallClockNow === undefined ? {} : { wallClockNow: deps.wallClockNow }),
+    ...(deps.isStopped === undefined ? {} : { isStopped: deps.isStopped }),
+    recordStatus: deps.recordStatus
+      ?? (async (status) => await writeLaunchdLogMonitorStatus(monitorTarget, status)),
+  });
 }
 
 export async function runBackgroundCommand(
@@ -412,78 +453,138 @@ export async function runLaunchdLogMaintenanceCommand(
     return 2;
   }
   const agentCwd = resolve(args.agentCwd);
-  const configPath = await canonicalBackgroundConfigPath(agentCwd, args.configPath);
-  let controllerEnvironment: Record<string, string | undefined>;
   try {
-    controllerEnvironment = await loadDurableBackgroundEnvironment({
-      cwd: agentCwd,
-      ...(args.envFile === undefined ? {} : { envFile: args.envFile }),
-      operationalEnvironment: managedBackgroundEnvironment({
-        ...process.env,
-        // The helper itself keeps a closed system PATH. Rehydrate the worker's
-        // original non-secret PATH from its private launchd arguments so a
-        // healthy login pass is stable and recovery preserves tool discovery.
-        PATH: args.agentPath,
-      }),
-    });
+    const configPath = await canonicalBackgroundConfigPath(agentCwd, args.configPath);
+    const label = deriveLaunchdLabel(configPath);
+    const lockTarget = { label, paths: launchdPathsFor(label) };
+    return await withLaunchdMaintenanceControllerLock(lockTarget, deps, async (ownership) =>
+      await runLaunchdLogMaintenanceCommandWithLifecycleLease(args, ownership, deps));
   } catch (error) {
     process.stderr.write(ui.errorLine(
-      `Scheduled recovery could not reconstruct the managed worker environment: ${error instanceof Error ? error.message : String(error)}`,
+      `Scheduled recovery could not establish its canonical ownership boundary: ${error instanceof Error ? error.message : String(error)}`,
     ));
     return 1;
   }
-  const preflight = await ensureStartable(args, controllerEnvironment, { cwd: agentCwd, configPath });
-  if (!preflight.ok) {
-    printPreflightFailure(preflight);
-    return preflight.code;
-  }
+}
 
-  let sourceAvailable: boolean;
-  try {
-    sourceAvailable = await controllerCliAvailable(args.controllerCliPath);
-  } catch (error) {
-    process.stderr.write(ui.errorLine(
-      `Scheduled recovery could not inspect the original controller CLI: ${error instanceof Error ? error.message : String(error)}`,
-    ));
-    return 1;
+/** Heavy reconciliation path callable only with the per-agent capability minted by the leaf gate. */
+export async function runLaunchdLogMaintenanceCommandWithLifecycleLease(
+  args: LaunchdMaintenanceCommandArgs | ParsedCliArgs,
+  ownership: LaunchdMaintenanceLifecycleLease,
+  deps: BackgroundDeps = defaultBackgroundDeps(),
+): Promise<number> {
+  const guard = requireDarwin("scheduled log maintenance");
+  if (guard !== undefined) return guard;
+  if (args.configPath === undefined || args.controllerCliPath === undefined
+    || args.agentCwd === undefined || args.agentPath === undefined) {
+    process.stderr.write(ui.errorLine("Managed launchd recovery requires its pinned config, controller CLI, agent cwd, and worker PATH."));
+    return 2;
   }
-  const controllerCliPath = sourceAvailable
-    ? resolve(args.controllerCliPath)
-    : fileURLToPath(new URL("./cli.js", import.meta.url));
-  let target = await resolveInstanceTarget({
-    args: {
-      configPath,
-      ...(args.envFile === undefined ? {} : { envFile: args.envFile }),
-    },
-    env: controllerEnvironment,
-    cwd: agentCwd,
-    cliPath: controllerCliPath,
-  });
-  target = {
-    ...target,
-    // A fallback recovery installs from the helper closure for this run, but
-    // the durable helper must keep probing the original source. Otherwise one
-    // missing checkout would permanently pin all later recoveries to the old
-    // private closure even after the source reappeared.
-    controllerCliPath: resolve(args.controllerCliPath),
-  };
+  const controllerCliPathInput = args.controllerCliPath;
+  const agentCwd = resolve(args.agentCwd);
   try {
+    const configPath = await canonicalBackgroundConfigPath(agentCwd, args.configPath);
+    const label = deriveLaunchdLabel(configPath);
+    const lockTarget = { label, paths: launchdPathsFor(label) };
+    assertLaunchdMaintenanceLifecycleLease(ownership, lockTarget);
+    let controllerEnvironment: Record<string, string | undefined>;
+    try {
+      controllerEnvironment = await loadDurableBackgroundEnvironment({
+        cwd: agentCwd,
+        ...(args.envFile === undefined ? {} : { envFile: args.envFile }),
+        operationalEnvironment: managedBackgroundEnvironment({
+          ...process.env,
+          // The helper itself keeps a closed system PATH. Rehydrate the worker's
+          // original non-secret PATH from its private launchd arguments so a
+          // healthy login pass is stable and recovery preserves tool discovery.
+          PATH: args.agentPath,
+        }),
+      });
+    } catch (error) {
+      process.stderr.write(ui.errorLine(
+        `Scheduled recovery could not reconstruct the managed worker environment: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+      return 1;
+    }
+
+    let sourceAvailable: boolean;
+    try {
+      sourceAvailable = await controllerCliAvailable(controllerCliPathInput);
+    } catch (error) {
+      process.stderr.write(ui.errorLine(
+        `Scheduled recovery could not inspect the original controller CLI: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+      return 1;
+    }
+    const controllerCliPath = sourceAvailable
+      ? resolve(controllerCliPathInput)
+      : fileURLToPath(new URL("./cli.js", import.meta.url));
+    let target: InstanceTarget;
+    try {
+      target = await resolveInstanceTarget({
+        args: {
+          configPath,
+          ...(args.envFile === undefined ? {} : { envFile: args.envFile }),
+        },
+        env: controllerEnvironment,
+        cwd: agentCwd,
+        cliPath: controllerCliPath,
+      });
+    } catch (error) {
+      process.stderr.write(ui.errorLine(
+        `Scheduled recovery could not resolve the managed worker target: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+      return 1;
+    }
+    if (target.label !== lockTarget.label || target.configPath !== configPath) {
+      process.stderr.write(ui.errorLine(
+        "Scheduled recovery refused a target whose canonical identity changed after lock acquisition.",
+      ));
+      return 1;
+    }
     target = {
       ...target,
-      expectedSnapshot: await captureBackgroundSnapshot({
-        cwd: target.cwd,
-        configPath: target.configPath,
-        ...(target.envFile === undefined ? {} : { envFile: target.envFile }),
-        env: controllerEnvironment,
-      }),
+      // A fallback recovery installs from the helper closure for this run, but
+      // the durable helper must keep probing the original source. Otherwise one
+      // missing checkout would permanently pin all later recoveries to the old
+      // private closure even after the source reappeared.
+      controllerCliPath: resolve(controllerCliPathInput),
     };
+    try {
+      target = {
+        ...target,
+        expectedSnapshot: await captureBackgroundSnapshot({
+          cwd: target.cwd,
+          configPath: target.configPath,
+          ...(target.envFile === undefined ? {} : { envFile: target.envFile }),
+          env: controllerEnvironment,
+        }),
+      };
+    } catch (error) {
+      process.stderr.write(ui.errorLine(
+        `Scheduled recovery could not prove the durable background snapshot: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+      return 1;
+    }
+    return await maintainLaunchdController(target, deps, {
+      sourceAvailable,
+      recoveryPreflight: async () => {
+        const preflight = await ensureStartable(
+          args,
+          controllerEnvironment,
+          { cwd: agentCwd, configPath },
+        );
+        if (preflight.ok) return 0;
+        printPreflightFailure(preflight);
+        return preflight.code;
+      },
+    }, ownership);
   } catch (error) {
     process.stderr.write(ui.errorLine(
-      `Scheduled recovery could not prove the durable background snapshot: ${error instanceof Error ? error.message : String(error)}`,
+      `Scheduled recovery failed inside its owned-lock boundary: ${error instanceof Error ? error.message : String(error)}`,
     ));
     return 1;
   }
-  return await maintainLaunchdController(target, deps, { sourceAvailable });
 }
 
 async function controllerCliAvailable(path: string): Promise<boolean> {
@@ -692,7 +793,10 @@ export function describeChannelStatus(status: ChannelStatus): string {
  * NOT keep Node running, and the trace heartbeat is unref'd). Cleared on stop so
  * the loop drains cleanly without a forceful `process.exit`. Exported for tests.
  */
-export function waitForShutdownSignal(app: Pick<MonoAgentApp, "stop">): Promise<number> {
+export function waitForShutdownSignal(
+  app: Pick<MonoAgentApp, "stop">,
+  beforeAppStop?: () => void,
+): Promise<number> {
   return new Promise<number>((resolve) => {
     const keepAlive = setInterval(() => {}, KEEP_ALIVE_INTERVAL_MS);
     let stopping = false;
@@ -705,14 +809,35 @@ export function waitForShutdownSignal(app: Pick<MonoAgentApp, "stop">): Promise<
       process.off("SIGTERM", onSignal);
       clearInterval(keepAlive);
       void (async () => {
-        process.stdout.write("\n" + ui.hint(`Received ${signal}; stopping mono agent app…`));
+        try {
+          process.stdout.write("\n" + ui.hint(`Received ${signal}; stopping mono agent app…`));
+        } catch {
+          // Reporter failure cannot prevent app shutdown or become unhandled.
+        }
+        let latchFailed = false;
+        try {
+          beforeAppStop?.();
+        } catch (error) {
+          latchFailed = true;
+          try {
+            process.stderr.write(ui.errorLine(
+              `Foreground shutdown latch failed: ${error instanceof Error ? error.message : String(error)}`,
+            ));
+          } catch {
+            // Reporter failure cannot prevent app shutdown or become unhandled.
+          }
+        }
         try {
           await app.stop();
-          resolve(0);
+          resolve(latchFailed ? 1 : 0);
         } catch (error) {
-          process.stderr.write(ui.errorLine(
-            `Foreground shutdown failed: ${error instanceof Error ? error.message : String(error)}`,
-          ));
+          try {
+            process.stderr.write(ui.errorLine(
+              `Foreground shutdown failed: ${error instanceof Error ? error.message : String(error)}`,
+            ));
+          } catch {
+            // Reporter failure cannot prevent outer idempotent cleanup.
+          }
           // Resolve so runForeground's finally block can retry idempotent app
           // cleanup and release the process-lifetime singleton lease.
           resolve(1);

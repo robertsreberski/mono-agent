@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { userInfo } from "node:os";
 import { resolve } from "node:path";
 
@@ -16,7 +17,11 @@ import {
   domainTarget,
   escapeXml,
   launchdMaintenancePathsFor,
+  launchdMaintenanceEntrypointPathForCli,
+  launchdMaintenanceCalendarMinute,
+  launchdMaintenanceDispersionSeconds,
   launchdPathsFor,
+  LAUNCHD_MAINTENANCE_DISPERSION_SECONDS,
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
   parseLaunchdManagedWorkerDefinition,
   parseLaunchdServicePid,
@@ -44,17 +49,18 @@ function maintenanceInput(overrides: Partial<MaintenancePlistInput> = {}): Maint
   return {
     label: "com.mono-agent-maintenance.demo-0a1b2c3d",
     nodePath: "/usr/local/bin/node",
-    cliPath: "/opt/app/dist/cli.js",
+    cliPath: "/opt/app/dist/launchd-maintenance-entry.js",
     configPath: "/work/demo/mono-agent.config.json",
     cwd: "/work/demo",
     controllerCliPath: "/checkout/packages/agent-app/dist/cli.js",
     agentCwd: "/work/demo",
     agentPath: "/custom/bin:/usr/bin:/bin",
+    expectedManagedRuntimeLaunch: "managed-runtime-launch-proof",
     environment: {
       PATH: "/usr/bin:/bin",
       [MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV]: "1",
     },
-    intervalSeconds: 300,
+    calendarMinute: 17,
     ...overrides,
   };
 }
@@ -288,7 +294,7 @@ describe("buildLaunchdMaintenancePlistXml", () => {
       `${MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV}=1`,
       "PATH=/usr/bin:/bin",
       "/usr/local/bin/node",
-      "/opt/app/dist/cli.js",
+      "/opt/app/dist/launchd-maintenance-entry.js",
       "__launchd-log-maintenance",
       "--config",
       "/work/demo/mono-agent.config.json",
@@ -298,21 +304,56 @@ describe("buildLaunchdMaintenancePlistXml", () => {
       "/work/demo",
       "--agent-path",
       "/custom/bin:/usr/bin:/bin",
+      "--expected-managed-runtime-launch",
+      "managed-runtime-launch-proof",
     ]);
     expect(xml).toContain("<key>RunAtLoad</key>\n  <true/>");
-    expect(xml).toContain("<key>StartInterval</key>\n  <integer>300</integer>");
+    expect(xml).toContain(
+      "<key>StartCalendarInterval</key>\n  <dict>\n    <key>Minute</key>\n    <integer>17</integer>",
+    );
+    expect(xml).not.toContain("<key>StartInterval</key>");
     expect(xml).toContain("<key>StandardOutPath</key>\n  <string>/dev/null</string>");
     expect(xml).toContain("<key>StandardErrorPath</key>\n  <string>/dev/null</string>");
+    expect(xml).toContain("<key>ProcessType</key>\n  <string>Background</string>");
     expect(xml).not.toContain("<key>KeepAlive</key>");
     expect(xml).not.toContain("--env-file");
     expect(xml).not.toContain("--expected-background-snapshot");
   });
 
-  it("rejects invalid intervals and control characters", () => {
-    expect(() => buildLaunchdMaintenancePlistXml(maintenanceInput({ intervalSeconds: 0 })))
-      .toThrow(/positive safe integer/u);
+  it("rejects invalid calendar minutes and control characters", () => {
+    expect(() => buildLaunchdMaintenancePlistXml(maintenanceInput({ calendarMinute: -1 })))
+      .toThrow(/0 through 59/u);
+    expect(() => buildLaunchdMaintenancePlistXml(maintenanceInput({ calendarMinute: 60 })))
+      .toThrow(/0 through 59/u);
     expect(() => buildLaunchdMaintenancePlistXml(maintenanceInput({ cwd: "/work/bad\npath" })))
       .toThrow(/control characters/u);
+  });
+
+  it("hashes only canonical main labels into deterministic hourly calendar minutes", () => {
+    expect(launchdMaintenanceCalendarMinute("com.mono-agent.demo-0a1b2c3d")).toBe(17);
+    expect(launchdMaintenanceCalendarMinute("com.mono-agent.alpha-12345678")).toBe(23);
+    expect(launchdMaintenanceCalendarMinute("com.mono-agent.beta-87654321")).toBe(41);
+    const maintenanceLabel = "com.mono-agent-maintenance.demo-0a1b2c3d";
+    expect(createHash("sha256").update(maintenanceLabel).digest().readUInt32BE(0) % 60).toBe(29);
+    // The corresponding helper label hashes differently, but is deliberately rejected.
+    expect(() => launchdMaintenanceCalendarMinute(maintenanceLabel))
+      .toThrow(/canonical mono-agent label/u);
+  });
+
+  it("reuses the canonical calendar hash for deterministic 120-second login dispersion", () => {
+    expect(LAUNCHD_MAINTENANCE_DISPERSION_SECONDS).toBe(120);
+    expect(launchdMaintenanceDispersionSeconds("com.mono-agent.demo-0a1b2c3d")).toBe(77);
+    expect(launchdMaintenanceDispersionSeconds("com.mono-agent.alpha-12345678")).toBe(23);
+    expect(launchdMaintenanceDispersionSeconds("com.mono-agent.beta-87654321")).toBe(41);
+    expect(() => launchdMaintenanceDispersionSeconds("com.mono-agent-maintenance.demo-0a1b2c3d"))
+      .toThrow(/canonical mono-agent label/u);
+  });
+
+  it("derives only the attested sibling maintenance entry from canonical dist/cli.js", () => {
+    expect(launchdMaintenanceEntrypointPathForCli("/managed/agent-app/dist/cli.js"))
+      .toBe("/managed/agent-app/dist/launchd-maintenance-entry.js");
+    expect(() => launchdMaintenanceEntrypointPathForCli("/managed/agent-app/cli.js"))
+      .toThrow(/canonical dist\/cli\.js/u);
   });
 });
 

@@ -4,10 +4,11 @@ import { lstat, open, rename, rm } from "node:fs/promises";
 import process from "node:process";
 
 import {
-  LAUNCHD_LOG_MAINTENANCE_INTERVAL_SECONDS,
   LAUNCHD_LOG_MAX_BYTES,
   LAUNCHD_LOG_ROTATION_COUNT,
 } from "./launchd-logs.js";
+
+const MANAGED_WEB_LOG_INSPECTION_INTERVAL_MS = 5 * 60_000;
 
 interface ManagedWebLogPaths {
   readonly launchd: {
@@ -49,7 +50,7 @@ export async function waitForManagedWebLogRollover(
     };
     const interval = setInterval(
       () => void inspect(),
-      LAUNCHD_LOG_MAINTENANCE_INTERVAL_SECONDS * 1_000,
+      MANAGED_WEB_LOG_INSPECTION_INTERVAL_MS,
     );
     interval.unref();
     signal.addEventListener("abort", onAbort, { once: true });

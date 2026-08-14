@@ -1,16 +1,17 @@
 import { execFile } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { RecordedRunListItem, TraceSourceListItem } from "@mono-agent/observability";
 
 import {
   canonicalBackgroundConfigPath,
   acquireFilesystemLifecycleLock,
+  acquireSharedLaunchdLogLock,
   ensureBackgroundReady,
   defaultBackgroundDeps,
   forceRestartBackground,
@@ -23,6 +24,8 @@ import {
   statusBackground,
   stopBackground,
   tailLogs,
+  sharedLaunchdLogLockTarget,
+  withLaunchdMaintenanceControllerLock,
 } from "../background.js";
 import type { BackgroundDeps, InstanceTarget } from "../background.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
@@ -32,6 +35,11 @@ import { buildLaunchdProgramArguments } from "../launchd.js";
 import type { LaunchctlRunner } from "../launchd.js";
 import type { ProcessIncarnation } from "../process-incarnation.js";
 import type { OwnerPrivateLock } from "../owner-private-lock.js";
+import {
+  readLaunchdLogMonitorStatus,
+  removeLaunchdLogMonitorStatus,
+  writeLaunchdLogMonitorStatus,
+} from "../launchd-log-monitor-status.js";
 
 const POLL = { timeoutMs: 5_000, intervalMs: 100 };
 const CLOCK_START = 1_000_000;
@@ -280,6 +288,7 @@ function makeHarness(opts: {
   markLaunchdLogMaintenanceRestoring?: BackgroundDeps["markLaunchdLogMaintenanceRestoring"];
   markLaunchdLogMaintenanceStopping?: BackgroundDeps["markLaunchdLogMaintenanceStopping"];
   clearLaunchdLogMaintenanceIntent?: BackgroundDeps["clearLaunchdLogMaintenanceIntent"];
+  removeLaunchdLogMonitorStatus?: NonNullable<BackgroundDeps["removeLaunchdLogMonitorStatus"]>;
   verifyLaunchdPlist?: BackgroundDeps["verifyLaunchdPlist"];
   ensureManagedRuntime?: BackgroundDeps["ensureManagedRuntime"];
   inspectManagedRuntimeSourceIdentity?: BackgroundDeps["inspectManagedRuntimeSourceIdentity"];
@@ -345,6 +354,9 @@ function makeHarness(opts: {
       phase: "stopping",
     })),
     clearLaunchdLogMaintenanceIntent: opts.clearLaunchdLogMaintenanceIntent ?? (async () => undefined),
+    ...(opts.removeLaunchdLogMonitorStatus === undefined
+      ? {}
+      : { removeLaunchdLogMonitorStatus: opts.removeLaunchdLogMonitorStatus }),
     verifyLaunchdPlist: opts.verifyLaunchdPlist ?? (async () => "plist-identity"),
     isAlive,
     ensureManagedRuntime: opts.ensureManagedRuntime ?? (async (input) => ({
@@ -396,8 +408,11 @@ function emptyLogInspection(overrides: Partial<LaunchdLogInspection> = {}): Laun
     present: false,
     canMaintain: true,
     needsMaintenance: false,
+    perAgentFileReasons: [],
+    sharedDirectoryNeedsMaintenance: false,
     pendingTransaction: false,
     pendingMaintenance: false,
+    pendingPreparation: false,
     issues: [],
     ...overrides,
   };
@@ -668,7 +683,15 @@ describe("startBackground", () => {
     expect(harness.written[0]?.data).not.toContain(target.cliPath);
     expect(harness.written[1]?.path).toContain("com.mono-agent-maintenance.demo-0a1b2c3d.plist");
     expect(harness.written[1]?.data).toContain("__launchd-log-maintenance");
-    expect(harness.written[1]?.data).toContain("<key>StartInterval</key>");
+    expect(harness.written[1]?.data).toContain(
+      "/home/u/.mono-agent/runtimes/agent-app/verified/dist/launchd-maintenance-entry.js",
+    );
+    expect(harness.written[1]?.data).toContain("--expected-managed-runtime-launch");
+    expect(harness.written[1]?.data).toContain("<key>RunAtLoad</key>\n  <true/>");
+    expect(harness.written[1]?.data).toContain(
+      "<key>StartCalendarInterval</key>\n  <dict>\n    <key>Minute</key>\n    <integer>17</integer>",
+    );
+    expect(harness.written[1]?.data).not.toContain("<key>StartInterval</key>");
     expect(harness.written[1]?.data).toContain("<string>/dev/null</string>");
     expect(harness.written[1]?.data).toContain("<string>/home/u/.mono-agent</string>");
     expect(harness.written[1]?.data).toContain("<string>--agent-cwd</string>");
@@ -1191,9 +1214,51 @@ describe("startBackground", () => {
     expect(runtimeCalls).toBe(0);
     expect(harness.written).toEqual([]);
   });
+
+  it("fails visibly without plist/log mutation when the interactive shared lock is unavailable", async () => {
+    const { runner, calls } = makeRunner({ loaded: false });
+    const target = makeTarget();
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      acquireLifecycleLock: async (_lockTarget, options) => options?.purpose === "shared-launchd-logs"
+        ? undefined
+        : async () => undefined,
+    });
+
+    await expect(ensureBackgroundReady(target, harness.deps, POLL))
+      .resolves.toEqual({ ok: false, action: "start", reason: "shared-contention" });
+    expect(harness.written).toEqual([]);
+    expect(harness.mkdirs).toEqual([]);
+    expect(calls.map((call) => call[0])).not.toContain("bootstrap");
+    expect(calls.map((call) => call[0])).not.toContain("bootout");
+    expect(harness.err.join(" ")).toContain("another agent on this account");
+  });
 });
 
 describe("filesystem lifecycle lock", () => {
+  it("uses immediate helper deferral and the exact interactive 18s/400ms wait", async () => {
+    const target = makeTarget();
+    const calls: Array<{ label: string; options: Record<string, unknown> | undefined }> = [];
+    const deps = {
+      acquireLifecycleLock: async (
+        lockTarget: Parameters<BackgroundDeps["acquireLifecycleLock"]>[0],
+        options?: Parameters<BackgroundDeps["acquireLifecycleLock"]>[1],
+      ) => {
+        calls.push({ label: lockTarget.label, options: options as Record<string, unknown> | undefined });
+        return async () => undefined;
+      },
+    };
+
+    await acquireSharedLaunchdLogLock(target, deps, "automatic");
+    await acquireSharedLaunchdLogLock(target, deps, "interactive");
+
+    expect(calls.map((call) => call.options)).toEqual([
+      expect.objectContaining({ waitTimeoutMs: 0, pollIntervalMs: 400 }),
+      expect.objectContaining({ waitTimeoutMs: 18_000, pollIntervalMs: 400 }),
+    ]);
+  });
+
   it("does not steal a fresh ownerless lock during the mkdir-to-owner write window", async () => {
     const home = await mkdtemp(join(tmpdir(), "mono-agent-lifecycle-lock-"));
     const target = makeTarget({
@@ -1209,7 +1274,9 @@ describe("filesystem lifecycle lock", () => {
     try {
       await mkdir(lockDir, { recursive: true, mode: 0o700 });
 
-      const acquired = await defaultBackgroundDeps().acquireLifecycleLock(target);
+      const acquired = await acquireFilesystemLifecycleLock(target, {
+        processIncarnation: processIncarnation("ownerless-contender"),
+      });
 
       expect(acquired).toBeUndefined();
       expect((await lstat(lockDir)).isDirectory()).toBe(true);
@@ -1296,9 +1363,224 @@ describe("filesystem lifecycle lock", () => {
       await rm(home, { recursive: true, force: true });
     }
   });
+
+  it("uses one synthetic shared key and defers automatic contenders without mutation", async () => {
+    const home = await mkdtemp(join(tmpdir(), "mono-agent-shared-log-lock-"));
+    const firstTarget = makeTarget({
+      paths: {
+        launchAgentsDir: join(home, "Library", "LaunchAgents"),
+        logDir: join(home, ".mono-agent", "logs"),
+        plistPath: join(home, "Library", "LaunchAgents", "agent.plist"),
+        stdoutPath: join(home, ".mono-agent", "logs", "agent.out.log"),
+        stderrPath: join(home, ".mono-agent", "logs", "agent.err.log"),
+      },
+    });
+    const secondTarget = { ...firstTarget, label: "com.mono-agent.other-12345678" };
+    try {
+      const synthetic = sharedLaunchdLogLockTarget(firstTarget);
+      expect(synthetic.label).toMatch(/^launchd-log-shared-[a-f0-9]{24}$/u);
+      expect(sharedLaunchdLogLockTarget(secondTarget).label).toBe(synthetic.label);
+      const held = await acquireFilesystemLifecycleLock(synthetic, {
+        purpose: "shared-launchd-logs",
+        ownerLabel: firstTarget.label,
+        processIncarnation: processIncarnation("shared-owner"),
+        randomToken: () => "shared-token",
+      });
+      expect(held).toBeTypeOf("function");
+      const owner = JSON.parse(await readFile(
+        join(home, ".mono-agent", "locks", `${synthetic.label}.lock`, "owner.json"),
+        "utf8",
+      )) as Record<string, unknown>;
+      expect(owner).toMatchObject({
+        schema: "mono-agent.shared-launchd-log-lock.v1",
+        label: firstTarget.label,
+      });
+
+      const deferred = await acquireSharedLaunchdLogLock(secondTarget, {
+        acquireLifecycleLock: async (target, options) =>
+          await acquireFilesystemLifecycleLock(target, {
+            ...options,
+            processIncarnation: processIncarnation("contender"),
+            isSameProcessIncarnation: async () => true,
+            randomToken: () => "contender-token",
+          }),
+      }, "automatic");
+      expect(deferred).toBeUndefined();
+      await held?.();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("fails visibly with holder identity after a bounded shared-lock wait", async () => {
+    const home = await mkdtemp(join(tmpdir(), "mono-agent-shared-log-wait-"));
+    const target = makeTarget({
+      paths: {
+        launchAgentsDir: join(home, "Library", "LaunchAgents"),
+        logDir: join(home, ".mono-agent", "logs"),
+        plistPath: join(home, "Library", "LaunchAgents", "agent.plist"),
+        stdoutPath: join(home, ".mono-agent", "logs", "agent.out.log"),
+        stderrPath: join(home, ".mono-agent", "logs", "agent.err.log"),
+      },
+    });
+    const synthetic = sharedLaunchdLogLockTarget(target);
+    try {
+      const held = await acquireFilesystemLifecycleLock(synthetic, {
+        purpose: "shared-launchd-logs",
+        ownerLabel: target.label,
+        processIncarnation: processIncarnation("holder"),
+        randomToken: () => "holder-token",
+      });
+      await expect(acquireFilesystemLifecycleLock(synthetic, {
+        purpose: "shared-launchd-logs",
+        ownerLabel: "com.mono-agent.contender-12345678",
+        waitTimeoutMs: 1,
+        pollIntervalMs: 1,
+        processIncarnation: processIncarnation("contender"),
+        isSameProcessIncarnation: async () => true,
+        randomToken: () => "contender-token",
+      })).rejects.toThrow(/holder pid=.*label=com\.mono-agent\.demo-0a1b2c3d.*acquiredAt=.*incarnation=/u);
+      await held?.();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the shared lock root cannot be authenticated", async () => {
+    const home = await mkdtemp(join(tmpdir(), "mono-agent-shared-log-unsafe-"));
+    const target = makeTarget({
+      paths: {
+        launchAgentsDir: join(home, "Library", "LaunchAgents"),
+        logDir: join(home, ".mono-agent", "logs"),
+        plistPath: join(home, "Library", "LaunchAgents", "agent.plist"),
+        stdoutPath: join(home, ".mono-agent", "logs", "agent.out.log"),
+        stderrPath: join(home, ".mono-agent", "logs", "agent.err.log"),
+      },
+    });
+    try {
+      const foreignRoot = join(home, "foreign-root");
+      await mkdir(foreignRoot, { mode: 0o700 });
+      await symlink(foreignRoot, join(home, ".mono-agent"));
+      await expect(acquireFilesystemLifecycleLock(sharedLaunchdLogLockTarget(target), {
+        purpose: "shared-launchd-logs",
+        ownerLabel: target.label,
+        processIncarnation: processIncarnation("unsafe-root-contender"),
+      })).rejects.toBeDefined();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("LaunchAgent private filesystem boundary", () => {
+  it("round-trips only bounded owner-private monitor status and rejects a linked replacement", async () => {
+    const home = await mkdtemp(join(tmpdir(), "mono-agent-monitor-status-"));
+    const target = makeTarget({
+      paths: {
+        launchAgentsDir: join(home, "Library", "LaunchAgents"),
+        logDir: join(home, ".mono-agent", "logs"),
+        plistPath: join(home, "Library", "LaunchAgents", "agent.plist"),
+        stdoutPath: join(home, ".mono-agent", "logs", "agent.out.log"),
+        stderrPath: join(home, ".mono-agent", "logs", "agent.err.log"),
+      },
+    });
+    const status = {
+      version: 1 as const,
+      lastInspectionAt: "2026-08-14T08:00:00.000Z",
+      wakeCount: 2,
+      lastOutcome: "requested" as const,
+      cooldownDeadline: "2026-08-14T08:10:00.000Z",
+    };
+    try {
+      await mkdir(join(home, ".mono-agent"), { mode: 0o700 });
+      await writeLaunchdLogMonitorStatus(target, status);
+      await expect(readLaunchdLogMonitorStatus(target.label, target.paths)).resolves.toEqual(status);
+      const statusDirectory = join(home, ".mono-agent", "launchd-log-monitor");
+      const [statusName] = await readdir(statusDirectory);
+      expect(statusName).toBeDefined();
+      const statusPath = join(statusDirectory, statusName!);
+      expect((await lstat(statusPath)).mode & 0o777).toBe(0o600);
+      expect((await lstat(statusPath)).size).toBeLessThanOrEqual(1024);
+
+      await removeLaunchdLogMonitorStatus(target);
+      await expect(lstat(statusPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await writeLaunchdLogMonitorStatus(target, status);
+      await rm(statusPath);
+      const outside = join(home, "outside-status.json");
+      await writeFile(outside, `${JSON.stringify(status)}\n`, { mode: 0o600 });
+      await symlink(outside, statusPath);
+      await expect(readLaunchdLogMonitorStatus(target.label, target.paths)).rejects.toBeDefined();
+      await expect(removeLaunchdLogMonitorStatus(target)).rejects.toBeDefined();
+      await expect(readFile(outside, "utf8")).resolves.toContain("requested");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps status available under a safe root needing repair without mutating that root", async () => {
+    const home = await mkdtemp(join(tmpdir(), "mono-agent-monitor-status-repairable-root-"));
+    const root = join(home, ".mono-agent");
+    const target = makeTarget({
+      paths: {
+        launchAgentsDir: join(home, "Library", "LaunchAgents"),
+        logDir: join(root, "logs"),
+        plistPath: join(home, "Library", "LaunchAgents", "agent.plist"),
+        stdoutPath: join(root, "logs", "agent.out.log"),
+        stderrPath: join(root, "logs", "agent.err.log"),
+      },
+    });
+    const status = {
+      version: 1 as const,
+      lastInspectionAt: "2026-08-14T08:00:00.000Z",
+      wakeCount: 3,
+      lastOutcome: "shared-only" as const,
+      cooldownDeadline: "2026-08-14T08:05:00.000Z",
+    };
+    try {
+      await mkdir(root, { mode: 0o755 });
+      await chmod(root, 0o755);
+      await writeLaunchdLogMonitorStatus(target, status);
+
+      expect((await lstat(root)).mode & 0o777).toBe(0o755);
+      const statusDirectory = join(root, "launchd-log-monitor");
+      expect((await lstat(statusDirectory)).mode & 0o777).toBe(0o700);
+      await expect(readLaunchdLogMonitorStatus(target.label, target.paths)).resolves.toEqual(status);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on an unsafe shared root without creating status state", async () => {
+    const home = await mkdtemp(join(tmpdir(), "mono-agent-monitor-status-unsafe-root-"));
+    const root = join(home, ".mono-agent");
+    const target = makeTarget({
+      paths: {
+        launchAgentsDir: join(home, "Library", "LaunchAgents"),
+        logDir: join(root, "logs"),
+        plistPath: join(home, "Library", "LaunchAgents", "agent.plist"),
+        stdoutPath: join(root, "logs", "agent.out.log"),
+        stderrPath: join(root, "logs", "agent.err.log"),
+      },
+    });
+    const status = {
+      version: 1 as const,
+      lastInspectionAt: "2026-08-14T08:00:00.000Z",
+      wakeCount: 0,
+      lastOutcome: "inspection-failed" as const,
+      cooldownDeadline: "2026-08-14T08:05:00.000Z",
+    };
+    try {
+      await mkdir(root, { mode: 0o700 });
+      await chmod(root, 0o777);
+      await expect(writeLaunchdLogMonitorStatus(target, status)).rejects.toThrow(/unavailable or unsafe/u);
+      await expect(readLaunchdLogMonitorStatus(target.label, target.paths)).rejects.toThrow(/unavailable or unsafe/u);
+      expect((await lstat(root)).mode & 0o777).toBe(0o777);
+      await expect(lstat(join(root, "launchd-log-monitor"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(process.platform === "win32")("rejects symlinked plist and log destinations without modifying their targets", async () => {
     // macOS exposes tmpdir() through the /var -> /private/var alias. Use its
     // canonical spelling so this fixture reaches the final-component symlink
@@ -1368,6 +1650,91 @@ describe("LaunchAgent private filesystem boundary", () => {
 });
 
 describe("maintainLaunchdController", () => {
+  it("defers at the per-agent nonblocking lock before any expensive helper work", async () => {
+    const target = makeTarget();
+    const { runner } = makeRunner({
+      loaded: true,
+      initialPid: 4321,
+      maintenanceLoaded: true,
+      maintenancePid: 9001,
+      mainPrintOutput: managedLaunchctlPrint(target),
+    });
+    const lockCalls: Array<{ label: string; waitTimeoutMs: number | undefined }> = [];
+    const releases: string[] = [];
+    let sleeps = 0;
+    const harness = makeHarness({
+      runner,
+      currentPid: () => 9001,
+      list: listReturning(() => [makeSource(target, { pid: 4321 })]),
+      acquireLifecycleLock: async (lockTarget, options) => {
+        lockCalls.push({ label: lockTarget.label, waitTimeoutMs: options?.waitTimeoutMs });
+        return undefined;
+      },
+      sleep: async () => { sleeps += 1; },
+    });
+    const expensiveInspection = vi.fn(async () => 0);
+
+    expect(await withLaunchdMaintenanceControllerLock(
+      target,
+      harness.deps,
+      expensiveInspection,
+    )).toBe(0);
+    expect(expensiveInspection).not.toHaveBeenCalled();
+    expect(lockCalls).toEqual([
+      { label: target.label, waitTimeoutMs: 0 },
+    ]);
+    expect(releases).toEqual([]);
+    expect(sleeps).toBe(0);
+  });
+
+  it("uses bounded fast proofs and defers healthy log-only work on its separate shared lease", async () => {
+    const target = makeTarget();
+    const { runner, calls } = makeRunner({
+      loaded: true,
+      initialPid: 4321,
+      maintenanceLoaded: true,
+      maintenancePid: process.pid,
+      mainPrintOutput: managedLaunchctlPrint(target),
+    });
+    let preflights = 0;
+    let installs = 0;
+    let sharedAttempts = 0;
+    let logInspections = 0;
+    const harness = makeHarness({
+      runner,
+      currentPid: () => process.pid,
+      list: listReturning(() => [makeSource(target, { pid: 4321 })]),
+      acquireLifecycleLock: async (_lockTarget, options) => {
+        if (options?.purpose === "shared-launchd-logs") {
+          sharedAttempts += 1;
+          return undefined;
+        }
+        return async () => undefined;
+      },
+      inspectLaunchdLogs: async () => {
+        logInspections += 1;
+        throw new Error("shared contention must defer before log inspection");
+      },
+      ensureManagedRuntime: async (input) => {
+        installs += 1;
+        return await makeHarness({ runner, list: listReturning(() => []) }).deps.ensureManagedRuntime(input);
+      },
+    });
+
+    expect(await maintainLaunchdController(target, harness.deps, {
+      sourceAvailable: true,
+      recoveryPreflight: async () => {
+        preflights += 1;
+        return 0;
+      },
+    })).toBe(0);
+    expect(preflights).toBe(0);
+    expect(installs).toBe(0);
+    expect(sharedAttempts).toBe(1);
+    expect(logInspections).toBe(0);
+    expect(calls.some((call) => call[0] === "bootout" || call[0] === "bootstrap")).toBe(false);
+  });
+
   it("upgrades a drifted worker while the old PID serves and preserves the running helper", async () => {
     const target = makeTarget({ controllerCliPath: "/checkout/packages/agent-app/dist/cli.js" });
     const priorSnapshot = makeSnapshot(target, "prior");
@@ -1376,13 +1743,13 @@ describe("maintainLaunchdController", () => {
       initialPid: 4321,
       bootstrapPid: 5432,
       maintenanceLoaded: true,
-      maintenancePid: 9001,
+      maintenancePid: process.pid,
       mainPrintOutput: managedLaunchctlPrint(target, { snapshot: priorSnapshot }),
     });
     let installedWhileOldWorkerServed = false;
     const harness = makeHarness({
       runner,
-      currentPid: () => 9001,
+      currentPid: () => process.pid,
       list: listReturning(() => calls.some((call) =>
         call[0] === "bootstrap" && call[2] === target.paths.plistPath)
         ? [makeSource(target, { pid: 5432 })]
@@ -1412,11 +1779,17 @@ describe("maintainLaunchdController", () => {
       },
     });
 
+    let preflights = 0;
     expect(await maintainLaunchdController(target, harness.deps, {
       sourceAvailable: true,
       controlPoll: POLL,
       readinessPoll: POLL,
+      recoveryPreflight: async () => {
+        preflights += 1;
+        return 0;
+      },
     })).toBe(0);
+    expect(preflights).toBe(1);
     expect(installedWhileOldWorkerServed).toBe(true);
     expect(harness.written.map(({ path }) => path)).toEqual([
       target.paths.plistPath,
@@ -1429,6 +1802,203 @@ describe("maintainLaunchdController", () => {
     expect(harness.written[1]?.data).toContain("/checkout/packages/agent-app/dist/cli.js");
   });
 
+  it("holds the shared lease only across post-install shared mutation and releases it before readiness", async () => {
+    const target = makeTarget({ controllerCliPath: "/checkout/packages/agent-app/dist/cli.js" });
+    const priorSnapshot = makeSnapshot(target, "prior-shared-boundary");
+    const { runner, calls } = makeRunner({
+      loaded: true,
+      initialPid: 4321,
+      bootstrapPid: 5432,
+      maintenanceLoaded: true,
+      maintenancePid: process.pid,
+      mainPrintOutput: managedLaunchctlPrint(target, { snapshot: priorSnapshot }),
+    });
+    const events: string[] = [];
+    let sharedHeld = false;
+    const harness = makeHarness({
+      runner,
+      currentPid: () => process.pid,
+      list: listReturning(() => {
+        if (calls.some((call) => call[0] === "bootstrap" && call[2] === target.paths.plistPath)) {
+          expect(sharedHeld).toBe(false);
+          events.push("readiness");
+          return [makeSource(target, { pid: 5432 })];
+        }
+        return [makeSource(target, { pid: 4321, metadata: { backgroundSnapshot: priorSnapshot } })];
+      }),
+      acquireLifecycleLock: async (_lockTarget, options) => {
+        if (options?.purpose === "shared-launchd-logs") {
+          expect(sharedHeld).toBe(false);
+          sharedHeld = true;
+          events.push("shared-acquired");
+          return async () => {
+            sharedHeld = false;
+            events.push("shared-released");
+          };
+        }
+        events.push("per-agent-acquired");
+        return async () => { events.push("per-agent-released"); };
+      },
+      inspectManagedRuntimeSourceIdentity: async () => ({
+        packageVersion: "0.14.0",
+        cliSha256: "b".repeat(64),
+      }),
+      verifyManagedRuntimeLaunch: async () => ({
+        installRoot: "/home/u/.mono-agent/runtimes/agent-app/old",
+        packageVersion: "0.13.0",
+        cliSha256: "a".repeat(64),
+        provenanceDetail: "old runtime",
+      }),
+      ensureManagedRuntime: async (input) => {
+        expect(sharedHeld).toBe(false);
+        events.push("runtime-installed");
+        return {
+          cliPath: "/home/u/.mono-agent/runtimes/agent-app/new/dist/cli.js",
+          nodePath: input.nodePath,
+          installRoot: "/home/u/.mono-agent/runtimes/agent-app/new",
+          packageVersion: "0.14.0",
+          cliSha256: "b".repeat(64),
+          nodeAbi: "137",
+          verificationMode: "installed",
+          launchProof: "new-runtime-proof",
+        };
+      },
+      rotateStoppedLaunchdLogs: async () => {
+        expect(sharedHeld).toBe(true);
+        events.push("shared-mutated");
+      },
+    });
+
+    await expect(maintainLaunchdController(target, harness.deps, {
+      sourceAvailable: true,
+      controlPoll: POLL,
+      readinessPoll: POLL,
+    })).resolves.toBe(0);
+
+    expect(events.indexOf("runtime-installed")).toBeLessThan(events.indexOf("shared-acquired"));
+    expect(events.indexOf("shared-acquired")).toBeLessThan(events.indexOf("shared-mutated"));
+    expect(events.indexOf("shared-mutated")).toBeLessThan(events.indexOf("shared-released"));
+    expect(events.indexOf("shared-released")).toBeLessThan(events.indexOf("readiness"));
+    expect(events.indexOf("readiness")).toBeLessThan(events.indexOf("per-agent-released"));
+  });
+
+  it("lets another agent enter interactive shared maintenance while a helper installs, then defers the helper cleanly", async () => {
+    const helperTarget = makeTarget({ controllerCliPath: "/checkout/packages/agent-app/dist/cli.js" });
+    const priorSnapshot = makeSnapshot(helperTarget, "prior-two-agent");
+    const interactiveTarget = makeTarget({
+      cwd: "/work/other",
+      configPath: "/work/other/mono-agent.config.json",
+      label: "com.mono-agent.other-12345678",
+      paths: {
+        launchAgentsDir: "/home/u/Library/LaunchAgents",
+        logDir: "/home/u/.mono-agent/logs",
+        plistPath: "/home/u/Library/LaunchAgents/com.mono-agent.other-12345678.plist",
+        stdoutPath: "/home/u/.mono-agent/logs/com.mono-agent.other-12345678.out.log",
+        stderrPath: "/home/u/.mono-agent/logs/com.mono-agent.other-12345678.err.log",
+      },
+    });
+    const { runner: helperRunner, calls: helperCalls } = makeRunner({
+      loaded: true,
+      initialPid: 4321,
+      bootstrapPid: 5432,
+      maintenanceLoaded: true,
+      maintenancePid: process.pid,
+      mainPrintOutput: managedLaunchctlPrint(helperTarget, { snapshot: priorSnapshot }),
+    });
+    const { runner: interactiveRunner } = makeRunner({ loaded: false });
+    const events: string[] = [];
+    let sharedOwner: string | undefined;
+    const acquireLifecycleLock: BackgroundDeps["acquireLifecycleLock"] = async (lockTarget, options) => {
+      if (options?.purpose !== "shared-launchd-logs") {
+        events.push(`${lockTarget.label}:per-agent-acquired`);
+        return async () => { events.push(`${lockTarget.label}:per-agent-released`); };
+      }
+      const owner = options.ownerLabel ?? "unknown";
+      if (sharedOwner !== undefined) {
+        events.push(`${owner}:shared-deferred`);
+        return undefined;
+      }
+      sharedOwner = owner;
+      events.push(`${owner}:shared-acquired`);
+      return async () => {
+        events.push(`${owner}:shared-released`);
+        sharedOwner = undefined;
+      };
+    };
+    let releaseInstall!: () => void;
+    const installGate = new Promise<void>((resolvePromise) => { releaseInstall = resolvePromise; });
+    let markInstallStarted!: () => void;
+    const installStarted = new Promise<void>((resolvePromise) => { markInstallStarted = resolvePromise; });
+    const helperHarness = makeHarness({
+      runner: helperRunner,
+      currentPid: () => process.pid,
+      list: listReturning(() => [makeSource(helperTarget, {
+        pid: 4321,
+        metadata: { backgroundSnapshot: priorSnapshot },
+      })]),
+      acquireLifecycleLock,
+      inspectManagedRuntimeSourceIdentity: async () => ({ packageVersion: "0.14.0", cliSha256: "b".repeat(64) }),
+      verifyManagedRuntimeLaunch: async () => ({
+        installRoot: "/home/u/.mono-agent/runtimes/agent-app/old",
+        packageVersion: "0.13.0",
+        cliSha256: "a".repeat(64),
+        provenanceDetail: "old runtime",
+      }),
+      ensureManagedRuntime: async (input) => {
+        events.push("helper-runtime-started");
+        markInstallStarted();
+        await installGate;
+        events.push("helper-runtime-finished");
+        return {
+          cliPath: "/home/u/.mono-agent/runtimes/agent-app/new/dist/cli.js",
+          nodePath: input.nodePath,
+          installRoot: "/home/u/.mono-agent/runtimes/agent-app/new",
+          packageVersion: "0.14.0",
+          cliSha256: "b".repeat(64),
+          nodeAbi: "137",
+          verificationMode: "installed",
+          launchProof: "new-runtime-proof",
+        };
+      },
+    });
+    let releaseInteractiveStop!: () => void;
+    const interactiveStopGate = new Promise<void>((resolvePromise) => { releaseInteractiveStop = resolvePromise; });
+    let markInteractiveSharedHeld!: () => void;
+    const interactiveSharedHeld = new Promise<void>((resolvePromise) => { markInteractiveSharedHeld = resolvePromise; });
+    const interactiveHarness = makeHarness({
+      runner: interactiveRunner,
+      list: listReturning(() => []),
+      acquireLifecycleLock,
+      readLaunchdLogMaintenanceIntent: async () => {
+        markInteractiveSharedHeld();
+        await interactiveStopGate;
+        return undefined;
+      },
+    });
+
+    const helper = maintainLaunchdController(helperTarget, helperHarness.deps, {
+      sourceAvailable: true,
+      controlPoll: POLL,
+      readinessPoll: POLL,
+    });
+    await installStarted;
+    expect(sharedOwner).toBeUndefined();
+
+    const interactiveStop = stopBackground(interactiveTarget, interactiveHarness.deps, POLL);
+    await interactiveSharedHeld;
+    expect(sharedOwner).toBe(interactiveTarget.label);
+    releaseInstall();
+
+    await expect(helper).resolves.toBe(0);
+    expect(events).toContain(`${helperTarget.label}:shared-deferred`);
+    expect(helperHarness.written).toEqual([]);
+    expect(helperCalls.some((call) => call[0] === "bootout" || call[0] === "bootstrap")).toBe(false);
+
+    releaseInteractiveStop();
+    await expect(interactiveStop).resolves.toBe(0);
+    expect(sharedOwner).toBeUndefined();
+  });
+
   it("keeps both definitions and the helper when recovered worker readiness fails", async () => {
     const target = makeTarget({ controllerCliPath: "/checkout/packages/agent-app/dist/cli.js" });
     const { runner, calls } = makeRunner({
@@ -1436,12 +2006,12 @@ describe("maintainLaunchdController", () => {
       initialPid: 4321,
       bootstrapPid: 5432,
       maintenanceLoaded: true,
-      maintenancePid: 9001,
+      maintenancePid: process.pid,
       mainPrintOutput: managedLaunchctlPrint(target),
     });
     const harness = makeHarness({
       runner,
-      currentPid: () => 9001,
+      currentPid: () => process.pid,
       list: listReturning(() => [makeSource(target, { pid: 4321 })]),
       inspectManagedRuntimeSourceIdentity: async () => ({
         packageVersion: "0.14.0",
@@ -1500,13 +2070,13 @@ describe("maintainLaunchdController", () => {
       loaded: true,
       initialPid: 4321,
       maintenanceLoaded: true,
-      maintenancePid: 9001,
+      maintenancePid: process.pid,
       mainPrintOutput: managedLaunchctlPrint(target),
     });
     let installs = 0;
     const harness = makeHarness({
       runner,
-      currentPid: () => 9001,
+      currentPid: () => process.pid,
       list: listReturning(() => [makeSource(target, { pid: 4321 })]),
       inspectManagedRuntimeSourceIdentity: async () => ({
         packageVersion: "0.12.0",
@@ -1539,13 +2109,13 @@ describe("maintainLaunchdController", () => {
       initialPid: 4321,
       bootstrapPid: 5432,
       maintenanceLoaded: true,
-      maintenancePid: 9001,
+      maintenancePid: process.pid,
       mainPrintOutput: managedLaunchctlPrint(target, { snapshot: priorSnapshot }),
     });
     let installationInput: string | undefined;
     const harness = makeHarness({
       runner,
-      currentPid: () => 9001,
+      currentPid: () => process.pid,
       list: listReturning(() => calls.some((call) =>
         call[0] === "bootstrap" && call[2] === target.paths.plistPath)
         ? [makeSource(target, { pid: 5432 })]
@@ -1825,6 +2395,29 @@ describe("maintainLaunchdLogs", () => {
     expect(calls).toEqual([]);
   });
 
+  it("defers scheduled maintenance immediately when another agent owns the shared chain", async () => {
+    const { runner, calls } = makeRunner({ loaded: true });
+    const target = makeTarget();
+    let inspections = 0;
+    let lifecycleReleased = 0;
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      acquireLifecycleLock: async (_lockTarget, options) => options?.purpose === "shared-launchd-logs"
+        ? undefined
+        : async () => { lifecycleReleased += 1; },
+      inspectLaunchdLogs: async () => {
+        inspections += 1;
+        return emptyLogInspection();
+      },
+    });
+
+    expect(await maintainLaunchdLogs(target, harness.deps, POLL)).toBe(0);
+    expect(inspections).toBe(0);
+    expect(calls).toEqual([]);
+    expect(lifecycleReleased).toBe(1);
+  });
+
   it("refuses unsafe inventory before bootout or mutation", async () => {
     const { runner, calls } = makeRunner({ loaded: true });
     const target = makeTarget();
@@ -2099,35 +2692,54 @@ describe("restartBackground", () => {
   it("keeps one lifecycle lock across stop, stopped-worker mutation, and start", async () => {
     const { runner } = makeRunner({ loaded: true, initialPid: 4321, bootstrapPid: 4321 });
     const target = makeTarget();
-    let lockAcquisitions = 0;
-    let lockReleases = 0;
-    let lockHeld = false;
+    let lifecycleAcquisitions = 0;
+    let lifecycleReleases = 0;
+    let sharedAcquisitions = 0;
+    let sharedReleases = 0;
+    let lifecycleHeld = false;
+    let sharedHeld = false;
     let mutationRan = false;
     const harness = makeHarness({
       runner,
       list: listReturning(() => [makeSource(target)]),
-      acquireLifecycleLock: async () => {
-        lockAcquisitions += 1;
-        expect(lockHeld).toBe(false);
-        lockHeld = true;
+      acquireLifecycleLock: async (_lockTarget, options) => {
+        if (options?.purpose === "shared-launchd-logs") {
+          sharedAcquisitions += 1;
+          expect(lifecycleHeld).toBe(true);
+          expect(sharedHeld).toBe(false);
+          sharedHeld = true;
+          return async () => {
+            expect(sharedHeld).toBe(true);
+            sharedHeld = false;
+            sharedReleases += 1;
+          };
+        }
+        lifecycleAcquisitions += 1;
+        expect(lifecycleHeld).toBe(false);
+        lifecycleHeld = true;
         return async () => {
-          expect(lockHeld).toBe(true);
-          lockHeld = false;
-          lockReleases += 1;
+          expect(lifecycleHeld).toBe(true);
+          expect(sharedHeld).toBe(false);
+          lifecycleHeld = false;
+          lifecycleReleases += 1;
         };
       },
     });
 
     const code = await forceRestartBackground(target, harness.deps, async () => {
-      expect(lockHeld).toBe(true);
+      expect(lifecycleHeld).toBe(true);
+      expect(sharedHeld).toBe(false);
       mutationRan = true;
     }, POLL);
 
     expect(code).toBe(0);
     expect(mutationRan).toBe(true);
-    expect(lockAcquisitions).toBe(1);
-    expect(lockReleases).toBe(1);
-    expect(lockHeld).toBe(false);
+    expect(lifecycleAcquisitions).toBe(1);
+    expect(lifecycleReleases).toBe(1);
+    expect(sharedAcquisitions).toBe(2);
+    expect(sharedReleases).toBe(2);
+    expect(lifecycleHeld).toBe(false);
+    expect(sharedHeld).toBe(false);
   });
 
   it("fully boots out and bootstraps an already-loaded service so the rewritten plist is loaded", async () => {
@@ -2210,15 +2822,34 @@ describe("restartBackground", () => {
 });
 
 describe("stopBackground", () => {
+  it("fails visibly before inspection when the shared mutation lock cannot be acquired", async () => {
+    const { runner, calls } = makeRunner({ loaded: true, maintenanceLoaded: true });
+    const target = makeTarget();
+    const harness = makeHarness({
+      runner,
+      list: listReturning(() => []),
+      acquireLifecycleLock: async (_lockTarget, options) => options?.purpose === "shared-launchd-logs"
+        ? undefined
+        : async () => undefined,
+    });
+
+    expect(await stopBackground(target, harness.deps, POLL)).toBe(1);
+    expect(calls).toEqual([]);
+    expect(harness.removed).toEqual([]);
+    expect(harness.err.join(" ")).toContain("another agent on this account");
+  });
+
   it("boots maintenance out before the service and removes both plists", async () => {
     const { runner, calls } = makeRunner({ loaded: true, maintenanceLoaded: true, maintenancePid: 7777 });
     const target = makeTarget();
     const existing = makeSource(target, { pid: 4321 });
     let clearedIntents = 0;
+    let removedMonitorStatus = 0;
     const harness = makeHarness({
       runner,
       list: listReturning(() => [existing]),
       clearLaunchdLogMaintenanceIntent: async () => { clearedIntents += 1; },
+      removeLaunchdLogMonitorStatus: async () => { removedMonitorStatus += 1; },
     });
 
     const code = await stopBackground(target, harness.deps);
@@ -2234,6 +2865,7 @@ describe("stopBackground", () => {
     expect(harness.removed).toContain(resolve(target.registryDir, `${existing.sourceId}.json`));
     expect(harness.out.join("")).toContain("Stopped");
     expect(clearedIntents).toBe(1);
+    expect(removedMonitorStatus).toBe(1);
   });
 
   it("fails closed on an invalidated maintenance phase whose launchd writer is already gone", async () => {

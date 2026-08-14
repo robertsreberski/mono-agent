@@ -32,6 +32,11 @@ import {
 import type { ProcessIncarnation, SameProcessIncarnation } from "./process-incarnation.js";
 import { acquireOwnerPrivateLock } from "./owner-private-lock.js";
 import type { OwnerPrivateLock } from "./owner-private-lock.js";
+import {
+  decodeManagedRuntimeLaunchProof,
+  encodeManagedRuntimeLaunchProof,
+} from "./managed-runtime-launch-proof.js";
+import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "./launchd-maintenance-command.js";
 
 const PACKAGE_NAME = "@mono-agent/agent-app";
 const LOCK_WAIT_TIMEOUT_MS = 5 * 60_000;
@@ -42,8 +47,6 @@ const MAX_RUNTIME_MARKER_BYTES = 16 * 1024;
 const MAX_RUNTIME_REUSE_PROOF_BYTES = 64 * 1024 * 1024;
 const RUNTIME_REUSE_PROOF_SCHEMA = "mono-agent.managed-runtime-reuse-proof.v1";
 const RUNTIME_REUSE_STAT_CONCURRENCY = 64;
-const MANAGED_RUNTIME_LAUNCH_PROOF_SCHEMA = "mono-agent.managed-runtime-launch.v1";
-const MAX_MANAGED_RUNTIME_LAUNCH_PROOF_BYTES = 2 * 1024;
 
 export type ManagedRuntimeVerificationMode = "fast-reuse" | "full-reuse" | "installed" | "repaired";
 
@@ -186,6 +189,7 @@ interface RuntimeLayout {
   readonly versionAbiDir: string;
   readonly installRoot: string;
   readonly cliPath: string;
+  readonly maintenanceEntryPath: string;
   readonly packageJsonPath: string;
   readonly packageLockPath: string;
   readonly closureManifestPath: string;
@@ -669,6 +673,9 @@ export async function verifyManagedRuntimeLaunch(
   if (!(await verifyManagedRuntimeCliFingerprint(layout, identity.cliSha256))) {
     throw new Error("The managed runtime CLI fingerprint is unstable.");
   }
+  if (!(await verifyManagedRuntimeMaintenanceEntryFingerprint(layout, proof.maintenanceEntrySha256))) {
+    throw new Error("The managed runtime maintenance entry fingerprint is invalid.");
+  }
   if (!(await verifyClosureManifestFingerprint(layout, marker.closureManifestSha256))) {
     throw new Error("The managed runtime closure manifest fingerprint is invalid.");
   }
@@ -681,6 +688,9 @@ export async function verifyManagedRuntimeLaunch(
   }
   if (!(await verifyManagedRuntimeCliFingerprint(layout, identity.cliSha256))) {
     throw new Error("The managed runtime CLI changed during launch verification.");
+  }
+  if (!(await verifyManagedRuntimeMaintenanceEntryFingerprint(layout, proof.maintenanceEntrySha256))) {
+    throw new Error("The managed runtime maintenance entry changed during launch verification.");
   }
   if (!(await verifyClosureManifestFingerprint(layout, marker.closureManifestSha256))) {
     throw new Error("The managed runtime closure manifest changed during launch verification.");
@@ -698,57 +708,6 @@ export async function verifyManagedRuntimeLaunch(
       + `${PACKAGE_NAME} ${identity.packageVersion}; ${identity.platform}-${identity.arch}; `
       + `Node ABI ${identity.nodeAbi}; installed ${marker.installedAt}).`,
   };
-}
-
-interface ManagedRuntimeLaunchProof {
-  readonly schema: typeof MANAGED_RUNTIME_LAUNCH_PROOF_SCHEMA;
-  readonly markerSha256: string;
-  readonly installedAt: string;
-}
-
-function encodeManagedRuntimeLaunchProof(proof: ManagedRuntimeLaunchProof): string {
-  return Buffer.from(JSON.stringify(proof), "utf8").toString("base64url");
-}
-
-function decodeManagedRuntimeLaunchProof(encoded: string): ManagedRuntimeLaunchProof {
-  if (
-    typeof encoded !== "string"
-    || encoded.length === 0
-    || encoded.length > MAX_MANAGED_RUNTIME_LAUNCH_PROOF_BYTES * 2
-    || !/^[0-9A-Za-z_-]+$/u.test(encoded)
-  ) {
-    throw new Error("The managed runtime launch proof is malformed.");
-  }
-  let bytes: Buffer;
-  try {
-    bytes = Buffer.from(encoded, "base64url");
-  } catch {
-    throw new Error("The managed runtime launch proof is malformed.");
-  }
-  if (
-    bytes.length === 0
-    || bytes.length > MAX_MANAGED_RUNTIME_LAUNCH_PROOF_BYTES
-    || bytes.toString("base64url") !== encoded
-  ) {
-    throw new Error("The managed runtime launch proof is malformed.");
-  }
-  const value = parseJson(bytes, "managed runtime launch proof");
-  if (!isRecord(value) || Object.keys(value).length !== 3) {
-    throw new Error("The managed runtime launch proof has an invalid schema.");
-  }
-  const installedAtMs = typeof value.installedAt === "string" ? Date.parse(value.installedAt) : Number.NaN;
-  if (
-    value.schema !== MANAGED_RUNTIME_LAUNCH_PROOF_SCHEMA
-    || typeof value.markerSha256 !== "string"
-    || !/^[0-9a-f]{64}$/u.test(value.markerSha256)
-    || typeof value.installedAt !== "string"
-    || !Number.isFinite(installedAtMs)
-    || new Date(installedAtMs).toISOString() !== value.installedAt
-    || value.installedAt === PROVISIONAL_RUNTIME_INSTALLED_AT
-  ) {
-    throw new Error("The managed runtime launch proof has an invalid schema.");
-  }
-  return value as unknown as ManagedRuntimeLaunchProof;
 }
 
 function parseJson(bytes: Buffer, label: string): unknown {
@@ -1822,6 +1781,14 @@ function runtimeLayout(home: string, identity: RuntimeIdentity, id: string, nowM
     versionAbiDir,
     installRoot,
     cliPath: join(installRoot, "node_modules", "@mono-agent", "agent-app", "dist", "cli.js"),
+    maintenanceEntryPath: join(
+      installRoot,
+      "node_modules",
+      "@mono-agent",
+      "agent-app",
+      "dist",
+      MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE,
+    ),
     packageJsonPath: join(installRoot, "node_modules", "@mono-agent", "agent-app", "package.json"),
     packageLockPath: join(installRoot, "package-lock.json"),
     closureManifestPath: join(installRoot, ".mono-agent-closure.json"),
@@ -1850,6 +1817,14 @@ function runtimeLayoutForRoot(layout: RuntimeLayout, root: string): RuntimeLayou
     ...layout,
     installRoot: root,
     cliPath: join(root, "node_modules", "@mono-agent", "agent-app", "dist", "cli.js"),
+    maintenanceEntryPath: join(
+      root,
+      "node_modules",
+      "@mono-agent",
+      "agent-app",
+      "dist",
+      MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE,
+    ),
     packageJsonPath: join(root, "node_modules", "@mono-agent", "agent-app", "package.json"),
     packageLockPath: join(root, "package-lock.json"),
     closureManifestPath: join(root, ".mono-agent-closure.json"),
@@ -2935,6 +2910,21 @@ async function verifyManagedRuntimeCliFingerprint(
   }
 }
 
+async function verifyManagedRuntimeMaintenanceEntryFingerprint(
+  layout: RuntimeLayout,
+  expectedSha256: string,
+): Promise<boolean> {
+  try {
+    const captured = await fingerprintClosureFile(
+      layout.maintenanceEntryPath,
+      `node_modules/@mono-agent/agent-app/dist/${MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE}`,
+    );
+    return captured.sha256 === expectedSha256;
+  } catch {
+    return false;
+  }
+}
+
 async function captureRuntimeClosureManifest(
   layout: RuntimeLayout,
   deps: RuntimeClosureManifestCaptureDeps = {},
@@ -3212,6 +3202,10 @@ async function runtimeResult(
   if (marker === undefined) {
     throw new Error("The managed runtime marker became invalid before launch proof publication.");
   }
+  const maintenanceEntry = await fingerprintClosureFile(
+    layout.maintenanceEntryPath,
+    `node_modules/@mono-agent/agent-app/dist/${MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE}`,
+  );
   return {
     cliPath: layout.cliPath,
     nodePath: resolve(nodePath),
@@ -3221,8 +3215,9 @@ async function runtimeResult(
     nodeAbi: identity.nodeAbi,
     verificationMode,
     launchProof: encodeManagedRuntimeLaunchProof({
-      schema: MANAGED_RUNTIME_LAUNCH_PROOF_SCHEMA,
+      schema: "mono-agent.managed-runtime-launch.v2",
       markerSha256: sha256(markerBytes),
+      maintenanceEntrySha256: maintenanceEntry.sha256,
       installedAt: marker.installedAt,
     }),
   };

@@ -76,9 +76,17 @@ Background commands (`start`, `restart`, `stop`, `status`, `logs`) require macOS
 
 Each managed macOS instance has active stdout/stderr files plus three retained
 generations under `~/.mono-agent/logs/`. Every file is capped at 5 MiB by a
-scheduled one-shot check every five minutes, so the post-maintenance ceiling is
-20 MiB per stream. Rotation runs only under the ordinary per-config lifecycle
-lock after launchd unload and PID-death proof; it uses owner-only temporary
+bounded in-worker metadata check immediately after readiness and every five
+minutes, so the post-maintenance ceiling is 20 MiB per stream. A healthy
+below-threshold check starts no helper and performs no config validation or
+snapshot capture. The immediate check is observational and has a five-minute
+wake floor. Only a safely inspected oversized or permission-repairable
+per-agent log can wake the authenticated one-shot controller; shared-directory
+repair and pending lifecycle/journal/preparation artifacts wait for scheduled
+recovery. Requests use monotonic 5/10/20/40/60-minute cooldowns and skip an
+unloaded or running helper. Rotation runs under the per-config lifecycle lock
+and a shared per-account log-chain mutation lock
+after launchd unload and PID-death proof; it uses owner-only temporary
 files, bounded tails, fsync, destination identity checks, atomic renames, and a
 per-agent recovery journal. A distinct per-agent lifecycle intent is atomically
 published as `stopping` before bootout, promoted to `stopped` only after unload
@@ -86,11 +94,13 @@ plus observed-PID death proof, then changed to `restoring` before bootstrap so
 the old proof cannot authorize rotation around a replacement writer. It is
 cleared only after exact-plist and live-worker proof. If a pre-proof maintainer dies after launchd loses the PID, recovery fails
 closed instead of rotating from an unproven unloaded state.
-The scheduler owns `/dev/null` output and no `KeepAlive`, so it cannot create a
-second unbounded log. Between checks the active writer can temporarily exceed
+The one-shot controller owns `/dev/null` output and no `KeepAlive`, so it cannot
+create a second unbounded log. Between checks the active writer can temporarily exceed
 the cap; `validate` / `doctor` reports exact current active, retained, and total
 bytes for safely inspected files without changing the filesystem. Unsafe or
 unreadable byte inventory is reported as unavailable.
+`validate` / `doctor` also reports the owner-private monitor snapshot: last
+inspection, cumulative wake count, last outcome, and cooldown deadline.
 
 ## `init`
 
@@ -373,7 +383,43 @@ automatic migration; never use it merely to make a RED audit green. See the
 
 Starts the agent. Without `--foreground`, it registers a background macOS service (launchd) for the config, prints the instance info, and returns; re-running restarts the running instance. Both modes refuse to start unless a valid `mono-agent.config.json` is present in the folder.
 
-Managed start also installs a no-`KeepAlive` recovery helper that runs at login and every five minutes. It authenticates its launchd-owned PID, reconstructs and validates the durable config environment, captures a fresh snapshot, and compares the strictly parsed loaded worker plus verified runtime proof with the original controller CLI's inert version/digest. It never executes mutable checkout bytes. Drift or an inactive worker is reconciled through the managed-runtime installer while an existing healthy worker keeps serving; shared installers may take up to five minutes before waiters time out. Recovery stops only the main job, preserves the running helper, and retains both definitions after failure so the next interval can retry. If the original source path disappeared, the helper may restore a drifted/inactive worker from its own private closure without claiming an upgrade. `stop` removes the helper and both definitions, preventing later resurrection.
+Managed start also installs a no-`KeepAlive` recovery helper with `RunAtLoad`
+for login recovery and a recurring hourly `StartCalendarInterval`. Its minute is
+the unsigned big-endian first four SHA-256 bytes of the canonical main label,
+modulo 60. Login keeps one deliberate fleet burst; recurring runs are
+deterministically staggered. Every `RunAtLoad` helper remains eligible: its
+lightweight entry waits the same first-four-byte SHA-256 value modulo 120 seconds
+before PID inspection, locking, attestation, or heavy import. Thus login heavy
+work disperses over 0–119 seconds without an admission lock; a worker-requested
+wake has the same maximum added delay. The ready worker separately performs an
+overlap-guarded log metadata check immediately and every five minutes, with a
+five-minute startup wake floor and monotonic 5/10/20/40/60-minute cooldown.
+Idle, shared-only, unsafe, and pending-artifact passes start no helper and do no
+config validation or snapshot capture. After dispersion, the helper authenticates its
+launchd-owned PID and takes the per-agent lock without waiting before attestation
+or importing the controller; a same-agent loser exits before expensive work.
+The plist runs an attested lightweight sibling entry rather than the public CLI
+graph. The winner verifies that entry against the managed-runtime proof and
+dynamically imports the heavy controller while retaining the per-agent lock.
+An owner reconstructs the durable config environment, captures a fresh snapshot,
+and compares the strictly parsed loaded worker plus its path-free managed-runtime
+launch proof with the original controller CLI's inert version/digest. A healthy
+pass neither runs full structural validation nor traverses the immutable closure.
+Only proven drift or inactivity runs full validation and managed-runtime
+installation/verification. After installation and read-only rechecks it takes the
+per-account shared-chain lock without waiting only for shared/stopped-writer
+mutation; automatic contention exits cleanly, and healthy log-only work takes the
+same lock separately. The shared lock is released before readiness waiting. It
+never executes mutable checkout bytes. Drift or an inactive worker is
+reconciled through the managed-runtime installer while an existing healthy
+worker keeps serving; shared installers may take up to five minutes before
+waiters time out. Recovery stops only the main job, preserves the running
+helper, and retains both definitions after failure so the next hourly run can
+retry. Worst-case recurring drift and shared-only repair latency is 60 minutes
+between logins. `stop` removes the helper and both definitions, preventing
+later resurrection. Existing loaded helpers adopt the calendar schedule only
+after that agent is explicitly restarted; launchctl's loaded definition, not
+the on-disk plist, is authoritative.
 
 | Flag | Effect |
 | --- | --- |

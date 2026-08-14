@@ -7,7 +7,6 @@ import {
   MANAGED_BACKGROUND_WORKER_ENV,
   sanitizeManagedBackgroundWorkerEnvironment,
 } from "./background-runtime.js";
-import { isBackgroundOperationalEnvName } from "./background-environment.js";
 import { readCliDotenvFile } from "./first-run-readiness.js";
 import { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
@@ -58,6 +57,7 @@ import {
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
 } from "./launchd.js";
+import { sanitizeManagedLaunchdLogMaintenanceEnvironment } from "./managed-launchd-maintenance-environment.js";
 import { runSandboxCommand } from "./cli-sandbox-command.js";
 export { runSandboxCommand } from "./cli-sandbox-command.js";
 export type { SandboxCommandDependencies } from "./cli-sandbox-command.js";
@@ -304,17 +304,6 @@ export async function runCli(argv: readonly string[]): Promise<number> {
 
 export function shouldLoadCommandDotenv(command: ParsedCliArgs["command"]): boolean {
   return command !== "web" && command !== "bridge";
-}
-
-function sanitizeManagedLaunchdLogMaintenanceEnvironment(
-  env: Record<string, string | undefined>,
-): void {
-  for (const name of Object.keys(env)) {
-    if (name !== MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV && !isBackgroundOperationalEnvName(name)) {
-      delete env[name];
-    }
-  }
-  delete env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV];
 }
 
 /**
