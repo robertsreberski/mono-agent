@@ -10,6 +10,17 @@
   `session/resume` across bridge and source restarts. Session authorizations are
   owner-only and are revoked by `restart --clear-sessions`.
 
+### Slack mention preservation
+
+- Slack now preserves one authenticated readable self-mention marker in the
+  current model-visible turn when `slack.stripMentionText` is unset. Explicit
+  `true` retains legacy full stripping and explicit `false` retains raw mention
+  forms; command recognition, bare mentions, attachments, live input, routing,
+  and preceding thread context keep their established paths.
+- Migration: configurations that supplied only `botUserIds` previously enabled
+  stripping implicitly. Set `stripMentionText: true` to retain that output;
+  omission now selects readable-marker preservation.
+
 ## 0.19.1 — Web Push delivery fix (2026-08-13)
 
 ### Web Push reliability

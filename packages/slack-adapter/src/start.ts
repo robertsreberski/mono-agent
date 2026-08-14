@@ -167,6 +167,7 @@ export async function startSlackAdapter(
     options,
     logger,
     identity.botUserIds,
+    identity.botUserName,
     runtimeSlashCommands,
     identity.botId,
   ));
@@ -220,6 +221,7 @@ function buildAdapterOptions(
   options: SlackAdapterStartOptions,
   logger: SlackAdapterStartLogger | undefined,
   botUserIds: readonly SlackUserId[],
+  botUserName: string | undefined,
   runtimeSlashCommands: SlackRuntimeSlashCommands | undefined,
   botId: string | undefined,
 ): ConstructorParameters<typeof SlackAdapter>[0] {
@@ -227,6 +229,7 @@ function buildAdapterOptions(
     api,
     responder: options.responder,
     botUserIds: [...botUserIds],
+    ...(botUserName === undefined ? {} : { botUserName }),
     ...(botId === undefined ? {} : { botId }),
   };
   if (options.allowedChannelIds !== undefined) {

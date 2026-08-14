@@ -36,8 +36,7 @@ The Slack section runs in Socket Mode (effective `botToken` and `appToken` value
   },
   "slack": {
     "enabled": true,
-    "allowedChannelIds": ["C012345"],
-    "stripMentionText": true
+    "allowedChannelIds": ["C012345"]
   },
   "tools": {
     "allowedTools": ["Read", "Grep", "SlackSendMessage", "deployTool"],
@@ -50,7 +49,7 @@ The Slack section runs in Socket Mode (effective `botToken` and `appToken` value
 }
 ```
 
-Secrets can also come from the environment: `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN`.
+Secrets can also come from the environment: `MONO_AGENT_SLACK_BOT_TOKEN` and `MONO_AGENT_SLACK_APP_TOKEN`. The unset mention-text policy keeps one authenticated readable `@name` marker in the current turn; set `slack.stripMentionText: true` only when legacy full stripping is required.
 
 :::caution
 The exact MCP tool name (`deployTool` here) must match the name your server advertises. MCP-server tools are available because their server is **declared** in `mcp.json`, not because they appear in `tools.allowedTools` — see [MCP servers](/tools/mcp/).
