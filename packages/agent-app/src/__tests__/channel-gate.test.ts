@@ -66,7 +66,9 @@ describe("unconfigured drivers answer with the adapter loader's own empty-input 
     const empty = { env: {}, json: {}, cwd: dir };
 
     expect(await drivers.get("telegram")!.loadConfig(input)).toEqual(await loadTelegramAdapterConfig(empty));
-    expect(await drivers.get("slack")!.loadConfig(input)).toEqual(await loadSlackAdapterConfig(empty));
+    const slack = await drivers.get("slack")!.loadConfig(input);
+    expect(slack).toStrictEqual(await loadSlackAdapterConfig(empty));
+    expect(Object.hasOwn(slack as object, "stripMentionText")).toBe(false);
     expect(await drivers.get("webhook")!.loadConfig(input)).toEqual(await loadWebhookAdapterConfig(empty));
     expect(await drivers.get("openai-api")!.loadConfig(input)).toEqual(await loadOpenAIApiAdapterConfig(empty));
     expect(await drivers.get("cron")!.loadConfig(input)).toEqual(await loadCronAdapterConfig(empty));

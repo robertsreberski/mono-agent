@@ -2001,7 +2001,6 @@ describe("startMonoAgentApp", () => {
         allowAllChannels: false,
         botUserIds: [],
         mentionTextAliases: [],
-        stripMentionText: false,
       } as never,
       coreConfig,
       responder: { respond: async () => ({ text: "" }) },
@@ -2593,7 +2592,6 @@ describe("startMonoAgentApp", () => {
         allowAllChannels: false,
         botUserIds: [],
         mentionTextAliases: [],
-        stripMentionText: false,
       } as never,
       coreConfig: parsedCoreConfig(),
       responder: { async respond() { return { text: "ok" }; } },
@@ -2612,6 +2610,7 @@ describe("startMonoAgentApp", () => {
     // A reconnect that stays up past the stability window flips back to running.
     captured?.onConnectionRestored?.();
     expect(onRecovered).toHaveBeenCalledTimes(1);
+    expect(Object.hasOwn(captured ?? {}, "stripMentionText")).toBe(false);
 
     await running.stop();
   });
@@ -2651,6 +2650,8 @@ describe("startMonoAgentApp", () => {
     expect(captured?.reconnect?.maxMs).toBe(45000);
     expect(captured?.reconnect?.stabilityMs).toBe(20000);
     expect(captured?.heartbeat?.timeoutMs).toBe(120000);
+    expect(Object.hasOwn(captured ?? {}, "stripMentionText")).toBe(true);
+    expect(captured?.stripMentionText).toBe(false);
 
     await running.stop();
   });

@@ -39,7 +39,7 @@ describe("loadSlackAdapterConfig", () => {
 
     const config = await loadSlackAdapterConfig({ env: {}, jsonPath: path });
 
-    expect(config).toEqual({
+    expect(config).toStrictEqual({
       enabled: true,
       botToken: "json-bot-token",
       appToken: "json-app-token",
@@ -47,7 +47,6 @@ describe("loadSlackAdapterConfig", () => {
       allowAllChannels: false,
       botUserIds: ["Ubot"],
       mentionTextAliases: ["@mono"],
-      stripMentionText: true,
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames: true,
@@ -266,7 +265,7 @@ describe("loadSlackAdapterConfig", () => {
       jsonPath: path,
     });
 
-    expect(config).toEqual({
+    expect(config).toStrictEqual({
       enabled: true,
       botToken: "env-bot-token",
       appToken: "env-app-token",
@@ -307,7 +306,7 @@ describe("loadSlackAdapterConfig", () => {
 
   it("is disabled by default and skips credential validation", async () => {
     const config = await loadSlackAdapterConfig({ env: {} });
-    expect(config).toEqual({
+    expect(config).toStrictEqual({
       enabled: false,
       botToken: "",
       appToken: "",
@@ -315,7 +314,6 @@ describe("loadSlackAdapterConfig", () => {
       allowAllChannels: false,
       botUserIds: [],
       mentionTextAliases: [],
-      stripMentionText: false,
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames: true,
@@ -330,16 +328,30 @@ describe("loadSlackAdapterConfig", () => {
     });
   });
 
-  it("defaults mention stripping on for either native bot IDs or text aliases", async () => {
+  it("preserves stripMentionText absence regardless of mention identities", async () => {
     const [withoutMentionIdentity, withBotUserId, withTextAlias] = await Promise.all([
       loadSlackAdapterConfig({ env: {} }),
       loadSlackAdapterConfig({ env: { MONO_AGENT_SLACK_BOT_USER_IDS: "U0BOT" } }),
       loadSlackAdapterConfig({ env: { MONO_AGENT_SLACK_MENTION_TEXT_ALIASES: "@agent" } }),
     ]);
 
-    expect(withoutMentionIdentity.stripMentionText).toBe(false);
-    expect(withBotUserId.stripMentionText).toBe(true);
-    expect(withTextAlias.stripMentionText).toBe(true);
+    expect(Object.hasOwn(withoutMentionIdentity, "stripMentionText")).toBe(false);
+    expect(Object.hasOwn(withBotUserId, "stripMentionText")).toBe(false);
+    expect(Object.hasOwn(withTextAlias, "stripMentionText")).toBe(false);
+  });
+
+  it("treats blank mention policy as absent and parses explicit booleans", async () => {
+    const blank = await loadSlackAdapterConfig({
+      env: { MONO_AGENT_SLACK_STRIP_MENTION_TEXT: "  " },
+    });
+    expect(Object.hasOwn(blank, "stripMentionText")).toBe(false);
+
+    await expect(loadSlackAdapterConfig({
+      env: { MONO_AGENT_SLACK_STRIP_MENTION_TEXT: "true" },
+    })).resolves.toMatchObject({ stripMentionText: true });
+    await expect(loadSlackAdapterConfig({
+      env: { MONO_AGENT_SLACK_STRIP_MENTION_TEXT: "false" },
+    })).resolves.toMatchObject({ stripMentionText: false });
   });
 
   it("ignores malformed shortcuts config while disabled", async () => {
@@ -353,7 +365,7 @@ describe("loadSlackAdapterConfig", () => {
       },
     });
 
-    expect(config).toEqual({
+    expect(config).toStrictEqual({
       enabled: false,
       botToken: "",
       appToken: "",
@@ -361,7 +373,6 @@ describe("loadSlackAdapterConfig", () => {
       allowAllChannels: false,
       botUserIds: [],
       mentionTextAliases: [],
-      stripMentionText: false,
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames: true,
@@ -387,7 +398,7 @@ describe("loadSlackAdapterConfig", () => {
       },
     });
 
-    expect(config).toEqual({
+    expect(config).toStrictEqual({
       enabled: false,
       botToken: "",
       appToken: "",
@@ -395,7 +406,6 @@ describe("loadSlackAdapterConfig", () => {
       allowAllChannels: false,
       botUserIds: [],
       mentionTextAliases: [],
-      stripMentionText: false,
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames: true,

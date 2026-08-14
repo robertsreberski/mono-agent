@@ -35,8 +35,7 @@ MONO_AGENT_SLACK_APP_TOKEN=xapp-replace-me
   "slack": {
     "enabled": true,
     "allowedChannelIds": ["C0123"],
-    "allowAllChannels": false,
-    "stripMentionText": true
+    "allowAllChannels": false
   }
 }
 ```
@@ -175,11 +174,27 @@ controls have two native entry points:
   mention-command selection can still override the inherited channel choice.
 
 `startSlackAdapter` discovers the authenticated bot user ID with `auth.test` and
-merges it with any configured `botUserIds`. A leading self-mention is removed
-for command recognition even when ordinary prompt mention stripping is disabled,
-so `@agent /model` works without copying the app's member ID into config. The
-`stripMentionText` option continues to control whether mentions are removed from
-normal prompts.
+merges it with any configured `botUserIds`. It also validates the authenticated
+username before using it as readable model text. By default, all recognized self
+forms are removed from the current turn except one marker at the first source
+position: the first configured alias is kept verbatim, while a native mention is
+rendered as `@<authenticated-username>` or falls back to its matched user ID.
+Mentions inside inline or fenced code are untouched, and earlier thread context
+keeps its existing rendering. A leading self identity is removed on a command-
+recognition copy, so `@agent /model` still works without changing model-visible
+text.
+
+`stripMentionText` is deliberately tri-state. Omit it for the readable-marker
+default, set `true` for legacy full stripping, or set `false` to keep raw Slack
+mention forms. Operators who previously supplied only `botUserIds` received
+implicit stripping; omission now selects readable-marker preservation, so set
+`true` when that historical output is required.
+
+Hosts constructing `SlackAdapter` directly may supply the additive optional
+`SlackAdapterOptions.botUserName`; it must be the trusted authenticated username.
+The adapter trims it, accepts 1–80 characters with no whitespace, angle bracket,
+or backtick, and otherwise falls back to the matched bot user ID. Inline Slack
+mention labels are never used as self-identity authority.
 
 The same controls also accept exact arguments:
 
@@ -295,8 +310,8 @@ explicit channel allowlist still bounds delivery.
 Mentioning the app with no other text starts an ordinary turn instead of being
 refused. The adapter substitutes `messages.bareMentionPrompt`, which tells the
 agent to work the request out from the conversation it was pulled into. A message
-that carried files whose attachments were all skipped is unchanged and still
-receives `messages.unsupportedText`.
+with usable files may carry empty text plus attachments; a message whose files
+were all skipped still receives `messages.unsupportedText`.
 
 ### Silent-delivery limitation
 

@@ -11,7 +11,7 @@ The Slack channel connects your agent to a Slack workspace over **Socket Mode** 
 
 - **Socket Mode transport.** The adapter opens a WebSocket to Slack using an app-level token, so you do not host a public endpoint. The app-level token must carry the `connections:write` scope.
 - **Bounded event callback admission.** After acknowledging an Events API envelope, the built-in Socket Mode runner synchronously admits its exact, nonblank `event_id` once per runner instance for 10 minutes. Hits do not refresh that window. The insertion-order FIFO holds at most 10,000 IDs and warns once if the cap forces an unexpired ID out, so an event delivered after its TTL or after cap eviction can be admitted again. The cache survives reconnects and repeated `start()` calls on the same runner; a fresh runner or process starts empty, with no persistent or distributed state. A blank or whitespace-only string ID fails open after acknowledgement and still dispatches with a safe debug record; absent or non-string IDs remain on the existing acknowledge-then-ignore validation path.
-- **Mention-triggered.** Slack's `app_mention` event routes real app mentions; text aliases from `mentionTextAliases` are optional. At startup the adapter discovers its authenticated bot user ID for self-filtering and native command recognition, then merges any supplemental `botUserIds`. Channels must be allowed via `allowedChannelIds` or `allowAllChannels`.
+- **Mention-triggered.** Slack's `app_mention` event routes shared-channel mentions; DMs route through `message.im`. `mentionTextAliases` affects recognized self text but does not independently admit a shared-channel message. At startup the adapter discovers its authenticated bot user ID and validated username for self-filtering and native command recognition, then merges supplemental `botUserIds`. Channels must be allowed via `allowedChannelIds` or `allowAllChannels`.
 - **Final-answer delivery with transient tool activity.** Like Telegram, Slack does not stream answer tokens. It starts with assistant-thread status or a 👀 reaction. When an inbound turn starts tools, one redacted cumulative activity message is edited in place. Applied live guidance adds a completed `↪️ Steered: “<safe preview>”` line. On completion Slack posts the final answer as a fresh message, then best-effort deletes the activity message; cleanup failure can leave stale activity behind but cannot duplicate or lose the answer. `ReadSkill` renders the selected skill as `📚 Reading "<skill>"` without exposing its path, and memory recall appears as preview-free `🧠 Recalling memory`, distinct from memory writes (`🧠`) and ordinary file reads (`📖`). Adjacent duplicates become `(×N)`; proactive notifications do not show the ledger. An acknowledged `/cancel` best-effort deletes a still-transient ledger and leaves one `Cancelled.` acknowledgement. This is the default (`stream.finalOnly: true`, `stream.showHints: true`); see [Delivery and send tools](/channels/delivery-and-send-tools/).
 - **Live follow-up steering.** Send another plain-text message in the same Slack **thread** while the agent is working to guide that active run. Steering never crosses a thread: a message in a different thread runs as its own turn and gets its own answer, even when both threads resolve to one conversation, and an inbound message never steers a cron or proactive run. Slack acknowledges the accepted message with 👀. Once the provider applies it, Slack best-effort deletes and reposts any confirmed cumulative activity ledger with the `↪️ Steered` line so that ledger follows the human message; delete failure edits in place. Applied guidance does not create a second response. If the provider cannot steer, delivery fails, or the active turn wins the race to finish, the exact message runs next as an ordinary queued turn and no `Steered` activity is emitted. Commands, pending `AskUser` replies, and file messages retain their existing paths. See [Live input steering](/programmatic/approval-and-structured-output/#live-input-steering).
 - **Native runtime controls.** Mention-message and workspace-registered slash commands open Block Kit selectors for the configured primary/fallback models and model-supported effort values. Direct-message choices apply across new DM threads. In shared channels, `/<bot>-model` and `/<bot>-effort` establish a channel choice while `@agent /model` and `@agent /effort` can override it inside one thread. No Slack-specific model catalog is required. See [Runtime model and effort controls](#runtime-model-and-effort-controls-built-in).
@@ -38,8 +38,7 @@ Put the Socket Mode credentials in `.env` as `MONO_AGENT_SLACK_BOT_TOKEN` and `M
   "slack": {
     "enabled": true,
     "allowedChannelIds": ["C0123"],
-    "allowAllChannels": false,
-    "stripMentionText": true
+    "allowAllChannels": false
   }
 }
 ```
@@ -52,8 +51,8 @@ Put the Socket Mode credentials in `.env` as `MONO_AGENT_SLACK_BOT_TOKEN` and `M
 | `allowedChannelIds` | string[] | — | Channel IDs the agent may respond in. Required unless `allowAllChannels` is `true`. |
 | `allowAllChannels` | boolean | `false` | Respond in any channel the bot is in. Alternative to `allowedChannelIds`. |
 | `botUserIds` | string[] | — | Optional supplemental bot user IDs for self-filtering and mention cleanup. The authenticated bot's own user ID is discovered automatically with `auth.test`. |
-| `mentionTextAliases` | string[] | — | Plain-text aliases (e.g. `@agent`) that also trigger a response. |
-| `stripMentionText` | boolean | conditional | Strip the mention/alias text from the prompt before the agent sees it. When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`. |
+| `mentionTextAliases` | string[] | — | Plain-text self identities (e.g. `@agent`) recognized after admission; they do not admit shared-channel traffic without an `app_mention` event. |
+| `stripMentionText` | boolean | preserve | When unset, preserves one readable authenticated self-mention marker; `true` restores legacy full stripping and `false` keeps raw mention forms. |
 | `resolveUserNames` | boolean | `true` | Resolve the speaker's display name and handle so the agent knows who is talking. Requires the `users:read` scope. See [Speaker names](#speaker-names). |
 | `resolveChannelNames` | boolean | `true` | Resolve the channel's name so the agent knows which channel it is talking in. Requires `channels:read` / `groups:read`. See [Channel names](#channel-names). |
 | `threadContext` | object | see below | Send what was said in the conversation before the agent was triggered. Requires a `*:history` scope. See [Thread and channel context](#thread-and-channel-context). |
@@ -238,10 +237,25 @@ Send these as ordinary messages to the app:
 Replace `@agent` with the real app mention or a configured
 `mentionTextAliases` value. Keeping the mention before the slash prevents Slack's
 composer from treating `/model` or `/effort` as an unregistered workspace
-command. The adapter discovers its own bot user ID at startup and removes that
-leading self-mention for command parsing, so no `botUserIds` or
-`mentionTextAliases` setting is required for the real app mention. This
-command-only cleanup does not override `stripMentionText` for normal prompts.
+command. The adapter discovers its own bot user ID and validates its username at
+startup. Command recognition accepts the leading native mention, `@username`,
+known `@user-id`, or configured alias on a parsing copy, so it neither duplicates
+nor removes the marker from normal/live model text. Mid-message or punctuation-
+attached identities remain ordinary text.
+
+For current-turn prompts, the unset default removes all recognized self forms
+outside inline/fenced code and retains one readable marker at the earliest source
+position. An alias stays verbatim; a native mention becomes the authenticated
+`@username`, falling back to `@matched-id`. Inline Slack labels are not identity
+authority. Mention-only turns still use the bare-mention prompt, usable files can
+be sent with empty text, and all-skipped files retain the unsupported-text reply.
+Preceding transcript messages are unchanged.
+
+:::note[Migration from the previous implicit default]
+Operators who configured only `botUserIds` previously received implicit full
+stripping. Omission now preserves one readable marker. Set `stripMentionText:
+true` to retain legacy stripping; set it to `false` for raw Slack mention forms.
+:::
 
 To expose the same controls in Slack's `/` picker, register these Slack Slash
 Commands, replacing `<bot-username>` with the lowercase username returned by

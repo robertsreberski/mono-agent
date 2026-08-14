@@ -352,8 +352,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "allowedChannelIds": ["C0123"],        // or "allowAllChannels": true
     "allowAllChannels": false,
     "botUserIds": ["U0BOT"],               // optional supplemental ID; own ID is auto-discovered
-    "mentionTextAliases": ["@agent"],
-    "stripMentionText": true
+    "mentionTextAliases": ["@agent"]       // unset preserves one readable self marker
   },
 
   "channels": {

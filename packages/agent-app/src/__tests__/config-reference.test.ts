@@ -346,6 +346,12 @@ describe("config reference", () => {
       type: "boolean",
       default: true,
     });
+    const slackMentionText = schemaNode(schema, "slack", "stripMentionText");
+    expect(slackMentionText).toMatchObject({
+      type: "boolean",
+      description: expect.stringContaining("preserves one readable authenticated self-mention marker"),
+    });
+    expect(slackMentionText).not.toHaveProperty("default");
   });
 
   it("models durable continuations as a strict fixed-port host-owned block", () => {

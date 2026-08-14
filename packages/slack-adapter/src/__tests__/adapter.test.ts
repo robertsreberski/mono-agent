@@ -599,6 +599,7 @@ describe("SlackAdapter", () => {
       api,
       allowAllChannels: true,
       botUserIds: ["U0BOT"],
+      botUserName: "mono",
       responder: responderFrom(async (request) => {
         captured = request as AgentRequest;
         return { text: "ok" };
@@ -613,7 +614,7 @@ describe("SlackAdapter", () => {
     // Host-only: the harness renders nothing from an id alone, so this stays out
     // of the prompt until the opt-in user directory supplies a name.
     expect(captured?.userId).toBe("U0ALICE");
-    expect(captured?.text).toBe("ask @carol about #releases");
+    expect(captured?.text).toBe("@mono ask @carol about #releases");
   });
 
   it("answers a bare mention as a turn instead of refusing it", async () => {
@@ -670,9 +671,9 @@ describe("SlackAdapter", () => {
       responder: responderFrom(async () => ({ text: "should not run" })),
     });
 
-    const result = await adapter.handleEventCallback(
-      directMessage("", { files: [{ id: "F1", mimetype: "application/x-msdownload", size: 10 }] }),
-    );
+    const result = await adapter.handleEventCallback(directMessage("<@U0BOT>", {
+      files: [{ id: "F1", mimetype: "application/x-msdownload", size: 10 }],
+    }));
 
     expect(result).toMatchObject({ kind: "ignored", reason: "no_usable_attachments" });
     expect(api.postMessageCalls.map((call) => call.text)).toContain(
@@ -1445,6 +1446,74 @@ describe("SlackAdapter", () => {
     expect(responder.respond).not.toHaveBeenCalled();
   });
 
+  it("recognizes every leading mention-prefixed command in preserve mode", async () => {
+    const api = new FakeSlackApi();
+    const responder = { respond: vi.fn() } satisfies AgentResponder;
+    const adapter = new SlackAdapter({
+      api,
+      responder,
+      allowAllChannels: true,
+      botUserIds: ["Ubot"],
+      botUserName: "agentname",
+      mentionTextAliases: ["@mono"],
+      runtimeControls: RUNTIME_CONTROLS,
+    });
+
+    const commandInputs = [
+      ["start", "<@uBOT|spoof> @mono /start"],
+      ["help", "@mono /help"],
+      ["model", "@agentname /model"],
+      ["effort", "@uBOT /effort"],
+      ["cancel", "<@ubot> /cancel"],
+    ] as const;
+    for (const [index, [command, input]] of commandInputs.entries()) {
+      const result = await adapter.handleEventCallback(directMessage(
+        input,
+        { eventId: `Ev-command-${command}`, ts: `171.0000${index + 10}` },
+      ));
+      expect(result).toMatchObject({
+        kind: command === "cancel" ? "cancelled" : "handled",
+        ...(command === "cancel" ? {} : { action: "command", command }),
+      });
+    }
+    expect(responder.respond).not.toHaveBeenCalled();
+  });
+
+  it("keeps legacy strip/raw command compatibility and command boundaries", async () => {
+    for (const stripMentionText of [true, false] as const) {
+      const responder = { respond: vi.fn() } satisfies AgentResponder;
+      const adapter = new SlackAdapter({
+        api: new FakeSlackApi(),
+        responder,
+        allowAllChannels: true,
+        botUserIds: ["Ubot"],
+        stripMentionText,
+      });
+      await expect(adapter.handleEventCallback(directMessage("<@ubOT> /help")))
+        .resolves.toMatchObject({ kind: "handled", action: "command", command: "help" });
+      expect(responder.respond).not.toHaveBeenCalled();
+    }
+
+    const captured: string[] = [];
+    const adapter = new SlackAdapter({
+      api: new FakeSlackApi(),
+      allowAllChannels: true,
+      botUserIds: ["Ubot"],
+      botUserName: "mono",
+      mentionTextAliases: ["@mono"],
+      responder: responderFrom(async (request) => {
+        captured.push(request.text);
+        return { text: "ok" };
+      }),
+    });
+    await adapter.handleEventCallback(directMessage("please @mono /help"));
+    await adapter.handleEventCallback(directMessage("@mono, /help", {
+      eventId: "Ev-punctuation",
+      ts: "171.000002",
+    }));
+    expect(captured).toEqual(["please @mono /help", "@mono, /help"]);
+  });
+
   it("rejects malformed runtime-control catalogs at construction", () => {
     expect(() => new SlackAdapter({
       api: new FakeSlackApi(),
@@ -1966,13 +2035,14 @@ describe("SlackAdapter", () => {
     expect(api.updateCalls).toEqual([]);
   });
 
-  it("handles app mentions and strips configured bot mentions and aliases", async () => {
+  it("preserves one readable addressing marker for an app mention by default", async () => {
     let capturedRequest: AgentRequest | undefined;
     const api = new FakeSlackApi();
     const adapter = new SlackAdapter({
       api,
       allowAllChannels: true,
       botUserIds: ["Ubot"],
+      botUserName: "mono",
       mentionTextAliases: ["@mono"],
       stream: { editDebounceMs: 0 },
       responder: responderFrom(async (request) => {
@@ -1987,7 +2057,7 @@ describe("SlackAdapter", () => {
     expect(capturedRequest).toMatchObject({
       conversationId: "slack:C123:172.000001",
       channelId: "C123",
-      text: "help me",
+      text: "@mono help me",
       trigger: "app_mention",
       metadata: {
         slack: {
@@ -1996,9 +2066,57 @@ describe("SlackAdapter", () => {
         },
       },
     });
-    // Final-only delivery: the stripped text is the final answer, posted once.
-    expect(api.postMessageCalls.at(-1)?.text).toBe("help me");
+    // Final-only delivery: the prepared text is the final answer, posted once.
+    expect(api.postMessageCalls.at(-1)?.text).toBe("@mono help me");
     expect(api.updateCalls).toEqual([]);
+  });
+
+  it.each([
+    [undefined, "@mono help"],
+    [false, "<@Ubot> @mono help"],
+    [true, "help"],
+  ] as const)("keeps tri-state mention text semantics for %s", async (stripMentionText, expected) => {
+    let captured = "";
+    const adapter = new SlackAdapter({
+      api: new FakeSlackApi(),
+      allowAllChannels: true,
+      botUserIds: ["Ubot"],
+      botUserName: "mono",
+      mentionTextAliases: ["@mono"],
+      ...(stripMentionText === undefined ? {} : { stripMentionText }),
+      responder: responderFrom(async (request) => {
+        captured = request.text;
+        return { text: "ok" };
+      }),
+    });
+
+    await adapter.handleEventCallback(appMention("<@Ubot> @mono help"));
+    expect(captured).toBe(expected);
+  });
+
+  it.each([
+    [undefined, "bare"],
+    [false, "<@Ubot>"],
+    [true, "bare"],
+  ] as const)("keeps tri-state mention-only fallback semantics for %s", async (
+    stripMentionText,
+    expected,
+  ) => {
+    let captured = "";
+    const adapter = new SlackAdapter({
+      api: new FakeSlackApi(),
+      allowAllChannels: true,
+      botUserIds: ["Ubot"],
+      messages: { bareMentionPrompt: "bare" },
+      ...(stripMentionText === undefined ? {} : { stripMentionText }),
+      responder: responderFrom(async (request) => {
+        captured = request.text;
+        return { text: "ok" };
+      }),
+    });
+
+    await adapter.handleEventCallback(appMention("<@Ubot>"));
+    expect(captured).toBe(expected);
   });
 
   it("normalizes Slack mrkdwn input to multiline Markdown after stripping mentions", async () => {
@@ -2009,6 +2127,7 @@ describe("SlackAdapter", () => {
       allowAllChannels: true,
       botUserIds: ["Ubot"],
       mentionTextAliases: ["@mono"],
+      stripMentionText: true,
       stream: { editDebounceMs: 0 },
       responder: responderFrom(async (request) => {
         capturedRequest = request;
@@ -2125,13 +2244,16 @@ describe("SlackAdapter", () => {
     const adapter = new SlackAdapter({
       api,
       allowAllChannels: true,
+      botUserIds: ["Ubot"],
+      botUserName: "mono",
+      mentionTextAliases: ["@mono"],
       responder: {
         respond: async () => {
           respondCalls += 1;
           return active.promise;
         },
         offerLiveInput(request) {
-          if (request.text !== "steer now") return { status: "unavailable", reason: "inactive" };
+          if (request.text !== "@mono steer now") return { status: "unavailable", reason: "inactive" };
           offered = request;
           return { status: "accepted", settled };
         },
@@ -2140,7 +2262,7 @@ describe("SlackAdapter", () => {
 
     const first = adapter.handleEventCallback(directMessage("long task"));
     await vi.waitFor(() => expect(respondCalls).toBe(1));
-    await expect(adapter.handleEventCallback(directMessage("steer now", {
+    await expect(adapter.handleEventCallback(directMessage("<@ubOT> @mono steer now", {
       eventId: "Ev2",
       ts: "171.000002",
       threadTs: "171.000001",
@@ -2148,7 +2270,7 @@ describe("SlackAdapter", () => {
     expect(offered).toMatchObject({
       conversationId: "slack:D123:171.000001",
       id: "Ev2",
-      text: "steer now",
+      text: "@mono steer now",
     });
     expect(api.reactionsAddCalls).toContainEqual({
       channel: "D123",
@@ -2173,13 +2295,16 @@ describe("SlackAdapter", () => {
     const adapter = new SlackAdapter({
       api,
       allowAllChannels: true,
+      botUserIds: ["Ubot"],
+      botUserName: "mono",
+      mentionTextAliases: ["@mono"],
       responder: {
         respond: async (request) => {
           seen.push(request.text);
           return request.text === "long task" ? firstResponse.promise : { text: "follow-up answer" };
         },
         offerLiveInput(request) {
-          return request.text === "follow up"
+          return request.text === "@mono follow up"
             ? { status: "accepted", settled }
             : { status: "unavailable", reason: "inactive" };
         },
@@ -2188,7 +2313,7 @@ describe("SlackAdapter", () => {
 
     const first = adapter.handleEventCallback(directMessage("long task"));
     await vi.waitFor(() => expect(seen).toEqual(["long task"]));
-    await adapter.handleEventCallback(directMessage("follow up", {
+    await adapter.handleEventCallback(directMessage("<@Ubot> @mono follow up", {
       eventId: "Ev2",
       ts: "171.000002",
       threadTs: "171.000001",
@@ -2196,7 +2321,7 @@ describe("SlackAdapter", () => {
     settle({ status: "requeue", reason: "closed" });
     firstResponse.resolve({ text: "first answer" });
     await first;
-    await vi.waitFor(() => expect(seen).toEqual(["long task", "follow up"]));
+    await vi.waitFor(() => expect(seen).toEqual(["long task", "@mono follow up"]));
     await vi.waitFor(() => expect(api.postMessageCalls.map((call) => call.text)).toEqual([
       "first answer",
       "follow-up answer",
@@ -2554,6 +2679,7 @@ describe("SlackAdapter", () => {
     const adapter = new SlackAdapter({
       api,
       allowAllChannels: true,
+      botUserIds: ["Ubot"],
       stream: { editDebounceMs: 0 },
       responder: responderFrom(async (request) => {
         captured = request;
@@ -2561,7 +2687,7 @@ describe("SlackAdapter", () => {
       }),
     });
 
-    const callback = directMessage("here are files", {
+    const callback = directMessage("<@Ubot>", {
       files: [
         {
           id: "F1",
@@ -2592,6 +2718,7 @@ describe("SlackAdapter", () => {
     ]);
     expect(downloads.every((d) => d.signalAborted === false)).toBe(true);
 
+    expect(captured?.text).toBe("");
     expect(captured?.attachments).toHaveLength(2);
     expect(captured?.attachments?.[0]).toEqual({
       kind: "image",
@@ -3833,9 +3960,10 @@ describe("SlackAdapter thread and channel context", () => {
     ];
     const { adapter, captured } = build(api);
 
-    await adapter.handleEventCallback(
-      appMention("what do you think?", { threadTs: "170.100000", ts: "172.500000" }),
-    );
+    await adapter.handleEventCallback(appMention(
+      "<@UBOT> what do you think?",
+      { threadTs: "170.100000", ts: "172.500000" },
+    ));
 
     expect(api.repliesCalls).toEqual([
       {
@@ -3847,6 +3975,7 @@ describe("SlackAdapter thread and channel context", () => {
       },
     ]);
     expect(api.historyCalls).toEqual([]);
+    expect(captured()?.text).toBe("@UBOT what do you think?");
     expect(captured()?.precedingMessages).toEqual([
       {
         sender: { displayName: "Alice Chen", handle: "alice" },

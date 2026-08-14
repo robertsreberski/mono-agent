@@ -34,7 +34,6 @@ const UNCONFIGURED_SLACK_CONFIG: SlackAdapterConfig = {
   allowAllChannels: false,
   botUserIds: [],
   mentionTextAliases: [],
-  stripMentionText: false,
   shortcuts: [],
   homeTab: { enabled: false, buttons: [] },
   // Mirrors the loader's own defaults rather than "everything off": channel-gate
@@ -114,7 +113,9 @@ export function createSlackChannelDriver(
         allowAllChannels: input.config.allowAllChannels,
         botUserIds: input.config.botUserIds,
         mentionTextAliases: input.config.mentionTextAliases,
-        stripMentionText: input.config.stripMentionText,
+        ...(input.config.stripMentionText === undefined
+          ? {}
+          : { stripMentionText: input.config.stripMentionText }),
         shortcuts: input.config.shortcuts,
         homeTab: input.config.homeTab,
         resolveUserNames: input.config.resolveUserNames,

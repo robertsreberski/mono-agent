@@ -7,8 +7,13 @@ const SLACK_LINK_PATTERN = /<((?:https?:\/\/|mailto:)[^>|]+)(?:\|([^>\n]+))?>/gu
  * {@link SLACK_LINK_PATTERN}, which matches only `http(s):`/`mailto:` targets.
  */
 const SLACK_MENTION_TOKEN = /<([@#!])([^>|\s]*)(?:\|([^>\n]*))?>/gu;
+const SLACK_SELF_MENTION_TOKEN = /<@([^>|\s]+)(?:\|[^>\n]*)?>/gu;
+const HORIZONTAL_WHITESPACE = /[ \t\u00a0]/u;
 const TOKEN_PREFIX = "\uE000";
 const TOKEN_SUFFIX = "\uE001";
+
+/** Slack caps user/profile names at 80 characters. */
+export const SLACK_BOT_USER_NAME_MAX_LENGTH = 80;
 
 let nextTokenNamespace = 0;
 
@@ -38,6 +43,162 @@ export function normalizeSlackMarkdownToMarkdown(text: string): string {
 export function renderSlackMentionTokens(text: string): string {
   return replaceProtectedSegments(text, FENCED_CODE_PATTERN, (chunk) =>
     replaceProtectedSegments(chunk, INLINE_CODE_PATTERN, renderMentionTokenChunk));
+}
+
+/**
+ * Accept only a bounded, token-safe authenticated Slack username before it can
+ * become model-visible mention text.
+ */
+export function normalizeSlackBotUserName(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  if (
+    normalized.length === 0
+    || normalized.length > SLACK_BOT_USER_NAME_MAX_LENGTH
+    || /[\s<>`]/u.test(normalized)
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
+interface SlackSelfMentionSpan {
+  readonly start: number;
+  readonly end: number;
+  readonly kind: "id" | "alias";
+  readonly matchedId?: string;
+  readonly aliasOrder: number;
+}
+
+/**
+ * Preserve one readable self-address marker while removing duplicate forms.
+ * Protected Markdown code is opaque to identity matching.
+ */
+export function preserveSlackSelfMentionText(
+  text: string,
+  options: {
+    readonly botUserIds: readonly string[];
+    readonly mentionTextAliases: readonly string[];
+    readonly botUserName?: string;
+  },
+): string {
+  const knownBotUserIds = new Set(
+    options.botUserIds
+      .map((userId) => userId.trim().toLowerCase())
+      .filter((userId) => userId.length > 0),
+  );
+  const aliases = options.mentionTextAliases
+    .filter((alias) => alias.length > 0);
+  const botUserName = normalizeSlackBotUserName(options.botUserName);
+
+  return replaceProtectedSegments(text, FENCED_CODE_PATTERN, (withoutFencedCode) =>
+    replaceProtectedSegments(withoutFencedCode, INLINE_CODE_PATTERN, (unprotected) => {
+      const spans = collectSlackSelfMentionSpans(unprotected, knownBotUserIds, aliases);
+      if (spans.length === 0) {
+        return unprotected;
+      }
+
+      const projection = replaceSlackSelfMentionSpans(unprotected, spans);
+      if (projection.trim().length === 0) {
+        return projection;
+      }
+
+      const first = spans[0]!;
+      const marker = first.kind === "alias"
+        ? unprotected.slice(first.start, first.end)
+        : `@${botUserName ?? first.matchedId!}`;
+      return replaceSlackSelfMentionSpans(unprotected, spans, marker);
+    }));
+}
+
+function collectSlackSelfMentionSpans(
+  text: string,
+  knownBotUserIds: ReadonlySet<string>,
+  aliases: readonly string[],
+): readonly SlackSelfMentionSpan[] {
+  const candidates: SlackSelfMentionSpan[] = [];
+  for (const match of text.matchAll(SLACK_SELF_MENTION_TOKEN)) {
+    const matchedId = match[1];
+    if (matchedId === undefined || !knownBotUserIds.has(matchedId.toLowerCase())) {
+      continue;
+    }
+    candidates.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      kind: "id",
+      matchedId,
+      aliasOrder: -1,
+    });
+  }
+  aliases.forEach((alias, aliasOrder) => {
+    let start = text.indexOf(alias);
+    while (start !== -1) {
+      candidates.push({ start, end: start + alias.length, kind: "alias", aliasOrder });
+      start = text.indexOf(alias, start + alias.length);
+    }
+  });
+  candidates.sort((left, right) =>
+    left.start - right.start
+    || (left.kind === right.kind ? left.aliasOrder - right.aliasOrder : left.kind === "id" ? -1 : 1));
+
+  const spans: SlackSelfMentionSpan[] = [];
+  for (const candidate of candidates) {
+    const previous = spans.at(-1);
+    if (previous === undefined || candidate.start >= previous.end) {
+      spans.push(candidate);
+    }
+  }
+  return spans;
+}
+
+function replaceSlackSelfMentionSpans(
+  text: string,
+  spans: readonly SlackSelfMentionSpan[],
+  firstMarker?: string,
+): string {
+  let output = "";
+  let cursor = 0;
+  spans.forEach((span, index) => {
+    output += text.slice(cursor, span.start);
+    if (index === 0 && firstMarker !== undefined) {
+      output += firstMarker;
+      cursor = span.end;
+      return;
+    }
+
+    const rightRunEnd = horizontalWhitespaceRunEnd(text, span.end);
+    const existingHardBreak = rightRunEnd - span.end >= 2 && isNewline(text[rightRunEnd]);
+    cursor = HORIZONTAL_WHITESPACE.test(text[span.start - 1] ?? "")
+      && HORIZONTAL_WHITESPACE.test(text[span.end] ?? "")
+      ? span.end + 1
+      : span.end;
+    if (!existingHardBreak && isNewline(text[cursor])) {
+      output = collapseTrailingHorizontalWhitespace(output);
+    }
+  });
+  return output + text.slice(cursor);
+}
+
+function horizontalWhitespaceRunEnd(text: string, start: number): number {
+  let end = start;
+  while (HORIZONTAL_WHITESPACE.test(text[end] ?? "")) {
+    end += 1;
+  }
+  return end;
+}
+
+function isNewline(value: string | undefined): boolean {
+  return value === "\n" || value === "\r";
+}
+
+function collapseTrailingHorizontalWhitespace(text: string): string {
+  const match = /[ \t\u00a0]+$/u.exec(text);
+  if (match === null || match[0].length < 2) {
+    return text;
+  }
+  return `${text.slice(0, match.index)} `;
 }
 
 function renderMentionTokenChunk(text: string): string {

@@ -7,6 +7,7 @@ import type {
 import { describe, expect, it, vi } from "vitest";
 
 import { startSlackAdapter, type SlackAdapterStartOptions } from "../start.js";
+import { loadSlackAdapterConfig } from "../config.js";
 import type {
   AgentRequest,
   AgentResponder,
@@ -177,7 +178,6 @@ describe("startSlackAdapter", () => {
       const socket = sockets[0];
       if (socket === undefined) throw new Error("expected a socket");
       socket.emitOpen();
-
       const initial = directMessage("long task", {
         eventId: "Ev-initial",
         ts: "171.000001",
@@ -261,7 +261,99 @@ describe("startSlackAdapter", () => {
     }
   });
 
-  it("discovers the bot identity and recognizes mention-prefixed runtime commands", async () => {
+  it("composes unset preserve mode from config through authenticated app-mention and DM turns", async () => {
+    const config = await loadSlackAdapterConfig({
+      env: {
+        MONO_AGENT_SLACK_ENABLED: "true",
+        MONO_AGENT_SLACK_BOT_TOKEN: "test-bot-token",
+        MONO_AGENT_SLACK_APP_TOKEN: "test-app-token",
+        MONO_AGENT_SLACK_ALLOW_ALL_CHANNELS: "true",
+        MONO_AGENT_SLACK_MENTION_TEXT_ALIASES: "@mono",
+      },
+    });
+    expect(Object.hasOwn(config, "stripMentionText")).toBe(false);
+
+    const api = new FakeSlackApi({ ok: true, user: "  mono  ", user_id: "Ubot" });
+    const sockets: FakeWebSocket[] = [];
+    const seen: AgentRequest[] = [];
+    const started = await startSlackAdapter(buildOptions({
+      ...config,
+      createApi: () => api,
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      responder: responderFrom(async (request) => {
+        seen.push(request);
+        return { text: "ok" };
+      }),
+    }));
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0];
+      if (socket === undefined) throw new Error("expected a socket");
+      socket.emitOpen();
+      socket.emitMessage(socketEnvelope("E-app", sharedMention("<@Ubot> @mono help me")));
+      await vi.waitFor(() => expect(seen[0]?.text).toBe("@mono help me"));
+      socket.emitMessage(socketEnvelope("E-dm", directMessage("<@ubOT|spoof> @mono dm help")));
+      await vi.waitFor(() => expect(seen[1]?.text).toBe("@mono dm help"));
+    } finally {
+      await started.stop();
+    }
+  });
+
+  it("falls back to the matched ID for model text while preserving spaced-name slash commands", async () => {
+    const api = new FakeSlackApi({ ok: true, user: "spoof name", user_id: "U_MICKEY" });
+    const sockets: FakeWebSocket[] = [];
+    const seen: AgentRequest[] = [];
+    const started = await startSlackAdapter(buildOptions({
+      createApi: () => api,
+      webSocketFactory: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      runtimeControls: {
+        defaultModel: "pi:openai:gpt-default",
+        models: [{ value: "pi:openai:gpt-default", label: "Default GPT", efforts: [] }],
+      },
+      responder: responderFrom(async (request) => {
+        seen.push(request);
+        return { text: "ok" };
+      }),
+    }));
+
+    try {
+      await vi.waitFor(() => expect(sockets).toHaveLength(1));
+      const socket = sockets[0];
+      if (socket === undefined) throw new Error("expected a socket");
+      socket.emitOpen();
+      socket.emitMessage(socketEnvelope("E-fallback", directMessage("<@U_MICKEY|spoof> help")));
+      await vi.waitFor(() => expect(seen[0]?.text).toBe("@U_MICKEY help"));
+      await vi.waitFor(() => expect(api.postMessageCalls).toHaveLength(1));
+
+      socket.emitMessage({
+        envelope_id: "SC-spaced-name-model",
+        type: "slash_commands",
+        payload: {
+          command: "/spoof-name-model",
+          text: "",
+          channel_id: "D1",
+          user_id: "U1",
+        },
+      });
+      await vi.waitFor(() => expect(api.postMessageCalls).toHaveLength(2));
+      expect(api.postMessageCalls[1]?.text).toBe(
+        "Current model: Default GPT. Choose a configured model:",
+      );
+    } finally {
+      await started.stop();
+    }
+  });
+
+  it("keeps explicit raw mode while recognizing mention-prefixed runtime commands", async () => {
     const api = new FakeSlackApi({ ok: true, user: "mickey", user_id: "U_MICKEY" });
     const sockets: FakeWebSocket[] = [];
     const seen: AgentRequest[] = [];

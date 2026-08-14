@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   formatMarkdownForSlack,
+  normalizeSlackBotUserName,
   normalizeSlackMarkdownToMarkdown,
+  preserveSlackSelfMentionText,
   renderSlackMentionTokens,
 } from "../slack-markdown.js";
 
@@ -152,4 +154,85 @@ describe("renderSlackMentionTokens", () => {
     expect(renderSlackMentionTokens("`<@U08ABC>` literal")).toBe("`<@U08ABC>` literal");
     expect(renderSlackMentionTokens("```\n<@U08ABC>\n```")).toBe("```\n<@U08ABC>\n```");
   });
+});
+
+describe("preserveSlackSelfMentionText", () => {
+  const modelText = (
+    text: string,
+    options: {
+      readonly botUserIds?: readonly string[];
+      readonly mentionTextAliases?: readonly string[];
+      readonly botUserName?: string;
+    } = {},
+  ): string => normalizeSlackMarkdownToMarkdown(renderSlackMentionTokens(
+    preserveSlackSelfMentionText(text, {
+      botUserIds: options.botUserIds ?? ["Ubot"],
+      mentionTextAliases: options.mentionTextAliases ?? ["@mono"],
+      ...(options.botUserName === undefined ? {} : { botUserName: options.botUserName }),
+    }),
+  ));
+
+  it.each([
+    ["<@Ubot> @mono help me", "@mono help me"],
+    ["please <@ubOT>", "please @mono"],
+    ["@mono <@Ubot> help", "@mono help"],
+    ["<@Ubot|spoof> help", "@mono help"],
+    ["hi,<@Ubot>!", "hi,@mono!"],
+    ["<@Ubot> help <@UBOT> @mono", "@mono help"],
+  ])("keeps one canonical marker for %s", (input, expected) => {
+    expect(modelText(input, { botUserName: "mono" })).toBe(expected);
+  });
+
+  it("uses the matched ID when authenticated username validation fails", () => {
+    expect(modelText("<@ubOT|spoof> help", { botUserName: "bad name" })).toBe("@ubOT help");
+    expect(modelText("<@Ubot> help")).toBe("@Ubot help");
+  });
+
+  it("keeps the earliest alias verbatim and characterizes literal prefix matching", () => {
+    expect(modelText("@mono <@Ubot> help", { botUserName: "other" })).toBe("@mono help");
+    expect(modelText("@monolith help", { mentionTextAliases: ["@mono"] })).toBe("@monolith help");
+    expect(modelText("@Mono help", { mentionTextAliases: ["@mono"] })).toBe("@Mono help");
+  });
+
+  it("protects code and leaves third-party mentions on the existing rendering path", () => {
+    expect(modelText("`<@Ubot>` <@Ubot> ask <@Uother|alice>", { botUserName: "mono" }))
+      .toBe("`<@Ubot>` @mono ask @alice");
+    expect(modelText("```txt\n<@Ubot>\n```\n<@Ubot> help", { botUserName: "mono" }))
+      .toBe("```txt\n<@Ubot>\n```\n@mono help");
+    expect(modelText("@mono before `<@Ubot>` after <@Ubot>", { botUserName: "mono" }))
+      .toBe("@mono before `<@Ubot>` after");
+  });
+
+  it("preserves existing hard breaks without creating one around a removed form", () => {
+    expect(modelText("@mono hi\nx  <@Ubot>\nend", { botUserName: "mono" }))
+      .toBe("@mono hi\nx \nend");
+    expect(modelText("@mono hi\nx <@Ubot>  \nend", { botUserName: "mono" }))
+      .toBe("@mono hi\nx  \nend");
+  });
+
+  it("uses Slack-token priority for equal-start identity matches", () => {
+    expect(modelText("<@Ubot> help", {
+      botUserName: "mono",
+      mentionTextAliases: ["<@Ubot>"],
+    })).toBe("@mono help");
+  });
+
+  it("does not guess self identity when no trusted form is configured", () => {
+    expect(modelText("<@Ubot|claimed> help", {
+      botUserIds: [],
+      mentionTextAliases: [],
+    })).toBe("@claimed help");
+  });
+});
+
+describe("normalizeSlackBotUserName", () => {
+  it("trims one bounded authenticated username", () => {
+    expect(normalizeSlackBotUserName("  mono  ")).toBe("mono");
+    expect(normalizeSlackBotUserName("a".repeat(80))).toBe("a".repeat(80));
+  });
+
+  it.each([undefined, "", "   ", "two words", "bad<name", "bad>name", "bad`name", "a".repeat(81)])(
+    "rejects unsafe authenticated username %s",
+    (value) => expect(normalizeSlackBotUserName(value)).toBeUndefined(),
+  );
 });

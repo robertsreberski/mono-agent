@@ -1188,7 +1188,7 @@ function defaultLabelFor(id: string): string {
     return "auto-detected";
   }
   if (id === "slack.stripMentionText") {
-    return "conditional";
+    return "preserve";
   }
   const value = defaultValueFor(id);
   if (value !== undefined) {
@@ -1395,7 +1395,7 @@ function descriptionFor(id: string): string {
     return "Allows an ACP request to prepend up to four absolute directories to process-tool PATH for one turn. The caller cannot replace PATH.";
   }
   if (id === "slack.stripMentionText") {
-    return "When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`.";
+    return "When unset, preserves one readable authenticated self-mention marker; `true` restores legacy full stripping and `false` keeps raw mention forms.";
   }
   if (id === "slack.resolveUserNames") {
     return "Resolves the speaker's display name and handle via `users.info` so the agent knows who is talking. Requires the `users:read` scope; a missing scope degrades to an unnamed speaker rather than failing turns.";

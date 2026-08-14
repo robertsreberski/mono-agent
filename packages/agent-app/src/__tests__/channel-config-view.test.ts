@@ -88,6 +88,16 @@ describe("channel config view", () => {
     expect(JSON.stringify(section)).not.toContain("fixture-webhook-secret");
   });
 
+  it("reports an unset Slack mention policy as provenance-default, not false", async () => {
+    const configPath = await writeConfig({ slack: { enabled: false } });
+    const section = await defaultChannelDrivers()
+      .find((driver) => driver.id === "slack")!
+      .configView!({ env: {}, cwd: dir, configPath });
+
+    expect(section.fields.find((field) => field.id === "slack.stripMentionText"))
+      .toMatchObject({ value: "—", source: "default" });
+  });
+
   it("reports a disabled channel section as disabled", async () => {
     const configPath = await writeConfig({ telegram: { enabled: false } });
     const driver = createTelegramChannelDriver();
