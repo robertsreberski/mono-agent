@@ -267,7 +267,7 @@ function isStructuredToolRun(value) {
  * @param {any} description
  * @param {any} parameters
  * @param {any} execute
- * @param {{cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, forceSequential?: boolean}} [options]
+ * @param {{cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: any, forceSequential?: boolean}} [options]
  */
 function createBuiltinTool(name, label, description, parameters, execute, {
   cwd,
@@ -277,6 +277,7 @@ function createBuiltinTool(name, label, description, parameters, execute, {
   sandboxPolicy,
   sandboxEngine,
   ctx,
+  processJobsController,
   forceSequential = false,
 } = {}) {
   return {
@@ -288,12 +289,22 @@ function createBuiltinTool(name, label, description, parameters, execute, {
     async execute(toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("tool execution aborted");
       const normalized = normalizePiBuiltinToolParams(name, params, { cwd, toolLimits, ctx });
+      if (processJobsController && params?.background === true && (name === "Bash" || name === "Exec")) {
+        // Foreground normalization always materializes the established default
+        // limits. A background omission instead belongs to the host's compiled
+        // process-job config, so preserve absence while still narrowing every
+        // explicitly supplied per-call value through the ordinary tool caps.
+        if (params.max_output_chars === undefined) delete normalized.max_output_chars;
+        if (params.timeout_ms === undefined && (name !== "Bash" || params.timeout === undefined)) {
+          delete normalized.timeout_ms;
+        }
+      }
       if (name === "Bash" && toolPolicy?.bashReadOnly && !isReadOnlyShellCommand(normalized.command)) {
         throw new Error("Error: Planning shell policy allows only read-only inspection commands.");
       }
       const shouldTrackWrite = name === "Write" && typeof normalized.file_path === "string" && normalized.file_path.length > 0;
       const beforeWrite = shouldTrackWrite ? readFileChangeSnapshot(normalized.file_path) : null;
-      const raw = await execute(normalized, { signal, sandboxPolicy, sandboxEngine, ctx });
+      const raw = await execute(normalized, { signal, sandboxPolicy, sandboxEngine, ctx, processJobsController });
       // Image reads (e.g. Read on a .png) come back as a structured image
       // result so vision models see pixels; emit an image content block and let
       // the shared bloat guard cap oversize payloads.
@@ -423,7 +434,7 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
 
 /**
  * @param {any} allowedTools
- * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, webController?: any, toolExecutionMode?: "sequential"|"safe-parallel", subagents?: any, subagentContext?: any, ctx?: any}} [options]
+ * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, webController?: any, processJobsController?: any, toolExecutionMode?: "sequential"|"safe-parallel", subagents?: any, subagentContext?: any, ctx?: any}} [options]
  */
 export function getPiBuiltinTools(allowedTools, {
   disallowedTools = [],
@@ -445,6 +456,7 @@ export function getPiBuiltinTools(allowedTools, {
   approvalModel = null,
   nodeReplController = null,
   webController = null,
+  processJobsController = null,
   subagents = null,
   subagentContext = null,
   toolExecutionMode = "safe-parallel",
@@ -470,6 +482,7 @@ export function getPiBuiltinTools(allowedTools, {
     toolPolicy,
     sandboxPolicy,
     sandboxEngine,
+    processJobsController,
     forceSequential: toolExecutionMode === "sequential",
     ctx,
   };
@@ -520,6 +533,9 @@ export function getPiBuiltinTools(allowedTools, {
       timeout_ms: processTimeoutSchema,
       timeout: legacyBashTimeoutSchema,
       max_output_chars: bashLimitSchema,
+      ...(processJobsController ? {
+        background: { type: "boolean", description: "Run as a durable background process job and notify this conversation when it finishes." },
+      } : {}),
     }, ["command"]), bashToolRun, toolContext),
     Exec: createBuiltinTool("Exec", "Exec", "Execute one program directly from an argv array without shell parsing. Prefer this for ordinary commands; use Bash only when shell syntax is required.", objectSchema({
       executable: { type: "string", minLength: 1 },
@@ -527,6 +543,9 @@ export function getPiBuiltinTools(allowedTools, {
       workdir: { type: "string" },
       timeout_ms: processTimeoutSchema,
       max_output_chars: bashLimitSchema,
+      ...(processJobsController ? {
+        background: { type: "boolean", description: "Run as a durable background process job and notify this conversation when it finishes." },
+      } : {}),
     }, ["executable"]), execToolRun, toolContext),
     NodeRepl: nodeReplController
       ? createBuiltinTool(

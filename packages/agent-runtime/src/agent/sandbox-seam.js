@@ -53,7 +53,7 @@
  */
 
 /**
- * @typedef {SandboxCommandSpec & {sandboxed: boolean, cleanup?: () => Promise<void>}} PreparedSandboxCommand
+ * @typedef {SandboxCommandSpec & {sandboxed: boolean, sandboxSettingsPath?: string, cleanup?: () => Promise<void>}} PreparedSandboxCommand
  */
 
 /**

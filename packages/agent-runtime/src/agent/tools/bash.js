@@ -14,6 +14,7 @@ import {
   DEFAULT_PROCESS_BUFFER_BYTES,
   runPreparedProcess,
 } from "./shared/process-runner.js";
+import { handOffProcessJob } from "./shared/process-jobs.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { requestToolProcessEnvironment, resolveSandboxPolicy } from "./shared/tool-context.js";
 
@@ -56,8 +57,8 @@ export function normalizeProcessTimeoutMs(value, fallback = DEFAULT_BASH_TIMEOUT
 /**
  * Compatibility wrapper retained for direct callers and tests.
  *
- * @param {{command: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string}} params
- * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ * @param {{command: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean}} params
+ * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: import("./shared/process-jobs.js").ProcessJobsController}} [options]
  */
 export async function bashToolImpl(params, options = {}) {
   return (await bashToolRun(params, options)).text;
@@ -66,8 +67,8 @@ export async function bashToolImpl(params, options = {}) {
 /**
  * Structured Bash execution used by the Pi bridge.
  *
- * @param {{command: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string}} params
- * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ * @param {{command: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean}} params
+ * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: import("./shared/process-jobs.js").ProcessJobsController}} [options]
  */
 export async function bashToolRun(
   {
@@ -76,12 +77,14 @@ export async function bashToolRun(
     timeout_ms,
     max_output_chars,
     workdir,
+    background,
   },
   {
     signal,
     sandboxPolicy,
     sandboxEngine,
     ctx,
+    processJobsController,
   } = {},
 ) {
   const startedAt = Date.now();
@@ -125,6 +128,22 @@ export async function bashToolRun(
     });
   } catch (error) {
     return failed(`Error: ${error?.message || String(error)}`, "sandbox_prepare_failed", startedAt);
+  }
+
+  if (background === true && processJobsController) {
+    const requestedTimeoutMs = timeout_ms !== undefined
+      ? timeoutMs
+      : (timeout === undefined ? undefined : timeoutMs);
+    return handOffProcessJob({
+      controller: processJobsController,
+      tool: "Bash",
+      prepared,
+      summary: `Bash command (${command.length} characters; content redacted)`,
+      timeoutMs: requestedTimeoutMs,
+      maxOutputChars: max_output_chars === undefined ? undefined : maxChars,
+      startedAt,
+      failed,
+    });
   }
 
   let result;

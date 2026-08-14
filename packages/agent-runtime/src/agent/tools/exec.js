@@ -15,15 +15,18 @@ import {
   DEFAULT_PROCESS_BUFFER_BYTES,
   runPreparedProcess,
 } from "./shared/process-runner.js";
+import { handOffProcessJob } from "./shared/process-jobs.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { requestToolProcessEnvironment, resolveSandboxPolicy } from "./shared/tool-context.js";
 
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 const MAX_EXEC_ARGS = 256;
 
+/** @typedef {import("./shared/process-jobs.js").ProcessJobsController} ProcessJobsController */
+
 /**
- * @param {{executable: string, args?: string[], workdir?: string, timeout_ms?: number, max_output_chars?: number}} params
- * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ * @param {{executable: string, args?: string[], workdir?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean}} params
+ * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: ProcessJobsController}} [options]
  */
 export async function execToolImpl(params, options = {}) {
   return (await execToolRun(params, options)).text;
@@ -32,8 +35,8 @@ export async function execToolImpl(params, options = {}) {
 /**
  * Execute an argv vector directly, without shell parsing.
  *
- * @param {{executable: string, args?: string[], workdir?: string, timeout_ms?: number, max_output_chars?: number}} params
- * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any}} [options]
+ * @param {{executable: string, args?: string[], workdir?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean}} params
+ * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: ProcessJobsController}} [options]
  */
 export async function execToolRun(
   {
@@ -42,12 +45,14 @@ export async function execToolRun(
     workdir,
     timeout_ms,
     max_output_chars,
+    background,
   },
   {
     signal,
     sandboxPolicy,
     sandboxEngine,
     ctx,
+    processJobsController,
   } = {},
 ) {
   const startedAt = Date.now();
@@ -88,6 +93,19 @@ export async function execToolRun(
     });
   } catch (error) {
     return failed(`Error: ${error?.message || String(error)}`, "sandbox_prepare_failed", startedAt);
+  }
+
+  if (background === true && processJobsController) {
+    return handOffProcessJob({
+      controller: processJobsController,
+      tool: "Exec",
+      prepared,
+      summary: `${executable} (${args.length} argument${args.length === 1 ? "" : "s"}; values redacted)`,
+      timeoutMs: timeout_ms === undefined ? undefined : timeoutMs,
+      maxOutputChars: max_output_chars === undefined ? undefined : maxChars,
+      startedAt,
+      failed,
+    });
   }
 
   let result;

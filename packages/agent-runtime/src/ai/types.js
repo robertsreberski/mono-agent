@@ -313,6 +313,7 @@
  *   Codex owns its collaboration agents and rejects configured teammate definitions; `codexLoadProjectDocs` controls
  *   whether Codex loads repository instructions for its own agents.
  * @property {RuntimeSubagentsOptions} [subagents] In-process `Agent` built-in: profiles, caps, and the nested-run callback.
+ * @property {{start: (request: Object) => Promise<Object>}} [processJobs] Pi-native-only structural process-job controller. When absent, Exec/Bash schemas and foreground behavior are unchanged.
  * @property {Object} [diagnosticsSeed] Set by createRouterRuntime (ai/runtime/router.js) with a `resume_snapshot` when
  *   failing over mid-chain; a host-level coordinator may relay it forward (see agent/transcript.js), not read by any
  *   bridge in this package today.

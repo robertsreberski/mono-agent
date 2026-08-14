@@ -23,9 +23,41 @@ export function runPreparedProcess(
     maxBufferBytes = DEFAULT_PROCESS_BUFFER_BYTES,
   } = {},
 ) {
+  return startPreparedProcess(commandSpec, {
+    timeoutMs,
+    signal,
+    maxBufferBytes,
+  }).completion;
+}
+
+/**
+ * Start one already-prepared executable and expose its process-group handle.
+ *
+ * `waitForProcessGroup` is deliberately opt-in so existing foreground tools
+ * retain their exact leader/stdio completion semantics. Process jobs enable it
+ * through their bound launcher: sandbox cleanup must not run while a detached
+ * descendant in the owned group is still alive.
+ *
+ * @param {{command: string, args?: string[], cwd?: string, env?: Record<string, string|undefined>}} commandSpec
+ * @param {{timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, waitForProcessGroup?: boolean, onStdout?: (chunk: Buffer) => void, onStderr?: (chunk: Buffer) => void}} [options]
+ * @returns {{pid: number|null, pgid: number|null, startedAt: string, completion: Promise<any>, cancel: () => void}}
+ */
+export function startPreparedProcess(
+  commandSpec,
+  {
+    timeoutMs,
+    signal,
+    maxBufferBytes = DEFAULT_PROCESS_BUFFER_BYTES,
+    waitForProcessGroup = false,
+    onStdout,
+    onStderr,
+  } = {},
+) {
   const startedAt = Date.now();
-  return new Promise((resolve) => {
-    let child;
+  /** @type {import("node:child_process").ChildProcess|null} */
+  let child = null;
+  let cancel = () => {};
+  const completion = new Promise((resolve) => {
     try {
       const env = commandSpec.env ? mergedProcessEnv(commandSpec.env) : process.env;
       child = spawn(commandSpec.command, commandSpec.args || [], {
@@ -74,9 +106,11 @@ export function runPreparedProcess(
         killTimer.unref?.();
       }
     }
+    cancel = terminate;
 
-    function append(target, chunk) {
+    function append(target, chunk, observe) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      try { observe?.(buffer); } catch { /* observers cannot break process ownership */ }
       state.bytes += buffer.length;
       const remaining = Math.max(0, maxBufferBytes - state.storedBytes);
       if (remaining > 0) {
@@ -106,27 +140,60 @@ export function runPreparedProcess(
     if (signal?.aborted) onAbort();
     else signal?.addEventListener?.("abort", onAbort, { once: true });
 
-    child.stdout?.on("data", (chunk) => append(stdout, chunk));
-    child.stderr?.on("data", (chunk) => append(stderr, chunk));
+    child.stdout?.on("data", (chunk) => append(stdout, chunk, onStdout));
+    child.stderr?.on("data", (chunk) => append(stderr, chunk, onStderr));
     child.once("error", (error) => {
       state.spawnError = error;
     });
     child.once("close", (code, closeSignal) => {
       if (settled) return;
-      settled = true;
-      if (timeoutTimer !== null) clearTimeout(timeoutTimer);
-      if (killTimer !== null) clearTimeout(killTimer);
-      signal?.removeEventListener?.("abort", onAbort);
-      resolve({
-        code,
-        signal: closeSignal,
-        stdout: Buffer.concat(stdout).toString("utf8"),
-        stderr: Buffer.concat(stderr).toString("utf8"),
-        ...state,
-        durationMs: Date.now() - startedAt,
-      });
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (timeoutTimer !== null) clearTimeout(timeoutTimer);
+        if (killTimer !== null) clearTimeout(killTimer);
+        signal?.removeEventListener?.("abort", onAbort);
+        resolve({
+          code,
+          signal: closeSignal,
+          stdout: Buffer.concat(stdout).toString("utf8"),
+          stderr: Buffer.concat(stderr).toString("utf8"),
+          ...state,
+          durationMs: Date.now() - startedAt,
+        });
+      };
+      if (!waitForProcessGroup || process.platform === "win32" || !child?.pid) {
+        finish();
+        return;
+      }
+      waitForOwnedProcessGroupExit(child.pid, finish);
     });
   });
+  return {
+    pid: child?.pid ?? null,
+    pgid: process.platform === "win32" ? null : (child?.pid ?? null),
+    startedAt: new Date(startedAt).toISOString(),
+    completion,
+    cancel: () => cancel(),
+  };
+}
+
+function waitForOwnedProcessGroupExit(pgid, finish) {
+  const probe = () => {
+    try {
+      process.kill(-pgid, 0);
+      const timer = setTimeout(probe, 25);
+      timer.unref?.();
+    } catch (error) {
+      if (error?.code === "EPERM") {
+        const timer = setTimeout(probe, 25);
+        timer.unref?.();
+        return;
+      }
+      finish();
+    }
+  };
+  probe();
 }
 
 function mergedProcessEnv(overrides) {

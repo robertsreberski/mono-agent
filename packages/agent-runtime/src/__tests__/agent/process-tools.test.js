@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
@@ -24,6 +24,111 @@ afterEach(() => {
 });
 
 describe("Exec", () => {
+  it("keeps the disabled schema byte-identical and injects background only with a controller", () => {
+    const withoutController = getPiBuiltinTools(["Exec", "Bash"]);
+    const baseline = Object.fromEntries(withoutController.map((tool) => [tool.name, JSON.stringify(tool.parameters)]));
+    expect(JSON.parse(baseline.Exec).properties).not.toHaveProperty("background");
+    expect(JSON.parse(baseline.Bash).properties).not.toHaveProperty("background");
+
+    const withController = getPiBuiltinTools(["Exec", "Bash"], {
+      processJobsController: { start: vi.fn() },
+    });
+    expect(withController.find((tool) => tool.name === "Exec").parameters.properties.background)
+      .toEqual(expect.objectContaining({ type: "boolean" }));
+    expect(withController.find((tool) => tool.name === "Bash").parameters.properties.background)
+      .toEqual(expect.objectContaining({ type: "boolean" }));
+
+    const disabledAgain = getPiBuiltinTools(["Exec", "Bash"]);
+    expect(Object.fromEntries(disabledAgain.map((tool) => [tool.name, JSON.stringify(tool.parameters)]))).toEqual(baseline);
+  });
+
+  it("hands off the exact prepared command, returns before completion, and cleans up once", async () => {
+    const workspace = tempWorkspace();
+    const cleanup = vi.fn(async () => {});
+    const preparedCommands = [];
+    const sandbox = {
+      ...passthroughSandbox,
+      async prepareCommand({ command }) {
+        const prepared = { ...command, args: command.args ?? [], sandboxed: true, sandboxSettingsPath: resolve(workspace, "settings.json"), cleanup };
+        preparedCommands.push(prepared);
+        return prepared;
+      },
+    };
+    let terminal;
+    const start = vi.fn(async (request) => {
+      const handle = request.launch({ timeoutMs: 5_000, maxBufferBytes: 1024 });
+      terminal = handle.completion.finally(async () => {
+        await request.prepared.cleanup();
+        await request.prepared.cleanup();
+      });
+      return { jobId: "pj_runtime", state: "running", startedAt: handle.startedAt };
+    });
+    const started = Date.now();
+    const result = await execToolRun({
+      executable: process.execPath,
+      args: ["--eval", "setTimeout(() => process.stdout.write('done'), 180)"],
+      background: true,
+    }, { ctx: { workspace, sandbox }, processJobsController: { start } });
+
+    expect(Date.now() - started).toBeLessThan(150);
+    expect(result).toMatchObject({
+      error: false,
+      outcome: { status: "ok", code: "background_started", background: true, job_id: "pj_runtime" },
+    });
+    expect(JSON.parse(result.text)).toMatchObject({ job_id: "pj_runtime", state: "running" });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(start.mock.calls[0][0].prepared.command).toBe(preparedCommands[0].command);
+    expect(start.mock.calls[0][0].prepared.sandboxSettingsPath).toBe(resolve(workspace, "settings.json"));
+    expect(cleanup).not.toHaveBeenCalled();
+    await terminal;
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves foreground behavior with an injected controller and narrows explicit background limits", async () => {
+    const workspace = tempWorkspace();
+    const controller = { start: vi.fn(async (request) => ({ jobId: "pj_limits", state: "queued", startedAt: null })) };
+    const foreground = await execToolRun({ executable: process.execPath, args: ["--eval", "process.stdout.write('same')"] }, options(workspace));
+    const injectedForeground = await execToolRun(
+      { executable: process.execPath, args: ["--eval", "process.stdout.write('same')"] },
+      { ...options(workspace), processJobsController: controller },
+    );
+    expect({ ...injectedForeground, outcome: { ...injectedForeground.outcome, durationMs: 0 } })
+      .toEqual({ ...foreground, outcome: { ...foreground.outcome, durationMs: 0 } });
+    expect(controller.start).not.toHaveBeenCalled();
+
+    const exec = getPiBuiltinTools(["Exec"], {
+      cwd: workspace,
+      ctx: { workspace, sandbox: passthroughSandbox },
+      processJobsController: controller,
+      toolLimits: { bashTimeoutMs: 1_000, bashOutputLimitChars: 100 },
+    }).find((tool) => tool.name === "Exec");
+    await exec.execute("job-limits", {
+      executable: process.execPath,
+      args: ["--version"],
+      timeout_ms: 9_999,
+      max_output_chars: 9_999,
+      background: true,
+    });
+    expect(controller.start).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 1_000, maxOutputChars: 100 }));
+  });
+
+  it("lets the host defaults own omitted background limits", async () => {
+    const workspace = tempWorkspace();
+    const start = vi.fn(async () => ({ jobId: "pj_defaults", state: "queued", startedAt: null }));
+    const exec = getPiBuiltinTools(["Exec"], {
+      cwd: workspace,
+      ctx: { workspace, sandbox: passthroughSandbox },
+      processJobsController: { start },
+    }).find((tool) => tool.name === "Exec");
+    await exec.execute("job-defaults", {
+      executable: process.execPath,
+      args: ["--version"],
+      background: true,
+    });
+    expect(start.mock.calls[0][0]).not.toHaveProperty("timeoutMs");
+    expect(start.mock.calls[0][0]).not.toHaveProperty("maxOutputChars");
+  });
+
   it("applies a request environment and PATH prepend only to the current tool run", async () => {
     const workspace = tempWorkspace();
     const ctx = {
@@ -118,6 +223,46 @@ describe("Exec", () => {
 });
 
 describe("Bash process outcomes and Pi bridge metadata", () => {
+  it("cancels the detached descendant group before sandbox cleanup", async () => {
+    if (process.platform === "win32") return;
+    const workspace = tempWorkspace();
+    const childPidPath = resolve(workspace, "child.pid");
+    const cleanup = vi.fn(async () => {});
+    let terminal;
+    const controller = {
+      async start(request) {
+        const handle = request.launch({ timeoutMs: 10_000 });
+        terminal = (async () => {
+          const deadline = Date.now() + 3_000;
+          while (!existsSync(childPidPath) && Date.now() < deadline) {
+            await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+          }
+          handle.cancel();
+          const outcome = await handle.completion;
+          await request.prepared.cleanup();
+          return outcome;
+        })();
+        return { jobId: "pj_tree", state: "running", startedAt: handle.startedAt };
+      },
+    };
+    const sandbox = {
+      ...passthroughSandbox,
+      async prepareCommand({ command }) {
+        return { ...command, args: command.args ?? [], sandboxed: true, cleanup };
+      },
+    };
+    const result = await bashToolRun({
+      command: `sleep 30 & echo $! > ${JSON.stringify(childPidPath)}; wait`,
+      background: true,
+    }, { ctx: { workspace, sandbox }, processJobsController: controller });
+    expect(result.outcome).toMatchObject({ code: "background_started" });
+    const outcome = await terminal;
+    const childPid = Number(readFileSync(childPidPath, "utf8").trim());
+    expect(outcome.signal).toBeTruthy();
+    expect(() => process.kill(childPid, 0)).toThrow();
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
   it("makes the request environment available to Bash without enabling profiles", async () => {
     const workspace = tempWorkspace();
     const result = await bashToolRun({ command: "printf %s \"$MULTICA_AGENT_ID\"" }, {
