@@ -1,6 +1,11 @@
 import { resolve } from "node:path";
 
 import {
+  MAX_CRON_OPERATOR_CONVERSATION_ID_BYTES,
+  MAX_CRON_OPERATOR_EXPRESSION_BYTES,
+  MAX_CRON_OPERATOR_JOB_ID_BYTES,
+  MAX_CRON_OPERATOR_JOBS,
+  MAX_CRON_OPERATOR_TIMEZONE_BYTES,
   fieldSpecMappings,
   layerJsonOntoEnv,
   normalizeOptionalString,
@@ -34,6 +39,8 @@ export interface CronJobConfig {
 
 export interface CronAdapterConfig {
   readonly jobs: readonly CronJobConfig[];
+  /** Administrative operator mutations are opt-in and default off. */
+  readonly operatorActionsEnabled?: boolean;
 }
 
 export type RedactedCronAdapterConfig = CronAdapterConfig;
@@ -52,6 +59,13 @@ const DEFAULT_JOB_ID = "default";
 const DEFAULT_TIMEZONE = "UTC";
 const DEFAULT_CRON_DIR = "cron";
 
+/** Public cron/operator identities stay bounded so overview pages have a hard wire ceiling. */
+export const MAX_CRON_JOBS = MAX_CRON_OPERATOR_JOBS;
+export const MAX_CRON_JOB_ID_BYTES = MAX_CRON_OPERATOR_JOB_ID_BYTES;
+export const MAX_CRON_EXPRESSION_BYTES = MAX_CRON_OPERATOR_EXPRESSION_BYTES;
+export const MAX_CRON_TIMEZONE_BYTES = MAX_CRON_OPERATOR_TIMEZONE_BYTES;
+export const MAX_CRON_CONVERSATION_ID_BYTES = MAX_CRON_OPERATOR_CONVERSATION_ID_BYTES;
+
 const invalidConfig = (message: string, details?: Record<string, unknown>): CronAdapterError =>
   new CronAdapterError("invalid_config", message, details);
 
@@ -59,7 +73,16 @@ export async function loadCronAdapterConfig(input: LoadCronAdapterConfigInput): 
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
   const configJobs = loadConfigJobs(json, input.env);
   const directoryJobs = await loadDirectoryJobs(json, input);
-  return { jobs: mergeJobs(configJobs, directoryJobs) };
+  const layered = layerCronJsonOntoEnv(json, input.env);
+  const operatorActionsEnabled = readBoolean(
+    layered.MONO_AGENT_CRON_OPERATOR_ACTIONS_ENABLED,
+    "MONO_AGENT_CRON_OPERATOR_ACTIONS_ENABLED",
+    false,
+    invalidConfig,
+  );
+  const jobs = mergeJobs(configJobs, directoryJobs);
+  assertCronOperatorWireBounds(jobs);
+  return { jobs, operatorActionsEnabled };
 }
 
 /**
@@ -192,6 +215,7 @@ export function redactCronAdapterConfig(config: CronAdapterConfig): RedactedCron
   // redaction is the identity transform; we only clone to preserve immutability.
   return {
     jobs: config.jobs.map((job) => ({ ...job })),
+    ...(config.operatorActionsEnabled === undefined ? {} : { operatorActionsEnabled: config.operatorActionsEnabled }),
   };
 }
 
@@ -248,6 +272,33 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
   };
 }
 
+function assertCronOperatorWireBounds(jobs: readonly CronJobConfig[]): void {
+  if (jobs.length > MAX_CRON_JOBS) {
+    throw invalidConfig(`Cron supports at most ${String(MAX_CRON_JOBS)} configured jobs.`, {
+      count: jobs.length,
+    });
+  }
+  for (const [index, job] of jobs.entries()) {
+    assertBoundedUtf8(job.id, MAX_CRON_JOB_ID_BYTES, "cron.jobs[].id", index);
+    assertBoundedUtf8(job.expression, MAX_CRON_EXPRESSION_BYTES, "cron.jobs[].expression", index);
+    assertBoundedUtf8(job.timezone, MAX_CRON_TIMEZONE_BYTES, "cron.jobs[].timezone", index);
+    if (job.conversationId !== undefined) {
+      assertBoundedUtf8(
+        job.conversationId,
+        MAX_CRON_CONVERSATION_ID_BYTES,
+        "cron.jobs[].conversationId",
+        index,
+      );
+    }
+  }
+}
+
+function assertBoundedUtf8(value: string, maxBytes: number, field: string, index: number): void {
+  if (Buffer.byteLength(value, "utf8") > maxBytes) {
+    throw invalidConfig(`${field} must be at most ${String(maxBytes)} UTF-8 bytes.`, { index });
+  }
+}
+
 /**
  * The `cron` section's field registry: the single source of truth both the
  * JSON→env layering below and the app's config provenance view derive from.
@@ -255,6 +306,12 @@ function normalizeJobConfig(entry: unknown, index: number): CronJobConfig {
  * are read straight from JSON / the filesystem).
  */
 export const CRON_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
+  {
+    id: "cron.operatorActions.enabled",
+    env: "MONO_AGENT_CRON_OPERATOR_ACTIONS_ENABLED",
+    kind: "boolean",
+    fromJson: (s) => isRecord(s.operatorActions) ? s.operatorActions.enabled : undefined,
+  },
   { id: "cron.enabled", env: "MONO_AGENT_CRON_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },
   { id: "cron.dir", env: "MONO_AGENT_CRON_DIR", fromJson: (s) => s.dir },
   { id: "cron.expression", env: "MONO_AGENT_CRON_EXPRESSION", fromJson: (s) => s.expression },

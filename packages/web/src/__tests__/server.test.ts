@@ -361,6 +361,107 @@ describe("web HTTP server", () => {
     await expect(lstat(ingressPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("returns a precise read-only API error when a healthy cron channel receives input", async () => {
+    const { baseUrl } = await start({
+      fetchImpl: operatorFetch({
+        cronOverview: {
+          generatedAt: "2026-08-14T10:00:00.000Z",
+          actionsEnabled: false,
+          jobs: [{
+            jobId: "digest",
+            expression: "*/5 * * * *",
+            timezone: "UTC",
+            conversationId: "cron:digest",
+            configured: true,
+            declaredEnabled: true,
+            effectiveEnabled: true,
+            health: "healthy",
+          }],
+        },
+      }),
+    });
+    const overviewResponse = await fetch(`${baseUrl}/api/v1/agents/agent-one/cron`);
+    const overview = await json(overviewResponse) as { jobs: Array<{ threadId: string }> };
+    const threadId = overview.jobs[0]!.threadId;
+    const expected = {
+      error: {
+        code: "cron_channel_read_only",
+        message: "Cron channels are read-only. Scheduled runs and history are managed by the agent.",
+      },
+    };
+
+    for (const endpoint of ["turns", "live-input"] as const) {
+      const response = await fetch(`${baseUrl}/api/v1/threads/${threadId}/${endpoint}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "not allowed" }),
+      });
+      expect(response.status).toBe(409);
+      expect(await json(response)).toEqual(expected);
+    }
+  });
+
+  it("serves compact cron pages separately from selected-run activity detail", async () => {
+    const summary = {
+      projection: "summary",
+      runId: "cron:digest:2026-08-14T10:00:00.000Z",
+      jobId: "digest",
+      scheduledAt: "2026-08-14T10:00:00.000Z",
+      orderedAt: "2026-08-14T10:00:00.000Z",
+      sequence: 1,
+      trigger: "scheduled",
+      status: "succeeded",
+      text: "Compact result",
+      eventCount: 30,
+    };
+    const { baseUrl } = await start({
+      fetchImpl: operatorFetch({
+        cronOverview: {
+          generatedAt: "2026-08-14T10:00:00.000Z",
+          actionsEnabled: false,
+          jobs: [{
+            jobId: "digest",
+            expression: "*/5 * * * *",
+            timezone: "UTC",
+            conversationId: "cron:digest",
+            configured: true,
+            declaredEnabled: true,
+            effectiveEnabled: true,
+            health: "healthy",
+            lastRun: summary,
+          }],
+        },
+        cronRuns: { runs: [summary] },
+        cronRun: {
+          ...summary,
+          projection: "detail",
+          text: "Selected full result",
+          events: [{ type: "runtime_warning", message: "Bounded activity" }],
+          eventsIncluded: 1,
+          eventsTruncated: true,
+        },
+      }),
+    });
+
+    const page = await json(await fetch(`${baseUrl}/api/v1/agents/agent-one/cron/jobs/digest/runs?limit=100`));
+    expect(page.runs).toEqual([summary]);
+    expect(JSON.stringify(page)).not.toContain("Bounded activity");
+    const selected = await json(await fetch(
+      `${baseUrl}/api/v1/agents/agent-one/cron/jobs/digest/runs/${encodeURIComponent(summary.runId)}`,
+    ));
+    expect(selected.message).toMatchObject({
+      parts: expect.arrayContaining([
+        { type: "text", text: "Selected full result" },
+        expect.objectContaining({ type: "telemetry", event: "runtime_warning" }),
+        expect.objectContaining({
+          type: "telemetry",
+          event: "cron_run",
+          data: expect.objectContaining({ eventsTruncated: true }),
+        }),
+      ]),
+    });
+  });
+
   it("rejects DNS-rebinding hosts and cross-origin mutations while accepting the exact configured hostname", async () => {
     const { baseUrl } = await start({ host: "127.0.0.1" });
     expect(isAllowedWebHostname("mickey.home.arpa", "mickey.home.arpa", "mickey")).toBe(true);

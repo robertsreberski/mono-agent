@@ -1,5 +1,5 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { AgentResponder } from "@mono-agent/agent-contracts";
+import type { AgentResponder, NotifyDeliveryContext } from "@mono-agent/agent-contracts";
 
 import {
   isAppCoreConfigError,
@@ -32,6 +32,7 @@ export interface ChannelsControllerPort {
   readonly driversById: ReadonlyMap<ChannelId, ChannelDriver>;
   readonly statuses: Map<ChannelId, ChannelStatus>;
   readonly running: Map<ChannelId, RunningChannel>;
+  readonly channelStartGenerations: Map<ChannelId, symbol>;
   readonly stopped: boolean;
   readonly traceabilityStatusValue: TraceabilityStatus;
   setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
@@ -42,7 +43,7 @@ export interface ChannelsControllerPort {
   notifyDestination(
     conversationId: string,
     text: string,
-    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
+    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string; readonly deliveryContext?: NotifyDeliveryContext },
   ): Promise<NotifyDeliveryResult>;
   listNotifyDestinations(): Promise<readonly NotifyDestination[]>;
   observabilityContext(): Promise<{
@@ -50,10 +51,14 @@ export interface ChannelsControllerPort {
     readonly sourceLabel?: string;
     readonly configPath?: string;
   }>;
+  refreshTraceSource(reason: string): Promise<void>;
   activeTransports(): readonly string[];
 }
 
 export async function startChannel(controller: ChannelsControllerPort, driver: ChannelDriver, reason: string): Promise<ChannelStatus> {
+  const generation = Symbol(driver.id);
+  controller.channelStartGenerations.set(driver.id, generation);
+  const isCurrentGeneration = (): boolean => controller.channelStartGenerations.get(driver.id) === generation;
   const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
 
   let config: unknown;
@@ -152,6 +157,9 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       // for the restarted transport to deliver into, and a later stop/reload still
       // finds the entry and disposes it exactly once.
       onDegraded: (reason) => {
+        if (!isCurrentGeneration()) {
+          return;
+        }
         if (controller.statuses.get(driver.id)?.kind === "degraded") {
           return;
         }
@@ -172,14 +180,46 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
         controller.setStatus(driver.id, { kind: "running", summary: entry.summary });
         controller.logger?.info?.(`${driver.label} channel recovered.`, {});
       },
+      // Runtime controls publish a fresh immutable summary. The controller owns
+      // both replacing the running entry and reapplying the status so every
+      // observer reads one coherent transition; discovery is then refreshed
+      // from that controller-owned snapshot.
+      onSummaryChanged: (summary) => {
+        if (!isCurrentGeneration()) {
+          return;
+        }
+        const entry = controller.running.get(driver.id);
+        if (entry === undefined) {
+          return;
+        }
+        const replacement: RunningChannel = { ...entry, summary: { ...summary } };
+        controller.running.set(driver.id, replacement);
+        if (controller.statuses.get(driver.id)?.kind === "running") {
+          controller.setStatus(driver.id, { kind: "running", summary: replacement.summary });
+        }
+        void controller.refreshTraceSource(`channel-${driver.id}-summary-changed`).catch((error: unknown) => {
+          controller.logger?.warn?.(`${driver.label} summary changed, but discovery refresh failed.`, {
+            error: reasonOf(error),
+          });
+        });
+      },
     });
     controller.running.set(driver.id, {
       ...runningChannel,
       stop: () => runningChannel.stop(),
       ...(hasDispose ? { dispose: () => disposeResponder() ?? Promise.resolve() } : {}),
     });
-    const status = controller.setStatus(driver.id, { kind: "running", summary: runningChannel.summary });
-    controller.logger?.info?.(`${driver.label} channel is running.`, { reason, ...runningChannel.summary });
+    // A driver may discover durable control-state corruption or a lease conflict
+    // only during start. Preserve that fail-visible degraded status instead of
+    // overwriting it with a generic running summary after start returns.
+    const degraded = controller.statuses.get(driver.id);
+    const status = degraded?.kind === "degraded"
+      ? degraded
+      : controller.setStatus(driver.id, { kind: "running", summary: runningChannel.summary });
+    controller.logger?.info?.(
+      degraded?.kind === "degraded" ? `${driver.label} channel started in degraded mode.` : `${driver.label} channel is running.`,
+      { reason, ...runningChannel.summary },
+    );
     return status;
   } catch (error) {
     const failure = reasonOf(error);
@@ -189,6 +229,7 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
 }
 
 export async function stopChannel(controller: ChannelsControllerPort, id: ChannelId, reason: string): Promise<void> {
+  controller.channelStartGenerations.delete(id);
   const driver = controller.driversById.get(id);
   const runningChannel = controller.running.get(id);
   if (driver === undefined || runningChannel === undefined) {

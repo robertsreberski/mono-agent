@@ -443,6 +443,41 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .chat-status.is-reconnecting, .chat-status.is-degraded { color: var(--warning); }
 .chat-status.is-reconnecting i, .chat-status.is-degraded i { background: var(--warning); animation: pulse 1.4s ease infinite; }
 .chat-header-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.cron-channel-header { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 7px 14px; padding: 10px max(17px, env(safe-area-inset-right)) 10px max(17px, env(safe-area-inset-left)); background: var(--surface-subtle); border-bottom: 1px solid var(--line); z-index: 4; }
+.cron-channel-facts { min-width: 0; display: grid; grid-template-columns: repeat(6, minmax(86px, auto)); gap: 8px 18px; margin: 0; }
+.cron-channel-facts > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.cron-channel-facts dt { color: var(--text-muted); font-size: 8px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.cron-channel-facts dd { min-width: 0; margin: 0; overflow: hidden; color: var(--text-soft); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.cron-channel-facts dd > small { display: block; overflow: hidden; color: var(--text-muted); font-size: 8.5px; text-overflow: ellipsis; }
+.cron-channel-facts code, .cron-session-link code { font-family: var(--font-mono); font-size: 9.5px; }
+.cron-channel-facts a { color: var(--accent); text-decoration: none; }
+.cron-channel-facts a:hover { text-decoration: underline; }
+.cron-health { text-transform: capitalize; }
+.cron-health.is-healthy { color: var(--accent); }
+.cron-health.is-warning, .cron-health.is-unknown { color: var(--warning); }
+.cron-health.is-unhealthy { color: var(--danger); }
+.cron-channel-actions { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-left: auto; }
+.cron-channel-actions > button, .cron-dialog footer > button { min-height: 32px; padding: 0 10px; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 10px; font-weight: 650; }
+.cron-channel-actions > button:hover:not(:disabled), .cron-dialog footer > button:hover:not(:disabled) { color: var(--text); border-color: var(--line-strong); }
+.cron-channel-actions > .cron-action-primary, .cron-dialog footer > .cron-action-primary { display: inline-flex; align-items: center; justify-content: center; gap: 5px; color: var(--on-accent); background: var(--accent-strong); border-color: transparent; }
+.cron-session-link { min-width: 0; max-width: 180px; overflow: hidden; color: var(--text-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.cron-refreshing { position: absolute; right: 18px; bottom: 1px; color: var(--text-muted); font-size: 8px; }
+.cron-action-error { margin: 0; color: var(--danger); font-size: 10px; }
+.cron-unavailable-reason { flex-basis: 100%; margin: 0; color: var(--text-muted); font-size: 9px; line-height: 1.35; }
+.cron-unavailable-reason:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+.cron-channel-header > .cron-action-error { position: absolute; right: 18px; bottom: 0; }
+.cron-dialog { width: min(100%, 560px); max-height: min(78dvh, 720px); display: flex; flex-direction: column; gap: 15px; overflow: hidden; padding: 18px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 16px; box-shadow: var(--shadow-lg); outline: none; }
+.cron-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.cron-dialog h2 { margin: 3px 0 0; font-size: 19px; letter-spacing: -0.02em; }
+.cron-dialog > p { margin: 0; color: var(--text-soft); font-size: 13px; line-height: 1.6; }
+.cron-dialog > small { color: var(--text-muted); font-size: 10px; }
+.cron-dialog > footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: auto; }
+.cron-config-fields { min-height: 0; display: grid; gap: 8px; margin: 0; padding-right: 4px; overflow-y: auto; }
+.cron-config-fields > div { display: grid; grid-template-columns: minmax(110px, 0.7fr) minmax(0, 1.5fr) auto; align-items: center; gap: 8px; padding: 9px 10px; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 8px; }
+.cron-config-fields dt { color: var(--text-soft); font-size: 11px; }
+.cron-config-fields dd { min-width: 0; margin: 0; overflow: auto; }
+.cron-config-fields code { font-family: var(--font-mono); font-size: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cron-config-fields small { color: var(--text-muted); font-size: 8px; }
 .model-controls { min-width: 0; display: flex; align-items: center; gap: 6px; }
 .model-selector__trigger {
   max-width: min(270px, 30vw);
@@ -629,6 +664,19 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .context-compaction-status { width: 7px; height: 7px; flex: none; background: var(--accent); border-radius: 50%; }
 .context-compaction-row.is-running .context-compaction-status { animation: pulse 1.2s ease infinite; }
 .context-compaction-row.is-failed .context-compaction-status, .context-compaction-row.is-interrupted .context-compaction-status { background: var(--danger); }
+.cron-run-row { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 9px; margin-top: 10px; padding-top: 8px; color: var(--text-muted); border-top: 1px solid var(--line); font-size: 9.5px; scroll-margin-top: 140px; }
+.cron-run-link { color: var(--accent); font-weight: 700; text-decoration: none; }
+.cron-run-link:hover { text-decoration: underline; }
+.cron-run-state { color: var(--text-soft); text-transform: capitalize; }
+.cron-run-row.is-failed .cron-run-state, .cron-run-row.is-dropped .cron-run-state { color: var(--danger); }
+.cron-run-row.is-skipped_overlap .cron-run-state, .cron-run-row.is-cancelled .cron-run-state { color: var(--warning); }
+.cron-run-row time { font-variant-numeric: tabular-nums; }
+.cron-activity-button { padding: 2px 7px; border-radius: 999px; font-size: 9px; }
+.cron-activity-truncated { flex-basis: 100%; color: var(--warning); line-height: 1.35; }
+.cron-artifact-link { min-width: 0; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cron-artifact-link code { font-family: var(--font-mono); font-size: 9px; }
+.cron-session-button { display: inline-flex; align-items: center; gap: 4px; padding: 2px 5px; color: var(--text-muted); background: transparent; border-radius: 5px; cursor: pointer; font-size: 9.5px; }
+.cron-session-button:hover { color: var(--accent); background: var(--accent-soft); }
 .context-compaction-row.is-skipped .context-compaction-status { background: var(--text-muted); }
 .context-compaction-label { color: var(--text-soft); font-weight: 650; }
 .context-compaction-trigger { color: var(--text-muted); }
@@ -780,6 +828,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .composer-stop { min-width: 70px; height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 10px; cursor: pointer; font-size: 11px; }
 .archived-footer { width: min(100%, 820px); min-height: 52px; display: flex; align-items: center; justify-content: center; gap: 10px; margin: 0 auto; padding: 10px 16px; color: var(--text-muted); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 12px; font-size: 12px; }
 .archived-footer button { color: var(--accent); background: transparent; cursor: pointer; font-weight: 650; }
+.cron-readonly-footer { width: min(100%, 820px); min-height: 48px; display: flex; align-items: center; justify-content: center; margin: 0 auto; padding: 10px 16px; color: var(--text-muted); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 12px; font-size: 11px; text-align: center; }
 
 /* Empty, loading, and errors */
 .chat-empty { min-height: 420px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 44px 20px; text-align: center; }
@@ -825,6 +874,9 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 
 @media (max-width: 1100px) {
   .model-selector__trigger { max-width: 210px; }
+  .cron-channel-header { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .cron-channel-facts { width: 100%; grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .cron-channel-actions { width: 100%; justify-content: flex-start; margin-left: 0; }
 }
 
 @media (max-width: 1100px) and (min-width: 901px) {
@@ -913,6 +965,14 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .chat-empty { min-height: 330px; padding: 32px 10px; }
   .chat-empty h2 { font-size: 23px; }
   .connection-banner { font-size: 10px; }
+  .cron-channel-header { padding: 9px max(9px, env(safe-area-inset-right)) 9px max(9px, env(safe-area-inset-left)); }
+  .cron-channel-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 7px; }
+  .cron-channel-actions { flex-wrap: wrap; }
+  .cron-channel-actions > button { flex: 1 1 auto; }
+  .cron-session-link { width: 100%; max-width: none; }
+  .cron-dialog { max-height: calc(100dvh - 24px); padding: 15px; border-radius: 13px; }
+  .cron-config-fields > div { grid-template-columns: 1fr; gap: 3px; }
+  .cron-run-row { align-items: flex-start; flex-direction: column; }
   .dialog-layer { padding: max(12px, env(safe-area-inset-top)) 8px 8px; align-items: flex-start; }
   .command-palette { border-radius: 13px; }
   .command-palette footer { display: none; }

@@ -13,7 +13,7 @@ import type { JsonEnvFieldSpec } from "@mono-agent/agent-contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { collectChannelConfigViews } from "../channel-config-view.js";
-import { createTelegramChannelDriver, defaultChannelDrivers } from "../channels.js";
+import { createCronChannelDriver, createTelegramChannelDriver, defaultChannelDrivers } from "../channels.js";
 
 let dir: string;
 
@@ -96,6 +96,32 @@ describe("channel config view", () => {
 
     expect(section.fields.find((field) => field.id === "slack.stripMentionText"))
       .toMatchObject({ value: "—", source: "default" });
+  });
+
+  it("limits cron config view to the registered already-visible surface", async () => {
+    const configPath = await writeConfig({
+      cron: {
+        enabled: true,
+        expression: "*/5 * * * *",
+        prompt: "Prepare the already-visible digest",
+        apiKey: "must-not-leak",
+        arbitrarySecret: "also-must-not-leak",
+      },
+      tui: { apiKey: "operator-secret-must-not-leak" },
+    });
+
+    const section = await createCronChannelDriver().configView!({ env: {}, cwd: dir, configPath });
+    const registeredIds = new Set(CRON_CONFIG_FIELDS.map((field) => field.id));
+
+    expect(section.fields.map((field) => field.id).every((id) => registeredIds.has(id))).toBe(true);
+    expect(section.fields.find((field) => field.id === "cron.prompt")).toMatchObject({
+      value: "Prepare the already-visible digest",
+      source: "json",
+    });
+    const serialized = JSON.stringify(section);
+    expect(serialized).not.toContain("must-not-leak");
+    expect(serialized).not.toContain("arbitrarySecret");
+    expect(serialized).not.toContain("apiKey");
   });
 
   it("reports a disabled channel section as disabled", async () => {

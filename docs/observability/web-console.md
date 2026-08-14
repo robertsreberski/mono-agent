@@ -67,7 +67,9 @@ The console intentionally has no application authentication or multi-user accoun
 - do not publish port `5050` through a public router, tunnel, or unrestricted reverse proxy;
 - keep operating-system and Tailscale network admission controls as the access boundary.
 
-The server rejects unexpected Host/Origin combinations and does not enable cross-origin API access, but those checks are browser request-integrity controls, not authentication. Plain LAN HTTP is not encrypted. Tailscale transport protects direct tailnet traffic, while Tailscale Serve provides browser-trusted HTTPS when available.
+The server rejects unexpected Host/Origin combinations and does not enable cross-origin API access, but those checks are browser request-integrity controls, not authentication. Cron mutations additionally require the addressed agent's operator API key, an explicit agent-side opt-in, a source-qualified job route, and an agent-issued confirmation; those gates do not turn the web console into a multi-user authenticated application. Plain LAN HTTP is not encrypted. Tailscale transport protects direct tailnet traffic, while Tailscale Serve provides browser-trusted HTTPS when available.
+
+Cron read routes preserve the operator endpoint's compatibility posture: they are keyless only when that endpoint has no API key, and otherwise require its bearer. The cron configuration action reuses the agent's source-annotated field view; it can show the already-visible job prompt, but never reads the console-discovered config path or exposes arbitrary keys and credentials. A stopped or failed cron registry degrades only the advertised cron capability—agent liveness still returns from `/v1/info`.
 
 At startup, mono-agent inspects the existing Tailscale Serve configuration. It prefers HTTPS `:443` only when free; otherwise it chooses the first free port in `8443`–`8499`. It never resets or replaces another Serve handler. Ownership is recorded locally, and `web stop` removes only the route this console created. If the first route cannot be created, the local/LAN service stays healthy and status prints the direct URLs plus remediation. If a restart cannot migrate an existing owned route to a changed app port, mono-agent restores the prior worker and exact route and exits nonzero.
 
@@ -96,9 +98,13 @@ Use the star beside an agent to add or remove it from favorites. The same pin co
 
 Selecting an agent filters its conversations; each conversation is permanently bound to that source id so a label change or a different agent cannot inherit its history. Unpinned offline agents are hidden by default behind a subtle **Show N offline** control shared by the desktop rail, mobile picker, and command palette. Pinned agents and the currently selected agent always remain visible. The filter resets to hidden on a full page load; sending stays disabled until that exact source returns.
 
-Threads use the first prompt as their initial title and can be renamed. They are archived rather than individually deleted, and archived threads can be restored. The console permits one active turn per thread while different threads and agents can run concurrently.
+Threads use the first prompt as their initial title and can be renamed. Active threads must be archived before deletion, and archived threads can be restored. The console permits one active turn per thread while different threads and agents can run concurrently.
 
-Cron jobs and webhook endpoints can explicitly target `notifyConversationId: "web:new"` with `notify: true`. Every distinct successful, non-empty result becomes a new assistant-only thread titled **Cron notification** or **Webhook notification** and marked **CRON** or **WEBHOOK** in the sidebar and header. The service appends the verbatim result to the generated thread's agent history before atomically exposing the completed thread, so a later reply continues with that notification in context. The current conversation is not changed and the new result does not steal focus. Cron's rate-limited all-models-failed notice uses the same CRON-marked path.
+Cron jobs and webhook endpoints can explicitly target `notifyConversationId: "web:new"` with `notify: true`. Webhook results retain one assistant-only thread per delivery. Cron results instead fold into one durable, source-qualified channel per job, with the stable route `/agents/<sourceId>/cron/<jobId>`. Its chronological feed includes scheduled/manual admission, running, queued, succeeded, failed, cancelled, overlap-skipped, and dropped states, plus artifact/session links when the agent reports them. The header shows the agent-authoritative schedule, timezone, declared/effective state, last/next run, and health; it never computes next-run locally. Cron channels are read-only in this release, so console interaction cannot occupy the cron job's own conversation and cause a scheduled firing to overlap.
+
+The console retains at most 500 run rows per cron job. Thread bootstrap and paging are independently bounded to 200 rows per `(sourceId, archived)` bucket, message pages to 100, and all older-page queries use opaque keyset cursors. A selected thread outside the current window is fetched through redirect-resolving `GET /threads/:id` before a mutation instead of silently no-oping.
+
+Configured cron channels may be archived but not deleted. If a job disappears from config, the channel becomes a `configured:false` historical tombstone; an archived tombstone may be deleted. Deletion retains a local suppression marker plus threadless notification-delivery receipts, so authoritative historical overviews and late or replayed deliveries cannot resurrect it. The marker clears only if that job id becomes configured again.
 
 `web:new` is exact and explicit-only: other `web:*` values are rejected, and the web console never joins Telegram/Slack destination inference. Delivery uses an owner-private `~/.mono-agent/web/notify-ingress.json` record pointing to a bearer-authenticated ephemeral loopback endpoint. Duplicate event keys return the existing thread and conflicting reuse fails. If the web service is stopped or unavailable, the trigger makes one attempt bounded to five seconds and then skips delivery; there is no retry queue or outbox, and the cron/webhook result is unchanged.
 
@@ -151,6 +157,19 @@ radio controls; multi-select questions use checkboxes and may combine proposed
 choices with a custom reply. Submitting the complete form resumes the same
 model run rather than creating a new user turn.
 
+An `AskUser` call may contain one to five questions. Each card reconciles by its
+exact `interactionId`, so an older run cannot adopt a newer ask from the same
+conversation. One backoff poller serves the selected thread, including after a
+refresh and after the tool call becomes terminal. The agent preserves the
+asking tool's single-consumer long-poll contract while separately retaining up
+to 512 terminal snapshots for at most 24 hours. An answer submitted through a
+different destination therefore converges in the console without a manual
+refresh. Once terminal history is evicted, or when an agent restarts/offlines,
+the card renders unavailable and non-actionable; expired and cancelled cards
+are also non-actionable. Submission remains server-authoritative and rejects
+stale, missing, or invalid answers without optimistic success. Older agents
+without exact lookup remain usable with a non-actionable degraded card.
+
 When the interaction reaches a terminal state, the completion state replaces
 the form rather than leaving disabled controls behind. Answered interactions
 keep `Answers submitted.` and add either one compact answer line or a question-
@@ -158,14 +177,11 @@ attributed list in recorded order. Resolved option labels take precedence over
 custom replies. Because this is the owner-private operator console, custom-only
 answers show their text; unknown questions and unknown-option-only answers are
 omitted. If nothing is resolvable, the generic completion text stands alone.
-The completion container retains semantic `role="status"` markup.
-
-An `AskUser` call may contain one to five questions. The form remains attached
-to the running assistant message across ordinary state refreshes. Cancelling
+The completion container retains semantic `role="status"` markup. Cancelling
 the turn cancels its pending question set, and an expired or already-completed
 form cannot submit stale answers. Older agents that do not advertise the
-`askUser` operator capability remain usable, but the console does not poll them
-for pending forms.
+`askUser` capability remain usable, but the console does not poll them for
+pending forms.
 
 ## Quote message text
 
@@ -268,7 +284,7 @@ to an older main-plist identity instead names `mono-agent web stop` followed by
 `mono-agent web start`. Stop clears that stale authority only after both jobs
 are proven down.
 
-There is no per-message or per-thread destructive delete. To intentionally erase the whole console store, stop the service and use the explicit two-part confirmation:
+There is no per-message delete. Ordinary threads and tombstoned cron channels can be deleted only after archival; configured cron channels cannot be deleted. To intentionally erase the whole console store, stop the service and use the explicit two-part confirmation:
 
 ```bash
 mono-agent web reset --all --yes
@@ -276,19 +292,21 @@ mono-agent web reset --all --yes
 
 Reset first requires both the web worker and maintenance helper stopped and both
 plist files absent, then takes their shared web lifecycle lock. It removes the
-web console's conversations, notification ledger and stale ingress record,
+web console's conversations, cron projection, notification ledger and stale ingress record,
 VAPID identity, push subscriptions/outbox, committed uploads, staged uploads,
 and server settings, including agent pins. It does not clear browser-local
 preferences such as rail expansion or notification opt-in, and it does not
 remove an agent's config, durable conversation history, memory, or recorded run
-artifacts. After reset, browsers reconcile the missing/rotated application-
-server key and subscribe again when permission permits.
+artifacts, or agent-owned `.mono-agent/cron-control-v1/` runtime overrides,
+audit, and idempotency state. After reset, browsers reconcile the missing or
+rotated application-server key and subscribe again when permission permits;
+cron channels rebuild from the running agents.
 
 ## Current scope
 
-The web console covers discovery, hostname identity, curated host themes, persistent multi-conversation chat, marked cron/webhook notification conversations, structured `AskUser` forms, quoting, durable Web Push with a page-notification fallback, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a host-named PWA when served from a secure browser context.
+The web console covers discovery, hostname identity, curated host themes, persistent multi-conversation chat, first-class cron channels, marked webhook notification conversations, structured `AskUser` forms, quoting, durable Web Push with a page-notification fallback, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a host-named PWA when served from a secure browser context.
 
-Recorded-run replay, source-annotated config inspection, and managed conversational configuration remain in the TUI for now. Use:
+General recorded-run replay, source-annotated configuration outside cron's redacted view, and managed conversational configuration remain in the TUI for now. Use:
 
 ```bash
 mono-agent tui

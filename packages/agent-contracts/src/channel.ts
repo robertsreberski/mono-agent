@@ -80,6 +80,13 @@ export interface NotifyDestination {
   readonly fromAllowlist?: boolean;
 }
 
+/** Structured producer identity carried beside, never parsed from, new delivery keys. */
+export type NotifyDeliveryContext = {
+  readonly kind: "cron";
+  readonly jobId: string;
+  readonly runId: string;
+};
+
 /** Where a resolved channel config value came from (env > JSON > default). */
 export type ChannelConfigViewFieldSource = "env" | "json" | "default";
 
@@ -137,6 +144,7 @@ export interface RunningChannel {
     readonly verbatim?: boolean;
     /** Stable host identity used by adapters that support duplicate suppression. */
     readonly deliveryKey?: string;
+    readonly deliveryContext?: NotifyDeliveryContext;
   }): Promise<NotifyDeliveryResult>;
 }
 
@@ -209,6 +217,12 @@ export interface ChannelInteractionHub {
   registerSink(channelId: string, sink: ChannelInteractionSink): void;
   /** Return the conversation's current ask, if any. */
   getPendingAsk(conversationId: string): ChannelAskSnapshot | undefined | Promise<ChannelAskSnapshot | undefined>;
+  /**
+   * Return one exact active or recently-terminal ask when the hub retains
+   * by-id history. Optional so third-party hubs that only implement the
+   * conversation-scoped pending surface remain compatible.
+   */
+  getAsk?(interactionId: string): ChannelAskSnapshot | undefined | Promise<ChannelAskSnapshot | undefined>;
   /** Validate and merge one or more complete question answers. */
   submitAskAnswers(input: ChannelAskSubmission): ChannelAskSubmissionResult | Promise<ChannelAskSubmissionResult>;
   /** Fail the conversation's pending ask (user cancelled). */
@@ -243,11 +257,22 @@ export interface ChannelStartInput<TConfig, TCore = unknown> {
   readonly onDegraded?: (reason: string) => void;
   /** Reports that a previously-degraded transport's self-recovery succeeded (back to running). */
   readonly onRecovered?: () => void;
+  /**
+   * Publishes a replacement running summary after an in-place runtime control
+   * changes observable channel facts. The host owns applying the status
+   * transition and refreshing discovery; drivers must not mutate the summary
+   * object returned from {@link ChannelDriver.start}.
+   */
+  readonly onSummaryChanged?: (summary: Readonly<Record<string, unknown>>) => void;
   /** Native scheduled/webhook delivery hook owned by the app, used by proactive trigger channels. */
   readonly notifyDestination?: (
     conversationId: string,
     text: string,
-    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
+    options?: {
+      readonly verbatim?: boolean;
+      readonly deliveryKey?: string;
+      readonly deliveryContext?: NotifyDeliveryContext;
+    },
   ) => Promise<NotifyDeliveryResult>;
   /** Candidate destinations for native delivery inference. */
   readonly listNotifyDestinations?: () => Promise<readonly NotifyDestination[]>;

@@ -413,6 +413,48 @@ describe("final agent demo", () => {
     }
   });
 
+  it("starts cron through the real control store from the lexical agent cwd", async () => {
+    const dir = await tempDir();
+    await writeFile(join(dir, "IDENTITY.md"), "You are Mono from cron.", "utf8");
+    await writeDemoMcpJson(dir);
+    const { telegram: _telegram, ...patch } = validConfigPatch();
+    await writeConfig(dir, {
+      ...patch,
+      cron: {
+        enabled: true,
+        expression: "* * * * *",
+        timezone: "UTC",
+        prompt: "scheduled check",
+      },
+    });
+    const cronStarts: CronAdapterOptions[] = [];
+    const stoppedCronAdapters: CronAdapterStartResult[] = [];
+    const demo = await startFinalAgentDemo({
+      cwd: dir,
+      env: testTraceEnv(),
+      runtime: createFakeRuntime().runtime,
+      cronAdapterFactory: (options) => createFakeCronAdapter(options, cronStarts, stoppedCronAdapters),
+    });
+
+    try {
+      expect(demo.cronStatus).toMatchObject({ kind: "running", jobs: 1 });
+      expect(cronStarts).toHaveLength(1);
+      expect(cronStarts[0]?.jobs).toEqual([{
+        id: "default",
+        enabled: true,
+        expression: "* * * * *",
+        timezone: "UTC",
+        prompt: "scheduled check",
+      }]);
+      expect(await readdir(join(dir, ".mono-agent", "cron-control-v1"))).toEqual(
+        expect.arrayContaining([".mono-agent-cron-control", "lease.sqlite", "state.sqlite"]),
+      );
+    } finally {
+      await demo.stop();
+      expect(stoppedCronAdapters).toHaveLength(1);
+    }
+  });
+
   it("starts webhook, OpenAI API, and cron adapters from demo config", async () => {
     const dir = await tempDir();
     await writeFile(join(dir, "IDENTITY.md"), "You are Mono from webhook, OpenAI API, and cron.", "utf8");
@@ -479,6 +521,7 @@ describe("final agent demo", () => {
       expect(cronStarts[0]?.jobs).toEqual([
         {
           id: "default",
+          enabled: true,
           expression: "* * * * *",
           timezone: "UTC",
           prompt: "scheduled check",
@@ -963,9 +1006,32 @@ function createFakeCronAdapter(
   stopped: CronAdapterStartResult[],
 ): CronAdapterStartResult {
   starts.push(options);
+  const enabledByJobId = new Map(options.jobs.map((job) => [job.id, job.enabled !== false]));
+  const snapshots = () => options.jobs.map((job) => ({
+    jobId: job.id,
+    expression: job.expression,
+    timezone: job.timezone ?? "UTC",
+    effectiveEnabled: enabledByJobId.get(job.id) === true,
+    conversationId: job.conversationId ?? `cron:${job.id}`,
+  }));
   const adapter: CronAdapterStartResult = {
     jobs: options.jobs.slice(),
     activeJobCount: 0,
+    snapshots,
+    runNow() {
+      throw new Error("The demo cron test double does not execute manual runs.");
+    },
+    setEffectiveEnabled(jobId, enabled) {
+      if (!enabledByJobId.has(jobId)) {
+        throw new Error(`Unknown demo cron job: ${jobId}`);
+      }
+      enabledByJobId.set(jobId, enabled);
+      const snapshot = snapshots().find((candidate) => candidate.jobId === jobId);
+      if (snapshot === undefined) {
+        throw new Error(`Unknown demo cron job: ${jobId}`);
+      }
+      return snapshot;
+    },
     stop() {
       stopped.push(adapter);
     },

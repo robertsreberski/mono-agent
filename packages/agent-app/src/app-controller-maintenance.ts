@@ -1,4 +1,5 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
+import type { NotifyDeliveryContext } from "@mono-agent/agent-contracts";
 import type { MonoRuntimeLike, SandboxEngine } from "@mono-agent/runtime-adapter";
 import {
   DEFAULT_MEMORY_FORGET_BACKUP_MAX_AGE_DAYS,
@@ -219,7 +220,7 @@ export async function notifyDestination(
   controller: NotifyControllerPort,
   conversationId: string,
   text: string,
-  options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
+  options?: { readonly verbatim?: boolean; readonly deliveryKey?: string; readonly deliveryContext?: NotifyDeliveryContext },
   sourceChannelId?: ChannelId,
 ): Promise<NotifyDeliveryResult> {
   if (conversationId === "web:new") {
@@ -239,6 +240,24 @@ export async function notifyDestination(
         retryable: false,
       };
     }
+    if (
+      sourceChannelId === "cron"
+      && (
+        options.deliveryContext?.kind !== "cron"
+        || !isCanonicalCronDelivery(
+          options.deliveryContext.jobId,
+          options.deliveryContext.runId,
+          options.deliveryKey,
+        )
+      )
+    ) {
+      return {
+        delivered: false,
+        code: "invalid_cron_notification_identity",
+        reason: "New cron web notifications require structured jobId/runId identity matching the delivery key.",
+        retryable: false,
+      };
+    }
     try {
       const { sourceId } = await controller.observabilityContext();
       if (sourceId === undefined) {
@@ -254,6 +273,9 @@ export async function notifyDestination(
         triggerKind: sourceChannelId,
         deliveryKey: options.deliveryKey,
         text,
+        ...(options.deliveryContext?.kind === "cron"
+          ? { jobId: options.deliveryContext.jobId, runId: options.deliveryContext.runId }
+          : {}),
       });
       controller.logger?.info?.("Web notification conversation delivered.", {
         sourceId,
@@ -289,6 +311,7 @@ export async function notifyDestination(
     running: controller.running,
     ...(options?.verbatim === undefined ? {} : { verbatim: options.verbatim }),
     ...(options?.deliveryKey === undefined ? {} : { deliveryKey: options.deliveryKey }),
+    ...(options?.deliveryContext === undefined ? {} : { deliveryContext: options.deliveryContext }),
     ...(controller.logger === undefined ? {} : { logger: controller.logger }),
   });
   // Make the delivery outcome inspectable (the failure cases already warn inside
@@ -297,6 +320,21 @@ export async function notifyDestination(
     controller.logger?.info?.("Proactive notification delivered.", { conversationId });
   }
   return result;
+}
+
+function isCanonicalCronDelivery(jobId: string, runId: string, deliveryKey: string): boolean {
+  const prefix = `cron:${encodeURIComponent(jobId)}:`;
+  if (!runId.startsWith(prefix)) return false;
+  const identity = runId.slice(prefix.length);
+  const manual = /^(.*):m([1-9][0-9]*)$/u.exec(identity);
+  const timestamp = manual?.[1] ?? identity;
+  if (timestamp.length === 0 || Number.isNaN(Date.parse(timestamp))) return false;
+  return deliveryKey === `${runId}:success`
+    || new RegExp(`^${escapeRegExp(runId)}:failure:[^:]+$`, "u").test(deliveryKey);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 export async function listNotifyDestinations(controller: DestinationsControllerPort): Promise<readonly NotifyDestination[]> {

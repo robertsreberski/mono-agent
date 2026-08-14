@@ -1,4 +1,10 @@
 import {
+  CronOperatorWireError,
+  parseCronOperatorJob,
+  parseCronOperatorOverview,
+  parseCronOperatorRunDetail,
+  parseCronOperatorRunPage,
+  parseCronOperatorRunSummary,
   parseAgentStreamFrame,
   type AgentLiveInputSettlement,
   type AgentLiveInputUnavailableReason,
@@ -10,7 +16,19 @@ import {
   type ChannelAskSubmissionResult,
 } from "@mono-agent/agent-contracts";
 
-import type { WebModelOption, WebSkillInfo, WebSkillRegistry } from "./contracts.js";
+import type {
+  WebChannelConfigView,
+  WebCronJob,
+  WebCronMutationResult,
+  WebCronOverview,
+  WebCronRun,
+  WebCronRunDetail,
+  WebCronRunPage,
+  WebCronRunSummary,
+  WebModelOption,
+  WebSkillInfo,
+  WebSkillRegistry,
+} from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
 import { isTrustedOperatorBaseUrl } from "./discovery.js";
 
@@ -47,8 +65,10 @@ export interface OperatorInfo {
   readonly supportsAttachments: boolean;
   readonly supportsHistoryAppend: boolean;
   readonly supportsAskUser: boolean;
+  readonly supportsAskById?: boolean;
   readonly supportsLiveInput: boolean;
   readonly supportsToolEnvironment?: boolean;
+  readonly cron?: { readonly read: true; readonly actions: boolean };
 }
 
 export type OperatorLiveInputResult =
@@ -120,6 +140,7 @@ export class OperatorClient {
     const modelOptions = parseModelOptions(body.modelOptions);
     const skills = parseSkillRegistry(body.skills);
     const capabilities = record(body.capabilities);
+    const cron = record(capabilities?.cron);
     return {
       schema: body.schema,
       ...(typeof body.label === "string" ? { label: body.label } : {}),
@@ -131,8 +152,10 @@ export class OperatorClient {
       supportsAttachments: capabilities?.attachments === true,
       supportsHistoryAppend: capabilities?.historyAppend === true,
       supportsAskUser: capabilities?.askUser === true,
+      ...(capabilities?.askById === true ? { supportsAskById: true } : {}),
       supportsLiveInput: capabilities?.liveInput === true,
       ...(capabilities?.toolEnvironment === true ? { supportsToolEnvironment: true } : {}),
+      ...(cron?.read === true ? { cron: { read: true, actions: cron.actions === true } } : {}),
     };
   }
 
@@ -252,6 +275,99 @@ export class OperatorClient {
     return body?.ask === null ? undefined : body?.ask as ChannelAskSnapshot | undefined;
   }
 
+  async ask(interactionId: string, signal?: AbortSignal): Promise<ChannelAskSnapshot | undefined> {
+    const response = await this.request(
+      `${this.baseUrl}/v1/interactions/${encodeURIComponent(interactionId)}`,
+      { headers: this.headers(false), ...(signal === undefined ? {} : { signal }) },
+    );
+    const body = record(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_ask_too_large")));
+    return body?.ask === null ? undefined : body?.ask as ChannelAskSnapshot | undefined;
+  }
+
+  async cronOverview(signal?: AbortSignal): Promise<Omit<WebCronOverview, "jobs"> & {
+    readonly jobs: readonly Omit<WebCronJob, "threadId">[];
+  }> {
+    const response = await this.request(`${this.baseUrl}/v1/cron`, {
+      headers: this.headers(false),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return parseCronOverview(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_cron_too_large")));
+  }
+
+  async cronRuns(jobId: string, input: {
+    readonly limit: number;
+    readonly before?: string;
+    readonly signal?: AbortSignal;
+  }): Promise<WebCronRunPage> {
+    const query = new URLSearchParams({ limit: String(input.limit) });
+    if (input.before !== undefined) query.set("before", input.before);
+    const response = await this.request(
+      `${this.baseUrl}/v1/cron/jobs/${encodeURIComponent(jobId)}/runs?${query.toString()}`,
+      {
+        headers: this.headers(false),
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      },
+    );
+    return parseCronRunPage(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_cron_too_large")));
+  }
+
+  async cronRun(jobId: string, runId: string, signal?: AbortSignal): Promise<WebCronRunDetail> {
+    const response = await this.request(
+      `${this.baseUrl}/v1/cron/jobs/${encodeURIComponent(jobId)}/runs/${encodeURIComponent(runId)}`,
+      {
+        headers: this.headers(false),
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+    const body = record(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_cron_too_large")));
+    if (!hasOnlyKeys(body, ["run"])) return invalidCronResponse();
+    return parseCronRunDetail(body.run);
+  }
+
+  async cronConfigView(signal?: AbortSignal): Promise<WebChannelConfigView> {
+    const response = await this.request(`${this.baseUrl}/v1/cron/config-view`, {
+      headers: this.headers(false),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    const body = record(JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_cron_too_large")));
+    return parseCronConfigView(body?.configView);
+  }
+
+  async cronRunNow(
+    jobId: string,
+    input: { readonly idempotencyKey: string; readonly confirmationToken?: string },
+    signal?: AbortSignal,
+  ): Promise<WebCronMutationResult<{ readonly run: WebCronRunSummary }>> {
+    const result = await this.cronMutation(
+      `${this.baseUrl}/v1/cron/jobs/${encodeURIComponent(jobId)}/run`,
+      input,
+      signal,
+    );
+    if (result.kind === "confirmation_required") return result;
+    const value = record(result.value);
+    if (value === undefined) invalidCronResponse();
+    if (!hasOnlyKeys(value, ["run"])) return invalidCronResponse();
+    return { ...result, value: { run: parseCronRunSummary(value.run) } };
+  }
+
+  async cronSetEffectiveEnabled(
+    jobId: string,
+    enabled: boolean,
+    input: { readonly idempotencyKey: string; readonly confirmationToken?: string },
+    signal?: AbortSignal,
+  ): Promise<WebCronMutationResult<{ readonly job: Omit<WebCronJob, "threadId"> }>> {
+    const result = await this.cronMutation(
+      `${this.baseUrl}/v1/cron/jobs/${encodeURIComponent(jobId)}/effective-enabled`,
+      { ...input, enabled },
+      signal,
+    );
+    if (result.kind === "confirmation_required") return result;
+    const value = record(result.value);
+    if (value === undefined) invalidCronResponse();
+    if (!hasOnlyKeys(value, ["job"])) return invalidCronResponse();
+    return { ...result, value: { job: parseCronJob(value.job) } };
+  }
+
   async submitAsk(
     conversationId: string,
     interactionId: string,
@@ -281,6 +397,36 @@ export class OperatorClient {
     };
   }
 
+  private async cronMutation(
+    url: string,
+    body: Readonly<Record<string, unknown>>,
+    signal?: AbortSignal,
+  ): Promise<WebCronMutationResult<unknown>> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        method: "POST",
+        headers: this.headers(true),
+        redirect: "error",
+        ...(signal === undefined ? {} : { signal }),
+        body: JSON.stringify(body),
+      });
+    } catch (error) {
+      if (signal?.aborted === true) throw error;
+      throw new WebConsoleError("agent_unreachable", `Agent is unreachable (${errorMessage(error)}).`, 502);
+    }
+    if (response.status !== 200 && response.status !== 428) {
+      const detail = await readBodyPrefix(response, MAX_ERROR_BODY_BYTES).catch(() => "");
+      throw new WebConsoleError(
+        response.status === 401 ? "agent_unauthorized" : "agent_http_error",
+        `Agent responded ${response.status}${detail.length === 0 ? "." : `: ${detail.slice(0, 300)}`}`,
+        502,
+      );
+    }
+    const parsed = JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_cron_too_large")) as unknown;
+    return parseCronMutation(parsed);
+  }
+
   private async request(url: string, init: RequestInit): Promise<Response> {
     let response: Response;
     try {
@@ -299,6 +445,89 @@ export class OperatorClient {
     }
     return response;
   }
+}
+
+function invalidCronResponse(): never {
+  throw new WebConsoleError("invalid_operator_cron", "The agent returned invalid cron operator data.", 502);
+}
+
+function parseCronOverview(value: unknown): Omit<WebCronOverview, "jobs"> & {
+  readonly jobs: readonly Omit<WebCronJob, "threadId">[];
+} {
+  return parseSharedCron(parseCronOperatorOverview, value);
+}
+
+function parseCronJob(value: unknown): Omit<WebCronJob, "threadId"> {
+  return parseSharedCron(parseCronOperatorJob, value);
+}
+
+function parseCronRunSummary(value: unknown): WebCronRunSummary {
+  return parseSharedCron(parseCronOperatorRunSummary, value);
+}
+
+function parseCronRunDetail(value: unknown): WebCronRunDetail {
+  return parseSharedCron(parseCronOperatorRunDetail, value);
+}
+
+function parseCronRunPage(value: unknown): WebCronRunPage {
+  return parseSharedCron(parseCronOperatorRunPage, value);
+}
+
+function parseSharedCron<T>(parser: (value: unknown) => T, value: unknown): T {
+  try {
+    return parser(value);
+  } catch (error) {
+    if (error instanceof CronOperatorWireError) return invalidCronResponse();
+    throw error;
+  }
+}
+
+function parseCronConfigView(value: unknown): WebChannelConfigView {
+  const view = record(value);
+  if (view === undefined
+    || typeof view.id !== "string"
+    || typeof view.label !== "string"
+    || (view.status !== "active" && view.status !== "disabled")
+    || !Array.isArray(view.fields)) return invalidCronResponse();
+  const fields = view.fields.map((value) => {
+    const field = record(value);
+    if (field === undefined
+      || typeof field.id !== "string"
+      || typeof field.label !== "string"
+      || typeof field.value !== "string"
+      || !["env", "json", "default"].includes(String(field.source))
+      || (field.redacted !== undefined && typeof field.redacted !== "boolean")
+      || (field.envKey !== undefined && typeof field.envKey !== "string")) return invalidCronResponse();
+    return field as unknown as WebChannelConfigView["fields"][number];
+  });
+  return { id: view.id, label: view.label, status: view.status, fields };
+}
+
+function parseCronMutation(value: unknown): WebCronMutationResult<unknown> {
+  const mutation = record(value);
+  if (mutation?.kind === "confirmation_required") {
+    const confirmation = record(mutation.confirmation);
+    if (!hasOnlyKeys(mutation, ["kind", "confirmation"])
+      || !hasOnlyKeys(confirmation, ["token", "expiresAt", "message"])
+      || typeof confirmation.token !== "string"
+      || !validDateString(confirmation.expiresAt)
+      || typeof confirmation.message !== "string") return invalidCronResponse();
+    return {
+      kind: "confirmation_required",
+      confirmation: {
+        token: confirmation.token,
+        expiresAt: confirmation.expiresAt,
+        message: confirmation.message,
+      },
+    };
+  }
+  if (mutation?.kind === "completed"
+    && hasOnlyKeys(mutation, ["kind", "value", "replayed"])
+    && mutation.value !== undefined
+    && typeof mutation.replayed === "boolean") {
+    return { kind: "completed", value: mutation.value, replayed: mutation.replayed };
+  }
+  return invalidCronResponse();
 }
 
 function parseSkillRegistry(
@@ -509,4 +738,17 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown> | undefined,
+  allowed: readonly string[],
+): value is Record<string, unknown> {
+  if (value === undefined) return false;
+  const accepted = new Set(allowed);
+  return Object.keys(value).every((key) => accepted.has(key));
+}
+
+function validDateString(value: unknown): value is string {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
 }

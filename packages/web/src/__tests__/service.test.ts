@@ -38,7 +38,386 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<voi
   }
 }
 
+function operatorCronOverview(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    generatedAt: "2026-08-14T10:00:00.000Z",
+    actionsEnabled: true,
+    jobs: [{
+      jobId: "digest",
+      expression: "*/5 * * * *",
+      timezone: "Europe/Amsterdam",
+      conversationId: "cron:digest",
+      configured: true,
+      declaredEnabled: true,
+      effectiveEnabled: true,
+      health: "unknown",
+    }],
+    ...overrides,
+  };
+}
+
 describe("WebService", () => {
+  it("feature-detects cron without a wire bump and keeps cached old-agent state read-only and unknown", async () => {
+    let modern = true;
+    const modernFetch = operatorFetch({ cronOverview: operatorCronOverview() });
+    const legacyFetch = operatorFetch();
+    const fetchImpl = ((input: string | URL | Request, init?: RequestInit) =>
+      (modern ? modernFetch : legacyFetch)(input, init)) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    expect((await service.bootstrap()).agents[0]).toMatchObject({
+      cron: { read: true, actions: false },
+    });
+    expect(await service.cronOverview("agent-one")).toMatchObject({
+      actionsEnabled: true,
+      jobs: [{ expression: "*/5 * * * *", health: "unknown" }],
+    });
+    expect((await service.cronOverview("agent-one")).jobs[0]).not.toHaveProperty("nextRunAt");
+
+    modern = false;
+    await service.refreshAgents();
+    expect((await service.bootstrap()).agents[0]).not.toHaveProperty("cron");
+    const degraded = await service.cronOverview("agent-one");
+    expect(degraded.actionsEnabled).toBe(false);
+    expect(degraded.jobs[0]).not.toHaveProperty("nextRunAt");
+    await expect(service.cronRunNow("agent-one", "digest", { idempotencyKey: "old-agent" }))
+      .rejects.toMatchObject({ code: "cron_unavailable" });
+    await service.stop();
+  });
+
+  it("reports healthy cron channels as read-only for turns and live input", async () => {
+    const service = await createService({
+      fetchImpl: operatorFetch({ cronOverview: operatorCronOverview() }),
+    });
+    const overview = await service.cronOverview("agent-one");
+    const threadId = overview.jobs[0]!.threadId;
+    const expected = {
+      code: "cron_channel_read_only",
+      message: "Cron channels are read-only. Scheduled runs and history are managed by the agent.",
+    };
+
+    await expect(service.startTurn(threadId, { text: "not allowed" })).rejects.toMatchObject(expected);
+    expect(() => service.submitLiveInput(threadId, "also not allowed")).toThrowError(
+      expect.objectContaining(expected),
+    );
+    await service.stop();
+  });
+
+  it("proxies agent confirmation and idempotency authoritatively on the source-qualified cron route", async () => {
+    const mutations: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const run = {
+      projection: "summary",
+      runId: "cron:digest:2026-08-14T10:00:00.000Z:m1",
+      jobId: "digest",
+      scheduledAt: "2026-08-14T10:00:00.000Z",
+      orderedAt: "2026-08-14T10:00:00.000Z",
+      sequence: 1,
+      trigger: "manual",
+      status: "admitted",
+      eventCount: 0,
+    };
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        cronOverview: operatorCronOverview(),
+        onCronMutation(url, body) {
+          mutations.push({ url, body });
+          return body.confirmationToken === undefined
+            ? {
+                kind: "confirmation_required",
+                confirmation: {
+                  token: "agent-confirmation",
+                  expiresAt: "2026-08-14T10:05:00.000Z",
+                  message: "Run now? A scheduled firing may be recorded as skipped_overlap.",
+                },
+              }
+            : { kind: "completed", replayed: false, value: { run } };
+        },
+      }),
+    });
+    const first = await service.cronRunNow("agent-one", "digest", { idempotencyKey: "manual-one" });
+    expect(first).toMatchObject({ kind: "confirmation_required", confirmation: { token: "agent-confirmation" } });
+    const second = await service.cronRunNow("agent-one", "digest", {
+      idempotencyKey: "manual-one",
+      confirmationToken: "agent-confirmation",
+    });
+    expect(second).toMatchObject({ kind: "completed", value: { run } });
+    expect(mutations.map(({ body }) => body)).toEqual([
+      { idempotencyKey: "manual-one" },
+      { idempotencyKey: "manual-one", confirmationToken: "agent-confirmation" },
+    ]);
+    expect(mutations.every(({ url }) => url.includes("/v1/cron/jobs/digest/run"))).toBe(true);
+    await expect(service.cronRunNow("missing-source", "digest", { idempotencyKey: "wrong-source" }))
+      .rejects.toMatchObject({ code: "agent_not_found" });
+    await service.stop();
+  });
+
+  it("returns canonical messages with each keyset-paginated cron run page", async () => {
+    const run = {
+      projection: "summary",
+      runId: "cron:digest:2026-08-14T09:55:00.000Z",
+      jobId: "digest",
+      scheduledAt: "2026-08-14T09:55:00.000Z",
+      orderedAt: "2026-08-14T09:55:00.000Z",
+      sequence: 4,
+      trigger: "scheduled",
+      status: "succeeded",
+      startedAt: "2026-08-14T09:55:01.000Z",
+      completedAt: "2026-08-14T09:55:02.000Z",
+      text: "Digest complete",
+      eventCount: 0,
+    };
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run], nextCursor: "older-runs" },
+      }),
+    });
+
+    const page = await service.cronRuns("agent-one", "digest", { limit: 100 });
+
+    expect(page).toMatchObject({
+      runs: [run],
+      nextCursor: "older-runs",
+      messages: [{
+        role: "assistant",
+        status: "complete",
+        parts: expect.arrayContaining([
+          { type: "text", text: "Digest complete" },
+          expect.objectContaining({ type: "telemetry", event: "cron_run" }),
+        ]),
+      }],
+    });
+    await service.stop();
+  });
+
+  it("does not duplicate overview reads while paging and loads bounded selected-run activity on demand", async () => {
+    const run = {
+      projection: "summary",
+      runId: "cron:digest:2026-08-14T09:55:00.000Z",
+      jobId: "digest",
+      scheduledAt: "2026-08-14T09:55:00.000Z",
+      orderedAt: "2026-08-14T09:55:00.000Z",
+      sequence: 4,
+      trigger: "scheduled",
+      status: "succeeded",
+      text: "Compact result",
+      eventCount: 30,
+      fieldsTruncated: ["text"],
+    };
+    let overviewReads = 0;
+    let pageReads = 0;
+    let detailReads = 0;
+    const delegated = operatorFetch({
+      cronOverview: operatorCronOverview(),
+      cronRuns: { runs: [run] },
+      cronRun: {
+        ...run,
+        projection: "detail",
+        text: "Selected full result",
+        events: [{ type: "runtime_warning", message: "Bounded activity" }],
+        eventsIncluded: 1,
+        eventsTruncated: true,
+      },
+    });
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/cron")) overviewReads += 1;
+      else if (/\/v1\/cron\/jobs\/[^/]+\/runs\/[^/?]+(?:\?|$)/u.test(url)) detailReads += 1;
+      else if (url.includes("/v1/cron/jobs/") && url.includes("/runs")) pageReads += 1;
+      return await delegated(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    const overviewReadsAfterStartup = overviewReads;
+
+    await service.cronRuns("agent-one", "digest", { limit: 100 });
+    expect(overviewReads).toBe(overviewReadsAfterStartup);
+    expect(pageReads).toBe(1);
+    const message = await service.cronRun("agent-one", "digest", run.runId);
+    expect(detailReads).toBe(1);
+    expect(message.parts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "telemetry", event: "runtime_warning" }),
+      expect.objectContaining({
+        type: "telemetry",
+        event: "cron_run",
+        data: expect.objectContaining({ eventsTruncated: true, loadedEventCount: 1 }),
+      }),
+      { type: "text", text: "Selected full result" },
+    ]));
+    await service.stop();
+  });
+
+  it("keeps repeated discovery recovery polls read-only and emits one convergence event for one change", async () => {
+    let currentOverview = operatorCronOverview();
+    let infoReads = 0;
+    let overviewReads = 0;
+    let clockMs = Date.parse("2026-08-14T10:00:00.000Z");
+    const delegated = operatorFetch({ cronOverview: currentOverview });
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/info")) infoReads += 1;
+      if (url.endsWith("/v1/cron")) {
+        overviewReads += 1;
+        return Response.json(currentOverview);
+      }
+      return await delegated(input, init);
+    }) as typeof fetch;
+    const service = await createService({
+      fetchImpl,
+      clock: () => new Date(clockMs += 1_000),
+    });
+    const threadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId;
+    const database = new DatabaseSync(service.store.paths.database, { readOnly: true });
+    const snapshot = () => ({
+      thread: database.prepare("SELECT revision, updated_at FROM threads WHERE id = ?").get(threadId),
+      revisions: database.prepare("SELECT COUNT(*) AS count FROM revisions WHERE entity_kind = 'thread' AND entity_id = ?")
+        .get(threadId),
+      turns: database.prepare("SELECT COUNT(*) AS count FROM turns WHERE thread_id = ?").get(threadId),
+      messages: database.prepare("SELECT COUNT(*) AS count FROM messages WHERE thread_id = ?").get(threadId),
+      mappings: database.prepare("SELECT COUNT(*) AS count FROM cron_run_messages WHERE thread_id = ?").get(threadId),
+    });
+    const beforeIdle = snapshot();
+    const events: string[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event.type); });
+    const startingInfoReads = infoReads;
+    const startingOverviewReads = overviewReads;
+    for (let tick = 0; tick < 40; tick += 1) await service.refreshAgents();
+    expect(infoReads - startingInfoReads).toBe(40);
+    expect(overviewReads - startingOverviewReads).toBe(40);
+    expect(snapshot()).toEqual(beforeIdle);
+    expect(events).toEqual([]);
+
+    currentOverview = operatorCronOverview({
+      jobs: [{
+        ...(operatorCronOverview().jobs as Record<string, unknown>[])[0],
+        health: "warning",
+      }],
+    });
+    await service.refreshAgents();
+    expect(events).toEqual(["cron.changed", "threads.changed"]);
+    events.length = 0;
+    await service.refreshAgents();
+    expect(events).toEqual([]);
+    expect((await service.cronOverview("agent-one")).jobs[0]).toMatchObject({ health: "warning" });
+    unsubscribe();
+    database.close();
+    await service.stop();
+  });
+
+  it("emits no refresh events for repeated polls of a tombstoned historical cron channel", async () => {
+    let currentOverview = operatorCronOverview();
+    const delegated = operatorFetch({ cronOverview: currentOverview });
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/v1/cron")) return Response.json(currentOverview);
+      return await delegated(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    const threadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId;
+    currentOverview = operatorCronOverview({
+      generatedAt: "2026-08-14T10:01:00.000Z",
+      jobs: [{
+        ...(operatorCronOverview().jobs as Record<string, unknown>[])[0],
+        configured: false,
+        effectiveEnabled: false,
+        health: "disabled",
+      }],
+    });
+    await service.refreshAgents();
+    service.patchThread(threadId, { archived: true });
+    await service.deleteThread(threadId);
+
+    const database = new DatabaseSync(service.store.paths.database, { readOnly: true });
+    const snapshot = () => ({
+      overviews: database.prepare("SELECT * FROM cron_overviews ORDER BY source_id").all(),
+      channels: database.prepare("SELECT * FROM cron_channels ORDER BY source_id, job_id").all(),
+      snapshots: database.prepare("SELECT * FROM cron_job_snapshots ORDER BY source_id, job_id").all(),
+      deletions: database.prepare("SELECT * FROM cron_channel_deletions ORDER BY source_id, job_id").all(),
+      revisions: database.prepare("SELECT * FROM revisions ORDER BY entity_kind, entity_id, revision").all(),
+      pushEvents: database.prepare("SELECT * FROM push_events ORDER BY id").all(),
+    });
+    const beforePolls = snapshot();
+    const events: string[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event.type); });
+
+    currentOverview = operatorCronOverview({ ...currentOverview, generatedAt: "2026-08-14T10:02:00.000Z" });
+    await service.refreshAgents();
+    currentOverview = operatorCronOverview({ ...currentOverview, generatedAt: "2026-08-14T10:03:00.000Z" });
+    await service.refreshAgents();
+
+    expect(events).toEqual([]);
+    expect(snapshot()).toEqual(beforePolls);
+    unsubscribe();
+    database.close();
+    await service.stop();
+  });
+
+  it("emits no refresh events when repeated overview polls omit a historical cron channel", async () => {
+    const digest = (operatorCronOverview().jobs as Record<string, unknown>[])[0]!;
+    const report = {
+      ...digest,
+      jobId: "report",
+      conversationId: "cron:report",
+    };
+    let currentOverview = operatorCronOverview({ jobs: [digest, report] });
+    const delegated = operatorFetch({ cronOverview: currentOverview });
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/v1/cron")) return Response.json(currentOverview);
+      return await delegated(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    expect((await service.cronOverview("agent-one")).jobs.map(({ jobId }) => jobId)).toEqual(["digest", "report"]);
+    const events: string[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event.type); });
+
+    currentOverview = operatorCronOverview({
+      generatedAt: "2026-08-14T10:01:00.000Z",
+      jobs: [digest],
+    });
+    expect((await service.cronOverview("agent-one")).jobs.map(({ jobId }) => jobId)).toEqual(["digest"]);
+    expect(events).toEqual(["cron.changed", "threads.changed"]);
+    expect(service.store.storedCronOverview("agent-one")?.jobs).toEqual([
+      expect.objectContaining({ jobId: "digest", configured: true }),
+      expect.objectContaining({ jobId: "report", configured: false }),
+    ]);
+    events.length = 0;
+
+    for (const generatedAt of ["2026-08-14T10:02:00.000Z", "2026-08-14T10:03:00.000Z"]) {
+      currentOverview = operatorCronOverview({ generatedAt, jobs: [digest] });
+      expect((await service.cronOverview("agent-one")).jobs.map(({ jobId }) => jobId)).toEqual(["digest"]);
+    }
+    expect(events).toEqual([]);
+
+    unsubscribe();
+    await service.stop();
+  });
+
+  it("reads terminal AskUser state by interaction id after another destination consumes the pending ask", async () => {
+    const answered = {
+      interactionId: "ask-old",
+      message: "Choose",
+      questions: [],
+      answers: [],
+      activeQuestionIndex: 0,
+      status: "answered",
+      createdAt: "2026-08-14T10:00:00.000Z",
+      expiresAt: "2026-08-14T10:05:00.000Z",
+    };
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsAskUser: true,
+        supportsAskById: true,
+        pendingAsk: { ...answered, interactionId: "ask-new", status: "pending" },
+        exactAsks: { "ask-old": answered },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await expect(service.ask(thread.id, "ask-old")).resolves.toMatchObject({
+      interactionId: "ask-old",
+      status: "answered",
+    });
+    await expect(service.pendingAsk(thread.id)).resolves.toMatchObject({ interactionId: "ask-new" });
+    await expect(service.ask(thread.id, "evicted")).resolves.toBeUndefined();
+    await service.stop();
+  });
+
   it("preserves operator context-window metadata through discovery, storage, and bootstrap", async () => {
     const service = await createService();
 
@@ -76,17 +455,60 @@ describe("WebService", () => {
       duplicate: false,
       thread: { title: "Webhook notification", trigger: { kind: "webhook" } },
     });
+    expect(delivered.thread).toBeDefined();
+    const deliveredThread = delivered.thread!;
     expect(recorded.at(-1)).toEqual({
-      conversationId: `web:${delivered.thread.id}`,
+      conversationId: `web:${deliveredThread.id}`,
       body: { text: "Webhook digest", idempotencyKey: input.deliveryKey },
     });
     await expect(service.deliverNotification(input)).resolves.toMatchObject({
       duplicate: true,
-      thread: { id: delivered.thread.id },
+      thread: { id: deliveredThread.id },
     });
     expect(recorded).toHaveLength(2);
     await expect(service.deliverNotification({ ...input, text: "Changed digest" }))
       .rejects.toMatchObject({ code: "notification_idempotency_conflict" });
+    await service.stop();
+  });
+
+  it("records structured cron delivery history in the source-qualified console namespace", async () => {
+    const recorded: Array<{ conversationId: string; body: Record<string, unknown> }> = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsHistoryAppend: true,
+        cronOverview: {
+          generatedAt: "2026-08-14T10:00:00.000Z",
+          actionsEnabled: false,
+          jobs: [{
+            jobId: "daily:brief",
+            expression: "*/5 * * * *",
+            timezone: "UTC",
+            conversationId: "cron:daily:brief",
+            configured: true,
+            declaredEnabled: true,
+            effectiveEnabled: true,
+            health: "unknown",
+          }],
+        },
+        onVerbatim(conversationId, body) { recorded.push({ conversationId, body }); },
+      }),
+    });
+    const runId = "cron:daily%3Abrief:2026-08-14T10:05:00.000Z";
+    const delivered = await service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "cron",
+      deliveryKey: `${runId}:success`,
+      jobId: "daily:brief",
+      runId,
+      text: "Cron digest",
+    });
+
+    expect(delivered.thread?.trigger).toMatchObject({ kind: "cron", jobId: "daily:brief" });
+    expect(recorded).toEqual([{
+      conversationId: expect.stringMatching(/^web-cron:[0-9a-f]{32}$/u),
+      body: { text: "Cron digest", idempotencyKey: `${runId}:success` },
+    }]);
+    expect(recorded[0]!.conversationId).not.toBe(`web:${delivered.thread!.id}`);
     await service.stop();
   });
 

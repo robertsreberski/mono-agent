@@ -71,7 +71,19 @@ describe("unconfigured drivers answer with the adapter loader's own empty-input 
     expect(Object.hasOwn(slack as object, "stripMentionText")).toBe(false);
     expect(await drivers.get("webhook")!.loadConfig(input)).toEqual(await loadWebhookAdapterConfig(empty));
     expect(await drivers.get("openai-api")!.loadConfig(input)).toEqual(await loadOpenAIApiAdapterConfig(empty));
-    expect(await drivers.get("cron")!.loadConfig(input)).toEqual(await loadCronAdapterConfig(empty));
+    const cron = await drivers.get("cron")!.loadConfig(input) as {
+      readonly jobs: readonly unknown[];
+      readonly operatorActionsEnabled?: boolean;
+      readonly controlInspection: unknown;
+      readonly effectiveEnabledByJobId: ReadonlyMap<string, boolean>;
+    };
+    const { controlInspection, effectiveEnabledByJobId, ...adapterCron } = cron;
+    expect(adapterCron).toEqual(await loadCronAdapterConfig(empty));
+    // These are deliberate host-owned additions rather than adapter defaults:
+    // inspection drives fail-closed startup and the map applies durable runtime
+    // overrides without mutating the adapter's authored config.
+    expect(controlInspection).toEqual({ status: "absent" });
+    expect(effectiveEnabledByJobId).toEqual(new Map());
   });
 
   it("tui is the deliberate exception: ungated, and its empty-input default is ENABLED", async () => {

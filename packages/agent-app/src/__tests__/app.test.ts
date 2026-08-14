@@ -677,6 +677,43 @@ describe("startMonoAgentApp", () => {
     await app.stop();
   });
 
+  it("reapplies replacement channel summaries through status and discovery", async () => {
+    await writeConfig(baseConfig());
+    let publishSummary: ((summary: Readonly<Record<string, unknown>>) => void) | undefined;
+    const driver: ChannelDriver = {
+      id: "summary-probe",
+      label: "Summary probe",
+      loadConfig: async () => ({ enabled: true }),
+      isConfigError: () => false,
+      start: async (input) => {
+        publishSummary = input.onSummaryChanged;
+        return { summary: { jobs: 1, configuredJobs: 2 }, stop: async () => undefined };
+      },
+    };
+    const runtime = { run: async (): Promise<RuntimeResult> => ({ text: "ok" }) };
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver], runtime });
+
+    try {
+      expect(app.channelStatus("summary-probe")).toEqual({
+        kind: "running",
+        summary: { jobs: 1, configuredJobs: 2 },
+      });
+      publishSummary?.({ jobs: 0, configuredJobs: 2 });
+      expect(app.channelStatus("summary-probe")).toEqual({
+        kind: "running",
+        summary: { jobs: 0, configuredJobs: 2 },
+      });
+      await vi.waitFor(async () => {
+        const source = (await listTraceSources({ registryDir: join(dir, "trace-sources") })).sources[0];
+        expect(source?.metadata?.channels).toMatchObject({
+          "summary-probe": { kind: "running", jobs: 0, configuredJobs: 2 },
+        });
+      });
+    } finally {
+      await app.stop();
+    }
+  });
+
   it("publishes durable startup proof only after lifecycle completion and preserves it across later refreshes", async () => {
     await writeConfig(baseConfig());
     let releaseStart!: () => void;
@@ -2778,6 +2815,47 @@ describe("startMonoAgentApp", () => {
     captured?.onPollingRecovered?.();
     expect(app.channelStatus("telegram").kind).not.toBe("running");
     expect(disposeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("fences superseded channel callbacks while preserving current degradation during start", async () => {
+    await writeConfig(baseConfig());
+    const starts: ChannelStartInput<unknown>[] = [];
+    const driver: ChannelDriver = {
+      id: "probe" as never,
+      label: "Probe",
+      loadConfig: async () => ({ enabled: true }),
+      isConfigError: () => false,
+      start: async (input) => {
+        starts.push(input);
+        const generation = starts.length;
+        if (generation === 3) {
+          input.onDegraded?.("current generation degraded during start");
+        }
+        return {
+          summary: { generation },
+          stop: async () => undefined,
+        };
+      },
+    };
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver] });
+
+    try {
+      expect(app.channelStatus(driver.id)).toEqual({ kind: "running", summary: { generation: 1 } });
+      await app.applyConfigChange("generation-two");
+      expect(app.channelStatus(driver.id)).toEqual({ kind: "running", summary: { generation: 2 } });
+
+      starts[0]?.onSummaryChanged?.({ generation: "superseded" });
+      starts[0]?.onDegraded?.("superseded generation degraded late");
+      expect(app.channelStatus(driver.id)).toEqual({ kind: "running", summary: { generation: 2 } });
+
+      await app.applyConfigChange("generation-three");
+      expect(app.channelStatus(driver.id)).toEqual({
+        kind: "degraded",
+        reason: "current generation degraded during start",
+      });
+    } finally {
+      await app.stop();
+    }
   });
 
   it("never starts BuJo consolidation for the strict Journal tier", async () => {

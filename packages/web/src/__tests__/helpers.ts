@@ -37,9 +37,16 @@ export function operatorFetch(options: {
   readonly supportsAttachments?: boolean;
   readonly supportsHistoryAppend?: boolean;
   readonly supportsAskUser?: boolean;
+  readonly supportsAskById?: boolean;
   readonly supportsLiveInput?: boolean;
   readonly skills?: OperatorSkillRegistry;
   readonly pendingAsk?: Record<string, unknown> | null;
+  readonly exactAsks?: Readonly<Record<string, Record<string, unknown> | null>>;
+  readonly cronOverview?: Record<string, unknown>;
+  readonly cronRuns?: Record<string, unknown>;
+  readonly cronRun?: Record<string, unknown>;
+  readonly cronConfigView?: Record<string, unknown>;
+  readonly onCronMutation?: (url: string, body: Record<string, unknown>) => Record<string, unknown>;
   readonly onAskSubmit?: (body: Record<string, unknown>) => void;
   readonly onTurn?: (body: Record<string, unknown>) => void;
   readonly onLiveInput?: (
@@ -70,9 +77,38 @@ export function operatorFetch(options: {
           attachments: options.supportsAttachments ?? true,
           ...(options.supportsHistoryAppend === true ? { historyAppend: true } : {}),
           askUser: options.supportsAskUser ?? false,
+          ...(options.supportsAskById === true ? { askById: true } : {}),
           liveInput: options.supportsLiveInput ?? false,
+          ...(options.cronOverview === undefined
+            ? {}
+            : { cron: { read: true, actions: options.onCronMutation !== undefined } }),
         },
       });
+    }
+    if (url.endsWith("/v1/cron")) {
+      return options.cronOverview === undefined
+        ? new Response("not found", { status: 404 })
+        : Response.json(options.cronOverview);
+    }
+    if (url.endsWith("/v1/cron/config-view")) {
+      return Response.json({ configView: options.cronConfigView ?? { id: "cron", label: "Cron", status: "active", fields: [] } });
+    }
+    if (/\/v1\/cron\/jobs\/[^/]+\/runs\/[^/?]+(?:\?|$)/u.test(url)) {
+      return Response.json({ run: options.cronRun ?? {} });
+    }
+    if (url.includes("/v1/cron/jobs/") && url.includes("/runs")) {
+      return Response.json(options.cronRuns ?? { runs: [] });
+    }
+    if (url.includes("/v1/cron/jobs/") && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      const response = options.onCronMutation?.(url, body);
+      return response === undefined
+        ? new Response("not found", { status: 404 })
+        : Response.json(response, { status: response.kind === "confirmation_required" ? 428 : 200 });
+    }
+    if (url.includes("/v1/interactions/")) {
+      const interactionId = decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
+      return Response.json({ ask: options.exactAsks?.[interactionId] ?? null });
     }
     if (url.endsWith("/v1/turns")) {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;

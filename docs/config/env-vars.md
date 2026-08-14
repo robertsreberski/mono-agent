@@ -392,6 +392,7 @@ The A2A provider is loaded through `channels.plugins[]` with `package: "@mono-ag
 | Env var | JSON key it overrides | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_CRON_JOBS_JSON` | `cron.jobs[]` | Full JSON array of jobs. |
+| `MONO_AGENT_CRON_OPERATOR_ACTIONS_ENABLED` | `cron.operatorActions.enabled` | Permit API-key-authenticated, explicitly confirmed run-now and runtime enable/disable actions; default `false`. |
 | `MONO_AGENT_CRON_ENABLED` | `cron.enabled` | Enable the legacy/default single-job form; default `false`. |
 | `MONO_AGENT_CRON_EXPRESSION` | `cron.expression` | Five-field expression for the default single job. |
 | `MONO_AGENT_CRON_TIMEZONE` | `cron.timezone` | IANA timezone for the default single job; default `UTC`. |

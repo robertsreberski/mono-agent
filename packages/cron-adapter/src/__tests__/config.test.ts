@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  MAX_CRON_JOBS,
   loadCronAdapterConfig,
   redactCronAdapterConfig,
   toCronJobs,
@@ -46,6 +47,7 @@ describe("loadCronAdapterConfig", () => {
     });
 
     expect(config).toEqual({
+      operatorActionsEnabled: false,
       jobs: [{
         id: "default",
         enabled: true,
@@ -55,6 +57,22 @@ describe("loadCronAdapterConfig", () => {
         conversationId: "json-conversation",
       }],
     });
+  });
+
+  it("keeps operator actions off by default and lets env override JSON", async () => {
+    const path = join(dir, "mono-agent.config.json");
+    await writeFile(path, `${JSON.stringify({
+      cron: {
+        operatorActions: { enabled: false },
+        jobs: [{ id: "daily", expression: "0 9 * * *", prompt: "brief" }],
+      },
+    })}\n`, "utf8");
+
+    const config = await loadCronAdapterConfig({
+      env: { MONO_AGENT_CRON_OPERATOR_ACTIONS_ENABLED: "true" },
+      jsonPath: path,
+    });
+    expect(config.operatorActionsEnabled).toBe(true);
   });
 
   it("loads multiple cron jobs from the cron.jobs array in the JSON config file", async () => {
@@ -270,6 +288,24 @@ describe("loadCronAdapterConfig", () => {
         effort: "max",
       },
     ]);
+  });
+
+  it("rejects cron identities that cannot fit the bounded operator overview contract", async () => {
+    const jobs = Array.from({ length: MAX_CRON_JOBS + 1 }, (_, index) => ({
+      id: `job-${String(index)}`,
+      expression: "* * * * *",
+      prompt: "run",
+    }));
+    await expect(loadCronAdapterConfig({ env: {}, json: { cron: { jobs } } }))
+      .rejects.toThrow(`at most ${String(MAX_CRON_JOBS)} configured jobs`);
+    await expect(loadCronAdapterConfig({
+      env: {},
+      json: { cron: { jobs: [{ id: "x".repeat(257), expression: "* * * * *", prompt: "run" }] } },
+    })).rejects.toThrow("cron.jobs[].id must be at most 256 UTF-8 bytes");
+    await expect(loadCronAdapterConfig({
+      env: {},
+      json: { cron: { jobs: [{ id: "bounded", expression: "* * * * *", prompt: "run", conversationId: "é".repeat(257) }] } },
+    })).rejects.toThrow("cron.jobs[].conversationId must be at most 512 UTF-8 bytes");
   });
 });
 

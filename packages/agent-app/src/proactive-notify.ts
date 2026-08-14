@@ -1,4 +1,4 @@
-import type { NotifyDeliveryResult } from "@mono-agent/agent-contracts";
+import type { NotifyDeliveryContext, NotifyDeliveryResult } from "@mono-agent/agent-contracts";
 
 import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
 
@@ -43,6 +43,7 @@ export interface ProactiveNotifyInput {
   readonly verbatim?: boolean;
   /** Stable host delivery identity for adapters with duplicate suppression. */
   readonly deliveryKey?: string;
+  readonly deliveryContext?: NotifyDeliveryContext;
   /** Currently running channels, keyed by id (the app's live registry). */
   readonly running: ReadonlyMap<ChannelId, Pick<RunningChannel, "notify">>;
   readonly logger?: MonoAgentAppLogger;
@@ -79,6 +80,7 @@ export async function routeProactiveNotification(input: ProactiveNotifyInput): P
       text: input.text,
       ...(input.verbatim === undefined ? {} : { verbatim: input.verbatim }),
       ...(input.deliveryKey === undefined ? {} : { deliveryKey: input.deliveryKey }),
+      ...(input.deliveryContext === undefined ? {} : { deliveryContext: input.deliveryContext }),
     });
   } catch (error) {
     const reason = reasonOf(error);

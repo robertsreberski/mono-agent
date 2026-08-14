@@ -18,7 +18,15 @@ import {
   type ChannelInteractionHub,
 } from "@mono-agent/agent-contracts";
 
-import { MAX_FRAME_BYTES, startTuiAdapter, type TuiAdapterStartResult } from "../index.js";
+import {
+  CronOperatorError,
+  MAX_CRON_OPERATOR_RESPONSE_BYTES,
+  MAX_CRON_OPERATOR_RUN_PAGE,
+  MAX_FRAME_BYTES,
+  startTuiAdapter,
+  type CronOperatorService,
+  type TuiAdapterStartResult,
+} from "../index.js";
 
 let running: TuiAdapterStartResult | undefined;
 
@@ -183,6 +191,7 @@ describe("startTuiAdapter", () => {
     const interaction: ChannelInteractionHub = {
       registerSink: () => undefined,
       getPendingAsk: (conversationId) => conversationId === "web:thread/one" ? snapshot : undefined,
+      getAsk: (interactionId) => interactionId === snapshot.interactionId ? snapshot : undefined,
       submitAskAnswers: (input) => {
         submission = input;
         return { accepted: true, snapshot: { ...snapshot, status: "answered" } };
@@ -195,7 +204,7 @@ describe("startTuiAdapter", () => {
     });
 
     await expect((await fetch(running.infoUrl)).json()).resolves.toMatchObject({
-      capabilities: { attachments: true, askUser: true },
+      capabilities: { attachments: true, askUser: true, askById: true },
     });
     const route = `${running.baseUrl}/v1/conversations/${encodeURIComponent("web:thread/one")}/ask`;
     await expect((await fetch(route)).json()).resolves.toEqual({ ask: snapshot });
@@ -208,10 +217,318 @@ describe("startTuiAdapter", () => {
       }),
     });
     await expect(response.json()).resolves.toMatchObject({ accepted: true, snapshot: { status: "answered" } });
+    await expect((await fetch(`${running.baseUrl}/v1/interactions/ask-test`)).json()).resolves.toEqual({ ask: snapshot });
+    await expect((await fetch(`${running.baseUrl}/v1/interactions/missing`)).json()).resolves.toEqual({ ask: null });
     expect(submission).toEqual({
       conversationId: "web:thread/one",
       interactionId: "ask-test",
       answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }],
+    });
+  });
+
+  it("keeps exact AskUser lookup optional for third-party interaction hubs", async () => {
+    const interaction: ChannelInteractionHub = {
+      registerSink: () => undefined,
+      getPendingAsk: () => undefined,
+      submitAskAnswers: () => ({ accepted: false, code: "stale" }),
+      cancelAsks: () => undefined,
+    };
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      interaction,
+    });
+
+    const info = await (await fetch(running.infoUrl)).json() as { capabilities: Record<string, unknown> };
+    expect(info.capabilities).toMatchObject({ askUser: true });
+    expect(info.capabilities).not.toHaveProperty("askById");
+    expect((await fetch(`${running.baseUrl}/v1/interactions/ask-test`)).status).toBe(501);
+  });
+
+  it("serves capability-gated cron reads and authenticated confirmed mutations without changing schema", async () => {
+    let actionsEnabled = false;
+    let degradedReason: string | undefined;
+    const calls: unknown[] = [];
+    const cron: CronOperatorService = {
+      overview: () => ({
+        generatedAt: "2026-08-14T10:00:00.000Z",
+        actionsEnabled,
+        ...(degradedReason === undefined ? {} : { degradedReason }),
+        jobs: [{
+          jobId: "daily:brief",
+          expression: "*/5 * * * *",
+          timezone: "Europe/Amsterdam",
+          conversationId: "cron:daily:brief",
+          configured: true,
+          declaredEnabled: true,
+          effectiveEnabled: true,
+          health: "unknown",
+        }],
+      }),
+      runs: (input) => {
+        calls.push(input);
+        return { runs: [], nextCursor: "older" };
+      },
+      run: ({ jobId, runId }) => ({
+        projection: "detail",
+        runId,
+        jobId,
+        scheduledAt: "2026-08-14T10:00:00.000Z",
+        orderedAt: "2026-08-14T10:00:00.000Z",
+        sequence: 1,
+        trigger: "manual",
+        status: "admitted",
+        eventCount: 0,
+        events: [],
+        eventsIncluded: 0,
+      }),
+      configView: () => ({
+        id: "cron",
+        label: "Cron",
+        status: "active",
+        fields: [{ id: "jobs", label: "Jobs", value: "set", source: "json" }],
+      }),
+      runNow: (jobId, input) => {
+        calls.push({ jobId, input });
+        return input.confirmationToken === undefined
+          ? {
+              kind: "confirmation_required",
+              confirmation: {
+                token: "confirm-run",
+                expiresAt: "2026-08-14T10:05:00.000Z",
+                message: "Run now? Scheduled overlap may be skipped.",
+              },
+            }
+          : {
+              kind: "completed",
+              replayed: false,
+              value: {
+                run: {
+                  projection: "summary",
+                  runId: "cron:daily%3Abrief:2026-08-14T10:00:00.000Z:m1",
+                  jobId,
+                  scheduledAt: "2026-08-14T10:00:00.000Z",
+                  orderedAt: "2026-08-14T10:00:00.000Z",
+                  sequence: 1,
+                  trigger: "manual",
+                  status: "admitted",
+                  eventCount: 0,
+                },
+              },
+            };
+      },
+      setEffectiveEnabled: (jobId, enabled, input) => {
+        calls.push({ jobId, enabled, input });
+        return {
+          kind: "completed",
+          replayed: false,
+          value: {
+            job: {
+              jobId,
+              conversationId: `cron:${jobId}`,
+              configured: true,
+              declaredEnabled: true,
+              effectiveEnabled: enabled,
+              health: enabled ? "unknown" : "disabled",
+            },
+          },
+        };
+      },
+    };
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      apiKey: "fixture-secret",
+      cron,
+    });
+    const headers = { authorization: "Bearer fixture-secret" };
+
+    await expect((await fetch(running.infoUrl, { headers })).json()).resolves.toMatchObject({
+      schema: 1,
+      capabilities: { cron: { status: "ready", read: true, actions: false } },
+    });
+    actionsEnabled = true;
+    await expect((await fetch(running.infoUrl, { headers })).json()).resolves.toMatchObject({
+      schema: 1,
+      capabilities: { cron: { status: "ready", read: true, actions: true } },
+    });
+    degradedReason = "Cron control store lease is held by another process.";
+    await expect((await fetch(running.infoUrl, { headers })).json()).resolves.toMatchObject({
+      schema: 1,
+      capabilities: { cron: { status: "degraded", read: true, actions: false } },
+    });
+    degradedReason = undefined;
+    await expect((await fetch(`${running.baseUrl}/v1/cron`, { headers })).json()).resolves.toMatchObject({
+      jobs: [{ jobId: "daily:brief" }],
+    });
+    await expect((await fetch(
+      `${running.baseUrl}/v1/cron/jobs/${encodeURIComponent("daily:brief")}/runs?limit=5&before=cursor`,
+      { headers },
+    )).json()).resolves.toEqual({ runs: [], nextCursor: "older" });
+    await expect((await fetch(`${running.baseUrl}/v1/cron/config-view`, { headers })).json()).resolves.toMatchObject({
+      configView: { fields: [{ value: "set" }] },
+    });
+    expect((await fetch(`${running.baseUrl}/v1/cron/jobs/daily%3Abrief/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ idempotencyKey: "manual-one" }),
+    })).status).toBe(401);
+    const confirmation = await fetch(`${running.baseUrl}/v1/cron/jobs/daily%3Abrief/run`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ idempotencyKey: "manual-one" }),
+    });
+    expect(confirmation.status).toBe(428);
+    await expect(confirmation.json()).resolves.toMatchObject({
+      kind: "confirmation_required",
+      confirmation: { token: "confirm-run" },
+    });
+    const completed = await fetch(`${running.baseUrl}/v1/cron/jobs/daily%3Abrief/run`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ idempotencyKey: "manual-one", confirmationToken: "confirm-run" }),
+    });
+    expect(completed.status).toBe(200);
+    await expect(completed.json()).resolves.toMatchObject({ kind: "completed", value: { run: { jobId: "daily:brief" } } });
+    expect(calls).toContainEqual({ jobId: "daily:brief", limit: 5, before: "cursor" });
+  });
+
+  it("serializes adversarial overview, 100-run pages, older pages, and detail below the cron wire ceiling", async () => {
+    const summary = (index: number) => ({
+      projection: "summary" as const,
+      runId: `cron:${"r".repeat(700)}:${String(index)}`,
+      jobId: `job-${String(index % 64)}`,
+      scheduledAt: "2026-08-14T10:00:00.000Z",
+      orderedAt: "2026-08-14T10:00:00.000Z",
+      sequence: index + 1,
+      trigger: "scheduled" as const,
+      status: "failed" as const,
+      startedAt: "2026-08-14T10:00:00.000Z",
+      completedAt: "2026-08-14T10:00:01.000Z",
+      artifactRunId: "a".repeat(512),
+      text: "t".repeat(2 * 1024),
+      error: "e".repeat(512),
+      failureKind: "f".repeat(128),
+      blockedByRunId: `cron:${"b".repeat(700)}`,
+      eventCount: 30,
+      fieldsTruncated: ["text" as const],
+    });
+    const runs = Array.from({ length: MAX_CRON_OPERATOR_RUN_PAGE }, (_, index) => summary(index));
+    const legacy = { runs: runs.map((run) => ({
+      ...run,
+      events: Array.from({ length: 30 }, () => ({ type: "runtime_warning", message: "x".repeat(350) })),
+    })) };
+    expect(Buffer.byteLength(JSON.stringify(legacy), "utf8")).toBeGreaterThan(1024 * 1024);
+    const detail = {
+      ...summary(0),
+      projection: "detail" as const,
+      text: "d".repeat(128 * 1024),
+      eventCount: 30,
+      events: Array.from({ length: 30 }, (_, index) => ({
+        type: "runtime_warning" as const,
+        warningKind: "probe",
+        message: `${String(index)}:${"y".repeat(8 * 1024)}`,
+      })),
+      eventsIncluded: 30,
+    };
+    const cron: CronOperatorService = {
+      overview: () => ({
+        generatedAt: "2026-08-14T10:00:00.000Z",
+        actionsEnabled: false,
+        jobs: Array.from({ length: 64 }, (_, index) => ({
+          jobId: `job-${String(index)}`,
+          expression: "*".repeat(256),
+          timezone: "Z".repeat(128),
+          conversationId: "c".repeat(512),
+          configured: true,
+          declaredEnabled: true,
+          effectiveEnabled: true,
+          health: "unhealthy" as const,
+          lastRun: { ...summary(index), jobId: `job-${String(index)}` },
+        })),
+      }),
+      runs: ({ before }) => before === undefined ? { runs, nextCursor: "older-page" } : { runs: [summary(100)] },
+      run: () => detail,
+      configView: () => ({ id: "cron", label: "Cron", status: "active", fields: [] }),
+      runNow: () => { throw new CronOperatorError("actions_disabled", "disabled", 403); },
+      setEffectiveEnabled: () => { throw new CronOperatorError("actions_disabled", "disabled", 403); },
+    };
+    running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })), cron });
+
+    for (const path of [
+      "/v1/cron",
+      "/v1/cron/jobs/job-0/runs?limit=100",
+      "/v1/cron/jobs/job-0/runs?limit=100&before=older-page",
+      `/v1/cron/jobs/job-0/runs/${encodeURIComponent(detail.runId)}`,
+    ]) {
+      const response = await fetch(`${running.baseUrl}${path}`);
+      expect(response.status).toBe(200);
+      const serialized = await response.text();
+      expect(Buffer.byteLength(serialized, "utf8")).toBeLessThan(MAX_CRON_OPERATOR_RESPONSE_BYTES);
+      expect(() => JSON.parse(serialized)).not.toThrow();
+    }
+  });
+
+  it("keeps agent info live when the cron overview is stopped or fails", async () => {
+    for (const failure of [
+      () => { throw new CronOperatorError("unavailable", "registry stopped", 404); },
+      async () => { throw new Error("control store failed"); },
+    ]) {
+      const errors: Array<{ readonly message: string; readonly data?: Readonly<Record<string, unknown>> }> = [];
+      const cron = { overview: failure } as unknown as CronOperatorService;
+      running = await startTuiAdapter({
+        responder: scriptedResponder(async () => ({ text: "ok" })),
+        cron,
+        logger: {
+          error: (message, data) => errors.push({ message, ...(data === undefined ? {} : { data }) }),
+        },
+      });
+
+      const response = await fetch(running.infoUrl);
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        schema: 1,
+        capabilities: { cron: { status: "degraded", read: false, actions: false } },
+      });
+      expect(errors).toContainEqual({
+        message: "Cron operator overview failed during TUI info.",
+        data: { error: expect.stringMatching(/registry stopped|control store failed/u) },
+      });
+
+      await running.stop();
+      running = undefined;
+    }
+  });
+
+  it("keeps cron reads keyless only on a keyless operator while refusing mutations", async () => {
+    const cron = {
+      overview: () => ({ generatedAt: "2026-08-14T10:00:00.000Z", actionsEnabled: false, jobs: [] }),
+      runs: () => ({ runs: [] }),
+      configView: () => ({
+        id: "cron",
+        label: "Cron",
+        status: "active" as const,
+        fields: [{ id: "cron.prompt", label: "Prompt", value: "Visible prompt", source: "json" as const }],
+      }),
+    } as unknown as CronOperatorService;
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({ text: "ok" })),
+      cron,
+    });
+
+    expect((await fetch(`${running.baseUrl}/v1/cron`)).status).toBe(200);
+    expect((await fetch(`${running.baseUrl}/v1/cron/jobs/digest/runs`)).status).toBe(200);
+    const configResponse = await fetch(`${running.baseUrl}/v1/cron/config-view`);
+    expect(configResponse.status).toBe(200);
+    await expect(configResponse.json()).resolves.toMatchObject({
+      configView: { fields: [{ id: "cron.prompt", value: "Visible prompt" }] },
+    });
+    const mutation = await fetch(`${running.baseUrl}/v1/cron/jobs/digest/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ idempotencyKey: "must-not-run" }),
+    });
+    expect(mutation.status).toBe(403);
+    await expect(mutation.json()).resolves.toMatchObject({
+      error: { code: "actions_disabled", message: expect.stringContaining("API key") },
     });
   });
 

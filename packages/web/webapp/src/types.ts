@@ -91,6 +91,8 @@ export interface AgentSummary {
   readonly defaultEffort?: string;
   readonly efforts?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, ModelOption>>;
+  readonly cron?: { readonly read: boolean; readonly actions: boolean };
+  readonly supportsAskById?: boolean;
   readonly updatedAt: string;
 }
 
@@ -146,7 +148,9 @@ export interface ThreadSummary {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly revision: number;
-  readonly trigger?: { readonly kind: NotificationTriggerKind };
+  readonly trigger?:
+    | { readonly kind: "webhook" }
+    | { readonly kind: "cron"; readonly jobId?: string; readonly configured?: boolean };
   readonly lastMessagePreview?: string;
   readonly messageCount: number;
   readonly runState: RunState;
@@ -220,6 +224,98 @@ export interface WebQuote {
 export interface ThreadDetail {
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
+  readonly messagesNextCursor?: string;
+}
+
+export interface ThreadPage {
+  readonly threads: readonly ThreadSummary[];
+  readonly nextCursor?: string;
+}
+
+export interface MessagePage {
+  readonly messages: readonly WebMessage[];
+  readonly nextCursor?: string;
+}
+
+export type CronRunStatus =
+  | "admitted" | "running" | "queued" | "succeeded" | "failed" | "cancelled"
+  | "skipped_overlap" | "dropped";
+export type CronHealth = "healthy" | "warning" | "unhealthy" | "disabled" | "unknown";
+
+export interface CronRun {
+  readonly projection: "summary";
+  readonly runId: string;
+  readonly jobId: string;
+  readonly scheduledAt: string;
+  readonly orderedAt: string;
+  readonly sequence: number;
+  readonly trigger: "scheduled" | "manual";
+  readonly status: CronRunStatus;
+  readonly startedAt?: string;
+  readonly completedAt?: string;
+  readonly artifactRunId?: string;
+  readonly text?: string;
+  readonly error?: string;
+  readonly failureKind?: string;
+  readonly blockedByRunId?: string;
+  readonly blockedByTrigger?: "scheduled" | "manual";
+  readonly queueDepth?: number;
+  readonly eventCount: number;
+  readonly fieldsTruncated?: readonly ("artifactRunId" | "error" | "failureKind" | "text")[];
+  readonly eventsTruncated?: true;
+}
+
+export interface CronJob {
+  readonly jobId: string;
+  readonly expression?: string;
+  readonly timezone?: string;
+  readonly conversationId: string;
+  readonly configured: boolean;
+  readonly declaredEnabled: boolean;
+  readonly effectiveEnabled: boolean;
+  readonly nextRunAt?: string;
+  readonly health: CronHealth;
+  readonly lastRun?: CronRun;
+  readonly activeRunId?: string;
+  readonly threadId: string;
+}
+
+export interface CronOverview {
+  readonly generatedAt: string;
+  readonly actionsEnabled: boolean;
+  readonly jobs: readonly CronJob[];
+  readonly degradedReason?: string;
+  readonly jobsTruncated?: true;
+}
+
+export interface CronRunPage {
+  readonly runs: readonly CronRun[];
+  readonly nextCursor?: string;
+  readonly messages?: readonly WebMessage[];
+}
+
+export interface CronConfirmation {
+  readonly token: string;
+  readonly expiresAt: string;
+  readonly message: string;
+}
+
+export type CronMutationResult<T> =
+  | { readonly kind: "confirmation_required"; readonly confirmation: CronConfirmation }
+  | { readonly kind: "completed"; readonly value: T; readonly replayed: boolean };
+
+export interface ChannelConfigView {
+  readonly id: string;
+  readonly label: string;
+  readonly status: "active" | "disabled";
+  readonly fields: readonly {
+    readonly id: string;
+    readonly label: string;
+    readonly value: string;
+    readonly source: "env" | "json" | "default";
+    readonly redacted?: boolean;
+    readonly envKey?: string;
+  }[];
 }
 
 export interface UploadLimits {
@@ -245,6 +341,7 @@ export interface WebEvent {
   readonly type:
     | "ready"
     | "agents.changed"
+    | "cron.changed"
     | "threads.changed"
     | "thread.changed"
     | "message.changed"

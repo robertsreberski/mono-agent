@@ -68,8 +68,9 @@ export async function startWebNotificationIngress(
     void delivery.finally(() => active.delete(delivery)).catch(() => undefined);
     void delivery.then((result) => {
       res.status(result.duplicate ? 200 : 201).json({
-        threadId: result.thread.id,
+        threadId: result.thread?.id ?? null,
         duplicate: result.duplicate,
+        ...(result.tombstoned === true ? { tombstoned: true } : {}),
       });
     }).catch(next);
   });
@@ -143,12 +144,14 @@ function parseNotificationRequest(body: unknown): {
   readonly triggerKind: WebNotificationTriggerKind;
   readonly deliveryKey: string;
   readonly text: string;
+  readonly jobId?: string;
+  readonly runId?: string;
 } {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     throw new WebConsoleError("invalid_notification", "Notification body must be a JSON object.", 400);
   }
   const record = body as Record<string, unknown>;
-  const allowed = new Set(["sourceId", "triggerKind", "deliveryKey", "text"]);
+  const allowed = new Set(["sourceId", "triggerKind", "deliveryKey", "text", "jobId", "runId"]);
   if (Object.keys(record).some((key) => !allowed.has(key))) {
     throw new WebConsoleError("invalid_notification", "Notification body contains unsupported fields.", 400);
   }
@@ -157,13 +160,28 @@ function parseNotificationRequest(body: unknown): {
   if (record.triggerKind !== "cron" && record.triggerKind !== "webhook") {
     throw new WebConsoleError("invalid_notification", "triggerKind must be 'cron' or 'webhook'.", 400);
   }
+  const jobId = record.jobId === undefined ? undefined : normalizedField(record.jobId, "jobId", 512);
+  const runId = record.runId === undefined ? undefined : normalizedField(record.runId, "runId", 1_024);
+  if ((jobId === undefined) !== (runId === undefined) || (jobId !== undefined && record.triggerKind !== "cron")) {
+    throw new WebConsoleError(
+      "invalid_notification",
+      "jobId and runId must be supplied together for cron notifications only.",
+      400,
+    );
+  }
   if (typeof record.text !== "string" || record.text.trim().length === 0) {
     throw new WebConsoleError("invalid_notification", "text is required.", 400);
   }
   if (record.text.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
     throw new WebConsoleError("invalid_notification", "Notification text exceeds the web text limit.", 413);
   }
-  return { sourceId, triggerKind: record.triggerKind, deliveryKey, text: record.text };
+  return {
+    sourceId,
+    triggerKind: record.triggerKind,
+    deliveryKey,
+    text: record.text,
+    ...(jobId === undefined ? {} : { jobId, runId: runId! }),
+  };
 }
 
 function normalizedField(value: unknown, name: string, maxLength: number): string {

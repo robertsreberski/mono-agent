@@ -32,11 +32,21 @@ import {
   isLoopbackHost,
   listen,
   normalizeOptionalString,
+  parseCronOperatorOverview,
+  parseCronOperatorRunDetail,
+  parseCronOperatorRunPage,
   readAuthorizationBearer,
 } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
 import { DEFAULT_BASE_PATH, DEFAULT_HOST, DEFAULT_PORT, MAX_FRAME_BYTES, TUI_WIRE_SCHEMA } from "./constants.js";
+import {
+  CronOperatorError,
+  MAX_CRON_OPERATOR_RESPONSE_BYTES,
+  MAX_CRON_OPERATOR_RUN_PAGE,
+  type CronOperatorActionInput,
+  type CronOperatorService,
+} from "./cron.js";
 import { TuiAdapterError } from "./errors.js";
 import type { RequestToolEnvironmentConfig } from "./config.js";
 
@@ -135,6 +145,8 @@ export interface TuiAdapterOptions {
   readonly onServerError?: (reason: string) => void;
   /** In-process bridge state used by the web console's structured AskUser form. */
   readonly interaction?: ChannelInteractionHub;
+  /** Agent-owned cron truth and controls. Absent on older/non-cron hosts. */
+  readonly cron?: CronOperatorService;
 }
 
 export interface TuiAdapterStartResult {
@@ -158,6 +170,7 @@ const MAX_REQUEST_TOOL_ENVIRONMENT_KEYS = 32;
 const MAX_REQUEST_TOOL_ENVIRONMENT_VALUE_BYTES = 16 * 1024;
 const MAX_REQUEST_TOOL_ENVIRONMENT_TOTAL_BYTES = 64 * 1024;
 const MAX_REQUEST_TOOL_ENVIRONMENT_PATHS = 4;
+const MAX_CRON_ACTION_BODY_BYTES = 32 * 1024;
 const ALLOWED_ATTACHMENT_MIME_TYPES = new Set(
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST.map((mimeType) => mimeType.toLowerCase()),
 );
@@ -195,13 +208,34 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const verbatimPath = `${basePath}/v1/conversations/:conversationId/verbatim`;
   const liveInputPath = `${basePath}/v1/conversations/:conversationId/live-input`;
   const askPath = `${basePath}/v1/conversations/:conversationId/ask`;
+  const interactionPath = `${basePath}/v1/interactions/:interactionId`;
+  const cronOverviewPath = `${basePath}/v1/cron`;
+  const cronRunsPath = `${basePath}/v1/cron/jobs/:jobId/runs`;
+  const cronRunDetailPath = `${basePath}/v1/cron/jobs/:jobId/runs/:runId`;
+  const cronConfigViewPath = `${basePath}/v1/cron/config-view`;
+  const cronRunNowPath = `${basePath}/v1/cron/jobs/:jobId/run`;
+  const cronEnabledPath = `${basePath}/v1/cron/jobs/:jobId/effective-enabled`;
 
   app.get(infoPath, (req, res) => {
     if (!authorize(req, res, apiKey)) {
       return;
     }
-    void resolveInfo(options.info)
-      .then((info) => {
+    const cronInfo = options.cron === undefined
+      ? Promise.resolve({ kind: "absent" } as const)
+      : Promise.resolve()
+        .then(async () => await options.cron!.overview())
+        .then((overview) => ({ kind: "available", overview } as const))
+        .catch((error: unknown) => {
+          // Cron is an additive capability, never the agent-liveness probe. A
+          // stopped registry or failed control store must not turn /v1/info into
+          // a 500 that makes the whole agent appear unreachable.
+          options.logger?.error?.("Cron operator overview failed during TUI info.", {
+            error: errorToMessage(error),
+          });
+          return { kind: "degraded" } as const;
+        });
+    void Promise.all([resolveInfo(options.info), cronInfo])
+      .then(([info, cronState]) => {
         res.status(200).json({
           schema: TUI_WIRE_SCHEMA,
           pid: process.pid,
@@ -210,6 +244,20 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
             ...(typeof options.responder.offerLiveInput === "function" ? { liveInput: true } : {}),
             ...(typeof options.responder.deliverVerbatim === "function" ? { historyAppend: true } : {}),
             ...(options.interaction === undefined ? {} : { askUser: true }),
+            ...(typeof options.interaction?.getAsk === "function" ? { askById: true } : {}),
+            ...(cronState.kind === "absent"
+              ? {}
+              : cronState.kind === "degraded"
+                ? { cron: { status: "degraded", read: false, actions: false } }
+                : {
+                    cron: {
+                      status: cronState.overview.degradedReason === undefined ? "ready" : "degraded",
+                      read: true,
+                      actions: cronState.overview.degradedReason === undefined
+                        && apiKey !== undefined
+                        && cronState.overview.actionsEnabled === true,
+                    },
+                  }),
             ...(options.requestToolEnvironment === undefined ? {} : { toolEnvironment: true }),
           },
           ...(info?.label === undefined ? {} : { label: info.label }),
@@ -376,6 +424,130 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     }).catch((error: unknown) => sendJsonError(res, 500, error));
   });
 
+  app.get(interactionPath, (req, res) => {
+    if (!authorize(req, res, apiKey)) return;
+    const interactionId = normalizeOptionalString(
+      typeof req.params.interactionId === "string" ? req.params.interactionId : undefined,
+    );
+    if (interactionId === undefined) {
+      sendJsonError(res, 400, new TuiAdapterError("invalid_request", "interactionId is required."));
+      return;
+    }
+    if (typeof options.interaction?.getAsk !== "function") {
+      sendJsonError(res, 501, new TuiAdapterError("invalid_request", "Exact interaction lookup is unsupported."));
+      return;
+    }
+    void Promise.resolve(options.interaction.getAsk(interactionId))
+      .then((ask) => res.status(200).json({ ask: ask ?? null }))
+      .catch((error: unknown) => sendJsonError(res, 500, error));
+  });
+
+  app.get(cronOverviewPath, (req, res, next) => {
+    if (!authorize(req, res, apiKey)) return;
+    if (options.cron === undefined) {
+      sendJsonError(res, 404, new CronOperatorError("unavailable", "Cron operator capability is unavailable.", 404));
+      return;
+    }
+    void Promise.resolve(options.cron.overview())
+      .then((overview) => sendBoundedCronJson(res, 200, parseCronOperatorOverview(overview)))
+      .catch(next);
+  });
+
+  app.get(cronRunsPath, (req, res, next) => {
+    if (!authorize(req, res, apiKey)) return;
+    if (options.cron === undefined) {
+      sendJsonError(res, 404, new CronOperatorError("unavailable", "Cron operator capability is unavailable.", 404));
+      return;
+    }
+    try {
+      const jobId = cronJobId(req.params.jobId);
+      const rawLimit = typeof req.query.limit === "string" ? Number(req.query.limit) : 50;
+      if (!Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > MAX_CRON_OPERATOR_RUN_PAGE) {
+        throw new CronOperatorError(
+          "invalid_request",
+          `limit must be 1-${String(MAX_CRON_OPERATOR_RUN_PAGE)}.`,
+          400,
+        );
+      }
+      const before = typeof req.query.before === "string" && req.query.before.length > 0
+        ? req.query.before
+        : undefined;
+      if (before !== undefined && Buffer.byteLength(before, "utf8") > 4_096) {
+        throw new CronOperatorError("invalid_request", "before cursor is too large.", 400);
+      }
+      void Promise.resolve(options.cron.runs({ jobId, limit: rawLimit, ...(before === undefined ? {} : { before }) }))
+        .then((page) => sendBoundedCronJson(res, 200, parseCronOperatorRunPage(page)))
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get(cronRunDetailPath, (req, res, next) => {
+    if (!authorize(req, res, apiKey)) return;
+    if (options.cron === undefined) {
+      sendJsonError(res, 404, new CronOperatorError("unavailable", "Cron operator capability is unavailable.", 404));
+      return;
+    }
+    try {
+      const jobId = cronJobId(req.params.jobId);
+      const runId = cronRunId(req.params.runId);
+      void Promise.resolve(options.cron.run({ jobId, runId }))
+        .then((run) => sendBoundedCronJson(res, 200, { run: parseCronOperatorRunDetail(run) }))
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get(cronConfigViewPath, (req, res, next) => {
+    if (!authorize(req, res, apiKey)) return;
+    if (options.cron === undefined) {
+      sendJsonError(res, 404, new CronOperatorError("unavailable", "Cron operator capability is unavailable.", 404));
+      return;
+    }
+    void Promise.resolve(options.cron.configView())
+      .then((configView) => res.status(200).json({ configView }))
+      .catch(next);
+  });
+
+  app.post(cronRunNowPath, express.json({ limit: MAX_CRON_ACTION_BODY_BYTES, strict: true }), (req, res, next) => {
+    if (!authorize(req, res, apiKey) || !requireCronActionKey(res, apiKey)) return;
+    if (options.cron === undefined) {
+      sendJsonError(res, 404, new CronOperatorError("unavailable", "Cron operator capability is unavailable.", 404));
+      return;
+    }
+    try {
+      const jobId = cronJobId(req.params.jobId);
+      const action = cronActionInput(req.body);
+      void Promise.resolve(options.cron.runNow(jobId, action))
+        .then((result) => sendCronMutation(res, result))
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post(cronEnabledPath, express.json({ limit: MAX_CRON_ACTION_BODY_BYTES, strict: true }), (req, res, next) => {
+    if (!authorize(req, res, apiKey) || !requireCronActionKey(res, apiKey)) return;
+    if (options.cron === undefined) {
+      sendJsonError(res, 404, new CronOperatorError("unavailable", "Cron operator capability is unavailable.", 404));
+      return;
+    }
+    try {
+      const jobId = cronJobId(req.params.jobId);
+      if (!isRecord(req.body) || typeof req.body.enabled !== "boolean") {
+        throw new CronOperatorError("invalid_request", "enabled must be a boolean.", 400);
+      }
+      const action = cronActionInput(req.body);
+      void Promise.resolve(options.cron.setEffectiveEnabled(jobId, req.body.enabled, action))
+        .then((result) => sendCronMutation(res, result))
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) {
       next(error);
@@ -389,6 +561,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     }
     // 400 only for client mistakes (invalid_request, body-parse SyntaxError);
     // anything else is a server-side failure and must read as one.
+    if (error instanceof CronOperatorError) {
+      sendJsonError(res, error.status, error);
+      return;
+    }
     const isClientError =
       codeOf(error) === "invalid_request" ||
       (error instanceof SyntaxError && (error as { status?: unknown }).status === 400);
@@ -1034,6 +1210,77 @@ async function resolveInfo(info: TuiAdapterOptions["info"]): Promise<TuiAdapterI
     return await info();
   }
   return info;
+}
+
+function cronJobId(value: string | readonly string[] | undefined): string {
+  const raw = typeof value === "string" ? value : undefined;
+  const jobId = normalizeOptionalString(raw);
+  if (jobId === undefined || Buffer.byteLength(jobId, "utf8") > 512) {
+    throw new CronOperatorError("invalid_request", "A valid cron job id is required.", 400);
+  }
+  return jobId;
+}
+
+function cronRunId(value: string | readonly string[] | undefined): string {
+  const raw = typeof value === "string" ? value : undefined;
+  const runId = normalizeOptionalString(raw);
+  if (runId === undefined || Buffer.byteLength(runId, "utf8") > 4_096) {
+    throw new CronOperatorError("invalid_request", "A valid cron run id is required.", 400);
+  }
+  return runId;
+}
+
+function cronActionInput(value: unknown): CronOperatorActionInput {
+  if (!isRecord(value)) {
+    throw new CronOperatorError("invalid_request", "A JSON action body is required.", 400);
+  }
+  const idempotencyKey = normalizeOptionalString(
+    typeof value.idempotencyKey === "string" ? value.idempotencyKey : undefined,
+  );
+  if (idempotencyKey === undefined || Buffer.byteLength(idempotencyKey, "utf8") > 256) {
+    throw new CronOperatorError("invalid_request", "A valid idempotencyKey is required.", 400);
+  }
+  const confirmationToken = normalizeOptionalString(
+    typeof value.confirmationToken === "string" ? value.confirmationToken : undefined,
+  );
+  if (confirmationToken !== undefined && Buffer.byteLength(confirmationToken, "utf8") > 1_024) {
+    throw new CronOperatorError("invalid_request", "confirmationToken is too large.", 400);
+  }
+  return { idempotencyKey, ...(confirmationToken === undefined ? {} : { confirmationToken }) };
+}
+
+function requireCronActionKey(res: Response, apiKey: string | undefined): boolean {
+  if (apiKey !== undefined) return true;
+  sendJsonError(
+    res,
+    403,
+    new CronOperatorError("actions_disabled", "Cron actions require an operator API key.", 403),
+  );
+  return false;
+}
+
+function sendCronMutation(
+  res: Response,
+  result: { readonly kind: "confirmation_required"; readonly confirmation: unknown }
+    | { readonly kind: "completed"; readonly value: unknown; readonly replayed: boolean },
+): void {
+  if (result.kind === "confirmation_required") {
+    sendBoundedCronJson(res, 428, result);
+    return;
+  }
+  sendBoundedCronJson(res, 200, result);
+}
+
+function sendBoundedCronJson(res: Response, status: number, value: unknown): void {
+  const serialized = JSON.stringify(value);
+  if (Buffer.byteLength(serialized, "utf8") > MAX_CRON_OPERATOR_RESPONSE_BYTES) {
+    throw new CronOperatorError(
+      "unavailable",
+      "Cron operator response exceeded its bounded wire contract.",
+      503,
+    );
+  }
+  res.status(status).type("application/json").send(serialized);
 }
 
 function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {

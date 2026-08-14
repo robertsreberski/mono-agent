@@ -30,6 +30,7 @@ import type { ChannelDriver } from "../channels.js";
 import { agentAppPackageVersion } from "../package-version.js";
 import { configuredRuntimeModels } from "../runtime-routes.js";
 import { createSkillRegistryMonitor } from "../skill-registry.js";
+import type { CronOperatorRegistry } from "../cron-operator-service.js";
 
 type TuiAdapterModule = typeof import("@mono-agent/operator-adapter");
 
@@ -87,6 +88,7 @@ export interface TuiChannelOverrides {
  */
 export function createTuiChannelDriver(
   overrides: TuiChannelOverrides = {},
+  cronOperator?: CronOperatorRegistry,
 ): ChannelDriver<TuiAdapterConfig> {
   return {
     id: "tui",
@@ -210,6 +212,7 @@ export function createTuiChannelDriver(
           : { requestToolEnvironment: input.config.requestToolEnvironment }),
         responder: input.responder,
         ...(input.interaction === undefined ? {} : { interaction: input.interaction }),
+        ...(cronOperator?.configured === true ? { cron: cronOperator } : {}),
         info: buildInfo,
         onServerError: (reason) => input.onFailure(reason),
         ...(input.logger === undefined ? {} : { logger: input.logger }),

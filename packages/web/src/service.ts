@@ -30,14 +30,22 @@ import {
   type WebAgentSummary,
   type WebAttachment,
   type WebBootstrap,
+  type WebChannelConfigView,
+  type WebCronMutationResult,
+  type WebCronOverview,
+  type WebCronRunSummary,
+  type WebCronRunPage,
   type WebEvent,
   type WebEventType,
   type WebLiveInputReceipt,
+  type WebMessage,
   type WebModelOption,
   type WebNotificationTriggerKind,
   type WebSkillRegistry,
   type WebThread,
   type WebThreadDetail,
+  type WebThreadPage,
+  type WebMessagePage,
   type WebPushSubscriptionStatus,
 } from "./contracts.js";
 import {
@@ -60,8 +68,10 @@ import {
 } from "./push.js";
 import { acquireWebStateLease, prepareWebStatePaths, type WebStateLease, type WebStatePathOptions } from "./state-paths.js";
 import {
+  cronChannelReadOnlyError,
   toWebAttachment,
   WebStore,
+  notificationPushLogicalKey,
   type StoredAttachment,
   type StoredWebPushEvent,
   type WebPushIdentity,
@@ -134,11 +144,14 @@ export interface DeliverWebNotificationInput {
   readonly triggerKind: WebNotificationTriggerKind;
   readonly deliveryKey: string;
   readonly text: string;
+  readonly jobId?: string;
+  readonly runId?: string;
 }
 
 export interface DeliverWebNotificationResult {
-  readonly thread: WebThread;
+  readonly thread?: WebThread;
   readonly duplicate: boolean;
+  readonly tombstoned?: true;
 }
 
 export interface WebUploadReservation {
@@ -268,6 +281,19 @@ export class WebService {
     return detail;
   }
 
+  threadsPage(input: {
+    readonly sourceId: string;
+    readonly archived: boolean;
+    readonly limit?: number;
+    readonly before?: string;
+  }): WebThreadPage {
+    return this.store.listThreadsPage(input);
+  }
+
+  messagePage(threadId: string, input: { readonly limit?: number; readonly before?: string }): WebMessagePage {
+    return this.store.listMessagesPage(threadId, input);
+  }
+
   async registerWebPushSubscription(input: {
     readonly endpoint: string;
     readonly p256dh: string;
@@ -335,17 +361,27 @@ export class WebService {
   async pendingAsk(threadId: string): Promise<ChannelAskSnapshot | undefined> {
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    threadId = thread.id;
     const connection = this.connections.get(thread.sourceId);
     if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
     if (!connection.info.supportsAskUser) return undefined;
     const snapshot = await connection.client.pendingAsk(
-      `web:${threadId}`,
+      this.store.cronConversationIdForThread(thread.id) ?? `web:${thread.id}`,
       AbortSignal.timeout(INFO_TIMEOUT_MS),
     );
     if (!this.stopped && snapshot !== undefined && isFuturePendingAsk(snapshot, this.currentDate())) {
-      this.enqueueAskPush(threadId, snapshot);
+      this.enqueueAskPush(thread.id, snapshot);
     }
     return snapshot;
+  }
+
+  async ask(threadId: string, interactionId: string): Promise<ChannelAskSnapshot | undefined> {
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    const connection = this.connections.get(thread.sourceId);
+    if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    if (!connection.info.supportsAskById) return undefined;
+    return await connection.client.ask(interactionId, AbortSignal.timeout(INFO_TIMEOUT_MS));
   }
 
   async submitAsk(
@@ -359,31 +395,34 @@ export class WebService {
     if (connection === undefined || !connection.info.supportsAskUser) {
       throw new WebConsoleError("ask_user_unavailable", "This agent does not support interactive questions.", 409);
     }
-    const result = await connection.client.submitAsk(`web:${threadId}`, interactionId, answers);
+    const conversationId = this.store.cronConversationIdForThread(thread.id) ?? `web:${thread.id}`;
+    const result = await connection.client.submitAsk(conversationId, interactionId, answers);
     if (result.accepted) this.store.staleWebPushEvent(`ask:${interactionId}`, "answered");
     return result;
   }
 
   patchThread(id: string, patch: { readonly title?: string; readonly archived?: boolean }): WebThread {
     const thread = this.store.patchThread(id, patch);
-    this.emit("thread.changed", id, { thread });
-    this.emit("threads.changed", id);
+    this.emit("thread.changed", thread.id, { thread });
+    this.emit("threads.changed", thread.id);
     return thread;
   }
 
   async deleteThread(id: string): Promise<void> {
-    if (this.activeTurns.has(id)) {
+    const resolved = this.store.getThread(id)?.id;
+    if (resolved === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    if (this.activeTurns.has(resolved)) {
       throw new WebConsoleError("turn_active", "Cancel the active turn before deleting this conversation.", 409);
     }
-    const result = await this.store.deleteArchivedThread(id);
+    const result = await this.store.deleteArchivedThread(resolved);
     if (result.orphanedFiles > 0) {
       this.options.logger?.warn?.("Deleted a web conversation with attachment files deferred to orphan cleanup.", {
-        threadId: id,
+        threadId: resolved,
         count: result.orphanedFiles,
       });
     }
-    this.emit("thread.changed", id, { threadId: id, removed: true });
-    this.emit("threads.changed", id);
+    this.emit("thread.changed", resolved, { threadId: resolved, removed: true });
+    this.emit("threads.changed", resolved);
   }
 
   patchAgent(sourceId: string, patch: PatchWebAgentInput): WebAgentSummary {
@@ -400,6 +439,122 @@ export class WebService {
       return { status: "offline", items: [] };
     }
     return connection.info.skills ?? { status: "unsupported", items: [] };
+  }
+
+  async cronOverview(sourceId: string): Promise<WebCronOverview> {
+    const agent = this.store.getAgent(sourceId);
+    if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const connection = this.connections.get(sourceId);
+    if (connection?.info.cron?.read === true) {
+      const overview = await connection.client.cronOverview(AbortSignal.timeout(INFO_TIMEOUT_MS));
+      const synced = this.store.syncCronOverviewResult({ sourceId, ...overview });
+      if (synced.changed) {
+        this.emit("cron.changed", undefined, { sourceId });
+        this.emit("threads.changed");
+      }
+      return synced.overview;
+    }
+    const stored = this.store.storedCronOverview(sourceId);
+    if (stored !== undefined) return { ...stored, actionsEnabled: false };
+    throw new WebConsoleError(
+      "cron_unavailable",
+      "This agent does not expose first-class cron operator state.",
+      404,
+    );
+  }
+
+  async cronRuns(
+    sourceId: string,
+    jobId: string,
+    input: { readonly limit: number; readonly before?: string },
+  ): Promise<WebCronRunPage> {
+    const agent = this.store.getAgent(sourceId);
+    if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const connection = this.connections.get(sourceId);
+    if (connection?.info.cron?.read !== true) {
+      if (this.store.cronThread(sourceId, jobId) === undefined) {
+        throw new WebConsoleError("cron_job_not_found", "Cron job not found for this agent.", 404);
+      }
+      if (input.before !== undefined) return { runs: [] };
+      return this.store.storedCronRuns(sourceId, jobId, input.limit);
+    }
+    const page = await connection.client.cronRuns(jobId, {
+      limit: input.limit,
+      ...(input.before === undefined ? {} : { before: input.before }),
+      signal: AbortSignal.timeout(INFO_TIMEOUT_MS),
+    });
+    const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, page.runs);
+    if (reconciled.changed) {
+      const threadId = this.store.cronThread(sourceId, jobId)?.id;
+      this.emit("thread.changed", threadId);
+      this.emit("threads.changed", threadId);
+    }
+    return { ...page, messages: reconciled.messages };
+  }
+
+  async cronRun(sourceId: string, jobId: string, runId: string): Promise<WebMessage> {
+    const connection = this.requireCronConnection(sourceId, false);
+    const run = await connection.client.cronRun(jobId, runId, AbortSignal.timeout(INFO_TIMEOUT_MS));
+    const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, [run]);
+    const message = reconciled.messages[0];
+    if (message === undefined) {
+      throw new WebConsoleError("invalid_operator_cron", "Cron detail did not reconcile a message.", 502);
+    }
+    if (reconciled.changed) {
+      this.emit("thread.changed", message.threadId, { messageId: message.id });
+      this.emit("threads.changed", message.threadId);
+    }
+    return message;
+  }
+
+  async cronConfigView(sourceId: string): Promise<WebChannelConfigView> {
+    const connection = this.requireCronConnection(sourceId, false);
+    return await connection.client.cronConfigView(AbortSignal.timeout(INFO_TIMEOUT_MS));
+  }
+
+  async cronRunNow(
+    sourceId: string,
+    jobId: string,
+    input: { readonly idempotencyKey: string; readonly confirmationToken?: string },
+  ): Promise<WebCronMutationResult<{ readonly run: WebCronRunSummary }>> {
+    const connection = this.requireCronConnection(sourceId, true);
+    const result = await connection.client.cronRunNow(jobId, input, AbortSignal.timeout(INFO_TIMEOUT_MS));
+    if (result.kind === "completed") {
+      const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, [result.value.run]);
+      if (reconciled.changed) {
+        const threadId = this.store.cronThread(sourceId, jobId)?.id;
+        this.emit("thread.changed", threadId);
+        this.emit("threads.changed", threadId);
+      }
+    }
+    return result;
+  }
+
+  async cronSetEffectiveEnabled(
+    sourceId: string,
+    jobId: string,
+    enabled: boolean,
+    input: { readonly idempotencyKey: string; readonly confirmationToken?: string },
+  ): Promise<WebCronMutationResult<{ readonly job: WebCronOverview["jobs"][number] }>> {
+    const connection = this.requireCronConnection(sourceId, true);
+    const result = await connection.client.cronSetEffectiveEnabled(
+      jobId,
+      enabled,
+      input,
+      AbortSignal.timeout(INFO_TIMEOUT_MS),
+    );
+    if (result.kind === "confirmation_required") return result;
+    const refreshed = await connection.client.cronOverview(AbortSignal.timeout(INFO_TIMEOUT_MS));
+    const synced = this.store.syncCronOverviewResult({ sourceId, ...refreshed });
+    const overview = synced.overview;
+    const job = overview.jobs.find((candidate) => candidate.jobId === jobId);
+    if (job === undefined) throw new WebConsoleError("invalid_operator_cron", "Updated cron job disappeared.", 502);
+    if (synced.changed) {
+      this.emit("cron.changed", job.threadId, { sourceId, jobId });
+      this.emit("thread.changed", job.threadId, { thread: this.store.getThread(job.threadId) });
+      this.emit("threads.changed", job.threadId);
+    }
+    return { ...result, value: { job } };
   }
 
   async deliverNotification(input: DeliverWebNotificationInput): Promise<DeliverWebNotificationResult> {
@@ -433,8 +588,10 @@ export class WebService {
     const attachmentIds = input.attachmentIds ?? [];
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    threadId = thread.id;
     const agent = this.store.getAgent(thread.sourceId);
     const connection = this.connections.get(thread.sourceId);
+    if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
     if (agent === undefined || connection === undefined || !thread.canSend) {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
     }
@@ -452,6 +609,7 @@ export class WebService {
     }
     const thread = this.store.getThread(threadId);
     if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    threadId = thread.id;
     const connection = this.connections.get(thread.sourceId);
     const active = this.activeTurns.get(threadId);
     const reserved = this.store.reserveLiveInput(threadId, text);
@@ -485,6 +643,9 @@ export class WebService {
   }
 
   async cancelTurn(threadId: string): Promise<WebThread> {
+    const resolved = this.store.getThread(threadId)?.id;
+    if (resolved === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    threadId = resolved;
     const active = this.activeTurns.get(threadId);
     const stored = this.store.activeTurn(threadId);
     if (stored === undefined) throw new WebConsoleError("no_active_turn", "This conversation has no active turn.", 409);
@@ -802,14 +963,20 @@ export class WebService {
       );
     }
     await connection.client.recordVerbatim(
-      `web:${reservation.threadId}`,
+      this.store.notificationConversationId(reservation),
       reservation.text,
       reservation.deliveryKey,
     );
     const completed = this.store.completeNotification(reservation);
+    if (completed.thread === undefined) {
+      if (completed.tombstoned === true) return completed;
+      throw new WebConsoleError("storage_corrupt", "A new notification completed without a conversation.", 500);
+    }
     this.emit("threads.changed", completed.thread.id, { thread: completed.thread });
     this.emit("thread.changed", completed.thread.id, { thread: completed.thread });
-    if (!completed.duplicate) this.announcePushEvent(`web-new:${reservation.threadId}`);
+    if (!completed.duplicate) {
+      this.announcePushEvent(notificationPushLogicalKey(reservation.sourceId, reservation.deliveryKey));
+    }
     return completed;
   }
 
@@ -838,9 +1005,9 @@ export class WebService {
       });
     } catch (error) {
       this.options.logger?.warn?.("Web agent discovery failed.", { error: errorMessage(error) });
-      this.store.replaceAgents([]);
+      const changed = this.store.replaceAgents([]);
       this.connections = new Map();
-      this.emit("agents.changed");
+      if (changed) this.emit("agents.changed", undefined, { agents: this.store.listAgents() });
       return;
     }
 
@@ -868,6 +1035,8 @@ export class WebService {
           ...(info.effort === undefined ? {} : { defaultEffort: info.effort }),
           ...(efforts.length === 0 ? {} : { efforts }),
           ...(info.modelOptions === undefined ? {} : { modelOptions: info.modelOptions }),
+          ...(info.cron === undefined ? {} : { cron: info.cron }),
+          ...(info.supportsAskById ? { supportsAskById: true } : {}),
           updatedAt: agent.source.updatedAt,
         };
       } catch (error) {
@@ -879,9 +1048,26 @@ export class WebService {
       }
     }));
     this.connections = nextConnections;
-    this.store.replaceAgents(summaries);
-    this.emit("agents.changed", undefined, { agents: this.store.listAgents() });
-    this.emit("threads.changed");
+    const agentsChanged = this.store.replaceAgents(summaries);
+    const cronChangedSources = new Set<string>();
+    await Promise.all([...nextConnections.entries()].map(async ([sourceId, connection]) => {
+      if (connection.info.cron?.read !== true) return;
+      try {
+        const overview = await connection.client.cronOverview(
+          AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]),
+        );
+        const synced = this.store.syncCronOverviewResult({ sourceId, ...overview });
+        if (synced.changed) cronChangedSources.add(sourceId);
+      } catch (error) {
+        this.options.logger?.debug?.("Cron operator refresh failed; retaining the last authoritative snapshot.", {
+          sourceId,
+          error: errorMessage(error),
+        });
+      }
+    }));
+    if (agentsChanged) this.emit("agents.changed", undefined, { agents: this.store.listAgents() });
+    for (const sourceId of cronChangedSources) this.emit("cron.changed", undefined, { sourceId });
+    if (cronChangedSources.size > 0) this.emit("threads.changed");
     for (const threadId of this.store.queuedLiveInputThreadIds()) {
       void this.drainQueuedLiveInputs(threadId);
     }
@@ -974,7 +1160,7 @@ export class WebService {
       if (connection !== undefined && connection.info.supportsAskUser) {
         try {
           const snapshot = await connection.client.pendingAsk(
-            `web:${threadId}`,
+            this.store.cronConversationIdForThread(threadId) ?? `web:${threadId}`,
             AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]),
           );
           if (snapshot !== undefined) {
@@ -1026,10 +1212,13 @@ export class WebService {
     const connection = thread === undefined ? undefined : this.connections.get(thread.sourceId);
     if (connection === undefined || !connection.info.supportsAskUser) return "unknown";
     try {
-      const snapshot = await connection.client.pendingAsk(
-        `web:${event.threadId}`,
-        AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]),
-      );
+      const boundedSignal = AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]);
+      const snapshot = connection.info.supportsAskById
+        ? await connection.client.ask(interactionId, boundedSignal)
+        : await connection.client.pendingAsk(
+            this.store.cronConversationIdForThread(event.threadId) ?? `web:${event.threadId}`,
+            boundedSignal,
+          );
       return snapshot?.interactionId === interactionId
         && snapshot.status === "pending"
         && new Date(snapshot.expiresAt).getTime() > this.currentDate().getTime()
@@ -1038,6 +1227,24 @@ export class WebService {
     } catch {
       return "unknown";
     }
+  }
+
+  private requireCronConnection(sourceId: string, actions: boolean): AgentConnection {
+    if (this.store.getAgent(sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    }
+    const connection = this.connections.get(sourceId);
+    if (connection === undefined || connection.info.cron?.read !== true) {
+      throw new WebConsoleError("cron_unavailable", "Cron operator state is unavailable for this agent.", 409);
+    }
+    if (actions && connection.info.cron.actions !== true) {
+      throw new WebConsoleError(
+        "cron_actions_disabled",
+        "Cron actions require this agent's authenticated operator capability.",
+        403,
+      );
+    }
+    return connection;
   }
 
   private currentDate(): Date {

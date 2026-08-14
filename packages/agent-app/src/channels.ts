@@ -20,6 +20,7 @@ import type { TuiChannelOverrides } from "./channel-drivers/tui.js";
 import { createWebhookChannelDriver } from "./channel-drivers/webhook.js";
 import type { WebhookChannelOverrides } from "./channel-drivers/webhook.js";
 import { resolveConfiguredChannelPlugins } from "./channel-plugins.js";
+import { CronOperatorRegistry } from "./cron-operator-service.js";
 
 /**
  * The channel contract lives in @mono-agent/agent-contracts so third-party
@@ -31,6 +32,7 @@ export type {
   ChannelLogger,
   ChannelStatus,
   NotifyDeliveryResult,
+  NotifyDeliveryContext,
   NotifyDestination,
   RunningChannel,
 } from "@mono-agent/agent-contracts";
@@ -90,13 +92,14 @@ export interface ChannelDriverOverrides {
 
 /** Every built-in channel driver, in startup/status display order. */
 export function defaultChannelDrivers(overrides: ChannelDriverOverrides = {}): readonly ChannelDriver[] {
+  const cronOperator = new CronOperatorRegistry();
   return [
     createTelegramChannelDriver(overrides.telegram),
     createSlackChannelDriver(overrides.slack),
     createWebhookChannelDriver(overrides.webhook),
     createOpenAIApiChannelDriver(overrides.openaiApi),
-    createCronChannelDriver(overrides.cron),
-    createTuiChannelDriver(overrides.tui),
+    createCronChannelDriver(overrides.cron, cronOperator),
+    createTuiChannelDriver(overrides.tui, cronOperator),
   ] as readonly ChannelDriver[];
 }
 

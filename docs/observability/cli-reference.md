@@ -576,7 +576,7 @@ There is no application authentication. Anyone who can reach the port can read c
 
 Managed start tries to claim a conflict-free Tailscale Serve HTTPS endpoint. It uses `:443` only when free, otherwise the first free port in `8443`–`8499`, never resets another handler, records ownership, and removes only its own route. Failure to create the first route is non-fatal: the direct local/LAN/tailnet HTTP URLs remain healthy and status prints remediation. If a restart changes the app port but cannot migrate an already-owned route, mono-agent restores the prior worker, service record, plist, and exact Serve route, then exits nonzero instead of leaving a healthy-looking split configuration.
 
-State lives owner-private under `~/.mono-agent/web/`. Threads are archived/restored rather than individually deleted. A running turn continues when the browser disconnects; a service restart marks any still-active turn interrupted. See the [web console guide](/observability/web-console/) for attachment limits, thread binding, and the chat-first scope.
+State lives owner-private under `~/.mono-agent/web/`. Conversations must be archived before deletion; configured cron channels may be archived but cannot be deleted, while removed-job tombstones may be deleted after archival. A running turn continues when the browser disconnects; a service restart marks any still-active turn interrupted. See the [web console guide](/observability/web-console/) for attachment limits, thread binding, and the chat-first scope.
 
 Managed stdout/stderr are `logs/web.{out,err}.log`; retained generations are
 `.1`, `.2`, and `.3`. Rotation stops and restarts the web service only after the

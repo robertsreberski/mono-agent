@@ -4,17 +4,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
 import {
   ConsoleStoreProvider,
+  cronChannelPath,
   useConsoleStore,
 } from "./console-store";
-import { agent, bootstrap } from "./test/fixtures";
-import type { AgentSkillRegistry } from "./types";
+import { agent, bootstrap, thread } from "./test/fixtures";
+import type { AgentSkillRegistry, CronOverview, ThreadDetail } from "./types";
 
 vi.mock("./api", () => ({
   api: {
     bootstrap: vi.fn(),
     thread: vi.fn(),
+    threads: vi.fn(),
+    messages: vi.fn(),
+    createThread: vi.fn(),
+    patchThread: vi.fn(),
+    deleteThread: vi.fn(),
     patchAgent: vi.fn(),
     agentSkills: vi.fn(),
+    cronOverview: vi.fn(),
+    cronRuns: vi.fn(),
+    cronRun: vi.fn(),
   },
 }));
 
@@ -70,9 +79,50 @@ const renderStore = async () => {
   };
 };
 
+const cronThread = thread("cron-thread", "alpha", {
+  title: "Cron · daily:report",
+  trigger: { kind: "cron", jobId: "daily:report", configured: true },
+  canSend: false,
+  canUpload: false,
+});
+
+const cronOverview = (overrides: Partial<CronOverview> = {}): CronOverview => ({
+  generatedAt: "2026-08-14T08:00:00.000Z",
+  actionsEnabled: true,
+  jobs: [{
+    jobId: "daily:report",
+    expression: "0 8 * * *",
+    timezone: "Europe/Amsterdam",
+    conversationId: "cron:daily:report",
+    configured: true,
+    declaredEnabled: true,
+    effectiveEnabled: true,
+    nextRunAt: "2026-08-15T06:00:00.000Z",
+    health: "healthy",
+    threadId: cronThread.id,
+  }],
+  ...overrides,
+});
+
+const detail = (threadSummary = cronThread, text = "first"): ThreadDetail => ({
+  thread: threadSummary,
+  messages: [{
+    id: `message-${text}`,
+    threadId: threadSummary.id,
+    role: "assistant",
+    parts: [{ type: "text", text }],
+    attachments: [],
+    createdAt: "2026-08-14T08:00:00.000Z",
+    updatedAt: "2026-08-14T08:00:00.000Z",
+    status: "complete",
+  }],
+});
+
 describe("ConsoleStoreProvider integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
+    window.history.replaceState(null, "", "/");
     FakeEventSource.latest = undefined;
     vi.stubGlobal("EventSource", FakeEventSource);
     vi.mocked(api.bootstrap).mockResolvedValue(
@@ -82,6 +132,9 @@ describe("ConsoleStoreProvider integration", () => {
       ], []),
     );
     vi.mocked(api.agentSkills).mockResolvedValue({ status: "unsupported", items: [] });
+    vi.mocked(api.threads).mockResolvedValue({ threads: [] });
+    vi.mocked(api.messages).mockResolvedValue({ messages: [] });
+    vi.mocked(api.cronRuns).mockResolvedValue({ runs: [] });
   });
 
   afterEach(() => {
@@ -253,5 +306,183 @@ describe("ConsoleStoreProvider integration", () => {
     } finally {
       window.removeEventListener("mono-agent:push-pending", pending);
     }
+  });
+
+  it("restores a stable source-qualified cron route from the bounded bootstrap", async () => {
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: true } }),
+    ], [cronThread]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread] });
+    vi.mocked(api.thread).mockResolvedValue(detail());
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview());
+
+    const store = await renderStore();
+
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+    expect(store.current.selectedAgentId).toBe("alpha");
+    expect(store.current.selectedThread?.canSend).toBe(false);
+    expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
+  });
+
+  it("resolves a cron route whose channel is outside the bootstrap window", async () => {
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: false } }),
+    ], []));
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview({ actionsEnabled: false }));
+    vi.mocked(api.thread).mockResolvedValue(detail());
+
+    const store = await renderStore();
+
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+    expect(api.thread).toHaveBeenCalledWith(cronThread.id);
+    expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
+  });
+
+  it("fetches and canonicalizes an out-of-window thread before mutating it", async () => {
+    const canonical = thread("canonical-thread", "alpha", { archivedAt: null });
+    vi.mocked(api.thread).mockResolvedValue({ thread: canonical, messages: [] });
+    vi.mocked(api.patchThread).mockResolvedValue({
+      ...canonical,
+      archivedAt: "2026-08-14T09:00:00.000Z",
+    });
+    const store = await renderStore();
+
+    await act(async () => store.current.archiveThread("redirected-legacy-id"));
+
+    expect(api.thread).toHaveBeenCalledWith("redirected-legacy-id");
+    expect(api.patchThread).toHaveBeenCalledWith("canonical-thread", { archived: true });
+  });
+
+  it("converges a selected cron feed on a live event without a manual refresh", async () => {
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: true } }),
+    ], [cronThread]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread] });
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview());
+    let currentDetail = detail(cronThread, "first");
+    vi.mocked(api.thread).mockImplementation(async () => currentDetail);
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.detail?.messages[0]?.parts).toEqual([
+      { type: "text", text: "first" },
+    ]));
+    const initialRunReads = vi.mocked(api.cronRuns).mock.calls.length;
+
+    currentDetail = detail(cronThread, "answered elsewhere");
+    act(() => FakeEventSource.latest?.emit("cron.changed", {
+      id: "event-cron-converged",
+      version: 1,
+      type: "cron.changed",
+      at: "2026-08-14T09:00:00.000Z",
+      payload: { sourceId: "alpha" },
+    }));
+
+    await waitFor(() => expect(store.current.detail?.messages[0]?.parts).toEqual([
+      { type: "text", text: "answered elsewhere" },
+    ]));
+    expect(vi.mocked(api.cronRuns).mock.calls.length).toBeGreaterThan(initialRunReads);
+  });
+
+  it("keeps an unrelated mutation error through a successful periodic cron refresh", async () => {
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: true } }),
+    ], [cronThread]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread] });
+    vi.mocked(api.thread).mockResolvedValue(detail());
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview());
+    vi.mocked(api.patchAgent).mockRejectedValue(new Error("pin mutation failed"));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+
+    await act(async () => {
+      await expect(store.current.setAgentPinned("alpha", true)).rejects.toThrow("pin mutation failed");
+    });
+    expect(store.current.actionError).toBe("pin mutation failed");
+    await act(async () => store.current.refreshCron());
+    expect(store.current.cronError).toBeNull();
+    expect(store.current.actionError).toBe("pin mutation failed");
+  });
+
+  it("replaces the selected canonical run message after loading activity detail", async () => {
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: true } }),
+    ], [cronThread]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread] });
+    vi.mocked(api.thread).mockResolvedValue(detail(cronThread, "compact"));
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview());
+    const detailedMessage = {
+      ...detail(cronThread, "compact").messages[0]!,
+      parts: [
+        { type: "text" as const, text: "selected detail" },
+        {
+          type: "telemetry" as const,
+          event: "cron_run",
+          data: { runId: "cron:daily:report:one", activityLoaded: true, eventsTruncated: true },
+        },
+      ],
+    };
+    vi.mocked(api.cronRun).mockResolvedValue(detailedMessage);
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+
+    await act(async () => store.current.loadCronRunActivity("cron:daily:report:one"));
+
+    expect(api.cronRun).toHaveBeenCalledWith("alpha", "daily:report", "cron:daily:report:one");
+    expect(store.current.detail?.messages[0]?.parts).toEqual(detailedMessage.parts);
+    expect(store.current.cronError).toBeNull();
+  });
+
+  it("loads older agent-owned cron pages into the canonical message feed", async () => {
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: true } }),
+    ], [cronThread]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread] });
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview());
+    vi.mocked(api.thread).mockResolvedValue(detail());
+    vi.mocked(api.cronRuns)
+      .mockResolvedValueOnce({ runs: [], nextCursor: "older-page" })
+      .mockResolvedValue({
+        runs: [],
+        messages: [{
+          id: "message-older",
+          threadId: cronThread.id,
+          role: "assistant",
+          parts: [{ type: "text", text: "older" }],
+          attachments: [],
+          createdAt: "2026-08-13T08:00:00.000Z",
+          updatedAt: "2026-08-13T08:00:00.000Z",
+          status: "complete",
+        }],
+      });
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.hasOlderMessages).toBe(true));
+
+    await act(async () => store.current.loadOlderMessages());
+
+    expect(api.cronRuns).toHaveBeenLastCalledWith("alpha", "daily:report", "older-page");
+    expect(store.current.detail?.messages.map((message) => message.id)).toEqual([
+      "message-older",
+      "message-first",
+    ]);
+    expect(store.current.hasOlderMessages).toBe(false);
+  });
+
+  it("keeps a cached cron channel read-only when paired with an old agent", async () => {
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha")], [cronThread]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread] });
+    vi.mocked(api.thread).mockResolvedValue(detail());
+
+    const store = await renderStore();
+
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+    expect(store.current.cronOverview).toBeNull();
+    expect(api.cronOverview).not.toHaveBeenCalled();
+    expect(store.current.selectedThread?.canSend).toBe(false);
   });
 });
