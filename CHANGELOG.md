@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### ACP client interoperability
+
+- The mono-agent ACP bridge now accepts standard client filesystem and terminal
+  capability advertisements without delegating agent-owned execution, treats
+  client working directories as advisory, and supports durable source-bound
+  `session/resume` across bridge and source restarts. Session authorizations are
+  owner-only and are revoked by `restart --clear-sessions`.
+
 ## 0.19.1 — Web Push delivery fix (2026-08-13)
 
 ### Web Push reliability

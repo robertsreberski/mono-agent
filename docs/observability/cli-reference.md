@@ -409,20 +409,20 @@ Restarts the background instance for this config, starting it if stopped. Like `
 | --- | --- |
 | `--config <path>` | Target a non-default config. |
 | `--env-file <path>` | Load the same non-default dotenv file used by the managed worker and preserve it in recovery commands. |
-| `--clear-sessions` | Stop, then purge the persisted pi-session store and active conversation-history store, then start fresh. |
+| `--clear-sessions` | Stop, then purge persisted Pi sessions, active conversation history, and ACP session authorizations, then start fresh. |
 | `--force` | Deprecated alias of `--clear-sessions` (same effect); every invocation prints a deprecation hint. |
 
-`--clear-sessions` clears both continuity paths: resumable provider transcripts under `providers.piNative.piSessionsRoot` and canonical active conversation history under `history/` beside `artifacts.dir`. The next turn therefore neither resumes nor replays pre-reset conversation state. Durable memory under `memory.path` and recorded run artifacts under `artifacts.dir` are untouched. Each missing store is a no-op.
+`--clear-sessions` clears every conversation-continuity path: resumable provider transcripts under `providers.piNative.piSessionsRoot`, canonical active conversation history under `history/`, and durable ACP session authorizations under `acp-sessions/` beside `artifacts.dir`. The next turn therefore neither resumes nor replays pre-reset conversation state, and previously issued ACP session ids are rejected. Durable memory under `memory.path` and recorded run artifacts under `artifacts.dir` are untouched. Each missing store is a no-op.
 
 ```bash
 mono-agent restart
-mono-agent restart --clear-sessions   # clears piSessionsRoot + active conversation history
+mono-agent restart --clear-sessions   # clears provider, history, and ACP continuity
 ```
 
 `piSessionsRoot` is set via `providers.piNative.piSessionsRoot` (env `MONO_AGENT_PI_SESSIONS_ROOT`), e.g. `.mono-agent/sessions`; leaving it unset keeps sessions in memory.
 
 :::caution
-`--clear-sessions` permanently deletes saved provider transcripts and active conversation history for this instance. The agent's durable long-term memory and recorded run artifacts are preserved, but the current-chat context cannot be recovered after the reset.
+`--clear-sessions` permanently deletes saved provider transcripts, active conversation history, and ACP session authorizations for this instance. The agent's durable long-term memory and recorded run artifacts are preserved, but the current-chat context cannot be recovered after the reset.
 :::
 
 ## `stop`, `status`, `logs`

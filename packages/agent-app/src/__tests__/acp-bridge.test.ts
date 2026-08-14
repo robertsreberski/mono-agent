@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import type { Server } from "node:http";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -13,6 +13,12 @@ import { runAcpBridge } from "../acp-bridge.js";
 const cleanupRoots: string[] = [];
 const cleanupServers: Server[] = [];
 
+interface BridgeHarness {
+  readonly send: (frame: unknown) => void;
+  readonly next: () => Promise<Record<string, unknown>>;
+  readonly close: () => Promise<void>;
+}
+
 afterEach(async () => {
   await Promise.all(cleanupServers.splice(0).map(async (server) => new Promise<void>((resolve) => {
     server.close(() => resolve());
@@ -22,6 +28,103 @@ afterEach(async () => {
     force: true,
   })));
 });
+
+function startBridgeHarness(options: {
+  readonly sourceId: string;
+  readonly registry: string;
+}): BridgeHarness {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const stderr = new PassThrough();
+  const lines = createInterface({ input: output, crlfDelay: Infinity });
+  const frames = lines[Symbol.asyncIterator]();
+  const bridge = runAcpBridge({
+    sourceId: options.sourceId,
+    env: { MONO_AGENT_TRACE_REGISTRY_DIR: options.registry },
+    input,
+    output,
+    stderr,
+  });
+  return {
+    send(frame: unknown): void {
+      input.write(`${JSON.stringify(frame)}\n`);
+    },
+    async next(): Promise<Record<string, unknown>> {
+      const frame = await frames.next();
+      if (frame.done) throw new Error(`ACP bridge stdout closed: ${stderr.read()?.toString() ?? ""}`);
+      return JSON.parse(frame.value) as Record<string, unknown>;
+    },
+    async close(): Promise<void> {
+      input.end();
+      const exitCode = await bridge;
+      if (exitCode !== 0) throw new Error(`ACP bridge exited ${String(exitCode)}: ${stderr.read()?.toString() ?? ""}`);
+    },
+  };
+}
+
+async function startOperatorFixture(turnBodies: Array<Record<string, unknown>>): Promise<string> {
+  const server = createServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/gui/v1/info") {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ schema: 1, label: "Resume Fixture", capabilities: {} }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/gui/v1/turns") {
+      let raw = "";
+      for await (const chunk of request) raw += String(chunk);
+      turnBodies.push(JSON.parse(raw) as Record<string, unknown>);
+      response.setHeader("content-type", "application/x-ndjson");
+      response.end([
+        JSON.stringify({ kind: "append", delta: "resumed" }),
+        JSON.stringify({ kind: "finish", finalText: "resumed" }),
+        "",
+      ].join("\n"));
+      return;
+    }
+    response.statusCode = 404;
+    response.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  cleanupServers.push(server);
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("fixture server did not bind TCP");
+  return `http://127.0.0.1:${String(address.port)}/gui`;
+}
+
+async function writeSourceManifest(options: {
+  readonly registry: string;
+  readonly artifactDir: string;
+  readonly workspace: string;
+  readonly baseUrl: string;
+  readonly sourceId?: string;
+}): Promise<void> {
+  const sourceId = options.sourceId ?? "personal-agent";
+  const now = new Date().toISOString();
+  await writeFile(join(options.registry, `${sourceId}.json`), JSON.stringify({
+    schema: "agent-runtime.trace-source.v1",
+    sourceId,
+    label: "Personal Agent",
+    artifactDir: options.artifactDir,
+    status: "running",
+    startedAt: now,
+    updatedAt: now,
+    metadata: {
+      channels: {
+        tui: {
+          kind: "running",
+          baseUrl: options.baseUrl,
+          acpBridge: {
+            schema: "mono-agent.acp-source.v1",
+            bridgeVersion: 1,
+            protocolVersion: 1,
+            installedVersion: "0.19.1",
+            workspacePath: options.workspace,
+          },
+        },
+      },
+    },
+  }));
+}
 
 describe("ACP bridge", () => {
   it("rejects a running source that publishes an unsupported bridge version", async () => {
@@ -190,39 +293,19 @@ describe("ACP bridge", () => {
       params: {
         protocolVersion: 1,
         clientCapabilities: advertisesToolEnvironment
-          ? { fs: { readTextFile: true } }
-          : { terminal: true },
-        clientInfo: { name: "unsupported-client", version: "1" },
-      },
-    });
-    await expect(next()).resolves.toMatchObject({
-      id: 0,
-      error: {
-        data: {
-          code: advertisesToolEnvironment
-            ? "client_filesystem_unsupported"
-            : "client_terminal_unsupported",
-        },
-      },
-    });
-
-    send({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: {
-        protocolVersion: 1,
-        clientCapabilities: {},
-        clientInfo: { name: "test", version: "1" },
+          ? { fs: { readTextFile: true, writeTextFile: true }, elicitation: { form: {} } }
+          : { terminal: true, elicitation: { form: {} } },
+        clientInfo: { name: "stock-acp-client", version: "1" },
       },
     });
     const initialized = await next();
     expect(initialized).toMatchObject({
-      id: 1,
+      id: 0,
       result: {
         protocolVersion: 1,
         agentCapabilities: {
           promptCapabilities: { image: false, audio: false, embeddedContext: false },
+          sessionCapabilities: { resume: {} },
         },
         _meta: {
           "mono-agent": {
@@ -238,8 +321,6 @@ describe("ACP bridge", () => {
     });
     expect((initialized.result as { agentCapabilities: unknown }).agentCapabilities)
       .not.toHaveProperty("loadSession");
-    expect((initialized.result as { agentCapabilities: unknown }).agentCapabilities)
-      .not.toHaveProperty("sessionCapabilities.resume");
 
     send({
       jsonrpc: "2.0",
@@ -247,10 +328,22 @@ describe("ACP bridge", () => {
       method: "session/new",
       params: { cwd: artifactDir, mcpServers: [] },
     });
-    await expect(next()).resolves.toMatchObject({
+    const advisoryCwdSession = await next();
+    expect(advisoryCwdSession).toMatchObject({
       id: 2,
-      error: { data: { code: "workspace_mismatch" } },
+      result: {
+        sessionId: expect.any(String),
+        _meta: {
+          agentSessionId: expect.any(String),
+          "mono-agent": { workspace: { path: canonicalRoot, owner: "agent" } },
+        },
+      },
     });
+    const advisoryCwdResult = advisoryCwdSession.result as {
+      sessionId: string;
+      _meta: { agentSessionId: string };
+    };
+    expect(advisoryCwdResult._meta.agentSessionId).toBe(advisoryCwdResult.sessionId);
 
     send({
       jsonrpc: "2.0",
@@ -284,8 +377,19 @@ describe("ACP bridge", () => {
       params: { cwd: root, mcpServers: [] },
     });
     const created = await next();
-    expect(created).toMatchObject({ id: 5, result: { sessionId: expect.any(String) } });
-    const sessionId = (created.result as { sessionId: string }).sessionId;
+    expect(created).toMatchObject({
+      id: 5,
+      result: {
+        sessionId: expect.any(String),
+        _meta: {
+          agentSessionId: expect.any(String),
+          "mono-agent": { workspace: { path: canonicalRoot, owner: "agent" } },
+        },
+      },
+    });
+    const createdResult = created.result as { sessionId: string; _meta: { agentSessionId: string } };
+    const sessionId = createdResult.sessionId;
+    expect(createdResult._meta.agentSessionId).toBe(sessionId);
 
     send({
       jsonrpc: "2.0",
@@ -392,6 +496,258 @@ describe("ACP bridge", () => {
       else reject(error);
     }));
     cleanupServers.splice(cleanupServers.indexOf(server), 1);
+  });
+
+  it("durably resumes the exact conversation after bridge and source restarts", async () => {
+    const firstTurns: Array<Record<string, unknown>> = [];
+    const secondTurns: Array<Record<string, unknown>> = [];
+    const firstBaseUrl = await startOperatorFixture(firstTurns);
+    const secondBaseUrl = await startOperatorFixture(secondTurns);
+    const root = await mkdtemp(join(tmpdir(), "mono-agent-acp-resume-"));
+    const canonicalRoot = await realpath(root);
+    cleanupRoots.push(root);
+    const registry = join(root, "registry");
+    const artifactDir = join(root, "artifacts");
+    await mkdir(registry);
+    await mkdir(artifactDir);
+    await writeSourceManifest({
+      registry,
+      artifactDir,
+      workspace: canonicalRoot,
+      baseUrl: firstBaseUrl,
+    });
+
+    const firstBridge = startBridgeHarness({ sourceId: "personal-agent", registry });
+    firstBridge.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: 1,
+        clientCapabilities: { fs: { readTextFile: true }, terminal: true },
+        clientInfo: { name: "acpx", version: "1" },
+      },
+    });
+    await expect(firstBridge.next()).resolves.toMatchObject({
+      id: 1,
+      result: { agentCapabilities: { sessionCapabilities: { resume: {} } } },
+    });
+    firstBridge.send({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session/new",
+      params: { cwd: tmpdir(), mcpServers: [] },
+    });
+    const created = await firstBridge.next();
+    const createdResult = created.result as {
+      sessionId: string;
+      _meta: { agentSessionId: string; "mono-agent": { workspace: { path: string } } };
+    };
+    expect(createdResult._meta).toMatchObject({
+      agentSessionId: createdResult.sessionId,
+      "mono-agent": { workspace: { path: canonicalRoot } },
+    });
+    const sessionId = createdResult.sessionId;
+    firstBridge.send({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "session/prompt",
+      params: { sessionId, prompt: [{ type: "text", text: "remember this first turn" }] },
+    });
+    await expect(firstBridge.next()).resolves.toMatchObject({
+      method: "session/update",
+      params: { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { text: "resumed" } } },
+    });
+    await expect(firstBridge.next()).resolves.toMatchObject({ id: 3, result: { stopReason: "end_turn" } });
+    await firstBridge.close();
+
+    const authorizationRoot = join(root, "acp-sessions");
+    const authorizationFiles = await readdir(authorizationRoot);
+    expect(authorizationFiles).toHaveLength(1);
+    const authorizationPath = join(authorizationRoot, authorizationFiles[0] as string);
+    expect((await stat(authorizationRoot)).mode & 0o777).toBe(0o700);
+    expect((await stat(authorizationPath)).mode & 0o777).toBe(0o600);
+    const authorization = JSON.parse(await readFile(authorizationPath, "utf8")) as Record<string, unknown>;
+    expect(authorization).toMatchObject({
+      schema: "mono-agent.acp-session.v1",
+      sessionId,
+      sourceId: "personal-agent",
+      workspace: canonicalRoot,
+      createdAt: expect.any(String),
+    });
+
+    await writeSourceManifest({
+      registry,
+      artifactDir,
+      workspace: canonicalRoot,
+      baseUrl: secondBaseUrl,
+    });
+    const resumedBridge = startBridgeHarness({ sourceId: "personal-agent", registry });
+    resumedBridge.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: 1,
+        clientCapabilities: {},
+        clientInfo: { name: "acpx", version: "1" },
+      },
+    });
+    await expect(resumedBridge.next()).resolves.toMatchObject({ id: 1, result: { protocolVersion: 1 } });
+    resumedBridge.send({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session/resume",
+      params: {
+        sessionId: "acp:personal-agent:00000000-0000-4000-8000-000000000000",
+        cwd: tmpdir(),
+        mcpServers: [],
+      },
+    });
+    await expect(resumedBridge.next()).resolves.toMatchObject({
+      id: 2,
+      error: { data: { code: "unknown_session_id" } },
+    });
+    resumedBridge.send({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "session/resume",
+      params: {
+        sessionId: "acp:other-agent:00000000-0000-4000-8000-000000000000",
+        cwd: tmpdir(),
+        mcpServers: [],
+      },
+    });
+    await expect(resumedBridge.next()).resolves.toMatchObject({
+      id: 3,
+      error: { data: { code: "invalid_session_id" } },
+    });
+    resumedBridge.send({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "session/resume",
+      params: { sessionId, cwd: artifactDir, mcpServers: [] },
+    });
+    const resumed = await resumedBridge.next();
+    expect(resumed).toMatchObject({
+      id: 4,
+      result: {
+        _meta: {
+          agentSessionId: sessionId,
+          "mono-agent": { workspace: { path: canonicalRoot } },
+        },
+      },
+    });
+    resumedBridge.send({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "session/prompt",
+      params: { sessionId, prompt: [{ type: "text", text: "continue the conversation" }] },
+    });
+    await expect(resumedBridge.next()).resolves.toMatchObject({
+      method: "session/update",
+      params: { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { text: "resumed" } } },
+    });
+    await expect(resumedBridge.next()).resolves.toMatchObject({ id: 5, result: { stopReason: "end_turn" } });
+    expect(firstTurns).toHaveLength(1);
+    expect(firstTurns[0]).toMatchObject({ conversationId: sessionId, text: "remember this first turn" });
+    expect(secondTurns).toHaveLength(1);
+    expect(secondTurns[0]).toMatchObject({ conversationId: sessionId, text: "continue the conversation" });
+    await resumedBridge.close();
+
+    await writeFile(authorizationPath, `${JSON.stringify({ ...authorization, sourceId: "other-agent" })}\n`);
+    const mismatchedBridge = startBridgeHarness({ sourceId: "personal-agent", registry });
+    mismatchedBridge.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "acpx", version: "1" } },
+    });
+    await mismatchedBridge.next();
+    mismatchedBridge.send({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session/resume",
+      params: { sessionId, cwd: canonicalRoot, mcpServers: [] },
+    });
+    await expect(mismatchedBridge.next()).resolves.toMatchObject({
+      id: 2,
+      error: { data: { code: "session_authorization_mismatch" } },
+    });
+    await mismatchedBridge.close();
+
+    await writeFile(authorizationPath, "{not-json\n");
+    const corruptBridge = startBridgeHarness({ sourceId: "personal-agent", registry });
+    corruptBridge.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "acpx", version: "1" } },
+    });
+    await corruptBridge.next();
+    corruptBridge.send({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session/resume",
+      params: { sessionId, cwd: canonicalRoot, mcpServers: [] },
+    });
+    await expect(corruptBridge.next()).resolves.toMatchObject({
+      id: 2,
+      error: { data: { code: "session_authorization_corrupt" } },
+    });
+    await corruptBridge.close();
+
+    await rm(authorizationRoot, { recursive: true, force: true });
+    const purgedBridge = startBridgeHarness({ sourceId: "personal-agent", registry });
+    purgedBridge.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "acpx", version: "1" } },
+    });
+    await purgedBridge.next();
+    purgedBridge.send({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session/resume",
+      params: { sessionId, cwd: canonicalRoot, mcpServers: [] },
+    });
+    await expect(purgedBridge.next()).resolves.toMatchObject({
+      id: 2,
+      error: { data: { code: "unknown_session_id" } },
+    });
+    await purgedBridge.close();
+
+    if (process.platform !== "win32") {
+      const redirectedRoot = join(root, "redirected-acp-sessions");
+      await rm(authorizationRoot, { recursive: true, force: true });
+      await mkdir(redirectedRoot, { mode: 0o700 });
+      await writeFile(
+        join(redirectedRoot, authorizationFiles[0] as string),
+        `${JSON.stringify(authorization)}\n`,
+        { mode: 0o600 },
+      );
+      await symlink(redirectedRoot, authorizationRoot, "dir");
+      const redirectedBridge = startBridgeHarness({ sourceId: "personal-agent", registry });
+      redirectedBridge.send({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "acpx", version: "1" } },
+      });
+      await redirectedBridge.next();
+      redirectedBridge.send({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "session/resume",
+        params: { sessionId, cwd: canonicalRoot, mcpServers: [] },
+      });
+      await expect(redirectedBridge.next()).resolves.toMatchObject({
+        id: 2,
+        error: { data: { code: "session_authorization_corrupt" } },
+      });
+      await redirectedBridge.close();
+    }
   });
 
   it.each([

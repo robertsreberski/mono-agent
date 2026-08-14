@@ -438,7 +438,7 @@ mono-agent validate     # section report; exit 0 means structurally valid, not z
 mono-agent validate --consumer ../local-agent-alpha  # read-only report for a downstream folder
 mono-agent start        # traceability + every configured channel
 mono-agent restart      # apply config edits (config is JSON-first; restart to re-apply)
-mono-agent restart --clear-sessions  # restart AND clear provider sessions + active chat history (durable memory kept)
+mono-agent restart --clear-sessions  # restart and clear provider/history/ACP continuity (durable memory kept)
 ```
 
 Edit `mono-agent.config.json` directly and run `mono-agent restart` to apply it through the CLI. The CLI does not watch the file. A programmatic host can explicitly call `app.applyConfigChange(reason)` instead. `start` prints the traceability source, exporter status, and one initial status per channel: `running`, `waiting_for_config`, `disabled`, or `failed`. A running self-recovering transport can later report `degraded`.

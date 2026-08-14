@@ -64,9 +64,10 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   identity; publish a bounded, refreshable skill registry through each running
   operator endpoint so the web composer can discover valid `$skill-name`
   references; use `mono-agent tui` for bounded recorded-run replay.
-- Discover and expose one exact running agent through the Worklab-oriented ACP
-  core-session profile with `mono-agent bridge acp` while preserving agent-owned
-  configuration, workspace, sandbox, tools, MCP servers, and credentials.
+- Discover and expose one exact running agent through the ACP core-session
+  profile with `mono-agent bridge acp`, including durable session resume, while
+  preserving agent-owned configuration, workspace, sandbox, tools, MCP servers,
+  and credentials.
 
 ## Install / Usage
 

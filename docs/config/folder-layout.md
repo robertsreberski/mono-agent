@@ -30,6 +30,7 @@ my-agent/
       .capture-intake/     # owner-only durable completed-turn intake
     whatsapp-auth/         # Baileys auth state (WhatsApp channel only)
     sessions/              # optional durable Pi sessions when piSessionsRoot is set
+    acp-sessions/          # owner-only ACP session authorization records
     trace-sources/         # traceability registry (when kept folder-local)
 ```
 
@@ -81,10 +82,11 @@ The framework creates and writes everything under `.mono-agent/`. You generally 
 | `.mono-agent/memory/` | Built-in memory root: canonical daily notes, BuJo `graph.jsonl` and owner-only `.replay-projection-v1.json`, durable intake, and the managed `.index/`. The replay sidecar is exact metadata-only authority for BuJo lifecycle/thread replay; do not edit it or SQLite directly. | `memory.path` |
 | `.mono-agent/whatsapp-auth/` | Baileys auth state, written only when the WhatsApp channel is enabled. | (WhatsApp channel) |
 | `.mono-agent/sessions/` | Optional Pi-native provider transcripts used with canonical history for cross-restart resume. Without `piSessionsRoot`, provider sessions are process-local. | `providers.piNative.piSessionsRoot` |
+| `.mono-agent/acp-sessions/` | Owner-only, hashed authorization records for durable ACP session resume. These bind opaque ids to one source and workspace; prompt content and credentials are not stored here. | automatic; stored beside `artifacts.dir` |
 | `.mono-agent/trace-sources/` | The traceability registry, when kept folder-local. | `traceability.registryDir` |
 
 :::note
-`mono-agent restart --clear-sessions` purges persisted pi `sessions/` and active conversation `history/` for a fresh start. It keeps durable memory and recorded run artifacts. See [Sessions & concurrency](/runtime/sessions-concurrency/), [Artifacts & traces](/observability/artifacts-and-traces/), and [Capture & recall](/memory/capture-and-recall/).
+`mono-agent restart --clear-sessions` purges persisted Pi `sessions/`, active conversation `history/`, and `acp-sessions/` authorizations for a fresh start. It keeps durable memory and recorded run artifacts. See [Sessions & concurrency](/runtime/sessions-concurrency/), [Artifacts & traces](/observability/artifacts-and-traces/), and [Capture & recall](/memory/capture-and-recall/).
 :::
 
 ## Applying changes
