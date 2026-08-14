@@ -5,12 +5,20 @@ import type {
   CronJobConfig,
   CronJobResult,
 } from "@mono-agent/cron-adapter";
+import type { ChannelConfigViewSection, NotifyDeliveryContext } from "@mono-agent/agent-contracts";
 
 import { buildChannelConfigView } from "../channel-config-view.js";
 import { isChannelConfigured } from "../channel-gate.js";
 import type { ChannelGateSpec } from "../channel-gate.js";
 import type { ChannelDriver, MonoAgentAppLogger } from "../channels.js";
 import type { NotifyDeliveryResult } from "../proactive-notify.js";
+import {
+  inspectCronControlStore,
+  openCronControlStore,
+  type CronControlInspection,
+  type CronControlStore,
+} from "../cron-control-store.js";
+import { createCronOperatorService, CronOperatorRegistry } from "../cron-operator-service.js";
 import { findTriggerOverrideIssues } from "../trigger-overrides.js";
 import { deliverNativeCronNotification, inferUniqueNotifyDestination } from "./native-notify.js";
 import { unconfiguredChannelView } from "./shared.js";
@@ -22,13 +30,27 @@ const loadCronModule = async (): Promise<CronAdapterModule> =>
   (cronModule ??= await import("@mono-agent/cron-adapter"));
 
 const CRON_GATE: ChannelGateSpec = { jsonKey: "cron", envPrefix: "MONO_AGENT_CRON_", dir: "cron" };
-const UNCONFIGURED_CRON_CONFIG: CronAdapterConfig = { jobs: [] };
+interface CronChannelConfig extends CronAdapterConfig {
+  readonly controlInspection: CronControlInspection;
+  readonly effectiveEnabledByJobId: ReadonlyMap<string, boolean>;
+}
+
+const UNCONFIGURED_CRON_CONFIG: CronChannelConfig = {
+  jobs: [],
+  operatorActionsEnabled: false,
+  controlInspection: { status: "absent" },
+  effectiveEnabledByJobId: new Map(),
+};
 const DEFAULT_CRON_MAX_RUN_MS = 20 * 60 * 1000;
 const DEFAULT_CRON_FAILURE_NOTICE_COOLDOWN_HOURS = 6;
 const MAX_CRON_FAILURE_NOTICE_ERROR_CHARS = 180;
 
 export interface CronChannelOverrides {
   readonly adapterFactory?: (options: CronAdapterOptions) => CronAdapterStartResult;
+  /** Test seam for the owner-private durable control store. */
+  readonly inspectControlStore?: typeof inspectCronControlStore;
+  /** Test seam for opening the owner-private durable control store. */
+  readonly openControlStore?: typeof openCronControlStore;
   /** Test seam for cooldown decisions; production uses the system clock. */
   readonly now?: () => Date;
   /** Maximum wall-clock time before a hung run is aborted and its slot reclaimed. */
@@ -37,9 +59,11 @@ export interface CronChannelOverrides {
 
 export function createCronChannelDriver(
   overrides: CronChannelOverrides = {},
-): ChannelDriver<CronAdapterConfig> {
+  operatorRegistry: CronOperatorRegistry = new CronOperatorRegistry(),
+): ChannelDriver<CronChannelConfig> {
   const failureNoticeLastSentMsByJobId = new Map<string, number>();
-  return {
+  let currentConfigView: (() => Promise<ChannelConfigViewSection>) | undefined;
+  const driver: ChannelDriver<CronChannelConfig> = {
     id: "cron",
     label: "Cron",
     async configView(input) {
@@ -50,32 +74,84 @@ export function createCronChannelDriver(
       return await buildChannelConfigView(this, adapter.CRON_CONFIG_FIELDS, input);
     },
     configIssues(config) {
-      return findTriggerOverrideIssues(
+      return [
+        ...(config.controlInspection.status === "degraded"
+          ? [`Cron control state is unavailable: ${config.controlInspection.reason}`]
+          : []),
+        ...findTriggerOverrideIssues(
         config.jobs
-          .filter((job) => job.enabled)
+          .filter((job) => config.effectiveEnabledByJobId.get(job.id) === true)
           .map((job) => ({
             name: `cron job "${job.id}"`,
             ...(job.model === undefined ? {} : { model: job.model }),
             ...(job.effort === undefined ? {} : { effort: job.effort }),
           })),
-      );
+        ),
+      ];
     },
     async loadConfig(input) {
       if (!(await isChannelConfigured(input, CRON_GATE))) {
+        currentConfigView = undefined;
+        operatorRegistry.clear();
         return UNCONFIGURED_CRON_CONFIG;
       }
       const adapter = await loadCronModule();
-      return await adapter.loadCronAdapterConfig({ env: input.env, jsonPath: input.configPath, cwd: input.cwd });
+      const config = await adapter.loadCronAdapterConfig({ env: input.env, jsonPath: input.configPath, cwd: input.cwd });
+      const controlInspection = await (overrides.inspectControlStore ?? inspectCronControlStore)(input.cwd);
+      const effectiveEnabledByJobId = new Map(config.jobs.map((job) => [
+        job.id,
+        controlInspection.status === "degraded"
+          ? false
+          : controlInspection.status === "ready"
+            ? controlInspection.overrides.get(job.id) ?? job.enabled
+            : job.enabled,
+      ]));
+      const resolved: CronChannelConfig = { ...config, controlInspection, effectiveEnabledByJobId };
+      currentConfigView = async () => await driver.configView!(input);
+      operatorRegistry.bind(createCronOperatorService({
+        config,
+        effectiveEnabledByJobId,
+        configView: currentConfigView,
+        ...(controlInspection.status === "degraded" ? { degradedReason: controlInspection.reason } : {}),
+        ...(overrides.now === undefined ? {} : { now: overrides.now }),
+      }));
+      return resolved;
     },
     isConfigError(error) {
       return cronModule !== undefined && error instanceof cronModule.CronAdapterError;
     },
     disabledReason(config) {
-      const enabledJobs = config.jobs.filter((job) => job.enabled);
-      return enabledJobs.length > 0 ? undefined : "Cron adapter has no enabled jobs.";
+      if (config.controlInspection.status === "degraded") return undefined;
+      const enabledJobs = config.jobs.filter((job) => config.effectiveEnabledByJobId.get(job.id) === true);
+      // An opted-in control surface must still register config-disabled jobs on
+      // first run, otherwise there is no healthy store/adapter through which an
+      // authenticated operator could create the enabling runtime override.
+      return enabledJobs.length > 0 || (config.operatorActionsEnabled === true && config.jobs.length > 0)
+        ? undefined
+        : "Cron adapter has no enabled jobs.";
     },
     async start(input) {
-      const jobs = input.config.jobs.filter((job) => job.enabled);
+      let store: CronControlStore | undefined;
+      let degradedReason: string | undefined;
+      try {
+        store = await (overrides.openControlStore ?? openCronControlStore)(
+          input.cwd,
+          overrides.now === undefined ? {} : { now: overrides.now },
+        );
+        store.syncConfiguredJobs(input.config.jobs.map((job) => job.id));
+      } catch (error) {
+        degradedReason = error instanceof Error ? error.message : String(error);
+        input.logger?.error?.("Cron control state is unavailable; no cron jobs will be armed.", {
+          reason: degradedReason,
+        });
+        input.onDegraded?.(degradedReason);
+      }
+      const overridesByJobId = store?.overrides() ?? new Map<string, boolean>();
+      const effectiveEnabledByJobId = new Map(input.config.jobs.map((job) => [
+        job.id,
+        store === undefined ? false : overridesByJobId.get(job.id) ?? job.enabled,
+      ]));
+      const jobs = input.config.jobs;
       const jobById = new Map(jobs.map((job) => [job.id, job]));
       const listNotifyDestinations = input.listNotifyDestinations;
       const resolveNotifyFallbackConversationId = listNotifyDestinations === undefined
@@ -92,6 +168,7 @@ export function createCronChannelDriver(
         maxRunMs: overrides.maxRunMs ?? DEFAULT_CRON_MAX_RUN_MS,
         jobs: jobs.map((job) => ({
           id: job.id,
+          enabled: effectiveEnabledByJobId.get(job.id) === true,
           expression: job.expression,
           timezone: job.timezone,
           prompt: job.prompt,
@@ -102,8 +179,15 @@ export function createCronChannelDriver(
           ...(job.model === undefined ? {} : { model: job.model }),
           ...(job.effort === undefined ? {} : { effort: job.effort }),
         })),
+        ...(store === undefined ? {} : {
+          admitFiring: (firing) => store.allocateFiring(firing),
+          onRunStarted: (firing, startedAt) => store.markStarted(firing, startedAt),
+          onEvent: (firing, event) => store.appendEvent(firing, event),
+        }),
+        onDegraded: (reason) => input.onDegraded?.(reason),
         ...(resolveNotifyFallbackConversationId === undefined ? {} : { resolveNotifyFallbackConversationId }),
-        onResult: (result) => {
+        onResult: async (result) => {
+          store?.recordResult(result);
           const level = result.kind === "failed" ? "error" : result.kind === "skipped" ? "warn" : "info";
           input.logger?.[level]?.("Cron job finished.", { result });
           void deliverCronModelExhaustionFailureNotice({
@@ -123,14 +207,34 @@ export function createCronChannelDriver(
         },
         ...(input.logger === undefined ? {} : { logger: input.logger }),
       });
+      const currentSummary = (): Record<string, unknown> => ({
+        jobs: adapter.snapshots().filter((job) => job.effectiveEnabled).length,
+        configuredJobs: adapter.jobs.length,
+      });
+      const summary = currentSummary();
+      operatorRegistry.bind(createCronOperatorService({
+        config: input.config,
+        effectiveEnabledByJobId,
+        ...(store === undefined ? {} : { store }),
+        adapter,
+        configView: currentConfigView ?? (async () => unconfiguredChannelView("cron", "Cron")),
+        ...(degradedReason === undefined ? {} : { degradedReason }),
+        ...(overrides.now === undefined ? {} : { now: overrides.now }),
+        ...(input.logger === undefined ? {} : { logger: input.logger }),
+        onEffectiveEnabledChanged: () => {
+          input.onSummaryChanged?.(currentSummary());
+        },
+      }));
       return {
-        summary: { jobs: adapter.jobs.length },
+        summary,
         async stop() {
           adapter.stop();
+          await store?.close();
         },
       };
     },
   };
+  return driver;
 }
 
 async function deliverCronModelExhaustionFailureNotice(input: {
@@ -141,7 +245,7 @@ async function deliverCronModelExhaustionFailureNotice(input: {
   readonly notifyDestination?: (
     conversationId: string,
     text: string,
-    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
+    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string; readonly deliveryContext?: NotifyDeliveryContext },
   ) => Promise<NotifyDeliveryResult>;
   readonly logger?: MonoAgentAppLogger;
 }): Promise<void> {
@@ -176,9 +280,10 @@ async function deliverCronModelExhaustionFailureNotice(input: {
   try {
     const delivery = await input.notifyDestination(destination, text, {
       verbatim: true,
+      deliveryContext: { kind: "cron", jobId: job.id, runId: input.result.cronRunId },
       ...(destination === "web:new"
         ? {
-            deliveryKey: `cron:${encodeURIComponent(job.id)}:${input.result.scheduledAt}:failure:${input.result.failureKind}`,
+            deliveryKey: `${input.result.cronRunId}:failure:${input.result.failureKind}`,
           }
         : {}),
     });

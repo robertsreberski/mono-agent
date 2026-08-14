@@ -1,4 +1,5 @@
 import { classifyNotifySuppression } from "@mono-agent/agent-contracts";
+import type { NotifyDeliveryContext } from "@mono-agent/agent-contracts";
 import type { CronJobConfig, CronJobResult } from "@mono-agent/cron-adapter";
 import type {
   WebhookEndpointConfig,
@@ -39,7 +40,7 @@ export async function deliverNativeCronNotification(input: {
   readonly notifyDestination?: (
     conversationId: string,
     text: string,
-    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
+    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string; readonly deliveryContext?: NotifyDeliveryContext },
   ) => Promise<NotifyDeliveryResult>;
   readonly logger?: MonoAgentAppLogger;
 }): Promise<void> {
@@ -67,8 +68,9 @@ export async function deliverNativeCronNotification(input: {
 
     const delivery = await input.notifyDestination(destination, text, {
       verbatim: true,
+      deliveryContext: { kind: "cron", jobId: job.id, runId: input.result.cronRunId },
       ...(destination === "web:new"
-        ? { deliveryKey: `cron:${encodeURIComponent(job.id)}:${input.result.scheduledAt}:success` }
+        ? { deliveryKey: `${input.result.cronRunId}:success` }
         : {}),
     });
     if (!delivery.delivered) {
@@ -112,7 +114,7 @@ export async function deliverNativeWebhookNotification(input: {
   readonly notifyDestination?: (
     conversationId: string,
     text: string,
-    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
+    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string; readonly deliveryContext?: NotifyDeliveryContext },
   ) => Promise<NotifyDeliveryResult>;
   readonly logger?: MonoAgentAppLogger;
 }): Promise<void> {

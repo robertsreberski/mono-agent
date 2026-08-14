@@ -189,6 +189,33 @@ describe("AskUser API", () => {
   });
 });
 
+describe("cron activity API", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("loads one selected run through its fully encoded detail route", async () => {
+    const message = {
+      id: "message-one",
+      threadId: "cron-thread",
+      role: "assistant",
+      parts: [],
+      attachments: [],
+      createdAt: "2026-08-14T10:00:00.000Z",
+      updatedAt: "2026-08-14T10:00:00.000Z",
+      status: "complete",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ message }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.cronRun("agent/one", "daily:brief", "cron:daily/one"))
+      .resolves.toEqual(message);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/v1/agents/agent%2Fone/cron/jobs/daily%3Abrief/runs/cron%3Adaily%2Fone",
+    );
+  });
+});
+
 describe("push subscription API", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

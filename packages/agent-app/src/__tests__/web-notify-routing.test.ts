@@ -27,7 +27,15 @@ describe("web notification destination routing", () => {
       controller(),
       "web:new",
       "Morning brief",
-      { verbatim: true, deliveryKey: "cron:daily:one:success" },
+      {
+        verbatim: true,
+        deliveryKey: "cron:daily:2026-08-14T10:00:00.000Z:success",
+        deliveryContext: {
+          kind: "cron",
+          jobId: "daily",
+          runId: "cron:daily:2026-08-14T10:00:00.000Z",
+        },
+      },
       "cron",
     );
 
@@ -35,9 +43,36 @@ describe("web notification destination routing", () => {
     expect(web.deliver).toHaveBeenCalledWith({
       sourceId: "agent-one",
       triggerKind: "cron",
-      deliveryKey: "cron:daily:one:success",
+      deliveryKey: "cron:daily:2026-08-14T10:00:00.000Z:success",
       text: "Morning brief",
+      jobId: "daily",
+      runId: "cron:daily:2026-08-14T10:00:00.000Z",
     });
+  });
+
+  it("rejects mismatched, prefixed, and malformed structured cron identities", async () => {
+    const base = {
+      verbatim: true as const,
+      deliveryContext: {
+        kind: "cron" as const,
+        jobId: "daily:brief",
+        runId: "cron:daily%3Abrief:2026-08-14T10:00:00.000Z",
+      },
+    };
+    for (const deliveryKey of [
+      "cron:daily%3Abrief:2026-08-14T10:00:00.000Z:success:extra",
+      "cron:daily%3Abrief:2026-08-14T10:00:00.000Z:failure:provider:error",
+      "cron:other:2026-08-14T10:00:00.000Z:success",
+    ]) {
+      await expect(notifyDestination(
+        controller(),
+        "web:new",
+        "text",
+        { ...base, deliveryKey },
+        "cron",
+      )).resolves.toMatchObject({ delivered: false, code: "invalid_cron_notification_identity" });
+    }
+    expect(web.deliver).not.toHaveBeenCalled();
   });
 
   it("rejects other web destinations and non-trigger callers before channel inference", async () => {

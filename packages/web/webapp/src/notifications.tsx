@@ -279,10 +279,8 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
       }
       if (payload.type !== NOTIFICATION_MESSAGE_TYPE || typeof payload.threadId !== "string") return;
       pendingThreadSelection.current = payload.threadId;
-      if (store.threads.some((thread) => thread.id === payload.threadId)) {
-        store.selectThread(payload.threadId);
-        pendingThreadSelection.current = null;
-      }
+      store.selectThread(payload.threadId);
+      pendingThreadSelection.current = null;
     };
     navigator.serviceWorker?.addEventListener("message", onMessage);
     return () => navigator.serviceWorker?.removeEventListener("message", onMessage);
@@ -290,7 +288,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
 
   useEffect(() => {
     const threadId = pendingThreadSelection.current;
-    if (!threadId || !store.threads.some((thread) => thread.id === threadId)) return;
+    if (!threadId) return;
     store.selectThread(threadId);
     pendingThreadSelection.current = null;
   }, [store]);
@@ -299,7 +297,6 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
     const url = new URL(window.location.href);
     const threadId = url.searchParams.get("thread");
     if (!threadId || handledDeepLink.current === threadId) return;
-    if (!store.threads.some((thread) => thread.id === threadId)) return;
     handledDeepLink.current = threadId;
     store.selectThread(threadId);
     url.searchParams.delete("thread");

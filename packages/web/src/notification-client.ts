@@ -16,6 +16,8 @@ export interface DeliverWebNotificationInput {
   readonly triggerKind: WebNotificationTriggerKind;
   readonly deliveryKey: string;
   readonly text: string;
+  readonly jobId?: string;
+  readonly runId?: string;
 }
 
 export interface DeliverWebNotificationOptions extends WebStatePathOptions {
@@ -24,8 +26,9 @@ export interface DeliverWebNotificationOptions extends WebStatePathOptions {
 }
 
 export interface DeliverWebNotificationResult {
-  readonly threadId: string;
+  readonly threadId?: string;
   readonly duplicate: boolean;
+  readonly tombstoned?: true;
 }
 
 interface NotificationIngressRecord {
@@ -79,10 +82,17 @@ export async function deliverWebNotification(
     throw new WebConsoleError("invalid_notification_response", "The web notification ingress returned invalid JSON.", 502);
   }
   const result = asRecord(parsed);
-  if (result === undefined || typeof result.threadId !== "string" || typeof result.duplicate !== "boolean") {
+  if (result === undefined
+    || (typeof result.threadId !== "string" && result.threadId !== null)
+    || typeof result.duplicate !== "boolean"
+    || (result.threadId === null && (result.duplicate !== true || result.tombstoned !== true))) {
     throw new WebConsoleError("invalid_notification_response", "The web notification ingress returned an invalid result.", 502);
   }
-  return { threadId: result.threadId, duplicate: result.duplicate };
+  return {
+    ...(typeof result.threadId === "string" ? { threadId: result.threadId } : {}),
+    duplicate: result.duplicate,
+    ...(result.tombstoned === true ? { tombstoned: true } : {}),
+  };
 }
 
 async function readIngressRecord(path: string): Promise<NotificationIngressRecord> {

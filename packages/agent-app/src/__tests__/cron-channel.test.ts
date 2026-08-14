@@ -1,10 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
-import type { CronAdapterConfig, CronAdapterOptions, CronAdapterStartResult } from "@mono-agent/cron-adapter";
+import type {
+  CronAdapterConfig,
+  CronAdapterOptions,
+  CronAdapterStartResult,
+  CronFiringIdentity,
+} from "@mono-agent/cron-adapter";
 
 import type { ChannelStartInput, CronChannelOverrides } from "../channels.js";
 import { createCronChannelDriver } from "../channels.js";
+import type { CronControlStore } from "../cron-control-store.js";
+import { CronOperatorRegistry } from "../cron-operator-service.js";
 
 const noopResponder: AgentResponder = {
   async respond() {
@@ -19,14 +26,88 @@ const baseInput = {
   onFailure: () => {},
   config: {
     jobs: [{ id: "j", expression: "* * * * *", timezone: "UTC", prompt: "p", enabled: true }],
+    controlInspection: { status: "absent" as const },
+    effectiveEnabledByJobId: new Map([["j", true]]),
   },
-} satisfies ChannelStartInput<CronAdapterConfig>;
+} satisfies ChannelStartInput<CronAdapterConfig & {
+  readonly controlInspection: { readonly status: "absent" };
+  readonly effectiveEnabledByJobId: ReadonlyMap<string, boolean>;
+}>;
 
-function succeededResult(text?: string, notifyConversationId?: string) {
+const testControlStore: CronControlStore = {
+  paths: { root: "/test", marker: "/test/marker", database: "/test/state", lease: "/test/lease" },
+  overrides: () => new Map(),
+  syncConfiguredJobs: () => {},
+  knownJobIds: () => [],
+  allocateFiring: (input) => firing(input.jobId, input.scheduledAt),
+  replayRunNowAction: () => undefined,
+  runNowAction: (input) => ({ firing: firing(input.jobId, input.observedAt), replayed: false }),
+  replayEnabledAction: () => undefined,
+  setEnabledAction: (input) => ({ enabled: input.enabled, replayed: false }),
+  markStarted: () => {},
+  appendEvent: () => {},
+  recordResult: () => {},
+  getRun: () => undefined,
+  getRunSummary: () => undefined,
+  lastRun: () => undefined,
+  runs: () => ({ runs: [] }),
+  audit: () => {},
+  close: async () => {},
+};
+
+function firing(jobId: string, at: string): CronFiringIdentity {
+  return {
+    runId: `cron:${encodeURIComponent(jobId)}:${at}`,
+    jobId,
+    scheduledAt: at,
+    orderedAt: at,
+    sequence: 1,
+    trigger: "scheduled",
+  };
+}
+
+function adapterResult(options: CronAdapterOptions): CronAdapterStartResult {
+  const enabled = new Map(options.jobs.map((job) => [job.id, job.enabled !== false]));
+  const snapshots = () => options.jobs.map((job) => ({
+    jobId: job.id,
+    expression: job.expression,
+    timezone: job.timezone ?? "UTC",
+    effectiveEnabled: enabled.get(job.id) === true,
+    conversationId: job.conversationId ?? `cron:${job.id}`,
+  }));
+  return {
+    jobs: options.jobs,
+    activeJobCount: 0,
+    snapshots,
+    runNow: (jobId, admitted) => admitted ?? firing(jobId, "2026-01-01T00:00:00.000Z"),
+    setEffectiveEnabled: (jobId, value) => {
+      enabled.set(jobId, value);
+      const snapshot = snapshots().find((entry) => entry.jobId === jobId);
+      if (snapshot === undefined) throw new Error(`Unknown job ${jobId}`);
+      return snapshot;
+    },
+    stop: () => {},
+  };
+}
+
+function cronOverrides(overrides: CronChannelOverrides = {}): CronChannelOverrides {
+  return {
+    openControlStore: async () => testControlStore,
+    inspectControlStore: async () => ({ status: "absent" }),
+    ...overrides,
+  };
+}
+
+function succeededResult(text?: string, notifyConversationId?: string, jobId = "j") {
+  const cronRunId = `cron:${encodeURIComponent(jobId)}:2026-01-01T00:00:00.000Z`;
   return {
     kind: "succeeded" as const,
-    jobId: "j",
+    jobId,
+    cronRunId,
     scheduledAt: "2026-01-01T00:00:00.000Z",
+    orderedAt: "2026-01-01T00:00:00.000Z",
+    sequence: 1,
+    trigger: "scheduled" as const,
     startedAt: "2026-01-01T00:00:00.000Z",
     completedAt: "2026-01-01T00:00:01.000Z",
     ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
@@ -37,11 +118,17 @@ function succeededResult(text?: string, notifyConversationId?: string) {
 function failedResult(
   error = "No API key for provider: openai-codex",
   failureKind = "provider_unavailable_exhausted",
+  jobId = "j",
 ) {
+  const cronRunId = `cron:${encodeURIComponent(jobId)}:2026-01-01T00:00:00.000Z`;
   return {
     kind: "failed" as const,
-    jobId: "j",
+    jobId,
+    cronRunId,
     scheduledAt: "2026-01-01T00:00:00.000Z",
+    orderedAt: "2026-01-01T00:00:00.000Z",
+    sequence: 1,
+    trigger: "scheduled" as const,
     startedAt: "2026-01-01T00:00:00.000Z",
     completedAt: "2026-01-01T00:00:01.000Z",
     error,
@@ -54,13 +141,13 @@ async function startCapturingCron(
   overrides: CronChannelOverrides = {},
 ): Promise<CronAdapterOptions> {
   let captured: CronAdapterOptions | undefined;
-  const driver = createCronChannelDriver({
+  const driver = createCronChannelDriver(cronOverrides({
     ...overrides,
     adapterFactory: (options): CronAdapterStartResult => {
       captured = options;
-      return { jobs: options.jobs, activeJobCount: 0, stop: () => {} };
+      return adapterResult(options);
     },
-  });
+  }));
 
   await driver.start(input as never);
   if (captured === undefined) {
@@ -72,12 +159,12 @@ async function startCapturingCron(
 describe("cron channel driver — run watchdog", () => {
   it("passes a default maxRunMs so a hung run is reclaimed instead of blocking the job forever", async () => {
     let captured: CronAdapterOptions | undefined;
-    const driver = createCronChannelDriver({
+    const driver = createCronChannelDriver(cronOverrides({
       adapterFactory: (options): CronAdapterStartResult => {
         captured = options;
-        return { jobs: options.jobs, activeJobCount: 0, stop: () => {} };
+        return adapterResult(options);
       },
-    });
+    }));
 
     await driver.start(baseInput);
 
@@ -87,13 +174,13 @@ describe("cron channel driver — run watchdog", () => {
 
   it("honors an explicit maxRunMs override", async () => {
     let captured: CronAdapterOptions | undefined;
-    const driver = createCronChannelDriver({
+    const driver = createCronChannelDriver(cronOverrides({
       maxRunMs: 5_000,
       adapterFactory: (options): CronAdapterStartResult => {
         captured = options;
-        return { jobs: options.jobs, activeJobCount: 0, stop: () => {} };
+        return adapterResult(options);
       },
-    });
+    }));
 
     await driver.start(baseInput);
 
@@ -102,12 +189,12 @@ describe("cron channel driver — run watchdog", () => {
 
   it("passes job-specific maxRunMs values through to the cron adapter", async () => {
     let captured: CronAdapterOptions | undefined;
-    const driver = createCronChannelDriver({
+    const driver = createCronChannelDriver(cronOverrides({
       adapterFactory: (options): CronAdapterStartResult => {
         captured = options;
-        return { jobs: options.jobs, activeJobCount: 0, stop: () => {} };
+        return adapterResult(options);
       },
-    });
+    }));
     const input = {
       ...baseInput,
       config: {
@@ -129,6 +216,7 @@ describe("cron channel driver — run watchdog", () => {
     expect(captured?.jobs).toEqual([
       {
         id: "bills",
+        enabled: true,
         expression: "0 9 * * *",
         timezone: "Europe/Rome",
         prompt: "p",
@@ -160,6 +248,7 @@ describe("cron channel driver — native notification delivery", () => {
     expect(captured.jobs).toEqual([
       {
         id: "j",
+        enabled: true,
         expression: "* * * * *",
         timezone: "UTC",
         prompt: "p",
@@ -193,7 +282,14 @@ describe("cron channel driver — native notification delivery", () => {
 
     await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledOnce());
     // Verbatim delivery: the final answer is posted as-is (no echo-turn wrapper).
-    expect(notifyDestination).toHaveBeenCalledWith("telegram:42", "Morning brief", { verbatim: true });
+    expect(notifyDestination).toHaveBeenCalledWith("telegram:42", "Morning brief", {
+      verbatim: true,
+      deliveryContext: {
+        kind: "cron",
+        jobId: "j",
+        runId: "cron:j:2026-01-01T00:00:00.000Z",
+      },
+    });
     const deliveredText = (notifyDestination.mock.calls[0] as [string, string, unknown] | undefined)?.[1];
     expect(deliveredText).toBe("Morning brief");
     expect(deliveredText).not.toContain("Do not call tools");
@@ -217,19 +313,29 @@ describe("cron channel driver — native notification delivery", () => {
       },
     });
 
-    await captured.onResult?.({ ...succeededResult("Morning brief"), jobId: "daily brief" });
+    await captured.onResult?.(succeededResult("Morning brief", undefined, "daily brief"));
     await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledTimes(1));
     expect(notifyDestination).toHaveBeenLastCalledWith("web:new", "Morning brief", {
       verbatim: true,
       deliveryKey: "cron:daily%20brief:2026-01-01T00:00:00.000Z:success",
+      deliveryContext: {
+        kind: "cron",
+        jobId: "daily brief",
+        runId: "cron:daily%20brief:2026-01-01T00:00:00.000Z",
+      },
     });
 
-    await captured.onResult?.({ ...failedResult(), jobId: "daily brief" });
+    await captured.onResult?.(failedResult(undefined, undefined, "daily brief"));
     await vi.waitFor(() => expect(notifyDestination).toHaveBeenCalledTimes(2));
     const failureCall = notifyDestination.mock.calls[1] as unknown as [string, string, unknown];
     expect(failureCall[2]).toEqual({
       verbatim: true,
       deliveryKey: "cron:daily%20brief:2026-01-01T00:00:00.000Z:failure:provider_unavailable_exhausted",
+      deliveryContext: {
+        kind: "cron",
+        jobId: "daily brief",
+        runId: "cron:daily%20brief:2026-01-01T00:00:00.000Z",
+      },
     });
   });
 
@@ -263,7 +369,14 @@ describe("cron channel driver — native notification delivery", () => {
     await captured.onResult?.(succeededResult("Digest", notifyConversationId));
 
     await vi.waitFor(() =>
-      expect(notifyDestination).toHaveBeenCalledWith("slack:C1", "Digest", { verbatim: true }),
+      expect(notifyDestination).toHaveBeenCalledWith("slack:C1", "Digest", {
+        verbatim: true,
+        deliveryContext: {
+          kind: "cron",
+          jobId: "j",
+          runId: "cron:j:2026-01-01T00:00:00.000Z",
+        },
+      }),
     );
   });
 
@@ -301,7 +414,14 @@ describe("cron channel driver — native notification delivery", () => {
     // second candidate appears before completion; replyTo and delivery cannot drift.
     await captured.onResult?.(succeededResult("First digest", firstRoute));
     await vi.waitFor(() =>
-      expect(notifyDestination).toHaveBeenCalledWith("slack:C1", "First digest", { verbatim: true }),
+      expect(notifyDestination).toHaveBeenCalledWith("slack:C1", "First digest", {
+        verbatim: true,
+        deliveryContext: {
+          kind: "cron",
+          jobId: "j",
+          runId: "cron:j:2026-01-01T00:00:00.000Z",
+        },
+      }),
     );
 
     const secondRoute = await captured.resolveNotifyFallbackConversationId?.();
@@ -486,7 +606,14 @@ describe("cron channel driver — native notification delivery", () => {
     expect(notifyDestination).toHaveBeenCalledWith(
       "telegram:42",
       'Cron job "j" failed: all configured models failed. Latest error: No API key for provider: openai-codex retry failed',
-      { verbatim: true },
+      {
+        verbatim: true,
+        deliveryContext: {
+          kind: "cron",
+          jobId: "j",
+          runId: "cron:j:2026-01-01T00:00:00.000Z",
+        },
+      },
     );
     const deliveredText = (notifyDestination.mock.calls[0] as [string, string, unknown] | undefined)?.[1];
     expect(deliveredText).not.toContain("\n");
@@ -611,5 +738,130 @@ describe("cron channel driver — native notification delivery", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(notifyDestination).not.toHaveBeenCalled();
+  });
+});
+
+describe("cron channel driver — durable effective state", () => {
+  it("starts an inert first-run adapter when controls can enable config-disabled jobs", async () => {
+    let captured: CronAdapterOptions | undefined;
+    const driver = createCronChannelDriver({
+      inspectControlStore: async () => ({ status: "absent" }),
+      openControlStore: async () => testControlStore,
+      adapterFactory: (options) => {
+        captured = options;
+        return adapterResult(options);
+      },
+    });
+    const config = {
+      jobs: [{ id: "j", expression: "* * * * *", timezone: "UTC", prompt: "p", enabled: false }],
+      operatorActionsEnabled: true,
+      controlInspection: { status: "absent" as const },
+      effectiveEnabledByJobId: new Map([["j", false]]),
+    };
+
+    expect(driver.disabledReason?.(config)).toBeUndefined();
+    const running = await driver.start({ ...baseInput, config });
+
+    expect(captured?.jobs).toEqual([expect.objectContaining({ id: "j", enabled: false })]);
+    expect(running.summary).toEqual({ jobs: 0, configuredJobs: 1 });
+  });
+
+  it("starts a config-disabled job when the agent-owned runtime override enables it", async () => {
+    let captured: CronAdapterOptions | undefined;
+    const overriddenStore: CronControlStore = {
+      ...testControlStore,
+      overrides: () => new Map([["j", true]]),
+    };
+    const driver = createCronChannelDriver({
+      inspectControlStore: async () => ({ status: "ready", overrides: new Map([["j", true]]) }),
+      openControlStore: async () => overriddenStore,
+      adapterFactory: (options) => {
+        captured = options;
+        return adapterResult(options);
+      },
+    });
+    const config = {
+      jobs: [{ id: "j", expression: "* * * * *", timezone: "UTC", prompt: "p", enabled: false }],
+      controlInspection: { status: "ready" as const, overrides: new Map([["j", true]]) },
+      effectiveEnabledByJobId: new Map([["j", true]]),
+    };
+
+    expect(driver.disabledReason?.(config)).toBeUndefined();
+    const running = await driver.start({ ...baseInput, config });
+
+    expect(captured?.jobs).toEqual([expect.objectContaining({ id: "j", enabled: true })]);
+    expect(running.summary).toEqual({ jobs: 1, configuredJobs: 1 });
+  });
+
+  it("publishes an immutable replacement summary after an effective-enable action", async () => {
+    const registry = new CronOperatorRegistry();
+    const onSummaryChanged = vi.fn();
+    const driver = createCronChannelDriver({
+      inspectControlStore: async () => ({ status: "absent" }),
+      openControlStore: async () => testControlStore,
+      adapterFactory: adapterResult,
+    }, registry);
+    const config = {
+      jobs: [{ id: "j", expression: "* * * * *", timezone: "UTC", prompt: "p", enabled: true }],
+      operatorActionsEnabled: true,
+      controlInspection: { status: "absent" as const },
+      effectiveEnabledByJobId: new Map([["j", true]]),
+    };
+    const running = await driver.start({ ...baseInput, config, onSummaryChanged });
+
+    const confirmation = registry.setEffectiveEnabled("j", false, { idempotencyKey: "disable-summary" });
+    if (confirmation instanceof Promise || confirmation.kind !== "confirmation_required") {
+      throw new Error("confirmation required");
+    }
+    expect(registry.setEffectiveEnabled("j", false, {
+      idempotencyKey: "disable-summary",
+      confirmationToken: confirmation.confirmation.token,
+    })).toMatchObject({ kind: "completed", value: { job: { effectiveEnabled: false } } });
+
+    expect(onSummaryChanged).toHaveBeenCalledWith({ jobs: 0, configuredJobs: 1 });
+    expect(running.summary).toEqual({ jobs: 1, configuredJobs: 1 });
+  });
+
+  it("halts every job, logs at error level, and exposes degraded operator state on control corruption", async () => {
+    const error = vi.fn();
+    const onDegraded = vi.fn();
+    let captured: CronAdapterOptions | undefined;
+    const registry = new CronOperatorRegistry();
+    const driver = createCronChannelDriver({
+      inspectControlStore: async () => ({ status: "degraded", reason: "state marker is corrupt" }),
+      openControlStore: async () => { throw new Error("state marker is corrupt"); },
+      adapterFactory: (options) => {
+        captured = options;
+        return adapterResult(options);
+      },
+    }, registry);
+    const config = {
+      jobs: [{ id: "j", expression: "* * * * *", timezone: "UTC", prompt: "p", enabled: true }],
+      controlInspection: { status: "degraded" as const, reason: "state marker is corrupt" },
+      effectiveEnabledByJobId: new Map([["j", false]]),
+    };
+
+    expect(driver.configIssues?.(config)).toContain("Cron control state is unavailable: state marker is corrupt");
+    const running = await driver.start({
+      ...baseInput,
+      config,
+      logger: { error },
+      onDegraded,
+    });
+
+    expect(captured?.jobs).toEqual([expect.objectContaining({ id: "j", enabled: false })]);
+    expect(running.summary).toEqual({ jobs: 0, configuredJobs: 1 });
+    expect(onDegraded).toHaveBeenCalledWith("state marker is corrupt");
+    captured?.onDegraded?.("runtime store failed");
+    expect(onDegraded).toHaveBeenLastCalledWith("runtime store failed");
+    expect(error).toHaveBeenCalledWith(
+      "Cron control state is unavailable; no cron jobs will be armed.",
+      { reason: "state marker is corrupt" },
+    );
+    expect(registry.overview()).toMatchObject({
+      actionsEnabled: false,
+      degradedReason: "state marker is corrupt",
+      jobs: [{ jobId: "j", effectiveEnabled: false, health: "unknown" }],
+    });
   });
 });

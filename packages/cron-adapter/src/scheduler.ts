@@ -6,12 +6,18 @@ import {
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
+  type AgentStreamEvent,
 } from "@mono-agent/agent-contracts";
 
 import { validateCronExpression } from "./cron-expression.js";
 
 export interface CronRequestMetadata {
   readonly jobId: string;
+  /** Stable cron-domain identity; distinct from the harness artifact run id. */
+  readonly cronRunId: string;
+  readonly sequence: number;
+  readonly orderedAt: string;
+  readonly trigger: CronRunTrigger;
   readonly expression: string;
   readonly timezone: string;
   readonly scheduledAt: string;
@@ -28,6 +34,8 @@ export interface CronRequestMetadata {
 
 export interface CronJob {
   readonly id: string;
+  /** Runtime-effective state. Defaults to true for programmatic compatibility. */
+  readonly enabled?: boolean;
   readonly expression: string;
   readonly timezone?: string;
   readonly prompt: string;
@@ -61,45 +69,60 @@ export type CronOverlapMode = "queue" | "skip" | "replace";
 /** What to do when a job's queue exceeds maxQueueDepth (overlap:"queue"). */
 export type CronOverflowPolicy = "preserve" | "coalesce" | "drop-oldest";
 
+export type CronRunTrigger = "scheduled" | "manual";
+
+/** Immutable identity allocated once for every admitted firing. */
+export interface CronFiringIdentity {
+  readonly runId: string;
+  readonly jobId: string;
+  readonly scheduledAt: string;
+  readonly orderedAt: string;
+  readonly sequence: number;
+  readonly trigger: CronRunTrigger;
+}
+
+interface CronResultIdentity {
+  readonly cronRunId: string;
+  readonly jobId: string;
+  readonly scheduledAt: string;
+  readonly orderedAt: string;
+  readonly sequence: number;
+  readonly trigger: CronRunTrigger;
+}
+
 export type CronJobResult =
-  | {
+  | (CronResultIdentity & {
       readonly kind: "succeeded";
-      readonly jobId: string;
-      readonly scheduledAt: string;
       readonly startedAt: string;
       readonly completedAt: string;
       /** Physical native-notify route snapshotted before the responder started. */
       readonly notifyConversationId?: string;
       readonly text?: string;
       readonly metadata?: Record<string, unknown>;
-    }
-  | {
+    })
+  | (CronResultIdentity & {
       readonly kind: "failed" | "cancelled";
-      readonly jobId: string;
-      readonly scheduledAt: string;
       readonly startedAt: string;
       readonly completedAt: string;
       readonly error: string;
       readonly failureKind?: string;
-    }
-  | {
+      /** Harness artifact id, when a recorder was created before failure. */
+      readonly runId?: string;
+    })
+  | (CronResultIdentity & {
       readonly kind: "skipped";
-      readonly jobId: string;
-      readonly scheduledAt: string;
       readonly reason: "overlap";
-    }
-  | {
+      readonly blockedByRunId: string;
+      readonly blockedByTrigger: CronRunTrigger;
+    })
+  | (CronResultIdentity & {
       readonly kind: "queued";
-      readonly jobId: string;
-      readonly scheduledAt: string;
       readonly queueDepth: number;
-    }
-  | {
+    })
+  | (CronResultIdentity & {
       readonly kind: "dropped";
-      readonly jobId: string;
-      readonly scheduledAt: string;
       readonly reason: "overflow";
-    };
+    });
 
 export interface CronAdapterLogger {
   debug?(message: string, metadata?: Record<string, unknown>): void;
@@ -120,7 +143,22 @@ export interface CronAdapterOptions {
    */
   readonly resolveNotifyFallbackConversationId?: (abortSignal?: AbortSignal) => Promise<string | undefined>;
   readonly now?: () => Date;
+  /** Host-owned durable identity allocator. Called synchronously before admission. */
+  readonly admitFiring?: (input: {
+    readonly jobId: string;
+    readonly scheduledAt: string;
+    readonly observedAt: string;
+    readonly trigger: CronRunTrigger;
+  }) => CronFiringIdentity;
+  /** Observe the exact transition into responder execution. */
+  readonly onRunStarted?: (firing: CronFiringIdentity, startedAt: string) => void | Promise<void>;
+  /** Persist/render canonical runtime events without inventing cron-only cards. */
+  readonly onEvent?: (firing: CronFiringIdentity, event: AgentStreamEvent) => void | Promise<void>;
+  /** Resolve the harness artifact id correlated by the host recorder hook. */
+  readonly resolveArtifactRunId?: (firing: CronFiringIdentity) => string | undefined;
   readonly onResult?: (result: CronJobResult) => void | Promise<void>;
+  /** Host-owned durable state became unavailable after startup. */
+  readonly onDegraded?: (reason: string) => void;
   readonly logger?: CronAdapterLogger;
   /** Overlap policy for a job that fires while still running. Default "skip". */
   readonly overlap?: CronOverlapMode;
@@ -141,7 +179,21 @@ export interface CronAdapterOptions {
 export interface CronAdapterStartResult {
   readonly jobs: readonly CronJob[];
   readonly activeJobCount: number;
+  snapshots(): readonly CronJobSnapshot[];
+  /** Start a manual firing; an optional identity must have been host-admitted durably. */
+  runNow(jobId: string, admitted?: CronFiringIdentity): CronFiringIdentity;
+  setEffectiveEnabled(jobId: string, enabled: boolean): CronJobSnapshot;
   stop(): void;
+}
+
+export interface CronJobSnapshot {
+  readonly jobId: string;
+  readonly expression: string;
+  readonly timezone: string;
+  readonly effectiveEnabled: boolean;
+  readonly conversationId: string;
+  readonly nextRunAt?: string;
+  readonly activeRunId?: string;
 }
 
 export type CronAdapterErrorCode = "invalid_config" | "stream_closed";
@@ -164,17 +216,22 @@ export class CronAdapterError extends Error {
   }
 }
 
-interface PendingFiring {
-  readonly scheduledAt: string;
+interface PendingFiring extends CronFiringIdentity {}
+
+interface ActiveFiring {
+  readonly controller: AbortController;
+  readonly firing: CronFiringIdentity;
 }
 
 interface JobRuntimeState {
-  active: AbortController | undefined;
+  active: ActiveFiring | undefined;
   pending: PendingFiring[];
 }
 
 interface ScheduledJob {
   readonly job: CronJob;
+  enabled: boolean;
+  nextRunAt: Date | undefined;
   timer: ReturnType<typeof setTimeout> | undefined;
 }
 
@@ -184,10 +241,38 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
 export function startCronAdapter(options: CronAdapterOptions): CronAdapterStartResult {
   validateOptions(options);
   const jobStates = new Map<string, JobRuntimeState>();
-  const scheduled = options.jobs.map((job) => ({ job, timer: undefined }) satisfies ScheduledJob);
+  const sequenceByJob = new Map<string, number>();
+  let stopped = false;
+  const scheduled = options.jobs.map((job) => ({
+    job,
+    enabled: job.enabled !== false,
+    nextRunAt: undefined,
+    timer: undefined,
+  }) satisfies ScheduledJob);
   for (const entry of scheduled) {
-    scheduleNext(entry, options, jobStates);
+    if (entry.enabled) scheduleNext(entry, options, jobStates, sequenceByJob);
   }
+
+  const requireEntry = (jobId: string): ScheduledJob => {
+    const entry = scheduled.find((candidate) => candidate.job.id === jobId);
+    if (entry === undefined) {
+      throw new CronAdapterError("invalid_config", `Unknown cron job "${jobId}".`, { jobId });
+    }
+    return entry;
+  };
+
+  const snapshotOfEntry = (entry: ScheduledJob): CronJobSnapshot => {
+    const active = jobStates.get(entry.job.id)?.active;
+    return {
+      jobId: entry.job.id,
+      expression: entry.job.expression,
+      timezone: entry.job.timezone ?? DEFAULT_TIMEZONE,
+      effectiveEnabled: entry.enabled,
+      conversationId: entry.job.conversationId ?? `cron:${entry.job.id}`,
+      ...(entry.nextRunAt === undefined ? {} : { nextRunAt: entry.nextRunAt.toISOString() }),
+      ...(active === undefined ? {} : { activeRunId: active.firing.runId }),
+    };
+  };
 
   return {
     jobs: options.jobs.slice(),
@@ -198,16 +283,47 @@ export function startCronAdapter(options: CronAdapterOptions): CronAdapterStartR
       }
       return count;
     },
+    snapshots() {
+      return scheduled.map(snapshotOfEntry);
+    },
+    runNow(jobId, admitted) {
+      if (stopped) {
+        throw new CronAdapterError("invalid_config", "Cron adapter is stopped.", { jobId });
+      }
+      const entry = requireEntry(jobId);
+      const now = admitted === undefined
+        ? options.now?.() ?? new Date()
+        : new Date(admitted.scheduledAt);
+      return handleTick(entry.job, now, options, jobStates, sequenceByJob, "manual", admitted);
+    },
+    setEffectiveEnabled(jobId, enabled) {
+      if (stopped) {
+        throw new CronAdapterError("invalid_config", "Cron adapter is stopped.", { jobId });
+      }
+      const entry = requireEntry(jobId);
+      if (entry.enabled === enabled) return snapshotOfEntry(entry);
+      entry.enabled = enabled;
+      if (!enabled) {
+        if (entry.timer !== undefined) clearTimeout(entry.timer);
+        entry.timer = undefined;
+        entry.nextRunAt = undefined;
+      } else {
+        scheduleNext(entry, options, jobStates, sequenceByJob);
+      }
+      return snapshotOfEntry(entry);
+    },
     stop() {
+      stopped = true;
       for (const entry of scheduled) {
         if (entry.timer !== undefined) {
           clearTimeout(entry.timer);
           entry.timer = undefined;
         }
+        entry.nextRunAt = undefined;
       }
       for (const state of jobStates.values()) {
         state.pending.length = 0;
-        state.active?.abort(new Error("Cron adapter stopped."));
+        state.active?.controller.abort(new Error("Cron adapter stopped."));
       }
       jobStates.clear();
     },
@@ -218,8 +334,10 @@ function scheduleNext(
   entry: ScheduledJob,
   options: CronAdapterOptions,
   jobStates: Map<string, JobRuntimeState>,
+  sequenceByJob: Map<string, number>,
   lastFiredScheduledAt?: Date,
 ): void {
+  if (!entry.enabled) return;
   const now = options.now?.() ?? new Date();
   // Belt-and-braces against a backward clock step (or a timer that coalesced early
   // and woke the just-fired timer before its target): never compute the next fire
@@ -232,7 +350,8 @@ function scheduleNext(
       ? now
       : new Date(Math.max(now.getTime(), lastFiredScheduledAt.getTime()));
   const scheduledAt = nextDateFor(entry.job, base);
-  armTimer(entry, scheduledAt, options, jobStates);
+  entry.nextRunAt = scheduledAt;
+  armTimer(entry, scheduledAt, options, jobStates, sequenceByJob);
 }
 
 /**
@@ -249,7 +368,9 @@ function armTimer(
   scheduledAt: Date,
   options: CronAdapterOptions,
   jobStates: Map<string, JobRuntimeState>,
+  sequenceByJob: Map<string, number>,
 ): void {
+  if (!entry.enabled) return;
   const now = options.now?.() ?? new Date();
   const delayMs = Math.max(0, scheduledAt.getTime() - now.getTime());
   entry.timer = setTimeout(() => {
@@ -260,7 +381,7 @@ function armTimer(
     // the next cron instant here; keeping the same target is more precise, identical
     // semantics.)
     if (delayMs > MAX_TIMEOUT_MS) {
-      armTimer(entry, scheduledAt, options, jobStates);
+      armTimer(entry, scheduledAt, options, jobStates, sequenceByJob);
       return;
     }
     // Early-wake guard: if the timer woke before `scheduledAt`, re-arm for the
@@ -268,14 +389,37 @@ function armTimer(
     // the remainder shrinks as the real clock catches up to `scheduledAt`.
     const wake = options.now?.() ?? new Date();
     if (wake.getTime() < scheduledAt.getTime()) {
-      armTimer(entry, scheduledAt, options, jobStates);
+      armTimer(entry, scheduledAt, options, jobStates, sequenceByJob);
       return;
     }
+    if (!entry.enabled) return;
+    entry.nextRunAt = undefined;
     // Due (now >= scheduledAt): dispatch this firing, then schedule the next one
     // anchored at-or-after this firing so a backward clock step cannot recompute the
     // same target (see scheduleNext's `base`).
-    handleTick(entry.job, scheduledAt, options, jobStates);
-    scheduleNext(entry, options, jobStates, scheduledAt);
+    try {
+      handleTick(entry.job, scheduledAt, options, jobStates, sequenceByJob, "scheduled");
+    } catch (error) {
+      reportDegraded(options, "Cron firing admission failed.", error, {
+        jobId: entry.job.id,
+        scheduledAt: scheduledAt.toISOString(),
+      });
+    } finally {
+      // Admission is host-persistent and may fail synchronously. The failed
+      // instant is still consumed: always compute the next strictly-later target
+      // from the original scheduled anchor so one store fault neither crashes
+      // the timer callback nor permanently unarms the job.
+      if (entry.enabled) {
+        try {
+          scheduleNext(entry, options, jobStates, sequenceByJob, scheduledAt);
+        } catch (error) {
+          reportDegraded(options, "Cron timer could not schedule its next firing.", error, {
+            jobId: entry.job.id,
+            scheduledAt: scheduledAt.toISOString(),
+          });
+        }
+      }
+    }
   }, Math.min(delayMs, MAX_TIMEOUT_MS));
 }
 
@@ -286,6 +430,43 @@ function ensureState(jobStates: Map<string, JobRuntimeState>, jobId: string): Jo
     jobStates.set(jobId, state);
   }
   return state;
+}
+
+function resultIdentity(firing: CronFiringIdentity): CronResultIdentity {
+  return {
+    cronRunId: firing.runId,
+    jobId: firing.jobId,
+    scheduledAt: firing.scheduledAt,
+    orderedAt: firing.orderedAt,
+    sequence: firing.sequence,
+    trigger: firing.trigger,
+  };
+}
+
+function artifactRunIdFields(options: CronAdapterOptions, firing: CronFiringIdentity): { readonly runId: string } | {} {
+  const runId = options.resolveArtifactRunId?.(firing);
+  return runId === undefined ? {} : { runId };
+}
+
+function assertFiringIdentity(
+  firing: CronFiringIdentity,
+  expected: { readonly jobId: string; readonly scheduledAt: string; readonly trigger: CronRunTrigger },
+): void {
+  if (
+    normalizeOptionalString(firing.runId) === undefined
+    || firing.jobId !== expected.jobId
+    || firing.scheduledAt !== expected.scheduledAt
+    || firing.trigger !== expected.trigger
+    || !Number.isSafeInteger(firing.sequence)
+    || firing.sequence <= 0
+    || Number.isNaN(Date.parse(firing.orderedAt))
+  ) {
+    throw new CronAdapterError("invalid_config", "Cron firing allocator returned an invalid identity.", {
+      jobId: expected.jobId,
+      scheduledAt: expected.scheduledAt,
+      trigger: expected.trigger,
+    });
+  }
 }
 
 /**
@@ -299,15 +480,35 @@ export function handleTick(
   scheduledAtDate: Date,
   options: CronAdapterOptions,
   jobStates: Map<string, JobRuntimeState>,
-): void {
+  sequenceByJob: Map<string, number> = new Map(),
+  trigger: CronRunTrigger = "scheduled",
+  admitted?: CronFiringIdentity,
+): CronFiringIdentity {
   const scheduledAt = scheduledAtDate.toISOString();
+  const observedAt = (options.now?.() ?? new Date()).toISOString();
+  const nextSequence = (sequenceByJob.get(job.id) ?? 0) + 1;
+  const fallbackFiring: CronFiringIdentity = {
+    runId: trigger === "manual"
+      ? `cron:${encodeURIComponent(job.id)}:${observedAt}:m${String(nextSequence)}`
+      : `cron:${encodeURIComponent(job.id)}:${scheduledAt}`,
+    jobId: job.id,
+    scheduledAt,
+    orderedAt: observedAt,
+    sequence: nextSequence,
+    trigger,
+  };
+  const firing = admitted
+    ?? options.admitFiring?.({ jobId: job.id, scheduledAt, observedAt, trigger })
+    ?? fallbackFiring;
+  assertFiringIdentity(firing, { jobId: job.id, scheduledAt, trigger });
+  sequenceByJob.set(job.id, Math.max(nextSequence, firing.sequence));
   const state = ensureState(jobStates, job.id);
 
   // No run in flight for this job: start immediately. Distinct jobs always run
   // in parallel because each has its own state.
   if (state.active === undefined) {
-    startRun(job, scheduledAt, options, jobStates, state);
-    return;
+    startRun(job, firing, options, jobStates, state);
+    return firing;
   }
 
   // Default to "skip" (the documented/legacy behavior): an overlapping firing is
@@ -316,8 +517,14 @@ export function handleTick(
   const mode: CronOverlapMode = options.overlap ?? "skip";
   if (mode === "skip") {
     options.logger?.warn?.("Cron job skipped because a prior run is still active.", { jobId: job.id, scheduledAt });
-    void emitResult(options, { kind: "skipped", jobId: job.id, scheduledAt, reason: "overlap" });
-    return;
+    void emitResult(options, {
+      ...resultIdentity(firing),
+      kind: "skipped",
+      reason: "overlap",
+      blockedByRunId: state.active.firing.runId,
+      blockedByTrigger: state.active.firing.trigger,
+    });
+    return firing;
   }
   if (mode === "replace") {
     // Discard pending + the in-flight run; the newest firing wins. Emit a
@@ -325,18 +532,18 @@ export function handleTick(
     // kind:"queued" never becomes a dangling firing with no terminal — mirroring
     // the queue branch's drop-oldest/coalesce observability below.
     for (const dropped of state.pending) {
-      void emitResult(options, { kind: "dropped", jobId: job.id, scheduledAt: dropped.scheduledAt, reason: "overflow" });
+      void emitResult(options, { ...resultIdentity(dropped), kind: "dropped", reason: "overflow" });
     }
-    state.pending = [{ scheduledAt }];
-    state.active.abort(new Error("Cron job replaced by a newer scheduled run."));
-    void emitResult(options, { kind: "queued", jobId: job.id, scheduledAt, queueDepth: state.pending.length });
-    return;
+    state.pending = [firing];
+    state.active.controller.abort(new Error("Cron job replaced by a newer scheduled run."));
+    void emitResult(options, { ...resultIdentity(firing), kind: "queued", queueDepth: state.pending.length });
+    return firing;
   }
 
   // "queue" (opt-in): preserve every firing, drained in order after the active
   // run finishes. Bound it with maxQueueDepth + overflow to limit memory.
   if (mode === "queue") {
-    state.pending.push({ scheduledAt });
+    state.pending.push(firing);
     const max = options.maxQueueDepth;
     if (max !== undefined && max >= 0 && state.pending.length > max) {
       const overflow: CronOverflowPolicy = options.overflow ?? "preserve";
@@ -344,14 +551,14 @@ export function handleTick(
         const dropped = state.pending.shift();
         if (dropped !== undefined) {
           options.logger?.warn?.("Cron firing dropped (queue overflow, drop-oldest).", { jobId: job.id, maxQueueDepth: max });
-          void emitResult(options, { kind: "dropped", jobId: job.id, scheduledAt: dropped.scheduledAt, reason: "overflow" });
+          void emitResult(options, { ...resultIdentity(dropped), kind: "dropped", reason: "overflow" });
         }
       } else if (overflow === "coalesce") {
         const newest = state.pending[state.pending.length - 1];
         const droppedOnes = state.pending.slice(0, -1);
         state.pending = newest === undefined ? [] : [newest];
         for (const dropped of droppedOnes) {
-          void emitResult(options, { kind: "dropped", jobId: job.id, scheduledAt: dropped.scheduledAt, reason: "overflow" });
+          void emitResult(options, { ...resultIdentity(dropped), kind: "dropped", reason: "overflow" });
         }
       } else {
         // "preserve": keep everything, but surface backpressure (never a silent drop).
@@ -362,8 +569,8 @@ export function handleTick(
         });
       }
     }
-    void emitResult(options, { kind: "queued", jobId: job.id, scheduledAt, queueDepth: state.pending.length });
-    return;
+    void emitResult(options, { ...resultIdentity(firing), kind: "queued", queueDepth: state.pending.length });
+    return firing;
   }
 
   // Any unrecognized mode (e.g. an invalid value passed via a cast or untyped
@@ -373,23 +580,27 @@ export function handleTick(
     jobId: job.id,
     overlap: options.overlap,
   });
-  void emitResult(options, { kind: "skipped", jobId: job.id, scheduledAt, reason: "overlap" });
+  void emitResult(options, {
+    ...resultIdentity(firing),
+    kind: "skipped",
+    reason: "overlap",
+    blockedByRunId: state.active.firing.runId,
+    blockedByTrigger: state.active.firing.trigger,
+  });
+  return firing;
 }
 
 function startRun(
   job: CronJob,
-  scheduledAt: string,
+  firing: CronFiringIdentity,
   options: CronAdapterOptions,
   jobStates: Map<string, JobRuntimeState>,
   state: JobRuntimeState,
 ): void {
   const controller = new AbortController();
-  state.active = controller;
+  state.active = { controller, firing };
   const startedAt = (options.now?.() ?? new Date()).toISOString();
-  const stream = new BufferedMessageStream({
-    onClosed: () =>
-      new CronAdapterError("stream_closed", "Cannot write to a finished cron stream."),
-  });
+  const stream = new CronMessageStream(firing, options);
 
   // Finalize the run at most once. Hung run work (a resolver or responder promise
   // that never settles AND ignores the abort signal) would otherwise leave
@@ -423,12 +634,12 @@ function startRun(
       controller.abort(new Error(`Cron job exceeded maxRunMs (${limitMs}ms).`));
       finalize(async () => {
         const result: CronJobResult = {
+          ...resultIdentity(firing),
           kind: "failed",
-          jobId: job.id,
-          scheduledAt,
           startedAt,
           completedAt: (options.now?.() ?? new Date()).toISOString(),
           error: `Cron job timed out after ${limitMs}ms (run did not settle); reclaiming the slot.`,
+          ...artifactRunIdFields(options, firing),
         };
         options.logger?.error?.("Cron job timed out; reclaiming the slot.", { jobId: job.id, maxRunMs: limitMs });
         await emitResult(options, result);
@@ -438,7 +649,20 @@ function startRun(
     (watchdog as { unref?: () => void }).unref?.();
   }
 
-  void resolveNotifyConversationId(job, options, controller.signal)
+  // Defer host callback evaluation into the promise chain: Promise.resolve(x)
+  // cannot catch a synchronous throw that occurs while evaluating x. A failed
+  // durable running transition fails this firing before model work starts, then
+  // the common finalizer reclaims the overlap slot.
+  void Promise.resolve()
+    .then(async () => await options.onRunStarted?.(firing, startedAt))
+    .catch((error: unknown) => {
+      reportDegraded(options, "Cron run-start persistence failed.", error, {
+        jobId: job.id,
+        runId: firing.runId,
+      });
+      throw error;
+    })
+    .then(async () => await resolveNotifyConversationId(job, options, controller.signal))
     .then(async (notifyConversationId) => {
       if (controller.signal.aborted) {
         throw controller.signal.reason ?? new Error("Cron job was cancelled before responder start.");
@@ -451,9 +675,13 @@ function startRun(
         metadata: {
           cron: {
             jobId: job.id,
+            cronRunId: firing.runId,
+            sequence: firing.sequence,
+            orderedAt: firing.orderedAt,
+            trigger: firing.trigger,
             expression: job.expression,
             timezone: job.timezone ?? DEFAULT_TIMEZONE,
-            scheduledAt,
+            scheduledAt: firing.scheduledAt,
             startedAt,
             ...(job.notify === true
               ? {
@@ -482,24 +710,23 @@ function startRun(
         // mirrors the .catch() classification below and LiveSessionManager.drain().
         if (controller.signal.aborted) {
           const result: CronJobResult = {
+            ...resultIdentity(firing),
             kind: "cancelled",
-            jobId: job.id,
-            scheduledAt,
             startedAt,
             completedAt: (options.now?.() ?? new Date()).toISOString(),
             error: "Cron job cancelled (responder resolved after abort).",
+            ...artifactRunIdFields(options, firing),
           };
           options.logger?.warn?.("Cron job responder resolved after abort; reporting cancelled.", {
             jobId: job.id,
-            error: result.error,
+            error: "Cron job cancelled (responder resolved after abort).",
           });
           await emitResult(options, result);
           return;
         }
         const result: CronJobResult = {
+          ...resultIdentity(firing),
           kind: "succeeded",
-          jobId: job.id,
-          scheduledAt,
           startedAt,
           completedAt: (options.now?.() ?? new Date()).toISOString(),
           ...(notifyConversationId === undefined ? {} : { notifyConversationId }),
@@ -514,21 +741,44 @@ function startRun(
         const cancelled = controller.signal.aborted || isAgentResponseCancelledError(error);
         const failureKind = failureKindFromUnknown(error);
         const result: CronJobResult = {
+          ...resultIdentity(firing),
           kind: cancelled ? "cancelled" : "failed",
-          jobId: job.id,
-          scheduledAt,
           startedAt,
           completedAt: (options.now?.() ?? new Date()).toISOString(),
           error: errorToMessage(error),
           ...(failureKind === undefined ? {} : { failureKind }),
+          ...artifactRunIdFields(options, firing),
         };
         options.logger?.[cancelled ? "warn" : "error"]?.("Cron job run failed.", {
           jobId: job.id,
-          error: result.error,
+          error: errorToMessage(error),
         });
         await emitResult(options, result);
       });
     });
+}
+
+class CronMessageStream extends BufferedMessageStream {
+  constructor(
+    private readonly firing: CronFiringIdentity,
+    private readonly options: CronAdapterOptions,
+  ) {
+    super({
+      onClosed: () =>
+        new CronAdapterError("stream_closed", "Cannot write to a finished cron stream."),
+    });
+  }
+
+  override async event(event: AgentStreamEvent): Promise<void> {
+    try {
+      await this.options.onEvent?.(this.firing, event);
+    } catch (error) {
+      reportDegraded(this.options, "Cron run event could not be persisted.", error, {
+        jobId: this.firing.jobId,
+        runId: this.firing.runId,
+      });
+    }
+  }
 }
 
 async function resolveNotifyConversationId(
@@ -605,7 +855,7 @@ function drainNext(
 ): void {
   const next = state.pending.shift();
   if (next !== undefined) {
-    startRun(job, next.scheduledAt, options, jobStates, state);
+    startRun(job, next, options, jobStates, state);
     return;
   }
   if (state.active === undefined && state.pending.length === 0) {
@@ -614,7 +864,33 @@ function drainNext(
 }
 
 async function emitResult(options: CronAdapterOptions, result: CronJobResult): Promise<void> {
-  await options.onResult?.(result);
+  try {
+    await options.onResult?.(result);
+  } catch (error) {
+    reportDegraded(options, "Cron run-result persistence failed.", error, {
+      jobId: result.jobId,
+      runId: result.cronRunId,
+      kind: result.kind,
+    });
+  }
+}
+
+function reportDegraded(
+  options: CronAdapterOptions,
+  message: string,
+  error: unknown,
+  metadata: Readonly<Record<string, unknown>>,
+): void {
+  const detail = errorToMessage(error);
+  options.logger?.error?.(message, { ...metadata, error: detail });
+  try {
+    options.onDegraded?.(`${message} ${detail}`);
+  } catch (callbackError) {
+    options.logger?.error?.("Cron degradation callback failed.", {
+      ...metadata,
+      error: errorToMessage(callbackError),
+    });
+  }
 }
 
 function nextDateFor(job: CronJob, currentDate: Date): Date {

@@ -84,6 +84,8 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
     selectedAgentId,
     showArchived,
     setShowArchived,
+    hasMoreThreads,
+    loadMoreThreads,
   } = useConsoleStore();
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLowerCase();
@@ -158,6 +160,18 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
                     : "Start a conversation"}
               </span>
             </div>
+          )}
+          {hasMoreThreads && !normalizedQuery && (
+            <button
+              type="button"
+              className="thread-load-more"
+              onClick={(event) => {
+                event.stopPropagation();
+                void loadMoreThreads().catch(() => undefined);
+              }}
+            >
+              Load older conversations
+            </button>
           )}
         </div>
       </ThreadListPrimitive.Root>

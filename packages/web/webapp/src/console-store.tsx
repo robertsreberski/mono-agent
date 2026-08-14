@@ -13,6 +13,7 @@ import { DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
   AgentSummary,
   Bootstrap,
+  CronOverview,
   SkillRegistryState,
   StartTurnInput,
   ThreadDetail,
@@ -46,6 +47,11 @@ interface ConsoleStoreValue {
   readonly modelOptions: readonly string[];
   readonly effortOptions: readonly string[];
   readonly skillRegistry: SkillRegistryState;
+  readonly cronOverview: CronOverview | null;
+  readonly cronLoading: boolean;
+  readonly cronError: string | null;
+  readonly hasMoreThreads: boolean;
+  readonly hasOlderMessages: boolean;
   readonly selectAgent: (sourceId: string) => void;
   readonly setAgentPinned: (sourceId: string, pinned: boolean) => Promise<void>;
   readonly selectThread: (threadId: string) => void;
@@ -66,12 +72,52 @@ interface ConsoleStoreValue {
   readonly setEffort: (effort: string) => void;
   readonly retry: () => void;
   readonly clearActionError: () => void;
+  readonly loadMoreThreads: () => Promise<void>;
+  readonly loadOlderMessages: () => Promise<void>;
+  readonly refreshCron: () => Promise<void>;
+  readonly loadCronRunActivity: (runId: string) => Promise<void>;
 }
 
 const ConsoleStore = createContext<ConsoleStoreValue | null>(null);
 
 const byMostRecent = (a: ThreadSummary, b: ThreadSummary) =>
   Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+const threadBucketKey = (sourceId: string, archived: boolean): string =>
+  `${sourceId}\0${archived ? "archived" : "active"}`;
+const cronChannelKey = (sourceId: string, jobId: string): string => `${sourceId}\0${jobId}`;
+
+const mergeThreads = (
+  current: readonly ThreadSummary[],
+  incoming: readonly ThreadSummary[],
+): ThreadSummary[] => {
+  const merged = new Map(current.map((thread) => [thread.id, thread]));
+  for (const thread of incoming) merged.set(thread.id, thread);
+  return [...merged.values()].sort(byMostRecent);
+};
+
+export const cronChannelPath = (sourceId: string, jobId: string): string =>
+  `/agents/${encodeURIComponent(sourceId)}/cron/${encodeURIComponent(jobId)}`;
+
+const threadRoute = (thread: ThreadSummary | undefined): string =>
+  thread?.trigger?.kind === "cron" && thread.trigger.jobId !== undefined
+    ? cronChannelPath(thread.sourceId, thread.trigger.jobId)
+    : "/";
+
+const updateThreadRoute = (thread: ThreadSummary | undefined, replace = false): void => {
+  const path = threadRoute(thread);
+  if (window.location.pathname === path) return;
+  window.history[replace ? "replaceState" : "pushState"](window.history.state, "", path);
+};
+
+const cronRouteSelection = (): { readonly sourceId: string; readonly jobId: string } | undefined => {
+  const match = /^\/agents\/([^/]+)\/cron\/([^/]+)\/?$/u.exec(window.location.pathname);
+  if (match === null) return undefined;
+  try {
+    return { sourceId: decodeURIComponent(match[1]!), jobId: decodeURIComponent(match[2]!) };
+  } catch {
+    return undefined;
+  }
+};
 
 export const SELECTED_AGENT_STORAGE_KEY = "mono-agent.web.selected-agent";
 export const SELECTED_THREADS_STORAGE_KEY = "mono-agent.web.selected-threads";
@@ -245,7 +291,7 @@ export const validateRunPreference = (
 export function ConsoleStoreProvider({ children }: { readonly children: ReactNode }) {
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() =>
-    localStorage.getItem(SELECTED_AGENT_STORAGE_KEY),
+    cronRouteSelection()?.sourceId ?? localStorage.getItem(SELECTED_AGENT_STORAGE_KEY),
   );
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ThreadDetail | null>(null);
@@ -259,7 +305,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     readonly registry: SkillRegistryState;
   }>({ sourceId: null, registry: { status: "loading", items: [] } });
   const [skillRefreshToken, setSkillRefreshToken] = useState(0);
+  const [cronRefreshToken, setCronRefreshToken] = useState(0);
   const [showArchived, setShowArchived] = useState(false);
+  const [threadCursorByBucket, setThreadCursorByBucket] = useState<Record<string, string | null | undefined>>({});
+  const [cronRunCursorByChannel, setCronRunCursorByChannel] = useState<Record<string, string | null | undefined>>({});
+  const [cronOverview, setCronOverview] = useState<CronOverview | null>(null);
+  const [cronLoading, setCronLoading] = useState(false);
+  const [cronError, setCronError] = useState<string | null>(null);
+  const [routeRevision, setRouteRevision] = useState(0);
   const [showOfflineAgents, setShowOfflineAgents] = useState(false);
   const [modelByContext, setModelByContext] = useState<Record<string, string>>(() =>
     Object.fromEntries(
@@ -310,12 +363,22 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     setBootstrap(next);
     setError(null);
     setLoading(false);
-    const selection = resolveBootstrapSelection(
+    const baseSelection = resolveBootstrapSelection(
       next,
       selectedAgentRef.current,
       selectedThreadRef.current,
       readPersistedThreadIds(),
     );
+    const route = cronRouteSelection();
+    const routeThread = route === undefined
+      ? undefined
+      : next.threads.find((thread) =>
+          thread.sourceId === route.sourceId
+          && thread.trigger?.kind === "cron"
+          && thread.trigger.jobId === route.jobId);
+    const selection = routeThread === undefined
+      ? baseSelection
+      : { agentId: routeThread.sourceId, threadId: routeThread.id };
     selectedAgentRef.current = selection.agentId;
     selectedThreadRef.current = selection.threadId;
     setSelectedAgentId(selection.agentId);
@@ -345,6 +408,40 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   useEffect(() => {
     void loadBootstrap();
   }, [loadBootstrap]);
+
+  useEffect(() => {
+    const onPopState = () => setRouteRevision((value) => value + 1);
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  const loadThreadBucket = useCallback(async (
+    sourceId: string,
+    archived: boolean,
+    before?: string,
+  ) => {
+    const page = await api.threads(sourceId, archived, before);
+    const key = threadBucketKey(sourceId, archived);
+    setBootstrap((current) => {
+      if (current === null) return current;
+      const retained = before === undefined
+        ? current.threads.filter((thread) =>
+            thread.sourceId !== sourceId || Boolean(thread.archivedAt) !== archived)
+        : current.threads;
+      return { ...current, threads: mergeThreads(retained, page.threads) };
+    });
+    setThreadCursorByBucket((current) => ({
+      ...current,
+      [key]: page.nextCursor ?? null,
+    }));
+  }, []);
+
+  useEffect(() => {
+    if (selectedAgentId === null) return;
+    void loadThreadBucket(selectedAgentId, showArchived).catch((loadError: unknown) => {
+      setActionError(errorMessage(loadError));
+    });
+  }, [loadThreadBucket, selectedAgentId, showArchived]);
 
   const loadThread = useCallback(async (threadId: string, signal: AbortSignal) => {
     setDetailLoading(true);
@@ -427,11 +524,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       if (eventType === "ready" || eventType === "agents.changed") {
         setSkillRefreshToken((value) => value + 1);
       }
+      if (eventType === "ready" || eventType === "agents.changed" || eventType === "cron.changed") {
+        setCronRefreshToken((value) => value + 1);
+      }
       queueRefresh();
     };
     const eventTypes: WebEvent["type"][] = [
       "ready",
       "agents.changed",
+      "cron.changed",
       "threads.changed",
       "thread.changed",
       "message.changed",
@@ -489,6 +590,145 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         .sort(byMostRecent),
     [selectedAgentId, showArchived, threads],
   );
+  const activeBucketKey = selectedAgentId === null
+    ? undefined
+    : threadBucketKey(selectedAgentId, showArchived);
+  const hasMoreThreads = activeBucketKey !== undefined
+    && typeof threadCursorByBucket[activeBucketKey] === "string";
+  const selectedCronJobId = selectedThread?.trigger?.kind === "cron"
+    ? selectedThread.trigger.jobId
+    : undefined;
+  const selectedCronThreadId = selectedCronJobId === undefined ? undefined : selectedThread?.id;
+  const selectedCronChannelKey = selectedAgentId === null || selectedCronJobId === undefined
+    ? undefined
+    : cronChannelKey(selectedAgentId, selectedCronJobId);
+  const hasOlderMessages = detail?.messagesNextCursor !== undefined
+    || (selectedAgent?.cron?.read === true
+      && selectedCronChannelKey !== undefined
+      && typeof cronRunCursorByChannel[selectedCronChannelKey] === "string");
+
+  const loadMoreThreads = useCallback(async () => {
+    if (selectedAgentId === null) return;
+    const cursor = threadCursorByBucket[threadBucketKey(selectedAgentId, showArchived)];
+    if (typeof cursor !== "string") return;
+    await loadThreadBucket(selectedAgentId, showArchived, cursor);
+  }, [loadThreadBucket, selectedAgentId, showArchived, threadCursorByBucket]);
+
+  const loadOlderMessages = useCallback(async () => {
+    const current = detail;
+    if (current === null) return;
+    if (current.messagesNextCursor !== undefined) {
+      const page = await api.messages(current.thread.id, current.messagesNextCursor);
+      setDetail((latest) => {
+        if (latest?.thread.id !== current.thread.id) return latest;
+        const ids = new Set(latest.messages.map((message) => message.id));
+        const messages = [...page.messages.filter((message) => !ids.has(message.id)), ...latest.messages];
+        if (page.nextCursor !== undefined) return { ...latest, messages, messagesNextCursor: page.nextCursor };
+        const { messagesNextCursor: _cursor, ...withoutCursor } = latest;
+        return { ...withoutCursor, messages };
+      });
+      return;
+    }
+    if (
+      selectedAgent?.cron?.read !== true
+      || selectedAgentId === null
+      || selectedCronJobId === undefined
+      || selectedCronThreadId !== current.thread.id
+      || selectedCronChannelKey === undefined
+    ) return;
+    const cursor = cronRunCursorByChannel[selectedCronChannelKey];
+    if (typeof cursor !== "string") return;
+    const page = await api.cronRuns(selectedAgentId, selectedCronJobId, cursor);
+    setCronRunCursorByChannel((latest) => ({
+      ...latest,
+      [selectedCronChannelKey]: page.nextCursor ?? null,
+    }));
+    setDetail((latest) => {
+      if (latest?.thread.id !== current.thread.id) return latest;
+      const ids = new Set(latest.messages.map((message) => message.id));
+      const messages = [
+        ...(page.messages ?? []).filter((message) => !ids.has(message.id)),
+        ...latest.messages,
+      ];
+      return { ...latest, messages };
+    });
+  }, [
+    cronRunCursorByChannel,
+    detail,
+    selectedAgent?.cron?.read,
+    selectedAgentId,
+    selectedCronChannelKey,
+    selectedCronJobId,
+    selectedCronThreadId,
+  ]);
+
+  const refreshCron = useCallback(async () => {
+    const sourceId = selectedAgentId;
+    const jobId = selectedCronJobId;
+    if (sourceId === null || selectedAgent?.cron?.read !== true) {
+      setCronOverview(null);
+      setCronError(null);
+      return;
+    }
+    setCronLoading(true);
+    setCronError(null);
+    try {
+      const overview = await api.cronOverview(sourceId);
+      setCronOverview(overview);
+      await loadThreadBucket(sourceId, showArchived);
+      if (jobId !== undefined) {
+        const page = await api.cronRuns(sourceId, jobId);
+        const channelKey = cronChannelKey(sourceId, jobId);
+        setCronRunCursorByChannel((current) => Object.prototype.hasOwnProperty.call(current, channelKey)
+          ? current
+          : { ...current, [channelKey]: page.nextCursor ?? null });
+        const nextDetail = await api.thread(selectedCronThreadId!);
+        if (selectedThreadRef.current === nextDetail.thread.id) setDetail(nextDetail);
+      }
+    } catch (cronError) {
+      setCronError(errorMessage(cronError));
+    } finally {
+      setCronLoading(false);
+    }
+  }, [
+    loadThreadBucket,
+    selectedAgent?.cron?.read,
+    selectedAgentId,
+    selectedCronJobId,
+    selectedCronThreadId,
+    showArchived,
+  ]);
+
+  const loadCronRunActivity = useCallback(async (runId: string) => {
+    const sourceId = selectedAgentId;
+    const jobId = selectedCronJobId;
+    const threadId = selectedCronThreadId;
+    if (sourceId === null || jobId === undefined || threadId === undefined) return;
+    setCronLoading(true);
+    setCronError(null);
+    try {
+      const message = await api.cronRun(sourceId, jobId, runId);
+      setDetail((current) => {
+        if (current?.thread.id !== threadId) return current;
+        const exists = current.messages.some((candidate) => candidate.id === message.id);
+        return {
+          ...current,
+          messages: exists
+            ? current.messages.map((candidate) => candidate.id === message.id ? message : candidate)
+            : [...current.messages, message].sort((left, right) =>
+                left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)),
+        };
+      });
+    } catch (loadError) {
+      setCronError(errorMessage(loadError));
+    } finally {
+      setCronLoading(false);
+    }
+  }, [selectedAgentId, selectedCronJobId, selectedCronThreadId]);
+
+  useEffect(() => {
+    void refreshCron();
+  }, [cronRefreshToken, refreshCron]);
 
   useEffect(() => {
     const generation = ++skillRequestGenerationRef.current;
@@ -560,6 +800,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       selectedThreadRef.current = recent?.id ?? null;
       setSelectedThreadId(recent?.id ?? null);
       persistThreadId(sourceId, recent?.id ?? null);
+      updateThreadRoute(recent);
       setShowArchived(false);
       setActionError(null);
     },
@@ -595,13 +836,40 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         setSelectedAgentId(thread.sourceId);
         localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, thread.sourceId);
         if (!thread.archivedAt) persistThreadId(thread.sourceId, thread.id);
+        updateThreadRoute(thread);
       }
       selectedThreadRef.current = threadId;
       setSelectedThreadId(threadId);
       setActionError(null);
+      if (thread === undefined) {
+        void api.thread(threadId).then((next) => {
+          const canonical = next.thread;
+          setBootstrap((current) => current === null
+            ? current
+            : { ...current, threads: mergeThreads(current.threads, [canonical]) });
+          setDetail(next);
+          selectedAgentRef.current = canonical.sourceId;
+          selectedThreadRef.current = canonical.id;
+          setSelectedAgentId(canonical.sourceId);
+          setSelectedThreadId(canonical.id);
+          localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, canonical.sourceId);
+          if (!canonical.archivedAt) persistThreadId(canonical.sourceId, canonical.id);
+          updateThreadRoute(canonical, true);
+        }).catch((selectionError: unknown) => setActionError(errorMessage(selectionError)));
+      }
     },
     [threads],
   );
+
+  useEffect(() => {
+    const route = cronRouteSelection();
+    if (route === undefined) return;
+    const job = cronOverview?.jobs.find(
+      (candidate) => candidate.jobId === route.jobId,
+    );
+    if (job === undefined || route.sourceId !== selectedAgentId) return;
+    if (selectedThreadRef.current !== job.threadId) selectThread(job.threadId);
+  }, [cronOverview, routeRevision, selectThread, selectedAgentId]);
 
   const createThread = useCallback(async () => {
     if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
@@ -625,6 +893,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setSelectedThreadId(thread.id);
       persistThreadId(selectedAgentId, thread.id);
       setShowArchived(false);
+      updateThreadRoute(thread);
       setBootstrap((current) =>
         current ? { ...current, threads: [thread, ...current.threads] } : current,
       );
@@ -637,10 +906,22 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [selectedAgentId]);
 
+  const fetchThreadSummary = useCallback(async (threadId: string): Promise<ThreadSummary> => {
+    const known = threads.find((candidate) => candidate.id === threadId) ??
+      (detail?.thread.id === threadId ? detail.thread : undefined);
+    if (known !== undefined) return known;
+    const fetched = await api.thread(threadId);
+    setBootstrap((current) => current === null
+      ? current
+      : { ...current, threads: mergeThreads(current.threads, [fetched.thread]) });
+    return fetched.thread;
+  }, [detail, threads]);
+
   const renameThread = useCallback(async (threadId: string, title: string) => {
     const trimmed = title.trim();
     if (!trimmed) return;
     try {
+      await fetchThreadSummary(threadId);
       const thread = await api.patchThread(threadId, { title: trimmed });
       setBootstrap((current) =>
         current
@@ -657,12 +938,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setActionError(errorMessage(renameError));
       throw renameError;
     }
-  }, []);
+  }, [fetchThreadSummary]);
 
   const archiveThread = useCallback(
     async (threadId: string) => {
       try {
-        const thread = await api.patchThread(threadId, { archived: true });
+        const target = await fetchThreadSummary(threadId);
+        const thread = await api.patchThread(target.id, { archived: true });
         setBootstrap((current) =>
           current
             ? {
@@ -671,12 +953,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
               }
             : current,
         );
-        if (selectedThreadRef.current === threadId) {
-          const replacement = visibleThreads.find((item) => item.id !== threadId);
+        if (selectedThreadRef.current === target.id || selectedThreadRef.current === threadId) {
+          const replacement = visibleThreads.find((item) => item.id !== target.id);
           selectedThreadRef.current = replacement?.id ?? null;
           setSelectedThreadId(replacement?.id ?? null);
           persistThreadId(thread.sourceId, replacement?.id ?? null);
-        } else if (readPersistedThreadIds()[thread.sourceId] === threadId) {
+          updateThreadRoute(replacement, true);
+        } else if (readPersistedThreadIds()[thread.sourceId] === target.id) {
           persistThreadId(thread.sourceId, null);
         }
       } catch (archiveError) {
@@ -684,12 +967,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         throw archiveError;
       }
     },
-    [visibleThreads],
+    [fetchThreadSummary, visibleThreads],
   );
 
   const unarchiveThread = useCallback(async (threadId: string) => {
     try {
-      const thread = await api.patchThread(threadId, { archived: false });
+      const target = await fetchThreadSummary(threadId);
+      const thread = await api.patchThread(target.id, { archived: false });
       setBootstrap((current) =>
         current
           ? {
@@ -702,18 +986,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setSelectedThreadId(thread.id);
       persistThreadId(thread.sourceId, thread.id);
       setShowArchived(false);
+      updateThreadRoute(thread, true);
     } catch (unarchiveError) {
       setActionError(errorMessage(unarchiveError));
       throw unarchiveError;
     }
-  }, []);
+  }, [fetchThreadSummary]);
 
   const deleteThread = useCallback(async (threadId: string) => {
-    const thread = threads.find((candidate) => candidate.id === threadId);
-    if (!thread) return;
     try {
-      await api.deleteThread(threadId);
-      const preferenceKey = preferenceKeyForThread(thread.sourceId, threadId);
+      const thread = await fetchThreadSummary(threadId);
+      await api.deleteThread(thread.id);
+      const preferenceKey = preferenceKeyForThread(thread.sourceId, thread.id);
       setModelByContext((current) => {
         const next = { ...current };
         delete next[preferenceKey];
@@ -725,15 +1009,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         return next;
       });
       setBootstrap((current) => current
-        ? { ...current, threads: current.threads.filter((item) => item.id !== threadId) }
+        ? { ...current, threads: current.threads.filter((item) => item.id !== thread.id) }
         : current);
-      if (selectedThreadRef.current === threadId) {
-        const replacement = visibleThreads.find((item) => item.id !== threadId);
+      if (selectedThreadRef.current === thread.id || selectedThreadRef.current === threadId) {
+        const replacement = visibleThreads.find((item) => item.id !== thread.id);
         selectedThreadRef.current = replacement?.id ?? null;
         setSelectedThreadId(replacement?.id ?? null);
         setDetail(null);
+        updateThreadRoute(replacement, true);
       }
-      if (readPersistedThreadIds()[thread.sourceId] === threadId) {
+      if (readPersistedThreadIds()[thread.sourceId] === thread.id) {
         persistThreadId(thread.sourceId, null);
       }
       setActionError(null);
@@ -741,7 +1026,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setActionError(errorMessage(deleteError));
       throw deleteError;
     }
-  }, [threads, visibleThreads]);
+  }, [fetchThreadSummary, visibleThreads]);
 
   const modelOptions = selectedAgent?.models ?? [];
   const preferenceKey = selectedAgentId
@@ -902,6 +1187,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       modelOptions,
       effortOptions,
       skillRegistry,
+      cronOverview,
+      cronLoading,
+      cronError,
+      hasMoreThreads,
+      hasOlderMessages,
       selectAgent,
       setAgentPinned,
       selectThread,
@@ -923,6 +1213,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         void loadBootstrap();
       },
       clearActionError: () => setActionError(null),
+      loadMoreThreads,
+      loadOlderMessages,
+      refreshCron,
+      loadCronRunActivity,
     }),
     [
       actionError,
@@ -932,6 +1226,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       cancelTurn,
       connection,
       createThread,
+      cronLoading,
+      cronError,
+      cronOverview,
       detail,
       detailLoading,
       deleteThread,
@@ -939,12 +1236,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       effortOptions,
       error,
       hiddenOfflineAgentCount,
+      hasMoreThreads,
+      hasOlderMessages,
       loadBootstrap,
+      loadMoreThreads,
+      loadOlderMessages,
+      loadCronRunActivity,
       loading,
       model,
       modelOptions,
       skillRegistry,
       renameThread,
+      refreshCron,
       selectAgent,
       selectThread,
       selectedAgent,

@@ -752,21 +752,23 @@ describe("WebStore", () => {
       deliveryKey: "cron:daily:2026-07-21T09:00:00.000Z:success",
       text: "Morning brief",
     });
+    expect(reservation.threadId).toBeDefined();
+    const notificationThreadId = reservation.threadId!;
 
-    expect(store.getThread(reservation.threadId)).toBeUndefined();
+    expect(store.getThread(notificationThreadId)).toBeUndefined();
     expect(store.currentThreadId()).toBe(selected.id);
     const completed = store.completeNotification(reservation);
     expect(completed).toMatchObject({
       duplicate: false,
       thread: {
-        id: reservation.threadId,
+        id: notificationThreadId,
         title: "Cron notification",
         trigger: { kind: "cron" },
         messageCount: 1,
         runState: { status: "complete" },
       },
     });
-    expect(store.getThreadDetail(reservation.threadId)?.messages).toEqual([
+    expect(store.getThreadDetail(notificationThreadId)?.messages).toEqual([
       expect.objectContaining({
         role: "assistant",
         status: "complete",
@@ -819,7 +821,7 @@ describe("WebStore", () => {
     const ledger = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notification_deliveries'").get();
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     inspected.close();
-    expect(version.user_version).toBe(4);
+    expect(version.user_version).toBe(6);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
@@ -834,7 +836,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 5");
+    future.exec("PRAGMA user_version = 7");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 

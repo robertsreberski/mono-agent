@@ -4,10 +4,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api";
 import type { AskSnapshot } from "../types";
-import { ToolFallback } from "./Messages";
+import { AskReconciliationProvider, ToolFallback } from "./Messages";
 
 vi.mock("../console-store", () => ({
-  useConsoleStore: () => ({ selectedThread: { id: "thread-1" } }),
+  useConsoleStore: () => ({
+    selectedThread: { id: "thread-1" },
+    selectedAgent: { status: "online" },
+    connection: "live",
+  }),
 }));
 
 const snapshot: AskSnapshot = {
@@ -40,7 +44,7 @@ const snapshot: AskSnapshot = {
   activeQuestionIndex: 0,
   status: "pending",
   createdAt: "2026-07-21T09:00:00.000Z",
-  expiresAt: "2026-07-21T09:10:00.000Z",
+  expiresAt: "2099-07-21T09:10:00.000Z",
 };
 
 const toolArgs = JSON.parse(JSON.stringify({
@@ -49,19 +53,23 @@ const toolArgs = JSON.parse(JSON.stringify({
 })) as ToolCallMessagePartProps["args"];
 
 function askUserTool() {
-  return <ToolFallback
-    type="tool-call"
-    toolName="AskUser"
-    toolCallId="tool-1"
-    args={toolArgs}
-    argsText={JSON.stringify(toolArgs)}
-    result={undefined}
-    isError={false}
-    status={{ type: "running" }}
-    addResult={vi.fn()}
-    resume={vi.fn()}
-    respondToApproval={vi.fn()}
-  />;
+  return (
+    <AskReconciliationProvider>
+      <ToolFallback
+        type="tool-call"
+        toolName="AskUser"
+        toolCallId="tool-1"
+        args={toolArgs}
+        argsText={JSON.stringify(toolArgs)}
+        result={undefined}
+        isError={false}
+        status={{ type: "running" }}
+        addResult={vi.fn()}
+        resume={vi.fn()}
+        respondToApproval={vi.fn()}
+      />
+    </AskReconciliationProvider>
+  );
 }
 
 async function renderAnsweredSnapshot(answered: AskSnapshot) {
@@ -85,7 +93,8 @@ describe("AskUser web form", () => {
       ],
       status: "answered",
     };
-    vi.spyOn(api, "pendingAsk").mockResolvedValueOnce(snapshot).mockResolvedValue(answered);
+    vi.spyOn(api, "pendingAsk").mockResolvedValue(snapshot);
+    vi.spyOn(api, "ask").mockResolvedValue(snapshot);
     const submitAsk = vi.spyOn(api, "submitAsk").mockResolvedValue({
       accepted: true,
       snapshot: answered,
@@ -244,5 +253,121 @@ describe("AskUser web form", () => {
     expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
     expect(container.querySelectorAll(".ask-user-summary-line")).toHaveLength(1);
     expect(container.querySelector(".ask-user-summary-line")?.textContent).toBe("Send");
+  });
+
+  it("re-reads a completed card by its exact interaction id and converges after another destination answers", async () => {
+    vi.spyOn(api, "pendingAsk");
+    vi.spyOn(api, "ask")
+      .mockResolvedValueOnce(snapshot)
+      .mockResolvedValue({ ...snapshot, status: "answered" });
+
+    render(
+      <AskReconciliationProvider>
+        <ToolFallback
+          type="tool-call"
+          toolName="AskUser"
+          toolCallId="tool-old"
+          args={{}}
+          argsText="{}"
+          result={{ structuredContent: { interactionId: snapshot.interactionId } }}
+          isError={false}
+          status={{ type: "complete" }}
+          addResult={vi.fn()}
+          resume={vi.fn()}
+          respondToApproval={vi.fn()}
+        />
+      </AskReconciliationProvider>,
+    );
+
+    expect(await screen.findByText("Answers submitted.", {}, { timeout: 3_000 })).toBeVisible();
+    expect(api.ask).toHaveBeenCalledTimes(2);
+    expect(api.pendingAsk).not.toHaveBeenCalled();
+  });
+
+  it("never lets an old card adopt a different interaction and becomes non-actionable after eviction", async () => {
+    vi.spyOn(api, "pendingAsk");
+    vi.spyOn(api, "ask").mockResolvedValue({ ...snapshot, interactionId: "ask-newer" });
+
+    render(
+      <AskReconciliationProvider>
+        <ToolFallback
+          type="tool-call"
+          toolName="AskUser"
+          toolCallId="tool-old"
+          args={{}}
+          argsText="{}"
+          result={{ structuredContent: { interactionId: "ask-old" } }}
+          isError={false}
+          status={{ type: "complete" }}
+          addResult={vi.fn()}
+          resume={vi.fn()}
+          respondToApproval={vi.fn()}
+        />
+      </AskReconciliationProvider>,
+    );
+
+    expect(await screen.findByText(/Question unavailable/u)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Submit/u })).not.toBeInTheDocument();
+    expect(api.pendingAsk).not.toHaveBeenCalled();
+  });
+
+  it("derives expiry from expiresAt and does not render an actionable form", async () => {
+    vi.spyOn(api, "ask").mockResolvedValue({
+      ...snapshot,
+      expiresAt: "2000-01-01T00:00:00.000Z",
+    });
+
+    render(
+      <AskReconciliationProvider>
+        <ToolFallback
+          type="tool-call"
+          toolName="AskUser"
+          toolCallId="tool-expired"
+          args={{}}
+          argsText="{}"
+          result={{ interactionId: snapshot.interactionId }}
+          isError={false}
+          status={{ type: "complete" }}
+          addResult={vi.fn()}
+          resume={vi.fn()}
+          respondToApproval={vi.fn()}
+        />
+      </AskReconciliationProvider>,
+    );
+
+    expect(await screen.findByText("Question expired.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Submit/u })).not.toBeInTheDocument();
+  });
+
+  it("keeps the canonical terminal tool outcome visible after agent history eviction", async () => {
+    vi.spyOn(api, "ask").mockResolvedValue(undefined);
+
+    render(
+      <AskReconciliationProvider>
+        <ToolFallback
+          type="tool-call"
+          toolName="AskUser"
+          toolCallId="tool-restarted"
+          args={{}}
+          argsText="{}"
+          result={{
+            structuredContent: {
+              interactionId: snapshot.interactionId,
+              answered: true,
+              answers: [{ questionId: "q0", selectedOptionIds: ["q0o0"] }],
+            },
+          }}
+          isError={false}
+          status={{ type: "complete" }}
+          addResult={vi.fn()}
+          resume={vi.fn()}
+          respondToApproval={vi.fn()}
+        />
+      </AskReconciliationProvider>,
+    );
+
+    expect(await screen.findByText("Answers submitted.")).toBeVisible();
+    await waitFor(() => expect(api.ask).toHaveBeenCalledWith("thread-1", "ask-test", expect.any(AbortSignal)));
+    expect(screen.queryByRole("button", { name: /Submit/u })).not.toBeInTheDocument();
   });
 });

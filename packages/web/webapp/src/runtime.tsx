@@ -136,8 +136,11 @@ const convertPart = (part: MessagePart): ConvertedPart | null => {
       // Compaction is user-visible activity, so expose that one canonical kind
       // as a named data part that can join reasoning/tools without leaking raw
       // provider diagnostics into the transcript.
-      return isContextCompactionPart(part)
-        ? { type: "data-context-compaction", data: jsonObject(part.data) }
+      if (isContextCompactionPart(part)) {
+        return { type: "data-context-compaction", data: jsonObject(part.data) };
+      }
+      return part.event === "cron_run"
+        ? { type: "data-cron-run", data: jsonObject(part.data) }
         : null;
     case "error":
       return { type: "data-error", data: { code: part.code, message: part.message } };

@@ -1,4 +1,4 @@
-import { chmod, link, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1699,6 +1699,29 @@ describe("validateMonoAgentFolder", () => {
     const webhook = sectionById(report, "channel:webhook");
     expect(webhook.status).toBe("error");
     expect(webhook.details.join("\n")).toContain('invalid effort override "extreme"');
+  });
+
+  it("reports a present but unreadable cron control store as a fail-visible channel error", async () => {
+    dir = await realpath(dir);
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      cron: {
+        jobs: [{ id: "digest", enabled: true, expression: "0 7 * * *", prompt: "Summarize." }],
+      },
+    });
+    // Presence means this is not a first run. A missing marker/database is
+    // corruption, so doctor must expose the same arming halt the runtime uses.
+    await mkdir(join(dir, ".mono-agent", "cron-control-v1"), { recursive: true, mode: 0o700 });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+
+    expect(report.ok).toBe(false);
+    const cron = sectionById(report, "channel:cron");
+    expect(cron.status).toBe("error");
+    expect(cron.details.join("\n")).toContain("Cron control state is unavailable");
+    expect(cron.details.join("\n")).toContain("Cron control marker");
   });
 
   it("rejects unknown exact Pi models in static webhook and cron overrides", async () => {

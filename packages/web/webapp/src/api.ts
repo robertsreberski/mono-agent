@@ -5,12 +5,21 @@ import type {
   AskSnapshot,
   AskSubmissionResult,
   Bootstrap,
+  ChannelConfigView,
+  CronJob,
+  CronMutationResult,
+  CronOverview,
+  CronRun,
+  CronRunPage,
   LiveInputReceipt,
   PushSubscriptionStatus,
   StartTurnInput,
   ThreadDetail,
+  MessagePage,
+  ThreadPage,
   ThreadSummary,
   WebAttachment,
+  WebMessage,
 } from "./types";
 
 export class ApiError extends Error {
@@ -60,6 +69,20 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   return (await response.json()) as T;
 };
 
+const cronMutation = async <T>(path: string, body: Readonly<Record<string, unknown>>): Promise<CronMutationResult<T>> => {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Mono-Agent-Web-Origin": window.location.origin,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok && response.status !== 428) throw await readError(response);
+  return await response.json() as CronMutationResult<T>;
+};
+
 export const api = {
   bootstrap: (signal?: AbortSignal) =>
     request<Bootstrap>("/api/v1/bootstrap", { signal }),
@@ -68,6 +91,20 @@ export const api = {
     request<ThreadDetail>(`/api/v1/threads/${encodeURIComponent(threadId)}`, {
       signal,
     }),
+
+  threads: (sourceId: string, archived: boolean, before?: string, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ sourceId, archived: String(archived), limit: "200" });
+    if (before !== undefined) query.set("before", before);
+    return request<ThreadPage>(`/api/v1/threads?${query.toString()}`, { signal });
+  },
+
+  messages: (threadId: string, before: string, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ before, limit: "100" });
+    return request<MessagePage>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/messages?${query.toString()}`,
+      { signal },
+    );
+  },
 
   createThread: async (sourceId: string) => {
     const result = await request<{ thread: ThreadSummary }>("/api/v1/threads", {
@@ -136,11 +173,68 @@ export const api = {
     return result.ask ?? undefined;
   },
 
+  ask: async (threadId: string, interactionId: string, signal?: AbortSignal) => {
+    const result = await request<{ ask: AskSnapshot | null }>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/ask/${encodeURIComponent(interactionId)}`,
+      { signal },
+    );
+    return result.ask ?? undefined;
+  },
+
   submitAsk: async (threadId: string, interactionId: string, answers: readonly AskAnswer[]) =>
     request<AskSubmissionResult>(`/api/v1/threads/${encodeURIComponent(threadId)}/ask`, {
       method: "POST",
       body: JSON.stringify({ interactionId, answers }),
     }),
+
+  cronOverview: (sourceId: string, signal?: AbortSignal) =>
+    request<CronOverview>(`/api/v1/agents/${encodeURIComponent(sourceId)}/cron`, { signal }),
+
+  cronRuns: (sourceId: string, jobId: string, before?: string, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ limit: "100" });
+    if (before !== undefined) query.set("before", before);
+    return request<CronRunPage>(
+      `/api/v1/agents/${encodeURIComponent(sourceId)}/cron/jobs/${encodeURIComponent(jobId)}/runs?${query.toString()}`,
+      { signal },
+    );
+  },
+
+  cronRun: async (sourceId: string, jobId: string, runId: string, signal?: AbortSignal) => {
+    const result = await request<{ message: WebMessage }>(
+      `/api/v1/agents/${encodeURIComponent(sourceId)}/cron/jobs/${encodeURIComponent(jobId)}/runs/${encodeURIComponent(runId)}`,
+      { signal },
+    );
+    return result.message;
+  },
+
+  cronConfigView: async (sourceId: string, signal?: AbortSignal) => {
+    const result = await request<{ configView: ChannelConfigView }>(
+      `/api/v1/agents/${encodeURIComponent(sourceId)}/cron/config-view`,
+      { signal },
+    );
+    return result.configView;
+  },
+
+  cronRunNow: (
+    sourceId: string,
+    jobId: string,
+    idempotencyKey: string,
+    confirmationToken?: string,
+  ) => cronMutation<{ readonly run: CronRun }>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/cron/jobs/${encodeURIComponent(jobId)}/run`,
+    { idempotencyKey, ...(confirmationToken === undefined ? {} : { confirmationToken }) },
+  ),
+
+  cronSetEnabled: (
+    sourceId: string,
+    jobId: string,
+    enabled: boolean,
+    idempotencyKey: string,
+    confirmationToken?: string,
+  ) => cronMutation<{ readonly job: CronJob }>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/cron/jobs/${encodeURIComponent(jobId)}/effective-enabled`,
+    { enabled, idempotencyKey, ...(confirmationToken === undefined ? {} : { confirmationToken }) },
+  ),
 
   registerPushSubscription: async (subscription: PushSubscription, previousSubscriptionId?: string) => {
     const serialized = subscription.toJSON();

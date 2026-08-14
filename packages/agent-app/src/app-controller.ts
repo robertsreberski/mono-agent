@@ -2,7 +2,7 @@
 import { resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { AgentResponder } from "@mono-agent/agent-contracts";
+import type { AgentResponder, NotifyDeliveryContext } from "@mono-agent/agent-contracts";
 import type { TraceSourceHandle, TraceSourceMemoryHealth } from "@mono-agent/observability";
 import type {
   MonoRuntimeLike,
@@ -529,7 +529,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   async notifyDestination(
     conversationId: string,
     text: string,
-    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
+    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string; readonly deliveryContext?: NotifyDeliveryContext },
   ): Promise<NotifyDeliveryResult> { return maintenanceOperations.notifyDestination(this, conversationId, text, options); }
 
   /**

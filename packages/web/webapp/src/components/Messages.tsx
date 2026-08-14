@@ -7,7 +7,17 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
-import { type ComponentProps, useEffect, useState } from "react";
+import {
+  type ComponentProps,
+  type ReactNode,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import { useConsoleStore } from "../console-store";
@@ -22,6 +32,7 @@ import { Icon } from "./Icon";
 import { safeJson } from "./json";
 import { SubagentPart } from "./Subagent";
 import { QuoteBlock } from "./assistant-ui/Quote";
+import { cronRunAnchor } from "./CronChannelHeader";
 
 export const copyTextWithFallback = async (text: string): Promise<void> => {
   if (navigator.clipboard?.writeText) {
@@ -225,42 +236,251 @@ function webAskAnsweredSummary(snapshot: AskSnapshot): AskUserAnsweredSummary | 
   return lines.length === 0 ? undefined : { kind: "multiple", lines };
 }
 
+interface AskCardRequest {
+  readonly toolCallId: string;
+  readonly expectedInteractionId?: string;
+  readonly running: boolean;
+}
+
+interface AskCardState {
+  readonly snapshot?: AskSnapshot;
+  readonly unavailable: boolean;
+}
+
+interface AskReconciliationValue {
+  readonly states: Readonly<Record<string, AskCardState>>;
+  readonly register: (request: AskCardRequest) => () => void;
+  readonly replace: (toolCallId: string, snapshot: AskSnapshot) => void;
+}
+
+const AskReconciliationContext = createContext<AskReconciliationValue | null>(null);
+const ASK_POLL_MIN_MS = 250;
+const ASK_POLL_MAX_MS = 2_000;
+
+const expiredSnapshot = (snapshot: AskSnapshot): AskSnapshot =>
+  snapshot.status === "pending" && Date.parse(snapshot.expiresAt) <= Date.now()
+    ? { ...snapshot, status: "expired" }
+    : snapshot;
+
+const askInteractionId = (value: unknown, depth = 0): string | undefined => {
+  if (depth > 6 || value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.interactionId === "string" && record.interactionId.trim().length > 0) {
+    return record.interactionId;
+  }
+  for (const key of ["structuredContent", "data", "result", "value"]) {
+    const nested = askInteractionId(record[key], depth + 1);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+};
+
+type TerminalAskStatus = Exclude<AskSnapshot["status"], "pending">;
+
+/**
+ * AskUser's canonical tool result durably records its terminal outcome. Keep
+ * that result as the refresh/restart fallback after the agent's bounded
+ * interaction history has expired, while the coordinator still re-reads the
+ * exact interaction whenever the agent can answer authoritatively.
+ */
+const persistedAskStatus = (value: unknown, depth = 0): TerminalAskStatus | undefined => {
+  if (depth > 6 || value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.interactionId === "string" && record.interactionId.trim().length > 0) {
+    if (record.answered === true) return "answered";
+    if (record.answered === false && record.reason === "timeout") return "expired";
+    if (record.answered === false && record.reason === "cancelled") return "cancelled";
+  }
+  for (const key of ["structuredContent", "data", "result", "value"]) {
+    const nested = persistedAskStatus(record[key], depth + 1);
+    if (nested !== undefined) return nested;
+  }
+  return undefined;
+};
+
+/**
+ * One coordinator owns AskUser polling for the selected thread. Exact by-id
+ * snapshots keep old cards from adopting a later run's conversation-scoped ask.
+ */
+export function AskReconciliationProvider({ children }: { readonly children: ReactNode }) {
+  const { selectedThread, selectedAgent, connection } = useConsoleStore();
+  const threadId = selectedThread?.id;
+  const requestsRef = useRef(new Map<string, AskCardRequest>());
+  const [requestRevision, setRequestRevision] = useState(0);
+  const [states, setStates] = useState<Record<string, AskCardState>>({});
+  const statesRef = useRef(states);
+
+  useEffect(() => {
+    statesRef.current = states;
+  }, [states]);
+
+  const register = useCallback((request: AskCardRequest) => {
+    const current = requestsRef.current.get(request.toolCallId);
+    if (current === undefined
+      || current.expectedInteractionId !== request.expectedInteractionId
+      || current.running !== request.running) {
+      requestsRef.current.set(request.toolCallId, request);
+      setRequestRevision((value) => value + 1);
+    }
+    return () => {
+      requestsRef.current.delete(request.toolCallId);
+      setRequestRevision((value) => value + 1);
+    };
+  }, []);
+
+  const replace = useCallback((toolCallId: string, snapshot: AskSnapshot) => {
+    const normalized = expiredSnapshot(snapshot);
+    const request = requestsRef.current.get(toolCallId);
+    if (request !== undefined) {
+      requestsRef.current.set(toolCallId, {
+        ...request,
+        expectedInteractionId: normalized.interactionId,
+      });
+    }
+    setStates((current) => ({
+      ...current,
+      [toolCallId]: { snapshot: normalized, unavailable: false },
+    }));
+  }, []);
+
+  useEffect(() => {
+    setStates({});
+  }, [threadId]);
+
+  useEffect(() => {
+    if (threadId === undefined) return;
+    const controller = new AbortController();
+
+    const update = (toolCallId: string, state: AskCardState): void => {
+      if (controller.signal.aborted) return;
+      setStates((current) => ({ ...current, [toolCallId]: state }));
+    };
+    const markUnavailable = (requests: readonly AskCardRequest[]): void => {
+      for (const request of requests) update(request.toolCallId, { unavailable: true });
+    };
+
+    const poll = async (): Promise<void> => {
+      let delayMs = ASK_POLL_MIN_MS;
+      while (!controller.signal.aborted) {
+        const requests = [...requestsRef.current.values()];
+        if (requests.length === 0) return;
+        if (connection !== "live" || selectedAgent?.status === "offline") {
+          markUnavailable(requests);
+          return;
+        }
+
+        let pollAgain = false;
+        const exact = requests.filter((request) => request.expectedInteractionId !== undefined);
+        for (const request of exact) {
+          const expected = request.expectedInteractionId!;
+          const cached = statesRef.current[request.toolCallId]?.snapshot;
+          if (cached?.interactionId === expected && cached.status !== "pending") continue;
+          try {
+            const snapshot = await api.ask(threadId, expected, controller.signal);
+            if (snapshot === undefined || snapshot.interactionId !== expected) {
+              update(request.toolCallId, { unavailable: true });
+              continue;
+            }
+            const normalized = expiredSnapshot(snapshot);
+            update(request.toolCallId, { snapshot: normalized, unavailable: false });
+            if (normalized.status === "pending") pollAgain = true;
+          } catch {
+            if (controller.signal.aborted) return;
+            update(request.toolCallId, { unavailable: true });
+            pollAgain = true;
+          }
+        }
+
+        const unresolved = requests.filter((request) => request.expectedInteractionId === undefined);
+        const inactive = unresolved.filter((request) => !request.running);
+        markUnavailable(inactive);
+        const active = unresolved.filter((request) => request.running);
+        if (active.length > 0) {
+          // The hub permits one pending ask per conversation. Assign it once to
+          // the newest unresolved running card, then lock that card to its id.
+          const request = active.at(-1)!;
+          try {
+            const snapshot = await api.pendingAsk(threadId, controller.signal);
+            if (snapshot !== undefined) {
+              const existingOwner = requests.find((candidate) =>
+                candidate.toolCallId !== request.toolCallId
+                && candidate.expectedInteractionId === snapshot.interactionId);
+              if (existingOwner === undefined) {
+                requestsRef.current.set(request.toolCallId, {
+                  ...request,
+                  expectedInteractionId: snapshot.interactionId,
+                });
+                const normalized = expiredSnapshot(snapshot);
+                update(request.toolCallId, { snapshot: normalized, unavailable: false });
+                if (normalized.status === "pending") pollAgain = true;
+              } else {
+                update(request.toolCallId, { unavailable: true });
+              }
+            } else {
+              update(request.toolCallId, { unavailable: false });
+              pollAgain = true;
+            }
+          } catch {
+            if (controller.signal.aborted) return;
+            update(request.toolCallId, { unavailable: true });
+            pollAgain = true;
+          }
+        }
+
+        if (!pollAgain || controller.signal.aborted) return;
+        await new Promise<void>((resolve) => {
+          const timer = window.setTimeout(resolve, delayMs);
+          controller.signal.addEventListener("abort", () => {
+            window.clearTimeout(timer);
+            resolve();
+          }, { once: true });
+        });
+        delayMs = Math.min(ASK_POLL_MAX_MS, delayMs * 2);
+      }
+    };
+
+    void poll();
+    return () => controller.abort();
+    // `states` is deliberately not a dependency: one loop owns its backoff and
+    // consults terminal state only as an optimization, never as authority.
+  }, [connection, requestRevision, selectedAgent?.status, threadId]);
+
+  const value = useMemo<AskReconciliationValue>(
+    () => ({ states, register, replace }),
+    [register, replace, states],
+  );
+  return (
+    <AskReconciliationContext.Provider value={value}>
+      {children}
+    </AskReconciliationContext.Provider>
+  );
+}
+
 function AskUserTool({
   args,
   result,
   status,
-}: Pick<ToolCallMessagePartProps, "args" | "result" | "status">) {
+  toolCallId,
+}: Pick<ToolCallMessagePartProps, "args" | "result" | "status" | "toolCallId">) {
   const threadId = useConsoleStore().selectedThread?.id;
-  const [snapshot, setSnapshot] = useState<AskSnapshot>();
+  const coordinator = useContext(AskReconciliationContext);
+  const registerAsk = coordinator?.register;
+  const replaceAsk = coordinator?.replace;
+  const expectedInteractionId = useMemo(() => askInteractionId(result), [result]);
+  const durableTerminalStatus = useMemo(() => persistedAskStatus(result), [result]);
+  const cardState = coordinator?.states[toolCallId];
+  const snapshot = cardState?.snapshot;
   const [selected, setSelected] = useState<Record<string, readonly string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
   const input = typeof args === "object" && args !== null ? args as Record<string, unknown> : {};
 
-  useEffect(() => {
-    if (!threadId || status.type !== "running") return;
-    const controller = new AbortController();
-    let timer: number | undefined;
-    const poll = async () => {
-      try {
-        const ask = await api.pendingAsk(threadId, controller.signal);
-        if (ask !== undefined) {
-          setSnapshot(ask);
-          if (ask.status !== "pending") return;
-        }
-      } catch (pollError) {
-        if (controller.signal.aborted) return;
-        setError(pollError instanceof Error ? pollError.message : "Could not load the question.");
-      }
-      if (!controller.signal.aborted) timer = window.setTimeout(poll, 400);
-    };
-    void poll();
-    return () => {
-      controller.abort();
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [status.type, threadId]);
+  useEffect(() => registerAsk?.({
+    toolCallId,
+    ...(expectedInteractionId === undefined ? {} : { expectedInteractionId }),
+    running: status.type === "running",
+  }), [expectedInteractionId, registerAsk, status.type, toolCallId]);
 
   const remaining = snapshot?.questions.slice(snapshot.activeQuestionIndex) ?? [];
   const complete = remaining.length > 0 && remaining.every((question) => {
@@ -279,7 +499,7 @@ function AskUserTool({
     try {
       const response = await api.submitAsk(threadId, snapshot.interactionId, answers);
       if (!response.accepted) throw new Error(response.code === "invalid_answer" ? "Please complete every question." : "This question is no longer active.");
-      if (response.snapshot !== undefined) setSnapshot(response.snapshot);
+      if (response.snapshot !== undefined) replaceAsk?.(toolCallId, response.snapshot);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "Could not submit the answer.");
     } finally {
@@ -287,7 +507,11 @@ function AskUserTool({
     }
   };
 
-  const terminal = snapshot?.status !== undefined && snapshot.status !== "pending";
+  const terminalStatus = snapshot?.status !== undefined && snapshot.status !== "pending"
+    ? snapshot.status
+    : snapshot === undefined
+      ? durableTerminalStatus
+      : undefined;
   const answeredSummary = snapshot?.status === "answered" ? webAskAnsweredSummary(snapshot) : undefined;
   return (
     <section className="ask-user-card" aria-label="Question from the agent">
@@ -298,11 +522,15 @@ function AskUserTool({
       {(snapshot?.message ?? (typeof input.message === "string" ? input.message : undefined)) && (
         <div className="ask-user-context">{snapshot?.message ?? String(input.message)}</div>
       )}
-      {snapshot === undefined ? (
+      {snapshot === undefined ? terminalStatus !== undefined ? (
+        <p className="ask-user-complete">{terminalStatus === "answered" ? "Answers submitted." : `Question ${terminalStatus}.`}</p>
+      ) : cardState?.unavailable === true ? (
+        <p className="ask-user-complete">Question unavailable. It may have expired, been evicted, or the agent may be offline.</p>
+      ) : (
         <p className="ask-user-loading">Preparing the questions…</p>
-      ) : terminal ? (
+      ) : terminalStatus !== undefined ? (
         <div className="ask-user-complete" role="status">
-          <p>{snapshot.status === "answered" ? "Answers submitted." : `Question ${snapshot.status}.`}</p>
+          <p>{terminalStatus === "answered" ? "Answers submitted." : `Question ${terminalStatus}.`}</p>
           {answeredSummary?.kind === "single" ? (
             <p className="ask-user-summary-line">{answeredSummary.text}</p>
           ) : answeredSummary?.kind === "multiple" ? (
@@ -371,9 +599,6 @@ function AskUserTool({
           </button>
         </form>
       )}
-      {snapshot === undefined && status.type !== "running" && result !== undefined && (
-        <pre className="ask-user-result">{safeJson(result)}</pre>
-      )}
     </section>
   );
 }
@@ -384,8 +609,11 @@ export function ToolFallback({
   result,
   isError,
   status,
+  toolCallId,
 }: ToolCallMessagePartProps) {
-  if (toolName === "AskUser") return <AskUserTool args={args} result={result} status={status} />;
+  if (toolName === "AskUser") {
+    return <AskUserTool args={args} result={result} status={status} toolCallId={toolCallId} />;
+  }
   const isRunning = status.type === "running";
   return (
     <details className={`tool-call${isError ? " is-error" : ""}`}>
@@ -485,6 +713,87 @@ function ContextCompactionPart({ data, status: messageStatus }: DataMessagePartP
   );
 }
 
+export function CronRunPart({ data }: DataMessagePartProps) {
+  const payload = data as Record<string, unknown>;
+  const runId = typeof payload.runId === "string" ? payload.runId : undefined;
+  const [copied, setCopied] = useState(false);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const { loadCronRunActivity } = useConsoleStore();
+  if (runId === undefined) return null;
+  const sequence = typeof payload.sequence === "number" ? payload.sequence : undefined;
+  const status = typeof payload.status === "string" ? payload.status : "unknown";
+  const stateLabel = status === "succeeded"
+    ? payload.silent === true ? "completed silently" : "completed"
+    : status.replaceAll("_", " ");
+  const trigger = payload.trigger === "manual" ? "manual" : "scheduled";
+  const artifactRunId = typeof payload.artifactRunId === "string" ? payload.artifactRunId : undefined;
+  const conversationId = typeof payload.conversationId === "string" ? payload.conversationId : undefined;
+  const orderedAt = typeof payload.orderedAt === "string" ? payload.orderedAt : undefined;
+  const eventCount = Number.isSafeInteger(payload.eventCount) ? Number(payload.eventCount) : 0;
+  const activityLoaded = payload.activityLoaded === true;
+  const activityStale = payload.activityStale === true;
+  const eventsTruncated = payload.eventsTruncated === true;
+  const fieldsTruncated = Array.isArray(payload.fieldsTruncated)
+    ? payload.fieldsTruncated.filter((field): field is string => typeof field === "string")
+    : [];
+  return (
+    <div
+      id={cronRunAnchor(runId)}
+      className={`cron-run-row is-${status}`}
+      aria-label={`Cron run ${runId}, ${trigger}, ${stateLabel}`}
+    >
+      <a className="cron-run-link" href={`#${cronRunAnchor(runId)}`} title={runId}>
+        Run{sequence === undefined ? "" : ` ${String(sequence)}`}
+      </a>
+      <span className="cron-run-state">{trigger} · {stateLabel}</span>
+      {orderedAt !== undefined && <time dateTime={orderedAt}>{new Date(orderedAt).toLocaleString()}</time>}
+      {artifactRunId !== undefined && (
+        <span className="cron-artifact-link" title={artifactRunId}>Artifact <code>{artifactRunId}</code></span>
+      )}
+      {conversationId !== undefined && (
+        <button
+          type="button"
+          className="cron-session-button"
+          title={conversationId}
+          aria-label={copied ? "Originating session copied" : `Copy originating session ${conversationId}`}
+          onClick={() => {
+            void copyTextWithFallback(conversationId).then(() => {
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 2_000);
+            });
+          }}
+        >
+          <Icon name={copied ? "check" : "copy"} size={12} />
+          {copied ? "Session copied" : "Originating session"}
+        </button>
+      )}
+      {eventCount > 0 && (!activityLoaded || activityStale) && (
+        <button
+          type="button"
+          className="cron-activity-button"
+          disabled={activityLoading}
+          onClick={() => {
+            setActivityLoading(true);
+            void loadCronRunActivity(runId).finally(() => setActivityLoading(false));
+          }}
+        >
+          {activityLoading ? "Loading activity…" : activityStale ? "Refresh activity" : "Load activity"}
+        </button>
+      )}
+      {eventsTruncated && (
+        <span className="cron-activity-truncated" role="status">
+          Activity is truncated; retained and wire-bounded events are shown.
+        </span>
+      )}
+      {fieldsTruncated.length > 0 && (
+        <span className="cron-activity-truncated" role="status">
+          Run {fieldsTruncated.join(", ")} {fieldsTruncated.length === 1 ? "is" : "are"} truncated in this view.
+        </span>
+      )}
+    </div>
+  );
+}
+
 /**
  * Prose the agent wrote between its tool calls. It reads as narration of the
  * work, so it renders as a plain row in the activity log — in its original
@@ -516,6 +825,7 @@ const parts = {
   data: {
     by_name: {
       "context-compaction": ContextCompactionPart,
+      "cron-run": CronRunPart,
       subagent: SubagentPart,
       note: NotePart,
       error: ErrorPart,
@@ -546,6 +856,7 @@ function AssistantParts() {
           case "data":
             if (part.name === "telemetry") return null;
             if (part.name === "context-compaction") return <ContextCompactionPart {...part} />;
+            if (part.name === "cron-run") return <CronRunPart {...part} />;
             if (part.name === "subagent") return <SubagentPart {...part} />;
             if (part.name === "note") return <NotePart {...part} />;
             if (part.name === "error") return <ErrorPart {...part} />;

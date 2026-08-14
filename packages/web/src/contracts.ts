@@ -1,4 +1,17 @@
-import { AGENT_LIVE_INPUT_MAX_MESSAGES } from "@mono-agent/agent-contracts";
+import {
+  AGENT_LIVE_INPUT_MAX_MESSAGES,
+  type CronOperatorHealth,
+  type CronOperatorJob,
+  type CronOperatorOverview,
+  type CronOperatorRun,
+  type CronOperatorRunBase,
+  type CronOperatorRunDetail,
+  type CronOperatorRunPage,
+  type CronOperatorRunStatus,
+  type CronOperatorRunSummary,
+  type CronOperatorRunTrigger,
+  type CronOperatorRunTruncatedField,
+} from "@mono-agent/agent-contracts";
 
 /** Machine-readable discovery contract consumed by local ACP clients such as Worklab. */
 export const ACP_BRIDGE_DISCOVERY_SCHEMA = "mono-agent.acp-discovery.v1" as const;
@@ -68,8 +81,18 @@ export const WEB_MAX_LIVE_INPUTS_PER_THREAD = AGENT_LIVE_INPUT_MAX_MESSAGES;
 export type WebAgentStatus = "online" | "offline" | "degraded";
 export type WebNotificationTriggerKind = "cron" | "webhook";
 
-export interface WebThreadTrigger {
-  readonly kind: WebNotificationTriggerKind;
+export type WebThreadTrigger =
+  | { readonly kind: "webhook" }
+  | {
+      readonly kind: "cron";
+      readonly jobId?: string;
+      /** False keeps historical channel history visible after the job leaves config. */
+      readonly configured?: boolean;
+    };
+
+export interface WebCronCapability {
+  readonly read: boolean;
+  readonly actions: boolean;
 }
 
 export interface WebModelOption {
@@ -92,6 +115,9 @@ export interface WebAgentSummary {
   readonly defaultEffort?: string;
   readonly efforts?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, WebModelOption>>;
+  /** Absent when the addressed agent predates first-class cron operator routes. */
+  readonly cron?: WebCronCapability;
+  readonly supportsAskById?: boolean;
   readonly updatedAt: string;
 }
 
@@ -228,6 +254,66 @@ export interface WebQuote {
 export interface WebThreadDetail {
   readonly thread: WebThread;
   readonly messages: readonly WebMessage[];
+  /** Opaque keyset cursor for the next older message page. */
+  readonly messagesNextCursor?: string;
+}
+
+export interface WebThreadPage {
+  readonly threads: readonly WebThread[];
+  readonly nextCursor?: string;
+}
+
+export interface WebMessagePage {
+  readonly messages: readonly WebMessage[];
+  readonly nextCursor?: string;
+}
+
+export type WebCronRunTrigger = CronOperatorRunTrigger;
+export type WebCronRunStatus = CronOperatorRunStatus;
+export type WebCronHealth = CronOperatorHealth;
+export type WebCronRunTruncatedField = CronOperatorRunTruncatedField;
+export type WebCronRunBase = CronOperatorRunBase;
+export type WebCronRunSummary = CronOperatorRunSummary;
+export type WebCronRunDetail = CronOperatorRunDetail;
+export type WebCronRun = CronOperatorRun;
+
+export interface WebCronJob extends CronOperatorJob {
+  readonly threadId: string;
+}
+
+export interface WebCronOverview extends Omit<CronOperatorOverview, "jobs"> {
+  readonly jobs: readonly WebCronJob[];
+}
+
+export interface WebCronRunPage extends CronOperatorRunPage {
+  /** Canonical messages reconciled by the web backend for this page. */
+  readonly messages?: readonly WebMessage[];
+}
+
+export interface WebCronConfirmation {
+  readonly token: string;
+  readonly expiresAt: string;
+  readonly message: string;
+}
+
+export type WebCronMutationResult<T> =
+  | { readonly kind: "confirmation_required"; readonly confirmation: WebCronConfirmation }
+  | { readonly kind: "completed"; readonly value: T; readonly replayed: boolean };
+
+export interface WebChannelConfigViewField {
+  readonly id: string;
+  readonly label: string;
+  readonly value: string;
+  readonly source: "env" | "json" | "default";
+  readonly redacted?: boolean;
+  readonly envKey?: string;
+}
+
+export interface WebChannelConfigView {
+  readonly id: string;
+  readonly label: string;
+  readonly status: "active" | "disabled";
+  readonly fields: readonly WebChannelConfigViewField[];
 }
 
 export interface WebConsoleIdentity {
@@ -273,6 +359,7 @@ export interface WebBootstrap {
 export type WebEventType =
   | "ready"
   | "agents.changed"
+  | "cron.changed"
   | "threads.changed"
   | "thread.changed"
   | "message.changed"

@@ -28,15 +28,16 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   state invalidations over SSE so any connected browser can catch up.
 - Offer plain-text follow-ups to a capable active provider run, persist their
   pending/applied/queued state, and promote safe fallbacks into normal turns.
-- Render a running agent's structured `AskUser` interaction as one complete web
-  form and proxy validated answer submission back to that same model run.
+- Render a running agent's structured `AskUser` interaction by exact
+  `interactionId`, including terminal cross-destination reconciliation, and
+  proxy validated answer submission back to that same model run.
 - Accept browser-selected files through bounded staged uploads and forward the
   exact transport-neutral `AgentAttachment` contract used by Telegram.
 - Serve the assistant-ui PWA and its versioned JSON/SSE API.
 - Accept explicit cron/webhook `web:new` notification delivery through an
-  owner-private, bearer-authenticated loopback ingress; persist one marked,
-  assistant-only conversation per distinct result only after agent history is
-  durably appended.
+  owner-private, bearer-authenticated loopback ingress. Webhooks retain one
+  marked thread per result; cron deliveries append to one durable read-only
+  channel per `(sourceId, jobId)` and reconcile all run states from the agent.
 
 ## Install / Usage
 
@@ -167,17 +168,37 @@ DNS failures retain the current subscription for retry, while confirmed expiry,
 application-key rotation, and explicit disable replace or retire it.
 
 An app-managed cron job or webhook endpoint can set `notify: true` with the
-exact destination `notifyConversationId: "web:new"`. Each distinct result gets
-a new thread without changing the selected thread. Delivery is idempotent,
-best-effort, attempted once with a five-second bound, and has no outbox when the
-web service is unavailable. Other `web:*` destinations are not accepted.
+exact destination `notifyConversationId: "web:new"`. Each webhook result gets
+a new thread. Cron results for the same source/job append to the stable
+`/agents/<sourceId>/cron/<jobId>` channel, whose header and total-order run feed
+come only from the running agent. Delivery is idempotent, best-effort, attempted
+once with a five-second bound, and has no outbox when the web service is
+unavailable. Other `web:*` destinations are not accepted.
+
+Cron channels are non-sendable and non-uploadable. Configured channels may be
+archived but not deleted; removed jobs become historical tombstones and may be
+deleted only after archival. Deletion leaves delivery receipts threadless and
+suppresses historical recreation until that job id is configured again, so a
+late or replayed delivery cannot recreate the channel. Bootstrap and paging are
+bounded per source and archive state, with redirect-resolving thread fetches for selections
+or mutations outside the current window.
+
+Run-now and runtime enable/disable controls appear only when the agent advertises
+them. They require same-origin browser mutation, source-qualified routing, an
+operator API key, explicit agent-side opt-in, an idempotency key, and an
+agent-issued confirmation. The console neither edits config nor computes a
+schedule. Runtime enable state, run history, action audit, and idempotency are
+agent-owned; the web SQLite database is a reconnect/refresh projection.
 
 When the selected agent advertises `capabilities.askUser`, a running `AskUser`
 tool call appears as one form containing all remaining questions. Each question
 has two or three described choices plus an **Other** custom-reply field;
 multi-select questions accept several choices and custom text. The browser
 submits the form atomically and the agent resumes the existing run. Cancelling
-the turn also cancels its pending form.
+the turn also cancels its pending form. With `capabilities.askById`, one bounded
+poller per thread reconciles each card by exact id, including an answer supplied
+through another destination. Expired, cancelled, evicted, missing, and offline
+states are non-actionable; submission success remains server-authoritative.
 
 A terminal snapshot replaces the form with a compact completion state. One
 resolved answer shows its option labels, while one custom-only answer shows its
@@ -193,8 +214,8 @@ questions and unknown-option-only entries are omitted, leaving only
 1. `server.ts` accepts the versioned browser API, staged uploads, and SSE
    subscriptions, then delegates stateful work to `WebConsoleService`.
 2. The service discovers agents from the trace-source registry, persists agent,
-   thread, message, part, turn, live-input, upload, preference, Web Push
-   subscription, event, and delivery records through the SQLite store, and
+   thread, message, part, turn, live-input, upload, preference, Web Push,
+   notification, and cron projection records through the SQLite store, and
    drives each agent over its loopback operator endpoint.
 3. Service mutations publish invalidations. Browsers consume `/api/v1/events`
    and refetch authoritative projections, including the selected agent's

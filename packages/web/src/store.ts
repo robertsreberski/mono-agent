@@ -2,9 +2,11 @@ import { createECDH, createHash, randomUUID, timingSafeEqual } from "node:crypto
 import { chmod, lstat, readdir, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
+  classifyNotifySuppression,
   type AgentStreamEvent,
   type AgentStreamWireFrame,
 } from "@mono-agent/agent-contracts";
@@ -20,11 +22,18 @@ import {
   type WebMessagePart,
   type WebMessageStatus,
   type WebNotificationTriggerKind,
+  type WebCronJob,
+  type WebCronOverview,
+  type WebCronRun,
+  type WebCronRunSummary,
+  type WebCronRunPage,
+  type WebMessagePage,
   type WebQuote,
   type WebRunState,
   type WebThread,
   type WebToolCall,
   type WebThreadDetail,
+  type WebThreadPage,
   type WebPushSubscriptionState,
   type WebPushSubscriptionStatus,
 } from "./contracts.js";
@@ -44,6 +53,9 @@ interface AgentRow {
   default_effort: string | null;
   efforts_json: string | null;
   model_options_json: string | null;
+  cron_read: number;
+  cron_actions: number;
+  ask_by_id: number;
   updated_at: string;
 }
 
@@ -56,6 +68,8 @@ interface ThreadRow {
   updated_at: string;
   revision: number;
   trigger_kind: string | null;
+  cron_job_id: string | null;
+  cron_configured: number | null;
   can_send: number;
   can_upload: number;
   message_count: number;
@@ -64,11 +78,39 @@ interface ThreadRow {
 interface NotificationDeliveryRow {
   source_id: string;
   delivery_key: string;
-  thread_id: string;
+  thread_id: string | null;
+  message_id: string | null;
+  job_id: string | null;
+  run_id: string | null;
   trigger_kind: string;
   payload_sha256: string;
   created_at: string;
   completed_at: string | null;
+}
+
+interface CronChannelRow {
+  source_id: string;
+  job_id: string;
+  thread_id: string;
+  configured: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CronRunReconciliationResult {
+  readonly messages: readonly WebMessage[];
+  readonly changed: boolean;
+}
+
+export interface CronOverviewSyncResult {
+  readonly overview: WebCronOverview;
+  readonly changed: boolean;
+}
+
+interface MessagePageRow extends MessageRow {
+  ordered_at: string;
+  role_rank: number;
+  storage_rowid: number;
 }
 
 interface MessageRow {
@@ -236,7 +278,10 @@ export interface ClaimedWebPushDelivery {
   readonly attempts: number;
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 4;
+const WEB_STORAGE_SCHEMA_VERSION = 6;
+const MAX_REVISIONS_PER_THREAD = 1_000;
+export const WEB_THREAD_PAGE_MAX = 200;
+export const WEB_MESSAGE_PAGE_MAX = 100;
 const MAX_ACTIVE_PUSH_SUBSCRIPTIONS = 32;
 const MAX_PENDING_PUSH_DELIVERIES_PER_SUBSCRIPTION = 200;
 const PUSH_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -293,17 +338,29 @@ export interface ReserveWebNotificationInput {
   readonly deliveryKey: string;
   readonly triggerKind: WebNotificationTriggerKind;
   readonly text: string;
+  readonly jobId?: string;
+  readonly runId?: string;
 }
 
 export interface WebNotificationReservation extends ReserveWebNotificationInput {
-  readonly threadId: string;
+  readonly threadId?: string;
   readonly payloadSha256: string;
   readonly duplicate: boolean;
+  readonly tombstoned?: true;
 }
 
 export interface CompleteWebNotificationResult {
-  readonly thread: WebThread;
+  readonly thread?: WebThread;
   readonly duplicate: boolean;
+  readonly tombstoned?: true;
+}
+
+export function cronChannelReadOnlyError(): WebConsoleError {
+  return new WebConsoleError(
+    "cron_channel_read_only",
+    "Cron channels are read-only. Scheduled runs and history are managed by the agent.",
+    409,
+  );
 }
 
 export class WebStore {
@@ -357,14 +414,23 @@ export class WebStore {
     this.database.close();
   }
 
-  replaceAgents(agents: readonly WebAgentSummary[]): void {
+  replaceAgents(agents: readonly WebAgentSummary[]): boolean {
+    const current = this.listAgents();
+    const currentById = new Map(current.map((agent) => [agent.sourceId, agent]));
+    const incomingIds = new Set(agents.map((agent) => agent.sourceId));
+    const changed = agents.some((agent) => {
+      const prior = currentById.get(agent.sourceId);
+      return prior === undefined || !isDeepStrictEqual(prior, { ...agent, pinned: prior.pinned });
+    }) || current.some((agent) => !incomingIds.has(agent.sourceId) && agent.status !== "offline");
+    if (!changed) return false;
     this.transaction(() => {
       this.database.prepare("UPDATE agents SET status = 'offline'").run();
       const statement = this.database.prepare(`
         INSERT INTO agents (
           source_id, label, status, health, supports_attachments, models_json,
-          default_model, default_effort, efforts_json, model_options_json, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          default_model, default_effort, efforts_json, model_options_json,
+          cron_read, cron_actions, ask_by_id, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_id) DO UPDATE SET
           label = excluded.label,
           status = excluded.status,
@@ -375,6 +441,9 @@ export class WebStore {
           default_effort = excluded.default_effort,
           efforts_json = excluded.efforts_json,
           model_options_json = excluded.model_options_json,
+          cron_read = excluded.cron_read,
+          cron_actions = excluded.cron_actions,
+          ask_by_id = excluded.ask_by_id,
           updated_at = excluded.updated_at
       `);
       for (const agent of agents) {
@@ -389,10 +458,14 @@ export class WebStore {
           agent.defaultEffort ?? null,
           stringifyOptional(agent.efforts),
           stringifyOptional(agent.modelOptions),
+          agent.cron?.read === true ? 1 : 0,
+          agent.cron?.actions === true ? 1 : 0,
+          agent.supportsAskById === true ? 1 : 0,
           agent.updatedAt,
         );
       }
     });
+    return true;
   }
 
   listAgents(): WebAgentSummary[] {
@@ -427,33 +500,115 @@ export class WebStore {
     if (input.text.trim().length === 0) {
       throw new WebConsoleError("invalid_notification", "Notification text cannot be empty.", 400);
     }
-    const threadId = notificationThreadId(input.sourceId, input.deliveryKey);
+    if ((input.jobId === undefined) !== (input.runId === undefined)
+      || (input.jobId !== undefined && input.triggerKind !== "cron")) {
+      throw new WebConsoleError(
+        "invalid_notification",
+        "jobId and runId must be supplied together for cron notifications only.",
+        400,
+      );
+    }
+    const channel = input.jobId === undefined
+      ? undefined
+      : this.cronChannel(input.sourceId, input.jobId);
+    const threadId = input.jobId === undefined
+      ? notificationThreadId(input.sourceId, input.deliveryKey)
+      : channel?.thread_id ?? cronChannelThreadId(input.sourceId, input.jobId);
+    // Identity is compared through the structured columns below. Keep the
+    // content digest compatible with pre-v5 receipts so a newly-structured
+    // replay of an adopted historical delivery remains idempotent.
     const payloadSha256 = notificationPayloadSha256(input.triggerKind, input.text);
     const existing = this.database.prepare(`
       SELECT * FROM notification_deliveries WHERE source_id = ? AND delivery_key = ?
     `).get(input.sourceId, input.deliveryKey) as unknown as NotificationDeliveryRow | undefined;
     if (existing !== undefined) {
-      if (existing.thread_id !== threadId
-        || existing.trigger_kind !== input.triggerKind
-        || existing.payload_sha256 !== payloadSha256) {
+      const historicalIdentity = input.jobId === undefined
+        && existing.trigger_kind === "cron"
+        && existing.job_id !== null
+        && existing.run_id !== null
+        ? legacyCronDeliveryIdentity(input.deliveryKey)
+        : undefined;
+      const expectedJobId = input.jobId ?? historicalIdentity?.jobId ?? null;
+      const expectedRunId = input.runId ?? historicalIdentity?.runId ?? null;
+      if (existing.trigger_kind !== input.triggerKind
+        || existing.payload_sha256 !== payloadSha256
+        || existing.job_id !== expectedJobId
+        || existing.run_id !== expectedRunId) {
         throw new WebConsoleError(
           "notification_idempotency_conflict",
           "The notification delivery key was already used with different content.",
           409,
         );
       }
-      if (existing.completed_at !== null && this.getThread(existing.thread_id) === undefined) {
+      if (existing.completed_at !== null && existing.thread_id === null) {
+        return {
+          ...input,
+          ...(historicalIdentity === undefined ? {} : historicalIdentity),
+          payloadSha256,
+          duplicate: true,
+          tombstoned: true,
+        };
+      }
+      if (existing.completed_at !== null && this.getThread(existing.thread_id!) === undefined) {
         throw new WebConsoleError("storage_corrupt", "A completed notification is missing its conversation.", 500);
       }
-      return { ...input, threadId, payloadSha256, duplicate: existing.completed_at !== null };
+      return {
+        ...input,
+        ...(historicalIdentity === undefined ? {} : historicalIdentity),
+        ...(existing.thread_id === null ? {} : { threadId: existing.thread_id }),
+        payloadSha256,
+        duplicate: existing.completed_at !== null,
+      };
     }
     const now = this.now();
+    if (input.jobId !== undefined
+      && input.runId !== undefined
+      && this.database.prepare(`
+        SELECT 1 FROM cron_channel_deletions WHERE source_id = ? AND job_id = ?
+      `).get(input.sourceId, input.jobId) !== undefined) {
+      this.database.prepare(`
+        INSERT INTO notification_deliveries (
+          source_id, delivery_key, thread_id, trigger_kind, job_id, run_id,
+          message_id, payload_sha256, created_at, completed_at
+        ) VALUES (?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?)
+      `).run(
+        input.sourceId,
+        input.deliveryKey,
+        input.triggerKind,
+        input.jobId,
+        input.runId,
+        payloadSha256,
+        now,
+        now,
+      );
+      return { ...input, payloadSha256, duplicate: true, tombstoned: true };
+    }
     this.database.prepare(`
       INSERT INTO notification_deliveries (
-        source_id, delivery_key, thread_id, trigger_kind, payload_sha256, created_at, completed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, NULL)
-    `).run(input.sourceId, input.deliveryKey, threadId, input.triggerKind, payloadSha256, now);
+        source_id, delivery_key, thread_id, trigger_kind, job_id, run_id,
+        message_id, payload_sha256, created_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
+    `).run(
+      input.sourceId,
+      input.deliveryKey,
+      threadId,
+      input.triggerKind,
+      input.jobId ?? null,
+      input.runId ?? null,
+      payloadSha256,
+      now,
+    );
     return { ...input, threadId, payloadSha256, duplicate: false };
+  }
+
+  /** Agent-history namespace for a reserved console delivery. */
+  notificationConversationId(reservation: WebNotificationReservation): string {
+    if (reservation.threadId === undefined) {
+      throw new WebConsoleError("notification_reservation_lost", "The notification reservation has no target.", 409);
+    }
+    return reservation.jobId === undefined
+      ? `web:${reservation.threadId}`
+      : cronConsoleConversationId(reservation.sourceId, reservation.jobId);
   }
 
   completeNotification(reservation: WebNotificationReservation): CompleteWebNotificationResult {
@@ -461,67 +616,121 @@ export class WebStore {
       SELECT * FROM notification_deliveries WHERE source_id = ? AND delivery_key = ?
     `).get(reservation.sourceId, reservation.deliveryKey) as unknown as NotificationDeliveryRow | undefined;
     if (existing === undefined
-      || existing.thread_id !== reservation.threadId
       || existing.trigger_kind !== reservation.triggerKind
-      || existing.payload_sha256 !== reservation.payloadSha256) {
+      || existing.payload_sha256 !== reservation.payloadSha256
+      || existing.job_id !== (reservation.jobId ?? null)
+      || existing.run_id !== (reservation.runId ?? null)) {
       throw new WebConsoleError("notification_reservation_lost", "The notification reservation is no longer valid.", 409);
     }
     if (existing.completed_at !== null) {
+      if (existing.thread_id === null) return { duplicate: true, tombstoned: true };
       return { thread: this.requireThread(existing.thread_id), duplicate: true };
     }
+    if (existing.thread_id === null || reservation.threadId === undefined) {
+      throw new WebConsoleError("notification_reservation_lost", "The notification reservation lost its target.", 409);
+    }
     const now = this.now();
-    const turnId = randomUUID();
-    const assistantMessageId = randomUUID();
-    const title = reservation.triggerKind === "cron" ? "Cron notification" : "Webhook notification";
+    let turnId: string = randomUUID();
+    let assistantMessageId: string = randomUUID();
+    let completedThreadId = existing.thread_id;
     this.transaction(() => {
-      if (this.getThread(reservation.threadId) !== undefined) {
+      const cronChannel = reservation.jobId === undefined
+        ? undefined
+        : this.cronChannel(reservation.sourceId, reservation.jobId);
+      completedThreadId = cronChannel?.thread_id ?? existing.thread_id!;
+      const existingThread = this.getThread(completedThreadId);
+      if (existingThread === undefined) {
+        const title = reservation.jobId === undefined
+          ? reservation.triggerKind === "cron" ? "Cron notification" : "Webhook notification"
+          : `Cron · ${reservation.jobId}`;
+        this.database.prepare(`
+          INSERT INTO threads (
+            id, source_id, conversation_id, title, title_manual, trigger_kind, archived_at,
+            created_at, updated_at, revision
+          ) VALUES (?, ?, ?, ?, 0, ?, NULL, ?, ?, 1)
+        `).run(
+          completedThreadId,
+          reservation.sourceId,
+          reservation.jobId === undefined
+            ? `web:${completedThreadId}`
+            : cronConsoleConversationId(reservation.sourceId, reservation.jobId),
+          title,
+          reservation.triggerKind,
+          now,
+          now,
+        );
+      } else if (reservation.jobId === undefined) {
         throw new WebConsoleError("notification_idempotency_conflict", "The notification conversation already exists.", 409);
       }
+      if (reservation.jobId !== undefined) {
+        this.database.prepare(`
+          INSERT INTO cron_channels (
+            source_id, job_id, thread_id, configured, created_at, updated_at
+          ) VALUES (?, ?, ?, 0, ?, ?)
+          ON CONFLICT(source_id, job_id) DO UPDATE SET
+            thread_id = excluded.thread_id,
+            updated_at = excluded.updated_at
+        `).run(reservation.sourceId, reservation.jobId, completedThreadId, now, now);
+      }
+      const mappedRun = reservation.jobId === undefined || reservation.runId === undefined
+        ? undefined
+        : this.database.prepare(`
+            SELECT turn_id, message_id FROM cron_run_messages
+            WHERE source_id = ? AND job_id = ? AND run_id = ? AND thread_id = ?
+          `).get(
+            reservation.sourceId,
+            reservation.jobId,
+            reservation.runId,
+            completedThreadId,
+          ) as unknown as { turn_id: string; message_id: string } | undefined;
+      if (mappedRun === undefined) {
+        this.database.prepare(`
+          INSERT INTO turns (
+            id, thread_id, status, text, model, effort, assistant_message_id,
+            started_at, finished_at, error_code, error_message
+          ) VALUES (?, ?, 'complete', '', NULL, NULL, ?, ?, ?, NULL, NULL)
+        `).run(turnId, completedThreadId, assistantMessageId, now, now);
+        this.database.prepare(`
+          INSERT INTO messages (
+            id, thread_id, turn_id, role, parts_json, created_at, updated_at, status
+          ) VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'complete')
+        `).run(
+          assistantMessageId,
+          completedThreadId,
+          turnId,
+          JSON.stringify([{ type: "text", text: reservation.text } satisfies WebMessagePart]),
+          now,
+          now,
+        );
+      } else {
+        turnId = mappedRun.turn_id;
+        assistantMessageId = mappedRun.message_id;
+        const message = this.database.prepare(`
+          SELECT parts_json FROM messages WHERE id = ? AND thread_id = ? AND turn_id = ?
+        `).get(assistantMessageId, completedThreadId, turnId) as unknown as { parts_json: string } | undefined;
+        if (message === undefined) {
+          throw new WebConsoleError("storage_corrupt", "A cron run mapping is missing its message.", 500);
+        }
+        const parts = parseParts(message.parts_json);
+        if (!parts.some((part) => part.type === "text" && part.text === reservation.text)) {
+          parts.push({ type: "text", text: reservation.text });
+          this.database.prepare("UPDATE messages SET parts_json = ?, updated_at = ? WHERE id = ?")
+            .run(JSON.stringify(parts), now, assistantMessageId);
+        }
+      }
       this.database.prepare(`
-        INSERT INTO threads (
-          id, source_id, conversation_id, title, title_manual, trigger_kind, archived_at,
-          created_at, updated_at, revision
-        ) VALUES (?, ?, ?, ?, 0, ?, NULL, ?, ?, 1)
-      `).run(
-        reservation.threadId,
-        reservation.sourceId,
-        `web:${reservation.threadId}`,
-        title,
-        reservation.triggerKind,
-        now,
-        now,
-      );
+        UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?
+      `).run(now, completedThreadId);
+      this.recordThreadRevision(completedThreadId, "notification_created", now);
       this.database.prepare(`
-        INSERT INTO turns (
-          id, thread_id, status, text, model, effort, assistant_message_id,
-          started_at, finished_at, error_code, error_message
-        ) VALUES (?, ?, 'complete', '', NULL, NULL, ?, ?, ?, NULL, NULL)
-      `).run(turnId, reservation.threadId, assistantMessageId, now, now);
-      this.database.prepare(`
-        INSERT INTO messages (
-          id, thread_id, turn_id, role, parts_json, created_at, updated_at, status
-        ) VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'complete')
-      `).run(
-        assistantMessageId,
-        reservation.threadId,
-        turnId,
-        JSON.stringify([{ type: "text", text: reservation.text } satisfies WebMessagePart]),
-        now,
-        now,
-      );
-      this.database.prepare(`
-        INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at)
-        VALUES ('thread', ?, 1, 'notification_created', ?)
-      `).run(reservation.threadId, now);
-      this.database.prepare(`
-        UPDATE notification_deliveries SET completed_at = ?
+        UPDATE notification_deliveries SET thread_id = ?, message_id = ?, completed_at = ?
         WHERE source_id = ? AND delivery_key = ? AND completed_at IS NULL
-      `).run(now, reservation.sourceId, reservation.deliveryKey);
+      `).run(completedThreadId, assistantMessageId, now, reservation.sourceId, reservation.deliveryKey);
       const agent = this.getAgent(reservation.sourceId);
       this.enqueueWebPushEventInTransaction({
-        logicalKey: `web-new:${reservation.threadId}`,
+        logicalKey: notificationPushLogicalKey(reservation.sourceId, reservation.deliveryKey),
         kind: "response.ready",
-        threadId: reservation.threadId,
+        threadId: completedThreadId,
         sourceId: reservation.sourceId,
         title: `${agent?.label ?? "mono-agent"} · ${reservation.triggerKind.toUpperCase()}`,
         body: reservation.text,
@@ -529,7 +738,476 @@ export class WebStore {
         notBefore: new Date(new Date(now).getTime() + 3_000).toISOString(),
       });
     });
-    return { thread: this.requireThread(reservation.threadId), duplicate: false };
+    return { thread: this.requireThread(completedThreadId), duplicate: false };
+  }
+
+  /** Persist an agent-authoritative overview without deriving scheduler facts in the console. */
+  syncCronOverviewResult(overview: Omit<WebCronOverview, "jobs"> & {
+    readonly sourceId: string;
+    readonly jobs: readonly Omit<WebCronJob, "threadId">[];
+  }): CronOverviewSyncResult {
+    if (this.cronOverviewMatches(overview)) {
+      const stored = this.storedCronOverview(overview.sourceId);
+      if (stored === undefined) {
+        throw new WebConsoleError("storage_corrupt", "Matched cron overview disappeared.", 500);
+      }
+      const threadByJobId = new Map(stored.jobs.map((job) => [job.jobId, job.threadId]));
+      return {
+        overview: {
+          generatedAt: overview.generatedAt,
+          actionsEnabled: overview.actionsEnabled,
+          jobs: overview.jobs.map((job) => {
+            const threadId = threadByJobId.get(job.jobId);
+            if (threadId === undefined) {
+              throw new WebConsoleError("storage_corrupt", "Matched cron channel is missing.", 500);
+            }
+            return { ...job, threadId };
+          }),
+          ...(overview.degradedReason === undefined ? {} : { degradedReason: overview.degradedReason }),
+          ...(overview.jobsTruncated === true ? { jobsTruncated: true as const } : {}),
+        },
+        changed: false,
+      };
+    }
+    return { overview: this.syncCronOverview(overview), changed: true };
+  }
+
+  syncCronOverview(overview: Omit<WebCronOverview, "jobs"> & {
+    readonly sourceId: string;
+    readonly jobs: readonly Omit<WebCronJob, "threadId">[];
+  }): WebCronOverview {
+    if (this.getAgent(overview.sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    }
+    const now = this.now();
+    const jobs: WebCronJob[] = [];
+    this.transaction(() => {
+      this.database.prepare("UPDATE cron_channels SET configured = 0, updated_at = ? WHERE source_id = ?")
+        .run(now, overview.sourceId);
+      // Jobs omitted by the new authoritative overview remain historical
+      // channels. Reconcile their cached payload too so an offline read cannot
+      // resurrect the prior configured:true value after the relational column
+      // has already been cleared.
+      const removedSnapshots = this.database.prepare(`
+        SELECT s.job_id, s.payload_json
+        FROM cron_job_snapshots s
+        JOIN cron_channels c ON c.source_id = s.source_id AND c.job_id = s.job_id
+        WHERE s.source_id = ? AND c.configured = 0
+      `).all(overview.sourceId) as unknown as Array<{ job_id: string; payload_json: string }>;
+      const markSnapshotRemoved = this.database.prepare(`
+        UPDATE cron_job_snapshots SET payload_json = ?, updated_at = ?
+        WHERE source_id = ? AND job_id = ?
+      `);
+      for (const snapshot of removedSnapshots) {
+        const job = parseStoredCronJob(snapshot.payload_json);
+        markSnapshotRemoved.run(
+          JSON.stringify({ ...job, configured: false }),
+          now,
+          overview.sourceId,
+          snapshot.job_id,
+        );
+      }
+      for (const job of overview.jobs) {
+        if (job.configured) {
+          this.database.prepare("DELETE FROM cron_channel_deletions WHERE source_id = ? AND job_id = ?")
+            .run(overview.sourceId, job.jobId);
+        } else if (this.database.prepare(`
+          SELECT 1 FROM cron_channel_deletions WHERE source_id = ? AND job_id = ?
+        `).get(overview.sourceId, job.jobId) !== undefined) {
+          continue;
+        }
+        const current = this.cronChannel(overview.sourceId, job.jobId);
+        const threadId = current?.thread_id ?? cronChannelThreadId(overview.sourceId, job.jobId);
+        const existingThread = this.database.prepare("SELECT source_id, trigger_kind FROM threads WHERE id = ?")
+          .get(threadId) as unknown as { source_id: string; trigger_kind: string | null } | undefined;
+        if (existingThread !== undefined
+          && (existingThread.source_id !== overview.sourceId || existingThread.trigger_kind !== "cron")) {
+          throw new WebConsoleError("storage_corrupt", "Cron channel identity collides with another conversation.", 500);
+        }
+        if (existingThread === undefined) {
+          this.database.prepare(`
+            INSERT INTO threads (
+              id, source_id, conversation_id, title, title_manual, trigger_kind,
+              archived_at, created_at, updated_at, revision
+            ) VALUES (?, ?, ?, ?, 0, 'cron', NULL, ?, ?, 1)
+          `).run(
+            threadId,
+            overview.sourceId,
+            cronConsoleConversationId(overview.sourceId, job.jobId),
+            `Cron · ${job.jobId}`,
+            now,
+            now,
+          );
+          this.database.prepare(`
+            INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at)
+            VALUES ('thread', ?, 1, 'cron_channel_created', ?)
+          `).run(threadId, now);
+        } else {
+          this.database.prepare(`
+            UPDATE threads SET trigger_kind = 'cron',
+              title = CASE WHEN title_manual = 0 THEN ? ELSE title END
+            WHERE id = ?
+          `).run(`Cron · ${job.jobId}`, threadId);
+        }
+        this.database.prepare(`
+          INSERT INTO cron_channels (source_id, job_id, thread_id, configured, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(source_id, job_id) DO UPDATE SET
+            thread_id = excluded.thread_id,
+            configured = excluded.configured,
+            updated_at = excluded.updated_at
+        `).run(overview.sourceId, job.jobId, threadId, job.configured ? 1 : 0, now, now);
+        this.database.prepare(`
+          INSERT INTO cron_job_snapshots (source_id, job_id, payload_json, updated_at)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(source_id, job_id) DO UPDATE SET
+            payload_json = excluded.payload_json,
+            updated_at = excluded.updated_at
+        `).run(overview.sourceId, job.jobId, JSON.stringify(job), now);
+        jobs.push({ ...job, threadId });
+      }
+      this.database.prepare(`
+        INSERT INTO cron_overviews (
+          source_id, generated_at, actions_enabled, degraded_reason, jobs_truncated, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_id) DO UPDATE SET
+          generated_at = excluded.generated_at,
+          actions_enabled = excluded.actions_enabled,
+          degraded_reason = excluded.degraded_reason,
+          jobs_truncated = excluded.jobs_truncated,
+          updated_at = excluded.updated_at
+      `).run(
+        overview.sourceId,
+        overview.generatedAt,
+        overview.actionsEnabled ? 1 : 0,
+        overview.degradedReason ?? null,
+        overview.jobsTruncated === true ? 1 : 0,
+        now,
+      );
+    });
+    return {
+      generatedAt: overview.generatedAt,
+      actionsEnabled: overview.actionsEnabled,
+      jobs,
+      ...(overview.degradedReason === undefined ? {} : { degradedReason: overview.degradedReason }),
+      ...(overview.jobsTruncated === true ? { jobsTruncated: true as const } : {}),
+    };
+  }
+
+  private cronOverviewMatches(overview: Omit<WebCronOverview, "jobs"> & {
+    readonly sourceId: string;
+    readonly jobs: readonly Omit<WebCronJob, "threadId">[];
+  }): boolean {
+    const stored = this.storedCronOverview(overview.sourceId);
+    if (stored === undefined
+      || stored.actionsEnabled !== overview.actionsEnabled
+      || stored.degradedReason !== overview.degradedReason
+      || (stored.jobsTruncated === true) !== (overview.jobsTruncated === true)) return false;
+    const storedById = new Map(stored.jobs.map((job) => [job.jobId, job]));
+    for (const incoming of overview.jobs) {
+      const current = storedById.get(incoming.jobId);
+      if (current === undefined) return false;
+      const { threadId: _threadId, ...currentPayload } = current;
+      if (!isDeepStrictEqual(currentPayload, incoming)) return false;
+    }
+    return overview.jobsTruncated === true || stored.jobs.length === overview.jobs.length;
+  }
+
+  storedCronOverview(sourceId: string): WebCronOverview | undefined {
+    const overview = this.database.prepare("SELECT * FROM cron_overviews WHERE source_id = ?")
+      .get(sourceId) as unknown as {
+        generated_at: string;
+        actions_enabled: number;
+        degraded_reason: string | null;
+        jobs_truncated: number;
+      } | undefined;
+    if (overview === undefined) return undefined;
+    const rows = this.database.prepare(`
+      SELECT s.payload_json, c.thread_id, c.configured
+      FROM cron_job_snapshots s
+      JOIN cron_channels c ON c.source_id = s.source_id AND c.job_id = s.job_id
+      WHERE s.source_id = ? ORDER BY s.job_id
+    `).all(sourceId) as unknown as Array<{ payload_json: string; thread_id: string; configured: number }>;
+    const jobs = rows.map((row) => ({
+      ...parseStoredCronJob(row.payload_json),
+      configured: row.configured === 1,
+      threadId: row.thread_id,
+    }));
+    return {
+      generatedAt: overview.generated_at,
+      actionsEnabled: overview.actions_enabled === 1,
+      jobs,
+      ...(overview.degraded_reason === null ? {} : { degradedReason: overview.degraded_reason }),
+      ...(overview.jobs_truncated === 1 ? { jobsTruncated: true as const } : {}),
+    };
+  }
+
+  cronThread(sourceId: string, jobId: string): WebThread | undefined {
+    const channel = this.cronChannel(sourceId, jobId);
+    return channel === undefined ? undefined : this.getThread(channel.thread_id);
+  }
+
+  cronConversationIdForThread(threadId: string): string | undefined {
+    const resolved = this.resolveThreadId(threadId);
+    const row = this.database.prepare(`
+      SELECT s.payload_json FROM cron_channels c
+      JOIN cron_job_snapshots s ON s.source_id = c.source_id AND s.job_id = c.job_id
+      WHERE c.thread_id = ?
+    `).get(resolved) as unknown as { payload_json: string } | undefined;
+    return row === undefined ? undefined : parseStoredCronJob(row.payload_json).conversationId;
+  }
+
+  storedCronRuns(sourceId: string, jobId: string, limit = 100): WebCronRunPage {
+    const bounded = boundedPageLimit(limit, 100);
+    const rows = this.database.prepare(`
+      SELECT payload_json FROM cron_run_messages
+      WHERE source_id = ? AND job_id = ?
+      ORDER BY ordered_at DESC, sequence DESC, run_id DESC LIMIT ?
+    `).all(sourceId, jobId, bounded) as unknown as Array<{ payload_json: string }>;
+    return { runs: rows.map((row) => parseStoredCronRun(row.payload_json)) };
+  }
+
+  reconcileCronRuns(sourceId: string, jobId: string, runs: readonly WebCronRun[]): WebMessage[] {
+    return [...this.reconcileCronRunsResult(sourceId, jobId, runs).messages];
+  }
+
+  reconcileCronRunsResult(
+    sourceId: string,
+    jobId: string,
+    runs: readonly WebCronRun[],
+  ): CronRunReconciliationResult {
+    const channel = this.cronChannel(sourceId, jobId);
+    if (channel === undefined) {
+      throw new WebConsoleError("cron_job_not_found", "Cron channel not found.", 404);
+    }
+    const jobRow = this.database.prepare(`
+      SELECT payload_json FROM cron_job_snapshots WHERE source_id = ? AND job_id = ?
+    `).get(sourceId, jobId) as unknown as { payload_json: string } | undefined;
+    const conversationId = jobRow === undefined
+      ? `cron:${jobId}`
+      : parseStoredCronJob(jobRow.payload_json).conversationId;
+    const ordered = [...runs].sort(compareCronRuns);
+    if (ordered.length === 0) return { messages: [], changed: false };
+    const now = this.now();
+    const messageIds: string[] = [];
+    let changed = false;
+    this.transaction(() => {
+      for (const run of ordered) {
+        if (run.jobId !== jobId) {
+          throw new WebConsoleError("invalid_cron_response", "Cron run belongs to another job.", 502);
+        }
+        const mapped = this.database.prepare(`
+          SELECT thread_id, turn_id, message_id, ordered_at, sequence, payload_json
+          FROM cron_run_messages
+          WHERE source_id = ? AND job_id = ? AND run_id = ?
+        `).get(sourceId, jobId, run.runId) as unknown as {
+          thread_id: string;
+          turn_id: string;
+          message_id: string;
+          ordered_at: string;
+          sequence: number;
+          payload_json: string;
+        } | undefined;
+        if (mapped !== undefined && (mapped.ordered_at !== run.orderedAt || mapped.sequence !== run.sequence)) {
+          throw new WebConsoleError(
+            "invalid_cron_response",
+            "Cron run ordering identity changed after admission.",
+            502,
+          );
+        }
+        const delivered = mapped === undefined
+          ? this.database.prepare(`
+              SELECT d.message_id, m.turn_id
+              FROM notification_deliveries d
+              JOIN messages m ON m.id = d.message_id
+              WHERE d.source_id = ? AND d.job_id = ? AND d.run_id = ?
+                AND d.thread_id = ? AND d.completed_at IS NOT NULL
+              ORDER BY d.completed_at DESC LIMIT 1
+            `).get(sourceId, jobId, run.runId, channel.thread_id) as unknown as {
+              message_id: string;
+              turn_id: string;
+            } | undefined
+          : undefined;
+        const turnId = mapped?.turn_id ?? delivered?.turn_id ?? cronEntityId("turn", sourceId, jobId, run.runId);
+        const messageId = mapped?.message_id ?? delivered?.message_id ?? cronEntityId("message", sourceId, jobId, run.runId);
+        messageIds.push(messageId);
+        const prior = this.database.prepare(`
+          SELECT thread_id, turn_id, parts_json, created_at, status FROM messages WHERE id = ?
+        `).get(messageId) as unknown as {
+          thread_id: string;
+          turn_id: string | null;
+          parts_json: string;
+          created_at: string;
+          status: string;
+        } | undefined;
+        const priorParts = prior === undefined ? [] : parseParts(prior.parts_json);
+        const parts = cronRunParts(
+          run,
+          priorParts,
+          conversationId,
+        );
+        const serializedParts = JSON.stringify(parts);
+        const status = cronMessageStatus(run.status);
+        const turnStatus = status === "running" ? "running" : status;
+        const finishedAt = status === "running" ? null : run.completedAt ?? run.orderedAt;
+        const existingTurn = this.database.prepare(`
+          SELECT thread_id, status, text, assistant_message_id, started_at, finished_at,
+            error_code, error_message FROM turns WHERE id = ?
+        `).get(turnId) as unknown as {
+          thread_id: string;
+          status: string;
+          text: string;
+          assistant_message_id: string;
+          started_at: string;
+          finished_at: string | null;
+          error_code: string | null;
+          error_message: string | null;
+        } | undefined;
+        const preserveLoadedText = run.projection === "summary"
+          && run.fieldsTruncated?.includes("text") === true
+          && priorParts.some((part) => part.type === "telemetry"
+            && part.event === "cron_run"
+            && record(part.data)?.activityLoaded === true);
+        const preserveLoadedError = run.projection === "summary"
+          && priorParts.some((part) => part.type === "telemetry"
+            && part.event === "cron_run"
+            && record(part.data)?.activityLoaded === true)
+          && (run.fieldsTruncated?.includes("error") === true
+            || run.fieldsTruncated?.includes("failureKind") === true);
+        const turnText = preserveLoadedText && existingTurn !== undefined
+          ? existingTurn.text
+          : run.text ?? "";
+        const turnErrorCode = preserveLoadedError && existingTurn !== undefined
+          ? existingTurn.error_code
+          : run.failureKind ?? null;
+        const turnErrorMessage = preserveLoadedError && existingTurn !== undefined
+          ? existingTurn.error_message
+          : run.error ?? null;
+        if (existingTurn === undefined) {
+          this.database.prepare(`
+            INSERT INTO turns (
+              id, thread_id, status, text, model, effort, assistant_message_id,
+              started_at, finished_at, error_code, error_message
+            ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)
+          `).run(
+            turnId,
+            channel.thread_id,
+            turnStatus,
+            turnText,
+            messageId,
+            run.orderedAt,
+            finishedAt,
+            turnErrorCode,
+            turnErrorMessage,
+          );
+          changed = true;
+        } else if (
+          existingTurn.thread_id !== channel.thread_id
+          || existingTurn.status !== turnStatus
+          || existingTurn.text !== turnText
+          || existingTurn.assistant_message_id !== messageId
+          || existingTurn.started_at !== run.orderedAt
+          || existingTurn.finished_at !== finishedAt
+          || existingTurn.error_code !== turnErrorCode
+          || existingTurn.error_message !== turnErrorMessage
+        ) {
+          this.database.prepare(`
+            UPDATE turns SET thread_id = ?, status = ?, text = ?, assistant_message_id = ?,
+              started_at = ?, finished_at = ?, error_code = ?, error_message = ?
+            WHERE id = ?
+          `).run(
+            channel.thread_id,
+            turnStatus,
+            turnText,
+            messageId,
+            run.orderedAt,
+            finishedAt,
+            turnErrorCode,
+            turnErrorMessage,
+            turnId,
+          );
+          changed = true;
+        }
+        if (prior === undefined) {
+          this.database.prepare(`
+            INSERT INTO messages (
+              id, thread_id, turn_id, role, parts_json, created_at, updated_at, status
+            ) VALUES (?, ?, ?, 'assistant', ?, ?, ?, ?)
+          `).run(messageId, channel.thread_id, turnId, serializedParts, run.orderedAt, now, status);
+          changed = true;
+        } else if (
+          prior.thread_id !== channel.thread_id
+          || prior.turn_id !== turnId
+          || prior.parts_json !== serializedParts
+          || prior.created_at !== run.orderedAt
+          || prior.status !== status
+        ) {
+          this.database.prepare(`
+            UPDATE messages SET thread_id = ?, turn_id = ?, parts_json = ?,
+              created_at = ?, updated_at = ?, status = ? WHERE id = ?
+          `).run(channel.thread_id, turnId, serializedParts, run.orderedAt, now, status, messageId);
+          changed = true;
+        }
+        // Detail is a message projection, not a replacement for the compact
+        // page identity. Keeping the existing summary prevents the next
+        // unchanged page poll from undoing a detail load and creating churn.
+        const serializedRun = run.projection === "detail" && mapped !== undefined
+          ? mapped.payload_json
+          : JSON.stringify(cronRunSummary(run));
+        if (mapped === undefined
+          || mapped.thread_id !== channel.thread_id
+          || mapped.turn_id !== turnId
+          || mapped.message_id !== messageId
+          || mapped.payload_json !== serializedRun) {
+          this.database.prepare(`
+            INSERT INTO cron_run_messages (
+              source_id, job_id, run_id, thread_id, turn_id, message_id,
+              ordered_at, sequence, payload_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_id, job_id, run_id) DO UPDATE SET
+              thread_id = excluded.thread_id,
+              turn_id = excluded.turn_id,
+              message_id = excluded.message_id,
+              payload_json = excluded.payload_json,
+              updated_at = excluded.updated_at
+          `).run(
+            sourceId,
+            jobId,
+            run.runId,
+            channel.thread_id,
+            turnId,
+            messageId,
+            run.orderedAt,
+            run.sequence,
+            serializedRun,
+            now,
+          );
+          changed = true;
+        }
+      }
+      if (changed) {
+        const newest = ordered.at(-1)!;
+        this.database.prepare(`
+          UPDATE threads SET updated_at = MAX(updated_at, ?), revision = revision + 1 WHERE id = ?
+        `).run(newest.completedAt ?? newest.startedAt ?? newest.orderedAt, channel.thread_id);
+        this.recordThreadRevision(channel.thread_id, "cron_runs_reconciled", now);
+
+        const excess = this.database.prepare(`
+          SELECT turn_id FROM (
+            SELECT turn_id, ROW_NUMBER() OVER (
+              PARTITION BY source_id, job_id ORDER BY ordered_at DESC, sequence DESC, run_id DESC
+            ) AS retained_row
+            FROM cron_run_messages WHERE source_id = ? AND job_id = ?
+          ) WHERE retained_row > 500
+        `).all(sourceId, jobId) as unknown as Array<{ turn_id: string }>;
+        const remove = this.database.prepare("DELETE FROM turns WHERE id = ?");
+        for (const row of excess) remove.run(row.turn_id);
+      }
+    });
+    return {
+      messages: [...new Set(messageIds)].map((messageId) => this.requireMessage(messageId)),
+      changed,
+    };
   }
 
   createThread(sourceId: string): WebThread {
@@ -553,45 +1231,168 @@ export class WebStore {
     return this.requireThread(id);
   }
 
+  /** Bounded bootstrap: at most one 200-row bucket per (source_id, archived). */
   listThreads(): WebThread[] {
-    const rows = this.database.prepare(threadSelectSql("ORDER BY t.updated_at DESC, t.id")).all() as unknown as ThreadRow[];
+    const rows = this.database.prepare(threadSelectSql(`
+      WHERE t.id IN (
+        SELECT id FROM (
+          SELECT id,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY source_id, CASE WHEN archived_at IS NULL THEN 0 ELSE 1 END
+                   ORDER BY updated_at DESC, id DESC
+                 ) AS bucket_row
+          FROM threads
+        ) WHERE bucket_row <= ${String(WEB_THREAD_PAGE_MAX)}
+      )
+      ORDER BY t.updated_at DESC, t.id DESC
+    `)).all() as unknown as ThreadRow[];
     return rows.map((row) => this.mapThread(row));
   }
 
+  listThreadsPage(input: {
+    readonly sourceId: string;
+    readonly archived: boolean;
+    readonly limit?: number;
+    readonly before?: string;
+  }): WebThreadPage {
+    if (this.getAgent(input.sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    }
+    const limit = boundedPageLimit(input.limit, WEB_THREAD_PAGE_MAX);
+    const cursor = input.before === undefined ? undefined : decodeThreadCursor(input.before);
+    const archivedSql = input.archived ? "t.archived_at IS NOT NULL" : "t.archived_at IS NULL";
+    const beforeSql = cursor === undefined
+      ? ""
+      : "AND (t.updated_at < ? OR (t.updated_at = ? AND t.id < ?))";
+    const values: Array<string | number> = [input.sourceId];
+    if (cursor !== undefined) values.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
+    values.push(limit + 1);
+    const rows = this.database.prepare(threadSelectSql(`
+      WHERE t.source_id = ? AND ${archivedSql} ${beforeSql}
+      ORDER BY t.updated_at DESC, t.id DESC LIMIT ?
+    `)).all(...values) as unknown as ThreadRow[];
+    const hasMore = rows.length > limit;
+    const pageRows = rows.slice(0, limit);
+    const last = pageRows.at(-1);
+    return {
+      threads: pageRows.map((row) => this.mapThread(row)),
+      ...(hasMore && last !== undefined
+        ? { nextCursor: encodeCursor({ updatedAt: last.updated_at, id: last.id }) }
+        : {}),
+    };
+  }
+
+  resolveThreadId(id: string): string {
+    let resolved = id;
+    const seen = new Set<string>();
+    for (let depth = 0; depth < 32; depth += 1) {
+      if (seen.has(resolved)) {
+        throw new WebConsoleError("storage_corrupt", "Conversation redirects contain a cycle.", 500);
+      }
+      seen.add(resolved);
+      const row = this.database.prepare("SELECT new_thread_id FROM thread_redirects WHERE old_thread_id = ?")
+        .get(resolved) as unknown as { new_thread_id: string } | undefined;
+      if (row === undefined) return resolved;
+      resolved = row.new_thread_id;
+    }
+    throw new WebConsoleError("storage_corrupt", "Conversation redirect chain is too deep.", 500);
+  }
+
   getThread(id: string): WebThread | undefined {
-    const row = this.database.prepare(threadSelectSql("WHERE t.id = ?")).get(id) as unknown as ThreadRow | undefined;
+    const resolved = this.resolveThreadId(id);
+    const row = this.database.prepare(threadSelectSql("WHERE t.id = ?")).get(resolved) as unknown as ThreadRow | undefined;
     return row === undefined ? undefined : this.mapThread(row);
   }
 
   getThreadDetail(id: string): WebThreadDetail | undefined {
-    const thread = this.getThread(id);
+    const resolved = this.resolveThreadId(id);
+    const thread = this.getThread(resolved);
     if (thread === undefined) return undefined;
+    const page = this.listMessagesPage(resolved);
+    return {
+      thread,
+      messages: page.messages,
+      ...(page.nextCursor === undefined ? {} : { messagesNextCursor: page.nextCursor }),
+    };
+  }
+
+  listMessagesPage(
+    id: string,
+    input: { readonly before?: string; readonly limit?: number } = {},
+  ): WebMessagePage {
+    const resolved = this.resolveThreadId(id);
+    if (this.getThread(resolved) === undefined) {
+      throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    }
+    const limit = boundedPageLimit(input.limit, WEB_MESSAGE_PAGE_MAX);
+    const cursor = input.before === undefined ? undefined : decodeMessageCursor(input.before);
+    const rank = messageRoleRankSql("m", "t");
+    const orderedAt = "COALESCE(t.started_at, m.created_at)";
+    const beforeSql = cursor === undefined ? "" : `AND (
+      ${orderedAt} < ?
+      OR (${orderedAt} = ? AND ${rank} < ?)
+      OR (${orderedAt} = ? AND ${rank} = ? AND m.created_at < ?)
+      OR (${orderedAt} = ? AND ${rank} = ? AND m.created_at = ? AND m.rowid < ?)
+    )`;
+    const values: Array<string | number> = [resolved];
+    if (cursor !== undefined) {
+      values.push(
+        cursor.orderedAt,
+        cursor.orderedAt,
+        cursor.roleRank,
+        cursor.orderedAt,
+        cursor.roleRank,
+        cursor.createdAt,
+        cursor.orderedAt,
+        cursor.roleRank,
+        cursor.createdAt,
+        cursor.rowid,
+      );
+    }
+    values.push(limit + 1);
     const rows = this.database.prepare(`
-      SELECT m.* FROM messages m
+      SELECT m.*, ${orderedAt} AS ordered_at, ${rank} AS role_rank, m.rowid AS storage_rowid
+      FROM messages m
       LEFT JOIN turns t ON t.id = m.turn_id
-      WHERE m.thread_id = ?
-      ORDER BY COALESCE(t.started_at, m.created_at),
-        CASE WHEN m.turn_id IS NOT NULL AND m.role = 'user' THEN 0
-             WHEN m.turn_id IS NOT NULL AND m.role = 'system' THEN 1
-             WHEN m.turn_id IS NOT NULL THEN 2
-             ELSE 3 END,
-        m.created_at, m.rowid
-    `).all(id) as unknown as MessageRow[];
-    return { thread, messages: rows.map((row) => this.mapMessage(row)) };
+      WHERE m.thread_id = ? ${beforeSql}
+      ORDER BY ordered_at DESC, role_rank DESC, m.created_at DESC, storage_rowid DESC
+      LIMIT ?
+    `).all(...values) as unknown as MessagePageRow[];
+    const hasMore = rows.length > limit;
+    const pageRows = rows.slice(0, limit).reverse();
+    const oldest = pageRows[0];
+    return {
+      messages: pageRows.map((row) => this.mapMessage(row)),
+      ...(hasMore && oldest !== undefined
+        ? {
+            nextCursor: encodeCursor({
+              orderedAt: oldest.ordered_at,
+              roleRank: oldest.role_rank,
+              createdAt: oldest.created_at,
+              rowid: oldest.storage_rowid,
+            }),
+          }
+        : {}),
+    };
   }
 
   currentThreadId(): string | undefined {
     const row = this.database.prepare("SELECT value FROM settings WHERE key = 'current_thread_id'").get() as unknown as { value: string } | undefined;
-    if (row === undefined || this.getThread(row.value) === undefined) return undefined;
-    return row.value;
+    if (row === undefined) return undefined;
+    const resolved = this.resolveThreadId(row.value);
+    if (this.getThread(resolved) === undefined) return undefined;
+    if (resolved !== row.value) this.setSetting("current_thread_id", resolved);
+    return resolved;
   }
 
   selectThread(id: string): void {
-    this.requireThread(id);
-    this.setSetting("current_thread_id", id);
+    const resolved = this.resolveThreadId(id);
+    this.requireThread(resolved);
+    this.setSetting("current_thread_id", resolved);
   }
 
   patchThread(id: string, patch: { readonly title?: string; readonly archived?: boolean }): WebThread {
+    id = this.resolveThreadId(id);
     const current = this.requireThread(id);
     const now = this.now();
     const title = patch.title === undefined ? undefined : normalizeTitle(patch.title);
@@ -618,9 +1419,19 @@ export class WebStore {
   }
 
   async deleteArchivedThread(id: string): Promise<{ readonly orphanedFiles: number }> {
+    id = this.resolveThreadId(id);
     const thread = this.requireThread(id);
     if (thread.archivedAt === null) {
       throw new WebConsoleError("thread_not_archived", "Archive the conversation before deleting it.", 409);
+    }
+    const cronChannel = this.database.prepare("SELECT * FROM cron_channels WHERE thread_id = ?")
+      .get(id) as unknown as CronChannelRow | undefined;
+    if (cronChannel?.configured === 1) {
+      throw new WebConsoleError(
+        "cron_channel_configured",
+        "Configured cron channels can be archived but not deleted.",
+        409,
+      );
     }
     const attachments = this.database.prepare("SELECT * FROM attachments WHERE thread_id = ?")
       .all(id) as unknown as AttachmentRow[];
@@ -631,7 +1442,21 @@ export class WebStore {
         WHERE event_id IN (SELECT id FROM push_events WHERE thread_id = ?)
           AND status IN ('pending', 'sending')
       `).run(now, now, id);
-      this.database.prepare("DELETE FROM notification_deliveries WHERE thread_id = ?").run(id);
+      // Keep the delivery receipt after its channel is removed. Replays remain
+      // duplicates and can never resurrect a deleted historical channel.
+      this.database.prepare(`
+        UPDATE notification_deliveries
+        SET thread_id = NULL, message_id = NULL, completed_at = COALESCE(completed_at, ?)
+        WHERE thread_id = ?
+      `).run(now, id);
+      if (cronChannel !== undefined) {
+        this.database.prepare(`
+          INSERT INTO cron_channel_deletions (source_id, job_id, deleted_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(source_id, job_id) DO UPDATE SET deleted_at = excluded.deleted_at
+        `).run(cronChannel.source_id, cronChannel.job_id, now);
+      }
+      this.database.prepare("DELETE FROM cron_channels WHERE thread_id = ?").run(id);
       this.database.prepare("DELETE FROM revisions WHERE entity_kind = 'thread' AND entity_id = ?").run(id);
       this.database.prepare("DELETE FROM threads WHERE id = ?").run(id);
       this.database.prepare("DELETE FROM settings WHERE key = 'current_thread_id' AND value = ?").run(id);
@@ -750,14 +1575,16 @@ export class WebStore {
   }
 
   beginTurn(input: BeginStoredTurnInput): BeginStoredTurnResult {
-    const thread = this.requireThread(input.threadId);
+    const threadId = this.resolveThreadId(input.threadId);
+    const thread = this.requireThread(threadId);
     if (thread.archivedAt !== null) {
       throw new WebConsoleError("thread_archived", "Unarchive this conversation before sending another message.", 409);
     }
+    if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
     if (!thread.canSend) {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
     }
-    const active = this.database.prepare("SELECT id FROM turns WHERE thread_id = ? AND status = 'running'").get(input.threadId);
+    const active = this.database.prepare("SELECT id FROM turns WHERE thread_id = ? AND status = 'running'").get(threadId);
     if (active !== undefined) {
       throw new WebConsoleError("turn_active", "This conversation already has an active turn.", 409);
     }
@@ -787,7 +1614,7 @@ export class WebStore {
       }
       const source = this.database.prepare(
         "SELECT id FROM messages WHERE id = ? AND thread_id = ?",
-      ).get(input.quote.messageId, input.threadId);
+      ).get(input.quote.messageId, threadId);
       if (source === undefined) {
         throw new WebConsoleError(
           "invalid_quote",
@@ -807,7 +1634,7 @@ export class WebStore {
           id, thread_id, status, text, model, effort, assistant_message_id,
           started_at, finished_at, error_code, error_message
         ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, NULL, NULL, NULL)
-      `).run(turnId, input.threadId, input.text, input.model ?? null, input.effort ?? null, assistantMessageId, now);
+      `).run(turnId, threadId, input.text, input.model ?? null, input.effort ?? null, assistantMessageId, now);
 
       const userParts: WebMessagePart[] = [
         ...(input.quote === undefined
@@ -818,11 +1645,11 @@ export class WebStore {
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
         VALUES (?, ?, ?, 'user', ?, ?, ?, 'complete')
-      `).run(userMessageId, input.threadId, turnId, JSON.stringify(userParts), now, now);
+      `).run(userMessageId, threadId, turnId, JSON.stringify(userParts), now, now);
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
         VALUES (?, ?, ?, 'assistant', '[]', ?, ?, 'running')
-      `).run(assistantMessageId, input.threadId, turnId, now, now);
+      `).run(assistantMessageId, threadId, turnId, now, now);
 
       const commitAttachment = this.database.prepare(`
         UPDATE attachments
@@ -830,7 +1657,7 @@ export class WebStore {
         WHERE id = ?
       `);
       for (const attachment of attachments) {
-        commitAttachment.run(input.threadId, userMessageId, now, attachment.id);
+        commitAttachment.run(threadId, userMessageId, now, attachment.id);
       }
 
       const title = deriveAutomaticTitle(input.text, attachments);
@@ -839,28 +1666,30 @@ export class WebStore {
         SET title = CASE WHEN title_manual = 0 AND title = 'New conversation' THEN ? ELSE title END,
             updated_at = ?, revision = revision + 1
         WHERE id = ?
-      `).run(title, now, input.threadId);
-      this.recordThreadRevision(input.threadId, "turn_started", now);
-      this.setSetting("current_thread_id", input.threadId);
+      `).run(title, now, threadId);
+      this.recordThreadRevision(threadId, "turn_started", now);
+      this.setSetting("current_thread_id", threadId);
     });
 
     return {
       turnId,
-      conversationId: `web:${input.threadId}`,
+      conversationId: `web:${threadId}`,
       text: input.text,
       ...(input.quote === undefined ? {} : { quote: input.quote }),
       userMessageId,
       assistantMessageId,
       attachments: attachments.map((attachment) => this.requireStoredAttachment(attachment.id)),
-      thread: this.requireThread(input.threadId),
+      thread: this.requireThread(threadId),
     };
   }
 
   reserveLiveInput(threadId: string, text: string): ReserveStoredLiveInputResult {
+    threadId = this.resolveThreadId(threadId);
     const thread = this.requireThread(threadId);
     if (thread.archivedAt !== null) {
       throw new WebConsoleError("thread_archived", "Unarchive this conversation before sending another message.", 409);
     }
+    if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
     if (!thread.canSend) {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
     }
@@ -982,6 +1811,7 @@ export class WebStore {
   }
 
   cancelLiveInputs(threadId: string): WebMessage[] {
+    threadId = this.resolveThreadId(threadId);
     const rows = this.database.prepare(
       "SELECT * FROM live_inputs WHERE thread_id = ? ORDER BY created_at, rowid",
     ).all(threadId) as unknown as LiveInputRow[];
@@ -1011,6 +1841,7 @@ export class WebStore {
   }
 
   promoteNextQueuedLiveInput(threadId: string): BeginStoredTurnResult | undefined {
+    threadId = this.resolveThreadId(threadId);
     const active = this.database.prepare(
       "SELECT id FROM turns WHERE thread_id = ? AND status = 'running'",
     ).get(threadId);
@@ -1119,6 +1950,7 @@ export class WebStore {
   }
 
   activeTurn(threadId: string): { readonly id: string; readonly conversationId: string } | undefined {
+    threadId = this.resolveThreadId(threadId);
     const row = this.database.prepare("SELECT id FROM turns WHERE thread_id = ? AND status = 'running'").get(threadId) as unknown as { id: string } | undefined;
     return row === undefined ? undefined : { id: row.id, conversationId: `web:${threadId}` };
   }
@@ -1538,6 +2370,9 @@ export class WebStore {
         default_effort TEXT,
         efforts_json TEXT,
         model_options_json TEXT,
+        cron_read INTEGER NOT NULL DEFAULT 0,
+        cron_actions INTEGER NOT NULL DEFAULT 0,
+        ask_by_id INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS threads (
@@ -1623,12 +2458,73 @@ export class WebStore {
       CREATE TABLE IF NOT EXISTS notification_deliveries (
         source_id TEXT NOT NULL REFERENCES agents(source_id),
         delivery_key TEXT NOT NULL,
-        thread_id TEXT NOT NULL UNIQUE,
+        thread_id TEXT,
+        message_id TEXT,
         trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('cron', 'webhook')),
+        job_id TEXT,
+        run_id TEXT,
         payload_sha256 TEXT NOT NULL,
         created_at TEXT NOT NULL,
         completed_at TEXT,
+        CHECK ((job_id IS NULL AND run_id IS NULL) OR (trigger_kind = 'cron' AND job_id IS NOT NULL AND run_id IS NOT NULL)),
         PRIMARY KEY (source_id, delivery_key)
+      );
+      CREATE INDEX IF NOT EXISTS notification_deliveries_by_thread
+        ON notification_deliveries(thread_id) WHERE thread_id IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS cron_channels (
+        source_id TEXT NOT NULL REFERENCES agents(source_id),
+        job_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL UNIQUE REFERENCES threads(id) ON DELETE CASCADE,
+        configured INTEGER NOT NULL CHECK (configured IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, job_id)
+      );
+      CREATE INDEX IF NOT EXISTS cron_channels_by_source
+        ON cron_channels(source_id, configured, job_id);
+      CREATE TABLE IF NOT EXISTS cron_channel_deletions (
+        source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+        job_id TEXT NOT NULL,
+        deleted_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, job_id)
+      );
+      CREATE TABLE IF NOT EXISTS cron_overviews (
+        source_id TEXT PRIMARY KEY REFERENCES agents(source_id) ON DELETE CASCADE,
+        generated_at TEXT NOT NULL,
+        actions_enabled INTEGER NOT NULL CHECK (actions_enabled IN (0, 1)),
+        degraded_reason TEXT,
+        jobs_truncated INTEGER NOT NULL DEFAULT 0 CHECK (jobs_truncated IN (0, 1)),
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS cron_job_snapshots (
+        source_id TEXT NOT NULL,
+        job_id TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, job_id),
+        FOREIGN KEY (source_id, job_id) REFERENCES cron_channels(source_id, job_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS cron_run_messages (
+        source_id TEXT NOT NULL,
+        job_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        turn_id TEXT NOT NULL UNIQUE REFERENCES turns(id) ON DELETE CASCADE,
+        message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+        ordered_at TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (source_id, job_id, run_id),
+        FOREIGN KEY (source_id, job_id) REFERENCES cron_channels(source_id, job_id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS cron_run_messages_by_order
+        ON cron_run_messages(source_id, job_id, ordered_at DESC, sequence DESC, run_id DESC);
+      CREATE TABLE IF NOT EXISTS thread_redirects (
+        old_thread_id TEXT PRIMARY KEY,
+        new_thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        CHECK (old_thread_id <> new_thread_id)
       );
       CREATE TABLE IF NOT EXISTS push_subscriptions (
         id TEXT PRIMARY KEY,
@@ -1691,6 +2587,16 @@ export class WebStore {
             );
           }
         }
+        if (versionRow.user_version < 5) this.migrateCronChannels();
+        if (versionRow.user_version < 6) {
+          const columns = new Set((this.database.prepare("PRAGMA table_info(cron_overviews)").all() as Array<{ name: string }>)
+            .map((column) => column.name));
+          if (!columns.has("jobs_truncated")) {
+            this.database.exec(
+              "ALTER TABLE cron_overviews ADD COLUMN jobs_truncated INTEGER NOT NULL DEFAULT 0 CHECK (jobs_truncated IN (0, 1))",
+            );
+          }
+        }
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
       } catch (error) {
         if (this.database.isTransaction) this.database.exec("ROLLBACK");
@@ -1700,6 +2606,166 @@ export class WebStore {
     } catch (error) {
       if (error instanceof WebConsoleError) throw error;
       throw new WebConsoleError("storage_corrupt", `Unable to initialize web state: ${error instanceof Error ? error.message : String(error)}`, 500);
+    }
+  }
+
+  /**
+   * Schema-v5 adoption runs after every older fixup inside the same
+   * BEGIN IMMEDIATE transaction. Each operation is guarded by the resulting
+   * schema/keys, so reopening an interrupted migration is idempotent.
+   */
+  private migrateCronChannels(): void {
+    const agentColumns = new Set((this.database.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
+      .map((column) => column.name));
+    if (!agentColumns.has("cron_read")) {
+      this.database.exec("ALTER TABLE agents ADD COLUMN cron_read INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!agentColumns.has("cron_actions")) {
+      this.database.exec("ALTER TABLE agents ADD COLUMN cron_actions INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!agentColumns.has("ask_by_id")) {
+      this.database.exec("ALTER TABLE agents ADD COLUMN ask_by_id INTEGER NOT NULL DEFAULT 0");
+    }
+
+    const deliveryColumns = this.database.prepare("PRAGMA table_info(notification_deliveries)")
+      .all() as Array<{ name: string; notnull: number }>;
+    const threadColumn = deliveryColumns.find((column) => column.name === "thread_id");
+    if (!deliveryColumns.some((column) => column.name === "job_id") || threadColumn?.notnull === 1) {
+      const legacyRows = this.database.prepare("SELECT * FROM notification_deliveries")
+        .all() as unknown as Array<{
+          source_id: string;
+          delivery_key: string;
+          thread_id: string;
+          trigger_kind: string;
+          payload_sha256: string;
+          created_at: string;
+          completed_at: string | null;
+        }>;
+      this.database.exec(`
+        DROP TABLE notification_deliveries;
+        CREATE TABLE notification_deliveries (
+          source_id TEXT NOT NULL REFERENCES agents(source_id),
+          delivery_key TEXT NOT NULL,
+          thread_id TEXT,
+          message_id TEXT,
+          trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('cron', 'webhook')),
+          job_id TEXT,
+          run_id TEXT,
+          payload_sha256 TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          completed_at TEXT,
+          CHECK ((job_id IS NULL AND run_id IS NULL) OR (trigger_kind = 'cron' AND job_id IS NOT NULL AND run_id IS NOT NULL)),
+          PRIMARY KEY (source_id, delivery_key)
+        );
+        CREATE INDEX notification_deliveries_by_thread
+          ON notification_deliveries(thread_id) WHERE thread_id IS NOT NULL;
+      `);
+      const insert = this.database.prepare(`
+        INSERT INTO notification_deliveries (
+          source_id, delivery_key, thread_id, trigger_kind, job_id, run_id,
+          message_id, payload_sha256, created_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+      `);
+      for (const row of legacyRows) {
+        const identity = row.trigger_kind === "cron" ? legacyCronDeliveryIdentity(row.delivery_key) : undefined;
+        insert.run(
+          row.source_id,
+          row.delivery_key,
+          row.thread_id,
+          row.trigger_kind,
+          identity?.jobId ?? null,
+          identity?.runId ?? null,
+          row.payload_sha256,
+          row.created_at,
+          row.completed_at,
+        );
+      }
+      this.database.exec(`
+        UPDATE notification_deliveries
+        SET message_id = (
+          SELECT m.id FROM messages m
+          WHERE m.thread_id = notification_deliveries.thread_id AND m.role = 'assistant'
+          ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1
+        )
+        WHERE completed_at IS NOT NULL
+      `);
+    }
+
+    // Startup recovery normally runs after schema initialization. Cron adoption
+    // can merge several legacy notification threads into one thread, though,
+    // and two independently-running legacy turns would violate the one-active-
+    // turn index during that reparenting. Settle them while this migration's
+    // BEGIN IMMEDIATE transaction still owns the database, before any merge.
+    this.recoverInterruptedTurnsInTransaction();
+
+    const adoptable = this.database.prepare(`
+      SELECT d.source_id, d.job_id, d.thread_id, d.created_at, t.created_at AS thread_created_at
+      FROM notification_deliveries d
+      JOIN threads t ON t.id = d.thread_id
+      WHERE d.trigger_kind = 'cron' AND d.job_id IS NOT NULL AND d.run_id IS NOT NULL
+        AND d.thread_id IS NOT NULL AND d.completed_at IS NOT NULL
+      ORDER BY d.source_id, d.job_id, t.created_at, d.created_at, d.thread_id
+    `).all() as unknown as Array<{
+      source_id: string;
+      job_id: string;
+      thread_id: string;
+      created_at: string;
+      thread_created_at: string;
+    }>;
+    const groups = new Map<string, typeof adoptable>();
+    for (const row of adoptable) {
+      const key = `${row.source_id}\0${row.job_id}`;
+      const group = groups.get(key) ?? [];
+      if (!group.some((entry) => entry.thread_id === row.thread_id)) group.push(row);
+      groups.set(key, group);
+    }
+    const now = this.now();
+    for (const rows of groups.values()) {
+      const canonical = rows[0];
+      if (canonical === undefined) continue;
+      const existing = this.cronChannel(canonical.source_id, canonical.job_id);
+      const canonicalId = existing?.thread_id ?? canonical.thread_id;
+      const conversationId = cronConsoleConversationId(canonical.source_id, canonical.job_id);
+      this.database.prepare(`
+        UPDATE threads SET conversation_id = ?, trigger_kind = 'cron', title = ?, updated_at = MAX(updated_at, ?)
+        WHERE id = ?
+      `).run(conversationId, `Cron · ${canonical.job_id}`, canonical.created_at, canonicalId);
+      this.database.prepare(`
+        INSERT INTO cron_channels (source_id, job_id, thread_id, configured, created_at, updated_at)
+        VALUES (?, ?, ?, 0, ?, ?)
+        ON CONFLICT(source_id, job_id) DO NOTHING
+      `).run(canonical.source_id, canonical.job_id, canonicalId, canonical.thread_created_at, now);
+
+      for (const legacy of rows) {
+        if (legacy.thread_id === canonicalId) continue;
+        this.database.prepare("UPDATE turns SET thread_id = ? WHERE thread_id = ?")
+          .run(canonicalId, legacy.thread_id);
+        this.database.prepare("UPDATE messages SET thread_id = ? WHERE thread_id = ?")
+          .run(canonicalId, legacy.thread_id);
+        this.database.prepare("UPDATE live_inputs SET thread_id = ? WHERE thread_id = ?")
+          .run(canonicalId, legacy.thread_id);
+        this.database.prepare("UPDATE attachments SET thread_id = ? WHERE thread_id = ?")
+          .run(canonicalId, legacy.thread_id);
+        this.database.prepare("UPDATE push_events SET thread_id = ? WHERE thread_id = ?")
+          .run(canonicalId, legacy.thread_id);
+        this.database.prepare("UPDATE notification_deliveries SET thread_id = ? WHERE thread_id = ?")
+          .run(canonicalId, legacy.thread_id);
+        this.database.prepare(`
+          UPDATE revisions SET entity_id = ? WHERE entity_kind = 'thread' AND entity_id = ?
+        `).run(canonicalId, legacy.thread_id);
+        this.database.prepare("UPDATE settings SET value = ? WHERE key = 'current_thread_id' AND value = ?")
+          .run(canonicalId, legacy.thread_id);
+        this.database.prepare(`
+          INSERT INTO thread_redirects (old_thread_id, new_thread_id, created_at)
+          VALUES (?, ?, ?) ON CONFLICT(old_thread_id) DO UPDATE SET new_thread_id = excluded.new_thread_id
+        `).run(legacy.thread_id, canonicalId, now);
+        this.database.prepare("DELETE FROM threads WHERE id = ?").run(legacy.thread_id);
+      }
+      this.database.prepare(`
+        UPDATE threads SET revision = revision + 1,
+          updated_at = MAX(updated_at, COALESCE((SELECT MAX(created_at) FROM messages WHERE thread_id = ?), updated_at))
+        WHERE id = ?
+      `).run(canonicalId, canonicalId);
     }
   }
 
@@ -1718,6 +2784,12 @@ export class WebStore {
       "revisions",
       "settings",
       "notification_deliveries",
+      "cron_channels",
+      "cron_channel_deletions",
+      "cron_overviews",
+      "cron_job_snapshots",
+      "cron_run_messages",
+      "thread_redirects",
       "push_subscriptions",
       "push_events",
       "push_deliveries",
@@ -1741,6 +2813,20 @@ export class WebStore {
     const active = this.listActiveTurnIds();
     for (const turnId of active) {
       this.interruptTurn(turnId, "The web service restarted before this turn completed.");
+    }
+  }
+
+  private recoverInterruptedTurnsInTransaction(): void {
+    const active = this.listActiveTurnIds();
+    for (const turnId of active) {
+      this.finishTurnInTransaction(
+        turnId,
+        "interrupted",
+        undefined,
+        "interrupted",
+        "The web service restarted before this turn completed.",
+        undefined,
+      );
     }
   }
 
@@ -1796,10 +2882,26 @@ export class WebStore {
     runtime?: { readonly model?: string; readonly effort?: string },
   ): WebThreadDetail {
     const turn = this.requireTurn(turnId);
-    const existing = this.requireMessage(turn.assistant_message_id);
     if (turn.status !== "running") {
       return this.requireThreadDetail(turn.thread_id);
     }
+    this.transaction(() => {
+      this.finishTurnInTransaction(turnId, status, finalText, errorCode, errorMessage, runtime);
+    });
+    return this.requireThreadDetail(turn.thread_id);
+  }
+
+  private finishTurnInTransaction(
+    turnId: string,
+    status: Exclude<WebMessageStatus, "running">,
+    finalText?: string,
+    errorCode?: string,
+    errorMessage?: string,
+    runtime?: { readonly model?: string; readonly effort?: string },
+  ): void {
+    const turn = this.requireTurn(turnId);
+    if (turn.status !== "running") return;
+    const existing = this.requireMessage(turn.assistant_message_id);
     const parts = [...existing.parts];
     if (finalText !== undefined && finalText.length > 0) reconcileFinalText(parts, finalText);
     if (errorMessage !== undefined) {
@@ -1808,13 +2910,12 @@ export class WebStore {
     const now = this.now();
     const thread = this.requireThread(turn.thread_id);
     const agent = this.getAgent(thread.sourceId);
-    this.transaction(() => {
-      this.database.prepare(`
+    this.database.prepare(`
         UPDATE turns SET status = ?, finished_at = ?, error_code = ?, error_message = ?,
           model = CASE WHEN ? IS NULL THEN model ELSE ? END,
           effort = CASE WHEN ? IS NULL THEN effort ELSE ? END
         WHERE id = ?
-      `).run(
+    `).run(
         status,
         now,
         errorCode ?? null,
@@ -1825,50 +2926,51 @@ export class WebStore {
         runtime?.effort ?? null,
         turnId,
       );
-      this.database.prepare("UPDATE messages SET parts_json = ?, status = ?, updated_at = ? WHERE id = ?")
-        .run(JSON.stringify(parts), status, now, existing.id);
-      this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
-        .run(now, turn.thread_id);
-      this.recordThreadRevision(turn.thread_id, `turn_${status}`, now);
-      const recentEnoughForRecoveredInterruption = status !== "interrupted"
-        || new Date(now).getTime() - new Date(existing.updatedAt).getTime() <= 60 * 60 * 1_000;
-      if (recentEnoughForRecoveredInterruption) {
-        const kind: WebPushEventKind = status === "complete"
-          ? "response.ready"
+    this.database.prepare("UPDATE messages SET parts_json = ?, status = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(parts), status, now, existing.id);
+    this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+      .run(now, turn.thread_id);
+    this.recordThreadRevision(turn.thread_id, `turn_${status}`, now);
+    const recentEnoughForRecoveredInterruption = status !== "interrupted"
+      || new Date(now).getTime() - new Date(existing.updatedAt).getTime() <= 60 * 60 * 1_000;
+    // Projected cron turns are agent-owned scheduler state. Restart recovery
+    // still settles the local projection, but only web-owned turns may emit a
+    // Web Push terminal notification from this service.
+    if (thread.trigger?.kind !== "cron" && recentEnoughForRecoveredInterruption) {
+      const kind: WebPushEventKind = status === "complete"
+        ? "response.ready"
+        : status === "cancelled"
+          ? "run.cancelled"
+          : status === "interrupted"
+            ? "run.interrupted"
+            : "run.failed";
+      const label = agent?.label ?? "mono-agent";
+      const body = status === "complete"
+        ? parts.filter((part): part is Extract<WebMessagePart, { type: "text" }> => part.type === "text")
+          .map((part) => part.text)
+          .join(" ")
+        : status === "cancelled"
+          ? "The run was cancelled."
+          : status === "interrupted"
+            ? "The run was interrupted when the web service stopped."
+            : errorMessage ?? "The run failed.";
+      this.enqueueWebPushEventInTransaction({
+        logicalKey: `turn:${turnId}:terminal`,
+        kind,
+        threadId: turn.thread_id,
+        sourceId: thread.sourceId,
+        title: status === "complete"
+          ? `${label} replied`
           : status === "cancelled"
-            ? "run.cancelled"
+            ? `${label} run cancelled`
             : status === "interrupted"
-              ? "run.interrupted"
-              : "run.failed";
-        const label = agent?.label ?? "mono-agent";
-        const body = status === "complete"
-          ? parts.filter((part): part is Extract<WebMessagePart, { type: "text" }> => part.type === "text")
-            .map((part) => part.text)
-            .join(" ")
-          : status === "cancelled"
-            ? "The run was cancelled."
-            : status === "interrupted"
-              ? "The run was interrupted when the web service stopped."
-              : errorMessage ?? "The run failed.";
-        this.enqueueWebPushEventInTransaction({
-          logicalKey: `turn:${turnId}:terminal`,
-          kind,
-          threadId: turn.thread_id,
-          sourceId: thread.sourceId,
-          title: status === "complete"
-            ? `${label} replied`
-            : status === "cancelled"
-              ? `${label} run cancelled`
-              : status === "interrupted"
-                ? `${label} run interrupted`
-                : `${label} run failed`,
-          body,
-          expiresAt: new Date(new Date(now).getTime() + (status === "complete" ? 24 : 1) * 60 * 60 * 1_000).toISOString(),
-          notBefore: new Date(new Date(now).getTime() + 3_000).toISOString(),
-        });
-      }
-    });
-    return this.requireThreadDetail(turn.thread_id);
+              ? `${label} run interrupted`
+              : `${label} run failed`,
+        body,
+        expiresAt: new Date(new Date(now).getTime() + (status === "complete" ? 24 : 1) * 60 * 60 * 1_000).toISOString(),
+        notBefore: new Date(new Date(now).getTime() + 3_000).toISOString(),
+      });
+    }
   }
 
   private mapThread(row: ThreadRow): WebThread {
@@ -1882,9 +2984,17 @@ export class WebStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       revision: row.revision,
-      ...(row.trigger_kind === "cron" || row.trigger_kind === "webhook"
-        ? { trigger: { kind: row.trigger_kind } }
-        : {}),
+      ...(row.trigger_kind === "cron"
+        ? {
+            trigger: {
+              kind: "cron" as const,
+              ...(row.cron_job_id === null ? {} : { jobId: row.cron_job_id }),
+              ...(row.cron_configured === null ? {} : { configured: row.cron_configured === 1 }),
+            },
+          }
+        : row.trigger_kind === "webhook"
+          ? { trigger: { kind: "webhook" as const } }
+          : {}),
       ...(preview === undefined ? {} : { lastMessagePreview: preview }),
       messageCount: row.message_count,
       runState,
@@ -1946,6 +3056,12 @@ export class WebStore {
       .replace(/\s+/gu, " ")
       .trim();
     return text.length === 0 ? undefined : text.slice(0, 160);
+  }
+
+  private cronChannel(sourceId: string, jobId: string): CronChannelRow | undefined {
+    return this.database.prepare(`
+      SELECT * FROM cron_channels WHERE source_id = ? AND job_id = ?
+    `).get(sourceId, jobId) as unknown as CronChannelRow | undefined;
   }
 
   private requireThread(id: string): WebThread {
@@ -2102,6 +3218,13 @@ export class WebStore {
     const row = this.database.prepare("SELECT revision FROM threads WHERE id = ?").get(threadId) as unknown as { revision: number };
     this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, ?, ?, ?)")
       .run(threadId, row.revision, event, now);
+    this.database.prepare(`
+      DELETE FROM revisions WHERE id IN (
+        SELECT id FROM revisions
+        WHERE entity_kind = 'thread' AND entity_id = ?
+        ORDER BY revision DESC, id DESC LIMIT -1 OFFSET ?
+      )
+    `).run(threadId, MAX_REVISIONS_PER_THREAD);
   }
 
   private setSetting(key: string, value: string): void {
@@ -2206,10 +3329,14 @@ function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
 function threadSelectSql(suffix: string): string {
   return `
     SELECT t.id, t.source_id, t.title, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
-           CASE WHEN a.status = 'online' OR a.status = 'degraded' THEN 1 ELSE 0 END AS can_send,
-           CASE WHEN (a.status = 'online' OR a.status = 'degraded') AND a.supports_attachments = 1 THEN 1 ELSE 0 END AS can_upload,
+           cc.job_id AS cron_job_id, cc.configured AS cron_configured,
+           CASE WHEN t.trigger_kind = 'cron' THEN 0
+                WHEN a.status = 'online' OR a.status = 'degraded' THEN 1 ELSE 0 END AS can_send,
+           CASE WHEN t.trigger_kind = 'cron' THEN 0
+                WHEN (a.status = 'online' OR a.status = 'degraded') AND a.supports_attachments = 1 THEN 1 ELSE 0 END AS can_upload,
            (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id) AS message_count
     FROM threads t JOIN agents a ON a.source_id = t.source_id
+    LEFT JOIN cron_channels cc ON cc.thread_id = t.id
     ${suffix}
   `;
 }
@@ -2240,12 +3367,321 @@ function notificationThreadId(sourceId: string, deliveryKey: string): string {
   return `notification-${digest}`;
 }
 
+function cronChannelThreadId(sourceId: string, jobId: string): string {
+  return `cron-${stableDigest(sourceId, jobId)}`;
+}
+
+function cronConsoleConversationId(sourceId: string, jobId: string): string {
+  return `web-cron:${stableDigest(sourceId, jobId)}`;
+}
+
+function cronEntityId(kind: "turn" | "message", sourceId: string, jobId: string, runId: string): string {
+  return `cron-${kind}-${stableDigest(sourceId, jobId, runId)}`;
+}
+
+function stableDigest(...values: readonly string[]): string {
+  const hash = createHash("sha256");
+  for (const value of values) hash.update(value).update("\0");
+  return hash.digest("hex").slice(0, 32);
+}
+
 function notificationPayloadSha256(kind: WebNotificationTriggerKind, text: string): string {
   return createHash("sha256")
     .update(kind)
     .update("\0")
     .update(text)
     .digest("hex");
+}
+
+export function notificationPushLogicalKey(sourceId: string, deliveryKey: string): string {
+  return `web-new:${stableDigest(sourceId, deliveryKey)}`;
+}
+
+function legacyCronDeliveryIdentity(deliveryKey: string): { readonly jobId: string; readonly runId: string } | undefined {
+  // Parse from the anchored terminal suffix and fixed-width canonical UTC
+  // timestamp. The greedy job segment may therefore contain legal literal
+  // colons while malformed prefixes/suffixes remain unadoptable.
+  const isoTimestamp = "(\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z)";
+  const success = new RegExp(`^cron:(.+):${isoTimestamp}:success$`, "u").exec(deliveryKey);
+  const failure = new RegExp(`^cron:(.+):${isoTimestamp}:failure:[^:]+$`, "u").exec(deliveryKey);
+  const match = success ?? failure;
+  if (match === null) return undefined;
+  const encodedJobId = match[1];
+  const middle = match[2];
+  if (encodedJobId === undefined || middle === undefined) return undefined;
+  const timestamp = Date.parse(middle);
+  if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== middle) return undefined;
+  try {
+    const jobId = decodeURIComponent(encodedJobId);
+    if (jobId.length === 0) return undefined;
+    return { jobId, runId: `cron:${encodedJobId}:${middle}` };
+  } catch {
+    return undefined;
+  }
+}
+
+function compareCronRuns(left: WebCronRun, right: WebCronRun): number {
+  return left.orderedAt.localeCompare(right.orderedAt)
+    || left.sequence - right.sequence
+    || left.runId.localeCompare(right.runId);
+}
+
+function cronMessageStatus(status: WebCronRun["status"]): WebMessageStatus {
+  if (status === "running") return "running";
+  if (status === "failed") return "failed";
+  if (status === "cancelled") return "cancelled";
+  return "complete";
+}
+
+function cronRunParts(
+  run: WebCronRun,
+  prior: readonly WebMessagePart[],
+  conversationId: string,
+): WebMessagePart[] {
+  const silent = run.status === "succeeded" && classifyNotifySuppression(run.text) !== "none";
+  const priorCron = prior.find(
+    (part): part is Extract<WebMessagePart, { type: "telemetry" }> =>
+      part.type === "telemetry" && part.event === "cron_run",
+  );
+  const priorCronData = record(priorCron?.data);
+  const priorActivityLoaded = priorCronData?.activityLoaded === true;
+  const priorLoadedEventCount = Number.isSafeInteger(priorCronData?.loadedEventCount)
+    ? Number(priorCronData?.loadedEventCount)
+    : undefined;
+  const priorActivityEventCount = Number.isSafeInteger(priorCronData?.activityEventCount)
+    ? Number(priorCronData?.activityEventCount)
+    : priorLoadedEventCount;
+  const activityLoaded = run.projection === "detail"
+    || (priorActivityLoaded && priorActivityEventCount === run.eventCount);
+  const activityStale = run.projection === "summary"
+    && priorActivityLoaded
+    && priorActivityEventCount !== run.eventCount;
+  const eventsTruncated = run.projection === "detail"
+    ? run.eventsTruncated === true
+    : run.eventsTruncated === true || (priorActivityLoaded && priorCronData?.eventsTruncated === true);
+  // Reconciliation updates one durable message in place. Strip the prior
+  // synthetic state/identity before rebuilding it, while retaining a genuine
+  // notification text that arrived before the operator run projection.
+  const retained = prior.filter((part) =>
+    !(part.type === "telemetry" && part.event === "cron_run")
+    && !(part.type === "text" && isSyntheticCronStateText(part.text)));
+  const parts: WebMessagePart[] = run.projection === "summary"
+    ? [...retained]
+    : retained.filter((part) => part.type === "text" || part.type === "error");
+  for (const event of run.projection === "detail" ? run.events : []) applyEvent(parts, event);
+  const preserveLoadedText = run.projection === "summary"
+    && run.fieldsTruncated?.includes("text") === true
+    && priorActivityLoaded;
+  const preserveLoadedError = run.projection === "summary"
+    && priorActivityLoaded
+    && (run.fieldsTruncated?.includes("error") === true
+      || run.fieldsTruncated?.includes("failureKind") === true);
+  if (!silent && !preserveLoadedText && run.text !== undefined && run.text.length > 0) {
+    reconcileFinalText(parts, run.text);
+  }
+  const hasText = parts.some((part) => part.type === "text" && part.text.trim().length > 0);
+  if (!hasText) {
+    const stateText = run.status === "succeeded"
+      ? "Completed silently (no message was reported)."
+      : run.status === "skipped_overlap"
+        ? run.blockedByTrigger === "manual"
+          ? "Scheduled firing skipped because an operator-started manual run was still in flight."
+          : "Firing skipped because the previous run was still in flight."
+        : run.status === "queued"
+          ? `Queued behind an active run${run.queueDepth === undefined ? "." : ` (position ${String(run.queueDepth)}).`}`
+          : run.status === "dropped"
+            ? "Dropped because the pending-run queue was full."
+            : run.status === "cancelled"
+              ? "Run cancelled."
+              : run.status === "failed"
+                ? "Run failed."
+                : run.status === "admitted"
+                  ? "Run admitted and waiting to start."
+                  : "Run is in progress.";
+    parts.push({ type: "text", text: stateText });
+  }
+  if (!preserveLoadedError
+    && run.error !== undefined
+    && !parts.some((part) => part.type === "error" && part.message === run.error)) {
+    parts.push({
+      type: "error",
+      ...(run.failureKind === undefined ? {} : { code: run.failureKind }),
+      message: run.error,
+    });
+  }
+  parts.push({
+    type: "telemetry",
+    event: "cron_run",
+    data: {
+      runId: run.runId,
+      conversationId,
+      scheduledAt: run.scheduledAt,
+      orderedAt: run.orderedAt,
+      sequence: run.sequence,
+      trigger: run.trigger,
+      status: run.status,
+      ...(silent ? { silent: true } : {}),
+      ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }),
+      ...(run.completedAt === undefined ? {} : { completedAt: run.completedAt }),
+      ...(run.artifactRunId === undefined ? {} : { artifactRunId: run.artifactRunId }),
+      ...(run.blockedByRunId === undefined ? {} : { blockedByRunId: run.blockedByRunId }),
+      eventCount: run.eventCount,
+      ...(activityLoaded
+        ? {
+            activityLoaded: true,
+            activityEventCount: run.eventCount,
+            loadedEventCount: run.projection === "detail" ? run.eventsIncluded : priorLoadedEventCount ?? run.eventCount,
+          }
+        : {}),
+      ...(activityStale ? { activityStale: true, loadedEventCount: priorLoadedEventCount } : {}),
+      ...(eventsTruncated ? { eventsTruncated: true } : {}),
+      ...(run.fieldsTruncated === undefined ? {} : { fieldsTruncated: run.fieldsTruncated }),
+    },
+  });
+  return parts;
+}
+
+function cronRunSummary(run: WebCronRun): WebCronRunSummary {
+  if (run.projection === "summary") return run;
+  const { events: _events, eventsIncluded: _eventsIncluded, ...base } = run;
+  return { ...base, projection: "summary" };
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function isSyntheticCronStateText(text: string): boolean {
+  return text === "Completed silently (no message was reported)."
+    || text === "Scheduled firing skipped because an operator-started manual run was still in flight."
+    || text === "Firing skipped because the previous run was still in flight."
+    || text.startsWith("Queued behind an active run")
+    || text === "Dropped because the pending-run queue was full."
+    || text === "Run cancelled."
+    || text === "Run failed."
+    || text === "Run admitted and waiting to start."
+    || text === "Run is in progress.";
+}
+
+function parseStoredCronJob(serialized: string): Omit<WebCronJob, "threadId"> {
+  let value: unknown;
+  try {
+    value = JSON.parse(serialized) as unknown;
+  } catch {
+    throw new WebConsoleError("storage_corrupt", "Stored cron job metadata is invalid JSON.", 500);
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new WebConsoleError("storage_corrupt", "Stored cron job metadata is invalid.", 500);
+  }
+  const job = value as Partial<Omit<WebCronJob, "threadId">>;
+  if (typeof job.jobId !== "string"
+    || typeof job.conversationId !== "string"
+    || typeof job.configured !== "boolean"
+    || typeof job.declaredEnabled !== "boolean"
+    || typeof job.effectiveEnabled !== "boolean"
+    || !["healthy", "warning", "unhealthy", "disabled", "unknown"].includes(String(job.health))) {
+    throw new WebConsoleError("storage_corrupt", "Stored cron job metadata is invalid.", 500);
+  }
+  return job as Omit<WebCronJob, "threadId">;
+}
+
+function parseStoredCronRun(serialized: string): WebCronRunSummary {
+  let value: unknown;
+  try {
+    value = JSON.parse(serialized) as unknown;
+  } catch {
+    throw new WebConsoleError("storage_corrupt", "Stored cron run metadata is invalid JSON.", 500);
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new WebConsoleError("storage_corrupt", "Stored cron run metadata is invalid.", 500);
+  }
+  const raw = value as Record<string, unknown>;
+  const legacyEvents = Array.isArray(raw.events) ? raw.events : undefined;
+  const { events: _legacyEvents, ...legacyBase } = raw;
+  const run = (raw.projection === undefined
+    ? {
+        ...legacyBase,
+        projection: "summary",
+        eventCount: legacyEvents?.length ?? 0,
+        ...(legacyEvents === undefined ? {} : { eventsTruncated: true }),
+      }
+    : raw) as Partial<WebCronRunSummary>;
+  if (run.projection !== "summary"
+    || typeof run.runId !== "string"
+    || typeof run.jobId !== "string"
+    || typeof run.scheduledAt !== "string"
+    || typeof run.orderedAt !== "string"
+    || !Number.isSafeInteger(run.sequence)
+    || (run.trigger !== "scheduled" && run.trigger !== "manual")
+    || !["admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "dropped"]
+      .includes(String(run.status))
+    || !Number.isSafeInteger(run.eventCount)
+    || Number(run.eventCount) < 0) {
+    throw new WebConsoleError("storage_corrupt", "Stored cron run metadata is invalid.", 500);
+  }
+  return run as WebCronRunSummary;
+}
+
+function messageRoleRankSql(messageAlias: string, turnAlias: string): string {
+  return `CASE WHEN ${messageAlias}.turn_id IS NOT NULL AND ${messageAlias}.role = 'user' THEN 0
+    WHEN ${messageAlias}.turn_id IS NOT NULL AND ${messageAlias}.role = 'system' THEN 1
+    WHEN ${messageAlias}.turn_id IS NOT NULL THEN 2 ELSE 3 END`;
+}
+
+function boundedPageLimit(value: number | undefined, maximum: number): number {
+  const normalized = value ?? maximum;
+  if (!Number.isSafeInteger(normalized) || normalized < 1 || normalized > maximum) {
+    throw new WebConsoleError("invalid_page", `limit must be 1-${String(maximum)}.`, 400);
+  }
+  return normalized;
+}
+
+function encodeCursor(value: Readonly<Record<string, string | number>>): string {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
+function decodeCursor(value: string): Record<string, unknown> {
+  if (value.length === 0 || value.length > 4_096 || !/^[A-Za-z0-9_-]+$/u.test(value)) {
+    throw new WebConsoleError("invalid_page", "Pagination cursor is invalid.", 400);
+  }
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid");
+    return parsed as Record<string, unknown>;
+  } catch {
+    throw new WebConsoleError("invalid_page", "Pagination cursor is invalid.", 400);
+  }
+}
+
+function decodeThreadCursor(value: string): { readonly updatedAt: string; readonly id: string } {
+  const cursor = decodeCursor(value);
+  if (typeof cursor.updatedAt !== "string" || typeof cursor.id !== "string") {
+    throw new WebConsoleError("invalid_page", "Pagination cursor is invalid.", 400);
+  }
+  return { updatedAt: cursor.updatedAt, id: cursor.id };
+}
+
+function decodeMessageCursor(value: string): {
+  readonly orderedAt: string;
+  readonly roleRank: number;
+  readonly createdAt: string;
+  readonly rowid: number;
+} {
+  const cursor = decodeCursor(value);
+  if (typeof cursor.orderedAt !== "string"
+    || !Number.isSafeInteger(cursor.roleRank)
+    || typeof cursor.createdAt !== "string"
+    || !Number.isSafeInteger(cursor.rowid)) {
+    throw new WebConsoleError("invalid_page", "Pagination cursor is invalid.", 400);
+  }
+  return {
+    orderedAt: cursor.orderedAt,
+    roleRank: cursor.roleRank as number,
+    createdAt: cursor.createdAt,
+    rowid: cursor.rowid as number,
+  };
 }
 
 function mapAgent(row: AgentRow): WebAgentSummary {
@@ -2264,6 +3700,10 @@ function mapAgent(row: AgentRow): WebAgentSummary {
     ...(row.default_effort === null ? {} : { defaultEffort: row.default_effort }),
     ...(efforts === undefined ? {} : { efforts }),
     ...(modelOptions === undefined ? {} : { modelOptions }),
+    ...(row.cron_read === 1
+      ? { cron: { read: true, actions: row.cron_actions === 1 } }
+      : {}),
+    ...(row.ask_by_id === 1 ? { supportsAskById: true } : {}),
     updatedAt: row.updated_at,
   };
 }

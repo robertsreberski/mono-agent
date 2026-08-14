@@ -60,9 +60,13 @@ Keep bearer values out of source config when possible. Set
 ### Conversational endpoints
 
 - `GET {basePath}/v1/info` returns the wire `schema`, process id, and attachment
-  capability. `capabilities.liveInput`, `capabilities.historyAppend`, and
-  `capabilities.askUser` are advertised additively when their routes are
-  supported. The response also
+  capability. `capabilities.liveInput`, `capabilities.historyAppend`,
+  `capabilities.askUser`, `capabilities.askById`, and `capabilities.cron` are
+  advertised additively when their routes are supported. `capabilities.cron`
+  reports `status: "ready" | "degraded"` and separates read support from
+  authenticated/agent-enabled actions. The wire
+  schema remains `1`; clients must feature-detect rather than reject an older
+  agent. The response also
   includes `label`, default `model`, default `effort`, candidate `models`, and
   per-model `modelOptions` when the host supplies them. A host may additionally
   expose a bounded `skills` snapshot with ready/error state and per-item
@@ -77,6 +81,10 @@ Keep bearer values out of source config when possible. Set
   aborts the in-flight turn.
 - `GET {basePath}/v1/conversations/:id/ask` - the current pending `AskUser`
   snapshot, or `{ ask: null }`.
+- `GET {basePath}/v1/interactions/:interactionId` - an exact pending or bounded
+  terminal `AskUser` snapshot when the host supplies optional `getAsk`; otherwise
+  the route is unsupported. This does not change the asking tool's
+  single-consumer long-poll contract.
 - `POST {basePath}/v1/conversations/:id/ask` - submit the snapshot's
   `{ interactionId, answers }` with one or more consecutive complete answers;
   the same turn resumes after all questions are answered.
@@ -89,6 +97,26 @@ Keep bearer values out of source config when possible. Set
 - `POST {basePath}/v1/conversations/:id/verbatim` - authenticated
   `{ text, idempotencyKey }` durable-history append with no model turn (200; 501
   when the responder has no `deliverVerbatim`).
+- `GET {basePath}/v1/cron` and
+  `GET {basePath}/v1/cron/jobs/:jobId/runs?limit=&before=` - agent-authoritative
+  job state and total-order keyset run history.
+- `GET {basePath}/v1/cron/config-view` - the host's redacted cron config view;
+  clients must not read the config file themselves.
+- `POST {basePath}/v1/cron/jobs/:jobId/run` and
+  `POST {basePath}/v1/cron/jobs/:jobId/effective-enabled` - API-key-protected,
+  idempotent actions with an agent-issued confirmation challenge. The host owns
+  persistence, audit, overlap, and watchdog semantics.
+
+Cron reads follow the operator endpoint's existing compatibility posture: when
+no operator API key is configured they remain keyless, and when a key is
+configured they require the same bearer as every other operator route. Cron
+mutations are stricter: they are unavailable without a configured operator API
+key, explicit host opt-in, and an agent-issued confirmation. The config-view
+route exposes only the host's existing source-annotated cron field registry,
+including the already-visible job prompt; it does not expose arbitrary config
+keys, credentials, or the console host's copy of the config file. If the cron
+overview itself fails, `/v1/info` remains a `200` liveness response and advertises
+cron as degraded with reads and actions unavailable.
 
 Event NDJSON lines are capped at 256 KiB. Oversized thought and tool payloads
 are reduced and remeasured; an event that still cannot fit becomes a bounded
@@ -100,10 +128,10 @@ are reduced and remeasured; an event that still cannot fit becomes a bounded
 
 1. The host passes an `AgentResponder` to `startTuiAdapter` and publishes the
    returned conversational base URL through its trace-source metadata.
-2. A TUI or web client reads `/v1/info` (including additive live skill metadata
-   when provided), submits a turn, consumes structured NDJSON frames until
-   `finish` or `error`, and may offer live input while that turn is active;
-   disconnecting the turn stream aborts the request.
+2. A TUI or web client reads `/v1/info` (including additive live skill, exact
+   ask, and cron capabilities when provided), submits a turn, consumes
+   structured NDJSON frames until `finish` or `error`, and may offer live input
+   while that turn is active; disconnecting the turn stream aborts the request.
 
 ### Package structure
 
@@ -131,10 +159,29 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/operator-adapter`**
 
 ```text
+CronOperatorActionInput
+CronOperatorConfirmation
+CronOperatorError
+CronOperatorErrorCode
+CronOperatorHealth
+CronOperatorJob
+CronOperatorMutationResult
+CronOperatorOverview
+CronOperatorRun
+CronOperatorRunBase
+CronOperatorRunDetail
+CronOperatorRunPage
+CronOperatorRunStatus
+CronOperatorRunSummary
+CronOperatorRunTrigger
+CronOperatorRunTruncatedField
+CronOperatorService
 DEFAULT_TUI_BASE_PATH
 DEFAULT_TUI_HOST
 DEFAULT_TUI_PORT
 LoadTuiAdapterConfigInput
+MAX_CRON_OPERATOR_RESPONSE_BYTES
+MAX_CRON_OPERATOR_RUN_PAGE
 MAX_FRAME_BYTES
 RedactedTuiAdapterConfig
 RequestToolEnvironmentConfig

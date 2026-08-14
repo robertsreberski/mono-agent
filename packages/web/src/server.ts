@@ -143,6 +143,73 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.get("/api/v1/agents/:id/cron", (req, res, next) => {
+    void trackOperation(service.cronOverview(pathParam(req.params.id)), activeOperations)
+      .then((overview) => res.status(200).json(overview))
+      .catch(next);
+  });
+
+  app.get("/api/v1/agents/:id/cron/config-view", (req, res, next) => {
+    void trackOperation(service.cronConfigView(pathParam(req.params.id)), activeOperations)
+      .then((configView) => res.status(200).json({ configView }))
+      .catch(next);
+  });
+
+  app.get("/api/v1/agents/:id/cron/jobs/:jobId/runs", (req, res, next) => {
+    try {
+      const limit = boundedQueryLimit(req.query.limit, 100, 50);
+      const before = optionalQueryString(req.query.before, 4_096);
+      void trackOperation(service.cronRuns(
+        pathParam(req.params.id),
+        pathParam(req.params.jobId),
+        { limit, ...(before === undefined ? {} : { before }) },
+      ), activeOperations).then((page) => res.status(200).json(page)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/agents/:id/cron/jobs/:jobId/runs/:runId", (req, res, next) => {
+    void trackOperation(service.cronRun(
+      pathParam(req.params.id),
+      pathParam(req.params.jobId),
+      pathParam(req.params.runId),
+    ), activeOperations).then((message) => res.status(200).json({ message })).catch(next);
+  });
+
+  app.post("/api/v1/agents/:id/cron/jobs/:jobId/run", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const action = parseCronAction(req.body);
+      void trackOperation(service.cronRunNow(
+        pathParam(req.params.id),
+        pathParam(req.params.jobId),
+        action,
+      ), activeOperations).then((result) => res.status(result.kind === "confirmation_required" ? 428 : 200).json(result)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/agents/:id/cron/jobs/:jobId/effective-enabled", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const body = requireRecord(req.body);
+      if (typeof body.enabled !== "boolean") {
+        throw new WebConsoleError("invalid_cron_action", "enabled must be a boolean.", 400);
+      }
+      const action = parseCronAction(body);
+      void trackOperation(service.cronSetEffectiveEnabled(
+        pathParam(req.params.id),
+        pathParam(req.params.jobId),
+        body.enabled,
+        action,
+      ), activeOperations).then((result) => res.status(result.kind === "confirmation_required" ? 428 : 200).json(result)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/v1/threads", (req, res, next) => {
     try {
       const input = parseCreateThread(req.body);
@@ -152,9 +219,41 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.get("/api/v1/threads", (req, res, next) => {
+    try {
+      const sourceId = requiredQueryString(req.query.sourceId, "sourceId", 512);
+      const archived = req.query.archived === "true"
+        ? true
+        : req.query.archived === "false"
+          ? false
+          : (() => { throw new WebConsoleError("invalid_page", "archived must be true or false.", 400); })();
+      const before = optionalQueryString(req.query.before, 4_096);
+      res.status(200).json(service.threadsPage({
+        sourceId,
+        archived,
+        limit: boundedQueryLimit(req.query.limit, 200, 200),
+        ...(before === undefined ? {} : { before }),
+      }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/v1/threads/:id", (req, res, next) => {
     try {
       res.status(200).json(service.thread(pathParam(req.params.id)));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/threads/:id/messages", (req, res, next) => {
+    try {
+      const before = optionalQueryString(req.query.before, 4_096);
+      res.status(200).json(service.messagePage(pathParam(req.params.id), {
+        limit: boundedQueryLimit(req.query.limit, 100, 100),
+        ...(before === undefined ? {} : { before }),
+      }));
     } catch (error) {
       next(error);
     }
@@ -210,6 +309,13 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     void trackOperation(service.pendingAsk(pathParam(req.params.id)), activeOperations)
       .then((ask) => res.status(200).json({ ask: ask ?? null }))
       .catch(next);
+  });
+
+  app.get("/api/v1/threads/:id/ask/:interactionId", (req, res, next) => {
+    void trackOperation(service.ask(
+      pathParam(req.params.id),
+      pathParam(req.params.interactionId),
+    ), activeOperations).then((ask) => res.status(200).json({ ask: ask ?? null })).catch(next);
   });
 
   app.post("/api/v1/threads/:id/ask", (req, res, next) => {
@@ -848,6 +954,43 @@ function sameOriginRead(req: Request): void {
 function requireRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw invalidBody("JSON body must be an object.");
   return value as Record<string, unknown>;
+}
+
+function requiredQueryString(value: unknown, field: string, max: number): string {
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > max) {
+    throw new WebConsoleError("invalid_page", `${field} is required.`, 400);
+  }
+  return value;
+}
+
+function optionalQueryString(value: unknown, max: number): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.length === 0 || value.length > max) {
+    throw new WebConsoleError("invalid_page", "Pagination cursor is invalid.", 400);
+  }
+  return value;
+}
+
+function boundedQueryLimit(value: unknown, maximum: number, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "string" || !/^\d+$/u.test(value)) {
+    throw new WebConsoleError("invalid_page", "Pagination limit is invalid.", 400);
+  }
+  const limit = Number(value);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > maximum) {
+    throw new WebConsoleError("invalid_page", `Pagination limit must be 1-${String(maximum)}.`, 400);
+  }
+  return limit;
+}
+
+function parseCronAction(value: unknown): {
+  readonly idempotencyKey: string;
+  readonly confirmationToken?: string;
+} {
+  const body = requireRecord(value);
+  const idempotencyKey = requireString(body.idempotencyKey, "idempotencyKey", 256);
+  const confirmationToken = optionalString(body.confirmationToken, "confirmationToken", 1_024);
+  return { idempotencyKey, ...(confirmationToken === undefined ? {} : { confirmationToken }) };
 }
 
 function requireString(value: unknown, field: string, max: number, allowEmpty = false): string {

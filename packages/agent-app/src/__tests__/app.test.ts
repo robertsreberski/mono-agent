@@ -677,6 +677,43 @@ describe("startMonoAgentApp", () => {
     await app.stop();
   });
 
+  it("reapplies replacement channel summaries through status and discovery", async () => {
+    await writeConfig(baseConfig());
+    let publishSummary: ((summary: Readonly<Record<string, unknown>>) => void) | undefined;
+    const driver: ChannelDriver = {
+      id: "summary-probe",
+      label: "Summary probe",
+      loadConfig: async () => ({ enabled: true }),
+      isConfigError: () => false,
+      start: async (input) => {
+        publishSummary = input.onSummaryChanged;
+        return { summary: { jobs: 1, configuredJobs: 2 }, stop: async () => undefined };
+      },
+    };
+    const runtime = { run: async (): Promise<RuntimeResult> => ({ text: "ok" }) };
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver], runtime });
+
+    try {
+      expect(app.channelStatus("summary-probe")).toEqual({
+        kind: "running",
+        summary: { jobs: 1, configuredJobs: 2 },
+      });
+      publishSummary?.({ jobs: 0, configuredJobs: 2 });
+      expect(app.channelStatus("summary-probe")).toEqual({
+        kind: "running",
+        summary: { jobs: 0, configuredJobs: 2 },
+      });
+      await vi.waitFor(async () => {
+        const source = (await listTraceSources({ registryDir: join(dir, "trace-sources") })).sources[0];
+        expect(source?.metadata?.channels).toMatchObject({
+          "summary-probe": { kind: "running", jobs: 0, configuredJobs: 2 },
+        });
+      });
+    } finally {
+      await app.stop();
+    }
+  });
+
   it("publishes durable startup proof only after lifecycle completion and preserves it across later refreshes", async () => {
     await writeConfig(baseConfig());
     let releaseStart!: () => void;
