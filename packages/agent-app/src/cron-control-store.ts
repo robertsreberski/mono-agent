@@ -954,17 +954,24 @@ function ensureControlSchemaColumns(database: DatabaseSync): void {
 }
 
 function reconcileInterruptedRuns(database: DatabaseSync, completedAt: string): void {
-  const interrupted = database.prepare(`
-    SELECT run_id FROM cron_runs WHERE status IN ('admitted', 'running', 'queued')
-  `).all() as Array<{ run_id: string }>;
-  database.prepare(`
-    UPDATE cron_runs SET status = 'cancelled', completed_at = ?,
-      error = COALESCE(error, 'Agent restarted before this cron firing completed.')
-    WHERE status IN ('admitted', 'running', 'queued')
-  `).run(completedAt);
-  for (const { run_id: runId } of interrupted) {
-    const row = runRow(database, runId);
-    if (row !== undefined) updateRunNowReceipt(database, row);
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const interrupted = database.prepare(`
+      SELECT run_id FROM cron_runs WHERE status IN ('admitted', 'running', 'queued')
+    `).all() as Array<{ run_id: string }>;
+    database.prepare(`
+      UPDATE cron_runs SET status = 'cancelled', completed_at = ?,
+        error = COALESCE(error, 'Agent restarted before this cron firing completed.')
+      WHERE status IN ('admitted', 'running', 'queued')
+    `).run(completedAt);
+    for (const { run_id: runId } of interrupted) {
+      const row = runRow(database, runId);
+      if (row !== undefined) updateRunNowReceipt(database, row);
+    }
+    database.exec("COMMIT");
+  } catch (error) {
+    if (database.isTransaction) database.exec("ROLLBACK");
+    throw error;
   }
 }
 
@@ -1334,7 +1341,8 @@ function applyRetention(database: DatabaseSync, date: Date): void {
   const idempotencyCutoff = new Date(date.getTime() - IDEMPOTENCY_RETENTION_MS).toISOString();
   database.prepare(`
     DELETE FROM action_idempotency WHERE created_at < ? OR idempotency_key IN (
-      SELECT idempotency_key FROM action_idempotency ORDER BY created_at DESC LIMIT -1 OFFSET ?
+      SELECT idempotency_key FROM action_idempotency
+      ORDER BY created_at DESC, idempotency_key DESC LIMIT -1 OFFSET ?
     )
   `).run(idempotencyCutoff, MAX_IDEMPOTENCY_RECORDS);
   const auditCutoff = new Date(date.getTime() - AUDIT_RETENTION_MS).toISOString();

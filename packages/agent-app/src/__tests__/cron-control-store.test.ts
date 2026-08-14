@@ -485,7 +485,9 @@ describe("cron control store", () => {
     for (let index = 0; index < 101; index += 1) {
       const at = new Date(Date.parse("2026-08-14T10:00:00.000Z") + index * 1_000).toISOString();
       const firing = store.allocateFiring({ jobId: "digest", scheduledAt: at, observedAt: at, trigger: "scheduled" });
-      for (let position = 0; position < 30; position += 1) store.appendEvent(firing, event);
+      if (index === 100) {
+        for (let position = 0; position < 30; position += 1) store.appendEvent(firing, event);
+      }
       store.recordResult(succeeded(firing, `Result ${String(index)}`));
     }
 
@@ -573,6 +575,52 @@ describe("cron control store", () => {
     expect(store.runs("digest", 500).runs).toHaveLength(500);
   });
 
+  it("retains same-timestamp idempotency receipts deterministically by key", async () => {
+    const timestamp = "2026-08-14T10:00:00.000Z";
+    const { store } = await fixture(() => new Date(timestamp));
+    store.syncConfiguredJobs(["digest"]);
+
+    const database = new DatabaseSync(store.paths.database);
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const insert = database.prepare(`
+        INSERT INTO action_idempotency (
+          idempotency_key, action, job_id, request_hash, response_json, target_run_id, created_at
+        ) VALUES (?, 'set_enabled', 'digest', 'fixture-hash', '{"enabled":true}', NULL, ?)
+      `);
+      for (let index = 0; index < 2_048; index += 1) {
+        insert.run(`receipt-${String(index).padStart(4, "0")}`, timestamp);
+      }
+      database.exec("COMMIT");
+    } catch (error) {
+      if (database.isTransaction) database.exec("ROLLBACK");
+      throw error;
+    } finally {
+      database.close();
+    }
+
+    store.setEnabledAction({
+      jobId: "digest",
+      enabled: true,
+      idempotencyKey: "zz-current",
+      requestHash: cronActionRequestHash({ action: "set_enabled", jobId: "digest", enabled: true }),
+    });
+
+    const retained = new DatabaseSync(store.paths.database, { readOnly: true });
+    try {
+      const keys = (retained.prepare(`
+        SELECT idempotency_key FROM action_idempotency ORDER BY idempotency_key
+      `).all() as Array<{ idempotency_key: string }>).map((row) => row.idempotency_key);
+      expect(keys).toHaveLength(2_048);
+      expect(keys).not.toContain("receipt-0000");
+      expect(keys).toContain("receipt-0001");
+      expect(keys).toContain("receipt-2047");
+      expect(keys).toContain("zz-current");
+    } finally {
+      retained.close();
+    }
+  });
+
   it("reconciles every admitted, running, or queued firing as cancelled after restart", async () => {
     const { cwd, store } = await fixture();
     const admitted = store.allocateFiring({
@@ -607,5 +655,71 @@ describe("cron control store", () => {
         error: expect.stringContaining("restarted"),
       });
     }
+  });
+
+  it("rolls back interrupted-run reconciliation when its receipt update fails, then replays deterministically", async () => {
+    const { cwd, store } = await fixture();
+    const requestHash = cronActionRequestHash({ action: "run_now", jobId: "digest" });
+    const manual = store.runNowAction({
+      jobId: "digest",
+      idempotencyKey: "manual-reconcile",
+      requestHash,
+      observedAt: "2026-08-14T10:00:00.000Z",
+    });
+    await store.close();
+    stores.splice(stores.indexOf(store), 1);
+
+    const injector = new DatabaseSync(store.paths.database);
+    try {
+      injector.exec(`
+        CREATE TRIGGER fail_reconciliation_receipt
+        BEFORE UPDATE OF response_json ON action_idempotency
+        WHEN OLD.idempotency_key = 'manual-reconcile'
+        BEGIN
+          SELECT RAISE(ABORT, 'injected receipt update failure');
+        END;
+      `);
+    } finally {
+      injector.close();
+    }
+
+    await expect(openCronControlStore(cwd, {
+      now: () => new Date("2026-08-14T11:00:00.000Z"),
+    })).rejects.toThrow(/injected receipt update failure/iu);
+
+    const afterFailure = new DatabaseSync(store.paths.database);
+    try {
+      const run = afterFailure.prepare("SELECT status FROM cron_runs WHERE run_id = ?")
+        .get(manual.firing.runId) as { status: string };
+      const receipt = afterFailure.prepare(`
+        SELECT response_json FROM action_idempotency WHERE idempotency_key = 'manual-reconcile'
+      `).get() as { response_json: string };
+      expect(run.status).toBe("admitted");
+      expect(JSON.parse(receipt.response_json)).toMatchObject({ run: { status: "admitted" } });
+      afterFailure.exec("DROP TRIGGER fail_reconciliation_receipt");
+    } finally {
+      afterFailure.close();
+    }
+
+    const reopened = await openCronControlStore(cwd, {
+      now: () => new Date("2026-08-14T11:00:00.000Z"),
+    });
+    stores.push(reopened);
+    expect(reopened.getRun(manual.firing.runId)).toMatchObject({
+      status: "cancelled",
+      completedAt: "2026-08-14T11:00:00.000Z",
+    });
+    expect(reopened.replayRunNowAction({
+      jobId: "digest",
+      idempotencyKey: "manual-reconcile",
+      requestHash,
+    })).toMatchObject({ runId: manual.firing.runId, status: "cancelled" });
+    expect(reopened.runNowAction({
+      jobId: "digest",
+      idempotencyKey: "manual-reconcile",
+      requestHash,
+      observedAt: "2026-08-14T12:00:00.000Z",
+    })).toMatchObject({ replayed: true, firing: { runId: manual.firing.runId } });
+    expect(reopened.runs("digest", 10).runs).toHaveLength(1);
   });
 });

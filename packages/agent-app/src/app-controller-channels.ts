@@ -32,6 +32,7 @@ export interface ChannelsControllerPort {
   readonly driversById: ReadonlyMap<ChannelId, ChannelDriver>;
   readonly statuses: Map<ChannelId, ChannelStatus>;
   readonly running: Map<ChannelId, RunningChannel>;
+  readonly channelStartGenerations: Map<ChannelId, symbol>;
   readonly stopped: boolean;
   readonly traceabilityStatusValue: TraceabilityStatus;
   setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
@@ -55,6 +56,9 @@ export interface ChannelsControllerPort {
 }
 
 export async function startChannel(controller: ChannelsControllerPort, driver: ChannelDriver, reason: string): Promise<ChannelStatus> {
+  const generation = Symbol(driver.id);
+  controller.channelStartGenerations.set(driver.id, generation);
+  const isCurrentGeneration = (): boolean => controller.channelStartGenerations.get(driver.id) === generation;
   const input: MonoAgentAppConfigInput = { env: controller.env, cwd: controller.cwd, configPath: controller.configReadPath };
 
   let config: unknown;
@@ -153,6 +157,9 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       // for the restarted transport to deliver into, and a later stop/reload still
       // finds the entry and disposes it exactly once.
       onDegraded: (reason) => {
+        if (!isCurrentGeneration()) {
+          return;
+        }
         if (controller.statuses.get(driver.id)?.kind === "degraded") {
           return;
         }
@@ -178,6 +185,9 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
       // observer reads one coherent transition; discovery is then refreshed
       // from that controller-owned snapshot.
       onSummaryChanged: (summary) => {
+        if (!isCurrentGeneration()) {
+          return;
+        }
         const entry = controller.running.get(driver.id);
         if (entry === undefined) {
           return;
@@ -219,6 +229,7 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
 }
 
 export async function stopChannel(controller: ChannelsControllerPort, id: ChannelId, reason: string): Promise<void> {
+  controller.channelStartGenerations.delete(id);
   const driver = controller.driversById.get(id);
   const runningChannel = controller.running.get(id);
   if (driver === undefined || runningChannel === undefined) {

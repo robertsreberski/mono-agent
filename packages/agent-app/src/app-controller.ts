@@ -248,6 +248,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   readonly activeRuntimes: MonoRuntimeLike[] = [];
   readonly statuses = new Map<ChannelId, ChannelStatus>();
   readonly running = new Map<ChannelId, RunningChannel>();
+  readonly channelStartGenerations = new Map<ChannelId, symbol>();
   readonly startsInFlight = new Map<ChannelId, Promise<ChannelStatus>>();
   /** Captured at construction (~process start): the cutoff for reclaiming orphaned "running" runs. */
   readonly processStartMs = Date.now();

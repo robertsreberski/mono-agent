@@ -65,19 +65,21 @@ When you select **Scheduled jobs (cron)** in the guided `mono-agent init` wizard
 | --- | --- | --- | --- | --- |
 | `cron.dir` | string | no | `cron` | Folder of per-job `*.md` files (frontmatter metadata + prompt body). |
 | `cron.operatorActions.enabled` | boolean | no | `false` | Permit authenticated, confirmed run-now and runtime enable/disable actions through an agent operator endpoint that has `tui.apiKey`. |
-| `cron.jobs[]` | array | no | `[]` | Inline job definitions. Merges with `*.md` files in `cron.dir`. |
-| `jobs[].id` | string | yes | — | Unique job id. Duplicate ids (across config and folder) are an error. |
+| `cron.jobs[]` | array | no | `[]` | Inline job definitions. Merges with `*.md` files in `cron.dir`; the merged set is limited to 64 jobs. |
+| `jobs[].id` | string | yes | — | Unique job id, at most 256 UTF-8 bytes. Duplicate ids (across config and folder) are an error. |
 | `jobs[].enabled` | boolean | no | `true` | Set `false` to keep a job defined but unscheduled. |
-| `jobs[].expression` | string | yes | — | Five fields: `minute hour day-of-month month day-of-week`; no seconds field or macros. `H` fields use the stable job `id` as their hash seed. |
-| `jobs[].timezone` | string | no | `UTC` | IANA timezone (e.g. `Europe/Rome`) the expression is evaluated in. |
+| `jobs[].expression` | string | yes | — | Five fields, at most 256 UTF-8 bytes: `minute hour day-of-month month day-of-week`; no seconds field or macros. `H` fields use the stable job `id` as their hash seed. |
+| `jobs[].timezone` | string | no | `UTC` | IANA timezone (e.g. `Europe/Rome`) the expression is evaluated in; at most 128 UTF-8 bytes. |
 | `jobs[].prompt` | string | yes | — | Text sent to the responder on each tick. |
-| `jobs[].conversationId` | string | no | per-tick | Share memory/history across ticks (see below). |
+| `jobs[].conversationId` | string | no | per-tick | Share memory/history across ticks (see below); at most 512 UTF-8 bytes. |
 | `jobs[].maxRunMs` | number | no | `1200000` | Per-job watchdog in milliseconds. |
 | `jobs[].notify` | boolean | no | `false` | Deliver the successful final answer via native cron notification. |
 | `jobs[].notifyConversationId` | string | no | inferred if exactly one destination | Destination conversation id for native notification. Use exact `web:new` to create a new CRON-marked web conversation; web is never inferred. |
 | `jobs[].notifyFailureCooldownHours` | number | no | `6` | Per-job cooldown, in hours, for all-models-failed error notices on `notify: true` jobs. |
 | `jobs[].model` | string | no | `runtime.model` | Per-job model override. Becomes this turn's primary, keeping canonical `runtime.fallbacks` (or legacy backups). See [Per-trigger model & effort](#per-trigger-model--effort). |
 | `jobs[].effort` | string | no | `runtime.effort` | Per-job reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. Reasoning-capable `pi:*` maps `ultra` to LOW; Pi without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged. Mono-agent rejects `ultra` on its Claude SDK route because the pinned SDK public contract ends at `max` (the SDK JavaScript itself forwards the value). The Claude CLI route passes `--effort ultra`, but both tested Claude Code binaries (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort. Direct OpenCode rejects explicit effort. Ranking above `max` only prevents keyword downgrade. |
+
+These limits are checked after inline and folder jobs are merged. Values are measured as UTF-8 bytes and rejected rather than truncated, so an oversized operator-visible configuration fails closed before any jobs arm.
 
 ## Per-trigger model & effort
 

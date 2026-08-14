@@ -2817,6 +2817,47 @@ describe("startMonoAgentApp", () => {
     expect(disposeSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("fences superseded channel callbacks while preserving current degradation during start", async () => {
+    await writeConfig(baseConfig());
+    const starts: ChannelStartInput<unknown>[] = [];
+    const driver: ChannelDriver = {
+      id: "probe" as never,
+      label: "Probe",
+      loadConfig: async () => ({ enabled: true }),
+      isConfigError: () => false,
+      start: async (input) => {
+        starts.push(input);
+        const generation = starts.length;
+        if (generation === 3) {
+          input.onDegraded?.("current generation degraded during start");
+        }
+        return {
+          summary: { generation },
+          stop: async () => undefined,
+        };
+      },
+    };
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [driver] });
+
+    try {
+      expect(app.channelStatus(driver.id)).toEqual({ kind: "running", summary: { generation: 1 } });
+      await app.applyConfigChange("generation-two");
+      expect(app.channelStatus(driver.id)).toEqual({ kind: "running", summary: { generation: 2 } });
+
+      starts[0]?.onSummaryChanged?.({ generation: "superseded" });
+      starts[0]?.onDegraded?.("superseded generation degraded late");
+      expect(app.channelStatus(driver.id)).toEqual({ kind: "running", summary: { generation: 2 } });
+
+      await app.applyConfigChange("generation-three");
+      expect(app.channelStatus(driver.id)).toEqual({
+        kind: "degraded",
+        reason: "current generation degraded during start",
+      });
+    } finally {
+      await app.stop();
+    }
+  });
+
   it("never starts BuJo consolidation for the strict Journal tier", async () => {
     const infos: string[] = [];
     const logger = { info: (m: string) => { infos.push(m); } };
