@@ -9,7 +9,7 @@ Use a custom channel when mono-agent does not ship your transport. You can load 
 
 ## When you need a driver
 
-The core drivers cover Telegram, Slack, Webhook, the OpenAI-compatible API, Cron, TUI, and Live. Bundled plugin-tier packages add WhatsApp and A2A. Write a `ChannelDriver` for an in-house message bus, SMS gateway, email poller, or another transport. Keep the driver thin: load config, start the transport, connect it to the responder, and return lifecycle controls.
+The core drivers cover Telegram, Slack, Webhook, the OpenAI-compatible API, Cron, TUI, and Live. Bundled plugin-tier packages add WhatsApp, A2A, and Advisor MCP. Write a `ChannelDriver` for an in-house message bus, SMS gateway, email poller, or another transport. Keep the driver thin: load config, start the transport, connect it to the responder, and return lifecycle controls.
 
 The neutral contract lives in `@mono-agent/agent-contracts`, so a channel package does not depend on the app host. `@mono-agent/agent-app` re-exports host-bound aliases for the main driver and lifecycle types, with `MonoAgentConfig` bound as the core config type.
 
@@ -36,7 +36,7 @@ The external-channel seam is only a loading mechanism. The app reads `channels.p
 ```
 
 :::note[Installing the bundled plugin-tier packages]
-`@mono-agent/whatsapp-adapter` and `@mono-agent/a2a-adapter` are **plugin-tier** packages: they publish to npm in the **same lockstep** as the core packages, so install the version that matches your `@mono-agent/agent-app`. Releases from before the extras rejoined the lockstep (npm `0.4.0`) predate this seam — they export no `createChannelDriver`, so `agent-app` reports `Channel plugin @mono-agent/whatsapp-adapter must export createChannelDriver(options) returning a ChannelDriver` and cannot load them (degradation is graceful — the rest of the host still runs), and they pull a now-retired internal settings dependency into your install tree. Upgrading the plugin to the current lockstep version fixes both. Each plugin's package README names the exact retired dependency.
+`@mono-agent/whatsapp-adapter`, `@mono-agent/a2a-adapter`, and `@mono-agent/advisor-mcp` are **plugin-tier** packages: they publish to npm in the **same lockstep** as the core packages, so install the version that matches your `@mono-agent/agent-app`. The WhatsApp/A2A releases from before those extras rejoined the lockstep (npm `0.4.0`) predate this seam — they export no `createChannelDriver`, so `agent-app` cannot load them. Upgrade those packages to the current lockstep version. Advisor MCP entered through the current seam and has no pre-lockstep compatibility release.
 :::
 
 A package can expose a factory like this:

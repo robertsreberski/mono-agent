@@ -43,6 +43,7 @@ Each active channel gets its own configured responder and runtime harness — th
 | Webhook | `webhook` | HTTP POST, sync/async |
 | OpenAI API | `openaiApi` | OpenAI-compatible `/v1/chat/completions` |
 | A2A | `channels.plugins[]` (`@mono-agent/a2a-adapter`) | Agent-to-Agent provider |
+| Advisor MCP | `channels.plugins[]` (`@mono-agent/advisor-mcp`) | bounded Streamable HTTP implementation review |
 | Cron | `cron` | scheduled prompts |
 
 Each channel is its own JSON section and runs independently — one failing or waiting on config never blocks the others. This per-channel harness boundary is also why configured concurrency limits apply per channel rather than globally. See [Channels](/channels/) for per-channel setup.

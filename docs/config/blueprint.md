@@ -402,6 +402,20 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
             // channel runs the provider side.
           }
         }
+      },
+      {
+        "package": "@mono-agent/advisor-mcp",
+        "id": "advisor",
+        "config": {
+          "enabled": true,
+          "host": "127.0.0.1",
+          "port": 4312,
+          "path": "/mcp",
+          "requireBearer": true,           // put MONO_AGENT_ADVISOR_BEARER_TOKEN in .env
+          "model": "pi:openai-codex:gpt-5.6-sol", // exact request-scoped route; no inherited tools/MCP
+          "effort": "max",
+          "namespace": "review-production"
+        }
       }
     ]
   },
@@ -471,7 +485,7 @@ Every top-level section maps to a deep-dive page:
 | `openaiApi` | OpenAI-compatible `/v1` endpoint (streams tokens) | [OpenAI API](/channels/openai-api/) |
 | `telegram` | Telegram bot channel | [Telegram](/channels/telegram/) |
 | `slack` | Slack Socket Mode channel | [Slack](/channels/slack/) |
-| `channels.plugins[]` | External channel packages such as WhatsApp and A2A | [Write your own channel adapter](/programmatic/custom-channels/), [WhatsApp](/channels/whatsapp/), [A2A](/channels/a2a/) |
+| `channels.plugins[]` | External channel packages such as WhatsApp, A2A, and Advisor MCP | [Write your own channel adapter](/programmatic/custom-channels/), [WhatsApp](/channels/whatsapp/), [A2A](/channels/a2a/), [Advisor MCP](/channels/advisor/) |
 | `cron` | Scheduled prompt jobs (inline + `cron/*.md`) | [Cron](/channels/cron/) |
 
 For per-section env vars see [Environment variables](/config/env-vars/). When config cannot express what you need (custom runtime, request-scoped extensions, custom channels, tool-approval gates, structured-output schemas), use the [programmatic escape hatch](/programmatic/).

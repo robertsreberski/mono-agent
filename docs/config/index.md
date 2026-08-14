@@ -77,7 +77,7 @@ Each top-level key maps to one capability area. All are optional except the two 
 | `telegram`, `slack` | Built-in chat channels (opt-in via `enabled`) | [Channels](/channels/) |
 | `webhook`, `openaiApi`, `cron` | Built-in HTTP, OpenAI-compatible, and scheduled channels | [Channels](/channels/) |
 | `tui` | Default-on loopback operator endpoint | [Operator stream endpoint](/channels/tui/) |
-| `channels.plugins[]` | External channel packages such as WhatsApp and A2A | [Write your own channel adapter](/programmatic/custom-channels/) |
+| `channels.plugins[]` | External channel packages such as WhatsApp, A2A, and Advisor MCP | [Write your own channel adapter](/programmatic/custom-channels/) |
 
 Channels start independently. For most channels, omission or `enabled: false` reports `disabled`; the default-on `tui` endpoint reports `disabled` only when explicitly opted out. An enabled channel that lacks required settings reports `waiting_for_config`. A self-recovering transport can temporarily report `degraded` without stopping healthy channels.
 

@@ -387,6 +387,36 @@ The A2A provider is loaded through `channels.plugins[]` with `package: "@mono-ag
 | `MONO_AGENT_A2A_CONSUMER_BEARER_TOKEN` | plugin `config.consumer.bearerToken` | Bearer token sent by the programmatic consumer. Keep it in `.env`. |
 | `MONO_AGENT_A2A_TIMEOUT_MS` | plugin `config.consumer.timeoutMs` | Per-request consumer timeout in milliseconds. |
 
+### Advisor MCP
+
+Advisor MCP is loaded through `channels.plugins[]` with `package: "@mono-agent/advisor-mcp"`. These env vars override that plugin entry's `config` fields.
+
+| Env var | JSON key it overrides | Notes |
+| --- | --- | --- |
+| `MONO_AGENT_ADVISOR_ENABLED` | plugin `config.enabled` | Opt-in; default `false`. |
+| `MONO_AGENT_ADVISOR_HOST` | plugin `config.host` | Bind host; default `127.0.0.1`. |
+| `MONO_AGENT_ADVISOR_PORT` | plugin `config.port` | Listen port; default `4312`. |
+| `MONO_AGENT_ADVISOR_PATH` | plugin `config.path` | Streamable HTTP MCP path; default `/mcp`. |
+| `MONO_AGENT_ADVISOR_ALLOW_NON_LOOPBACK` | plugin `config.allowNonLoopback` | Explicit non-loopback opt-in; bearer and allowed hosts are still required. |
+| `MONO_AGENT_ADVISOR_REQUIRE_BEARER` | plugin `config.requireBearer` | Require bearer auth on loopback too. |
+| `MONO_AGENT_ADVISOR_BEARER_TOKEN` | plugin `config.bearerToken` | Server/client shared secret. Keep it in `.env`; never inline it in source config. |
+| `MONO_AGENT_ADVISOR_ALLOWED_HOSTS` | plugin `config.allowedHosts` | Comma-separated exact Host/DNS-rebinding allowlist without ports or schemes. |
+| `MONO_AGENT_ADVISOR_ALLOWED_ORIGINS` | plugin `config.allowedOrigins` | Comma-separated exact HTTP(S) Origin allowlist. |
+| `MONO_AGENT_ADVISOR_MODEL` | plugin `config.model` | Required exact enforcing runtime route when enabled; prefer `pi:*`. |
+| `MONO_AGENT_ADVISOR_EFFORT` | plugin `config.effort` | Required exact effort when enabled. |
+| `MONO_AGENT_ADVISOR_MAX_REQUEST_BYTES` | plugin `config.maxRequestBytes` | HTTP/tool-argument ceiling; at most 4 MiB. |
+| `MONO_AGENT_ADVISOR_MAX_INTENT_CHARS` | plugin `config.maxIntentChars` | Intent character ceiling. |
+| `MONO_AGENT_ADVISOR_MAX_PATCH_CHARS` | plugin `config.maxPatchChars` | Patch-text character ceiling. |
+| `MONO_AGENT_ADVISOR_MAX_VERIFICATION_CHARS` | plugin `config.maxVerificationChars` | Verification-text character ceiling. |
+| `MONO_AGENT_ADVISOR_MAX_OUTPUT_CHARS` | plugin `config.maxOutputChars` | Review character ceiling. |
+| `MONO_AGENT_ADVISOR_MAX_RESPONSE_BYTES` | plugin `config.maxResponseBytes` | Combined MCP text/structured-result byte ceiling. |
+| `MONO_AGENT_ADVISOR_MAX_RUN_MS` | plugin `config.maxRunMs` | Run watchdog; `0` disables only the timer. |
+| `MONO_AGENT_ADVISOR_MAX_CONCURRENT_REVIEWS` | plugin `config.maxConcurrentReviews` | Global review admission ceiling; same-continuity calls remain serialized. |
+| `MONO_AGENT_ADVISOR_MAX_SESSIONS` | plugin `config.maxSessions` | Metadata-only continuity cache capacity. |
+| `MONO_AGENT_ADVISOR_SESSION_TTL_MS` | plugin `config.sessionTtlMs` | Idle continuity metadata TTL. |
+| `MONO_AGENT_ADVISOR_NAMESPACE` | plugin `config.namespace` | Stable continuity-isolation salt. |
+| `MONO_AGENT_ADVISOR_OPERATOR_PROMPT` | plugin `config.operatorPrompt` | Endpoint-owned review instructions. Caller content cannot replace it. |
+
 ### Cron
 
 | Env var | JSON key it overrides | Notes |

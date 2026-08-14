@@ -372,6 +372,20 @@ new agent.
             "timeoutMs": 30000
           }
         }
+      },
+      {
+        "package": "@mono-agent/advisor-mcp",
+        "id": "advisor",
+        "config": {
+          "enabled": true,
+          "host": "127.0.0.1",
+          "port": 4312,
+          "path": "/mcp",
+          "requireBearer": true,           // put MONO_AGENT_ADVISOR_BEARER_TOKEN in .env
+          "model": "pi:openai-codex:gpt-5.6-sol",
+          "effort": "max",
+          "namespace": "review-production"
+        }
       }
     ]
   },
