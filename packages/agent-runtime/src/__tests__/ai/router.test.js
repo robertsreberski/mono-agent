@@ -906,6 +906,27 @@ describe("createRouterRuntime — production fallback contracts", () => {
     expect(executeMock.mock.calls[1][1]).not.toHaveProperty("permissionMode");
   });
 
+  it("rejects resolver replacement of logical Codex sandbox network access", async () => {
+    const router = createRouterRuntime({
+      chain: [{ sdk: "codex", model: "gpt-5.6-sol" }],
+      resolveAttempt: () => ({
+        options: { codexSandboxNetworkAccess: false },
+      }),
+    });
+
+    const result = await router.run("sys", {
+      messages: [],
+      codexSandboxNetworkAccess: true,
+    });
+
+    expect(result.failureKind).toBe("safety_unavailable");
+    expect(result.error).toContain("cannot override codexSandboxNetworkAccess");
+    expect(result.routeSafetyHistory).toEqual([
+      expect.objectContaining({ status: "safety_unavailable" }),
+    ]);
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+
   it("keeps primary run-level custom metadata for compatibility but scrubs every fallback without a resolver", async () => {
     executeMock
       .mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false })

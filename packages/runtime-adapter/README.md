@@ -64,6 +64,16 @@ while running in an untrusted checkout. For Codex app-server runs,
 `RuntimeRunOptions.codexLoadProjectDocs: true` restores Codex's native project
 document defaults; omitted/false disables automatic discovery with
 `project_doc_max_bytes=0`. Explicit `codexAppServerArgs` remain authoritative.
+`RuntimeRunOptions.codexSandboxNetworkAccess` is also code-only: strict `true`
+enables Codex's native network access for plan/read-only and
+default/acceptEdits/workspace-write turns, including retained threads. Omitted
+or any other runtime value keeps network access disabled. The dedicated
+no-tools probe always remains read-only with network disabled, while
+bypassPermissions remains danger-full-access regardless of this field.
+This provider-native control is unrelated to `RuntimeRunOptions.sandboxPolicy`,
+which governs mono-agent's own sandbox and is not consumed by Codex's tool loop.
+Workspace-write plus network access grants repository read and network egress
+in the same turn; prefer plan for read-only browsing.
 Codex owns its native collaboration agents and their profiles: the facade
 normalizes their activity but does not inject `nativeSubagents` definitions.
 `RuntimeRunOptions.nativeSubagents` is the typed Claude-native `Task` profile
@@ -73,7 +83,9 @@ Codex and its own agents load repository instructions.
 
 For heterogeneous fallback chains, `resolveAttempt().policyOptions` may project
 only `allowedTools`, `disallowedTools`, and `permissionMode` for the runtime
-actually being attempted. Other logical request fields remain protected.
+actually being attempted. Other logical request fields, including
+`codexSandboxNetworkAccess`, remain protected and cannot be replaced through
+`resolveAttempt().options`.
 
 ## Architecture
 

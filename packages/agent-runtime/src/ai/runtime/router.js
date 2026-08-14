@@ -102,7 +102,16 @@ const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
   "allowedTools", "disallowedTools", "permissionMode", "mcpServers", "skills",
   "outputSchema", "nativeSubagents", "liveInput", "fastMode", "toolEnvironment",
+  "codexSandboxNetworkAccess",
 ]);
+
+class ResolverProtectedOptionError extends Error {
+  /** @param {string} key */
+  constructor(key) {
+    super(`route attempt resolver cannot override ${key}`);
+    this.name = "ResolverProtectedOptionError";
+  }
+}
 
 /**
  * @param {Object} [options]
@@ -850,7 +859,7 @@ function mergeAttemptOptions(base, resolved) {
   if (resolved === undefined) return merged;
   for (const [key, value] of Object.entries(resolved)) {
     if (RESOLVER_PROTECTED_OPTION_KEYS.has(key)) {
-      throw new Error(`route attempt resolver cannot override ${key}`);
+      throw new ResolverProtectedOptionError(key);
     }
     if (value !== undefined) merged[key] = value;
   }
@@ -980,11 +989,14 @@ function applyEntryEffort(options, effort) {
 /** @param {unknown} error @returns {RuntimeResult} */
 function safetyUnavailableResult(error) {
   // Host resolvers may handle credentials. Never echo their exception text
-  // into persisted results or route telemetry.
-  void error;
+  // into persisted results or route telemetry. ResolverProtectedOptionError is
+  // constructed only from a repository-owned allowlist key, so it is safe and
+  // useful to expose for a rejected logical-request override.
   return {
     text: null,
-    error: "The route safety contract could not be established before execution.",
+    error: error instanceof ResolverProtectedOptionError
+      ? error.message
+      : "The route safety contract could not be established before execution.",
     failureKind: "safety_unavailable",
     events: [],
     cancelled: false,

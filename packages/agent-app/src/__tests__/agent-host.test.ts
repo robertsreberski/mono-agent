@@ -833,7 +833,7 @@ describe("agent host composition helpers", () => {
     }
   });
 
-  it("lets host runtimeOptions override config runtime flags", async () => {
+  it("lets host runtimeOptions override config flags and carry code-only provider controls", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
@@ -843,7 +843,10 @@ describe("agent host composition helpers", () => {
     const responder = await createConfiguredAgentResponder({
       config: monoConfig({ dir, identityPath, artifactDir, permissionMode: "acceptEdits" }),
       runtime: fake.runtime,
-      runtimeOptions: { permissionMode: "bypassPermissions" },
+      runtimeOptions: {
+        permissionMode: "bypassPermissions",
+        codexSandboxNetworkAccess: true,
+      },
     });
     await responder.respond(
       { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
@@ -851,6 +854,7 @@ describe("agent host composition helpers", () => {
     );
 
     expect(fake.calls[0]?.options.permissionMode).toBe("bypassPermissions");
+    expect(fake.calls[0]?.options.codexSandboxNetworkAccess).toBe(true);
   });
 
   it("keeps the configured Pi transport authoritative over request extensions", async () => {

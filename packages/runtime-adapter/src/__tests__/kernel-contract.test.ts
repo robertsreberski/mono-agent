@@ -73,6 +73,7 @@ type RuntimeRunComparableKeys =
   | "prompts"
   | "settingSources"
   | "codexLoadProjectDocs"
+  | "codexSandboxNetworkAccess"
   | "nativeSubagents"
   | "acpSessionTokenKey";
 type RuntimeRunComparableOptions = Pick<RuntimeRunOptions, RuntimeRunComparableKeys>;
@@ -139,7 +140,7 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
     assertAssignable<KernelRunOptions>(facade);
   });
 
-  it("keeps provider project-discovery controls typed at the facade/kernel seam", () => {
+  it("keeps provider controls typed at the facade/kernel seam", () => {
     expectTypeOf<RuntimeRunOptions["settingSources"]>()
       .toEqualTypeOf<readonly ("user" | "project" | "local")[] | undefined>();
     expectTypeOf<RuntimeRunOptions["codexLoadProjectDocs"]>()
@@ -147,6 +148,10 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
     expectTypeOf<KernelRunOptions["settingSources"]>()
       .toEqualTypeOf<readonly ("user" | "project" | "local")[] | undefined>();
     expectTypeOf<KernelRunOptions["codexLoadProjectDocs"]>()
+      .toEqualTypeOf<boolean | undefined>();
+    expectTypeOf<RuntimeRunOptions["codexSandboxNetworkAccess"]>()
+      .toEqualTypeOf<boolean | undefined>();
+    expectTypeOf<KernelRunOptions["codexSandboxNetworkAccess"]>()
       .toEqualTypeOf<boolean | undefined>();
     expectTypeOf<RuntimeRunOptions["nativeSubagents"]>()
       .toEqualTypeOf<RuntimeNativeSubagentsOptions | undefined>();
@@ -175,6 +180,14 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
         },
       } satisfies MonoRuntimeAttemptResolution;
       assertAssignable<MonoRuntimeAttemptResolution>(invalid);
+
+      const invalidResolverOptions = {
+        options: {
+          // @ts-expect-error route plugins cannot replace logical Codex network policy.
+          codexSandboxNetworkAccess: true,
+        },
+      } satisfies MonoRuntimeAttemptResolution;
+      void invalidResolverOptions;
     }
   });
 
