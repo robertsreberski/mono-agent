@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, mkdir, readFile, readdir, symlink, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -57,10 +57,15 @@ describe("process job service", () => {
     const service = await startService(fixture, { wake });
     await service.activateWakes();
 
-    const result = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion), cleanup, {
+    const request = requestOf(handleOf(completion), cleanup, {
       SECRET_TOKEN: "top-secret-value",
       PIN: "123",
-    }));
+    });
+    const result = await service.controller(ORIGIN, 0).start({
+      ...request,
+      summary: "top-secret-value raw command",
+      prepared: { ...request.prepared, cwd: "/tmp/top-secret-value" },
+    });
     expect(result).toMatchObject({ state: "running", startedAt: "2026-08-14T10:00:01.000Z" });
     const recordPath = join(fixture.settings.stateDir, "records-v1", `${result.jobId}.json`);
     const beforeReturn = await readFile(recordPath, "utf8");
@@ -104,6 +109,66 @@ describe("process job service", () => {
       if (previous === undefined) delete process.env[inheritedName];
       else process.env[inheritedName] = previous;
     }
+  });
+
+  it("redacts a secret prefix retained at the process-runner truncation boundary", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const service = await startService(fixture);
+    const secret = "boundary-sensitive-value";
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion), undefined, {
+      BOUNDARY_SECRET: secret,
+    }));
+    completion.resolve(processResult({
+      stdout: "visible boundary-sens",
+      bufferExceeded: true,
+      truncated: true,
+    }));
+
+    await waitFor(async () => (await service.get(started.jobId))?.state === "failed");
+    const projection = await service.get(started.jobId);
+    const artifact = await readFile(join(fixture.settings.stateDir, projection!.output.stdoutRef!), "utf8");
+    expect(projection?.output.preview).toContain("[REDACTED]");
+    expect(projection?.output.preview).not.toContain("boundary-sens");
+    expect(artifact).not.toContain("boundary-sens");
+  });
+
+  it("bounds long-output redaction with short explicit environment values", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const service = await startService(fixture);
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion), undefined, {
+      SHORT_D: "D",
+      SHORT_E: "E",
+      SHORT_R: "R",
+    }));
+    completion.resolve(processResult({ stdout: "RED".repeat(100_000) }));
+
+    await waitFor(async () => (await service.get(started.jobId))?.state === "succeeded");
+    const projection = await service.get(started.jobId);
+    const artifact = await readFile(join(fixture.settings.stateDir, projection!.output.stdoutRef!), "utf8");
+    expect(artifact).toBe("");
+    expect(projection?.output.stdoutBytes).toBe(0);
+  });
+
+  it("redacts secrets before bounding a retained launch failure", async () => {
+    const fixture = await createFixture();
+    const jobId = "10101010-1010-4010-8010-101010101010";
+    const service = await startService(fixture, { randomId: () => jobId });
+    const secret = "boundary-sensitive-value";
+    const request = requestOf(handleOf(deferred<ProcessJobProcessResult>()), undefined, {
+      BOUNDARY_SECRET: secret,
+    });
+    const failingRequest: ProcessJobStartRequest = {
+      ...request,
+      launch: () => { throw new Error(`${"x".repeat(7_995)}${secret}`); },
+    };
+
+    await expect(service.controller(ORIGIN, 0).start(failingRequest))
+      .rejects.toMatchObject({ code: "process_job_spawn_failed" });
+    const projection = await service.get(jobId);
+    expect(projection?.state).toBe("spawn_failed");
+    expect(projection?.lastError?.message).not.toContain("boun");
   });
 
   it("creates the web card before returning and advances the same card through terminal wake settlement", async () => {
@@ -154,6 +219,7 @@ describe("process job service", () => {
       ...ORIGIN,
       conversationId: "slack:C2:2.2",
       baseConversationId: "slack:C2:2.2",
+      bucket: null,
       replyToConversationId: "slack:C2:2.2",
       normalizedReplyTarget: "slack:C2:2.2",
     }, 0)
@@ -410,6 +476,23 @@ describe("process job service", () => {
     });
   });
 
+  it("keeps active ownership nonterminal until shutdown cancellation has fully settled", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const handle = handleOf(completion);
+    const service = await startService(fixture);
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handle));
+
+    const stopping = service.stop();
+    await waitFor(() => handle.cancel.mock.calls.length === 1);
+    const whileCancelling = await service.get(started.jobId);
+    completion.resolve(processResult({ aborted: true, code: null }));
+    await stopping;
+
+    expect(whileCancelling).toMatchObject({ state: "running", cancelRequested: true });
+    expect(await service.get(started.jobId)).toMatchObject({ state: "interrupted" });
+  });
+
   it("resumes a persisted safe retry but never replays an ambiguous wake attempt", async () => {
     const fixture = await createFixture();
     const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
@@ -452,28 +535,110 @@ describe("process job service", () => {
     const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
     const jobId = "11111111-1111-4111-8111-111111111111";
     await store.ensureArtifacts(jobId);
-    const settingsPath = join(fixture.cwd, "sandbox-settings.json");
-    await writeFile(settingsPath, "{}\n", { mode: 0o600 });
+    const { directory: settingsDirectory, path: settingsPath } = await createSandboxSettingsFile();
     await store.mutate((records) => records.set(jobId, durableRecord(jobId, { sandboxSettingsPath: settingsPath })));
     const signals: Array<[number, NodeJS.Signals]> = [];
+    const processGroupExists = vi.fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValueOnce(false);
     const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
     const service = await startService(fixture, {
       store,
       wake,
       sameIncarnation: async () => true,
       signalProcess: (pid, signal) => { signals.push([pid, signal]); },
+      processGroupExists,
       sleep: async () => undefined,
     });
     await service.activateWakes();
     await waitFor(async () => wake.mock.calls.length === 1);
     expect(signals).toEqual([[-4321, "SIGTERM"], [-4321, "SIGKILL"]]);
     await expect(lstat(settingsPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(settingsDirectory)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await service.get(jobId)).toMatchObject({
       state: "interrupted",
       lastError: { code: "process_job_agent_restarted" },
       wake: { state: "delivered", attempts: 1 },
     });
     expect(wake).toHaveBeenCalledOnce();
+  });
+
+  it("does not clean settings or claim termination until the signalled process group is absent", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "12121212-1212-4212-8212-121212121212";
+    await store.ensureArtifacts(jobId);
+    const { directory: settingsDirectory, path: settingsPath } = await createSandboxSettingsFile();
+    await store.mutate((records) => records.set(jobId, durableRecord(jobId, { sandboxSettingsPath: settingsPath })));
+    const signals: Array<[number, NodeJS.Signals]> = [];
+    const service = await startService(fixture, {
+      store,
+      sameIncarnation: async () => true,
+      signalProcess: (pid, signal) => { signals.push([pid, signal]); },
+      processGroupExists: () => true,
+      sleep: async () => undefined,
+    });
+
+    expect(signals).toEqual([[-4321, "SIGTERM"], [-4321, "SIGKILL"]]);
+    expect(await pathExists(settingsPath)).toBe(true);
+    expect((await service.get(jobId))?.lastError?.message).toContain("descendants may remain");
+    await rm(settingsDirectory, { recursive: true, force: true });
+  });
+
+  it("cleans persisted sandbox settings for a recovered job that never crossed the launch fence", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "13131313-1313-4313-8313-131313131313";
+    await store.ensureArtifacts(jobId);
+    const { directory: settingsDirectory, path: settingsPath } = await createSandboxSettingsFile();
+    const unreleased = durableRecord(jobId, {
+      state: "queued",
+      pid: null,
+      pgid: null,
+      sandboxSettingsPath: settingsPath,
+      startedAt: null,
+      runtimeDeadlineAt: null,
+    });
+    delete unreleased.processIncarnation;
+    await store.mutate((records) => records.set(jobId, unreleased));
+    const signalProcess = vi.fn();
+    const service = await startService(fixture, { store, signalProcess });
+
+    expect(signalProcess).not.toHaveBeenCalled();
+    await expect(lstat(settingsPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(lstat(settingsDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await service.get(jobId)).toMatchObject({
+      state: "interrupted",
+      lastError: { message: expect.stringContaining("target was ever released") },
+    });
+  });
+
+  it("refuses recovery cleanup authority over an arbitrary owner-only file", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "15151515-1515-4515-8515-151515151515";
+    await baseStore.ensureArtifacts(jobId);
+    const unreleased = durableRecord(jobId, {
+      state: "queued",
+      pid: null,
+      pgid: null,
+      startedAt: null,
+      runtimeDeadlineAt: null,
+    });
+    delete unreleased.processIncarnation;
+    await baseStore.mutate((records) => records.set(jobId, unreleased));
+    const protectedPath = join(fixture.cwd, "protected-owner-file");
+    await writeFile(protectedPath, "must stay\n", { mode: 0o600 });
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async list() {
+        return (await baseStore.list()).map((record) => ({ ...record, sandboxSettingsPath: protectedPath }));
+      },
+    };
+    const service = await startService(fixture, { store });
+
+    expect(await readFile(protectedPath, "utf8")).toBe("must stay\n");
+    expect((await service.get(jobId))?.lastError?.message).toContain("could not be removed");
   });
 
   it("never signals a reused/missing leader and honestly warns that descendants may remain", async () => {
@@ -517,7 +682,7 @@ describe("process job service", () => {
     });
 
     expect(signalProcess).not.toHaveBeenCalled();
-    expect((await baseStore.get(jobId))?.lastError?.message).toContain("no process was signalled");
+    expect((await baseStore.get(jobId))?.lastError?.message).toContain("cleanup was withheld");
   });
 
   it("does not SIGKILL a PGID whose leader vanished during the recovery grace window", async () => {
@@ -525,8 +690,7 @@ describe("process job service", () => {
     const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
     const jobId = "cccccccc-3333-4333-8333-333333333333";
     await store.ensureArtifacts(jobId);
-    const settingsPath = join(fixture.cwd, "sandbox-settings-reused.json");
-    await writeFile(settingsPath, "{}\n", { mode: 0o600 });
+    const { directory: settingsDirectory, path: settingsPath } = await createSandboxSettingsFile();
     await store.mutate((records) => records.set(jobId, durableRecord(jobId, { sandboxSettingsPath: settingsPath })));
     const sameIncarnation = vi.fn()
       .mockResolvedValueOnce(true)
@@ -536,12 +700,14 @@ describe("process job service", () => {
       store,
       sameIncarnation,
       signalProcess: (pid, signal) => { signals.push([pid, signal]); },
+      processGroupExists: () => true,
       sleep: async () => undefined,
     });
 
     expect(signals).toEqual([[-4321, "SIGTERM"]]);
     expect(await pathExists(settingsPath)).toBe(true);
     expect((await service.get(jobId))?.lastError?.message).toContain("descendants may remain");
+    await rm(settingsDirectory, { recursive: true, force: true });
   });
 
   it("fails closed before touching state or lock ownership on Windows", async () => {
@@ -616,6 +782,38 @@ describe("process job store", () => {
       .rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("rejects a drifted durable origin before publishing a transaction marker", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "18181818-1818-4818-8818-181818181818";
+    const drifted = durableRecord(jobId, {
+      origin: {
+        ...ORIGIN,
+        replyToConversationId: "slack:C2:2.2",
+        normalizedReplyTarget: "slack:C2:2.2",
+      },
+    });
+
+    await expect(store.mutate((records) => records.set(jobId, drifted)))
+      .rejects.toThrow(/malformed schema/u);
+    await expect(lstat(join(fixture.settings.stateDir, PROCESS_JOB_TRANSACTION_FILE)))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(openProcessJobStore(fixture.cwd, fixture.settings.stateDir))
+      .resolves.toBeDefined();
+  });
+
+  it("rejects queued state that ambiguously claims live PID and PGID ownership", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "19191919-1919-4919-8919-191919191919";
+    const ambiguous = durableRecord(jobId, { state: "queued" });
+
+    await expect(store.mutate((records) => records.set(jobId, ambiguous)))
+      .rejects.toThrow(/malformed schema/u);
+    await expect(lstat(join(fixture.settings.stateDir, PROCESS_JOB_TRANSACTION_FILE)))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("drops oldest retained artifacts only after nulling durable refs", async () => {
     const fixture = await createFixture();
     const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
@@ -668,6 +866,40 @@ describe("process job store", () => {
     expect(await store.get(deliveredId)).toBeUndefined();
   });
 
+  it("retains pending-wake artifacts while pruning delivered peers deterministically", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const pendingId = "16161616-1616-4616-8616-161616161616";
+    const deliveredId = "17171717-1717-4717-8717-171717171717";
+    for (const [jobId, wakeState] of [[pendingId, "pending"], [deliveredId, "delivered"]] as const) {
+      await store.ensureArtifacts(jobId);
+      await store.writeArtifact(jobId, "stdout", `${wakeState} retained output`);
+      await store.mutate((records) => records.set(jobId, durableRecord(jobId, {
+        state: "succeeded",
+        completedAt: "2026-08-14T10:01:00.000Z",
+        wake: {
+          state: wakeState,
+          attempts: wakeState === "pending" ? 0 : 1,
+          deliveryKey: `process-job:${jobId}`,
+          lastAttemptAt: wakeState === "pending" ? null : "2026-08-14T10:01:01.000Z",
+        },
+        lastError: null,
+      })));
+    }
+
+    await store.applyRetention({
+      ...fixture.settings,
+      retention: { ...fixture.settings.retention, artifactMaxBytes: 1 },
+    }, new Date("2026-08-14T10:02:00.000Z"));
+    expect(await store.get(pendingId)).toMatchObject({
+      stdoutRef: `artifacts/${pendingId}/stdout.log`,
+      stderrRef: `artifacts/${pendingId}/stderr.log`,
+    });
+    expect(await pathExists(join(store.artifactsDir, pendingId, "stdout.log"))).toBe(true);
+    expect(await store.get(deliveredId)).toMatchObject({ stdoutRef: null, stderrRef: null });
+    expect(await pathExists(join(store.artifactsDir, deliveredId))).toBe(false);
+  });
+
   it("fails closed on a linked artifact instead of following it", async () => {
     const fixture = await createFixture();
     const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
@@ -684,7 +916,26 @@ describe("process job store", () => {
       .rejects.toThrow(/unsupported entry|single-link regular file/u);
     expect(await readFile(target, "utf8")).toBe("must stay untouched\n");
   });
+
+  it("fails closed when a retained record points at a missing artifact", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "14141414-1414-4414-8414-141414141414";
+    await store.ensureArtifacts(jobId);
+    await store.mutate((records) => records.set(jobId, durableRecord(jobId)));
+    await unlink(join(fixture.settings.stateDir, "artifacts", jobId, "stdout.log"));
+
+    await expect(openProcessJobStore(fixture.cwd, fixture.settings.stateDir))
+      .rejects.toThrow(/referenced artifact is missing/u);
+  });
 });
+
+async function createSandboxSettingsFile(): Promise<{ readonly directory: string; readonly path: string }> {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "mono-agent-srt-settings-")));
+  const path = join(directory, "settings.json");
+  await writeFile(path, "{}\n", { mode: 0o600 });
+  return { directory, path };
+}
 
 async function createFixture(overrides: Partial<ProcessJobsSettings> = {}): Promise<{ cwd: string; settings: ProcessJobsSettings }> {
   const cwd = await mkdtemp(join(tmpdir(), "mono-process-jobs-"));

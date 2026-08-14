@@ -56,7 +56,10 @@ export async function runJobsCommand(options: RunJobsCommandOptions): Promise<nu
   } catch {
     return writeFailure(stderr, options.json === true, "agent_unreachable", "The selected agent advertised an invalid operator endpoint.");
   }
-  if ((baseUrl.protocol !== "http:" && baseUrl.protocol !== "https:") || !isLoopbackHost(baseUrl.hostname)) {
+  if ((baseUrl.protocol !== "http:" && baseUrl.protocol !== "https:")
+    || !isLoopbackHost(baseUrl.hostname)
+    || baseUrl.username.length > 0
+    || baseUrl.password.length > 0) {
     return writeFailure(stderr, options.json === true, "remote_refused", "Process-job operator commands refuse non-loopback endpoints.");
   }
   let token: string;
@@ -133,11 +136,12 @@ export async function discoverJobsSource(options: Pick<RunJobsCommandOptions, "c
 
 async function request(fetchImpl: typeof fetch, baseUrl: string, token: string, action: string, jobId?: string): Promise<Response> {
   const headers = { authorization: `Bearer ${token}` };
-  if (action === "list") return await fetchImpl(`${baseUrl}/v1/jobs`, { headers });
+  if (action === "list") return await fetchImpl(`${baseUrl}/v1/jobs`, { headers, redirect: "error" });
   const path = `${baseUrl}/v1/jobs/${encodeURIComponent(jobId as string)}`;
   return await fetchImpl(action === "cancel" ? `${path}/cancel` : path, {
     ...(action === "cancel" ? { method: "POST" } : {}),
     headers,
+    redirect: "error",
   });
 }
 

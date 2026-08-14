@@ -8,7 +8,7 @@ import {
   realpath,
   rm,
 } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
   isProcessJobErrorCode,
@@ -258,9 +258,10 @@ export async function openProcessJobStore(
       const artifactDirectoriesToRemove = await this.mutate(async (draft) => {
         const terminal = [...draft.values()]
           .filter((record) => isTerminalProcessJobState(record.state))
-          .sort((left, right) => terminalTime(left) - terminalTime(right));
-        // A pending wake is still live state. Retiring its record would erase
-        // the only durable exactly-once recovery obligation.
+          .sort((left, right) => terminalTime(left) - terminalTime(right)
+            || left.jobId.localeCompare(right.jobId));
+        // A pending wake is still live state. Retiring its record or artifacts
+        // would erase the durable delivery obligation or evidence it references.
         const retireable = terminal.filter((record) => record.wake.state !== "pending");
         const cutoff = now.getTime() - settings.retention.maxAgeMs;
         const remove = new Set(
@@ -278,6 +279,7 @@ export async function openProcessJobStore(
         let artifactBytes = await retainedArtifactBytes(artifactsDir, artifactRecords, new Set());
         for (const record of artifactRecords) {
           if (artifactBytes <= settings.retention.artifactMaxBytes) break;
+          if (record.wake.state === "pending") continue;
           artifactBytes -= await artifactDirectoryBytes(join(artifactsDir, record.jobId));
           artifactRemovals.add(record.jobId);
           const mutable = draft.get(record.jobId);
@@ -398,6 +400,14 @@ async function persistDiff(
   before: Map<string, DurableProcessJobRecord>,
   after: Map<string, DurableProcessJobRecord>,
 ): Promise<void> {
+  // Validate the complete draft before publishing a transaction marker. A
+  // caller bug must not strand malformed recovery input in otherwise healthy
+  // owner state.
+  for (const [jobId, record] of after) {
+    assertJobId(jobId);
+    assertDurableRecord(record);
+    if (record.jobId !== jobId) throw new Error("Process-job record key does not match its job id.");
+  }
   const changes: Array<{
     readonly write: DurableProcessJobRecord | null;
     readonly delete: string | null;
@@ -655,11 +665,11 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
     || (value.pgid !== null && value.pgid !== value.pid)
     || (value.state === "running"
       && (value.pid === null || value.pgid !== value.pid || value.processIncarnation === undefined))
-    || !nullableString(value.sandboxSettingsPath, 16_384)
+    || !nullableSandboxSettingsPath(value.sandboxSettingsPath)
     || !boundedString(value.argvSummary, 8_000)
     || !boundedString(value.cwd, 16_384)
     || !stringArray(value.envKeys, 512, 512)
-    || !validOrigin(value.origin)
+    || !isProcessJobOriginRecord(value.origin)
     || !nonNegativeInteger(value.chainDepth)
     || !boundedPositiveInteger(value.maxRuntimeMs, PROCESS_JOBS_CAPS.maxRuntimeMs)
     || !boundedPositiveInteger(value.maxOutputBytes, PROCESS_JOBS_CAPS.maxOutputBytes)
@@ -682,33 +692,106 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
     || !nullableArtifactRef(value.stderrRef, value.jobId as string, "stderr.log")
     || typeof value.cancelRequested !== "boolean"
     || !validWake(value.wake)
-    || !validLastError(value.lastError)) {
+    || !validLastError(value.lastError)
+    || !validDurableLifecycle(value)) {
     throw new Error("Process-job record has a malformed schema.");
   }
 }
 
-function validOrigin(value: unknown): boolean {
-  return isRecord(value)
-    && hasExactKeys(value, [
+function validDurableLifecycle(value: Record<string, unknown>): boolean {
+  const noProcessOwner = value.pid === null
+    && value.pgid === null
+    && value.processIncarnation === undefined
+    && value.startedAt === null
+    && value.runtimeDeadlineAt === null;
+  const completeProcessOwner = typeof value.pid === "number"
+    && value.pgid === value.pid
+    && value.processIncarnation !== undefined
+    && typeof value.startedAt === "string"
+    && typeof value.runtimeDeadlineAt === "string";
+  if (value.state === "queued" && !noProcessOwner) return false;
+  if (value.state === "starting" && !noProcessOwner && !completeProcessOwner) return false;
+  if (value.state === "running" && !completeProcessOwner) return false;
+  const terminal = isProcessJobState(value.state) && isTerminalProcessJobState(value.state);
+  if (terminal !== (value.completedAt !== null)) return false;
+  if (!terminal) {
+    const wake = value.wake as DurableProcessJobRecord["wake"];
+    if (wake.state !== "pending"
+      || wake.attempts !== 0
+      || wake.lastAttemptAt !== null
+      || wake.retrySafe === true) return false;
+  }
+  return true;
+}
+
+/** Validate the exact durable wake identity, including its normalized base. */
+export function isProcessJobOriginRecord(value: unknown): value is ProcessJobOriginRecord {
+  if (!isRecord(value)
+    || !hasExactKeys(value, [
       "conversationId", "baseConversationId", "bucket", "replyToConversationId",
       "normalizedReplyTarget", "runId", "historyBoundary", "channel",
     ])
-    && boundedNonEmptyString(value.conversationId, 2_048)
-    && boundedNonEmptyString(value.baseConversationId, 2_048)
-    && nullableString(value.bucket, 512)
-    && boundedNonEmptyString(value.replyToConversationId, 2_048)
-    && boundedNonEmptyString(value.normalizedReplyTarget, 2_048)
-    && value.replyToConversationId === value.normalizedReplyTarget
-    && value.normalizedReplyTarget === normalizedProcessJobReplyTarget(value.normalizedReplyTarget)
-    && value.normalizedReplyTarget.startsWith(`${String(value.channel)}:`)
-    && boundedNonEmptyString(value.runId, 512)
-    && boundedNonEmptyString(value.historyBoundary, 512)
-    && (value.channel === "slack" || value.channel === "telegram" || value.channel === "web");
+    || !boundedNonEmptyString(value.conversationId, 2_048)
+    || !boundedNonEmptyString(value.baseConversationId, 2_048)
+    || !nullableString(value.bucket, 512)
+    || !boundedNonEmptyString(value.replyToConversationId, 2_048)
+    || !boundedNonEmptyString(value.normalizedReplyTarget, 2_048)
+    || !boundedNonEmptyString(value.runId, 512)
+    || !boundedNonEmptyString(value.historyBoundary, 512)
+    || (value.channel !== "slack" && value.channel !== "telegram" && value.channel !== "web")) {
+    return false;
+  }
+  const conversation = splitProcessJobConversationId(value.conversationId);
+  return conversation !== undefined
+    && conversation.baseConversationId === value.baseConversationId
+    && conversation.bucket === value.bucket
+    && isCanonicalProcessJobBase(value.baseConversationId, value.channel)
+    && value.replyToConversationId === value.baseConversationId
+    && value.normalizedReplyTarget === value.baseConversationId
+    && value.historyBoundary === value.runId;
 }
 
-function normalizedProcessJobReplyTarget(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  return value.split("#", 1)[0]?.trim();
+function splitProcessJobConversationId(
+  value: string,
+): { readonly baseConversationId: string; readonly bucket: string | null } | undefined {
+  if (value !== value.trim()) return undefined;
+  const hash = value.indexOf("#");
+  if (hash < 0) return { baseConversationId: value, bucket: null };
+  if (hash === 0 || hash === value.length - 1 || value.indexOf("#", hash + 1) >= 0) return undefined;
+  const baseConversationId = value.slice(0, hash);
+  const bucket = value.slice(hash + 1);
+  if (bucket !== bucket.trim()) return undefined;
+  return { baseConversationId, bucket };
+}
+
+function isCanonicalProcessJobBase(
+  value: string,
+  channel: ProcessJobOriginRecord["channel"],
+): boolean {
+  const prefix = `${channel}:`;
+  if (!value.startsWith(prefix)) return false;
+  const destination = value.slice(prefix.length);
+  if (channel === "telegram") {
+    const chatId = Number(destination);
+    return /^-?\d+$/u.test(destination)
+      && Number.isSafeInteger(chatId)
+      && String(chatId) === destination;
+  }
+  if (channel === "web") return destination !== "new" && /^[^\s:#]+$/u.test(destination);
+  const parts = destination.split(":");
+  const channelId = parts[0];
+  const threadTs = parts[1];
+  return (parts.length === 1 || parts.length === 2)
+    && typeof channelId === "string"
+    && /^(?:C|D|G)[A-Z0-9]+$/u.test(channelId)
+    && (threadTs === undefined || /^\d+\.\d+$/u.test(threadTs));
+}
+
+function nullableSandboxSettingsPath(value: unknown): value is string | null {
+  if (value === null) return true;
+  if (!boundedNonEmptyString(value, 16_384) || !isAbsolute(value) || resolve(value) !== value) return false;
+  return basename(value) === "settings.json"
+    && /^mono-agent-srt-settings-[A-Za-z0-9_-]{6,}$/u.test(basename(dirname(value)));
 }
 
 function validWake(value: unknown): boolean {
@@ -748,6 +831,27 @@ async function removeOrphanArtifacts(
     await assertPrivateDirectory(path);
     await artifactDirectoryBytes(path);
   }
+  for (const record of records.values()) {
+    if (record.stdoutRef !== null) {
+      await assertReferencedArtifact(join(artifactsDir, record.jobId, "stdout.log"));
+    }
+    if (record.stderrRef !== null) {
+      await assertReferencedArtifact(join(artifactsDir, record.jobId, "stderr.log"));
+    }
+  }
+}
+
+async function assertReferencedArtifact(path: string): Promise<void> {
+  let info: Stats;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) {
+      throw new Error(`Process-job referenced artifact is missing: ${path}`);
+    }
+    throw error;
+  }
+  assertPrivateFile(info, path, 0o600);
 }
 
 async function retainedArtifactBytes(

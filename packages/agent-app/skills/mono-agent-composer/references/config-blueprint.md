@@ -169,7 +169,8 @@ new agent.
   // Exec is direct argv; use Bash only for shell syntax. NodeRepl shares state
   // only inside one run. All three use the same sandbox policy.
 
-  // Opt-in Pi-native Exec/Bash background jobs. The host owns the process tree,
+  // Opt-in Pi-native Exec/Bash background jobs. The host owns the inherited
+  // POSIX process group (commands that daemonize into another group are unsupported),
   // bounded output, exact Slack/Telegram/web wake, cancellation, and restart
   // interruption. Unsupported on Windows; unknown keys are rejected.
   "processJobs": {

@@ -179,9 +179,10 @@ injects an available process-job controller for the exact request. With no
 controller, schemas and foreground behavior are unchanged. With one,
 `background: true` hands the already sandbox-prepared command to the host and
 returns an opaque job id without waiting for completion. The host preserves the
-same command/shell semantics, owns cleanup after the whole process tree exits,
-and wakes the originating Slack, Telegram, or web conversation through a normal
-tool-capable turn. See [Background process jobs](/tools/background-process-jobs/)
+same command/shell semantics, owns cleanup after the inherited POSIX process
+group exits, and wakes the originating Slack, Telegram, or web conversation
+through a normal tool-capable turn. Commands that daemonize into another group
+or session are unsupported. See [Background process jobs](/tools/background-process-jobs/)
 for configuration, limits, supported origins, recovery, and operator access.
 
 These are macOS-facing tools. Prefer portable commands or feature-detect flags

@@ -6,7 +6,8 @@ sidebar:
 ---
 
 Background process jobs let the existing Pi-native `Exec` and `Bash` tools
-return immediately while mono-agent continues to own the spawned process tree.
+return immediately while mono-agent continues to own the spawned POSIX process
+group.
 There is no separate job tool. When the host has an available process-job
 controller, both schemas gain the optional `background: true` field. Without
 that controller, the schemas and foreground execution path are unchanged.
@@ -103,13 +104,16 @@ foreground call would launch. The immediate result contains only an opaque
 `job_id`, `state`, and `started_at`; it does not expose argv, environment,
 process ids, paths, or secrets.
 
-The process owns its sandbox settings until the complete process tree exits.
+The process owns its sandbox settings until every process remaining in its
+owned POSIX process group exits.
 On POSIX a command-agnostic detached group leader starts first. Mono-agent
 persists its PID, equal PGID, and process-incarnation evidence before releasing
 the exact command and environment over an anonymous pipe. A crash before that
 commit cannot spawn the target; a crash after release leaves a recoverable
-owned group. Timeout, cancellation, and matched restart recovery can therefore
-terminate descendants before sandbox cleanup.
+owned group. Timeout, cancellation, and matched restart recovery therefore wait
+for inherited-group descendants before sandbox cleanup. Commands that
+deliberately daemonize into another POSIX process group or session are not
+contained by this contract and must not use `background: true`.
 
 ## Lifecycle, output, and wake delivery
 
@@ -130,13 +134,18 @@ at most three attempts with the same delivery key, including across restart.
 Ambiguous wake attempts are not replayed automatically, because a second post
 could duplicate a real first delivery.
 
+Pending-wake records and their referenced artifacts remain live and are exempt
+from age, count, and artifact-byte pruning until delivery settles. Other
+terminal records and artifacts are pruned oldest-first with job-id tie-breaking.
+
 Stdout and stderr are stored separately under the configured output budget.
 The model, CLI, operator API, and web card receive only bounded redacted
 previews plus agent-root-relative artifact references. Treat every preview as
 untrusted process output. Records retain a redacted command summary and only
 environment key names; raw argv and environment values are never projected to
 operator clients. Distinctive effective environment values and values from
-sensitive environment names are also scrubbed from previews and artifacts.
+sensitive environment names are also scrubbed from previews and artifacts,
+including a retained secret prefix at the process-runner truncation boundary.
 
 Slack and Telegram wake the original thread/chat through their normal proactive
 turn path and settle the existing in-thread running indicator once, without an
@@ -149,13 +158,16 @@ one durable job card in the originating thread.
 At startup, mono-agent reuses process-incarnation evidence. Only a stored leader
 whose PID still matches its incarnation and equals its PGID can authorize a
 signal. Recovery sends `SIGTERM` to that owned process group and waits one
-second. It re-attests the leader immediately before `SIGKILL`; if the leader
-vanished or its PID changed during the grace window, it does not signal the
-group again or clean settings while descendants may remain. Only a still-matched
-group is killed and cleaned. Every path marks the job `interrupted` and
-schedules one recovered wake, with conservative wording when complete tree
-termination could not be proven. Process jobs never claim to survive an agent
-restart.
+second. If the group remains, it re-attests the leader immediately before
+`SIGKILL`; if the leader vanished or its PID changed during the grace window,
+it does not signal the group again or clean settings while descendants may
+remain. Recovery polls for actual group absence after an accepted signal and
+only then removes the validated one-use sandbox settings directory. A queued or
+pre-attestation record never crossed the target-release fence, so recovery can
+remove that directory without signalling. Every path marks the job
+`interrupted` and schedules one recovered wake, with conservative wording when
+owned-group termination could not be proven. Process jobs never claim to
+survive an agent restart.
 
 `mono-agent restart --clear-sessions` does not delete process-job records or
 artifacts. Stop the agent and remove the configured `stateDir` only when you

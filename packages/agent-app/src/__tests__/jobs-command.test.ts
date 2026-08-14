@@ -15,6 +15,7 @@ describe("mono-agent jobs", () => {
     const projection = job();
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${fixture.token}`);
+      expect(init?.redirect).toBe("error");
       const url = String(input);
       if (url.endsWith("/v1/jobs")) return Response.json({ jobs: [projection] });
       if (url.endsWith("/cancel")) return Response.json({ ...projection, cancelRequested: true });
@@ -42,6 +43,25 @@ describe("mono-agent jobs", () => {
 
   it("refuses remote endpoints before reading credentials or making a request", async () => {
     const fixture = await createFixture("http://agent.example/gui");
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const errors: string[] = [];
+    const result = await runJobsCommand({
+      cwd: fixture.cwd,
+      configPath: fixture.configPath,
+      env: fixture.env,
+      positionals: ["list"],
+      listSources: fixture.listSources,
+      fetchImpl,
+      json: true,
+      stderr: (text) => errors.push(text),
+    });
+    expect(result).toBe(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(JSON.parse(errors.join(""))).toMatchObject({ error: { code: "remote_refused" } });
+  });
+
+  it("refuses credential-bearing loopback endpoints before sending the owner bearer", async () => {
+    const fixture = await createFixture("http://user:pass@127.0.0.1:49123/gui");
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const errors: string[] = [];
     const result = await runJobsCommand({

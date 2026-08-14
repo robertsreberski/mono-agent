@@ -93,7 +93,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
   {
     jsonPath: "processJobs.maxRuntimeMs", env: "--", type: "integer",
     defaultLabel: "1800000", defaultValue: 1_800_000, example: 1_800_000,
-    description: "Host runtime ceiling per spawned process tree (compiled cap 24 hours; calls may narrow it).",
+    description: "Host runtime ceiling per owned process group (compiled cap 24 hours; calls may narrow it).",
   },
   {
     jsonPath: "processJobs.maxQueueAgeMs", env: "--", type: "integer",

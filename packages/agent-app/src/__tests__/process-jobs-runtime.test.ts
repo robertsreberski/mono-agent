@@ -66,6 +66,11 @@ describe("process-job request availability", () => {
       ["openai-api", { conversationId: "openai-api:request" }],
       ["a2a", { conversationId: "a2a:request" }],
       ["slack", { conversationId: "slack:C1:1.1", replyTo: { conversationId: "telegram:42" } }],
+      ["slack", { conversationId: "slack:C1:1.1", replyTo: { conversationId: "slack:C2:2.2" } }],
+      ["slack", { conversationId: "telegram:42", replyTo: { conversationId: "slack:C1:1.1" } }],
+      ["slack", { conversationId: "slack:c1:1.1", replyTo: { conversationId: "slack:c1:1.1" } }],
+      ["telegram", { conversationId: "telegram:042", replyTo: { conversationId: "telegram:042" } }],
+      ["tui", { conversationId: "web:thread-1", replyTo: { conversationId: "web:thread-2" }, metadata: { source: "web" } }],
     ] as const;
     for (const [channelId, request] of cases) {
       expect(processJobOriginForRequest({ runId: "run", request: { text: "hello", ...request } as never }, channelId as never)).toBeUndefined();

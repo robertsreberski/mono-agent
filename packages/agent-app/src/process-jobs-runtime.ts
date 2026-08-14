@@ -4,7 +4,10 @@ import type { MonoAgentConfig } from "@mono-agent/config";
 import type { ChannelId } from "./channels.js";
 import { currentProcessJobWakeContext } from "./process-jobs-context.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
-import type { ProcessJobOriginRecord } from "./process-jobs-store.js";
+import {
+  isProcessJobOriginRecord,
+  type ProcessJobOriginRecord,
+} from "./process-jobs-store.js";
 import type { RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 
 export interface ProcessJobsRuntimeExtensionOptions {
@@ -56,7 +59,7 @@ export function processJobOriginForRequest(
   const bucket = hash < 0 ? null : conversationId.slice(hash + 1) || null;
   const replyToConversationId = normalizeReplyTarget(request.replyTo?.conversationId ?? baseConversationId);
   if (!matchesChannel(replyToConversationId, channel)) return undefined;
-  return {
+  const origin: ProcessJobOriginRecord = {
     conversationId,
     baseConversationId,
     bucket,
@@ -66,6 +69,7 @@ export function processJobOriginForRequest(
     historyBoundary: input.runId,
     channel,
   };
+  return isProcessJobOriginRecord(origin) ? origin : undefined;
 }
 
 function hasAllowedProcessTool(config: MonoAgentConfig): boolean {

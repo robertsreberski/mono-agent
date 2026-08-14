@@ -534,7 +534,7 @@ export function getPiBuiltinTools(allowedTools, {
       timeout: legacyBashTimeoutSchema,
       max_output_chars: bashLimitSchema,
       ...(processJobsController ? {
-        background: { type: "boolean", description: "Run as a durable background process job and notify this conversation when it finishes." },
+        background: { type: "boolean", description: "Run as a durable background process job and notify this conversation when it finishes. Do not use for commands that daemonize into another POSIX process group or session." },
       } : {}),
     }, ["command"]), bashToolRun, toolContext),
     Exec: createBuiltinTool("Exec", "Exec", "Execute one program directly from an argv array without shell parsing. Prefer this for ordinary commands; use Bash only when shell syntax is required.", objectSchema({
@@ -544,7 +544,7 @@ export function getPiBuiltinTools(allowedTools, {
       timeout_ms: processTimeoutSchema,
       max_output_chars: bashLimitSchema,
       ...(processJobsController ? {
-        background: { type: "boolean", description: "Run as a durable background process job and notify this conversation when it finishes." },
+        background: { type: "boolean", description: "Run as a durable background process job and notify this conversation when it finishes. Do not use for commands that daemonize into another POSIX process group or session." },
       } : {}),
     }, ["executable"]), execToolRun, toolContext),
     NodeRepl: nodeReplController

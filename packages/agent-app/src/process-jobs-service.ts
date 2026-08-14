@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { lstat, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, readdir, realpath, rm } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
 import type {
@@ -28,6 +29,7 @@ import {
 } from "./process-incarnation.js";
 import {
   isTerminalProcessJobState,
+  isProcessJobOriginRecord,
   loadOrCreateProcessJobSecret,
   openProcessJobStore,
   prepareProcessJobStateDirectory,
@@ -40,8 +42,12 @@ import {
 
 const PROCESS_JOB_OWNER_SCHEMA = "mono-agent.process-jobs-owner.v1";
 const RECOVERY_KILL_GRACE_MS = 1_000;
+const RECOVERY_GROUP_EXIT_POLL_MS = 25;
+const RECOVERY_GROUP_EXIT_POLLS = 40;
 const MAX_WAKE_ATTEMPTS = 3;
 const WAKE_RETRY_BASE_MS = 100;
+const SHUTDOWN_INTERRUPTED_MESSAGE =
+  "The owning agent stopped after process and sandbox ownership settled; a later start will deliver the recovery wake.";
 
 interface PendingProcessJob {
   readonly request: ProcessJobStartRequest;
@@ -79,6 +85,7 @@ export interface OpenProcessJobsServiceOptions {
   readonly readIncarnation?: typeof readProcessIncarnation;
   readonly sameIncarnation?: typeof isSameProcessIncarnation;
   readonly signalProcess?: (pid: number, signal: NodeJS.Signals) => void;
+  readonly processGroupExists?: (pgid: number) => boolean;
   readonly sleep?: (milliseconds: number) => Promise<void>;
   readonly acquireLock?: () => Promise<OwnerPrivateLock | undefined>;
   readonly store?: ProcessJobStore;
@@ -177,6 +184,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private readonly readIncarnation: typeof readProcessIncarnation;
   private readonly sameIncarnation: typeof isSameProcessIncarnation;
   private readonly signalProcess: (pid: number, signal: NodeJS.Signals) => void;
+  private readonly processGroupExists: (pgid: number) => boolean;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private tail: Promise<void> = Promise.resolve();
   private queueTimer: ReturnType<typeof setTimeout> | undefined;
@@ -202,6 +210,15 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     this.readIncarnation = options.readIncarnation ?? readProcessIncarnation;
     this.sameIncarnation = options.sameIncarnation ?? isSameProcessIncarnation;
     this.signalProcess = options.signalProcess ?? ((pid, signal) => process.kill(pid, signal));
+    this.processGroupExists = options.processGroupExists ?? ((pgid) => {
+      try {
+        process.kill(this.platform === "win32" ? pgid : -pgid, 0);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+        return true;
+      }
+    });
     this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolvePromise) => {
       const timer = setTimeout(resolvePromise, milliseconds);
       timer.unref?.();
@@ -319,7 +336,14 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       if (isTerminalProcessJobState(record.state)) continue;
       let matched = false;
       let terminated = false;
-      if (record.pid !== null && record.processIncarnation !== undefined) {
+      let unreleased = false;
+      let unreleasedSettingsCleaned = false;
+      if (record.pid === null && record.pgid === null && record.processIncarnation === undefined) {
+        // Queued and pre-attestation starting records never crossed the gate's
+        // durable release fence, so no target command can have been spawned.
+        unreleased = true;
+        unreleasedSettingsCleaned = await cleanupPersistedSandboxSettings(record.sandboxSettingsPath);
+      } else if (record.pid !== null && record.processIncarnation !== undefined) {
         matched = await this.sameIncarnation(record.pid, record.processIncarnation).catch(() => false);
       }
       // A detached child created by the kernel is always its own group leader.
@@ -328,23 +352,32 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       if (matched && record.pgid !== null && record.pid === record.pgid) {
         const termAccepted = this.signalOwned(record.pgid, "SIGTERM");
         await this.sleep(RECOVERY_KILL_GRACE_MS);
-        // Re-attest the leader immediately before escalation. If it vanished or
-        // its PID was reused during the grace window, never signal that PGID
-        // again: descendants may remain, but an unrelated process is safe.
-        const stillMatched = record.pid !== null
-          && record.processIncarnation !== undefined
-          && await this.sameIncarnation(record.pid, record.processIncarnation).catch(() => false);
-        if (stillMatched) {
-          const killAccepted = this.signalOwned(record.pgid, "SIGKILL");
-          const settingsCleaned = termAccepted && killAccepted
-            ? await cleanupPersistedSandboxSettings(record.sandboxSettingsPath)
-            : false;
-          terminated = termAccepted && killAccepted && settingsCleaned;
+        let groupExited = termAccepted && this.ownedProcessGroupIsAbsent(record.pgid);
+        let killAccepted = groupExited;
+        if (!groupExited) {
+          // Re-attest the leader immediately before escalation. If it vanished
+          // or its PID was reused during the grace window, never signal that
+          // PGID again: descendants may remain, but an unrelated process is safe.
+          const stillMatched = record.pid !== null
+            && record.processIncarnation !== undefined
+            && await this.sameIncarnation(record.pid, record.processIncarnation).catch(() => false);
+          if (stillMatched) {
+            killAccepted = this.signalOwned(record.pgid, "SIGKILL");
+            groupExited = killAccepted && await this.waitForOwnedProcessGroupExit(record.pgid);
+          }
         }
+        const settingsCleaned = termAccepted && killAccepted && groupExited
+          ? await cleanupPersistedSandboxSettings(record.sandboxSettingsPath)
+          : false;
+        terminated = termAccepted && killAccepted && groupExited && settingsCleaned;
       }
-      const message = terminated
-        ? "The owning agent restarted; the verified process group was terminated before recovery."
-        : "The owning agent restarted without both a matching process incarnation and owned process group; no process was signalled and descendants may remain.";
+      const message = unreleased
+        ? unreleasedSettingsCleaned
+          ? "The owning agent restarted before the target was ever released; no target was spawned and sandbox settings were removed."
+          : "The owning agent restarted before the target was ever released; no target was spawned, but sandbox settings could not be removed."
+        : terminated
+          ? "The owning agent restarted; the verified process group exited before sandbox cleanup."
+          : "The owning agent restarted without complete proof that the owned process group exited; cleanup was withheld and descendants may remain.";
       await this.store.mutate((draft) => {
         const current = draft.get(record.jobId);
         if (current === undefined || isTerminalProcessJobState(current.state)) return;
@@ -374,19 +407,22 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         const admittedAt = this.now();
         const maxRuntimeMs = Math.min(this.settings.maxRuntimeMs, request.timeoutMs ?? this.settings.maxRuntimeMs);
         const previewChars = Math.min(this.settings.previewChars, request.maxOutputChars ?? this.settings.previewChars);
+        const summary = request.tool === "Exec"
+          ? "Exec command (values redacted)"
+          : "Bash command (content redacted)";
         const record: DurableProcessJobRecord = {
           schemaVersion: 1,
           generation: randomUUID(),
           jobId,
           tool: request.tool,
           state: "queued",
-          summary: boundedSummary(request.summary),
+          summary,
           agentIncarnation: this.agentIncarnation,
           pid: null,
           pgid: null,
           sandboxSettingsPath: request.prepared.sandboxSettingsPath ?? null,
-          argvSummary: boundedSummary(request.summary),
-          cwd: boundedPath(request.prepared.cwd),
+          argvSummary: summary,
+          cwd: "Working directory (value redacted)",
           envKeys: effectiveEnvironmentKeys(request.prepared.env),
           origin,
           chainDepth,
@@ -569,12 +605,13 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       if (active === undefined) return;
       let cleanupError: unknown;
       try { await active.cleanup(); } catch (error) { cleanupError = error; }
+      const runnerTruncated = result.truncated || result.bufferExceeded;
       const stdout = boundOutput(
-        redactOutput(result.stdout, active.redactionSecrets),
+        redactOutput(result.stdout, active.redactionSecrets, runnerTruncated),
         this.settings.maxOutputBytes,
       );
       const stderr = boundOutput(
-        redactOutput(result.stderr, active.redactionSecrets),
+        redactOutput(result.stderr, active.redactionSecrets, runnerTruncated),
         Math.max(0, this.settings.maxOutputBytes - Buffer.byteLength(stdout.text, "utf8")),
       );
       const artifactWrites = await Promise.allSettled([
@@ -585,7 +622,6 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         .filter((result): result is PromiseRejectedResult => result.status === "rejected")
         .map((result) => result.reason)[0];
       let transitioned = false;
-      let completedAfterTerminal = false;
       try {
         await this.store.mutate((records) => {
           const record = records.get(jobId);
@@ -611,7 +647,6 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           // dropping the process result.
           record.preview = outputPreview(stdout.text, stderr.text, record.previewChars);
           if (alreadyTerminal) {
-            completedAfterTerminal = true;
             if (cleanupError !== undefined) {
               appendOperationalFailure(
                 record,
@@ -634,21 +669,51 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             }
             return;
           }
-          const terminal = terminalFromResult(
-            record,
-            result,
-            cleanupError,
-            artifactError,
-            active.redactionSecrets,
-          );
-          transitionTerminal(record, terminal.state, this.now(), terminal.code, terminal.message);
+          if (this.stopping) {
+            transitionTerminal(
+              record,
+              "interrupted",
+              this.now(),
+              "process_job_agent_restarted",
+              SHUTDOWN_INTERRUPTED_MESSAGE,
+            );
+            if (cleanupError !== undefined) {
+              appendOperationalFailure(
+                record,
+                `Sandbox cleanup also failed: ${safeProcessError(
+                  cleanupError,
+                  "unknown cleanup failure",
+                  active.redactionSecrets,
+                )}`,
+              );
+            }
+            if (artifactError !== undefined) {
+              appendOperationalFailure(
+                record,
+                `Output artifact publication also failed: ${safeProcessError(
+                  artifactError,
+                  "unknown artifact failure",
+                  active.redactionSecrets,
+                )}`,
+              );
+            }
+          } else {
+            const terminal = terminalFromResult(
+              record,
+              result,
+              cleanupError,
+              artifactError,
+              active.redactionSecrets,
+            );
+            transitionTerminal(record, terminal.state, this.now(), terminal.code, terminal.message);
+          }
           transitioned = true;
         });
       } finally {
         this.active.delete(jobId);
         this.pending.delete(jobId);
       }
-      if (completedAfterTerminal && this.stopping) {
+      if (this.stopping) {
         if (cleanupError !== undefined) this.shutdownFailures.push(cleanupError);
         if (artifactError !== undefined) this.shutdownFailures.push(artifactError);
       }
@@ -831,15 +896,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         await this.withLock(async () => {
           await this.store.mutate((records) => {
             for (const record of records.values()) {
-              if (!isTerminalProcessJobState(record.state)) {
-                transitionTerminal(
-                  record,
-                  "interrupted",
-                  this.now(),
-                  "process_job_agent_restarted",
-                  "The owning agent stopped before this process job completed; a later start will deliver the recovery wake.",
-                );
-              }
+              if (!isTerminalProcessJobState(record.state)) record.cancelRequested = true;
             }
           });
         });
@@ -851,7 +908,33 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       }
       const queuedToCleanup = [...this.pending.keys()].filter((jobId) => !this.active.has(jobId));
       for (const jobId of queuedToCleanup) {
-        try { await this.cleanupPending(jobId); } catch (error) { failures.push(error); }
+        let cleaned = false;
+        try {
+          await this.cleanupPending(jobId);
+          cleaned = true;
+        } catch (error) {
+          failures.push(error);
+        }
+        if (cleaned) {
+          try {
+            await this.withLock(async () => {
+              await this.store.mutate((records) => {
+                const record = records.get(jobId);
+                if (record !== undefined && !isTerminalProcessJobState(record.state)) {
+                  transitionTerminal(
+                    record,
+                    "interrupted",
+                    this.now(),
+                    "process_job_agent_restarted",
+                    SHUTDOWN_INTERRUPTED_MESSAGE,
+                  );
+                }
+              });
+            });
+          } catch (error) {
+            failures.push(error);
+          }
+        }
       }
       await Promise.allSettled([...this.settlements.values()]);
       failures.push(...this.shutdownFailures.splice(0));
@@ -861,7 +944,31 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           // rejected before it could retire ownership. Completion has settled,
           // so sandbox cleanup is now safe and remains exactly-once wrapped.
           for (const [jobId, active] of this.active) {
-            try { await active.cleanup(); } catch (error) { failures.push(error); }
+            let cleaned = false;
+            try {
+              await active.cleanup();
+              cleaned = true;
+            } catch (error) {
+              failures.push(error);
+            }
+            if (cleaned) {
+              try {
+                await this.store.mutate((records) => {
+                  const record = records.get(jobId);
+                  if (record !== undefined && !isTerminalProcessJobState(record.state)) {
+                    transitionTerminal(
+                      record,
+                      "interrupted",
+                      this.now(),
+                      "process_job_agent_restarted",
+                      SHUTDOWN_INTERRUPTED_MESSAGE,
+                    );
+                  }
+                });
+              } catch (error) {
+                failures.push(error);
+              }
+            }
             this.active.delete(jobId);
             this.pending.delete(jobId);
           }
@@ -909,6 +1016,19 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     }
   }
 
+  private ownedProcessGroupIsAbsent(pgid: number): boolean {
+    try { return !this.processGroupExists(pgid); }
+    catch { return false; }
+  }
+
+  private async waitForOwnedProcessGroupExit(pgid: number): Promise<boolean> {
+    for (let attempt = 0; attempt < RECOVERY_GROUP_EXIT_POLLS; attempt += 1) {
+      if (this.ownedProcessGroupIsAbsent(pgid)) return true;
+      if (attempt + 1 < RECOVERY_GROUP_EXIT_POLLS) await this.sleep(RECOVERY_GROUP_EXIT_POLL_MS);
+    }
+    return false;
+  }
+
   private assertAvailable(
     origin: ProcessJobOriginRecord,
     chainDepth: number,
@@ -917,7 +1037,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     if (this.stopping || this.stopped) {
       throw new ProcessJobServiceError("process_job_controller_unavailable", "Process-job controller is stopping.");
     }
-    if (!isWakeCapableOrigin(origin)) {
+    if (!isProcessJobOriginRecord(origin) || !isWakeCapableOrigin(origin)) {
       throw new ProcessJobServiceError(
         "background_unsupported_channel",
         `Background process jobs cannot wake origin channel ${origin.channel}.`,
@@ -1139,17 +1259,54 @@ function processJobWakePrompt(projection: ProcessJobProjection): string {
   ].join("\n");
 }
 
-function redactOutput(text: string, secrets: readonly string[]): string {
-  let redacted = text;
-  for (const secret of [...new Set(secrets)].sort((left, right) => right.length - left.length)) {
-    redacted = redacted.replaceAll(secret, "[REDACTED]");
-  }
-  redacted = redacted
+function redactOutput(text: string, secrets: readonly string[], truncatedAtEnd = false): string {
+  const orderedSecrets = [...new Set(secrets)]
+    .filter((secret) => secret.length > 0)
+    .sort((left, right) => right.length - left.length);
+  let redacted = text
     .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [REDACTED]")
     .replace(/\b(api[ _-]?key|(?:access|auth|refresh|session)[ _-]?token|authorization|client[ _-]?secret|password|secret|token)(["']?\s*[=:]\s*["']?)(?!\[REDACTED\])([^\s,;}\]"']+)/giu,
       (_match, label: string, separator: string) => `${label}${separator}[REDACTED]`)
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)([^/\s]+)@/giu, "$1[REDACTED]@");
+    .replace(/\b([a-z][a-z0-9+.-]{0,63}:\/\/)([^/\s]+)@/giu, "$1[REDACTED]@");
+  // Never run later replacements across a marker produced by an earlier
+  // replacement. Short explicit environment values such as "R" or "E" must
+  // not recursively amplify "[REDACTED]" before the byte bound is applied.
+  // If the ordinary marker itself contains a secret, omission is the only
+  // literal representation that cannot reproduce that value.
+  const literalMarker = orderedSecrets.some((secret) => "[REDACTED]".includes(secret))
+    ? ""
+    : "[REDACTED]";
+  redacted = replaceSecretLiterals(redacted, orderedSecrets, literalMarker);
+  if (truncatedAtEnd) {
+    for (const secret of orderedSecrets) {
+      const maximumPrefix = Math.min(secret.length - 1, redacted.length);
+      for (let length = maximumPrefix; length > 0; length -= 1) {
+        if (redacted.endsWith(secret.slice(0, length))) {
+          redacted = `${redacted.slice(0, -length)}${literalMarker}`;
+          break;
+        }
+      }
+    }
+  }
   return redacted;
+}
+
+function replaceSecretLiterals(text: string, secrets: readonly string[], marker: string): string {
+  if (secrets.length === 0) return text;
+  // Reserve one UTF-16 code unit absent from both source text and every secret.
+  // Sequential native literal replacements can then use that sentinel without
+  // letting later rules rescan or amplify earlier redaction markers.
+  const used = new Uint8Array(65_536);
+  for (let index = 0; index < text.length; index += 1) used[text.charCodeAt(index)] = 1;
+  for (const secret of secrets) {
+    for (let index = 0; index < secret.length; index += 1) used[secret.charCodeAt(index)] = 1;
+  }
+  const sentinelCode = used.indexOf(0);
+  if (sentinelCode < 0) return marker;
+  const sentinel = String.fromCharCode(sentinelCode);
+  let redacted = text;
+  for (const secret of secrets) redacted = redacted.replaceAll(secret, sentinel);
+  return redacted.replaceAll(sentinel, marker);
 }
 
 function boundOutput(text: string, maxBytes: number): { readonly text: string; readonly truncated: boolean } {
@@ -1187,7 +1344,7 @@ function effectiveEnvironmentKeys(overrides: Readonly<Record<string, string | un
     if (value === undefined) keys.delete(key);
     else keys.add(key);
   }
-  return [...keys].filter((key) => key.length > 0 && key.length <= 512).sort();
+  return [...keys].filter((key) => key.length > 0 && Buffer.byteLength(key, "utf8") <= 512).sort();
 }
 
 function processOutputSecrets(
@@ -1218,11 +1375,15 @@ function isWakeCapableOrigin(origin: ProcessJobOriginRecord): boolean {
 
 function boundedSummary(value: string): string {
   const normalized = value.trim().length === 0 ? "Process job" : value.trim();
-  return normalized.length <= 8_000 ? normalized : `${normalized.slice(0, 7_999)}…`;
+  return boundUtf8(normalized, 8_000, "…");
 }
 
-function boundedPath(value: string): string {
-  return value.length <= 16_384 ? value : value.slice(0, 16_384);
+function boundUtf8(value: string, maxBytes: number, marker: string): string {
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.byteLength <= maxBytes) return value;
+  const markerBytes = Buffer.from(marker, "utf8");
+  if (markerBytes.byteLength >= maxBytes) return decodeUtf8Prefix(bytes, maxBytes);
+  return `${decodeUtf8Prefix(bytes, maxBytes - markerBytes.byteLength)}${marker}`;
 }
 
 function requireRecord(
@@ -1279,22 +1440,54 @@ async function cancelMalformedHandle(handle: ProcessJobProcessHandle | undefined
 
 async function cleanupPersistedSandboxSettings(path: string | null): Promise<boolean> {
   if (path === null) return true;
+  const directory = dirname(path);
+  if (resolve(path) !== path
+    || basename(path) !== "settings.json"
+    || !/^mono-agent-srt-settings-[A-Za-z0-9_-]{6,}$/u.test(basename(directory))) {
+    return false;
+  }
   try {
-    const info = await lstat(path);
-    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) return false;
-    if (typeof process.getuid === "function" && info.uid !== process.getuid()) return false;
-    if (process.platform !== "win32" && (info.mode & 0o077) !== 0) return false;
-    await rm(path, { force: true });
+    const canonicalDirectory = await realpath(directory);
+    if (canonicalDirectory !== directory || !await isAllowedSandboxSettingsDirectory(canonicalDirectory)) return false;
+    const directoryInfo = await lstat(directory);
+    if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) return false;
+    if (typeof process.getuid === "function" && directoryInfo.uid !== process.getuid()) return false;
+    if (process.platform !== "win32" && (directoryInfo.mode & 0o077) !== 0) return false;
+    const entries = await readdir(directory, { withFileTypes: true });
+    if (entries.some((entry) => entry.name !== "settings.json")) return false;
+    const settings = entries.find((entry) => entry.name === "settings.json");
+    if (settings !== undefined) {
+      const info = await lstat(path);
+      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1) return false;
+      if (typeof process.getuid === "function" && info.uid !== process.getuid()) return false;
+      if (process.platform !== "win32" && (info.mode & 0o077) !== 0) return false;
+    }
+    await rm(directory, { recursive: true, force: true });
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "ENOENT";
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    try {
+      await lstat(directory);
+      return false;
+    } catch (directoryError) {
+      return (directoryError as NodeJS.ErrnoException).code === "ENOENT";
+    }
   }
+}
+
+async function isAllowedSandboxSettingsDirectory(directory: string): Promise<boolean> {
+  for (const base of [tmpdir(), resolve(homedir(), ".cache")]) {
+    try {
+      if (dirname(directory) === await realpath(base)) return true;
+    } catch { /* unavailable fallback root */ }
+  }
+  return false;
 }
 
 function safeError(error: unknown, fallback: string): string {
   try {
     const message = error instanceof Error ? error.message : String(error);
-    return boundedSummary(message.length === 0 ? fallback : message);
+    return message.length === 0 ? fallback : message;
   } catch {
     return fallback;
   }

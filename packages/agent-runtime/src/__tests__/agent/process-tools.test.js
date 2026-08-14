@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 import { bashToolRun, execToolRun } from "../../agent/tools/index.js";
 import { getPiBuiltinTools } from "../../agent/tools/pi-bridge.js";
+import { killProcessGroup } from "../../agent/tools/shared/process-runner.js";
 
 const tempDirs = [];
 
@@ -38,6 +39,8 @@ describe("Exec", () => {
       .toEqual(expect.objectContaining({ type: "boolean" }));
     expect(withController.find((tool) => tool.name === "Bash").parameters.properties.background)
       .toEqual(expect.objectContaining({ type: "boolean" }));
+    expect(withController.find((tool) => tool.name === "Exec").parameters.properties.background.description)
+      .toContain("Do not use for commands that daemonize");
 
     const disabledAgain = getPiBuiltinTools(["Exec", "Bash"]);
     expect(Object.fromEntries(disabledAgain.map((tool) => [tool.name, JSON.stringify(tool.parameters)]))).toEqual(baseline);
@@ -172,6 +175,49 @@ describe("Exec", () => {
     } finally {
       try { process.kill(-pgid, "SIGKILL"); } catch { /* already gone */ }
     }
+  });
+
+  it("waits for an inherited-group descendant after the target leader exits", async () => {
+    if (process.platform === "win32") return;
+    const workspace = tempWorkspace();
+    const marker = resolve(workspace, "descendant-finished");
+    let terminal;
+    const controller = {
+      async start(request) {
+        const handle = request.launch({ timeoutMs: 5_000 });
+        await handle.release();
+        terminal = handle.completion;
+        return { jobId: "pj_descendant", state: "running", startedAt: handle.startedAt };
+      },
+    };
+    const target = [
+      "const { spawn } = require('node:child_process');",
+      "const child = spawn(process.execPath, ['--eval', `setTimeout(() => require('node:fs').writeFileSync(process.argv[1], 'done'), 350)`, process.argv[1]], { stdio: 'ignore' });",
+      "child.unref();",
+    ].join("\n");
+
+    await execToolRun({
+      executable: process.execPath,
+      args: ["--eval", target, marker],
+      background: true,
+    }, { ...options(workspace), processJobsController: controller });
+
+    expect(existsSync(marker)).toBe(false);
+    await terminal;
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it("never falls back from an absent POSIX group to a potentially reused leader PID", () => {
+    if (process.platform === "win32") return;
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid) => {
+      if (pid < 0) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+      return true;
+    });
+
+    killProcessGroup({ pid: 4321 }, "SIGTERM");
+
+    expect(kill).toHaveBeenCalledOnce();
+    expect(kill).toHaveBeenCalledWith(-4321, "SIGTERM");
   });
 
   it("preserves foreground behavior with an injected controller and narrows explicit background limits", async () => {

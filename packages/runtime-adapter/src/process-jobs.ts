@@ -40,9 +40,10 @@ export interface ProcessJobStartRequest {
   readonly tool: "Exec" | "Bash";
   /**
    * Exact sandbox-prepared command. The controller takes ownership before
-   * start() can settle and must call cleanup after the owned process tree exits
-   * on every success/failure/cancellation path. Never persist env values or raw
-   * argv from this object.
+   * start() can settle and must call cleanup after the owned process group exits
+   * on every success/failure/cancellation path. Commands that deliberately
+   * create a different POSIX session or process group are outside this ownership
+   * contract. Never persist env values or raw argv from this object.
    */
   readonly prepared: PreparedSandboxCommand;
   /** Kernel-produced summary that contains no argument/command values. */

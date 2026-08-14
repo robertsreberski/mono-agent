@@ -243,9 +243,14 @@ export function startPreparedProcess(
     let settled = false;
 
     function terminate() {
+      if (processLeaderExited(child)) return;
       killProcessGroup(child, "SIGTERM");
       if (killTimer === null) {
-        killTimer = setTimeout(() => killProcessGroup(child, "SIGKILL"), KILL_GRACE_MS);
+        killTimer = setTimeout(() => {
+          // Once the exact ChildProcess reports exit, its PID/PGID may be
+          // reused. Fail closed instead of signalling by a stale numeric id.
+          if (!processLeaderExited(child)) killProcessGroup(child, "SIGKILL");
+        }, KILL_GRACE_MS);
         killTimer.unref?.();
       }
     }
@@ -445,9 +450,13 @@ export function killProcessGroup(child, signal) {
   if (!child?.pid) return;
   try {
     process.kill(process.platform === "win32" ? child.pid : -child.pid, signal);
-  } catch {
-    try { process.kill(child.pid, signal); } catch { /* already gone */ }
-  }
+  } catch { /* already gone or no longer safely attributable */ }
+}
+
+function processLeaderExited(child) {
+  return !child?.pid
+    || (child.exitCode !== null && child.exitCode !== undefined)
+    || (child.signalCode !== null && child.signalCode !== undefined);
 }
 
 /**

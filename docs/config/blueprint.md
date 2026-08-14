@@ -234,7 +234,8 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     ]
   },
 
-  // Opt-in Pi-native Exec/Bash background jobs. The host owns the process tree,
+  // Opt-in Pi-native Exec/Bash background jobs. The host owns the inherited
+  // POSIX process group (commands that daemonize into another group are unsupported),
   // durable bounded output, exact-thread wake, cancellation, and restart recovery.
   // Unsupported on Windows; every numeric field has a compiled hard cap.
   "processJobs": {
