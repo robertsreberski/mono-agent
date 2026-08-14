@@ -172,6 +172,98 @@ describe("runCli memory", () => {
     expect(bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot)).toBe(before);
   }, 15_000);
 
+  it("runs import prepare, apply, and restore from the temp-root alias and keeps plans outside the canonical root", async () => {
+    const sourceRoot = join(await tempDir(), "memory");
+    const destinationRoot = join(await tempDir(), "memory");
+    await seedLocalStore(sourceRoot);
+    const sourceOnly = createBujoMemoryStore({ root: sourceRoot });
+    try {
+      await sourceOnly.appendHostSummary("source-only", "Portable source-only memory sentinel.");
+    } finally {
+      await sourceOnly.close();
+    }
+    await seedLocalStore(destinationRoot);
+    const embeddings = deterministicEmbeddings("ollama:test-embed", 8);
+    await safeRebuildMemoryIndex({ root: sourceRoot, tier: "bujo", embeddings, dim: 8 });
+    await safeRebuildMemoryIndex({ root: destinationRoot, tier: "bujo", embeddings, dim: 8 });
+
+    if (process.platform === "darwin") {
+      // macOS tempDir() is lexically /var/... while the package safety layer
+      // canonically binds the same directory as /private/var/....
+      expect(await realpath(destinationRoot)).not.toBe(destinationRoot);
+    }
+
+    const sourceDir = await agentDir({
+      memory: {
+        mode: "bujo",
+        path: sourceRoot,
+        writeMode: "capture",
+        embeddings: { provider: "ollama", model: "test-embed", dim: 8 },
+        llm: { provider: "ollama", model: "test-capture" },
+      },
+    });
+    const destinationDir = await agentDir({
+      memory: {
+        mode: "bujo",
+        path: destinationRoot,
+        writeMode: "capture",
+        embeddings: { provider: "ollama", model: "test-embed", dim: 8 },
+        llm: { provider: "ollama", model: "test-capture" },
+      },
+    });
+    const transferDir = await tempDir();
+    const bundlePath = join(transferDir, "bundle");
+    const planPath = join(transferDir, "import-plan.json");
+    const before = bujoMemory.readBujoCanonicalSourceFingerprint(destinationRoot);
+
+    const exported = await captureCli(() => withCwd(sourceDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "export", "--bundle", bundlePath, "--json"]))));
+    expect(exported.code, exported.stderr).toBe(0);
+    expect(JSON.parse(exported.stdout)).toMatchObject({ operation: "memory-export", status: "exported" });
+
+    const insidePlan = join(destinationRoot, "import-plan.json");
+    const refused = await captureCli(() => withCwd(destinationDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "import", "prepare", "--bundle", bundlePath, "--plan", insidePlan, "--json"]))));
+    expect(refused.code).toBe(1);
+    expect(JSON.parse(refused.stdout)).toMatchObject({
+      operation: "memory-import-prepare",
+      code: "import_prepare_failed",
+      status: "failed",
+    });
+    await expect(lstat(insidePlan)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const prepared = await captureCli(() => withCwd(destinationDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "import", "prepare", "--bundle", bundlePath, "--plan", planPath, "--json"]))));
+    expect(prepared.code, prepared.stderr).toBe(0);
+    const prepareResult = JSON.parse(prepared.stdout) as {
+      readonly operation: string;
+      readonly status: string;
+      readonly counts: { readonly newMemories: number };
+    };
+    expect(prepareResult).toMatchObject({
+      operation: "memory-import-prepare",
+      status: "prepared",
+    });
+    expect(prepareResult.counts.newMemories).toBeGreaterThan(0);
+
+    stubOllamaEmbeddings(8);
+    const applied = await captureCli(() => withCwd(destinationDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "import", "apply", "--plan", planPath, "--json"]))));
+    expect(applied.code, applied.stderr).toBe(0);
+    const applyResult = JSON.parse(applied.stdout) as { readonly backupPath: string; readonly operation: string };
+    expect(applyResult.operation).toBe("memory-import-apply");
+    expect(bujoMemory.readBujoCanonicalSourceFingerprint(destinationRoot)).not.toBe(before);
+
+    const restored = await captureCli(() => withCwd(destinationDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "import", "restore", "--backup", applyResult.backupPath, "--json"]))));
+    expect(restored.code, restored.stderr).toBe(0);
+    expect(JSON.parse(restored.stdout)).toMatchObject({
+      operation: "memory-import-restore",
+      status: "restored",
+    });
+    expect(bujoMemory.readBujoCanonicalSourceFingerprint(destinationRoot)).toBe(before);
+  }, 30_000);
+
   it("emits the closed strict-health JSON contract for unconfigured and remote memory", async () => {
     const unconfiguredDir = await agentDir({ memory: undefined });
     const unconfigured = await captureCli(() => withCwd(unconfiguredDir, () => withCleanMonoAgentEnv(() =>
@@ -1392,6 +1484,16 @@ describe("runCli memory", () => {
       runCli(["memory", "forget", privateOperation]))));
     expect(unknownForgetHuman.code).toBe(2);
     expect(`${unknownForgetHuman.stdout}${unknownForgetHuman.stderr}`).not.toContain(privateOperation);
+
+    const unknownImport = await captureCli(() => withCwd(usageDir, () => withCleanMonoAgentEnv(() =>
+      runCli(["memory", "import", privateOperation, "--json"]))));
+    expect(unknownImport.code).toBe(2);
+    expect(JSON.parse(unknownImport.stdout)).toMatchObject({
+      operation: "memory-import-unknown",
+      code: "import_usage",
+      status: "failed",
+    });
+    expect(`${unknownImport.stdout}${unknownImport.stderr}`).not.toContain(privateOperation);
 
     const forgetConfig = await captureCli(() => withCwd(privateConfigRoot, () => withCleanMonoAgentEnv(() =>
       runCli(["memory", "forget", "apply", "--plan", "private-plan", "--json"]))));

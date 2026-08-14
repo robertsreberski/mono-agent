@@ -15,6 +15,7 @@ import { openMemoryDb } from "../../store/index.js";
 
 import { exportMemoryBundle } from "../bundle-export.js";
 import { MEMORY_BUNDLE_MANIFEST_FILE, MEMORY_BUNDLE_SOURCE_DIR } from "../bundle-format.js";
+import { appendBullet } from "../daily.js";
 import {
   applyMemoryBundleImport,
   MemoryBundleImportError,
@@ -26,6 +27,7 @@ import { readManagedIndexManifest, resolveActiveMemoryDbPath } from "../generati
 import { readBujoCanonicalSourceFingerprint } from "../replay-projection.js";
 
 import {
+  bulletOf,
   cleanupBujoFixtures,
   createBujoFixture,
   scratchDirectory,
@@ -82,6 +84,7 @@ async function applyBundle(
     expectedSourceFingerprint: preview.destinationSourceFingerprint,
     expectedBundleDigest: preview.bundleDigest,
     expectedMergeDigest: preview.mergeDigest,
+    expectedMergedSourceFingerprint: preview.mergedSourceFingerprint,
     planDigest: planDigestFor("import"),
     embeddings: destination.embeddings,
     dimension: destination.dim,
@@ -104,6 +107,8 @@ describe("memory bundle import", { timeout: 60_000 }, () => {
     expect(result.status).toBe("applied");
     expect(result.imported).toBe(2);
     expect(result.skipped).toBe(0);
+    expect(result.sourceFingerprint).toBe(preview.mergedSourceFingerprint);
+    expect(readBujoCanonicalSourceFingerprint(destination.root)).toBe(preview.mergedSourceFingerprint);
 
     const db = openMemoryDb({
       path: resolveActiveMemoryDbPath(destination.root),
@@ -286,6 +291,7 @@ describe("memory bundle import", { timeout: 60_000 }, () => {
         expectedSourceFingerprint: readBujoCanonicalSourceFingerprint(other.root),
         expectedBundleDigest: preview.bundleDigest,
         expectedMergeDigest: preview.mergeDigest,
+        expectedMergedSourceFingerprint: preview.mergedSourceFingerprint,
         planDigest: planDigestFor("stale"),
         embeddings: destination.embeddings,
         dimension: destination.dim,
@@ -405,6 +411,29 @@ describe("memory bundle import", { timeout: 60_000 }, () => {
   });
 
   describe("crash recovery", () => {
+    it("recovers when a valid but unplanned canonical write appears after the committed merge", async () => {
+      const source = await sourceStore();
+      const destination = await destinationStore();
+      const bundlePath = await bundleFrom(source);
+      const before = readBujoCanonicalSourceFingerprint(destination.root);
+
+      await expect(applyBundle(destination, bundlePath, {
+        hooks: {
+          afterMutation: () => {
+            appendBullet(
+              destination.root,
+              bulletOf({ id: "UNPLANNED", text: "valid but uncommitted post-merge write", day: "2026-08-01" }),
+              new Date("2026-08-01T05:00:00.000Z"),
+            );
+          },
+        },
+      })).rejects.toMatchObject({ code: "import_apply_failed_recovered" });
+
+      // The injected bullet is structurally rebuildable, so only the
+      // independently prepared post-merge fingerprint can reject it.
+      expect(readBujoCanonicalSourceFingerprint(destination.root)).toBe(before);
+    });
+
     it.each([
       ["afterTransactionDurable"],
       ["afterMutation"],

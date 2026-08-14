@@ -52,7 +52,7 @@ import {
 import { acquireMemoryMaintenanceLease } from "./maintenance.js";
 import { hasPendingMigrateDecision } from "./migrate.js";
 import { recoverDurableMutationState } from "./mutation-lock.js";
-import { appendCanonicalFile, canonicalMemoryRootPath } from "./path-safety.js";
+import { appendCanonicalFile } from "./path-safety.js";
 import { writeIndex } from "./projections.js";
 import {
   assertCanonicalGraphRepairBaseParity,
@@ -85,6 +85,11 @@ const IMPORT_OPERATION = MEMORY_IMPORT_SWAP_OPERATION;
 
 export type MemoryBundleImportHooks = DurableRootSwapHooks;
 
+/** Canonicalize a configured import root while preserving import recovery semantics. */
+export function resolveMemoryBundleImportRoot(root: string): string {
+  return resolveMemoryRootForMaintenance(root, IMPORT_OPERATION);
+}
+
 export interface MemoryBundleImportPolicy {
   readonly onConflict?: MemoryBundleIdConflictPolicy;
   readonly entityConflict?: MemoryBundleEntityConflictPolicy;
@@ -105,6 +110,7 @@ export interface MemoryBundleImportPreview {
   readonly bundleTreeFingerprint: string;
   readonly bundleSourceFingerprint: string;
   readonly mergeDigest: string;
+  readonly mergedSourceFingerprint: string;
   readonly onConflict: MemoryBundleIdConflictPolicy;
   readonly entityConflict: MemoryBundleEntityConflictPolicy;
   readonly counts: MemoryBundleMergeCounts;
@@ -122,6 +128,7 @@ export interface ApplyMemoryBundleImportOptions extends MemoryBundleImportPolicy
   readonly expectedSourceFingerprint: string;
   readonly expectedBundleDigest: string;
   readonly expectedMergeDigest: string;
+  readonly expectedMergedSourceFingerprint: string;
   readonly planDigest: string;
   readonly embeddings: EmbeddingProvider;
   readonly dimension: number;
@@ -180,7 +187,7 @@ export function prepareMemoryBundleImport(
   options: PrepareMemoryBundleImportOptions,
 ): MemoryBundleImportPreview {
   try {
-    const root = canonicalMemoryRootPath(options.root, false);
+    const root = resolveMemoryBundleImportRoot(options.root);
     const verified = verifyBundle(options.bundlePath);
     const destination = readCanonicalMergeSnapshot(root);
     const incoming = readCanonicalMergeSnapshot(verified.sourcePath);
@@ -196,6 +203,7 @@ export function prepareMemoryBundleImport(
       bundleTreeFingerprint: verified.manifest.treeFingerprint,
       bundleSourceFingerprint: verified.manifest.sourceFingerprint,
       mergeDigest: merge.digest,
+      mergedSourceFingerprint: merge.expectedSourceFingerprint,
       onConflict,
       entityConflict,
       counts: merge.counts,
@@ -220,7 +228,7 @@ export async function applyMemoryBundleImport(
   let backup: DurableRootSwapBackupState | undefined;
   let transactionDurable = false;
   try {
-    const root = resolveMemoryRootForMaintenance(options.root, IMPORT_OPERATION);
+    const root = resolveMemoryBundleImportRoot(options.root);
     const actualRootFingerprint = rootFingerprint(root);
     const existing = readDurableRootSwapTransactionOptional(maintenance.transactionPath, IMPORT_OPERATION);
     if (existing !== undefined) {
@@ -278,7 +286,8 @@ export async function applyMemoryBundleImport(
       entityConflict: options.entityConflict ?? "target",
     });
     assertDriftAccepted(merge, options.acceptDerivedAssociationDrift === true);
-    if (merge.digest !== options.expectedMergeDigest) {
+    if (merge.digest !== options.expectedMergeDigest
+      || merge.expectedSourceFingerprint !== options.expectedMergedSourceFingerprint) {
       throw new MemoryBundleImportError("import_stale_plan");
     }
 
@@ -320,7 +329,10 @@ export async function applyMemoryBundleImport(
       dim: options.dimension,
     });
     const sourceFingerprint = readBujoCanonicalSourceFingerprint(root);
-    assertHealthyRoot(root, rebuilt.active, options.dimension, sourceFingerprint);
+    if (sourceFingerprint !== merge.expectedSourceFingerprint) {
+      throw new Error("memory-import: canonical source differs from the prepared merge commitment");
+    }
+    assertHealthyRoot(root, rebuilt.active, options.dimension, merge.expectedSourceFingerprint);
     refreshDerivedProjections(rebuilt.active, root, options.dimension, options.now ?? (() => new Date()));
 
     const postTreeFingerprint = memoryTreeFingerprint(root);
@@ -373,7 +385,7 @@ export async function restoreMemoryBundleImport(
   const maintenance = acquireMemoryMaintenanceLease(options.root);
   let writer: MemoryWriterLease | undefined;
   try {
-    const root = resolveMemoryRootForMaintenance(options.root, IMPORT_OPERATION);
+    const root = resolveMemoryBundleImportRoot(options.root);
     const actualRootFingerprint = rootFingerprint(root);
     // A forget backup and an import backup carry different manifest operation
     // literals, so neither restore path can ever consume the other's artifact.
@@ -543,6 +555,7 @@ function refreshDerivedProjections(dbPath: string, root: string, dimension: numb
 function assertApplyOptions(options: ApplyMemoryBundleImportOptions): void {
   if (!isSha256(options.expectedRootFingerprint) || !isSha256(options.expectedSourceFingerprint)
     || !isSha256(options.expectedBundleDigest) || !isSha256(options.expectedMergeDigest)
+    || !isSha256(options.expectedMergedSourceFingerprint)
     || !isSha256(options.planDigest)
     || !Number.isInteger(options.dimension) || options.dimension <= 0) {
     throw new MemoryBundleImportError("import_apply_failed");

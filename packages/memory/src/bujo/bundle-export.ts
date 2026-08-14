@@ -1,5 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  opendirSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  type Stats,
+} from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 import { hasPendingCaptureIntent } from "./capture-outbox.js";
@@ -14,6 +23,7 @@ import {
   type MemoryExportBundleManifest,
 } from "./bundle-format.js";
 import {
+  assertDurableRootSwapBackupDirectoryInfo,
   copyTreeDurably,
   memoryTreeFingerprint,
   writeJsonExclusiveDurable,
@@ -36,6 +46,12 @@ import { readBujoCanonicalSourceFingerprint, REPLAY_PROJECTION_FILE } from "./re
 const GRAPH_FILE = "graph.jsonl";
 const EXTRA_DIRECTORIES = ["audit", "monthly", "legacy"] as const;
 const MAX_ATTEMPTS = 3;
+const MAX_STALE_STAGING_CANDIDATES = 32;
+const MAX_STALE_STAGING_ENTRIES = 10_000;
+const MAX_STALE_STAGING_BYTES = 8 * 1024 * 1024 * 1024;
+const MAX_STALE_STAGING_DEPTH = 32;
+const MAX_PID = 0x7fff_ffff;
+const UUID_V4 = "[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}";
 
 export interface MemoryBundleExportHooks {
   /** Race seam: fires after the canonical set is copied, before the closing fingerprint. */
@@ -87,6 +103,11 @@ export async function exportMemoryBundle(
   const bundlePath = resolveBundleDestination(root, options.bundlePath);
   const scope = options.scope ?? "canonical";
   const now = options.now ?? (() => new Date());
+
+  // A SIGKILL cannot run the local finally block. Reclaim only exact reserved
+  // siblings from dead PIDs, and only after a bounded owner-controlled tree and
+  // inode-stable rename claim prove that the path is ours to remove.
+  reclaimStaleExportStaging(bundlePath);
 
   const pendingWork = hasPendingCaptureIntent(root) || hasPendingMigrateDecision(root);
   if (pendingWork && options.allowPending !== true) {
@@ -284,4 +305,139 @@ function discardStaging(stagingPath: string): void {
     // Staging is unpublished by construction; a failed cleanup must not mask
     // the decisive export result.
   }
+}
+
+function reclaimStaleExportStaging(bundlePath: string): void {
+  if (typeof process.getuid !== "function") return;
+  const parent = dirname(bundlePath);
+  let parentInfo: Stats;
+  let names: string[];
+  try {
+    parentInfo = lstatSync(parent);
+    if (!safeStagingParent(parentInfo)) return;
+    const pattern = new RegExp(
+      `^${escapeRegExp(basename(bundlePath))}\\.tmp-([1-9][0-9]*)-${UUID_V4}$`,
+      "u",
+    );
+    names = readdirSync(parent)
+      .filter((name) => pattern.test(name))
+      .sort();
+    if (names.length > MAX_STALE_STAGING_CANDIDATES) return;
+
+    for (const name of names) {
+      const match = pattern.exec(name);
+      const pid = Number(match?.[1]);
+      if (!Number.isSafeInteger(pid) || pid <= 0 || pid > MAX_PID || processMayBeAlive(pid)) continue;
+      const candidatePath = join(parent, name);
+      const candidate = safeStagingTree(candidatePath);
+      if (candidate === undefined || !sameDirectoryIdentity(parent, parentInfo)) continue;
+
+      const claimedPath = `${bundlePath}.tmp-${process.pid}-${randomUUID()}`;
+      try {
+        if (existsSync(claimedPath)) continue;
+        renameSync(candidatePath, claimedPath);
+      } catch {
+        continue;
+      }
+
+      const claimed = safeStagingTree(claimedPath, candidate);
+      if (claimed === undefined || !sameDirectoryIdentity(parent, parentInfo)) {
+        // The claimed name is reserved and will be reconsidered only after this
+        // process exits. Never delete a path whose identity or tree became
+        // ambiguous across the claim.
+        continue;
+      }
+      try {
+        rmSync(claimedPath, { recursive: true, force: false });
+        fsyncMaintenanceDirectory(parent);
+      } catch {
+        // Cleanup is best effort. A later export can safely reconsider the
+        // still-reserved owner-controlled claim after this PID exits.
+      }
+    }
+  } catch {
+    // Ambiguous parents, inventories, or entries are preserved. Export itself
+    // remains governed by the normal exclusive staging/publish path.
+  }
+}
+
+function safeStagingTree(
+  root: string,
+  expected?: { readonly dev: number; readonly ino: number },
+): { readonly dev: number; readonly ino: number } | undefined {
+  try {
+    const rootInfo = lstatSync(root);
+    assertDurableRootSwapBackupDirectoryInfo(rootInfo);
+    if (expected !== undefined && (rootInfo.dev !== expected.dev || rootInfo.ino !== expected.ino)) return undefined;
+    const uid = process.getuid!();
+    const device = rootInfo.dev;
+    const stack = [{ path: root, depth: 0 }];
+    let entries = 1;
+    let bytes = 0;
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (current.depth > MAX_STALE_STAGING_DEPTH) return undefined;
+      const before = lstatSync(current.path);
+      if (!before.isDirectory() || before.isSymbolicLink() || before.uid !== uid
+        || before.dev !== device || (before.mode & 0o022) !== 0) return undefined;
+      const directory = opendirSync(current.path);
+      try {
+        for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
+          entries += 1;
+          if (entries > MAX_STALE_STAGING_ENTRIES) return undefined;
+          const childPath = join(current.path, entry.name);
+          const info = lstatSync(childPath);
+          if (info.isSymbolicLink() || info.uid !== uid || info.dev !== device || (info.mode & 0o022) !== 0) {
+            return undefined;
+          }
+          if (info.isDirectory()) {
+            stack.push({ path: childPath, depth: current.depth + 1 });
+            continue;
+          }
+          if (!info.isFile() || info.nlink !== 1 || !Number.isSafeInteger(info.size) || info.size < 0) {
+            return undefined;
+          }
+          bytes += info.size;
+          if (!Number.isSafeInteger(bytes) || bytes > MAX_STALE_STAGING_BYTES) return undefined;
+        }
+      } finally {
+        directory.closeSync();
+      }
+      const after = lstatSync(current.path);
+      if (after.dev !== before.dev || after.ino !== before.ino) return undefined;
+    }
+    const after = lstatSync(root);
+    return after.dev === rootInfo.dev && after.ino === rootInfo.ino
+      ? { dev: rootInfo.dev, ino: rootInfo.ino }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function safeStagingParent(info: Stats): boolean {
+  return info.isDirectory() && !info.isSymbolicLink()
+    && ((info.mode & 0o022) === 0 || (info.mode & 0o1000) !== 0);
+}
+
+function sameDirectoryIdentity(path: string, expected: Stats): boolean {
+  try {
+    const current = lstatSync(path);
+    return safeStagingParent(current) && current.dev === expected.dev && current.ino === expected.ino;
+  } catch {
+    return false;
+  }
+}
+
+function processMayBeAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }

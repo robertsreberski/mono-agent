@@ -158,7 +158,7 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
       return 2;
     }
     if (input.positionals[0] === "import") {
-      writeMemoryBundleFailure(input.json, `import-${input.positionals[1] ?? "unknown"}`, "import_usage");
+      writeMemoryBundleFailure(input.json, memoryImportOperationLabel(input.positionals[1]), "import_usage");
       return 2;
     }
     process.stderr.write(ui.errorLine(usageError));
@@ -188,7 +188,7 @@ export async function runMemoryCommand(input: RunMemoryCommandInput): Promise<nu
     if (subcommand === "export" || subcommand === "import") {
       writeMemoryBundleFailure(
         input.json,
-        subcommand === "export" ? "export" : `import-${rest[0] ?? "unknown"}`,
+        subcommand === "export" ? "export" : memoryImportOperationLabel(rest[0]),
         subcommand === "export" ? "export_requires_bujo" : "import_requires_bujo",
       );
       return 1;
@@ -427,6 +427,7 @@ interface MemoryImportPlanPayload {
   readonly bundlePath: string;
   readonly bundleDigest: string;
   readonly mergeDigest: string;
+  readonly mergedSourceFingerprint: string;
   readonly onConflict: "fail" | "skip";
   readonly entityConflict: "target" | "source";
   readonly acceptDerivedAssociationDrift: boolean;
@@ -506,7 +507,7 @@ async function runMemoryBundleImport(
   input: RunMemoryCommandInput,
 ): Promise<number> {
   const operation = rest[0] as "prepare" | "apply" | "restore";
-  const label = `import-${operation}`;
+  const label = memoryImportOperationLabel(operation);
   const memory = bundleMemorySettings(context);
   if (memory === undefined) {
     writeMemoryBundleFailure(input.json, label, "import_requires_bujo");
@@ -514,7 +515,10 @@ async function runMemoryBundleImport(
   }
   try {
     const bujo = await loadBujoModule();
-    const root = resolve(context.cwd, memory.path);
+    // Canonicalize once through the import operation's recovery-aware resolver.
+    // Every containment check, fingerprint, and package call below must bind to
+    // this same root identity (not a lexical Darwin system alias).
+    const root = bujo.resolveMemoryBundleImportRoot(resolve(context.cwd, memory.path));
     if (operation === "prepare") {
       const result = await prepareMemoryImportPlan(context, root, input, bujo);
       write(input.json, result, () => renderMemoryBundleImport(result));
@@ -575,6 +579,7 @@ async function prepareMemoryImportPlan(
     bundlePath: preview.bundlePath,
     bundleDigest: preview.bundleDigest,
     mergeDigest: preview.mergeDigest,
+    mergedSourceFingerprint: preview.mergedSourceFingerprint,
     onConflict: preview.onConflict,
     entityConflict: preview.entityConflict,
     acceptDerivedAssociationDrift: input.acceptDerivedAssociationDrift === true,
@@ -630,6 +635,7 @@ async function applyMemoryImportPlan(
       expectedSourceFingerprint: plan.destinationSourceFingerprint,
       expectedBundleDigest: plan.bundleDigest,
       expectedMergeDigest: plan.mergeDigest,
+      expectedMergedSourceFingerprint: plan.mergedSourceFingerprint,
       planDigest: plan.planDigest,
       onConflict: plan.onConflict,
       entityConflict: plan.entityConflict,
@@ -799,18 +805,34 @@ function readOwnErrorCode(error: Error): ErrorPropertyRead {
 async function readMemoryImportPlan(path: string): Promise<MemoryImportPlan> {
   const value = await readPrivateJson(path, MAX_IMPORT_PLAN_BYTES);
   if (!isObject(value)
+    || !hasExactKeys(value, [
+      "acceptDerivedAssociationDrift",
+      "bundleDigest",
+      "bundlePath",
+      "createdAt",
+      "destinationSourceFingerprint",
+      "entityConflict",
+      "mergeDigest",
+      "mergedSourceFingerprint",
+      "onConflict",
+      "operation",
+      "planDigest",
+      "rootFingerprint",
+      "schemaVersion",
+    ])
     || value.schemaVersion !== MEMORY_BUNDLE_CLI_SCHEMA_VERSION
     || value.operation !== "import"
-    || typeof value.rootFingerprint !== "string"
-    || typeof value.destinationSourceFingerprint !== "string"
+    || !isSha256(value.rootFingerprint)
+    || !isSha256(value.destinationSourceFingerprint)
     || typeof value.bundlePath !== "string"
-    || typeof value.bundleDigest !== "string"
-    || typeof value.mergeDigest !== "string"
+    || !isSha256(value.bundleDigest)
+    || !isSha256(value.mergeDigest)
+    || !isSha256(value.mergedSourceFingerprint)
     || (value.onConflict !== "fail" && value.onConflict !== "skip")
     || (value.entityConflict !== "target" && value.entityConflict !== "source")
     || typeof value.acceptDerivedAssociationDrift !== "boolean"
-    || typeof value.createdAt !== "string"
-    || typeof value.planDigest !== "string") {
+    || typeof value.createdAt !== "string" || !isCanonicalIso(value.createdAt)
+    || !isSha256(value.planDigest)) {
     throw new MemoryBundleOperationError("import_stale_plan");
   }
   const plan = value as unknown as MemoryImportPlan;
@@ -821,6 +843,13 @@ async function readMemoryImportPlan(path: string): Promise<MemoryImportPlan> {
   return plan;
 }
 
+function memoryImportOperationLabel(operation: string | undefined):
+  "import-prepare" | "import-apply" | "import-restore" | "import-unknown" {
+  return operation === "prepare" || operation === "apply" || operation === "restore"
+    ? `import-${operation}`
+    : "import-unknown";
+}
+
 export function writeMemoryBundleFailure(
   json: boolean,
   operation: string,
@@ -828,9 +857,16 @@ export function writeMemoryBundleFailure(
   recovered = false,
   backupPath?: string,
 ): void {
+  const safeOperation = operation === "export"
+    || operation === "import-prepare"
+    || operation === "import-apply"
+    || operation === "import-restore"
+    || operation === "import-unknown"
+    ? operation
+    : "import-unknown";
   const result = {
     schemaVersion: MEMORY_BUNDLE_CLI_SCHEMA_VERSION,
-    operation: `memory-${operation}`,
+    operation: `memory-${safeOperation}`,
     status: "failed" as const,
     code,
     message: MEMORY_BUNDLE_FAILURE_MESSAGES[code],

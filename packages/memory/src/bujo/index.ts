@@ -67,6 +67,7 @@ export {
   applyMemoryBundleImport,
   MemoryBundleImportError,
   prepareMemoryBundleImport,
+  resolveMemoryBundleImportRoot,
   restoreMemoryBundleImport,
 } from "./bundle-import.js";
 export type {

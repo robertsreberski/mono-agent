@@ -278,6 +278,7 @@ export interface CanonicalMergeSnapshot {
   readonly fingerprint: string;
   readonly daily: readonly CanonicalDailySource[];
   readonly graphBytes?: Buffer;
+  readonly replayBytes?: Buffer;
   readonly records: readonly MemoryRecord[];
   readonly graph: CanonicalGraphRecords;
   readonly replay: ReplayProjectionV1;
@@ -295,6 +296,7 @@ export function readCanonicalMergeSnapshot(root: string): CanonicalMergeSnapshot
     fingerprint: snapshot.fingerprint,
     daily: snapshot.daily.map((source) => ({ relativePath: source.relativePath, bytes: source.bytes })),
     ...(snapshot.graph === undefined ? {} : { graphBytes: snapshot.graph.bytes }),
+    ...(snapshot.replay === undefined ? {} : { replayBytes: snapshot.replay.bytes }),
     records: plan.records,
     graph: parseCanonicalGraphStrict(snapshot.graph?.bytes.toString("utf8")),
     replay: plan.replay,

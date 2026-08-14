@@ -12,6 +12,8 @@ import { assertCanonicalDailySourcePath } from "./path-safety.js";
 import type { CanonicalMergeSnapshot } from "./rebuild.js";
 import {
   mergeReplayProjection,
+  REPLAY_PROJECTION_FILE,
+  serializeReplayProjection,
   type ReplayProjectionDelta,
   type ReplayProjectionV1,
 } from "./replay-projection.js";
@@ -64,8 +66,11 @@ export interface MemoryBundleMergeCounts {
   readonly newAssociations: number;
   readonly skippedAssociations: number;
   readonly newTerminals: number;
+  readonly skippedTerminals: number;
   readonly newSupersedes: number;
+  readonly skippedSupersedes: number;
   readonly newThreads: number;
+  readonly skippedThreads: number;
   readonly derivedAssociationsAdded: number;
   readonly derivedAssociationsRemoved: number;
 }
@@ -83,6 +88,8 @@ export interface MemoryBundleMergePlan {
   /** Pre-existing destination memories that LOSE a derived association. Gated by an explicit flag. */
   readonly derivedAssociationsRemoved: readonly string[];
   readonly counts: MemoryBundleMergeCounts;
+  /** Independently derived commitment to the exact post-write canonical corpus. */
+  readonly expectedSourceFingerprint: string;
   /** Commitment to the exact ordered write plan; apply must reproduce it. */
   readonly digest: string;
 }
@@ -155,17 +162,14 @@ export function mergeCanonicalMemoryBundles(
   const dailyAppends = groupDailyAppends(imported, destinationPaths);
 
   const graph = mergeGraph(destination, incoming, importedIds, skippedIds, entityConflict);
-  const replayDelta: ReplayProjectionDelta = {
-    // Every incoming replay endpoint is an incoming memory id, and every
-    // incoming id survives the merge (imported, identical, or already present
-    // in the destination), so no endpoint filtering is needed here. Endpoint
-    // validity and lifecycle-status agreement are proven by validating the
-    // staged corpus before anything is written.
-    terminals: incoming.replay.terminals,
-    supersedes: incoming.replay.supersedes,
-    threads: incoming.replay.threads,
-  };
-  assertReplayMergeable(destination.replay, replayDelta);
+  // A skipped collision keeps the destination memory, not the incoming memory
+  // that merely shares its id. Replay authority describing the rejected memory
+  // must therefore be dropped just like its graph associations. Keeping even
+  // one terminal or edge endpoint would apply lifecycle semantics from the
+  // wrong memory and can make the written corpus unrebuildable.
+  const replay = filterSkippedReplayEntries(incoming.replay, skippedIds);
+  const replayDelta = replay.delta;
+  const mergedReplay = assertReplayMergeable(destination.replay, replayDelta);
 
   const drift = derivedAssociationDrift(destination, graph.mergedRecords, graph.mergedGraph);
 
@@ -180,11 +184,22 @@ export function mergeCanonicalMemoryBundles(
     newAssociations: graph.newAssociations,
     skippedAssociations: graph.skippedAssociations,
     newTerminals: replayDelta.terminals?.length ?? 0,
+    skippedTerminals: replay.skippedTerminals,
     newSupersedes: replayDelta.supersedes?.length ?? 0,
+    skippedSupersedes: replay.skippedSupersedes,
     newThreads: replayDelta.threads?.length ?? 0,
+    skippedThreads: replay.skippedThreads,
     derivedAssociationsAdded: drift.added.length,
     derivedAssociationsRemoved: drift.removed.length,
   };
+
+  const expectedSourceFingerprint = expectedMergedSourceFingerprint(
+    destination,
+    dailyAppends,
+    graph.lines,
+    replayDelta,
+    mergedReplay,
+  );
 
   const plan = {
     dailyAppends,
@@ -197,8 +212,35 @@ export function mergeCanonicalMemoryBundles(
     derivedAssociationsAdded: drift.added,
     derivedAssociationsRemoved: drift.removed,
     counts,
+    expectedSourceFingerprint,
   };
   return { ...plan, digest: digestMergePlan(plan, onConflict, entityConflict) };
+}
+
+interface FilteredReplayDelta {
+  readonly delta: ReplayProjectionDelta;
+  readonly skippedTerminals: number;
+  readonly skippedSupersedes: number;
+  readonly skippedThreads: number;
+}
+
+function filterSkippedReplayEntries(
+  incoming: ReplayProjectionV1,
+  skippedIds: ReadonlySet<string>,
+): FilteredReplayDelta {
+  const terminals = incoming.terminals.filter((entry) => !skippedIds.has(entry.id));
+  const supersedes = incoming.supersedes.filter(
+    (entry) => !skippedIds.has(entry.src) && !skippedIds.has(entry.dst),
+  );
+  const threads = incoming.threads.filter(
+    (entry) => !skippedIds.has(entry.src) && !skippedIds.has(entry.dst),
+  );
+  return {
+    delta: { terminals, supersedes, threads },
+    skippedTerminals: incoming.terminals.length - terminals.length,
+    skippedSupersedes: incoming.supersedes.length - supersedes.length,
+    skippedThreads: incoming.threads.length - threads.length,
+  };
 }
 
 function readBullets(snapshot: CanonicalMergeSnapshot): Map<string, BulletEntry> {
@@ -377,13 +419,13 @@ function changedEntityFields(current: EntityRecord, next: EntityRecord): string[
   return fields;
 }
 
-function assertReplayMergeable(base: ReplayProjectionV1, delta: ReplayProjectionDelta): void {
+function assertReplayMergeable(base: ReplayProjectionV1, delta: ReplayProjectionDelta): ReplayProjectionV1 {
   try {
     // Delegates every lifecycle conflict rule already owned by the replay
     // authority: conflicting authority for one key, duplicate supersede
     // destinations, terminal/supersede topology conflicts, cycles across the
     // union, thread fan-out, and the entry/byte caps.
-    mergeReplayProjection(base, delta);
+    return mergeReplayProjection(base, delta);
   } catch (error) {
     throw new MemoryBundleMergeError(
       "replay_conflict",
@@ -391,6 +433,79 @@ function assertReplayMergeable(base: ReplayProjectionV1, delta: ReplayProjection
       error,
     );
   }
+}
+
+/**
+ * Reproduce the exact canonical bytes the apply phase will write, without I/O.
+ *
+ * This is intentionally separate from the post-write fingerprint reader. Apply
+ * compares that independent plan commitment with the rebuilt root, so a valid
+ * but unplanned source mutation cannot bless itself by being read twice.
+ */
+function expectedMergedSourceFingerprint(
+  destination: CanonicalMergeSnapshot,
+  dailyAppends: readonly MemoryBundleDailyAppend[],
+  graphLines: readonly string[],
+  replayDelta: ReplayProjectionDelta,
+  mergedReplay: ReplayProjectionV1,
+): string {
+  const daily = new Map(destination.daily.map((source) => [source.relativePath, Buffer.from(source.bytes)]));
+  for (const append of dailyAppends) {
+    const existing = daily.get(append.relativePath) ?? Buffer.alloc(0);
+    const date = /^(?:daily\/)?(\d{4}-\d{2}-\d{2})\.md$/u.exec(append.relativePath)?.[1];
+    if (date === undefined) throw new Error(`memory-bundle: unsupported daily target ${append.relativePath}.`);
+    const body = append.blocks.map((block) => `${block}\n`).join("");
+    daily.set(
+      append.relativePath,
+      Buffer.concat([
+        existing,
+        Buffer.from(`${existing.length === 0 ? `# ${date}\n\n` : ""}${body}`, "utf8"),
+      ]),
+    );
+  }
+
+  const nestedDailyNames = new Set(
+    [...daily.keys()].filter((path) => path.startsWith("daily/")).map((path) => path.slice("daily/".length)),
+  );
+  const dailyEntries = [
+    ...[...daily.entries()]
+      .filter(([path]) => LEGACY_DAILY_FILE.test(path) && !nestedDailyNames.has(path))
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+    ...[...daily.entries()]
+      .filter(([path]) => path.startsWith("daily/"))
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+  ];
+
+  let graphBytes = destination.graphBytes;
+  if (graphLines.length > 0) {
+    graphBytes = Buffer.concat([
+      graphBytes ?? Buffer.alloc(0),
+      Buffer.from(graphLines.map((line) => `${line}\n`).join(""), "utf8"),
+    ]);
+  }
+
+  const replayEntries = (replayDelta.terminals?.length ?? 0)
+    + (replayDelta.supersedes?.length ?? 0)
+    + (replayDelta.threads?.length ?? 0);
+  const replayBytes = replayEntries === 0
+    ? destination.replayBytes
+    : Buffer.from(serializeReplayProjection(mergedReplay), "utf8");
+  const entries = [
+    ...dailyEntries,
+    ...(graphBytes === undefined ? [] : [["graph.jsonl", graphBytes] as const]),
+    ...(replayBytes === undefined ? [] : [[REPLAY_PROJECTION_FILE, replayBytes] as const]),
+  ];
+  const hash = createHash("sha256");
+  for (const [relativePath, bytes] of entries) {
+    hash.update(String(Buffer.byteLength(relativePath)));
+    hash.update("\0");
+    hash.update(relativePath);
+    hash.update("\0");
+    hash.update(String(bytes.length));
+    hash.update("\0");
+    hash.update(bytes);
+  }
+  return hash.digest("hex");
 }
 
 interface DerivedAssociationDrift {
@@ -473,6 +588,7 @@ function digestMergePlan(
     plan.entityDiscards.map((discard) => [discard.entityId, discard.fields]),
     plan.derivedAssociationsAdded,
     plan.derivedAssociationsRemoved,
+    plan.expectedSourceFingerprint,
   ];
   return createHash("sha256").update(JSON.stringify(commitment), "utf8").digest("hex");
 }

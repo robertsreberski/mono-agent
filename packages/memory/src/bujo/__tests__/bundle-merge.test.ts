@@ -347,6 +347,120 @@ describe("canonical memory bundle merge", () => {
       expect(plan.counts.newTerminals).toBe(1);
     });
 
+    it("drops an incoming terminal for a skipped conflicting memory and reports the omission", () => {
+      const destination = snapshot({
+        daily: { "daily/2026-07-30.md": [{ id: "A", text: "destination version", type: "task" }] },
+      });
+      const incoming = snapshot({
+        daily: {
+          "daily/2026-07-30.md": [
+            { id: "A", text: "incoming terminal version", status: "dropped", type: "task" },
+          ],
+        },
+        replay: projection({ terminals: [terminal("A", "2026-07-30T09:00:00.000Z")] }),
+      });
+
+      const plan = merge(destination, incoming, { onConflict: "skip" });
+
+      expect(plan.replayDelta).toEqual({ terminals: [], supersedes: [], threads: [] });
+      expect(plan.counts).toEqual({
+        newMemories: 0,
+        identicalMemories: 0,
+        conflictingMemories: 1,
+        targetDailyFiles: 0,
+        newEntities: 0,
+        discardedEntities: 0,
+        newRelations: 0,
+        newAssociations: 0,
+        skippedAssociations: 0,
+        newTerminals: 0,
+        skippedTerminals: 1,
+        newSupersedes: 0,
+        skippedSupersedes: 0,
+        newThreads: 0,
+        skippedThreads: 0,
+        derivedAssociationsAdded: 0,
+        derivedAssociationsRemoved: 0,
+      });
+    });
+
+    it("drops an incoming supersede when either endpoint is a skipped conflicting memory", () => {
+      const destination = snapshot({
+        daily: { "daily/2026-07-30.md": [{ id: "B", text: "destination B" }] },
+      });
+      const incoming = snapshot({
+        daily: {
+          "daily/2026-07-31.md": [
+            { id: "A", text: "incoming A", status: "invalidated" },
+            { id: "B", text: "incoming B" },
+          ],
+        },
+        replay: projection({ supersedes: [supersede("A", "B", "2026-07-30T05:00:00.000Z")] }),
+      });
+
+      const plan = merge(destination, incoming, { onConflict: "skip" });
+
+      expect(plan.importedMemoryIds).toEqual(["A"]);
+      expect(plan.replayDelta.supersedes).toEqual([]);
+      expect(plan.counts).toEqual({
+        newMemories: 1,
+        identicalMemories: 0,
+        conflictingMemories: 1,
+        targetDailyFiles: 1,
+        newEntities: 0,
+        discardedEntities: 0,
+        newRelations: 0,
+        newAssociations: 0,
+        skippedAssociations: 0,
+        newSupersedes: 0,
+        skippedSupersedes: 1,
+        newTerminals: 0,
+        skippedTerminals: 0,
+        newThreads: 0,
+        skippedThreads: 0,
+        derivedAssociationsAdded: 0,
+        derivedAssociationsRemoved: 0,
+      });
+    });
+
+    it("drops an incoming thread when a skipped conflicting memory is an endpoint", () => {
+      const destination = snapshot({
+        daily: { "daily/2026-07-30.md": [{ id: "A", text: "destination A" }] },
+      });
+      const incoming = snapshot({
+        daily: {
+          "daily/2026-07-31.md": [
+            { id: "A", text: "incoming A" },
+            { id: "B", text: "incoming B" },
+          ],
+        },
+        replay: projection({ threads: [thread("A", "B")] }),
+      });
+
+      const plan = merge(destination, incoming, { onConflict: "skip" });
+
+      expect(plan.replayDelta.threads).toEqual([]);
+      expect(plan.counts).toEqual({
+        newMemories: 1,
+        identicalMemories: 0,
+        conflictingMemories: 1,
+        targetDailyFiles: 1,
+        newEntities: 0,
+        discardedEntities: 0,
+        newRelations: 0,
+        newAssociations: 0,
+        skippedAssociations: 0,
+        newTerminals: 0,
+        skippedTerminals: 0,
+        newSupersedes: 0,
+        skippedSupersedes: 0,
+        newThreads: 0,
+        skippedThreads: 1,
+        derivedAssociationsAdded: 0,
+        derivedAssociationsRemoved: 0,
+      });
+    });
+
     it("fails closed when both sides claim a different terminal authority for one id", () => {
       const destination = snapshot({
         daily: { "daily/2026-07-30.md": [{ id: "A", text: "a", status: "dropped", type: "task" }] },

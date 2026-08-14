@@ -1,4 +1,13 @@
-import { chmodSync, existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -202,4 +211,36 @@ describe("memory bundle export", { timeout: 60_000 }, () => {
     expect(result.sourceFingerprint).toBe(readBujoCanonicalSourceFingerprint(store.root));
     expect(result.counts.memories).toBe(3);
   });
+
+  it("reclaims only bounded owner-controlled staging siblings left by dead exporters", async () => {
+    if (typeof process.getuid !== "function") return;
+    const store = await fixture();
+    const parent = scratchDirectory("bundle-staging-reclaim");
+    const bundlePath = join(parent, "bundle");
+    const pid = absentPid();
+    const stale = `${bundlePath}.tmp-${pid}-${randomUUID()}`;
+    mkdirSync(stale, { mode: 0o700 });
+    writeFileSync(join(stale, "partial"), "stale\n", { mode: 0o600 });
+
+    const ambiguous = `${bundlePath}.tmp-${pid}-${randomUUID()}`;
+    const outside = scratchDirectory("bundle-staging-ambiguous");
+    symlinkSync(outside, ambiguous);
+
+    await exportMemoryBundle({ root: store.root, bundlePath });
+
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(ambiguous)).toBe(true);
+    expect(existsSync(bundlePath)).toBe(true);
+  });
 });
+
+function absentPid(): number {
+  for (const candidate of [0x7fff_ffff, 1_000_000_000, process.pid + 1_000_000]) {
+    try {
+      process.kill(candidate, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return candidate;
+    }
+  }
+  throw new Error("test could not identify an absent PID");
+}
