@@ -6,7 +6,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { Role, TaskState, type Message, type Part, type SendMessageRequest, type Task } from "@a2a-js/sdk";
-import { InMemoryTaskStore, ServerCallContext, type A2ARequestHandler } from "@a2a-js/sdk/server";
+import {
+  DefaultExecutionEventBus,
+  InMemoryTaskStore,
+  RequestContext,
+  ServerCallContext,
+  type A2ARequestHandler,
+} from "@a2a-js/sdk/server";
 
 import type { AgentRequestBase, AgentResponder } from "@mono-agent/agent-contracts";
 
@@ -21,14 +27,78 @@ import {
   type A2AProviderStartResult,
 } from "../index.js";
 import {
+  beginA2AIdempotencyShutdown,
   classifyA2AIdempotencyTransportError,
   createIdempotentA2ARequestHandler,
 } from "../idempotency.js";
+import { MonoA2AExecutor } from "../provider.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
   await Promise.allSettled(cleanups.splice(0).map((cleanup) => cleanup()));
+});
+
+describe("A2A executor cancellation attribution", () => {
+  it.each([
+    ["explicit cancellation", false, "Task cancellation requested by user."],
+    ["provider shutdown", true, "A2A provider stopped."],
+  ] as const)(
+    "attributes the first cancellation publisher when %s wins",
+    async (_winner, shutdownWins, expectedText) => {
+      const taskId = `executor-attribution-${shutdownWins ? "shutdown" : "explicit"}`;
+      const contextId = `context-${taskId}`;
+      const responderEntered = deferred<void>();
+      const releaseResponder = deferred<void>();
+      const cancellationTexts: string[] = [];
+      const executor = new MonoA2AExecutor({
+        async respond() {
+          responderEntered.resolve();
+          await releaseResponder.promise;
+          return { text: "late response" };
+        },
+      });
+      const eventBus = new DefaultExecutionEventBus();
+      eventBus.on("event", (event) => {
+        if (event.kind !== "statusUpdate") {
+          return;
+        }
+        const status = event.data.status;
+        if (status?.state !== TaskState.TASK_STATE_CANCELED) {
+          return;
+        }
+        const content = status.message?.parts[0]?.content;
+        if (content?.$case === "text") {
+          cancellationTexts.push(content.value);
+        }
+      });
+      const message = testDirectRequest(taskId, "hold executor open").message;
+      if (message === undefined) {
+        throw new Error("Expected a test request message.");
+      }
+      const execution = executor.execute(
+        new RequestContext(message, taskId, contextId, testServerCallContext()),
+        eventBus,
+      );
+
+      try {
+        await responderEntered.promise;
+        if (shutdownWins) {
+          executor.stop("A2A provider stopped.");
+          await executor.cancelTask(taskId, eventBus);
+        } else {
+          await executor.cancelTask(taskId, eventBus);
+          executor.stop("A2A provider stopped.");
+        }
+
+        expect(executor.wasTaskCanceledByShutdown(taskId)).toBe(shutdownWins);
+        expect(cancellationTexts).toEqual([expectedText]);
+      } finally {
+        releaseResponder.resolve();
+        await execution;
+      }
+    },
+  );
 });
 
 describe("durable A2A logical dispatch idempotency", () => {
@@ -402,6 +472,350 @@ describe("durable A2A logical dispatch idempotency", () => {
     assertRawPartBuffer(replay, rawBytes);
   });
 
+  it("keeps a terminal monitor result in doubt when shutdown lands during task-store load", async () => {
+    const stateDir = await temporaryStateDir();
+    const taskId = "monitor-shutdown-task";
+    const loadEntered = deferred<void>();
+    const releaseLoad = deferred<void>();
+    const errorLogs: Array<{
+      readonly message: string;
+      readonly metadata: Record<string, unknown> | undefined;
+    }> = [];
+    let delegateCalls = 0;
+    const taskStore = new class extends InMemoryTaskStore {
+      override async load(loadedTaskId: string, context: ServerCallContext): Promise<Task | undefined> {
+        void context;
+        expect(loadedTaskId).toBe(taskId);
+        loadEntered.resolve();
+        await releaseLoad.promise;
+        return testTask(taskId, TaskState.TASK_STATE_CANCELED, "shutdown cancellation");
+      }
+    }();
+    const options = testIdempotencyOptions(stateDir);
+    const handler = await createIdempotentA2ARequestHandler({
+      delegate: {
+        async sendMessage() {
+          delegateCalls += 1;
+          return testTask(taskId, TaskState.TASK_STATE_SUBMITTED, "accepted");
+        },
+      } as unknown as A2ARequestHandler,
+      taskStore,
+      options,
+      logger: {
+        error(message, metadata) {
+          errorLogs.push({ message, metadata });
+        },
+      },
+    });
+    const request = testDirectRequest("logical-monitor-shutdown-1", "monitor shutdown ambiguity");
+    const outcomePromise = captureOutcome(handler.sendMessage(request, testServerCallContext()));
+
+    try {
+      await expectMilestoneBeforeSettlement(loadEntered.promise, outcomePromise, "task-store load");
+      beginA2AIdempotencyShutdown(handler);
+      releaseLoad.resolve();
+
+      const outcome = await outcomePromise;
+      expect(outcome.status).toBe("rejected");
+      if (outcome.status !== "rejected" || !(outcome.reason instanceof Error)) {
+        throw new Error("Expected monitor shutdown reconciliation to fail with an Error.");
+      }
+      expect(classifyA2AIdempotencyTransportError(String(outcome.reason.message))).toBe("in_doubt");
+      expect(errorLogs).toContainEqual({
+        message: "A2A idempotency monitor failed; the admission remains fail-closed.",
+        metadata: expect.objectContaining({ taskId }),
+      });
+
+      const recordPath = await onlyRecordPath(stateDir);
+      expect(JSON.parse(await readFile(recordPath, "utf8"))).toMatchObject({
+        status: "active",
+        taskId,
+        acceptedResult: { id: taskId },
+      });
+      expect((await readdir(join(stateDir, "slots"))).filter((name) => /^slot-/u.test(name))).toHaveLength(1);
+
+      const sameProcessRetry = await captureOutcome(handler.sendMessage(request, testServerCallContext()));
+      expect(sameProcessRetry.status).toBe("rejected");
+      if (sameProcessRetry.status !== "rejected" || !(sameProcessRetry.reason instanceof Error)) {
+        throw new Error("Expected the same-process retry to remain in doubt.");
+      }
+      expect(classifyA2AIdempotencyTransportError(String(sameProcessRetry.reason.message))).toBe("in_doubt");
+
+      let replacementCalls = 0;
+      const restarted = await createIdempotentA2ARequestHandler({
+        delegate: {
+          async sendMessage() {
+            replacementCalls += 1;
+            return testTerminalMessage("unexpected-monitor-replacement", "must not run");
+          },
+        } as unknown as A2ARequestHandler,
+        taskStore: new InMemoryTaskStore(),
+        options,
+      });
+      const restartRetry = await captureOutcome(restarted.sendMessage(request, testServerCallContext()));
+      expect(restartRetry.status).toBe("rejected");
+      if (restartRetry.status !== "rejected" || !(restartRetry.reason instanceof Error)) {
+        throw new Error("Expected the restarted retry to remain in doubt.");
+      }
+      expect(classifyA2AIdempotencyTransportError(String(restartRetry.reason.message))).toBe("in_doubt");
+      expect(delegateCalls).toBe(1);
+      expect(replacementCalls).toBe(0);
+    } finally {
+      releaseLoad.resolve();
+      await outcomePromise;
+    }
+  });
+
+  it.each([
+    ["explicit user cancellation", false, "Task cancellation requested by user."],
+    ["executor shutdown cancellation", true, "A2A provider stopped."],
+  ] as const)(
+    "attributes a monitor-path cancel/shutdown race when %s wins",
+    async (_winner, shutdownWins, cancellationText) => {
+      const stateDir = await temporaryStateDir();
+      const stateLabel = shutdownWins ? "shutdown" : "explicit";
+      const taskId = `monitor-cancel-${stateLabel}-task`;
+      const loadEntered = deferred<void>();
+      const cancelEntered = deferred<void>();
+      const releaseLoad = deferred<void>();
+      const releaseCancel = deferred<void>();
+      const errorLogs: Array<{
+        readonly message: string;
+        readonly metadata: Record<string, unknown> | undefined;
+      }> = [];
+      let delegateCalls = 0;
+      let cancelCalls = 0;
+      let shutdownCanceled = false;
+      const canceledTask = testTask(taskId, TaskState.TASK_STATE_CANCELED, cancellationText);
+      const taskStore = new class extends InMemoryTaskStore {
+        override async load(loadedTaskId: string, context: ServerCallContext): Promise<Task | undefined> {
+          void context;
+          expect(loadedTaskId).toBe(taskId);
+          loadEntered.resolve();
+          await releaseLoad.promise;
+          return canceledTask;
+        }
+      }();
+      const options = testIdempotencyOptions(stateDir);
+      const handler = await createIdempotentA2ARequestHandler({
+        delegate: {
+          async sendMessage() {
+            delegateCalls += 1;
+            return testTask(taskId, TaskState.TASK_STATE_SUBMITTED, "accepted");
+          },
+          async cancelTask(params: Parameters<A2ARequestHandler["cancelTask"]>[0]) {
+            cancelCalls += 1;
+            expect(params.id).toBe(taskId);
+            cancelEntered.resolve();
+            await releaseCancel.promise;
+            return canceledTask;
+          },
+        } as unknown as A2ARequestHandler,
+        taskStore,
+        options,
+        wasTaskCanceledByShutdown(checkedTaskId) {
+          expect(checkedTaskId).toBe(taskId);
+          return shutdownCanceled;
+        },
+        logger: {
+          error(message, metadata) {
+            errorLogs.push({ message, metadata });
+          },
+        },
+      });
+      const request = testDirectRequest(
+        `logical-monitor-cancel-${stateLabel}-1`,
+        "cancel while shutdown begins",
+      );
+      const outcomePromise = captureOutcome(handler.sendMessage(request, testServerCallContext()));
+      let cancelPromise: Promise<Task> | undefined;
+
+      try {
+        await expectMilestoneBeforeSettlement(loadEntered.promise, outcomePromise, "task-store load");
+        if (shutdownWins) {
+          beginA2AIdempotencyShutdown(handler);
+          shutdownCanceled = true;
+        }
+        cancelPromise = handler.cancelTask({ tenant: "", id: taskId, metadata: {} }, testServerCallContext());
+        await expectMilestoneBeforeSettlement(cancelEntered.promise, captureOutcome(cancelPromise), "cancel entry");
+        if (!shutdownWins) {
+          beginA2AIdempotencyShutdown(handler);
+        }
+        const recordPath = await onlyRecordPath(stateDir);
+        let outcome!: Awaited<typeof outcomePromise>;
+        let cancelResult!: Task;
+        let winnerRecordText: string;
+        if (shutdownWins) {
+          // A shutdown-owned terminal must fail closed without waiting for the blocked cancel call.
+          releaseLoad.resolve();
+          outcome = await outcomePromise;
+          winnerRecordText = await readFile(recordPath, "utf8");
+          const winnerRecord = JSON.parse(winnerRecordText) as Record<string, unknown>;
+          expect(winnerRecord).toMatchObject({
+            status: "active",
+            taskId,
+            acceptedResult: { id: taskId },
+          });
+          expect(winnerRecordText).not.toContain("A2A provider stopped.");
+          releaseCancel.resolve();
+          cancelResult = await cancelPromise;
+        } else {
+          // The explicit cancel response is not consumable until its terminal result is durable.
+          releaseCancel.resolve();
+          cancelResult = await cancelPromise;
+          winnerRecordText = await readFile(recordPath, "utf8");
+          const winnerRecord = JSON.parse(winnerRecordText) as Record<string, unknown>;
+          expect(winnerRecord).toMatchObject({
+            status: "completed",
+            taskId,
+            result: { id: taskId, status: { state: TaskState.TASK_STATE_CANCELED } },
+          });
+          expect(winnerRecordText).toContain("Task cancellation requested by user.");
+          releaseLoad.resolve();
+          outcome = await outcomePromise;
+        }
+
+        expect(cancelResult).toEqual(canceledTask);
+        expect(await readFile(recordPath, "utf8")).toBe(winnerRecordText);
+        let replacementCalls = 0;
+        const restarted = await createIdempotentA2ARequestHandler({
+          delegate: {
+            async sendMessage() {
+              replacementCalls += 1;
+              return testTerminalMessage(`unexpected-${stateLabel}-replacement`, "must not run");
+            },
+          } as unknown as A2ARequestHandler,
+          taskStore: new InMemoryTaskStore(),
+          options,
+        });
+
+        if (shutdownWins) {
+          expect(outcome.status).toBe("rejected");
+          if (outcome.status !== "rejected" || !(outcome.reason instanceof Error)) {
+            throw new Error("Expected shutdown-owned cancellation reconciliation to remain in doubt.");
+          }
+          expect(classifyA2AIdempotencyTransportError(String(outcome.reason.message))).toBe("in_doubt");
+          expect(errorLogs).toContainEqual({
+            message: "A2A idempotency monitor failed; the admission remains fail-closed.",
+            metadata: expect.objectContaining({ taskId }),
+          });
+          const replay = await captureOutcome(restarted.sendMessage(request, testServerCallContext()));
+          expect(replay.status).toBe("rejected");
+          if (replay.status !== "rejected" || !(replay.reason instanceof Error)) {
+            throw new Error("Expected shutdown-owned cancellation replay to remain in doubt.");
+          }
+          expect(classifyA2AIdempotencyTransportError(String(replay.reason.message))).toBe("in_doubt");
+        } else {
+          expect(outcome).toEqual({ status: "fulfilled", value: canceledTask });
+          expect(errorLogs).toEqual([]);
+          await expect(restarted.sendMessage(request, testServerCallContext())).resolves.toEqual(canceledTask);
+        }
+        expect(delegateCalls).toBe(1);
+        expect(cancelCalls).toBe(1);
+        expect(replacementCalls).toBe(0);
+      } finally {
+        releaseLoad.resolve();
+        releaseCancel.resolve();
+        await outcomePromise;
+        await cancelPromise?.catch(() => undefined);
+      }
+    },
+  );
+
+  it.each([
+    ["canceled", TaskState.TASK_STATE_CANCELED],
+    ["failed", TaskState.TASK_STATE_FAILED],
+  ] as const)(
+    "keeps a %s terminal delegate result in doubt when shutdown lands before delegate return",
+    async (stateLabel, terminalState) => {
+      const stateDir = await temporaryStateDir();
+      const taskId = `delegate-shutdown-${stateLabel}-task`;
+      const delegateEntered = deferred<void>();
+      const releaseDelegate = deferred<void>();
+      const errorLogs: Array<{
+        readonly message: string;
+        readonly metadata: Record<string, unknown> | undefined;
+      }> = [];
+      let delegateCalls = 0;
+      const options = testIdempotencyOptions(stateDir);
+      const handler = await createIdempotentA2ARequestHandler({
+        delegate: {
+          async sendMessage() {
+            delegateCalls += 1;
+            delegateEntered.resolve();
+            await releaseDelegate.promise;
+            return testTask(taskId, terminalState, `shutdown ${stateLabel}`);
+          },
+        } as unknown as A2ARequestHandler,
+        taskStore: new InMemoryTaskStore(),
+        options,
+        logger: {
+          error(message, metadata) {
+            errorLogs.push({ message, metadata });
+          },
+        },
+      });
+      const key = `logical-delegate-shutdown-${stateLabel}-1`;
+      const request = testDirectRequest(key, "delegate shutdown ambiguity");
+      const outcomePromise = captureOutcome(handler.sendMessage(request, testServerCallContext()));
+
+      try {
+        await expectMilestoneBeforeSettlement(delegateEntered.promise, outcomePromise, "delegate entry");
+        beginA2AIdempotencyShutdown(handler);
+        releaseDelegate.resolve();
+
+        const outcome = await outcomePromise;
+        expect(outcome.status).toBe("rejected");
+        if (outcome.status !== "rejected" || !(outcome.reason instanceof Error)) {
+          throw new Error("Expected delegate shutdown reconciliation to fail with an Error.");
+        }
+        expect(classifyA2AIdempotencyTransportError(String(outcome.reason.message))).toBe("in_doubt");
+        expect(errorLogs).toContainEqual({
+          message: "A2A idempotency shutdown reconciliation remains in doubt.",
+          metadata: { keyHash: testStoreKeyHash(key), taskId, terminalState },
+        });
+
+        const recordPath = await onlyRecordPath(stateDir);
+        const record = JSON.parse(await readFile(recordPath, "utf8")) as Record<string, unknown>;
+        expect(record).toMatchObject({ status: "active" });
+        expect(record).not.toHaveProperty("taskId");
+        expect(record).not.toHaveProperty("acceptedResult");
+        expect(record).not.toHaveProperty("result");
+        expect((await readdir(join(stateDir, "slots"))).filter((name) => /^slot-/u.test(name))).toHaveLength(1);
+
+        const sameProcessRetry = await captureOutcome(handler.sendMessage(request, testServerCallContext()));
+        expect(sameProcessRetry.status).toBe("rejected");
+        if (sameProcessRetry.status !== "rejected" || !(sameProcessRetry.reason instanceof Error)) {
+          throw new Error("Expected the same-process retry to remain in doubt.");
+        }
+        expect(classifyA2AIdempotencyTransportError(String(sameProcessRetry.reason.message))).toBe("in_doubt");
+
+        let replacementCalls = 0;
+        const restarted = await createIdempotentA2ARequestHandler({
+          delegate: {
+            async sendMessage() {
+              replacementCalls += 1;
+              return testTerminalMessage(`unexpected-delegate-${stateLabel}-replacement`, "must not run");
+            },
+          } as unknown as A2ARequestHandler,
+          taskStore: new InMemoryTaskStore(),
+          options,
+        });
+        const restartRetry = await captureOutcome(restarted.sendMessage(request, testServerCallContext()));
+        expect(restartRetry.status).toBe("rejected");
+        if (restartRetry.status !== "rejected" || !(restartRetry.reason instanceof Error)) {
+          throw new Error("Expected the restarted retry to remain in doubt.");
+        }
+        expect(classifyA2AIdempotencyTransportError(String(restartRetry.reason.message))).toBe("in_doubt");
+        expect(delegateCalls).toBe(1);
+        expect(replacementCalls).toBe(0);
+      } finally {
+        releaseDelegate.resolve();
+        await outcomePromise;
+      }
+    },
+  );
+
   it("fails closed if the durable directory pathname is replaced while the provider is running", async () => {
     const stateDir = await temporaryStateDir();
     let responderCalls = 0;
@@ -724,6 +1138,8 @@ describe("durable A2A logical dispatch idempotency", () => {
     // Let the monitor observe the shutdown's own `canceled` publication before restarting, so this
     // pins the fail-closed contract instead of racing it. See the dispatch.test.ts sibling.
     await new Promise((resolve) => setTimeout(resolve, 250));
+    const activeRecordPath = await onlyRecordPath(stateDir);
+    expect(JSON.parse(await readFile(activeRecordPath, "utf8"))).toMatchObject({ status: "active" });
 
     let restartedCalls = 0;
     const restarted = await startProvider({
@@ -1248,6 +1664,36 @@ function testTerminalMessage(messageId: string, text: string): Message {
     metadata: {},
     extensions: [],
     referenceTaskIds: [],
+  };
+}
+
+function testTask(taskId: string, state: TaskState, text: string): Task {
+  const contextId = `context-${taskId}`;
+  return {
+    id: taskId,
+    contextId,
+    status: {
+      state,
+      message: {
+        messageId: `message-${taskId}`,
+        contextId,
+        taskId,
+        role: Role.ROLE_AGENT,
+        parts: [{
+          content: { $case: "text", value: text },
+          filename: "",
+          mediaType: "text/plain",
+          metadata: {},
+        }],
+        metadata: {},
+        extensions: [],
+        referenceTaskIds: [],
+      },
+      timestamp: new Date().toISOString(),
+    },
+    artifacts: [],
+    history: [],
+    metadata: {},
   };
 }
 
