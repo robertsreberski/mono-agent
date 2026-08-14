@@ -287,7 +287,7 @@ describe("replay data", () => {
 
     const withoutSource = createJsonlRunRecorder({
       runId: "run-without-source",
-      conversationId: "telegram:99",
+      conversationId: "advisor:0123456789abcdef0123456789abcdef",
       artifactDir: dir,
     });
     await withoutSource.finish({ text: "ok" });
@@ -296,7 +296,7 @@ describe("replay data", () => {
     const withSourceItem = runs.find((run) => run.runId === "run-with-source");
     const withoutSourceItem = runs.find((run) => run.runId === "run-without-source");
     expect(withSourceItem?.resolvedSource).toBe("cron");
-    expect(withoutSourceItem?.resolvedSource).toBe("telegram");
+    expect(withoutSourceItem?.resolvedSource).toBe("advisor");
   });
 
   it("filters by resolved source", async () => {

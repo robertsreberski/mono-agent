@@ -83,10 +83,13 @@ settles rather than changing the session key and losing continuity.
   prompt policy.
 - The advisor request overrides the host model/effort for that turn and replaces
   all host tools and MCP servers with an empty policy.
+- The same authoritative seal suppresses automatic memory before any backend
+  recall query, so prior private host notes cannot enter the review.
 - The server hashes the normalized namespace and session key; it stores no
   review body, key, prompt, token, or model output in continuity state.
-- The configured responder may retain payloads and reviews through the host's
-  normal history, artifact, observability, or memory policy. Never submit
+- The configured responder may retain payloads and reviews after the turn
+  through the host's normal history, artifact, observability, or memory capture
+  policy. Never submit
   credentials or other secrets.
 - Keep the endpoint on loopback unless a separately reviewed authenticated
   exposure is necessary. Prefer private HTTPS through Tailscale Serve over a

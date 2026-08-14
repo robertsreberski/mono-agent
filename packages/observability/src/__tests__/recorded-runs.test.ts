@@ -395,6 +395,7 @@ describe("deriveRunSource", () => {
     expect(deriveRunSource("slack:C123:U456")).toBe("slack");
     expect(deriveRunSource("cron:nightly-digest")).toBe("cron");
     expect(deriveRunSource("webhook:my-endpoint")).toBe("webhook");
+    expect(deriveRunSource("advisor:0123456789abcdef0123456789abcdef")).toBe("advisor");
     expect(deriveRunSource("memory:capture:distill")).toBe("memory");
     expect(deriveRunSource("a2a:peer-1")).toBe("a2a");
     expect(deriveRunSource("openai:thread-1")).toBe("openai-api");

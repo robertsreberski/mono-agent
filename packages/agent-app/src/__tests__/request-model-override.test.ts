@@ -96,6 +96,9 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     await expect(run({ advisor: { model: "opencode:github-copilot:gpt-4.1", effort: "high" } })).rejects.toThrow(
       "Advisor requests require an enforceable explicit model and effort selection.",
     );
+    await expect(run({ advisor: { model: "acp:personal-agent", effort: "high" } })).rejects.toThrow(
+      "Advisor requests require an enforceable explicit model and effort selection.",
+    );
     await expect(run(
       { advisor: { model: "pi:openai-codex:gpt-5.6-sol", effort: "max" } },
       { baseModel: parseMonoRuntimeModelReference("codex:gpt-5.6-sol") },
@@ -119,6 +122,16 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     expect(result.runtimeOptions).toEqual({});
     expect(result.toolPolicyOverride).toBeUndefined();
     expect(logger.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a non-advisor ACP override on the ordinary programmatic path", async () => {
+    const result = await run({ webhook: { model: "acp:personal-agent" } });
+    expect(result.runtimeOptions.model).toEqual(expect.objectContaining({
+      sdk: "acp",
+      model: "personal-agent",
+    }));
+    expect(result.sealedToolPolicy).toBeUndefined();
+    expect(result.toolPolicyOverride).toBeUndefined();
   });
 
   it("applies a webhook model + effort override (executionMode is left to the harness)", async () => {

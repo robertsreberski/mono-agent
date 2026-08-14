@@ -635,6 +635,7 @@ describe("mapRunToSession", () => {
     expect(src("gmail-focus-hourly")).toBe("cron");
     // Channel prefixes win (suffix stripped first).
     expect(src("cron:nightly")).toBe("cron");
+    expect(src("advisor:0123456789abcdef0123456789abcdef")).toBe("advisor");
     expect(src("memory:capture:reconcile")).toBe("memory");
     expect(src("telegram:123#2026-06-24")).toBe("telegram");
     expect(src("openai-api:resp-123")).toBe("openai-api");

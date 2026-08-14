@@ -8,7 +8,7 @@ import {
   fauxProvider,
   fauxText,
 } from "@earendil-works/pi-ai";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
@@ -18,6 +18,8 @@ import {
 } from "@mono-agent/runtime-adapter";
 
 import { createConfiguredAgentHarness } from "../index.js";
+import { MemoryRetrievalService, type SharedRecallStore } from "../memory-retrieval.js";
+import { createRequestModelOverrideRuntimeExtension } from "../request-model-override.js";
 
 const tempDirs: string[] = [];
 const model = {
@@ -42,6 +44,97 @@ afterEach(async () => {
 });
 
 describe("configured sealed tool policy with progressive skill disclosure", () => {
+  it("suppresses automatic memory before a sealed advisor query and preserves ordinary recall", async () => {
+    const fixture = await createFixture("memory");
+    const provider = createProviderObserver(2);
+    const observed = observeRuntime(createMonoRuntime());
+    const privateSentinel = "private host memory sentinel";
+    const storeLoad = vi.fn(async () => undefined);
+    const storeRecall = vi.fn(async () => [{
+      score: 1,
+      record: {
+        id: "private-host-note",
+        text: `Morgan selected ${privateSentinel} as the deployment color.`,
+      },
+    }]);
+    const store: SharedRecallStore = {
+      load: storeLoad,
+      recall: storeRecall,
+      async appendHostSummary(conversationId) {
+        return { conversationId, source: "test", bytesWritten: 0 };
+      },
+      async close() {},
+    };
+    const memory = new MemoryRetrievalService(store);
+    const memoryLoad = vi.spyOn(memory, "load");
+    const advisorOverride = createRequestModelOverrideRuntimeExtension();
+    const runIds = ["run-sealed-memory", "run-ordinary-memory"];
+    const harness = await createConfiguredAgentHarness({
+      config: {
+        ...fixture.config,
+        memory: {
+          mode: "lite",
+          path: join(fixture.dir, "memory"),
+          writeMode: "disabled",
+          maxBytes: 8_000,
+          recallTool: { enabled: true },
+        },
+      },
+      memory,
+      runtime: observed.runtime,
+      createRunId: () => runIds.shift() ?? "unexpected-run",
+      runtimeOptions: {
+        piResolvedModel: provider.piModel,
+        piResolvedModels: provider.models,
+        effort: "none",
+      },
+      runtimeOptionsForRequest: async (input) => await advisorOverride({ request: input.request }),
+    });
+
+    try {
+      const sealedEvents: unknown[] = [];
+      const sealed = await harness.run({
+        conversationId: "advisor:0123456789abcdef0123456789abcdef",
+        userMessage: "What deployment color did Morgan select?",
+        metadata: { advisor: { model: model.reference, effort: "none" } },
+        abortSignal: new AbortController().signal,
+        onEvent: (event) => sealedEvents.push(event),
+      });
+
+      expect(sealed.text).toBe("provider answer");
+      expect(memoryLoad).not.toHaveBeenCalled();
+      expect(storeLoad).not.toHaveBeenCalled();
+      expect(storeRecall).not.toHaveBeenCalled();
+      const sealedRuntime = observed.calls[0];
+      expect(sealedRuntime?.options.allowedTools).toEqual([]);
+      expect(sealedRuntime?.options.mcpServers).toEqual({});
+      expect(JSON.stringify({
+        prompt: sealedRuntime?.prompt,
+        messages: sealedRuntime?.options.messages,
+        contextMetadata: sealed.metadata,
+        events: sealedEvents,
+      })).not.toContain(privateSentinel);
+
+      const ordinary = await harness.run({
+        conversationId: "ordinary:memory-control",
+        userMessage: "What deployment color did Morgan select?",
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(ordinary.text).toBe("provider answer");
+      expect(memoryLoad).toHaveBeenCalledTimes(1);
+      expect(storeRecall).toHaveBeenCalledTimes(1);
+      expect(storeRecall).toHaveBeenCalledWith(
+        "what deployment color did morgan select?",
+        { topK: 50, trackAccess: false },
+      );
+      expect(JSON.stringify(observed.calls[1]?.options.messages)).toContain(privateSentinel);
+      expect(observed.calls[1]?.prompt).not.toContain(privateSentinel);
+    } finally {
+      await harness.dispose?.();
+    }
+  });
+
   it("exposes exactly the sealed empty policy through the real harness and Pi provider path", async () => {
     const fixture = await createFixture("sealed");
     const provider = createProviderObserver();
@@ -198,7 +291,7 @@ async function createFixture(label: string): Promise<{
   return { dir, identityPath, artifactDir, skillsRoot, skillName, skillBody, skillPath, config };
 }
 
-function createProviderObserver(): {
+function createProviderObserver(responseCount = 1): {
   readonly contexts: ProviderContext[];
   readonly piModel: ReturnType<ReturnType<typeof fauxProvider>["getModel"]>;
   readonly models: ReturnType<typeof createModels>;
@@ -215,7 +308,10 @@ function createProviderObserver(): {
     contexts.push(context as ProviderContext);
     return streamSimple(requestModel, context, options);
   };
-  faux.setResponses([fauxAssistantMessage([fauxText("provider answer")])]);
+  faux.setResponses(Array.from(
+    { length: responseCount },
+    () => fauxAssistantMessage([fauxText("provider answer")]),
+  ));
   return { contexts, piModel: faux.getModel(), models };
 }
 

@@ -71,7 +71,11 @@ surface. When a higher-level composer normally preserves an internal MCP server,
 `sealedToolPolicy: true` keeps the winning override exact instead; the seal follows
 the same last-wins precedence as the override that declares it. A sealed turn
 also removes host-added progressive skill options, the Skill Index, and selected
-skill instructions before runtime invocation and recording.
+skill instructions before runtime invocation and recording. It also suppresses
+automatic long-term memory before `memory.load` is called, so private host notes
+are never queried for that turn. Host-authored continuations already skip
+automatic recall; their no-tools form keeps the same memory/tool/skill boundary.
+Ordinary turns and non-sealed request extensions retain configured recall.
 The model-facing Skill Index defines exact `$skill-name` tokens as explicit
 requests to apply a matching skill; other dollar-prefixed text remains ordinary
 user text. With `skillDisclosure: "index"`, it lists names and descriptions
@@ -103,9 +107,10 @@ The harness is the request-to-runtime composition boundary:
 
 1. Validate the structural request and admit it under the configured pending-run
    bound.
-2. Persist attachments, load identity/SOUL and selected skills, recall memory,
-   and assemble canonical history into runtime messages.
-3. Merge fail-closed tool policy and request-scoped runtime options, attach the
+2. Persist attachments, load identity/SOUL and selected skills, and assemble
+   canonical history and system context.
+3. Resolve request-scoped runtime policy, recall memory only when the resolved
+   turn is not sealed/a continuation, merge fail-closed tool policy, attach the
    active conversation's live-input mailbox on capable backends, then invoke
    `MonoRuntimeLike.run()` under the provider-run concurrency bound.
 4. Normalize runtime results into explicit success/failure responses while

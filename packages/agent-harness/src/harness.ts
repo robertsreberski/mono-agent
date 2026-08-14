@@ -209,8 +209,9 @@ export class MonoAgentHarness implements AgentHarness {
 
     // Global admission bound (maxPendingRuns): a cheap SYNCHRONOUS check before
     // any expensive pre-provider work (applyAttachments persists bytes to disk;
-    // prepareContext loads history/recalls memory/reads skills/builds the
-    // prompt). `pendingRuns` counts runs that are admitted but have NOT yet begun
+    // prepareContext loads history/reads skills/builds the prompt; resolved
+    // request policy may then permit automatic recall). `pendingRuns` counts
+    // runs that are admitted but have NOT yet begun
     // their provider call — i.e. the requests simultaneously holding persisted
     // attachments + built context in memory while waiting for a provider slot in
     // the otherwise-unbounded semaphore queue. A request arriving when that
@@ -406,8 +407,7 @@ export class MonoAgentHarness implements AgentHarness {
           : providerHistoryTurn === undefined
             ? "prompt"
             : "messages",
-        turnId: runId,
-      }, emit);
+      });
       context = prepared.context;
 
       let resumeError: unknown;
@@ -421,7 +421,6 @@ export class MonoAgentHarness implements AgentHarness {
           activeRequest,
           recorder,
           context,
-          prepared.memory,
           runId,
           resumeSessionId,
           providerHistoryTurn === undefined ? undefined : this.options.piSessionsRoot,
@@ -472,8 +471,7 @@ export class MonoAgentHarness implements AgentHarness {
         coordinatedProviderAttemptEligibleForSync = false;
         prepared = await prepareHarnessContext(this.options, this.skillsCache, activeRequest, {
           historyMode: "prompt",
-          turnId: runId,
-        }, emit);
+        });
         context = prepared.context;
         runtimeResult = await runHarnessRuntime(
           this.options,
@@ -482,7 +480,6 @@ export class MonoAgentHarness implements AgentHarness {
           activeRequest,
           recorder,
           context,
-          prepared.memory,
           runId,
           undefined,
           undefined,

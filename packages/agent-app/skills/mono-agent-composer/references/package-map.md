@@ -54,7 +54,7 @@ Use this path when the agent needs identity, selected skills, history, and optio
 | Embedding providers | `@mono-agent/memory/search` | Exclusive Ollama/LM Studio/OpenAI embedding providers used by the store subpath for vector recall; `agent-app` owns guided typed discovery and the real readiness probe |
 | Composer documentation search + guided reading | `@mono-agent/docs-mcp` (optional plugin) | Exact-version offline hybrid semantic/BM25 `mono_agent_docs` search plus anchored reads, cross-link resolution, and continuation windows over canonical docs and composer references; paired by `mono-agent install-skill`, outside the composed agent's own `mcp.json` |
 | External Supermemory backend | `@mono-agent/memory-supermemory` (optional plugin) | Explicitly installed lockstep package selected by `memory.backend: "supermemory"`; proxies the shared `MemoryStore` / `MemoryRecall` contracts to local or hosted Supermemory for server-side extraction, consolidation, and hybrid recall |
-| Recall tool surface | `@mono-agent/agent-app` (bundled) | Auto-provisions read-only `MemoryRecall` for every configured tier and direct configured responder; automatic/tool recall share the same store and per-turn query cache |
+| Recall tool surface | `@mono-agent/agent-app` (bundled) | Auto-provisions read-only `MemoryRecall` for every configured tier and direct configured responder; eligible ordinary automatic/tool recall share the same store and per-turn query cache, while authoritative sealed turns and host continuations suppress automatic lookup (the seal also excludes the tool) |
 
 Mono-agent selected skills are not auto-selected by description. The host chooses `context.selectedSkills`, and the harness loads those exact bodies.
 

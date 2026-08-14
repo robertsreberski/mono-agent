@@ -19,7 +19,7 @@ The context builder in `@mono-agent/agent-harness` concatenates sections in a fi
 | 4 | Conversation History | owner-only durable history store | Optional (empty on first turn) |
 | 5 | Skill Index | name/description of selected skills | Optional |
 | 6 | Selected Skill Instructions | full `SKILL.md` bodies of selected skills | Optional |
-| 7 | Current User Message | the inbound request text, with any recalled memory appended | Yes |
+| 7 | Current User Message | the inbound request text, with any eligible recalled memory appended | Yes |
 
 The user message is always last, so the model reads its guardrails, identity, and history before the task it must act on — and any recalled memory travels **with** that user message. See [Identity and soul](/context/identity-and-soul/) for sections 1–2, [Session](#session) for section 3, and [Skills](/context/skills/) for sections 5–6.
 
@@ -88,7 +88,7 @@ Note the distinction from [Speaker and group context](#speaker-and-group-context
 
 ## Memory recall
 
-Recalled long-term memory is **not** part of the system-prompt sections above. When `memory` is configured and a recall returns hits, the harness appends the recalled block to the **user message** each turn — after the user's text and any attachment block — clearly delimited so the model reads it as injected background context rather than the user's words:
+Recalled long-term memory is **not** part of the system-prompt sections above. On an ordinary turn, when `memory` is configured and a recall returns hits, the harness appends the recalled block to the **user message** — after the user's text and any attachment block — clearly delimited so the model reads it as injected background context rather than the user's words:
 
 ```text
 [Recalled long-term memory — background context for this turn, not the user's words:]
@@ -100,6 +100,7 @@ This injection happens on **every** turn, including the resume-retry path, becau
 A few specifics:
 
 - **Not persisted.** Injected memory is added only to the provider-facing message, never written back to history or capture, so it cannot compound into future prompts.
+- **Suppressed before lookup on sealed/continuation turns.** An authoritative request-scoped `sealedToolPolicy` never calls `memory.load`; neither private recall results nor the `MemoryRecall` tool reach that turn. Host-authored continuations already skip automatic recall, including their no-tools synthesis form. Ordinary and non-sealed request extensions keep recall unchanged.
 - **Skipped when empty.** A recall that returns no hits injects nothing — no delimiter, no header.
 - **Still traced.** A lightweight `memory_recalled` diagnostic (source + byte size, not the content) keeps the fact that recall fired visible in the run record even though memory no longer appears in the prompt sections.
 

@@ -37,7 +37,7 @@ pnpm add @mono-agent/agent-app@latest @mono-agent/advisor-mcp@latest
 
 Then add the plugin to `mono-agent.config.json`. The Pi route below is
 intentional: advisor turns get an authoritative empty tool/MCP policy, which
-direct Codex, direct OpenCode, and Claude CLI cannot enforce.
+direct Codex, direct OpenCode, ACP, and Claude CLI cannot enforce.
 
 The host primary must also be in a compatible runtime family. In particular, a
 host configured with direct `codex:*` cannot cross that runtime boundary for an
@@ -96,9 +96,10 @@ and error contracts.
    normalizes and hashes `(namespace, session_key)`, admits at most one active
    call per continuity plus the global cap, and builds a containment prompt.
 4. Agent-app applies the exact advisor model/effort for that request and
-   replaces all host tools and MCP servers with an empty policy. A model
-   selection rejection or provider failover is a visible failure, never an
-   accepted fallback review.
+   replaces all host tools and MCP servers with an empty policy. Before any
+   automatic long-term memory query, the same seal suppresses recall, so private
+   host notes cannot enter the review. A model selection rejection or provider
+   failover is a visible failure, never an accepted fallback review.
 5. Output and errors are bounded and redacted. Disconnect, timeout, and server
    shutdown abort the run, then stop/drain through bounded cleanup deadlines.
 
@@ -226,9 +227,10 @@ It does not choose a default model or effort, read caller filesystem paths,
 apply patches, run verification commands, upload credentials, expose arbitrary
 tools, broaden host policy, authenticate via forwarded proxy headers, add a
 package-owned review-body store, or claim a separately isolated agent process.
-It never accepts a provider fallback as the configured advisor's review. Do not
-submit credentials: the host responder may retain request/review content under
-its configured history, artifact, observability, or memory policy.
+It never accepts a provider fallback as the configured advisor's review and
+never receives automatic recall from the host's prior memory. Do not submit
+credentials: post-turn capture can still retain request/review content under
+the host's configured history, artifact, observability, or memory policy.
 
 ## Related Documentation
 

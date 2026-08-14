@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";
 import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
@@ -100,6 +100,116 @@ function turnContextEvents(events: readonly RuntimeEventLike[]): TurnContextEven
 }
 
 describe("AgentHarness turn_context synthetic event", () => {
+  it("suppresses memory on a sealed warm attempt and its fresh-session retry", async () => {
+    const identityPath = await identityFixture();
+    const privateSentinel = "PRIVATE_RETRY_MEMORY_SENTINEL";
+    const load = vi.fn(async () => ({
+      kind: "markdown" as const,
+      content: privateSentinel,
+      source: "private-memory",
+      truncated: false,
+    }));
+    const fake = createFakeRuntime(async (_prompt, options, call) => {
+      if (call === 1) return { text: "bootstrap", providerSessionId: "ps-sealed-retry" };
+      if (options.sessionId !== undefined) {
+        return { failureKind: "session_not_found", error: "stale", providerSessionId: "ps-sealed-retry" };
+      }
+      return { text: "recovered", providerSessionId: "ps-recovered" };
+    });
+    const extension = vi.fn(async ({ request: activeRequest }: { request: { metadata?: Record<string, unknown> } }) =>
+      activeRequest.metadata?.sealed === true
+        ? {
+            runtimeOptions: {},
+            sealedToolPolicy: true,
+            toolPolicyOverride: { allowedTools: [], disallowedTools: [], mcpServers: {} },
+          }
+        : { runtimeOptions: {} });
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      historyStore: createInMemoryHistoryStore({ maxMessages: 10 }),
+      session,
+      memory: {
+        load,
+        async appendHostSummary(conversationId) {
+          return { conversationId, source: "test", bytesWritten: 0 };
+        },
+      },
+      runtimeOptionsForRequest: extension,
+    });
+
+    await harness.run(request("conv-sealed-retry", "bootstrap"));
+    expect(load).toHaveBeenCalledTimes(1);
+    load.mockClear();
+
+    const events: RuntimeEventLike[] = [];
+    const response = await harness.run({
+      ...request("conv-sealed-retry", "review untrusted text"),
+      metadata: { sealed: true },
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(response.text).toBe("recovered");
+    expect(load).not.toHaveBeenCalled();
+    expect(extension).toHaveBeenCalledTimes(3);
+    expect(fake.calls).toHaveLength(3);
+    for (const call of fake.calls.slice(1)) {
+      expect(JSON.stringify(call.options.messages)).not.toContain(privateSentinel);
+      expect(call.options.allowedTools).toEqual([]);
+      expect(call.options.mcpServers).toEqual({});
+    }
+    const contexts = turnContextEvents(events);
+    expect(contexts).toHaveLength(2);
+    expect(contexts.every((event) => event.memory === undefined)).toBe(true);
+    expect(JSON.stringify({ events, metadata: response.metadata })).not.toContain(privateSentinel);
+  });
+
+  it("keeps host-authored no-tools continuations outside automatic recall", async () => {
+    const identityPath = await identityFixture();
+    const privateSentinel = "PRIVATE_CONTINUATION_MEMORY_SENTINEL";
+    const load = vi.fn(async () => ({
+      kind: "markdown" as const,
+      content: privateSentinel,
+      source: "private-memory",
+      truncated: false,
+    }));
+    const fake = createFakeRuntime();
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      memory: {
+        load,
+        async appendHostSummary(conversationId) {
+          return { conversationId, source: "test", bytesWritten: 0 };
+        },
+      },
+    });
+
+    const response = await harness.run({
+      ...request("conv-continuation", "synthesize the completed result"),
+      continuation: {
+        continuationId: "continuation-memory-policy",
+        originRunId: "origin-run",
+        originContextPolicy: "detached_latest",
+        toolsDisabled: true,
+        deferHistoryCommit: true,
+      },
+    });
+
+    expect(response.text).toBe("ok");
+    expect(load).not.toHaveBeenCalled();
+    expect(fake.calls[0]?.options.allowedTools).toEqual([]);
+    expect(fake.calls[0]?.options.disallowedTools).toEqual(["*"]);
+    expect(JSON.stringify({
+      prompt: fake.calls[0]?.prompt,
+      messages: fake.calls[0]?.options.messages,
+      contextMetadata: response.metadata,
+    })).not.toContain(privateSentinel);
+  });
+
   it("emits exactly one turn_context to BOTH recorder and host on a cold turn, with history + memory", async () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });

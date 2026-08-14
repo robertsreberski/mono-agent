@@ -11,7 +11,7 @@ import {
   type RuntimeRunOptions,
 } from "@mono-agent/runtime-adapter";
 
-import type { BuiltAgentContext, ContextBlockInput, HistoryMessage, SkillIndexSummary } from "../context/index.js";
+import type { BuiltAgentContext, HistoryMessage, SkillIndexSummary } from "../context/index.js";
 import { renderAgentContextSections } from "../context/context-builder.js";
 import type { Semaphore } from "../semaphore.js";
 import type {
@@ -24,6 +24,7 @@ import type {
 import type { LiveInputMailbox } from "../live-input.js";
 import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "../tool-policy/index.js";
 import type { AttachmentRequestContext } from "./attachments.js";
+import { loadHarnessMemory } from "./context-preparation.js";
 import { AgentHarnessError } from "./error.js";
 import { injectMcpContinuationContext, injectMcpRequestContext } from "./mcp-context.js";
 import {
@@ -47,7 +48,6 @@ export async function runHarnessRuntime(
   request: AgentHarnessRequest,
   recorder: RunRecorder,
   context: BuiltAgentContext,
-  memory: ContextBlockInput | undefined,
   runId: string,
   resumeSessionId: string | undefined,
   durablePiSessionsRoot: string | undefined,
@@ -138,12 +138,31 @@ export async function runHarnessRuntime(
         acquired = true;
       }
       requestExtension = await options.runtimeOptionsForRequest?.({ request, runId, context });
-      const suppressSkillContext = request.continuation?.toolsDisabled === true
+      const suppressToolBoundContext = request.continuation?.toolsDisabled === true
         || (
           requestExtension?.sealedToolPolicy === true
           && requestExtension.toolPolicyOverride !== undefined
         );
-      const runtimeContext = suppressSkillContext
+      // Continuations already carry host-pinned/synthesized context and have
+      // never performed automatic recall. A sealed authoritative tool policy
+      // extends that invariant to an ordinary request: resolve the winning
+      // request extension first, then skip memory.load entirely. This must stay
+      // before loadHarnessMemory so private host notes are never queried and
+      // cannot leak through messages or turn-context metadata.
+      const suppressAutomaticMemory = request.continuation !== undefined || suppressToolBoundContext;
+      const memory = suppressAutomaticMemory
+        ? undefined
+        : await loadHarnessMemory(
+            options,
+            request.conversationId,
+            request.userMessage,
+            runId,
+            (event) => {
+              recorder.onEvent(event);
+              hostOnEvent?.(event);
+            },
+          );
+      const runtimeContext = suppressToolBoundContext
         ? withoutSkillContext(context, options.skillsRoot)
         : context;
       onRuntimeContext?.(runtimeContext);
@@ -182,7 +201,7 @@ export async function runHarnessRuntime(
       if (options.runtimeOptions?.piTransport !== undefined) {
         merged.piTransport = options.runtimeOptions.piTransport;
       }
-      if (suppressSkillContext) {
+      if (suppressToolBoundContext) {
         // A sealed request policy and a host-authored no-tools continuation are
         // authoritative over every static, extension, and host-added skill
         // surface. In particular, neither a request extension nor the
@@ -294,7 +313,7 @@ export async function runHarnessRuntime(
       // Speaker/group context wraps the user's words FIRST (it is chronologically
       // prior and identity-scoping); recalled memory still appends last. Composing
       // HERE rather than mutating request.userMessage is load-bearing: that field
-      // is the memory recall query (see loadHarnessMemory in prepareContext), so
+      // is the memory recall query (see loadHarnessMemory above), so
       // folding this into applyHarnessAttachments would silently make BuJo retrieve
       // against third-party chatter instead of the user's actual ask. It also keeps
       // the transcript out of persistUserMessage, so it can never reach history or
@@ -318,7 +337,7 @@ export async function runHarnessRuntime(
         model: effectiveModel,
         // Recalled memory is appended to the user message (NOT the system prompt) so
         // it reaches the model on every turn, including resumed turns. See
-        // prepareContext for why.
+        // loadHarnessMemory for why.
         messages: [
           ...(historyAsMessages ? structuredHistoryMessages(history) : []),
           currentUserMessage,
@@ -347,7 +366,7 @@ export async function runHarnessRuntime(
         // Each entry carries its description as well as its name: this is also
         // what a subagent inherits (agent-app forwards it down the Agent tool
         // seam), and a child renders its own index from these entries.
-        ...(!suppressSkillContext && skillDisclosureEntries.length > 0 && options.skillsRoot !== undefined
+        ...(!suppressToolBoundContext && skillDisclosureEntries.length > 0 && options.skillsRoot !== undefined
           ? {
             skills: skillDisclosureEntries.map(({ name, description }) => ({ name, description })),
             skillsRoot: options.skillsRoot,

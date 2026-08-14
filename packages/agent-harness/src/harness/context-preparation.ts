@@ -21,12 +21,9 @@ export async function prepareHarnessContext(
   request: AgentHarnessRequest,
   contextOptions: {
     readonly historyMode: "prompt" | "messages" | "omitted";
-    readonly turnId: string;
   },
-  emit?: (event: RuntimeEventLike) => void,
 ): Promise<{
   readonly context: BuiltAgentContext;
-  readonly memory: ContextBlockInput | undefined;
   readonly skillDisclosureEntries: readonly SkillIndexSummary[];
   readonly history: readonly HistoryMessage[];
   readonly historyOmitted: boolean;
@@ -35,16 +32,6 @@ export async function prepareHarnessContext(
     const history = contextOptions.historyMode === "omitted"
       ? []
       : await loadHarnessHistory(options, request.conversationId, request.continuation);
-    // Recalled memory deliberately does NOT go into the system prompt. It rides on
-    // the per-turn USER MESSAGE instead (see runRuntime): the user message is the
-    // one field every runtime re-sends verbatim each turn, so memory survives
-    // session resume even on runtimes that drop the system prompt on a resumed
-    // turn (e.g. codex-app sends developerInstructions only on a fresh thread).
-    // Keeping it out of the system prompt also leaves that prompt stable across a
-    // session, which is better for provider prompt caching.
-    const memory = request.continuation === undefined
-      ? await loadHarnessMemory(options, request.conversationId, request.userMessage, contextOptions.turnId, emit)
-      : undefined;
     const selectedSkills = await loadHarnessSkills(options, skillsCache);
     const context = await loadContextFromFiles({
       identityPath: options.identityPath,
@@ -69,7 +56,6 @@ export async function prepareHarnessContext(
     const skillDisclosureEntries = await loadSkillDisclosureEntries(options);
     return {
       context,
-      memory,
       skillDisclosureEntries,
       history,
       historyOmitted: contextOptions.historyMode === "omitted",
@@ -139,7 +125,21 @@ export async function loadHarnessHistory(
     return history.slice(0, boundaryIndex + 1);
 }
 
-async function loadHarnessMemory(
+/**
+ * Query automatic long-term memory only after request-scoped runtime policy has
+ * been resolved. The caller owns the sealed/no-tools decision so an
+ * authoritative policy can suppress the backend query itself rather than
+ * trying to remove private results after retrieval.
+ *
+ * Recalled memory deliberately does NOT go into the system prompt. It rides on
+ * the per-turn USER MESSAGE instead (see runHarnessRuntime): the user message is
+ * the one field every runtime re-sends verbatim each turn, so memory survives
+ * session resume even on runtimes that drop the system prompt on a resumed turn
+ * (e.g. codex-app sends developerInstructions only on a fresh thread). Keeping
+ * it out of the system prompt also leaves that prompt stable across a session,
+ * which is better for provider prompt caching.
+ */
+export async function loadHarnessMemory(
   options: AgentHarnessOptions,
   conversationId: string,
   query: string,

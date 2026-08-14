@@ -177,10 +177,16 @@ so a seal never transfers to a different earlier or later override. For that
 sealed turn, the harness also removes host-added `skills` / `skillsRoot` runtime
 options and omits the Skill Index and selected skill instructions from the
 provider prompt, recorded context, and response context metadata. Ordinary
-overrides retain configured progressive disclosure.
+overrides retain configured progressive disclosure. The same sealed boundary
+suppresses automatic long-term memory before the harness calls `memory.load`,
+so a backend recall query is never issued and recalled private notes cannot
+enter runtime messages or turn-context metadata. Host-authored continuations
+already skip automatic recall; the no-tools continuation form therefore keeps
+the same tool/skill/memory invariant. Non-sealed request extensions preserve
+ordinary recall.
 
 :::note
-Request-scoped options apply at the harness **run boundary**: they are resolved after context assembly and merged just before the provider call, then `cleanup` runs when the turn finishes. A model-changing option under continuous-session mode must match a valid model already declared in the request's cron, webhook, or TUI metadata, because that declaration isolates the turn before history assembly. An undeclared late model change fails before provider execution; otherwise a warm session could have omitted history for the wrong runtime. Execution mode remains harness-derived from the effective model.
+Request-scoped options apply at the harness **run boundary**: they are resolved after system-context assembly, before automatic memory recall, and merged just before the provider call; `cleanup` runs when the turn finishes. A model-changing option under continuous-session mode must match a valid model already declared in the request's cron, webhook, or TUI metadata, because that declaration isolates the turn before history assembly. An undeclared late model change fails before provider execution; otherwise a warm session could have omitted history for the wrong runtime. Execution mode remains harness-derived from the effective model.
 :::
 
 ## Dropping to the harness

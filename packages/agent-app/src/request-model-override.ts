@@ -328,7 +328,11 @@ function resolveAcceptedModelOverride(
   const directOpenCodeWouldReceiveMcp = parsed.sdk === "opencode" && mcpSources.length > 0;
   const directOpenCodeWouldReceiveIndexSkills = parsed.sdk === "opencode" && options?.indexSkillsActive === true;
 
-  if (source === "advisor" && (parsed.sdk === "codex" || parsed.sdk === "opencode")) {
+  if (source === "advisor" && (
+    parsed.sdk === "codex"
+    || parsed.sdk === "opencode"
+    || parsed.sdk === "acp"
+  )) {
     logger?.warn?.("Rejecting advisor model selection that cannot enforce the advisor tool-free boundary.", {
       model: rawModel,
       runtime: parsed.sdk,

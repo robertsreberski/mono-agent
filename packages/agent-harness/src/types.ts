@@ -480,7 +480,8 @@ export interface AgentHarnessRuntimeOptionsExtension {
    * ordinary override clears the seal through normal last-wins precedence.
    * Use it when the request must expose exactly the declared tool policy. The
    * harness also removes host-added progressive skill options and model-facing
-   * skill sections from that sealed turn.
+   * skill sections from that sealed turn, and suppresses automatic long-term
+   * memory recall before any backend query is issued.
    */
   readonly sealedToolPolicy?: boolean;
   readonly cleanup?: () => void | Promise<void>;

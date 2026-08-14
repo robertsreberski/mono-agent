@@ -303,9 +303,10 @@ export function createSharedMemoryRecallRuntimeExtension(
       } catch {
         // Diagnostics are best-effort; a logger failure cannot fail the turn.
       }
-      // Automatic recall already ran through MemoryRetrievalService.load(). A
-      // loopback startup failure therefore omits only the explicit tool and
-      // must not prevent the provider turn from proceeding.
+      // Automatic recall runs only after request-extension resolution. A
+      // loopback startup failure therefore omits only the explicit tool; an
+      // eligible ordinary turn still calls MemoryRetrievalService.load next,
+      // while a later authoritative seal suppresses that query as intended.
       return { runtimeOptions: { mcpServers: {} }, cleanup: async () => { service.releaseTurn(runId); } };
     }
   };

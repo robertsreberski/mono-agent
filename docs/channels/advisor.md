@@ -62,7 +62,7 @@ host restart because channel plugins are resolved at startup.
 :::caution
 Use an advisor model route that can enforce an empty tool set. A Pi SDK route
 such as `pi:openai-codex:gpt-5.6-sol` is the recommended Codex-backed form.
-Direct `codex:*`, direct `opencode:*`, and Claude CLI routes reject this
+Direct `codex:*`, direct `opencode:*`, `acp:*`, and Claude CLI routes reject this
 boundary. Claude SDK can enforce it when the host's execution mode is `sdk`.
 The selected advisor route must also be compatible with the host primary's
 runtime family: a direct `codex:*` host cannot switch an advisor turn to `pi:*`.
@@ -137,6 +137,12 @@ Unknown arguments, malformed metadata, and a serialized argument object over
 as untrusted inside an endpoint-owned containment prompt; caller prose cannot
 change the model, effort, tool policy, or operator prompt.
 
+The authoritative advisor seal is also a context boundary. Before any automatic
+long-term memory query is issued, the harness sees the winning sealed policy and
+skips recall entirely. Prior private host notes therefore cannot enter the
+advisor's runtime messages, prompt metadata, or review output; the default
+`MemoryRecall` MCP tool is excluded with every other tool and MCP server.
+
 A success has stable schema `mono-agent.advisor.v1`:
 
 ```json
@@ -156,10 +162,11 @@ Review text is normalized, redacts high-confidence credentials and private home
 or temporary paths, and is fitted to both `maxOutputChars` and
 `maxResponseBytes`. Server logs contain endpoint facts and generic lifecycle
 messages, not request bodies, bearer values, raw model errors, or caller keys.
-The package-owned continuity cache also stores metadata only. The configured
-responder remains subject to the host's ordinary conversation-history,
-run-artifact, observability, and memory policies, which can retain submitted
-payloads and reviews. Never submit credentials or secrets to the tool.
+The package-owned continuity cache also stores metadata only. Suppressing recall
+does not disable post-turn retention: the configured responder remains subject
+to the host's ordinary conversation-history, run-artifact, observability, and
+memory capture policies, which can retain submitted payloads and reviews. Never
+submit credentials or secrets to the tool.
 
 ## Configuration reference
 

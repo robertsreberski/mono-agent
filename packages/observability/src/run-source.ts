@@ -3,6 +3,7 @@ const CONVERSATION_ID_PREFIX_SOURCES: ReadonlyArray<readonly [string, string]> =
   ["slack:", "slack"],
   ["cron:", "cron"],
   ["webhook:", "webhook"],
+  ["advisor:", "advisor"],
   ["memory:", "memory"],
   ["a2a:", "a2a"],
   ["openai-api:", "openai-api"],
