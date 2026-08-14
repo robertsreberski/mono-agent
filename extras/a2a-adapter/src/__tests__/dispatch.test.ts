@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -118,9 +118,11 @@ describe("A2A durable dispatch lifecycle", () => {
     expect(responderCalls).toBe(1);
   });
 
-  it("cancels only through the explicit dispatch cancellation method", async () => {
+  it("persists explicit cancellation durably and replays it after restart", async () => {
+    const stateDir = await temporaryStateDir();
     let observedAbort = false;
     const provider = await startProvider({
+      stateDir,
       responder: {
         async respond(request) {
           await new Promise<void>((resolve) => {
@@ -134,10 +136,11 @@ describe("A2A durable dispatch lifecycle", () => {
       },
     });
     const consumer = await createA2AConsumer({ agentUrl: provider.agentCardUrl });
-    const dispatch = await consumer.dispatchMessage({
+    const input = {
       text: "cancel me",
       idempotencyKey: "dispatch-explicit-cancel-1",
-    });
+    } as const;
+    const dispatch = await consumer.dispatchMessage(input);
 
     const outcome = await dispatch.cancel();
     expect(outcome).toMatchObject({
@@ -147,6 +150,46 @@ describe("A2A durable dispatch lifecycle", () => {
     });
     expect(observedAbort).toBe(true);
     expect(dispatch.current).toBe(outcome.response);
+
+    const recordPath = await onlyRecordPath(stateDir);
+    const completionDeadline = Date.now() + 2_000;
+    let lastRecord: Record<string, unknown>;
+    while (true) {
+      lastRecord = JSON.parse(await readFile(recordPath, "utf8")) as Record<string, unknown>;
+      if (lastRecord.status === "completed") break;
+      if (Date.now() >= completionDeadline) {
+        throw new Error(`Timed out waiting for the canceled receipt to persist. Last record: ${JSON.stringify(lastRecord)}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(lastRecord).toMatchObject({
+      status: "completed",
+      result: { status: { state: TaskState.TASK_STATE_CANCELED } },
+    });
+
+    await provider.stop();
+    let replacementCalls = 0;
+    const restarted = await startProvider({
+      stateDir,
+      responder: {
+        async respond() {
+          replacementCalls += 1;
+          return { text: "must not run" };
+        },
+      },
+    });
+    const replay = await dispatchA2AMessage({ ...input, agentUrl: restarted.agentCardUrl });
+    const replayOutcome = await replay.observeTerminal();
+    expect(replayOutcome).toMatchObject({
+      status: "canceled",
+      error: { code: "remote_canceled" },
+    });
+    if (replayOutcome.status !== "canceled") {
+      throw new Error("Expected the restarted explicit cancellation to replay as canceled.");
+    }
+    expect(replayOutcome.error).toBeInstanceOf(A2AConsumerError);
+    expect(replayOutcome.error.code).toBe("remote_canceled");
+    expect(replacementCalls).toBe(0);
   });
 
   it("replays a terminal dispatch after provider restart without another responder call", async () => {
@@ -214,6 +257,8 @@ describe("A2A durable dispatch lifecycle", () => {
     // monitor promotes that cancellation to a durable terminal record and the replay below
     // returns a definite `remote_canceled` instead of failing closed.
     await new Promise((resolve) => setTimeout(resolve, 250));
+    const activeRecordPath = await onlyRecordPath(stateDir);
+    expect(JSON.parse(await readFile(activeRecordPath, "utf8"))).toMatchObject({ status: "active" });
 
     let restartedCalls = 0;
     const restarted = await startProvider({
@@ -388,6 +433,12 @@ async function temporaryStateDir(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "mono-a2a-dispatch-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   return join(root, "state");
+}
+
+async function onlyRecordPath(stateDir: string): Promise<string> {
+  const records = (await readdir(stateDir)).filter((name) => /^[a-f0-9]{64}\.json$/u.test(name));
+  expect(records).toHaveLength(1);
+  return join(stateDir, records[0] as string);
 }
 
 function idempotentAgentCard(): AgentCard {

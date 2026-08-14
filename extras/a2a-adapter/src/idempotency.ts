@@ -54,6 +54,8 @@ const MAX_RETENTION_MS = 365 * 24 * 60 * 60 * 1_000;
 const DEFAULT_MAX_RECORDS = 10_000;
 const MAX_RECORDS_LIMIT = 1_000_000;
 const ERROR_MARKER = "[mono-agent:a2a-idempotency]";
+const SHUTDOWN_IN_DOUBT_MESSAGE =
+  "The provider began shutting down before the delegated A2A task's terminal result could be durably reconciled. The admission remains active and automatic re-execution is refused.";
 
 export interface A2AProviderIdempotencyOptions {
   /** Owner-only durable record directory. */
@@ -503,6 +505,21 @@ class IdempotentA2ARequestHandler extends DelegatingA2ARequestHandler {
 
     const result = await this.delegate.sendMessage(asImmediateExecutionRequest(params), context);
     const taskId = taskIdFromResult(result);
+    // "status" identifies a Task: executor shutdown terminals are Tasks;
+    // Messages are genuine responder output.
+    if (
+      this.shuttingDown
+      && "status" in result
+      && isTerminalState(result.status?.state)
+    ) {
+      // Invariant: no terminal task observed after the shutdown latch may become durable truth.
+      this.logger?.error?.("A2A idempotency shutdown reconciliation remains in doubt.", {
+        keyHash: active.keyHash,
+        taskId,
+        terminalState: result.status?.state,
+      });
+      throw protocolIdempotencyError("idempotency_in_doubt", SHUTDOWN_IN_DOUBT_MESSAGE);
+    }
     if (isNonTerminalTask(result)) {
       const accepted: ActiveRecord = {
         ...active,
@@ -586,6 +603,10 @@ class IdempotentA2ARequestHandler extends DelegatingA2ARequestHandler {
         }
         await unrefDelay(ACTIVE_POLL_MS);
       }
+      if (this.shuttingDown) {
+        throw protocolIdempotencyError("idempotency_in_doubt", SHUTDOWN_IN_DOUBT_MESSAGE);
+      }
+      // Defensive/unreachable under current ownership: the task stays live until terminal or shutdown.
       throw storeError("A2A idempotent task monitoring ended before a terminal result was recorded.");
     } catch (error) {
       this.logger?.error?.("A2A idempotency monitor failed; the admission remains fail-closed.", {
