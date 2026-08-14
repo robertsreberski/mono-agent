@@ -189,6 +189,37 @@ describe("canonical memory bundle merge", () => {
     expect(retained.dailyAppends[0]?.relativePath).toBe("2026-07-30.md");
   });
 
+  it("appends a modern incoming date to the destination's root-legacy layout", () => {
+    const destinationBullet = { id: "DEST-LEGACY", text: "destination legacy fact" } as const;
+    const incomingBullet = { id: "INCOMING-DAILY", text: "incoming modern fact" } as const;
+    const destination = snapshot({ daily: { "2026-07-30.md": [destinationBullet] } });
+    const incoming = snapshot({ daily: { "daily/2026-07-30.md": [incomingBullet] } });
+
+    const plan = merge(destination, incoming);
+    const expectedCorpus = snapshot({
+      daily: { "2026-07-30.md": [destinationBullet, incomingBullet] },
+    });
+    const expectedCommitment = merge(expectedCorpus, snapshot({}));
+
+    expect(plan.dailyAppends).toEqual([{
+      relativePath: "2026-07-30.md",
+      blocks: [serializeBullet(bulletOf(incomingBullet))],
+    }]);
+    expect(plan.importedMemoryIds).toEqual(["INCOMING-DAILY"]);
+    expect(plan.counts).toMatchObject({
+      newMemories: 1,
+      identicalMemories: 0,
+      conflictingMemories: 0,
+      targetDailyFiles: 1,
+    });
+    expect(plan.expectedSourceFingerprint).toBe(expectedCommitment.expectedSourceFingerprint);
+    expect(plan.digest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(plan.digest).not.toBe(merge(
+      snapshot({ daily: { "daily/2026-07-30.md": [destinationBullet] } }),
+      incoming,
+    ).digest);
+  });
+
   it("refuses a non-dated daily source that could never be migrated or forgotten", () => {
     const incoming = snapshot({ daily: { "daily/custom-notes.md": [{ id: "B", text: "b" }] } });
 

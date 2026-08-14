@@ -273,9 +273,10 @@ function readBullets(snapshot: CanonicalMergeSnapshot): Map<string, BulletEntry>
 /**
  * Resolve every imported bullet onto a canonical destination daily path.
  *
- * A root-legacy incoming file promotes into `daily/<date>.md` unless the
- * destination still keeps that date in the legacy layout, mirroring the
- * "daily wins" precedence the rebuild planner applies.
+ * The destination's existing layout wins for a date. When that date is new to
+ * the destination, use the modern `daily/<date>.md` layout regardless of the
+ * incoming layout. This prevents a new daily file from shadowing a legacy root
+ * file that the rebuild planner would otherwise stop reading.
  */
 function groupDailyAppends(
   imported: readonly BulletEntry[],
@@ -283,9 +284,10 @@ function groupDailyAppends(
 ): MemoryBundleDailyAppend[] {
   const grouped = new Map<string, string[]>();
   for (const entry of imported) {
-    const target = LEGACY_DAILY_FILE.test(entry.relativePath) && !destinationPaths.has(entry.relativePath)
-      ? `daily/${entry.relativePath}`
+    const date = entry.relativePath.startsWith("daily/")
+      ? entry.relativePath.slice("daily/".length)
       : entry.relativePath;
+    const target = destinationPaths.has(date) ? date : `daily/${date}`;
     assertCanonicalDailySourcePath(target);
     const blocks = grouped.get(target);
     if (blocks === undefined) grouped.set(target, [entry.raw]);

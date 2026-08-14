@@ -16,6 +16,7 @@ import { openMemoryDb } from "../../store/index.js";
 import { exportMemoryBundle } from "../bundle-export.js";
 import { MEMORY_BUNDLE_MANIFEST_FILE, MEMORY_BUNDLE_SOURCE_DIR } from "../bundle-format.js";
 import { appendBullet } from "../daily.js";
+import { assertHealthyRoot } from "../durable-root-swap.js";
 import {
   applyMemoryBundleImport,
   MemoryBundleImportError,
@@ -24,6 +25,8 @@ import {
 } from "../bundle-import.js";
 import { pruneExplicitMemoryForgetBackups } from "../forget-backup-retention.js";
 import { readManagedIndexManifest, resolveActiveMemoryDbPath } from "../generations.js";
+import { serializeBullet } from "../grammar.js";
+import { readCanonicalMergeSnapshot, safeRebuildMemoryIndex } from "../rebuild.js";
 import { readBujoCanonicalSourceFingerprint } from "../replay-projection.js";
 
 import {
@@ -191,6 +194,78 @@ describe("memory bundle import", { timeout: 60_000 }, () => {
     const daily = readFileSync(join(destination.root, "daily", "2026-07-30.md"), "utf8");
     expect(daily).toContain(SOURCE_FACT);
     expect(existsSync(join(destination.root, "daily", "2026-07-31.md"))).toBe(true);
+  });
+
+  it("preserves a legacy destination memory when importing a modern same-date bundle", async () => {
+    const day = "2026-07-30";
+    const destinationBullet = bulletOf({
+      id: "DEST-LEGACY",
+      text: "the destination's legacy-layout memory",
+      day,
+    });
+    const source = await createBujoFixture({
+      prefix: "bundle-import-modern-source",
+      bullets: [{ id: "INCOMING-DAILY", text: "the incoming daily-layout memory", day }],
+    });
+    const destination = await createBujoFixture({
+      prefix: "bundle-import-legacy-dest",
+      bullets: [],
+    });
+    const legacyPath = join(destination.root, `${day}.md`);
+    writeFileSync(
+      legacyPath,
+      `# ${day}\n\n${serializeBullet(destinationBullet)}\n`,
+      { mode: 0o600 },
+    );
+    const legacyRebuild = await safeRebuildMemoryIndex({
+      root: destination.root,
+      tier: "bujo",
+      embeddings: destination.embeddings,
+      dim: destination.dim,
+    });
+    const legacyFingerprint = readBujoCanonicalSourceFingerprint(destination.root);
+    assertHealthyRoot(destination.root, legacyRebuild.active, destination.dim, legacyFingerprint);
+    const bundlePath = await bundleFrom(source);
+
+    const preview = prepareMemoryBundleImport({ root: destination.root, bundlePath });
+    expect(preview.counts).toMatchObject({ newMemories: 1, targetDailyFiles: 1 });
+
+    const result = await applyBundle(destination, bundlePath);
+
+    expect(result).toMatchObject({
+      status: "applied",
+      imported: 1,
+      skipped: 0,
+      identical: 0,
+      sourceFingerprint: preview.mergedSourceFingerprint,
+    });
+    expect(existsSync(join(destination.root, "daily", `${day}.md`))).toBe(false);
+    const legacyDaily = readFileSync(legacyPath, "utf8");
+    expect(legacyDaily).toContain(destinationBullet.text);
+    expect(legacyDaily).toContain("the incoming daily-layout memory");
+
+    const canonical = readCanonicalMergeSnapshot(destination.root);
+    expect(canonical.daily.map((entry) => entry.relativePath)).toEqual([`${day}.md`]);
+    expect(canonical.records.map((record) => record.id).sort()).toEqual(["DEST-LEGACY", "INCOMING-DAILY"]);
+    expect(canonical.fingerprint).toBe(preview.mergedSourceFingerprint);
+    assertHealthyRoot(
+      destination.root,
+      resolveActiveMemoryDbPath(destination.root),
+      destination.dim,
+      preview.mergedSourceFingerprint,
+    );
+
+    const db = openMemoryDb({
+      path: resolveActiveMemoryDbPath(destination.root),
+      readOnly: true,
+      dim: destination.dim,
+    });
+    try {
+      expect(db.validationSnapshot()).toMatchObject({ memories: 2, vectors: 2 });
+      expect(db.allMemories().map((record) => record.id).sort()).toEqual(["DEST-LEGACY", "INCOMING-DAILY"]);
+    } finally {
+      db.close();
+    }
   });
 
   it("does not advertise a rollback generation after import", async () => {
