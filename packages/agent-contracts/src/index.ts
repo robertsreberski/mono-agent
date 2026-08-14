@@ -12,6 +12,7 @@ export {
 } from "./process-jobs.js";
 export type {
   ProcessJobErrorCode,
+  ProcessJobOperator,
   ProcessJobProjection,
   ProcessJobProjectionError,
   ProcessJobProjectionLimits,

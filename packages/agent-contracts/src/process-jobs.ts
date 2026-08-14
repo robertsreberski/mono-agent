@@ -29,11 +29,13 @@ export const PROCESS_JOB_ERROR_CODES = [
   "process_job_queue_expired",
   "process_job_chain_depth_exceeded",
   "process_job_spawn_failed",
+  "process_job_failed",
   "process_job_timeout",
   "process_job_cancelled",
   "process_job_agent_restarted",
   "process_job_store_error",
   "process_job_wake_failed",
+  "process_job_response_too_large",
   "process_job_invalid",
 ] as const;
 
@@ -113,6 +115,15 @@ export interface ProcessJobProjection {
   readonly lastError: ProcessJobProjectionError | null;
 }
 
+/** Neutral owner-authorized operator surface used by app, TUI, CLI, and web proxy. */
+export interface ProcessJobOperator {
+  /** Owner-only bearer used by local operator routes. Never expose to a model. */
+  readonly operatorToken: string;
+  list(): Promise<readonly ProcessJobProjection[]>;
+  get(jobId: string): Promise<ProcessJobProjection | undefined>;
+  cancel(jobId: string): Promise<ProcessJobProjection>;
+}
+
 const PROJECTION_KEYS = [
   "schema",
   "jobId",
@@ -154,6 +165,10 @@ export function parseProcessJobProjection(value: unknown): ProcessJobProjection 
   parseOutput(value.output);
   parseWake(value.wake);
   parseError(value.lastError);
+  if (value.output.preview.length > value.limits.previewChars
+    || value.output.stdoutBytes + value.output.stderrBytes > value.limits.maxOutputBytes) {
+    throw invalid("output limits");
+  }
   return value as unknown as ProcessJobProjection;
 }
 
@@ -200,10 +215,11 @@ function parseTimestamps(value: unknown): asserts value is ProcessJobProjectionT
 function parseLimits(value: unknown): asserts value is ProcessJobProjectionLimits {
   if (!isRecord(value)
     || !hasExactlyKeys(value, ["maxRuntimeMs", "maxOutputBytes", "previewChars", "chainDepth"])
-    || !positiveInteger(value.maxRuntimeMs)
-    || !positiveInteger(value.maxOutputBytes)
-    || !positiveInteger(value.previewChars)
-    || !nonNegativeInteger(value.chainDepth)) {
+    || !boundedPositiveInteger(value.maxRuntimeMs, 24 * 60 * 60 * 1_000)
+    || !boundedPositiveInteger(value.maxOutputBytes, 8 * 1024 * 1024)
+    || !boundedPositiveInteger(value.previewChars, 8_000)
+    || !nonNegativeInteger(value.chainDepth)
+    || Number(value.chainDepth) > 8) {
     throw invalid("limits");
   }
 }
@@ -214,7 +230,7 @@ function parseOutput(value: unknown): asserts value is ProcessJobProjectionOutpu
     || !nonNegativeInteger(value.stdoutBytes)
     || !nonNegativeInteger(value.stderrBytes)
     || typeof value.truncated !== "boolean"
-    || !boundedString(value.preview, 8_000)
+    || !boundedCharacters(value.preview, 8_000)
     || !nullableArtifactRef(value.stdoutRef)
     || !nullableArtifactRef(value.stderrRef)) {
     throw invalid("output");
@@ -265,6 +281,10 @@ function boundedString(value: unknown, maxBytes: number): value is string {
   return typeof value === "string" && utf8Bytes(value) <= maxBytes;
 }
 
+function boundedCharacters(value: unknown, maxCharacters: number): value is string {
+  return typeof value === "string" && value.length <= maxCharacters;
+}
+
 function boundedNonEmptyString(value: unknown, maxBytes: number): value is string {
   return boundedString(value, maxBytes) && value.trim().length > 0;
 }
@@ -287,6 +307,10 @@ function nonNegativeInteger(value: unknown): value is number {
 
 function positiveInteger(value: unknown): value is number {
   return nonNegativeInteger(value) && Number(value) > 0;
+}
+
+function boundedPositiveInteger(value: unknown, max: number): value is number {
+  return positiveInteger(value) && Number(value) <= max;
 }
 
 function nullableInteger(value: unknown): value is number | null {

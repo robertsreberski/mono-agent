@@ -88,6 +88,21 @@ describe("process-job contracts", () => {
     expect(() => parseProcessJobProjection(clock)).toThrow(/timestamps/u);
   });
 
+  it("applies compiled caps while treating previewChars as characters", () => {
+    const unicode: any = projection();
+    unicode.limits.previewChars = 8_000;
+    unicode.output.preview = "😀".repeat(4_000);
+    expect(parseProcessJobProjection(unicode).output.preview).toBe(unicode.output.preview);
+
+    const tooLong = structuredClone(unicode);
+    tooLong.output.preview += "x";
+    expect(() => parseProcessJobProjection(tooLong)).toThrow(/output/u);
+
+    const excessiveRuntime: any = projection();
+    excessiveRuntime.limits.maxRuntimeMs = 86_400_001;
+    expect(() => parseProcessJobProjection(excessiveRuntime)).toThrow(/limits/u);
+  });
+
   it("exports exact state and error-code guards", () => {
     expect(isProcessJobState("interrupted")).toBe(true);
     expect(isProcessJobState("active")).toBe(false);
