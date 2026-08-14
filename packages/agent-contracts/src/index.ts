@@ -2,6 +2,26 @@ import { types as nodeUtilTypes } from "node:util";
 
 export type AgentRequestMetadata = Record<string, unknown>;
 export type AgentResponseMetadata = Record<string, unknown>;
+export {
+  PROCESS_JOB_ERROR_CODES,
+  PROCESS_JOB_STATES,
+  isProcessJobErrorCode,
+  isProcessJobState,
+  parseProcessJobProjection,
+  parseProcessJobProjections,
+} from "./process-jobs.js";
+export type {
+  ProcessJobErrorCode,
+  ProcessJobProjection,
+  ProcessJobProjectionError,
+  ProcessJobProjectionLimits,
+  ProcessJobProjectionOrigin,
+  ProcessJobProjectionOutput,
+  ProcessJobProjectionTimestamps,
+  ProcessJobProjectionWake,
+  ProcessJobState,
+  ProcessJobWakeState,
+} from "./process-jobs.js";
 export type {
   MemoryBlock,
   MemoryCompletedTurn,
