@@ -398,6 +398,90 @@ describe("validateMonoAgentFolder", () => {
     expect(await pathExists(stateDir)).toBe(false);
   });
 
+  it("reports enabled process jobs without creating their local state", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "process-jobs");
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      processJobs: { enabled: true },
+    });
+
+    const report = await validateMonoAgentFolder({
+      env: {},
+      cwd: dir,
+      configPath,
+      liveness: false,
+      allowFilesystemWrites: false,
+    });
+
+    expect(sectionById(report, "process-jobs")).toMatchObject({ status: "ok" });
+    expect(sectionById(report, "process-jobs").details.join("\n"))
+      .toContain("State has not been initialized");
+    expect(await pathExists(stateDir)).toBe(false);
+  });
+
+  it("fails process-job doctor checks for a symlinked intermediate state component", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const outside = await mkdtemp(join(tmpdir(), "agent-app-doctor-process-jobs-outside-"));
+    try {
+      await symlink(outside, join(dir, ".mono-agent"));
+      const configPath = await writeConfig({
+        runtime: { model: "pi:openai-codex:gpt-5.5" },
+        context: { identityPath: "./IDENTITY.md" },
+        processJobs: { enabled: true },
+      });
+
+      const report = await validateMonoAgentFolder({
+        env: {},
+        cwd: dir,
+        configPath,
+        liveness: false,
+        allowFilesystemWrites: false,
+      });
+
+      expect(sectionById(report, "process-jobs")).toMatchObject({ status: "error" });
+      expect(sectionById(report, "process-jobs").details.join("\n")).toContain("not a symlink");
+      expect(await pathExists(join(outside, "process-jobs"))).toBe(false);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("reports bounded local process-job state counts without reading artifacts", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const stateDir = join(dir, ".mono-agent", "process-jobs");
+    const recordsDir = join(stateDir, "records-v1");
+    const artifactsDir = join(stateDir, "artifacts");
+    await mkdir(recordsDir, { recursive: true, mode: 0o700 });
+    await mkdir(artifactsDir, { recursive: true, mode: 0o700 });
+    await chmod(stateDir, 0o700);
+    await chmod(recordsDir, 0o700);
+    await chmod(artifactsDir, 0o700);
+    for (const [jobId, state] of [
+      ["11111111-1111-4111-8111-111111111111", "running"],
+      ["22222222-2222-4222-8222-222222222222", "succeeded"],
+    ] as const) {
+      const recordPath = join(recordsDir, `${jobId}.json`);
+      await writeFile(recordPath, `${JSON.stringify({ jobId, state })}\n`, { mode: 0o600 });
+      await chmod(recordPath, 0o600);
+    }
+    await writeFile(join(artifactsDir, "ignored-output"), "secret artifact contents\n", { mode: 0o600 });
+    const configPath = await writeConfig({
+      runtime: { model: "pi:openai-codex:gpt-5.5" },
+      context: { identityPath: "./IDENTITY.md" },
+      processJobs: { enabled: true },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const section = sectionById(report, "process-jobs");
+    expect(section.status).toBe("ok");
+    expect(section.details).toContain("Local records: 2.");
+    expect(section.details.join("\n")).toContain("running=1");
+    expect(section.details.join("\n")).toContain("succeeded=1");
+    expect(section.details.join("\n")).not.toContain("secret artifact contents");
+  });
+
   it("fails continuation doctor validation for ephemeral configured ports", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({

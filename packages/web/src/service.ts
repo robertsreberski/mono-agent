@@ -15,6 +15,7 @@ import {
   type ChannelAskAnswer,
   type ChannelAskSnapshot,
   type ChannelAskSubmissionResult,
+  type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 import { EFFORT_LEVELS } from "@mono-agent/config";
 
@@ -46,7 +47,7 @@ import {
   type WebMessage,
   type WebMessagePart,
   type WebModelOption,
-  type WebNotificationTriggerKind,
+  type WebThreadNotificationTriggerKind,
   type WebSkillRegistry,
   type WebThread,
   type WebThreadDetail,
@@ -150,14 +151,27 @@ type WebRichReplyPart =
   | Extract<WebMessagePart, { type: "attachment" }>
   | Extract<WebMessagePart, { type: "mcp_app" }>;
 
-export interface DeliverWebNotificationInput {
+export interface DeliverWebThreadNotificationInput {
   readonly sourceId: string;
-  readonly triggerKind: WebNotificationTriggerKind;
+  readonly triggerKind: WebThreadNotificationTriggerKind;
   readonly deliveryKey: string;
   readonly text: string;
   readonly jobId?: string;
   readonly runId?: string;
 }
+
+export interface DeliverWebProcessJobNotificationInput {
+  readonly sourceId: string;
+  readonly triggerKind: "job";
+  readonly deliveryKey: string;
+  readonly threadId: string;
+  readonly processJob: ProcessJobProjection;
+  readonly text?: string;
+}
+
+export type DeliverWebNotificationInput =
+  | DeliverWebThreadNotificationInput
+  | DeliverWebProcessJobNotificationInput;
 
 export interface DeliverWebNotificationResult {
   readonly thread?: WebThread;
@@ -718,6 +732,25 @@ export class WebService {
       throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
     }
     if (this.store.getAgent(input.sourceId) === undefined) await this.refreshAgents();
+    if (input.triggerKind === "job") {
+      const completed = this.store.upsertProcessJobCard({
+        sourceId: input.sourceId,
+        threadId: input.threadId,
+        deliveryKey: input.deliveryKey,
+        processJob: input.processJob,
+        ...(input.text === undefined ? {} : { responseText: input.text }),
+      });
+      const message = completed.thread.id === input.threadId
+        ? this.store.getThreadDetail(input.threadId)?.messages.find((candidate) =>
+            candidate.parts.some((part) => part.type === "process-job" && part.job.jobId === input.processJob.jobId))
+        : undefined;
+      if (!completed.duplicate && message !== undefined) {
+        this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
+      }
+      this.emit("threads.changed", input.threadId, { thread: completed.thread });
+      this.emit("thread.changed", input.threadId, { thread: completed.thread });
+      return completed;
+    }
     const reservation = this.store.reserveNotification(input);
     if (reservation.duplicate) return this.store.completeNotification(reservation);
 
@@ -729,6 +762,18 @@ export class WebService {
     });
     this.activeNotifications.set(activeKey, delivery);
     return delivery;
+  }
+
+  async threadJobs(threadId: string): Promise<readonly ProcessJobProjection[]> {
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    const connection = this.connections.get(thread.sourceId);
+    if (connection === undefined || connection.info.supportsJobs !== true) {
+      throw new WebConsoleError("process_jobs_unavailable", "Process jobs are unavailable for this agent.", 409);
+    }
+    const conversationId = `web:${threadId}`;
+    const jobs = await connection.client.listJobs(AbortSignal.timeout(INFO_TIMEOUT_MS));
+    return jobs.filter((job) => job.origin.conversationId.split("#", 1)[0] === conversationId);
   }
 
   async startTurn(threadId: string, input: StartWebTurnInput): Promise<{ readonly thread: WebThread; readonly turn: WebThread["runState"] }> {
@@ -1180,6 +1225,7 @@ export class WebService {
       const client = new OperatorClient({
         baseUrl: agent.baseUrl,
         ...(agent.apiKey === undefined ? {} : { apiKey: agent.apiKey }),
+        ...(agent.processJobsBearer === undefined ? {} : { processJobsBearer: agent.processJobsBearer }),
         ...(this.options.fetchImpl === undefined ? {} : { fetchImpl: this.options.fetchImpl }),
       });
       try {

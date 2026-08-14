@@ -4,6 +4,115 @@ import { spawn } from "node:child_process";
 
 export const DEFAULT_PROCESS_BUFFER_BYTES = 8 * 1024 * 1024;
 const KILL_GRACE_MS = 1_000;
+const PROCESS_JOB_LAUNCH_PAYLOAD_BYTES = 8 * 1024 * 1024;
+const PROCESS_JOB_STATUS_BYTES = 64 * 1024;
+
+// Background jobs start this command-agnostic group leader first. The actual
+// target crosses fd 3 only after the host has durably recorded the leader's
+// PID, PGID, and incarnation. If the host exits before that release, fd 3
+// closes empty and no target is ever spawned. Raw argv/environment values are
+// therefore absent from both durable state and the gate's process arguments.
+const PROCESS_JOB_LAUNCH_GATE_SOURCE = String.raw`
+"use strict";
+const { spawn } = require("node:child_process");
+const { createReadStream, createWriteStream } = require("node:fs");
+const MAX_PAYLOAD_BYTES = 8 * 1024 * 1024;
+const input = createReadStream(null, { fd: 3, autoClose: true });
+const chunks = [];
+let bytes = 0;
+let finished = false;
+
+function finish(value) {
+  if (finished) return;
+  finished = true;
+  const output = createWriteStream(null, { fd: 4, autoClose: true });
+  output.once("error", () => { process.exitCode = 1; });
+  output.end(JSON.stringify(value), () => { process.exitCode = 0; });
+}
+
+function spawnFailure(code) {
+  finish({
+    code: null,
+    signal: null,
+    spawnError: {
+      message: "The gated target process could not be spawned.",
+      ...(typeof code === "string" ? { code } : {}),
+    },
+  });
+}
+
+function forwardOutput(source, destination) {
+  let destinationOpen = true;
+  const resume = () => source.resume();
+  const discard = () => {
+    destinationOpen = false;
+    source.resume();
+  };
+  destination.on("drain", resume);
+  // If the owning host crashes, its pipe readers disappear. Keep the gate
+  // alive as the attestable group leader and drain target output instead of
+  // crashing on EPIPE and stranding descendants without a leader.
+  destination.on("error", discard);
+  source.on("data", (chunk) => {
+    if (!destinationOpen) return;
+    try {
+      if (!destination.write(chunk)) source.pause();
+    } catch {
+      discard();
+    }
+  });
+}
+
+input.on("data", (chunk) => {
+  bytes += chunk.length;
+  if (bytes > MAX_PAYLOAD_BYTES) {
+    input.destroy();
+    spawnFailure("PROCESS_JOB_LAUNCH_PAYLOAD_TOO_LARGE");
+    return;
+  }
+  chunks.push(chunk);
+});
+input.once("error", (error) => spawnFailure(error && error.code));
+input.once("end", () => {
+  if (finished) return;
+  if (bytes === 0) {
+    process.exitCode = 0;
+    return;
+  }
+  let spec;
+  try {
+    spec = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    spawnFailure("PROCESS_JOB_LAUNCH_PAYLOAD_INVALID");
+    return;
+  }
+  if (!spec || typeof spec.command !== "string" || !Array.isArray(spec.args)
+    || spec.args.some((argument) => typeof argument !== "string")
+    || (spec.cwd !== undefined && typeof spec.cwd !== "string")
+    || !spec.env || typeof spec.env !== "object" || Array.isArray(spec.env)) {
+    spawnFailure("PROCESS_JOB_LAUNCH_PAYLOAD_INVALID");
+    return;
+  }
+  let target;
+  try {
+    target = spawn(spec.command, spec.args, {
+      cwd: spec.cwd,
+      detached: false,
+      env: spec.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    spawnFailure(error && error.code);
+    return;
+  }
+  forwardOutput(target.stdout, process.stdout);
+  forwardOutput(target.stderr, process.stderr);
+  target.once("error", (error) => spawnFailure(error && error.code));
+  target.once("close", (code, signal) => {
+    finish({ code, signal, spawnError: null });
+  });
+});
+`;
 
 /**
  * Run one already-prepared executable without adding a shell.
@@ -39,8 +148,12 @@ export function runPreparedProcess(
  * descendant in the owned group is still alive.
  *
  * @param {{command: string, args?: string[], cwd?: string, env?: Record<string, string|undefined>}} commandSpec
- * @param {{timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, waitForProcessGroup?: boolean, onStdout?: (chunk: Buffer) => void, onStderr?: (chunk: Buffer) => void}} [options]
- * @returns {{pid: number|null, pgid: number|null, startedAt: string, completion: Promise<any>, cancel: () => void}}
+ * @param {{timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, waitForProcessGroup?: boolean, exactEnvironment?: boolean, onStdout?: (chunk: Buffer) => void, onStderr?: (chunk: Buffer) => void}} [options]
+ * For process jobs, `release()` is the persistence fence: the target cannot
+ * spawn until the host has durably recorded the returned ownership metadata.
+ * Foreground handles expose a harmless no-op release for one structural shape.
+ *
+ * @returns {{pid: number|null, pgid: number|null, startedAt: string, completion: Promise<any>, release: () => Promise<void>, cancel: () => void}}
  */
 export function startPreparedProcess(
   commandSpec,
@@ -49,23 +162,49 @@ export function startPreparedProcess(
     signal,
     maxBufferBytes = DEFAULT_PROCESS_BUFFER_BYTES,
     waitForProcessGroup = false,
+    exactEnvironment = false,
     onStdout,
     onStderr,
   } = {},
 ) {
   const startedAt = Date.now();
+  const gated = waitForProcessGroup && process.platform !== "win32";
+  const targetEnvironment = exactEnvironment
+    ? exactProcessEnv(commandSpec.env)
+    : commandSpec.env
+      ? mergedProcessEnv(commandSpec.env)
+      : { ...process.env };
+  const launchPayload = gated
+    ? Buffer.from(JSON.stringify({
+      command: commandSpec.command,
+      args: commandSpec.args || [],
+      ...(commandSpec.cwd === undefined ? {} : { cwd: commandSpec.cwd }),
+      env: targetEnvironment,
+    }), "utf8")
+    : null;
+  if (launchPayload !== null && launchPayload.byteLength > PROCESS_JOB_LAUNCH_PAYLOAD_BYTES) {
+    throw new RangeError("Process-job launch payload exceeds the safe in-memory gate limit.");
+  }
   /** @type {import("node:child_process").ChildProcess|null} */
   let child = null;
   let cancel = () => {};
+  let release = async () => {};
   const completion = new Promise((resolve) => {
     try {
-      const env = commandSpec.env ? mergedProcessEnv(commandSpec.env) : process.env;
-      child = spawn(commandSpec.command, commandSpec.args || [], {
-        cwd: commandSpec.cwd,
+      child = spawn(
+        gated ? process.execPath : commandSpec.command,
+        gated
+          ? ["--input-type=commonjs", "--eval", PROCESS_JOB_LAUNCH_GATE_SOURCE]
+          : (commandSpec.args || []),
+        {
+        ...(gated ? {} : { cwd: commandSpec.cwd }),
         detached: process.platform !== "win32",
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+        env: gated ? {} : targetEnvironment,
+        stdio: gated
+          ? ["ignore", "pipe", "pipe", "pipe", "pipe"]
+          : ["ignore", "pipe", "pipe"],
+      },
+      );
     } catch (error) {
       resolve({
         code: null,
@@ -95,6 +234,10 @@ export function startPreparedProcess(
       timedOut: false,
       truncated: false,
     };
+    let targetStatus = null;
+    let statusInvalid = false;
+    const statusChunks = [];
+    let statusBytes = 0;
     let killTimer = null;
     let timeoutTimer = null;
     let settled = false;
@@ -107,6 +250,54 @@ export function startPreparedProcess(
       }
     }
     cancel = terminate;
+
+    if (gated) {
+      const gate = /** @type {import("node:stream").Writable|undefined} */ (child.stdio?.[3]);
+      const status = /** @type {import("node:stream").Readable|undefined} */ (child.stdio?.[4]);
+      let releasePromise;
+      release = async () => {
+        releasePromise ??= new Promise((resolveRelease, rejectRelease) => {
+          if (!gate || typeof gate.end !== "function" || launchPayload === null) {
+            rejectRelease(new Error("Process-job launch gate is unavailable."));
+            return;
+          }
+          let released = false;
+          const rejectOnce = () => {
+            if (released) return;
+            released = true;
+            rejectRelease(new Error("Process-job launch gate closed before release."));
+          };
+          gate.once("error", rejectOnce);
+          gate.end(launchPayload, () => {
+            if (released) return;
+            released = true;
+            gate.off("error", rejectOnce);
+            resolveRelease();
+          });
+        });
+        await releasePromise;
+      };
+      status?.on("data", (chunk) => {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        statusBytes += buffer.length;
+        if (statusBytes > PROCESS_JOB_STATUS_BYTES) {
+          statusInvalid = true;
+          return;
+        }
+        statusChunks.push(buffer);
+      });
+      status?.once("error", () => { statusInvalid = true; });
+      status?.once("end", () => {
+        if (statusInvalid || statusBytes === 0) return;
+        try {
+          const parsed = JSON.parse(Buffer.concat(statusChunks).toString("utf8"));
+          if (validTargetStatus(parsed)) targetStatus = parsed;
+          else statusInvalid = true;
+        } catch {
+          statusInvalid = true;
+        }
+      });
+    }
 
     function append(target, chunk, observe) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -153,12 +344,26 @@ export function startPreparedProcess(
         if (timeoutTimer !== null) clearTimeout(timeoutTimer);
         if (killTimer !== null) clearTimeout(killTimer);
         signal?.removeEventListener?.("abort", onAbort);
+        const statusSpawnError = targetStatus?.spawnError
+          ? processSpawnError(targetStatus.spawnError)
+          : null;
+        const missingTargetStatus = gated
+          && targetStatus === null
+          && closeSignal === null
+          && code !== 0
+          && !state.timedOut
+          && !state.bufferExceeded;
         resolve({
-          code,
-          signal: closeSignal,
+          code: targetStatus?.code ?? code,
+          signal: targetStatus?.signal ?? closeSignal,
           stdout: Buffer.concat(stdout).toString("utf8"),
           stderr: Buffer.concat(stderr).toString("utf8"),
           ...state,
+          spawnError: state.spawnError
+            ?? statusSpawnError
+            ?? (statusInvalid || missingTargetStatus
+              ? new Error("The process-job launch gate exited without a valid target result.")
+              : null),
           durationMs: Date.now() - startedAt,
         });
       };
@@ -174,8 +379,26 @@ export function startPreparedProcess(
     pgid: process.platform === "win32" ? null : (child?.pid ?? null),
     startedAt: new Date(startedAt).toISOString(),
     completion,
+    release: () => release(),
     cancel: () => cancel(),
   };
+}
+
+function validTargetStatus(value) {
+  if (!value || typeof value !== "object") return false;
+  if (value.code !== null && !Number.isInteger(value.code)) return false;
+  if (value.signal !== null && typeof value.signal !== "string") return false;
+  if (value.spawnError === null) return true;
+  return typeof value.spawnError === "object"
+    && typeof value.spawnError.message === "string"
+    && (value.spawnError.code === undefined || typeof value.spawnError.code === "string");
+}
+
+function processSpawnError(value) {
+  return Object.assign(
+    new Error(value.message),
+    typeof value.code === "string" ? { code: value.code } : {},
+  );
 }
 
 function waitForOwnedProcessGroupExit(pgid, finish) {
@@ -201,6 +424,15 @@ function mergedProcessEnv(overrides) {
   for (const [key, value] of Object.entries(overrides)) {
     if (value === undefined) delete env[key];
     else env[key] = value;
+  }
+  return env;
+}
+
+function exactProcessEnv(values = {}) {
+  /** @type {Record<string, string>} */
+  const env = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined) env[key] = value;
   }
   return env;
 }

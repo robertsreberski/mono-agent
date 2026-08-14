@@ -4,6 +4,7 @@ export type TuiAdapterErrorCode =
   | "invalid_config"
   | "invalid_request"
   | "missing_required_config"
+  | "process_job_response_too_large"
   | "unsafe_host"
   | "start_failed";
 

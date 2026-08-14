@@ -241,6 +241,15 @@ export function requestModelOverrideTargetsUnsupportedHistoryTool(
   return sdk === "opencode" || sdk === "acp";
 }
 
+/** Whether the accepted request route (or its configured base) is Pi-native. */
+export function requestModelOverrideTargetsPiNative(
+  metadata: Record<string, unknown> | undefined,
+  options?: RequestModelOverrideOptions,
+): boolean {
+  const accepted = resolveAcceptedModelOverride(metadata, options, undefined).model ?? options?.baseModel;
+  return [accepted, ...(options?.fallbackModels ?? [])].some((model) => model?.sdk === "pi");
+}
+
 interface ModelOverrideResolution {
   readonly rawModel?: string;
   readonly rawEffort?: string;

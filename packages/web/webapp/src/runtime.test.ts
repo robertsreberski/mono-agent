@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { canSendInConsole, canUploadInConsole, convertWebMessage } from "./runtime";
-import { agent, attachment, thread } from "./test/fixtures";
+import { agent, attachment, processJob, thread } from "./test/fixtures";
 import type { WebMessage } from "./types";
 
 const message = (overrides: Partial<WebMessage> = {}): WebMessage => ({
@@ -16,6 +16,18 @@ const message = (overrides: Partial<WebMessage> = {}): WebMessage => ({
 });
 
 describe("convertWebMessage", () => {
+  it("maps a retained process job into one named data card", () => {
+    const job = processJob();
+    const converted = convertWebMessage(message({
+      role: "assistant",
+      parts: [{ type: "process-job", job, responseText: "Completed normally." }],
+    }));
+    expect(converted.content).toEqual([{
+      type: "data-process-job",
+      data: { type: "process-job", job, responseText: "Completed normally." },
+    }]);
+  });
+
   it("preserves attachment-only user messages without manufacturing text or running state", () => {
     const converted = convertWebMessage(
       message({

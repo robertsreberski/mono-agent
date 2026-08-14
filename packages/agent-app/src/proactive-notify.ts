@@ -1,4 +1,8 @@
-import type { NotifyDeliveryContext, NotifyDeliveryResult } from "@mono-agent/agent-contracts";
+import type {
+  NotifyDeliveryContext,
+  NotifyDeliveryResult,
+  ProcessJobProjection,
+} from "@mono-agent/agent-contracts";
 
 import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
 
@@ -17,6 +21,7 @@ export type { NotifyDeliveryResult } from "@mono-agent/agent-contracts";
 const PUSH_CHANNEL_BY_SCHEME: Partial<Record<string, ChannelId>> = {
   telegram: "telegram",
   slack: "slack",
+  web: "tui",
   whatsapp: "whatsapp",
 };
 
@@ -44,6 +49,8 @@ export interface ProactiveNotifyInput {
   /** Stable host delivery identity for adapters with duplicate suppression. */
   readonly deliveryKey?: string;
   readonly deliveryContext?: NotifyDeliveryContext;
+  /** Secret-free state for a process-job wake and web card update. */
+  readonly processJob?: ProcessJobProjection;
   /** Currently running channels, keyed by id (the app's live registry). */
   readonly running: ReadonlyMap<ChannelId, Pick<RunningChannel, "notify">>;
   readonly logger?: MonoAgentAppLogger;
@@ -81,6 +88,7 @@ export async function routeProactiveNotification(input: ProactiveNotifyInput): P
       ...(input.verbatim === undefined ? {} : { verbatim: input.verbatim }),
       ...(input.deliveryKey === undefined ? {} : { deliveryKey: input.deliveryKey }),
       ...(input.deliveryContext === undefined ? {} : { deliveryContext: input.deliveryContext }),
+      ...(input.processJob === undefined ? {} : { processJob: input.processJob }),
     });
   } catch (error) {
     const reason = reasonOf(error);

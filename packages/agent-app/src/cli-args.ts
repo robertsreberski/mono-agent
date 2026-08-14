@@ -14,7 +14,7 @@ import {
 import { parseWebLogMaintenanceArguments } from "./web-log-maintenance-command.js";
 import type { CodexLoginMode } from "./provider-setup.js";
 
-const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "bridge", "install-skill", "backfill", "runs", "memory", "continuations"] as const;
+const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "bridge", "install-skill", "backfill", "runs", "memory", "continuations", "jobs"] as const;
 const KNOWN_COMMANDS = [
   ...PUBLIC_COMMANDS,
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
@@ -34,12 +34,13 @@ const JSON_CAPABLE_COMMANDS = [
   "runs",
   "memory",
   "continuations",
+  "jobs",
 ] as const;
 
 // Human-facing list for the rejection message: the two subcommand-gated surfaces
 // are qualified so the error points at the exact invocation that accepts `--json`.
 const JSON_CAPABLE_COMMANDS_DISPLAY =
-  "validate, config, presets, status, sandbox status, install-skill --project --check, runs, memory, continuations";
+  "validate, config, presets, status, sandbox status, install-skill --project --check, runs, memory, continuations, jobs";
 
 // Commands removed outright before the KNOWN_COMMANDS gate. Parsing throws with the
 // replacement, and runCli maps that parse error to exit code 2 (usage-error).
@@ -761,11 +762,11 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   }
   assertFlagCommand(configPath !== undefined, "--config", cmd, [
     "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs", "tui",
-    "runs", "backfill", "memory", "continuations", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+    "runs", "backfill", "memory", "continuations", "jobs", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   ]);
   assertFlagCommand(envFile !== undefined, "--env-file", cmd, [
     "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs", "tui",
-    "runs", "backfill", "memory", "continuations", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+    "runs", "backfill", "memory", "continuations", "jobs", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   ]);
   assertFlagCommand(name !== undefined, "--name", cmd, ["init"]);
   assertFlagCommand(model !== undefined, "--model", cmd, ["init"]);
@@ -784,7 +785,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   assertFlagCommand(artifactDir !== undefined, "--artifacts", cmd, ["runs"]);
   assertFlagCommand(groupBy !== undefined, "--by", cmd, ["runs"]);
   assertFlagCommand(staleAfterMs !== undefined, "--stale-after-ms", cmd, ["runs"]);
-  assertFlagCommand(agent !== undefined, "--agent", cmd, ["tui"]);
+  assertFlagCommand(agent !== undefined, "--agent", cmd, ["tui", "jobs"]);
   assertFlagCommand(conversation !== undefined, "--conversation", cmd, ["tui"]);
   assertFlagCommand(target !== undefined, "--target", cmd, ["install-skill"]);
   assertFlagCommand(force, "--force", cmd, ["install-skill", "restart"]);

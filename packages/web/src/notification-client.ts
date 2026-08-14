@@ -1,7 +1,9 @@
 import { constants as fsConstants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 
-import type { WebNotificationTriggerKind } from "./contracts.js";
+import type { ProcessJobProjection } from "@mono-agent/agent-contracts";
+
+import type { WebThreadNotificationTriggerKind } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
 import { resolveWebStatePaths, type WebStatePathOptions } from "./state-paths.js";
 
@@ -11,14 +13,27 @@ const MAX_INGRESS_RECORD_BYTES = 64 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const DEFAULT_TIMEOUT_MS = 5_000;
 
-export interface DeliverWebNotificationInput {
+export interface DeliverWebThreadNotificationInput {
   readonly sourceId: string;
-  readonly triggerKind: WebNotificationTriggerKind;
+  readonly triggerKind: WebThreadNotificationTriggerKind;
   readonly deliveryKey: string;
   readonly text: string;
   readonly jobId?: string;
   readonly runId?: string;
 }
+
+export interface DeliverWebProcessJobNotificationInput {
+  readonly sourceId: string;
+  readonly triggerKind: "job";
+  readonly deliveryKey: string;
+  readonly threadId: string;
+  readonly processJob: ProcessJobProjection;
+  readonly text?: string;
+}
+
+export type DeliverWebNotificationInput =
+  | DeliverWebThreadNotificationInput
+  | DeliverWebProcessJobNotificationInput;
 
 export interface DeliverWebNotificationOptions extends WebStatePathOptions {
   readonly fetchImpl?: typeof fetch;
@@ -99,7 +114,7 @@ async function readIngressRecord(path: string): Promise<NotificationIngressRecor
   const info = await lstat(path).catch(() => undefined);
   const currentUid = typeof process.getuid === "function" ? process.getuid() : undefined;
   if (info === undefined || !info.isFile() || info.isSymbolicLink()
-    || info.size <= 0 || info.size > MAX_INGRESS_RECORD_BYTES
+    || info.nlink !== 1 || info.size <= 0 || info.size > MAX_INGRESS_RECORD_BYTES
     || (currentUid !== undefined && info.uid !== currentUid)
     || (info.mode & 0o077) !== 0) {
     throw new WebConsoleError(
@@ -112,7 +127,9 @@ async function readIngressRecord(path: string): Promise<NotificationIngressRecor
   let contents: string;
   try {
     const opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino || opened.size !== info.size) {
+    if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino || opened.size !== info.size
+      || opened.nlink !== 1 || (currentUid !== undefined && opened.uid !== currentUid)
+      || (opened.mode & 0o077) !== 0) {
       throw new WebConsoleError("notification_ingress_unavailable", "The web notification ingress record changed while opening.", 503);
     }
     contents = await handle.readFile("utf8");

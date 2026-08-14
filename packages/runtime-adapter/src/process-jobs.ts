@@ -30,6 +30,8 @@ export interface ProcessJobProcessHandle {
   readonly pgid: number | null;
   readonly startedAt: string;
   readonly completion: Promise<ProcessJobProcessResult>;
+  /** Release the gated target only after PID/PGID/incarnation ownership is durable. */
+  readonly release: () => Promise<void>;
   /** Send SIGTERM to the owned group and escalate to SIGKILL after one second. */
   readonly cancel: () => void;
 }
@@ -90,7 +92,10 @@ function assertKernelStartRequest(request: ProcessJobStartRequest): void {
     || !Array.isArray(request.prepared.args)
     || request.prepared.args.some((argument) => typeof argument !== "string")
     || typeof request.prepared.cwd !== "string"
-    || typeof request.prepared.sandboxed !== "boolean") {
+    || typeof request.prepared.sandboxed !== "boolean"
+    || (request.timeoutMs !== undefined && (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs <= 0))
+    || (request.maxOutputChars !== undefined
+      && (!Number.isSafeInteger(request.maxOutputChars) || request.maxOutputChars <= 0))) {
     throw new TypeError("Kernel process-job start request is invalid.");
   }
 }

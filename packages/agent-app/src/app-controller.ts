@@ -2,7 +2,11 @@
 import { resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { AgentResponder, NotifyDeliveryContext } from "@mono-agent/agent-contracts";
+import type {
+  AgentResponder,
+  NotifyDeliveryContext,
+  ProcessJobProjection,
+} from "@mono-agent/agent-contracts";
 import type { TraceSourceHandle, TraceSourceMemoryHealth } from "@mono-agent/observability";
 import type {
   MonoRuntimeLike,
@@ -50,6 +54,8 @@ import * as maintenanceOperations from "./app-controller-maintenance.js";
 import * as channelsOperations from "./app-controller-channels.js";
 import * as responderOperations from "./app-controller-responder.js";
 import * as memoryOperations from "./app-controller-memory.js";
+import * as processJobsOperations from "./app-controller-process-jobs.js";
+import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import type {
   ConfigApplyResult,
   ExporterStatus,
@@ -112,6 +118,9 @@ export interface MonoAgentApp {
   capturedContinuationText?(id: string): Promise<string | undefined>;
   retryContinuation?(id: string, options?: { readonly allowUnknown?: boolean }): Promise<ContinuationStatusSnapshot>;
   cancelContinuation?(id: string): Promise<ContinuationStatusSnapshot>;
+  listProcessJobs?(): Promise<readonly ProcessJobProjection[]>;
+  getProcessJob?(id: string): Promise<ProcessJobProjection | undefined>;
+  cancelProcessJob?(id: string): Promise<ProcessJobProjection>;
   resolveContinuationDelivery?(
     id: string,
     outcome: { readonly kind: "delivered"; readonly deliveryId?: string } | { readonly kind: "not_delivered" } | { readonly kind: "dead_lettered" },
@@ -182,11 +191,13 @@ async function startMonoAgentAppInternal(
   await measure("services", async () => {
     await controller.startExporters("startup");
     await controller.startContinuationServiceIfConfigured("startup");
+    await controller.startProcessJobsIfConfigured("startup");
   });
   await measure(
     "channels",
     () => Promise.all(drivers.map((driver) => controller.startChannelIfConfigured(driver.id, "startup"))),
   );
+  await controller.activateProcessJobWakes();
   await measure("memoryRituals", () => controller.startMemoryRitualsIfConfigured("startup"));
   const memoryHealthStartedAt = performance.now();
   await controller.refreshMemoryHealthAfterLifecycle("startup-complete", () => {
@@ -317,6 +328,8 @@ export class MonoAgentAppController implements MonoAgentApp {
   interactionBridgeStart: Promise<InteractionBridgeHandle | undefined> | undefined;
   continuationService: ContinuationServiceHandle | undefined;
   continuationServiceStart: Promise<ContinuationServiceHandle | undefined> | undefined;
+  processJobsService: ProcessJobsServiceHandle | undefined;
+  processJobsServiceStart: Promise<ProcessJobsServiceHandle | undefined> | undefined;
   /** One bounded scan cache for artifact-derived native-notify destinations. */
   readonly seenNotifyDestinations = createSeenNotifyDestinationCache();
 
@@ -405,6 +418,19 @@ export class MonoAgentAppController implements MonoAgentApp {
     return await this.requireContinuationService().cancel(id);
   }
 
+  async listProcessJobs(): Promise<readonly ProcessJobProjection[]> {
+    return await this.processJobsService?.list() ?? [];
+  }
+
+  async getProcessJob(id: string): Promise<ProcessJobProjection | undefined> {
+    return await this.processJobsService?.get(id);
+  }
+
+  async cancelProcessJob(id: string): Promise<ProcessJobProjection> {
+    if (this.processJobsService === undefined) throw new Error("Process-job controller is not running.");
+    return await this.processJobsService.cancel(id);
+  }
+
   async resolveContinuationDelivery(
     id: string,
     outcome: { readonly kind: "delivered"; readonly deliveryId?: string } | { readonly kind: "not_delivered" } | { readonly kind: "dead_lettered" },
@@ -490,6 +516,22 @@ export class MonoAgentAppController implements MonoAgentApp {
 
   async stopContinuationService(): Promise<void> { return continuationOperations.stopContinuationService(this); }
 
+  ensureProcessJobsService(): Promise<ProcessJobsServiceHandle | undefined> {
+    return processJobsOperations.ensureProcessJobsService(this);
+  }
+
+  async startProcessJobsIfConfigured(reason: string): Promise<void> {
+    return processJobsOperations.startProcessJobsIfConfigured(this, reason);
+  }
+
+  async activateProcessJobWakes(): Promise<void> {
+    return processJobsOperations.activateProcessJobWakes(this);
+  }
+
+  async stopProcessJobsService(): Promise<void> {
+    return processJobsOperations.stopProcessJobsService(this);
+  }
+
   requireContinuationService(): ContinuationServiceHandle { return continuationOperations.requireContinuationService(this); }
 
   async synthesizeContinuation(input: ContinuationSynthesisInput): Promise<{ readonly text: string; readonly actionable?: boolean }> { return continuationOperations.synthesizeContinuation(this, input); }
@@ -559,6 +601,7 @@ export class MonoAgentAppController implements MonoAgentApp {
     readonly extension: RuntimeOptionsExtension;
     readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
     readonly targetsUnsupportedHistoryTool: (metadata: Record<string, unknown> | undefined) => boolean;
+    readonly targetsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
   } { return responderOperations.requestModelOverrideRuntimeOptions(this, coreConfig, compatibility); }
 
   /**

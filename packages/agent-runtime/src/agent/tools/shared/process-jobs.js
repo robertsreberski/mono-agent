@@ -43,6 +43,7 @@ export async function handOffProcessJob({
   failed,
 }) {
   const ownedPrepared = withCleanupOnce(prepared);
+  const boundEnvironment = mergedProcessEnvironment(ownedPrepared.env);
   let launched = false;
   try {
     const result = await controller.start({
@@ -54,9 +55,10 @@ export async function handOffProcessJob({
       launch(options = {}) {
         if (launched) throw new Error("Process-job prepared command was already launched.");
         launched = true;
-        return startPreparedProcess(ownedPrepared, {
+        return startPreparedProcess({ ...ownedPrepared, env: boundEnvironment }, {
           ...options,
           waitForProcessGroup: true,
+          exactEnvironment: true,
         });
       },
     });
@@ -93,6 +95,15 @@ export async function handOffProcessJob({
       startedAt,
     );
   }
+}
+
+function mergedProcessEnvironment(overrides = {}) {
+  const environment = { ...process.env };
+  for (const [name, value] of Object.entries(overrides)) {
+    if (value === undefined) delete environment[name];
+    else environment[name] = value;
+  }
+  return environment;
 }
 
 function withCleanupOnce(prepared) {

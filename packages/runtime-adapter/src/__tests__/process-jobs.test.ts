@@ -69,6 +69,13 @@ describe("process-jobs kernel bridge", () => {
       summary: "true",
       launch: vi.fn(),
     } as unknown as ProcessJobStartRequest)).rejects.toThrow(/invalid/u);
+    await expect(controller.start({
+      tool: "Bash",
+      prepared: { command: "/bin/bash", args: [], cwd: "/tmp", sandboxed: true },
+      summary: "Bash command (1 character; content redacted)",
+      timeoutMs: -1,
+      launch: vi.fn(),
+    })).rejects.toThrow(/invalid/u);
     expect(start).not.toHaveBeenCalled();
   });
 });

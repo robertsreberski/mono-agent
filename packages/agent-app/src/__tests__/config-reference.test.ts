@@ -194,17 +194,22 @@ describe("config reference", () => {
         },
         retryForever: true,
       },
+      processJobs: {
+        enabled: true,
+        retryForever: true,
+      },
     };
 
     expect(findUnknownAppConfigPaths(json)).toEqual([
       "console",
       "continuations.retryForever",
+      "processJobs.retryForever",
       "runtime.session.idleMs",
       "traceability.heartBeatMs",
       "webhook.endpoints[0].extraPluginOwnedShape",
     ]);
     expect(() => assertKnownAppConfigKeys(json)).toThrow(
-      /unknown keys: console, continuations\.retryForever, runtime\.session\.idleMs, traceability\.heartBeatMs, webhook\.endpoints\[0\]\.extraPluginOwnedShape/u,
+      /unknown keys: console, continuations\.retryForever, processJobs\.retryForever, runtime\.session\.idleMs, traceability\.heartBeatMs, webhook\.endpoints\[0\]\.extraPluginOwnedShape/u,
     );
   });
 
@@ -371,6 +376,27 @@ describe("config reference", () => {
     expect(routes.additionalProperties?.oneOf?.[1]?.required).toEqual(["mode", "conversationId"]);
     expect(routes.additionalProperties?.oneOf?.[2]?.required).toEqual(["mode"]);
     expect(detached.items?.required).toEqual(["name", "tokenEnv"]);
+  });
+
+  it("models process jobs as a strict bounded owner-private block", () => {
+    const schema = buildMonoAgentConfigSchema() as SchemaNode;
+    const jobs = schemaNode(schema, "processJobs");
+    const retention = schemaNode(jobs, "retention");
+
+    expect((jobs as SchemaNode & { readonly additionalProperties?: boolean }).additionalProperties).toBe(false);
+    expect((retention as SchemaNode & { readonly additionalProperties?: boolean }).additionalProperties).toBe(false);
+    expect(schemaNode(jobs, "enabled")).toMatchObject({ type: "boolean", default: false });
+    expect(schemaNode(jobs, "maxConcurrent")).toMatchObject({ minimum: 1, maximum: 32, default: 4 });
+    expect(schemaNode(jobs, "maxActivePerConversation")).toMatchObject({ maximum: 8, default: 2 });
+    expect(schemaNode(jobs, "maxQueued")).toMatchObject({ maximum: 64, default: 8 });
+    expect(schemaNode(jobs, "maxRuntimeMs")).toMatchObject({ maximum: 86_400_000, default: 1_800_000 });
+    expect(schemaNode(jobs, "maxQueueAgeMs")).toMatchObject({ maximum: 3_600_000, default: 300_000 });
+    expect(schemaNode(jobs, "maxOutputBytes")).toMatchObject({ maximum: 8_388_608, default: 1_048_576 });
+    expect(schemaNode(jobs, "previewChars")).toMatchObject({ maximum: 8_000, default: 2_000 });
+    expect(schemaNode(jobs, "maxChainDepth")).toMatchObject({ maximum: 8, default: 4 });
+    expect(schemaNode(retention, "maxRecords")).toMatchObject({ maximum: 10_000, default: 1_000 });
+    expect(schemaNode(retention, "maxAgeMs")).toMatchObject({ maximum: 2_592_000_000, default: 604_800_000 });
+    expect(schemaNode(retention, "artifactMaxBytes")).toMatchObject({ maximum: 1_073_741_824, default: 268_435_456 });
   });
 
   it("models the strict built-in memory tier prerequisites and incompatibilities", () => {

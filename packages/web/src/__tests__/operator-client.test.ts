@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { OperatorClient } from "../operator-client.js";
+import { fakeProcessJob } from "./helpers.js";
 
 function turnInput() {
   return {
@@ -97,6 +98,37 @@ describe("OperatorClient", () => {
     await expect(client.cronRun("daily:brief", "run-two"))
       .rejects.toMatchObject({ code: "invalid_operator_cron" });
   });
+
+  it("uses only the independent owner bearer for strict process-job projections", async () => {
+    const requests: Array<{ url: string; authorization: string | null; method: string }> = [];
+    const projection = fakeProcessJob();
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      apiKey: "ordinary-tui-key",
+      processJobsBearer: "owner-job-key",
+      fetchImpl: (async (input, init) => {
+        const url = String(input);
+        requests.push({
+          url,
+          authorization: new Headers(init?.headers).get("authorization"),
+          method: init?.method ?? "GET",
+        });
+        return Response.json(url.endsWith("/v1/jobs") ? { jobs: [projection] } : projection);
+      }) as typeof fetch,
+    });
+
+    await expect(client.listJobs()).resolves.toEqual([projection]);
+    await expect(client.getJob(projection.jobId)).resolves.toEqual(projection);
+    await expect(client.cancelJob(projection.jobId)).resolves.toEqual(projection);
+    expect(requests).toEqual([
+      expect.objectContaining({ authorization: "Bearer owner-job-key", method: "GET" }),
+      expect.objectContaining({ authorization: "Bearer owner-job-key", method: "GET" }),
+      expect.objectContaining({ authorization: "Bearer owner-job-key", method: "POST" }),
+    ]);
+    await expect(new OperatorClient({ baseUrl: "http://127.0.0.1:1234/gui" }).listJobs())
+      .rejects.toMatchObject({ code: "process_jobs_unavailable" });
+  });
+
   it("parses capabilities/model metadata and rejects untrusted endpoints", async () => {
     expect(() => new OperatorClient({ baseUrl: "http://192.168.1.5:1234/gui" })).toThrowError(/non-loopback/u);
     const client = new OperatorClient({

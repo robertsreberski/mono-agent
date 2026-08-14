@@ -1,0 +1,833 @@
+import { lstat, mkdtemp, mkdir, readFile, readdir, symlink, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import type { ProcessJobProjection } from "@mono-agent/agent-contracts";
+import type {
+  ProcessJobProcessHandle,
+  ProcessJobProcessResult,
+  ProcessJobStartRequest,
+} from "@mono-agent/runtime-adapter";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import type { ProcessJobsSettings } from "../process-jobs-config.js";
+import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
+import {
+  openProcessJobsService,
+  type ProcessJobWakeInput,
+  type ProcessJobsServiceHandle,
+} from "../process-jobs-service.js";
+import {
+  openProcessJobStore,
+  PROCESS_JOB_TRANSACTION_FILE,
+  type DurableProcessJobRecord,
+  type ProcessJobOriginRecord,
+  type ProcessJobStore,
+} from "../process-jobs-store.js";
+import type { ProcessIncarnation } from "../process-incarnation.js";
+
+const INCARNATION: ProcessIncarnation = {
+  schema: "mono-agent.process-incarnation.v1",
+  bootSessionId: "boot-test",
+  processStartId: "start-test",
+};
+const ORIGIN: ProcessJobOriginRecord = {
+  conversationId: "slack:C1:1.1#2026-08-14",
+  baseConversationId: "slack:C1:1.1",
+  bucket: "2026-08-14",
+  replyToConversationId: "slack:C1:1.1",
+  normalizedReplyTarget: "slack:C1:1.1",
+  runId: "run-1",
+  historyBoundary: "run-1",
+  channel: "slack",
+};
+
+const services: ProcessJobsServiceHandle[] = [];
+afterEach(async () => {
+  await Promise.allSettled(services.splice(0).map(async (service) => await service.stop()));
+  vi.useRealTimers();
+});
+
+describe("process job service", () => {
+  it("persists the job before returning, redacts output, cleans once, and wakes exactly once", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const cleanup = vi.fn(async () => undefined);
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const, code: "delivered" }));
+    const service = await startService(fixture, { wake });
+    await service.activateWakes();
+
+    const result = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion), cleanup, {
+      SECRET_TOKEN: "top-secret-value",
+      PIN: "123",
+    }));
+    expect(result).toMatchObject({ state: "running", startedAt: "2026-08-14T10:00:01.000Z" });
+    const recordPath = join(fixture.settings.stateDir, "records-v1", `${result.jobId}.json`);
+    const beforeReturn = await readFile(recordPath, "utf8");
+    expect(beforeReturn).toContain('"state": "running"');
+    expect(beforeReturn).not.toContain("top-secret-value");
+    expect(beforeReturn).not.toContain("echo secret command");
+
+    completion.resolve(processResult({ stdout: "token=top-secret-value pin=123\n", stderr: "Authorization: bearer-value\n" }));
+    await waitFor(async () => (await service.get(result.jobId))?.state === "succeeded");
+    const projection = await service.get(result.jobId);
+    expect(projection?.output.preview).toContain("[REDACTED]");
+    expect(projection?.output.preview).not.toContain("top-secret-value");
+    expect(projection?.output.preview).not.toContain("123");
+    expect(cleanup).toHaveBeenCalledOnce();
+    await waitFor(async () => wake.mock.calls.length === 1);
+    expect(wake).toHaveBeenCalledOnce();
+    expect(wake.mock.calls[0]?.[0].prompt).toContain("<untrusted_process_job_result>");
+  });
+
+  it("redacts inherited environment values from every retained output surface", async () => {
+    const inheritedName = "MONO_AGENT_PROCESS_JOB_INHERITED_SECRET";
+    const inheritedValue = "inherited-process-job-secret-value";
+    const previous = process.env[inheritedName];
+    process.env[inheritedName] = inheritedValue;
+    try {
+      const fixture = await createFixture();
+      const completion = deferred<ProcessJobProcessResult>();
+      const service = await startService(fixture);
+      const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+      completion.resolve(processResult({
+        stdout: `${inheritedValue}\n`,
+        stderr: `token=${inheritedValue}\n`,
+      }));
+      await waitFor(async () => (await service.get(started.jobId))?.state === "succeeded");
+      const projection = await service.get(started.jobId);
+      expect(projection?.output.preview).toContain("[REDACTED]");
+      expect(JSON.stringify(projection)).not.toContain(inheritedValue);
+      const artifact = await readFile(join(fixture.settings.stateDir, projection!.output.stdoutRef!), "utf8");
+      expect(artifact).not.toContain(inheritedValue);
+    } finally {
+      if (previous === undefined) delete process.env[inheritedName];
+      else process.env[inheritedName] = previous;
+    }
+  });
+
+  it("creates the web card before returning and advances the same card through terminal wake settlement", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const surfaceUpdate = vi.fn(async (_projection: ProcessJobProjection) => undefined);
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const, code: "delivered" }));
+    const service = await startService(fixture, { surfaceUpdate, wake });
+    await service.activateWakes();
+    const webOrigin: ProcessJobOriginRecord = {
+      ...ORIGIN,
+      conversationId: "web:thread-1#2026-08-14",
+      baseConversationId: "web:thread-1",
+      replyToConversationId: "web:thread-1",
+      normalizedReplyTarget: "web:thread-1",
+      channel: "web",
+    };
+
+    const result = await service.controller(webOrigin, 0).start(requestOf(handleOf(completion)));
+    expect(surfaceUpdate).toHaveBeenCalledOnce();
+    expect(surfaceUpdate.mock.calls[0]?.[0]).toMatchObject({ jobId: result.jobId, state: "running" });
+
+    completion.resolve(processResult());
+    await waitFor(async () => (await service.get(result.jobId))?.wake.state === "delivered");
+    await waitFor(() => surfaceUpdate.mock.calls.some(([projection]) =>
+      projection.jobId === result.jobId && projection.state === "succeeded" && projection.wake.state === "delivered"));
+    expect(new Set(surfaceUpdate.mock.calls.map(([projection]) => projection.jobId))).toEqual(new Set([result.jobId]));
+    expect(wake).toHaveBeenCalledOnce();
+  });
+
+  it("uses admission time for queue expiry, spawn time for runtime, and enforces fan-out quotas", async () => {
+    let now = new Date("2026-08-14T10:00:00.000Z");
+    const fixture = await createFixture({ maxConcurrent: 1, maxActivePerConversation: 2, maxQueued: 1, maxQueueAgeMs: 1_000 });
+    const firstCompletion = deferred<ProcessJobProcessResult>();
+    const service = await startService(fixture, { now: () => now });
+    const first = await service.controller(ORIGIN, 0).start(requestOf(handleOf(firstCompletion)));
+    const secondCompletion = deferred<ProcessJobProcessResult>();
+    const second = await service.controller({
+      ...ORIGIN,
+      conversationId: ORIGIN.baseConversationId,
+      bucket: null,
+    }, 0).start(requestOf(handleOf(secondCompletion)));
+    expect(second.state).toBe("queued");
+
+    await expect(service.controller(ORIGIN, 0).start(requestOf(handleOf(deferred<ProcessJobProcessResult>()))))
+      .rejects.toMatchObject({ code: "process_job_conversation_capacity" });
+    await expect(service.controller({
+      ...ORIGIN,
+      conversationId: "slack:C2:2.2",
+      baseConversationId: "slack:C2:2.2",
+      replyToConversationId: "slack:C2:2.2",
+      normalizedReplyTarget: "slack:C2:2.2",
+    }, 0)
+      .start(requestOf(handleOf(deferred<ProcessJobProcessResult>()))))
+      .rejects.toMatchObject({ code: "process_job_queue_full" });
+    expect(await readdir(join(fixture.settings.stateDir, "artifacts"))).toHaveLength(2);
+
+    now = new Date("2026-08-14T10:00:02.000Z");
+    firstCompletion.resolve(processResult());
+    await waitFor(async () => (await service.get(second.jobId))?.state === "queue_expired");
+    expect(await service.get(second.jobId)).toMatchObject({
+      timestamps: { admittedAt: "2026-08-14T10:00:00.000Z", startedAt: null, runtimeDeadlineAt: null },
+    });
+    expect((await service.get(first.jobId))?.timestamps.runtimeDeadlineAt).toBe("2026-08-14T10:30:01.000Z");
+  });
+
+  it("enforces the compiled output cap across both redacted UTF-8 artifacts", async () => {
+    const fixture = await createFixture({ maxOutputBytes: 48, previewChars: 48 });
+    const completion = deferred<ProcessJobProcessResult>();
+    const service = await startService(fixture);
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    completion.resolve(processResult({
+      stdout: "😀 token=first-secret\n".repeat(8),
+      stderr: "stderr password=second-secret\n".repeat(8),
+    }));
+    await waitFor(async () => (await service.get(started.jobId))?.state === "succeeded");
+
+    const projection = await service.get(started.jobId);
+    expect((projection?.output.stdoutBytes ?? 0) + (projection?.output.stderrBytes ?? 0)).toBeLessThanOrEqual(48);
+    expect(projection?.output.truncated).toBe(true);
+    expect(projection?.output.preview.length).toBeLessThanOrEqual(48);
+    expect(projection?.output.preview).not.toContain("first-secret");
+    expect(projection?.output.preview).not.toContain("second-secret");
+  });
+
+  it("cancels the owned process group through its handle and enforces host-only chain depth", async () => {
+    const fixture = await createFixture({ maxChainDepth: 2 });
+    const completion = deferred<ProcessJobProcessResult>();
+    const handle = handleOf(completion);
+    const service = await startService(fixture);
+    await expect(service.controller(ORIGIN, 2).start(requestOf(handle)))
+      .rejects.toMatchObject({ code: "process_job_chain_depth_exceeded" });
+    const started = await service.controller(ORIGIN, 1).start(requestOf(handle));
+    await service.cancel(started.jobId);
+    expect(handle.cancel).toHaveBeenCalledOnce();
+    completion.resolve(processResult({ aborted: true, code: null }));
+    await waitFor(async () => (await service.get(started.jobId))?.state === "cancelled");
+  });
+
+  it("settles a cancel/completion race once with one cleanup and one wake", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const cleanup = vi.fn(async () => undefined);
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const service = await startService(fixture, { wake });
+    await service.activateWakes();
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion), cleanup));
+
+    const cancellation = service.cancel(started.jobId);
+    completion.resolve(processResult({ aborted: true, code: null }));
+    await cancellation;
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "delivered");
+    expect(await service.get(started.jobId)).toMatchObject({ state: "cancelled", cancelRequested: true });
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(wake).toHaveBeenCalledOnce();
+  });
+
+  it("terminates and cleans a spawned tree when ownership metadata cannot be recorded", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async mutate(operation) {
+        return await baseStore.mutate(async (records) => {
+          const result = await operation(records);
+          if ([...records.values()].some((record) => record.state === "running")) {
+            throw new Error("simulated running-record failure");
+          }
+          return result;
+        });
+      },
+    };
+    const completion = deferred<ProcessJobProcessResult>();
+    const handle = handleOf(completion);
+    handle.cancel.mockImplementation(() => completion.resolve(processResult({ aborted: true, code: null })));
+    const cleanup = vi.fn(async () => undefined);
+    const service = await startService(fixture, { store });
+
+    await expect(service.controller(ORIGIN, 0).start(requestOf(handle, cleanup)))
+      .rejects.toMatchObject({ code: "process_job_store_error" });
+    expect(handle.release).toHaveBeenCalledOnce();
+    expect(handle.cancel).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect((await baseStore.list())[0]).toMatchObject({
+      state: "spawn_failed",
+      pid: 4321,
+      pgid: 4321,
+      processIncarnation: INCARNATION,
+      lastError: { code: "process_job_store_error" },
+    });
+  });
+
+  it("rejects a launcher that cannot prove one self-led process group", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    completion.resolve(processResult());
+    const handle = handleOf(completion);
+    const malformed = { ...handle, pgid: handle.pid! + 1 };
+    const service = await startService(fixture);
+
+    await expect(service.controller(ORIGIN, 0).start(requestOf(malformed)))
+      .rejects.toMatchObject({ code: "process_job_spawn_failed" });
+    expect(handle.release).not.toHaveBeenCalled();
+    expect(handle.cancel).toHaveBeenCalledOnce();
+    expect((await service.list())[0]).toMatchObject({
+      state: "spawn_failed",
+      timestamps: { startedAt: null },
+    });
+  });
+
+  it("records an artifact publication failure without dropping the bounded preview", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async writeArtifact(jobId, stream, contents) {
+        if (stream === "stderr") throw new Error("simulated stderr publication failure");
+        await baseStore.writeArtifact(jobId, stream, contents);
+      },
+    };
+    const completion = deferred<ProcessJobProcessResult>();
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const service = await startService(fixture, { store, wake });
+    await service.activateWakes();
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    completion.resolve(processResult({ stdout: "kept stdout\n", stderr: "kept stderr\n" }));
+
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "delivered");
+    expect(await service.get(started.jobId)).toMatchObject({
+      state: "failed",
+      output: {
+        preview: expect.stringContaining("kept stderr"),
+        stderrBytes: 0,
+        stderrRef: null,
+        truncated: true,
+      },
+      lastError: {
+        code: "process_job_store_error",
+        message: expect.stringContaining("artifact publication failed"),
+      },
+    });
+    expect(wake).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the process failure when wake delivery also fails", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const wake = vi.fn(async () => ({
+      delivered: false as const,
+      code: "channel_unavailable",
+      reason: "Slack is unavailable.",
+      retryable: false,
+    }));
+    const service = await startService(fixture, { wake });
+    await service.activateWakes();
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    completion.resolve(processResult({ code: 9 }));
+
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "failed");
+    expect(await service.get(started.jobId)).toMatchObject({
+      state: "failed",
+      exitCode: 9,
+      wake: { state: "failed", attempts: 1 },
+      lastError: {
+        code: "process_job_failed",
+        message: expect.stringContaining("Wake delivery also failed: Slack is unavailable."),
+      },
+    });
+  });
+
+  it("retries only an explicitly safe wake result with the same delivery key", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const wake = vi.fn()
+      .mockResolvedValueOnce({ delivered: false, code: "ratelimited", reason: "retry later", retryable: true })
+      .mockResolvedValueOnce({ delivered: true, code: "delivered" });
+    const service = await startService(fixture, { wake, sleep: async () => undefined });
+    await service.activateWakes();
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    completion.resolve(processResult());
+
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "delivered");
+    expect(wake).toHaveBeenCalledTimes(2);
+    expect(wake.mock.calls[0]?.[0].deliveryKey).toBe(wake.mock.calls[1]?.[0].deliveryKey);
+    expect(await service.get(started.jobId)).toMatchObject({
+      state: "succeeded",
+      wake: { state: "delivered", attempts: 2 },
+      lastError: null,
+    });
+  });
+
+  it("waits for an already-started wake before releasing service ownership", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const wakeResult = deferred<{ delivered: true }>();
+    const wake = vi.fn(async () => await wakeResult.promise);
+    const release = vi.fn(async () => undefined);
+    const service = await startService(fixture, {
+      wake,
+      acquireLock: async () => ({
+        path: join(fixture.settings.stateDir, ".lock"),
+        ownerPid: process.pid,
+        release,
+      }),
+    });
+    await service.activateWakes();
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    completion.resolve(processResult());
+    await waitFor(() => wake.mock.calls.length === 1);
+
+    let stopped = false;
+    const stopping = service.stop().then(() => { stopped = true; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(stopped).toBe(false);
+    expect(release).not.toHaveBeenCalled();
+    wakeResult.resolve({ delivered: true });
+    await stopping;
+    expect(release).toHaveBeenCalledOnce();
+    expect((await service.get(started.jobId))?.wake.state).toBe("delivered");
+  });
+
+  it("retains terminal output and reports sandbox cleanup failure during shutdown", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const handle = handleOf(completion);
+    handle.cancel.mockImplementation(() => completion.resolve(processResult({
+      aborted: true,
+      code: null,
+      stdout: "output before shutdown\n",
+    })));
+    const cleanup = vi.fn(async () => { throw new Error("shutdown cleanup failed"); });
+    const service = await startService(fixture);
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handle, cleanup));
+
+    await expect(service.stop()).rejects.toThrow(/shutdown encountered failures/u);
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(await service.get(started.jobId)).toMatchObject({
+      state: "interrupted",
+      output: { preview: expect.stringContaining("output before shutdown") },
+      lastError: {
+        code: "process_job_agent_restarted",
+        message: expect.stringContaining("Sandbox cleanup also failed: shutdown cleanup failed"),
+      },
+    });
+  });
+
+  it("resumes a persisted safe retry but never replays an ambiguous wake attempt", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const retryId = "eeeeeeee-5555-4555-8555-555555555555";
+    const ambiguousId = "ffffffff-6666-4666-8666-666666666666";
+    for (const [jobId, retrySafe] of [[retryId, true], [ambiguousId, false]] as const) {
+      await store.ensureArtifacts(jobId);
+      await store.mutate((records) => records.set(jobId, durableRecord(jobId, {
+        state: "succeeded",
+        completedAt: "2026-08-14T10:00:02.000Z",
+        wake: {
+          state: "pending",
+          attempts: 1,
+          deliveryKey: `process-job:${jobId}`,
+          lastAttemptAt: "2026-08-14T10:00:03.000Z",
+          retrySafe,
+        },
+        lastError: null,
+      })));
+    }
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const service = await startService(fixture, { store, wake, sleep: async () => undefined });
+    await service.activateWakes();
+
+    await waitFor(async () => (await service.get(retryId))?.wake.state === "delivered");
+    expect(wake).toHaveBeenCalledOnce();
+    expect(wake.mock.calls[0]?.[0].projection.jobId).toBe(retryId);
+    expect(await service.get(retryId)).toMatchObject({ wake: { state: "delivered", attempts: 2 } });
+    expect(await service.get(ambiguousId)).toMatchObject({
+      wake: { state: "failed", attempts: 1 },
+      lastError: {
+        code: "process_job_wake_failed",
+        message: expect.stringContaining("ambiguously"),
+      },
+    });
+  });
+
+  it("kills only a matching persisted PID incarnation, cleans settings, and emits one recovered wake", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "11111111-1111-4111-8111-111111111111";
+    await store.ensureArtifacts(jobId);
+    const settingsPath = join(fixture.cwd, "sandbox-settings.json");
+    await writeFile(settingsPath, "{}\n", { mode: 0o600 });
+    await store.mutate((records) => records.set(jobId, durableRecord(jobId, { sandboxSettingsPath: settingsPath })));
+    const signals: Array<[number, NodeJS.Signals]> = [];
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const service = await startService(fixture, {
+      store,
+      wake,
+      sameIncarnation: async () => true,
+      signalProcess: (pid, signal) => { signals.push([pid, signal]); },
+      sleep: async () => undefined,
+    });
+    await service.activateWakes();
+    await waitFor(async () => wake.mock.calls.length === 1);
+    expect(signals).toEqual([[-4321, "SIGTERM"], [-4321, "SIGKILL"]]);
+    await expect(lstat(settingsPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await service.get(jobId)).toMatchObject({
+      state: "interrupted",
+      lastError: { code: "process_job_agent_restarted" },
+      wake: { state: "delivered", attempts: 1 },
+    });
+    expect(wake).toHaveBeenCalledOnce();
+  });
+
+  it("never signals a reused/missing leader and honestly warns that descendants may remain", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "22222222-2222-4222-8222-222222222222";
+    await store.ensureArtifacts(jobId);
+    await store.mutate((records) => records.set(jobId, durableRecord(jobId)));
+    const signalProcess = vi.fn();
+    const wake = vi.fn(async (_input: ProcessJobWakeInput) => ({ delivered: true as const }));
+    const service = await startService(fixture, {
+      store,
+      wake,
+      sameIncarnation: async () => false,
+      signalProcess,
+    });
+    await service.activateWakes();
+    await waitFor(async () => wake.mock.calls.length === 1);
+    expect(signalProcess).not.toHaveBeenCalled();
+    expect((await service.get(jobId))?.lastError?.message).toContain("descendants may remain");
+    expect(wake).toHaveBeenCalledOnce();
+  });
+
+  it("never treats a matching PID as authority for a different persisted process group", async () => {
+    const fixture = await createFixture();
+    const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "dddddddd-4444-4444-8444-444444444444";
+    await baseStore.ensureArtifacts(jobId);
+    await baseStore.mutate((records) => records.set(jobId, durableRecord(jobId)));
+    const store: ProcessJobStore = {
+      ...baseStore,
+      async list() {
+        return (await baseStore.list()).map((record) => ({ ...record, pgid: 9876 }));
+      },
+    };
+    const signalProcess = vi.fn();
+    const service = await startService(fixture, {
+      store,
+      sameIncarnation: async () => true,
+      signalProcess,
+    });
+
+    expect(signalProcess).not.toHaveBeenCalled();
+    expect((await baseStore.get(jobId))?.lastError?.message).toContain("no process was signalled");
+  });
+
+  it("does not SIGKILL a PGID whose leader vanished during the recovery grace window", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "cccccccc-3333-4333-8333-333333333333";
+    await store.ensureArtifacts(jobId);
+    const settingsPath = join(fixture.cwd, "sandbox-settings-reused.json");
+    await writeFile(settingsPath, "{}\n", { mode: 0o600 });
+    await store.mutate((records) => records.set(jobId, durableRecord(jobId, { sandboxSettingsPath: settingsPath })));
+    const sameIncarnation = vi.fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+    const signals: Array<[number, NodeJS.Signals]> = [];
+    const service = await startService(fixture, {
+      store,
+      sameIncarnation,
+      signalProcess: (pid, signal) => { signals.push([pid, signal]); },
+      sleep: async () => undefined,
+    });
+
+    expect(signals).toEqual([[-4321, "SIGTERM"]]);
+    expect(await pathExists(settingsPath)).toBe(true);
+    expect((await service.get(jobId))?.lastError?.message).toContain("descendants may remain");
+  });
+
+  it("fails closed before touching state or lock ownership on Windows", async () => {
+    const fixture = await createFixture();
+    const acquireLock = vi.fn();
+    await expect(openProcessJobsService({
+      cwd: fixture.cwd,
+      settings: fixture.settings,
+      platform: "win32",
+      wake: async () => ({ delivered: true }),
+      acquireLock,
+    })).rejects.toMatchObject({ code: "process_job_platform_unsupported" });
+    expect(acquireLock).not.toHaveBeenCalled();
+    expect(await pathExists(fixture.settings.stateDir)).toBe(false);
+  });
+});
+
+describe("process job store", () => {
+  it("uses owner-only modes, rejects a symlinked records path, and reopens after multi-record retention", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    if (process.platform !== "win32") {
+      expect((await lstat(fixture.settings.stateDir)).mode & 0o777).toBe(0o700);
+      expect((await lstat(store.recordsDir)).mode & 0o777).toBe(0o700);
+    }
+    for (const [index, jobId] of [
+      "33333333-3333-4333-8333-333333333333",
+      "44444444-4444-4444-8444-444444444444",
+      "55555555-5555-4555-8555-555555555555",
+    ].entries()) {
+      await store.ensureArtifacts(jobId);
+      await store.mutate((records) => records.set(jobId, durableRecord(jobId, {
+        state: "succeeded",
+        completedAt: new Date(Date.UTC(2026, 7, 14, 10, index)).toISOString(),
+        wake: { state: "delivered", attempts: 1, deliveryKey: `process-job:${jobId}`, lastAttemptAt: "2026-08-14T10:00:00.000Z" },
+        lastError: null,
+      })));
+    }
+    if (process.platform !== "win32") {
+      expect((await lstat(join(store.recordsDir, "55555555-5555-4555-8555-555555555555.json"))).mode & 0o777).toBe(0o600);
+      expect((await lstat(join(store.artifactsDir, "55555555-5555-4555-8555-555555555555", "stdout.log"))).mode & 0o777).toBe(0o600);
+    }
+    await store.applyRetention({ ...fixture.settings, retention: { ...fixture.settings.retention, maxRecords: 1 } }, new Date("2026-08-15T00:00:00.000Z"));
+    const reopened = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    expect(await reopened.list()).toHaveLength(1);
+
+    const unsafe = await createFixture();
+    await mkdir(unsafe.settings.stateDir, { recursive: true, mode: 0o700 });
+    const target = join(unsafe.cwd, "elsewhere");
+    await mkdir(target);
+    await symlink(target, join(unsafe.settings.stateDir, "records-v1"));
+    await expect(openProcessJobStore(unsafe.cwd, unsafe.settings.stateDir)).rejects.toThrow(/not a real directory/u);
+  });
+
+  it("replays one interrupted record transaction and removes its durable marker", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "66666666-6666-4666-8666-666666666666";
+    await store.ensureArtifacts(jobId);
+    const generation = "77777777-7777-4777-8777-777777777777";
+    await writeFile(join(fixture.settings.stateDir, PROCESS_JOB_TRANSACTION_FILE), `${JSON.stringify({
+      schemaVersion: 1,
+      generation,
+      createdAt: "2026-08-14T10:00:00.000Z",
+      write: durableRecord(jobId, { generation }),
+      delete: null,
+    })}\n`, { mode: 0o600 });
+
+    const recovered = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    expect(await recovered.get(jobId)).toMatchObject({ jobId, generation, state: "running" });
+    await expect(lstat(join(fixture.settings.stateDir, PROCESS_JOB_TRANSACTION_FILE)))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("drops oldest retained artifacts only after nulling durable refs", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "99999999-9999-4999-8999-999999999999";
+    await store.ensureArtifacts(jobId);
+    await store.writeArtifact(jobId, "stdout", "retained output".repeat(20));
+    await store.mutate((records) => records.set(jobId, durableRecord(jobId, {
+      state: "succeeded",
+      completedAt: "2026-08-14T10:01:00.000Z",
+      wake: { state: "delivered", attempts: 1, deliveryKey: `process-job:${jobId}`, lastAttemptAt: "2026-08-14T10:01:00.000Z" },
+      lastError: null,
+    })));
+
+    await store.applyRetention({
+      ...fixture.settings,
+      retention: { ...fixture.settings.retention, artifactMaxBytes: 1 },
+    }, new Date("2026-08-14T10:02:00.000Z"));
+    expect(await store.get(jobId)).toMatchObject({ stdoutRef: null, stderrRef: null });
+    await expect(lstat(join(fixture.settings.stateDir, "artifacts", jobId)))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(openProcessJobStore(fixture.cwd, fixture.settings.stateDir))
+      .resolves.toBeDefined();
+  });
+
+  it("never retires a terminal record whose exactly-once wake is still pending", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const pendingId = "aaaaaaaa-1111-4111-8111-111111111111";
+    const deliveredId = "bbbbbbbb-2222-4222-8222-222222222222";
+    for (const [jobId, wakeState] of [[pendingId, "pending"], [deliveredId, "delivered"]] as const) {
+      await store.ensureArtifacts(jobId);
+      await store.mutate((records) => records.set(jobId, durableRecord(jobId, {
+        state: "succeeded",
+        completedAt: "2026-07-01T00:00:00.000Z",
+        wake: {
+          state: wakeState,
+          attempts: wakeState === "pending" ? 0 : 1,
+          deliveryKey: `process-job:${jobId}`,
+          lastAttemptAt: wakeState === "pending" ? null : "2026-07-01T00:00:01.000Z",
+        },
+        lastError: null,
+      })));
+    }
+
+    await store.applyRetention({
+      ...fixture.settings,
+      retention: { ...fixture.settings.retention, maxRecords: 1, maxAgeMs: 1 },
+    }, new Date("2026-08-14T00:00:00.000Z"));
+    expect(await store.get(pendingId)).toMatchObject({ wake: { state: "pending" } });
+    expect(await store.get(deliveredId)).toBeUndefined();
+  });
+
+  it("fails closed on a linked artifact instead of following it", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const jobId = "88888888-8888-4888-8888-888888888888";
+    await store.ensureArtifacts(jobId);
+    await store.mutate((records) => records.set(jobId, durableRecord(jobId)));
+    const stdoutPath = join(fixture.settings.stateDir, "artifacts", jobId, "stdout.log");
+    const target = join(fixture.cwd, "outside-output.log");
+    await writeFile(target, "must stay untouched\n", { mode: 0o600 });
+    await unlink(stdoutPath);
+    await symlink(target, stdoutPath);
+
+    await expect(openProcessJobStore(fixture.cwd, fixture.settings.stateDir))
+      .rejects.toThrow(/unsupported entry|single-link regular file/u);
+    expect(await readFile(target, "utf8")).toBe("must stay untouched\n");
+  });
+});
+
+async function createFixture(overrides: Partial<ProcessJobsSettings> = {}): Promise<{ cwd: string; settings: ProcessJobsSettings }> {
+  const cwd = await mkdtemp(join(tmpdir(), "mono-process-jobs-"));
+  const settings: ProcessJobsSettings = {
+    configured: true,
+    ...PROCESS_JOBS_DEFAULTS,
+    enabled: true,
+    stateDir: join(cwd, ".mono-agent", "process-jobs"),
+    retention: { ...PROCESS_JOBS_DEFAULTS.retention },
+    ...overrides,
+  };
+  return { cwd, settings };
+}
+
+async function startService(
+  fixture: { cwd: string; settings: ProcessJobsSettings },
+  overrides: Partial<Parameters<typeof openProcessJobsService>[0]> = {},
+): Promise<ProcessJobsServiceHandle> {
+  const service = await openProcessJobsService({
+    cwd: fixture.cwd,
+    settings: fixture.settings,
+    wake: async () => ({ delivered: true }),
+    currentIncarnation: async () => INCARNATION,
+    readIncarnation: async () => INCARNATION,
+    acquireLock: async () => ({ path: join(fixture.settings.stateDir, ".lock"), ownerPid: process.pid, release: async () => undefined }),
+    ...overrides,
+  });
+  services.push(service);
+  return service;
+}
+
+function requestOf(
+  handle: ProcessJobProcessHandle,
+  cleanup = vi.fn(async () => undefined),
+  env: Record<string, string> = {},
+): ProcessJobStartRequest {
+  return {
+    tool: "Bash",
+    summary: "Bash command (19 characters; content redacted)",
+    timeoutMs: 60 * 60 * 1_000,
+    maxOutputChars: 7_000,
+    prepared: {
+      command: "/bin/bash",
+      args: ["--noprofile", "--norc", "-c", "echo secret command"],
+      cwd: "/tmp",
+      env,
+      sandboxed: true,
+      cleanup,
+    },
+    launch: () => handle,
+  };
+}
+
+function handleOf(completion: ReturnType<typeof deferred<ProcessJobProcessResult>>): ProcessJobProcessHandle & {
+  cancel: ReturnType<typeof vi.fn>;
+  release: ReturnType<typeof vi.fn>;
+} {
+  return {
+    pid: 4321,
+    pgid: 4321,
+    startedAt: "2026-08-14T10:00:01.000Z",
+    completion: completion.promise,
+    release: vi.fn(async () => undefined),
+    cancel: vi.fn(),
+  };
+}
+
+function processResult(overrides: Partial<ProcessJobProcessResult> = {}): ProcessJobProcessResult {
+  return {
+    code: 0,
+    signal: null,
+    stdout: "ok\n",
+    stderr: "",
+    aborted: false,
+    timedOut: false,
+    bufferExceeded: false,
+    truncated: false,
+    bytes: 3,
+    storedBytes: 3,
+    spawnError: null,
+    durationMs: 250,
+    ...overrides,
+  };
+}
+
+function durableRecord(jobId: string, overrides: Partial<DurableProcessJobRecord> = {}): DurableProcessJobRecord {
+  return {
+    schemaVersion: 1,
+    generation: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    jobId,
+    tool: "Exec",
+    state: "running",
+    summary: "exec (values redacted)",
+    agentIncarnation: INCARNATION,
+    processIncarnation: INCARNATION,
+    pid: 4321,
+    pgid: 4321,
+    sandboxSettingsPath: null,
+    argvSummary: "exec (values redacted)",
+    cwd: "/tmp",
+    envKeys: ["PATH"],
+    origin: ORIGIN,
+    chainDepth: 0,
+    maxRuntimeMs: 1_000,
+    maxOutputBytes: 1_024,
+    previewChars: 100,
+    admittedAt: "2026-08-14T10:00:00.000Z",
+    queueDeadlineAt: "2026-08-14T10:05:00.000Z",
+    startedAt: "2026-08-14T10:00:01.000Z",
+    runtimeDeadlineAt: "2026-08-14T10:00:02.000Z",
+    completedAt: null,
+    exitCode: null,
+    signal: null,
+    durationMs: null,
+    stdoutBytes: 0,
+    stderrBytes: 0,
+    truncated: false,
+    preview: "",
+    stdoutRef: `artifacts/${jobId}/stdout.log`,
+    stderrRef: `artifacts/${jobId}/stderr.log`,
+    cancelRequested: false,
+    wake: { state: "pending", attempts: 0, deliveryKey: `process-job:${jobId}`, lastAttemptAt: null },
+    lastError: null,
+    ...overrides,
+  };
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(reason: unknown): void } {
+  let resolvePromise!: (value: T) => void;
+  let rejectPromise!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolve, reject) => { resolvePromise = resolve; rejectPromise = reject; });
+  return { promise, resolve: resolvePromise, reject: rejectPromise };
+}
+
+async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("condition did not settle");
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try { await lstat(path); return true; }
+  catch { return false; }
+}

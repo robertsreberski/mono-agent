@@ -134,7 +134,7 @@ export async function bashToolRun(
     const requestedTimeoutMs = timeout_ms !== undefined
       ? timeoutMs
       : (timeout === undefined ? undefined : timeoutMs);
-    return handOffProcessJob({
+    const handedOff = await handOffProcessJob({
       controller: processJobsController,
       tool: "Bash",
       prepared,
@@ -144,6 +144,9 @@ export async function bashToolRun(
       startedAt,
       failed,
     });
+    return handedOff.error || !legacyTimeoutUsed
+      ? handedOff
+      : { ...handedOff, outcome: { ...handedOff.outcome, legacyTimeoutUsed: true } };
   }
 
   let result;

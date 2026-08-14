@@ -6,11 +6,13 @@ import {
   bearerTokensEqual,
   close,
   listen,
+  parseProcessJobProjection,
   readAuthorizationBearer,
+  type ProcessJobProjection,
 } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
-import { WEB_MAX_TURN_TEXT_CHARACTERS, type WebNotificationTriggerKind } from "./contracts.js";
+import { WEB_MAX_TURN_TEXT_CHARACTERS, type WebThreadNotificationTriggerKind } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
 import type { WebService, WebServiceLogger } from "./service.js";
 
@@ -139,26 +141,60 @@ export async function startWebNotificationIngress(
   };
 }
 
-function parseNotificationRequest(body: unknown): {
+type ParsedNotificationRequest = {
   readonly sourceId: string;
-  readonly triggerKind: WebNotificationTriggerKind;
+  readonly triggerKind: WebThreadNotificationTriggerKind;
   readonly deliveryKey: string;
   readonly text: string;
   readonly jobId?: string;
   readonly runId?: string;
-} {
+} | {
+  readonly sourceId: string;
+  readonly triggerKind: "job";
+  readonly deliveryKey: string;
+  readonly threadId: string;
+  readonly processJob: ProcessJobProjection;
+  readonly text?: string;
+};
+
+export function parseNotificationRequest(body: unknown): ParsedNotificationRequest {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     throw new WebConsoleError("invalid_notification", "Notification body must be a JSON object.", 400);
   }
   const record = body as Record<string, unknown>;
-  const allowed = new Set(["sourceId", "triggerKind", "deliveryKey", "text", "jobId", "runId"]);
+  const allowed = record.triggerKind === "job"
+    ? new Set(["sourceId", "triggerKind", "deliveryKey", "threadId", "processJob", "text"])
+    : new Set(["sourceId", "triggerKind", "deliveryKey", "text", "jobId", "runId"]);
   if (Object.keys(record).some((key) => !allowed.has(key))) {
     throw new WebConsoleError("invalid_notification", "Notification body contains unsupported fields.", 400);
   }
   const sourceId = normalizedField(record.sourceId, "sourceId", 512);
   const deliveryKey = normalizedField(record.deliveryKey, "deliveryKey", 1_024);
+  if (record.triggerKind === "job") {
+    const threadId = normalizedField(record.threadId, "threadId", 512);
+    let processJob: ProcessJobProjection;
+    try {
+      processJob = parseProcessJobProjection(record.processJob);
+    } catch {
+      throw new WebConsoleError("invalid_notification", "processJob must be a strict process-job projection.", 400);
+    }
+    if (record.text !== undefined && (typeof record.text !== "string" || record.text.trim().length === 0)) {
+      throw new WebConsoleError("invalid_notification", "text must be a non-empty string when provided.", 400);
+    }
+    if (typeof record.text === "string" && record.text.length > 8_000) {
+      throw new WebConsoleError("invalid_notification", "Process-job response text exceeds its limit.", 413);
+    }
+    return {
+      sourceId,
+      triggerKind: "job",
+      deliveryKey,
+      threadId,
+      processJob,
+      ...(typeof record.text === "string" ? { text: record.text } : {}),
+    };
+  }
   if (record.triggerKind !== "cron" && record.triggerKind !== "webhook") {
-    throw new WebConsoleError("invalid_notification", "triggerKind must be 'cron' or 'webhook'.", 400);
+    throw new WebConsoleError("invalid_notification", "triggerKind must be 'cron', 'webhook', or 'job'.", 400);
   }
   const jobId = record.jobId === undefined ? undefined : normalizedField(record.jobId, "jobId", 512);
   const runId = record.runId === undefined ? undefined : normalizedField(record.runId, "runId", 1_024);

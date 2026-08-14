@@ -43,6 +43,7 @@ import {
   createRequestModelOverrideRuntimeExtension,
   requestModelOverrideTargetsDirectOpenCode,
   requestModelOverrideTargetsUnsupportedHistoryTool,
+  requestModelOverrideTargetsPiNative,
 } from "./request-model-override.js";
 import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
 import { configuredRuntimeFallbackModels, runtimeUsesFallbackRouter } from "./runtime-routes.js";
@@ -63,6 +64,8 @@ import type { ContinuationServiceHandle } from "./continuation-service.js";
 import type { MemoryRetrievalService } from "./memory-retrieval.js";
 import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
+import { createProcessJobsRuntimeExtension } from "./process-jobs-runtime.js";
+import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 
@@ -76,6 +79,7 @@ export interface ResponderControllerPort {
   readonly activeRuntimes: MonoRuntimeLike[];
   readonly interactionBridge: InteractionBridgeHandle | undefined;
   readonly continuationService: ContinuationServiceHandle | undefined;
+  readonly processJobsService: ProcessJobsServiceHandle | undefined;
   readonly seenNotifyDestinations: SeenNotifyDestinationCache;
   sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined;
   memoryStore(coreConfig: MonoAgentConfig): Promise<ConfiguredMemory>;
@@ -98,6 +102,7 @@ export interface ResponderControllerPort {
     readonly extension: RuntimeOptionsExtension;
     readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
     readonly targetsUnsupportedHistoryTool: (metadata: Record<string, unknown> | undefined) => boolean;
+    readonly targetsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
   };
   buildRuntimeForModel(
     coreConfig: MonoAgentConfig,
@@ -266,6 +271,14 @@ export async function buildResponder(
     : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
       ? { runtimeOptions: {}, cleanup: async () => {} }
       : await replyArtifactsBase(requestInput);
+  const processJobsExtension = controller.processJobsService === undefined
+    ? undefined
+    : createProcessJobsRuntimeExtension({
+        service: controller.processJobsService,
+        coreConfig,
+        channelId,
+        targetsPiNative: requestModelOverride.targetsPiNative,
+      });
   const runHistoryExtension: RuntimeOptionsExtension | undefined = runHistoryBase === undefined
     ? undefined
     : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
@@ -289,6 +302,7 @@ export async function buildResponder(
     mcpAppsExtension,
     replyArtifactsExtension,
     adapterSendToolsExtension,
+    processJobsExtension,
     requestModelOverride.extension,
     // Last and authoritative: only an opaque owner-created configuration
     // session can replace the daemon's ordinary action/MCP surface.
@@ -378,6 +392,7 @@ export function requestModelOverrideRuntimeOptions(
   readonly extension: RuntimeOptionsExtension;
   readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
   readonly targetsUnsupportedHistoryTool: (metadata: Record<string, unknown> | undefined) => boolean;
+  readonly targetsPiNative: (metadata: Record<string, unknown> | undefined) => boolean;
 } {
   const options = {
     ...(controller.logger === undefined ? {} : { logger: controller.logger }),
@@ -398,6 +413,7 @@ export function requestModelOverrideRuntimeOptions(
     extension: async (input) => extension({ request: input.request }),
     targetsDirectOpenCode: (metadata) => requestModelOverrideTargetsDirectOpenCode(metadata, options),
     targetsUnsupportedHistoryTool: (metadata) => requestModelOverrideTargetsUnsupportedHistoryTool(metadata, options),
+    targetsPiNative: (metadata) => requestModelOverrideTargetsPiNative(metadata, options),
   };
 }
 

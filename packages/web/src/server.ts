@@ -389,6 +389,12 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.get("/api/v1/threads/:id/jobs", (req, res, next) => {
+    void trackOperation(service.threadJobs(pathParam(req.params.id)), activeOperations)
+      .then((jobs) => res.status(200).json({ jobs }))
+      .catch(next);
+  });
+
   app.patch("/api/v1/threads/:id", (req, res, next) => {
     try {
       const input = parsePatchThread(req.body);

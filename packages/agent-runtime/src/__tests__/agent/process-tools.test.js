@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -57,6 +58,7 @@ describe("Exec", () => {
     let terminal;
     const start = vi.fn(async (request) => {
       const handle = request.launch({ timeoutMs: 5_000, maxBufferBytes: 1024 });
+      await handle.release();
       terminal = handle.completion.finally(async () => {
         await request.prepared.cleanup();
         await request.prepared.cleanup();
@@ -79,9 +81,97 @@ describe("Exec", () => {
     expect(start).toHaveBeenCalledTimes(1);
     expect(start.mock.calls[0][0].prepared.command).toBe(preparedCommands[0].command);
     expect(start.mock.calls[0][0].prepared.sandboxSettingsPath).toBe(resolve(workspace, "settings.json"));
+    expect(start.mock.calls[0][0].summary).toBe("Exec command (2 arguments; values redacted)");
+    expect(start.mock.calls[0][0].summary).not.toContain(process.execPath);
     expect(cleanup).not.toHaveBeenCalled();
     await terminal;
     expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not spawn the target until the host releases its durable ownership gate", async () => {
+    const workspace = tempWorkspace();
+    const marker = resolve(workspace, "target-started");
+    let terminal;
+    const controller = {
+      async start(request) {
+        const handle = request.launch({ timeoutMs: 5_000 });
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+        expect(existsSync(marker)).toBe(false);
+        await handle.release();
+        terminal = handle.completion;
+        return { jobId: "pj_gate", state: "running", startedAt: handle.startedAt };
+      },
+    };
+
+    await execToolRun({
+      executable: process.execPath,
+      args: ["--eval", "require('node:fs').writeFileSync(process.argv[1], 'started')", marker],
+      background: true,
+    }, { ...options(workspace), processJobsController: controller });
+    await terminal;
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it("binds the exact process environment at handoff rather than delayed launch", async () => {
+    const workspace = tempWorkspace();
+    const key = "MONO_AGENT_BACKGROUND_ENV_SNAPSHOT";
+    const previous = process.env[key];
+    process.env[key] = "value-at-handoff";
+    let terminal;
+    const controller = {
+      async start(request) {
+        process.env[key] = "changed-before-launch";
+        const handle = request.launch({ timeoutMs: 5_000 });
+        await handle.release();
+        terminal = handle.completion;
+        return { jobId: "pj_environment", state: "running", startedAt: handle.startedAt };
+      },
+    };
+    try {
+      await execToolRun({
+        executable: process.execPath,
+        args: ["--eval", `process.stdout.write(process.env.${key} ?? 'missing')`],
+        background: true,
+      }, { ...options(workspace), processJobsController: controller });
+      await expect(terminal).resolves.toMatchObject({ stdout: "value-at-handoff" });
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+  });
+
+  it("keeps the attestable group leader alive when its owning host pipe disappears", async () => {
+    if (process.platform === "win32") return;
+    const runnerUrl = new URL("../../agent/tools/shared/process-runner.js", import.meta.url).href;
+    const parentSource = [
+      `import { startPreparedProcess } from ${JSON.stringify(runnerUrl)};`,
+      "const target = \"setTimeout(() => process.stdout.write('x'.repeat(65536)), 200); setTimeout(() => {}, 5000)\";",
+      "const handle = startPreparedProcess({ command: process.execPath, args: ['--eval', target] }, { waitForProcessGroup: true, timeoutMs: 10000 });",
+      "await handle.release();",
+      "process.stdout.write(String(handle.pid) + '\\n');",
+      "setTimeout(() => process.exit(0), 50);",
+    ].join("\n");
+    const parent = spawn(process.execPath, ["--input-type=module", "--eval", parentSource], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let parentOutput = "";
+    let parentError = "";
+    parent.stdout.on("data", (chunk) => { parentOutput += chunk.toString("utf8"); });
+    parent.stderr.on("data", (chunk) => { parentError += chunk.toString("utf8"); });
+    await new Promise((resolvePromise, reject) => {
+      parent.once("error", reject);
+      parent.once("close", (code) => code === 0
+        ? resolvePromise()
+        : reject(new Error(`owner fixture exited ${String(code)}: ${parentError}`)));
+    });
+    const pgid = Number(parentOutput.trim());
+    expect(Number.isSafeInteger(pgid) && pgid > 0).toBe(true);
+    try {
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+      expect(() => process.kill(pgid, 0)).not.toThrow();
+    } finally {
+      try { process.kill(-pgid, "SIGKILL"); } catch { /* already gone */ }
+    }
   });
 
   it("preserves foreground behavior with an injected controller and narrows explicit background limits", async () => {
@@ -232,6 +322,7 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
     const controller = {
       async start(request) {
         const handle = request.launch({ timeoutMs: 10_000 });
+        await handle.release();
         terminal = (async () => {
           const deadline = Date.now() + 3_000;
           while (!existsSync(childPidPath) && Date.now() < deadline) {
@@ -261,6 +352,29 @@ describe("Bash process outcomes and Pi bridge metadata", () => {
     expect(outcome.signal).toBeTruthy();
     expect(() => process.kill(childPid, 0)).toThrow();
     expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the legacy Bash timeout warning on a successful background handoff", async () => {
+    const workspace = tempWorkspace();
+    const events = [];
+    const start = vi.fn(async () => ({ jobId: "pj_legacy", state: "queued", startedAt: null }));
+    const bash = getPiBuiltinTools(["Bash"], {
+      cwd: workspace,
+      onEvent: (event) => events.push(event),
+      ctx: { workspace, sandbox: passthroughSandbox },
+      processJobsController: { start },
+    }).find((tool) => tool.name === "Bash");
+
+    await bash.execute("bash-background-legacy", {
+      command: "printf safe",
+      timeout: 1,
+      background: true,
+    });
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 1_000 }));
+    expect(events).toEqual([expect.objectContaining({
+      type: "runtime_warning",
+      warning_kind: "deprecated_bash_timeout",
+    })]);
   });
 
   it("makes the request environment available to Bash without enabling profiles", async () => {

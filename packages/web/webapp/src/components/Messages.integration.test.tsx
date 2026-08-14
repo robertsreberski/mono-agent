@@ -7,6 +7,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { convertWebMessage } from "../runtime";
 import type { WebMessage } from "../types";
+import { processJob } from "../test/fixtures";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
 
 function MessageHarness({ message }: { readonly message: WebMessage }) {
@@ -376,6 +377,20 @@ describe("AssistantMessage grouped parts", () => {
 });
 
 describe("message actions", () => {
+  it("renders one durable process-job card with bounded expandable output", () => {
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [{ type: "process-job", job: processJob(), responseText: "Completed normally." }],
+    }} />);
+
+    expect(screen.getByRole("region", { name: "Exec background job succeeded" })).toBeVisible();
+    expect(screen.getByText("node worker.js --safe-summary")).toBeVisible();
+    expect(screen.getByText("2 s")).toBeVisible();
+    expect(screen.getByText("Completed normally.")).toBeVisible();
+    const disclosure = screen.getByText("Output");
+    expect(disclosure.closest("details")).not.toHaveAttribute("open");
+  });
+
   it("keeps the copy action mounted before hover so revealing it cannot shift layout", () => {
     render(<MessageHarness message={userMessage} />);
 

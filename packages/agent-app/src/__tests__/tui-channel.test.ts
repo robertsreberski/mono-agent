@@ -2,9 +2,10 @@ import { realpath } from "node:fs/promises";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { AgentResponder } from "@mono-agent/agent-contracts";
+import type { AgentMessageStream, AgentRequestBase, AgentResponder, ProcessJobOperator, ProcessJobProjection } from "@mono-agent/agent-contracts";
 import type { DiscoveredLocalModel, LocalProviderDefinition } from "@mono-agent/runtime-adapter";
 import type { TuiAdapterConfig, TuiAdapterInfo, TuiAdapterOptions, TuiAdapterStartResult } from "@mono-agent/operator-adapter";
+import type { DeliverWebNotificationInput } from "@mono-agent/web";
 
 import type { ChannelStartInput } from "../channels.js";
 import { createTuiChannelDriver } from "../channels.js";
@@ -332,3 +333,111 @@ describe("tui channel driver — info composition", () => {
     }
   });
 });
+
+describe("tui channel driver — process jobs", () => {
+  it("passes the owner bearer and wakes one existing web thread through a normal history turn", async () => {
+    let captured: TuiAdapterOptions | undefined;
+    const deliverNotification = vi.fn(async (_input: DeliverWebNotificationInput) => ({ threadId: "thread-1", duplicate: false }));
+    const driver = createTuiChannelDriver({
+      adapterFactory: async (options): Promise<TuiAdapterStartResult> => {
+        captured = options;
+        return {
+          url: "http://127.0.0.1:0",
+          baseUrl: "http://127.0.0.1:0/gui",
+          infoUrl: "http://127.0.0.1:0/gui/v1/info",
+          turnsUrl: "http://127.0.0.1:0/gui/v1/turns",
+          host: "127.0.0.1",
+          port: 0,
+          stop: async () => undefined,
+        };
+      },
+      discoverModels: async () => [],
+      deliverNotification,
+    });
+    const respond = vi.fn(async (_request: AgentRequestBase, _stream: AgentMessageStream) => ({ text: "Job finished safely." }));
+    const deliverVerbatim = vi.fn(async () => undefined);
+    const processJobs: ProcessJobOperator = {
+      operatorToken: "owner-token",
+      list: async () => [],
+      get: async () => undefined,
+      cancel: async () => { throw new Error("not used"); },
+    };
+    const running = await driver.start({
+      ...baseInput(),
+      responder: { respond, deliverVerbatim },
+      processJobs,
+      sourceId: "agent-one",
+    });
+    expect(captured?.processJobs).toBe(processJobs);
+    expect(captured?.processJobsBearer).toBe("owner-token");
+
+    await expect(running.notify?.({
+      conversationId: "web:thread-1",
+      text: "bounded untrusted wake",
+      deliveryKey: PROCESS_JOB.wake.deliveryKey,
+      processJob: PROCESS_JOB,
+    })).resolves.toMatchObject({ delivered: true, historyRecorded: true });
+    expect(respond).toHaveBeenCalledOnce();
+    expect(respond.mock.calls[0]?.[0]).toMatchObject({
+      conversationId: "web:thread-1",
+      text: "bounded untrusted wake",
+      metadata: { source: "web", web: { trigger: "job" } },
+    });
+    expect(deliverVerbatim).not.toHaveBeenCalled();
+    expect(deliverNotification).toHaveBeenCalledWith({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: PROCESS_JOB.wake.deliveryKey,
+      threadId: "thread-1",
+      processJob: PROCESS_JOB,
+      text: "Job finished safely.",
+    });
+
+    respond.mockResolvedValueOnce({ text: "x".repeat(8_100) });
+    await expect(running.notify?.({
+      conversationId: "web:thread-1",
+      text: "bounded untrusted wake",
+      deliveryKey: `${PROCESS_JOB.wake.deliveryKey}:bounded`,
+      processJob: {
+        ...PROCESS_JOB,
+        wake: { ...PROCESS_JOB.wake, deliveryKey: `${PROCESS_JOB.wake.deliveryKey}:bounded` },
+      },
+    })).resolves.toMatchObject({ delivered: true });
+    const boundedText = deliverNotification.mock.calls.at(-1)?.[0].text;
+    expect(boundedText).toHaveLength(8_000);
+    expect(boundedText).toMatch(/… \[response truncated\]$/u);
+
+    await expect(running.notify?.({ conversationId: "tui:direct", text: "wake" }))
+      .resolves.toMatchObject({ delivered: false, code: "background_unsupported_channel" });
+    expect(respond).toHaveBeenCalledTimes(2);
+  });
+});
+
+const PROCESS_JOB: ProcessJobProjection = {
+  schema: "mono-agent.process-job-projection.v1",
+  jobId: "11111111-1111-4111-8111-111111111111",
+  tool: "Exec",
+  state: "succeeded",
+  summary: "worker",
+  origin: { conversationId: "web:thread-1", channel: "web", runId: "run-1", historyBoundary: "web:thread-1", bucket: null },
+  timestamps: {
+    admittedAt: "2026-07-21T09:00:00.000Z",
+    queueDeadlineAt: "2026-07-21T09:05:00.000Z",
+    startedAt: "2026-07-21T09:00:01.000Z",
+    runtimeDeadlineAt: "2026-07-21T09:30:01.000Z",
+    completedAt: "2026-07-21T09:00:02.000Z",
+  },
+  limits: { maxRuntimeMs: 1_800_000, maxOutputBytes: 1_048_576, previewChars: 2_000, chainDepth: 0 },
+  output: { stdoutBytes: 0, stderrBytes: 0, truncated: false, preview: "", stdoutRef: null, stderrRef: null },
+  wake: {
+    state: "pending",
+    attempts: 1,
+    deliveryKey: "process-job:11111111-1111-4111-8111-111111111111",
+    lastAttemptAt: "2026-07-21T09:00:03.000Z",
+  },
+  exitCode: 0,
+  signal: null,
+  durationMs: 1_000,
+  cancelRequested: false,
+  lastError: null,
+};

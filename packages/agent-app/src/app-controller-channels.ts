@@ -22,6 +22,7 @@ import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import type { ContinuationServiceHandle } from "./continuation-service.js";
 import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import type { NotifyDestination } from "./notify-destinations.js";
+import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 
 export interface ChannelsControllerPort {
   readonly env: Record<string, string | undefined>;
@@ -35,6 +36,7 @@ export interface ChannelsControllerPort {
   readonly channelStartGenerations: Map<ChannelId, symbol>;
   readonly stopped: boolean;
   readonly traceabilityStatusValue: TraceabilityStatus;
+  readonly processJobsService: ProcessJobsServiceHandle | undefined;
   setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
   rememberSelectedSkills(coreConfig: MonoAgentConfig): void;
   ensureInteractionBridge(coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined>;
@@ -125,16 +127,21 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
     const disposeResponder = (): Promise<void> | undefined =>
       (responder as { dispose?: () => Promise<void> }).dispose?.();
     const hasDispose = typeof (responder as { dispose?: () => Promise<void> }).dispose === "function";
+    const observability = driver.id === "tui"
+      ? await controller.observabilityContext()
+      : {};
     const runningChannel = await driver.start({
       config,
       coreConfig,
       responder,
       cwd: controller.cwd,
+      ...(observability.sourceId === undefined ? {} : { sourceId: observability.sourceId }),
       notifyDestination: (conversationId, text, options) =>
         notifyDestinationForChannel(controller, conversationId, text, options, driver.id),
       listNotifyDestinations: () => controller.listNotifyDestinations(),
       postedMessageIndexPath,
       ...(interactionBridge === undefined ? {} : { interaction: interactionBridge }),
+      ...(controller.processJobsService === undefined ? {} : { processJobs: controller.processJobsService }),
       ...(controller.logger === undefined ? {} : { logger: controller.logger }),
       onFailure: (failureReason) => {
         controller.running.delete(driver.id);
@@ -204,8 +211,15 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
         });
       },
     });
+    const summary = driver.id === "tui" && controller.processJobsService !== undefined
+      ? {
+          ...runningChannel.summary,
+          processJobs: { stateDir: controller.processJobsService.settings.stateDir },
+        }
+      : runningChannel.summary;
     controller.running.set(driver.id, {
       ...runningChannel,
+      summary,
       stop: () => runningChannel.stop(),
       ...(hasDispose ? { dispose: () => disposeResponder() ?? Promise.resolve() } : {}),
     });
@@ -215,10 +229,10 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
     const degraded = controller.statuses.get(driver.id);
     const status = degraded?.kind === "degraded"
       ? degraded
-      : controller.setStatus(driver.id, { kind: "running", summary: runningChannel.summary });
+      : controller.setStatus(driver.id, { kind: "running", summary });
     controller.logger?.info?.(
       degraded?.kind === "degraded" ? `${driver.label} channel started in degraded mode.` : `${driver.label} channel is running.`,
-      { reason, ...runningChannel.summary },
+      { reason, ...summary },
     );
     return status;
   } catch (error) {

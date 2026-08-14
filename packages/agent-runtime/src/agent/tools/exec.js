@@ -100,7 +100,7 @@ export async function execToolRun(
       controller: processJobsController,
       tool: "Exec",
       prepared,
-      summary: `${executable} (${args.length} argument${args.length === 1 ? "" : "s"}; values redacted)`,
+      summary: `Exec command (${args.length} argument${args.length === 1 ? "" : "s"}; values redacted)`,
       timeoutMs: timeout_ms === undefined ? undefined : timeoutMs,
       maxOutputChars: max_output_chars === undefined ? undefined : maxChars,
       startedAt,

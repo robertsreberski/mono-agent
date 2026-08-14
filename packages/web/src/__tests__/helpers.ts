@@ -2,6 +2,8 @@ import { mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import type { ProcessJobProjection, ProcessJobState } from "@mono-agent/agent-contracts";
+
 import type { DiscoveredOperatorAgent } from "../discovery.js";
 import type { WebSkillRegistry } from "../contracts.js";
 
@@ -32,6 +34,59 @@ export function fakeDiscoveredAgent(overrides: Partial<DiscoveredOperatorAgent> 
   };
 }
 
+export function fakeProcessJob(options: {
+  readonly state?: ProcessJobState;
+  readonly conversationId?: string;
+  readonly jobId?: string;
+  readonly wakeState?: "pending" | "delivered" | "failed";
+  readonly preview?: string;
+} = {}): ProcessJobProjection {
+  const state = options.state ?? "running";
+  const terminal = ["succeeded", "failed", "timed_out", "cancelled", "spawn_failed", "queue_expired", "interrupted"]
+    .includes(state);
+  return {
+    schema: "mono-agent.process-job-projection.v1",
+    jobId: options.jobId ?? "11111111-1111-4111-8111-111111111111",
+    tool: "Exec",
+    state,
+    summary: "node worker.js --safe-summary",
+    origin: {
+      conversationId: options.conversationId ?? "web:thread-one",
+      channel: "web",
+      runId: "run-one",
+      historyBoundary: options.conversationId ?? "web:thread-one",
+      bucket: null,
+    },
+    timestamps: {
+      admittedAt: "2026-07-21T09:00:00.000Z",
+      queueDeadlineAt: "2026-07-21T09:05:00.000Z",
+      startedAt: state === "queued" ? null : "2026-07-21T09:00:01.000Z",
+      runtimeDeadlineAt: state === "queued" ? null : "2026-07-21T09:30:01.000Z",
+      completedAt: terminal ? "2026-07-21T09:00:03.000Z" : null,
+    },
+    limits: { maxRuntimeMs: 1_800_000, maxOutputBytes: 1_048_576, previewChars: 2_000, chainDepth: 0 },
+    output: {
+      stdoutBytes: terminal ? 5 : 0,
+      stderrBytes: 0,
+      truncated: false,
+      preview: options.preview ?? (terminal ? "done\n" : ""),
+      stdoutRef: "artifacts/11111111-1111-4111-8111-111111111111/stdout.log",
+      stderrRef: "artifacts/11111111-1111-4111-8111-111111111111/stderr.log",
+    },
+    wake: {
+      state: options.wakeState ?? "pending",
+      attempts: options.wakeState === undefined ? 0 : 1,
+      deliveryKey: `process-job:${options.jobId ?? "11111111-1111-4111-8111-111111111111"}`,
+      lastAttemptAt: options.wakeState === undefined ? null : "2026-07-21T09:00:04.000Z",
+    },
+    exitCode: state === "succeeded" ? 0 : null,
+    signal: null,
+    durationMs: terminal ? 2_000 : null,
+    cancelRequested: state === "cancelled",
+    lastError: state === "failed" ? { code: "process_job_failed", message: "Exited with code 1." } : null,
+  };
+}
+
 export function operatorFetch(options: {
   readonly turns?: (body: Record<string, unknown>) => string | ReadableStream<Uint8Array>;
   readonly supportsAttachments?: boolean;
@@ -41,6 +96,9 @@ export function operatorFetch(options: {
   readonly supportsLiveInput?: boolean;
   readonly supportsReplyAttachments?: boolean;
   readonly supportsMcpApps?: boolean;
+  readonly supportsJobs?: boolean;
+  readonly jobs?: readonly ProcessJobProjection[];
+  readonly onJobsRequest?: (authorization: string | null) => void;
   readonly skills?: OperatorSkillRegistry;
   readonly pendingAsk?: Record<string, unknown> | null;
   readonly exactAsks?: Readonly<Record<string, Record<string, unknown> | null>>;
@@ -103,6 +161,7 @@ export function operatorFetch(options: {
           ...(options.cronOverview === undefined
             ? {}
             : { cron: { read: true, actions: options.onCronMutation !== undefined } }),
+          ...(options.supportsJobs === true ? { jobs: true } : {}),
         },
       });
     }
@@ -130,6 +189,10 @@ export function operatorFetch(options: {
     if (url.includes("/v1/interactions/")) {
       const interactionId = decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
       return Response.json({ ask: options.exactAsks?.[interactionId] ?? null });
+    }
+    if (url.endsWith("/v1/jobs")) {
+      options.onJobsRequest?.(new Headers(init?.headers).get("authorization"));
+      return Response.json({ jobs: options.jobs ?? [] });
     }
     if (url.endsWith("/v1/turns")) {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;

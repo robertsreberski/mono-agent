@@ -16,6 +16,7 @@ import type {
   McpAppResource,
   MessagePart,
   PushSubscriptionStatus,
+  ProcessJobProjection,
   StartTurnInput,
   ThreadDetail,
   MessagePage,
@@ -253,6 +254,14 @@ export const api = {
       `/api/v1/threads/${encodeURIComponent(threadId)}/messages?${query.toString()}`,
       { signal },
     );
+  },
+
+  threadJobs: async (threadId: string, signal?: AbortSignal) => {
+    const result = await request<{ jobs: readonly ProcessJobProjection[] }>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/jobs`,
+      { signal },
+    );
+    return result.jobs;
   },
 
   createThread: async (sourceId: string) => {

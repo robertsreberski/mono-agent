@@ -8,6 +8,7 @@ import {
   createRequestModelOverrideRuntimeExtension,
   requestModelOverrideTargetsDirectOpenCode,
   requestModelOverrideTargetsUnsupportedHistoryTool,
+  requestModelOverrideTargetsPiNative,
 } from "../request-model-override.js";
 import { composeRuntimeOptionExtensions } from "../runtime-option-extensions.js";
 
@@ -61,6 +62,29 @@ const OLLAMA_PROVIDER: LocalProviderDefinition = {
   baseUrl: "http://localhost:11434",
   enabled: true,
 };
+
+describe("requestModelOverrideTargetsPiNative", () => {
+  it("offers Pi-native tools when an accepted override targets Pi", () => {
+    expect(requestModelOverrideTargetsPiNative(
+      { tui: { model: "pi:openai-codex:gpt-5.6-terra" } },
+      { baseModel: parseMonoRuntimeModelReference("claude:claude-opus-4-8") },
+    )).toBe(true);
+  });
+
+  it("offers Pi-native tools when only a configured fallback targets Pi", () => {
+    expect(requestModelOverrideTargetsPiNative(undefined, {
+      baseModel: parseMonoRuntimeModelReference("claude:claude-opus-4-8"),
+      fallbackModels: [parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra")],
+    })).toBe(true);
+  });
+
+  it("does not offer Pi-native tools when every possible route is non-Pi", () => {
+    expect(requestModelOverrideTargetsPiNative(undefined, {
+      baseModel: parseMonoRuntimeModelReference("claude:claude-opus-4-8"),
+      fallbackModels: [parseMonoRuntimeModelReference("opencode:github-copilot:gpt-5.1")],
+    })).toBe(false);
+  });
+});
 
 describe("createRequestModelOverrideRuntimeExtension", () => {
   it("distinguishes the direct OpenCode gate from the wider request-scoped history-tool gate", () => {

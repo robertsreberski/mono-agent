@@ -66,6 +66,71 @@ const CHANNEL_FIELDS: readonly ConfigReferenceField[] = CHANNEL_FIELD_GROUPS.fla
 
 const APP_FIELDS: readonly ConfigReferenceField[] = [
   {
+    jsonPath: "processJobs.enabled", env: "--", type: "boolean",
+    defaultLabel: "false", defaultValue: false, example: true,
+    description: "Opt in to owner-private Pi-native Exec/Bash background process jobs (unsupported on Windows).",
+  },
+  {
+    jsonPath: "processJobs.stateDir", env: "--", type: "string",
+    defaultLabel: ".mono-agent/process-jobs", defaultValue: ".mono-agent/process-jobs", example: ".mono-agent/process-jobs",
+    description: "Agent-root-confined owner-private process-job records and artifacts.",
+  },
+  {
+    jsonPath: "processJobs.maxConcurrent", env: "--", type: "integer",
+    defaultLabel: "4", defaultValue: 4, example: 4,
+    description: "Maximum simultaneously running process jobs (compiled cap 32).",
+  },
+  {
+    jsonPath: "processJobs.maxActivePerConversation", env: "--", type: "integer",
+    defaultLabel: "2", defaultValue: 2, example: 2,
+    description: "Maximum non-terminal process jobs admitted from one conversation (compiled cap 8).",
+  },
+  {
+    jsonPath: "processJobs.maxQueued", env: "--", type: "integer",
+    defaultLabel: "8", defaultValue: 8, example: 8,
+    description: "Maximum queued process jobs after running capacity is full (compiled cap 64).",
+  },
+  {
+    jsonPath: "processJobs.maxRuntimeMs", env: "--", type: "integer",
+    defaultLabel: "1800000", defaultValue: 1_800_000, example: 1_800_000,
+    description: "Host runtime ceiling per spawned process tree (compiled cap 24 hours; calls may narrow it).",
+  },
+  {
+    jsonPath: "processJobs.maxQueueAgeMs", env: "--", type: "integer",
+    defaultLabel: "300000", defaultValue: 300_000, example: 300_000,
+    description: "Maximum admission-to-spawn queue age (compiled cap one hour).",
+  },
+  {
+    jsonPath: "processJobs.maxOutputBytes", env: "--", type: "integer",
+    defaultLabel: "1048576", defaultValue: 1_048_576, example: 1_048_576,
+    description: "Combined retained process-output ceiling (compiled cap 8 MiB).",
+  },
+  {
+    jsonPath: "processJobs.previewChars", env: "--", type: "integer",
+    defaultLabel: "2000", defaultValue: 2_000, example: 2_000,
+    description: "Bound for redacted wake/operator output previews (compiled cap 8000; calls may narrow it).",
+  },
+  {
+    jsonPath: "processJobs.maxChainDepth", env: "--", type: "integer",
+    defaultLabel: "4", defaultValue: 4, example: 4,
+    description: "Maximum host-owned background wake chain depth (compiled cap 8).",
+  },
+  {
+    jsonPath: "processJobs.retention.maxRecords", env: "--", type: "integer",
+    defaultLabel: "1000", defaultValue: 1_000, example: 1_000,
+    description: "Maximum retained terminal process-job records (compiled cap 10000).",
+  },
+  {
+    jsonPath: "processJobs.retention.maxAgeMs", env: "--", type: "integer",
+    defaultLabel: "604800000", defaultValue: 604_800_000, example: 604_800_000,
+    description: "Maximum terminal process-job record age (compiled cap 30 days).",
+  },
+  {
+    jsonPath: "processJobs.retention.artifactMaxBytes", env: "--", type: "integer",
+    defaultLabel: "268435456", defaultValue: 268_435_456, example: 268_435_456,
+    description: "Aggregate retained terminal output artifact budget (compiled cap 1 GiB).",
+  },
+  {
     jsonPath: "interaction.bridge.host",
     env: "MONO_AGENT_INTERACTION_BRIDGE_HOST",
     type: "string",
@@ -385,6 +450,7 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
   setRequired(root, ["runtime"], ["model"]);
   setRequired(root, ["context"], ["identityPath"]);
   setMemoryTierSchema(root);
+  setProcessJobsSchema(root);
   setContinuationSchema(root);
   setStructuredAppSchemas(root);
   setRemovedConfigSchemas(root);
@@ -413,6 +479,34 @@ export function buildMonoAgentConfigSchema(): JsonSchema {
     properties: {
       $schema: { type: "string" },
       ...root,
+    },
+  };
+}
+
+function setProcessJobsSchema(root: Record<string, JsonSchema>): void {
+  root.processJobs = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      enabled: { type: "boolean", default: false },
+      stateDir: { type: "string", minLength: 1, default: ".mono-agent/process-jobs" },
+      maxConcurrent: { type: "integer", minimum: 1, maximum: 32, default: 4 },
+      maxActivePerConversation: { type: "integer", minimum: 1, maximum: 8, default: 2 },
+      maxQueued: { type: "integer", minimum: 1, maximum: 64, default: 8 },
+      maxRuntimeMs: { type: "integer", minimum: 1, maximum: 86_400_000, default: 1_800_000 },
+      maxQueueAgeMs: { type: "integer", minimum: 1, maximum: 3_600_000, default: 300_000 },
+      maxOutputBytes: { type: "integer", minimum: 1, maximum: 8_388_608, default: 1_048_576 },
+      previewChars: { type: "integer", minimum: 1, maximum: 8_000, default: 2_000 },
+      maxChainDepth: { type: "integer", minimum: 1, maximum: 8, default: 4 },
+      retention: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          maxRecords: { type: "integer", minimum: 1, maximum: 10_000, default: 1_000 },
+          maxAgeMs: { type: "integer", minimum: 1, maximum: 2_592_000_000, default: 604_800_000 },
+          artifactMaxBytes: { type: "integer", minimum: 1, maximum: 1_073_741_824, default: 268_435_456 },
+        },
+      },
     },
   };
 }

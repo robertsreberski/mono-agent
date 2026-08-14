@@ -853,6 +853,9 @@ describe("SlackAdapter", () => {
     });
     expect(captured?.conversationId).toBe("slack:C1:171.5");
     expect(captured?.text).toBe("Compose the brief");
+    expect(api.postMessageCalls).toHaveLength(1);
+    expect(api.updateCalls).toEqual([]);
+    expect(api.setAssistantStatusCalls).toEqual([]);
     const post = api.postMessageCalls.at(-1);
     expect(post?.channel).toBe("C1");
     expect(post?.thread_ts).toBe("171.5");
