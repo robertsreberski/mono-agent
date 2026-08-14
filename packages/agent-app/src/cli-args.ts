@@ -7,11 +7,19 @@ import {
 import type { EffortLevel, RouteSafetyMode } from "@mono-agent/config";
 
 import type { InstallSkillTarget } from "./install-skill.js";
-import { INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND } from "./launchd.js";
+import {
+  INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+  INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
+} from "./launchd.js";
+import { parseWebLogMaintenanceArguments } from "./web-log-maintenance-command.js";
 import type { CodexLoginMode } from "./provider-setup.js";
 
 const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "bridge", "install-skill", "backfill", "runs", "memory", "continuations"] as const;
-const KNOWN_COMMANDS = [...PUBLIC_COMMANDS, INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND] as const;
+const KNOWN_COMMANDS = [
+  ...PUBLIC_COMMANDS,
+  INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+  INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
+] as const;
 
 // Canonical (post-normalization) commands that emit a `--json` envelope. This is
 // an allowlist so future commands fail closed until they opt in explicitly. The
@@ -88,6 +96,8 @@ export interface ParsedCliArgs {
   readonly expectedBackgroundSnapshot?: string;
   /** Internal finalized-runtime proof; never a public start option. */
   readonly expectedManagedRuntimeLaunch?: string;
+  /** Exact composite main web plist identity; private helper only. */
+  readonly expectedWebPlistIdentity?: string;
   readonly target?: InstallSkillTarget;
   readonly force: boolean;
   /** restart: canonical spelling that clears pi sessions + active conversation history. */
@@ -210,6 +220,13 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       "The internal launchd recovery command requires its exact config, controller CLI, agent cwd, worker PATH, and optional env-file arguments.",
     );
   }
+  if (cmd === INTERNAL_WEB_LOG_MAINTENANCE_COMMAND) {
+    try {
+      parseWebLogMaintenanceArguments([cmd, ...rest]);
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : String(error));
+    }
+  }
   const isLogs = cmd === "logs" || (cmd === "web" && rest[0] === "logs");
 
   let configPath: string | undefined;
@@ -234,6 +251,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let agentPath: string | undefined;
   let expectedBackgroundSnapshot: string | undefined;
   let expectedManagedRuntimeLaunch: string | undefined;
+  let expectedWebPlistIdentity: string | undefined;
   let target: InstallSkillTarget | undefined;
   let force = false;
   let clearSessions = false;
@@ -528,6 +546,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--expected-managed-runtime-launch":
         expectedManagedRuntimeLaunch = requireValue(rest, ++i, flag);
         break;
+      case "--expected-web-plist-identity":
+        expectedWebPlistIdentity = requireValue(rest, ++i, flag);
+        break;
       case "--target": {
         const raw = requireValue(rest, ++i, flag);
         if (raw !== "claude" && raw !== "codex" && raw !== "both") {
@@ -714,6 +735,12 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   assertFlagCommand(foreground, "--foreground", cmd, ["start"]);
   assertFlagCommand(follow, "--follow", cmd, ["logs", "web"]);
   assertFlagCommand(lines !== undefined, "--lines", cmd, ["logs", "web"]);
+  assertFlagCommand(
+    expectedWebPlistIdentity !== undefined,
+    "--expected-web-plist-identity",
+    cmd,
+    [INTERNAL_WEB_LOG_MAINTENANCE_COMMAND],
+  );
 
   if (cmd === "web") {
     const action = positionals[0];
@@ -755,6 +782,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(agentPath === undefined ? {} : { agentPath }),
     ...(expectedBackgroundSnapshot === undefined ? {} : { expectedBackgroundSnapshot }),
     ...(expectedManagedRuntimeLaunch === undefined ? {} : { expectedManagedRuntimeLaunch }),
+    ...(expectedWebPlistIdentity === undefined ? {} : { expectedWebPlistIdentity }),
     ...(target === undefined ? {} : { target }),
     force,
     ...(clearSessions ? { clearSessions } : {}),

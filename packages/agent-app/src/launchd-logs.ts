@@ -1306,7 +1306,8 @@ function validateMaintenanceIntent(intent: LaunchdLogMaintenanceIntent): void {
   if (intent.phase !== "stopping" && intent.phase !== "stopped" && intent.phase !== "restoring") {
     throw new Error("LaunchAgent log maintenance intent has an invalid lifecycle phase.");
   }
-  if (!/^com\.mono-agent\.[a-z0-9][a-z0-9-]*$/u.test(intent.label)) {
+  if (intent.label !== "com.mono-agent-web"
+    && !/^com\.mono-agent\.[a-z0-9][a-z0-9-]*$/u.test(intent.label)) {
     throw new Error("LaunchAgent log maintenance intent has an invalid label.");
   }
   if (!/^[A-Za-z0-9._:-]{1,1024}$/u.test(intent.plistFingerprint)) {
@@ -1862,16 +1863,34 @@ function canonicalDirectoryChain(logDir: string): readonly {
   readonly path: string;
   readonly requireOwnerPrivate: boolean;
 }[] {
-  const stateDir = dirname(logDir);
+  const parentDir = dirname(logDir);
+  const stateDir = basename(parentDir) === "web" ? dirname(parentDir) : parentDir;
   const homeDir = dirname(stateDir);
-  if (basename(logDir) !== "logs" || basename(stateDir) !== ".mono-agent" || homeDir === stateDir) {
-    throw new Error("LaunchAgent log directory must be the canonical <account-home>/.mono-agent/logs path.");
+  const agentLogDir = basename(logDir) === "logs"
+    && basename(stateDir) === ".mono-agent"
+    && parentDir === stateDir
+    && homeDir !== stateDir;
+  const webLogDir = basename(logDir) === "logs"
+    && basename(parentDir) === "web"
+    && basename(stateDir) === ".mono-agent"
+    && homeDir !== stateDir;
+  if (!agentLogDir && !webLogDir) {
+    throw new Error(
+      "LaunchAgent log directory must be the canonical <account-home>/.mono-agent/logs or <account-home>/.mono-agent/web/logs path.",
+    );
   }
-  return [
-    { path: homeDir, requireOwnerPrivate: false },
-    { path: stateDir, requireOwnerPrivate: true },
-    { path: logDir, requireOwnerPrivate: true },
-  ];
+  return webLogDir
+    ? [
+        { path: homeDir, requireOwnerPrivate: false },
+        { path: stateDir, requireOwnerPrivate: true },
+        { path: parentDir, requireOwnerPrivate: true },
+        { path: logDir, requireOwnerPrivate: true },
+      ]
+    : [
+        { path: homeDir, requireOwnerPrivate: false },
+        { path: stateDir, requireOwnerPrivate: true },
+        { path: logDir, requireOwnerPrivate: true },
+      ];
 }
 
 function assertPolicy(policy: LaunchdLogPolicy): void {

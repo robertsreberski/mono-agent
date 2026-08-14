@@ -1,178 +1,345 @@
-import { randomUUID } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
-import { lstat, open, rename, rm } from "node:fs/promises";
+import { constants as fsConstants, type Stats } from "node:fs";
+import { lstat, open, opendir, unlink } from "node:fs/promises";
+import { basename, join } from "node:path";
 import process from "node:process";
 
+import type {
+  AdditionalLaunchdLogInspection,
+  AdditionalLaunchdLogMaintenanceResult,
+  ManagedLaunchdLogMonitor,
+} from "./background-log-maintenance.js";
 import {
-  LAUNCHD_LOG_MAX_BYTES,
-  LAUNCHD_LOG_ROTATION_COUNT,
+  inspectLaunchdLogs,
+  LAUNCHD_LOG_MONITOR_INTERVAL_SECONDS,
 } from "./launchd-logs.js";
+import type { LaunchdLogInspection } from "./launchd-logs.js";
+import {
+  kickstart,
+  launchdServiceInfo,
+  WEB_MAINTENANCE_LAUNCHD_LABEL,
+} from "./launchd.js";
+import type { LaunchctlRunner, LaunchdPaths } from "./launchd.js";
 
-const MANAGED_WEB_LOG_INSPECTION_INTERVAL_MS = 5 * 60_000;
+const LEGACY_SCAN_ENTRY_LIMIT = 256;
+const LEGACY_CANDIDATE_LIMIT = 32;
+const LEGACY_PREFIX = /^web\..*\.log\.(?:rollover|retiring)/u;
+const CANONICAL_UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+const LEGACY_NAME = new RegExp(`^web\\.(?:out|err)\\.log\\.(?:rollover|retiring)-${CANONICAL_UUID}$`, "u");
+const WAKE_COOLDOWN_MS = [5, 10, 20, 40, 60].map((minutes) => minutes * 60_000);
 
-interface ManagedWebLogPaths {
-  readonly launchd: {
-    readonly stdoutPath: string;
-    readonly stderrPath: string;
-  };
+type WebLogPaths = Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">;
+
+export type ManagedWebLogMonitorOutcome =
+  | "idle"
+  | "cooldown"
+  | "stopped"
+  | "helper-unloaded"
+  | "helper-running"
+  | "requested"
+  | "request-failed"
+  | "inspection-failed";
+
+export interface ManagedWebLogMonitorStatus {
+  readonly version: 1;
+  readonly lastInspectionAt: string;
+  readonly wakeCount: number;
+  readonly lastOutcome: ManagedWebLogMonitorOutcome;
+  readonly cooldownDeadline: string;
 }
 
-export async function waitForManagedWebLogRollover(
-  paths: ManagedWebLogPaths,
-  signal: AbortSignal,
-): Promise<"rollover" | "unsafe" | "cancelled"> {
-  if (signal.aborted) return "cancelled";
-  return await new Promise((resolvePromise) => {
-    let checking = false;
-    let settled = false;
-    const finish = (outcome: "rollover" | "unsafe" | "cancelled"): void => {
-      if (settled) return;
-      settled = true;
-      clearInterval(interval);
-      signal.removeEventListener("abort", onAbort);
-      resolvePromise(outcome);
-    };
-    const onAbort = (): void => finish("cancelled");
-    const inspect = async (): Promise<void> => {
-      if (checking || settled) return;
-      checking = true;
-      try {
-        const sizes = await Promise.all([
-          managedLogSize(paths.launchd.stdoutPath),
-          managedLogSize(paths.launchd.stderrPath),
-        ]);
-        if (sizes.some((size) => size > LAUNCHD_LOG_MAX_BYTES)) finish("rollover");
-      } catch {
-        finish("unsafe");
-      } finally {
-        checking = false;
-      }
-    };
-    const interval = setInterval(
-      () => void inspect(),
-      MANAGED_WEB_LOG_INSPECTION_INTERVAL_MS,
-    );
-    interval.unref();
-    signal.addEventListener("abort", onAbort, { once: true });
-    void inspect();
-  });
+export interface ManagedWebLogMonitorDependencies {
+  readonly runner: LaunchctlRunner;
+  readonly getuid: () => number;
+  readonly inspectLogs?: (paths: WebLogPaths) => Promise<LaunchdLogInspection>;
+  readonly inspectLegacy?: (paths: WebLogPaths) => Promise<AdditionalLaunchdLogInspection>;
+  readonly stderr: (text: string) => void | Promise<void>;
+  readonly recordStatus?: (status: ManagedWebLogMonitorStatus) => void | Promise<void>;
+  readonly monotonicNow?: () => number;
+  readonly wallClockNow?: () => number;
+  readonly isStopped?: () => boolean;
+}
+
+interface WebWakeState {
+  cooldownIndex: number;
+  cooldownDeadlineMonotonicMs: number;
+  wakeCount: number;
+  lastOutcome: ManagedWebLogMonitorOutcome;
+  lastReportedOutcome: ManagedWebLogMonitorOutcome | undefined;
 }
 
 /**
- * Roll a managed web worker's active launchd logs after its HTTP service has
- * stopped. The current process still owns stdout/stderr, so each active file is
- * moved to a retiring name, a bounded tail is published as generation 1, and
- * the retiring inode is unlinked before launchd starts the replacement worker.
+ * The managed worker only inspects and wakes the dedicated helper. It never
+ * stops itself and never rotates, renames, truncates, or unlinks a log.
  */
-export async function rolloverManagedWebLogs(paths: ManagedWebLogPaths): Promise<void> {
-  await rolloverManagedWebLogStream(paths.launchd.stdoutPath);
-  await rolloverManagedWebLogStream(paths.launchd.stderrPath);
+export function startManagedWebLogMonitor(
+  paths: WebLogPaths,
+  deps: ManagedWebLogMonitorDependencies,
+): ManagedLaunchdLogMonitor {
+  let stopped = false;
+  let checking = false;
+  const monotonicNow = deps.monotonicNow ?? (() => performance.now());
+  const wallClockNow = deps.wallClockNow ?? Date.now;
+  const state: WebWakeState = {
+    cooldownIndex: 0,
+    cooldownDeadlineMonotonicMs: monotonicNow() + WAKE_COOLDOWN_MS[0]!,
+    wakeCount: 0,
+    lastOutcome: "idle",
+    lastReportedOutcome: undefined,
+  };
+  const inspect = async (): Promise<void> => {
+    if (stopped || checking) return;
+    checking = true;
+    try {
+      const [logs, legacy] = await Promise.all([
+        (deps.inspectLogs ?? inspectLaunchdLogs)(paths),
+        (deps.inspectLegacy ?? inspectLegacyManagedWebLogArtifacts)(paths),
+      ]);
+      if (stopped || deps.isStopped?.() === true) {
+        setOutcome(state, "stopped");
+        return;
+      }
+      if (!logs.canMaintain || !legacy.canMaintain) {
+        throw new Error([...logs.issues, ...legacy.issues].join("; ") || "the bounded inventory is unsafe");
+      }
+      if (!logs.needsMaintenance && !legacy.needsMaintenance) {
+        resetCooldown(state, monotonicNow());
+        setOutcome(state, "idle");
+        return;
+      }
+      if (monotonicNow() < state.cooldownDeadlineMonotonicMs) {
+        setOutcome(state, "cooldown");
+        return;
+      }
+      const helper = await launchdServiceInfo(deps.runner, WEB_MAINTENANCE_LAUNCHD_LABEL, deps.getuid());
+      if (stopped || deps.isStopped?.() === true) {
+        setOutcome(state, "stopped");
+        return;
+      }
+      if (!helper.loaded) {
+        advanceCooldown(state, monotonicNow());
+        setOutcome(state, "helper-unloaded");
+        return;
+      }
+      if (helper.pid !== undefined) {
+        advanceCooldown(state, monotonicNow());
+        setOutcome(state, "helper-running");
+        return;
+      }
+      setOutcome(state, "request-failed");
+      const result = await kickstart(deps.runner, WEB_MAINTENANCE_LAUNCHD_LABEL, deps.getuid());
+      advanceCooldown(state, monotonicNow());
+      if (result.code !== 0) {
+        throw new Error(`launchctl kickstart exited ${String(result.code)}${commandDetail(result.stderr, result.stdout)}`);
+      }
+      state.wakeCount += 1;
+      setOutcome(state, "requested");
+    } catch (error) {
+      if (state.lastOutcome !== "request-failed") setOutcome(state, "inspection-failed");
+      if (!stopped && shouldReport(state, state.lastOutcome)) {
+        safeReport(deps, `Managed web log monitor: ${safeDetail(error)}`);
+      }
+    } finally {
+      if (!stopped) safeRecordStatus(deps, statusFor(state, monotonicNow(), wallClockNow()));
+      checking = false;
+    }
+  };
+  const guarded = (): void => {
+    void inspect().catch((error: unknown) => safeReport(deps, `Managed web log monitor: ${safeDetail(error)}`));
+  };
+  const interval = setInterval(guarded, LAUNCHD_LOG_MONITOR_INTERVAL_SECONDS * 1_000);
+  interval.unref();
+  guarded();
+  return {
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(interval);
+    },
+  };
 }
 
-async function rolloverManagedWebLogStream(activePath: string): Promise<void> {
-  const active = await ownedManagedLogStats(activePath);
-  if (active === undefined || active.size <= LAUNCHD_LOG_MAX_BYTES) return;
-  const generations = Array.from(
-    { length: LAUNCHD_LOG_ROTATION_COUNT },
-    (_unused, index) => `${activePath}.${String(index + 1)}`,
-  );
-  await Promise.all(generations.map(async (path) => await ownedManagedLogStats(path)));
+/** Bounded inspection of only the two retired pre-helper filename families. */
+export async function inspectLegacyManagedWebLogArtifacts(
+  paths: WebLogPaths,
+): Promise<AdditionalLaunchdLogInspection> {
+  const inventory = await legacyInventory(paths.logDir);
+  return {
+    needsMaintenance: inventory.candidates.length > 0,
+    canMaintain: !inventory.exceededBound,
+    issues: inventory.refusals,
+  };
+}
 
-  const source = await open(activePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
-  let temporaryPath: string | undefined;
-  let retiringPath: string | undefined;
-  try {
-    const sourceStats = await source.stat();
-    assertOwnedManagedLog(sourceStats, activePath);
-    if (!sameManagedLogIdentity(active, sourceStats)) {
-      throw new Error(`Managed web log ${activePath} changed before rollover.`);
-    }
-    const retainedBytes = Math.min(sourceStats.size, LAUNCHD_LOG_MAX_BYTES);
-    const tail = Buffer.alloc(retainedBytes);
-    const read = await source.read(tail, 0, retainedBytes, sourceStats.size - retainedBytes);
-    if (read.bytesRead !== retainedBytes) {
-      throw new Error(`Managed web log ${activePath} changed while its bounded tail was read.`);
-    }
-    const afterRead = await source.stat();
-    if (!sameManagedLogIdentity(sourceStats, afterRead) || sourceStats.size !== afterRead.size) {
-      throw new Error(`Managed web log ${activePath} changed while its bounded tail was prepared.`);
-    }
-
-    temporaryPath = `${activePath}.rollover-${randomUUID()}`;
-    const temporary = await open(
-      temporaryPath,
-      fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
-      0o600,
-    );
+/** Remove only re-authenticated safe legacy artifacts after stopped-writer proof. */
+export async function maintainLegacyManagedWebLogArtifacts(
+  paths: WebLogPaths,
+): Promise<AdditionalLaunchdLogMaintenanceResult> {
+  const inventory = await legacyInventory(paths.logDir);
+  if (inventory.exceededBound) return { refusals: inventory.refusals };
+  const refusals = [...inventory.refusals];
+  for (const candidate of inventory.candidates) {
     try {
-      await temporary.writeFile(tail);
-      await temporary.sync();
-    } finally {
-      await temporary.close();
+      await removeSameLegacyFile(candidate.path, candidate.stats);
+    } catch (error) {
+      refusals.push(`Legacy web log ${basename(candidate.path)} was preserved: ${safeDetail(error)}`);
     }
+  }
+  return { refusals };
+}
 
-    const oldest = generations.at(-1);
-    if (oldest !== undefined && await ownedManagedLogStats(oldest) !== undefined) {
-      await rm(oldest);
-    }
-    for (let index = generations.length - 1; index > 0; index -= 1) {
-      const from = generations[index - 1];
-      const to = generations[index];
-      if (from !== undefined && to !== undefined && await ownedManagedLogStats(from) !== undefined) {
-        await rename(from, to);
+interface LegacyCandidate {
+  readonly path: string;
+  readonly stats: Stats;
+}
+
+interface LegacyInventory {
+  readonly candidates: readonly LegacyCandidate[];
+  readonly refusals: readonly string[];
+  readonly exceededBound: boolean;
+}
+
+async function legacyInventory(logDir: string): Promise<LegacyInventory> {
+  const candidates: LegacyCandidate[] = [];
+  const refusals: string[] = [];
+  let seen = 0;
+  let exceededBound = false;
+  const directory = await opendir(logDir);
+  try {
+    for await (const entry of directory) {
+      seen += 1;
+      if (seen > LEGACY_SCAN_ENTRY_LIMIT) {
+        exceededBound = true;
+        refusals.push(`Legacy web log scan exceeded ${String(LEGACY_SCAN_ENTRY_LIMIT)} direct children.`);
+        break;
+      }
+      if (!LEGACY_PREFIX.test(entry.name)) continue;
+      if (!LEGACY_NAME.test(entry.name)) {
+        refusals.push(`Legacy-like web log ${safeName(entry.name)} was preserved because its name is not canonical.`);
+        continue;
+      }
+      if (candidates.length >= LEGACY_CANDIDATE_LIMIT) {
+        exceededBound = true;
+        refusals.push(`Legacy web log candidates exceeded ${String(LEGACY_CANDIDATE_LIMIT)} files.`);
+        continue;
+      }
+      const path = join(logDir, entry.name);
+      try {
+        const stats = await lstat(path);
+        assertSafeLegacyFile(stats, path);
+        candidates.push({ path, stats });
+      } catch (error) {
+        refusals.push(`Legacy web log ${safeName(entry.name)} was preserved: ${safeDetail(error)}`);
       }
     }
-
-    retiringPath = `${activePath}.retiring-${randomUUID()}`;
-    await rename(activePath, retiringPath);
-    try {
-      await rename(temporaryPath, generations[0] as string);
-      temporaryPath = undefined;
-    } catch (error) {
-      await rename(retiringPath, activePath).catch(() => undefined);
-      retiringPath = undefined;
-      throw error;
-    }
-    await rm(retiringPath);
-    retiringPath = undefined;
   } finally {
-    await source.close().catch(() => undefined);
-    if (temporaryPath !== undefined) await rm(temporaryPath, { force: true }).catch(() => undefined);
-    if (retiringPath !== undefined) await rm(retiringPath, { force: true }).catch(() => undefined);
+    await directory.close().catch(() => undefined);
   }
+  return { candidates, refusals, exceededBound };
 }
 
-async function managedLogSize(path: string): Promise<number> {
-  return Number((await ownedManagedLogStats(path))?.size ?? 0);
-}
-
-async function ownedManagedLogStats(path: string): Promise<Awaited<ReturnType<typeof lstat>> | undefined> {
+async function removeSameLegacyFile(path: string, expected: Stats): Promise<void> {
+  const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
   try {
-    const stats = await lstat(path);
-    assertOwnedManagedLog(stats, path);
-    return stats;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
+    const opened = await handle.stat();
+    assertSafeLegacyFile(opened, path);
+    if (!sameIdentity(expected, opened)) throw new Error("its identity changed before removal");
+    const current = await lstat(path);
+    assertSafeLegacyFile(current, path);
+    if (!sameIdentity(opened, current)) throw new Error("its pathname changed before removal");
+    await unlink(path);
+  } finally {
+    await handle.close();
   }
 }
 
-function assertOwnedManagedLog(stats: Awaited<ReturnType<typeof lstat>>, path: string): void {
+function assertSafeLegacyFile(stats: Stats, path: string): void {
   if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
-    throw new Error(`Managed web log ${path} must be one regular, non-symbolic-link file.`);
+    throw new Error(`${basename(path)} is not one regular non-symbolic-link file with one link`);
   }
   const uid = process.getuid?.();
-  if (uid !== undefined && stats.uid !== uid) {
-    throw new Error(`Managed web log ${path} is not owned by the current user.`);
-  }
+  if (uid !== undefined && stats.uid !== uid) throw new Error(`${basename(path)} is not owned by the current user`);
+  if (!Number.isSafeInteger(stats.size) || stats.size < 0) throw new Error(`${basename(path)} has an unsafe size`);
 }
 
-function sameManagedLogIdentity(
-  left: Awaited<ReturnType<typeof lstat>>,
-  right: Awaited<ReturnType<typeof lstat>>,
-): boolean {
+function sameIdentity(left: Stats, right: Stats): boolean {
   return left.dev === right.dev
     && left.ino === right.ino
     && left.uid === right.uid
-    && left.nlink === right.nlink;
+    && left.nlink === right.nlink
+    && left.size === right.size;
+}
+
+function setOutcome(state: WebWakeState, outcome: ManagedWebLogMonitorOutcome): void {
+  state.lastOutcome = outcome;
+}
+
+function resetCooldown(state: WebWakeState, now: number): void {
+  state.cooldownIndex = 0;
+  state.cooldownDeadlineMonotonicMs = now + WAKE_COOLDOWN_MS[0]!;
+  state.lastReportedOutcome = undefined;
+}
+
+function advanceCooldown(state: WebWakeState, now: number): void {
+  state.cooldownIndex = Math.min(state.cooldownIndex + 1, WAKE_COOLDOWN_MS.length - 1);
+  state.cooldownDeadlineMonotonicMs = now + WAKE_COOLDOWN_MS[state.cooldownIndex]!;
+}
+
+function shouldReport(state: WebWakeState, outcome: ManagedWebLogMonitorOutcome): boolean {
+  if (outcome === "idle" || outcome === "cooldown" || outcome === "stopped") return false;
+  if (state.lastReportedOutcome === outcome) return false;
+  state.lastReportedOutcome = outcome;
+  return true;
+}
+
+function statusFor(state: WebWakeState, monotonicNow: number, wallClockNow: number): ManagedWebLogMonitorStatus {
+  return {
+    version: 1,
+    lastInspectionAt: new Date(wallClockNow).toISOString(),
+    wakeCount: state.wakeCount,
+    lastOutcome: state.lastOutcome,
+    cooldownDeadline: new Date(wallClockNow + Math.max(0, state.cooldownDeadlineMonotonicMs - monotonicNow)).toISOString(),
+  };
+}
+
+function safeRecordStatus(deps: ManagedWebLogMonitorDependencies, status: ManagedWebLogMonitorStatus): void {
+  try {
+    const result = deps.recordStatus?.(status);
+    if (result !== undefined) void Promise.resolve(result).catch(() => undefined);
+  } catch {
+    // A monitor status failure cannot alter the worker lifecycle.
+  }
+}
+
+function safeReport(deps: ManagedWebLogMonitorDependencies, message: string): void {
+  const line = `[error] ${safeText(message, 620)}\n`;
+  try {
+    const result = deps.stderr(Buffer.byteLength(line, "utf8") <= 640 ? line : "[error] Managed web log monitor failed.\n");
+    if (result !== undefined) void Promise.resolve(result).catch(() => undefined);
+  } catch {
+    // Diagnostics are bounded and non-fatal.
+  }
+}
+
+function commandDetail(stderr: string, stdout: string): string {
+  const detail = safeText(stderr || stdout, 256);
+  return detail.length === 0 ? "" : `: ${detail}`;
+}
+
+function safeDetail(error: unknown): string {
+  return safeText(error instanceof Error ? error.message : String(error), 512);
+}
+
+function safeName(value: string): string {
+  return safeText(value, 160);
+}
+
+function safeText(value: string, maxLength: number): string {
+  return value
+    .replace(/[\u0000-\u001f\u007f]+/gu, " ")
+    .replace(/\b(token|secret|password|api[-_]?key|authorization)\s*[=:]\s*\S+/giu, "$1=<redacted>")
+    .replace(/\bBearer\s+\S+/giu, "Bearer <redacted>")
+    .replace(/(?:\/[A-Za-z0-9._~!$&'()+,;=:@%-]+){2,}/gu, "<path>")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, maxLength);
 }

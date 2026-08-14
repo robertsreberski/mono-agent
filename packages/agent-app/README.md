@@ -62,9 +62,11 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   lifecycle.
 - Operate the machine-wide `@mono-agent/web` assistant-ui console through
   `mono-agent web`, including persisted curated host themes and hostname
-  identity; publish a bounded, refreshable skill registry through each running
-  operator endpoint so the web composer can discover valid `$skill-name`
-  references; use `mono-agent tui` for bounded recorded-run replay.
+  identity; on macOS pair its worker with one helper-only, stopped-writer log
+  controller while the worker remains wake-only; publish a bounded, refreshable
+  skill registry through each running operator endpoint so the web composer can
+  discover valid `$skill-name` references; use `mono-agent tui` for bounded
+  recorded-run replay.
 - Discover and expose one exact running agent through the ACP core-session
   profile with `mono-agent bridge acp`, including durable session resume, while
   preserving agent-owned configuration, workspace, sandbox, tools, MCP servers,
@@ -357,6 +359,29 @@ for migration. Existing agents retain their previously loaded interval until
 each agent is explicitly restarted after upgrade; a fleet restart is not
 performed automatically.
 
+The machine-wide web console uses the same rotation transaction over its exact
+`~/.mono-agent/web/logs/web.{out,err}.log` paths but a deliberately separate
+control domain. `com.mono-agent-web-maintenance` is a no-`KeepAlive`, `/dev/null`
+one-shot helper with `RunAtLoad`, a deterministic hourly minute, and the same
+0–119-second pre-import dispersion. The managed worker's five-minute monitor is
+wake-only and never stops or rotates the writer. The helper authenticates its
+launchd PID, cached private definition, attested runtime entry, exact helper
+bytes, and the main plist's composite `dev:ino:size:sha256` identity before and
+after taking the web lifecycle lock. Because web logs are outside the shared
+agent log directory chain, it never takes the agents' shared mutation lock.
+
+Every main-plist publication or restoration regenerates the helper from the
+fresh composite identity before either definition can be bootstrapped. Start
+and restart unload helper before worker, perform proven stopped-window
+maintenance, then bootstrap helper before worker. Stop unloads helper first and
+removes both plists only after death proof; reset requires both jobs stopped,
+both plists absent, and the same lifecycle lock. The fixed policy remains one
+active file plus three 5 MiB retained generations per stream. Refused legacy
+rollover artifacts are preserved while core rotation proceeds, and bounded
+owner-private monitor/maintenance status lets `mono-agent web status`
+distinguish active maintenance, routine `due`, durable failure, and abandoned
+recovery. `mono-agent web logs` tails only active names with `tail -F`.
+
 Guided readiness uses a worker-reproducible environment rather than the launching
 shell: durable `.env` values, entered selected secrets, the resolved Pi auth path,
 and operational values such as `PATH`/`HOME`. Shell-only provider credentials and
@@ -556,6 +581,10 @@ path:
    `waiting_for_config`, `running`, `degraded`, or `failed`.
 5. On stop or reload, stop the transport first, then dispose its responder so
    queued turns and warm provider sessions cannot outlive the config snapshot.
+6. For the managed macOS web console, publish the main and helper LaunchAgent
+   definitions as one composite-identity pair. The worker only wakes the helper;
+   the helper alone rotates after stopped-writer proof under the web lifecycle
+   lock and persists bounded recovery status.
 
 ### Package structure
 
@@ -565,7 +594,7 @@ path:
 | Configured agent | `configured-agent.ts`, `app-controller-responder.ts` | Runtime, harness, memory, history, tools, and recorder composition. |
 | Channel integration | `channels.ts`, `channel-drivers/` | Built-in drivers plus config-loaded plugin resolution. |
 | Interaction and send tools | `interaction-bridge.ts`, `adapter-send-tools*.ts` | Structured `AskUser` state, channel sinks, progress, adapter-send tools, and bounded interaction-history projection. |
-| Operator CLI | `cli*.ts`, `init.ts`, `doctor.ts`, `doctor-observability.ts`, `background*.ts`, `managed-web-logs.ts` | Setup, focused validation sections, managed service/log lifecycle, and diagnostics. |
+| Operator CLI | `cli*.ts`, `init.ts`, `doctor.ts`, `doctor-observability.ts`, `background*.ts`, `launchd*.ts`, `managed-web-logs.ts`, `web-*.ts` | Setup, focused validation sections, paired managed service/log lifecycle, and diagnostics. |
 | Host services | `run-history.ts`, `continuation*.ts`, `memory-*.ts` | Bounded prior-run evidence, durable continuations, and memory operations. |
 
 ## Public API
@@ -579,7 +608,10 @@ path:
 | Embed selected built-in channels | `defaultChannelDrivers`, `resolveChannelDrivers`, `createTelegramChannelDriver`, `createSlackChannelDriver`, `createWebhookChannelDriver`, `createOpenAIApiChannelDriver`, `createCronChannelDriver` |
 | Scaffold or validate an agent folder | `initMonoAgentFolder`, `validateMonoAgentFolder` |
 | Add bounded prior-run inspection | `createRunHistoryRuntimeExtension`, `isRunHistoryToolAllowed` |
-| Operate the CLI programmatically | `runCli`, `parseCliArgs`, `renderHelp` |
+| Operate the CLI programmatically, including the managed web lifecycle | `runCli`, `parseCliArgs`, `renderHelp` |
+
+The web maintenance controller and publication helpers remain private CLI
+implementation details; this change adds no new package-level public API.
 
 <!-- public-api-inventory:start -->
 <!-- Generated by scripts/generate-public-api-docs.mjs. Do not edit by hand. -->

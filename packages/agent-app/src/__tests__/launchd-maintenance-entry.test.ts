@@ -11,6 +11,8 @@ import {
   launchdMaintenanceDispersionSeconds,
   launchdPathsFor,
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
+  MANAGED_WEB_LOG_MAINTENANCE_ENV,
+  webMaintenanceDispersionSeconds,
 } from "../launchd.js";
 import {
   acquireFilesystemLifecycleLock,
@@ -27,6 +29,80 @@ afterEach(async () => {
 });
 
 describe("launchd maintenance lightweight entry", () => {
+  it("uses the exact web marker and private argv before its dispersed heavy import", async () => {
+    const calls: string[] = [];
+    const { deps } = entryHarness({
+      sleep: async () => { calls.push("dispersed"); },
+      verifyEntrypoint: async () => { calls.push("attested"); },
+      inspectWebHelper: async () => {
+        calls.push("launchd-authenticated");
+        return webHelperInfo();
+      },
+      loadWebHeavy: async () => {
+        calls.push("web-heavy-imported");
+        return {
+          runWebLogMaintenanceCommand: async () => {
+            calls.push("web-handler");
+            return 9;
+          },
+        };
+      },
+    });
+    const env = {
+      [MANAGED_WEB_LOG_MAINTENANCE_ENV]: "1",
+      PATH: "/usr/bin:/bin",
+      SECRET: "removed",
+    };
+    await expect(runLaunchdMaintenanceEntry(webEntryArguments(), env, deps)).resolves.toBe(9);
+    expect(deps.sleep).toHaveBeenCalledWith(webMaintenanceDispersionSeconds() * 1_000);
+    expect(calls).toEqual([
+      "dispersed",
+      "attested",
+      "launchd-authenticated",
+      "web-heavy-imported",
+      "web-handler",
+    ]);
+    expect(env).toEqual({ PATH: "/usr/bin:/bin" });
+    expect(deps.loadHeavy).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale cached web-helper definition before importing heavy code", async () => {
+    const { deps } = entryHarness({
+      inspectWebHelper: async () => ({
+        ...webHelperInfo(),
+        definition: {
+          ...webHelperInfo().definition!,
+          expectedWebPlistIdentity: `9:9:9:${"b".repeat(64)}`,
+        },
+      }),
+    });
+    const env = { [MANAGED_WEB_LOG_MAINTENANCE_ENV]: "1", PATH: "/usr/bin:/bin" };
+
+    await expect(runLaunchdMaintenanceEntry(webEntryArguments(), env, deps)).resolves.toBe(1);
+    expect(deps.loadWebHeavy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing marker", {}, webEntryArguments()],
+    ["agent marker", { [MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV]: "1" }, webEntryArguments()],
+    ["both markers", {
+      [MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV]: "1",
+      [MANAGED_WEB_LOG_MAINTENANCE_ENV]: "1",
+    }, webEntryArguments()],
+    ["reordered", { [MANAGED_WEB_LOG_MAINTENANCE_ENV]: "1" }, [
+      "__web-log-maintenance",
+      "--expected-web-plist-identity", `1:2:3:${"a".repeat(64)}`,
+      "--expected-managed-runtime-launch", "cHJvb2Y",
+    ]],
+    ["extra", { [MANAGED_WEB_LOG_MAINTENANCE_ENV]: "1" }, [...webEntryArguments(), "extra"]],
+  ])("rejects %s web-helper authority without importing heavy code", async (_label, env, argv) => {
+    const { deps } = entryHarness();
+    await expect(runLaunchdMaintenanceEntry(argv, env, deps)).resolves.toBe(2);
+    expect(deps.sleep).not.toHaveBeenCalled();
+    expect(deps.loadHeavy).not.toHaveBeenCalled();
+    expect(deps.loadWebHeavy).not.toHaveBeenCalled();
+  });
+
   it("defers at the per-agent lifecycle lock without attestation or heavy import", async () => {
     const calls: string[] = [];
     const { deps, env } = entryHarness({
@@ -274,9 +350,19 @@ function entryArguments(): string[] {
   ];
 }
 
+function webEntryArguments(): string[] {
+  return [
+    "__web-log-maintenance",
+    "--expected-managed-runtime-launch", "cHJvb2Y",
+    "--expected-web-plist-identity", `1:2:3:${"a".repeat(64)}`,
+  ];
+}
+
 function entryHarness(overrides: Partial<LaunchdMaintenanceEntryDependencies["gate"]> & {
   readonly verifyEntrypoint?: LaunchdMaintenanceEntryDependencies["verifyEntrypoint"];
   readonly loadHeavy?: LaunchdMaintenanceEntryDependencies["loadHeavy"];
+  readonly loadWebHeavy?: NonNullable<LaunchdMaintenanceEntryDependencies["loadWebHeavy"]>;
+  readonly inspectWebHelper?: NonNullable<LaunchdMaintenanceEntryDependencies["inspectWebHelper"]>;
   readonly sleep?: LaunchdMaintenanceEntryDependencies["sleep"];
 } = {}): { deps: LaunchdMaintenanceEntryDependencies; env: Record<string, string | undefined> } {
   const pid = 999;
@@ -299,10 +385,31 @@ function entryHarness(overrides: Partial<LaunchdMaintenanceEntryDependencies["ga
       loadHeavy: overrides.loadHeavy === undefined
         ? vi.fn(async () => ({ runLaunchdLogMaintenanceCommandWithLifecycleLease: async () => 0 }))
         : vi.fn(overrides.loadHeavy),
+      loadWebHeavy: overrides.loadWebHeavy === undefined
+        ? vi.fn(async () => ({ runWebLogMaintenanceCommand: async () => 0 }))
+        : vi.fn(overrides.loadWebHeavy),
+      inspectWebHelper: overrides.inspectWebHelper === undefined
+        ? vi.fn(async () => webHelperInfo(pid))
+        : vi.fn(overrides.inspectWebHelper),
       currentEntrypointPath: "/managed/runtime/dist/launchd-maintenance-entry.js",
       platform: "darwin",
       sleep: overrides.sleep === undefined ? vi.fn(async () => undefined) : vi.fn(overrides.sleep),
       stderr: gate.stderr,
+    },
+  };
+}
+
+function webHelperInfo(pid = 999) {
+  return {
+    loaded: true,
+    pid,
+    definition: {
+      plistPath: "/Users/example/Library/LaunchAgents/com.mono-agent-web-maintenance.plist",
+      nodePath: process.execPath,
+      cliPath: "/managed/runtime/dist/launchd-maintenance-entry.js",
+      cwd: "/Users/example/.mono-agent/web",
+      expectedManagedRuntimeLaunch: "cHJvb2Y",
+      expectedWebPlistIdentity: `1:2:3:${"a".repeat(64)}`,
     },
   };
 }

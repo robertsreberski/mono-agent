@@ -39,6 +39,46 @@ export interface ManagedLaunchdLogMonitor {
   stop(): void;
 }
 
+export interface AdditionalLaunchdLogInspection {
+  readonly needsMaintenance: boolean;
+  readonly canMaintain: boolean;
+  readonly issues: readonly string[];
+}
+
+export interface AdditionalLaunchdLogMaintenanceResult {
+  readonly refusals: readonly string[];
+}
+
+/** Narrow mutation port shared by agent maintenance and the isolated web helper. */
+export interface LaunchdLogMaintenanceDeps {
+  readonly runner: LaunchctlRunner;
+  readonly getuid: () => number;
+  readonly now: () => number;
+  readonly sleep: (ms: number) => Promise<void>;
+  readonly stderr: (text: string) => void;
+  readonly inspectLaunchdLogs: BackgroundDeps["inspectLaunchdLogs"];
+  readonly rotateStoppedLaunchdLogs: BackgroundDeps["rotateStoppedLaunchdLogs"];
+  readonly readLaunchdLogMaintenanceIntent: BackgroundDeps["readLaunchdLogMaintenanceIntent"];
+  readonly beginLaunchdLogMaintenanceIntent: BackgroundDeps["beginLaunchdLogMaintenanceIntent"];
+  readonly markLaunchdLogMaintenanceStopped: BackgroundDeps["markLaunchdLogMaintenanceStopped"];
+  readonly markLaunchdLogMaintenanceRestoring: BackgroundDeps["markLaunchdLogMaintenanceRestoring"];
+  readonly clearLaunchdLogMaintenanceIntent: BackgroundDeps["clearLaunchdLogMaintenanceIntent"];
+  readonly verifyLaunchdPlist: BackgroundDeps["verifyLaunchdPlist"];
+  readonly isAlive: (pid: number) => boolean;
+  /** Optional bounded compatibility seam; it cannot read or mutate intent/journal state. */
+  readonly inspectAdditionalLaunchdLogArtifacts?: (
+    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
+  ) => Promise<AdditionalLaunchdLogInspection>;
+  /** Runs only after durable stopped-writer proof and before core rotation. */
+  readonly maintainAdditionalLaunchdLogArtifacts?: (
+    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
+  ) => Promise<AdditionalLaunchdLogMaintenanceResult>;
+  readonly recordAdditionalLaunchdLogRefusals?: (refusals: readonly string[]) => Promise<void>;
+  readonly recordMaintenancePhase?: (
+    phase: "inspecting" | "stopping" | "stopped" | "rotating" | "restoring" | "complete",
+  ) => Promise<void>;
+}
+
 export type ManagedLaunchdLogMonitorOutcome =
   | "idle"
   | "shared-only"
@@ -360,9 +400,10 @@ export async function maintainLaunchdLogsWithLifecycleLockOperation(
 /** Execute log maintenance only while the caller owns per-agent then shared leases. */
 export async function maintainLaunchdLogsWithSharedLockOperation(
   target: BackgroundLifecycleTarget,
-  deps: BackgroundDeps,
+  deps: LaunchdLogMaintenanceDeps,
   poll: PollOptions,
 ): Promise<number> {
+  await deps.recordMaintenancePhase?.("inspecting");
   const uid = deps.getuid();
   const service = await launchdServiceInfo(deps.runner, target.label, uid);
 
@@ -372,6 +413,27 @@ export async function maintainLaunchdLogsWithSharedLockOperation(
   } catch (error) {
     reportMaintenanceFailure(target, deps, "inspect launchd logs", error);
     return 1;
+  }
+  let additionalInspection: AdditionalLaunchdLogInspection = {
+    needsMaintenance: false,
+    canMaintain: true,
+    issues: [],
+  };
+  try {
+    additionalInspection = await deps.inspectAdditionalLaunchdLogArtifacts?.(target.paths)
+      ?? additionalInspection;
+  } catch (error) {
+    reportMaintenanceFailure(target, deps, "inspect bounded legacy log artifacts", error);
+    return 1;
+  }
+  let additionalRefused = !additionalInspection.canMaintain;
+  if (additionalRefused) {
+    try {
+      await deps.recordAdditionalLaunchdLogRefusals?.(additionalInspection.issues);
+    } catch (error) {
+      reportMaintenanceFailure(target, deps, "record bounded legacy log refusals", error);
+      return 1;
+    }
   }
   let maintenanceIntent: LaunchdLogMaintenanceIntent | undefined;
   try {
@@ -389,7 +451,7 @@ export async function maintainLaunchdLogsWithSharedLockOperation(
     );
     return 1;
   }
-  if (!service.loaded && maintenanceIntent === undefined) return 0;
+  if (!service.loaded && maintenanceIntent === undefined) return additionalRefused ? 1 : 0;
 
   let originalPlistIdentity: string;
   try {
@@ -452,7 +514,9 @@ export async function maintainLaunchdLogsWithSharedLockOperation(
     for (const issue of inspection.issues) deps.stderr(ui.style.dim(issue) + "\n");
     return 1;
   }
-  if (!inspection.needsMaintenance && maintenanceIntent === undefined) return 0;
+  if (!inspection.needsMaintenance
+    && !additionalInspection.needsMaintenance
+    && maintenanceIntent === undefined) return additionalRefused ? 1 : 0;
 
   if (maintenanceIntent === undefined) {
     maintenanceIntent = {
@@ -462,6 +526,7 @@ export async function maintainLaunchdLogsWithSharedLockOperation(
       plistFingerprint: originalPlistIdentity,
     };
     try {
+      await deps.recordMaintenancePhase?.("stopping");
       await deps.beginLaunchdLogMaintenanceIntent(target.paths, maintenanceIntent);
     } catch (error) {
       reportMaintenanceFailure(target, deps, "publish durable launchd-log maintenance intent", error);
@@ -484,6 +549,7 @@ export async function maintainLaunchdLogsWithSharedLockOperation(
     }
     try {
       maintenanceIntent = await deps.markLaunchdLogMaintenanceStopped(target.paths, maintenanceIntent);
+      await deps.recordMaintenancePhase?.("stopped");
     } catch (error) {
       reportMaintenanceFailure(target, deps, "record durable stopped-writer proof", error);
       return 1;
@@ -502,6 +568,17 @@ export async function maintainLaunchdLogsWithSharedLockOperation(
   }
 
   try {
+    await deps.recordMaintenancePhase?.("rotating");
+    if (additionalInspection.canMaintain && additionalInspection.needsMaintenance) {
+      const result = await deps.maintainAdditionalLaunchdLogArtifacts?.(target.paths);
+      if (result === undefined) {
+        throw new Error("The bounded legacy inspection had no matching stopped-writer maintainer.");
+      }
+      if (result.refusals.length > 0) {
+        additionalRefused = true;
+        await deps.recordAdditionalLaunchdLogRefusals?.(result.refusals);
+      }
+    }
     await deps.rotateStoppedLaunchdLogs(target.paths);
     const currentPlistIdentity = await deps.verifyLaunchdPlist(target.paths.plistPath);
     if (currentPlistIdentity !== originalPlistIdentity) {
@@ -514,6 +591,7 @@ export async function maintainLaunchdLogsWithSharedLockOperation(
 
   try {
     maintenanceIntent = await deps.markLaunchdLogMaintenanceRestoring(target.paths, maintenanceIntent);
+    await deps.recordMaintenancePhase?.("restoring");
   } catch (error) {
     reportMaintenanceFailure(target, deps, "invalidate stopped-writer proof before restoration", error);
     return 1;
@@ -571,16 +649,17 @@ export async function maintainLaunchdLogsWithSharedLockOperation(
   }
   try {
     await deps.clearLaunchdLogMaintenanceIntent(target.paths, maintenanceIntent);
+    await deps.recordMaintenancePhase?.("complete");
   } catch (error) {
     reportMaintenanceFailure(target, deps, "clear durable launchd-log maintenance intent", error);
     return 1;
   }
-  return 0;
+  return additionalRefused ? 1 : 0;
 }
 
 export function reportMaintenanceFailure(
   target: BackgroundLifecycleTarget,
-  deps: BackgroundDeps,
+  deps: Pick<LaunchdLogMaintenanceDeps, "stderr">,
   action: string,
   error: unknown,
 ): void {

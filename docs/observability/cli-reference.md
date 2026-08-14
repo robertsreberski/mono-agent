@@ -45,7 +45,7 @@ The read/status commands accept `--json` for scripting: `validate`, `config`, `p
 | `stop` | Stop the background instance, unloading log maintenance first, and remove both LaunchAgent definitions. | `--config <path>`, `--env-file <path>` |
 | `status` | Show this config's instance plus any other running instances. | `--config <path>`, `--env-file <path>`, `--json` |
 | `logs` | Print (and optionally follow) the background instance's log files. | `--config <path>`, `--env-file <path>`, `--follow` / `-f`, `--lines <n>` |
-| `web` | Operate the always-on browser conversation console for every discovered running agent. Bare `web` is read-only status/help. | `start`, `restart`, `stop`, `status`, `logs`, `run`, `reset`; `--host <addr>`, `--loopback`, `--port <n>` |
+| `web` | Operate the always-on browser conversation console for every discovered running agent. Bare `web` is read-only status/help; managed macOS start also installs its paired fixed-policy log-maintenance helper. | `start`, `restart`, `stop`, `status`, `logs`, `run`, `reset`; `--host <addr>`, `--loopback`, `--port <n>` |
 | `sessions` (removed) | The Session Recorder launcher was removed; it now errors with a pointer and exits `2`. Use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). | — |
 | `tui` | Open remote discovery/chat, attach to a managed macOS background agent for a dedicated SELF-CONFIG session, or use ordinary in-process local chat. | `--agent`, `--conversation`, `--configure`, `--local` |
 | `install-skill` | Copy the authoring composer to coding harnesses and pair its documentation MCP companion, or check/update managed project-local skills. | `--target claude\|codex\|both`, `--force`, `--no-docs-mcp`, `--project`, `--check`, `--update`, `--json` (with `--project --check`) |
@@ -101,6 +101,20 @@ bytes for safely inspected files without changing the filesystem. Unsafe or
 unreadable byte inventory is reported as unavailable.
 `validate` / `doctor` also reports the owner-private monitor snapshot: last
 inspection, cumulative wake count, last outcome, and cooldown deadline.
+
+The managed macOS web console applies the same 5 MiB active-file plus three
+retained-generation policy independently under `~/.mono-agent/web/logs/`.
+Its foreground worker only performs a bounded wake check; it never renames,
+truncates, unlinks, or exits to rotate its own open files. The separate
+`com.mono-agent-web-maintenance` one-shot helper is the only rotation authority.
+It has `RunAtLoad`, a deterministic hourly minute, the same deterministic
+0–119-second pre-import dispersion, no `KeepAlive`, and `/dev/null` output.
+It proves the exact launchd-owned PID, cached helper definition, attested runtime
+entry, and composite `dev:ino:size:sha256` identity of the main web plist before
+and after taking the web lifecycle lock. Web logs are outside the shared agent
+log chain, so this helper never takes the agents' per-account shared log lock.
+Failures and refusals instead persist in bounded owner-private state shown by
+`mono-agent web status`.
 
 ## `init`
 
@@ -541,19 +555,24 @@ mono-agent web stop
 
 | Command / flag | Effect |
 | --- | --- |
-| `start [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Install/start the managed macOS service. Defaults to `0.0.0.0:5050` and `evergreen`; a stopped service retains its recorded theme unless replaced. |
-| `restart [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Restart with the stored bind/theme or replace either supplied value. |
-| `stop` | Stop the managed service and remove only the Tailscale Serve route it owns. |
-| `status` | Print process health, effective bind and theme, local/LAN/Tailscale URLs, and Serve state. |
-| `logs [--follow\|-f] [--lines <n>]` | Print or follow the managed service logs. |
+| `start [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Install/start the paired managed macOS worker and maintenance helper. Defaults to `0.0.0.0:5050` and `evergreen`; a stopped service retains its recorded theme unless replaced. |
+| `restart [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Restart with the stored bind/theme or replace either supplied value, republishing both plists from one fresh composite main-plist identity. |
+| `stop` | Unload the helper before the worker, remove both definitions after PID-death proof, and remove only the Tailscale Serve route it owns. |
+| `status` | Print process health, effective bind and theme, local/LAN/Tailscale URLs, Serve state, and durable log-maintenance state. A safe pass merely awaiting its schedule is `due`, not a failure; missing/stale helpers, unsafe inventory, refused artifacts, failed passes, and abandoned recovery remain nonzero. Proven recovery names `restart`; unproven stopping or stale-plist authority names `stop` then `start`. |
+| `logs [--follow\|-f] [--lines <n>]` | Print or follow only `web.err.log` and `web.out.log`; follow uses `tail -F` so it reopens a rotated active name. Retained `.1`–`.3` files have no CLI selector. |
 | `run [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Run the service in the foreground; cross-platform. The theme defaults to `evergreen`. |
-| `reset --all --yes` | With the service stopped, erase the whole web-console store and uploads. Both confirmations are mandatory. |
+| `reset --all --yes` | With both worker and helper stopped and both plist files absent, take the web lifecycle lock and erase the whole web-console store and uploads. Both confirmations are mandatory. |
 
 There is no application authentication. Anyone who can reach the port can read conversations, upload files, and operate discovered agents. Keep the listener on a trusted LAN/tailnet or use `--loopback`; Host/Origin checks and the absence of CORS do not turn an untrusted network into a safe one.
 
 Managed start tries to claim a conflict-free Tailscale Serve HTTPS endpoint. It uses `:443` only when free, otherwise the first free port in `8443`–`8499`, never resets another handler, records ownership, and removes only its own route. Failure to create the first route is non-fatal: the direct local/LAN/tailnet HTTP URLs remain healthy and status prints remediation. If a restart changes the app port but cannot migrate an already-owned route, mono-agent restores the prior worker, service record, plist, and exact Serve route, then exits nonzero instead of leaving a healthy-looking split configuration.
 
 State lives owner-private under `~/.mono-agent/web/`. Threads are archived/restored rather than individually deleted. A running turn continues when the browser disconnects; a service restart marks any still-active turn interrupted. See the [web console guide](/observability/web-console/) for attachment limits, thread binding, and the chat-first scope.
+
+Managed stdout/stderr are `logs/web.{out,err}.log`; retained generations are
+`.1`, `.2`, and `.3`. Rotation stops and restarts the web service only after the
+helper proves the writer down, so it can interrupt in-flight turns and SSE
+streams. The helper does not rotate before the fixed policy requires it.
 
 ## `sessions`
 

@@ -1076,7 +1076,13 @@ export async function writeOwnerPrivateLaunchdFile(path: string, data: string): 
   }
 }
 
-async function inspectOwnerPrivateLaunchdPlist(path: string): Promise<string> {
+export async function inspectOwnerPrivateLaunchdPlist(path: string): Promise<string> {
+  return (await readOwnerPrivateLaunchdPlist(path)).identity;
+}
+
+export async function readOwnerPrivateLaunchdPlist(
+  path: string,
+): Promise<{ readonly identity: string; readonly contents: string }> {
   const handle = await open(
     path,
     fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
@@ -1103,12 +1109,13 @@ async function inspectOwnerPrivateLaunchdPlist(path: string): Promise<string> {
     if ((current.mode & 0o777) !== 0o600 || !sameFileSnapshot(after, current)) {
       throw new Error(`LaunchAgent plist ${path} changed while it was inspected.`);
     }
-    return [
+    const identity = [
       String(after.dev),
       String(after.ino),
       String(after.size),
       createHash("sha256").update(contents).digest("hex"),
     ].join(":");
+    return { identity, contents: contents.toString("utf8") };
   } finally {
     await handle.close();
   }

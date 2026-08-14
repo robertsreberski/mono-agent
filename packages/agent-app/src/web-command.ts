@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { networkInterfaces } from "node:os";
 import { readFile, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
@@ -10,11 +10,12 @@ import { pruneTraceSources } from "@mono-agent/observability";
 import { isLoopbackHost } from "@mono-agent/agent-contracts";
 import type { WebTheme } from "@mono-agent/web";
 
-import { accountHomeDirectory } from "./account-home.js";
 import { resolveGlobalTraceRegistryDir } from "./app-config.js";
 import {
   acquireFilesystemLifecycleLock,
   ensureOwnerPrivateLaunchdDirectory,
+  inspectOwnerPrivateLaunchdPlist,
+  readOwnerPrivateLaunchdPlist,
   writeOwnerPrivateLaunchdFile,
 } from "./background.js";
 import { selectBackgroundOperationalEnvironment } from "./background-environment.js";
@@ -22,25 +23,59 @@ import { ensureManagedBackgroundRuntime } from "./background-runtime.js";
 import {
   bootout,
   bootstrap,
+  buildEnvironmentArguments,
+  buildWebMaintenancePlistXml,
   buildWebPlistXml,
   defaultPathEnv,
+  INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
+  launchdMaintenanceEntrypointPathForCli,
   launchdServiceInfo,
+  launchdWebMaintenanceInfo,
   makeLaunchctlRunner,
+  WEB_LAUNCHD_LABEL,
+  WEB_MAINTENANCE_LAUNCHD_LABEL,
+  webMaintenanceCalendarMinute,
 } from "./launchd.js";
-import type { LaunchctlRunner, LaunchdPaths, LaunchdServiceInfo } from "./launchd.js";
+import type {
+  LaunchctlRunner,
+  LaunchdPaths,
+  LaunchdServiceInfo,
+  LaunchdWebMaintenanceDefinition,
+  LaunchdWebMaintenanceInfo,
+} from "./launchd.js";
 import {
-  rolloverManagedWebLogs,
-  waitForManagedWebLogRollover,
+  beginLaunchdLogMaintenanceIntent,
+  clearLaunchdLogMaintenanceIntent,
+  inspectLaunchdLogs,
+  markLaunchdLogMaintenanceRestoring,
+  markLaunchdLogMaintenanceStopped,
+  readLaunchdLogMaintenanceIntent,
+  rotateStoppedLaunchdLogs,
+} from "./launchd-logs.js";
+import {
+  inspectLegacyManagedWebLogArtifacts,
+  maintainLegacyManagedWebLogArtifacts,
+  startManagedWebLogMonitor,
 } from "./managed-web-logs.js";
+import type { ManagedWebLogMonitorDependencies } from "./managed-web-logs.js";
+import { managedWebLogMaintenanceEnvironment } from "./managed-web-maintenance-environment.js";
+import { verifyManagedRuntimeMaintenanceEntrypoint } from "./managed-runtime-maintenance-entry.js";
+import { managedWebPaths } from "./web-maintenance-paths.js";
+import type { ManagedWebPaths } from "./web-maintenance-paths.js";
+import {
+  readWebLogMaintenanceStatus,
+  readWebLogMonitorStatus,
+  writeWebLogMaintenanceStatus,
+  writeWebLogMonitorStatus,
+} from "./web-log-maintenance-status.js";
 import * as ui from "./ui.js";
 
-export { rolloverManagedWebLogs } from "./managed-web-logs.js";
+export { WEB_LAUNCHD_LABEL } from "./launchd.js";
 
 export const DEFAULT_WEB_HOST = "0.0.0.0";
 export const DEFAULT_WEB_PORT = 5050;
 // Deliberately outside `com.mono-agent.*`: fleet discovery reserves that prefix
 // for configured agent instances.
-export const WEB_LAUNCHD_LABEL = "com.mono-agent-web";
 export const MANAGED_WEB_WORKER_ENV = "MONO_AGENT_MANAGED_WEB_WORKER";
 const DEFAULT_LOG_LINES = 200;
 const WEB_SERVICE_SCHEMA = "mono-agent.web-service.v1";
@@ -106,6 +141,7 @@ export type CommandRunner = (args: readonly string[]) => Promise<CommandResult>;
 interface ManagedRuntimeResult {
   readonly cliPath: string;
   readonly nodePath: string;
+  readonly launchProof: string;
 }
 
 export interface RunWebCommandDeps {
@@ -127,15 +163,19 @@ export interface RunWebCommandDeps {
     readonly currentCliPath: string;
     readonly nodePath: string;
   }) => Promise<ManagedRuntimeResult>;
+  readonly verifyMaintenanceEntrypoint?: typeof verifyManagedRuntimeMaintenanceEntrypoint;
+  readonly inspectMaintenanceService?: (
+    runner: LaunchctlRunner,
+    uid: number,
+  ) => Promise<LaunchdWebMaintenanceInfo>;
   readonly spawnTail?: (args: readonly string[]) => Promise<number>;
   readonly writePrivateFile?: (path: string, contents: string) => Promise<void>;
   readonly acquireLifecycleLock?: (paths: WebPaths) => Promise<(() => Promise<void>) | undefined>;
   readonly discoverNetworkAddresses?: () => readonly string[];
-  readonly waitForManagedLogRollover?: (
-    paths: WebPaths,
-    signal: AbortSignal,
-  ) => Promise<"rollover" | "unsafe" | "cancelled">;
-  readonly rolloverManagedLogs?: (paths: WebPaths) => Promise<void>;
+  readonly startManagedLogMonitor?: (
+    paths: Pick<LaunchdPaths, "logDir" | "stdoutPath" | "stderrPath">,
+    dependencies: ManagedWebLogMonitorDependencies,
+  ) => { stop(): void };
   readonly homeDir?: string;
 }
 
@@ -150,13 +190,24 @@ interface WebServiceRecord {
 
 interface PreviousWebServiceSnapshot {
   readonly plist: string;
+  readonly helperInputs?: WebMaintenancePublicationInputs;
   readonly recordText?: string;
   readonly record?: WebServiceRecord;
 }
 
 interface WebPublicationSnapshot {
   readonly plist?: string;
+  readonly helperInputs?: WebMaintenancePublicationInputs;
   readonly recordText?: string;
+}
+
+interface WebMaintenancePublicationInputs {
+  readonly nodePath: string;
+  readonly cliPath: string;
+  readonly cwd: string;
+  readonly expectedManagedRuntimeLaunch: string;
+  readonly environment: Readonly<Record<string, string>>;
+  readonly calendarMinute: number;
 }
 
 type WebServiceRecordRead =
@@ -195,29 +246,10 @@ type OwnedRouteInspection =
   | { readonly kind: "changed" }
   | { readonly kind: "unavailable"; readonly detail: string };
 
-export interface WebPaths {
-  readonly stateDir: string;
-  readonly recordPath: string;
-  readonly tailscalePath: string;
-  readonly launchd: LaunchdPaths;
-}
+export type WebPaths = ManagedWebPaths;
 
-export function webPaths(homeDir = accountHomeDirectory()): WebPaths {
-  const stateDir = resolve(homeDir, ".mono-agent", "web");
-  const logDir = join(stateDir, "logs");
-  const launchAgentsDir = resolve(homeDir, "Library", "LaunchAgents");
-  return {
-    stateDir,
-    recordPath: join(stateDir, "service.json"),
-    tailscalePath: join(stateDir, "tailscale-serve.json"),
-    launchd: {
-      launchAgentsDir,
-      logDir,
-      plistPath: join(launchAgentsDir, `${WEB_LAUNCHD_LABEL}.plist`),
-      stdoutPath: join(logDir, "web.out.log"),
-      stderrPath: join(logDir, "web.err.log"),
-    },
-  };
+export function webPaths(homeDir?: string): WebPaths {
+  return managedWebPaths(homeDir);
 }
 
 export function renderWebHelp(): string {
@@ -331,35 +363,23 @@ async function runWebForeground(options: RunWebCommandOptions, deps: RunWebComma
   }
   printWebUrls(stdout, handle.url, handle.port ?? port, host, deps.discoverNetworkAddresses);
   stdout.write("No app authentication is enabled; network reachability is the access boundary. Press Ctrl-C to stop.\n");
-  const monitorController = new AbortController();
-  const managedLogOutcome = options.env[MANAGED_WEB_WORKER_ENV] === "1"
-    ? (deps.waitForManagedLogRollover ?? waitForManagedWebLogRollover)(paths, monitorController.signal)
-    : new Promise<"cancelled">(() => undefined);
-  let outcome: "shutdown" | "rollover" | "unsafe" | "cancelled" = "shutdown";
+  const monitor = options.env[MANAGED_WEB_WORKER_ENV] === "1"
+    ? (deps.startManagedLogMonitor ?? startManagedWebLogMonitor)(paths.launchd, {
+        runner: deps.launchctl ?? makeLaunchctlRunner(),
+        getuid: deps.getuid ?? requiredUid,
+        stderr: (text) => { stderr.write(text); },
+        recordStatus: async (status) => await writeWebLogMonitorStatus(
+          paths.monitorStatusPath,
+          status,
+          deps.writePrivateFile ?? writeOwnerPrivateLaunchdFile,
+        ),
+      })
+    : undefined;
   try {
-    outcome = await Promise.race([
-      (deps.waitForShutdown ?? waitForShutdownSignal)().then(() => "shutdown" as const),
-      managedLogOutcome,
-    ]);
+    await (deps.waitForShutdown ?? waitForShutdownSignal)();
   } finally {
-    monitorController.abort();
+    monitor?.stop();
     await handle.stop();
-  }
-  if (outcome === "unsafe") {
-    stderr.write(ui.errorLine("Managed web log maintenance found an unsafe log path; the worker stopped without changing it."));
-    return 1;
-  }
-  if (outcome === "rollover") {
-    try {
-      await (deps.rolloverManagedLogs ?? rolloverManagedWebLogs)(paths);
-    } catch (error) {
-      stderr.write(ui.errorLine(`Managed web log rollover failed: ${errorMessage(error)}`));
-      return 1;
-    }
-    // KeepAlive restarts only after an unsuccessful exit. The old stdout/stderr
-    // descriptors now point at unlinked retiring files; launchd opens fresh
-    // active paths for the replacement worker.
-    return 75;
   }
   stdout.write("mono-agent web stopped.\n");
   return 0;
@@ -393,6 +413,7 @@ async function startWebBackground(
   let replacementLaunchAttempted = false;
   let publicationAttempted = false;
   let publicationSnapshot: WebPublicationSnapshot | undefined;
+  let pendingMaintenanceIntent: Awaited<ReturnType<typeof readLaunchdLogMaintenanceIntent>>;
   const fail = async (message: string, error?: unknown): Promise<number> => {
     stderr.write(ui.errorLine(`${message}${error === undefined ? "" : `: ${errorMessage(error)}`}`));
     if (previousStopped && previous !== undefined) {
@@ -406,10 +427,20 @@ async function startWebBackground(
       let safeToRestorePublication = true;
       if (replacementLaunchAttempted) {
         try {
+          const helper = await launchdServiceInfo(launchctl, WEB_MAINTENANCE_LAUNCHD_LABEL, getuid());
+          if (helper.loaded) {
+            safeToRestorePublication = await stopLaunchdOnly(
+              WEB_MAINTENANCE_LAUNCHD_LABEL,
+              helper,
+              launchctl,
+              getuid(),
+              deps,
+            );
+          }
           const replacement = await launchdServiceInfo(launchctl, WEB_LAUNCHD_LABEL, getuid());
           if (replacement.loaded) {
-            const stopped = await stopLaunchdOnly(replacement, launchctl, getuid(), deps);
-            safeToRestorePublication = stopped;
+            const stopped = await stopLaunchdOnly(WEB_LAUNCHD_LABEL, replacement, launchctl, getuid(), deps);
+            safeToRestorePublication = safeToRestorePublication && stopped;
             stderr.write(stopped
               ? ui.style.yellow("⚠ The failed initial web worker was stopped.\n")
               : ui.style.yellow("⚠ The failed initial web worker could not be proven stopped; inspect `mono-agent web status` and logs.\n"));
@@ -432,12 +463,57 @@ async function startWebBackground(
   try {
     const uid = getuid();
     const existing = await launchdServiceInfo(launchctl, WEB_LAUNCHD_LABEL, uid);
+    let helper = await launchdServiceInfo(launchctl, WEB_MAINTENANCE_LAUNCHD_LABEL, uid);
     if (existing.loaded && !restart) {
       if (options.theme !== undefined) {
         stderr.write(ui.errorLine(
           `mono-agent web is already managed by launchd; use \`mono-agent web restart --theme ${options.theme}\` to change its theme.`,
         ));
         return 1;
+      }
+      if (helper.loaded) {
+        try {
+          const loadedHelper = await (deps.inspectMaintenanceService ?? launchdWebMaintenanceInfo)(launchctl, uid);
+          await inspectInstalledWebMaintenanceHelper(
+            paths,
+            undefined,
+            deps.verifyMaintenanceEntrypoint,
+            loadedHelper.definition,
+            true,
+          );
+        } catch (error) {
+          stderr.write(ui.errorLine(
+            `The running web worker was preserved, but its maintenance helper is stale or unverifiable: ${errorMessage(error)}`,
+          ));
+          stderr.write(ui.hint("Repair the paired definitions with: mono-agent web restart"));
+          return 1;
+        }
+      } else {
+        try {
+          await ensureWebDirectories(paths);
+          const currentCliPath = fileURLToPath(new URL("./cli.js", import.meta.url));
+          const runtime = await (deps.ensureManagedRuntime ?? ((input) => ensureManagedBackgroundRuntime(input)))({
+            currentCliPath,
+            nodePath: process.execPath,
+          });
+          await publishHelperForExistingMain(
+            paths,
+            maintenanceInputsForRuntime(runtime, paths),
+            deps.writePrivateFile ?? writeOwnerPrivateLaunchdFile,
+          );
+          const booted = await bootstrap(launchctl, paths.maintenancePlistPath, uid);
+          if (booted.code !== 0) {
+            throw new Error(commandDetail(booted) || `launchctl bootstrap exited ${String(booted.code)}`);
+          }
+          helper = await launchdServiceInfo(launchctl, WEB_MAINTENANCE_LAUNCHD_LABEL, uid);
+          if (!helper.loaded) throw new Error("launchd did not retain the maintenance helper");
+        } catch (error) {
+          stderr.write(ui.errorLine(
+            `The running web worker was preserved, but its missing maintenance helper could not be installed: ${errorMessage(error)}`,
+          ));
+          stderr.write(ui.hint("Repair the paired definitions with: mono-agent web restart"));
+          return 1;
+        }
       }
       stdout.write(ui.style.dim("mono-agent web is already managed by launchd.\n"));
       return await statusWeb(options, deps, true);
@@ -446,9 +522,56 @@ async function startWebBackground(
     if (recordRead.kind === "invalid") {
       return await fail(`Refusing to start because ${recordRead.detail}`);
     }
+    try {
+      pendingMaintenanceIntent = await readLaunchdLogMaintenanceIntent(paths.launchd);
+    } catch (error) {
+      return await fail("Refusing to start because the durable web log-maintenance intent is unsafe", error);
+    }
+    if (pendingMaintenanceIntent?.phase === "stopping") {
+      stderr.write(ui.errorLine(
+        "Refusing to change either LaunchAgent because an abandoned stopping intent lacks complete prior PID-death proof.",
+      ));
+      stderr.write(ui.hint(
+        "Recover safely with `mono-agent web stop`, then `mono-agent web start`; restart cannot promote an unproven stop.",
+      ));
+      return 1;
+    }
     const existingPlist = await readOptionalText(paths.launchd.plistPath);
+    if (pendingMaintenanceIntent !== undefined) {
+      let currentMainIdentity: string;
+      try {
+        currentMainIdentity = await inspectOwnerPrivateLaunchdPlist(paths.launchd.plistPath);
+      } catch {
+        stderr.write(ui.errorLine(
+          "Refusing to recover web log maintenance because its main LaunchAgent identity is absent or unsafe.",
+        ));
+        stderr.write(ui.hint(
+          "Recover safely with `mono-agent web stop`, then `mono-agent web start`; stop clears stale authority only after both jobs are down.",
+        ));
+        return 1;
+      }
+      if (pendingMaintenanceIntent.plistFingerprint !== currentMainIdentity) {
+        stderr.write(ui.errorLine(
+          "Refusing to recover web log maintenance because its durable intent authenticates an older main LaunchAgent identity.",
+        ));
+        stderr.write(ui.hint(
+          "Recover safely with `mono-agent web stop`, then `mono-agent web start`; restart cannot reuse stale rotation authority.",
+        ));
+        return 1;
+      }
+    }
+    let existingHelperInputs: WebMaintenancePublicationInputs | undefined;
+    if (await readOptionalText(paths.maintenancePlistPath) !== undefined) {
+      try {
+        existingHelperInputs = await inspectInstalledWebMaintenanceHelper(paths, undefined, deps.verifyMaintenanceEntrypoint);
+      } catch {
+        // Explicit start/restart may repair a stopped or stale helper. A loaded
+        // healthy worker took the preserve-and-restart-instruction path above.
+      }
+    }
     publicationSnapshot = {
       ...(existingPlist === undefined ? {} : { plist: existingPlist }),
+      ...(existingHelperInputs === undefined ? {} : { helperInputs: existingHelperInputs }),
       ...(recordRead.kind === "valid" ? { recordText: recordRead.contents } : {}),
     };
     if (existing.loaded && restart) {
@@ -457,6 +580,7 @@ async function startWebBackground(
         if (recordRead.kind !== "valid") throw new Error("the loaded web service record is missing");
         previous = {
           plist: existingPlist,
+          ...(existingHelperInputs === undefined ? {} : { helperInputs: existingHelperInputs }),
           recordText: recordRead.contents,
           record: recordRead.record,
         };
@@ -464,19 +588,9 @@ async function startWebBackground(
         return await fail("Refusing restart because the current web service could not be snapshotted", error);
       }
     }
-    if (existing.loaded) {
-      const stopped = await stopLaunchdOnly(existing, launchctl, uid, deps);
-      if (!stopped) {
-        stderr.write(ui.errorLine("Could not prove the existing mono-agent web worker stopped; its definition was preserved."));
-        return 1;
-      }
-      previousStopped = restart && previous !== undefined;
-    }
-
-    const priorRecord = recordRead.kind === "valid" ? recordRead.record : undefined;
-    const host = effectiveHost(options, priorRecord?.host);
-    const port = options.port ?? priorRecord?.port ?? DEFAULT_WEB_PORT;
-    const theme = selectedWebTheme(options.theme, priorRecord?.theme);
+    // Establish structured helper inputs before unloading anything. If runtime
+    // installation fails, the current pair remains untouched and no rollback
+    // needs authority that was not captured.
     await ensureWebDirectories(paths);
     const currentCliPath = fileURLToPath(new URL("./cli.js", import.meta.url));
     let runtime: ManagedRuntimeResult;
@@ -487,6 +601,62 @@ async function startWebBackground(
       });
     } catch (error) {
       return await fail("Could not install the durable web runtime", error);
+    }
+    const helperInputs = maintenanceInputsForRuntime(runtime, paths);
+    if (publicationSnapshot.plist !== undefined && publicationSnapshot.helperInputs === undefined) {
+      publicationSnapshot = { ...publicationSnapshot, helperInputs };
+    }
+    if (previous !== undefined && previous.helperInputs === undefined) {
+      previous = { ...previous, helperInputs };
+    }
+    const helperWasLoaded = helper.loaded;
+    if (helper.loaded) {
+      const stopped = await stopLaunchdOnly(
+        WEB_MAINTENANCE_LAUNCHD_LABEL,
+        helper,
+        launchctl,
+        uid,
+        deps,
+      );
+      if (!stopped) {
+        stderr.write(ui.errorLine("Could not prove the web-maintenance helper stopped; both definitions were preserved."));
+        return 1;
+      }
+      helper = { loaded: false };
+    }
+    if (existing.loaded) {
+      const stopped = await stopLaunchdOnly(WEB_LAUNCHD_LABEL, existing, launchctl, uid, deps);
+      if (!stopped) {
+        if (helperWasLoaded) {
+          const restoredHelper = await bootstrap(launchctl, paths.maintenancePlistPath, uid);
+          const helperRestored = restoredHelper.code === 0
+            && (await launchdServiceInfo(launchctl, WEB_MAINTENANCE_LAUNCHD_LABEL, uid)).loaded;
+          if (!helperRestored) {
+            stderr.write(ui.style.yellow(
+              `⚠ The worker remained loaded, but its prior maintenance helper could not be proven restored: ${commandDetail(restoredHelper) || "launchd did not retain the helper"}\n`,
+            ));
+          }
+        }
+        stderr.write(ui.errorLine("Could not prove the existing mono-agent web worker stopped; its definition was preserved."));
+        return 1;
+      }
+      previousStopped = restart && previous !== undefined;
+    }
+
+    const priorRecord = recordRead.kind === "valid" ? recordRead.record : undefined;
+    const host = effectiveHost(options, priorRecord?.host);
+    const port = options.port ?? priorRecord?.port ?? DEFAULT_WEB_PORT;
+    const theme = selectedWebTheme(options.theme, priorRecord?.theme);
+    if (existingPlist !== undefined) {
+      try {
+        pendingMaintenanceIntent = await maintainStoppedWebLogsBeforePublication(
+          paths,
+          pendingMaintenanceIntent,
+          deps.now ?? Date.now,
+        );
+      } catch (error) {
+        return await fail("Could not complete the proven stopped-window web log maintenance pass", error);
+      }
     }
     const tailscaleRunner = deps.tailscale ?? makeTailscaleRunner(options.env);
     const priorTailscaleOwnership = await readTailscaleOwnership(paths.tailscalePath);
@@ -534,12 +704,17 @@ async function startWebBackground(
     publicationAttempted = true;
     try {
       await writePrivateFile(paths.recordPath, `${JSON.stringify(record, undefined, 2)}\n`);
-      await writePrivateFile(paths.launchd.plistPath, plist);
+      await publishPairedWebPlists(paths, plist, helperInputs, writePrivateFile);
     } catch (error) {
       return await fail("Could not publish the web LaunchAgent definition", error);
     }
 
     replacementLaunchAttempted = true;
+    const helperBootstrapped = await bootstrap(launchctl, paths.maintenancePlistPath, uid);
+    if (helperBootstrapped.code !== 0) {
+      writeCommandDetail(stderr, helperBootstrapped);
+      return await fail(`launchctl could not start mono-agent web maintenance (exit ${String(helperBootstrapped.code)})`);
+    }
     const bootstrapped = await bootstrap(launchctl, paths.launchd.plistPath, uid);
     if (bootstrapped.code !== 0) {
       writeCommandDetail(stderr, bootstrapped);
@@ -549,6 +724,24 @@ async function startWebBackground(
     if (!ready) {
       stderr.write(ui.hint("Inspect `mono-agent web logs`, then retry `mono-agent web restart`."));
       return await fail("mono-agent web did not become healthy before the startup timeout");
+    }
+    if (pendingMaintenanceIntent !== undefined) {
+      try {
+        await inspectInstalledWebMaintenanceHelper(paths, undefined, deps.verifyMaintenanceEntrypoint);
+        await clearLaunchdLogMaintenanceIntent(paths.launchd, pendingMaintenanceIntent);
+        const priorStatus = await readWebLogMaintenanceStatus(paths.maintenanceStatusPath);
+        if (priorStatus.kind !== "valid" || priorStatus.status.state !== "degraded") {
+          await writeWebLogMaintenanceStatus(paths.maintenanceStatusPath, {
+            version: 1,
+            state: "success",
+            phase: "complete",
+            updatedAt: new Date((deps.now ?? Date.now)()).toISOString(),
+          });
+        }
+        pendingMaintenanceIntent = undefined;
+      } catch (error) {
+        return await fail("The replacement worker is live, but stale rotation authority could not be revoked", error);
+      }
     }
 
     const tailscale = tailscaleDnsName === undefined
@@ -594,11 +787,12 @@ async function stopWebBackground(options: RunWebCommandOptions, deps: RunWebComm
   const uid = (deps.getuid ?? requiredUid)();
   const paths = webPaths(deps.homeDir);
   const initialService = await launchdServiceInfo(launchctl, WEB_LAUNCHD_LABEL, uid);
+  const initialHelper = await launchdServiceInfo(launchctl, WEB_MAINTENANCE_LAUNCHD_LABEL, uid);
   // A running worker owns the backend state lease. Stop must reach launchd
   // bootout without opening or preparing that state first. On a pristine,
   // already-stopped install, preparation creates a valid marked state root
   // before the filesystem lifecycle lock needs to place its lock directory.
-  if (!initialService.loaded) {
+  if (!initialService.loaded && !initialHelper.loaded) {
     try {
       await (deps.prepareState ?? defaultPrepareWebState)({ stateDir: paths.stateDir, env: options.env });
     } catch (error) {
@@ -612,18 +806,64 @@ async function stopWebBackground(options: RunWebCommandOptions, deps: RunWebComm
     return 1;
   }
   try {
+    const helper = await launchdServiceInfo(launchctl, WEB_MAINTENANCE_LAUNCHD_LABEL, uid);
+    const helperWasLoaded = helper.loaded;
+    if (helper.loaded && !await stopLaunchdOnly(
+      WEB_MAINTENANCE_LAUNCHD_LABEL,
+      helper,
+      launchctl,
+      uid,
+      deps,
+    )) {
+      stderr.write(ui.errorLine("Could not prove mono-agent web maintenance stopped; both LaunchAgents were preserved."));
+      return 1;
+    }
     const service = await launchdServiceInfo(launchctl, WEB_LAUNCHD_LABEL, uid);
-    if (service.loaded && !await stopLaunchdOnly(service, launchctl, uid, deps)) {
+    if (service.loaded && !await stopLaunchdOnly(WEB_LAUNCHD_LABEL, service, launchctl, uid, deps)) {
+      if (helperWasLoaded) {
+        let helperRestored = false;
+        let restoreDetail = "launchd did not retain the helper";
+        try {
+          const restoredHelper = await bootstrap(launchctl, paths.maintenancePlistPath, uid);
+          helperRestored = restoredHelper.code === 0
+            && (await launchdServiceInfo(launchctl, WEB_MAINTENANCE_LAUNCHD_LABEL, uid)).loaded;
+          restoreDetail = commandDetail(restoredHelper) || restoreDetail;
+        } catch (error) {
+          restoreDetail = errorMessage(error);
+        }
+        if (!helperRestored) {
+          stderr.write(ui.style.yellow(
+            `⚠ The worker remained loaded, but its prior maintenance helper could not be proven restored: ${restoreDetail}\n`,
+          ));
+        }
+      }
       stderr.write(ui.errorLine("Could not prove mono-agent web stopped; its LaunchAgent and Tailscale handler were preserved."));
       return 1;
     }
     const tailscaleResult = await removeOwnedTailscaleServe(paths, deps);
+    try {
+      let intent = await readLaunchdLogMaintenanceIntent(paths.launchd);
+      // Explicit stop has just proven both launchd jobs and every observed PID
+      // gone. Convert pre-proof or stale restoration authority into the same
+      // durable stopped proof before clearing it; clear itself never accepts a
+      // raw stopping intent.
+      if (intent?.phase === "stopping" || intent?.phase === "restoring") {
+        intent = await markLaunchdLogMaintenanceStopped(paths.launchd, intent);
+      }
+      await clearLaunchdLogMaintenanceIntent(paths.launchd, intent);
+      await rm(paths.monitorStatusPath, { force: true });
+      await rm(paths.maintenanceStatusPath, { force: true });
+    } catch (error) {
+      stderr.write(ui.errorLine(`Web stopped, but maintenance recovery state could not be safely cleared: ${errorMessage(error)}`));
+      return 1;
+    }
+    await rm(paths.maintenancePlistPath, { force: true });
     await rm(paths.launchd.plistPath, { force: true });
     if (tailscaleResult.kind === "unavailable") {
       stderr.write(ui.style.yellow(`⚠ Web stopped, but the owned Tailscale handler was preserved: ${tailscaleResult.detail}\n`));
       return 1;
     }
-    stdout.write(service.loaded
+    stdout.write(service.loaded || helper.loaded
       ? `${ui.badge("ok")}${ui.style.bold("Stopped mono-agent web")} and removed its LaunchAgent.\n`
       : "mono-agent web was already stopped; removed its LaunchAgent if present.\n");
     return 0;
@@ -645,12 +885,14 @@ async function statusWeb(
   const port = record?.port ?? DEFAULT_WEB_PORT;
   const theme = record?.theme ?? DEFAULT_WEB_THEME;
   let service: LaunchdServiceInfo = { loaded: false };
+  let helper: LaunchdWebMaintenanceInfo = { loaded: false };
   if ((deps.platform ?? process.platform) === "darwin") {
-    service = await launchdServiceInfo(
-      deps.launchctl ?? makeLaunchctlRunner(),
-      WEB_LAUNCHD_LABEL,
-      (deps.getuid ?? requiredUid)(),
-    );
+    const runner = deps.launchctl ?? makeLaunchctlRunner();
+    const uid = (deps.getuid ?? requiredUid)();
+    [service, helper] = await Promise.all([
+      launchdServiceInfo(runner, WEB_LAUNCHD_LABEL, uid),
+      (deps.inspectMaintenanceService ?? launchdWebMaintenanceInfo)(runner, uid),
+    ]);
   }
   const healthState = recordRead.kind === "invalid" || !service.loaded
     ? "unavailable"
@@ -658,6 +900,84 @@ async function statusWeb(
       ? await webHealthStatus(healthUrl(host, port))
       : await deps.healthcheck(healthUrl(host, port)) ? "ok" : "unavailable";
   const healthy = healthState === "ok";
+  const maintenanceProblems: string[] = [];
+  let maintenanceSummary = helper.loaded ? "idle" : "helper missing";
+  let pendingIntent: Awaited<ReturnType<typeof readLaunchdLogMaintenanceIntent>>;
+  let pendingRecoveryRequiresStopStart = false;
+  try {
+    pendingIntent = await readLaunchdLogMaintenanceIntent(paths.launchd);
+  } catch {
+    pendingIntent = undefined;
+    maintenanceProblems.push("maintenance intent is unreadable or unsafe");
+  }
+  const maintenanceStatus = await readWebLogMaintenanceStatus(paths.maintenanceStatusPath);
+  const monitorStatus = await readWebLogMonitorStatus(paths.monitorStatusPath);
+  if (helper.loaded) {
+    try {
+      await inspectInstalledWebMaintenanceHelper(
+        paths,
+        undefined,
+        deps.verifyMaintenanceEntrypoint,
+        helper.definition,
+        true,
+      );
+    } catch {
+      maintenanceProblems.push("helper definition or managed-runtime closure is invalid");
+    }
+  } else {
+    maintenanceProblems.push("maintenance helper is not loaded");
+  }
+  if (pendingIntent !== undefined) {
+    pendingRecoveryRequiresStopStart = pendingIntent.phase === "stopping";
+    if (!pendingRecoveryRequiresStopStart) {
+      try {
+        pendingRecoveryRequiresStopStart = pendingIntent.plistFingerprint
+          !== await inspectOwnerPrivateLaunchdPlist(paths.launchd.plistPath);
+      } catch {
+        pendingRecoveryRequiresStopStart = true;
+      }
+    }
+    if (helper.pid !== undefined) {
+      maintenanceSummary = `maintenance in progress (${pendingIntent.phase})`;
+    } else {
+      maintenanceSummary = "maintenance recovery required";
+      maintenanceProblems.push("durable maintenance intent has no live helper");
+    }
+  } else if (helper.pid !== undefined) {
+    maintenanceSummary = maintenanceStatus.kind === "valid" && maintenanceStatus.status.state === "running"
+      ? `maintenance in progress (${maintenanceStatus.status.phase})`
+      : "maintenance in progress";
+  } else if (maintenanceStatus.kind === "valid") {
+    if (maintenanceStatus.status.state === "failed" || maintenanceStatus.status.state === "degraded") {
+      maintenanceSummary = maintenanceStatus.status.state;
+      maintenanceProblems.push(maintenanceStatus.status.detail ?? "the last maintenance pass did not complete cleanly");
+    }
+    if ((maintenanceStatus.status.refusals?.length ?? 0) > 0) {
+      maintenanceProblems.push("bounded legacy artifacts were refused and preserved");
+    }
+  } else if (maintenanceStatus.kind === "invalid") {
+    maintenanceProblems.push("maintenance status is unreadable or unsafe");
+  }
+  if (monitorStatus.kind === "invalid") {
+    maintenanceProblems.push("worker monitor status is unreadable or unsafe");
+  } else if (monitorStatus.kind === "valid"
+    && ["helper-unloaded", "request-failed", "inspection-failed"].includes(monitorStatus.status.lastOutcome)) {
+    maintenanceProblems.push(`worker monitor reports ${monitorStatus.status.lastOutcome}`);
+  }
+  try {
+    const [logs, legacy] = await Promise.all([
+      inspectLaunchdLogs(paths.launchd),
+      inspectLegacyManagedWebLogArtifacts(paths.launchd),
+    ]);
+    if (!logs.canMaintain || !legacy.canMaintain) maintenanceProblems.push("managed web log inventory is unsafe");
+    else if (logs.needsMaintenance || legacy.needsMaintenance) {
+      maintenanceSummary = maintenanceSummary === "idle"
+        ? "due"
+        : `${maintenanceSummary}; due`;
+    }
+  } catch {
+    maintenanceProblems.push("managed web log inventory could not be inspected");
+  }
   stdout.write(ui.rule("Web console status"));
   stdout.write(ui.keyValue([
     ["service", service.loaded
@@ -667,6 +987,7 @@ async function statusWeb(
     ["theme", recordRead.kind === "invalid" ? "invalid service record" : theme],
     ["state", paths.stateDir],
     ["pid", service.pid === undefined ? "—" : String(service.pid)],
+    ["log maintenance", maintenanceSummary],
     ["authentication", "none (network reachability is the boundary)"],
   ]));
   if (recordRead.kind === "invalid") stdout.write(ui.errorLine(recordRead.detail));
@@ -692,7 +1013,13 @@ async function statusWeb(
   }
   if (!service.loaded) stdout.write(ui.hint("Start it with: mono-agent web start"));
   else if (!healthy) stdout.write(ui.hint("Inspect: mono-agent web logs"));
-  return (strictExit && !healthy) || recordRead.kind === "invalid" ? 1 : 0;
+  for (const problem of [...new Set(maintenanceProblems)]) stdout.write(ui.errorLine(problem));
+  if (pendingIntent !== undefined && helper.pid === undefined) {
+    stdout.write(pendingRecoveryRequiresStopStart
+      ? ui.hint("Recover it with `mono-agent web stop`, then `mono-agent web start`; the prior stop or plist identity is unproven.")
+      : ui.hint("Recover it with exactly: mono-agent web restart"));
+  }
+  return (strictExit && (!healthy || maintenanceProblems.length > 0)) || recordRead.kind === "invalid" ? 1 : 0;
 }
 
 async function tailWebLogs(options: RunWebCommandOptions, deps: RunWebCommandDeps): Promise<number> {
@@ -714,19 +1041,31 @@ async function resetWeb(options: RunWebCommandOptions, deps: RunWebCommandDeps):
   const stdout = deps.stdout ?? process.stdout;
   const paths = webPaths(deps.homeDir);
   if ((deps.platform ?? process.platform) === "darwin") {
-    const service = await launchdServiceInfo(
-      deps.launchctl ?? makeLaunchctlRunner(),
-      WEB_LAUNCHD_LABEL,
-      (deps.getuid ?? requiredUid)(),
-    );
-    if (service.loaded) {
+    const launchctl = deps.launchctl ?? makeLaunchctlRunner();
+    const uid = (deps.getuid ?? requiredUid)();
+    const [service, helper] = await Promise.all([
+      launchdServiceInfo(launchctl, WEB_LAUNCHD_LABEL, uid),
+      launchdServiceInfo(launchctl, WEB_MAINTENANCE_LAUNCHD_LABEL, uid),
+    ]);
+    if (service.loaded || helper.loaded) {
       stderr.write(ui.errorLine("Refusing to reset while mono-agent web is running."));
       stderr.write(ui.hint("Run `mono-agent web stop`, then repeat `mono-agent web reset --all --yes`."));
       return 1;
     }
   }
   await (deps.prepareState ?? defaultPrepareWebState)({ stateDir: paths.stateDir, env: options.env });
+  const release = await (deps.acquireLifecycleLock ?? acquireWebLifecycleLock)(paths);
+  if (release === undefined) {
+    stderr.write(ui.errorLine("Another mono-agent web lifecycle command is active."));
+    return 1;
+  }
   try {
+    if (await readOptionalText(paths.launchd.plistPath) !== undefined
+      || await readOptionalText(paths.maintenancePlistPath) !== undefined) {
+      stderr.write(ui.errorLine("Refusing to reset while web LaunchAgent definitions remain installed."));
+      stderr.write(ui.hint("Run `mono-agent web stop`, then repeat `mono-agent web reset --all --yes`."));
+      return 1;
+    }
     const tailscaleOwnershipBefore = await readOptionalText(paths.tailscalePath);
     await (deps.resetState ?? defaultResetWebState)({ stateDir: paths.stateDir, env: options.env });
     if (tailscaleOwnershipBefore !== undefined) {
@@ -740,6 +1079,8 @@ async function resetWeb(options: RunWebCommandOptions, deps: RunWebCommandDeps):
   } catch (error) {
     stderr.write(ui.errorLine(`Could not reset the web console: ${errorMessage(error)}`));
     return 1;
+  } finally {
+    await release().catch(() => undefined);
   }
   stdout.write(`${ui.badge("ok")}Reset all mono-agent web conversations, messages, attachments, and settings.\n`);
   return 0;
@@ -790,6 +1131,221 @@ async function ensureWebDirectories(paths: WebPaths): Promise<void> {
   }
 }
 
+function maintenanceInputsForRuntime(
+  runtime: ManagedRuntimeResult,
+  paths: WebPaths,
+): WebMaintenancePublicationInputs {
+  return {
+    nodePath: runtime.nodePath,
+    cliPath: launchdMaintenanceEntrypointPathForCli(runtime.cliPath),
+    cwd: paths.stateDir,
+    expectedManagedRuntimeLaunch: runtime.launchProof,
+    environment: managedWebLogMaintenanceEnvironment(),
+    calendarMinute: webMaintenanceCalendarMinute(),
+  };
+}
+
+async function publishPairedWebPlists(
+  paths: WebPaths,
+  mainPlist: string,
+  helperInputs: WebMaintenancePublicationInputs,
+  writer: (path: string, contents: string) => Promise<void>,
+): Promise<string> {
+  await writer(paths.launchd.plistPath, mainPlist);
+  // Every main write creates a new inode, even when bytes are identical. Read
+  // the post-write composite identity before generating the paired helper.
+  const mainIdentity = await inspectOwnerPrivateLaunchdPlist(paths.launchd.plistPath);
+  const helperPlist = buildWebMaintenancePlistXml({
+    label: WEB_MAINTENANCE_LAUNCHD_LABEL,
+    ...helperInputs,
+    expectedWebPlistIdentity: mainIdentity,
+  });
+  await writer(paths.maintenancePlistPath, helperPlist);
+  const committedHelper = await readOwnerPrivateLaunchdPlist(paths.maintenancePlistPath);
+  if (committedHelper.contents !== helperPlist) {
+    throw new Error("The web-maintenance helper changed while paired publication was verified.");
+  }
+  if (await inspectOwnerPrivateLaunchdPlist(paths.launchd.plistPath) !== mainIdentity) {
+    throw new Error("The main web LaunchAgent changed while its helper was paired.");
+  }
+  return mainIdentity;
+}
+
+async function publishHelperForExistingMain(
+  paths: WebPaths,
+  helperInputs: WebMaintenancePublicationInputs,
+  writer: (path: string, contents: string) => Promise<void>,
+): Promise<string> {
+  const mainIdentity = await inspectOwnerPrivateLaunchdPlist(paths.launchd.plistPath);
+  const helperPlist = buildWebMaintenancePlistXml({
+    label: WEB_MAINTENANCE_LAUNCHD_LABEL,
+    ...helperInputs,
+    expectedWebPlistIdentity: mainIdentity,
+  });
+  await writer(paths.maintenancePlistPath, helperPlist);
+  const committedHelper = await readOwnerPrivateLaunchdPlist(paths.maintenancePlistPath);
+  if (committedHelper.contents !== helperPlist
+    || await inspectOwnerPrivateLaunchdPlist(paths.launchd.plistPath) !== mainIdentity) {
+    throw new Error("The existing main web LaunchAgent changed while its helper was published.");
+  }
+  return mainIdentity;
+}
+
+async function maintainStoppedWebLogsBeforePublication(
+  paths: WebPaths,
+  pending: Awaited<ReturnType<typeof readLaunchdLogMaintenanceIntent>>,
+  now: () => number,
+): Promise<Awaited<ReturnType<typeof readLaunchdLogMaintenanceIntent>>> {
+  const mainIdentity = await inspectOwnerPrivateLaunchdPlist(paths.launchd.plistPath);
+  if (pending !== undefined
+    && (pending.label !== WEB_LAUNCHD_LABEL || pending.plistFingerprint !== mainIdentity)) {
+    throw new Error("The pending web log-maintenance intent does not authenticate the current main plist.");
+  }
+  if (pending?.phase === "stopping") {
+    throw new Error("The abandoned stopping intent has no complete prior PID-death proof; refusing rotation.");
+  }
+  if (pending?.phase === "restoring") return pending;
+  const [logs, legacy] = await Promise.all([
+    inspectLaunchdLogs(paths.launchd),
+    inspectLegacyManagedWebLogArtifacts(paths.launchd),
+  ]);
+  if (!logs.canMaintain) {
+    throw new Error(`Managed web log maintenance refused unsafe paths: ${logs.issues.join("; ")}`);
+  }
+  if (!logs.needsMaintenance && !legacy.needsMaintenance && pending === undefined) return undefined;
+  let intent = pending;
+  if (intent === undefined) {
+    intent = {
+      version: 1,
+      phase: "stopping",
+      label: WEB_LAUNCHD_LABEL,
+      plistFingerprint: mainIdentity,
+    };
+    await beginLaunchdLogMaintenanceIntent(paths.launchd, intent);
+    intent = await markLaunchdLogMaintenanceStopped(paths.launchd, intent);
+  }
+  await writeWebLogMaintenanceStatus(paths.maintenanceStatusPath, {
+    version: 1,
+    state: "running",
+    phase: "rotating",
+    updatedAt: new Date(now()).toISOString(),
+  });
+  const refusals = [...legacy.issues];
+  if (legacy.canMaintain && legacy.needsMaintenance) {
+    const maintained = await maintainLegacyManagedWebLogArtifacts(paths.launchd);
+    refusals.push(...maintained.refusals);
+  }
+  await rotateStoppedLaunchdLogs(paths.launchd);
+  if (await inspectOwnerPrivateLaunchdPlist(paths.launchd.plistPath) !== mainIdentity) {
+    throw new Error("The main web LaunchAgent changed during stopped-window maintenance.");
+  }
+  intent = await markLaunchdLogMaintenanceRestoring(paths.launchd, intent);
+  await writeWebLogMaintenanceStatus(paths.maintenanceStatusPath, {
+    version: 1,
+    state: refusals.length === 0 ? "running" : "degraded",
+    phase: "restoring",
+    updatedAt: new Date(now()).toISOString(),
+    ...(refusals.length === 0 ? {} : { refusals }),
+  });
+  return intent;
+}
+
+async function inspectInstalledWebMaintenanceHelper(
+  paths: WebPaths,
+  expectedMainIdentity?: string,
+  verifyEntrypoint: typeof verifyManagedRuntimeMaintenanceEntrypoint = verifyManagedRuntimeMaintenanceEntrypoint,
+  loadedDefinition?: LaunchdWebMaintenanceDefinition,
+  requireLoadedDefinition = false,
+): Promise<WebMaintenancePublicationInputs> {
+  const helper = await readOwnerPrivateLaunchdPlist(paths.maintenancePlistPath);
+  const strings = plistProgramArguments(helper.contents);
+  const expectedPrefix = [
+    "/usr/bin/env",
+    "-i",
+    ...buildEnvironmentArguments(managedWebLogMaintenanceEnvironment()),
+  ];
+  const nodeIndex = expectedPrefix.length;
+  if (strings.length !== expectedPrefix.length + 7
+    || expectedPrefix.some((value, index) => strings[index] !== value)
+    || strings[nodeIndex + 2] !== INTERNAL_WEB_LOG_MAINTENANCE_COMMAND
+    || strings[nodeIndex + 3] !== "--expected-managed-runtime-launch"
+    || strings[nodeIndex + 5] !== "--expected-web-plist-identity") {
+    throw new Error("The web-maintenance helper has an unexpected private argv definition.");
+  }
+  const nodePath = strings[nodeIndex]!;
+  const cliPath = strings[nodeIndex + 1]!;
+  const expectedManagedRuntimeLaunch = strings[nodeIndex + 4]!;
+  const embeddedMainIdentity = strings[nodeIndex + 6]!;
+  const cwd = plistStringForKey(helper.contents, "WorkingDirectory");
+  const calendarMinute = plistIntegerForKey(helper.contents, "Minute");
+  const inputs: WebMaintenancePublicationInputs = {
+    nodePath,
+    cliPath,
+    cwd,
+    expectedManagedRuntimeLaunch,
+    environment: managedWebLogMaintenanceEnvironment(),
+    calendarMinute,
+  };
+  const rebuilt = buildWebMaintenancePlistXml({
+    label: WEB_MAINTENANCE_LAUNCHD_LABEL,
+    ...inputs,
+    expectedWebPlistIdentity: embeddedMainIdentity,
+  });
+  if (rebuilt !== helper.contents) throw new Error("The web-maintenance helper definition is not canonical.");
+  const mainIdentity = await inspectOwnerPrivateLaunchdPlist(paths.launchd.plistPath);
+  if (embeddedMainIdentity !== mainIdentity
+    || (expectedMainIdentity !== undefined && expectedMainIdentity !== mainIdentity)) {
+    throw new Error("The web-maintenance helper does not carry the current composite main-plist identity.");
+  }
+  if (loadedDefinition !== undefined
+    && (loadedDefinition.plistPath !== paths.maintenancePlistPath
+      || loadedDefinition.nodePath !== nodePath
+      || loadedDefinition.cliPath !== cliPath
+      || loadedDefinition.cwd !== cwd
+      || loadedDefinition.expectedManagedRuntimeLaunch !== expectedManagedRuntimeLaunch
+      || loadedDefinition.expectedWebPlistIdentity !== embeddedMainIdentity)) {
+    throw new Error("launchd's cached web-maintenance helper definition does not match the paired plist.");
+  }
+  if (loadedDefinition === undefined && requireLoadedDefinition) {
+    throw new Error("launchd did not expose the cached web-maintenance helper definition.");
+  }
+  await verifyEntrypoint({
+    currentEntrypointPath: cliPath,
+    launchProof: expectedManagedRuntimeLaunch,
+  });
+  return inputs;
+}
+
+function plistProgramArguments(xml: string): readonly string[] {
+  const array = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/u.exec(xml)?.[1];
+  if (array === undefined) throw new Error("The web-maintenance helper is missing ProgramArguments.");
+  return [...array.matchAll(/<string>([\s\S]*?)<\/string>/gu)].map((match) => decodeXml(match[1] ?? ""));
+}
+
+function plistStringForKey(xml: string, key: string): string {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const value = new RegExp(`<key>${escapedKey}<\\/key>\\s*<string>([\\s\\S]*?)<\\/string>`, "u").exec(xml)?.[1];
+  if (value === undefined) throw new Error(`The web-maintenance helper is missing ${key}.`);
+  return decodeXml(value);
+}
+
+function plistIntegerForKey(xml: string, key: string): number {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const raw = new RegExp(`<key>${escapedKey}<\\/key>\\s*<integer>([0-9]+)<\\/integer>`, "u").exec(xml)?.[1];
+  const value = raw === undefined ? Number.NaN : Number(raw);
+  if (!Number.isSafeInteger(value)) throw new Error(`The web-maintenance helper has an invalid ${key}.`);
+  return value;
+}
+
+function decodeXml(value: string): string {
+  return value
+    .replace(/&lt;/gu, "<")
+    .replace(/&gt;/gu, ">")
+    .replace(/&quot;/gu, "\"")
+    .replace(/&apos;/gu, "'")
+    .replace(/&amp;/gu, "&");
+}
+
 async function acquireWebLifecycleLock(paths: WebPaths): Promise<(() => Promise<void>) | undefined> {
   await ensureOwnerPrivateLaunchdDirectory(dirname(paths.stateDir));
   await ensureOwnerPrivateLaunchdDirectory(paths.stateDir);
@@ -797,17 +1353,18 @@ async function acquireWebLifecycleLock(paths: WebPaths): Promise<(() => Promise<
 }
 
 async function stopLaunchdOnly(
+  label: string,
   service: LaunchdServiceInfo,
   runner: LaunchctlRunner,
   uid: number,
   deps: RunWebCommandDeps,
 ): Promise<boolean> {
-  const result = await bootout(runner, WEB_LAUNCHD_LABEL, uid);
+  const result = await bootout(runner, label, uid);
   if (result.code !== 0) return false;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolvePromise) => setTimeout(resolvePromise, ms)));
   const deadline = (deps.now ?? Date.now)() + READY_TIMEOUT_MS;
   for (;;) {
-    const current = await launchdServiceInfo(runner, WEB_LAUNCHD_LABEL, uid);
+    const current = await launchdServiceInfo(runner, label, uid);
     const pidAlive = service.pid !== undefined && (deps.isAlive ?? processIsAlive)(service.pid);
     if (!current.loaded && !pidAlive) return true;
     if ((deps.now ?? Date.now)() >= deadline) return false;
@@ -823,14 +1380,31 @@ async function restorePreviousWebService(
   deps: RunWebCommandDeps,
 ): Promise<{ readonly ok: true } | { readonly ok: false; readonly detail: string }> {
   try {
+    const currentHelper = await launchdServiceInfo(runner, WEB_MAINTENANCE_LAUNCHD_LABEL, uid);
+    if (currentHelper.loaded && !await stopLaunchdOnly(
+      WEB_MAINTENANCE_LAUNCHD_LABEL,
+      currentHelper,
+      runner,
+      uid,
+      deps,
+    )) {
+      return { ok: false, detail: "the failed replacement helper could not be stopped" };
+    }
     const current = await launchdServiceInfo(runner, WEB_LAUNCHD_LABEL, uid);
-    if (current.loaded && !await stopLaunchdOnly(current, runner, uid, deps)) {
+    if (current.loaded && !await stopLaunchdOnly(WEB_LAUNCHD_LABEL, current, runner, uid, deps)) {
       return { ok: false, detail: "the failed replacement worker could not be stopped" };
     }
     const writer = deps.writePrivateFile ?? writeOwnerPrivateLaunchdFile;
+    if (snapshot.helperInputs === undefined) {
+      return { ok: false, detail: "the prior main definition has no structured helper inputs" };
+    }
     if (snapshot.recordText === undefined) await rm(paths.recordPath, { force: true });
     else await writer(paths.recordPath, snapshot.recordText);
-    await writer(paths.launchd.plistPath, snapshot.plist);
+    await publishPairedWebPlists(paths, snapshot.plist, snapshot.helperInputs, writer);
+    const helperBooted = await bootstrap(runner, paths.maintenancePlistPath, uid);
+    if (helperBooted.code !== 0) {
+      return { ok: false, detail: commandDetail(helperBooted) || `helper launchctl bootstrap exited ${String(helperBooted.code)}` };
+    }
     const booted = await bootstrap(runner, paths.launchd.plistPath, uid);
     if (booted.code !== 0) {
       return { ok: false, detail: commandDetail(booted) || `launchctl bootstrap exited ${String(booted.code)}` };
@@ -860,8 +1434,15 @@ async function restoreWebPublication(
 ): Promise<void> {
   if (snapshot.recordText === undefined) await rm(paths.recordPath, { force: true });
   else await writer(paths.recordPath, snapshot.recordText);
-  if (snapshot.plist === undefined) await rm(paths.launchd.plistPath, { force: true });
-  else await writer(paths.launchd.plistPath, snapshot.plist);
+  if (snapshot.plist === undefined) {
+    await rm(paths.maintenancePlistPath, { force: true });
+    await rm(paths.launchd.plistPath, { force: true });
+  } else {
+    if (snapshot.helperInputs === undefined) {
+      throw new Error("Cannot restore a main web plist without structured helper inputs.");
+    }
+    await publishPairedWebPlists(paths, snapshot.plist, snapshot.helperInputs, writer);
+  }
 }
 
 async function waitForWebReady(

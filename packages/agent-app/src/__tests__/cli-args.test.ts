@@ -26,7 +26,9 @@ function helpTopicText(topic: string): string {
 import { MANAGED_BACKGROUND_WORKER_ENV } from "../background-runtime.js";
 import {
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+  INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
+  MANAGED_WEB_LOG_MAINTENANCE_ENV,
 } from "../launchd.js";
 
 const tempDirs: string[] = [];
@@ -273,6 +275,53 @@ describe("parseCliArgs", () => {
       expect(unauthorized.stderr).toContain("reserved for its managed LaunchAgent");
     } finally {
       if (previous !== undefined) process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV] = previous;
+    }
+  });
+
+  it("keeps web maintenance on one exact hidden composite-identity argv shape", async () => {
+    const identity = `1:2:345:${"a".repeat(64)}`;
+    expect(parseCliArgs([
+      INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
+      "--expected-managed-runtime-launch",
+      "cHJvb2Y",
+      "--expected-web-plist-identity",
+      identity,
+    ])).toMatchObject({
+      command: INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
+      expectedManagedRuntimeLaunch: "cHJvb2Y",
+      expectedWebPlistIdentity: identity,
+      positionals: [],
+    });
+    for (const argv of [
+      [INTERNAL_WEB_LOG_MAINTENANCE_COMMAND],
+      [INTERNAL_WEB_LOG_MAINTENANCE_COMMAND, "--expected-web-plist-identity", identity,
+        "--expected-managed-runtime-launch", "cHJvb2Y"],
+      [INTERNAL_WEB_LOG_MAINTENANCE_COMMAND, "--expected-managed-runtime-launch", "cHJvb2Y",
+        "--expected-web-plist-identity", "a".repeat(64)],
+      [INTERNAL_WEB_LOG_MAINTENANCE_COMMAND, "--expected-managed-runtime-launch", "cHJvb2Y",
+        "--expected-web-plist-identity", identity, "extra"],
+    ]) {
+      expect(() => parseCliArgs(argv)).toThrow(/exact|dev:ino:size:sha256/u);
+    }
+    expect(renderHelp()).not.toContain(INTERNAL_WEB_LOG_MAINTENANCE_COMMAND);
+
+    const previousWeb = process.env[MANAGED_WEB_LOG_MAINTENANCE_ENV];
+    const previousAgent = process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV];
+    process.env[MANAGED_WEB_LOG_MAINTENANCE_ENV] = "1";
+    process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV] = "1";
+    try {
+      const crossMarked = await captureCli(() => runCli([
+        INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
+        "--expected-managed-runtime-launch", "cHJvb2Y",
+        "--expected-web-plist-identity", identity,
+      ]));
+      expect(crossMarked.code).toBe(2);
+      expect(crossMarked.stderr).toContain("reserved for its exact managed LaunchAgent");
+    } finally {
+      if (previousWeb === undefined) delete process.env[MANAGED_WEB_LOG_MAINTENANCE_ENV];
+      else process.env[MANAGED_WEB_LOG_MAINTENANCE_ENV] = previousWeb;
+      if (previousAgent === undefined) delete process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV];
+      else process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV] = previousAgent;
     }
   });
 
