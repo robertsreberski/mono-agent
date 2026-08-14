@@ -21,6 +21,15 @@
   stripping implicitly. Set `stripMentionText: true` to retain that output;
   omission now selects readable-marker preservation.
 
+### Cron operator controls
+
+- Added an opt-in, authenticated cron control console with confirmed run-now
+  and runtime enable/disable actions, durable audit/idempotency state, and
+  bounded run history and detail views.
+- Cron configuration now fails closed above 64 merged jobs or when an
+  operator-visible id, expression, timezone, or conversation id exceeds its
+  documented UTF-8 byte limit.
+
 ## 0.19.1 — Web Push delivery fix (2026-08-13)
 
 ### Web Push reliability

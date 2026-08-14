@@ -54,6 +54,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `cron.notify` | `boolean` | `MONO_AGENT_CRON_NOTIFY` | false | `false` | Configures notify for the cron section. |
 | `cron.notifyConversationId` | `string` | `MONO_AGENT_CRON_NOTIFY_CONVERSATION_ID` | unset | `example` | Configures notifyConversationId for the cron section. |
 | `cron.notifyFailureCooldownHours` | `integer` | `MONO_AGENT_CRON_NOTIFY_FAILURE_COOLDOWN_HOURS` | 6 | `6` | Configures notifyFailureCooldownHours for the cron section. |
+| `cron.operatorActions.enabled` | `boolean` | `MONO_AGENT_CRON_OPERATOR_ACTIONS_ENABLED` | false | `true` | Allows API-key-authenticated, explicitly confirmed run-now and runtime enable/disable actions. Defaults off and never rewrites cron config sources. |
 | `cron.prompt` | `string` | `MONO_AGENT_CRON_PROMPT` | unset | `example` | Configures prompt for the cron section. |
 | `cron.timezone` | `string` | `MONO_AGENT_CRON_TIMEZONE` | UTC | `UTC` | Configures timezone for the cron section. |
 | `interaction.askUser.timeoutMs` | `integer` | `MONO_AGENT_ASK_USER_TIMEOUT_MS` | 600000 | `600000` | Maximum wait for one AskUser interaction (one to five questions). |

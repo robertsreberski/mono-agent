@@ -14,8 +14,14 @@ import {
   type ModelSelectorOption,
 } from "./assistant-ui/ModelSelector";
 import { SelectionToolbar } from "./assistant-ui/Quote";
-import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
+import {
+  AskReconciliationProvider,
+  AssistantMessage,
+  SystemMessage,
+  UserMessage,
+} from "./Messages";
 import { Composer } from "./Composer";
+import { CronChannelHeader } from "./CronChannelHeader";
 import { Icon } from "./Icon";
 
 const runLabel: Record<string, string> = {
@@ -245,6 +251,7 @@ const effortName = (effort: string): string => ({
 
 function EmptyConversation() {
   const { selectedAgent, createThread, selectedThread } = useConsoleStore();
+  const cron = selectedThread?.trigger?.kind === "cron";
   return (
     <ThreadPrimitive.Empty>
       <div className="chat-empty">
@@ -253,13 +260,15 @@ function EmptyConversation() {
           <Icon name="spark" size={22} />
         </div>
         <span className="eyebrow">{selectedAgent?.label ?? "mono-agent"}</span>
-        <h2>{selectedThread ? "What should we work on?" : "Start a new conversation"}</h2>
+        <h2>{cron ? "No cron runs recorded yet" : selectedThread ? "What should we work on?" : "Start a new conversation"}</h2>
         <p>
-          {selectedAgent
+          {cron
+            ? "Runs will appear here chronologically after the agent admits them."
+            : selectedAgent
             ? "Messages, reasoning, tool calls, and files stay together in this conversation."
             : "No agents have been discovered yet. Start an agent and it will appear here automatically."}
         </p>
-        {selectedAgent && !selectedThread && (
+        {selectedAgent && !selectedThread && !cron && (
           <button
             type="button"
             className="primary-button"
@@ -289,6 +298,8 @@ export function Chat({
     archiveThread,
     unarchiveThread,
     deleteThread,
+    hasOlderMessages,
+    loadOlderMessages,
   } = useConsoleStore();
   const runStatus = selectedThread?.runState.status;
   const runNeedsAttention =
@@ -332,7 +343,7 @@ export function Chat({
           </span>
         </div>
         <div className="chat-header-actions">
-          <ModelControls />
+          {selectedThread?.trigger?.kind !== "cron" && <ModelControls />}
           <NotificationBell />
           {selectedThread && (
             <button
@@ -350,7 +361,9 @@ export function Chat({
               <Icon name={selectedThread.archivedAt ? "restore" : "archive"} size={17} />
             </button>
           )}
-          {selectedThread?.archivedAt && (
+          {selectedThread?.archivedAt
+            && (selectedThread.trigger?.kind !== "cron" || selectedThread.trigger.configured === false)
+            && (
             <button
               type="button"
               className="icon-button header-delete"
@@ -367,44 +380,60 @@ export function Chat({
         </div>
       </header>
       <ConnectionBanner connection={connection} />
-      <ThreadPrimitive.Root className="thread-root">
-        <SelectionToolbar />
-        <ThreadPrimitive.Viewport className="thread-viewport" autoScroll>
-          <div className="message-column">
-            <EmptyConversation />
-            <ThreadPrimitive.Messages
-              components={{
-                UserMessage,
-                AssistantMessage,
-                SystemMessage,
-              }}
-            />
-          </div>
-          <ThreadPrimitive.ScrollToBottom className="scroll-bottom" aria-label="Scroll to latest message">
-            <Icon name="arrow-down" size={16} />
-          </ThreadPrimitive.ScrollToBottom>
-          <ThreadPrimitive.ViewportFooter className="thread-footer">
-            {selectedThread?.archivedAt ? (
-              <div className="archived-footer">
-                <span>This conversation is archived.</span>
+      <CronChannelHeader />
+      <AskReconciliationProvider>
+        <ThreadPrimitive.Root className="thread-root">
+          <SelectionToolbar />
+          <ThreadPrimitive.Viewport className="thread-viewport" autoScroll>
+            <div className="message-column">
+              <EmptyConversation />
+              {hasOlderMessages && (
                 <button
                   type="button"
-                  onClick={() => void unarchiveThread(selectedThread.id).catch(() => undefined)}
+                  className="message-history-more"
+                  onClick={() => void loadOlderMessages().catch(() => undefined)}
                 >
-                  Restore to continue
+                  Load earlier messages
                 </button>
-              </div>
-            ) : (
-              <Composer />
-            )}
-          </ThreadPrimitive.ViewportFooter>
-        </ThreadPrimitive.Viewport>
-        {detailLoading && selectedThread && (
-          <div className="detail-loading" role="status" aria-label="Loading conversation">
-            <span />
-          </div>
-        )}
-      </ThreadPrimitive.Root>
+              )}
+              <ThreadPrimitive.Messages
+                components={{
+                  UserMessage,
+                  AssistantMessage,
+                  SystemMessage,
+                }}
+              />
+            </div>
+            <ThreadPrimitive.ScrollToBottom className="scroll-bottom" aria-label="Scroll to latest message">
+              <Icon name="arrow-down" size={16} />
+            </ThreadPrimitive.ScrollToBottom>
+            <ThreadPrimitive.ViewportFooter className="thread-footer">
+              {selectedThread?.archivedAt ? (
+                <div className="archived-footer">
+                  <span>This conversation is archived.</span>
+                  <button
+                    type="button"
+                    onClick={() => void unarchiveThread(selectedThread.id).catch(() => undefined)}
+                  >
+                    Restore to continue
+                  </button>
+                </div>
+              ) : selectedThread?.trigger?.kind === "cron" ? (
+                <div className="cron-readonly-footer" role="status">
+                  Cron channels are read-only. Open the originating session to continue the conversation.
+                </div>
+              ) : (
+                <Composer />
+              )}
+            </ThreadPrimitive.ViewportFooter>
+          </ThreadPrimitive.Viewport>
+          {detailLoading && selectedThread && (
+            <div className="detail-loading" role="status" aria-label="Loading conversation">
+              <span />
+            </div>
+          )}
+        </ThreadPrimitive.Root>
+      </AskReconciliationProvider>
     </main>
   );
 }

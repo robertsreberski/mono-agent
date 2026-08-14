@@ -68,7 +68,9 @@ The core turn boundary is deliberately structural:
    `AgentMessageStream` and returns an `AgentResponse` when the turn settles.
 5. A `ChannelDriver` combines config loading and the responder with a transport,
    returns a `RunningChannel`, and reports `ChannelStatus` transitions to the
-   host.
+   host. Runtime controls publish replacement summaries through
+   `ChannelStartInput.onSummaryChanged`; the host applies the status/discovery
+   transition instead of a driver mutating shared summary state.
 
 ### Package structure
 
@@ -202,6 +204,18 @@ ChannelTransport
 ChannelUserCancelReason
 CodedError
 ConfigErrorFactory
+CronOperatorHealth
+CronOperatorJob
+CronOperatorOverview
+CronOperatorRun
+CronOperatorRunBase
+CronOperatorRunDetail
+CronOperatorRunPage
+CronOperatorRunStatus
+CronOperatorRunSummary
+CronOperatorRunTrigger
+CronOperatorRunTruncatedField
+CronOperatorWireError
 DEFAULT_AGENT_ATTACHMENT_MAX_BYTES
 DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST
 DEFAULT_EMPTY_FINAL_TEXT
@@ -211,6 +225,26 @@ InboundHttpHeaders
 JsonEnvFieldSpec
 JsonEnvMapping
 ListenErrorFactories
+MAX_CRON_OPERATOR_CONVERSATION_ID_BYTES
+MAX_CRON_OPERATOR_CURSOR_BYTES
+MAX_CRON_OPERATOR_DEGRADED_REASON_BYTES
+MAX_CRON_OPERATOR_DETAIL_ARTIFACT_ID_BYTES
+MAX_CRON_OPERATOR_DETAIL_ERROR_BYTES
+MAX_CRON_OPERATOR_DETAIL_EVENTS
+MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES
+MAX_CRON_OPERATOR_DETAIL_FAILURE_KIND_BYTES
+MAX_CRON_OPERATOR_DETAIL_TEXT_BYTES
+MAX_CRON_OPERATOR_EXPRESSION_BYTES
+MAX_CRON_OPERATOR_JOBS
+MAX_CRON_OPERATOR_JOB_ID_BYTES
+MAX_CRON_OPERATOR_RESPONSE_BYTES
+MAX_CRON_OPERATOR_RUN_ID_BYTES
+MAX_CRON_OPERATOR_RUN_PAGE
+MAX_CRON_OPERATOR_SUMMARY_ARTIFACT_ID_BYTES
+MAX_CRON_OPERATOR_SUMMARY_ERROR_BYTES
+MAX_CRON_OPERATOR_SUMMARY_FAILURE_KIND_BYTES
+MAX_CRON_OPERATOR_SUMMARY_TEXT_BYTES
+MAX_CRON_OPERATOR_TIMEZONE_BYTES
 MemoryBlock
 MemoryCompletedTurn
 MemoryCompletedTurnAdmissionStatus
@@ -220,6 +254,7 @@ MemoryStore
 MemoryWriteResult
 MessageRef
 NOTHING_TO_REPORT_SENTINEL
+NotifyDeliveryContext
 NotifyDeliveryResult
 NotifyDestination
 NotifySuppression
@@ -268,6 +303,11 @@ normalizeHostForBind
 normalizeOptionalString
 normalizeTrailing
 parseAgentStreamFrame
+parseCronOperatorJob
+parseCronOperatorOverview
+parseCronOperatorRunDetail
+parseCronOperatorRunPage
+parseCronOperatorRunSummary
 readAuthorizationBearer
 readBoolean
 readChoice

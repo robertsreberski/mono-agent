@@ -41,6 +41,13 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   `degraded` means a temporarily unavailable transport owns its recovery while
   the responder remains alive; `failed` is terminal until the host restarts or
   reloads that channel.
+- Own cron control truth in owner-private `.mono-agent/cron-control-v1/`:
+  durable per-job admission order, bounded run/event history, runtime enable
+  overrides, idempotency receipts, and audit. An absent store is initialized;
+  a present corrupt, insecure, or lease-conflicted store arms no cron jobs and
+  surfaces a degraded lifecycle/discovery reason plus an error log. Operator
+  actions are config-opt-in, API-key-protected, and explicitly confirmed; they
+  never rewrite config, environment, or Markdown job sources.
 - Register the host as a traceability source. Config edits are made directly in
   `mono-agent.config.json`, or proposed through the OS-owner-managed macOS
   configuration TUI; direct edits take effect on the next `mono-agent restart`.
@@ -574,8 +581,10 @@ path:
    recorder, and request-scoped extensions.
 3. Start every driver in parallel. Each driver normalizes transport input into
    the shared request/stream contract and returns a `RunningChannel` handle. The
-   TUI driver primes its skill registry before binding and refreshes changed
-   `SKILL.md` metadata in memory while it runs.
+   cron driver registers configured and disabled jobs but arms only their
+   effective runtime-enabled subset; its operator service feeds the TUI/web
+   capability lane. The TUI driver primes its skill registry before binding and
+   refreshes changed `SKILL.md` metadata in memory while it runs.
 4. Publish traceability, exporter, sandbox, continuation, and memory-health
    state while the controller tracks channel states as `disabled`,
    `waiting_for_config`, `running`, `degraded`, or `failed`.

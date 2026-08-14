@@ -1,4 +1,5 @@
 import type { MonoAgentConfig } from "@mono-agent/config";
+import type { NotifyDeliveryContext } from "@mono-agent/agent-contracts";
 
 import { isAppCoreConfigError, loadAppCoreConfig } from "./app-config.js";
 import {
@@ -57,7 +58,7 @@ export interface ContinuationControllerPort {
   notifyDestination(
     conversationId: string,
     text: string,
-    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
+    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string; readonly deliveryContext?: NotifyDeliveryContext },
   ): Promise<NotifyDeliveryResult>;
 }
 

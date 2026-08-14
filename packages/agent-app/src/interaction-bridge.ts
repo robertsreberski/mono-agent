@@ -51,6 +51,7 @@ export interface InteractionBridgeHandle {
   readonly token: string;
   registerSink(channelId: string, sink: ChannelInteractionSink): void;
   getPendingAsk(conversationId: string): ChannelAskSnapshot | undefined;
+  getAsk(interactionId: string): ChannelAskSnapshot | undefined;
   submitAskAnswers(input: ChannelAskSubmission): Promise<ChannelAskSubmissionResult>;
   /** Fail every pending ask on the conversation (user cancelled the run). */
   cancelAsks(conversationId: string): void;
@@ -163,6 +164,9 @@ const MAX_INTERACTION_ENTRIES_PER_RUN = 32;
 const MAX_INTERACTION_RUNS = 256;
 const MAX_INTERACTION_FIELD_CHARS = 4_096;
 const MAX_INTERACTION_TRANSCRIPT_CHARS = 16 * 1_024;
+/** Exact terminal snapshots remain queryable after the asking tool consumes them. */
+const MAX_TERMINAL_ASK_HISTORY = 512;
+const TERMINAL_ASK_HISTORY_RETENTION_MS = 24 * 60 * 60 * 1_000;
 const MAX_ASK_QUESTIONS = 5;
 const MIN_ASK_OPTIONS = 2;
 const MAX_ASK_OPTIONS = 3;
@@ -218,6 +222,11 @@ interface InteractionJournal {
   omittedEntries: number;
 }
 
+interface TerminalAskHistoryEntry {
+  readonly snapshot: ChannelAskSnapshot;
+  readonly retiredAtMs: number;
+}
+
 interface ProgressCapabilityBinding {
   readonly runId: string;
   readonly conversationId: string;
@@ -265,6 +274,7 @@ export async function startInteractionBridge(
   // (the model must consolidate its questions instead of stacking them).
   const asksByConversation = new Map<string, PendingAsk>();
   const asksById = new Map<string, PendingAsk>();
+  const terminalAskHistoryById = new Map<string, TerminalAskHistoryEntry>();
   const interactionJournals = new Map<string, InteractionJournal>();
   const progressCapabilities = new Map<string, ProgressCapabilityBinding>();
   const deliveryHistoryCapabilities = new Map<string, DeliveryHistoryCapabilityBinding>();
@@ -293,6 +303,37 @@ export async function startInteractionBridge(
       createdAt: ask.createdAt,
       expiresAt: ask.expiresAt,
     };
+  }
+
+  function pruneTerminalAskHistory(): void {
+    const oldestAllowedMs = nowDate().getTime() - TERMINAL_ASK_HISTORY_RETENTION_MS;
+    for (const [interactionId, entry] of terminalAskHistoryById) {
+      if (entry.retiredAtMs >= oldestAllowedMs) break;
+      terminalAskHistoryById.delete(interactionId);
+    }
+    while (terminalAskHistoryById.size > MAX_TERMINAL_ASK_HISTORY) {
+      const oldestInteractionId = terminalAskHistoryById.keys().next().value as string | undefined;
+      if (oldestInteractionId === undefined) break;
+      terminalAskHistoryById.delete(oldestInteractionId);
+    }
+  }
+
+  /**
+   * Preserve the terminal snapshot before removing the active by-id entry.
+   * The ask tool's long-poll remains single-consumer; consoles read this
+   * separate bounded history after that consumer drains the active record.
+   */
+  function retireAsk(ask: PendingAsk): void {
+    if (asksById.get(ask.interactionId) !== ask) return;
+    if (ask.status !== "pending") {
+      terminalAskHistoryById.delete(ask.interactionId);
+      terminalAskHistoryById.set(ask.interactionId, {
+        snapshot: snapshotOf(ask),
+        retiredAtMs: nowDate().getTime(),
+      });
+      pruneTerminalAskHistory();
+    }
+    asksById.delete(ask.interactionId);
   }
 
   function appendInteractionJournal(ask: PendingAsk, outcome: "answered" | "expired"): void {
@@ -378,6 +419,7 @@ export async function startInteractionBridge(
       readonly timeoutMs: number;
     },
   ): PendingAsk {
+    pruneTerminalAskHistory();
     askCounter += 1;
     const interactionId = `ask-${String(askCounter)}-${randomBytes(9).toString("base64url")}`;
     const createdAt = nowIso();
@@ -502,7 +544,7 @@ export async function startInteractionBridge(
       request.removeListener("aborted", abandonUnacknowledgedAsk);
       response.removeListener("close", abandonUnacknowledgedAsk);
       settleAsk(ask, "cancelled");
-      asksById.delete(ask.interactionId);
+      retireAsk(ask);
     };
     request.once("aborted", abandonUnacknowledgedAsk);
     response.once("close", abandonUnacknowledgedAsk);
@@ -525,7 +567,7 @@ export async function startInteractionBridge(
         return;
       }
       settleAsk(ask, "cancelled");
-      asksById.delete(ask.interactionId);
+      retireAsk(ask);
       options.logger?.warn?.("interaction bridge: presenting the structured ask failed.", {
         conversationId,
         error: error instanceof Error ? error.message : String(error),
@@ -545,7 +587,7 @@ export async function startInteractionBridge(
     }
     if (ask.status !== "pending") {
       // Terminal snapshots are single-consumer: the asking tool reads it once.
-      asksById.delete(interactionId);
+      retireAsk(ask);
       sendJson(response, 200, snapshotOf(ask));
       return;
     }
@@ -563,7 +605,7 @@ export async function startInteractionBridge(
       clearTimeout(pollTimer);
       ask.waiters.delete(respond);
       if (snapshot.status !== "pending") {
-        asksById.delete(interactionId);
+        retireAsk(ask);
       }
       sendJson(response, 200, snapshot);
     };
@@ -768,7 +810,7 @@ export async function startInteractionBridge(
       const ask = asksById.get(askMatch[1] as string);
       if (ask !== undefined) {
         settleAsk(ask, "cancelled");
-        asksById.delete(ask.interactionId);
+        retireAsk(ask);
       }
       response.statusCode = 204;
       response.end();
@@ -792,13 +834,22 @@ export async function startInteractionBridge(
       const ask = asksByConversation.get(normalizeConversationId(conversationId));
       return ask === undefined ? undefined : snapshotOf(ask);
     },
+    getAsk(interactionId) {
+      const active = asksById.get(interactionId);
+      if (active !== undefined) return snapshotOf(active);
+      pruneTerminalAskHistory();
+      return terminalAskHistoryById.get(interactionId)?.snapshot;
+    },
     async submitAskAnswers(input) {
+      pruneTerminalAskHistory();
       const conversationId = normalizeConversationId(input.conversationId);
       const ask = asksByConversation.get(conversationId);
       if (ask === undefined) {
         return {
           accepted: false,
-          code: asksById.has(input.interactionId) ? "stale" : "not_found",
+          code: asksById.has(input.interactionId) || terminalAskHistoryById.has(input.interactionId)
+            ? "stale"
+            : "not_found",
         };
       }
       if (ask.interactionId !== input.interactionId) {
@@ -900,6 +951,7 @@ export async function startInteractionBridge(
         settleAsk(ask, "cancelled");
       }
       asksById.clear();
+      terminalAskHistoryById.clear();
       interactionJournals.clear();
       progressCapabilities.clear();
       deliveryHistoryCapabilities.clear();

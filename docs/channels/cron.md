@@ -15,7 +15,7 @@ Each tick invokes the responder with the job's `prompt` text, exactly as if a me
 
 Set `notify: true` on a job to deliver its successful, non-empty final answer to Telegram, Slack, or the web console. The agent's **final answer is posted verbatim** — no second LLM turn — and recorded into history, so a user's reply resumes with it in context. A top-level Slack post is recorded against the thread it opens rather than the channel, so replies under two different posts continue two separate conversations; every other destination records against itself. The operator just writes the prompt; on a notify turn the harness auto-injects guidance telling the agent that its final reply is delivered as-is and how to stay silent.
 
-**Destination resolution.** If `notifyConversationId` is set, it is used (`telegram:42`, `slack:C123`, `slack:C123:1718.99` for a Slack thread, or the exact value `web:new`). `web:new` creates a separate assistant-only conversation for every distinct result, marked **CRON** in the sidebar and header. It is explicit-only and never participates in destination inference. If `notifyConversationId` is omitted, the app infers the destination **only when exactly one** Telegram/Slack notify-capable candidate exists (from seen conversations plus the adapter allowlist). With 0 or 2+ candidates, delivery is skipped with a warning — it never guesses. Artifact-derived candidates are cached for 30 seconds after each scan completes. An artifact committed under a Telegram/Slack conversation id invalidates the cache immediately; runs using the default synthetic `cron:`/`webhook:` ids do not. Other artifact changes are picked up after cache expiry and the next scan completes. Delivery is best-effort: a failed notification does not change the cron job result. Web delivery makes one attempt against the running local console and has no retry queue or outbox.
+**Destination resolution.** If `notifyConversationId` is set, it is used (`telegram:42`, `slack:C123`, `slack:C123:1718.99` for a Slack thread, or the exact value `web:new`). For cron, `web:new` appends every firing of the same job to one durable, assistant-only channel at `/agents/<sourceId>/cron/<jobId>`; it does not mint a thread per run. The channel remains as a historical tombstone if the job later disappears from config. `web:new` is explicit-only and never participates in destination inference. If `notifyConversationId` is omitted, the app infers the destination **only when exactly one** Telegram/Slack notify-capable candidate exists (from seen conversations plus the adapter allowlist). With 0 or 2+ candidates, delivery is skipped with a warning — it never guesses. Artifact-derived candidates are cached for 30 seconds after each scan completes. An artifact committed under a Telegram/Slack conversation id invalidates the cache immediately; runs using the default synthetic `cron:`/`webhook:` ids do not. Other artifact changes are picked up after cache expiry and the next scan completes. Delivery is best-effort: a failed notification does not change the cron job result. Web delivery makes one attempt against the running local console and has no retry queue or outbox.
 
 **Model-exhaustion failure notice.** For cron jobs only, `notify: true` also enables a short one-line error notice when the run fails because **all configured models failed** (`provider_unavailable_exhausted`). This notice is sent only when `notifyConversationId` is explicitly set; failure notices never infer a destination. They are delivered verbatim with no second LLM turn, best-effort, and rate-limited per job by `notifyFailureCooldownHours` (default `6`).
 
@@ -43,6 +43,7 @@ When you select **Scheduled jobs (cron)** in the guided `mono-agent init` wizard
 {
   "cron": {
     "dir": "cron",
+    "operatorActions": { "enabled": false },
     "jobs": [
       {
         "id": "daily",
@@ -63,19 +64,22 @@ When you select **Scheduled jobs (cron)** in the guided `mono-agent init` wizard
 | Key | Type | Required | Default | Notes |
 | --- | --- | --- | --- | --- |
 | `cron.dir` | string | no | `cron` | Folder of per-job `*.md` files (frontmatter metadata + prompt body). |
-| `cron.jobs[]` | array | no | `[]` | Inline job definitions. Merges with `*.md` files in `cron.dir`. |
-| `jobs[].id` | string | yes | — | Unique job id. Duplicate ids (across config and folder) are an error. |
+| `cron.operatorActions.enabled` | boolean | no | `false` | Permit authenticated, confirmed run-now and runtime enable/disable actions through an agent operator endpoint that has `tui.apiKey`. |
+| `cron.jobs[]` | array | no | `[]` | Inline job definitions. Merges with `*.md` files in `cron.dir`; the merged set is limited to 64 jobs. |
+| `jobs[].id` | string | yes | — | Unique job id, at most 256 UTF-8 bytes. Duplicate ids (across config and folder) are an error. |
 | `jobs[].enabled` | boolean | no | `true` | Set `false` to keep a job defined but unscheduled. |
-| `jobs[].expression` | string | yes | — | Five fields: `minute hour day-of-month month day-of-week`; no seconds field or macros. `H` fields use the stable job `id` as their hash seed. |
-| `jobs[].timezone` | string | no | `UTC` | IANA timezone (e.g. `Europe/Rome`) the expression is evaluated in. |
+| `jobs[].expression` | string | yes | — | Five fields, at most 256 UTF-8 bytes: `minute hour day-of-month month day-of-week`; no seconds field or macros. `H` fields use the stable job `id` as their hash seed. |
+| `jobs[].timezone` | string | no | `UTC` | IANA timezone (e.g. `Europe/Rome`) the expression is evaluated in; at most 128 UTF-8 bytes. |
 | `jobs[].prompt` | string | yes | — | Text sent to the responder on each tick. |
-| `jobs[].conversationId` | string | no | per-tick | Share memory/history across ticks (see below). |
+| `jobs[].conversationId` | string | no | per-tick | Share memory/history across ticks (see below); at most 512 UTF-8 bytes. |
 | `jobs[].maxRunMs` | number | no | `1200000` | Per-job watchdog in milliseconds. |
 | `jobs[].notify` | boolean | no | `false` | Deliver the successful final answer via native cron notification. |
 | `jobs[].notifyConversationId` | string | no | inferred if exactly one destination | Destination conversation id for native notification. Use exact `web:new` to create a new CRON-marked web conversation; web is never inferred. |
 | `jobs[].notifyFailureCooldownHours` | number | no | `6` | Per-job cooldown, in hours, for all-models-failed error notices on `notify: true` jobs. |
 | `jobs[].model` | string | no | `runtime.model` | Per-job model override. Becomes this turn's primary, keeping canonical `runtime.fallbacks` (or legacy backups). See [Per-trigger model & effort](#per-trigger-model--effort). |
 | `jobs[].effort` | string | no | `runtime.effort` | Per-job reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. Reasoning-capable `pi:*` maps `ultra` to LOW; Pi without reasoning uses OFF. Direct `codex:*` forwards `ultra` unchanged. Mono-agent rejects `ultra` on its Claude SDK route because the pinned SDK public contract ends at `max` (the SDK JavaScript itself forwards the value). The Claude CLI route passes `--effort ultra`, but both tested Claude Code binaries (SDK-bundled 2.1.206 and local 2.1.210) warn that it is unknown, ignore it, and use default effort. Direct OpenCode rejects explicit effort. Ranking above `max` only prevents keyword downgrade. |
+
+These limits are checked after inline and folder jobs are merged. Values are measured as UTF-8 bytes and rejected rather than truncated, so an oversized operator-visible configuration fails closed before any jobs arm.
 
 ## Per-trigger model & effort
 
@@ -94,6 +98,7 @@ A model-override tick runs **ephemerally**: it does not resume or persist a shar
 | Variable | Maps to | Notes |
 | --- | --- | --- |
 | `MONO_AGENT_CRON_ENABLED` | `cron.enabled` | Enables the legacy single-job form; default `false`. |
+| `MONO_AGENT_CRON_OPERATOR_ACTIONS_ENABLED` | `cron.operatorActions.enabled` | Opts into authenticated, confirmed runtime controls; default `false`. |
 | `MONO_AGENT_CRON_DIR` | `cron.dir` | Folder of per-job `*.md` files; default `cron/`. |
 | `MONO_AGENT_CRON_JOBS_JSON` | `cron.jobs[]` | Full JSON array of jobs. |
 | `MONO_AGENT_CRON_EXPRESSION` | `cron.expression` | Single-job five-field expression. |
@@ -142,8 +147,18 @@ The `@mono-agent/agent-app` cron driver pins the scheduler to `overlap: "skip"`.
 The config schema intentionally has no `overlap`, `maxQueueDepth`, or `overflow` key. Direct embedders of `@mono-agent/cron-adapter` can select queue or replace behavior through the programmatic `startCronAdapter` API; those adapter options are outside this config-focused channel surface.
 
 :::note
-Pick an `expression` whose interval comfortably exceeds the job's typical runtime; otherwise the agent will quietly drop overlapping firings.
+Pick an `expression` whose interval comfortably exceeds the job's typical runtime. The web channel records an overlapping firing as `skipped_overlap`; it never pretends that the firing ran.
 :::
+
+## Web-console state and controls
+
+The running agent is authoritative for configured/effective state, last and next run, health, run records, and the redacted configuration view. The console never reads `source.configPath` or computes a next run from the expression. Agents that do not advertise the additive cron capability remain readable through cached history, with next run and health shown as unknown.
+
+Run records use a durable per-job admission sequence. Scheduled ids are `cron:<encodedJobId>:<scheduledAt>`; manual ids use the disjoint `cron:<encodedJobId>:<observedAt>:m<sequence>` form. The feed orders every admitted, running, queued, succeeded, failed, cancelled, skipped, or dropped record by immutable `(orderedAt, sequence, runId)`. The artifact run id is a separate link when one exists.
+
+Controls require all three gates: `cron.operatorActions.enabled`, an operator API key, and explicit confirmation returned by the agent. Run-now reuses the scheduler's fixed skip-overlap guard and watchdog. Consequently, a scheduled tick arriving while a manual run is active is recorded as `skipped_overlap`, attributed to that manual run, and does not make the job unhealthy. Enable/disable is a durable **runtime override**; it does not rewrite any of the layered config, environment, or Markdown sources.
+
+The agent stores overrides, run ordering, idempotency receipts, and audit records in owner-private `.mono-agent/cron-control-v1/`. An absent directory is normal first-run state and is created before jobs arm. A present but corrupt, insecure, or already-leased store is fail-closed: no cron jobs arm, lifecycle/discovery reports the cron channel as degraded, an error is logged, and `mono-agent doctor` reports the state for recovery. Removing this directory is not a routine enable/reset operation because it discards runtime overrides, ordering, idempotency, audit, and bounded run history.
 
 ## Run watchdog: a wedged run is aborted, not left to starve
 

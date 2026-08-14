@@ -13,7 +13,80 @@ function turnInput() {
   } as const;
 }
 
+const cronSummary = (overrides: Record<string, unknown> = {}) => ({
+  projection: "summary",
+  runId: "cron:daily%3Abrief:2026-08-14T10:00:00.000Z",
+  jobId: "daily:brief",
+  scheduledAt: "2026-08-14T10:00:00.000Z",
+  orderedAt: "2026-08-14T10:00:00.000Z",
+  sequence: 1,
+  trigger: "scheduled",
+  status: "succeeded",
+  eventCount: 1,
+  ...overrides,
+});
+
 describe("OperatorClient", () => {
+  it("parses compact cron pages and bounded detail through distinct encoded routes", async () => {
+    const requests: string[] = [];
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async (input) => {
+        const url = String(input);
+        requests.push(url);
+        return url.includes("/runs?")
+          ? Response.json({ runs: [cronSummary()], nextCursor: "older" })
+          : Response.json({
+              run: cronSummary({
+                projection: "detail",
+                events: [{ type: "runtime_warning", message: "bounded" }],
+                eventsIncluded: 1,
+              }),
+            });
+      }) as typeof fetch,
+    });
+
+    await expect(client.cronRuns("daily:brief", { limit: 100 })).resolves.toMatchObject({
+      runs: [{ projection: "summary", eventCount: 1 }],
+      nextCursor: "older",
+    });
+    await expect(client.cronRun("daily:brief", cronSummary().runId)).resolves.toMatchObject({
+      projection: "detail",
+      eventsIncluded: 1,
+    });
+    expect(requests).toEqual([
+      "http://127.0.0.1:1234/gui/v1/cron/jobs/daily%3Abrief/runs?limit=100",
+      `http://127.0.0.1:1234/gui/v1/cron/jobs/daily%3Abrief/runs/${encodeURIComponent(cronSummary().runId)}`,
+    ]);
+  });
+
+  it.each([
+    ["summary events", { runs: [{ ...cronSummary(), events: [] }] }],
+    ["unknown summary field", { runs: [{ ...cronSummary(), future: true }] }],
+    ["wrong projection", { runs: [cronSummary({ projection: "detail", events: [], eventsIncluded: 0 })] }],
+  ])("fails closed on cron pages with %s", async (_label, page) => {
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json(page)) as typeof fetch,
+    });
+    await expect(client.cronRuns("daily:brief", { limit: 100 }))
+      .rejects.toMatchObject({ code: "invalid_operator_cron" });
+  });
+
+  it("fails closed on malformed detail events and detail envelopes", async () => {
+    const responses = [
+      { run: cronSummary({ projection: "detail", events: [{ type: "runtime_warning" }], eventsIncluded: 1 }) },
+      { run: cronSummary({ projection: "detail", events: [], eventsIncluded: 0 }), future: true },
+    ];
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json(responses.shift())) as typeof fetch,
+    });
+    await expect(client.cronRun("daily:brief", "run-one"))
+      .rejects.toMatchObject({ code: "invalid_operator_cron" });
+    await expect(client.cronRun("daily:brief", "run-two"))
+      .rejects.toMatchObject({ code: "invalid_operator_cron" });
+  });
   it("parses capabilities/model metadata and rejects untrusted endpoints", async () => {
     expect(() => new OperatorClient({ baseUrl: "http://192.168.1.5:1234/gui" })).toThrowError(/non-loopback/u);
     const client = new OperatorClient({

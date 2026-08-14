@@ -127,6 +127,14 @@ describe("structured AskUser interaction bridge", () => {
     expect(handle.getPendingAsk("web:thread-1")).toBeUndefined();
     expect(updated.at(-1)?.status).toBe("answered");
     expect((await pollAsk(handle, interactionId)).answers).toHaveLength(2);
+    // The asking tool consumed the terminal active entry above. Exact-id
+    // history remains available for a second destination such as the console.
+    expect(handle.getAsk(interactionId)).toMatchObject({ status: "answered" });
+
+    const consumed = await fetch(`${handle.url}/v1/asks/${encodeURIComponent(interactionId)}`, {
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    expect(consumed.status).toBe(404);
 
     const history = handle.enrichAssistantHistory({
       runId: "run-1",
@@ -238,5 +246,44 @@ describe("structured AskUser interaction bridge", () => {
     );
     expect(terminal.answers).toHaveLength(1);
     expect(updated.at(-1)?.status).toBe("expired");
+  });
+
+  it("retains cancellation for exact-id reconciliation after the active entry is deleted", async () => {
+    const { handle } = await createHarness();
+    const created = await createAsk(handle, { conversationId: "web:cancelled", questions: [questions()[0]] });
+    const interactionId = created.body.interactionId as string;
+    const cancelled = await fetch(`${handle.url}/v1/asks/${encodeURIComponent(interactionId)}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${handle.token}` },
+    });
+    expect(cancelled.status).toBe(204);
+    expect(handle.getAsk(interactionId)).toMatchObject({ interactionId, status: "cancelled" });
+  });
+
+  it("evicts exact-id terminal history after the bounded retention window", async () => {
+    let now = new Date("2026-08-14T10:00:00.000Z");
+    const handle = await startInteractionBridge({
+      askTimeoutMs: 5_000,
+      now: () => now,
+    });
+    handles.push(handle);
+    handle.registerSink("web", {
+      presentAsk: async () => undefined,
+      updateAsk: async () => undefined,
+      postStatus: async () => undefined,
+    });
+    const created = await createAsk(handle, { conversationId: "web:retention", questions: [questions()[0]] });
+    const interactionId = created.body.interactionId as string;
+    const snapshot = handle.getPendingAsk("web:retention")!;
+    await handle.submitAskAnswers({
+      conversationId: "web:retention",
+      interactionId,
+      answers: [{ questionId: snapshot.questions[0]!.id, selectedOptionIds: [snapshot.questions[0]!.options[0]!.id] }],
+    });
+    await pollAsk(handle, interactionId);
+    expect(handle.getAsk(interactionId)?.status).toBe("answered");
+
+    now = new Date("2026-08-15T10:00:00.001Z");
+    expect(handle.getAsk(interactionId)).toBeUndefined();
   });
 });

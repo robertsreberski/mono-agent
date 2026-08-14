@@ -52,6 +52,11 @@ The config-first host pins every configured job to `overlap: "skip"`: a tick
 that overlaps an active run of the same job is skipped. There is no cron config
 field for queueing or replacing active runs.
 
+The host may additionally register config-disabled jobs for inspection while
+arming only their effective runtime-enabled subset. Administrative run-now and
+enable/disable controls are host-owned; they are disabled by default and do not
+make this adapter responsible for network authorization or durable state.
+
 ### Programmatic use
 
 Install the adapter directly only when building a custom host:
@@ -146,11 +151,21 @@ The request lifecycle is:
    duplicate ids, and projects enabled entries through `toCronJobs`.
 2. `cron-expression.ts` validates the five-field expression and resolves the
    next timezone-aware firing; hashed fields use the job id as their seed.
-3. `scheduler.ts` admits the firing under the selected overlap policy, creates
-   an abortable `AgentRequestBase`, and invokes the host-owned responder.
-4. The scheduler emits a typed `CronJobResult`; the host decides whether to log,
-   persist, or deliver that result. `stop()` clears timers, queues, and active
-   runs.
+3. `scheduler.ts` obtains a host-supplied or local per-job admission identity,
+   preserving immutable `orderedAt` plus a sequence for scheduled, manual,
+   queued, skipped, and dropped records. Scheduled and manual ids occupy
+   disjoint spaces.
+4. The scheduler applies the same overlap guard and watchdog to timer and
+   `runNow()` admission, creates an abortable `AgentRequestBase`, and invokes
+   the host-owned responder. Caller-controlled cron ids never widen that shared
+   request contract; an artifact harness id is reported separately.
+5. The scheduler emits typed events/results; the host decides whether to log,
+   persist, audit, or deliver them. Synchronous and asynchronous host-state
+   failures are reported through `onDegraded` and error logging; a timer
+   admission failure consumes only that scheduled instant and still re-arms the
+   next strictly-later target. `snapshots()` exposes armed state and
+   `setEffectiveEnabled()` re-arms safely. `stop()` clears timers, queues, and
+   active runs.
 
 ### Package structure
 
@@ -170,7 +185,7 @@ The request lifecycle is:
 | --- | --- |
 | `loadCronAdapterConfig` | Load and validate config, env, and optional `cron/*.md` jobs. |
 | `toCronJobs` | Drop disabled config entries and produce scheduler-ready jobs. |
-| `startCronAdapter` | Start future scheduling in a custom host and obtain `stop()`. |
+| `startCronAdapter` | Start scheduling in a custom host and obtain snapshots, run-now, effective-enable, and stop controls. |
 | `validateCronExpression` | Validate user input with the scheduler's parser. |
 | `loadCronJobsFromDirectory` / `parseCronJobMarkdown` | Build custom directory-backed authoring flows. |
 | `CronJobResult` | Handle every terminal and overlap/queue result explicitly. |
@@ -193,13 +208,21 @@ CronAdapterOptions
 CronAdapterStartResult
 CronExpressionValidationOptions
 CronExpressionValidationResult
+CronFiringIdentity
 CronJob
 CronJobConfig
 CronJobResult
+CronJobSnapshot
 CronOverflowPolicy
 CronOverlapMode
 CronRequestMetadata
+CronRunTrigger
 LoadCronAdapterConfigInput
+MAX_CRON_CONVERSATION_ID_BYTES
+MAX_CRON_EXPRESSION_BYTES
+MAX_CRON_JOBS
+MAX_CRON_JOB_ID_BYTES
+MAX_CRON_TIMEZONE_BYTES
 RedactedCronAdapterConfig
 loadCronAdapterConfig
 loadCronJobsFromDirectory

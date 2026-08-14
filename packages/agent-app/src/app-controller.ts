@@ -2,7 +2,7 @@
 import { resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
-import type { AgentResponder } from "@mono-agent/agent-contracts";
+import type { AgentResponder, NotifyDeliveryContext } from "@mono-agent/agent-contracts";
 import type { TraceSourceHandle, TraceSourceMemoryHealth } from "@mono-agent/observability";
 import type {
   MonoRuntimeLike,
@@ -248,6 +248,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   readonly activeRuntimes: MonoRuntimeLike[] = [];
   readonly statuses = new Map<ChannelId, ChannelStatus>();
   readonly running = new Map<ChannelId, RunningChannel>();
+  readonly channelStartGenerations = new Map<ChannelId, symbol>();
   readonly startsInFlight = new Map<ChannelId, Promise<ChannelStatus>>();
   /** Captured at construction (~process start): the cutoff for reclaiming orphaned "running" runs. */
   readonly processStartMs = Date.now();
@@ -529,7 +530,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   async notifyDestination(
     conversationId: string,
     text: string,
-    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string },
+    options?: { readonly verbatim?: boolean; readonly deliveryKey?: string; readonly deliveryContext?: NotifyDeliveryContext },
   ): Promise<NotifyDeliveryResult> { return maintenanceOperations.notifyDestination(this, conversationId, text, options); }
 
   /**

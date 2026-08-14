@@ -1282,6 +1282,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "webhook.defaultMode": "sync",
     "webhook.retentionMs": 300_000,
     "webhook.maxStoredRequests": 100,
+    "cron.operatorActions.enabled": false,
     "cron.enabled": false,
     "cron.dir": "cron",
     "cron.timezone": "UTC",
@@ -1393,6 +1394,9 @@ function descriptionFor(id: string): string {
   }
   if (id === "tui.requestToolEnvironment.allowPathPrepend") {
     return "Allows an ACP request to prepend up to four absolute directories to process-tool PATH for one turn. The caller cannot replace PATH.";
+  }
+  if (id === "cron.operatorActions.enabled") {
+    return "Allows API-key-authenticated, explicitly confirmed run-now and runtime enable/disable actions. Defaults off and never rewrites cron config sources.";
   }
   if (id === "slack.stripMentionText") {
     return "When unset, preserves one readable authenticated self-mention marker; `true` restores legacy full stripping and `false` keeps raw mention forms.";

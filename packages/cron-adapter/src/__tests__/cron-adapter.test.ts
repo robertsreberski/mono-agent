@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AgentResponder } from "@mono-agent/agent-contracts";
 
+import type { CronJobResult } from "../index.js";
 import { CronAdapterError, startCronAdapter, toCronJobs } from "../index.js";
 // handleTick is an internal export (not re-exported from the package index) so
 // the overlap defense-in-depth fallback can be tested directly, bypassing the
@@ -54,7 +55,7 @@ describe("Cron adapter", () => {
         effort: "high",
       }],
       now: () => new Date(Date.now()),
-      onResult: (result) => {
+      onResult: (result: CronJobResult) => {
         results.push(result);
       },
     });
@@ -95,6 +96,115 @@ describe("Cron adapter", () => {
     }
   });
 
+  it("contains a synchronous durable-admission failure and re-arms the next scheduled instant", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const responder = { respond: vi.fn(async () => ({ text: "ok" })) };
+    const degraded = vi.fn();
+    const error = vi.fn();
+    let admitted = 0;
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "durable", expression: "* * * * *", prompt: "run" }],
+      now: () => new Date(Date.now()),
+      admitFiring(input) {
+        admitted += 1;
+        if (admitted === 1) throw new Error("control database unavailable");
+        return {
+          runId: `cron:${input.jobId}:${input.scheduledAt}`,
+          jobId: input.jobId,
+          scheduledAt: input.scheduledAt,
+          orderedAt: input.observedAt,
+          sequence: 1,
+          trigger: input.trigger,
+        };
+      },
+      onDegraded: degraded,
+      logger: { error },
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(responder.respond).not.toHaveBeenCalled();
+      expect(degraded).toHaveBeenCalledWith(
+        "Cron firing admission failed. control database unavailable",
+      );
+      expect(error).toHaveBeenCalledWith(
+        "Cron firing admission failed.",
+        expect.objectContaining({
+          jobId: "durable",
+          scheduledAt: "1970-01-01T00:01:00.000Z",
+          error: "control database unavailable",
+        }),
+      );
+      expect(scheduler.snapshots()[0]).toMatchObject({
+        nextRunAt: "1970-01-01T00:02:00.000Z",
+      });
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect.poll(() => responder.respond).toHaveBeenCalledOnce();
+      expect(admitted).toBe(2);
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["synchronous", "asynchronous"] as const)(
+    "contains a %s run-start persistence failure, reclaims the slot, and keeps scheduling",
+    async (failureMode) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+      const responder = { respond: vi.fn(async () => ({ text: "ok" })) };
+      const results: CronJobResult[] = [];
+      const degraded = vi.fn();
+      let starts = 0;
+      const scheduler = startCronAdapter({
+        responder,
+        jobs: [{ id: "start-state", expression: "* * * * *", prompt: "run" }],
+        now: () => new Date(Date.now()),
+        onRunStarted() {
+          starts += 1;
+          if (starts !== 1) return;
+          if (failureMode === "synchronous") throw new Error("mark-started failed");
+          return Promise.reject(new Error("mark-started failed"));
+        },
+        onResult: (result) => {
+          results.push(result);
+        },
+        onDegraded: degraded,
+      });
+
+      try {
+        await vi.advanceTimersByTimeAsync(60_000);
+        await expect.poll(() => results).toContainEqual(expect.objectContaining({
+          kind: "failed",
+          jobId: "start-state",
+          sequence: 1,
+          error: "mark-started failed",
+        }));
+        expect(responder.respond).not.toHaveBeenCalled();
+        expect(degraded).toHaveBeenCalledWith(
+          "Cron run-start persistence failed. mark-started failed",
+        );
+        expect(scheduler.snapshots()[0]).toMatchObject({
+          nextRunAt: "1970-01-01T00:02:00.000Z",
+        });
+
+        await vi.advanceTimersByTimeAsync(60_000);
+        await expect.poll(() => responder.respond).toHaveBeenCalledOnce();
+        await expect.poll(() => results).toContainEqual(expect.objectContaining({
+          kind: "succeeded",
+          jobId: "start-state",
+          sequence: 2,
+        }));
+      } finally {
+        scheduler.stop();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("keeps a mid-lifecycle destination snapshot in both replyTo and the completion result", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -124,7 +234,7 @@ describe("Cron adapter", () => {
       jobs: [{ id: "digest", expression: "* * * * *", prompt: "p", notify: true }],
       now: () => new Date(Date.now()),
       resolveNotifyFallbackConversationId,
-      onResult: (result) => {
+      onResult: (result: CronJobResult) => {
         results.push(result);
       },
     });
@@ -633,7 +743,8 @@ describe("Cron adapter", () => {
     // Release the (now-aborted) first responder so it resolves with text. The
     // success path must reclassify it as cancelled because its controller was
     // aborted by the replace.
-    gates[0]?.();
+    await expect.poll(() => gates.length).toBe(1);
+    gates[0]!();
     await expect
       .poll(() => results)
       .toContainEqual(
@@ -1014,6 +1125,150 @@ describe("Cron adapter", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("registers effectively-disabled jobs without arming them and can enable them at runtime", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const responder = { respond: vi.fn(async () => ({ text: "done" })) } satisfies AgentResponder;
+    const scheduler = startCronAdapter({
+      responder,
+      jobs: [{ id: "runtime", enabled: false, expression: "* * * * *", prompt: "run" }],
+      now: () => new Date(Date.now()),
+    });
+
+    try {
+      expect(scheduler.jobs).toHaveLength(1);
+      expect(scheduler.snapshots()).toEqual([
+        expect.objectContaining({ jobId: "runtime", effectiveEnabled: false }),
+      ]);
+      expect(scheduler.snapshots()[0]).not.toHaveProperty("nextRunAt");
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(responder.respond).not.toHaveBeenCalled();
+
+      const enabled = scheduler.setEffectiveEnabled("runtime", true);
+      expect(enabled).toEqual(expect.objectContaining({
+        effectiveEnabled: true,
+        nextRunAt: "1970-01-01T00:03:00.000Z",
+      }));
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(responder.respond).toHaveBeenCalledOnce();
+
+      const disabled = scheduler.setEffectiveEnabled("runtime", false);
+      expect(disabled.effectiveEnabled).toBe(false);
+      expect(disabled).not.toHaveProperty("nextRunAt");
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(responder.respond).toHaveBeenCalledOnce();
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses disjoint manual ids and a total per-job order for same-instant overlap", async () => {
+    const gates: Array<() => void> = [];
+    const results: CronJobResult[] = [];
+    const responder: AgentResponder = {
+      async respond() {
+        await new Promise<void>((resolve) => gates.push(resolve));
+        return { text: "done" };
+      },
+    };
+    const now = new Date("2026-08-14T12:00:00.000Z");
+    const options = {
+      responder,
+      jobs: [{ id: "a:b", expression: "* * * * *", prompt: "run" }],
+      now: () => now,
+      overlap: "skip" as const,
+      onResult: (result: CronJobResult) => {
+        results.push(result);
+      },
+    };
+    const jobStates = new Map();
+    const sequenceByJob = new Map<string, number>();
+
+    const scheduled = handleTick(options.jobs[0]!, now, options, jobStates, sequenceByJob, "scheduled");
+    const manual = handleTick(options.jobs[0]!, now, options, jobStates, sequenceByJob, "manual");
+
+    expect(scheduled).toMatchObject({
+      runId: "cron:a%3Ab:2026-08-14T12:00:00.000Z",
+      orderedAt: "2026-08-14T12:00:00.000Z",
+      sequence: 1,
+      trigger: "scheduled",
+    });
+    expect(manual).toMatchObject({
+      runId: "cron:a%3Ab:2026-08-14T12:00:00.000Z:m2",
+      orderedAt: "2026-08-14T12:00:00.000Z",
+      sequence: 2,
+      trigger: "manual",
+    });
+    await expect.poll(() => results).toContainEqual(expect.objectContaining({
+      kind: "skipped",
+      cronRunId: manual.runId,
+      sequence: 2,
+      orderedAt: manual.orderedAt,
+      blockedByRunId: scheduled.runId,
+      blockedByTrigger: "scheduled",
+    }));
+
+    await expect.poll(() => gates.length).toBe(1);
+    gates[0]!();
+    await expect.poll(() => results).toContainEqual(expect.objectContaining({
+      kind: "succeeded",
+      cronRunId: scheduled.runId,
+      sequence: 1,
+      orderedAt: scheduled.orderedAt,
+    }));
+  });
+
+  it("keeps queued and dropped records on the firing's immutable admission order", async () => {
+    let finish!: () => void;
+    const results: CronJobResult[] = [];
+    const responder: AgentResponder = {
+      async respond() {
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        return { text: "done" };
+      },
+    };
+    const options = {
+      responder,
+      jobs: [{ id: "ordered", expression: "* * * * *", prompt: "run" }],
+      now: () => new Date("2026-08-14T12:00:02.000Z"),
+      overlap: "queue" as const,
+      maxQueueDepth: 0,
+      overflow: "drop-oldest" as const,
+      onResult: (result: CronJobResult) => {
+        results.push(result);
+      },
+    };
+    const jobStates = new Map();
+    const sequenceByJob = new Map<string, number>();
+
+    handleTick(options.jobs[0]!, new Date("2026-08-14T12:00:00.000Z"), options, jobStates, sequenceByJob);
+    const overflowed = handleTick(
+      options.jobs[0]!,
+      new Date("2026-08-14T12:01:00.000Z"),
+      options,
+      jobStates,
+      sequenceByJob,
+    );
+    await expect.poll(() => results.filter((result) => result.cronRunId === overflowed.runId)).toEqual([
+      expect.objectContaining({
+        kind: "dropped",
+        orderedAt: "2026-08-14T12:00:02.000Z",
+        sequence: 2,
+      }),
+      expect.objectContaining({
+        kind: "queued",
+        orderedAt: "2026-08-14T12:00:02.000Z",
+        sequence: 2,
+      }),
+    ]);
+    await expect.poll(() => typeof finish).toBe("function");
+    finish();
+    await expect.poll(() => results.some((result) => result.kind === "succeeded")).toBe(true);
   });
 
   it("does not schedule or run jobs disabled in config", async () => {
