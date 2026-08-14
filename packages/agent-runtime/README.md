@@ -934,6 +934,9 @@ skill instructions by default, including content beyond the former
 `formatSkillBodyWithPathNote()` may pass a positive `maxChars` only when
 truncation is explicitly desired; omitting it is not a separate hidden limit.
 The standard 256 KiB tool-payload guard still applies to oversized tool results.
+Ordinary `allowedTools` selection does not remove this disclosure tool, but the
+canonical or legacy name in `disallowedTools` does, and `disallowedTools: ["*"]`
+denies it with every built-in.
 
 Override or extend the tool surface by passing `mcpServers` for MCP-backed tools.
 On direct Codex normal runs, each valid server that survives translation into

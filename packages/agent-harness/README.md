@@ -69,7 +69,9 @@ Hosts that need request-scoped runtime setup can provide `runtimeOptionsForReque
 An extension can return `toolPolicyOverride` to replace the turn's ordinary tool
 surface. When a higher-level composer normally preserves an internal MCP server,
 `sealedToolPolicy: true` keeps the winning override exact instead; the seal follows
-the same last-wins precedence as the override that declares it.
+the same last-wins precedence as the override that declares it. A sealed turn
+also removes host-added progressive skill options, the Skill Index, and selected
+skill instructions before runtime invocation and recording.
 The model-facing Skill Index defines exact `$skill-name` tokens as explicit
 requests to apply a matching skill; other dollar-prefixed text remains ordinary
 user text. With `skillDisclosure: "index"`, it lists names and descriptions

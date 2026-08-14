@@ -165,8 +165,10 @@ replace credential bytes. Guided commit atomically creates the config and rechec
 ### Managed skills and documentation companion
 
 Every scaffold selects versioned `mono-agent-configure` and `mono-agent-memory`
-skills from `./skills` with index disclosure. `ReadSkill` remains separate from
-action-tool policy. `mono-agent install-skill --project --check|--update` reports
+skills from `./skills` with index disclosure. On ordinary turns, `ReadSkill`
+remains separate from action-tool policy; authoritative sealed and host no-tools
+turns suppress it with the model-facing skill context.
+`mono-agent install-skill --project --check|--update` reports
 version/hash drift and refreshes only unchanged managed copies with backups; a
 canonical owner-only non-symlink parent chain, per-project owner lock, and
 compare-and-swap activation prevent outside or concurrent

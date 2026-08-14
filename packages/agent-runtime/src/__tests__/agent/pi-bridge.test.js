@@ -889,6 +889,19 @@ describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", 
     expect(tools.map((tool) => tool.name)).toEqual(["Read"]);
   });
 
+  it('treats disallowedTools ["*"] as deny-all for built-ins and ReadSkill', () => {
+    const root = tempWorkspace();
+    const skillsRoot = join(root, "skills");
+    mkdirSync(join(skillsRoot, "research"), { recursive: true });
+    writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nbody\n");
+
+    expect(getPiBuiltinTools(["*"], {
+      skillsRoot,
+      skillNames: ["research"],
+      disallowedTools: ["*"],
+    })).toEqual([]);
+  });
+
   it("exposes a sequential NodeRepl tool only when its run-owned controller is supplied", async () => {
     const execute = vi.fn(async () => "42");
     const controller = { execute };

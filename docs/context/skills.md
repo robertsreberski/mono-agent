@@ -43,9 +43,9 @@ The folder convention is part of the standard [agent folder layout](/config/fold
 - `mono-agent-configure` guides the fail-closed low-risk proposal allowlist and hands paths, tiers/capture, secrets, providers, channels, plugins, MCP, sandbox/network, exporters, and unknown fields to explicit guided setup.
 - `mono-agent-memory` explains the built-in memory tiers, prerequisites, and cost/quality tradeoffs.
 
-Generated agents use `skillDisclosure: "index"`, so their names/descriptions enter the prompt while the bodies load on demand through `ReadSkill`. `ReadSkill` is shown separately from action-tool allowlists because disabling file/shell/web actions does not disable skill disclosure.
+Generated agents use `skillDisclosure: "index"`, so their names/descriptions enter the prompt while the bodies load on demand through `ReadSkill`. On ordinary turns, `ReadSkill` is shown separately from action-tool allowlists because disabling file/shell/web actions does not disable skill disclosure. An authoritative request-scoped `sealedToolPolicy` or a host no-tools continuation suppresses the tool, `skills` / `skillsRoot` runtime options, the Skill Index, and selected skill instructions together.
 
-In index mode, the model-facing Skill Index contains names and descriptions but not filesystem paths to each `SKILL.md`. The prompt tells the agent to call `ReadSkill` with the selected name before following that skill; ordinary `Read` remains available for supporting files referenced by the loaded instructions. Skill paths remain in host-side context metadata for diagnostics.
+In index mode, the model-facing Skill Index contains names and descriptions but not filesystem paths to each `SKILL.md`. The prompt tells the agent to call `ReadSkill` with the selected name before following that skill; ordinary `Read` remains available for supporting files referenced by the loaded instructions. Skill paths remain in host-side context metadata for diagnostics on ordinary turns; sealed and host no-tools turns remove those skill sources from their effective context metadata.
 
 ## Canonical skill references
 

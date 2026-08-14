@@ -76,6 +76,100 @@ describe("AgentHarness progressive skill disclosure wiring", () => {
     expect(fake.calls[0]?.prompt).not.toContain(join(skillsRoot, "research", "SKILL.md"));
   });
 
+  it("keeps a sealed request policy exact by removing every host skill surface", async () => {
+    const { identityPath, skillsRoot } = await fixture(["research"]);
+    const fake = createFakeRuntime();
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      skillsRoot,
+      skillDisclosure: "index",
+      selectedSkills: ["research"],
+      toolPolicy: { allowedTools: ["Read"], disallowedTools: ["Write"] },
+      runtimeOptions: {
+        mcpConfigPath: join(skillsRoot, "configured-mcp.json"),
+        mcpServers: { configured: { type: "http", url: "http://127.0.0.1:7310" } },
+        skills: [{ name: "static-skill", description: "must not survive" }],
+        skillsRoot: join(skillsRoot, "static-root"),
+      },
+      runtimeOptionsForRequest: async () => ({
+        runtimeOptions: {
+          mcpServers: { caller: { type: "http", url: "http://127.0.0.1:7311" } },
+          skills: [{ name: "request-skill", description: "must not survive" }],
+          skillsRoot: join(skillsRoot, "request-root"),
+        },
+        sealedToolPolicy: true,
+        toolPolicyOverride: {
+          allowedTools: [],
+          disallowedTools: [],
+          mcpServers: {},
+        },
+      }),
+    });
+
+    const response = await harness.run(request());
+
+    const options = fake.calls[0]?.options as Record<string, unknown>;
+    expect(options.allowedTools).toEqual([]);
+    expect(options.disallowedTools).toEqual([]);
+    expect(options.mcpServers).toEqual({});
+    expect(options.mcpConfigPath).toBeUndefined();
+    expect(options.skills).toBeUndefined();
+    expect(options.skillsRoot).toBeUndefined();
+    expect(fake.calls[0]?.prompt).not.toContain("ReadSkill");
+    expect(fake.calls[0]?.prompt).not.toContain("Skill Index");
+    expect(fake.calls[0]?.prompt).not.toContain("Selected Skill Instructions");
+    expect(fake.calls[0]?.prompt).not.toContain("**research**");
+    expect(fake.calls[0]?.prompt).not.toContain("The research skill body.");
+    expect(response.metadata.contextSectionIds).not.toContain("skills");
+    expect(response.metadata.contextSectionIds).not.toContain("skill-instructions");
+    expect(response.metadata.contextSources).not.toContain(join(skillsRoot, "research", "SKILL.md"));
+  });
+
+  it("applies the same no-skill invariant to host-authored no-tools continuations", async () => {
+    const { identityPath, skillsRoot } = await fixture(["research"]);
+    const fake = createFakeRuntime();
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      skillsRoot,
+      skillDisclosure: "index",
+      selectedSkills: ["research"],
+      toolPolicy: { allowedTools: ["Read"], disallowedTools: [] },
+      runtimeOptions: {
+        mcpServers: { configured: { type: "http", url: "http://127.0.0.1:7310" } },
+      },
+    });
+
+    const response = await harness.run({
+      ...request(),
+      continuation: {
+        continuationId: "continuation-1",
+        originRunId: "origin-run-1",
+        originContextPolicy: "detached_latest",
+        toolsDisabled: true,
+        deferHistoryCommit: true,
+      },
+    });
+
+    const options = fake.calls[0]?.options as Record<string, unknown>;
+    expect(options.allowedTools).toEqual([]);
+    expect(options.disallowedTools).toEqual(["*"]);
+    expect(options.mcpServers).toEqual({});
+    expect(options.skills).toBeUndefined();
+    expect(options.skillsRoot).toBeUndefined();
+    expect(fake.calls[0]?.prompt).not.toContain("ReadSkill");
+    expect(fake.calls[0]?.prompt).not.toContain("**research**");
+    expect(fake.calls[0]?.prompt).not.toContain("The research skill body.");
+    expect(response.metadata.contextSectionIds).not.toContain("skills");
+    expect(response.metadata.contextSectionIds).not.toContain("skill-instructions");
+    expect(response.metadata.contextSources).not.toContain(join(skillsRoot, "research", "SKILL.md"));
+  });
+
   it("keeps absolute skill paths out of the entries it threads", async () => {
     // `mainFile` is dropped on the way into run options. It is an absolute host
     // path, and these entries now travel further than the runtime call — into a

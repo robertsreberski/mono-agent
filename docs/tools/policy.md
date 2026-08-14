@@ -38,7 +38,7 @@ Allow-all is the **config** default, not a programmatic one. For code-defined ag
 :::caution
 **Enforcement varies by runtime.** Unsupported combinations fail before provider startup instead of silently widening the tool surface.
 
-- **pi-native** — both guarantees hold: `[]` is a true chat-only agent, and a specific list is the agent's complete tool surface.
+- **pi-native** — both guarantees hold for ordinary action tools: `[]` selects none, and a specific list is the complete action-tool surface. Index disclosure can separately add `ReadSkill`; deny it by name, use the host deny-all invariant, or use an authoritative sealed request policy when the complete turn surface must be exact.
 - **Claude SDK** — both guarantees hold through the SDK's native tool options.
 - **Claude Code** CLI — a specific non-empty list is passed as `--tools` and restricts the surface; `disallowedTools` reaches the native denylist. An explicit `[]` cannot represent chat-only in that CLI and is therefore rejected by validation and runtime before spawn.
 - **Codex** CLI — the app-server cannot enforce arbitrary mono-agent name lists. Normal direct `codex:*` runs require effective allow-all: `allowedTools` is omitted or contains `"*"`, and `disallowedTools` is empty. Named entries alongside `"*"` are redundant but accepted because the wildcard dominates. A named-only list, `[]`, or any denylist fails validation and runtime startup with a capability mismatch; mono-agent never silently widens it. Choose another runtime for a restrictive policy.
@@ -58,8 +58,8 @@ conservatively.
 
 | Key | Type | Behavior |
 | --- | --- | --- |
-| `tools.allowedTools` | `string[]` | The allowlist. Omitted or containing `"*"` means all tools; a specific named-only list narrows to those names; `[]` means none. |
-| `tools.disallowedTools` | `string[]` | The denylist. Tools named here are always blocked, even under allow-all. |
+| `tools.allowedTools` | `string[]` | The action-tool allowlist. Omitted or containing `"*"` means all tools; a specific named-only list narrows to those names; `[]` means no ordinary action tools. Progressive `ReadSkill` is separate on ordinary turns. |
+| `tools.disallowedTools` | `string[]` | The denylist. Tools named here are always blocked, even under allow-all; the host-only `"*"` deny-all form also removes `ReadSkill`. |
 
 Two rules govern how the lists combine:
 
@@ -82,7 +82,7 @@ The example above keeps allow-all (every tool stays available) but denies `Bash`
 
 ## Deny enforcement by runtime
 
-`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, `RunHistory`, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …) on runtimes that expose those tools through mono-agent. The **Claude Code** CLI additionally receives `--disallowedTools`, so the denial reaches its native tools. Pi-native honors the list for built-ins and policy-gated app-owned tools. Direct Codex has no corresponding native denylist boundary, so configurations containing `disallowedTools` are rejected rather than partially enforced.
+`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, `RunHistory`, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …) on runtimes that expose those tools through mono-agent. The host's `"*"` no-tools form is deny-all, including `ReadSkill`. The **Claude Code** CLI additionally receives `--disallowedTools`, so the denial reaches its native tools. Pi-native honors the list for built-ins and policy-gated app-owned tools. Direct Codex has no corresponding native denylist boundary, so configurations containing `disallowedTools` are rejected rather than partially enforced.
 
 :::caution
 **Known limitation — external MCP tools on pi.** Arbitrary tools advertised by an external MCP server are **not** deny-filtered on the pi-native runtime yet. Listing such a tool in `disallowedTools` has no effect there. To hard-restrict an external MCP tool on pi, **don't declare its server** in `mcp.json` / `tools.mcpServers` — server declaration, not the denylist, is what governs its availability. (The app-owned adapter send tools are exempt from this limitation: they are gated by the app, so their `disallowedTools` entries are honored everywhere.)

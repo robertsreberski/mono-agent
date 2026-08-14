@@ -478,7 +478,9 @@ export interface AgentHarnessRuntimeOptionsExtension {
    * this extension's {@link toolPolicyOverride}. The marker applies only to
    * the extension that supplies the winning authoritative override; a later
    * ordinary override clears the seal through normal last-wins precedence.
-   * Use it when the request must expose exactly the declared tool policy.
+   * Use it when the request must expose exactly the declared tool policy. The
+   * harness also removes host-added progressive skill options and model-facing
+   * skill sections from that sealed turn.
    */
   readonly sealedToolPolicy?: boolean;
   readonly cleanup?: () => void | Promise<void>;

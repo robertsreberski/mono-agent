@@ -1,3 +1,5 @@
+import { isAbsolute, relative, resolve, sep } from "node:path";
+
 import type { RunRecorder, RuntimeEventLike } from "@mono-agent/observability";
 import {
   modelReferenceKey,
@@ -10,6 +12,7 @@ import {
 } from "@mono-agent/runtime-adapter";
 
 import type { BuiltAgentContext, ContextBlockInput, HistoryMessage, SkillIndexSummary } from "../context/index.js";
+import { renderAgentContextSections } from "../context/context-builder.js";
 import type { Semaphore } from "../semaphore.js";
 import type {
   AgentHarnessContinuationClaimCapability,
@@ -56,6 +59,7 @@ export async function runHarnessRuntime(
   attachmentContext: AttachmentRequestContext,
   continuationCapabilities: AgentHarnessContinuationClaimCapability[],
   liveInputMailbox?: LiveInputMailbox,
+  onRuntimeContext?: (context: BuiltAgentContext) => void,
   onProviderStart?: () => void,
 ): Promise<RuntimeResult> {
     const hostOnEvent = request.onEvent;
@@ -134,6 +138,15 @@ export async function runHarnessRuntime(
         acquired = true;
       }
       requestExtension = await options.runtimeOptionsForRequest?.({ request, runId, context });
+      const suppressSkillContext = request.continuation?.toolsDisabled === true
+        || (
+          requestExtension?.sealedToolPolicy === true
+          && requestExtension.toolPolicyOverride !== undefined
+        );
+      const runtimeContext = suppressSkillContext
+        ? withoutSkillContext(context, options.skillsRoot)
+        : context;
+      onRuntimeContext?.(runtimeContext);
       const policyOptions = toolPolicyToRuntimeOptions(
         requestExtension?.toolPolicyOverride
         ?? options.toolPolicy
@@ -168,6 +181,14 @@ export async function runHarnessRuntime(
       // switch an explicitly configured host away from its selected transport.
       if (options.runtimeOptions?.piTransport !== undefined) {
         merged.piTransport = options.runtimeOptions.piTransport;
+      }
+      if (suppressSkillContext) {
+        // A sealed request policy and a host-authored no-tools continuation are
+        // authoritative over every static, extension, and host-added skill
+        // surface. In particular, neither a request extension nor the
+        // progressive-disclosure block below may recreate ReadSkill.
+        delete merged.skills;
+        delete merged.skillsRoot;
       }
       if (request.continuation?.toolsDisabled === true) {
         // Host-authoritative continuation synthesis is side-effect free. This
@@ -326,7 +347,7 @@ export async function runHarnessRuntime(
         // Each entry carries its description as well as its name: this is also
         // what a subagent inherits (agent-app forwards it down the Agent tool
         // seam), and a child renders its own index from these entries.
-        ...(skillDisclosureEntries.length > 0 && options.skillsRoot !== undefined
+        ...(!suppressSkillContext && skillDisclosureEntries.length > 0 && options.skillsRoot !== undefined
           ? {
             skills: skillDisclosureEntries.map(({ name, description }) => ({ name, description })),
             skillsRoot: options.skillsRoot,
@@ -400,7 +421,7 @@ export async function runHarnessRuntime(
       // attachment persistence, compaction, admission wait).
       const bridgeStartMs = Date.now();
       try {
-        return await runtime.run(context.prompt, runtimeOptions);
+        return await runtime.run(runtimeContext.prompt, runtimeOptions);
       } finally {
         const latencyEvent: RuntimeEventLike = {
           type: "provider_bridge_latency",
@@ -425,6 +446,38 @@ export async function runHarnessRuntime(
         }
       }
     }
+}
+
+const SUPPRESSED_SKILL_SECTION_IDS = new Set(["skills", "skill-instructions"]);
+
+function withoutSkillContext(context: BuiltAgentContext, skillsRoot: string | undefined): BuiltAgentContext {
+  const sections = context.sections.filter((section) => !SUPPRESSED_SKILL_SECTION_IDS.has(section.id));
+  const sources = skillsRoot === undefined
+    ? context.metadata.sources
+    : context.metadata.sources.filter((source) => !isSkillSource(skillsRoot, source));
+  return {
+    prompt: renderAgentContextSections(sections),
+    sections,
+    metadata: {
+      ...context.metadata,
+      skillCount: 0,
+      sources,
+    },
+  };
+}
+
+function isSkillSource(skillsRoot: string, source: string): boolean {
+  const relativeSource = relative(resolve(skillsRoot), resolve(source));
+  if (
+    relativeSource.length === 0
+    || relativeSource === ".."
+    || relativeSource.startsWith(`..${sep}`)
+    || isAbsolute(relativeSource)
+  ) {
+    return false;
+  }
+  const parts = relativeSource.split(sep);
+  return parts.length === 2 && parts[1] === "SKILL.md";
 }
 
 /**

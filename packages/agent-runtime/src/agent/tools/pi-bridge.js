@@ -571,12 +571,18 @@ export function getPiBuiltinTools(allowedTools, {
   const allowAll = !Array.isArray(allowedTools) || allowedTools.includes("*");
   const selected = allowAll ? Object.keys(all) : allowedTools;
   const denied = new Set(Array.isArray(disallowedTools) ? disallowedTools : []);
-  const names = selected.filter((name) => !denied.has(name));
+  const denyAll = denied.has("*");
+  const names = selected.filter((name) => !denyAll && !denied.has(name));
   const tools = names.map((name) => all[name]).filter(Boolean);
   const skillTool = readSkillTool(skillNames, { skillsRoot, dataDir, skills });
   // Deny-check the canonical PascalCase name AND the legacy snake_case alias so
   // an old denylist keeps disabling the tool after the rename.
-  if (skillTool && !denied.has("ReadSkill") && !denied.has("read_skill" /* legacy alias */)) tools.push(skillTool);
+  if (
+    skillTool
+    && !denyAll
+    && !denied.has("ReadSkill")
+    && !denied.has("read_skill" /* legacy alias */)
+  ) tools.push(skillTool);
   if (toolExecutionMode === "sequential") {
     for (const tool of tools) tool.executionMode = "sequential";
   }

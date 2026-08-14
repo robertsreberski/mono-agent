@@ -433,6 +433,9 @@ export class MonoAgentHarness implements AgentHarness {
           attachmentContext,
           continuationCapabilities,
           liveInputMailbox,
+          (runtimeContext) => {
+            context = runtimeContext;
+          },
           () => noteProviderStart(resumeSessionId),
         );
         noteProviderResultSession(runtimeResult.providerSessionId);
@@ -491,6 +494,9 @@ export class MonoAgentHarness implements AgentHarness {
           attachmentContext,
           continuationCapabilities,
           liveInputMailbox,
+          (runtimeContext) => {
+            context = runtimeContext;
+          },
           () => noteProviderStart(undefined),
         );
         noteProviderResultSession(runtimeResult.providerSessionId);

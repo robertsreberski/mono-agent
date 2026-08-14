@@ -67,7 +67,7 @@ export function buildAgentContext(input: BuildContextInput): BuiltAgentContext {
   sections.push(makeSection('user-message', 'Current User Message', { content: userMessage }));
 
   return {
-    prompt: sections.map(renderSection).join('\n\n'),
+    prompt: renderAgentContextSections(sections),
     sections,
     metadata: {
       usedDefaultCore,
@@ -76,6 +76,10 @@ export function buildAgentContext(input: BuildContextInput): BuiltAgentContext {
       sources: collectSources(core, identity, session, memory, skills, skillInstructions),
     },
   };
+}
+
+export function renderAgentContextSections(sections: readonly ContextSection[]): string {
+  return sections.map(renderSection).join('\n\n');
 }
 
 function normalizeMemory(memory: BuildContextInput['memory']): readonly NormalizedBlock[] {

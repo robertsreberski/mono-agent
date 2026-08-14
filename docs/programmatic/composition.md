@@ -173,7 +173,11 @@ The callback receives `{ request, runId, context }` (the inbound request, the ru
 configuration. Agent-app can preserve an explicitly trusted internal MCP server
 under an ordinary override; set `sealedToolPolicy: true` on the same extension
 when the winning policy must remain exact. Both fields use last-wins composition,
-so a seal never transfers to a different earlier or later override.
+so a seal never transfers to a different earlier or later override. For that
+sealed turn, the harness also removes host-added `skills` / `skillsRoot` runtime
+options and omits the Skill Index and selected skill instructions from the
+provider prompt, recorded context, and response context metadata. Ordinary
+overrides retain configured progressive disclosure.
 
 :::note
 Request-scoped options apply at the harness **run boundary**: they are resolved after context assembly and merged just before the provider call, then `cleanup` runs when the turn finishes. A model-changing option under continuous-session mode must match a valid model already declared in the request's cron, webhook, or TUI metadata, because that declaration isolates the turn before history assembly. An undeclared late model change fails before provider execution; otherwise a warm session could have omitted history for the wrong runtime. Execution mode remains harness-derived from the effective model.
