@@ -168,7 +168,7 @@ payloads and reviews. Never submit credentials or secrets to the tool.
 | `enabled` | `false` | Opt in to the listener. An enabled endpoint requires `model` and `effort`. |
 | `host` | `127.0.0.1` | Bind host. Exact loopback is safe by default. |
 | `port` | `4312` | Integer 0–65535; `0` selects an ephemeral test/programmatic port. |
-| `path` | `/mcp` | Absolute path, with no query, fragment, or controls. |
+| `path` | `/mcp` | Exact absolute literal path, with no query, fragment, controls, or Express router metacharacters (`: * ( ) { } ? + [ ] ! \\`). |
 | `allowNonLoopback` | `false` | Explicitly permit a non-loopback bind; also requires bearer auth and an explicit host allowlist. |
 | `requireBearer` | `false` | Require one `Authorization: Bearer` header. Non-loopback binds require auth regardless. |
 | `bearerToken` | — | Expected token; prefer `MONO_AGENT_ADVISOR_BEARER_TOKEN`. Maximum 4096 characters. |

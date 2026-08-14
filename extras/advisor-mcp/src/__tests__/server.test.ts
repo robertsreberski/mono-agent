@@ -7,6 +7,7 @@ import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ADVISOR_MAX_REQUEST_BYTES, loadAdvisorConfig, type AdvisorConfig } from "../config.js";
+import { advisorMcpPackageVersion } from "../package-version.js";
 import { REVIEW_ITERATION_TOOL_NAME } from "../protocol.js";
 import type { AdvisorRunFactory, AdvisorRunResult, AdvisorStopReason } from "../run.js";
 import {
@@ -18,6 +19,20 @@ import {
 
 const servers: RunningAdvisorServer[] = [];
 const clients: Client[] = [];
+const ROUTER_METACHARACTER_PATHS = [
+  "/mcp/:id",
+  "/mcp*",
+  "/mcp(",
+  "/mcp)",
+  "/mcp{segment",
+  "/mcp}",
+  "/mcp?",
+  "/mcp+",
+  "/mcp[",
+  "/mcp]",
+  "/mcp!",
+  String.raw`/mcp\literal`,
+] as const;
 
 afterEach(async () => {
   await Promise.allSettled(clients.splice(0).map(async (client) => await client.close()));
@@ -106,7 +121,27 @@ describe("Advisor Streamable HTTP MCP", () => {
     });
     expect(initialize.status).toBe(200);
     expect(initialize.headers["mcp-session-id"]).toBeUndefined();
+    expect(JSON.parse(initialize.body)).toMatchObject({
+      result: {
+        serverInfo: {
+          name: "mono-agent-advisor",
+          version: advisorMcpPackageVersion(),
+        },
+      },
+    });
   });
+
+  it.each(ROUTER_METACHARACTER_PATHS)(
+    "rejects router metacharacter path %j with an Advisor configuration error before startup",
+    async (path) => {
+      const config = { ...await activeConfig(), path };
+
+      await expect(startAdvisorServer({ config, runFactory: successfulFactory() })).rejects.toMatchObject({
+        code: "invalid_config",
+        message: expect.stringContaining("MONO_AGENT_ADVISOR_PATH"),
+      });
+    },
+  );
 
   it("rejects unknown tool input keys over the real protocol", async () => {
     const client = await openClient(await start(await activeConfig()));

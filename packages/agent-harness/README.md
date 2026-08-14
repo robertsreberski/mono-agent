@@ -66,6 +66,10 @@ console.log(response.text);
 
 Hosts wire identity/context paths, runtime, model, execution mode, tool policy, sandbox policy, history, memory, skills, and recorder factory explicitly.
 Hosts that need request-scoped runtime setup can provide `runtimeOptionsForRequest`; the harness merges those options into the runtime call, keeps configured sandbox policy monotonic, and runs the returned cleanup after execution.
+An extension can return `toolPolicyOverride` to replace the turn's ordinary tool
+surface. When a higher-level composer normally preserves an internal MCP server,
+`sealedToolPolicy: true` keeps the winning override exact instead; the seal follows
+the same last-wins precedence as the override that declares it.
 The model-facing Skill Index defines exact `$skill-name` tokens as explicit
 requests to apply a matching skill; other dollar-prefixed text remains ordinary
 user text. With `skillDisclosure: "index"`, it lists names and descriptions

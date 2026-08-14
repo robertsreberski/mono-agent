@@ -67,6 +67,7 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     );
     expect(result.runtimeOptions.model).toEqual(expect.objectContaining({ sdk: "claude", model: "claude-opus-4-8" }));
     expect(result.runtimeOptions.effort).toBe("xhigh");
+    expect(result.sealedToolPolicy).toBe(true);
     expect(result.toolPolicyOverride).toEqual({
       allowedTools: [],
       disallowedTools: [],
@@ -702,6 +703,48 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
         expect.stringContaining("Escalating per-turn effort"),
         expect.objectContaining({ keyword: "Ultra Think", from: "medium", to: "max" }),
       );
+    });
+  });
+});
+
+describe("composeRuntimeOptionExtensions with advisor policy", () => {
+  it("keeps the composed advisor MCP policy empty beside preserved memory recall", async () => {
+    const memoryRecall = async () => ({
+      runtimeOptions: {
+        mcpServers: {
+          "mono-agent-memory": { type: "http", url: "http://127.0.0.1:7311/mcp" },
+        },
+      },
+    });
+    const advisorOverride = createRequestModelOverrideRuntimeExtension();
+    const appExtensions = composeRuntimeOptionExtensions([
+      async () => ({ runtimeOptions: {} }),
+      async (input) => advisorOverride({ request: input.request }),
+    ]);
+    const configuredExtensions = composeRuntimeOptionExtensions(
+      [memoryRecall, appExtensions],
+      { preserveMcpServersUnderOverride: [memoryRecall] },
+    );
+    const input = {
+      request: {
+        conversationId: "advisor:review",
+        userMessage: "Review this untrusted patch.",
+        abortSignal: new AbortController().signal,
+        metadata: {
+          advisor: { model: "claude:claude-opus-4-8", effort: "xhigh" },
+        },
+      },
+      runId: "run-advisor",
+      context: {},
+    } as unknown as AgentHarnessRuntimeOptionsInput;
+
+    const result = await configuredExtensions!(input);
+
+    expect(result.sealedToolPolicy).toBe(true);
+    expect(result.toolPolicyOverride).toEqual({
+      allowedTools: [],
+      disallowedTools: [],
+      mcpServers: {},
     });
   });
 });

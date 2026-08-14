@@ -43,10 +43,14 @@ export function composeRuntimeOptionExtensions(
     const runtimeOptions: Record<string, unknown> = {};
     for (const result of results) mergeRuntimeOptions(runtimeOptions, result.runtimeOptions);
     let toolPolicyOverride: AgentHarnessRuntimeOptionsExtension["toolPolicyOverride"];
+    let sealedToolPolicy = false;
     for (const result of results) {
-      if (result.toolPolicyOverride !== undefined) toolPolicyOverride = result.toolPolicyOverride;
+      if (result.toolPolicyOverride !== undefined) {
+        toolPolicyOverride = result.toolPolicyOverride;
+        sealedToolPolicy = result.sealedToolPolicy === true;
+      }
     }
-    if (toolPolicyOverride !== undefined) {
+    if (toolPolicyOverride !== undefined && !sealedToolPolicy) {
       const preservedServers: Record<string, unknown> = {};
       const preservedExtensions = new Set(options.preserveMcpServersUnderOverride ?? []);
       for (const [index, extension] of active.entries()) {
@@ -69,6 +73,7 @@ export function composeRuntimeOptionExtensions(
     return {
       runtimeOptions,
       ...(toolPolicyOverride === undefined ? {} : { toolPolicyOverride }),
+      ...(toolPolicyOverride !== undefined && sealedToolPolicy ? { sealedToolPolicy: true } : {}),
       cleanup: async () => {
         await Promise.all(results.map(async (result) => result.cleanup?.()));
       },

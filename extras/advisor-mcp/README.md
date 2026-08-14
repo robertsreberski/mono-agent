@@ -70,8 +70,10 @@ mono-agent validate
 mono-agent start --foreground
 ```
 
-The endpoint defaults to `http://127.0.0.1:4312/mcp`. Enable bearer auth even
-on loopback when another local user or process is outside the trust boundary:
+The endpoint defaults to `http://127.0.0.1:4312/mcp`. Its configured path must
+be an exact absolute literal: query/fragment syntax, controls, and Express route
+metacharacters (`: * ( ) { } ? + [ ] ! \\`) are rejected. Enable bearer auth
+even on loopback when another local user or process is outside the trust boundary:
 
 ```bash
 export MONO_AGENT_ADVISOR_REQUIRE_BEARER=true

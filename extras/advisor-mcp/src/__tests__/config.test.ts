@@ -9,6 +9,21 @@ import {
 } from "../config.js";
 import { AdvisorError } from "../errors.js";
 
+const ROUTER_METACHARACTER_PATHS = [
+  "/mcp/:id",
+  "/mcp*",
+  "/mcp(",
+  "/mcp)",
+  "/mcp{segment",
+  "/mcp}",
+  "/mcp?",
+  "/mcp+",
+  "/mcp[",
+  "/mcp]",
+  "/mcp!",
+  String.raw`/mcp\literal`,
+] as const;
+
 describe("advisor config", () => {
   it("loads the complete disabled loopback defaults", async () => {
     await expect(loadAdvisorConfig({ env: {}, json: {} })).resolves.toEqual({
@@ -65,7 +80,7 @@ describe("advisor config", () => {
     });
   });
 
-  it.each(["mcp", "/mcp?x=1", "/mcp#fragment", "/mcp\u0000"])(
+  it.each(["mcp", "/mcp?x=1", "/mcp#fragment", "/mcp\u0000", ...ROUTER_METACHARACTER_PATHS])(
     "rejects unsafe endpoint path %j",
     async (path) => {
       await expect(loadAdvisorConfig({

@@ -82,4 +82,87 @@ describe("composeRuntimeOptionExtensions", () => {
       memoryRecall: { type: "http", url: "http://127.0.0.1:7311" },
     });
   });
+
+  it("does not carry an earlier sealed policy into a later ordinary winner", async () => {
+    const memoryRecall = vi.fn(async () => ({
+      runtimeOptions: {
+        mcpServers: {
+          memoryRecall: { type: "http", url: "http://127.0.0.1:7311" },
+        },
+      },
+    }));
+    const sealedOverride = vi.fn(async () => ({
+      runtimeOptions: {},
+      sealedToolPolicy: true,
+      toolPolicyOverride: {
+        allowedTools: [],
+        disallowedTools: [],
+        mcpServers: {},
+      },
+    }));
+    const ordinaryOverride = vi.fn(async () => ({
+      runtimeOptions: {},
+      toolPolicyOverride: {
+        allowedTools: ["ProposeAgentConfiguration"],
+        disallowedTools: [],
+        mcpServers: {
+          configurator: { type: "http", url: "http://127.0.0.1:7310" },
+        },
+      },
+    }));
+    const composed = composeRuntimeOptionExtensions(
+      [memoryRecall, sealedOverride, ordinaryOverride],
+      { preserveMcpServersUnderOverride: [memoryRecall] },
+    );
+
+    const result = await composed!(INPUT);
+
+    expect(result.sealedToolPolicy).toBeUndefined();
+    expect(result.toolPolicyOverride?.mcpServers).toEqual({
+      configurator: { type: "http", url: "http://127.0.0.1:7310" },
+      memoryRecall: { type: "http", url: "http://127.0.0.1:7311" },
+    });
+  });
+
+  it("does not let an earlier ordinary policy unseal a later sealed winner", async () => {
+    const memoryRecall = vi.fn(async () => ({
+      runtimeOptions: {
+        mcpServers: {
+          memoryRecall: { type: "http", url: "http://127.0.0.1:7311" },
+        },
+      },
+    }));
+    const ordinaryOverride = vi.fn(async () => ({
+      runtimeOptions: {},
+      toolPolicyOverride: {
+        allowedTools: ["ProposeAgentConfiguration"],
+        disallowedTools: [],
+        mcpServers: {
+          configurator: { type: "http", url: "http://127.0.0.1:7310" },
+        },
+      },
+    }));
+    const sealedOverride = vi.fn(async () => ({
+      runtimeOptions: {},
+      sealedToolPolicy: true,
+      toolPolicyOverride: {
+        allowedTools: [],
+        disallowedTools: [],
+        mcpServers: {},
+      },
+    }));
+    const composed = composeRuntimeOptionExtensions(
+      [memoryRecall, ordinaryOverride, sealedOverride],
+      { preserveMcpServersUnderOverride: [memoryRecall] },
+    );
+
+    const result = await composed!(INPUT);
+
+    expect(result.sealedToolPolicy).toBe(true);
+    expect(result.toolPolicyOverride).toEqual({
+      allowedTools: [],
+      disallowedTools: [],
+      mcpServers: {},
+    });
+  });
 });

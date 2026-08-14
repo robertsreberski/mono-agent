@@ -94,6 +94,7 @@ const DEFAULT_MAX_CONCURRENT_REVIEWS = 2;
 const DEFAULT_MAX_SESSIONS = 64;
 const DEFAULT_SESSION_TTL_MS = 21_600_000;
 const DEFAULT_NAMESPACE = "default";
+const EXPRESS_ROUTE_METACHARACTERS = /[{}()\[\]+?!:*\\]/u;
 
 const invalidConfig = (
   message: string,
@@ -196,7 +197,7 @@ export async function loadAdvisorConfig(
     ...(operatorPrompt === undefined ? {} : { operatorPrompt }),
   };
 
-  validatePath(config.path);
+  validateAdvisorPath(config.path);
   validateAllowedHosts(config.allowedHosts);
   validateAllowedOrigins(config.allowedOrigins);
   validateNamespace(config.namespace);
@@ -250,10 +251,15 @@ function validateSafeBind(config: AdvisorConfig, allowedHostsExplicit: boolean):
   }
 }
 
-function validatePath(path: string): void {
-  if (!path.startsWith("/") || path.includes("?") || path.includes("#") || /[\u0000-\u001f\u007f]/u.test(path)) {
+export function validateAdvisorPath(path: string): void {
+  if (
+    !path.startsWith("/")
+    || path.includes("#")
+    || EXPRESS_ROUTE_METACHARACTERS.test(path)
+    || /[\u0000-\u001f\u007f]/u.test(path)
+  ) {
     throw invalidConfig(
-      "MONO_AGENT_ADVISOR_PATH must be an absolute path without a query string, fragment, or control characters.",
+      "MONO_AGENT_ADVISOR_PATH must be an exact absolute literal path without router metacharacters, a query string, fragment, or control characters.",
       { env: "MONO_AGENT_ADVISOR_PATH" },
     );
   }

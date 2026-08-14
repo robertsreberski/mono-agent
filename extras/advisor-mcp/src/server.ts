@@ -17,7 +17,7 @@ import express from "express";
 import type { ErrorRequestHandler, Request, RequestHandler, Response } from "express";
 
 import { abortAdvisorRun } from "./cancellation.js";
-import { ADVISOR_MAX_REQUEST_BYTES, type AdvisorConfig } from "./config.js";
+import { ADVISOR_MAX_REQUEST_BYTES, type AdvisorConfig, validateAdvisorPath } from "./config.js";
 import { AdvisorConcurrencyGate } from "./concurrency.js";
 import { createAdvisorContinuityCache, type AdvisorContinuityCache } from "./continuity.js";
 import { AdvisorError } from "./errors.js";
@@ -210,6 +210,7 @@ export function constantTimeBearerMatches(
 }
 
 function validateStartConfig(config: AdvisorConfig): void {
+  validateAdvisorPath(config.path);
   if (!config.enabled) {
     throw new AdvisorError("invalid_config", "Advisor MCP cannot start while advisor.enabled is false.");
   }

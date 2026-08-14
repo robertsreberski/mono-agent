@@ -117,6 +117,7 @@ interface RequestModelOverrideResult {
     readonly disallowedTools: readonly string[];
     readonly mcpServers: Record<string, unknown>;
   };
+  readonly sealedToolPolicy?: boolean;
   readonly cleanup: () => Promise<void>;
 }
 
@@ -201,6 +202,7 @@ export function createRequestModelOverrideRuntimeExtension(
       runtimeOptions,
       ...(resolution.source === "advisor"
         ? {
+            sealedToolPolicy: true,
             toolPolicyOverride: {
               allowedTools: [],
               disallowedTools: [],

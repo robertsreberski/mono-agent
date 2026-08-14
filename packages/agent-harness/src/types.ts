@@ -473,6 +473,14 @@ export interface AgentHarnessRuntimeOptionsExtension {
    * configuration where ordinary action tools must not leak through.
    */
   readonly toolPolicyOverride?: ToolPolicy;
+  /**
+   * Prevents a composer from reattaching otherwise preserved MCP servers to
+   * this extension's {@link toolPolicyOverride}. The marker applies only to
+   * the extension that supplies the winning authoritative override; a later
+   * ordinary override clears the seal through normal last-wins precedence.
+   * Use it when the request must expose exactly the declared tool policy.
+   */
+  readonly sealedToolPolicy?: boolean;
   readonly cleanup?: () => void | Promise<void>;
   /**
    * Cleanup that must wait until the runtime call and all of its tool clients

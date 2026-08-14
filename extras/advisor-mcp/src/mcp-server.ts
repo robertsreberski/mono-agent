@@ -4,6 +4,7 @@ import type { AdvisorConfig } from "./config.js";
 import type { AdvisorAdmissionGate } from "./concurrency.js";
 import type { AdvisorContinuityResolver } from "./continuity.js";
 import { executeReviewIteration } from "./execution.js";
+import { advisorMcpPackageVersion } from "./package-version.js";
 import {
   advisorToolResult,
   createAdvisorOutputSchema,
@@ -25,7 +26,7 @@ export function createAdvisorMcpServer(options: CreateAdvisorMcpServerOptions): 
   if (options.config.model === undefined || options.config.effort === undefined) {
     throw new TypeError("Advisor MCP requires explicit model and effort configuration.");
   }
-  const server = new McpServer({ name: "mono-agent-advisor", version: "0.19.1" });
+  const server = new McpServer({ name: "mono-agent-advisor", version: advisorMcpPackageVersion() });
   server.registerTool(
     REVIEW_ITERATION_TOOL_NAME,
     {
