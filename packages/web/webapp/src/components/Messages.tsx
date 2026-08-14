@@ -177,6 +177,54 @@ function RunningText({ status }: EmptyMessagePartProps) {
   );
 }
 
+type AskUserAnsweredSummary =
+  | { readonly kind: "single"; readonly text: string }
+  | { readonly kind: "multiple"; readonly lines: readonly string[] };
+
+function resolveWebAskAnswer(
+  snapshot: AskSnapshot,
+  answer: AskAnswer,
+): {
+  readonly header: string;
+  readonly labels: readonly string[];
+  readonly customReply?: string;
+} | undefined {
+  const question = snapshot.questions.find((candidate) => candidate.id === answer.questionId);
+  if (question === undefined) return undefined;
+  const customReply = answer.customReply?.trim();
+  return {
+    header: question.header,
+    labels: answer.selectedOptionIds.flatMap((optionId) => {
+      const option = question.options.find((candidate) => candidate.id === optionId);
+      return option === undefined ? [] : [option.label];
+    }),
+    ...(customReply === undefined || customReply.length === 0 ? {} : { customReply }),
+  };
+}
+
+function webAskAnsweredSummary(snapshot: AskSnapshot): AskUserAnsweredSummary | undefined {
+  if (snapshot.answers.length === 1) {
+    const resolved = resolveWebAskAnswer(snapshot, snapshot.answers[0]!);
+    if (resolved === undefined) return undefined;
+    if (resolved.labels.length > 0) {
+      return { kind: "single", text: resolved.labels.join(", ") };
+    }
+    return resolved.customReply === undefined
+      ? undefined
+      : { kind: "single", text: `Answer: ${resolved.customReply}` };
+  }
+
+  const lines = snapshot.answers.flatMap((answer) => {
+    const resolved = resolveWebAskAnswer(snapshot, answer);
+    if (resolved === undefined || resolved.header.trim().length === 0) return [];
+    if (resolved.labels.length > 0) {
+      return [`${resolved.header}: ${resolved.labels.join(", ")}`];
+    }
+    return resolved.customReply === undefined ? [] : [`${resolved.header}: ${resolved.customReply}`];
+  });
+  return lines.length === 0 ? undefined : { kind: "multiple", lines };
+}
+
 function AskUserTool({
   args,
   result,
@@ -240,6 +288,7 @@ function AskUserTool({
   };
 
   const terminal = snapshot?.status !== undefined && snapshot.status !== "pending";
+  const answeredSummary = snapshot?.status === "answered" ? webAskAnsweredSummary(snapshot) : undefined;
   return (
     <section className="ask-user-card" aria-label="Question from the agent">
       <div className="ask-user-heading">
@@ -252,7 +301,18 @@ function AskUserTool({
       {snapshot === undefined ? (
         <p className="ask-user-loading">Preparing the questions…</p>
       ) : terminal ? (
-        <p className="ask-user-complete">{snapshot.status === "answered" ? "Answers submitted." : `Question ${snapshot.status}.`}</p>
+        <div className="ask-user-complete" role="status">
+          <p>{snapshot.status === "answered" ? "Answers submitted." : `Question ${snapshot.status}.`}</p>
+          {answeredSummary?.kind === "single" ? (
+            <p className="ask-user-summary-line">{answeredSummary.text}</p>
+          ) : answeredSummary?.kind === "multiple" ? (
+            <ul className="ask-user-summary">
+              {answeredSummary.lines.map((line, index) => (
+                <li key={`${String(index)}:${line}`} className="ask-user-summary-line">{line}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
       ) : (
         <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
           {snapshot.questions.map((question, questionIndex) => {

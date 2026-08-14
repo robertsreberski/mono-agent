@@ -179,6 +179,13 @@ multi-select questions accept several choices and custom text. The browser
 submits the form atomically and the agent resumes the existing run. Cancelling
 the turn also cancels its pending form.
 
+A terminal snapshot replaces the form with a compact completion state. One
+resolved answer shows its option labels, while one custom-only answer shows its
+operator-private text. Multiple answers are attributed by question header in
+recorded order; resolved labels take precedence over custom text. Unknown
+questions and unknown-option-only entries are omitted, leaving only
+`Answers submitted.` when nothing can be resolved.
+
 ## Architecture
 
 ### Data flow

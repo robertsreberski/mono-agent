@@ -150,6 +150,15 @@ radio controls; multi-select questions use checkboxes and may combine proposed
 choices with a custom reply. Submitting the complete form resumes the same
 model run rather than creating a new user turn.
 
+When the interaction reaches a terminal state, the completion state replaces
+the form rather than leaving disabled controls behind. Answered interactions
+keep `Answers submitted.` and add either one compact answer line or a question-
+attributed list in recorded order. Resolved option labels take precedence over
+custom replies. Because this is the owner-private operator console, custom-only
+answers show their text; unknown questions and unknown-option-only answers are
+omitted. If nothing is resolvable, the generic completion text stands alone.
+The completion container retains semantic `role="status"` markup.
+
 An `AskUser` call may contain one to five questions. The form remains attached
 to the running assistant message across ordinary state refreshes. Cancelling
 the turn cancels its pending question set, and an expired or already-completed
