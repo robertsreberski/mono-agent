@@ -10,6 +10,7 @@ import {
 } from "@mono-agent/agent-runtime";
 import { executionModeIncompatibilityReason, parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime/model-refs.js";
 import { listRuntimeBridges } from "@mono-agent/agent-runtime/ai/runtime/registry.js";
+import { bridgeProcessJobsController } from "./process-jobs.js";
 import { monoSandboxImpl } from "./sandbox-impl.js";
 
 import type {
@@ -280,6 +281,8 @@ export interface MonoRuntimeAttemptResolution {
     readonly sandbox?: never;
     /** Logical Codex network policy is caller-owned and resolver-protected. */
     readonly codexSandboxNetworkAccess?: never;
+    /** Attempt plugins cannot replace the host's durable process-job owner. */
+    readonly processJobs?: never;
   };
   /** Provider-specific projection of the logical tool policy for this attempt. */
   readonly policyOptions?: Readonly<Pick<
@@ -367,6 +370,9 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
 
       const result = await runtime.run(systemPrompt, {
         ...withoutCallerSandbox(runOptions),
+        ...(runOptions.processJobs === undefined
+          ? {}
+          : { processJobs: bridgeProcessJobsController(runOptions.processJobs) }),
         executionMode,
       } as unknown as KernelRunOptions);
       return result as RuntimeResult;
@@ -452,9 +458,16 @@ function protectAttemptResolver(
       ...resolution,
       ...(resolution.options === undefined
         ? {}
-        : { options: withoutCallerSandbox(resolution.options) }),
+        : { options: withoutProtectedAttemptOptions(resolution.options) }),
     };
   };
+}
+
+function withoutProtectedAttemptOptions<T extends Readonly<Record<string, unknown>>>(
+  input: T,
+): Omit<T, "sandbox" | "processJobs"> {
+  const { sandbox: _callerSandbox, processJobs: _processJobs, ...rest } = input;
+  return rest;
 }
 
 export { createPiOAuthApiKeyResolver };

@@ -1,0 +1,96 @@
+import type { ProcessJobState } from "@mono-agent/agent-contracts";
+
+import type { PreparedSandboxCommand } from "./sandbox.js";
+
+export interface ProcessJobProcessResult {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly aborted: boolean;
+  readonly timedOut: boolean;
+  readonly bufferExceeded: boolean;
+  readonly truncated: boolean;
+  readonly bytes: number;
+  readonly storedBytes: number;
+  readonly spawnError: Error | null;
+  readonly durationMs: number;
+}
+
+export interface ProcessJobLaunchOptions {
+  readonly timeoutMs?: number;
+  readonly signal?: AbortSignal;
+  readonly maxBufferBytes?: number;
+  readonly onStdout?: (chunk: Buffer) => void;
+  readonly onStderr?: (chunk: Buffer) => void;
+}
+
+export interface ProcessJobProcessHandle {
+  readonly pid: number | null;
+  readonly pgid: number | null;
+  readonly startedAt: string;
+  readonly completion: Promise<ProcessJobProcessResult>;
+  /** Send SIGTERM to the owned group and escalate to SIGKILL after one second. */
+  readonly cancel: () => void;
+}
+
+export interface ProcessJobStartRequest {
+  readonly tool: "Exec" | "Bash";
+  /**
+   * Exact sandbox-prepared command. The controller takes ownership before
+   * start() can settle and must call cleanup after the owned process tree exits
+   * on every success/failure/cancellation path. Never persist env values or raw
+   * argv from this object.
+   */
+  readonly prepared: PreparedSandboxCommand;
+  /** Kernel-produced summary that contains no argument/command values. */
+  readonly summary: string;
+  /** Explicit per-call narrowing; omission delegates to compiled host config. */
+  readonly timeoutMs?: number;
+  /** Explicit per-call preview narrowing; omission delegates to host config. */
+  readonly maxOutputChars?: number;
+  /** One-shot launcher bound to the exact prepared command and POSIX group wait. */
+  readonly launch: (options?: ProcessJobLaunchOptions) => ProcessJobProcessHandle;
+}
+
+export interface ProcessJobStartResult {
+  readonly jobId: string;
+  readonly state: Extract<ProcessJobState, "queued" | "starting" | "running">;
+  readonly startedAt: string | null;
+}
+
+/** Request-scoped host controller injected only into Pi-native Exec/Bash. */
+export interface ProcessJobsController {
+  start(request: ProcessJobStartRequest): Promise<ProcessJobStartResult>;
+}
+
+/** Bridge the typed host controller to agent-runtime's dependency-free seam. */
+export function bridgeProcessJobsController(
+  controller: ProcessJobsController,
+): ProcessJobsController {
+  if (controller === null || typeof controller !== "object" || typeof controller.start !== "function") {
+    throw new TypeError("Process-jobs controller must implement start().");
+  }
+  return Object.freeze({
+    async start(request: ProcessJobStartRequest): Promise<ProcessJobStartResult> {
+      assertKernelStartRequest(request);
+      return await controller.start(request);
+    },
+  });
+}
+
+function assertKernelStartRequest(request: ProcessJobStartRequest): void {
+  if (request === null || typeof request !== "object"
+    || (request.tool !== "Exec" && request.tool !== "Bash")
+    || typeof request.summary !== "string"
+    || typeof request.launch !== "function"
+    || request.prepared === null
+    || typeof request.prepared !== "object"
+    || typeof request.prepared.command !== "string"
+    || !Array.isArray(request.prepared.args)
+    || request.prepared.args.some((argument) => typeof argument !== "string")
+    || typeof request.prepared.cwd !== "string"
+    || typeof request.prepared.sandboxed !== "boolean") {
+    throw new TypeError("Kernel process-job start request is invalid.");
+  }
+}

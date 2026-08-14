@@ -48,12 +48,20 @@
  * @property {string} command
  * @property {ReadonlyArray<string>} [args]
  * @property {string} [cwd]
- * @property {Object<string, string|undefined>} [env]
+ * @property {Record<string, string|undefined>} [env]
  * @property {boolean} [allowLocalBinding] Trusted per-command capability.
  */
 
 /**
- * @typedef {SandboxCommandSpec & {sandboxed: boolean, sandboxSettingsPath?: string, cleanup?: () => Promise<void>}} PreparedSandboxCommand
+ * @typedef {Object} PreparedSandboxCommand
+ * @property {string} command
+ * @property {ReadonlyArray<string>} args
+ * @property {string} cwd
+ * @property {Record<string, string|undefined>} [env]
+ * @property {boolean} [allowLocalBinding]
+ * @property {boolean} sandboxed
+ * @property {string} [sandboxSettingsPath]
+ * @property {() => Promise<void>} [cleanup]
  */
 
 /**

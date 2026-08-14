@@ -83,6 +83,7 @@ type RuntimeRunComparableKeys =
   | "codexLoadProjectDocs"
   | "codexSandboxNetworkAccess"
   | "nativeSubagents"
+  | "processJobs"
   | "acpSessionTokenKey";
 type RuntimeRunComparableOptions = Pick<RuntimeRunOptions, RuntimeRunComparableKeys>;
 type KnownKeys<T> = {
@@ -225,6 +226,14 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
         },
       } satisfies MonoRuntimeAttemptResolution;
       void invalidResolverOptions;
+
+      const invalidProcessJobsResolver = {
+        options: {
+          // @ts-expect-error route plugins cannot replace the host process-job owner.
+          processJobs: { start: async () => ({ jobId: "fake", state: "queued", startedAt: null }) },
+        },
+      } satisfies MonoRuntimeAttemptResolution;
+      void invalidProcessJobsResolver;
     }
   });
 

@@ -41,6 +41,15 @@ export {
 } from "./runtime-helpers.js";
 export { parseMcpServers } from "./mcp-servers.js";
 export type { NormalizedMcpServer, NormalizedMcpTransport } from "./mcp-servers.js";
+export { bridgeProcessJobsController } from "./process-jobs.js";
+export type {
+  ProcessJobLaunchOptions,
+  ProcessJobProcessHandle,
+  ProcessJobProcessResult,
+  ProcessJobsController,
+  ProcessJobStartRequest,
+  ProcessJobStartResult,
+} from "./process-jobs.js";
 export { resolveRuntimePolicies } from "./runtime-policies.js";
 export { PI_TRANSPORTS, isRuntimeSubagentActivityEvent } from "./types.js";
 export {
