@@ -58,7 +58,7 @@ const JSON_ONLY_ADAPTER_FIELDS = [
 ] as const;
 const CONDITIONAL_MENTION_STRIP_DOCS = [
   {
-    contract: "When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`.",
+    contract: "When unset, preserves one readable authenticated self-mention marker; `true` restores legacy full stripping and `false` keeps raw mention forms.",
     docs: [
       ["docs/config/env-vars.md", "| `MONO_AGENT_SLACK_STRIP_MENTION_TEXT` |"],
       ["docs/config/reference.md", "| `slack.stripMentionText` |"],

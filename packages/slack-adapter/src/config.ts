@@ -78,7 +78,7 @@ export interface SlackAdapterConfig {
   readonly allowAllChannels: boolean;
   readonly botUserIds: readonly string[];
   readonly mentionTextAliases: readonly string[];
-  readonly stripMentionText: boolean;
+  readonly stripMentionText?: boolean;
   /** Shortcut bindings, read from the `slack.shortcuts` JSON array. */
   readonly shortcuts: readonly SlackShortcutConfig[];
   /** App Home tab config, read from the `slack.homeTab` JSON object. */
@@ -169,12 +169,15 @@ export async function loadSlackAdapterConfig(
   );
   const botUserIds = readCsv(env.MONO_AGENT_SLACK_BOT_USER_IDS);
   const mentionTextAliases = readCsv(env.MONO_AGENT_SLACK_MENTION_TEXT_ALIASES);
-  const stripMentionText = readBoolean(
-    env.MONO_AGENT_SLACK_STRIP_MENTION_TEXT,
-    "MONO_AGENT_SLACK_STRIP_MENTION_TEXT",
-    botUserIds.length > 0 || mentionTextAliases.length > 0,
-    invalidConfig,
-  );
+  const stripMentionTextRaw = env.MONO_AGENT_SLACK_STRIP_MENTION_TEXT;
+  const stripMentionText = normalizeOptionalString(stripMentionTextRaw) === undefined
+    ? undefined
+    : readBoolean(
+        stripMentionTextRaw,
+        "MONO_AGENT_SLACK_STRIP_MENTION_TEXT",
+        false,
+        invalidConfig,
+      );
   const resolveUserNames = readBoolean(
     env.MONO_AGENT_SLACK_RESOLVE_USER_NAMES,
     "MONO_AGENT_SLACK_RESOLVE_USER_NAMES",
@@ -200,7 +203,7 @@ export async function loadSlackAdapterConfig(
       allowAllChannels,
       botUserIds,
       mentionTextAliases,
-      stripMentionText,
+      ...(stripMentionText === undefined ? {} : { stripMentionText }),
       shortcuts: [],
       homeTab: { enabled: false, buttons: [] },
       resolveUserNames,
@@ -232,7 +235,7 @@ export async function loadSlackAdapterConfig(
     allowAllChannels,
     botUserIds,
     mentionTextAliases,
-    stripMentionText,
+    ...(stripMentionText === undefined ? {} : { stripMentionText }),
     shortcuts,
     homeTab,
     resolveUserNames,

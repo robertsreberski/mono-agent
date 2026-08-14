@@ -32,7 +32,9 @@ import {
 import { SlackApiError } from "./slack-client.js";
 import {
   formatMarkdownForSlack,
+  normalizeSlackBotUserName,
   normalizeSlackMarkdownToMarkdown,
+  preserveSlackSelfMentionText,
   renderSlackMentionTokens,
 } from "./slack-markdown.js";
 import {
@@ -450,6 +452,8 @@ export interface SlackAdapterOptions {
   botUserIds?: SlackUserId[];
   mentionTextAliases?: string[];
   stripMentionText?: boolean;
+  /** Authenticated Slack username used for one readable self-address marker. */
+  botUserName?: string;
   stream?: SlackAdapterStreamOptions;
   messages?: SlackAdapterMessages;
   attachments?: SlackAttachmentOptions;
@@ -924,7 +928,8 @@ export class SlackAdapter {
   private readonly botUserIds: Set<string>;
   private readonly rawBotUserIds: readonly string[];
   private readonly mentionTextAliases: readonly string[];
-  private readonly stripMentionText: boolean;
+  private readonly stripMentionText: boolean | undefined;
+  private readonly botUserName: string | undefined;
   private readonly streamOptions: SlackAdapterStreamOptions;
   private readonly messages: Required<SlackAdapterMessages>;
   private readonly attachmentMaxBytes: number;
@@ -1016,8 +1021,8 @@ export class SlackAdapter {
     );
     this.rawBotUserIds = options.botUserIds ?? [];
     this.mentionTextAliases = options.mentionTextAliases ?? [];
-    this.stripMentionText =
-      options.stripMentionText ?? (this.botUserIds.size > 0 || this.mentionTextAliases.length > 0);
+    this.stripMentionText = options.stripMentionText;
+    this.botUserName = normalizeSlackBotUserName(options.botUserName);
     this.streamOptions = options.stream ?? {};
     this.runtimeCatalog = buildSlackRuntimeControlCatalog(options.runtimeControls);
     this.runtimeSlashCommands = buildSlackRuntimeSlashCommandMap(options.runtimeSlashCommands);
@@ -3328,15 +3333,22 @@ export class SlackAdapter {
   }
 
   private prepareText(text: string): string {
-    // `stripMentionText: false` is an explicit opt-out of ALL inbound mention
-    // rewriting: callers in that mode receive Slack's raw text verbatim, and
-    // prepareCommandText still recognizes a leading raw `<@bot>` token. So
-    // third-party mention rendering is gated on the same flag rather than
-    // applied unconditionally.
-    if (!this.stripMentionText) {
+    // Explicit false preserves raw mention forms. Markdown normalization still
+    // runs, as it did before this option became tri-state.
+    if (this.stripMentionText === false) {
       return normalizeSlackMarkdownToMarkdown(text);
     }
 
+    if (this.stripMentionText === undefined) {
+      const preserved = preserveSlackSelfMentionText(text, {
+        botUserIds: this.rawBotUserIds,
+        mentionTextAliases: this.mentionTextAliases,
+        ...(this.botUserName === undefined ? {} : { botUserName: this.botUserName }),
+      });
+      return normalizeSlackMarkdownToMarkdown(renderSlackMentionTokens(preserved));
+    }
+
+    // Explicit true is the byte-identical legacy full-strip path.
     let stripped = text;
     for (const botUserId of this.rawBotUserIds) {
       stripped = stripped.replaceAll(`<@${botUserId}>`, " ");
@@ -3356,15 +3368,40 @@ export class SlackAdapter {
 
   private prepareCommandText(text: string): string {
     let commandText = text.trim();
-    const identityTokens = [
-      ...this.rawBotUserIds.map((botUserId) => `<@${botUserId}>`),
-      ...this.mentionTextAliases.map((alias) => alias.trim()).filter((alias) => alias.length > 0),
+    const identityTokens: readonly {
+      readonly value: string;
+      readonly caseInsensitive: boolean;
+    }[] = [
+      ...this.rawBotUserIds
+        .map((botUserId) => botUserId.trim())
+        .filter((botUserId) => botUserId.length > 0)
+        .map((botUserId) => ({ value: `@${botUserId}`, caseInsensitive: true })),
+      ...(this.botUserName === undefined
+        ? []
+        : [{ value: `@${this.botUserName}`, caseInsensitive: false }]),
+      ...this.mentionTextAliases
+        .map((alias) => alias.trim())
+        .filter((alias) => alias.length > 0)
+        .map((alias) => ({ value: alias, caseInsensitive: false })),
     ];
     let strippedIdentity = true;
     while (strippedIdentity) {
       strippedIdentity = false;
+      const rawMentionRemainder = stripLeadingKnownSlackMentionToken(
+        commandText,
+        this.botUserIds,
+      );
+      if (rawMentionRemainder !== undefined) {
+        commandText = rawMentionRemainder;
+        strippedIdentity = true;
+        continue;
+      }
       for (const identityToken of identityTokens) {
-        const remainder = stripLeadingIdentityToken(commandText, identityToken);
+        const remainder = stripLeadingIdentityToken(
+          commandText,
+          identityToken.value,
+          identityToken.caseInsensitive,
+        );
         if (remainder !== undefined) {
           commandText = remainder;
           strippedIdentity = true;
@@ -3537,8 +3574,27 @@ function parseCommand(text: string): NormalizedCommand | undefined {
   return { name: match[1].toLowerCase(), argument: match[2]?.trim() ?? "" };
 }
 
-function stripLeadingIdentityToken(text: string, identityToken: string): string | undefined {
-  if (!text.startsWith(identityToken)) {
+function stripLeadingKnownSlackMentionToken(
+  text: string,
+  knownBotUserIds: ReadonlySet<string>,
+): string | undefined {
+  const match = /^<@([^>|\s]+)(?:\|[^>\n]*)?>/u.exec(text);
+  const userId = match?.[1];
+  if (match === null || userId === undefined || !knownBotUserIds.has(normalizeIdForMatch(userId))) {
+    return undefined;
+  }
+  return stripLeadingIdentityToken(text, match[0], false);
+}
+
+function stripLeadingIdentityToken(
+  text: string,
+  identityToken: string,
+  caseInsensitive = false,
+): string | undefined {
+  const matches = caseInsensitive
+    ? text.slice(0, identityToken.length).toLowerCase() === identityToken.toLowerCase()
+    : text.startsWith(identityToken);
+  if (!matches) {
     return undefined;
   }
   const nextCharacter = text[identityToken.length];

@@ -2318,7 +2318,7 @@
           }
         },
         "stripMentionText": {
-          "description": "When unset, defaults to `true` when `botUserIds` or `mentionTextAliases` is non-empty; otherwise `false`.",
+          "description": "When unset, preserves one readable authenticated self-mention marker; `true` restores legacy full stripping and `false` keeps raw mention forms.",
           "examples": [
             false
           ],
