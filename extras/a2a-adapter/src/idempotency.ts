@@ -54,6 +54,8 @@ const MAX_RETENTION_MS = 365 * 24 * 60 * 60 * 1_000;
 const DEFAULT_MAX_RECORDS = 10_000;
 const MAX_RECORDS_LIMIT = 1_000_000;
 const ERROR_MARKER = "[mono-agent:a2a-idempotency]";
+const SHUTDOWN_IN_DOUBT_MESSAGE =
+  "The provider began shutting down before the delegated A2A task's terminal result could be durably reconciled. The admission remains active and automatic re-execution is refused.";
 
 export interface A2AProviderIdempotencyOptions {
   /** Owner-only durable record directory. */
@@ -140,6 +142,11 @@ interface RuntimeRequest {
   readonly terminal: Promise<SendMessageResult>;
 }
 
+interface LiveImmediateTask {
+  readonly record: ActiveRecord;
+  explicitCancellation?: Promise<Task | undefined>;
+}
+
 interface DirectoryIdentity {
   readonly dev: number;
   readonly ino: number;
@@ -159,6 +166,8 @@ export async function createIdempotentA2ARequestHandler(input: {
   readonly delegate: A2ARequestHandler;
   readonly taskStore: TaskStore;
   readonly options: A2AProviderIdempotencyOptions;
+  /** @internal Authoritative provider signal for executor.stop-owned cancellations. */
+  readonly wasTaskCanceledByShutdown?: (taskId: string) => boolean;
   readonly logger?: {
     warn?(message: string, metadata?: Record<string, unknown>): void;
     error?(message: string, metadata?: Record<string, unknown>): void;
@@ -182,6 +191,7 @@ export async function createIdempotentA2ARequestHandler(input: {
     input.taskStore,
     store,
     providerScope,
+    input.wasTaskCanceledByShutdown,
     input.logger,
   );
 }
@@ -360,7 +370,7 @@ class UnsupportedIdempotencyA2ARequestHandler extends DelegatingA2ARequestHandle
 
 class IdempotentA2ARequestHandler extends DelegatingA2ARequestHandler {
   private readonly activeRequests = new Map<string, RuntimeRequest>();
-  private readonly liveImmediateTasks = new Set<string>();
+  private readonly liveImmediateTasks = new Map<string, LiveImmediateTask>();
   private shuttingDown = false;
 
   /**
@@ -369,7 +379,8 @@ class IdempotentA2ARequestHandler extends DelegatingA2ARequestHandler {
    * actually happened is unknown. Recording it as terminal would hand a later replay a definite
    * answer for work whose effects are in doubt, which is exactly what `activeAfterRestart:
    * idempotency_in_doubt` promises never to do. Latch the shutdown so the monitor stops promoting
-   * terminal states and the admission stays active for the next process to fail closed on.
+   * shutdown terminals and the admission stays active for the next process to fail closed on. A
+   * separately recorded explicit user cancellation remains a definitive requested outcome.
    */
   beginShutdown(): void {
     this.shuttingDown = true;
@@ -380,6 +391,7 @@ class IdempotentA2ARequestHandler extends DelegatingA2ARequestHandler {
     private readonly taskStore: TaskStore,
     private readonly store: IdempotencyStore,
     private readonly providerScope: string,
+    private readonly wasTaskCanceledByShutdown: ((taskId: string) => boolean) | undefined,
     private readonly logger?: {
       warn?(message: string, metadata?: Record<string, unknown>): void;
       error?(message: string, metadata?: Record<string, unknown>): void;
@@ -445,6 +457,37 @@ class IdempotentA2ARequestHandler extends DelegatingA2ARequestHandler {
       : { payload: { $case: "message", value: result } };
   }
 
+  override async cancelTask(
+    params: Parameters<A2ARequestHandler["cancelTask"]>[0],
+    context: ServerCallContext,
+  ): Promise<Task> {
+    const liveTask = this.liveImmediateTasks.get(params.id);
+    if (liveTask === undefined || liveTask.explicitCancellation !== undefined) {
+      return await this.delegate.cancelTask(params, context);
+    }
+
+    let settleCancellation!: (task: Task | undefined) => void;
+    liveTask.explicitCancellation = new Promise<Task | undefined>((resolve) => {
+      settleCancellation = resolve;
+    });
+    try {
+      const task = await this.delegate.cancelTask(params, context);
+      const explicitCancellation =
+        task.id === params.id
+        && task.status?.state === TaskState.TASK_STATE_CANCELED
+        && this.wasTaskCanceledByShutdown?.(params.id) === false;
+      if (explicitCancellation) {
+        // Publish durably before either the cancel caller or the monitor can consume the result.
+        await this.saveTerminalTask(liveTask.record, task);
+      }
+      settleCancellation(explicitCancellation ? task : undefined);
+      return task;
+    } catch (error) {
+      settleCancellation(undefined);
+      throw error;
+    }
+  }
+
   private admissionFor(
     params: SendMessageRequest,
     context: ServerCallContext,
@@ -503,6 +546,21 @@ class IdempotentA2ARequestHandler extends DelegatingA2ARequestHandler {
 
     const result = await this.delegate.sendMessage(asImmediateExecutionRequest(params), context);
     const taskId = taskIdFromResult(result);
+    // "status" identifies a Task: executor shutdown terminals are Tasks;
+    // Messages are genuine responder output.
+    if (
+      this.shuttingDown
+      && "status" in result
+      && isTerminalState(result.status?.state)
+    ) {
+      // Invariant: no terminal task observed after the shutdown latch may become durable truth.
+      this.logger?.error?.("A2A idempotency shutdown reconciliation remains in doubt.", {
+        keyHash: active.keyHash,
+        taskId,
+        terminalState: result.status?.state,
+      });
+      throw protocolIdempotencyError("idempotency_in_doubt", SHUTDOWN_IN_DOUBT_MESSAGE);
+    }
     if (isNonTerminalTask(result)) {
       const accepted: ActiveRecord = {
         ...active,
@@ -512,10 +570,11 @@ class IdempotentA2ARequestHandler extends DelegatingA2ARequestHandler {
       };
       await this.store.save(accepted);
       if (taskId !== undefined) {
-        this.liveImmediateTasks.add(taskId);
+        const liveTask: LiveImmediateTask = { record: accepted };
+        this.liveImmediateTasks.set(taskId, liveTask);
         return {
           accepted: result,
-          terminal: this.monitorImmediateTask(accepted, context),
+          terminal: this.monitorImmediateTask(liveTask, context),
         };
       }
       throw storeError("A2A immediate task did not include a task id; refusing an unmonitorable admission.");
@@ -559,33 +618,35 @@ class IdempotentA2ARequestHandler extends DelegatingA2ARequestHandler {
     );
   }
 
-  private async monitorImmediateTask(record: ActiveRecord, context: ServerCallContext): Promise<SendMessageResult> {
+  private async monitorImmediateTask(
+    liveTask: LiveImmediateTask,
+    context: ServerCallContext,
+  ): Promise<SendMessageResult> {
+    const record = liveTask.record;
     const taskId = record.taskId;
     if (taskId === undefined) {
       throw storeError("A2A active idempotency record is missing taskId.");
     }
     try {
-      while (this.liveImmediateTasks.has(taskId) && !this.shuttingDown) {
+      while (this.liveImmediateTasks.get(taskId) === liveTask && !this.shuttingDown) {
         const task = await this.taskStore.load(taskId, context);
         if (task !== undefined && isTerminalState(task.status?.state)) {
           // Re-check after the await: a shutdown that landed while this poll was in flight makes
-          // the terminal state ours, not the responder's, so it must not be recorded.
+          // the terminal state ours, not the responder's, so it must not be recorded here.
           if (this.shuttingDown) break;
-          await this.store.save({
-            schemaVersion: RECORD_SCHEMA_VERSION,
-            keyHash: record.keyHash,
-            fingerprint: record.fingerprint,
-            status: "completed",
-            createdAtMs: record.createdAtMs,
-            updatedAtMs: Date.now(),
-            slot: record.slot,
-            taskId,
-            result: cloneResult(task),
-          });
+          await this.saveTerminalTask(record, task);
           return task;
         }
         await unrefDelay(ACTIVE_POLL_MS);
       }
+      if (this.shuttingDown) {
+        const explicitCancellation = await this.reconcileExplicitCancellationAfterShutdown(liveTask);
+        if (explicitCancellation !== undefined) {
+          return explicitCancellation;
+        }
+        throw protocolIdempotencyError("idempotency_in_doubt", SHUTDOWN_IN_DOUBT_MESSAGE);
+      }
+      // Defensive/unreachable under current ownership: the task stays live until terminal or shutdown.
       throw storeError("A2A idempotent task monitoring ended before a terminal result was recorded.");
     } catch (error) {
       this.logger?.error?.("A2A idempotency monitor failed; the admission remains fail-closed.", {
@@ -594,8 +655,48 @@ class IdempotentA2ARequestHandler extends DelegatingA2ARequestHandler {
       });
       throw error;
     } finally {
-      this.liveImmediateTasks.delete(taskId);
+      if (this.liveImmediateTasks.get(taskId) === liveTask) {
+        this.liveImmediateTasks.delete(taskId);
+      }
     }
+  }
+
+  private async reconcileExplicitCancellationAfterShutdown(
+    liveTask: LiveImmediateTask,
+  ): Promise<Task | undefined> {
+    const taskId = liveTask.record.taskId;
+    const cancellation = liveTask.explicitCancellation;
+    if (
+      taskId === undefined
+      || cancellation === undefined
+      || this.wasTaskCanceledByShutdown?.(taskId) !== false
+    ) {
+      return undefined;
+    }
+    // One already-started per-task result is the bounded post-latch reconciliation budget.
+    const task = await cancellation;
+    if (
+      task?.id !== taskId
+      || task.status?.state !== TaskState.TASK_STATE_CANCELED
+      || this.wasTaskCanceledByShutdown(taskId)
+    ) {
+      return undefined;
+    }
+    return task;
+  }
+
+  private async saveTerminalTask(record: ActiveRecord, task: Task): Promise<void> {
+    await this.store.save({
+      schemaVersion: RECORD_SCHEMA_VERSION,
+      keyHash: record.keyHash,
+      fingerprint: record.fingerprint,
+      status: "completed",
+      createdAtMs: record.createdAtMs,
+      updatedAtMs: Date.now(),
+      slot: record.slot,
+      taskId: task.id,
+      result: cloneResult(task),
+    });
   }
 }
 
