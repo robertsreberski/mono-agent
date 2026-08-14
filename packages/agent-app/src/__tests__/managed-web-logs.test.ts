@@ -109,6 +109,18 @@ describe("legacy managed web log cleanup", () => {
     const maintained = await maintainLegacyManagedWebLogArtifacts(paths.launchd);
     expect(maintained.refusals.join(" ")).toContain("exceeded 32");
   });
+
+  it("reports refused-only legacy artifacts without advertising removable maintenance", async () => {
+    const paths = await fixture();
+    const near = join(paths.launchd.logDir, "web.out.log.retiring-not-a-uuid");
+    await writeFile(near, "preserve", { mode: 0o600 });
+
+    const inspected = await inspectLegacyManagedWebLogArtifacts(paths.launchd);
+
+    expect(inspected).toMatchObject({ needsMaintenance: false, canMaintain: true });
+    expect(inspected.issues.join(" ")).toContain("not canonical");
+    await expect(lstat(near)).resolves.toBeDefined();
+  });
 });
 
 describe("startManagedWebLogMonitor", () => {
@@ -133,7 +145,10 @@ describe("startManagedWebLogMonitor", () => {
       wallClockNow: Date.now,
     });
 
-    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    await vi.advanceTimersByTimeAsync(5 * 60_000 - 1);
+    expect(mutableCalls.some((args) => args[0] === "kickstart")).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
     monitor.stop();
     expect(mutableCalls.some((args) => args[0] === "kickstart"
       && args.some((value) => value.includes("com.mono-agent-web-maintenance")))).toBe(true);

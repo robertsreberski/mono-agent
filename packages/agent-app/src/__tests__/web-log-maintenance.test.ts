@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { LaunchdLogMaintenanceDeps } from "../background-log-maintenance.js";
 import {
   buildWebMaintenancePlistXml,
+  WEB_LAUNCHD_LABEL,
   WEB_MAINTENANCE_LAUNCHD_LABEL,
   webMaintenanceCalendarMinute,
 } from "../launchd.js";
@@ -42,6 +43,8 @@ function inspection(needsMaintenance = true): LaunchdLogInspection {
 function harness(options: {
   readonly helperContents?: string;
   readonly additionalRefusals?: readonly string[];
+  readonly additionalCanMaintain?: boolean;
+  readonly coreNeedsMaintenance?: boolean;
   readonly pendingIntent?: LaunchdLogMaintenanceIntent;
   readonly workerInitiallyLoaded?: boolean;
   readonly lockAvailable?: boolean;
@@ -82,7 +85,7 @@ function harness(options: {
     now: () => { clock += 250; return clock; },
     sleep: async () => undefined,
     stderr: () => undefined,
-    inspectLaunchdLogs: async () => inspection(),
+    inspectLaunchdLogs: async () => inspection(options.coreNeedsMaintenance ?? true),
     rotateStoppedLaunchdLogs: rotate,
     readLaunchdLogMaintenanceIntent: async () => intent,
     beginLaunchdLogMaintenanceIntent: async (_paths, next) => { intent = next; },
@@ -104,7 +107,7 @@ function harness(options: {
     isAlive: (pid) => alive.has(pid),
     inspectAdditionalLaunchdLogArtifacts: async () => ({
       needsMaintenance: (options.additionalRefusals?.length ?? 0) > 0,
-      canMaintain: true,
+      canMaintain: options.additionalCanMaintain ?? true,
       issues: options.additionalRefusals ?? [],
     }),
     maintainAdditionalLaunchdLogArtifacts: async () => ({
@@ -175,6 +178,9 @@ describe("runWebLogMaintenanceCommand", () => {
     expect(test.getIntent()).toBeUndefined();
     expect(test.calls.findIndex((args) => args[0] === "bootout"))
       .toBeLessThan(test.calls.findIndex((args) => args[0] === "bootstrap"));
+    const restored = await test.deps.runner(["print", `gui/501/${WEB_LAUNCHD_LABEL}`]);
+    expect(restored).toMatchObject({ code: 0, stdout: "pid = 701\n" });
+    expect(test.deps.isAlive(701)).toBe(true);
     expect(test.statuses.at(-1)).toMatchObject({ state: "success", phase: "complete" });
   });
 
@@ -189,6 +195,26 @@ describe("runWebLogMaintenanceCommand", () => {
     expect(test.getIntent()).toBeUndefined();
     expect(test.statuses.at(-1)).toMatchObject({ state: "degraded", phase: "complete" });
     expect(test.statuses.at(-1)?.refusals).toContain("unsafe legacy hardlink was preserved");
+  });
+
+  it("keeps an unloaded service visibly degraded when unsafe legacy inventory is refused", async () => {
+    const refusal = "unsafe legacy hardlink was preserved";
+    const test = harness({
+      additionalRefusals: [refusal],
+      additionalCanMaintain: false,
+      coreNeedsMaintenance: false,
+      workerInitiallyLoaded: false,
+    });
+    await expect(runWebLogMaintenanceCommand({
+      expectedManagedRuntimeLaunch: PROOF,
+      expectedWebPlistIdentity: IDENTITY,
+    }, test.deps)).resolves.toBe(1);
+
+    expect(test.rotate).not.toHaveBeenCalled();
+    expect(test.getIntent()).toBeUndefined();
+    expect(test.calls.some((args) => args[0] === "bootout" || args[0] === "bootstrap")).toBe(false);
+    expect(test.statuses.at(-1)).toMatchObject({ state: "degraded", phase: "complete" });
+    expect(test.statuses.at(-1)?.refusals).toContain(refusal);
   });
 
   it("rejects a stale helper definition before locking or mutating intent and logs", async () => {

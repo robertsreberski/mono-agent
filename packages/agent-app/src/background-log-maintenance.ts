@@ -451,7 +451,7 @@ export async function maintainLaunchdLogsWithSharedLockOperation(
     );
     return 1;
   }
-  if (!service.loaded && maintenanceIntent === undefined) return 0;
+  if (!service.loaded && maintenanceIntent === undefined) return additionalRefused ? 1 : 0;
 
   let originalPlistIdentity: string;
   try {

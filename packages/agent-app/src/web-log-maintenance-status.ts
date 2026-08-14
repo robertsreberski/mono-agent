@@ -153,8 +153,10 @@ function sanitizeMaintenanceStatus(status: WebLogMaintenanceStatus): WebLogMaint
 function parseMaintenanceStatus(value: unknown): WebLogMaintenanceStatus {
   if (!isRecord(value)
     || value.version !== 1
-    || !["running", "success", "degraded", "failed"].includes(String(value.state))
-    || !["authenticating", "inspecting", "stopping", "stopped", "rotating", "restoring", "complete"].includes(String(value.phase))
+    || typeof value.state !== "string"
+    || !["running", "success", "degraded", "failed"].includes(value.state)
+    || typeof value.phase !== "string"
+    || !["authenticating", "inspecting", "stopping", "stopped", "rotating", "restoring", "complete"].includes(value.phase)
     || !isIsoInstant(value.updatedAt)
     || (value.detail !== undefined && (typeof value.detail !== "string" || value.detail.length > 512))
     || (value.refusals !== undefined && (!Array.isArray(value.refusals)

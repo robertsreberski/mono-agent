@@ -473,11 +473,12 @@ describe("runWebCommand", () => {
     );
 
     expect(code).toBe(0);
-    expect(launchd.calls.some((args) => args[0] === "bootout")).toBe(false);
     expect(launchd.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
-    expect(launchd.calls.filter((args) => args[0] === "print"
-      && args.some((value) => value.endsWith(`/${WEB_LAUNCHD_LABEL}`)))
-      .every((args) => args.length > 0)).toBe(true);
+    const workerStatus = await launchd.runner(["print", `gui/501/${WEB_LAUNCHD_LABEL}`]);
+    expect(workerStatus).toMatchObject({ code: 0, stdout: "pid = 777\n" });
+    expect(launchd.isAlive(777)).toBe(true);
+    expect(launchd.calls.filter((args) => (args[0] === "bootout" || args[0] === "bootstrap")
+      && !args.some((value) => value.includes(WEB_MAINTENANCE_LAUNCHD_LABEL)))).toEqual([]);
     expect(await readFile(paths.maintenancePlistPath, "utf8"))
       .toContain(`<string>${await compositeIdentity(paths.launchd.plistPath)}</string>`);
   });

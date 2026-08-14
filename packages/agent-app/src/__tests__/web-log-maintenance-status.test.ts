@@ -79,4 +79,20 @@ describe("web log maintenance status files", () => {
     await writeFile(path, "x".repeat(4 * 1024 + 1), { mode: 0o600 });
     await expect(readWebLogMaintenanceStatus(path)).resolves.toMatchObject({ kind: "invalid" });
   });
+
+  it.each([
+    ["array state", { state: ["failed"] }],
+    ["array phase", { phase: ["complete"] }],
+  ])("rejects hostile maintenance status with %s", async (_case, override) => {
+    const path = await fixture();
+    await writeFile(path, `${JSON.stringify({
+      version: 1,
+      state: "failed",
+      phase: "complete",
+      updatedAt: "2026-08-14T12:01:00.000Z",
+      ...override,
+    })}\n`, { mode: 0o600 });
+
+    await expect(readWebLogMaintenanceStatus(path)).resolves.toMatchObject({ kind: "invalid" });
+  });
 });

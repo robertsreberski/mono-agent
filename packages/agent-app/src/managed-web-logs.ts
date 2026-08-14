@@ -164,7 +164,7 @@ export async function inspectLegacyManagedWebLogArtifacts(
 ): Promise<AdditionalLaunchdLogInspection> {
   const inventory = await legacyInventory(paths.logDir);
   return {
-    needsMaintenance: inventory.candidates.length > 0 || inventory.refusals.length > 0,
+    needsMaintenance: inventory.candidates.length > 0,
     canMaintain: !inventory.exceededBound,
     issues: inventory.refusals,
   };
