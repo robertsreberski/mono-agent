@@ -14,6 +14,20 @@ export type {
 } from "./config.js";
 export { AdvisorError } from "./errors.js";
 export type { AdvisorErrorCode, AdvisorErrorDetails } from "./errors.js";
+export {
+  abortAdvisorRun,
+  AdvisorCancellationError,
+  advisorStopReason,
+} from "./cancellation.js";
+export {
+  AdvisorContinuityCache,
+  createAdvisorContinuityCache,
+} from "./continuity.js";
+export type {
+  AdvisorContinuityCacheOptions,
+  AdvisorContinuityMetadata,
+  AdvisorContinuityResolver,
+} from "./continuity.js";
 export { executeReviewIteration } from "./execution.js";
 export type { ExecuteReviewIterationOptions } from "./execution.js";
 export { createAdvisorMcpServer } from "./mcp-server.js";

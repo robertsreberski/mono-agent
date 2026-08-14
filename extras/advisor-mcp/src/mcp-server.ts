@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type { AdvisorConfig } from "./config.js";
+import type { AdvisorContinuityResolver } from "./continuity.js";
 import { executeReviewIteration } from "./execution.js";
 import {
   advisorToolResult,
@@ -13,6 +14,8 @@ import type { AdvisorRunFactory } from "./run.js";
 export interface CreateAdvisorMcpServerOptions {
   readonly config: AdvisorConfig;
   readonly runFactory: AdvisorRunFactory;
+  readonly shutdownSignal?: AbortSignal;
+  readonly continuity?: AdvisorContinuityResolver;
 }
 
 export function createAdvisorMcpServer(options: CreateAdvisorMcpServerOptions): McpServer {
@@ -45,6 +48,8 @@ export function createAdvisorMcpServer(options: CreateAdvisorMcpServerOptions): 
       config: options.config,
       runFactory: options.runFactory,
       abortSignal: extra.signal,
+      ...(options.shutdownSignal === undefined ? {} : { shutdownSignal: options.shutdownSignal }),
+      ...(options.continuity === undefined ? {} : { continuity: options.continuity }),
     }), options.config),
   );
   return server;
