@@ -123,16 +123,19 @@ describe("purgeConversationState", () => {
     });
     const sessionsRoot = join(dir, ".mono-agent", "sessions");
     const historyRoot = join(dir, ".mono-agent", "history");
+    const acpSessionsRoot = join(dir, ".mono-agent", "acp-sessions");
     const memoryRoot = join(dir, ".mono-agent", "memory");
     const artifactsRoot = join(dir, ".mono-agent", "artifacts");
     await Promise.all([
       mkdir(sessionsRoot, { recursive: true }),
       mkdir(historyRoot, { recursive: true }),
+      mkdir(acpSessionsRoot, { recursive: true }),
       mkdir(memoryRoot, { recursive: true }),
       mkdir(artifactsRoot, { recursive: true }),
     ]);
     await writeFile(join(sessionsRoot, "session.jsonl"), "{}\n");
     await writeFile(join(historyRoot, "conversation.history.json"), "{}\n");
+    await writeFile(join(acpSessionsRoot, "authorization.json"), "{}\n");
     await writeFile(join(memoryRoot, "memory.md"), "keep memory\n");
     await writeFile(join(artifactsRoot, "run.summary.json"), "{}\n");
 
@@ -140,8 +143,10 @@ describe("purgeConversationState", () => {
 
     expect(result.sessions).toMatchObject({ root: sessionsRoot, removed: true, files: 1 });
     expect(result.history).toEqual({ root: historyRoot, removed: true, files: 1 });
+    expect(result.acpSessions).toEqual({ root: acpSessionsRoot, removed: true, files: 1 });
     await expect(stat(sessionsRoot)).rejects.toThrow();
     await expect(stat(historyRoot)).rejects.toThrow();
+    await expect(stat(acpSessionsRoot)).rejects.toThrow();
     await expect(readFile(join(memoryRoot, "memory.md"), "utf8")).resolves.toBe("keep memory\n");
     await expect(readFile(join(artifactsRoot, "run.summary.json"), "utf8")).resolves.toBe("{}\n");
   });

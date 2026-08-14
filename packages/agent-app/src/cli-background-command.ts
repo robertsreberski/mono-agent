@@ -500,10 +500,10 @@ async function controllerCliAvailable(path: string): Promise<boolean> {
 }
 
 /**
- * `restart --clear-sessions`: stop the worker, purge provider transcripts and canonical
- * active-conversation history, then start fresh. Stopping first guarantees no
- * conversation state is being written during deletion. Durable memory and run
- * artifacts live elsewhere and remain untouched.
+ * `restart --clear-sessions`: stop the worker, purge provider transcripts, canonical
+ * active-conversation history, and ACP session authorizations, then start fresh.
+ * Stopping first guarantees no conversation state is being written during deletion.
+ * Durable memory and run artifacts live elsewhere and remain untouched.
  */
 async function runForceRestart(
   target: InstanceTarget,
@@ -525,10 +525,18 @@ async function runForceRestart(
         : ` (${result.history.files} conversation file${result.history.files === 1 ? "" : "s"})`;
       cleared.push(`active conversation history${count}`);
     }
+    if (result.acpSessions.removed) {
+      const count = result.acpSessions.files === 0
+        ? ""
+        : ` (${result.acpSessions.files} authorization file${result.acpSessions.files === 1 ? "" : "s"})`;
+      cleared.push(`ACP session authorizations${count}`);
+    }
     if (cleared.length > 0) {
       process.stdout.write(`${ui.badge("ok")}${ui.style.bold(`Cleared ${cleared.join(" and ")}`)}.\n`);
     } else {
-      process.stdout.write(ui.style.dim("No persisted provider sessions or conversation history to clear.") + "\n");
+      process.stdout.write(
+        ui.style.dim("No persisted provider sessions, conversation history, or ACP authorizations to clear.") + "\n",
+      );
     }
   });
 }
