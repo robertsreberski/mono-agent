@@ -76,6 +76,7 @@ At startup, mono-agent inspects the existing Tailscale Serve configuration. It p
 | Layer | What it owns |
 | --- | --- |
 | Service | Agent discovery, thread/turn lifecycle, attachment admission, notification ingestion, and the upstream operator connection. |
+| Managed lifecycle | Paired macOS worker and one-shot maintenance LaunchAgents; the foreground worker only requests a wake, while the helper alone owns stopped-writer log rotation and durable recovery. |
 | SQLite store | Authoritative agents, pins, threads, messages, structured parts, revisions, turns, live-input fallback state, uploads, and notification idempotency. |
 | `/api/v1` HTTP/SSE | Browser commands and projections. Mutations publish invalidations; browsers refetch current state instead of owning the turn. |
 | Assistant-ui PWA | Responsive thread/message/composer presentation, upload progress, response notifications, and browser-origin preferences. |
@@ -243,13 +244,45 @@ Older running agents that do not advertise attachment support remain usable for 
 
 The service keeps its owner-private SQLite store, settings, notification idempotency ledger, VAPID private key, push subscriptions/outbox, upload stages, logs, and live notification-ingress record under `~/.mono-agent/web/`. Stored messages, quote metadata, attachment metadata, revisions, run state, and pinned agents are local to this computer; they are independent from browser storage and from the agents' provider-side sessions. The desktop agent-rail expansion state, notification opt-in, opaque subscription id, and one-way endpoint digest are intentionally browser-origin-local preferences and are removed when that origin's site data is cleared. Raw push endpoints and key material are never stored in browser preferences.
 
+Managed stdout/stderr live at `logs/web.out.log` and `logs/web.err.log`.
+Each active file and retained `.1`, `.2`, and `.3` generation is capped at
+5 MiB after maintenance. `mono-agent web logs` reads only the active names, and
+`--follow` uses `tail -F` so it reopens them after rotation; there is no
+historical selector. `log-monitor-status.json` records the worker's bounded
+wake-only observation, while `log-maintenance-status.json` records the helper's
+last phase, refusal, or failure. `service.json`, `tailscale-serve.json`, and the
+durable rotation intent complete the lifecycle evidence in this owner-private
+tree. The two LaunchAgent plists remain under `~/Library/LaunchAgents/`.
+
+The managed worker never rotates its open files or exits with a special rollover
+code. `com.mono-agent-web-maintenance` is the only rotation authority. It runs
+at login and at one deterministic hourly minute, with deterministic pre-import
+dispersion, and restarts the service only after proving the writer stopped.
+That restart can interrupt in-flight turns and SSE streams; the next projection
+marks an unfinished turn interrupted. Safe oversize logs awaiting the next pass
+appear as `due` in `mono-agent web status` without making a healthy service
+nonzero. A missing or stale helper, unsafe inventory, refused legacy artifact,
+failed pass, or abandoned durable intent remains nonzero. A recoverable proven
+intent names `mono-agent web restart`; an unproven `stopping` intent or one tied
+to an older main-plist identity instead names `mono-agent web stop` followed by
+`mono-agent web start`. Stop clears that stale authority only after both jobs
+are proven down.
+
 There is no per-message or per-thread destructive delete. To intentionally erase the whole console store, stop the service and use the explicit two-part confirmation:
 
 ```bash
 mono-agent web reset --all --yes
 ```
 
-Reset removes the web console's conversations, notification ledger and stale ingress record, VAPID identity, push subscriptions/outbox, committed uploads, staged uploads, and server settings, including agent pins. It does not clear browser-local preferences such as rail expansion or notification opt-in, and it does not remove an agent's config, durable conversation history, memory, or recorded run artifacts. After reset, browsers reconcile the missing/rotated application-server key and subscribe again when permission permits.
+Reset first requires both the web worker and maintenance helper stopped and both
+plist files absent, then takes their shared web lifecycle lock. It removes the
+web console's conversations, notification ledger and stale ingress record,
+VAPID identity, push subscriptions/outbox, committed uploads, staged uploads,
+and server settings, including agent pins. It does not clear browser-local
+preferences such as rail expansion or notification opt-in, and it does not
+remove an agent's config, durable conversation history, memory, or recorded run
+artifacts. After reset, browsers reconcile the missing/rotated application-
+server key and subscribe again when permission permits.
 
 ## Current scope
 

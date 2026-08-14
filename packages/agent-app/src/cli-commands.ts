@@ -55,9 +55,12 @@ export type {
 import { runRunsCommand } from "./cli-runs-command.js";
 import {
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+  INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
+  MANAGED_WEB_LOG_MAINTENANCE_ENV,
 } from "./launchd.js";
 import { sanitizeManagedLaunchdLogMaintenanceEnvironment } from "./managed-launchd-maintenance-environment.js";
+import { sanitizeManagedWebLogMaintenanceEnvironment } from "./managed-web-maintenance-environment.js";
 import { runSandboxCommand } from "./cli-sandbox-command.js";
 export { runSandboxCommand } from "./cli-sandbox-command.js";
 export type { SandboxCommandDependencies } from "./cli-sandbox-command.js";
@@ -102,9 +105,33 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     return 2;
   }
 
+  const managedWebLogMaintenance =
+    args.command === INTERNAL_WEB_LOG_MAINTENANCE_COMMAND
+    && process.env[MANAGED_WEB_LOG_MAINTENANCE_ENV] === "1"
+    && process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV] !== "1";
+  if (args.command === INTERNAL_WEB_LOG_MAINTENANCE_COMMAND) {
+    if (!managedWebLogMaintenance
+      || args.expectedManagedRuntimeLaunch === undefined
+      || args.expectedWebPlistIdentity === undefined) {
+      process.stderr.write(ui.errorLine("The web log maintenance command is reserved for its exact managed LaunchAgent."));
+      return 2;
+    }
+    sanitizeManagedWebLogMaintenanceEnvironment(process.env);
+    const { runWebLogMaintenanceCommand } = await import("./web-log-maintenance.js");
+    return await runWebLogMaintenanceCommand({
+      expectedManagedRuntimeLaunch: args.expectedManagedRuntimeLaunch,
+      expectedWebPlistIdentity: args.expectedWebPlistIdentity,
+    });
+  }
+  if (process.env[MANAGED_WEB_LOG_MAINTENANCE_ENV] === "1") {
+    process.stderr.write(ui.errorLine("The managed web-maintenance marker cannot authorize another CLI command."));
+    return 2;
+  }
+
   const managedLaunchdLogMaintenance =
     args.command === INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND
-    && process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV] === "1";
+    && process.env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV] === "1"
+    && process.env[MANAGED_WEB_LOG_MAINTENANCE_ENV] !== "1";
   if (args.command === INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND) {
     if (!managedLaunchdLogMaintenance) {
       process.stderr.write(ui.errorLine("The launchd log maintenance command is reserved for its managed LaunchAgent."));
@@ -127,8 +154,12 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     process.stderr.write(ui.errorLine("--expected-background-snapshot is reserved for the managed LaunchAgent worker."));
     return 2;
   }
-  if (args.expectedManagedRuntimeLaunch !== undefined && !managedBackgroundWorker) {
+  if (args.expectedManagedRuntimeLaunch !== undefined && !managedBackgroundWorker && !managedWebLogMaintenance) {
     process.stderr.write(ui.errorLine("--expected-managed-runtime-launch is reserved for the managed LaunchAgent worker."));
+    return 2;
+  }
+  if (args.expectedWebPlistIdentity !== undefined && !managedWebLogMaintenance) {
+    process.stderr.write(ui.errorLine("--expected-web-plist-identity is reserved for the managed web-maintenance LaunchAgent."));
     return 2;
   }
   if (managedBackgroundWorker) {

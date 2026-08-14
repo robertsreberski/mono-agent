@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,9 +10,7 @@ import {
   DEFAULT_WEB_HOST,
   DEFAULT_WEB_PORT,
   ensureTailscaleServe,
-  MANAGED_WEB_WORKER_ENV,
   removeOwnedTailscaleServe,
-  rolloverManagedWebLogs,
   runWebCommand,
   tailscaleProxyTarget,
   webHealthcheck,
@@ -19,7 +18,19 @@ import {
   WEB_LAUNCHD_LABEL,
 } from "../web-command.js";
 import type { CommandRunner } from "../web-command.js";
-import { LAUNCHD_LOG_MAX_BYTES } from "../launchd-logs.js";
+import {
+  buildWebMaintenancePlistXml,
+  WEB_MAINTENANCE_LAUNCHD_LABEL,
+  webMaintenanceCalendarMinute,
+} from "../launchd.js";
+import {
+  beginLaunchdLogMaintenanceIntent,
+  LAUNCHD_LOG_MAX_BYTES,
+  markLaunchdLogMaintenanceRestoring,
+  markLaunchdLogMaintenanceStopped,
+  readLaunchdLogMaintenanceIntent,
+} from "../launchd-logs.js";
+import { managedWebLogMaintenanceEnvironment } from "../managed-web-maintenance-environment.js";
 
 let dir: string | undefined;
 
@@ -35,8 +46,52 @@ afterEach(async () => {
 });
 
 async function testHome(): Promise<string> {
-  dir = await mkdtemp(join(tmpdir(), "mono-agent-web-command-"));
+  dir = await realpath(await mkdtemp(join(tmpdir(), "mono-agent-web-command-")));
   return dir;
+}
+
+async function compositeIdentity(path: string): Promise<string> {
+  const [stats, contents] = await Promise.all([lstat(path), readFile(path)]);
+  return [stats.dev, stats.ino, stats.size, createHash("sha256").update(contents).digest("hex")].join(":");
+}
+
+function pairedLaunchctlFixture(initial: { readonly worker?: boolean; readonly helper?: boolean } = {}) {
+  const loaded = new Map<string, boolean>([
+    ["com.mono-agent-web", initial.worker ?? false],
+    ["com.mono-agent-web-maintenance", initial.helper ?? false],
+  ]);
+  const calls: string[][] = [];
+  const labelFor = (args: readonly string[]): string => args.some((value) => value.includes("com.mono-agent-web-maintenance"))
+    ? "com.mono-agent-web-maintenance"
+    : "com.mono-agent-web";
+  return {
+    calls,
+    loaded,
+    isAlive: (pid: number) => pid === 777 && loaded.get("com.mono-agent-web") === true,
+    runner: async (args: readonly string[]) => {
+      calls.push([...args]);
+      const label = labelFor(args);
+      if (args[0] === "print") {
+        const active = loaded.get(label) === true;
+        return {
+          code: active ? 0 : 1,
+          stdout: active && label === "com.mono-agent-web" ? "pid = 777\n" : "",
+          stderr: active ? "" : "not loaded",
+        };
+      }
+      if (args[0] === "bootout") {
+        loaded.set(label, false);
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "bootstrap") {
+        if (loaded.get(label) === true) return { code: 37, stdout: "", stderr: "already loaded" };
+        loaded.set(label, true);
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "kickstart") return { code: 0, stdout: "", stderr: "" };
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    },
+  };
 }
 
 describe("runWebCommand", () => {
@@ -86,6 +141,128 @@ describe("runWebCommand", () => {
     expect(await readdir(home)).toEqual([]);
   });
 
+  it.each([
+    [true, "maintenance in progress (stopping)"],
+    [false, "maintenance recovery required"],
+  ])("distinguishes live helper maintenance from abandoned recovery (live=%s)", async (helperLive, expected) => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
+    await mkdir(join(home, "Library", "LaunchAgents"), { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "main plist\n", { mode: 0o600 });
+    await beginLaunchdLogMaintenanceIntent(paths.launchd, {
+      version: 1,
+      phase: "stopping",
+      label: WEB_LAUNCHD_LABEL,
+      plistFingerprint: await compositeIdentity(paths.launchd.plistPath),
+    });
+    let output = "";
+    const launchctl = async (args: readonly string[]) => {
+      const helper = args.some((value) => value.includes("com.mono-agent-web-maintenance"));
+      if (helper) return { code: 0, stdout: helperLive ? "pid = 900\n" : "", stderr: "" };
+      return { code: 0, stdout: "pid = 777\n", stderr: "" };
+    };
+    await expect(runWebCommand(
+      { positionals: ["status"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        launchctl,
+        healthcheck: async () => true,
+        stdout: { write: (text) => { output += text; } },
+      },
+    )).resolves.toBe(1);
+    expect(output).toContain(expected);
+    if (!helperLive) {
+      expect(output).toContain("mono-agent web stop");
+      expect(output).toContain("mono-agent web start");
+    }
+  });
+
+  it.each(["stopping", "stale-restoring"] as const)(
+    "advertises and executes stop-then-start recovery for %s authority",
+    async (scenario) => {
+      const home = await testHome();
+      const paths = webPaths(home);
+      await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
+      await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+      await writeFile(paths.launchd.plistPath, "pre-crash main plist\n", { mode: 0o600 });
+      await writeFile(paths.maintenancePlistPath, "pre-crash helper plist\n", { mode: 0o600 });
+      const stopping = {
+        version: 1 as const,
+        phase: "stopping" as const,
+        label: WEB_LAUNCHD_LABEL,
+        plistFingerprint: await compositeIdentity(paths.launchd.plistPath),
+      };
+      await beginLaunchdLogMaintenanceIntent(paths.launchd, stopping);
+      if (scenario === "stale-restoring") {
+        const stopped = await markLaunchdLogMaintenanceStopped(paths.launchd, stopping);
+        await markLaunchdLogMaintenanceRestoring(paths.launchd, stopped);
+        await writeFile(paths.launchd.plistPath, "replacement main plist with a fresh identity\n", { mode: 0o600 });
+      }
+      const launchd = pairedLaunchctlFixture();
+      let statusOutput = "";
+
+      await expect(runWebCommand(
+        { positionals: ["status"], env: {} },
+        {
+          platform: "darwin",
+          homeDir: home,
+          getuid: () => 501,
+          launchctl: launchd.runner,
+          stdout: { write: (text) => { statusOutput += text; } },
+        },
+      )).resolves.toBe(1);
+      expect(statusOutput).toContain("mono-agent web stop");
+      expect(statusOutput).toContain("mono-agent web start");
+      expect(statusOutput).not.toContain("Recover it with exactly: mono-agent web restart");
+
+      await expect(runWebCommand(
+        { positionals: ["stop"], env: {} },
+        {
+          platform: "darwin",
+          homeDir: home,
+          getuid: () => 501,
+          prepareState,
+          acquireLifecycleLock: async () => async () => undefined,
+          launchctl: launchd.runner,
+          isAlive: launchd.isAlive,
+          stdout: { write: () => undefined },
+          stderr: { write: () => undefined },
+        },
+      )).resolves.toBe(0);
+      expect(await readLaunchdLogMaintenanceIntent(paths.launchd)).toBeUndefined();
+
+      await expect(runWebCommand(
+        { positionals: ["start"], env: {}, loopback: true },
+        {
+          platform: "darwin",
+          homeDir: home,
+          getuid: () => 501,
+          prepareState,
+          acquireLifecycleLock: async () => async () => undefined,
+          launchctl: launchd.runner,
+          ensureManagedRuntime: async () => ({
+            cliPath: "/managed/dist/cli.js",
+            nodePath: "/managed/node",
+            launchProof: "cHJvb2Y",
+          }),
+          healthcheck: async () => true,
+          isAlive: launchd.isAlive,
+          sleep: async () => undefined,
+          tailscale: async () => ({ code: 1, stdout: "", stderr: "unavailable in test" }),
+          stdout: { write: () => undefined },
+          stderr: { write: () => undefined },
+        },
+      )).resolves.toBe(0);
+      expect(launchd.loaded.get(WEB_MAINTENANCE_LAUNCHD_LABEL)).toBe(true);
+      expect(launchd.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
+      expect(await readLaunchdLogMaintenanceIntent(paths.launchd)).toBeUndefined();
+    },
+  );
+
   it("prints only reachable IPv6 URLs for an IPv6 wildcard bind", async () => {
     const home = await testHome();
     const registryDir = join(home, "registry");
@@ -119,6 +296,7 @@ describe("runWebCommand", () => {
     const registryDir = join(home, "registry");
     await mkdir(registryDir, { mode: 0o700 });
     const stop = vi.fn(async () => undefined);
+    const startManagedLogMonitor = vi.fn(() => ({ stop: vi.fn() }));
     const startServer = vi.fn(async (options) => ({
       url: "http://0.0.0.0:5050/",
       host: "0.0.0.0",
@@ -137,6 +315,7 @@ describe("runWebCommand", () => {
         homeDir: home,
         prepareState,
         startServer,
+        startManagedLogMonitor,
         waitForShutdown: async () => undefined,
         discoverNetworkAddresses: () => ["192.0.2.42"],
         stdout: { write: () => undefined },
@@ -151,59 +330,28 @@ describe("runWebCommand", () => {
       registryDirs: [registryDir],
     }));
     expect(startServer.mock.calls[0]?.[0]).not.toHaveProperty("authToken");
+    expect(startManagedLogMonitor).not.toHaveBeenCalled();
     expect(stop).toHaveBeenCalledOnce();
   });
 
-  it("stops with a restart exit when a managed worker requests log rollover", async () => {
-    const home = await testHome();
-    const registryDir = join(home, "registry");
-    await mkdir(registryDir, { mode: 0o700 });
-    const stop = vi.fn(async () => undefined);
-    const rolloverManagedLogs = vi.fn(async () => undefined);
-
-    await expect(runWebCommand(
-      {
-        positionals: ["run"],
-        env: {
-          MONO_AGENT_GLOBAL_TRACE_REGISTRY_DIR: registryDir,
-          [MANAGED_WEB_WORKER_ENV]: "1",
-        },
-      },
-      {
-        homeDir: home,
-        prepareState,
-        startServer: async () => ({ url: "http://127.0.0.1:5050/", stop }),
-        waitForShutdown: async () => await new Promise<void>(() => undefined),
-        waitForManagedLogRollover: async () => "rollover",
-        rolloverManagedLogs,
-        stdout: { write: () => undefined },
-        stderr: { write: () => undefined },
-      },
-    )).resolves.toBe(75);
-
-    expect(stop).toHaveBeenCalledOnce();
-    expect(rolloverManagedLogs).toHaveBeenCalledOnce();
-  });
-
-  it("retains a bounded tail and fixed generations for managed web logs", async () => {
+  it("tails only the two active web logs and follows replacements by name", async () => {
     const home = await testHome();
     const paths = webPaths(home);
-    await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
-    await writeFile(
+    const spawnTail = vi.fn(async (_args: readonly string[]) => 0);
+
+    await expect(runWebCommand(
+      { positionals: ["logs"], env: {}, follow: true, lines: 37 },
+      { platform: "darwin", homeDir: home, spawnTail },
+    )).resolves.toBe(0);
+
+    expect(spawnTail).toHaveBeenCalledWith([
+      "-n",
+      "37",
+      "-F",
+      paths.launchd.stderrPath,
       paths.launchd.stdoutPath,
-      Buffer.concat([Buffer.alloc(128, "a"), Buffer.alloc(LAUNCHD_LOG_MAX_BYTES, "b")]),
-      { mode: 0o600 },
-    );
-    await writeFile(`${paths.launchd.stdoutPath}.1`, "older-one", { mode: 0o600 });
-    await writeFile(`${paths.launchd.stdoutPath}.2`, "older-two", { mode: 0o600 });
-
-    await rolloverManagedWebLogs(paths);
-
-    await expect(stat(paths.launchd.stdoutPath)).rejects.toMatchObject({ code: "ENOENT" });
-    expect((await stat(`${paths.launchd.stdoutPath}.1`)).size).toBe(LAUNCHD_LOG_MAX_BYTES);
-    expect(await readFile(`${paths.launchd.stdoutPath}.1`, "utf8")).toMatch(/^b+$/u);
-    expect(await readFile(`${paths.launchd.stdoutPath}.2`, "utf8")).toBe("older-one");
-    expect(await readFile(`${paths.launchd.stdoutPath}.3`, "utf8")).toBe("older-two");
+    ]);
+    expect(spawnTail.mock.calls[0]?.[0].some((path) => /\.log\.[1-3]$/u.test(path))).toBe(false);
   });
 
   it("maps --loopback to 127.0.0.1 and rejects combining it with --host", async () => {
@@ -276,6 +424,195 @@ describe("runWebCommand", () => {
     expect(launchctl).not.toHaveBeenCalledWith(expect.arrayContaining(["bootstrap"]));
   });
 
+  it("installs a missing healthy-worker helper in place without changing the worker PID", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "existing worker plist\n", { mode: 0o600 });
+    await writeFile(paths.recordPath, `${JSON.stringify({
+      schema: "mono-agent.web-service.v1",
+      host: "127.0.0.1",
+      port: 5050,
+      theme: "evergreen",
+      updatedAt: "2026-08-14T12:00:00.000Z",
+    })}\n`, { mode: 0o600 });
+    const launchd = pairedLaunchctlFixture({ worker: true });
+
+    const code = await runWebCommand(
+      { positionals: ["start"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl: launchd.runner,
+        ensureManagedRuntime: async () => ({
+          cliPath: "/managed/dist/cli.js",
+          nodePath: "/managed/node",
+          launchProof: "cHJvb2Y",
+        }),
+        inspectMaintenanceService: async () => ({
+          loaded: launchd.loaded.get("com.mono-agent-web-maintenance") === true,
+          definition: {
+            plistPath: paths.maintenancePlistPath,
+            nodePath: "/managed/node",
+            cliPath: "/managed/dist/launchd-maintenance-entry.js",
+            cwd: paths.stateDir,
+            expectedManagedRuntimeLaunch: "cHJvb2Y",
+            expectedWebPlistIdentity: await compositeIdentity(paths.launchd.plistPath),
+          },
+        }),
+        verifyMaintenanceEntrypoint: async () => undefined,
+        healthcheck: async () => true,
+        isAlive: launchd.isAlive,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(launchd.calls.some((args) => args[0] === "bootout")).toBe(false);
+    expect(launchd.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
+    expect(launchd.calls.filter((args) => args[0] === "print"
+      && args.some((value) => value.endsWith(`/${WEB_LAUNCHD_LABEL}`)))
+      .every((args) => args.length > 0)).toBe(true);
+    expect(await readFile(paths.maintenancePlistPath, "utf8"))
+      .toContain(`<string>${await compositeIdentity(paths.launchd.plistPath)}</string>`);
+  });
+
+  it("preserves a healthy worker when its loaded helper is stale and requires explicit restart", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "existing worker plist\n", { mode: 0o600 });
+    await writeFile(paths.maintenancePlistPath, "stale helper plist\n", { mode: 0o600 });
+    const launchd = pairedLaunchctlFixture({ worker: true, helper: true });
+    const ensureManagedRuntime = vi.fn();
+    let errors = "";
+    await expect(runWebCommand(
+      { positionals: ["start"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl: launchd.runner,
+        ensureManagedRuntime,
+        stdout: { write: () => undefined },
+        stderr: { write: (text) => { errors += text; } },
+      },
+    )).resolves.toBe(1);
+    expect(launchd.calls.some((args) => args[0] === "bootout")).toBe(false);
+    expect(ensureManagedRuntime).not.toHaveBeenCalled();
+    expect(errors).toContain("mono-agent web restart");
+  });
+
+  it("keeps a pre-helper worker serving when managed-runtime preparation fails before restart", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    const priorPlist = "pre-helper worker plist\n";
+    const priorRecord = `${JSON.stringify({
+      schema: "mono-agent.web-service.v1",
+      host: "127.0.0.1",
+      port: 5050,
+      theme: "evergreen",
+      updatedAt: "2026-08-14T12:00:00.000Z",
+    })}\n`;
+    await writeFile(paths.launchd.plistPath, priorPlist, { mode: 0o600 });
+    await writeFile(paths.recordPath, priorRecord, { mode: 0o600 });
+    const launchd = pairedLaunchctlFixture({ worker: true });
+
+    await expect(runWebCommand(
+      { positionals: ["restart"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl: launchd.runner,
+        ensureManagedRuntime: async () => { throw new Error("runtime unavailable"); },
+        isAlive: launchd.isAlive,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    )).resolves.toBe(1);
+
+    expect(launchd.loaded.get(WEB_LAUNCHD_LABEL)).toBe(true);
+    expect(launchd.calls.some((args) => args[0] === "bootout" || args[0] === "bootstrap")).toBe(false);
+    expect(await readFile(paths.launchd.plistPath, "utf8")).toBe(priorPlist);
+    expect(await readFile(paths.recordPath, "utf8")).toBe(priorRecord);
+  });
+
+  it("reports routine due maintenance without failing an idempotent healthy start", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.stdoutPath, Buffer.alloc(LAUNCHD_LOG_MAX_BYTES + 1), { mode: 0o600 });
+    await writeFile(paths.launchd.stderrPath, "", { mode: 0o600 });
+    await writeFile(paths.launchd.plistPath, "healthy worker plist\n", { mode: 0o600 });
+    await writeFile(paths.recordPath, `${JSON.stringify({
+      schema: "mono-agent.web-service.v1",
+      host: "127.0.0.1",
+      port: 5050,
+      theme: "evergreen",
+      updatedAt: "2026-08-14T12:00:00.000Z",
+    })}\n`, { mode: 0o600 });
+    const mainIdentity = await compositeIdentity(paths.launchd.plistPath);
+    const definition = {
+      plistPath: paths.maintenancePlistPath,
+      nodePath: "/managed/node",
+      cliPath: "/managed/dist/launchd-maintenance-entry.js",
+      cwd: paths.stateDir,
+      expectedManagedRuntimeLaunch: "cHJvb2Y",
+      expectedWebPlistIdentity: mainIdentity,
+    };
+    await writeFile(paths.maintenancePlistPath, buildWebMaintenancePlistXml({
+      label: WEB_MAINTENANCE_LAUNCHD_LABEL,
+      ...definition,
+      environment: managedWebLogMaintenanceEnvironment(),
+      calendarMinute: webMaintenanceCalendarMinute(),
+    }), { mode: 0o600 });
+    let output = "";
+    let errors = "";
+    const launchctl = async (args: readonly string[]) => ({
+      code: 0,
+      stdout: args.some((value) => value.includes(WEB_MAINTENANCE_LAUNCHD_LABEL))
+        ? "pid = 900\n"
+        : "pid = 777\n",
+      stderr: "",
+    });
+
+    const code = await runWebCommand(
+      { positionals: ["start"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        launchctl,
+        inspectMaintenanceService: async () => ({ loaded: true, pid: 900, definition }),
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        verifyMaintenanceEntrypoint: async () => undefined,
+        healthcheck: async () => true,
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write: (text) => { errors += text; } },
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(errors).toBe("");
+    expect(output).toContain("due");
+    expect(output).not.toContain("managed web log maintenance is due");
+  });
+
   it("requires explicit double confirmation before reset", async () => {
     const resetState = vi.fn();
     await expect(runWebCommand(
@@ -283,6 +620,33 @@ describe("runWebCommand", () => {
       { resetState, stdout: { write: () => undefined }, stderr: { write: () => undefined } },
     )).resolves.toBe(2);
     expect(resetState).not.toHaveBeenCalled();
+  });
+
+  it("refuses reset while the maintenance helper is loaded", async () => {
+    const home = await testHome();
+    const resetState = vi.fn();
+    let errors = "";
+    const launchctl = async (args: readonly string[]) => ({
+      code: args.some((value) => value.includes(WEB_MAINTENANCE_LAUNCHD_LABEL)) ? 0 : 1,
+      stdout: "",
+      stderr: "",
+    });
+
+    await expect(runWebCommand(
+      { positionals: ["reset"], env: {}, all: true, yes: true },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        launchctl,
+        resetState,
+        stdout: { write: () => undefined },
+        stderr: { write: (text) => { errors += text; } },
+      },
+    )).resolves.toBe(1);
+
+    expect(resetState).not.toHaveBeenCalled();
+    expect(errors).toContain("mono-agent web stop");
   });
 
   it("boots out a running worker without preparing its contended state", async () => {
@@ -321,6 +685,178 @@ describe("runWebCommand", () => {
 
     expect(prepareContendedState).not.toHaveBeenCalled();
     expect(calls.map((args) => args[0])).toContain("bootout");
+  });
+
+  it("stops the helper before the worker and removes both definitions only after death proof", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "worker\n", { mode: 0o600 });
+    await writeFile(paths.maintenancePlistPath, "helper\n", { mode: 0o600 });
+    await writeFile(paths.monitorStatusPath, "status\n", { mode: 0o600 });
+    await writeFile(paths.maintenanceStatusPath, "status\n", { mode: 0o600 });
+    const launchd = pairedLaunchctlFixture({ worker: true, helper: true });
+
+    await expect(runWebCommand(
+      { positionals: ["stop"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl: launchd.runner,
+        isAlive: launchd.isAlive,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    )).resolves.toBe(0);
+
+    expect(launchd.calls.filter((args) => args[0] === "bootout").map((args) => args[1])).toEqual([
+      "gui/501/com.mono-agent-web-maintenance",
+      "gui/501/com.mono-agent-web",
+    ]);
+    for (const path of [
+      paths.maintenancePlistPath,
+      paths.launchd.plistPath,
+      paths.monitorStatusPath,
+      paths.maintenanceStatusPath,
+    ]) {
+      await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it("reports when stop cannot restore the helper after worker death proof fails", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "worker\n", { mode: 0o600 });
+    await writeFile(paths.maintenancePlistPath, "helper\n", { mode: 0o600 });
+    let helperLoaded = true;
+    const calls: string[][] = [];
+    const launchctl = async (args: readonly string[]) => {
+      calls.push([...args]);
+      const helper = args.some((value) => value.includes(WEB_MAINTENANCE_LAUNCHD_LABEL));
+      if (args[0] === "print") {
+        if (helper) return helperLoaded
+          ? { code: 0, stdout: "pid = 900\n", stderr: "" }
+          : { code: 1, stdout: "", stderr: "not loaded" };
+        return { code: 0, stdout: "pid = 777\n", stderr: "" };
+      }
+      if (args[0] === "bootout" && helper) {
+        helperLoaded = false;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "bootout") return { code: 0, stdout: "", stderr: "" };
+      if (args[0] === "bootstrap" && helper) {
+        // launchctl success alone is insufficient: this fixture deliberately
+        // leaves the helper absent so the loaded-state proof must fail.
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+    let clock = 0;
+    let errors = "";
+
+    await expect(runWebCommand(
+      { positionals: ["stop"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl,
+        isAlive: (pid) => pid === 777 || (pid === 900 && helperLoaded),
+        now: () => { clock += 20_000; return clock; },
+        sleep: async () => undefined,
+        stdout: { write: () => undefined },
+        stderr: { write: (text) => { errors += text; } },
+      },
+    )).resolves.toBe(1);
+
+    expect(helperLoaded).toBe(false);
+    expect(errors).toContain("prior maintenance helper could not be proven restored");
+    expect(errors).toContain("launchd did not retain the helper");
+    expect(calls.filter((args) => args[0] === "bootout" || args[0] === "bootstrap")
+      .map((args) => [args[0], args.at(-1)])).toEqual([
+      ["bootout", `gui/501/${WEB_MAINTENANCE_LAUNCHD_LABEL}`],
+      ["bootout", `gui/501/${WEB_LAUNCHD_LABEL}`],
+      ["bootstrap", paths.maintenancePlistPath],
+    ]);
+    await expect(readFile(paths.launchd.plistPath, "utf8")).resolves.toBe("worker\n");
+    await expect(readFile(paths.maintenancePlistPath, "utf8")).resolves.toBe("helper\n");
+  });
+
+  it("reboots the prior helper if restart cannot prove the worker stopped", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "worker plist\n", { mode: 0o600 });
+    await writeFile(paths.maintenancePlistPath, "prior helper plist\n", { mode: 0o600 });
+    await writeFile(paths.recordPath, `${JSON.stringify({
+      schema: "mono-agent.web-service.v1",
+      host: "127.0.0.1",
+      port: 5050,
+      theme: "evergreen",
+      updatedAt: "2026-08-14T12:00:00.000Z",
+    })}\n`, { mode: 0o600 });
+    let helperLoaded = true;
+    const calls: string[][] = [];
+    const launchctl = async (args: readonly string[]) => {
+      calls.push([...args]);
+      const helper = args.some((value) => value.includes(WEB_MAINTENANCE_LAUNCHD_LABEL));
+      if (args[0] === "print") {
+        if (helper) return helperLoaded
+          ? { code: 0, stdout: "pid = 900\n", stderr: "" }
+          : { code: 1, stdout: "", stderr: "not loaded" };
+        return { code: 0, stdout: "pid = 777\n", stderr: "" };
+      }
+      if (args[0] === "bootout" && helper) {
+        helperLoaded = false;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "bootout") return { code: 0, stdout: "", stderr: "" };
+      if (args[0] === "bootstrap" && helper) {
+        helperLoaded = true;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+    let clock = 0;
+
+    await expect(runWebCommand(
+      { positionals: ["restart"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl,
+        ensureManagedRuntime: async () => ({
+          cliPath: "/managed/dist/cli.js",
+          nodePath: "/managed/node",
+          launchProof: "cHJvb2Y",
+        }),
+        isAlive: (pid) => pid === 777 || (pid === 900 && helperLoaded),
+        now: () => { clock += 20_000; return clock; },
+        sleep: async () => undefined,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    )).resolves.toBe(1);
+
+    expect(helperLoaded).toBe(true);
+    const lifecycleCalls = calls.filter((args) => args[0] === "bootout" || args[0] === "bootstrap");
+    expect(lifecycleCalls.map((args) => [args[0], args.at(-1)])).toEqual([
+      ["bootout", `gui/501/${WEB_MAINTENANCE_LAUNCHD_LABEL}`],
+      ["bootout", `gui/501/${WEB_LAUNCHD_LABEL}`],
+      ["bootstrap", paths.maintenancePlistPath],
+    ]);
+    expect(await readFile(paths.launchd.plistPath, "utf8")).toBe("worker plist\n");
+    expect(await readFile(paths.maintenancePlistPath, "utf8")).toBe("prior helper plist\n");
   });
 
   it("surfaces the web package's shared-state lease for concurrent ports and reset", async () => {
@@ -368,6 +904,7 @@ describe("runWebCommand", () => {
         platform: "linux",
         homeDir: home,
         prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
         resetState,
         stdout: { write: () => undefined },
         stderr: { write: () => undefined },
@@ -391,6 +928,7 @@ describe("runWebCommand", () => {
         platform: "linux",
         homeDir: home,
         prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
         resetState: async () => { await rm(paths.tailscalePath); },
         stdout: { write: () => undefined },
         stderr: { write: () => undefined },
@@ -447,7 +985,7 @@ describe("runWebCommand", () => {
         prepareState,
         acquireLifecycleLock: async () => async () => undefined,
         launchctl,
-        ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
+        ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
         healthcheck: async (url) => url.includes(":5050/"),
         isAlive: () => alive,
         now: () => { clock += 20_000; return clock; },
@@ -460,7 +998,14 @@ describe("runWebCommand", () => {
     expect(code).toBe(1);
     expect(await readFile(paths.launchd.plistPath, "utf8")).toBe(oldPlist);
     expect(await readFile(paths.recordPath, "utf8")).toBe(oldRecord);
-    expect(calls.filter((args) => args[0] === "bootstrap")).toHaveLength(2);
+    expect(await readFile(paths.maintenancePlistPath, "utf8"))
+      .toContain(`<string>${await compositeIdentity(paths.launchd.plistPath)}</string>`);
+    expect(calls.filter((args) => args[0] === "bootstrap").map((args) => args.at(-1))).toEqual([
+      paths.maintenancePlistPath,
+      paths.launchd.plistPath,
+      paths.maintenancePlistPath,
+      paths.launchd.plistPath,
+    ]);
     expect(errors).toContain("previous web worker is running again");
   });
 
@@ -495,6 +1040,195 @@ describe("runWebCommand", () => {
     expect(launchctl).not.toHaveBeenCalledWith(expect.arrayContaining(["bootstrap"]));
   });
 
+  it("publishes the helper from the fresh composite main identity before either bootstrap", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(join(home, "Library"), { mode: 0o700 });
+    const launchd = pairedLaunchctlFixture();
+
+    await expect(runWebCommand(
+      { positionals: ["start"], env: {}, loopback: true },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl: launchd.runner,
+        tailscale: unavailableTailscaleRunner(),
+        ensureManagedRuntime: async () => ({
+          cliPath: "/managed/dist/cli.js",
+          nodePath: "/managed/node",
+          launchProof: "cHJvb2Y",
+        }),
+        healthcheck: async () => true,
+        isAlive: launchd.isAlive,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    )).resolves.toBe(0);
+
+    const identity = await compositeIdentity(paths.launchd.plistPath);
+    const helper = await readFile(paths.maintenancePlistPath, "utf8");
+    expect(helper).toContain(`<string>${identity}</string>`);
+    expect(helper).not.toContain("--expected-web-plist-fingerprint");
+    expect(launchd.calls.filter((args) => args[0] === "bootstrap").map((args) => args.at(-1))).toEqual([
+      paths.maintenancePlistPath,
+      paths.launchd.plistPath,
+    ]);
+  });
+
+  it("regenerates the helper after a byte-identical main rewrite with a new inode identity", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(join(home, "Library"), { mode: 0o700 });
+    const launchd = pairedLaunchctlFixture();
+    const deps = {
+      platform: "darwin" as const,
+      homeDir: home,
+      getuid: () => 501,
+      prepareState,
+      acquireLifecycleLock: async () => async () => undefined,
+      launchctl: launchd.runner,
+      tailscale: unavailableTailscaleRunner(),
+      ensureManagedRuntime: async () => ({
+        cliPath: "/managed/dist/cli.js",
+        nodePath: "/managed/node",
+        launchProof: "cHJvb2Y",
+      }),
+      healthcheck: async () => true,
+      isAlive: launchd.isAlive,
+      stdout: { write: (_text: string) => undefined },
+      stderr: { write: (_text: string) => undefined },
+    };
+    await expect(runWebCommand({ positionals: ["start"], env: {}, loopback: true }, deps)).resolves.toBe(0);
+    const firstMain = await readFile(paths.launchd.plistPath, "utf8");
+    const firstIdentity = await compositeIdentity(paths.launchd.plistPath);
+    await expect(runWebCommand({ positionals: ["restart"], env: {}, loopback: true }, deps)).resolves.toBe(0);
+    const secondIdentity = await compositeIdentity(paths.launchd.plistPath);
+    const helper = await readFile(paths.maintenancePlistPath, "utf8");
+
+    expect(await readFile(paths.launchd.plistPath, "utf8")).toBe(firstMain);
+    expect(secondIdentity).not.toBe(firstIdentity);
+    expect(helper).toContain(`<string>${secondIdentity}</string>`);
+    expect(helper).not.toContain(`<string>${firstIdentity}</string>`);
+  });
+
+  it("converges an abandoned restoring intent with zero additional rotation", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "prior main plist\n", { mode: 0o600 });
+    await writeFile(paths.recordPath, `${JSON.stringify({
+      schema: "mono-agent.web-service.v1",
+      host: "127.0.0.1",
+      port: 5050,
+      theme: "evergreen",
+      updatedAt: "2026-08-14T12:00:00.000Z",
+    })}\n`, { mode: 0o600 });
+    await writeFile(paths.launchd.stdoutPath, Buffer.alloc(LAUNCHD_LOG_MAX_BYTES + 1, "x"), { mode: 0o600 });
+    const stopping = {
+      version: 1 as const,
+      phase: "stopping" as const,
+      label: WEB_LAUNCHD_LABEL,
+      plistFingerprint: await compositeIdentity(paths.launchd.plistPath),
+    };
+    await beginLaunchdLogMaintenanceIntent(paths.launchd, stopping);
+    const stopped = await markLaunchdLogMaintenanceStopped(paths.launchd, stopping);
+    await markLaunchdLogMaintenanceRestoring(paths.launchd, stopped);
+    const launchd = pairedLaunchctlFixture();
+
+    await expect(runWebCommand(
+      { positionals: ["start"], env: {}, loopback: true },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl: launchd.runner,
+        tailscale: unavailableTailscaleRunner(),
+        ensureManagedRuntime: async () => ({
+          cliPath: "/managed/dist/cli.js",
+          nodePath: "/managed/node",
+          launchProof: "cHJvb2Y",
+        }),
+        verifyMaintenanceEntrypoint: async () => undefined,
+        healthcheck: async () => true,
+        isAlive: launchd.isAlive,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    )).resolves.toBe(0);
+
+    expect((await stat(paths.launchd.stdoutPath)).size).toBe(LAUNCHD_LOG_MAX_BYTES + 1);
+    await expect(stat(`${paths.launchd.stdoutPath}.1`)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readLaunchdLogMaintenanceIntent(paths.launchd)).resolves.toBeUndefined();
+  });
+
+  it("fails closed on an abandoned stopping intent without unloading either service", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(paths.launchd.logDir, { recursive: true, mode: 0o700 });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "prior main plist\n", { mode: 0o600 });
+    await beginLaunchdLogMaintenanceIntent(paths.launchd, {
+      version: 1,
+      phase: "stopping",
+      label: WEB_LAUNCHD_LABEL,
+      plistFingerprint: await compositeIdentity(paths.launchd.plistPath),
+    });
+    const launchd = pairedLaunchctlFixture({ helper: true });
+    await expect(runWebCommand(
+      { positionals: ["start"], env: {} },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl: launchd.runner,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    )).resolves.toBe(1);
+    expect(launchd.calls.some((args) => args[0] === "bootout")).toBe(false);
+  });
+
+  it("never bootstraps a partial pair when helper regeneration fails", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await mkdir(join(home, "Library"), { mode: 0o700 });
+    const launchd = pairedLaunchctlFixture();
+    const writer = async (path: string, contents: string): Promise<void> => {
+      if (path === paths.maintenancePlistPath) throw new Error("injected helper publication failure");
+      await writeFile(path, contents, { mode: 0o600 });
+    };
+    await expect(runWebCommand(
+      { positionals: ["start"], env: {}, loopback: true },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl: launchd.runner,
+        ensureManagedRuntime: async () => ({
+          cliPath: "/managed/dist/cli.js",
+          nodePath: "/managed/node",
+          launchProof: "cHJvb2Y",
+        }),
+        writePrivateFile: writer,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    )).resolves.toBe(1);
+    expect(launchd.calls.some((args) => args[0] === "bootstrap")).toBe(false);
+    await expect(stat(paths.launchd.plistPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(paths.maintenancePlistPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("removes a partial first-start publication when the plist write fails", async () => {
     const home = await testHome();
     const paths = webPaths(home);
@@ -517,7 +1251,7 @@ describe("runWebCommand", () => {
         acquireLifecycleLock: async () => async () => undefined,
         launchctl,
         tailscale: unavailableTailscaleRunner(),
-        ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
+        ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
         writePrivateFile,
         stdout: { write: () => undefined },
         stderr: { write: () => undefined },
@@ -527,6 +1261,7 @@ describe("runWebCommand", () => {
     expect(code).toBe(1);
     await expect(stat(paths.recordPath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(paths.launchd.plistPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(paths.maintenancePlistPath)).rejects.toMatchObject({ code: "ENOENT" });
     expect(launchctl).not.toHaveBeenCalledWith(expect.arrayContaining(["bootstrap"]));
   });
 
@@ -571,7 +1306,7 @@ describe("runWebCommand", () => {
         launchctl,
         tailscale,
         sleep,
-        ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
+        ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
         healthcheck: async () => true,
         isAlive: () => loaded,
         stdout: { write: () => undefined },
@@ -603,21 +1338,27 @@ describe("runWebCommand", () => {
       theme: "plum",
       updatedAt: "2026-07-17T00:00:00.000Z",
     })}\n`, { mode: 0o600 });
-    let loaded = true;
+    let workerLoaded = true;
+    let helperLoaded = false;
     const launchctl = async (args: readonly string[]) => {
-      if (args[0] === "print") return { code: loaded ? 0 : 1, stdout: loaded ? "pid = 777\n" : "", stderr: "" };
+      const helper = args.some((value) => value.includes("com.mono-agent-web-maintenance"));
+      const loaded = helper ? helperLoaded : workerLoaded;
+      if (args[0] === "print") return { code: loaded ? 0 : 1, stdout: loaded && !helper ? "pid = 777\n" : "", stderr: "" };
       if (args[0] === "bootout") {
-        loaded = false;
+        if (helper) helperLoaded = false;
+        else workerLoaded = false;
         return { code: 0, stdout: "", stderr: "" };
       }
       if (args[0] === "bootstrap") {
-        loaded = true;
+        if (helper) helperLoaded = true;
+        else workerLoaded = true;
         return { code: 0, stdout: "", stderr: "" };
       }
       return { code: 1, stdout: "", stderr: "unexpected" };
     };
 
-    await expect(runWebCommand(
+    let errors = "";
+    const result = await runWebCommand(
       { positionals: ["restart"], env: {} },
       {
         platform: "darwin",
@@ -627,13 +1368,14 @@ describe("runWebCommand", () => {
         acquireLifecycleLock: async () => async () => undefined,
         launchctl,
         tailscale: unavailableTailscaleRunner(),
-        ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
+        ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
         healthcheck: async () => true,
-        isAlive: () => loaded,
+        isAlive: (pid) => pid === 777 && workerLoaded,
         stdout: { write: () => undefined },
-        stderr: { write: () => undefined },
+        stderr: { write: (text) => { errors += text; } },
       },
-    )).resolves.toBe(0);
+    );
+    expect(result, errors).toBe(0);
 
     expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).toMatchObject({ theme: "plum" });
     expect(await readFile(paths.launchd.plistPath, "utf8")).toContain("<string>plum</string>");
@@ -685,7 +1427,7 @@ describe("runWebCommand", () => {
         launchctl,
         tailscale,
         sleep: async () => undefined,
-        ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
+        ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
         healthcheck: async () => true,
         isAlive: () => loaded,
         stdout: { write: (text) => { output += text; } },
@@ -731,7 +1473,7 @@ describe("runWebCommand", () => {
         acquireLifecycleLock: async () => async () => undefined,
         launchctl,
         tailscale: unavailableTailscaleRunner(),
-        ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
+        ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
         isAlive: () => false,
         stdout: { write: () => undefined },
         stderr: { write: (text) => { errors += text; } },
@@ -744,6 +1486,7 @@ describe("runWebCommand", () => {
     expect(calls.map((args) => args[0])).toContain("bootout");
     await expect(stat(paths.recordPath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(paths.launchd.plistPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(paths.maintenancePlistPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("stops a crash-looping first start and removes its artifacts after readiness timeout", async () => {
@@ -777,7 +1520,7 @@ describe("runWebCommand", () => {
         acquireLifecycleLock: async () => async () => undefined,
         launchctl,
         tailscale: unavailableTailscaleRunner(),
-        ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
+        ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
         healthcheck: async () => false,
         isAlive: () => false,
         now: () => { clock += 20_000; return clock; },
@@ -792,6 +1535,7 @@ describe("runWebCommand", () => {
     expect(calls.some((args) => args[0] === "bootout")).toBe(true);
     await expect(stat(paths.recordPath)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(paths.launchd.plistPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(paths.maintenancePlistPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rolls worker, service record, plist, and Tailnet route back to 5050 when a 5051 migration claim fails", async () => {
@@ -865,7 +1609,7 @@ describe("runWebCommand", () => {
         acquireLifecycleLock: async () => async () => undefined,
         launchctl,
         tailscale,
-        ensureManagedRuntime: async () => ({ cliPath: "/managed/cli.js", nodePath: "/managed/node" }),
+        ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
         healthcheck: async () => true,
         isAlive: () => loaded,
         stdout: { write: () => undefined },
@@ -879,7 +1623,12 @@ describe("runWebCommand", () => {
     expect(await readFile(paths.launchd.plistPath, "utf8")).toBe(oldPlist);
     expect(await readFile(paths.recordPath, "utf8")).toBe(oldRecord);
     expect(await readFile(paths.tailscalePath, "utf8")).toContain("http://127.0.0.1:5050");
-    expect(launchCalls.filter((args) => args[0] === "bootstrap")).toHaveLength(2);
+    expect(launchCalls.filter((args) => args[0] === "bootstrap").map((args) => args.at(-1))).toEqual([
+      paths.maintenancePlistPath,
+      paths.launchd.plistPath,
+      paths.maintenancePlistPath,
+      paths.launchd.plistPath,
+    ]);
   });
 });
 

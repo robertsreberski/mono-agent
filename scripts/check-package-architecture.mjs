@@ -201,8 +201,33 @@ for (const file of controllerOperationModules) {
 const extractedResponsibilityDeclarations = [
   {
     file: join("packages", "agent-app", "src", "web-command.ts"),
-    declaration: "function rolloverManagedWebLogs",
+    declaration: "function startManagedWebLogMonitor",
     owner: "managed-web-logs.ts",
+  },
+  {
+    file: join("packages", "agent-app", "src", "web-command.ts"),
+    declaration: "function inspectLegacyManagedWebLogArtifacts",
+    owner: "managed-web-logs.ts",
+  },
+  {
+    file: join("packages", "agent-app", "src", "web-command.ts"),
+    declaration: "function maintainLegacyManagedWebLogArtifacts",
+    owner: "managed-web-logs.ts",
+  },
+  {
+    file: join("packages", "agent-app", "src", "web-command.ts"),
+    declaration: "function runWebLogMaintenanceCommand",
+    owner: "web-log-maintenance.ts",
+  },
+  {
+    file: join("packages", "agent-app", "src", "web-command.ts"),
+    declaration: "function writeWebLogMaintenanceStatus",
+    owner: "web-log-maintenance-status.ts",
+  },
+  {
+    file: join("packages", "agent-app", "src", "background.ts"),
+    declaration: "function maintainLaunchdLogsWithSharedLockOperation",
+    owner: "background-log-maintenance.ts",
   },
   {
     file: join("packages", "agent-app", "src", "background.ts"),

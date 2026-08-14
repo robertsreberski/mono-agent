@@ -7,9 +7,13 @@ import { fileURLToPath } from "node:url";
 import {
   deriveLaunchdLabel,
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
+  INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
   launchdMaintenanceDispersionSeconds,
+  launchdWebMaintenanceInfo,
   launchdPathsFor,
   MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV,
+  MANAGED_WEB_LOG_MAINTENANCE_ENV,
+  webMaintenanceDispersionSeconds,
 } from "./launchd.js";
 import type { LaunchdPaths } from "./launchd.js";
 import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "./launchd-maintenance-command.js";
@@ -23,9 +27,12 @@ import type {
   LaunchdMaintenanceLifecycleLease,
 } from "./launchd-maintenance-gate.js";
 import { sanitizeManagedLaunchdLogMaintenanceEnvironment } from "./managed-launchd-maintenance-environment.js";
+import { sanitizeManagedWebLogMaintenanceEnvironment } from "./managed-web-maintenance-environment.js";
 import {
   verifyManagedRuntimeMaintenanceEntrypoint,
 } from "./managed-runtime-maintenance-entry.js";
+import { parseWebLogMaintenanceArguments } from "./web-log-maintenance-command.js";
+import type { WebLogMaintenanceCommandArgs } from "./web-log-maintenance-command.js";
 
 interface HeavyMaintenanceModule {
   readonly runLaunchdLogMaintenanceCommandWithLifecycleLease: (
@@ -34,11 +41,17 @@ interface HeavyMaintenanceModule {
   ) => Promise<number>;
 }
 
+interface HeavyWebMaintenanceModule {
+  readonly runWebLogMaintenanceCommand: (args: WebLogMaintenanceCommandArgs) => Promise<number>;
+}
+
 export interface LaunchdMaintenanceEntryDependencies {
   readonly gate: LaunchdMaintenanceGateDependencies;
   readonly pathsForLabel: (label: string) => LaunchdPaths;
   readonly verifyEntrypoint: typeof verifyManagedRuntimeMaintenanceEntrypoint;
   readonly loadHeavy: () => Promise<HeavyMaintenanceModule>;
+  readonly loadWebHeavy?: () => Promise<HeavyWebMaintenanceModule>;
+  readonly inspectWebHelper?: typeof launchdWebMaintenanceInfo;
   readonly currentEntrypointPath: string;
   readonly platform: NodeJS.Platform;
   readonly sleep: (milliseconds: number) => Promise<void>;
@@ -51,6 +64,8 @@ export function defaultLaunchdMaintenanceEntryDependencies(): LaunchdMaintenance
     pathsForLabel: (label) => launchdPathsFor(label),
     verifyEntrypoint: verifyManagedRuntimeMaintenanceEntrypoint,
     loadHeavy: async () => await import("./cli-background-command.js"),
+    loadWebHeavy: async () => await import("./web-log-maintenance.js"),
+    inspectWebHelper: launchdWebMaintenanceInfo,
     currentEntrypointPath: fileURLToPath(import.meta.url),
     platform: process.platform,
     sleep: wait,
@@ -65,17 +80,65 @@ export async function runLaunchdMaintenanceEntry(
   deps: LaunchdMaintenanceEntryDependencies = defaultLaunchdMaintenanceEntryDependencies(),
 ): Promise<number> {
   const command = argv[0];
-  const marked = env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV] === "1";
+  const agentMarked = env[MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV] === "1";
+  const webMarked = env[MANAGED_WEB_LOG_MAINTENANCE_ENV] === "1";
+  if (command === INTERNAL_WEB_LOG_MAINTENANCE_COMMAND) {
+    if (!webMarked || agentMarked) {
+      safeStderr(deps, "The web log maintenance command is reserved for its exact managed LaunchAgent marker.");
+      return 2;
+    }
+    let webArgs: WebLogMaintenanceCommandArgs;
+    try {
+      webArgs = parseWebLogMaintenanceArguments(argv);
+    } catch (error) {
+      safeStderr(deps, safeError(error));
+      return 2;
+    }
+    sanitizeManagedWebLogMaintenanceEnvironment(env);
+    if (deps.platform !== "darwin") {
+      safeStderr(deps, "Scheduled web log maintenance is only available on macOS launchd.");
+      return 1;
+    }
+    try {
+      // Mirror the agent helper's pre-import, pre-lock RunAtLoad dispersion.
+      await deps.sleep(webMaintenanceDispersionSeconds() * 1_000);
+      await deps.verifyEntrypoint({
+        currentEntrypointPath: deps.currentEntrypointPath,
+        launchProof: webArgs.expectedManagedRuntimeLaunch,
+      });
+      const helperPid = deps.gate.currentPid();
+      const helper = await (deps.inspectWebHelper ?? launchdWebMaintenanceInfo)(
+        deps.gate.runner,
+        deps.gate.getuid(),
+      );
+      const definition = helper.definition;
+      if (!helper.loaded
+        || helper.pid !== helperPid
+        || !deps.gate.isAlive(helperPid)
+        || definition === undefined
+        || definition.nodePath !== process.execPath
+        || definition.cliPath !== deps.currentEntrypointPath
+        || definition.expectedManagedRuntimeLaunch !== webArgs.expectedManagedRuntimeLaunch
+        || definition.expectedWebPlistIdentity !== webArgs.expectedWebPlistIdentity) {
+        throw new Error("launchd does not own this exact web-maintenance helper definition and pid");
+      }
+      const heavy = await (deps.loadWebHeavy ?? (async () => await import("./web-log-maintenance.js")))();
+      return await heavy.runWebLogMaintenanceCommand(webArgs);
+    } catch (error) {
+      safeStderr(deps, `Scheduled web maintenance could not establish its dispersed attested boundary: ${safeError(error)}`);
+      return 1;
+    }
+  }
   if (command !== INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND) {
     safeStderr(
       deps,
-      marked
+      agentMarked || webMarked
         ? "The managed log-maintenance marker cannot authorize another command."
         : "The launchd maintenance entry only accepts its reserved managed command.",
     );
     return 2;
   }
-  if (!marked) {
+  if (!agentMarked || webMarked) {
     safeStderr(deps, "The launchd log maintenance command is reserved for its managed LaunchAgent.");
     return 2;
   }

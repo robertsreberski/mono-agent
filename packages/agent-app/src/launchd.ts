@@ -9,6 +9,12 @@ import {
   MANAGED_BACKGROUND_WORKER_ENV,
 } from "./background-environment.js";
 import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "./launchd-maintenance-command.js";
+import {
+  managedWebLogMaintenanceEnvironment,
+  MANAGED_WEB_LOG_MAINTENANCE_ENV,
+} from "./managed-web-maintenance-environment.js";
+
+export { MANAGED_WEB_LOG_MAINTENANCE_ENV } from "./managed-web-maintenance-environment.js";
 
 /**
  * Thin, side-effect-light helpers around macOS launchd. The `launchctl` runner
@@ -74,6 +80,19 @@ export interface MaintenancePlistInput {
   readonly calendarMinute: number;
 }
 
+export interface WebMaintenancePlistInput {
+  readonly label: typeof WEB_MAINTENANCE_LAUNCHD_LABEL;
+  readonly nodePath: string;
+  /** The same attested lightweight entry used by agent maintenance. */
+  readonly cliPath: string;
+  readonly cwd: string;
+  readonly expectedManagedRuntimeLaunch: string;
+  /** Fresh dev:ino:size:sha256 identity of the paired main web plist. */
+  readonly expectedWebPlistIdentity: string;
+  readonly environment: Readonly<Record<string, string>>;
+  readonly calendarMinute: number;
+}
+
 export interface WebPlistInput {
   readonly label: string;
   readonly nodePath: string;
@@ -112,6 +131,20 @@ export interface LaunchdManagedWorkerInfo extends LaunchdServiceInfo {
   readonly definition?: LaunchdManagedWorkerDefinition;
 }
 
+export interface LaunchdWebMaintenanceDefinition {
+  readonly plistPath: string;
+  readonly nodePath: string;
+  readonly cliPath: string;
+  readonly cwd: string;
+  readonly expectedManagedRuntimeLaunch: string;
+  readonly expectedWebPlistIdentity: string;
+}
+
+export interface LaunchdWebMaintenanceInfo extends LaunchdServiceInfo {
+  /** Present only when launchctl exposes the exact cached helper definition. */
+  readonly definition?: LaunchdWebMaintenanceDefinition;
+}
+
 const LABEL_PREFIX = "com.mono-agent";
 const MAINTENANCE_LABEL_PREFIX = "com.mono-agent-maintenance";
 const MAX_FOLDER_SEGMENT = 40;
@@ -120,6 +153,9 @@ const PATH_EXTRAS = ["/opt/homebrew/bin", "/usr/local/bin"];
 
 export const INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND = "__launchd-log-maintenance";
 export const MANAGED_LAUNCHD_LOG_MAINTENANCE_ENV = "MONO_AGENT_MANAGED_LOG_MAINTENANCE";
+export const WEB_LAUNCHD_LABEL = "com.mono-agent-web";
+export const WEB_MAINTENANCE_LAUNCHD_LABEL = "com.mono-agent-web-maintenance";
+export const INTERNAL_WEB_LOG_MAINTENANCE_COMMAND = "__web-log-maintenance";
 
 /**
  * A stable, launchd-legal label derived from the resolved config path. The
@@ -178,6 +214,23 @@ export function launchdMaintenanceDispersionSeconds(canonicalMainLabel: string):
     canonicalMainLabel,
     LAUNCHD_MAINTENANCE_DISPERSION_SECONDS,
   );
+}
+
+/** Web has a fixed label and therefore a distinct exact-label schedule validator. */
+export function webMaintenanceCalendarMinute(label: string = WEB_LAUNCHD_LABEL): number {
+  return webMaintenanceHashBucket(label, 60);
+}
+
+/** Mirror agent RunAtLoad dispersion without admitting the web label to agent grammar. */
+export function webMaintenanceDispersionSeconds(label: string = WEB_LAUNCHD_LABEL): number {
+  return webMaintenanceHashBucket(label, LAUNCHD_MAINTENANCE_DISPERSION_SECONDS);
+}
+
+function webMaintenanceHashBucket(label: string, bucketCount: number): number {
+  if (label !== WEB_LAUNCHD_LABEL) {
+    throw new Error("Web maintenance requires the exact managed web LaunchAgent label.");
+  }
+  return createHash("sha256").update(label).digest().readUInt32BE(0) % bucketCount;
 }
 
 function launchdMaintenanceHashBucket(canonicalMainLabel: string, bucketCount: number): number {
@@ -313,6 +366,57 @@ ${argsXml}
 `;
 }
 
+/** Scheduled one-shot web log controller. It never owns a KeepAlive or log stream. */
+export function buildWebMaintenancePlistXml(input: WebMaintenancePlistInput): string {
+  if (input.label !== WEB_MAINTENANCE_LAUNCHD_LABEL) {
+    throw new Error("Web maintenance requires its exact private LaunchAgent label.");
+  }
+  if (!Number.isSafeInteger(input.calendarMinute)
+    || input.calendarMinute < 0
+    || input.calendarMinute > 59) {
+    throw new Error("Web maintenance calendar minute must be an integer from 0 through 59.");
+  }
+  assertWebPlistIdentity(input.expectedWebPlistIdentity);
+  for (const [name, value] of [
+    ["web maintenance launchd label", input.label],
+    ["web maintenance working directory", input.cwd],
+  ] as const) {
+    assertControlFree(value, name);
+  }
+  const argsXml = buildWebMaintenanceProgramArguments(input)
+    .map((argument) => `    <string>${escapeXml(argument)}</string>`)
+    .join("\n");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${escapeXml(input.label)}</string>
+  <key>ProgramArguments</key>
+  <array>
+${argsXml}
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${escapeXml(input.cwd)}</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Minute</key>
+    <integer>${String(input.calendarMinute)}</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/dev/null</string>
+  <key>StandardErrorPath</key>
+  <string>/dev/null</string>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>
+`;
+}
+
 /** Always-on web-console LaunchAgent. It runs the public blocking `web run` worker. */
 export function buildWebPlistXml(input: WebPlistInput): string {
   if (!Number.isSafeInteger(input.port) || input.port < 1 || input.port > 65_535) {
@@ -414,6 +518,27 @@ export function buildLaunchdMaintenanceProgramArguments(
   return arguments_;
 }
 
+/** Exact argv persisted by the private scheduled web-maintenance LaunchAgent. */
+export function buildWebMaintenanceProgramArguments(
+  input: WebMaintenancePlistInput,
+): readonly string[] {
+  assertWebPlistIdentity(input.expectedWebPlistIdentity);
+  const arguments_ = [
+    "/usr/bin/env",
+    "-i",
+    ...buildEnvironmentArguments(input.environment),
+    input.nodePath,
+    input.cliPath,
+    INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
+    "--expected-managed-runtime-launch",
+    input.expectedManagedRuntimeLaunch,
+    "--expected-web-plist-identity",
+    input.expectedWebPlistIdentity,
+  ];
+  for (const argument of arguments_) assertControlFree(argument, "web maintenance program argument");
+  return arguments_;
+}
+
 /** Exact argv persisted for the always-on web console. */
 export function buildWebLaunchdProgramArguments(input: WebPlistInput): readonly string[] {
   const arguments_ = [
@@ -435,7 +560,7 @@ export function buildWebLaunchdProgramArguments(input: WebPlistInput): readonly 
   return arguments_;
 }
 
-function buildEnvironmentArguments(environment: Readonly<Record<string, string>>): string[] {
+export function buildEnvironmentArguments(environment: Readonly<Record<string, string>>): string[] {
   return Object.entries(environment)
     .sort(([left], [right]) => compareCodeUnits(left, right))
     .map(([key, value]) => {
@@ -450,6 +575,12 @@ function buildEnvironmentArguments(environment: Readonly<Record<string, string>>
 function assertControlFree(value: string, label: string): void {
   if (/[\u0000-\u001f\u007f]/u.test(value)) {
     throw new Error(`${label} must not contain control characters.`);
+  }
+}
+
+export function assertWebPlistIdentity(value: string): void {
+  if (!/^\d+:\d+:\d+:[0-9a-f]{64}$/u.test(value)) {
+    throw new Error("Web LaunchAgent plist identity must be dev:ino:size:sha256.");
   }
 }
 
@@ -541,6 +672,86 @@ export async function launchdManagedWorkerInfo(
     loaded: true,
     ...(pid === undefined ? {} : { pid }),
     ...(definition === undefined ? {} : { definition }),
+  };
+}
+
+/** Read the cached definition, not merely the mutable helper plist on disk. */
+export async function launchdWebMaintenanceInfo(
+  runner: LaunchctlRunner,
+  uid: number,
+): Promise<LaunchdWebMaintenanceInfo> {
+  const result = await runner(["print", serviceTarget(WEB_MAINTENANCE_LAUNCHD_LABEL, uid)]);
+  if (result.code !== 0) return { loaded: false };
+  const pid = parseLaunchdServicePid(result.stdout);
+  const definition = parseLaunchdWebMaintenanceDefinition(result.stdout);
+  return {
+    loaded: true,
+    ...(pid === undefined ? {} : { pid }),
+    ...(definition === undefined ? {} : { definition }),
+  };
+}
+
+/** Parse only the exact cached web-helper definition emitted by this producer. */
+export function parseLaunchdWebMaintenanceDefinition(
+  output: string,
+): LaunchdWebMaintenanceDefinition | undefined {
+  const lines = output.endsWith("\n") ? output.slice(0, -1).split("\n") : output.split("\n");
+  const oneValue = (name: string): string | undefined => {
+    const prefix = `\t${name} = `;
+    const matches = lines.filter((line) => line.startsWith(prefix));
+    if (matches.length !== 1) return undefined;
+    const value = matches[0]!.slice(prefix.length);
+    return value.length > 0 && !/[\u0000-\u001f\u007f]/u.test(value) ? value : undefined;
+  };
+  const blockStarts = lines
+    .map((line, index) => line === "\targuments = {" ? index : -1)
+    .filter((index) => index >= 0);
+  if (blockStarts.length !== 1) return undefined;
+  const blockStart = blockStarts[0]!;
+  const blockEnd = lines.indexOf("\t}", blockStart + 1);
+  if (blockEnd <= blockStart + 1) return undefined;
+  const args = lines.slice(blockStart + 1, blockEnd).map((line) =>
+    line.startsWith("\t\t") ? line.slice(2) : "");
+  if (args.some((argument) => argument.length === 0 || /[\u0000-\u001f\u007f]/u.test(argument))) {
+    return undefined;
+  }
+  const expectedPrefix = [
+    "/usr/bin/env",
+    "-i",
+    ...buildEnvironmentArguments(managedWebLogMaintenanceEnvironment()),
+  ];
+  const nodeIndex = expectedPrefix.length;
+  if (oneValue("program") !== "/usr/bin/env"
+    || args.length !== expectedPrefix.length + 7
+    || expectedPrefix.some((value, index) => args[index] !== value)
+    || args[nodeIndex + 2] !== INTERNAL_WEB_LOG_MAINTENANCE_COMMAND
+    || args[nodeIndex + 3] !== "--expected-managed-runtime-launch"
+    || args[nodeIndex + 5] !== "--expected-web-plist-identity") {
+    return undefined;
+  }
+  const nodePath = args[nodeIndex];
+  const cliPath = args[nodeIndex + 1];
+  const expectedManagedRuntimeLaunch = args[nodeIndex + 4];
+  const expectedWebPlistIdentity = args[nodeIndex + 6];
+  const plistPath = oneValue("path");
+  const cwd = oneValue("working directory");
+  if (nodePath === undefined || cliPath === undefined || plistPath === undefined || cwd === undefined
+    || ![nodePath, cliPath, plistPath, cwd].every((path) => isAbsolute(path))
+    || expectedManagedRuntimeLaunch === undefined
+    || !/^[A-Za-z0-9_-]+$/u.test(expectedManagedRuntimeLaunch)
+    || expectedWebPlistIdentity === undefined) return undefined;
+  try {
+    assertWebPlistIdentity(expectedWebPlistIdentity);
+  } catch {
+    return undefined;
+  }
+  return {
+    plistPath,
+    nodePath,
+    cliPath,
+    cwd,
+    expectedManagedRuntimeLaunch,
+    expectedWebPlistIdentity,
   };
 }
 

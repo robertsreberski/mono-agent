@@ -59,6 +59,22 @@ async function fixture(): Promise<LaunchdPaths> {
   };
 }
 
+async function webFixture(): Promise<LaunchdPaths> {
+  const home = await realpath(await mkdtemp(join(tmpdir(), "mono-agent-web-launchd-logs-")));
+  tempDirs.push(home);
+  const launchAgentsDir = join(home, "Library", "LaunchAgents");
+  const logDir = join(home, ".mono-agent", "web", "logs");
+  await mkdir(launchAgentsDir, { recursive: true, mode: 0o700 });
+  await mkdir(logDir, { recursive: true, mode: 0o700 });
+  return {
+    launchAgentsDir,
+    logDir,
+    plistPath: join(launchAgentsDir, "com.mono-agent-web.plist"),
+    stdoutPath: join(logDir, "web.out.log"),
+    stderrPath: join(logDir, "web.err.log"),
+  };
+}
+
 async function privateFile(path: string, contents: string): Promise<void> {
   await writeFile(path, contents, { encoding: "utf8", mode: 0o600 });
   await chmod(path, 0o600);
@@ -72,6 +88,44 @@ async function findTransactionArtifact(logDir: string, suffix: string): Promise<
 }
 
 describe("inspectLaunchdLogs", () => {
+  it("admits only the exact managed web directory chain and exact web intent label", async () => {
+    const paths = await webFixture();
+    const intent = {
+      version: 1 as const,
+      phase: "stopping" as const,
+      label: "com.mono-agent-web",
+      plistFingerprint: `1:2:3:${"a".repeat(64)}`,
+    };
+    await expect(inspectLaunchdLogs(paths, POLICY)).resolves.toMatchObject({ canMaintain: true });
+    await expect(beginLaunchdLogMaintenanceIntent(paths, intent)).resolves.toBeUndefined();
+    await expect(readLaunchdLogMaintenanceIntent(paths)).resolves.toEqual(intent);
+    const stopped = await markLaunchdLogMaintenanceStopped(paths, intent);
+    await clearLaunchdLogMaintenanceIntent(paths, stopped);
+
+    for (const label of [
+      "com.mono-agent-web-maintenance",
+      "com.mono-agent-web.extra",
+      "com.mono-agent-web-evil",
+    ]) {
+      await expect(beginLaunchdLogMaintenanceIntent(paths, { ...intent, label }))
+        .rejects.toThrow(/invalid label/u);
+    }
+  });
+
+  it("rejects every near-match below the web state root while leaving agent paths admitted", async () => {
+    const web = await webFixture();
+    const evilLogDir = join(dirname(web.logDir), "other", "logs");
+    await mkdir(evilLogDir, { recursive: true, mode: 0o700 });
+    const evil = {
+      ...web,
+      logDir: evilLogDir,
+      stdoutPath: join(evilLogDir, "web.out.log"),
+      stderrPath: join(evilLogDir, "web.err.log"),
+    };
+    await expect(inspectLaunchdLogs(evil, POLICY)).rejects.toThrow(/canonical/u);
+    await expect(inspectLaunchdLogs(await fixture(), POLICY)).resolves.toMatchObject({ canMaintain: true });
+  });
+
   it("publishes, reports, and clears one owner-private maintenance lifecycle intent", async () => {
     const paths = await fixture();
     const intent = {
