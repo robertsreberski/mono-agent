@@ -296,6 +296,7 @@ export async function runHarnessRuntime(
           memory,
         ),
       };
+      const structuredHistory = historyAsMessages ? structuredHistoryMessages(history) : [];
       const runtimeOptions: RuntimeRunOptions = {
         ...merged,
         model: effectiveModel,
@@ -303,10 +304,13 @@ export async function runHarnessRuntime(
         // it reaches the model on every turn, including resumed turns. See
         // prepareContext for why.
         messages: [
-          ...(historyAsMessages ? structuredHistoryMessages(history) : []),
+          ...structuredHistory,
           ...(historyAsMessages && toolHistoryProjection !== undefined
             ? [{
-                role: "assistant" as const,
+                // Some providers reject a transcript whose first role is
+                // assistant. With no canonical messages, keep the synthetic
+                // evidence neutral but introduce it as user context.
+                role: structuredHistory.length === 0 ? "user" as const : "assistant" as const,
                 content: `### Managed Tool Lifecycles (untrusted)\n\n${toolHistoryProjection}`,
               }]
             : []),

@@ -204,8 +204,6 @@ export type RuntimeToolLifecycleEvent =
       readonly toolCallId: string;
       readonly toolName: string;
       readonly arguments?: unknown;
-      /** Present only for the parent Agent call; child internals are omitted. */
-      readonly parentToolCallId?: string;
     }
   | {
       readonly phase: "result";

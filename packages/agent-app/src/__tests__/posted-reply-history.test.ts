@@ -142,12 +142,14 @@ function occurrences(haystack: string, needle: string): number {
 describe("createSlackPostedReplyHistory", () => {
   it("forwards conversation reset controls through both decorators", async () => {
     const reset = vi.fn(async () => undefined);
+    const resetLogicalConversation = vi.fn(async () => undefined);
     const startNewSession = vi.fn(async () => undefined);
     const bridge = createSlackPostedReplyHistory({ maxMessages: 64 });
     const history = bridge.wrapHistoryStore({
       load: async () => [],
       append: async () => undefined,
       reset,
+      resetLogicalConversation,
     });
     const responder = bridge.wrapResponder({
       respond: async () => ({ text: "ok" }),
@@ -155,11 +157,13 @@ describe("createSlackPostedReplyHistory", () => {
     } as AgentResponder & { startNewSession(conversationId: string): Promise<void> });
 
     await history.reset?.("telegram:42");
+    await history.resetLogicalConversation?.("telegram:42");
     await (responder as AgentResponder & {
       startNewSession?: (conversationId: string) => Promise<void>;
     }).startNewSession?.("telegram:42");
 
     expect(reset).toHaveBeenCalledWith("telegram:42");
+    expect(resetLogicalConversation).toHaveBeenCalledWith("telegram:42");
     expect(startNewSession).toHaveBeenCalledWith("telegram:42");
   });
 

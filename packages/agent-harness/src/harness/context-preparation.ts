@@ -65,13 +65,24 @@ export async function prepareHarnessContext(
     // Durable tool records are a separate store, not HistoryMessage entries.
     // A cold reseed gets a bounded neutral text projection; a confirmed warm
     // provider session gets none because it already owns the live transcript.
-    const toolProjection = contextOptions.historyMode === "omitted" || options.toolHistory === undefined
-      ? undefined
-      : buildToolHistoryProjection(
+    let toolProjection: ReturnType<typeof buildToolHistoryProjection> = undefined;
+    if (contextOptions.historyMode !== "omitted" && options.toolHistory !== undefined) {
+      try {
+        toolProjection = buildToolHistoryProjection(
           options.toolHistory.reader,
           options.toolHistory.logicalConversationId(request.conversationId),
           contextOptions.turnId,
         );
+      } catch (error) {
+        const errorCode = toolHistoryProjectionErrorCode(error);
+        emit?.({
+          type: "runtime_warning",
+          warning_kind: "tool_history_projection_degraded",
+          error_code: errorCode,
+          message: `Tool history projection failed (${errorCode}); continuing without automatic tool history.`,
+        });
+      }
+    }
     const context = toolProjection === undefined || contextOptions.historyMode !== "prompt"
       ? baseContext
       : projectToolHistoryBeforeCurrentTurn(baseContext, toolProjection.text, toolProjection.recordCount);
@@ -91,6 +102,15 @@ export async function prepareHarnessContext(
       historyAsMessages: contextOptions.historyMode === "messages",
       toolHistoryProjection: contextOptions.historyMode === "messages" ? toolProjection?.text : undefined,
     };
+}
+
+function toolHistoryProjectionErrorCode(error: unknown): string {
+    const candidate = typeof error === "object" && error !== null && "code" in error
+      ? (error as { readonly code?: unknown }).code
+      : undefined;
+    return typeof candidate === "string" && /^history_[a-z0-9_]+$/u.test(candidate)
+      ? candidate
+      : "history_projection_unavailable";
 }
 
 function projectToolHistoryBeforeCurrentTurn(

@@ -73,6 +73,11 @@ const ARGUMENT_MAX_BYTES = 8 * 1024;
 const RESULT_MAX_BYTES = 16 * 1024;
 const STRING_MAX_BYTES = 4 * 1024;
 const SEARCH_TEXT_MAX_BYTES = 8 * 1024;
+const PRE_REDACTION_MAX_NODES = 2_048;
+const PRE_REDACTION_MAX_STRING_BYTES = 64 * 1024;
+const PRE_REDACTION_MAX_COLLECTION_ITEMS = 512;
+const PRE_REDACTION_MAX_KEY_BYTES = 512;
+const PRE_REDACTION_OMISSION = "[oversized value omitted before redaction]";
 const TOOL_DIR_ALLOWED = new Set([TOOL_HISTORY_DATABASE, `${TOOL_HISTORY_DATABASE}-journal`]);
 const TERMINAL_STATES = new Set<RuntimeToolLifecycleTerminalState>([
   "success", "rejected", "error", "exit_nonzero", "timeout", "signal", "cancelled", "interrupted",
@@ -202,11 +207,13 @@ parentPort.on("message", (request: WorkerRequest) => {
           respond(request.id, workerStats(database));
           break;
         case "close":
-          closeDangling(database, undefined, "interrupted", "cancelled_shutdown", "writer_shutdown", true);
-          respond(request.id, null);
+          closeDangling(database, undefined, "interrupted", "cancelled_shutdown", "writer_shutdown", false);
           closed = true;
           database.close();
           owner.release();
+          // Acknowledgement is the durability boundary: the content database is
+          // closed and the ownership row is gone before the host can terminate.
+          respond(request.id, null);
           break;
         default:
           respondError(request.id, "history_operation_unsupported", `Unsupported tool history operation ${request.operation}.`);
@@ -227,9 +234,6 @@ function recordInvocation(database: DatabaseSync, payload: LifecyclePayload): Ru
   const event = payload.event;
   const toolCallId = normalizeId(event.toolCallId, "toolCallId");
   const toolName = normalizeId(event.toolName, "toolName");
-  const parentToolCallId = event.parentToolCallId === undefined
-    ? null
-    : normalizeId(event.parentToolCallId, "parentToolCallId");
   const bounded = boundedPayload(event.arguments ?? null, ARGUMENT_MAX_BYTES);
   return transaction(database, () => {
     ensureRun(database, binding);
@@ -239,7 +243,7 @@ function recordInvocation(database: DatabaseSync, payload: LifecyclePayload): Ru
     }
     const existing = database.prepare(`
       SELECT tr.record_id, tr.seq, tr.payload_sha256, tr.truncated, tr.original_bytes, tr.retained_bytes,
-             c.tool_name, c.parent_tool_call_id
+             c.tool_name
       FROM tool_records tr JOIN tool_calls c
         ON c.conversation_id=tr.conversation_id AND c.run_id=tr.run_id AND c.tool_call_id=tr.tool_call_id
       WHERE tr.conversation_id=? AND tr.run_id=? AND tr.tool_call_id=? AND tr.phase='invocation'
@@ -248,7 +252,6 @@ function recordInvocation(database: DatabaseSync, payload: LifecyclePayload): Ru
       if (
         existing.payload_sha256 !== bounded.sha256
         || existing.tool_name !== toolName
-        || existing.parent_tool_call_id !== parentToolCallId
       ) {
         incrementStat(database, "idempotency_conflicts", 1, `${binding.runId}:${toolCallId}:invocation`);
         return { persistence: "failed", errorCode: "history_idempotency_conflict" };
@@ -259,14 +262,13 @@ function recordInvocation(database: DatabaseSync, payload: LifecyclePayload): Ru
     const now = Date.now();
     database.prepare(`
       INSERT INTO tool_calls (
-        conversation_id,run_id,tool_call_id,tool_name,parent_tool_call_id,start_seq,started_at_ms,recovered,synthetic_start
-      ) VALUES (?,?,?,?,?,?,?,?,0)
+        conversation_id,run_id,tool_call_id,tool_name,start_seq,started_at_ms,recovered,synthetic_start
+      ) VALUES (?,?,?,?,?,?,?,0)
     `).run(
       binding.conversationId,
       binding.runId,
       toolCallId,
       toolName,
-      parentToolCallId,
       sequence,
       now,
       0,
@@ -638,7 +640,6 @@ function openContentDatabase(
       run_id TEXT NOT NULL,
       tool_call_id TEXT NOT NULL,
       tool_name TEXT NOT NULL,
-      parent_tool_call_id TEXT,
       start_seq INTEGER NOT NULL,
       end_seq INTEGER,
       state TEXT,
@@ -803,10 +804,20 @@ interface BoundedPayload {
 }
 
 function boundedPayload(value: unknown, maxBytes: number): BoundedPayload {
-  // Count the caller's serializable payload before redaction/truncation. Only
-  // the count survives; unredacted bytes never cross the worker transaction.
-  const originalBytes = Buffer.byteLength(safeJson(value), "utf8");
-  const redacted = redactJsonValue(value, STRING_MAX_BYTES, {
+  // Redaction must run over bounded work. Complete small values are retained so
+  // key-aware and content-aware redaction sees their original structure. Any
+  // value that cannot fit is replaced wholesale before redaction; retaining a
+  // raw prefix could split a credential and leak the unmatched fragment.
+  const preprocessed = securelyPreprocessPayload(value);
+  // Never stringify the caller-owned graph. For a wholly admitted payload this
+  // is the exact pre-redaction JSON size; once preprocessing omits anything the
+  // count deliberately saturates above both persistence limits instead of
+  // doing unbounded serialization merely to produce diagnostics metadata.
+  const preprocessedJsonBytes = Buffer.byteLength(safeJson(preprocessed.value), "utf8");
+  const originalBytes = preprocessed.truncated
+    ? Math.max(preprocessedJsonBytes, PRE_REDACTION_MAX_STRING_BYTES + 1)
+    : preprocessedJsonBytes;
+  const redacted = redactJsonValue(preprocessed.value, STRING_MAX_BYTES, {
     contentPatternRedaction: true,
     visibleTextSanitization: {
       omitFilesystemPaths: true,
@@ -815,7 +826,7 @@ function boundedPayload(value: unknown, maxBytes: number): BoundedPayload {
   });
   const full = safeJson(redacted);
   let json = full;
-  let truncated = originalBytes > maxBytes
+  let truncated = preprocessed.truncated || originalBytes > maxBytes
     || /\[(?:max-(?:nodes|items|keys|depth)|circular)\]|…\[truncated \d+ bytes\]/u.test(full);
   if (Buffer.byteLength(full, "utf8") > maxBytes) {
     truncated = true;
@@ -835,6 +846,102 @@ function boundedPayload(value: unknown, maxBytes: number): BoundedPayload {
     retainedBytes,
     truncated,
   };
+}
+
+interface SecurePreprocessBudget {
+  remainingNodes: number;
+  remainingStringBytes: number;
+  truncated: boolean;
+  readonly seen: WeakSet<object>;
+}
+
+function securelyPreprocessPayload(value: unknown): { readonly value: unknown; readonly truncated: boolean } {
+  const budget: SecurePreprocessBudget = {
+    remainingNodes: PRE_REDACTION_MAX_NODES,
+    remainingStringBytes: PRE_REDACTION_MAX_STRING_BYTES,
+    truncated: false,
+    seen: new WeakSet<object>(),
+  };
+  const bounded = securePayloadValue(value, budget, 0);
+  return { value: bounded, truncated: budget.truncated };
+}
+
+function securePayloadValue(value: unknown, budget: SecurePreprocessBudget, depth: number): unknown {
+  if (budget.remainingNodes <= 0 || depth >= 24) {
+    budget.truncated = true;
+    return PRE_REDACTION_OMISSION;
+  }
+  budget.remainingNodes -= 1;
+  if (typeof value === "string") return securePayloadString(value, budget);
+  if (value === null || typeof value === "boolean" || typeof value === "number") return value;
+  if (typeof value === "bigint") return securePayloadString(value.toString(), budget);
+  if (typeof value === "undefined") return "[undefined]";
+  if (typeof value === "function" || typeof value === "symbol") return `[${typeof value}]`;
+  if (typeof value !== "object") return "[unserializable]";
+  if (budget.seen.has(value)) {
+    budget.truncated = true;
+    return "[circular]";
+  }
+  budget.seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const retained: unknown[] = [];
+      const limit = Math.min(value.length, PRE_REDACTION_MAX_COLLECTION_ITEMS);
+      for (let index = 0; index < limit && budget.remainingNodes > 0; index += 1) {
+        retained.push(securePayloadValue(value[index], budget, depth + 1));
+      }
+      if (limit < value.length || budget.remainingNodes <= 0) {
+        budget.truncated = true;
+        retained.push(PRE_REDACTION_OMISSION);
+      }
+      return retained;
+    }
+    const retained: Record<string, unknown> = {};
+    let retainedItems = 0;
+    const source = value as Record<string, unknown>;
+    for (const rawKey in source) {
+      if (!Object.prototype.hasOwnProperty.call(source, rawKey)) continue;
+      if (retainedItems >= PRE_REDACTION_MAX_COLLECTION_ITEMS || budget.remainingNodes <= 0) {
+        budget.truncated = true;
+        retained.__preprocessing_omitted__ = PRE_REDACTION_OMISSION;
+        break;
+      }
+      // UTF-8 bytes are never fewer than JavaScript code units. Reject an
+      // obviously oversized key before asking Buffer to inspect all of it.
+      const keyBytes = rawKey.length > PRE_REDACTION_MAX_KEY_BYTES
+        || rawKey.length > budget.remainingStringBytes
+        ? undefined
+        : Buffer.byteLength(rawKey, "utf8");
+      const key = keyBytes === undefined
+        || keyBytes > PRE_REDACTION_MAX_KEY_BYTES
+        || keyBytes > budget.remainingStringBytes
+        ? `__oversized_key_${String(retainedItems)}__`
+        : rawKey;
+      if (key !== rawKey) budget.truncated = true;
+      else budget.remainingStringBytes -= keyBytes!;
+      retained[key] = securePayloadValue(source[rawKey], budget, depth + 1);
+      retainedItems += 1;
+    }
+    return retained;
+  } finally {
+    budget.seen.delete(value);
+  }
+}
+
+function securePayloadString(value: string, budget: SecurePreprocessBudget): string {
+  // This O(1) code-unit guard prevents TextEncoder/Buffer from traversing a
+  // multi-MiB string that is already known not to fit the byte budget.
+  if (value.length > budget.remainingStringBytes) {
+    budget.truncated = true;
+    return PRE_REDACTION_OMISSION;
+  }
+  const bytes = Buffer.byteLength(value, "utf8");
+  if (bytes > budget.remainingStringBytes) {
+    budget.truncated = true;
+    return PRE_REDACTION_OMISSION;
+  }
+  budget.remainingStringBytes -= bytes;
+  return value;
 }
 
 function persistence(

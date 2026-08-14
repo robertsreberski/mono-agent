@@ -73,6 +73,12 @@ export interface ConversationHistoryStore {
    */
   reset?(conversationId: string): Promise<void>;
   /**
+   * Reset every canonical message bucket owned by one logical conversation.
+   * Daily-rollover hosts require this capability so reset cannot leave prior
+   * day buckets visible while clearing logical tool history.
+   */
+  resetLogicalConversation?(logicalConversationId: string): Promise<void>;
+  /**
    * Optional transactional path used by the harness to validate and fsync a
    * turn before it marks the conversation committed. Stores that omit it keep
    * the legacy append contract; the harness still appends before warming a

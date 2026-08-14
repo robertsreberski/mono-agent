@@ -1,7 +1,13 @@
 import { ToolHistoryWriter } from "../../../dist/index.js";
 
 const [root, ceilingText, mode] = process.argv.slice(2);
-const keepAlive = mode === "open-only" ? undefined : setInterval(() => {}, 1_000);
+const keepAlive = mode === "hold" ? setInterval(() => {}, 1_000) : undefined;
+const binding = {
+  conversationId: "slack:C1#2026-08-14",
+  logicalConversationId: "slack:C1",
+  runId: "crashed-run",
+  isolated: false,
+};
 console.log("STARTING");
 try {
   const writer = await ToolHistoryWriter.open({
@@ -10,24 +16,40 @@ try {
   });
   console.log("ACQUIRED");
   if (mode === "hold") {
-    await writer.persist(
-      {
-        conversationId: "slack:C1#2026-08-14",
-        logicalConversationId: "slack:C1",
-        runId: "crashed-run",
-        isolated: false,
-      },
-      {
+    await writer.persist(binding, {
         phase: "invocation",
         toolCallId: "crash-call",
         toolName: "Bash",
         arguments: { command: "sleep" },
-      },
-    );
+      });
     console.log("READY");
+  } else if (mode === "settle") {
+    const finishedBinding = { ...binding, runId: "finished-run" };
+    await writer.persist(finishedBinding, {
+      phase: "invocation",
+      toolCallId: "finished-call",
+      toolName: "Read",
+      arguments: { path: "README.md" },
+    });
+    await writer.persist(finishedBinding, {
+      phase: "result",
+      toolCallId: "finished-call",
+      state: "success",
+      content: "done",
+    });
+    console.log("PERSISTED");
+    await writer.finishRun(finishedBinding, "succeeded");
+    console.log("FINISHED");
+    await writer.persist(binding, {
+      phase: "invocation",
+      toolCallId: "graceful-close-call",
+      toolName: "Bash",
+      arguments: { command: "waiting" },
+    });
+    await writer.close();
+    console.log("CLOSED");
   } else if (mode === "close") {
     await writer.close();
-    if (keepAlive !== undefined) clearInterval(keepAlive);
   }
 } catch (error) {
   if (keepAlive !== undefined) clearInterval(keepAlive);

@@ -15,6 +15,8 @@ import {
   createAgentHarness,
   createDurableHistoryStore,
   createInMemoryHistoryStore,
+  ToolHistoryReader,
+  toolHistoryLogicalConversationId,
 } from "../index.js";
 import type { AgentHarnessSessionOptions, ConversationHistoryStore } from "../index.js";
 import type { SkillsCache } from "../skills/index.js";
@@ -995,6 +997,43 @@ describe("AgentHarness continuous sessions", () => {
 
     expect(fake.disposedSessions).toEqual([]);
     await expect(historyStore.load("telegram:42")).resolves.toHaveLength(2);
+  });
+
+  it("rejects a daily logical reset before eviction when a custom store only supports physical reset", async () => {
+    const identityPath = await identityFixture();
+    const backingStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const historyStore: ConversationHistoryStore = {
+      load: (conversationId) => backingStore.load(conversationId),
+      append: (conversationId, messages) => backingStore.append(conversationId, messages),
+      reset: (conversationId) => backingStore.reset(conversationId),
+    };
+    const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-rollover-preserved" }));
+    const resetToolHistory: string[] = [];
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      executionMode: "sdk",
+      historyStore,
+      session,
+      toolHistory: {
+        reader: new ToolHistoryReader(join(identityPath, "..", "history")),
+        logicalConversationId: (conversationId) => toolHistoryLogicalConversationId(conversationId, "daily"),
+        writer: {
+          createSink: () => async () => ({ persistence: "persisted" }),
+          async finishRun() {},
+          async resetConversation(logicalConversationId) { resetToolHistory.push(logicalConversationId); },
+        },
+      },
+    });
+    await harness.run(request("telegram:42#2026-08-14", "old"));
+
+    await expect(harness.resetConversation?.("telegram:42#2026-08-14"))
+      .rejects.toThrow("does not support logical session reset");
+
+    expect(fake.disposedSessions).toEqual([]);
+    expect(resetToolHistory).toEqual([]);
+    await expect(historyStore.load("telegram:42#2026-08-14")).resolves.toHaveLength(2);
   });
 
   it("a concurrent second run goes fresh instead of resuming a busy session", async () => {

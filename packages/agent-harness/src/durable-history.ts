@@ -263,6 +263,22 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
+  async resetLogicalConversation(logicalConversationId: string): Promise<void> {
+    const logicalId = normalizeConversationId(logicalConversationId);
+    const rootIdentity = await this.ensureRoot();
+    const entries = await this.scanCommittedEntries(rootIdentity, true);
+    const conversationIds: string[] = [];
+    for (const entry of entries) {
+      const record = await this.readCommittedEntryRecord(entry, rootIdentity);
+      if (belongsToLogicalConversation(record.conversationId, logicalId)) {
+        conversationIds.push(record.conversationId);
+      }
+    }
+    for (const conversationId of conversationIds.sort()) {
+      await this.reset(conversationId);
+    }
+  }
+
   async prepareAppend(
     conversationId: string,
     messages: readonly HistoryMessage[],
@@ -1478,6 +1494,15 @@ function normalizeConversationId(conversationId: string): string {
   }
   if (normalized.includes("\0")) throw new TypeError("conversationId must not contain NUL bytes.");
   return normalized;
+}
+
+function belongsToLogicalConversation(conversationId: string, logicalConversationId: string): boolean {
+  return conversationId === logicalConversationId
+    || new RegExp(`^${escapeRegExp(logicalConversationId)}#\\d{4}-\\d{2}-\\d{2}$`, "u").test(conversationId);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
 function normalizeRunId(runId: string): string {

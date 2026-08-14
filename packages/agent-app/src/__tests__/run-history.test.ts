@@ -1220,6 +1220,91 @@ describe("RunHistory MCP tool", () => {
     }
   });
 
+  it("sanitizes ordinary filesystem spans in place while omitting credentials and private artifacts", async () => {
+    const artifactDir = await tempDir();
+    const conversationId = "webhook:run-history-path-spans";
+    const sourcePath = "/Users/example/work/mono-agent/src/index.ts";
+    const privateArtifactPath = join(artifactDir, "path-spans.events.jsonl");
+    const secret = "password=never-project-this";
+    await writeRun({
+      artifactDir,
+      runId: "path-spans",
+      conversationId,
+      startedAt: "2026-07-12T08:00:00.000Z",
+      events: [
+        {
+          type: "assistant",
+          message: {
+            content: [{
+              type: "tool_use",
+              id: "path-tool",
+              name: "Bash",
+              input: { command: `node ${sourcePath} --check` },
+            }, {
+              type: "tool_use",
+              id: "secret-tool",
+              name: "Bash",
+              input: { command: secret },
+            }, {
+              type: "tool_use",
+              id: "artifact-tool",
+              name: "Read",
+              input: { path: privateArtifactPath },
+            }],
+          },
+        },
+        {
+          type: "user",
+          message: {
+            content: [{
+              type: "tool_result",
+              tool_use_id: "path-tool",
+              content: [{ type: "text", text: `checked ${sourcePath}:12:4 successfully` }],
+            }, {
+              type: "tool_result",
+              tool_use_id: "secret-tool",
+              content: [{ type: "text", text: secret }],
+            }, {
+              type: "tool_result",
+              tool_use_id: "artifact-tool",
+              content: [{ type: "text", text: `opened ${privateArtifactPath}` }],
+            }],
+          },
+        },
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", phase: "commentary", text: `diagnostic at ${sourcePath}:14:2 remains useful` }] },
+        },
+        {
+          type: "runtime_warning",
+          warning_kind: "compiler_warning",
+          message: `compiler warning at ${sourcePath}:18:1`,
+        },
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", text: `final report for ${sourcePath}` }] },
+        },
+      ],
+    });
+
+    const history = await openHistoryClient(artifactDir, conversationId);
+    try {
+      const inspected = await inspectWithTimeline(history.client, "path-spans");
+      const serialized = JSON.stringify([inspected.overview, inspected.timeline]);
+      expect(serialized).toContain("node [host-path]/src/index.ts --check");
+      expect(serialized).toContain("checked [host-path]/src/index.ts:12:4 successfully");
+      expect(serialized).toContain("diagnostic at [host-path]/src/index.ts:14:2 remains useful");
+      expect(serialized).toContain("compiler warning at [host-path]/src/index.ts:18:1");
+      expect(serialized).toContain("final report for [host-path]/src/index.ts");
+      expect(serialized).not.toContain(sourcePath);
+      expect(serialized).not.toContain(secret);
+      expect(serialized).not.toContain(privateArtifactPath);
+      expect(serialized).toContain("[tool result omitted because it contained private run-artifact internals]");
+    } finally {
+      await history.close();
+    }
+  });
+
   it("only exempts a complete exact [redacted] assignment sentinel in real MCP projections", async () => {
     const artifactDir = await tempDir();
     const conversationId = "webhook:run-history-redacted-sentinel";

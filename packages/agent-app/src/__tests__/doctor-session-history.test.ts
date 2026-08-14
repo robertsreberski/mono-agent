@@ -1,7 +1,10 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 
 import {
   ToolHistoryWriter,
@@ -60,16 +63,49 @@ describe("sessionToolHistorySection", () => {
     expect(section.details.join("\n")).toMatch(/Tool history: 1 calls, 2 records, 0 tombstones, \d+ retained payload bytes, \d+ database bytes/iu);
   });
 
-  it("audits normal interrupted recovery without implying the completed tool ran again", async () => {
+  it("does not classify a graceful close of a dangling invocation as crash recovery", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
     await writer.persist(binding, { phase: "invocation", toolCallId: "dangling", toolName: "Bash", arguments: {} });
     await writer.close();
 
     const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
-    expect(section.status).toBe("waiting");
-    expect(section.details.join("\n")).toContain("1 invocation(s) were recovered as interrupted without rerun.");
+    expect(section.status, section.details.join("\n")).toBe("ok");
+    expect(section.details.join("\n")).toContain("Tool history: 1 calls, 2 records");
+    expect(section.details.join("\n")).not.toContain("recovered as interrupted");
   });
+
+  it.skipIf(process.platform === "win32")("reports an actual writer crash as recovered and waiting", async () => {
+    const root = await tempRoot();
+    const fixture = fileURLToPath(new URL(
+      "../../../agent-harness/src/__tests__/fixtures/tool-history-child.mjs",
+      import.meta.url,
+    ));
+    const child = spawn(process.execPath, [fixture, root, "2000", "hold"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); });
+    child.stderr?.on("data", (chunk: Buffer) => { output += chunk.toString("utf8"); });
+    try {
+      await waitForChildOutput(child, () => output, "READY");
+      child.kill("SIGKILL");
+      await once(child, "exit");
+
+      const recoveringWriter = await ToolHistoryWriter.open({ root, ownerAcquireCeilingMs: 1_000 });
+      await recoveringWriter.close();
+      const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+
+      expect(section.status, section.details.join("\n")).toBe("waiting");
+      expect(section.details.join("\n")).toContain("Tool history: 1 calls, 2 records");
+      expect(section.details.join("\n")).toContain("1 invocation(s) were recovered as interrupted without rerun.");
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await once(child, "exit").catch(() => undefined);
+      }
+    }
+  }, 10_000);
 
   it.skipIf(process.platform === "win32")("reports a secure live DELETE transaction as waiting instead of error", async () => {
     const root = await tempRoot();
@@ -142,4 +178,36 @@ async function waitForFile(path: string): Promise<Awaited<ReturnType<typeof lsta
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
     }
   }
+}
+
+async function waitForChildOutput(
+  child: ChildProcess,
+  output: () => string,
+  marker: string,
+): Promise<void> {
+  if (output().includes(marker)) return;
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      rejectPromise(new Error(`Timed out waiting for child marker ${marker}: ${output()}`));
+    }, 5_000);
+    const onData = (): void => {
+      if (!output().includes(marker)) return;
+      cleanup();
+      resolvePromise();
+    };
+    const onExit = (code: number | null): void => {
+      cleanup();
+      rejectPromise(new Error(`Child exited ${String(code)} before ${marker}: ${output()}`));
+    };
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      child.stdout?.off("data", onData);
+      child.stderr?.off("data", onData);
+      child.off("exit", onExit);
+    };
+    child.stdout?.on("data", onData);
+    child.stderr?.on("data", onData);
+    child.on("exit", onExit);
+  });
 }

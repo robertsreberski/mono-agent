@@ -17,6 +17,7 @@ import {
   TOOL_HISTORY_DATABASE,
   TOOL_HISTORY_DIRECTORY,
   TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS,
+  TOOL_HISTORY_OWNER_DATABASE,
   TOOL_HISTORY_PERSISTENCE_CEILING_MS,
   type ToolHistoryRunBinding,
 } from "../tool-history-store.js";
@@ -136,18 +137,6 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
         arguments: {},
       });
       expect(conflict).toEqual({ persistence: "failed", errorCode: "history_idempotency_conflict" });
-      const parentConflict = await writer.persist(run, {
-        phase: "invocation",
-        toolCallId: "call-0",
-        toolName: "Bash",
-        parentToolCallId: "different-parent",
-        arguments: {
-          apiKey: "sk-secret-never-persist",
-          authorization: "Bearer private-token",
-          query: "needle-0",
-        },
-      });
-      expect(parentConflict).toEqual({ persistence: "failed", errorCode: "history_idempotency_conflict" });
       const resultConflict = await writer.persist(run, {
         phase: "result",
         toolCallId: "call-0",
@@ -206,14 +195,54 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     ]);
     const rawDatabase = await readFile(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE));
     expect(rawDatabase.includes(Buffer.from("sk-secret-never-persist"))).toBe(false);
+    const schema = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE), { readOnly: true });
+    try {
+      expect((schema.prepare("PRAGMA table_info(tool_calls)").all() as Array<{ readonly name: string }>)
+        .map((column) => column.name)).not.toContain("parent_tool_call_id");
+    } finally {
+      schema.close();
+    }
     expect(reader.stats()).toMatchObject({
       calls: 8,
       records: 16,
-      idempotencyConflicts: 3,
+      idempotencyConflicts: 2,
       dangling: 0,
       retainedBytes: expect.any(Number),
     });
   }, 20_000);
+
+  it("securely bounds multi-MiB payload preprocessing inside the persistence ceiling", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root, persistenceCeilingMs: 250 });
+    const secret = `sk-${"S".repeat(48)}`;
+    const oversized = `${"x".repeat(4 * 1024 * 1024)}${secret}`;
+    const started = performance.now();
+    const persisted = await writer.persist(binding("large-payload"), {
+      phase: "invocation",
+      toolCallId: "large-call",
+      toolName: "Bash",
+      arguments: { command: oversized, apiKey: secret },
+    });
+    const elapsed = performance.now() - started;
+    await writer.finishRun(binding("large-payload"), "succeeded");
+    await writer.close();
+
+    expect(persisted).toMatchObject({ persistence: "persisted", truncated: true });
+    expect(persisted.originalBytes).toBeGreaterThan(64 * 1024);
+    expect(elapsed).toBeLessThan(750);
+    const reader = new ToolHistoryReader(root);
+    const visible = JSON.stringify(reader.get({
+      logicalConversationId: "slack:C1",
+      currentRunId: "current",
+      recordId: persisted.recordId!,
+      chunkBytes: 8 * 1024,
+    }));
+    expect(visible).toContain("oversized value omitted before redaction");
+    expect(visible).toContain("[redacted]");
+    expect(visible).not.toContain(secret);
+    const databaseBytes = await readFile(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE));
+    expect(databaseBytes.includes(Buffer.from(secret))).toBe(false);
+  }, 10_000);
 
   it("drops out-of-root and symlinked provider artifact paths without probing or persisting them", async () => {
     const root = await tempRoot();
@@ -844,6 +873,35 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     expect(new ToolHistoryReader(root).stats()).toMatchObject({ calls: 0, records: 0 });
   }, 10_000);
 
+  it("keeps persist, finishRun, and close referenced until graceful ownership release settles", async () => {
+    const root = await tempRoot();
+    const result = await childResult(startChild(root, 2_000, "settle"));
+
+    expect(result.code, JSON.stringify(result)).toBe(0);
+    expect(result.stdout).toContain("PERSISTED");
+    expect(result.stdout).toContain("FINISHED");
+    expect(result.stdout).toContain("CLOSED");
+    expect(result.stderr).toBe("");
+
+    const owner = new DatabaseSync(join(root, ".locks", TOOL_HISTORY_OWNER_DATABASE), { readOnly: true });
+    try {
+      expect(owner.prepare("SELECT count(*) AS count FROM writer_owner").get()).toEqual({ count: 0 });
+    } finally {
+      owner.close();
+    }
+    const reader = new ToolHistoryReader(root);
+    const graceful = reader.search({
+      logicalConversationId: "slack:C1",
+      currentRunId: "after-graceful-close",
+    }).items.find((item) => item.toolCallId === "graceful-close-call");
+    expect(graceful).toMatchObject({ state: "interrupted", recovered: false });
+    expect(reader.stats()).toMatchObject({ recovered: 0, dangling: 0 });
+
+    const reopened = await ToolHistoryWriter.open({ root });
+    await reopened.close();
+    expect(reader.stats()).toMatchObject({ recovered: 0, dangling: 0 });
+  }, 10_000);
+
   it("rejects a second live process deterministically after its bounded acquisition window", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
@@ -968,7 +1026,7 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
 function startChild(
   root: string,
   ceilingMs: number,
-  mode: "close" | "hold" | "open-only" = "close",
+  mode: "close" | "hold" | "open-only" | "settle" = "close",
 ): ChildProcess {
   const fixture = fileURLToPath(new URL("./fixtures/tool-history-child.mjs", import.meta.url));
   const child = spawn(process.execPath, [fixture, root, String(ceilingMs), mode], {

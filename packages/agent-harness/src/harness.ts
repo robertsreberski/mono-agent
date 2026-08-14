@@ -144,20 +144,26 @@ export class MonoAgentHarness implements AgentHarness {
     }
     const normalized = conversationId.trim();
     const historyStore = this.options.historyStore;
+    const logicalConversationId = this.options.toolHistory?.logicalConversationId(normalized) ?? normalized;
     if (historyStore !== undefined && historyStore.reset === undefined) {
       throw new Error("The configured conversation history store does not support session reset.");
     }
+    if (
+      historyStore !== undefined
+      && logicalConversationId !== normalized
+      && historyStore.resetLogicalConversation === undefined
+    ) {
+      throw new Error("The configured conversation history store does not support logical session reset for rollover buckets.");
+    }
     // The responder serializes this behind the cancelled turn. Evict the warm
-    // handle first, then clear canonical message history for this physical
-    // bucket and tool history for the logical session visible to projection and
-    // SessionHistory. The stores are deliberately separate (tool records can
-    // exist without messages), so a partial failure is surfaced and a retry is
-    // idempotent rather than acknowledged as success.
+    // handle first, then clear canonical message history and tool history for
+    // the same logical session. The stores are deliberately separate (tool
+    // records can exist without messages), so a partial failure is surfaced and
+    // a retry is idempotent rather than acknowledged as success.
     await this.sessionStore?.evict(normalized, "stale");
-    await historyStore?.reset?.(normalized);
-    await this.options.toolHistory?.writer.resetConversation(
-      this.options.toolHistory.logicalConversationId(normalized),
-    );
+    if (logicalConversationId === normalized) await historyStore?.reset?.(normalized);
+    else await historyStore?.resetLogicalConversation?.(logicalConversationId);
+    await this.options.toolHistory?.writer.resetConversation(logicalConversationId);
     // Identity/soul are already read per turn. Clearing the skill cache forces
     // installed skill metadata and content to be re-read on the next turn too.
     this.skillsCache.clear();

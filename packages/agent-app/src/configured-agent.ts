@@ -937,20 +937,42 @@ interface LazyConfiguredToolHistoryOptions {
   readonly artifactRoot: string;
   readonly rollover: "none" | "daily" | undefined;
   readonly onWarning?: (message: string) => void;
+  /** Internal seam for deterministic acquisition-retry tests. */
+  readonly acquireWriter?: typeof acquireToolHistoryWriter;
 }
 
-function lazyConfiguredToolHistory(
+export function lazyConfiguredToolHistory(
   options: LazyConfiguredToolHistoryOptions,
 ): AgentHarnessToolHistoryOptions {
   let handlePromise: Promise<ToolHistoryWriterHandle> | undefined;
+  let acquisitionOutage = false;
   const reader = new ToolHistoryReader(options.root);
+  const warn = (message: string): void => {
+    try { options.onWarning?.(message); } catch { /* diagnostics are best-effort */ }
+  };
   const acquire = (): Promise<ToolHistoryWriterHandle> => {
-    handlePromise ??= acquireToolHistoryWriter({
+    if (handlePromise !== undefined) return handlePromise;
+    let pending: Promise<ToolHistoryWriterHandle>;
+    pending = (options.acquireWriter ?? acquireToolHistoryWriter)({
       root: options.root,
       artifactRoot: options.artifactRoot,
       ...(options.onWarning === undefined ? {} : { onWarning: options.onWarning }),
+    }).then((handle) => {
+      if (acquisitionOutage) {
+        warn("Tool history writer acquisition recovered; lifecycle persistence resumed.");
+      }
+      acquisitionOutage = false;
+      return handle;
+    }).catch((error: unknown) => {
+      if (handlePromise === pending) handlePromise = undefined;
+      if (!acquisitionOutage) {
+        acquisitionOutage = true;
+        warn(`Tool history writer acquisition failed (${toolHistoryAcquisitionErrorCode(error)}); the next lifecycle write will retry.`);
+      }
+      throw error;
     });
-    return handlePromise;
+    handlePromise = pending;
+    return pending;
   };
   const writer: AgentHarnessToolHistoryOptions["writer"] = {
     createSink(binding) {
@@ -977,6 +999,15 @@ function lazyConfiguredToolHistory(
       await handle?.release();
     },
   };
+}
+
+function toolHistoryAcquisitionErrorCode(error: unknown): string {
+  const candidate = typeof error === "object" && error !== null && "code" in error
+    ? (error as { readonly code?: unknown }).code
+    : undefined;
+  return typeof candidate === "string" && /^history_[a-z0-9_]+$/u.test(candidate)
+    ? candidate
+    : "history_writer_unavailable";
 }
 
 function configuredMemoryForHarness(

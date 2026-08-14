@@ -307,7 +307,7 @@ releases in time, and otherwise fails deterministically with
 
 Keys are `(conversationId, runId, toolCallId)`; each run has monotonic
 writer-assigned start/end sequences, while timestamps remain metadata. Repeating
-the same phase returns its stable record id; conflicting payload, name, parent,
+the same phase returns its stable record id; conflicting payload or name,
 terminal classification, duration, or artifact identity is rejected. Startup
 closes a dangling invocation as `interrupted` with `process_death`, never reruns
 it, and never duplicates a completed phase. Results cover `success`, `rejected`,
@@ -315,8 +315,12 @@ it, and never duplicates a completed phase. Results cover `success`, `rejected`,
 the observability failure-kind taxonomy.
 
 Arguments retain at most 8 KiB, results 16 KiB, individual strings 4 KiB, and
-search text 8 KiB after shared structured/content-pattern redaction. Records
-carry original/retained byte counts and truncation, plus opaque artifact ids;
+search text 8 KiB after secure pre-bounding and shared
+structured/content-pattern redaction. Oversized values are omitted wholesale
+before redaction instead of exposing a possibly unmatched raw prefix. Records
+carry exact original byte counts for fully admitted payloads, a saturated
+over-limit count after secure omission, retained byte counts, and truncation,
+plus opaque artifact ids;
 artifact availability is recomputed and the reference does not extend artifact
 lifetime. Retention independently bounds completed calls (100,000), age (365
 days), retained payload (256 MiB), tombstones (10,000), and tombstone age (30
@@ -325,11 +329,17 @@ days). Isolated/proactive runs persist but are excluded from default reads.
 Cold reseed inserts at most 32 newest completed records as bounded neutralized
 text before the current user message. Fresh/stateless runs place it in the
 history prompt section; a history-coordinated Pi reopen carries it as a prior
-assistant message so create-on-miss seeds it and a true native resume skips it
-with the other prior messages. True warm provider resume omits replay.
+structured message so create-on-miss seeds it and a true native resume skips it
+with the other prior messages. It uses an assistant role when canonical history
+precedes it and a user role when it would otherwise lead the provider history.
+True warm provider resume omits replay.
+Automatic projection treats a zero-byte fresh sidecar as absent and converts
+other unsafe/corrupt reader failures into a structured runtime warning without
+failing the turn. Explicit search/get/stats remain fail closed.
 Message compaction changes this projection only and does not delete retained
 tool records. Only the parent `Agent` call is persisted for a nested agent;
-provider-owned child internals are omitted.
+provider-owned child internals are omitted, so the lifecycle contract does not
+synthesize an unusable parent-link id.
 
 ## Dependency Boundary
 

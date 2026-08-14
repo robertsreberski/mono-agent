@@ -265,7 +265,7 @@ export class ToolHistoryWriter {
   private readonly onWarning: ((message: string) => void) | undefined;
   private requestId = 0;
   private closed = false;
-  private warned = false;
+  private readonly warnedKinds = new Set<string>();
 
   private constructor(worker: Worker, options: ToolHistoryWriterOptions) {
     this.worker = worker;
@@ -280,8 +280,11 @@ export class ToolHistoryWriter {
       this.failPending(new ToolHistoryWriterError(workerErrorCode(error), reasonOf(error)));
     });
     worker.on("exit", (code) => {
-      if (!this.closed) {
-        this.closed = true;
+      const wasClosed = this.closed;
+      this.closed = true;
+      if (this.pending.size > 0) {
+        this.failPending(new Error(`Tool history writer exited with code ${String(code)}.`));
+      } else if (!wasClosed && code !== 0) {
         this.failPending(new Error(`Tool history writer exited with code ${String(code)}.`));
       }
     });
@@ -314,10 +317,9 @@ export class ToolHistoryWriter {
     const writer = new ToolHistoryWriter(worker, options);
     try {
       await writer.request("ready", undefined, (options.ownerAcquireCeilingMs ?? TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS) + 1_000);
-      // Keep startup referenced until the worker has proved readiness. Once the
-      // top-level open settles, an idle sidecar must not prolong a one-shot CLI
-      // process; live harnesses still close their owned reference explicitly.
-      worker.unref();
+      // request() releases the startup reference once the pending map drains.
+      // An idle sidecar must not prolong a one-shot CLI process; every later
+      // awaited operation temporarily references it again until it settles.
       return writer;
     } catch (error) {
       writer.closed = true;
@@ -343,7 +345,7 @@ export class ToolHistoryWriter {
       return value;
     } catch (error) {
       const code = error instanceof ToolHistoryWriterError ? error.code : "history_write_failed";
-      this.warnOnce(`Tool lifecycle persistence failed (${code}); streaming continues with an explicit failure marker.`);
+      this.warnOnce(code, `Tool lifecycle persistence failed (${code}); streaming continues with an explicit failure marker.`);
       this.postBestEffort("write_failure", { code, message: reasonOf(error) });
       return { persistence: "failed", errorCode: code };
     }
@@ -351,7 +353,7 @@ export class ToolHistoryWriter {
 
   async finishRun(binding: ToolHistoryRunBinding, status: string, failureKind?: string): Promise<void> {
     await this.request("finish_run", { binding, status, failureKind }, this.persistenceCeilingMs).catch((error) => {
-      this.warnOnce(`Tool history run finalization failed: ${reasonOf(error)}`);
+      this.warnOnce("run_finalize_failed", `Tool history run finalization failed: ${reasonOf(error)}`);
       this.postBestEffort("write_failure", { code: "run_finalize_failed", message: reasonOf(error) });
     });
   }
@@ -381,6 +383,7 @@ export class ToolHistoryWriter {
     return await new Promise<unknown>((resolvePromise, rejectPromise) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        this.unrefIfIdle();
         rejectPromise(new ToolHistoryWriterError(
           "history_persistence_timeout",
           `Tool history ${operation} exceeded the ${String(timeoutMs)} ms host wait ceiling.`,
@@ -388,11 +391,13 @@ export class ToolHistoryWriter {
       }, timeoutMs);
       timer.unref?.();
       this.pending.set(id, { resolve: resolvePromise, reject: rejectPromise, timer });
+      this.worker.ref();
       try {
         this.worker.postMessage({ id, operation, ...(payload === undefined ? {} : { payload }) } satisfies WorkerRequest);
       } catch (error) {
         this.pending.delete(id);
         clearTimeout(timer);
+        this.unrefIfIdle();
         rejectPromise(error);
       }
     });
@@ -418,6 +423,7 @@ export class ToolHistoryWriter {
     if (pending.timer !== undefined) clearTimeout(pending.timer);
     if (response.ok) pending.resolve(response.value);
     else pending.reject(new ToolHistoryWriterError(response.code ?? "history_write_failed", response.error ?? "Tool history operation failed."));
+    this.unrefIfIdle();
   }
 
   private failPending(error: Error): void {
@@ -426,11 +432,16 @@ export class ToolHistoryWriter {
       if (pending.timer !== undefined) clearTimeout(pending.timer);
       pending.reject(error);
     }
+    this.unrefIfIdle();
   }
 
-  private warnOnce(message: string): void {
-    if (this.warned) return;
-    this.warned = true;
+  private unrefIfIdle(): void {
+    if (this.pending.size === 0) this.worker.unref();
+  }
+
+  private warnOnce(kind: string, message: string): void {
+    if (this.warnedKinds.has(kind)) return;
+    this.warnedKinds.add(kind);
     try { this.onWarning?.(message); } catch { /* diagnostics are best-effort */ }
   }
 }
@@ -512,7 +523,9 @@ export class ToolHistoryReader {
     currentRunId: string,
     limit = 32,
   ): readonly ToolHistoryProjectionItem[] {
-    const database = this.openReadOnly();
+    // Automatic enrichment is allowed to treat a crash-stale zero-byte file as
+    // pristine. Explicit search/get/stats continue through the fail-closed path.
+    const database = this.openReadOnly({ zeroLengthAsAbsent: true });
     if (database === undefined) return [];
     try {
       const calls: ToolHistorySearchItem[] = [];
@@ -702,10 +715,11 @@ export class ToolHistoryReader {
     };
   }
 
-  private openReadOnly(): DatabaseSync | undefined {
+  private openReadOnly(options: { readonly zeroLengthAsAbsent?: boolean } = {}): DatabaseSync | undefined {
     try {
       assertSecureReadableDirectory(join(this.root, TOOL_HISTORY_DIRECTORY));
-      assertSecureReadableFile(this.databasePath);
+      const fileSize = assertSecureReadableFile(this.databasePath);
+      if (options.zeroLengthAsAbsent === true && fileSize === 0) return undefined;
       const database = new DatabaseSync(this.databasePath, { readOnly: true });
       database.exec("PRAGMA busy_timeout=250");
       validateDatabase(database);
@@ -786,7 +800,7 @@ function assertSecureReadableDirectory(path: string): void {
   }
 }
 
-function assertSecureReadableFile(path: string): void {
+function assertSecureReadableFile(path: string): number {
   const info = lstatSync(path);
   if (info.isSymbolicLink() || !info.isFile() || Number(info.nlink) !== 1) {
     throw new ToolHistoryWriterError("history_security_invalid", "Tool history database must be a single-link non-symlink regular file.");
@@ -798,6 +812,7 @@ function assertSecureReadableFile(path: string): void {
   if (process.platform !== "win32" && (Number(info.mode) & 0o777) !== 0o600) {
     throw new ToolHistoryWriterError("history_security_invalid", "Tool history database must have mode 0600.");
   }
+  return Number(info.size);
 }
 
 function searchCursorFromRow(row: Record<string, unknown> | undefined): ToolHistorySearchCursor {

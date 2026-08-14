@@ -461,7 +461,11 @@ and `bearer` can remain visible; numeric values under `apiKey`, `token`,
 Assignment-shaped password or secret prose is content-scanned and replaced with
 the diagnostic or tool-result omission sentinel. An optionally quoted assignment
 value is exempt only when its complete value is exactly `[redacted]`; any prefix
-or suffix is omitted. Results exclude the current/running run, unrelated
+or suffix is omitted. Ordinary filesystem spans are sanitized in place to
+`[host-path]` plus a bounded non-sensitive suffix, so surrounding commands,
+tool results, and assistant diagnostics remain visible; credentials and private
+run-artifact content are still omitted, and absolute roots or private run paths
+never survive. Results exclude the current/running run, unrelated
 conversations or threads, system prompts, reasoning, recalled memory,
 turn-context payloads, and raw artifact paths; historical text is marked
 untrusted.
@@ -485,7 +489,7 @@ successful-turn commit. A lifecycle record may therefore exist without a
 canonical message-history entry. Stable conversation/run/tool-call keys and
 writer-assigned per-run start/end sequences make retries idempotent; process
 recovery closes dangling starts as `interrupted` without rerunning a tool.
-Arguments/results are redacted and byte-bounded, with truncation metadata and
+Arguments/results are securely pre-bounded, redacted, and byte-bounded, with truncation metadata and
 opaque artifact ids. Filesystem-shaped spans use an opaque host-root token plus
 at most two non-sensitive trailing components, so commands and results remain
 inspectable without exposing an absolute root, account/home prefix, artifact
@@ -502,11 +506,16 @@ Current-run and unrelated-conversation records are identically unavailable,
 daily rollover buckets remain one logical scope, nested history-tool result
 bodies are omitted, and every response is labelled untrusted. Cold context
 reseed receives a bounded neutralized text projection; warm provider resume
-continues natively and receives no replay.
+continues natively and receives no replay. A zero-byte fresh sidecar is absent
+for automatic projection; another corrupt/unsafe projection emits a structured
+warning and continues the turn, while explicit SessionHistory reads fail closed.
+Lazy writer acquisition retries on the next lifecycle write after a transient
+failure and emits only an outage warning plus a later recovery warning.
 
-Telegram `/new` clears message records for its exact physical conversation
-bucket and all tool records in the same logical session, including prior daily
-rollover buckets that SessionHistory and cold projection can expose.
+Telegram `/new` clears message records and tool records across the same logical
+session, including prior daily rollover buckets that canonical replay,
+SessionHistory, and cold projection can expose. A custom history store used with
+daily rollover must implement logical-session reset or the reset fails closed.
 `restart --clear-sessions` purges all provider transcripts, message history, and
 tool history while reporting message/tool counts and bytes separately. Doctor
 audits schema, ownership, journal/integrity state, recovery, quota, and fail-soft
@@ -529,7 +538,7 @@ questions, each with two or three described options and an optional multi-select
 mode. Slack and Telegram present the questions sequentially with native buttons
 plus a typed custom reply; the web console renders the whole question set as one
 form. The built-in Telegram `/new` command uses the configured responder's
-host-owned reset surface to clear only that conversation and force
+host-owned reset surface to clear only that logical conversation and force
 skill/startup-context reload on its next turn.
 
 ### Memory health and maintenance

@@ -77,6 +77,22 @@ describe("DurableConversationHistoryStore", () => {
     expect(retired).toContain(turn.providerSessionId);
   });
 
+  it("resets every daily bucket in one logical conversation without touching lookalikes", async () => {
+    const dir = await tempDir();
+    const store = createDurableHistoryStore({ root: join(dir, "history") });
+    await store.append("chat:42#2026-08-13", [{ role: "assistant", content: "old day" }]);
+    await store.append("chat:42#2026-08-14", [{ role: "assistant", content: "current day" }]);
+    await store.append("chat:42#not-a-day", [{ role: "assistant", content: "lookalike" }]);
+    await store.append("chat:99#2026-08-14", [{ role: "assistant", content: "foreign" }]);
+
+    await store.resetLogicalConversation("chat:42");
+
+    await expect(store.load("chat:42#2026-08-13")).resolves.toEqual([]);
+    await expect(store.load("chat:42#2026-08-14")).resolves.toEqual([]);
+    await expect(store.load("chat:42#not-a-day")).resolves.toEqual([{ role: "assistant", content: "lookalike" }]);
+    await expect(store.load("chat:99#2026-08-14")).resolves.toEqual([{ role: "assistant", content: "foreign" }]);
+  });
+
   it("persists normalized exact conversation ids across store recreation in owner-only files", async () => {
     const dir = await tempDir();
     const root = join(dir, ".mono-agent", "history");

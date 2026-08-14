@@ -189,7 +189,7 @@ async function handleRunHistoryRequest(binding: RunHistoryBinding, input: RunHis
       query === undefined
       || query.length === 0
       || Buffer.byteLength(query, "utf8") > MAX_SEARCH_QUERY_BYTES
-      || containsVisibleSensitiveText(query, binding.artifactDir)
+      || containsOmissionSensitiveText(query, binding.artifactDir)
     ) {
       return safeToolError("search", "invalid_query", "Search requires a short topic or metadata query without private artifact or credential text.");
     }
@@ -519,7 +519,7 @@ function isListableRunId(runId: string, artifactDir: string): boolean {
     && runId === runId.trim()
     && Buffer.byteLength(runId, "utf8") <= MAX_RUN_ID_BYTES
     && !/[\u0000-\u001f\u007f\u2028\u2029]/u.test(runId)
-    && !containsVisibleSensitiveText(runId, artifactDir);
+    && !containsOmissionSensitiveText(runId, artifactDir);
 }
 
 function projectRunMetadata(run: RecordedRunListItem, artifactDir: string) {
@@ -1151,7 +1151,7 @@ function sanitizeAssistantTimelineGroups(
     .filter((entry): entry is Extract<ProjectedTimelineEntry, { kind: "assistant" }> => entry.kind === "assistant")
     .map((entry) => entry.text)
     .join("");
-  if (!containsVisibleSensitiveText(assistantText, artifactDir)) return [...entries];
+  if (!containsOmissionSensitiveText(assistantText, artifactDir)) return [...entries];
   return entries.map((entry) => entry.kind === "assistant"
     ? { ...entry, text: PRIVATE_DIAGNOSTIC_OMISSION }
     : entry);
@@ -1257,7 +1257,9 @@ const FORBIDDEN_PROJECTED_KEYS = new Set([
 
 function sanitizeProjectedValue(value: unknown, artifactDir: string): unknown {
   if (typeof value === "string") {
-    return containsPrivateArtifactText(value, artifactDir) ? PRIVATE_TOOL_RESULT_OMISSION : value;
+    return containsPrivateArtifactText(value, artifactDir)
+      ? PRIVATE_TOOL_RESULT_OMISSION
+      : sanitizeVisibleText(value, artifactDir);
   }
   if (Array.isArray(value)) return value.map((entry) => sanitizeProjectedValue(entry, artifactDir));
   if (!isRecord(value)) return value;
@@ -1323,7 +1325,7 @@ function sanitizeToolResultText(text: string, artifactDir: string): unknown {
   const parsed = parseStructuredToolText(text);
   if (parsed !== undefined) return parsed;
   if (containsPrivateArtifactText(text, artifactDir)) return PRIVATE_TOOL_RESULT_OMISSION;
-  return text;
+  return sanitizeVisibleText(text, artifactDir);
 }
 
 function parseStructuredToolText(text: string): unknown | undefined {
@@ -1361,16 +1363,15 @@ function isCredentialKey(key: string): boolean {
     || normalized.endsWith("cookie");
 }
 
-function containsVisibleSensitiveText(text: string, artifactDir: string): boolean {
+function containsOmissionSensitiveText(text: string, artifactDir: string): boolean {
   return containsSharedVisibleSensitiveText(text, {
     artifactDir,
     recalledMemoryMarker: RECALLED_MEMORY_MARKER,
-    omitFilesystemPaths: true,
   });
 }
 
 function containsPrivateArtifactText(text: string, artifactDir: string): boolean {
-  if (containsVisibleSensitiveText(text, artifactDir)) return true;
+  if (containsOmissionSensitiveText(text, artifactDir)) return true;
   return /["']?(?:system[_ -]?prompt|provider[_ -]?session[_ -]?id|turn[_ -]?context|memory[_ -]?context|conversation[_ -]?id|artifact[_ -]?paths?|summary[_ -]?file[_ -]?name|event[_ -]?file[_ -]?name|reasoning|thinking|analysis)["']?\s*[:=]/iu.test(text)
     || /["']phase["']\s*:\s*["'](?:analysis|reasoning|thinking)["']/iu.test(text)
     || /["']type["']\s*:\s*["'](?:system|turn_context|memory_context|memory_context_loaded|user_message|thinking|reasoning|analysis)["']/iu.test(text);
@@ -1383,7 +1384,7 @@ function sanitizeDiagnosticText(
 ): string {
   return containsPrivateArtifactText(text, artifactDir)
     ? PRIVATE_DIAGNOSTIC_OMISSION
-    : boundedString(text, maxBytes);
+    : sanitizeVisibleText(text, artifactDir, maxBytes);
 }
 
 function sanitizeVisibleText(

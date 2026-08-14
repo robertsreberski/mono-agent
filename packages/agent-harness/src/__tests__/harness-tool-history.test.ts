@@ -1,6 +1,7 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,6 +12,8 @@ import {
   createInMemoryHistoryStore,
   ToolHistoryReader,
   ToolHistoryWriter,
+  TOOL_HISTORY_DATABASE,
+  TOOL_HISTORY_DIRECTORY,
   toolHistoryLogicalConversationId,
   type ToolHistoryRunBinding,
 } from "../index.js";
@@ -45,6 +48,127 @@ function request(conversationId: string, abortSignal = new AbortController().sig
 }
 
 describe("AgentHarness durable tool lifecycle integration", () => {
+  it("degrades a corrupt automatic projection to a structured warning while explicit reads fail closed", async () => {
+    const { identityPath, root } = await fixture();
+    const initialized = await ToolHistoryWriter.open({ root });
+    await initialized.close();
+    const database = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE));
+    database.exec("PRAGMA user_version=2");
+    database.close();
+
+    const reader = new ToolHistoryReader(root);
+    expect(() => reader.search({ logicalConversationId: "chat:42", currentRunId: "current" }))
+      .toThrow(/schema is unsupported/iu);
+    const prompts: string[] = [];
+    const runtime = {
+      async run(prompt: string): Promise<RuntimeResult> {
+        prompts.push(prompt);
+        return { text: "safe answer" };
+      },
+    };
+    const events: Array<Record<string, unknown>> = [];
+    const harness = createAgentHarness({
+      identityPath,
+      runtime,
+      model,
+      createRunId: () => "corrupt-projection-run",
+      toolHistory: {
+        reader,
+        logicalConversationId: (conversationId) => toolHistoryLogicalConversationId(conversationId, "daily"),
+        writer: {
+          createSink: () => async () => ({ persistence: "persisted" }),
+          async finishRun() {},
+          async resetConversation() {},
+        },
+      },
+    });
+
+    await expect(harness.run({
+      ...request("chat:42#2026-08-14"),
+      onEvent: (event) => events.push(event as Record<string, unknown>),
+    })).resolves.toMatchObject({ text: "safe answer" });
+    expect(prompts[0]).not.toContain("Managed Tool Lifecycles");
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "runtime_warning",
+      warning_kind: "tool_history_projection_degraded",
+      error_code: "history_schema_unsupported",
+    }));
+  });
+
+  it("treats a crash-stale zero-byte sidecar as pristine until lazy startup and recovers later history", async () => {
+    const { identityPath, root } = await fixture();
+    const toolDirectory = join(root, TOOL_HISTORY_DIRECTORY);
+    const databasePath = join(toolDirectory, TOOL_HISTORY_DATABASE);
+    await mkdir(toolDirectory, { recursive: true, mode: 0o700 });
+    await chmod(root, 0o700);
+    await chmod(toolDirectory, 0o700);
+    await writeFile(databasePath, Buffer.alloc(0));
+    await chmod(databasePath, 0o600);
+
+    const reader = new ToolHistoryReader(root);
+    expect(() => reader.search({ logicalConversationId: "chat:42", currentRunId: "before-startup" }))
+      .toThrow();
+    let writerPromise: Promise<ToolHistoryWriter> | undefined;
+    const acquire = (): Promise<ToolHistoryWriter> => {
+      writerPromise ??= ToolHistoryWriter.open({ root });
+      return writerPromise;
+    };
+    const prompts: string[] = [];
+    let call = 0;
+    const runtime = {
+      async run(prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        prompts.push(prompt);
+        call += 1;
+        if (call === 1) {
+          await options.toolLifecycleSink?.({
+            phase: "invocation",
+            toolCallId: "recovered-call",
+            toolName: "Read",
+            arguments: { needle: "history-after-lazy-recovery" },
+          });
+          await options.toolLifecycleSink?.({
+            phase: "result",
+            toolCallId: "recovered-call",
+            state: "success",
+            content: "recovered result",
+          });
+        }
+        return { text: `answer-${String(call)}` };
+      },
+    };
+    let run = 0;
+    const harness = createAgentHarness({
+      identityPath,
+      runtime,
+      model,
+      createRunId: () => `lazy-run-${String(++run)}`,
+      toolHistory: {
+        reader,
+        logicalConversationId: (conversationId) => toolHistoryLogicalConversationId(conversationId, "daily"),
+        writer: {
+          createSink: (runBinding) => async (event) => await (await acquire()).persist(runBinding, event),
+          async finishRun(runBinding, status, failureKind) {
+            if (writerPromise !== undefined) await (await writerPromise).finishRun(runBinding, status, failureKind);
+          },
+          async resetConversation(logicalConversationId) {
+            if (writerPromise !== undefined) await (await writerPromise).resetConversation(logicalConversationId);
+          },
+        },
+        async release() {
+          if (writerPromise !== undefined) await (await writerPromise).close();
+        },
+      },
+    });
+
+    await expect(harness.run(request("chat:42#2026-08-14"))).resolves.toMatchObject({ text: "answer-1" });
+    await expect(harness.run(request("chat:42#2026-08-14"))).resolves.toMatchObject({ text: "answer-2" });
+    expect(prompts[0]).not.toContain("history-after-lazy-recovery");
+    expect(prompts[1]).toContain("history-after-lazy-recovery");
+    expect(reader.search({ logicalConversationId: "chat:42", currentRunId: "lazy-run-2" }).items)
+      .toMatchObject([{ toolCallId: "recovered-call", recovered: false }]);
+    await harness.dispose?.();
+  });
+
   it("keeps a cancelled dangling tool pair even though the surrounding turn has no canonical history entry", async () => {
     const { identityPath, root } = await fixture();
     const writer = await ToolHistoryWriter.open({ root });
@@ -227,10 +351,73 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     await harness.dispose?.();
   });
 
+  it("does not lead empty structured provider history with an assistant projection", async () => {
+    const { identityPath, root } = await fixture();
+    const writer = await ToolHistoryWriter.open({ root });
+    const reader = new ToolHistoryReader(root);
+    const oldRun = binding("old-empty-history-run", "chat:42#2026-08-13");
+    await writer.persist(oldRun, {
+      phase: "invocation",
+      toolCallId: "old-empty-history-call",
+      toolName: "Read",
+      arguments: { needle: "projection-without-message-history" },
+    });
+    await writer.persist(oldRun, {
+      phase: "result",
+      toolCallId: "old-empty-history-call",
+      state: "success",
+      content: "done",
+    });
+    const historyStore = createDurableHistoryStore({
+      root: join(root, "empty-message-history"),
+      retireProviderSession: async () => undefined,
+    });
+    const calls: RuntimeRunOptions[] = [];
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        calls.push(options);
+        return { text: "answer", providerSessionId: options.sessionId as string };
+      },
+      async refreshSession(): Promise<void> {},
+      async syncSession(): Promise<boolean> { return true; },
+      async disposeAllSessions(): Promise<void> {},
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime,
+      model,
+      historyStore,
+      session,
+      piSessionsRoot: join(root, "empty-pi-sessions"),
+      createRunId: () => "empty-structured-run",
+      toolHistory: {
+        writer,
+        reader,
+        logicalConversationId: (conversationId) => toolHistoryLogicalConversationId(conversationId, "daily"),
+        release: async () => await writer.close(),
+      },
+    });
+
+    await expect(harness.run(request("chat:42#2026-08-14"))).resolves.toMatchObject({ text: "answer" });
+    expect(calls[0]?.messages).toEqual([
+      expect.objectContaining({
+        role: "user",
+        content: expect.stringContaining("projection-without-message-history"),
+      }),
+      { role: "user", content: "run tools" },
+    ]);
+    expect(calls[0]?.messages?.[0]?.role).not.toBe("assistant");
+    await harness.dispose?.();
+  });
+
   it("persists isolated parent tools but excludes them from default discovery and resets the logical rollover session", async () => {
     const { identityPath, root } = await fixture();
     const writer = await ToolHistoryWriter.open({ root });
     const reader = new ToolHistoryReader(root);
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    await historyStore.append("chat:42#2026-08-13", [{ role: "assistant", content: "old-day-message" }]);
+    await historyStore.append("chat:42#2026-08-14", [{ role: "assistant", content: "current-day-message" }]);
+    await historyStore.append("chat:99#2026-08-14", [{ role: "assistant", content: "foreign-message" }]);
     await writer.persist(binding("kept-run", "chat:42#2026-08-13"), {
       phase: "invocation", toolCallId: "kept", toolName: "Read", arguments: {},
     });
@@ -248,6 +435,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       identityPath,
       runtime,
       model,
+      historyStore,
       session: { ...session, isolateProactive: true },
       createRunId: () => "isolated-run",
       toolHistory: {
@@ -268,6 +456,9 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     expect(reader.search({ logicalConversationId: "chat:42", currentRunId: "later", includeIsolated: true }).items.map((item) => item.toolCallId))
       .toEqual([]);
     expect(reader.latestProjection("chat:42", "later")).toEqual([]);
+    expect(await historyStore.load("chat:42#2026-08-13")).toEqual([]);
+    expect(await historyStore.load("chat:42#2026-08-14")).toEqual([]);
+    expect(await historyStore.load("chat:99#2026-08-14")).toEqual([{ role: "assistant", content: "foreign-message" }]);
     await harness.dispose?.();
   });
 });

@@ -82,6 +82,13 @@ companion, not an MCP server injected into every composed agent. Add project
 MCP servers to the agent's own `mcp.json`; do not copy the documentation server
 there unless the resulting agent itself must answer mono-agent framework questions.
 
+`RunHistory` and `SessionHistory` are app-owned request-scoped read tools, not
+entries for `mcp.json`. `SessionHistory` searches the current logical session's
+retained managed-tool calls/results and needs no config key. Allow-all exposes
+it on compatible routes; a specific allowlist must name `SessionHistory`.
+Direct OpenCode/ACP retain and cold-project lifecycle evidence but cannot expose
+that request-scoped tool.
+
 ```ts
 import { createToolPolicy, toolPolicyToRuntimeOptions } from "@mono-agent/agent-harness";
 

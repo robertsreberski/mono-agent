@@ -89,7 +89,7 @@ actually being attempted. Other logical request fields, including
 
 `RuntimeRunOptions.toolLifecycleSink` is the typed incremental persistence seam
 for managed tools. It receives an invocation with stable call id/name,
-redaction-eligible arguments, and optional parent call, then exactly one result
+and redaction-eligible arguments, then exactly one result
 with `success`, `rejected`, `error`, `exit_nonzero`, `timeout`, `signal`,
 `cancelled`, or `interrupted`, an existing observability failure kind, optional
 detail/duration, bounded-content input, and host artifact paths. The awaited
