@@ -242,6 +242,10 @@ interface AskCardRequest {
   readonly running: boolean;
 }
 
+interface VersionedAskCardRequest extends AskCardRequest {
+  readonly version: number;
+}
+
 interface AskCardState {
   readonly snapshot?: AskSnapshot;
   readonly unavailable: boolean;
@@ -324,7 +328,8 @@ const persistedAskStatus = (value: unknown, depth = 0): TerminalAskStatus | unde
 export function AskReconciliationProvider({ children }: { readonly children: ReactNode }) {
   const { selectedThread, selectedAgent, connection } = useConsoleStore();
   const threadId = selectedThread?.id;
-  const requestsRef = useRef(new Map<string, AskCardRequest>());
+  const requestsRef = useRef(new Map<string, VersionedAskCardRequest>());
+  const nextRequestVersionRef = useRef(0);
   const [requestRevision, setRequestRevision] = useState(0);
   const [states, setStates] = useState<Record<string, AskCardState>>({});
   const statesRef = useRef(states);
@@ -333,34 +338,41 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
     statesRef.current = states;
   }, [states]);
 
+  const versionRequest = useCallback((request: AskCardRequest): VersionedAskCardRequest => {
+    nextRequestVersionRef.current += 1;
+    return { ...request, version: nextRequestVersionRef.current };
+  }, []);
+
   const register = useCallback((request: AskCardRequest) => {
     const current = requestsRef.current.get(request.toolCallId);
     if (current === undefined
       || current.expectedInteractionId !== request.expectedInteractionId
       || current.running !== request.running) {
-      requestsRef.current.set(request.toolCallId, request);
+      requestsRef.current.set(request.toolCallId, versionRequest(request));
       setRequestRevision((value) => value + 1);
     }
     return () => {
       requestsRef.current.delete(request.toolCallId);
       setRequestRevision((value) => value + 1);
     };
-  }, []);
+  }, [versionRequest]);
 
   const replace = useCallback((toolCallId: string, snapshot: AskSnapshot) => {
     const normalized = expiredSnapshot(snapshot);
+    const replacement = { snapshot: normalized, unavailable: false };
     const request = requestsRef.current.get(toolCallId);
     if (request !== undefined) {
-      requestsRef.current.set(toolCallId, {
+      requestsRef.current.set(toolCallId, versionRequest({
         ...request,
         expectedInteractionId: normalized.interactionId,
-      });
+      }));
     }
+    statesRef.current = { ...statesRef.current, [toolCallId]: replacement };
     setStates((current) => ({
       ...current,
-      [toolCallId]: { snapshot: normalized, unavailable: false },
+      [toolCallId]: replacement,
     }));
-  }, []);
+  }, [versionRequest]);
 
   useEffect(() => {
     setStates({});
@@ -370,12 +382,24 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
     if (threadId === undefined) return;
     const controller = new AbortController();
 
-    const update = (toolCallId: string, state: AskCardState): void => {
-      if (controller.signal.aborted) return;
-      setStates((current) => ({ ...current, [toolCallId]: state }));
+    // Each awaited request may write only while its exact card version still
+    // owns the slot. Submission replacement advances that version synchronously.
+    const isCurrent = (request: VersionedAskCardRequest): boolean =>
+      requestsRef.current.get(request.toolCallId)?.version === request.version;
+    const update = (request: VersionedAskCardRequest, state: AskCardState): boolean => {
+      if (controller.signal.aborted || !isCurrent(request)) return false;
+      setStates((current) => {
+        if (!isCurrent(request)) return current;
+        return { ...current, [request.toolCallId]: state };
+      });
+      return true;
     };
-    const markUnavailable = (requests: readonly AskCardRequest[]): void => {
-      for (const request of requests) update(request.toolCallId, { unavailable: true });
+    const markUnavailable = (requests: readonly VersionedAskCardRequest[]): boolean => {
+      let stale = false;
+      for (const request of requests) {
+        if (!update(request, { unavailable: true })) stale = true;
+      }
+      return stale;
     };
 
     const poll = async (): Promise<void> => {
@@ -391,57 +415,70 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
         let pollAgain = false;
         const exact = requests.filter((request) => request.expectedInteractionId !== undefined);
         for (const request of exact) {
+          if (!isCurrent(request)) {
+            pollAgain = true;
+            continue;
+          }
           const expected = request.expectedInteractionId!;
           const cached = statesRef.current[request.toolCallId]?.snapshot;
           if (cached?.interactionId === expected && cached.status !== "pending") continue;
           try {
             const snapshot = await api.ask(threadId, expected, controller.signal);
+            if (controller.signal.aborted) return;
             if (snapshot === undefined || snapshot.interactionId !== expected) {
-              update(request.toolCallId, { unavailable: true });
+              if (!update(request, { unavailable: true })) pollAgain = true;
               continue;
             }
             const normalized = expiredSnapshot(snapshot);
-            update(request.toolCallId, { snapshot: normalized, unavailable: false });
-            if (normalized.status === "pending") pollAgain = true;
+            if (!update(request, { snapshot: normalized, unavailable: false })
+              || normalized.status === "pending") pollAgain = true;
           } catch {
             if (controller.signal.aborted) return;
-            update(request.toolCallId, { unavailable: true });
+            update(request, { unavailable: true });
             pollAgain = true;
           }
         }
 
         const unresolved = requests.filter((request) => request.expectedInteractionId === undefined);
         const inactive = unresolved.filter((request) => !request.running);
-        markUnavailable(inactive);
+        if (markUnavailable(inactive)) pollAgain = true;
         const active = unresolved.filter((request) => request.running);
         if (active.length > 0) {
           // The hub permits one pending ask per conversation. Assign it once to
           // the newest unresolved running card, then lock that card to its id.
           const request = active.at(-1)!;
+          if (!isCurrent(request)) {
+            pollAgain = true;
+            continue;
+          }
           try {
             const snapshot = await api.pendingAsk(threadId, controller.signal);
-            if (snapshot !== undefined) {
-              const existingOwner = requests.find((candidate) =>
+            if (controller.signal.aborted) return;
+            if (!isCurrent(request)) {
+              pollAgain = true;
+            } else if (snapshot !== undefined) {
+              const existingOwner = [...requestsRef.current.values()].find((candidate) =>
                 candidate.toolCallId !== request.toolCallId
                 && candidate.expectedInteractionId === snapshot.interactionId);
               if (existingOwner === undefined) {
-                requestsRef.current.set(request.toolCallId, {
+                const assigned = versionRequest({
                   ...request,
                   expectedInteractionId: snapshot.interactionId,
                 });
+                requestsRef.current.set(request.toolCallId, assigned);
                 const normalized = expiredSnapshot(snapshot);
-                update(request.toolCallId, { snapshot: normalized, unavailable: false });
-                if (normalized.status === "pending") pollAgain = true;
+                if (!update(assigned, { snapshot: normalized, unavailable: false })
+                  || normalized.status === "pending") pollAgain = true;
               } else {
-                update(request.toolCallId, { unavailable: true });
+                if (!update(request, { unavailable: true })) pollAgain = true;
               }
             } else {
-              update(request.toolCallId, { unavailable: false });
+              update(request, { unavailable: false });
               pollAgain = true;
             }
           } catch {
             if (controller.signal.aborted) return;
-            update(request.toolCallId, { unavailable: true });
+            update(request, { unavailable: true });
             pollAgain = true;
           }
         }
@@ -456,7 +493,7 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
     return () => controller.abort();
     // `states` is deliberately not a dependency: one loop owns its backoff and
     // consults terminal state only as an optimization, never as authority.
-  }, [connection, requestRevision, selectedAgent?.status, threadId]);
+  }, [connection, requestRevision, selectedAgent?.status, threadId, versionRequest]);
 
   const value = useMemo<AskReconciliationValue>(
     () => ({ states, register, replace }),

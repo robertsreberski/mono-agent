@@ -126,6 +126,48 @@ describe("AskUser web form", () => {
     expect(screen.queryByText("Also mention risk")).not.toBeInTheDocument();
   });
 
+  it("keeps a submitted answer terminal when an older exact poll resolves pending", async () => {
+    const answered: AskSnapshot = {
+      ...snapshot,
+      answers: [
+        { questionId: "q0", selectedOptionIds: ["q0o0"] },
+        { questionId: "q1", selectedOptionIds: ["q1o1"] },
+      ],
+      status: "answered",
+    };
+    let releaseStalePoll!: (value: AskSnapshot | undefined) => void;
+    const stalePoll = new Promise<AskSnapshot | undefined>((resolve) => {
+      releaseStalePoll = resolve;
+    });
+    vi.spyOn(api, "pendingAsk").mockResolvedValue(snapshot);
+    vi.spyOn(api, "ask").mockReturnValue(stalePoll);
+    vi.spyOn(api, "submitAsk").mockResolvedValue({ accepted: true, snapshot: answered });
+
+    const { container } = render(askUserTool());
+    expect(await screen.findByText("What should I do with the draft?")).toBeVisible();
+    await waitFor(() => expect(api.ask).toHaveBeenCalledWith(
+      "thread-1",
+      snapshot.interactionId,
+      expect.any(AbortSignal),
+    ));
+
+    fireEvent.click(screen.getByRole("radio", { name: /Send/u }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Deadline/u }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit answers" }));
+    await screen.findByText("Answers submitted.");
+
+    await act(async () => {
+      releaseStalePoll(snapshot);
+      await stalePoll;
+    });
+
+    expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
+    expect(screen.getByRole("status")).toHaveTextContent("Answers submitted.");
+    expect(screen.getByText("Delivery: Send")).toBeVisible();
+    expect(screen.getByText("Follow-up: Deadline")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Submit answers" })).not.toBeInTheDocument();
+  });
+
   it("renders one resolved answer compactly for a two-question AskUser", async () => {
     const answered: AskSnapshot = {
       ...snapshot,
