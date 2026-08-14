@@ -127,6 +127,28 @@ describe("memory forget-backup retention", () => {
     }
   });
 
+  it("labels the exact truncated import-manifest read with the deciding operation", async () => {
+    const root = await memoryFixture();
+    const rootFingerprint = createHash("sha256").update(realpathSync(root)).digest("hex");
+    const importBackup = await writeManaged(root, "6", 40, "applied", rootFingerprint, "import");
+
+    const result = await pruneExplicitMemoryForgetBackups({
+      root,
+      clock: () => NOW,
+      hooks: {
+        afterManifestStat: async ({ path, operation }) => {
+          expect(operation).toBe("memory-import");
+          await writeFile(path, "", { encoding: "utf8", mode: 0o600 });
+        },
+      },
+    });
+
+    expect(result).toMatchObject({ candidateCount: 0, prunedCount: 0 });
+    expect(result.warnings.join("\n")).toMatch(/memory-import: short artifact read/iu);
+    expect(result.warnings.join("\n")).not.toMatch(/memory-forget: short artifact read/iu);
+    expect(existsSync(importBackup)).toBe(true);
+  });
+
   it("atomically claims a candidate and restores a raced replacement instead of deleting it", async () => {
     const root = await memoryFixture();
     const candidate = await writeOperator(root, "forget-raced", 40);
@@ -224,13 +246,16 @@ async function writeManaged(
   ageDays: number,
   status: "prepared" | "applying" | "applied" | "recovered",
   rootFingerprint = createHash("sha256").update(realpathSync(root)).digest("hex"),
+  operation: "forget" | "import" = "forget",
 ): Promise<string> {
   const planDigest = digit.repeat(64);
-  const backup = join(dirname(root), `.${basename(root)}-forget-backup-${planDigest.slice(0, 24)}`);
+  const backupInfix = operation === "forget" ? "forget-backup" : "import-backup";
+  const manifestOperation = operation === "forget" ? "memory-forget-backup" : "memory-import-backup";
+  const backup = join(dirname(root), `.${basename(root)}-${backupInfix}-${planDigest.slice(0, 24)}`);
   await mkdir(backup, { mode: 0o700 });
   await writeFile(join(backup, "manifest.json"), `${JSON.stringify({
     schemaVersion: 1,
-    operation: "memory-forget-backup",
+    operation: manifestOperation,
     status,
     rootFingerprint,
     sourceFingerprint: "1".repeat(64),

@@ -289,6 +289,10 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "mono-agent memory [stats|today|show <date>|search <query>|top|audit|inspect [id]|retry [id]|resolve <id> <reason>|rebuild|rollback|adopt-replay]\n" +
       "mono-agent memory forget prepare --ids-file <file> --reason <slug> --plan <file>\n" +
       "mono-agent memory forget apply --plan <file> | forget restore --backup <dir>\n" +
+      "mono-agent memory export --bundle <dir> [--include-extras] [--allow-pending]\n" +
+      "mono-agent memory import prepare --bundle <dir> --plan <file> [--on-conflict fail|skip]\n" +
+      "                  [--entity-conflict target|source] [--accept-derived-association-drift]\n" +
+      "mono-agent memory import apply --plan <file> | import restore --backup <dir>\n" +
       "                  [--limit <n>] [--strict] [--json] [--config <path>] [--env-file <path>]",
     lines: [
       "Preview the configured memory store from an agent folder. Reads the",
@@ -299,6 +303,10 @@ const HELP_COMMANDS: readonly HelpEntry[] = [
       "operation. It returns metadata only and requires rebuild before restart.",
       "forget uses an explicit, content-free plan plus a full owner-private backup;",
       "apply and restore require the configured agent to be stopped.",
+      "export writes a portable canonical bundle and does not require stopping the",
+      "agent; import merges one into this store and does require a stopped agent.",
+      "Import re-embeds every memory, so a bundle from a different embedding model",
+      "or dimension is accepted. Undo an import with import restore --backup, not rollback.",
     ],
   },
   {

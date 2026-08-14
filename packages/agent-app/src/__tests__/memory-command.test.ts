@@ -1,8 +1,15 @@
+import * as bujoMemory from "@mono-agent/memory/bujo";
+import type { MemoryBundleExportErrorCode } from "@mono-agent/memory/bujo";
 import { MemorySearchError } from "@mono-agent/memory/search";
 import type { MemorySearchErrorCode } from "@mono-agent/memory/search";
 import { describe, expect, it } from "vitest";
 
-import { isFtsFallbackEligible } from "../memory-command.js";
+import {
+  classifyImportApplyFailure,
+  classifyImportPrepareFailure,
+  classifyMemoryBundleExportFailure,
+  isFtsFallbackEligible,
+} from "../memory-command.js";
 import type { MemoryRecallSettings } from "../memory-recall.js";
 
 const semanticSettings: MemoryRecallSettings = {
@@ -16,6 +23,101 @@ const fallbackMemorySearchCodes = [
   "embedding_response_invalid",
   "invalid_embedding_options",
 ] as const satisfies readonly MemorySearchErrorCode[];
+
+describe("memory bundle error classification", () => {
+  const exportCodes = [
+    "export_destination_invalid",
+    "export_pending_work",
+    "export_source_changed",
+    "export_source_invalid",
+    "export_failed",
+  ] as const satisfies readonly MemoryBundleExportErrorCode[];
+
+  it.each(exportCodes)("preserves the typed export failure %s", (code) => {
+    const error = new bujoMemory.MemoryBundleExportError(code, "private package detail");
+
+    expect(classifyMemoryBundleExportFailure(bujoMemory.MemoryBundleExportError, error)).toBe(code);
+  });
+
+  it("does not trust an export-error lookalike", () => {
+    const lookalike = Object.assign(new Error("private package detail"), {
+      name: "MemoryBundleExportError",
+      code: "export_pending_work",
+    });
+
+    expect(classifyMemoryBundleExportFailure(bujoMemory.MemoryBundleExportError, lookalike))
+      .toBe("export_failed");
+  });
+
+  it("recognizes an explicit id-conflict code only inside a typed bounded cause chain", () => {
+    const conflict = Object.assign(new Error("private merge detail"), { code: "id_conflict" });
+    const error = new bujoMemory.MemoryBundleImportError("import_prepare_failed", undefined, conflict);
+
+    expect(classifyImportPrepareFailure(bujoMemory.MemoryBundleImportError, error))
+      .toBe("import_conflict");
+  });
+
+  it.each([
+    [
+      "an untyped top-level code",
+      Object.assign(new Error("private input"), { code: "import_derived_drift" }),
+    ],
+    [
+      "an arbitrary cause object",
+      new bujoMemory.MemoryBundleImportError(
+        "import_prepare_failed",
+        undefined,
+        { code: "id_conflict" },
+      ),
+    ],
+    [
+      "arbitrary user text",
+      new bujoMemory.MemoryBundleImportError(
+        "import_prepare_failed",
+        undefined,
+        new Error("user text says id_conflict and import_bundle_invalid"),
+      ),
+    ],
+  ] as const)("does not classify from %s", (_label, error) => {
+    expect(classifyImportPrepareFailure(bujoMemory.MemoryBundleImportError, error))
+      .toBe("import_prepare_failed");
+  });
+
+  it("stops before an explicit code beyond the finite cause bound", () => {
+    let cause: Error = Object.assign(new Error("private merge detail"), { code: "id_conflict" });
+    for (let depth = 0; depth < 8; depth += 1) {
+      cause = new Error("bounded wrapper", { cause });
+    }
+    const error = new bujoMemory.MemoryBundleImportError("import_prepare_failed", undefined, cause);
+
+    expect(classifyImportPrepareFailure(bujoMemory.MemoryBundleImportError, error))
+      .toBe("import_prepare_failed");
+  });
+
+  it("terminates on a cyclic typed cause chain", () => {
+    const cause = new Error("cyclic") as Error & { cause?: unknown };
+    cause.cause = cause;
+    const error = new bujoMemory.MemoryBundleImportError("import_prepare_failed", undefined, cause);
+
+    expect(classifyImportPrepareFailure(bujoMemory.MemoryBundleImportError, error))
+      .toBe("import_prepare_failed");
+  });
+
+  it("preserves typed import prepare and apply codes", () => {
+    expect(classifyImportPrepareFailure(
+      bujoMemory.MemoryBundleImportError,
+      new bujoMemory.MemoryBundleImportError("import_derived_drift"),
+    )).toBe("import_derived_drift");
+    expect(classifyImportApplyFailure(
+      bujoMemory,
+      new bujoMemory.MemoryBundleImportError("import_pending_work"),
+    )).toEqual(["import_pending_work", false, undefined]);
+    expect(classifyImportApplyFailure(
+      bujoMemory,
+      new bujoMemory.MemoryBundleImportError("import_apply_failed_recovered", "/private/backup"),
+    )).toEqual(["import_apply_failed_recovered", true, "/private/backup"]);
+  });
+});
 
 describe("isFtsFallbackEligible", () => {
   it.each(fallbackMemorySearchCodes)("accepts the typed provider failure code %s", (code) => {

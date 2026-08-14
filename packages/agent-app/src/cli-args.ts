@@ -160,6 +160,18 @@ export interface ParsedCliArgs {
   readonly planPath?: string;
   /** memory forget restore: owner-private backup directory. */
   readonly backupPath?: string;
+  /** `mono-agent memory export|import` bundle directory. */
+  readonly bundlePath?: string;
+  /** `mono-agent memory export`: also copy audit/monthly/legacy companions. */
+  readonly includeExtras?: boolean;
+  /** `mono-agent memory export`: export over unreplayed durable work. */
+  readonly allowPending?: boolean;
+  /** `mono-agent memory import prepare`: memory-id collision policy. */
+  readonly onConflict?: "fail" | "skip";
+  /** `mono-agent memory import prepare`: entity-slug collision policy. */
+  readonly entityConflict?: "target" | "source";
+  /** `mono-agent memory import prepare`: accept removal of derived associations. */
+  readonly acceptDerivedAssociationDrift?: boolean;
   /** web: bind host (defaults to 0.0.0.0). */
   readonly host?: string;
   /** web: bind port (defaults to 5050). */
@@ -284,6 +296,12 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let reason: string | undefined;
   let planPath: string | undefined;
   let backupPath: string | undefined;
+  let bundlePath: string | undefined;
+  let includeExtras = false;
+  let allowPending = false;
+  let onConflict: "fail" | "skip" | undefined;
+  let entityConflict: "target" | "source" | undefined;
+  let acceptDerivedAssociationDrift = false;
   let host: string | undefined;
   let port: number | undefined;
   let theme: string | undefined;
@@ -397,6 +415,30 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--backup":
         backupPath = requireValue(rest, ++i, flag);
+        break;
+      case "--bundle":
+        bundlePath = requireValue(rest, ++i, flag);
+        break;
+      case "--include-extras":
+        includeExtras = true;
+        break;
+      case "--allow-pending":
+        allowPending = true;
+        break;
+      case "--on-conflict": {
+        const raw = requireValue(rest, ++i, flag).trim();
+        if (raw !== "fail" && raw !== "skip") throw new Error("--on-conflict must be fail or skip.");
+        onConflict = raw;
+        break;
+      }
+      case "--entity-conflict": {
+        const raw = requireValue(rest, ++i, flag).trim();
+        if (raw !== "target" && raw !== "source") throw new Error("--entity-conflict must be target or source.");
+        entityConflict = raw;
+        break;
+      }
+      case "--accept-derived-association-drift":
+        acceptDerivedAssociationDrift = true;
         break;
       case "--host":
         host = requireValue(rest, ++i, flag);
@@ -659,11 +701,25 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (strict && (cmd !== "memory" || (positionals[0] ?? "stats") !== "audit")) {
     throw new Error("--strict is only supported for `mono-agent memory audit`.");
   }
+  if ((idsFile !== undefined || reason !== undefined) && (cmd !== "memory" || positionals[0] !== "forget")) {
+    throw new Error("--ids-file and --reason are only supported for `mono-agent memory forget`.");
+  }
   if (
-    (idsFile !== undefined || reason !== undefined || planPath !== undefined || backupPath !== undefined)
-    && (cmd !== "memory" || positionals[0] !== "forget")
+    (planPath !== undefined || backupPath !== undefined)
+    && (cmd !== "memory" || (positionals[0] !== "forget" && positionals[0] !== "import"))
   ) {
-    throw new Error("--ids-file, --reason, --plan, and --backup are only supported for `mono-agent memory forget`.");
+    throw new Error("--plan and --backup are only supported for `mono-agent memory forget` and `mono-agent memory import`.");
+  }
+  if (
+    (bundlePath !== undefined || includeExtras || allowPending
+      || onConflict !== undefined || entityConflict !== undefined || acceptDerivedAssociationDrift)
+    && (cmd !== "memory" || (positionals[0] !== "export" && positionals[0] !== "import"))
+  ) {
+    throw new Error(
+      "--bundle, --include-extras, --allow-pending, --on-conflict, --entity-conflict, and "
+      + "--accept-derived-association-drift are only supported for `mono-agent memory export` "
+      + "and `mono-agent memory import`.",
+    );
   }
   if (auth && cmd !== "init") {
     throw new Error("--auth is only supported for `mono-agent init`.");
@@ -807,6 +863,12 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(reason === undefined ? {} : { reason }),
     ...(planPath === undefined ? {} : { planPath }),
     ...(backupPath === undefined ? {} : { backupPath }),
+    ...(bundlePath === undefined ? {} : { bundlePath }),
+    ...(includeExtras ? { includeExtras } : {}),
+    ...(allowPending ? { allowPending } : {}),
+    ...(onConflict === undefined ? {} : { onConflict }),
+    ...(entityConflict === undefined ? {} : { entityConflict }),
+    ...(acceptDerivedAssociationDrift ? { acceptDerivedAssociationDrift } : {}),
     ...(agent === undefined ? {} : { agent }),
     ...(conversation === undefined ? {} : { conversation }),
     ...(local ? { local } : {}),
