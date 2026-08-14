@@ -147,13 +147,18 @@ export function createRequestModelOverrideRuntimeExtension(
     }
     const runtimeOptions: RequestModelOverrideResult["runtimeOptions"] = {};
     const effectiveModelForEffort = model ?? baseModel;
-    // Shared by the metadata effort override AND keyword escalation below: any
-    // direct OpenCode model in the resulting chain means no run-level effort.
-    const directOpenCodeModels = [effectiveModelForEffort, ...fallbackModels]
-      .filter((entry): entry is RuntimeModelReference => entry?.sdk === "opencode");
-    if (resolution.source === "advisor" && directOpenCodeModels.length > 0) {
+    const effectiveModelChain = [effectiveModelForEffort, ...fallbackModels]
+      .filter((entry): entry is RuntimeModelReference => entry !== undefined);
+    if (resolution.source === "advisor" && effectiveModelChain.some((entry) => (
+      entry.sdk === "codex"
+      || entry.sdk === "opencode"
+      || entry.sdk === "acp"
+    ))) {
       throw new Error("Advisor requests require an enforceable explicit model and effort selection.");
     }
+    // Shared by the metadata effort override AND keyword escalation below: any
+    // direct OpenCode model in the resulting chain means no run-level effort.
+    const directOpenCodeModels = effectiveModelChain.filter((entry) => entry.sdk === "opencode");
 
     if (model !== undefined && rawModel !== undefined) {
       runtimeOptions.model = model;

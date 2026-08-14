@@ -60,17 +60,20 @@ the matching nested `config` values. Adding or removing the package requires a
 host restart because channel plugins are resolved at startup.
 
 :::caution
-Use an advisor model route that can enforce an empty tool set. A Pi SDK route
-such as `pi:openai-codex:gpt-5.6-sol` is the recommended Codex-backed form.
-Direct `codex:*`, direct `opencode:*`, `acp:*`, and Claude CLI routes reject this
-boundary. Claude SDK can enforce it when the host's execution mode is `sdk`.
-The selected advisor route must also be compatible with the host primary's
-runtime family: a direct `codex:*` host cannot switch an advisor turn to `pi:*`.
-An advisor chain containing a direct OpenCode fallback is rejected because that
-chain cannot preserve the configured effort on every attempt.
+Every route in the effective advisor chain—the selected primary and all
+configured fallbacks—must enforce an empty tool set. A Pi SDK route such as
+`pi:openai-codex:gpt-5.6-sol` is the recommended Codex-backed form. Any direct
+`codex:*`, direct `opencode:*`, or `acp:*` entry in that chain rejects the request
+before execution. Claude CLI also cannot enforce this boundary; Claude SDK can
+when the host's execution mode is `sdk`. The selected advisor route must remain
+compatible with the host primary's runtime family: a direct `codex:*` host
+cannot switch an advisor turn to `pi:*`.
 Invalid model/effort metadata fails the turn instead of using the host default.
-If the provider router emits a failover, the fallback answer is discarded and
-the call returns `advisor_run_failed`.
+If an otherwise enforceable provider route reports a failover, the call returns
+`advisor_run_failed` to preserve the exact-backend result contract. Discarding
+that answer after execution is not a security boundary and cannot undo side
+effects; the chain-wide preflight rejection above prevents unenforceable routes
+from attempting the review.
 :::
 
 ## Register the client

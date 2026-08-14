@@ -105,15 +105,43 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     )).rejects.toThrow(
       "Advisor requests require an enforceable explicit model and effort selection.",
     );
+  });
+
+  it.each([
+    { sdk: "codex", fallback: "codex:gpt-5.6-sol" },
+    { sdk: "opencode", fallback: "opencode:github-copilot:gpt-5.1" },
+    { sdk: "acp", fallback: "acp:personal-agent" },
+  ])("fails closed when an advisor effective chain retains a $sdk fallback", async ({ fallback }) => {
     await expect(run(
       { advisor: { model: "claude:claude-opus-4-8", effort: "high" } },
       {
         baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
-        fallbackModels: [parseMonoRuntimeModelReference("opencode:github-copilot:gpt-5.1")],
+        fallbackModels: [parseMonoRuntimeModelReference(fallback)],
       },
     )).rejects.toThrow(
       "Advisor requests require an enforceable explicit model and effort selection.",
     );
+  });
+
+  it("keeps ordinary non-advisor fallback chains on their existing path", async () => {
+    const result = await run(
+      { webhook: { model: "claude:claude-opus-4-8" } },
+      {
+        baseModel: parseMonoRuntimeModelReference("pi:openai-codex:gpt-5.6-terra"),
+        fallbackModels: [
+          parseMonoRuntimeModelReference("codex:gpt-5.6-sol"),
+          parseMonoRuntimeModelReference("opencode:github-copilot:gpt-5.1"),
+          parseMonoRuntimeModelReference("acp:personal-agent"),
+        ],
+      },
+    );
+
+    expect(result.runtimeOptions.model).toEqual(expect.objectContaining({
+      sdk: "claude",
+      model: "claude-opus-4-8",
+    }));
+    expect(result.sealedToolPolicy).toBeUndefined();
+    expect(result.toolPolicyOverride).toBeUndefined();
   });
 
   it("keeps invalid non-advisor metadata on the existing warn-and-fallback path", async () => {
