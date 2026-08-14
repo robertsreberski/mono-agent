@@ -119,6 +119,40 @@ describe("TurnPresenter", () => {
     expect(text).not.toContain("full data in run artifacts");
   });
 
+  it("renders canonical history state, truncation, and unavailable artifact references on the same tool panel", async () => {
+    const { presenter, rendered } = setup();
+    await presenter.event({
+      type: "tool_call_started",
+      id: "history-tool",
+      name: "Bash",
+      arguments: { command: "slow" },
+      history: {
+        recordId: "sth1_start",
+        sequence: 1,
+        persistence: "persisted",
+        untrusted: true,
+      },
+    });
+    await presenter.event({
+      type: "tool_call_completed",
+      id: "history-tool",
+      name: "Bash",
+      content: "bounded output",
+      history: {
+        recordId: "sth1_result",
+        sequence: 2,
+        persistence: "persisted",
+        terminalState: "timeout",
+        truncated: true,
+        artifactReferences: [{ id: "stha1_output", available: false }],
+        untrusted: true,
+      },
+    });
+
+    expect(rendered()).toContain("✗ Bash");
+    expect(rendered()).toContain("history persisted · timeout · seq 2 · bounded · 1 artifact · 1 unavailable");
+  });
+
   it("expands thinking on demand with the full text", async () => {
     const { presenter, transcript, rendered } = setup();
     await presenter.event({ type: "assistant_thought", text: "secret reasoning here" });

@@ -26,6 +26,7 @@ import {
 } from "./claude-sandbox.js";
 import { resolveSandboxPolicy } from "../../agent/tools/shared/tool-context.js";
 import { createClaudeSubagentActivityNormalizer } from "./claude-subagent-activity.js";
+import { toolLifecycleMetadata } from "../tool-lifecycle.js";
 
 const CODEX_CLI_SANDBOX_POLICY_UNSUPPORTED =
   "Direct Codex CLI cannot enforce mono-agent's native srt sandbox scopes. Remove the mono-agent sandbox policy or use a Pi runtime for exact readableRoots, writableRoots, denyWrite, and network rules.";
@@ -260,7 +261,8 @@ export function normalizeCliEvent(raw, context = {}) {
   if (raw.type === "assistant") {
     return thinkingBuffer ? thinkingBuffer.rehydrate(raw) : raw;
   }
-  if (raw.type === "user" || raw.type === "result" || raw.type === "error") return raw;
+  if (raw.type === "user") return annotateClaudeCliToolResults(raw);
+  if (raw.type === "result" || raw.type === "error") return raw;
   if (raw.type === "message" && raw.message) return { type: "assistant", message: raw.message };
   if (raw.type === "item.completed" && raw.item?.type === "agent_message" && typeof raw.item.text === "string") {
     return { type: "assistant", message: { content: [{ type: "text", text: raw.item.text }] } };
@@ -276,9 +278,40 @@ export function normalizeCliEvent(raw, context = {}) {
     return { type: "assistant", message: { content: [{ type: "tool_use", id: raw.id, name: raw.name, input: raw.input || raw.arguments }] } };
   }
   if (raw.type === "tool_result") {
-    return { type: "user", message: { content: [{ type: "tool_result", tool_use_id: raw.id || raw.tool_use_id, content: raw.output || raw.result || "" }] } };
+    const isError = raw.is_error === true;
+    return {
+      type: "user",
+      message: {
+        content: [{
+          type: "tool_result",
+          tool_use_id: raw.id || raw.tool_use_id,
+          content: raw.output || raw.result || "",
+          is_error: isError,
+          tool_lifecycle: toolLifecycleMetadata(isError
+            ? { state: "error", failure_kind: "runtime_error", detail_code: "claude_cli_tool_error" }
+            : { state: "success" }),
+        }],
+      },
+    };
   }
   return { type: "cli_event", raw };
+}
+
+/** Preserve Claude CLI's only trustworthy terminal distinction: tool_result is_error. */
+function annotateClaudeCliToolResults(raw) {
+  if (!raw?.message || !Array.isArray(raw.message.content)) return raw;
+  let changed = false;
+  const content = raw.message.content.map((block) => {
+    if (!block || block.type !== "tool_result") return block;
+    changed = true;
+    return {
+      ...block,
+      tool_lifecycle: toolLifecycleMetadata(block.is_error === true
+        ? { state: "error", failure_kind: "runtime_error", detail_code: "claude_cli_tool_error" }
+        : { state: "success" }),
+    };
+  });
+  return changed ? { ...raw, message: { ...raw.message, content } } : raw;
 }
 
 function textFromEvent(raw) {

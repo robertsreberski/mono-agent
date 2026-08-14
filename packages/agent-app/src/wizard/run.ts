@@ -1269,7 +1269,7 @@ function toolSituationFraming(draft: DraftAnswers, alwaysOn: readonly string[]):
       ? `Always on (auto-provisioned, not affected by this choice): ${alwaysOnDisplay(alwaysOn).join(", ")}.`
       : "Always on (auto-provisioned): none for this setup.",
     "Built-ins: files (Read/Write/Edit/Glob/Grep), shell (Bash), JavaScript (NodeRepl), web (WebFetch/WebSearch).",
-    "App tools: RunHistory (read-only evidence from completed prior runs in this conversation).",
+    "App tools: RunHistory (completed-run evidence) and SessionHistory (bounded retained tool calls/results in this session).",
     channelLine,
     '"Allow all" lets the model run shell commands or JavaScript, read/change files, access the web, and send through enabled channels. These actions can modify data or contact people; you can turn specific tools off later via tools.disallowedTools.',
   ].join("\n");

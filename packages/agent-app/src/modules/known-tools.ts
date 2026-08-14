@@ -29,6 +29,7 @@ export const BUILTIN_TOOL_NAMES = [
 /** App-owned tools injected by the configured host and governed by tool policy. */
 export const APP_TOOL_NAMES = [
   "RunHistory",
+  "SessionHistory",
 ] as const;
 
 /** Adapter send tools — require BOTH an `allowedTools` entry AND an enabled channel. */
@@ -55,6 +56,7 @@ export const LEGACY_TOOL_ALIASES: Record<string, string> = {
   telegram_send_document: "TelegramSendFile",
   telegram_send_photo: "TelegramSendFile",
   run_history: "RunHistory",
+  session_history: "SessionHistory",
   memory_recall: "MemoryRecall",
   read_skill: "ReadSkill",
   ask_collaborator: "AskCollaborator",

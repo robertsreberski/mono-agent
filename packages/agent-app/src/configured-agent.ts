@@ -1,10 +1,13 @@
 import {
   createAgentHarness,
   createAgentResponder,
+  acquireToolHistoryWriter,
   createDurableHistoryStore,
   createToolPolicy,
   loadToolPolicyFromJsonFileSync,
   renderSkillIndexSection,
+  ToolHistoryReader,
+  toolHistoryLogicalConversationId,
 } from "@mono-agent/agent-harness";
 import type {
   AgentHarness,
@@ -127,6 +130,8 @@ export interface ConfiguredAgentHarnessOptions {
   readonly onMemoryRecallUnavailable?: (error: unknown) => void;
   /** Best-effort host diagnostic for post-provider memory write failures. */
   readonly onMemoryWarning?: (message: string) => void;
+  /** Best-effort diagnostic for bounded lifecycle-sidecar write failures. */
+  readonly onToolHistoryWarning?: (message: string) => void;
   readonly onSessionEvent?: ConfiguredAgentSessionEventHandler;
   /**
    * Factory for a runtime bound to a per-request override model (cron/webhook
@@ -813,8 +818,9 @@ async function createConfiguredAgentHarnessInternal(
   };
   const piSessionsRoot = config.providers?.piNative?.piSessionsRoot;
   const retireDurableSession = runtime.retireDurableSession?.bind(runtime);
+  const historyRoot = resolvePath(config.artifacts.dir, "..", "history");
   const baseHistoryStore = options.historyStore ?? createDurableHistoryStore({
-    root: resolvePath(config.artifacts.dir, "..", "history"),
+    root: historyRoot,
     maxMessages: DEFAULT_HISTORY_MAX_MESSAGES,
     ...(piSessionsRoot === undefined || retireDurableSession === undefined
       ? {}
@@ -825,8 +831,15 @@ async function createConfiguredAgentHarnessInternal(
         }),
   });
   const historyStore = internalHooks.wrapHistoryStore?.(baseHistoryStore) ?? baseHistoryStore;
+  const toolHistoryHandle = await acquireToolHistoryWriter({
+    root: historyRoot,
+    artifactRoot: resolvePath(config.artifacts.dir, "tool-output"),
+    ...(options.onToolHistoryWarning === undefined ? {} : { onWarning: options.onToolHistoryWarning }),
+  });
+  const rollover = internalHooks.sessionRollover ?? config.runtime.session.rollover;
 
-  return createAgentHarness({
+  try {
+    return createAgentHarness({
     identityPath: config.context.identityPath,
     ...(config.context.soulPath === undefined ? {} : { soulPath: config.context.soulPath }),
     ...(config.context.skillsRoot === undefined ? {} : { skillsRoot: config.context.skillsRoot }),
@@ -883,6 +896,12 @@ async function createConfiguredAgentHarnessInternal(
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
     ...(options.onMemoryWarning === undefined ? {} : { onMemoryWarning: options.onMemoryWarning }),
     historyStore,
+    toolHistory: {
+      writer: toolHistoryHandle.writer,
+      reader: new ToolHistoryReader(historyRoot),
+      logicalConversationId: (conversationId) => toolHistoryLogicalConversationId(conversationId, rollover),
+      release: toolHistoryHandle.release,
+    },
     ...(options.turnHistoryEnricher === undefined ? {} : { turnHistoryEnricher: options.turnHistoryEnricher }),
     // Inbound channel attachments are saved here (under the artifacts dir, which
     // sits inside a sandbox-readable root) so the agent can open them by path.
@@ -901,7 +920,11 @@ async function createConfiguredAgentHarnessInternal(
       }),
     ...(options.createRunId === undefined ? {} : { createRunId: options.createRunId }),
     ...(options.now === undefined ? {} : { now: options.now }),
-  });
+    });
+  } catch (error) {
+    await toolHistoryHandle.release().catch(() => undefined);
+    throw error;
+  }
 }
 
 function configuredMemoryForHarness(

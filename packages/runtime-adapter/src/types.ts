@@ -186,6 +186,63 @@ export interface RuntimeEventLike {
   readonly [key: string]: unknown;
 }
 
+/** Durable terminal classification for one managed tool invocation. */
+export type RuntimeToolLifecycleTerminalState =
+  | "success"
+  | "rejected"
+  | "error"
+  | "exit_nonzero"
+  | "timeout"
+  | "signal"
+  | "cancelled"
+  | "interrupted";
+
+/** Provider-neutral, host-persisted half of a managed tool lifecycle. */
+export type RuntimeToolLifecycleEvent =
+  | {
+      readonly phase: "invocation";
+      readonly toolCallId: string;
+      readonly toolName: string;
+      readonly arguments?: unknown;
+      /** Present only for the parent Agent call; child internals are omitted. */
+      readonly parentToolCallId?: string;
+    }
+  | {
+      readonly phase: "result";
+      readonly toolCallId: string;
+      readonly toolName?: string;
+      readonly content?: unknown;
+      readonly state: RuntimeToolLifecycleTerminalState;
+      /** Existing observability failure taxonomy; no competing errorKind. */
+      readonly failureKind?: string;
+      readonly detailCode?: string;
+      readonly executionMs?: number;
+      readonly artifacts?: readonly {
+        readonly path: string;
+        readonly available?: boolean;
+      }[];
+    };
+
+/** Metadata returned by the host after one lifecycle half becomes durable. */
+export interface RuntimeToolLifecyclePersistence {
+  readonly recordId?: string;
+  readonly sequence?: number;
+  readonly persistence: "persisted" | "failed";
+  readonly truncated?: boolean;
+  readonly originalBytes?: number;
+  readonly retainedBytes?: number;
+  readonly artifactReferences?: readonly {
+    readonly id: string;
+    readonly available: boolean;
+  }[];
+  readonly errorCode?: string;
+}
+
+/** Awaited host boundary used to persist managed tool lifecycles. */
+export type RuntimeToolLifecycleSink = (
+  event: RuntimeToolLifecycleEvent,
+) => Promise<RuntimeToolLifecyclePersistence | undefined>;
+
 /** One exact normalized native or in-process subagent activity event. */
 export interface RuntimeSubagentActivityEvent extends RuntimeEventLike {
   readonly type: "subagent_activity";
@@ -364,6 +421,8 @@ export interface RuntimeRunOptions {
   readonly toolEnvironment?: AgentToolEnvironment;
   readonly executionMode?: RuntimeExecutionMode;
   readonly onEvent?: (event: RuntimeEventLike) => void;
+  /** Host-owned, incremental durable tool-lifecycle writer for this run. */
+  readonly toolLifecycleSink?: RuntimeToolLifecycleSink;
   readonly effort?: string;
   readonly cwd?: string;
   readonly maxTurns?: number;

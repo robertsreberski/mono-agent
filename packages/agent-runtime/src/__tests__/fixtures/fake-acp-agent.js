@@ -205,7 +205,7 @@ if (mode === "malformed" || mode === "oversize" || mode === "unterminated" || mo
           update: {
             sessionUpdate: "tool_call_update",
             toolCallId: "tool-1",
-            status: "completed",
+            status: text.includes("failed-tool") ? "failed" : "completed",
             rawOutput: "done",
           },
         });

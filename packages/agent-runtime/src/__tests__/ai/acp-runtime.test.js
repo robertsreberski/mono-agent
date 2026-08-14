@@ -150,6 +150,43 @@ describe("ACP runtime bridge", () => {
     expect(resolveAcpProfile.mock.calls[0][1]).not.toHaveProperty("acpSessionTokenKey");
   });
 
+  it.each([
+    ["completed", "permission", "success"],
+    ["failed", "permission failed-tool", "error"],
+  ])("persists ACP %s tool updates using only the protocol's success/error fidelity", async (_label, prompt, state) => {
+    const persisted = [];
+    const result = await createRuntime().run("System", runOptions(async () => descriptor(), {
+      messages: [{ role: "user", content: prompt }],
+      onAcpInteractionRequest: () => ({
+        outcome: { outcome: "selected", optionId: "allow-once" },
+      }),
+      toolLifecycleSink: async (event) => {
+        persisted.push(event);
+        return {
+          persistence: "persisted",
+          recordId: `acp-${event.phase}`,
+          sequence: event.phase === "invocation" ? 1 : 2,
+        };
+      },
+    }));
+
+    expect(result.error).toBeNull();
+    expect(persisted).toHaveLength(2);
+    expect(persisted[0]).toMatchObject({
+      phase: "invocation",
+      toolCallId: "tool-1",
+      toolName: "fake_tool",
+    });
+    expect(persisted[1]).toMatchObject({
+      phase: "result",
+      toolCallId: "tool-1",
+      state,
+      ...(state === "error"
+        ? { failureKind: "runtime_error", detailCode: "acp_tool_failed" }
+        : {}),
+    });
+  });
+
   it("binds the session-token key from host options", async () => {
     const resolveAcpProfile = vi.fn(async () => descriptor());
     const options = runOptions(resolveAcpProfile);

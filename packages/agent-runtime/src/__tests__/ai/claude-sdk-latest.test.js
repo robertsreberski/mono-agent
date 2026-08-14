@@ -214,6 +214,31 @@ describe("Claude Agent SDK 0.3 effort and query contract", () => {
 });
 
 describe("Claude Agent SDK terminal handling", () => {
+  it.each([
+    [false, { state: "success" }],
+    [true, { state: "error", failure_kind: "runtime_error", detail_code: "claude_sdk_tool_error" }],
+  ])("maps SDK tool_result is_error=%s to its conservative terminal state", async (isError, lifecycle) => {
+    installStream([
+      {
+        type: "user",
+        message: {
+          content: [{
+            type: "tool_result",
+            tool_use_id: "toolu_sdk_fidelity",
+            content: isError ? "failed" : "done",
+            is_error: isError,
+          }],
+        },
+      },
+      resultEvent(),
+    ]);
+
+    const result = await generateClaudeResponse("system", options());
+    const block = result.events.flatMap((event) => event.message?.content ?? [])
+      .find((content) => content.tool_use_id === "toolu_sdk_fidelity");
+    expect(block.tool_lifecycle).toEqual(lifecycle);
+  });
+
   it("uses the shared live normalizer without leaking child text into the parent result", async () => {
     installStream([
       ...sdkSubagentFixture,

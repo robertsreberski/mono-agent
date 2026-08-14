@@ -14,6 +14,7 @@ import type { SkillsCache } from "../skills/index.js";
 import { AgentHarnessError } from "./error.js";
 import { sessionContextBlock } from "./session-context.js";
 import { errorMessageText } from "./value-utils.js";
+import { buildToolHistoryProjection } from "../tool-history-projection.js";
 
 export async function prepareHarnessContext(
   options: AgentHarnessOptions,
@@ -31,6 +32,7 @@ export async function prepareHarnessContext(
   readonly history: readonly HistoryMessage[];
   readonly historyOmitted: boolean;
   readonly historyAsMessages: boolean;
+  readonly toolHistoryProjection: string | undefined;
 }> {
     const history = contextOptions.historyMode === "omitted"
       ? []
@@ -46,7 +48,7 @@ export async function prepareHarnessContext(
       ? await loadHarnessMemory(options, request.conversationId, request.userMessage, contextOptions.turnId, emit)
       : undefined;
     const selectedSkills = await loadHarnessSkills(options, skillsCache);
-    const context = await loadContextFromFiles({
+    const baseContext = await loadContextFromFiles({
       identityPath: options.identityPath,
       userMessage: request.userMessage,
       session: sessionContextBlock(request, options.memory !== undefined),
@@ -60,6 +62,19 @@ export async function prepareHarnessContext(
       ...(options.skillDisclosure === undefined ? {} : { skillDisclosure: options.skillDisclosure }),
       ...(selectedSkills.instructions.length === 0 ? {} : { skillInstructions: selectedSkills.instructions }),
     });
+    // Durable tool records are a separate store, not HistoryMessage entries.
+    // A cold reseed gets a bounded neutral text projection; a confirmed warm
+    // provider session gets none because it already owns the live transcript.
+    const toolProjection = contextOptions.historyMode === "omitted" || options.toolHistory === undefined
+      ? undefined
+      : buildToolHistoryProjection(
+          options.toolHistory.reader,
+          options.toolHistory.logicalConversationId(request.conversationId),
+          contextOptions.turnId,
+        );
+    const context = toolProjection === undefined || contextOptions.historyMode !== "prompt"
+      ? baseContext
+      : projectToolHistoryBeforeCurrentTurn(baseContext, toolProjection.text, toolProjection.recordCount);
     // Progressive skill disclosure (index mode, opt-in): the index is in the
     // prompt but the bodies are not — so expose a `ReadSkill` tool whose enum is
     // the discovered skill names, letting the agent pull a full body on demand.
@@ -74,6 +89,40 @@ export async function prepareHarnessContext(
       history,
       historyOmitted: contextOptions.historyMode === "omitted",
       historyAsMessages: contextOptions.historyMode === "messages",
+      toolHistoryProjection: contextOptions.historyMode === "messages" ? toolProjection?.text : undefined,
+    };
+}
+
+function projectToolHistoryBeforeCurrentTurn(
+  context: BuiltAgentContext,
+  projection: string,
+  projectedRecordCount: number,
+): BuiltAgentContext {
+    const sections = [...context.sections];
+    const historyIndex = sections.findIndex((section) => section.id === "history");
+    const content = `### Managed Tool Lifecycles (untrusted)\n\n${projection}`;
+    if (historyIndex >= 0) {
+      const history = sections[historyIndex]!;
+      sections[historyIndex] = { ...history, content: `${history.content}\n\n${content}` };
+    } else {
+      const userIndex = sections.findIndex((section) => section.id === "user-message");
+      sections.splice(userIndex < 0 ? sections.length : userIndex, 0, {
+        id: "history",
+        title: "Conversation History",
+        content,
+      });
+    }
+    return {
+      ...context,
+      sections,
+      prompt: sections.map((section) => `## ${section.title}\n\n${section.content}`).join("\n\n"),
+      metadata: {
+        ...context.metadata,
+        historyCount: context.metadata.historyCount + projectedRecordCount,
+        sources: context.metadata.sources.includes("session-tool-history")
+          ? context.metadata.sources
+          : [...context.metadata.sources, "session-tool-history"],
+      },
     };
 }
 

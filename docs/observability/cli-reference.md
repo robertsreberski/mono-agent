@@ -41,7 +41,7 @@ The read/status commands accept `--json` for scripting: `validate`, `config`, `p
 | `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>`, `--json` |
 | `memory` | Preview, strictly audit, safely maintain, and move the configured memory store and its durable completed-turn intake. | `stats`, `today`, `show`, `search`, `top`, `audit`, `inspect`, `retry`, `resolve`, `rebuild`, `rollback`, `adopt-replay`, `forget`, `export`, `import`; `--strict`, `--limit`, `--bundle`, `--json` |
 | `start` | Start the agent as a background launchd service (or foreground worker). Background start also installs the fixed-policy one-shot recovery and log-maintenance LaunchAgent. | `--config <path>`, `--env-file <path>`, `--foreground` |
-| `restart` | Restart the background instance for this config (starts it if stopped), maintaining logs only while the old writer is proven down. | `--config <path>`, `--env-file <path>`, `--clear-sessions` |
+| `restart` | Restart the background instance for this config (starts it if stopped), maintaining logs only while the old writer is proven down. `--clear-sessions` also purges provider transcripts plus canonical message and tool history. | `--config <path>`, `--env-file <path>`, `--clear-sessions` |
 | `stop` | Stop the background instance, unloading log maintenance first, and remove both LaunchAgent definitions. | `--config <path>`, `--env-file <path>` |
 | `status` | Show this config's instance plus any other running instances. | `--config <path>`, `--env-file <path>`, `--json` |
 | `logs` | Print (and optionally follow) the background instance's log files. | `--config <path>`, `--env-file <path>`, `--follow` / `-f`, `--lines <n>` |
@@ -299,6 +299,25 @@ An empty or missing artifact directory prints `No runs recorded yet.`, reports `
 
 `status` and foreground `start --foreground` use the same local run-summary display for the running instance when the trace-source manifest includes an artifact directory, so operators can see active selected skills, the exact recorded-run count, the most recent run ids with status and age, failure-kind counts with explanations, and any `running` summaries whose owner process is gone without running a separate validation command.
 
+### Session tool history
+
+`validate` includes a read-only **Session tool history** audit for the canonical
+managed-tool sidecar. It reports top-level message-history files/bytes separately
+from tool calls, records, tombstones, retained payload bytes, and physical tool
+database bytes. It checks the owner-only directory/database modes, exact schema,
+`DELETE` journal mode, integrity, live/dead writer ownership, surviving journals,
+dangling or synthetic pairs, recovered interruptions, fail-soft write and
+maintenance counters, idempotency conflicts, and retention quota pressure. A
+direct OpenCode or ACP route reports `unsupported_route`: lifecycle records still
+persist and cold-project, but that route has no host-tool seam for the
+request-scoped `SessionHistory` tool.
+
+A newer or foreign tool-history schema is a hard error. Downgrade does not try to
+interpret or rewrite that state and hard-fails until persisted conversation state
+is purged with `mono-agent restart --clear-sessions`. Busy state held by a live
+writer is reported as `waiting`; a dead recorded owner is reaped by the next
+writer's bounded acquisition.
+
 ### Secret placement
 
 `validate` includes a **Secret placement** section that warns when a secret-marked config field is resolved from the committed `mono-agent.config.json` rather than from `.env`. It covers the core secrets (`memory.embeddings.apiKey`, `memory.supermemory.apiKey`) and every channel credential — `telegram.botToken`, `slack.botToken` / `slack.appToken`, `webhook.apiKey`, `openaiApi.apiKey`, and the A2A bearer tokens. The section reports `waiting` — it is advisory and never `error`, so it never blocks `start`. Each detail line is prefixed `[WARN]` and names the matching `MONO_AGENT_*` env var to move the secret to, e.g.:
@@ -478,20 +497,20 @@ Restarts the background instance for this config, starting it if stopped. Like `
 | --- | --- |
 | `--config <path>` | Target a non-default config. |
 | `--env-file <path>` | Load the same non-default dotenv file used by the managed worker and preserve it in recovery commands. |
-| `--clear-sessions` | Stop, then purge persisted Pi sessions, active conversation history, and ACP session authorizations, then start fresh. |
+| `--clear-sessions` | Stop, then purge persisted Pi sessions, canonical message and tool history, and ACP session authorizations, then start fresh. |
 | `--force` | Deprecated alias of `--clear-sessions` (same effect); every invocation prints a deprecation hint. |
 
-`--clear-sessions` clears every conversation-continuity path: resumable provider transcripts under `providers.piNative.piSessionsRoot`, canonical active conversation history under `history/`, and durable ACP session authorizations under `acp-sessions/` beside `artifacts.dir`. The next turn therefore neither resumes nor replays pre-reset conversation state, and previously issued ACP session ids are rejected. Durable memory under `memory.path` and recorded run artifacts under `artifacts.dir` are untouched. Each missing store is a no-op.
+`--clear-sessions` clears all conversation-continuity stores: resumable provider transcripts under `providers.piNative.piSessionsRoot`, top-level canonical message-history records under `history/` beside `artifacts.dir`, the canonical managed-tool sidecar under `history/tool-history/` with its owner database under `history/.locks/`, and durable ACP session authorizations under `acp-sessions/` beside `artifacts.dir`. The next turn therefore neither resumes, replays, nor searches pre-reset conversation state, and previously issued ACP session ids are rejected. Durable memory under `memory.path` and recorded run artifacts under `artifacts.dir` are untouched. Each missing store is a no-op. Output reports message-history files/bytes and tool-history files/bytes plus call/record/tombstone counts separately; if a corrupt sidecar cannot be counted, it says those record counts are unavailable instead of reporting zero.
 
 ```bash
 mono-agent restart
-mono-agent restart --clear-sessions   # clears provider, history, and ACP continuity
+mono-agent restart --clear-sessions   # clears provider, message/tool, and ACP continuity
 ```
 
 `piSessionsRoot` is set via `providers.piNative.piSessionsRoot` (env `MONO_AGENT_PI_SESSIONS_ROOT`), e.g. `.mono-agent/sessions`; leaving it unset keeps sessions in memory.
 
 :::caution
-`--clear-sessions` permanently deletes saved provider transcripts, active conversation history, and ACP session authorizations for this instance. The agent's durable long-term memory and recorded run artifacts are preserved, but the current-chat context cannot be recovered after the reset.
+`--clear-sessions` permanently deletes saved provider transcripts, canonical message and tool history, and ACP session authorizations for this instance. The agent's durable long-term memory and recorded run artifacts are preserved, but the current-chat context and retained `SessionHistory` evidence cannot be recovered after the reset, and previously issued ACP session ids are revoked.
 :::
 
 ## `stop`, `status`, `logs`

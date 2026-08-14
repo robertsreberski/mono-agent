@@ -77,7 +77,7 @@ The framework creates and writes everything under `.mono-agent/`. You generally 
 | Path | Holds | Config key |
 |------|-------|------------|
 | `.mono-agent/artifacts/` | JSONL run summaries and events — the completed-run record after terminal persistence. `start()` independently replaces empty events plus a `running` summary, later events buffer in RAM, and terminal files are independently replaced; a crash can lose buffered data, and stale reconciliation sees only persisted data. | `artifacts.dir` |
-| `.mono-agent/history/` | Bounded conversation history for cold or non-resumable replay. The default keeps 64 messages per exact conversation id and survives ordinary restarts independently of warm-session mode. | automatic; stored beside `artifacts.dir` |
+| `.mono-agent/history/` | Bounded canonical conversation state. Top-level `*.history.json` files keep 64 messages per exact conversation id; `tool-history/tool-lifecycles.sqlite` independently keeps redacted/bounded managed-tool lifecycles, and `.locks/tool-lifecycles-owner.sqlite` enforces one writer. All survive ordinary restarts independently of warm-session mode. | automatic; stored beside `artifacts.dir` |
 | `.mono-agent/workspace/` | The runtime working directory, when `runtime.workspace` is not `"."`. | `runtime.workspace` |
 | `.mono-agent/memory/` | Built-in memory root: canonical daily notes, BuJo `graph.jsonl` and owner-only `.replay-projection-v1.json`, durable intake, and the managed `.index/`. The replay sidecar is exact metadata-only authority for BuJo lifecycle/thread replay; do not edit it or SQLite directly. | `memory.path` |
 | `.mono-agent/whatsapp-auth/` | Baileys auth state, written only when the WhatsApp channel is enabled. | (WhatsApp channel) |
@@ -86,7 +86,7 @@ The framework creates and writes everything under `.mono-agent/`. You generally 
 | `.mono-agent/trace-sources/` | The traceability registry, when kept folder-local. | `traceability.registryDir` |
 
 :::note
-`mono-agent restart --clear-sessions` purges persisted Pi `sessions/`, active conversation `history/`, and `acp-sessions/` authorizations for a fresh start. It keeps durable memory and recorded run artifacts. See [Sessions & concurrency](/runtime/sessions-concurrency/), [Artifacts & traces](/observability/artifacts-and-traces/), and [Capture & recall](/memory/capture-and-recall/).
+`mono-agent restart --clear-sessions` purges persisted Pi `sessions/`, top-level message history, the tool-lifecycle sidecar, and `acp-sessions/` authorizations for a fresh start. Its output reports message-history bytes separately from tool-history files/bytes and record counts (or says when counts were unreadable). It keeps durable memory and recorded run artifacts. See [Sessions & concurrency](/runtime/sessions-concurrency/), [Artifacts & traces](/observability/artifacts-and-traces/), and [Capture & recall](/memory/capture-and-recall/).
 :::
 
 ## Applying changes

@@ -277,6 +277,7 @@ describe("wizard prompt builders", () => {
     expect(values.slice(0, BUILTIN_TOOL_NAMES.length)).toEqual([...BUILTIN_TOOL_NAMES]);
     expect(values.slice(BUILTIN_TOOL_NAMES.length)).toEqual([
       "RunHistory",
+      "SessionHistory",
       "TelegramSendMessage",
       "AskUser",
     ]);
@@ -285,6 +286,7 @@ describe("wizard prompt builders", () => {
     const send = options.find((option) => option.value === "TelegramSendMessage");
     expect(send?.hint).toBe("proactive send (Telegram)");
     expect(options.find((option) => option.value === "RunHistory")?.hint).toContain("prior runs");
+    expect(options.find((option) => option.value === "SessionHistory")?.hint).toContain("tool calls");
   });
 
   it("toolMultiselectOptions offers the built-ins plus channel-agnostic AskUser with no channel", () => {

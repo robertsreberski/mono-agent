@@ -12,6 +12,7 @@ import type {
   PreparedHistoryAppend,
   ProviderSessionTurnCommitOptions,
 } from "./types.js";
+import { isProcessAlive } from "./history-process-liveness.js";
 
 const LEGACY_STORE_VERSION = 1;
 const STORE_VERSION = 2;
@@ -28,6 +29,8 @@ const DEFAULT_MAX_CONVERSATIONS = 10_000;
 const DEFAULT_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1_000;
 const HISTORY_FILE_SUFFIX = ".history.json";
 const LOCKS_DIRECTORY = ".locks";
+const TOOL_HISTORY_DIRECTORY = "tool-history";
+const TOOL_HISTORY_OWNER_FILE = "tool-lifecycles-owner.sqlite";
 const ROOT_LOCK_FILE = "root.sqlite";
 const CONVERSATION_LOCK_SHARDS = 16;
 const CONVERSATION_SHARD_LOCK_PATTERN = /^conversation-shard-([a-f0-9]{2})\.sqlite$/u;
@@ -874,6 +877,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         assertSecureHistoryDirectory(info, path);
         continue;
       }
+      if (name === TOOL_HISTORY_DIRECTORY) {
+        const info = await lstat(path);
+        assertSecureHistoryDirectory(info, path);
+        continue;
+      }
       if (HISTORY_FILE_PATTERN.test(name)) {
         const info = await lstat(path);
         assertSecureHistoryFile(info, path);
@@ -1079,6 +1087,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     for (const name of (await readdir(locksRoot)).sort()) {
       if (
         name === ROOT_LOCK_FILE
+        || name === TOOL_HISTORY_OWNER_FILE
         || LEGACY_CONVERSATION_LOCK_PATTERN.test(name)
         || isConversationShardLockName(name)
       ) {
@@ -1135,6 +1144,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const path = join(locksRoot, name);
       if (
         name === ROOT_LOCK_FILE
+        || name === TOOL_HISTORY_OWNER_FILE
         || LEGACY_CONVERSATION_LOCK_PATTERN.test(name)
         || isConversationShardLockName(name)
         || ACTIVE_MARKER_PATTERN.test(name)
@@ -2037,14 +2047,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isErrno(error: unknown, code: string): boolean {
   return (error as NodeJS.ErrnoException)?.code === code;
-}
-
-function isProcessAlive(pid: number): boolean {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return isErrno(error, "EPERM");
-  }
 }

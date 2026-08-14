@@ -7,6 +7,8 @@
 //   ReasoningPart { type:"reasoning", text }
 //   TextPart      { type:"text", text }
 
+import { toolLifecycleMetadata } from "../tool-lifecycle.js";
+
 export function toolUseEvent(part) {
   return {
     type: "assistant",
@@ -27,6 +29,9 @@ export function toolResultEvent(part) {
         tool_use_id: part.callID,
         content: isError ? (state.error || "") : (state.output || ""),
         is_error: isError,
+        tool_lifecycle: toolLifecycleMetadata(isError
+          ? { state: "error", failure_kind: "runtime_error", detail_code: "opencode_tool_error" }
+          : { state: "success" }),
       }],
     },
   };

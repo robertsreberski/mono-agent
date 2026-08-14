@@ -27,9 +27,11 @@ import {
 import { composeRuntimeOptionExtensions, type RuntimeOptionsExtension } from "./runtime-option-extensions.js";
 import { createLocalConfigurationRuntimeExtension } from "./local-configuration.js";
 import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "./run-history.js";
+import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed } from "./session-history.js";
 import {
   createRequestModelOverrideRuntimeExtension,
   requestModelOverrideTargetsDirectOpenCode,
+  requestModelOverrideTargetsUnsupportedHistoryTool,
 } from "./request-model-override.js";
 import { resolvePostedMessageIndexPath } from "./posted-message-index.js";
 import { configuredRuntimeFallbackModels, runtimeUsesFallbackRouter } from "./runtime-routes.js";
@@ -37,8 +39,10 @@ import { isNotifyDestinationConversationId } from "./notify-destinations.js";
 import { createSlackPostedReplyHistory } from "./posted-reply-history.js";
 import {
   isInteractionToolName,
+  historyToolRouteSupport,
   reasonOf,
   runtimeRouteContainsDirectOpenCode,
+  runtimeRouteContainsUnsupportedHistoryTool,
 } from "./app-controller-utils.js";
 import type { ChannelId, MonoAgentAppLogger } from "./channels.js";
 import type { InteractionBridgeHandle } from "./interaction-bridge.js";
@@ -79,6 +83,7 @@ export interface ResponderControllerPort {
   ): {
     readonly extension: RuntimeOptionsExtension;
     readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
+    readonly targetsUnsupportedHistoryTool: (metadata: Record<string, unknown> | undefined) => boolean;
   };
   buildRuntimeForModel(
     coreConfig: MonoAgentConfig,
@@ -130,8 +135,9 @@ export async function buildResponder(
   const memoryRecallEnabled = controller.reportMemoryRecallStatus(coreConfig, memoryRetrieval);
   const supermemoryMcp = controller.supermemoryMcpRuntimeOptions(coreConfig);
   const adapterSendTools = await controller.adapterSendToolsRuntimeOptions(coreConfig);
+  const historyToolSupport = historyToolRouteSupport(coreConfig);
   const runHistoryBase = isRunHistoryToolAllowed(coreConfig.tools)
-    && !runtimeRouteContainsDirectOpenCode(coreConfig)
+    && historyToolSupport.runHistory
     ? createRunHistoryRuntimeExtension({
         artifactDir: coreConfig.artifacts.dir,
         ...(coreConfig.runtime.session.rollover === undefined
@@ -139,6 +145,20 @@ export async function buildResponder(
           : { rollover: coreConfig.runtime.session.rollover }),
         onUnavailable: (error) => {
           controller.logger?.warn?.("RunHistory tool endpoint could not start; continuing without prior-run inspection.", {
+            reason: reasonOf(error),
+          });
+        },
+      })
+    : undefined;
+  const sessionHistoryBase = isSessionHistoryToolAllowed(coreConfig.tools)
+    && historyToolSupport.sessionHistory
+    ? createSessionHistoryRuntimeExtension({
+        historyRoot: resolve(coreConfig.artifacts.dir, "..", "history"),
+        ...(coreConfig.runtime.session.rollover === undefined
+          ? {}
+          : { rollover: coreConfig.runtime.session.rollover }),
+        onUnavailable: (error) => {
+          controller.logger?.warn?.("SessionHistory tool endpoint could not start; lifecycle persistence remains active.", {
             reason: reasonOf(error),
           });
         },
@@ -173,6 +193,11 @@ export async function buildResponder(
     : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
       ? { runtimeOptions: {}, cleanup: async () => {} }
       : await runHistoryBase(requestInput);
+  const sessionHistoryExtension: RuntimeOptionsExtension | undefined = sessionHistoryBase === undefined
+    ? undefined
+    : async (requestInput) => requestModelOverride.targetsUnsupportedHistoryTool(requestInput.request.metadata)
+      ? { runtimeOptions: {}, cleanup: async () => {} }
+      : await sessionHistoryBase(requestInput);
   const localConfigurationExtension = createLocalConfigurationRuntimeExtension({
     cwd: controller.cwd,
     configPath: controller.configPath,
@@ -182,12 +207,17 @@ export async function buildResponder(
   const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
     supermemoryMcp,
     runHistoryExtension,
+    sessionHistoryExtension,
     adapterSendToolsExtension,
     requestModelOverride.extension,
     // Last and authoritative: only an opaque owner-created configuration
     // session can replace the daemon's ordinary action/MCP surface.
     localConfigurationExtension,
-  ]);
+  ], {
+    // SELF-CONFIG stays proposal-only for writes, but may inspect this exact
+    // read-only host history capability under its authoritative policy.
+    preserveMcpServersUnderOverride: sessionHistoryExtension === undefined ? [] : [sessionHistoryExtension],
+  });
   // The override factory is needed whenever the ROUTER is active, not merely
   // when backups exist: the router freezes the model chain, so an override must
   // run on a runtime whose chain has it as primary. A primary configured for
@@ -230,6 +260,9 @@ export async function buildResponder(
     onMemoryWarning: (message) => {
       controller.logger?.warn?.(message);
     },
+    onToolHistoryWarning: (message) => {
+      controller.logger?.warn?.(message);
+    },
     // Thread run-identifying context onto exported spans and surface per-run
     // export warnings to `exporterStatus` (agent-host only builds the exporter
     // when config.observability.exporters is non-empty).
@@ -261,6 +294,7 @@ export function requestModelOverrideRuntimeOptions(
 ): {
   readonly extension: RuntimeOptionsExtension;
   readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
+  readonly targetsUnsupportedHistoryTool: (metadata: Record<string, unknown> | undefined) => boolean;
 } {
   const options = {
     ...(controller.logger === undefined ? {} : { logger: controller.logger }),
@@ -280,6 +314,7 @@ export function requestModelOverrideRuntimeOptions(
   return {
     extension: async (input) => extension({ request: input.request }),
     targetsDirectOpenCode: (metadata) => requestModelOverrideTargetsDirectOpenCode(metadata, options),
+    targetsUnsupportedHistoryTool: (metadata) => requestModelOverrideTargetsUnsupportedHistoryTool(metadata, options),
   };
 }
 

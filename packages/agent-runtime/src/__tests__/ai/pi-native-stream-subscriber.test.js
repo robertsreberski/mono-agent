@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createStreamSubscriber } from "../../ai/providers/pi-native/stream-subscriber.js";
+import { createToolLifecycleEventGate } from "../../ai/tool-lifecycle.js";
 
 function freshRunState() {
   return {
@@ -8,6 +9,7 @@ function freshRunState() {
     textDeltaIndexes: new Set(),
     thinkingDeltaIndexes: new Set(),
     toolStartTimes: new Map(),
+    toolApprovals: new Map(),
     turnCount: 0,
     toolResultsSeen: 0,
     lastToolName: null,
@@ -28,15 +30,21 @@ function driver(overrides = {}) {
   const runState = freshRunState();
   const emitted = [];
   const harness = harnessDouble();
+  const gate = typeof overrides.toolLifecycleSink === "function"
+    ? createToolLifecycleEventGate({
+        sink: overrides.toolLifecycleSink,
+        onEvent: (event) => emitted.push(event),
+      })
+    : undefined;
   const handler = createStreamSubscriber(runState, {
-    onEvent: (event) => emitted.push(event),
-    options: { cwd: "/repo", maxTurns: overrides.maxTurns },
+    onEvent: gate?.emit ?? ((event) => emitted.push(event)),
+    options: { cwd: "/repo", maxTurns: overrides.maxTurns, toolLifecycleSink: overrides.toolLifecycleSink },
     toolLimits: {},
     harness,
     sdk: "pi",
     model: "pi:faux:m",
   });
-  return { runState, emitted, harness, handler };
+  return { runState, emitted, harness, handler, flush: async () => await gate?.flush() };
 }
 
 const msgUpdate = (assistantMessageEvent) => ({ type: "message_update", assistantMessageEvent });
@@ -128,6 +136,60 @@ describe("createStreamSubscriber — exact context snapshots", () => {
 });
 
 describe("createStreamSubscriber — tool lifecycle + timing", () => {
+  it("keeps a fast sequential tool ordered behind a slow lifecycle sink", async () => {
+    let releaseInvocation;
+    const invocationReleased = new Promise((resolvePromise) => { releaseInvocation = resolvePromise; });
+    const persisted = [];
+    const { emitted, handler, flush } = driver({
+      toolLifecycleSink: async (event) => {
+        persisted.push(`${event.phase}:${event.toolCallId}`);
+        if (event.phase === "invocation") await invocationReleased;
+        return { persistence: "persisted", recordId: `${event.phase}-${event.toolCallId}`, sequence: persisted.length };
+      },
+    });
+
+    handler({ type: "tool_execution_start", toolName: "Read", toolCallId: "fast", args: {} });
+    handler({ type: "tool_execution_end", toolName: "Read", toolCallId: "fast", result: "done", isError: false });
+    expect(emitted).toEqual([]);
+    releaseInvocation();
+    await flush();
+
+    expect(persisted).toEqual(["invocation:fast", "result:fast"]);
+    expect(emitted.map((event) => event.type)).toEqual(["assistant", "tool_timing", "user"]);
+    expect(emitted[0].message.content[0]).toMatchObject({ type: "tool_use", id: "fast" });
+    expect(emitted[2].message.content[0]).toMatchObject({ type: "tool_result", tool_use_id: "fast" });
+  });
+
+  it("keeps a parallel batch in provider emission order while persistence is delayed", async () => {
+    let releaseFirst;
+    const firstReleased = new Promise((resolvePromise) => { releaseFirst = resolvePromise; });
+    const persisted = [];
+    const { emitted, handler, flush } = driver({
+      toolLifecycleSink: async (event) => {
+        persisted.push(`${event.phase}:${event.toolCallId}`);
+        if (persisted.length === 1) await firstReleased;
+        return { persistence: "persisted", recordId: `${event.phase}-${event.toolCallId}`, sequence: persisted.length };
+      },
+    });
+
+    handler({ type: "tool_execution_start", toolName: "Read", toolCallId: "A", args: {} });
+    handler({ type: "tool_execution_start", toolName: "Read", toolCallId: "B", args: {} });
+    handler({ type: "tool_execution_end", toolName: "Read", toolCallId: "A", result: "A done", isError: false });
+    handler({ type: "tool_execution_end", toolName: "Read", toolCallId: "B", result: "B done", isError: false });
+    expect(emitted).toEqual([]);
+    releaseFirst();
+    await flush();
+
+    expect(persisted).toEqual(["invocation:A", "invocation:B", "result:A", "result:B"]);
+    expect(emitted.map((event) => event.type === "assistant"
+      ? `use:${event.message.content[0].id}`
+      : event.type === "user"
+        ? `result:${event.message.content[0].tool_use_id}`
+        : `timing:${event.tool_use_id}`)).toEqual([
+      "use:A", "use:B", "timing:A", "result:A", "timing:B", "result:B",
+    ]);
+  });
+
   it("emits tool_use on start, tool_update on update, tool_timing + tool_result on end", () => {
     const { runState, emitted, handler } = driver();
     handler({ type: "tool_execution_start", toolName: "my_tool", toolCallId: "call-1", args: { a: 1 } });

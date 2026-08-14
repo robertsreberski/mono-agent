@@ -276,6 +276,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     textDeltaIndexes: new Set(),
     thinkingDeltaIndexes: new Set(),
     toolStartTimes: new Map(),
+    toolApprovals: new Map(),
     turnCount: 0,
     toolResultsSeen: 0,
     lastToolName: null,
@@ -345,7 +346,12 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
   let structuredOutputFinalizationRetryFailed = false;
   const piTransport = resolvePiTransport(options.piTransport);
 
-  const onEvent = (event) => emitCaptured(events, options.onEvent, event);
+  const onEvent = (event) => {
+    if (event?.type === "tool_approval_denied" && typeof event.toolUseId === "string") {
+      runState.toolApprovals.set(event.toolUseId, event);
+    }
+    emitCaptured(events, options.onEvent, event);
+  };
   const approvalRiskTiers = {
     ...(options.toolRiskTiers || {}),
     ...(

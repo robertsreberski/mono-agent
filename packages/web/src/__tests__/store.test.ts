@@ -272,6 +272,74 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("round-trips the canonical durable-history metadata on the same rendered tool record", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "run", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_started",
+          id: "tool-history-1",
+          name: "Bash",
+          arguments: { command: "false" },
+          history: {
+            recordId: "sth1_start",
+            sequence: 1,
+            persistence: "persisted",
+            originalBytes: 19,
+            retainedBytes: 19,
+            untrusted: true,
+          },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "tool-history-1",
+          name: "Bash",
+          content: "exit 1",
+          isError: true,
+          history: {
+            recordId: "sth1_result",
+            sequence: 2,
+            persistence: "persisted",
+            terminalState: "exit_nonzero",
+            artifactReferences: [{ id: "stha1_output", available: false }],
+            untrusted: true,
+          },
+        },
+      },
+    ]);
+    store.completeTurn(turn.turnId, "done");
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThreadDetail(thread.id)?.messages.at(-1)?.parts).toContainEqual({
+      type: "tool-call",
+      toolCallId: "tool-history-1",
+      toolName: "Bash",
+      args: { command: "false" },
+      result: "exit 1",
+      status: "failed",
+      history: {
+        recordId: "sth1_result",
+        sequence: 2,
+        persistence: "persisted",
+        terminalState: "exit_nonzero",
+        artifactReferences: [{ id: "stha1_output", available: false }],
+        untrusted: true,
+      },
+    });
+    reopened.close();
+  });
+
   it("persists quote metadata without exposing its storage telemetry as message content", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -975,6 +1043,59 @@ describe("WebStore subagent parts", () => {
         status: "complete",
       }],
     });
+  });
+
+  it("keeps durable metadata on the parent Agent record while child activity stays presentation-only", async () => {
+    const frames = [
+      {
+        ...launch("call-history", "researcher"),
+        event: {
+          ...launch("call-history", "researcher").event,
+          history: { recordId: "sth1_parent_start", sequence: 1, persistence: "persisted", untrusted: true },
+        },
+      },
+      bookend("call-history", "researcher"),
+      childCall("call-history", "researcher", "child-read", "Read", { file_path: "/repo/a.ts" }),
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "call-history",
+          name: "Agent",
+          content: "child summary",
+          history: {
+            recordId: "sth1_parent_result",
+            sequence: 2,
+            persistence: "persisted",
+            terminalState: "success",
+            untrusted: true,
+          },
+        },
+      },
+    ] as const;
+    expect((await turnWith(frames.slice(0, 2))).find((part) => part.type === "subagent")).toMatchObject({
+      type: "subagent",
+      history: {
+        recordId: "sth1_parent_start",
+        sequence: 1,
+        persistence: "persisted",
+        untrusted: true,
+      },
+    });
+    const parts = await turnWith(frames);
+    const group = parts.find((part) => part.type === "subagent");
+    expect(group).toMatchObject({
+      type: "subagent",
+      history: {
+        recordId: "sth1_parent_result",
+        sequence: 2,
+        persistence: "persisted",
+        terminalState: "success",
+        untrusted: true,
+      },
+      calls: [{ toolName: "Read" }],
+    });
+    if (group?.type === "subagent") expect(group.calls[0]).not.toHaveProperty("history");
   });
 
   it("keeps a background group running until its lifecycle terminal arrives", async () => {

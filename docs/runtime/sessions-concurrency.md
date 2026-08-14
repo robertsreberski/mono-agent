@@ -15,6 +15,7 @@ Mono-agent uses "session" for five related but different boundaries:
 | --- | --- | --- | --- |
 | `runtime.session` config block | Agent config / env | Whether turns try to reuse a warm provider session and how long idle warmth lasts | Changing config, setting `mode: "per-message"`, or disabling resume support |
 | Provider session | Runtime backend / provider bridge | Warm runtime continuity: provider-side context, provider session id, busy state, and idle eviction | Idle eviction, stale/busy resume retry, provider session rotation, cancelled successful turn, harness disposal, or process restart when only in-memory |
+| Canonical logical-session history | Durable message-history files plus the separate `tool-history/tool-lifecycles.sqlite` sidecar | Cold context replay and retained, searchable managed-tool invocation/result evidence; tool records may survive even when a failed or interrupted turn commits no message-history entry | A reset of that exact physical conversation bucket, or `mono-agent restart --clear-sessions` for all persisted conversation state |
 | Durable Pi transcript | Pi-native JSONL store plus the canonical history record's random provider epoch and transcript revision | Crash-safe cross-restart and cross-process resume for Pi-native provider sessions | `mono-agent restart --clear-sessions`, deleting either store, a dirty fence or legacy/missing history record, host-only history append, failed provider sync, or leaving `piSessionsRoot` unset |
 | Web console thread | `mono-agent web` / `@mono-agent/web` | Persistent source-bound browser conversation, its messages/attachments/live follow-ups, and at most one active turn; different threads can run concurrently | Archive only hides it; `mono-agent web reset --all --yes` removes the entire stopped console store. Browser disconnect does not end its active turn; service restart marks that turn interrupted and requeues uncertain live input |
 
@@ -27,10 +28,10 @@ Boundary rules:
 | Isolated model override | Nothing shared; the override turn uses a one-shot provider session for the alternate model | Existing default-model warm session, durable history, memory, and run artifacts | `session_boundary` with `kind: "isolated"` and `reason: "model_override"` |
 | Resume replay after stale/missing provider session | The stale provider session id | Durable history, memory, run artifacts, and the run itself, which retries once | `runtime_warning` `session_resume_retry` plus `session_boundary` with `kind: "resume_replay"` |
 | Host-only history append / unsynchronized provider result | The prior durable provider epoch | Canonical history, memory, and run artifacts | The next provider turn receives a fresh epoch id and replays canonical history |
-| Telegram `/new` | Current chat's warm provider session and canonical history | Other conversations, durable memory, run artifacts, and the chat's model/effort override | Telegram confirmation; the next message rebuilds startup context and reloads skills |
+| Telegram `/new` | Current chat's warm provider session plus message and tool history for its exact physical bucket | Other rollover buckets and conversations, durable memory, run artifacts, and the chat's model/effort override | Telegram confirmation; the next message rebuilds startup context and reloads skills |
 | Idle eviction / replaced / disposed provider session | Warm runtime continuity for that conversation id | Durable Pi transcripts, durable history, memory, and run artifacts | App log line and status metadata event (`evicted`) with reason |
 | Detached status read | Nothing | All runtime/session state | No runtime event; status reads the latest published config + store snapshot |
-| `mono-agent restart --clear-sessions` / explicit purge | Durable Pi transcripts under `piSessionsRoot`, canonical active conversation history, and ACP session authorizations beside `artifacts.dir` | Durable memory under `memory.path` and recorded run artifacts | Restart/status output only |
+| `mono-agent restart --clear-sessions` / explicit purge | Durable Pi transcripts under `piSessionsRoot`, message-history files, the tool-history sidecar, and ACP session authorizations beside `artifacts.dir` | Durable memory under `memory.path` and recorded run artifacts | Restart/status output reports message-history and tool-history counts/bytes plus ACP authorization counts separately |
 | Browser disconnect or reload | Only that SSE/browser connection | Web service turn, source-bound thread, messages, committed attachments, provider/harness work | Reconnect receives current state and subsequent events |
 | Web service restart | Any web-owned active upstream connection | Terminal messages, archived/active threads, committed attachments, queued live follow-ups, agent memory/history, recorded runs | Active web turn is projected as `interrupted`; pending live offers become queued normal turns |
 | `mono-agent web reset --all --yes` | Entire stopped web-console SQLite/settings/upload state | Agent configs, provider/harness history, memory, and recorded-run artifacts | CLI confirmation/result only |
@@ -65,10 +66,12 @@ Warm in-memory sessions are lost on restart. To resume across restarts, use the 
 `rolloverNotice` is adapter-local and default-off. It does not enable rollover by itself and does not add a new IPC channel or change provider resume behavior. When daily rollover is already enabled and a base conversation crosses into a new day bucket, the responder streams `New session bucket started: <bucket>.` before the model answer and includes the same prelude in the returned final text for final-only transports.
 
 Daily rollover partitions active conversation/provider history, but it does not
-partition recorded-run exploration: the app-owned `RunHistory` tool strips the
-daily bucket only for its request-scoped authorization match, so completed runs
-from earlier buckets of the same logical conversation remain searchable. Other
-conversations and threads remain inaccessible.
+partition retained exploration: the app-owned `RunHistory` and `SessionHistory`
+tools strip the daily bucket only for their request-scoped authorization match,
+so completed runs and tool records from earlier buckets of the same logical
+conversation remain searchable. Reset still targets only the exact current
+physical bucket; other rollover buckets remain intact. Other conversations and
+threads remain inaccessible.
 
 Rollover never applies to the console channel (the `gui` operator channel behind
 both `mono-agent tui` and the web console). A console thread already carries an
@@ -77,9 +80,9 @@ a visible "new thread" action. Bucketing it by day on top of that severed a live
 conversation at midnight, so the next morning's follow-up in the same visible
 thread woke with no transcript and had to reconstruct it through `RunHistory`.
 Every other channel — Telegram, Slack, cron, webhook, OpenAI-API — takes the
-configured policy unchanged. `RunHistory` still uses the *configured* policy for
-its scope match, so runs a console thread already recorded under a dated id stay
-searchable from the same thread's undated id.
+configured policy unchanged. Both history tools still use the *configured*
+policy for their scope match, so runs and tool records a console thread already
+recorded under a dated id stay searchable from the same thread's undated id.
 
 :::caution
 Enabling this on an agent that has been running with `rollover: "daily"` means
@@ -172,7 +175,7 @@ On every cold durable Pi reopen, the harness loads canonical history and passes 
 When `piSessionsRoot` is unset, sessions are in-memory only. A programmatic custom `historyStore` also stays process-local unless it both implements `beginProviderSessionTurn` and advertises `providerSessionRetirement: "fail-closed"`; the harness withholds the durable path because fencing alone cannot reclaim cold JSONL after rotation or retention. Advertise that capability only when the store can durably fence before the provider, serialize the conversation across processes, expose a monotonic provider transcript revision, atomically publish the next revision or rotate the epoch with history commit, and prove exact-id provider transcript retirement before making an epoch unreachable.
 
 :::caution
-`mono-agent restart --clear-sessions` purges `piSessionsRoot`, canonical active conversation history, and ACP session authorizations, so the agent neither resumes a provider transcript nor replays an earlier chat turn — a fresh start. Previously issued ACP session ids are revoked. Durable memory under `memory.path` and recorded run artifacts remain untouched. A missing store is a no-op.
+`mono-agent restart --clear-sessions` purges `piSessionsRoot`, canonical message-history files, the separate canonical tool-history sidecar, and ACP session authorizations, so the agent neither resumes a provider transcript nor replays or searches an earlier chat turn — a fresh start. Previously issued ACP session ids are revoked. Output reports message-history files/bytes separately from tool-history calls/records/bytes and ACP authorization counts. Durable memory under `memory.path` and recorded run artifacts remain untouched. A missing store is a no-op.
 :::
 
 For retry behavior across *different* models (provider failover, not transport retries), see [Fallback models](/runtime/fallback/). Transport retries here are within a single model; fallback moves to the next model in the chain.

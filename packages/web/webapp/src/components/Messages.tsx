@@ -660,18 +660,23 @@ export function ToolFallback({
   isError,
   status,
   toolCallId,
+  artifact,
 }: ToolCallMessagePartProps) {
   if (toolName === "AskUser") {
     return <AskUserTool args={args} result={result} status={status} toolCallId={toolCallId} />;
   }
   const isRunning = status.type === "running";
+  const history = sessionToolHistory(artifact);
+  const displayedState = typeof history?.terminalState === "string"
+    ? history.terminalState
+    : isRunning ? "running" : isError ? "failed" : result === undefined ? "called" : "done";
   return (
     <details className={`tool-call${isError ? " is-error" : ""}`}>
       <summary>
         <span className={`tool-status${isRunning ? " is-running" : ""}`} />
         <span className="tool-name">{toolName}</span>
         <span className="tool-state">
-          {isRunning ? "running" : isError ? "failed" : result === undefined ? "called" : "done"}
+          {displayedState}
         </span>
         <Icon name="chevron" size={14} />
       </summary>
@@ -684,9 +689,39 @@ export function ToolFallback({
             <pre>{safeJson(result)}</pre>
           </>
         )}
+        {history !== undefined && (
+          <>
+            <span>History</span>
+            <pre>{toolHistorySummary(history)}</pre>
+          </>
+        )}
       </div>
     </details>
   );
+}
+
+function sessionToolHistory(value: unknown): Record<string, unknown> | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const history = value as Record<string, unknown>;
+  return (history.persistence === "persisted" || history.persistence === "failed") && history.untrusted === true
+    ? history
+    : undefined;
+}
+
+function toolHistorySummary(history: Record<string, unknown>): string {
+  const artifacts = Array.isArray(history.artifactReferences) ? history.artifactReferences : [];
+  const unavailable = artifacts.filter((entry) => (
+    typeof entry === "object" && entry !== null && !Array.isArray(entry)
+      && (entry as Record<string, unknown>).available === false
+  )).length;
+  return [
+    history.persistence === "persisted" ? "persisted" : `not persisted${typeof history.errorCode === "string" ? ` (${history.errorCode})` : ""}`,
+    typeof history.recordId === "string" ? `record ${history.recordId}` : undefined,
+    typeof history.sequence === "number" ? `sequence ${String(history.sequence)}` : undefined,
+    history.truncated === true ? `bounded ${String(history.retainedBytes ?? "?")}/${String(history.originalBytes ?? "?")} bytes` : undefined,
+    artifacts.length > 0 ? `${String(artifacts.length)} artifact reference${artifacts.length === 1 ? "" : "s"}${unavailable > 0 ? ` (${String(unavailable)} unavailable)` : ""}` : undefined,
+    "untrusted historical data",
+  ].filter((part): part is string => part !== undefined).join(" · ");
 }
 
 type CompactionDisplayStatus = "running" | "succeeded" | "skipped" | "failed" | "interrupted";

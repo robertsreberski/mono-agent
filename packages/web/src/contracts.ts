@@ -11,6 +11,7 @@ import {
   type CronOperatorRunSummary,
   type CronOperatorRunTrigger,
   type CronOperatorRunTruncatedField,
+  type SessionToolHistoryEventMetadata,
 } from "@mono-agent/agent-contracts";
 
 /** Machine-readable discovery contract consumed by local ACP clients such as Worklab. */
@@ -189,6 +190,8 @@ export interface WebToolCall {
   readonly args?: unknown;
   readonly result?: unknown;
   readonly status: WebToolCallStatus;
+  /** Canonical durable-tool record metadata received on the live event. */
+  readonly history?: SessionToolHistoryEventMetadata;
 }
 
 export type WebMessagePart =
@@ -214,6 +217,8 @@ export type WebMessagePart =
       readonly executionMs?: number;
       /** What this delegation cost, when the runtime priced its model. */
       readonly costUsd?: number;
+      /** Metadata for the persisted parent `Agent` call; child internals omit it. */
+      readonly history?: SessionToolHistoryEventMetadata;
       readonly status: WebToolCallStatus;
       readonly calls: readonly WebToolCall[];
     }

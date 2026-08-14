@@ -3771,14 +3771,20 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
       const group = ensureSubagentPart(parts, subagent);
       // The bookend only announces the subagent; the group it belongs to is the
       // whole of its contribution here.
-      if (event.metadata?.subagentLifecycle !== true) {
-        upsertSubagentCall(parts, group, {
-          toolCallId: event.id,
-          toolName: subagentToolName(event.name),
+      if (event.metadata?.subagentLifecycle === true) {
+        replaceSubagentPart(parts, {
+          ...group,
           ...(event.arguments === undefined ? {} : { args: event.arguments }),
-          status: "running",
+          ...(event.history === undefined ? {} : { history: event.history }),
         });
+        return;
       }
+      upsertSubagentCall(parts, group, {
+        toolCallId: event.id,
+        toolName: subagentToolName(event.name),
+        ...(event.arguments === undefined ? {} : { args: event.arguments }),
+        status: "running",
+      });
       return;
     }
     upsertToolCall(parts, {
@@ -3786,6 +3792,7 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
       toolCallId: event.id,
       toolName: event.name,
       ...(event.arguments === undefined ? {} : { args: event.arguments }),
+      ...(event.history === undefined ? {} : { history: event.history }),
       status: "running",
     });
     return;
@@ -3809,6 +3816,7 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
         replaceSubagentPart(parts, {
           ...group,
           status,
+          ...(event.history === undefined ? {} : { history: event.history }),
           ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
           ...(subagent.costUsd === undefined ? {} : { costUsd: subagent.costUsd }),
         });
@@ -3819,6 +3827,7 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
         toolName: subagentToolName(event.name ?? existingSubagentToolName(group, event.id) ?? "Tool"),
         ...(event.arguments === undefined ? {} : { args: event.arguments }),
         ...(event.content === undefined ? {} : { result: event.content }),
+        ...(event.history === undefined ? {} : { history: event.history }),
         status,
       });
       return;
@@ -3830,6 +3839,7 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
       replaceSubagentPart(parts, {
         ...group,
         status,
+        ...(event.history === undefined ? {} : { history: event.history }),
         ...(event.content === undefined ? {} : { result: event.content }),
         ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
       });
@@ -3841,6 +3851,7 @@ function applyEvent(parts: WebMessagePart[], event: AgentStreamEvent): void {
       toolName: event.name ?? existingToolName(parts, event.id) ?? "Tool",
       ...(event.arguments === undefined ? {} : { args: event.arguments }),
       ...(event.content === undefined ? {} : { result: event.content }),
+      ...(event.history === undefined ? {} : { history: event.history }),
       status,
     });
     return;
@@ -3964,6 +3975,7 @@ function ensureSubagentPart(
     ...(subagent.label === undefined ? {} : { label: subagent.label }),
     ...(previous?.type === "tool-call" && previous.args !== undefined ? { args: previous.args } : {}),
     ...(previous?.type === "tool-call" && previous.result !== undefined ? { result: previous.result } : {}),
+    ...(previous?.type === "tool-call" && previous.history !== undefined ? { history: previous.history } : {}),
     status: previous?.type === "tool-call" ? previous.status : "running",
     calls: [],
   };
@@ -4236,7 +4248,51 @@ function isWebToolCall(value: unknown): boolean {
   const call = value as Record<string, unknown>;
   return typeof call.toolCallId === "string"
     && typeof call.toolName === "string"
-    && isWebToolCallStatus(call.status);
+    && isWebToolCallStatus(call.status)
+    && (call.history === undefined || isSessionToolHistoryMetadata(call.history));
+}
+
+function isSessionToolHistoryMetadata(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const history = value as Record<string, unknown>;
+  const states = new Set([
+    "success", "rejected", "error", "exit_nonzero", "timeout", "signal", "cancelled", "interrupted",
+  ]);
+  return (history.persistence === "persisted" || history.persistence === "failed")
+    && history.untrusted === true
+    && (history.recordId === undefined || boundedHistoryString(history.recordId, 4_096))
+    && (history.sequence === undefined || positiveSafeInteger(history.sequence))
+    && (history.terminalState === undefined || (
+      typeof history.terminalState === "string" && states.has(history.terminalState)
+    ))
+    && (history.truncated === undefined || typeof history.truncated === "boolean")
+    && (history.originalBytes === undefined || nonNegativeSafeInteger(history.originalBytes))
+    && (history.retainedBytes === undefined || nonNegativeSafeInteger(history.retainedBytes))
+    && (history.errorCode === undefined || boundedHistoryString(history.errorCode, 256))
+    && (history.artifactReferences === undefined || (
+      Array.isArray(history.artifactReferences)
+      && history.artifactReferences.length <= 32
+      && history.artifactReferences.every((entry) => {
+        if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return false;
+        const artifact = entry as Record<string, unknown>;
+        return boundedHistoryString(artifact.id, 4_096) && typeof artifact.available === "boolean";
+      })
+    ));
+}
+
+function boundedHistoryString(value: unknown, maxBytes: number): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && Buffer.byteLength(value, "utf8") <= maxBytes
+    && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+function positiveSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
+
+function nonNegativeSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
 function isWebMessagePart(value: unknown): value is WebMessagePart {
@@ -4250,6 +4306,7 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && (part.label === undefined || typeof part.label === "string")
       && (part.executionMs === undefined || typeof part.executionMs === "number")
       && (part.costUsd === undefined || typeof part.costUsd === "number")
+      && (part.history === undefined || isSessionToolHistoryMetadata(part.history))
       && isWebToolCallStatus(part.status)
       && Array.isArray(part.calls)
       && part.calls.every(isWebToolCall);

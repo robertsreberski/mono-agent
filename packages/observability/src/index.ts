@@ -9,6 +9,12 @@ export type {
   RedactJsonValueOptions,
 } from "./recorder.js";
 export {
+  containsVisibleSensitiveText,
+  sanitizeVisibleText,
+  truncateVisibleText,
+} from "./redaction.js";
+export type { VisibleTextSanitizationOptions } from "./redaction.js";
+export {
   createCompositeRunRecorder,
 } from "./composite-recorder.js";
 export type {
@@ -79,6 +85,7 @@ export {
   describeRunFailureKind,
   KNOWN_RUN_FAILURE_KINDS,
 } from "./failure-kinds.js";
+export { isKnownArtifactFailureKind } from "./summary-schema.js";
 export {
   RUNS_HEALTH_STALE_RUNNING_MS,
 } from "./run-health.js";

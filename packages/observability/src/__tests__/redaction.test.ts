@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { redactJsonValue, truncateString } from "../redaction.js";
+import {
+  containsVisibleSensitiveText,
+  redactJsonValue,
+  sanitizeVisibleText,
+  truncateString,
+} from "../redaction.js";
 
 describe("redactJsonValue", () => {
   it("redacts sensitive keys", () => {
@@ -177,6 +182,167 @@ describe("redactJsonValue", () => {
       nested: ["again [redacted]"],
       apiKey: "[redacted]",
     });
+  });
+
+  it.each([
+    ["/Users/private/.mono-agent/artifacts/tool-output/run/output.txt", "[private-path]"],
+    ["C:\\Users\\private\\tool-output\\result.txt", "[private-path]"],
+    ["Full output saved to: /private/tmp/tool-output.txt", "Full output saved to: [host-path]/tool-output.txt"],
+    ["file:///Users/private/repo/src/result.txt", "[host-path]/src/result.txt"],
+    ["read ~/private/result.txt", "read [home-path]/private/result.txt"],
+  ])("neutralizes only the filesystem span in model-visible text: %s", (value, expected) => {
+    const options = {
+      omitFilesystemPaths: true,
+      omission: "[private host path omitted]",
+    } as const;
+    expect(containsVisibleSensitiveText(value, options)).toBe(true);
+    expect(sanitizeVisibleText(value, options)).toBe(expected);
+    expect(redactJsonValue({ output: value }, 4_096, {
+      visibleTextSanitization: options,
+    })).toEqual({ output: expected });
+  });
+
+  it.each([
+    ["[/Users/rob/.ssh/id_rsa]", "[[private-path]]"],
+    ["{/Users/rob/private/x.key}", "{[host-path]/private/x.key}"],
+    ["x,/Users/rob/proj/a.ts", "x,[host-path]/proj/a.ts"],
+    ["x;/Users/rob/proj/a.ts", "x;[host-path]/proj/a.ts"],
+    ["cmd|/Users/rob/bin/tool", "cmd|[host-path]/bin/tool"],
+    ["user@/Users/rob/share", "user@[host-path]/share"],
+    ["-->/Users/rob/proj/a.ts", "-->[host-path]/proj/a.ts"],
+    ["[/Users/rob/proj/a.ts](/Users/rob/proj/b.ts)", "[[host-path]/proj/a.ts]([host-path]/proj/b.ts)"],
+  ])("recognizes a host path after delimiter punctuation: %s", (value, expected) => {
+    const options = { omitFilesystemPaths: true } as const;
+    expect(containsVisibleSensitiveText(value, options)).toBe(true);
+    expect(sanitizeVisibleText(value, options)).toBe(expected);
+    expect(sanitizeVisibleText(expected, options)).toBe(expected);
+    expect(expected).not.toContain("/Users/rob");
+  });
+
+  it.each([
+    ["/Users/rob/a.ts,/Users/rob/secret/b.ts", "[host-path]/a.ts,[host-path]/secret/b.ts"],
+    ["C:\\Users\\Rob\\a.ts,C:\\Users\\Rob\\secret\\b.ts", "[host-path]/a.ts,[host-path]/secret/b.ts"],
+  ])("sanitizes comma-separated paths independently without consuming their separator: %s", (original, expected) => {
+    const options = { omitFilesystemPaths: true } as const;
+
+    expect(sanitizeVisibleText(original, options)).toBe(expected);
+    expect(sanitizeVisibleText(expected, options)).toBe(expected);
+  });
+
+  it.each([
+    ["/Users/rob/proj/a.ts:42:7", "[host-path]/proj/a.ts:42:7"],
+    ["C:\\Users\\Rob\\repo\\src\\a.ts:9:2", "[host-path]/src/a.ts:9:2"],
+    ["\\\\server\\share\\Users\\Rob\\repo\\src\\a.ts", "[host-path]/src/a.ts"],
+    ["file:///Users/rob/repo/src/a.ts", "[host-path]/src/a.ts"],
+    ["file://build-host/Users/rob/repo/src/a.ts", "[host-path]/src/a.ts"],
+    ["/home/rob/.aws/credentials", "[private-path]"],
+    ["C:\\Users\\Rob\\.mono-agent\\artifacts\\tool-output\\run-1\\out.txt", "[private-path]"],
+  ])("handles supported host-path forms and private segments: %s", (value, expected) => {
+    const options = { omitFilesystemPaths: true } as const;
+    expect(sanitizeVisibleText(value, options)).toBe(expected);
+    expect(sanitizeVisibleText(expected, options)).toBe(expected);
+  });
+
+  it.each([
+    "https://example.com/Users/rob/a.ts,/Users/rob/still-url.ts",
+    "custom+scheme://host/Users/rob/a.ts;segment/Users/rob/b.ts",
+    "[URL](https://example.com/Users/rob/a.ts)",
+    "//example.com/Users/rob/a.ts",
+  ])("does not treat URL path components as host filesystem paths: %s", (value) => {
+    const options = { omitFilesystemPaths: true } as const;
+    expect(containsVisibleSensitiveText(value, options)).toBe(false);
+    expect(sanitizeVisibleText(value, options)).toBe(value);
+  });
+
+  it.each([
+    ["./src/a.ts", "./src/a.ts"],
+    ["../src/b.ts", "../src/b.ts"],
+    [".\\src\\c.ts", ".\\src\\c.ts"],
+    ["..\\src\\d.ts", "..\\src\\d.ts"],
+    ["~/repo/src/e.ts", "[home-path]/src/e.ts"],
+    ["~/.ssh/id_rsa", "[private-path]"],
+  ])("applies the explicit portable-relative versus home-relative policy: %s", (original, expected) => {
+    const options = { omitFilesystemPaths: true } as const;
+
+    expect(sanitizeVisibleText(original, options)).toBe(expected);
+    expect(sanitizeVisibleText(expected, options)).toBe(expected);
+  });
+
+  it("keeps commands, multiple path suffixes, punctuation, line/column data, and web URLs inspectable", () => {
+    const original = [
+      "Read /Users/alice/work/repo/src/index.ts:42:7),",
+      "compare C:\\Users\\Alice\\repo\\src\\windows.ts:9:2;",
+      "then ls -la /etc && open https://example.com/docs/path.",
+    ].join(" ");
+    const sanitized = sanitizeVisibleText(original, { omitFilesystemPaths: true });
+
+    expect(sanitized).toBe([
+      "Read [host-path]/src/index.ts:42:7),",
+      "compare [host-path]/src/windows.ts:9:2;",
+      "then ls -la [host-path]/etc && open https://example.com/docs/path.",
+    ].join(" "));
+    expect(sanitized).not.toContain("/Users/alice");
+    expect(sanitized).not.toContain("C:\\Users\\Alice");
+  });
+
+  it("composes recursive path neutralization, credential redaction, truncation bounds, and repeat passes", () => {
+    const secret = ["sk", "-", "A".repeat(48)].join("");
+    const value = {
+      read: { file_path: "/Users/alice/work/repo/src/index.ts", apiKey: "not-shape-dependent" },
+      nested: [
+        "stack at /home/bob/service/src/worker.ts:12:4",
+        { command: `cat /repo/config.json and report ${secret}` },
+      ],
+      url: "https://example.com/a/b",
+    };
+    const options = {
+      contentPatternRedaction: true,
+      visibleTextSanitization: { omitFilesystemPaths: true },
+    } as const;
+    const once = redactJsonValue(value, 4_096, options);
+    const twice = redactJsonValue(once, 4_096, options);
+
+    expect(once).toEqual({
+      read: { file_path: "[host-path]/src/index.ts", apiKey: "[redacted]" },
+      nested: [
+        "stack at [host-path]/src/worker.ts:12:4",
+        { command: "cat [host-path]/repo/config.json and report [redacted]" },
+      ],
+      url: "https://example.com/a/b",
+    });
+    expect(twice).toEqual(once);
+
+    const bounded = sanitizeVisibleText(
+      `inspect /Users/alice/work/repo/src/index.ts ${"x".repeat(500)}`,
+      { omitFilesystemPaths: true, maxBytes: 64 },
+    );
+    expect(new TextEncoder().encode(bounded).length).toBeLessThanOrEqual(64);
+    expect(bounded).toContain("[host-path]/src/index.ts");
+    expect(bounded).not.toContain("/Users/alice");
+    expect(sanitizeVisibleText(bounded, { omitFilesystemPaths: true, maxBytes: 64 })).toBe(bounded);
+  });
+
+  it("keeps whole-value omission for explicitly private run-artifact evidence", () => {
+    const artifactDir = "/Users/alice/.mono-agent/artifacts/runs";
+    expect(sanitizeVisibleText(`inspect ${artifactDir}/run-1.summary.json`, {
+      artifactDir,
+      omitFilesystemPaths: true,
+      omission: "[private artifact omitted]",
+    })).toBe("[private artifact omitted]");
+  });
+
+  it("does not mistake web URLs, ordinary repository-relative paths, or exact redaction sentinels for host evidence", () => {
+    const options = { omitFilesystemPaths: true } as const;
+    for (const value of [
+      "https://example.com/docs/path",
+      "inspect src/runtime/index.ts",
+      "read ./src/runtime/index.ts and ../shared/types.ts",
+      "token=[redacted]",
+      "password: '[redacted]'",
+    ]) {
+      expect(containsVisibleSensitiveText(value, options), value).toBe(false);
+      expect(sanitizeVisibleText(value, options)).toBe(value);
+    }
   });
 });
 

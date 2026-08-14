@@ -148,10 +148,13 @@ export class MonoAgentHarness implements AgentHarness {
       throw new Error("The configured conversation history store does not support session reset.");
     }
     // The responder serializes this behind the cancelled turn. Evict the warm
-    // handle first, then atomically replace only this conversation's canonical
-    // history. A reset failure is surfaced and never acknowledged as success.
+    // handle first, then clear each canonical store for this exact physical
+    // bucket. The stores are deliberately separate (tool records can exist
+    // without messages), so a partial failure is surfaced and a retry is
+    // idempotent rather than acknowledged as success.
     await this.sessionStore?.evict(normalized, "stale");
     await historyStore?.reset?.(normalized);
+    await this.options.toolHistory?.writer.resetConversation(normalized);
     // Identity/soul are already read per turn. Clearing the skill cache forces
     // installed skill metadata and content to be re-read on the next turn too.
     this.skillsCache.clear();
@@ -430,6 +433,7 @@ export class MonoAgentHarness implements AgentHarness {
           prepared.history,
           prepared.historyOmitted,
           prepared.historyAsMessages,
+          prepared.toolHistoryProjection,
           attachmentContext,
           continuationCapabilities,
           liveInputMailbox,
@@ -488,6 +492,7 @@ export class MonoAgentHarness implements AgentHarness {
           prepared.history,
           prepared.historyOmitted,
           prepared.historyAsMessages,
+          prepared.toolHistoryProjection,
           attachmentContext,
           continuationCapabilities,
           liveInputMailbox,
@@ -834,6 +839,15 @@ export class MonoAgentHarness implements AgentHarness {
         failure,
       };
     } finally {
+      const toolHistoryStatus = liveInputCloseReason === "closed"
+        ? "succeeded"
+        : request.abortSignal.aborted ? "cancelled" : "failed";
+      await this.options.toolHistory?.writer.finishRun({
+        conversationId: request.conversationId,
+        logicalConversationId: this.options.toolHistory.logicalConversationId(request.conversationId),
+        runId,
+        isolated,
+      }, toolHistoryStatus, request.abortSignal.aborted ? cancellationFailureKind(request.abortSignal) : undefined);
       await preparedHistoryAppend?.abort().catch(() => undefined);
       await providerHistoryTurn?.abort().catch(() => undefined);
       if (!continuationOriginSettled && continuationCapabilities.length > 0) {
@@ -893,6 +907,7 @@ export class MonoAgentHarness implements AgentHarness {
     this.activeLiveInputs.clear();
     await this.liveSessionManager?.dispose();
     await this.sessionStore?.disposeAll();
+    await this.options.toolHistory?.release?.();
   }
 
   /**

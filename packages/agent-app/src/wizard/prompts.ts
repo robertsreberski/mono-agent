@@ -132,6 +132,7 @@ const BUILTIN_TOOL_HINTS: Readonly<Record<string, string>> = {
 
 const APP_TOOL_HINTS: Readonly<Record<string, string>> = {
   RunHistory: "inspect safe evidence from prior runs in this conversation",
+  SessionHistory: "search bounded tool calls and results retained for this session",
 };
 
 const ADAPTER_SEND_TOOL_SET: ReadonlySet<string> = new Set(ADAPTER_SEND_TOOL_NAMES);

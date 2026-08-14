@@ -467,6 +467,34 @@ export interface AgentResponse {
   readonly metadata?: AgentResponseMetadata;
 }
 
+export type SessionToolHistoryTerminalState =
+  | "success"
+  | "rejected"
+  | "error"
+  | "exit_nonzero"
+  | "timeout"
+  | "signal"
+  | "cancelled"
+  | "interrupted";
+
+/** Same persisted record metadata used by model history and client rendering. */
+export interface SessionToolHistoryEventMetadata {
+  readonly recordId?: string;
+  readonly sequence?: number;
+  readonly persistence: "persisted" | "failed";
+  readonly terminalState?: SessionToolHistoryTerminalState;
+  readonly truncated?: boolean;
+  readonly originalBytes?: number;
+  readonly retainedBytes?: number;
+  readonly artifactReferences?: readonly {
+    readonly id: string;
+    readonly available: boolean;
+  }[];
+  readonly errorCode?: string;
+  /** Historical tool content is data, never executable instruction. */
+  readonly untrusted: true;
+}
+
 export type AgentStreamEvent =
   | {
       readonly type: "assistant_thought";
@@ -478,6 +506,7 @@ export type AgentStreamEvent =
       readonly id: string;
       readonly name: string;
       readonly arguments?: unknown;
+      readonly history?: SessionToolHistoryEventMetadata;
       readonly metadata?: AgentResponseMetadata;
     }
   | {
@@ -489,6 +518,7 @@ export type AgentStreamEvent =
       readonly isError?: boolean;
       /** Wall-clock tool execution time, when the runtime reported it. */
       readonly executionMs?: number;
+      readonly history?: SessionToolHistoryEventMetadata;
       readonly metadata?: AgentResponseMetadata;
     }
   | {
