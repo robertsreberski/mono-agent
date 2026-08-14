@@ -214,10 +214,10 @@ export function createRuntime(host = {}) {
       });
       const lifecycleGate = createToolLifecycleEventGate({
         sink: options.toolLifecycleSink,
-        onEvent: (event) => {
-          hub.emit(event);
-          try { options.onEvent?.(event); } catch { /* host callback errors do not abort the provider */ }
-        },
+        // Observer delivery keeps the runtime's synchronous contract. Only the
+        // client-facing lifecycle event waits for its serialized persistence.
+        onObserve: (event) => hub.emit(event),
+        onEvent: options.onEvent,
         abortSignal: options.abortSignal,
       });
       const liveInput = instrumentLiveInputAppliedEvents(options.liveInput, lifecycleGate.emit);

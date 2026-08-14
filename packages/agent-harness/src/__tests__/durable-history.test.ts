@@ -28,6 +28,25 @@ async function tempDir(): Promise<string> {
   return dir;
 }
 
+async function compileDurableHistoryFixture(dir: string): Promise<string> {
+  const compiledPath = join(dir, "durable-history.mjs");
+  const compilerOptions = { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } as const;
+  const durableSource = await readFile(new URL("../durable-history.ts", import.meta.url), "utf8");
+  const livenessSource = await readFile(
+    new URL("../history-process-liveness.ts", import.meta.url),
+    "utf8",
+  );
+  await Promise.all([
+    writeFile(compiledPath, transpileModule(durableSource, { compilerOptions }).outputText),
+    writeFile(
+      join(dir, "history-process-liveness.js"),
+      transpileModule(livenessSource, { compilerOptions }).outputText,
+    ),
+    writeFile(join(dir, "package.json"), '{"type":"module"}\n'),
+  ]);
+  return compiledPath;
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
@@ -603,12 +622,8 @@ describe("DurableConversationHistoryStore", () => {
   it("serializes 30 independent Node processes appending one conversation", async () => {
     const dir = await tempDir();
     const root = join(dir, "history");
-    const compiledPath = join(dir, "durable-history.mjs");
+    await compileDurableHistoryFixture(dir);
     const workerPath = join(dir, "worker.mjs");
-    const source = await readFile(new URL("../durable-history.ts", import.meta.url), "utf8");
-    await writeFile(compiledPath, transpileModule(source, {
-      compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
-    }).outputText);
     await writeFile(workerPath, [
       'import { createDurableHistoryStore } from "./durable-history.mjs";',
       "const [root, index] = process.argv.slice(2);",
@@ -676,12 +691,8 @@ describe("DurableConversationHistoryStore", () => {
   it("waits for a live cross-process owner and recovers its dirty epoch after process death", async () => {
     const dir = await tempDir();
     const root = join(dir, "history");
-    const compiledPath = join(dir, "durable-history.mjs");
+    await compileDurableHistoryFixture(dir);
     const workerPath = join(dir, "crash-worker.mjs");
-    const source = await readFile(new URL("../durable-history.ts", import.meta.url), "utf8");
-    await writeFile(compiledPath, transpileModule(source, {
-      compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
-    }).outputText);
     await writeFile(workerPath, [
       'import { createDurableHistoryStore } from "./durable-history.mjs";',
       "const store = createDurableHistoryStore({ root: process.argv[2] });",

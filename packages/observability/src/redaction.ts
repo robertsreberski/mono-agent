@@ -106,17 +106,18 @@ function redact(
     return value;
   }
   if (typeof value === "string") {
-    if (
-      options.visibleTextSanitization !== undefined
-      && containsVisibleSensitiveText(value, options.visibleTextSanitization)
-    ) {
-      const sanitized = sanitizeVisibleText(value, {
+    if (options.visibleTextSanitization !== undefined) {
+      const visibleTextOptions = {
         ...options.visibleTextSanitization,
         maxBytes: maxStringBytes,
-      });
-      return options.contentPatternRedaction === true
-        ? redactStringContent(sanitized, maxStringBytes)
-        : sanitized;
+      };
+      const inspection = inspectVisibleText(value, visibleTextOptions);
+      if (inspection.kind !== "none") {
+        const sanitized = sanitizedVisibleText(value, visibleTextOptions, inspection);
+        return options.contentPatternRedaction === true
+          ? redactStringContent(sanitized, maxStringBytes)
+          : sanitized;
+      }
     }
     return options.contentPatternRedaction === true
       ? redactStringContent(value, maxStringBytes)
@@ -179,22 +180,14 @@ export function containsVisibleSensitiveText(
   text: string,
   options: VisibleTextSanitizationOptions = {},
 ): boolean {
-  return containsPrivateVisibleEvidence(text, options)
-    || containsCredentialAssignment(text)
-    || options.omitFilesystemPaths === true && containsFilesystemPath(text);
+  return inspectVisibleText(text, options).kind !== "none";
 }
 
 export function sanitizeVisibleText(
   text: string,
   options: VisibleTextSanitizationOptions = {},
 ): string {
-  if (containsPrivateVisibleEvidence(text, options) || containsCredentialAssignment(text)) {
-    return options.omission ?? DEFAULT_VISIBLE_TEXT_OMISSION;
-  }
-  const sanitized = options.omitFilesystemPaths === true
-    ? redactFilesystemPaths(text)
-    : text;
-  return truncateVisibleText(sanitized, options.maxBytes ?? DEFAULT_MAX_STRING_BYTES);
+  return sanitizedVisibleText(text, options, inspectVisibleText(text, options));
 }
 
 /** Match RunHistory's stable model-text truncation contract. */
@@ -241,8 +234,37 @@ function isCredentialKey(key: string): boolean {
     || normalized.endsWith("cookie");
 }
 
-function containsFilesystemPath(text: string): boolean {
-  return redactFilesystemPaths(text) !== text;
+type VisibleTextInspection =
+  | { readonly kind: "none" }
+  | { readonly kind: "omission" }
+  | { readonly kind: "filesystem"; readonly sanitized: string };
+
+function inspectVisibleText(
+  text: string,
+  options: VisibleTextSanitizationOptions,
+): VisibleTextInspection {
+  if (containsPrivateVisibleEvidence(text, options) || containsCredentialAssignment(text)) {
+    return { kind: "omission" };
+  }
+  if (options.omitFilesystemPaths !== true) return { kind: "none" };
+  const sanitized = redactFilesystemPaths(text);
+  return sanitized === text
+    ? { kind: "none" }
+    : { kind: "filesystem", sanitized };
+}
+
+function sanitizedVisibleText(
+  text: string,
+  options: VisibleTextSanitizationOptions,
+  inspection: VisibleTextInspection,
+): string {
+  if (inspection.kind === "omission") {
+    return options.omission ?? DEFAULT_VISIBLE_TEXT_OMISSION;
+  }
+  return truncateVisibleText(
+    inspection.kind === "filesystem" ? inspection.sanitized : text,
+    options.maxBytes ?? DEFAULT_MAX_STRING_BYTES,
+  );
 }
 
 function containsPrivateVisibleEvidence(
@@ -256,7 +278,13 @@ function containsPrivateVisibleEvidence(
     || /(?:\.events\.jsonl|\.summary\.json)(?:\b|$)/iu.test(text);
 }
 
-type FilesystemPathKind = "file-url" | "windows-unc" | "windows-drive" | "home" | "posix";
+type FilesystemPathKind =
+  | "file-url"
+  | "windows-unc"
+  | "windows-drive"
+  | "home"
+  | "posix"
+  | "private-relative";
 
 const OPAQUE_FILESYSTEM_PATH_TOKENS = [
   "[host-path]",
@@ -267,7 +295,63 @@ const OPAQUE_FILESYSTEM_PATH_TOKENS = [
 const PRIVATE_PATH_SEGMENTS = new Set([
   ".aws", ".gnupg", ".kube", ".mono-agent", ".ssh", "tool-output",
 ]);
-const PRIVATE_PATH_BASENAMES = /^(?:\.env(?:\..*)?|id_(?:dsa|ecdsa|ed25519|rsa)|known_hosts)$/iu;
+const PRIVATE_PATH_BASENAMES = /^(?:\.env(?:\..*)?|\.git-credentials|\.netrc|\.npmrc|id_(?:dsa|ecdsa|ed25519|rsa)|known_hosts)$/iu;
+const HOST_POSIX_ROOTS = new Set([
+  "applications",
+  "library",
+  "system",
+  "users",
+  "volumes",
+  "dev",
+  "etc",
+  "home",
+  "media",
+  "mnt",
+  "opt",
+  "private",
+  "proc",
+  "repo",
+  "root",
+  "run",
+  "srv",
+  "tmp",
+  "usr",
+  "var",
+  "workspace",
+  "workspaces",
+]);
+const PATH_PREFIX_LOOKBEHIND_CODE_UNITS = 64;
+// URI schemes are normally short (the longest registered schemes are well
+// below this), and treating an unbounded run as a possible scheme lets crafted
+// punctuation-dense text repeatedly rescan the remaining input. Overlong
+// schemes simply fall back to ordinary text/path handling, which is the
+// privacy-conservative behavior.
+const MAX_URL_SCHEME_CODE_UNITS = 64;
+const PRIVATE_PATH_BASENAME_LITERALS = [
+  ".git-credentials",
+  ".netrc",
+  ".npmrc",
+  "id_dsa",
+  "id_ecdsa",
+  "id_ed25519",
+  "id_rsa",
+  "known_hosts",
+] as const;
+const HTTP_REQUEST_METHODS = [
+  "DELETE",
+  "GET",
+  "HEAD",
+  "OPTIONS",
+  "PATCH",
+  "POST",
+  "PUT",
+  "TRACE",
+] as const;
+
+interface OpaqueFilesystemMatch {
+  readonly end: number;
+  readonly replacement: string;
+}
 
 /**
  * Replace only filesystem-shaped spans. The stable token carries no host root,
@@ -278,10 +362,10 @@ function redactFilesystemPaths(text: string): string {
   let sanitized = "";
   let index = 0;
   while (index < text.length) {
-    const opaqueEnd = opaqueFilesystemPathEndAt(text, index);
-    if (opaqueEnd !== undefined) {
-      sanitized += text.slice(index, opaqueEnd);
-      index = opaqueEnd;
+    const opaqueMatch = opaqueFilesystemPathAt(text, index);
+    if (opaqueMatch !== undefined) {
+      sanitized += opaqueMatch.replacement;
+      index = opaqueMatch.end;
       continue;
     }
 
@@ -293,8 +377,15 @@ function redactFilesystemPaths(text: string): string {
     }
 
     const kind = filesystemPathKindAt(text, index);
+    const requestTargetEnd = httpRequestTargetEndAt(text, index, kind);
+    if (requestTargetEnd !== undefined) {
+      sanitized += text.slice(index, requestTargetEnd);
+      index = requestTargetEnd;
+      continue;
+    }
+
     if (kind !== undefined) {
-      const end = filesystemPathEnd(text, index);
+      const end = filesystemPathEnd(text, index, kind);
       sanitized += opaqueFilesystemPath(text.slice(index, end), kind);
       index = end;
       continue;
@@ -306,60 +397,332 @@ function redactFilesystemPaths(text: string): string {
   return sanitized;
 }
 
-function opaqueFilesystemPathEndAt(text: string, index: number): number | undefined {
+function opaqueFilesystemPathAt(text: string, index: number): OpaqueFilesystemMatch | undefined {
   for (const token of OPAQUE_FILESYSTEM_PATH_TOKENS) {
     if (!text.startsWith(token, index)) continue;
     const tokenEnd = index + token.length;
-    return (token === "[host-path]" || token === "[home-path]") && text[tokenEnd] === "/"
-      ? filesystemPathEnd(text, tokenEnd)
-      : tokenEnd;
+    if (text[tokenEnd] !== "/") {
+      return { end: tokenEnd, replacement: token };
+    }
+    const suffixEnd = filesystemPathEnd(text, tokenEnd, "posix");
+    const suffix = text.slice(tokenEnd, suffixEnd);
+    if (opaqueSuffixNeedsResanitization(suffix)) {
+      const sanitizedSuffix = opaqueFilesystemPath(
+        suffix,
+        token === "[home-path]" ? "home" : "posix",
+      );
+      return {
+        end: suffixEnd,
+        replacement: token === "[private-path]"
+          ? `${token}${sanitizedSuffix}`
+          : sanitizedSuffix,
+      };
+    }
+    return { end: suffixEnd, replacement: text.slice(index, suffixEnd) };
   }
   return undefined;
 }
 
+function opaqueSuffixNeedsResanitization(suffix: string): boolean {
+  const segments = pathSegments(suffix);
+  const basename = stripLineColumnSuffix(segments.at(-1) ?? "");
+  return segments.some((segment) => PRIVATE_PATH_SEGMENTS.has(segment.toLocaleLowerCase("en-US")))
+    || PRIVATE_PATH_BASENAMES.test(basename)
+    || segments.some((segment) => {
+      const normalized = segment.toLocaleLowerCase("en-US");
+      return normalized === "users" || normalized === "home";
+    });
+}
+
 /**
  * Preserve non-file URLs as one opaque lexical token before looking for path
- * starts. This prevents `/Users/...`-shaped URL components from being mistaken
+ * starts. This prevents `/Users/example`-shaped URL components from being mistaken
  * for host paths, including after URL punctuation that also separates shell
  * paths outside a URL.
  */
 function nonFileUrlEndAt(text: string, index: number): number | undefined {
-  if (!isTokenBoundaryBefore(text, index) || !isAsciiLetter(text[index])) return undefined;
-  let cursor = index + 1;
-  while (cursor < text.length && isUrlSchemeCharacter(text[cursor]!)) cursor += 1;
-  if (text.slice(cursor, cursor + 3) !== "://") return undefined;
-  if (text.slice(index, cursor).toLocaleLowerCase("en-US") === "file") return undefined;
-  cursor += 3;
+  if (!isTokenBoundaryBefore(text, index)) return undefined;
+  let cursor: number;
+  if (text.startsWith("//", index) && isAsciiLetterOrDigit(text[index + 2])) {
+    cursor = index + 2;
+  } else {
+    // A scheme can contain `+`, `-`, and `.`, so those characters cannot also
+    // introduce a fresh scheme probe in the middle of the same lexical run.
+    // This makes the candidate runs disjoint; the fixed cap below bounds even
+    // the first probe on adversarial input.
+    if (index > 0 && isUrlSchemeCharacter(text[index - 1]!)) return undefined;
+    if (!isAsciiLetter(text[index])) return undefined;
+    cursor = index + 1;
+    const schemeLimit = Math.min(text.length, index + MAX_URL_SCHEME_CODE_UNITS);
+    while (cursor < schemeLimit && isUrlSchemeCharacter(text[cursor]!)) cursor += 1;
+    if (cursor === schemeLimit
+      && text[cursor] !== undefined
+      && isUrlSchemeCharacter(text[cursor]!)) {
+      return undefined;
+    }
+    if (!text.startsWith("://", cursor)) return undefined;
+    if (cursor - index === 4 && startsWithAsciiCaseInsensitive(text, index, "file")) {
+      return undefined;
+    }
+    cursor += 3;
+  }
   while (cursor < text.length && !isUrlTerminator(text[cursor]!)) cursor += 1;
   return cursor;
 }
 
 function filesystemPathKindAt(text: string, index: number): FilesystemPathKind | undefined {
-  if (!isTokenBoundaryBefore(text, index)) return undefined;
-  if (text.slice(index, index + 7).toLocaleLowerCase("en-US") === "file://") {
+  const boundary = isTokenBoundaryBefore(text, index);
+  if (boundary && text.slice(index, index + 7).toLocaleLowerCase("en-US") === "file://") {
     return "file-url";
   }
   // `./` and `../` are intentionally not candidates: they are portable,
   // workspace-relative evidence and disclose no host root or account name.
   // `~/` does identify a private host location, so retain only its useful
   // suffix behind a distinct opaque root.
-  if (text[index] === "~" && isPathSeparator(text[index + 1])) return "home";
+  if (boundary && text[index] === "~" && homePrefixEnd(text, index) !== undefined) return "home";
   if (
+    boundary
+    &&
     isAsciiLetter(text[index])
     && text[index + 1] === ":"
     && isPathSeparator(text[index + 2])
   ) {
     return "windows-drive";
   }
-  if (text[index] === "\\" && text[index + 1] === "\\") return "windows-unc";
-  if (text[index] === "/" && text[index + 1] !== "/") return "posix";
+  if (boundary && text[index] === "\\" && text[index + 1] === "\\") return "windows-unc";
+  if (isPrivateRelativePathAt(text, index)) return "private-relative";
+  if (isHostIdentifyingPosixPathAt(text, index)) return "posix";
   return undefined;
 }
 
-function filesystemPathEnd(text: string, start: number): number {
-  let end = start + 1;
-  while (end < text.length && !isFilesystemPathTerminator(text[end]!)) end += 1;
+function httpRequestTargetEndAt(
+  text: string,
+  index: number,
+  pathKind: FilesystemPathKind | undefined,
+): number | undefined {
+  if (text[index] !== "/") return undefined;
+  if (!hasHttpRequestMethodBefore(text, index)) return undefined;
+  let cursor = index + 1;
+  while (cursor < text.length && !/\s/u.test(text[cursor]!)) cursor += 1;
+  const targetEnd = cursor;
+  if (!hasHttpVersionAfter(text, cursor)) return undefined;
+
+  const filesystemPathStart = filesystemPathStartInRange(
+    text,
+    index,
+    targetEnd,
+    pathKind,
+  );
+  if (filesystemPathStart === undefined) return targetEnd;
+  return filesystemPathStart === index ? undefined : filesystemPathStart;
+}
+
+function filesystemPathStartInRange(
+  text: string,
+  start: number,
+  end: number,
+  initialKind: FilesystemPathKind | undefined,
+): number | undefined {
+  let cursor = start;
+  while (cursor < end) {
+    const opaqueMatch = opaqueFilesystemPathAt(text, cursor);
+    if (opaqueMatch !== undefined) {
+      if (opaqueMatch.replacement !== text.slice(cursor, opaqueMatch.end)) return cursor;
+      cursor = Math.min(end, opaqueMatch.end);
+      continue;
+    }
+    const urlEnd = nonFileUrlEndAt(text, cursor);
+    if (urlEnd !== undefined) {
+      cursor = Math.min(end, urlEnd);
+      continue;
+    }
+    const kind = cursor === start ? initialKind : filesystemPathKindAt(text, cursor);
+    if (kind === undefined) {
+      cursor += 1;
+      continue;
+    }
+    return cursor;
+  }
+  return undefined;
+}
+
+function hasHttpRequestMethodBefore(text: string, index: number): boolean {
+  const windowStart = Math.max(0, index - PATH_PREFIX_LOOKBEHIND_CODE_UNITS);
+  let cursor = index - 1;
+  let whitespaceCodeUnits = 0;
+  while (cursor >= windowStart) {
+    const character = text[cursor]!;
+    if (!/\s/u.test(character)) break;
+    // The old classifier considered only the current line prefix. A newline
+    // between the method and target therefore cannot form a request prefix.
+    if (character === "\n") return false;
+    whitespaceCodeUnits += 1;
+    cursor -= 1;
+  }
+  if (whitespaceCodeUnits === 0 || cursor < windowStart) return false;
+
+  const methodEnd = cursor + 1;
+  for (const method of HTTP_REQUEST_METHODS) {
+    const methodStart = methodEnd - method.length;
+    if (methodStart < windowStart || !text.startsWith(method, methodStart)) continue;
+    if (methodStart === 0) return true;
+    const delimiterIndex = methodStart - 1;
+    // A truncated window is not a synthetic line/token boundary. Require the
+    // real delimiter to be observable inside the fixed window.
+    if (delimiterIndex < windowStart) return false;
+    return /\s/u.test(text[delimiterIndex]!);
+  }
+  return false;
+}
+
+function hasHttpVersionAfter(text: string, start: number): boolean {
+  let cursor = start;
+  let whitespaceCodeUnits = 0;
+  while (cursor < text.length && /\s/u.test(text[cursor]!)) {
+    whitespaceCodeUnits += 1;
+    cursor += 1;
+  }
+  if (whitespaceCodeUnits === 0 || !text.startsWith("HTTP/", cursor)) return false;
+  cursor += 5;
+  const majorStart = cursor;
+  while (cursor < text.length && isAsciiDigit(text[cursor]!)) cursor += 1;
+  if (cursor === majorStart) return false;
+  if (text[cursor] === ".") {
+    cursor += 1;
+    const minorStart = cursor;
+    while (cursor < text.length && isAsciiDigit(text[cursor]!)) cursor += 1;
+    if (cursor === minorStart) return false;
+  }
+  return cursor === text.length || /\s/u.test(text[cursor]!);
+}
+
+function filesystemPathEnd(text: string, start: number, kind: FilesystemPathKind): number {
+  let end = kind === "file-url"
+    ? start + 7
+    : kind === "windows-drive"
+      ? start + 3
+      : start + 1;
+  while (end < text.length) {
+    const character = text[end]!;
+    if (character === ":") {
+      const lineColumnEnd = lineColumnSuffixEnd(text, end);
+      if (lineColumnEnd !== undefined) {
+        end = lineColumnEnd;
+        continue;
+      }
+      break;
+    }
+    if (isFilesystemPathTerminator(character)) break;
+    end += 1;
+  }
   return end;
+}
+
+function isHostIdentifyingPosixPathAt(text: string, index: number): boolean {
+  if (text[index] !== "/" || text[index + 1] === "/") return false;
+  if (text[index - 1] === "<") return false;
+  if (!isTokenBoundaryBefore(text, index)
+    && !isAttachedPathOptionBefore(text, index)
+    && text.slice(Math.max(0, index - 3), index) !== "...") {
+    return false;
+  }
+  const segmentEnd = firstPathSegmentEnd(text, index + 1);
+  const root = text.slice(index + 1, segmentEnd).toLocaleLowerCase("en-US");
+  if (!HOST_POSIX_ROOTS.has(root)) return false;
+  return segmentEnd === text.length || isPathSegmentBoundary(text[segmentEnd]);
+}
+
+function isAttachedPathOptionBefore(text: string, index: number): boolean {
+  const windowStart = Math.max(0, index - PATH_PREFIX_LOOKBEHIND_CODE_UNITS);
+  let cursor = index - 1;
+  if (cursor < windowStart) return false;
+  if (text[cursor] === "=") cursor -= 1;
+
+  let letterCodeUnits = 0;
+  while (cursor >= windowStart) {
+    const character = text[cursor]!;
+    if (!isAsciiLetter(character)) break;
+    letterCodeUnits += 1;
+    cursor -= 1;
+  }
+  if (letterCodeUnits === 0 || cursor < windowStart || text[cursor] !== "-") return false;
+  if (cursor === 0) return true;
+  const delimiterIndex = cursor - 1;
+  // Do not accept `windowStart` as an invented token boundary when the actual
+  // delimiter lies outside the bounded lookbehind window.
+  if (delimiterIndex < windowStart) return false;
+  const delimiter = text[delimiterIndex]!;
+  return delimiter === " " || delimiter === "\t" || delimiter === "\n";
+}
+
+function isPrivateRelativePathAt(text: string, index: number): boolean {
+  if (!isPrivatePathBoundaryBefore(text, index)) return false;
+  const initial = text[index]?.toLocaleLowerCase("en-US");
+  if (initial === undefined) return false;
+
+  for (const directory of PRIVATE_PATH_SEGMENTS) {
+    if (directory[0] !== initial
+      || !startsWithAsciiCaseInsensitive(text, index, directory)) {
+      continue;
+    }
+    if (isPathSeparator(text[index + directory.length])) return true;
+  }
+
+  // Every `.env.<suffix>` basename is private. Recognizing the fixed prefix is
+  // sufficient and avoids scanning an attacker-controlled segment to its end.
+  if (initial === "." && startsWithAsciiCaseInsensitive(text, index, ".env")) {
+    const afterEnvironment = text[index + 4];
+    if (afterEnvironment === "." || isPathSegmentBoundary(afterEnvironment)) return true;
+  }
+
+  for (const basename of PRIVATE_PATH_BASENAME_LITERALS) {
+    if (basename[0] !== initial
+      || !startsWithAsciiCaseInsensitive(text, index, basename)) {
+      continue;
+    }
+    if (isPathSegmentBoundary(text[index + basename.length])) return true;
+  }
+  return false;
+}
+
+function homePrefixEnd(text: string, index: number): number | undefined {
+  let cursor = index + 1;
+  if (isPathSeparator(text[cursor])) return cursor + 1;
+  while (cursor < text.length && /[A-Za-z0-9_.-]/u.test(text[cursor]!)) cursor += 1;
+  return cursor > index + 1 && isPathSeparator(text[cursor]) ? cursor + 1 : undefined;
+}
+
+function firstPathSegmentEnd(text: string, start: number): number {
+  let cursor = start;
+  while (cursor < text.length && !isPathSegmentBoundary(text[cursor])) cursor += 1;
+  return cursor;
+}
+
+function isPathSegmentBoundary(character: string | undefined): boolean {
+  return character === undefined
+    || isPathSeparator(character)
+    || isFilesystemPathTerminator(character)
+    || character === ":";
+}
+
+function isPrivatePathBoundaryBefore(text: string, index: number): boolean {
+  if (index === 0) return true;
+  const previous = text[index - 1]!;
+  return isPathSeparator(previous) || isTokenBoundaryBefore(text, index);
+}
+
+function lineColumnSuffixEnd(text: string, index: number): number | undefined {
+  let cursor = index + 1;
+  const lineStart = cursor;
+  while (cursor < text.length && isAsciiDigit(text[cursor]!)) cursor += 1;
+  if (cursor === lineStart) return undefined;
+  if (text[cursor] !== ":") return cursor;
+
+  const columnDelimiter = cursor;
+  cursor += 1;
+  const columnStart = cursor;
+  while (cursor < text.length && isAsciiDigit(text[cursor]!)) cursor += 1;
+  return cursor === columnStart ? columnDelimiter : cursor;
 }
 
 function isTokenBoundaryBefore(text: string, index: number): boolean {
@@ -390,6 +753,8 @@ function isFilesystemPathTerminator(character: string): boolean {
     || character === ">"
     || character === ","
     || character === ";"
+    || character === "?"
+    || character === "#"
     || character === "|"
     || character === "@"
     || character === "&";
@@ -430,6 +795,20 @@ function isAsciiDigit(character: string): boolean {
   return code >= 48 && code <= 57;
 }
 
+function isAsciiLetterOrDigit(character: string | undefined): boolean {
+  return isAsciiLetter(character) || character !== undefined && isAsciiDigit(character);
+}
+
+function startsWithAsciiCaseInsensitive(text: string, index: number, expected: string): boolean {
+  if (index + expected.length > text.length) return false;
+  for (let offset = 0; offset < expected.length; offset += 1) {
+    const actualCode = text.charCodeAt(index + offset);
+    const foldedCode = actualCode >= 65 && actualCode <= 90 ? actualCode + 32 : actualCode;
+    if (foldedCode !== expected.charCodeAt(offset)) return false;
+  }
+  return true;
+}
+
 function isPathSeparator(character: string | undefined): boolean {
   return character === "/" || character === "\\";
 }
@@ -445,8 +824,8 @@ function opaqueFilesystemPath(path: string, kind: FilesystemPathKind): string {
       normalized = authorityEnd === -1 ? "" : remainder.slice(authorityEnd);
     }
   }
-  const privateSegments = normalized.split("/").filter(Boolean).map((segment) => segment.toLocaleLowerCase("en-US"));
-  const privateBasename = (privateSegments.at(-1) ?? "").replace(/:\d+(?::\d+)?$/u, "");
+  const privateSegments = pathSegments(normalized).map((segment) => segment.toLocaleLowerCase("en-US"));
+  const privateBasename = stripLineColumnSuffix(privateSegments.at(-1) ?? "");
   if (
     privateSegments.some((segment) => PRIVATE_PATH_SEGMENTS.has(segment))
     || PRIVATE_PATH_BASENAMES.test(privateBasename)
@@ -462,9 +841,10 @@ function opaqueFilesystemPath(path: string, kind: FilesystemPathKind): string {
     .split("/")
     .filter((segment) => segment.length > 0 && segment !== "." && segment !== ".." && segment !== "~");
   if (unc) segments = segments.slice(2);
-  const first = segments[0]?.toLocaleLowerCase("en-US");
-  if ((first === "users" || first === "home") && segments.length >= 2) segments = segments.slice(2);
+  if (kind === "home" && segments[0]?.startsWith("~")) segments = segments.slice(1);
+  segments = stripHostIdentitySegments(segments);
 
+  const first = segments[0]?.toLocaleLowerCase("en-US");
   const temporaryRoot = first === "tmp"
     || first === "private" && segments[1]?.toLocaleLowerCase("en-US") === "tmp"
     || first === "var" && segments[1]?.toLocaleLowerCase("en-US") === "folders"
@@ -476,6 +856,28 @@ function opaqueFilesystemPath(path: string, kind: FilesystemPathKind): string {
   return suffixSegments.length === 0
     ? opaqueRoot
     : `${opaqueRoot}/${suffixSegments.join("/")}`;
+}
+
+function pathSegments(path: string): string[] {
+  return path.replace(/\\/gu, "/").split("/").filter(Boolean);
+}
+
+function stripLineColumnSuffix(value: string): string {
+  return value.replace(/:\d+(?::\d+)?$/u, "");
+}
+
+function stripHostIdentitySegments(segments: readonly string[]): string[] {
+  const retained: string[] = [];
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index]!;
+    const normalized = segment.toLocaleLowerCase("en-US");
+    if (normalized === "users" || normalized === "home") {
+      index += 1;
+      continue;
+    }
+    retained.push(segment);
+  }
+  return retained;
 }
 
 function redactContentPatterns(value: string): string {

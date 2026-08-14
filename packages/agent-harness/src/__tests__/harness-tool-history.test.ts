@@ -227,7 +227,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     await harness.dispose?.();
   });
 
-  it("persists isolated parent tools but excludes them from default discovery and resets only the exact physical bucket", async () => {
+  it("persists isolated parent tools but excludes them from default discovery and resets the logical rollover session", async () => {
     const { identityPath, root } = await fixture();
     const writer = await ToolHistoryWriter.open({ root });
     const reader = new ToolHistoryReader(root);
@@ -266,7 +266,8 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       .toEqual(["isolated", "kept"]);
     await harness.resetConversation?.("chat:42#2026-08-14");
     expect(reader.search({ logicalConversationId: "chat:42", currentRunId: "later", includeIsolated: true }).items.map((item) => item.toolCallId))
-      .toEqual(["kept"]);
+      .toEqual([]);
+    expect(reader.latestProjection("chat:42", "later")).toEqual([]);
     await harness.dispose?.();
   });
 });

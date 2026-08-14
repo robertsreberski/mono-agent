@@ -137,16 +137,16 @@ describe("SessionHistory request handler", () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
     const run = binding("path-run");
-    const sourcePath = "/Users/alice/work/repo/src/index.ts";
-    const outputPath = "/Users/alice/work/repo/src/generated/output.ts";
-    const privateArtifact = "/Users/alice/.mono-agent/artifacts/tool-output/path-run/bash.txt";
+    const sourcePath = "/Users/example/work/repo/src/index.ts";
+    const outputPath = "/Users/example/work/repo/src/generated/output.ts";
+    const privateArtifact = "/Users/example/.mono-agent/artifacts/tool-output/path-run/bash.txt";
     const calls = [
       { id: "read", name: "Read", arguments: { file_path: sourcePath }, content: `read ${sourcePath}:8:3` },
       { id: "write", name: "Write", arguments: { file_path: outputPath, content: "generated" }, content: `wrote ${outputPath}` },
       { id: "edit", name: "Edit", arguments: { file_path: sourcePath, old_string: "before", new_string: "after" }, content: `edited ${sourcePath}` },
       { id: "bash", name: "Bash", arguments: { command: `ls -la /etc && cat ${sourcePath}` }, content: `output\nFull output saved to: ${privateArtifact}` },
-      { id: "grep", name: "Grep", arguments: { pattern: "needle", path: "/Users/alice/work/repo/src" }, content: [{ path: sourcePath, line: 7 }] },
-      { id: "glob", name: "Glob", arguments: { pattern: "/Users/alice/work/repo/src/**/*.ts" }, content: [sourcePath, outputPath, "https://example.com/docs/path"] },
+      { id: "grep", name: "Grep", arguments: { pattern: "needle", path: "/Users/example/work/repo/src" }, content: [{ path: sourcePath, line: 7 }] },
+      { id: "glob", name: "Glob", arguments: { pattern: "/Users/example/work/repo/src/**/*.ts" }, content: [sourcePath, outputPath, "https://example.com/docs/path"] },
     ] as const;
     const recordIds: string[] = [];
     try {
@@ -190,7 +190,7 @@ describe("SessionHistory request handler", () => {
     expect(visible).toContain("**/*.ts");
     expect(visible).toContain("https://example.com/docs/path");
     expect(visible).toContain("[private-path]");
-    for (const hidden of [sourcePath, outputPath, privateArtifact, "/Users/alice", ".mono-agent", "path-run/bash.txt"]) {
+    for (const hidden of [sourcePath, outputPath, privateArtifact, "/Users/example", ".mono-agent", "path-run/bash.txt"]) {
       expect(visible, hidden).not.toContain(hidden);
     }
   });

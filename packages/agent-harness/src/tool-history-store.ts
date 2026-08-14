@@ -285,9 +285,6 @@ export class ToolHistoryWriter {
         this.failPending(new Error(`Tool history writer exited with code ${String(code)}.`));
       }
     });
-    // The writer must not keep an otherwise clean CLI/test process alive. Live
-    // harness references still own it and close it during normal disposal.
-    worker.unref();
   }
 
   static async open(options: ToolHistoryWriterOptions): Promise<ToolHistoryWriter> {
@@ -317,6 +314,10 @@ export class ToolHistoryWriter {
     const writer = new ToolHistoryWriter(worker, options);
     try {
       await writer.request("ready", undefined, (options.ownerAcquireCeilingMs ?? TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS) + 1_000);
+      // Keep startup referenced until the worker has proved readiness. Once the
+      // top-level open settles, an idle sidecar must not prolong a one-shot CLI
+      // process; live harnesses still close their owned reference explicitly.
+      worker.unref();
       return writer;
     } catch (error) {
       writer.closed = true;
@@ -355,8 +356,12 @@ export class ToolHistoryWriter {
     });
   }
 
-  async resetConversation(conversationId: string): Promise<void> {
-    await this.request("reset_conversation", { conversationId }, this.persistenceCeilingMs);
+  async resetConversation(logicalConversationId: string): Promise<void> {
+    await this.request(
+      "reset_conversation",
+      { logicalConversationId },
+      this.persistenceCeilingMs,
+    );
   }
 
   async stats(): Promise<ToolHistoryStats> {

@@ -13,34 +13,62 @@ const HOST_HISTORY_METADATA = Symbol("mono-agent.host-tool-history");
 const HOST_TOOL_LIFECYCLE_METADATA = Symbol("mono-agent.host-tool-lifecycle");
 
 /**
- * @param {{sink?: (event: any) => Promise<any>, onEvent?: (event: any) => void, abortSignal?: AbortSignal}} options
+ * @param {{sink?: (event: any) => Promise<any>, onObserve?: (event: any) => void, onEvent?: (event: any) => void, abortSignal?: AbortSignal}} options
  */
-export function createToolLifecycleEventGate({ sink, onEvent, abortSignal }) {
+export function createToolLifecycleEventGate({ sink, onObserve, onEvent, abortSignal }) {
   /** @type {Promise<void>} */
   let tail = Promise.resolve();
+  let pendingDeliveries = 0;
   /** @type {Map<string, any>} */
   const timing = new Map();
   /** @type {Map<string, any>} */
   const approvals = new Map();
 
   const emit = (event) => {
-    tail = tail.then(async () => {
-      stripProviderLifecycleMetadata(event);
+    stripProviderLifecycleMetadata(event);
+    try { onObserve?.(event); } catch { /* observer callback semantics remain best-effort */ }
+    const requiresPersistence = typeof sink === "function" && eventNeedsPersistence(event);
+    if (!requiresPersistence && pendingDeliveries === 0) {
       observeClassification(event, timing, approvals);
-      if (typeof sink === "function") {
+      try { onEvent?.(event); } catch { /* host callback semantics remain best-effort */ }
+      return;
+    }
+
+    pendingDeliveries += 1;
+    const delivery = tail.then(async () => {
+      observeClassification(event, timing, approvals);
+      if (requiresPersistence) {
         await persistEvent(event, sink, { timing, approvals, abortSignal });
       }
       try { onEvent?.(event); } catch { /* host callback semantics remain best-effort */ }
     }).catch((error) => {
-      attachPersistenceFailure(event, error);
+      if (requiresPersistence) attachPersistenceFailure(event, error);
       try { onEvent?.(event); } catch { /* host callback semantics remain best-effort */ }
     });
+    tail = delivery.finally(() => { pendingDeliveries -= 1; });
   };
 
   return {
     emit,
     async flush() { await tail; },
   };
+}
+
+/** @param {any} event */
+function eventNeedsPersistence(event) {
+  if (!record(event) || (event.type !== "assistant" && event.type !== "user")) return false;
+  const message = event.message;
+  if (!record(message) || !Array.isArray(message.content)) return false;
+  return message.content.some((block) => {
+    if (!record(block) || hostHistoryMetadata(block.history)) return false;
+    if (event.type === "assistant" && block.type === "tool_use") {
+      return typeof block.id === "string" && typeof block.name === "string";
+    }
+    if (event.type === "user" && block.type === "tool_result") {
+      return typeof block.tool_use_id === "string" || typeof block.tool_call_id === "string";
+    }
+    return false;
+  });
 }
 
 /**

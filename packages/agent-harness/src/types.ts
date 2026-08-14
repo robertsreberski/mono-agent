@@ -491,7 +491,7 @@ export interface AgentHarnessRuntimeOptionsExtension {
 }
 
 export interface AgentHarnessToolHistoryOptions {
-  readonly writer: ToolHistoryWriter;
+  readonly writer: Pick<ToolHistoryWriter, "createSink" | "finishRun" | "resetConversation">;
   readonly reader: ToolHistoryReader;
   /** Collapse a physical rollover bucket into its current logical session. */
   readonly logicalConversationId: (conversationId: string) => string;

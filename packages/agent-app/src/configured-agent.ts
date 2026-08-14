@@ -14,8 +14,10 @@ import type {
   AgentHarnessOptions,
   AgentHarnessRuntimeOptionsExtension,
   AgentHarnessRuntimeOptionsInput,
+  AgentHarnessToolHistoryOptions,
   ConversationHistoryStore,
   SkillIndexSummary,
+  ToolHistoryWriterHandle,
 } from "@mono-agent/agent-harness";
 import type { ToolPolicyInput } from "@mono-agent/agent-harness";
 import { readFileSync } from "node:fs";
@@ -831,12 +833,20 @@ async function createConfiguredAgentHarnessInternal(
         }),
   });
   const historyStore = internalHooks.wrapHistoryStore?.(baseHistoryStore) ?? baseHistoryStore;
-  const toolHistoryHandle = await acquireToolHistoryWriter({
+  const rollover = internalHooks.sessionRollover ?? config.runtime.session.rollover;
+  // Conversation history and managed-tool history are distinct contracts. A
+  // caller-supplied message store remains the sole message-history owner, while
+  // the configured app keeps its independent lifecycle sidecar and
+  // SessionHistory capability. Acquisition stays lazy so tool-free runs do not
+  // create either the sidecar or its owner database.
+  const toolHistory = lazyConfiguredToolHistory({
     root: historyRoot,
     artifactRoot: resolvePath(config.artifacts.dir, "tool-output"),
-    ...(options.onToolHistoryWarning === undefined ? {} : { onWarning: options.onToolHistoryWarning }),
+    rollover,
+    ...(options.onToolHistoryWarning === undefined
+      ? {}
+      : { onWarning: options.onToolHistoryWarning }),
   });
-  const rollover = internalHooks.sessionRollover ?? config.runtime.session.rollover;
 
   try {
     return createAgentHarness({
@@ -896,12 +906,7 @@ async function createConfiguredAgentHarnessInternal(
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
     ...(options.onMemoryWarning === undefined ? {} : { onMemoryWarning: options.onMemoryWarning }),
     historyStore,
-    toolHistory: {
-      writer: toolHistoryHandle.writer,
-      reader: new ToolHistoryReader(historyRoot),
-      logicalConversationId: (conversationId) => toolHistoryLogicalConversationId(conversationId, rollover),
-      release: toolHistoryHandle.release,
-    },
+    toolHistory,
     ...(options.turnHistoryEnricher === undefined ? {} : { turnHistoryEnricher: options.turnHistoryEnricher }),
     // Inbound channel attachments are saved here (under the artifacts dir, which
     // sits inside a sandbox-readable root) so the agent can open them by path.
@@ -922,9 +927,56 @@ async function createConfiguredAgentHarnessInternal(
     ...(options.now === undefined ? {} : { now: options.now }),
     });
   } catch (error) {
-    await toolHistoryHandle.release().catch(() => undefined);
+    await toolHistory?.release?.().catch(() => undefined);
     throw error;
   }
+}
+
+interface LazyConfiguredToolHistoryOptions {
+  readonly root: string;
+  readonly artifactRoot: string;
+  readonly rollover: "none" | "daily" | undefined;
+  readonly onWarning?: (message: string) => void;
+}
+
+function lazyConfiguredToolHistory(
+  options: LazyConfiguredToolHistoryOptions,
+): AgentHarnessToolHistoryOptions {
+  let handlePromise: Promise<ToolHistoryWriterHandle> | undefined;
+  const reader = new ToolHistoryReader(options.root);
+  const acquire = (): Promise<ToolHistoryWriterHandle> => {
+    handlePromise ??= acquireToolHistoryWriter({
+      root: options.root,
+      artifactRoot: options.artifactRoot,
+      ...(options.onWarning === undefined ? {} : { onWarning: options.onWarning }),
+    });
+    return handlePromise;
+  };
+  const writer: AgentHarnessToolHistoryOptions["writer"] = {
+    createSink(binding) {
+      return async (event) => await (await acquire()).writer.persist(binding, event);
+    },
+    async finishRun(binding, status, failureKind) {
+      if (handlePromise === undefined) return;
+      const handle = await handlePromise.catch(() => undefined);
+      await handle?.writer.finishRun(binding, status, failureKind);
+    },
+    async resetConversation(logicalConversationId) {
+      if (!await reader.exists()) return;
+      await (await acquire()).writer.resetConversation(logicalConversationId);
+    },
+  };
+  return {
+    writer,
+    reader,
+    logicalConversationId: (conversationId) =>
+      toolHistoryLogicalConversationId(conversationId, options.rollover),
+    async release(): Promise<void> {
+      if (handlePromise === undefined) return;
+      const handle = await handlePromise.catch(() => undefined);
+      await handle?.release();
+    },
+  };
 }
 
 function configuredMemoryForHarness(

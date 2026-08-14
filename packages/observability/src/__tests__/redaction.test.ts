@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   containsVisibleSensitiveText,
@@ -185,10 +185,10 @@ describe("redactJsonValue", () => {
   });
 
   it.each([
-    ["/Users/private/.mono-agent/artifacts/tool-output/run/output.txt", "[private-path]"],
+    ["/Users/example/.mono-agent/artifacts/tool-output/run/output.txt", "[private-path]"],
     ["C:\\Users\\private\\tool-output\\result.txt", "[private-path]"],
     ["Full output saved to: /private/tmp/tool-output.txt", "Full output saved to: [host-path]/tool-output.txt"],
-    ["file:///Users/private/repo/src/result.txt", "[host-path]/src/result.txt"],
+    ["file:///Users/example/repo/src/result.txt", "[host-path]/src/result.txt"],
     ["read ~/private/result.txt", "read [home-path]/private/result.txt"],
   ])("neutralizes only the filesystem span in model-visible text: %s", (value, expected) => {
     const options = {
@@ -203,24 +203,24 @@ describe("redactJsonValue", () => {
   });
 
   it.each([
-    ["[/Users/rob/.ssh/id_rsa]", "[[private-path]]"],
-    ["{/Users/rob/private/x.key}", "{[host-path]/private/x.key}"],
-    ["x,/Users/rob/proj/a.ts", "x,[host-path]/proj/a.ts"],
-    ["x;/Users/rob/proj/a.ts", "x;[host-path]/proj/a.ts"],
-    ["cmd|/Users/rob/bin/tool", "cmd|[host-path]/bin/tool"],
-    ["user@/Users/rob/share", "user@[host-path]/share"],
-    ["-->/Users/rob/proj/a.ts", "-->[host-path]/proj/a.ts"],
-    ["[/Users/rob/proj/a.ts](/Users/rob/proj/b.ts)", "[[host-path]/proj/a.ts]([host-path]/proj/b.ts)"],
+    ["[/Users/example/.ssh/id_rsa]", "[[private-path]]"],
+    ["{/Users/example/private/x.key}", "{[host-path]/private/x.key}"],
+    ["x,/Users/example/proj/a.ts", "x,[host-path]/proj/a.ts"],
+    ["x;/Users/example/proj/a.ts", "x;[host-path]/proj/a.ts"],
+    ["cmd|/Users/example/bin/tool", "cmd|[host-path]/bin/tool"],
+    ["user@/Users/example/share", "user@[host-path]/share"],
+    ["-->/Users/example/proj/a.ts", "-->[host-path]/proj/a.ts"],
+    ["[/Users/example/proj/a.ts](/Users/example/proj/b.ts)", "[[host-path]/proj/a.ts]([host-path]/proj/b.ts)"],
   ])("recognizes a host path after delimiter punctuation: %s", (value, expected) => {
     const options = { omitFilesystemPaths: true } as const;
     expect(containsVisibleSensitiveText(value, options)).toBe(true);
     expect(sanitizeVisibleText(value, options)).toBe(expected);
     expect(sanitizeVisibleText(expected, options)).toBe(expected);
-    expect(expected).not.toContain("/Users/rob");
+    expect(expected).not.toContain("/Users/example");
   });
 
   it.each([
-    ["/Users/rob/a.ts,/Users/rob/secret/b.ts", "[host-path]/a.ts,[host-path]/secret/b.ts"],
+    ["/Users/example/a.ts,/Users/example/secret/b.ts", "[host-path]/a.ts,[host-path]/secret/b.ts"],
     ["C:\\Users\\Rob\\a.ts,C:\\Users\\Rob\\secret\\b.ts", "[host-path]/a.ts,[host-path]/secret/b.ts"],
   ])("sanitizes comma-separated paths independently without consuming their separator: %s", (original, expected) => {
     const options = { omitFilesystemPaths: true } as const;
@@ -230,13 +230,28 @@ describe("redactJsonValue", () => {
   });
 
   it.each([
-    ["/Users/rob/proj/a.ts:42:7", "[host-path]/proj/a.ts:42:7"],
+    ["/Users/example/proj/a.ts:42:7", "[host-path]/proj/a.ts:42:7"],
     ["C:\\Users\\Rob\\repo\\src\\a.ts:9:2", "[host-path]/src/a.ts:9:2"],
     ["\\\\server\\share\\Users\\Rob\\repo\\src\\a.ts", "[host-path]/src/a.ts"],
-    ["file:///Users/rob/repo/src/a.ts", "[host-path]/src/a.ts"],
-    ["file://build-host/Users/rob/repo/src/a.ts", "[host-path]/src/a.ts"],
-    ["/home/rob/.aws/credentials", "[private-path]"],
+    ["file:///Users/example/repo/src/a.ts", "[host-path]/src/a.ts"],
+    ["file://build-host/Users/example/repo/src/a.ts", "[host-path]/src/a.ts"],
+    ["/home/example/.aws/credentials", "[private-path]"],
     ["C:\\Users\\Rob\\.mono-agent\\artifacts\\tool-output\\run-1\\out.txt", "[private-path]"],
+    ["gcc -I/Users/example/repo/include", "gcc -I[host-path]/repo/include"],
+    ["tar -C/Users/example/archive source.tgz", "tar -C[host-path]/archive source.tgz"],
+    ["docker -v/Users/example/data:/data image", "docker -v[host-path]/data:/data image"],
+    ["rsync -av/Users/example/source target", "rsync -av[host-path]/source target"],
+    ["read ~rob/repo/src/a.ts", "read [home-path]/src/a.ts"],
+    [".../Users/example/repo/src/a.ts", "...[host-path]/src/a.ts"],
+    ["/Users/example/Users/example", "[host-path]"],
+    ["[host-path]/Users/example/repo/src/a.ts", "[host-path]/src/a.ts"],
+    ["[private-path]/etc/passwd", "[private-path]/etc/passwd"],
+    ["[private-path]/Users/example/repo/a.ts", "[private-path][host-path]/repo/a.ts"],
+    [".ssh/id_rsa", "[private-path]"],
+    [".aws/credentials", "[private-path]"],
+    ["/Users/example/.git-credentials", "[private-path]"],
+    ["~rob/.netrc", "[private-path]"],
+    ["/home/example/.npmrc", "[private-path]"],
   ])("handles supported host-path forms and private segments: %s", (value, expected) => {
     const options = { omitFilesystemPaths: true } as const;
     expect(sanitizeVisibleText(value, options)).toBe(expected);
@@ -244,14 +259,192 @@ describe("redactJsonValue", () => {
   });
 
   it.each([
-    "https://example.com/Users/rob/a.ts,/Users/rob/still-url.ts",
-    "custom+scheme://host/Users/rob/a.ts;segment/Users/rob/b.ts",
-    "[URL](https://example.com/Users/rob/a.ts)",
-    "//example.com/Users/rob/a.ts",
+    ["/users/example/.git-credentials", "[private-path]"],
+    ["/Home/example/.npmrc", "[private-path]"],
+    ["/USERS/example/repo/src/a.ts", "[host-path]/src/a.ts"],
+  ])("case-folds POSIX roots and strips private account segments: %s", (value, expected) => {
+    const options = { omitFilesystemPaths: true } as const;
+    const sanitized = sanitizeVisibleText(value, options);
+
+    expect(sanitized).toBe(expected);
+    expect(sanitized).not.toMatch(/\/example(?:\/|$)/iu);
+    expect(sanitizeVisibleText(sanitized, options)).toBe(sanitized);
+  });
+
+  it.each([
+    "https://example.com/Users/example/a.ts,/Users/example/still-url.ts",
+    "custom+scheme://host/Users/example/a.ts;segment/Users/example/b.ts",
+    "https://example.com/Users/example/.ssh/url_rsa?next=/Users/example/.aws/url-credentials#fragment",
+    "[URL](https://example.com/Users/example/a.ts)",
+    "//example.com/Users/example/a.ts",
+    "//example.com/Users/example/.ssh/url_rsa",
   ])("does not treat URL path components as host filesystem paths: %s", (value) => {
     const options = { omitFilesystemPaths: true } as const;
     expect(containsVisibleSensitiveText(value, options)).toBe(false);
     expect(sanitizeVisibleText(value, options)).toBe(value);
+  });
+
+  it.each([
+    "<div>content</div>",
+    "<Users>content</Users>",
+    "</session_tool_history>",
+    "3 / 4",
+    "use / as the separator",
+    "build/run/test and alpha/Users/example",
+    "/^foo$/giu",
+    "replace /^foo$/ with bar /g",
+    "GET /api/v1/users?active=true HTTP/1.1",
+    "POST /request/path HTTP/1.1",
+    "/public/assets/app.js",
+    "/docs/reference/session-history",
+  ])("preserves useful slash syntax and public request paths: %s", (value) => {
+    const options = { omitFilesystemPaths: true } as const;
+
+    expect(containsVisibleSensitiveText(value, options)).toBe(false);
+    expect(sanitizeVisibleText(value, options)).toBe(value);
+  });
+
+  const reviewerAccount = ["roberts", "reberski"].join("");
+  const reviewerMacHome = ["/Users", reviewerAccount].join("/");
+  const reviewerLinuxHome = ["/home", reviewerAccount].join("/");
+
+  it.each([
+    [
+      `GET ${reviewerMacHome}/notes.txt HTTP/1.1`,
+      "GET [host-path]/notes.txt HTTP/1.1",
+    ],
+    [
+      `GET /files?path=${reviewerMacHome}/notes.txt HTTP/1.1`,
+      "GET /files?path=[host-path]/notes.txt HTTP/1.1",
+    ],
+    [
+      `POST /upload?dest=${reviewerLinuxHome}/secret-project/plan.md HTTP/1.0`,
+      "POST /upload?dest=[host-path]/secret-project/plan.md HTTP/1.0",
+    ],
+    [
+      `GET /api/v1/users?path=${reviewerMacHome}/notes.txt HTTP/1.1`,
+      "GET /api/v1/users?path=[host-path]/notes.txt HTTP/1.1",
+    ],
+    [
+      "GET /Users/example/.ssh/id_rsa HTTP/1.1",
+      "GET [private-path] HTTP/1.1",
+    ],
+    [
+      "GET /api/read?file=/Users/example/.ssh/id_rsa HTTP/1.1",
+      "GET /api/read?file=[private-path] HTTP/1.1",
+    ],
+    [
+      "GET /Users/example/profile?file=.ssh/id_rsa HTTP/1.1",
+      "GET [host-path]/profile?file=[private-path] HTTP/1.1",
+    ],
+  ])("redacts filesystem-shaped host evidence inside an HTTP request target: %s", (value, expected) => {
+    const options = { omitFilesystemPaths: true } as const;
+
+    expect(containsVisibleSensitiveText(value, options)).toBe(true);
+    expect(sanitizeVisibleText(value, options)).toBe(expected);
+  });
+
+  it("does not invent a token or line start at the bounded lookbehind edge", () => {
+    const oversizedOption = `-${"I".repeat(64)}/Users/example/profile`;
+    const oversizedRequestPrefix = `GET${" ".repeat(64)}/Users/example/profile HTTP/1.1`;
+    const options = { omitFilesystemPaths: true } as const;
+
+    expect(sanitizeVisibleText(oversizedOption, options)).toBe(oversizedOption);
+    expect(sanitizeVisibleText(oversizedRequestPrefix, options)).toBe(
+      `GET${" ".repeat(64)}[host-path]/profile HTTP/1.1`,
+    );
+  });
+
+  it("keeps path-classifier slice allocation bounded for a 200 KiB Write-style argument", () => {
+    const contentBytes = 200 * 1_024;
+    const base64LikeUnit = `${"A".repeat(80)}/`;
+    const content = base64LikeUnit.repeat(Math.ceil(contentBytes / base64LikeUnit.length))
+      .slice(0, contentBytes);
+    const serialized = JSON.stringify({
+      tool: "Write",
+      arguments: {
+        file_path: "/users/PrivateAccount/repo/blob.bin",
+        content,
+      },
+    });
+    const nativeSlice = String.prototype.slice;
+    let slicedCodeUnits = 0;
+    let largestSliceCodeUnits = 0;
+    const sliceSpy = vi.spyOn(String.prototype, "slice").mockImplementation(function (
+      this: string,
+      start?: number,
+      end?: number,
+    ): string {
+      const source = String(this);
+      if (source === serialized) {
+        const normalizedStart = start === undefined
+          ? 0
+          : start < 0
+            ? Math.max(0, source.length + start)
+            : Math.min(source.length, start);
+        const normalizedEnd = end === undefined
+          ? source.length
+          : end < 0
+            ? Math.max(0, source.length + end)
+            : Math.min(source.length, end);
+        const codeUnits = Math.max(0, normalizedEnd - normalizedStart);
+        slicedCodeUnits += codeUnits;
+        largestSliceCodeUnits = Math.max(largestSliceCodeUnits, codeUnits);
+      }
+      return nativeSlice.call(this, start, end);
+    });
+    let sanitized: string;
+    try {
+      sanitized = sanitizeVisibleText(serialized, { omitFilesystemPaths: true });
+    } finally {
+      sliceSpy.mockRestore();
+    }
+
+    expect(serialized.length).toBeGreaterThanOrEqual(contentBytes);
+    expect(sanitized).toContain('"file_path":"[host-path]/repo/blob.bin"');
+    expect(largestSliceCodeUnits).toBeLessThanOrEqual(128);
+    expect(slicedCodeUnits).toBeLessThanOrEqual(serialized.length * 2);
+
+    const redacted = redactJsonValue(
+      { file_path: "/users/PrivateAccount/repo/blob.bin", content },
+      4_096,
+      { visibleTextSanitization: { omitFilesystemPaths: true } },
+    ) as { readonly file_path: string; readonly content: string };
+    expect(redacted.file_path).toBe("[host-path]/repo/blob.bin");
+    expect(redacted.content).toMatch(/…\[truncated \d+ bytes\]$/u);
+  });
+
+  it("keeps URL-scheme classification work linear on plus-dense input", () => {
+    const countClassificationWork = (codeUnits: number): number => {
+      const input = "a+".repeat(codeUnits / 2);
+      const nativeCharCodeAt = String.prototype.charCodeAt;
+      let calls = 0;
+      const charCodeAtSpy = vi.spyOn(String.prototype, "charCodeAt").mockImplementation(function (
+        this: string,
+        position: number,
+      ): number {
+        calls += 1;
+        return nativeCharCodeAt.call(this, position);
+      });
+      let sanitized: string;
+      try {
+        sanitized = sanitizeVisibleText(input, {
+          omitFilesystemPaths: true,
+          maxBytes: codeUnits,
+        });
+      } finally {
+        charCodeAtSpy.mockRestore();
+      }
+      expect(sanitized).toBe(input);
+      return calls;
+    };
+
+    const sizes = [512, 1_024, 2_048] as const;
+    const counts = sizes.map(countClassificationWork);
+
+    expect(counts[1]).toBeLessThanOrEqual(counts[0]! * 2.5);
+    expect(counts[2]).toBeLessThanOrEqual(counts[1]! * 2.5);
+    expect(counts[2]).toBeLessThanOrEqual(sizes[2] * 80);
   });
 
   it.each([
@@ -270,7 +463,7 @@ describe("redactJsonValue", () => {
 
   it("keeps commands, multiple path suffixes, punctuation, line/column data, and web URLs inspectable", () => {
     const original = [
-      "Read /Users/alice/work/repo/src/index.ts:42:7),",
+      "Read /Users/example/work/repo/src/index.ts:42:7),",
       "compare C:\\Users\\Alice\\repo\\src\\windows.ts:9:2;",
       "then ls -la /etc && open https://example.com/docs/path.",
     ].join(" ");
@@ -281,16 +474,16 @@ describe("redactJsonValue", () => {
       "compare [host-path]/src/windows.ts:9:2;",
       "then ls -la [host-path]/etc && open https://example.com/docs/path.",
     ].join(" "));
-    expect(sanitized).not.toContain("/Users/alice");
+    expect(sanitized).not.toContain("/Users/example");
     expect(sanitized).not.toContain("C:\\Users\\Alice");
   });
 
   it("composes recursive path neutralization, credential redaction, truncation bounds, and repeat passes", () => {
     const secret = ["sk", "-", "A".repeat(48)].join("");
     const value = {
-      read: { file_path: "/Users/alice/work/repo/src/index.ts", apiKey: "not-shape-dependent" },
+      read: { file_path: "/Users/example/work/repo/src/index.ts", apiKey: "not-shape-dependent" },
       nested: [
-        "stack at /home/bob/service/src/worker.ts:12:4",
+        "stack at /home/example/service/src/worker.ts:12:4",
         { command: `cat /repo/config.json and report ${secret}` },
       ],
       url: "https://example.com/a/b",
@@ -313,17 +506,17 @@ describe("redactJsonValue", () => {
     expect(twice).toEqual(once);
 
     const bounded = sanitizeVisibleText(
-      `inspect /Users/alice/work/repo/src/index.ts ${"x".repeat(500)}`,
+      `inspect /Users/example/work/repo/src/index.ts ${"x".repeat(500)}`,
       { omitFilesystemPaths: true, maxBytes: 64 },
     );
     expect(new TextEncoder().encode(bounded).length).toBeLessThanOrEqual(64);
     expect(bounded).toContain("[host-path]/src/index.ts");
-    expect(bounded).not.toContain("/Users/alice");
+    expect(bounded).not.toContain("/Users/example");
     expect(sanitizeVisibleText(bounded, { omitFilesystemPaths: true, maxBytes: 64 })).toBe(bounded);
   });
 
   it("keeps whole-value omission for explicitly private run-artifact evidence", () => {
-    const artifactDir = "/Users/alice/.mono-agent/artifacts/runs";
+    const artifactDir = "/Users/example/.mono-agent/artifacts/runs";
     expect(sanitizeVisibleText(`inspect ${artifactDir}/run-1.summary.json`, {
       artifactDir,
       omitFilesystemPaths: true,

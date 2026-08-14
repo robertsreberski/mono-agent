@@ -504,12 +504,14 @@ bodies are omitted, and every response is labelled untrusted. Cold context
 reseed receives a bounded neutralized text projection; warm provider resume
 continues natively and receives no replay.
 
-Telegram `/new` clears message and tool records for only its exact physical
-conversation bucket. `restart --clear-sessions` purges all provider transcripts,
-message history, and tool history while reporting message/tool counts and bytes
-separately. Doctor audits schema, ownership, journal/integrity state, recovery,
-quota, and fail-soft counters. A newer tool-history schema hard-fails downgrade
-until persisted conversation state is purged.
+Telegram `/new` clears message records for its exact physical conversation
+bucket and all tool records in the same logical session, including prior daily
+rollover buckets that SessionHistory and cold projection can expose.
+`restart --clear-sessions` purges all provider transcripts, message history, and
+tool history while reporting message/tool counts and bytes separately. Doctor
+audits schema, ownership, journal/integrity state, recovery, quota, and fail-soft
+counters. A newer tool-history schema hard-fails downgrade until persisted
+conversation state is purged.
 
 ### Channel interactions and conversation history
 

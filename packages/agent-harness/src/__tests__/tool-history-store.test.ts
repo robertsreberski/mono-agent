@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -273,18 +273,18 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
     const run = binding("useful-path-history");
-    const sourcePath = "/Users/alice/work/repo/src/index.ts";
-    const outputPath = "/Users/alice/work/repo/src/generated/output.ts";
+    const sourcePath = "/Users/example/work/repo/src/index.ts";
+    const outputPath = "/Users/example/work/repo/src/generated/output.ts";
     const windowsPath = "C:\\Users\\Alice\\repo\\src\\windows.ts:18:6";
-    const privateArtifact = "/Users/alice/.mono-agent/artifacts/tool-output/private-run/bash.txt";
+    const privateArtifact = "/Users/example/.mono-agent/artifacts/tool-output/private-run/bash.txt";
     const secret = ["sk", "-", "A".repeat(48)].join("");
     const calls = [
       { id: "read", name: "Read", arguments: { file_path: sourcePath }, content: `export found at ${sourcePath}:4:2` },
       { id: "write", name: "Write", arguments: { file_path: outputPath, content: "export const generated = true;" }, content: `wrote ${outputPath}` },
       { id: "edit", name: "Edit", arguments: { file_path: sourcePath, old_string: "before", new_string: "after" }, content: `updated ${sourcePath}` },
       { id: "bash", name: "Bash", arguments: { command: `ls -la /etc && cat ${sourcePath}`, apiKey: "never-visible" }, content: `stack at ${windowsPath}), token ${secret}` },
-      { id: "grep", name: "Grep", arguments: { pattern: "needle", path: "/Users/alice/work/repo/src" }, content: [{ path: sourcePath, line: 7, text: "needle" }] },
-      { id: "glob", name: "Glob", arguments: { pattern: "/Users/alice/work/repo/src/**/*.{ts,tsx}" }, content: [sourcePath, outputPath, privateArtifact, "https://example.com/docs/path"] },
+      { id: "grep", name: "Grep", arguments: { pattern: "needle", path: "/Users/example/work/repo/src" }, content: [{ path: sourcePath, line: 7, text: "needle" }] },
+      { id: "glob", name: "Glob", arguments: { pattern: "/Users/example/work/repo/src/**/*.{ts,tsx}" }, content: [sourcePath, outputPath, privateArtifact, "https://example.com/docs/path"] },
     ] as const;
     const recordIds: string[] = [];
     try {
@@ -328,7 +328,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     expect(visible).toContain("https://example.com/docs/path");
     expect(visible).toContain("[private-path]");
     expect(visible).toContain("[redacted]");
-    for (const hidden of [sourcePath, outputPath, windowsPath, privateArtifact, "/Users/alice", "C:\\Users\\Alice", ".mono-agent", "private-run", secret]) {
+    for (const hidden of [sourcePath, outputPath, windowsPath, privateArtifact, "/Users/example", "C:\\Users\\Alice", ".mono-agent", "private-run", secret]) {
       expect(visible, hidden).not.toContain(hidden);
     }
 
@@ -343,23 +343,59 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     const writer = await ToolHistoryWriter.open({ root });
     const run = binding("delimiter-path-history");
     const cases = [
-      { raw: "[/Users/rob/.ssh/id_rsa]", expected: "[[private-path]]", paths: ["/Users/rob/.ssh/id_rsa"] },
-      { raw: "{/Users/rob/private/x.key}", expected: "{[host-path]/private/x.key}", paths: ["/Users/rob/private/x.key"] },
-      { raw: "-->/Users/rob/proj/a.ts", expected: "-->[host-path]/proj/a.ts", paths: ["/Users/rob/proj/a.ts"] },
-      { raw: "x;/Users/rob/proj/b.ts", expected: "x;[host-path]/proj/b.ts", paths: ["/Users/rob/proj/b.ts"] },
-      { raw: "cmd|/Users/rob/bin/tool", expected: "cmd|[host-path]/bin/tool", paths: ["/Users/rob/bin/tool"] },
-      { raw: "user@/Users/rob/share", expected: "user@[host-path]/share", paths: ["/Users/rob/share"] },
+      { raw: "[/Users/example/.ssh/id_rsa]", expected: "[[private-path]]", paths: ["/Users/example/.ssh/id_rsa"] },
+      { raw: "{/Users/example/private/x.key}", expected: "{[host-path]/private/x.key}", paths: ["/Users/example/private/x.key"] },
+      { raw: "-->/Users/example/proj/a.ts", expected: "-->[host-path]/proj/a.ts", paths: ["/Users/example/proj/a.ts"] },
+      { raw: "x;/Users/example/proj/b.ts", expected: "x;[host-path]/proj/b.ts", paths: ["/Users/example/proj/b.ts"] },
+      { raw: "cmd|/Users/example/bin/tool", expected: "cmd|[host-path]/bin/tool", paths: ["/Users/example/bin/tool"] },
+      { raw: "user@/Users/example/share", expected: "user@[host-path]/share", paths: ["/Users/example/share"] },
       {
-        raw: "/Users/rob/a.ts,/Users/rob/secret/b.ts",
-        expected: "[host-path]/a.ts,[host-path]/secret/b.ts",
-        paths: ["/Users/rob/a.ts", "/Users/rob/secret/b.ts"],
+        raw: "/Users/example/local/a.ts,/Users/example/secret/b.ts",
+        expected: "[host-path]/local/a.ts,[host-path]/secret/b.ts",
+        paths: ["/Users/example/local/a.ts", "/Users/example/secret/b.ts"],
       },
       { raw: "C:\\Users\\Rob\\repo\\src\\a.ts:9:2", expected: "[host-path]/src/a.ts:9:2", paths: ["C:\\Users\\Rob\\repo\\src\\a.ts:9:2"] },
       { raw: "\\\\server\\share\\Users\\Rob\\repo\\src\\a.ts", expected: "[host-path]/src/a.ts", paths: ["\\\\server\\share\\Users\\Rob\\repo\\src\\a.ts"] },
-      { raw: "file:///Users/rob/repo/src/a.ts", expected: "[host-path]/src/a.ts", paths: ["file:///Users/rob/repo/src/a.ts"] },
+      { raw: "file:///Users/example/repo/src/a.ts", expected: "[host-path]/src/a.ts", paths: ["file:///Users/example/repo/src/a.ts"] },
       { raw: "~/repo/src/a.ts", expected: "[home-path]/src/a.ts", paths: ["~/repo/src/a.ts"] },
+      { raw: "gcc -I/Users/example/repo/include", expected: "gcc -I[host-path]/repo/include", paths: ["/Users/example/repo/include"] },
+      { raw: "tar -C/Users/example/archive source.tgz", expected: "tar -C[host-path]/archive source.tgz", paths: ["/Users/example/archive"] },
+      { raw: "docker -v/Users/example/data:/data image", expected: "docker -v[host-path]/data:/data image", paths: ["/Users/example/data"] },
+      { raw: "rsync -av/Users/example/source target", expected: "rsync -av[host-path]/source target", paths: ["/Users/example/source"] },
+      { raw: "~rob/repo/src/a.ts", expected: "[home-path]/src/a.ts", paths: ["~rob/repo/src/a.ts"] },
+      { raw: ".../Users/example/repo/src/a.ts", expected: "...[host-path]/src/a.ts", paths: ["/Users/example/repo/src/a.ts"] },
+      { raw: "/Users/example/Users/example", expected: "[host-path]", paths: ["/Users/example/Users/example"] },
+      { raw: "[host-path]/Users/example/repo/a.ts", expected: "[host-path]/repo/a.ts", paths: ["/Users/example/repo/a.ts"] },
+      {
+        raw: "https://example.com/Users/example/a.ts,/Users/example/still-url.ts",
+        expected: "https://example.com/Users/example/a.ts,/Users/example/still-url.ts",
+        paths: [],
+      },
+      {
+        raw: "custom+scheme://host/Users/example/a.ts;segment/Users/example/b.ts",
+        expected: "custom+scheme://host/Users/example/a.ts;segment/Users/example/b.ts",
+        paths: [],
+      },
+      {
+        raw: "https://example.com/Users/example/.ssh/url_rsa?next=/Users/example/.aws/url-credentials#fragment",
+        expected: "https://example.com/Users/example/.ssh/url_rsa?next=/Users/example/.aws/url-credentials#fragment",
+        paths: [],
+      },
+      { raw: ".ssh/id_rsa", expected: "[private-path]", paths: [".ssh/id_rsa"] },
+      { raw: ".aws/credentials", expected: "[private-path]", paths: [".aws/credentials"] },
+      { raw: "/Users/example/.git-credentials", expected: "[private-path]", paths: ["/Users/example/.git-credentials"] },
+      { raw: "~rob/.netrc", expected: "[private-path]", paths: ["~rob/.netrc"] },
+      { raw: "/home/example/.npmrc", expected: "[private-path]", paths: ["/home/example/.npmrc"] },
       { raw: "./src/a.ts ../src/b.ts", expected: "./src/a.ts ../src/b.ts", paths: [] },
-      { raw: "https://example.com/Users/url-only/a.ts", expected: "https://example.com/Users/url-only/a.ts", paths: [] },
+      { raw: "https://example.com/Users/example/a.ts", expected: "https://example.com/Users/example/a.ts", paths: [] },
+      { raw: "</session_tool_history>", expected: "</session_tool_history>", paths: [] },
+      { raw: "3 / 4", expected: "3 / 4", paths: [] },
+      { raw: "build/run/test and alpha/Users/example", expected: "build/run/test and alpha/Users/example", paths: [] },
+      { raw: "/^foo$/giu", expected: "/^foo$/giu", paths: [] },
+      { raw: "GET /api/v1/users HTTP/1.1", expected: "GET /api/v1/users HTTP/1.1", paths: [] },
+      { raw: "GET /Users/example/.ssh/id_rsa HTTP/1.1", expected: "GET [private-path] HTTP/1.1", paths: ["/Users/example/.ssh/id_rsa"] },
+      { raw: "GET /api/read?file=/Users/example/.ssh/id_rsa HTTP/1.1", expected: "GET /api/read?file=[private-path] HTTP/1.1", paths: ["/Users/example/.ssh/id_rsa"] },
+      { raw: "/public/assets/app.js", expected: "/public/assets/app.js", paths: [] },
     ] as const;
     const invocation = await writer.persist(run, {
       phase: "invocation",
@@ -394,12 +430,15 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     for (const path of cases.flatMap(({ paths }) => paths)) {
       expect(databaseBytes.includes(Buffer.from(path)), path).toBe(false);
     }
+    for (const value of cases.filter(({ paths }) => paths.length === 0).map(({ raw }) => raw)) {
+      expect(databaseBytes.includes(Buffer.from(value)), value).toBe(true);
+    }
   });
 
   it("neutralizes private artifact paths in search, get chunks, and the cold projection while excluding the current run", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
-    const leakedPath = "/Users/private/.mono-agent/artifacts/tool-output/old-run/bash.txt";
+    const leakedPath = "/Users/example/.mono-agent/artifacts/tool-output/old-run/bash.txt";
     for (const [runId, label] of [["old-run", "retained"], ["current-run", "current-only"]] as const) {
       const run = binding(runId);
       await writer.persist(run, {
@@ -460,7 +499,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     }
   });
 
-  it("creates a paired synthetic invocation for an orphan result and resets only the exact physical rollover bucket", async () => {
+  it("resets the logical rollover session across search, get, and cold projection without harming isolation", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
     try {
@@ -478,14 +517,47 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       await writer.persist(binding("run-new", "slack:C1#2026-08-14"), {
         phase: "result", toolCallId: "kept", state: "success", content: "kept",
       });
-      await writer.resetConversation("slack:C1#2026-08-13");
+      await writer.persist({
+        ...binding("foreign-run", "slack:C2#2026-08-14"),
+        logicalConversationId: "slack:C2",
+      }, {
+        phase: "invocation", toolCallId: "foreign", toolName: "Read", arguments: {},
+      });
+      await writer.persist({
+        ...binding("foreign-run", "slack:C2#2026-08-14"),
+        logicalConversationId: "slack:C2",
+      }, {
+        phase: "result", toolCallId: "foreign", state: "success", content: "foreign",
+      });
+
+      const reader = new ToolHistoryReader(root);
+      const before = reader.search({ logicalConversationId: "slack:C1", currentRunId: "run-current" });
+      expect(before.items.map((item) => item.toolCallId).sort()).toEqual(["kept", "orphan"]);
+      expect(reader.latestProjection("slack:C1", "run-current")).toHaveLength(2);
+      const recordIds = before.items.flatMap((item) => [item.recordId, item.resultRecordId].filter(
+        (recordId): recordId is string => recordId !== undefined,
+      ));
+
+      await writer.resetConversation("slack:C1");
+      expect(reader.search({ logicalConversationId: "slack:C1", currentRunId: "run-current" }).items)
+        .toEqual([]);
+      expect(reader.latestProjection("slack:C1", "run-current")).toEqual([]);
+      for (const recordId of recordIds) {
+        expect(reader.get({
+          logicalConversationId: "slack:C1",
+          currentRunId: "run-current",
+          recordId,
+        })).toEqual({ untrusted: true });
+      }
     } finally {
       await writer.close();
     }
 
     const reader = new ToolHistoryReader(root);
-    const found = reader.search({ logicalConversationId: "slack:C1", currentRunId: "run-current" });
-    expect(found.items.map((item) => item.toolCallId)).toEqual(["kept"]);
+    expect(reader.search({ logicalConversationId: "slack:C1", currentRunId: "run-current" }).items)
+      .toEqual([]);
+    expect(reader.search({ logicalConversationId: "slack:C2", currentRunId: "run-current" }).items)
+      .toMatchObject([{ toolCallId: "foreign" }]);
     expect(reader.stats()).toMatchObject({ calls: 1, records: 2 });
   });
 
@@ -762,6 +834,16 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
       .rejects.toMatchObject({ code: "history_schema_unsupported" });
   });
 
+  it("keeps a one-shot process alive until writer readiness settles, then permits clean exit", async () => {
+    const root = await tempRoot();
+    const result = await childResult(startChild(root, 2_000, "open-only"));
+
+    expect(result.code, JSON.stringify(result)).toBe(0);
+    expect(result.stdout).toContain("STARTING");
+    expect(result.stdout).toContain("ACQUIRED");
+    expect(new ToolHistoryReader(root).stats()).toMatchObject({ calls: 0, records: 0 });
+  }, 10_000);
+
   it("rejects a second live process deterministically after its bounded acquisition window", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });
@@ -786,9 +868,50 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     expect(result.stdout).toContain("ACQUIRED");
   }, 10_000);
 
+  it.skipIf(process.platform === "win32")("keeps a live DELETE journal owner-only for doctor and concurrent acquisition", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    const contentPath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    const journalPath = `${contentPath}-journal`;
+    const blocker = new DatabaseSync(contentPath);
+    blocker.exec("PRAGMA busy_timeout=0; BEGIN");
+    blocker.prepare("SELECT count(*) FROM metadata").get();
+    const persistence = writer.persist(binding("live-journal-run"), {
+      phase: "invocation",
+      toolCallId: "live-journal-call",
+      toolName: "Read",
+      arguments: { path: "README.md" },
+    });
+    try {
+      const journal = await waitForFile(journalPath);
+      expect(journal.isFile()).toBe(true);
+      expect(journal.isSymbolicLink()).toBe(false);
+      expect(journal.nlink).toBe(1);
+      expect(Number(journal.mode) & 0o777).toBe(0o600);
+
+      const acquisition = ToolHistoryWriter.open({ root, ownerAcquireCeilingMs: 75 }).then(
+        (unexpectedWriter) => ({ unexpectedWriter }),
+        (error: unknown) => ({ error }),
+      );
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+      expect((await lstat(journalPath)).mode & 0o777).toBe(0o600);
+      blocker.exec("ROLLBACK");
+      blocker.close();
+      const acquisitionResult = await acquisition;
+      if ("unexpectedWriter" in acquisitionResult) await acquisitionResult.unexpectedWriter.close();
+      expect(acquisitionResult).toMatchObject({ error: { code: "history_writer_in_use" } });
+      expect(acquisitionResult).not.toHaveProperty("unexpectedWriter");
+    } finally {
+      try { blocker.exec("ROLLBACK"); } catch { /* already released after live inspection */ }
+      try { blocker.close(); } catch { /* already closed after live inspection */ }
+    }
+    await expect(persistence).resolves.toMatchObject({ persistence: "persisted" });
+    await writer.close();
+  }, 10_000);
+
   it.skipIf(process.platform === "win32")("reaps a dead owner and closes its dangling start as interrupted without rerun", async () => {
     const root = await tempRoot();
-    const child = startChild(root, 2_000, true);
+    const child = startChild(root, 2_000, "hold");
     await waitForOutput(child, "READY");
     child.kill("SIGKILL");
     await once(child, "exit");
@@ -842,9 +965,13 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
   }, 10_000);
 });
 
-function startChild(root: string, ceilingMs: number, holdAfterInvocation = false): ChildProcess {
+function startChild(
+  root: string,
+  ceilingMs: number,
+  mode: "close" | "hold" | "open-only" = "close",
+): ChildProcess {
   const fixture = fileURLToPath(new URL("./fixtures/tool-history-child.mjs", import.meta.url));
-  const child = spawn(process.execPath, [fixture, root, String(ceilingMs), holdAfterInvocation ? "hold" : "close"], {
+  const child = spawn(process.execPath, [fixture, root, String(ceilingMs), mode], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const buffers = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
@@ -888,4 +1015,16 @@ async function waitForOutput(child: ChildProcess, marker: string): Promise<void>
       rejectPromise(new Error(`Child exited ${String(code)} before ${marker}: ${output}`));
     });
   });
+}
+
+async function waitForFile(path: string): Promise<Awaited<ReturnType<typeof lstat>>> {
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    try {
+      return await lstat(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || Date.now() >= deadline) throw error;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
+    }
+  }
 }

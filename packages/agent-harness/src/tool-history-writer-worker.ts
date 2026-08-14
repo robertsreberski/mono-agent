@@ -10,6 +10,7 @@ import {
   mkdirSync,
   openSync,
   readdirSync,
+  unlinkSync,
 } from "node:fs";
 import { dirname, join, parse, resolve, sep } from "node:path";
 import { parentPort, workerData } from "node:worker_threads";
@@ -181,9 +182,12 @@ parentPort.on("message", (request: WorkerRequest) => {
           break;
         }
         case "reset_conversation": {
-          const conversationId = normalizeId(recordOf(request.payload).conversationId, "conversationId");
+          const logicalConversationId = normalizeId(
+            recordOf(request.payload).logicalConversationId,
+            "logicalConversationId",
+          );
           transaction(database, () => {
-            database.prepare("DELETE FROM runs WHERE conversation_id=?").run(conversationId);
+            database.prepare("DELETE FROM runs WHERE logical_id=?").run(logicalConversationId);
           });
           respond(request.id, null);
           break;
@@ -879,18 +883,50 @@ function artifactRefs(database: DatabaseSync, binding: ToolHistoryRunBinding, to
 }
 
 function transaction<T>(database: DatabaseSync, operation: () => T, afterCommit?: () => void): T {
-  database.exec("BEGIN IMMEDIATE");
+  const preparedJournalCreated = prepareSecureJournal();
   try {
+    database.exec("BEGIN IMMEDIATE");
     const value = operation();
     database.exec("COMMIT");
     try { afterCommit?.(); } catch (error) { incrementStat(database, "maintenance_failures", 1, reasonOf(error)); }
-    if (existsSync(journalPath)) {
-      try { chmodSync(journalPath, 0o600); } catch { /* doctor will flag a surviving insecure journal */ }
-    }
+    removeEmptyPreparedJournal();
     return value;
   } catch (error) {
     try { database.exec("ROLLBACK"); } catch { /* close/recovery remains authoritative */ }
+    if (preparedJournalCreated) removeEmptyPreparedJournal();
     throw error;
+  }
+}
+
+function prepareSecureJournal(): boolean {
+  // SQLite creates the DELETE journal at the first write inside a transaction.
+  // Materialize it with its final mode before BEGIN so doctor and a concurrent
+  // owner acquisition can never observe SQLite's process-default creation mode.
+  const created = !existsSync(journalPath);
+  const descriptor = openSync(
+    journalPath,
+    fsConstants.O_CREAT | fsConstants.O_RDWR | (fsConstants.O_NOFOLLOW ?? 0),
+    0o600,
+  );
+  try {
+    fchmodSync(descriptor, 0o600);
+  } finally {
+    closeSync(descriptor);
+  }
+  assertSecureFile(journalPath);
+  return created;
+}
+
+function removeEmptyPreparedJournal(): void {
+  if (!existsSync(journalPath)) return;
+  try {
+    const info = lstatSync(journalPath);
+    if (info.isFile() && !info.isSymbolicLink() && info.nlink === 1 && info.size === 0) {
+      unlinkSync(journalPath);
+    }
+  } catch {
+    // A surviving journal remains visible to the next writer and doctor, which
+    // fail closed unless a live owner can account for it.
   }
 }
 

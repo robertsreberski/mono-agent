@@ -132,6 +132,69 @@ describe("tool lifecycle persistence gate", () => {
     });
   });
 
+  it("delivers ordinary client events synchronously while preserving order around an awaited write", async () => {
+    const order = [];
+    let releasePersistence;
+    const persistenceBlocked = new Promise((resolve) => { releasePersistence = resolve; });
+    const gate = createToolLifecycleEventGate({
+      sink: async () => {
+        order.push("persist:start");
+        await persistenceBlocked;
+        order.push("persist:end");
+        return { persistence: "persisted", recordId: "record-1", sequence: 1 };
+      },
+      onEvent: (event) => order.push(`client:${event.type}`),
+    });
+
+    gate.emit({ type: "status_before" });
+    expect(order).toEqual(["client:status_before"]);
+
+    gate.emit({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "call-1", name: "Read", input: {} }] },
+    });
+    gate.emit({ type: "status_after" });
+    await Promise.resolve();
+    expect(order).toEqual(["client:status_before", "persist:start"]);
+
+    releasePersistence();
+    await gate.flush();
+    expect(order).toEqual([
+      "client:status_before",
+      "persist:start",
+      "persist:end",
+      "client:assistant",
+      "client:status_after",
+    ]);
+  });
+
+  it("keeps lifecycle observers synchronous while client delivery waits for persistence", async () => {
+    const order = [];
+    let releasePersistence;
+    const persistenceBlocked = new Promise((resolve) => { releasePersistence = resolve; });
+    const gate = createToolLifecycleEventGate({
+      sink: async () => {
+        order.push("persist:start");
+        await persistenceBlocked;
+        return { persistence: "persisted", recordId: "record-1", sequence: 1 };
+      },
+      onObserve: (event) => order.push(`observe:${event.type}`),
+      onEvent: (event) => order.push(`client:${event.type}`),
+    });
+
+    gate.emit({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "call-1", name: "Read", input: {} }] },
+    });
+    expect(order).toEqual(["observe:assistant"]);
+    await Promise.resolve();
+    expect(order).toEqual(["observe:assistant", "persist:start"]);
+
+    releasePersistence();
+    await gate.flush();
+    expect(order).toEqual(["observe:assistant", "persist:start", "client:assistant"]);
+  });
+
   it("fails soft with an explicit marker and still emits exactly once", async () => {
     const seen = [];
     const gate = createToolLifecycleEventGate({

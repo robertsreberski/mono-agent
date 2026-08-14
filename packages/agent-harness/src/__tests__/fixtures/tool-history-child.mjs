@@ -1,7 +1,7 @@
 import { ToolHistoryWriter } from "../../../dist/index.js";
 
 const [root, ceilingText, mode] = process.argv.slice(2);
-const keepAlive = setInterval(() => {}, 1_000);
+const keepAlive = mode === "open-only" ? undefined : setInterval(() => {}, 1_000);
 console.log("STARTING");
 try {
   const writer = await ToolHistoryWriter.open({
@@ -25,12 +25,12 @@ try {
       },
     );
     console.log("READY");
-  } else {
+  } else if (mode === "close") {
     await writer.close();
-    clearInterval(keepAlive);
+    if (keepAlive !== undefined) clearInterval(keepAlive);
   }
 } catch (error) {
-  clearInterval(keepAlive);
+  if (keepAlive !== undefined) clearInterval(keepAlive);
   console.log(error?.code || error?.message || String(error));
   process.exitCode = error?.code === "history_writer_in_use" ? 23 : 24;
 }

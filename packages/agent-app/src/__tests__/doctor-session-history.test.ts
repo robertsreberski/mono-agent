@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -54,7 +54,7 @@ describe("sessionToolHistorySection", () => {
     await writer.close();
 
     const section = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
-    expect(section.status).toBe("ok");
+    expect(section.status, section.details.join("\n")).toBe("ok");
     expect(section.details).toContain("Message history: 1 files, 3 bytes.");
     expect(section.details.join("\n")).toMatch(/Tool history physical storage: 2 files, \d+ bytes/iu);
     expect(section.details.join("\n")).toMatch(/Tool history: 1 calls, 2 records, 0 tombstones, \d+ retained payload bytes, \d+ database bytes/iu);
@@ -70,6 +70,41 @@ describe("sessionToolHistorySection", () => {
     expect(section.status).toBe("waiting");
     expect(section.details.join("\n")).toContain("1 invocation(s) were recovered as interrupted without rerun.");
   });
+
+  it.skipIf(process.platform === "win32")("reports a secure live DELETE transaction as waiting instead of error", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    const contentPath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    const journalPath = `${contentPath}-journal`;
+    const blocker = new DatabaseSync(contentPath);
+    blocker.exec("PRAGMA busy_timeout=0; BEGIN");
+    blocker.prepare("SELECT count(*) FROM metadata").get();
+    const persistence = writer.persist(binding, {
+      phase: "invocation",
+      toolCallId: "live-transaction",
+      toolName: "Read",
+      arguments: { path: "README.md" },
+    });
+    try {
+      const journal = await waitForFile(journalPath);
+      expect(Number(journal.mode) & 0o777).toBe(0o600);
+
+      const section = await sessionToolHistorySection({
+        historyRoot: root,
+        requestScopedToolSupported: true,
+      });
+      expect(section.status).toBe("waiting");
+      expect(section.details).toContain(
+        "An in-flight DELETE journal is present under the protected 0700 tool-history directory.",
+      );
+      expect(section.details.join("\n")).not.toMatch(/journal must be.*0600/iu);
+    } finally {
+      blocker.exec("ROLLBACK");
+      blocker.close();
+    }
+    await persistence;
+    await writer.close();
+  }, 10_000);
 
   it("hard-fails newer schema state with the documented purge-only downgrade path", async () => {
     const root = await tempRoot();
@@ -96,3 +131,15 @@ describe("sessionToolHistorySection", () => {
     expect(section.details).toContain("Tool history database must be a single-link regular current-user file with mode 0600.");
   });
 });
+
+async function waitForFile(path: string): Promise<Awaited<ReturnType<typeof lstat>>> {
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    try {
+      return await lstat(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || Date.now() >= deadline) throw error;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
+    }
+  }
+}
