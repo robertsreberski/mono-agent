@@ -29,6 +29,17 @@ import { createLocalConfigurationRuntimeExtension } from "./local-configuration.
 import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "./run-history.js";
 import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed } from "./session-history.js";
 import {
+  createReplyArtifactService,
+  DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES,
+  isPublishReplyFileToolAllowed,
+  replyArtifactStorageBudgetFor,
+} from "./reply-artifacts.js";
+import {
+  createMcpAppService,
+  DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES,
+} from "./mcp-apps.js";
+import { createReplyPartBudget } from "./reply-part-budget.js";
+import {
   createRequestModelOverrideRuntimeExtension,
   requestModelOverrideTargetsDirectOpenCode,
   requestModelOverrideTargetsUnsupportedHistoryTool,
@@ -43,12 +54,15 @@ import {
   reasonOf,
   runtimeRouteContainsDirectOpenCode,
   runtimeRouteContainsUnsupportedHistoryTool,
+  runtimeRouteSupportsMcpApps,
 } from "./app-controller-utils.js";
 import type { ChannelId, MonoAgentAppLogger } from "./channels.js";
+import { loadContinuationSettings } from "./continuation-config.js";
 import type { InteractionBridgeHandle } from "./interaction-bridge.js";
 import type { ContinuationServiceHandle } from "./continuation-service.js";
 import type { MemoryRetrievalService } from "./memory-retrieval.js";
 import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
+import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 
@@ -107,6 +121,12 @@ export interface ResponderControllerPort {
  */
 const SELF_BOUNDED_CHANNEL_ID = "tui";
 
+/** @internal deterministic composition contract used by focused tests. */
+export function replyArtifactStorageMaxBytesForMcpApps(mcpAppsEnabled: boolean): number {
+  return DEFAULT_REPLY_ARTIFACT_STORAGE_MAX_BYTES
+    - (mcpAppsEnabled ? DEFAULT_MCP_APP_AUDIT_STORAGE_MAX_BYTES : 0);
+}
+
 /** The rollover policy this channel's responder runs under. */
 export function sessionRolloverForChannel(
   channelId: ChannelId | undefined,
@@ -136,6 +156,54 @@ export async function buildResponder(
   const supermemoryMcp = controller.supermemoryMcpRuntimeOptions(coreConfig);
   const adapterSendTools = await controller.adapterSendToolsRuntimeOptions(coreConfig);
   const historyToolSupport = historyToolRouteSupport(coreConfig);
+  const replyPartBudget = createReplyPartBudget();
+  const mcpAppsEnabled = runtimeRouteSupportsMcpApps(coreConfig);
+  const replyArtifactStorage = replyArtifactStorageBudgetFor(
+    coreConfig.artifacts.dir,
+    replyArtifactStorageMaxBytesForMcpApps(mcpAppsEnabled),
+  );
+  const artifactDerivedRoots = agentArtifactDerivedRoots(coreConfig.artifacts.dir);
+  const continuationStateDir = (await loadContinuationSettings({
+    cwd: controller.cwd,
+    configPath: controller.configReadPath,
+    env: controller.env,
+  })).stateDir;
+  const replyArtifactPrivateRoots = [
+    resolve(controller.cwd, ".mono-agent"),
+    controller.configPath,
+    controller.configReadPath,
+    coreConfig.context.identityPath,
+    coreConfig.context.soulPath,
+    coreConfig.context.skillsRoot,
+    coreConfig.memory?.path,
+    coreConfig.tools.mcpConfigPath,
+    coreConfig.providers?.piAuthPath,
+    coreConfig.providers?.piNative?.piSessionsRoot,
+    coreConfig.traceability.registryDir,
+    continuationStateDir,
+    artifactDerivedRoots.history,
+  ].filter((path): path is string => path !== undefined);
+  const replyArtifacts = createReplyArtifactService({
+    artifactDir: coreConfig.artifacts.dir,
+    workspace: coreConfig.runtime.workspace,
+    privateRoots: replyArtifactPrivateRoots,
+    retentionDays: coreConfig.artifacts.retention.maxAgeDays,
+    replyPartBudget,
+    storageBudget: replyArtifactStorage,
+  });
+  const mcpApps = mcpAppsEnabled
+    ? createMcpAppService({
+        artifactDir: coreConfig.artifacts.dir,
+        retentionDays: coreConfig.artifacts.retention.maxAgeDays,
+        replyPartBudget,
+        storageBudget: replyArtifactStorage,
+      })
+    : undefined;
+  const mcpAppsBase = mcpApps?.createExtension;
+  const replyArtifactsBase = isPublishReplyFileToolAllowed(coreConfig.tools)
+    && !runtimeRouteContainsDirectOpenCode(coreConfig)
+    ? replyArtifacts.createExtension
+    : undefined;
   const runHistoryBase = isRunHistoryToolAllowed(coreConfig.tools)
     && historyToolSupport.runHistory
     ? createRunHistoryRuntimeExtension({
@@ -188,6 +256,16 @@ export async function buildResponder(
   const adapterSendToolsExtension = adapterSendTools.createExtension?.(
     requestModelOverride.targetsDirectOpenCode,
   );
+  const mcpAppsExtension: RuntimeOptionsExtension | undefined = mcpAppsBase === undefined
+    ? undefined
+    : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
+      ? { runtimeOptions: {}, cleanup: async () => {} }
+      : await mcpAppsBase(requestInput);
+  const replyArtifactsExtension: RuntimeOptionsExtension | undefined = replyArtifactsBase === undefined
+    ? undefined
+    : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
+      ? { runtimeOptions: {}, cleanup: async () => {} }
+      : await replyArtifactsBase(requestInput);
   const runHistoryExtension: RuntimeOptionsExtension | undefined = runHistoryBase === undefined
     ? undefined
     : async (requestInput) => requestModelOverride.targetsDirectOpenCode(requestInput.request.metadata)
@@ -208,6 +286,8 @@ export async function buildResponder(
     supermemoryMcp,
     runHistoryExtension,
     sessionHistoryExtension,
+    mcpAppsExtension,
+    replyArtifactsExtension,
     adapterSendToolsExtension,
     requestModelOverride.extension,
     // Last and authoritative: only an opaque owner-created configuration
@@ -284,7 +364,10 @@ export async function buildResponder(
       }
     },
   });
-  return postedReplyHistory.wrapResponder(responder);
+  const replyResponder = replyArtifacts.wrapResponder(responder);
+  return postedReplyHistory.wrapResponder(
+    mcpApps === undefined ? replyResponder : mcpApps.wrapResponder(replyResponder),
+  );
 }
 
 export function requestModelOverrideRuntimeOptions(
@@ -398,7 +481,7 @@ export async function adapterSendToolsRuntimeOptions(controller: ResponderContro
   const indexPath = resolvePostedMessageIndexPath(await resolveAppArtifactDir(input));
   const interactionForChild = settings.askUser;
   const runOutputRoot = settings.telegram?.sendTools?.pathScope === "run-output"
-    ? resolve(coreConfig.artifacts.dir, "outbound")
+    ? agentArtifactDerivedRoots(coreConfig.artifacts.dir).outbound
     : undefined;
   const createExtension = (
     targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean,

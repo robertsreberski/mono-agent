@@ -23,13 +23,27 @@ The Agent Card advertises `capabilities.streaming: true`, so callers can stream 
 
 ## Scope
 
-The provider is deliberately **text/task only**. It supports plain-text message exchange and task-style turns, and nothing more. The following A2A protocol features are intentionally not implemented:
+The provider is deliberately **text/task only** for deliverable content. It
+supports plain-text message exchange and task-style turns. If a responder tries
+to return an attachment or MCP App, answer text remains byte-for-byte unchanged
+and the final artifact adds one structured outcome data `Part`; every attempted
+rich part terminates explicitly as a bounded sanitized failure. Text-only
+clients can ignore that additive part. The following A2A protocol features are
+intentionally not implemented:
 
 - No agent registry / catalog
 - No gRPC transport (HTTP/JSON only)
 - No push notifications
 - No signed Agent Cards
-- No file exchange (text parts only)
+- No file exchange (no file URL or raw-byte parts)
+
+The outcome part uses
+`application/vnd.mono-agent.reply-part-outcomes+json`. It never carries part
+ids, filenames, local or host-only URLs, capability values, integrity ids,
+producer messages, or private payload bytes. Attachments and MCP Apps report
+`unsupported_destination`; the list is capped at 20 with a counted overflow
+aggregate. Durable idempotency stores and replays the same structured result
+without rerunning the responder.
 
 :::note
 If you need richer transport semantics, treat the provider as a stable text gateway and compose the missing pieces in front of it. The surface is kept small on purpose so it stays predictable for other agents to call.

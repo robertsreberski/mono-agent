@@ -95,6 +95,52 @@ describe("web HTTP server", () => {
     expect(JSON.stringify(body)).not.toContain("privateKey");
   });
 
+  it("serves the fixed MCP App proxy with a route-local executable CSP", async () => {
+    const { baseUrl } = await start();
+
+    const proxy = await fetch(`${baseUrl}/api/v1/mcp-app-proxy`);
+    expect(proxy.status).toBe(200);
+    expect(proxy.headers.get("content-type")).toContain("text/html");
+    expect(proxy.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(proxy.headers.get("x-frame-options")).toBe("SAMEORIGIN");
+    expect(proxy.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+    const proxyCsp = proxy.headers.get("content-security-policy") ?? "";
+    const proxyDirectives = new Map(proxyCsp.split("; ").map((directive) => {
+      const separator = directive.indexOf(" ");
+      return separator < 0
+        ? [directive, ""] as const
+        : [directive.slice(0, separator), directive.slice(separator + 1)] as const;
+    }));
+    expect(proxyDirectives.get("script-src")).toBe("'unsafe-inline'");
+    expect(proxyDirectives.get("frame-ancestors")).toBe("'self'");
+    for (const omitted of [
+      "default-src",
+      "connect-src",
+      "style-src",
+      "img-src",
+      "font-src",
+      "media-src",
+      "frame-src",
+      "child-src",
+      "base-uri",
+    ]) expect(proxyDirectives.has(omitted)).toBe(false);
+    expect(proxyCsp).not.toMatch(/script-src[^;]*(?:https?:|\*)/u);
+    const document = await proxy.text();
+    expect(document).toContain('type: "mono-agent:mcp-app-proxy-ready"');
+    expect(document).toContain('frame.setAttribute("sandbox", "allow-scripts")');
+    expect(document).toContain('event.source !== appFrame.contentWindow');
+    expect(document).toContain('event.origin !== "null"');
+    expect(document).not.toContain("allow-same-origin");
+    expect(document).not.toContain("resourceUrl");
+    expect(document).not.toContain("bridgeUrl");
+
+    const shell = await fetch(`${baseUrl}/`);
+    const shellCsp = shell.headers.get("content-security-policy") ?? "";
+    expect(shellCsp).toContain("script-src 'self'");
+    expect(shellCsp).not.toMatch(/script-src[^;]*'unsafe-inline'/u);
+    expect(shell.headers.get("x-frame-options")).toBe("DENY");
+  });
+
   it("registers only exact-origin public push endpoints and never returns endpoint secrets", async () => {
     const { baseUrl } = await start({
       pushDnsResolver: async () => [{ address: "203.0.114.10", family: 4 }],
@@ -570,6 +616,246 @@ describe("web HTTP server", () => {
     expect(content.headers.get("content-disposition")).toContain("attachment;");
     expect(content.headers.get("content-disposition")).toContain("%27");
     expect(await content.text()).toBe("hello");
+  });
+
+  it("serves message-bound reply downloads and private MCP App bridge routes with hardened headers", async () => {
+    const bytes = Buffer.from("<script>alert(1)</script>");
+    const integrityId = `sha256:${"a".repeat(64)}`;
+    const bridgeBodies: Record<string, unknown>[] = [];
+    let clockMs = Date.parse("2026-08-14T12:00:00.000Z");
+    const { baseUrl } = await start({
+      clock: () => new Date(clockMs),
+      fetchImpl: operatorFetch({
+        supportsReplyAttachments: true,
+        supportsMcpApps: true,
+        turns: () => `${JSON.stringify({
+          kind: "finish",
+          finalText: "Ready",
+          parts: [
+            {
+              type: "attachment",
+              id: "file-part",
+              reference: { scheme: "mono-agent-artifact", id: "artifact-one" },
+              name: "unsafe.html",
+              mediaType: "text/html",
+              sizeBytes: bytes.byteLength,
+              integrityId,
+              expiresAt: "2026-08-15T12:00:00.000Z",
+            },
+            {
+              type: "mcp_app",
+              id: "11111111-1111-4111-8111-111111111111",
+              invocationId: "11111111-1111-4111-8111-111111111111",
+              connectionId: "connection-one",
+              serverName: "widgets",
+              toolName: "show_chart",
+              resourceUri: "ui://widgets/chart",
+              mediaType: "text/html;profile=mcp-app",
+              protocolVersion: "2026-01-26",
+              expiresAt: "2026-08-15T12:00:00.000Z",
+            },
+          ],
+        })}\n`,
+        onReplyArtifact(_url, init) {
+          expect(init?.headers).toMatchObject({ "x-mono-agent-integrity-id": integrityId });
+          return new Response(bytes, {
+            headers: { "content-length": String(bytes.byteLength), "x-mono-agent-integrity-id": integrityId },
+          });
+        },
+        onMcpAppResource(_url, init) {
+          expect(init?.headers).toMatchObject({ "x-mono-agent-mcp-connection-id": "connection-one" });
+          return {
+            app: {
+              type: "mcp_app",
+              id: "11111111-1111-4111-8111-111111111111",
+              invocationId: "11111111-1111-4111-8111-111111111111",
+              connectionId: "connection-one",
+              serverName: "widgets",
+              toolName: "show_chart",
+              resourceUri: "ui://widgets/chart",
+              mediaType: "text/html;profile=mcp-app",
+              protocolVersion: "2026-01-26",
+            },
+            html: "<!doctype html><script>parent.document.cookie</script>",
+            connected: true,
+          };
+        },
+        onMcpAppRequest(_url, body) {
+          bridgeBodies.push(body);
+          if ((body.params as { readonly name?: unknown } | undefined)?.name === "audit_incomplete") {
+            return Response.json({
+              error: {
+                code: "app_audit_incomplete",
+                message: "The MCP App tool ran; do not retry automatically.",
+              },
+            }, { status: 409 });
+          }
+          return { ok: true };
+        },
+      }),
+    });
+    const created = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    const thread = (await json(created) as { thread: { id: string } }).thread;
+    await fetch(`${baseUrl}/api/v1/threads/${thread.id}/turns`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "show results" }),
+    });
+    let message: { id: string; parts: Array<Record<string, unknown>> } | undefined;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`)) as {
+        messages: Array<{ id: string; parts: Array<Record<string, unknown>> }>;
+      };
+      message = detail.messages.at(-1);
+      if (message?.parts.some((part) => part.type === "mcp_app")) break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+    const attachment = message?.parts.find((part) => part.type === "attachment");
+    const app = message?.parts.find((part) => part.type === "mcp_app");
+    expect(attachment?.contentUrl).toEqual(expect.any(String));
+    expect(app?.resourceUrl).toEqual(expect.any(String));
+
+    const download = await fetch(`${baseUrl}${String(attachment?.contentUrl)}`);
+    expect(download.status).toBe(200);
+    expect(download.headers.get("content-type")).toBe("application/octet-stream");
+    expect(download.headers.get("content-disposition")).toMatch(/^attachment;/u);
+    expect(download.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(download.headers.get("content-security-policy")).toContain("sandbox");
+    expect(download.headers.get("accept-ranges")).toBe("none");
+    expect(Buffer.from(await download.arrayBuffer())).toEqual(bytes);
+
+    const other = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    const otherId = (await json(other) as { thread: { id: string } }).thread.id;
+    const crossSessionUrl = String(attachment?.contentUrl).replace(thread.id, otherId);
+    expect((await fetch(`${baseUrl}${crossSessionUrl}`)).status).toBe(404);
+
+    const appResource = await fetch(`${baseUrl}${String(app?.resourceUrl)}`);
+    expect(appResource.status).toBe(200);
+    expect(appResource.headers.get("cache-control")).toContain("no-store");
+    expect(appResource.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    await expect(appResource.json()).resolves.toMatchObject({ connected: true, html: expect.stringContaining("<script>") });
+
+    const bridgeUrl = `${baseUrl}${String(app?.bridgeUrl)}`;
+    const unconfirmed = await fetch(bridgeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({ method: "tools/call", params: { name: "refresh_chart" } }),
+    });
+    expect(unconfirmed.status).toBe(409);
+    const confirmed = await fetch(bridgeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({ method: "tools/call", params: { name: "refresh_chart" }, confirmed: true }),
+    });
+    await expect(confirmed.json()).resolves.toEqual({ result: { ok: true } });
+    expect(bridgeBodies).toEqual([{
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    }]);
+    const incomplete = await fetch(bridgeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({ method: "tools/call", params: { name: "audit_incomplete" }, confirmed: true }),
+    });
+    expect(incomplete.status).toBe(409);
+    await expect(incomplete.json()).resolves.toMatchObject({
+      error: {
+        code: "app_audit_incomplete",
+        message: expect.stringContaining("do not retry automatically"),
+      },
+    });
+
+    const crossOrigin = await fetch(bridgeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://evil.example" },
+      body: JSON.stringify({ method: "resources/read", params: { uri: "ui://widgets/data" } }),
+    });
+    expect(crossOrigin.status).toBe(403);
+    const oversized = await fetch(bridgeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({ method: "resources/read", params: { value: "x".repeat(70 * 1024) } }),
+    });
+    expect(oversized.status).toBe(413);
+
+    clockMs += 11 * 60 * 1_000;
+    const expiredDownload = await fetch(`${baseUrl}${String(attachment?.contentUrl)}`);
+    expect(expiredDownload.status).toBe(410);
+    await expect(expiredDownload.json()).resolves.toMatchObject({
+      error: { code: "reply_access_expired" },
+    });
+    const expiredResource = await fetch(`${baseUrl}${String(app?.resourceUrl)}`);
+    expect(expiredResource.status).toBe(410);
+    await expect(expiredResource.json()).resolves.toMatchObject({
+      error: { code: "reply_access_expired" },
+    });
+    const expiredBridge = await fetch(bridgeUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({ method: "resources/read", params: { uri: "ui://widgets/data" } }),
+    });
+    expect(expiredBridge.status).toBe(410);
+    await expect(expiredBridge.json()).resolves.toMatchObject({
+      error: { code: "reply_access_expired" },
+    });
+
+    const attachmentAccessPath = new URL(String(attachment?.contentUrl), baseUrl).pathname
+      .replace(/\/content$/u, "/access");
+    const appAccessPath = `${new URL(String(app?.resourceUrl), baseUrl).pathname}/access`;
+    const refreshedAttachmentResponse = await fetch(`${baseUrl}${attachmentAccessPath}`, {
+      method: "POST",
+      headers: { origin: baseUrl },
+    });
+    expect(refreshedAttachmentResponse.status).toBe(200);
+    const refreshedAttachment = (await json(refreshedAttachmentResponse)).part as Record<string, unknown>;
+    expect(refreshedAttachment.contentUrl).not.toBe(attachment?.contentUrl);
+    expect((await fetch(`${baseUrl}${String(refreshedAttachment.contentUrl)}`)).status).toBe(200);
+
+    const refreshedAppResponse = await fetch(`${baseUrl}${appAccessPath}`, {
+      method: "POST",
+      headers: { origin: baseUrl },
+    });
+    expect(refreshedAppResponse.status).toBe(200);
+    const refreshedApp = (await json(refreshedAppResponse)).part as Record<string, unknown>;
+    expect(refreshedApp.resourceUrl).not.toBe(app?.resourceUrl);
+    expect((await fetch(`${baseUrl}${String(refreshedApp.resourceUrl)}`)).status).toBe(200);
+    const refreshedBridge = await fetch(`${baseUrl}${String(refreshedApp.bridgeUrl)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({ method: "resources/read", params: { uri: "ui://widgets/data" } }),
+    });
+    expect(refreshedBridge.status).toBe(200);
+
+    const staleAttachmentUrl = new URL(String(attachment?.contentUrl), baseUrl);
+    const originalToken = staleAttachmentUrl.searchParams.get("token")!;
+    staleAttachmentUrl.searchParams.set(
+      "token",
+      `${originalToken.slice(0, -1)}${originalToken.endsWith("x") ? "y" : "x"}`,
+    );
+    const forged = await fetch(staleAttachmentUrl);
+    expect(forged.status).toBe(404);
+    await expect(forged.json()).resolves.toMatchObject({ error: { code: "reply_part_not_found" } });
+    const unknown = await fetch(
+      `${baseUrl}${String(attachment?.contentUrl).replace("file-part", "unknown-part")}`,
+    );
+    expect(unknown.status).toBe(404);
+    const crossThreadRefresh = await fetch(
+      `${baseUrl}${attachmentAccessPath.replace(thread.id, otherId)}`,
+      { method: "POST", headers: { origin: baseUrl } },
+    );
+    expect(crossThreadRefresh.status).toBe(404);
+    const missingOriginRefresh = await fetch(`${baseUrl}${attachmentAccessPath}`, { method: "POST" });
+    expect(missingOriginRefresh.status).toBe(403);
+    expect(bridgeBodies).toHaveLength(3);
   });
 
   it("keeps failed upload bytes staged/retryable and removes only staged attachments", async () => {

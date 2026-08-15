@@ -4,7 +4,14 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   AgentResponseCancelledError,
+  CodedError,
+  MAX_AGENT_REPLY_PARTS,
+  MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES,
   isChannelUserCancelReason,
+  parseCronOperatorJob,
+  parseCronOperatorOverview,
+  parseCronOperatorRunDetail,
+  parseCronOperatorRunPage,
   parseAgentStreamFrame,
   serializeAgentStreamFrame,
   type AgentMessageStream,
@@ -248,6 +255,13 @@ describe("startTuiAdapter", () => {
     let actionsEnabled = false;
     let degradedReason: string | undefined;
     const calls: unknown[] = [];
+    const replyPartOutcomes = [{
+      partIndex: 0,
+      partType: "attachment" as const,
+      status: "failed" as const,
+      code: "unsupported_destination" as const,
+      message: "Attachment reply parts are unsupported on this destination.",
+    }];
     const cron: CronOperatorService = {
       overview: () => ({
         generatedAt: "2026-08-14T10:00:00.000Z",
@@ -276,7 +290,9 @@ describe("startTuiAdapter", () => {
         orderedAt: "2026-08-14T10:00:00.000Z",
         sequence: 1,
         trigger: "manual",
-        status: "admitted",
+        status: "succeeded",
+        text: "  operator text\n",
+        replyPartOutcomes,
         eventCount: 0,
         events: [],
         eventsIncluded: 0,
@@ -363,6 +379,12 @@ describe("startTuiAdapter", () => {
       `${running.baseUrl}/v1/cron/jobs/${encodeURIComponent("daily:brief")}/runs?limit=5&before=cursor`,
       { headers },
     )).json()).resolves.toEqual({ runs: [], nextCursor: "older" });
+    await expect((await fetch(
+      `${running.baseUrl}/v1/cron/jobs/${encodeURIComponent("daily:brief")}/runs/${encodeURIComponent("run-one")}`,
+      { headers },
+    )).json()).resolves.toMatchObject({
+      run: { status: "succeeded", text: "  operator text\n", replyPartOutcomes },
+    });
     await expect((await fetch(`${running.baseUrl}/v1/cron/config-view`, { headers })).json()).resolves.toMatchObject({
       configView: { fields: [{ value: "set" }] },
     });
@@ -392,6 +414,13 @@ describe("startTuiAdapter", () => {
   });
 
   it("serializes adversarial overview, 100-run pages, older pages, and detail below the cron wire ceiling", async () => {
+    const replyPartOutcomes = Array.from({ length: MAX_AGENT_REPLY_PARTS }, (_, partIndex) => ({
+      partIndex,
+      partType: "failure" as const,
+      status: "failed" as const,
+      code: "artifact_integrity_failed" as const,
+      message: "Reply part failed before destination delivery.",
+    }));
     const summary = (index: number) => ({
       projection: "summary" as const,
       runId: `cron:${"r".repeat(700)}:${String(index)}`,
@@ -408,6 +437,7 @@ describe("startTuiAdapter", () => {
       error: "e".repeat(512),
       failureKind: "f".repeat(128),
       blockedByRunId: `cron:${"b".repeat(700)}`,
+      replyPartOutcomes: replyPartOutcomes.slice(0, MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES),
       eventCount: 30,
       fieldsTruncated: ["text" as const],
     });
@@ -421,6 +451,7 @@ describe("startTuiAdapter", () => {
       ...summary(0),
       projection: "detail" as const,
       text: "d".repeat(128 * 1024),
+      replyPartOutcomes,
       eventCount: 30,
       events: Array.from({ length: 30 }, (_, index) => ({
         type: "runtime_warning" as const,
@@ -429,6 +460,10 @@ describe("startTuiAdapter", () => {
       })),
       eventsIncluded: 30,
     };
+    expect(runs.every((run) =>
+      run.replyPartOutcomes.length === MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify({ runs, nextCursor: "older-page" }), "utf8"))
+      .toBeLessThan(MAX_CRON_OPERATOR_RESPONSE_BYTES);
     const cron: CronOperatorService = {
       overview: () => ({
         generatedAt: "2026-08-14T10:00:00.000Z",
@@ -464,6 +499,87 @@ describe("startTuiAdapter", () => {
       const serialized = await response.text();
       expect(Buffer.byteLength(serialized, "utf8")).toBeLessThan(MAX_CRON_OPERATOR_RESPONSE_BYTES);
       expect(() => JSON.parse(serialized)).not.toThrow();
+    }
+  });
+
+  it("rejects swapping getters through the compiled public cron parser boundary without reading them", () => {
+    const summary = (overrides: Record<string, unknown> = {}) => ({
+      projection: "summary",
+      runId: "cron:digest:2026-08-14T10:00:00.000Z",
+      jobId: "digest",
+      scheduledAt: "2026-08-14T10:00:00.000Z",
+      orderedAt: "2026-08-14T10:00:00.000Z",
+      sequence: 1,
+      trigger: "scheduled",
+      status: "succeeded",
+      eventCount: 1,
+      ...overrides,
+    });
+    const probes: Array<{ readonly parse: () => unknown; readonly reads: () => number }> = [];
+
+    let expressionReads = 0;
+    const job = {
+      jobId: "digest",
+      conversationId: "cron:digest",
+      configured: true,
+      declaredEnabled: true,
+      effectiveEnabled: true,
+      health: "healthy",
+    };
+    Object.defineProperty(job, "expression", {
+      enumerable: true,
+      get() {
+        expressionReads += 1;
+        return expressionReads === 1 ? "0 10 * * *" : "s".repeat(1_066);
+      },
+    });
+    probes.push({ parse: () => parseCronOperatorJob(job), reads: () => expressionReads });
+
+    let reasonReads = 0;
+    const overview = { generatedAt: "2026-08-14T10:00:00.000Z", actionsEnabled: false, jobs: [] };
+    Object.defineProperty(overview, "degradedReason", {
+      enumerable: true,
+      get() {
+        reasonReads += 1;
+        return reasonReads === 1 ? "bounded" : "s".repeat(4_097);
+      },
+    });
+    probes.push({ parse: () => parseCronOperatorOverview(overview), reads: () => reasonReads });
+
+    let runsReads = 0;
+    const page = {};
+    Object.defineProperty(page, "runs", {
+      enumerable: true,
+      get() {
+        runsReads += 1;
+        return runsReads === 1 ? [summary()] : Array.from({ length: 600 }, () => summary());
+      },
+    });
+    probes.push({ parse: () => parseCronOperatorRunPage(page), reads: () => runsReads });
+
+    let eventReads = 0;
+    const events = [{ type: "runtime_warning", message: "bounded" }];
+    Object.defineProperty(events, "0", {
+      enumerable: true,
+      get() {
+        eventReads += 1;
+        return eventReads === 1
+          ? { type: "runtime_warning", message: "bounded" }
+          : { type: "runtime_warning", message: "s".repeat(600 * 1024) };
+      },
+    });
+    probes.push({
+      parse: () => parseCronOperatorRunDetail(summary({
+        projection: "detail",
+        events,
+        eventsIncluded: 1,
+      })),
+      reads: () => eventReads,
+    });
+
+    for (const probe of probes) {
+      expect(probe.parse).toThrowError(/invalid cron operator/iu);
+      expect(probe.reads()).toBe(0);
     }
   });
 
@@ -1125,6 +1241,234 @@ describe("startTuiAdapter", () => {
     ).toBe(200);
   });
 
+  it("authenticates, ownership-checks, and download-hardens reply artifact streams", async () => {
+    const bytes = Buffer.from("<script>document.cookie</script>");
+    const responderWithArtifacts: AgentResponder = {
+      respond: async () => ({ text: "ok" }),
+      async openReplyArtifact(request) {
+        if (request.conversationId !== "conversation-1") {
+          throw new CodedError("artifact_forbidden", "wrong conversation");
+        }
+        return {
+          attachment: {
+            type: "attachment",
+            id: "part-1",
+            reference: request.reference,
+            name: "evil\r\nname.html",
+            mediaType: "text/html",
+            sizeBytes: bytes.byteLength,
+            integrityId: `sha256:${"a".repeat(64)}`,
+          },
+          body: (async function* () { yield bytes; })(),
+        };
+      },
+    };
+    running = await startTuiAdapter({ responder: responderWithArtifacts, apiKey: "secret" });
+    await expect((await fetch(running.infoUrl, {
+      headers: { authorization: "Bearer secret" },
+    })).json()).resolves.toMatchObject({
+      capabilities: { replyAttachments: { version: 1, maxBytes: 20 * 1024 * 1024 } },
+    });
+
+    const path = `${running.baseUrl}/v1/conversations/conversation-1/reply-artifacts/artifact-1`;
+    expect((await fetch(path)).status).toBe(401);
+    expect((await fetch(path.replace("conversation-1", "conversation-2"), {
+      headers: { authorization: "Bearer secret" },
+    })).status).toBe(404);
+
+    const response = await fetch(path, {
+      headers: {
+        authorization: "Bearer secret",
+        "x-mono-agent-integrity-id": `sha256:${"a".repeat(64)}`,
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/octet-stream");
+    expect(response.headers.get("x-original-content-type")).toBe("text/html");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("content-security-policy")).toContain("sandbox");
+    expect(response.headers.get("accept-ranges")).toBe("none");
+    expect(response.headers.get("content-disposition")).toMatch(/^attachment;/u);
+    expect(response.headers.get("content-disposition")).not.toMatch(/[\r\n]/u);
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+  });
+
+  it("keeps MCP App resources private and binds bridge requests to exact conversation and connection identity", async () => {
+    const requests: unknown[] = [];
+    const responderWithApps: AgentResponder = {
+      respond: async () => ({ text: "ok" }),
+      async loadMcpApp(request) {
+        if (request.conversationId !== "conversation-1" || request.connectionId !== "connection-1") {
+          throw new CodedError("app_forbidden", "wrong app owner");
+        }
+        return {
+          app: {
+            type: "mcp_app",
+            id: request.invocationId,
+            invocationId: request.invocationId,
+            connectionId: request.connectionId,
+            serverName: "widgets",
+            toolName: "show_chart",
+            resourceUri: "ui://widgets/chart",
+            mediaType: "text/html;profile=mcp-app",
+            protocolVersion: "2026-01-26",
+          },
+          html: "<!doctype html><script>parent.document.cookie</script>",
+          toolInput: { range: "week" },
+          toolResult: { ok: true },
+          connected: true,
+        };
+      },
+      async requestMcpApp(request) {
+        requests.push(request);
+        if (request.method === "tools/call" && request.confirmed !== true) {
+          throw new CodedError("app_confirmation_required", "confirmation required");
+        }
+        const requestedTool = (request.params as { readonly name?: unknown } | undefined)?.name;
+        if (requestedTool === "audit_incomplete") {
+          throw new CodedError(
+            "app_audit_incomplete",
+            "The MCP App tool ran, but completion could not be recorded safely; do not retry automatically.",
+          );
+        }
+        if (requestedTool === "audit_failed") {
+          throw new CodedError("app_audit_failed", "The MCP App action could not be recorded safely.");
+        }
+        if (request.method === "resources/read") {
+          throw new CodedError("app_resource_forbidden", "resource forbidden");
+        }
+        if (request.method === "ui/update-model-context") {
+          throw new CodedError("app_rate_limited", "rate limited");
+        }
+        return { accepted: true };
+      },
+    };
+    running = await startTuiAdapter({ responder: responderWithApps, apiKey: "secret" });
+    await expect((await fetch(running.infoUrl, {
+      headers: { authorization: "Bearer secret" },
+    })).json()).resolves.toMatchObject({
+      capabilities: {
+        mcpApps: {
+          bridgeVersion: 1,
+          versions: ["2026-01-26", "2025-11-21"],
+          mimeTypes: ["text/html;profile=mcp-app"],
+        },
+      },
+    });
+
+    const route = `${running.baseUrl}/v1/conversations/conversation-1/mcp-apps/invocation-1`;
+    expect((await fetch(route)).status).toBe(401);
+    expect((await fetch(route, {
+      headers: {
+        authorization: "Bearer secret",
+        "x-mono-agent-mcp-connection-id": "wrong-connection",
+      },
+    })).status).toBe(404);
+
+    const resourceResponse = await fetch(route, {
+      headers: {
+        authorization: "Bearer secret",
+        "x-mono-agent-mcp-connection-id": "connection-1",
+      },
+    });
+    expect(resourceResponse.status).toBe(200);
+    expect(resourceResponse.headers.get("cache-control")).toContain("no-store");
+    expect(resourceResponse.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(resourceResponse.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    await expect(resourceResponse.json()).resolves.toMatchObject({ connected: true, toolInput: { range: "week" } });
+
+    const bridgeRoute = `${route}/requests`;
+    const unconfirmed = await fetch(bridgeRoute, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-mono-agent-mcp-connection-id": "connection-1",
+      },
+      body: JSON.stringify({ method: "tools/call", params: { name: "refresh_chart" } }),
+    });
+    expect(unconfirmed.status).toBe(409);
+    const confirmed = await fetch(bridgeRoute, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-mono-agent-mcp-connection-id": "connection-1",
+      },
+      body: JSON.stringify({ method: "tools/call", params: { name: "refresh_chart" }, confirmed: true }),
+    });
+    await expect(confirmed.json()).resolves.toEqual({ result: { accepted: true } });
+    expect(requests.at(-1)).toMatchObject({
+      conversationId: "conversation-1",
+      invocationId: "invocation-1",
+      connectionId: "connection-1",
+      method: "tools/call",
+      confirmed: true,
+    });
+
+    const incomplete = await fetch(bridgeRoute, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-mono-agent-mcp-connection-id": "connection-1",
+      },
+      body: JSON.stringify({ method: "tools/call", params: { name: "audit_incomplete" }, confirmed: true }),
+    });
+    expect(incomplete.status).toBe(409);
+    await expect(incomplete.json()).resolves.toMatchObject({
+      error: {
+        code: "app_audit_incomplete",
+        message: expect.stringContaining("do not retry automatically"),
+      },
+    });
+    const auditFailed = await fetch(bridgeRoute, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-mono-agent-mcp-connection-id": "connection-1",
+      },
+      body: JSON.stringify({ method: "tools/call", params: { name: "audit_failed" }, confirmed: true }),
+    });
+    expect(auditFailed.status).toBe(507);
+    await expect(auditFailed.json()).resolves.toMatchObject({
+      error: { code: "app_audit_failed" },
+    });
+
+    const forbiddenResource = await fetch(bridgeRoute, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-mono-agent-mcp-connection-id": "connection-1",
+      },
+      body: JSON.stringify({ method: "resources/read", params: { uri: "ui://widgets/other" } }),
+    });
+    expect(forbiddenResource.status).toBe(403);
+    const rateLimited = await fetch(bridgeRoute, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-mono-agent-mcp-connection-id": "connection-1",
+      },
+      body: JSON.stringify({ method: "ui/update-model-context", confirmed: true }),
+    });
+    expect(rateLimited.status).toBe(429);
+
+    const oversized = await fetch(bridgeRoute, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret",
+        "content-type": "application/json",
+        "x-mono-agent-mcp-connection-id": "connection-1",
+      },
+      body: JSON.stringify({ method: "resources/read", params: { value: "x".repeat(70 * 1024) } }),
+    });
+    expect(oversized.status).toBe(413);
+  });
+
   it("refuses to bind a non-loopback host without allowNonLoopback", async () => {
     await expect(
       startTuiAdapter({ host: "0.0.0.0", responder: scriptedResponder(async () => ({ text: "ok" })) }),
@@ -1191,6 +1535,126 @@ describe("startTuiAdapter", () => {
     expect(event.content.endsWith("… [truncated]")).toBe(true);
     expect(event.metadata?.truncated).toBe(true);
     expect(frames.at(-1)).toEqual({ kind: "finish", finalText: "done" });
+  });
+
+  it("splits oversized append frames without losing multibyte text", async () => {
+    const huge = "🙂é".repeat(MAX_FRAME_BYTES);
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async (_request, stream) => {
+        await stream.append(huge);
+        return { text: "done" };
+      }),
+    });
+
+    const responseText = await (await postTurn(
+      running.baseUrl,
+      { conversationId: "c", text: "hi" },
+    )).text();
+    const lines = responseText.split("\n").filter((line) => line.length > 0);
+    expect(lines.every((line) => Buffer.byteLength(`${line}\n`, "utf8") <= MAX_FRAME_BYTES)).toBe(true);
+    const frames = lines.map(parseAgentStreamFrame);
+    expect(frames.filter((frame) => frame.kind === "append").map((frame) => (
+      frame as Extract<AgentStreamWireFrame, { kind: "append" }>
+    ).delta).join("")).toBe(huge);
+    expect(frames.at(-1)).toEqual({ kind: "finish", finalText: "done" });
+  });
+
+  it("bounds terminal reply parts and emits an explicit per-part failure", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({
+        text: "answer",
+        metadata: { runId: "run-1" },
+        parts: [
+          {
+            type: "attachment",
+            id: "small",
+            reference: { scheme: "mono-agent-artifact", id: "artifact-small" },
+            name: "report.txt",
+            mediaType: "text/plain",
+            sizeBytes: 2,
+            integrityId: `sha256:${"a".repeat(64)}`,
+          },
+          {
+            type: "failure",
+            id: "huge",
+            code: "artifact_publish_failed",
+            message: "é".repeat(MAX_FRAME_BYTES),
+          },
+        ],
+      })),
+    });
+
+    const responseText = await (await postTurn(
+      running.baseUrl,
+      { conversationId: "c", text: "hi" },
+    )).text();
+    const lines = responseText.split("\n").filter((line) => line.length > 0);
+    expect(lines).toHaveLength(1);
+    expect(Buffer.byteLength(`${lines[0]}\n`, "utf8")).toBeLessThanOrEqual(MAX_FRAME_BYTES);
+    const frame = parseAgentStreamFrame(lines[0] ?? "") as Extract<AgentStreamWireFrame, { kind: "finish" }>;
+    expect(frame).toMatchObject({
+      kind: "finish",
+      finalText: "answer",
+      metadata: { runId: "run-1", truncated: true },
+      parts: [
+        { type: "attachment", id: "small" },
+        { type: "failure", id: "wire-rich-parts-truncated", code: "reply_part_too_large" },
+      ],
+    });
+  });
+
+  it("enforces the shared rich-part count even when the terminal frame is small", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({
+        text: "answer",
+        parts: Array.from({ length: MAX_AGENT_REPLY_PARTS + 1 }, (_, index) => ({
+          type: "failure" as const,
+          id: `part-${String(index)}`,
+          code: "artifact_publish_failed" as const,
+          message: "failed",
+        })),
+      })),
+    });
+
+    const frames = await readFrames(await postTurn(running.baseUrl, { conversationId: "c", text: "hi" }));
+    const frame = frames.at(-1) as Extract<AgentStreamWireFrame, { kind: "finish" }>;
+    expect(frame.parts).toHaveLength(MAX_AGENT_REPLY_PARTS);
+    expect(frame.parts?.slice(0, -1).map((part) => part.id)).toEqual(
+      Array.from({ length: MAX_AGENT_REPLY_PARTS - 1 }, (_, index) => `part-${String(index)}`),
+    );
+    expect(frame.parts?.at(-1)).toMatchObject({
+      type: "failure",
+      id: "wire-rich-parts-over-limit",
+      code: "reply_part_too_large",
+    });
+  });
+
+  it("preserves bounded rich parts while truncating an oversized final answer", async () => {
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async () => ({
+        text: "x".repeat(MAX_FRAME_BYTES * 2),
+        parts: [{
+          type: "attachment",
+          id: "small",
+          reference: { scheme: "mono-agent-artifact", id: "artifact-small" },
+          name: "report.txt",
+          mediaType: "text/plain",
+          sizeBytes: 2,
+          integrityId: `sha256:${"a".repeat(64)}`,
+        }],
+      })),
+    });
+
+    const responseText = await (await postTurn(
+      running.baseUrl,
+      { conversationId: "c", text: "hi" },
+    )).text();
+    const lines = responseText.split("\n").filter((line) => line.length > 0);
+    expect(lines).toHaveLength(1);
+    expect(Buffer.byteLength(`${lines[0]}\n`, "utf8")).toBeLessThanOrEqual(MAX_FRAME_BYTES);
+    const frame = parseAgentStreamFrame(lines[0] ?? "") as Extract<AgentStreamWireFrame, { kind: "finish" }>;
+    expect(frame.finalText?.endsWith("… [truncated]")).toBe(true);
+    expect(frame.parts).toEqual([expect.objectContaining({ type: "attachment", id: "small" })]);
   });
 
   it("field-reduces an oversized subagent tool event instead of collapsing it to a marker", async () => {

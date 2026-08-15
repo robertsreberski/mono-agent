@@ -1,6 +1,7 @@
 import {
   MAX_CRON_OPERATOR_RESPONSE_BYTES,
   MAX_CRON_OPERATOR_RUN_PAGE,
+  MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES,
   type ChannelConfigViewSection,
   type CronOperatorHealth,
   type CronOperatorJob,
@@ -15,7 +16,11 @@ import {
   type CronOperatorRunTruncatedField,
 } from "@mono-agent/agent-contracts";
 
-export { MAX_CRON_OPERATOR_RESPONSE_BYTES, MAX_CRON_OPERATOR_RUN_PAGE };
+export {
+  MAX_CRON_OPERATOR_RESPONSE_BYTES,
+  MAX_CRON_OPERATOR_RUN_PAGE,
+  MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES,
+};
 export type {
   CronOperatorHealth,
   CronOperatorJob,

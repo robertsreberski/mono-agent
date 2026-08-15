@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import {
+  MAX_AGENT_REPLY_PARTS,
   MAX_CRON_OPERATOR_DETAIL_ARTIFACT_ID_BYTES,
   MAX_CRON_OPERATOR_DETAIL_ERROR_BYTES,
   MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES,
@@ -14,7 +15,12 @@ import {
   MAX_CRON_OPERATOR_SUMMARY_ARTIFACT_ID_BYTES,
   MAX_CRON_OPERATOR_SUMMARY_ERROR_BYTES,
   MAX_CRON_OPERATOR_SUMMARY_FAILURE_KIND_BYTES,
+  MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES,
   MAX_CRON_OPERATOR_SUMMARY_TEXT_BYTES,
+  MAX_CRON_OPERATOR_RESPONSE_BYTES,
+  isAgentReplyPartDeliveryOutcomes,
+  sanitizeReplyPartDeliveryOutcomes,
+  type AgentReplyPartDeliveryOutcome,
   type AgentStreamEvent,
 } from "@mono-agent/agent-contracts";
 import type { CronFiringIdentity, CronJobResult, CronRunTrigger } from "@mono-agent/cron-adapter";
@@ -56,6 +62,13 @@ const MAX_SUMMARY_ARTIFACT_ID_BYTES = MAX_CRON_OPERATOR_SUMMARY_ARTIFACT_ID_BYTE
 const MAX_DETAIL_ARTIFACT_ID_BYTES = MAX_CRON_OPERATOR_DETAIL_ARTIFACT_ID_BYTES;
 const MAX_SUMMARY_FAILURE_KIND_BYTES = MAX_CRON_OPERATOR_SUMMARY_FAILURE_KIND_BYTES;
 const MAX_DETAIL_FAILURE_KIND_BYTES = MAX_CRON_OPERATOR_DETAIL_FAILURE_KIND_BYTES;
+const REPLY_PART_OUTCOMES_STORAGE_SCHEMA = 1;
+const MAX_REPLY_PART_OUTCOMES_STORAGE_BYTES = 8 * 1024;
+const MUTABLE_RUN_STATUSES = new Set<CronOperatorRun["status"]>([
+  "admitted",
+  "running",
+  "queued",
+]);
 // Inspection runs synchronously during config load. A bounded wait absorbs a
 // brief DELETE-journal writer handoff without letting sustained contention
 // stall reload indefinitely or be mistaken for a permanently corrupt store.
@@ -447,17 +460,25 @@ export async function openCronControlStore(
       requireOpen();
       database.prepare(`
         UPDATE cron_runs SET status = 'running', started_at = COALESCE(started_at, ?)
-        WHERE run_id = ?
+        WHERE run_id = ? AND status IN ('admitted', 'queued')
       `).run(startedAt, firing.runId);
     },
     appendEvent(firing, event) {
       withTransaction(() => {
+        const row = database.prepare(`
+          SELECT status, event_count, event_bytes FROM cron_runs WHERE run_id = ?
+        `).get(firing.runId) as {
+          status: CronOperatorRun["status"];
+          event_count: number;
+          event_bytes: number;
+        } | undefined;
+        if (row === undefined) throw new CronControlStoreError("corrupt", `Unknown cron run: ${firing.runId}`);
+        // A watchdog/cancellation result owns the first terminal projection.
+        // Ignore any later stream activity without even serializing it, so a
+        // responder that settles late cannot mutate or leak into that record.
+        if (!MUTABLE_RUN_STATUSES.has(row.status)) return;
         const encoded = JSON.stringify(event);
         const bytes = Buffer.byteLength(encoded, "utf8");
-        const row = database.prepare(`
-          SELECT event_count, event_bytes FROM cron_runs WHERE run_id = ?
-        `).get(firing.runId) as { event_count: number; event_bytes: number } | undefined;
-        if (row === undefined) throw new CronControlStoreError("corrupt", `Unknown cron run: ${firing.runId}`);
         if (
           bytes > MAX_EVENT_BYTES
           || row.event_count >= MAX_EVENTS_PER_RUN
@@ -480,8 +501,10 @@ export async function openCronControlStore(
         const changed = database.prepare(`
           UPDATE cron_runs SET
             status = ?, started_at = COALESCE(started_at, ?), completed_at = ?, artifact_run_id = ?,
-            text = ?, error = ?, failure_kind = ?, blocked_by_run_id = ?, blocked_by_trigger = ?, queue_depth = ?
+            text = ?, error = ?, failure_kind = ?, reply_part_outcomes_json = ?,
+            blocked_by_run_id = ?, blocked_by_trigger = ?, queue_depth = ?
           WHERE run_id = ?
+            AND status IN ('admitted', 'running', 'queued')
         `).run(
           fields.status,
           fields.startedAt ?? null,
@@ -490,13 +513,22 @@ export async function openCronControlStore(
           fields.text ?? null,
           fields.error ?? null,
           fields.failureKind ?? null,
+          fields.replyPartOutcomesJson,
           fields.blockedByRunId ?? null,
           fields.blockedByTrigger ?? null,
           fields.queueDepth ?? null,
           result.cronRunId,
         );
         if (changed.changes !== 1) {
-          throw new CronControlStoreError("corrupt", `Unknown cron run result: ${result.cronRunId}`);
+          const existing = runRow(database, result.cronRunId);
+          if (existing === undefined) {
+            throw new CronControlStoreError("corrupt", `Unknown cron run result: ${result.cronRunId}`);
+          }
+          // The first terminal callback is authoritative. A responder, timer,
+          // or host callback that settles later cannot overwrite its state,
+          // text, or sanitized rich-part outcomes.
+          if (!MUTABLE_RUN_STATUSES.has(existing.status)) return;
+          throw new CronControlStoreError("corrupt", `Cron run result could not be recorded: ${result.cronRunId}`);
         }
         const completed = runRow(database, result.cronRunId);
         if (completed === undefined) {
@@ -533,14 +565,7 @@ export async function openCronControlStore(
               OR (ordered_at = ? AND sequence = ? AND run_id < ?)
             ) ORDER BY ordered_at DESC, sequence DESC, run_id DESC LIMIT ?`)
           .all(jobId, cursor.orderedAt, cursor.orderedAt, cursor.sequence, cursor.orderedAt, cursor.sequence, cursor.runId, limit + 1)) as unknown as RunRow[];
-      const selected = rows.slice(0, limit);
-      const tail = selected[selected.length - 1];
-      return {
-        runs: selected.map(operatorRunSummary),
-        ...(rows.length <= limit || tail === undefined
-          ? {}
-          : { nextCursor: encodeCursor({ orderedAt: tail.ordered_at, sequence: tail.sequence, runId: tail.run_id }) }),
-      };
+      return operatorRunPage(rows, limit);
     },
     audit(input) {
       withTransaction(() => {
@@ -887,6 +912,7 @@ function createSchema(database: DatabaseSync): void {
       text TEXT,
       error TEXT,
       failure_kind TEXT,
+      reply_part_outcomes_json TEXT,
       blocked_by_run_id TEXT,
       blocked_by_trigger TEXT,
       queue_depth INTEGER,
@@ -944,12 +970,19 @@ function assertHealthyDatabase(database: DatabaseSync): void {
 }
 
 function ensureControlSchemaColumns(database: DatabaseSync): void {
-  const columns = database.prepare("PRAGMA table_info(action_idempotency)").all() as Array<{ name: string }>;
-  if (!columns.some((column) => column.name === "target_run_id")) {
+  const idempotencyColumns = database.prepare("PRAGMA table_info(action_idempotency)").all() as Array<{ name: string }>;
+  if (!idempotencyColumns.some((column) => column.name === "target_run_id")) {
     // This feature's first schema revision existed in review worktrees before
     // run receipts needed a direct retention link. The additive repair keeps
     // those private stores restartable without weakening schema validation.
     database.exec("ALTER TABLE action_idempotency ADD COLUMN target_run_id TEXT");
+  }
+  const runColumns = database.prepare("PRAGMA table_info(cron_runs)").all() as Array<{ name: string }>;
+  if (!runColumns.some((column) => column.name === "reply_part_outcomes_json")) {
+    // Schema-1 stores created before rich-part outcome persistence remain valid;
+    // the absent column is upgraded under the exclusive store lease and every
+    // legacy row receives NULL (the backwards-compatible no-outcomes state).
+    database.exec("ALTER TABLE cron_runs ADD COLUMN reply_part_outcomes_json TEXT");
   }
 }
 
@@ -989,6 +1022,7 @@ interface RunRow {
   readonly text: string | null;
   readonly error: string | null;
   readonly failure_kind: string | null;
+  readonly reply_part_outcomes_json: string | null;
   readonly blocked_by_run_id: string | null;
   readonly blocked_by_trigger: CronRunTrigger | null;
   readonly queue_depth: number | null;
@@ -998,7 +1032,8 @@ interface RunRow {
 
 const RUN_SELECT = `SELECT run_id, job_id, scheduled_at, ordered_at, sequence, trigger, status,
   started_at, completed_at, artifact_run_id, text, error, failure_kind,
-  blocked_by_run_id, blocked_by_trigger, queue_depth, event_count, events_truncated FROM cron_runs`;
+  reply_part_outcomes_json, blocked_by_run_id, blocked_by_trigger, queue_depth,
+  event_count, events_truncated FROM cron_runs`;
 
 function runRow(database: DatabaseSync, runId: string): RunRow | undefined {
   return database.prepare(`${RUN_SELECT} WHERE run_id = ?`).get(runId) as RunRow | undefined;
@@ -1026,14 +1061,49 @@ function firingFromOperatorRun(run: CronOperatorRunSummary): CronFiringIdentity 
   };
 }
 
-function operatorRunSummary(row: RunRow): CronOperatorRunSummary {
+function operatorRunSummary(row: RunRow, includeReplyPartOutcomes = true): CronOperatorRunSummary {
   return operatorRunBase(row, {
     projection: "summary",
     textBytes: MAX_SUMMARY_TEXT_BYTES,
     errorBytes: MAX_SUMMARY_ERROR_BYTES,
     artifactRunIdBytes: MAX_SUMMARY_ARTIFACT_ID_BYTES,
     failureKindBytes: MAX_SUMMARY_FAILURE_KIND_BYTES,
+    replyPartOutcomeLimit: includeReplyPartOutcomes ? MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES : 0,
   });
+}
+
+function operatorRunPage(rows: readonly RunRow[], limit: number): CronOperatorRunPage {
+  const candidates = rows.slice(0, limit);
+  if (candidates.length === 0) return { runs: [] };
+  const runs: CronOperatorRunSummary[] = [];
+  for (let index = 0; index < candidates.length; index += 1) {
+    const row = candidates[index]!;
+    runs.push(operatorRunSummary(row));
+    const more = index + 1 < rows.length;
+    const candidatePage: CronOperatorRunPage = {
+      runs,
+      ...(more ? { nextCursor: encodeRunCursor(row) } : {}),
+    };
+    if (Buffer.byteLength(JSON.stringify(candidatePage), "utf8") > MAX_CRON_OPERATOR_RESPONSE_BYTES) {
+      runs.pop();
+      if (runs.length === 0) {
+        throw new CronControlStoreError(
+          "corrupt",
+          "A single cron run summary exceeded the operator response boundary.",
+        );
+      }
+      break;
+    }
+  }
+  const tail = candidates[runs.length - 1]!;
+  return {
+    runs,
+    ...(runs.length < rows.length ? { nextCursor: encodeRunCursor(tail) } : {}),
+  };
+}
+
+function encodeRunCursor(row: RunRow): string {
+  return encodeCursor({ orderedAt: row.ordered_at, sequence: row.sequence, runId: row.run_id });
 }
 
 function operatorRunDetail(database: DatabaseSync, row: RunRow): CronOperatorRunDetail {
@@ -1062,6 +1132,7 @@ function operatorRunDetail(database: DatabaseSync, row: RunRow): CronOperatorRun
     errorBytes: MAX_DETAIL_ERROR_BYTES,
     artifactRunIdBytes: MAX_DETAIL_ARTIFACT_ID_BYTES,
     failureKindBytes: MAX_DETAIL_FAILURE_KIND_BYTES,
+    replyPartOutcomeLimit: MAX_AGENT_REPLY_PARTS,
   });
   return {
     ...base,
@@ -1080,6 +1151,7 @@ function operatorRunBase<P extends "summary" | "detail">(
     readonly errorBytes: number;
     readonly artifactRunIdBytes: number;
     readonly failureKindBytes: number;
+    readonly replyPartOutcomeLimit: number;
   },
 ): CronOperatorRunBase & { readonly projection: P } {
   const truncated: CronOperatorRunTruncatedField[] = [];
@@ -1097,6 +1169,10 @@ function operatorRunBase<P extends "summary" | "detail">(
     "failureKind",
     truncated,
   );
+  const storedReplyPartOutcomes = parseStoredReplyPartOutcomes(row.reply_part_outcomes_json);
+  const replyPartOutcomes = storedReplyPartOutcomes === undefined || limits.replyPartOutcomeLimit === 0
+    ? undefined
+    : storedReplyPartOutcomes.slice(0, limits.replyPartOutcomeLimit);
   return {
     projection: limits.projection,
     runId: row.run_id,
@@ -1112,6 +1188,7 @@ function operatorRunBase<P extends "summary" | "detail">(
     ...(text === undefined ? {} : { text }),
     ...(error === undefined ? {} : { error }),
     ...(failureKind === undefined ? {} : { failureKind }),
+    ...(replyPartOutcomes === undefined ? {} : { replyPartOutcomes }),
     ...(row.blocked_by_run_id === null ? {} : { blockedByRunId: row.blocked_by_run_id }),
     ...(row.blocked_by_trigger === null ? {} : { blockedByTrigger: row.blocked_by_trigger }),
     ...(row.queue_depth === null ? {} : { queueDepth: row.queue_depth }),
@@ -1154,6 +1231,7 @@ function resultFields(result: CronJobResult): {
   readonly text?: string;
   readonly error?: string;
   readonly failureKind?: string;
+  readonly replyPartOutcomesJson: string | null;
   readonly blockedByRunId?: string;
   readonly blockedByTrigger?: CronRunTrigger;
   readonly queueDepth?: number;
@@ -1166,6 +1244,7 @@ function resultFields(result: CronJobResult): {
       completedAt: result.completedAt,
       ...(runId === undefined ? {} : { artifactRunId: runId }),
       ...(result.text === undefined ? {} : { text: result.text }),
+      replyPartOutcomesJson: serializeStoredReplyPartOutcomes(result.replyPartOutcomes),
     };
   }
   if (result.kind === "failed" || result.kind === "cancelled") {
@@ -1176,6 +1255,7 @@ function resultFields(result: CronJobResult): {
       ...(result.runId === undefined ? {} : { artifactRunId: result.runId }),
       error: result.error,
       ...(result.failureKind === undefined ? {} : { failureKind: result.failureKind }),
+      replyPartOutcomesJson: serializeStoredReplyPartOutcomes(result.replyPartOutcomes),
     };
   }
   if (result.kind === "skipped") {
@@ -1184,10 +1264,57 @@ function resultFields(result: CronJobResult): {
       completedAt: result.orderedAt,
       blockedByRunId: result.blockedByRunId,
       blockedByTrigger: result.blockedByTrigger,
+      replyPartOutcomesJson: null,
     };
   }
-  if (result.kind === "queued") return { status: "queued", queueDepth: result.queueDepth };
-  return { status: "dropped", completedAt: result.orderedAt };
+  if (result.kind === "queued") return { status: "queued", queueDepth: result.queueDepth, replyPartOutcomesJson: null };
+  return { status: "dropped", completedAt: result.orderedAt, replyPartOutcomesJson: null };
+}
+
+function serializeStoredReplyPartOutcomes(value: unknown): string | null {
+  const replyPartOutcomes = sanitizeReplyPartDeliveryOutcomes(value);
+  if (replyPartOutcomes === undefined) return null;
+  const serialized = JSON.stringify({
+    schemaVersion: REPLY_PART_OUTCOMES_STORAGE_SCHEMA,
+    replyPartOutcomes,
+  });
+  if (Buffer.byteLength(serialized, "utf8") > MAX_REPLY_PART_OUTCOMES_STORAGE_BYTES) {
+    throw new CronControlStoreError("corrupt", "Cron reply-part outcomes exceeded the storage boundary.");
+  }
+  return serialized;
+}
+
+function parseStoredReplyPartOutcomes(
+  serialized: unknown,
+): readonly AgentReplyPartDeliveryOutcome[] | undefined {
+  if (serialized === null) return undefined;
+  if (typeof serialized !== "string"
+    || Buffer.byteLength(serialized, "utf8") > MAX_REPLY_PART_OUTCOMES_STORAGE_BYTES) {
+    throw new CronControlStoreError("corrupt", "Stored cron reply-part outcomes are invalid.");
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(serialized) as unknown;
+  } catch (error) {
+    throw new CronControlStoreError("corrupt", "Stored cron reply-part outcomes are invalid.", { cause: error });
+  }
+  const envelope = record(value);
+  const schemaVersion = envelope?.schemaVersion;
+  if (Number.isSafeInteger(schemaVersion)
+    && Number(schemaVersion) > REPLY_PART_OUTCOMES_STORAGE_SCHEMA) {
+    return undefined;
+  }
+  if (envelope === undefined
+    || Object.keys(envelope).some((key) => key !== "schemaVersion" && key !== "replyPartOutcomes")
+    || schemaVersion !== REPLY_PART_OUTCOMES_STORAGE_SCHEMA
+    || !isAgentReplyPartDeliveryOutcomes(envelope.replyPartOutcomes)) {
+    throw new CronControlStoreError("corrupt", "Stored cron reply-part outcomes are invalid.");
+  }
+  const replyPartOutcomes = sanitizeReplyPartDeliveryOutcomes(envelope.replyPartOutcomes);
+  if (replyPartOutcomes === undefined) {
+    throw new CronControlStoreError("corrupt", "Stored cron reply-part outcomes are invalid.");
+  }
+  return replyPartOutcomes;
 }
 
 function idempotencyRecord(
@@ -1231,10 +1358,11 @@ function parseRunNowReceipt(serialized: string): CronOperatorRunSummary | string
     if (legacyRunId !== undefined) return legacyRunId;
     throw new CronControlStoreError("corrupt", "Stored cron run-now idempotency result is invalid.");
   }
+  const sourceReplyPartOutcomes = run.replyPartOutcomes;
   const allowed = new Set([
     "projection", "runId", "jobId", "scheduledAt", "orderedAt", "sequence", "trigger", "status",
     "startedAt", "completedAt", "artifactRunId", "text", "error", "failureKind", "blockedByRunId",
-    "blockedByTrigger", "queueDepth", "eventCount", "fieldsTruncated", "eventsTruncated",
+    "blockedByTrigger", "queueDepth", "replyPartOutcomes", "eventCount", "fieldsTruncated", "eventsTruncated",
   ]);
   if (Object.keys(run).some((key) => !allowed.has(key))
     || run.projection !== "summary"
@@ -1248,6 +1376,7 @@ function parseRunNowReceipt(serialized: string): CronOperatorRunSummary | string
       .includes(String(run.status))
     || !Number.isSafeInteger(run.eventCount)
     || Number(run.eventCount) < 0
+    || (sourceReplyPartOutcomes !== undefined && !isAgentReplyPartDeliveryOutcomes(sourceReplyPartOutcomes))
     || (run.eventsTruncated !== undefined && run.eventsTruncated !== true)) {
     throw new CronControlStoreError("corrupt", "Stored cron run-now idempotency result is invalid.");
   }
@@ -1272,14 +1401,22 @@ function parseRunNowReceipt(serialized: string): CronOperatorRunSummary | string
       || run.fieldsTruncated.some((field) => !truncatedFields.includes(String(field))))) {
     throw new CronControlStoreError("corrupt", "Stored cron run-now idempotency result is invalid.");
   }
-  return run as unknown as CronOperatorRunSummary;
+  const replyPartOutcomes = sourceReplyPartOutcomes === undefined
+    ? undefined
+    : (sourceReplyPartOutcomes as readonly AgentReplyPartDeliveryOutcome[])
+        .slice(0, MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES)
+        .map((outcome) => ({ ...outcome }));
+  return {
+    ...run,
+    ...(replyPartOutcomes === undefined ? {} : { replyPartOutcomes }),
+  } as unknown as CronOperatorRunSummary;
 }
 
 function updateRunNowReceipt(database: DatabaseSync, row: RunRow): void {
   database.prepare(`
     UPDATE action_idempotency SET response_json = ?
     WHERE action = 'run_now' AND target_run_id = ?
-  `).run(JSON.stringify({ run: operatorRunSummary(row) }), row.run_id);
+  `).run(JSON.stringify({ run: operatorRunSummary(row, false) }), row.run_id);
 }
 
 function insertIdempotency(database: DatabaseSync, input: {

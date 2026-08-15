@@ -26,6 +26,14 @@ const cronSummary = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+const replyPartOutcomes = [{
+  partIndex: 0,
+  partType: "attachment",
+  status: "failed",
+  code: "unsupported_destination",
+  message: "Attachment reply parts are unsupported on this destination.",
+}];
+
 describe("OperatorClient", () => {
   it("parses compact cron pages and bounded detail through distinct encoded routes", async () => {
     const requests: string[] = [];
@@ -35,10 +43,11 @@ describe("OperatorClient", () => {
         const url = String(input);
         requests.push(url);
         return url.includes("/runs?")
-          ? Response.json({ runs: [cronSummary()], nextCursor: "older" })
+          ? Response.json({ runs: [cronSummary({ replyPartOutcomes })], nextCursor: "older" })
           : Response.json({
               run: cronSummary({
                 projection: "detail",
+                replyPartOutcomes,
                 events: [{ type: "runtime_warning", message: "bounded" }],
                 eventsIncluded: 1,
               }),
@@ -47,12 +56,13 @@ describe("OperatorClient", () => {
     });
 
     await expect(client.cronRuns("daily:brief", { limit: 100 })).resolves.toMatchObject({
-      runs: [{ projection: "summary", eventCount: 1 }],
+      runs: [{ projection: "summary", eventCount: 1, replyPartOutcomes }],
       nextCursor: "older",
     });
     await expect(client.cronRun("daily:brief", cronSummary().runId)).resolves.toMatchObject({
       projection: "detail",
       eventsIncluded: 1,
+      replyPartOutcomes,
     });
     expect(requests).toEqual([
       "http://127.0.0.1:1234/gui/v1/cron/jobs/daily%3Abrief/runs?limit=100",
@@ -144,6 +154,32 @@ describe("OperatorClient", () => {
       supportsHistoryAppend: false,
       supportsAskUser: true,
       supportsLiveInput: false,
+    });
+  });
+
+  it("intersects additive reply attachment and MCP Apps capabilities", async () => {
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        schema: 1,
+        capabilities: {
+          replyAttachments: { version: 1, maxBytes: 20 * 1024 * 1024 },
+          mcpApps: {
+            bridgeVersion: 1,
+            versions: ["future", "2025-11-21", "2026-01-26"],
+            mimeTypes: ["text/html;profile=mcp-app"],
+          },
+        },
+      })) as typeof fetch,
+    });
+
+    await expect(client.info()).resolves.toMatchObject({
+      replyAttachments: { version: 1, maxBytes: 20 * 1024 * 1024 },
+      mcpApps: {
+        bridgeVersion: 1,
+        versions: ["2026-01-26", "2025-11-21"],
+        mimeTypes: ["text/html;profile=mcp-app"],
+      },
     });
   });
 
@@ -386,7 +422,20 @@ describe("OperatorClient", () => {
         return new Response([
           JSON.stringify({ kind: "status", text: "thinking" }),
           JSON.stringify({ kind: "append", delta: "hello" }),
-          JSON.stringify({ kind: "finish", finalText: "hello", metadata: { runtime: { model: "actual" } } }),
+          JSON.stringify({
+            kind: "finish",
+            finalText: "hello",
+            metadata: { runtime: { model: "actual" } },
+            parts: [{
+              type: "attachment",
+              id: "part-1",
+              reference: { scheme: "mono-agent-artifact", id: "artifact-1" },
+              name: "report.txt",
+              mediaType: "text/plain",
+              sizeBytes: 2,
+              integrityId: `sha256:${"a".repeat(64)}`,
+            }],
+          }),
           "",
         ].join("\n"), { headers: { "content-type": "application/x-ndjson" } });
       }) as typeof fetch,
@@ -404,7 +453,112 @@ describe("OperatorClient", () => {
     expect(requestBody).toMatchObject({ client: "web", conversationId: "web:thread", text: "prompt" });
     expect(requestBody?.attachments).toEqual([{ kind: "document", mimeType: "text/plain", data: "aGk=", name: "a.txt", sizeBytes: 2 }]);
     expect(frames).toEqual([{ kind: "status", text: "thinking" }, { kind: "append", delta: "hello" }]);
-    expect(result).toEqual({ finalText: "hello", metadata: { runtime: { model: "actual" } } });
+    expect(result).toMatchObject({
+      finalText: "hello",
+      metadata: { runtime: { model: "actual" } },
+      parts: [{ type: "attachment", reference: { id: "artifact-1" } }],
+    });
+  });
+
+  it("streams integrity-bound artifacts and uses exact MCP App connection headers", async () => {
+    const requests: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      apiKey: "secret",
+      fetchImpl: (async (input, init) => {
+        const url = String(input);
+        requests.push({ url, ...(init === undefined ? {} : { init }) });
+        if (url.includes("reply-artifacts")) {
+          return new Response("ok", {
+            headers: {
+              "content-length": "2",
+              "x-mono-agent-integrity-id": `sha256:${"a".repeat(64)}`,
+            },
+          });
+        }
+        if (url.endsWith("/requests")) {
+          const body = JSON.parse(String(init?.body)) as { params?: { name?: string } };
+          if (body.params?.name === "audit_incomplete") {
+            return Response.json({
+              error: {
+                code: "app_audit_incomplete",
+                message: "The tool ran; do not retry automatically.",
+              },
+            }, { status: 409 });
+          }
+          if (body.params?.name === "audit_failed") {
+            return Response.json({
+              error: { code: "app_audit_failed", message: "The action was not recorded." },
+            }, { status: 507 });
+          }
+          return Response.json({ result: { refreshed: true } });
+        }
+        return Response.json({
+          app: {
+            type: "mcp_app",
+            id: "invocation-1",
+            invocationId: "invocation-1",
+            connectionId: "connection-1",
+            serverName: "widgets",
+            toolName: "show_chart",
+            resourceUri: "ui://widgets/chart",
+            mediaType: "text/html;profile=mcp-app",
+            protocolVersion: "2026-01-26",
+          },
+          html: "<!doctype html><p>chart</p>",
+          connected: true,
+        });
+      }) as typeof fetch,
+    });
+    const attachment = {
+      type: "attachment" as const,
+      id: "part-1",
+      reference: { scheme: "mono-agent-artifact" as const, id: "artifact-1" },
+      name: "report.txt",
+      mediaType: "text/plain",
+      sizeBytes: 2,
+      integrityId: `sha256:${"a".repeat(64)}`,
+    };
+    const artifact = await client.replyArtifact("web:thread/one", attachment);
+    expect(await artifact.text()).toBe("ok");
+    await expect(client.mcpAppResource("web:thread/one", "invocation-1", "connection-1"))
+      .resolves.toMatchObject({ connected: true, app: { invocationId: "invocation-1" } });
+    await expect(client.mcpAppRequest("web:thread/one", {
+      invocationId: "invocation-1",
+      connectionId: "connection-1",
+      method: "tools/call",
+      params: { name: "refresh_chart" },
+      confirmed: true,
+    })).resolves.toEqual({ refreshed: true });
+    await expect(client.mcpAppRequest("web:thread/one", {
+      invocationId: "invocation-1",
+      connectionId: "connection-1",
+      method: "tools/call",
+      params: { name: "audit_incomplete" },
+      confirmed: true,
+    })).rejects.toMatchObject({
+      code: "app_audit_incomplete",
+      status: 409,
+      message: expect.stringContaining("do not retry automatically"),
+    });
+    await expect(client.mcpAppRequest("web:thread/one", {
+      invocationId: "invocation-1",
+      connectionId: "connection-1",
+      method: "tools/call",
+      params: { name: "audit_failed" },
+      confirmed: true,
+    })).rejects.toMatchObject({ code: "app_audit_failed", status: 507 });
+
+    expect(requests[0]?.init?.headers).toMatchObject({
+      authorization: "Bearer secret",
+      "x-mono-agent-integrity-id": attachment.integrityId,
+    });
+    expect(requests[1]?.init?.headers).toMatchObject({
+      "x-mono-agent-mcp-connection-id": "connection-1",
+    });
+    expect(requests[2]?.init?.headers).toMatchObject({
+      "x-mono-agent-mcp-connection-id": "connection-1",
+    });
   });
 
   it("posts authenticated verbatim history with its stable idempotency key", async () => {
@@ -470,7 +624,16 @@ describe("OperatorClient", () => {
     await expect(wrongContentType.turn(turnInput())).rejects.toMatchObject({ code: "invalid_operator_content_type" });
   });
 
-  it("bounds unterminated and terminal NDJSON frames while accepting a final frame without a newline", async () => {
+  it("accepts old-agent frames above the new producer cap and enforces the legacy 8 MiB consumer boundary", async () => {
+    const mixedVersionText = "x".repeat(300 * 1024);
+    const mixedVersion = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1/gui",
+      fetchImpl: (async () => new Response(`${JSON.stringify({ kind: "finish", finalText: mixedVersionText })}\n`, {
+        headers: { "content-type": "application/x-ndjson" },
+      })) as typeof fetch,
+    });
+    await expect(mixedVersion.turn(turnInput())).resolves.toMatchObject({ finalText: mixedVersionText });
+
     const unterminated = new OperatorClient({
       baseUrl: "http://127.0.0.1:1/gui",
       fetchImpl: (async () => new Response("x".repeat(8 * 1024 * 1024 + 1), {

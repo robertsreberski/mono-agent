@@ -5,6 +5,7 @@ import {
 } from "@mono-agent/agent-contracts";
 import { createHash } from "node:crypto";
 import type {
+  AgentMessageFinishOptions,
   AgentMessageStream as AgentMessageStreamBase,
   AgentStreamEvent,
   ChannelDeliveryDisposition,
@@ -34,7 +35,7 @@ export interface AgentMessageStream extends AgentMessageStreamBase {
   append(delta: string): Promise<void>;
   replace(text: string): Promise<void>;
   event(event: AgentStreamEvent): Promise<void>;
-  finish(finalText?: string): Promise<void>;
+  finish(finalText?: string, options?: AgentMessageFinishOptions): Promise<void>;
 }
 
 export type SlackMessageStreamLogger = ResilientMessageStreamLogger;
@@ -541,12 +542,12 @@ export class SlackMessageStream implements AgentMessageStream {
     return this.inner.dismissTransient();
   }
 
-  async finish(finalText?: string): Promise<void> {
+  async finish(finalText?: string, options?: AgentMessageFinishOptions): Promise<void> {
     if (this.finalOnly) {
       this.transport.beginSeparateFinalAnswer();
     }
     try {
-      await this.inner.finish(finalText);
+      await this.inner.finish(finalText, options);
     } catch (error) {
       if (isChannelDeliveryError(error)) {
         const attempts = readSafeSlackDataProperty(error, "attempts");

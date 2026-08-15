@@ -214,6 +214,19 @@ Unknown question and option IDs are omitted. Multi-answer custom-only entries us
 the placeholder `custom answer`, while Telegram never echoes the custom reply
 text; a single custom-only or otherwise unresolved answer keeps the generic
 `Answer recorded.` confirmation.
+### Generated reply files
+
+When the host returns an authorized reply-file part, the adapter reads its
+integrity-checked private stream and sends a native Bot API `sendDocument` to
+the exact chat and reply target. Proactive quiet-hour delivery preserves
+`disable_notification`. A part leaves textual fallback only after Telegram
+confirms the send; failure or a custom sender without `sendDocument` keeps a
+concise warning without exposing a local path or private URL. Confirmed sends
+are deduplicated by file integrity plus chat/reply target.
+
+This path is separate from model-invoked `TelegramSendFile`: reply files use the
+shared response-part contract and host authorization. See
+[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
 
 ## Architecture
 
@@ -396,6 +409,7 @@ It does not build prompts, run models, store memory, serve UI, manage provider c
 - [Telegram channel guide](https://mono-agent-docs.vercel.app/channels/telegram/)
 - [Telegram personal-assistant playbook](https://mono-agent-docs.vercel.app/playbooks/telegram-personal-assistant-bujo/)
 - [Delivery and send tools](https://mono-agent-docs.vercel.app/channels/delivery-and-send-tools/)
+- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
 - [Custom channel adapters](https://mono-agent-docs.vercel.app/programmatic/custom-channels/)
 
 ## Verification

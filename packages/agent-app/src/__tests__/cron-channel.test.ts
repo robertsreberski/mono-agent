@@ -295,6 +295,74 @@ describe("cron channel driver — native notification delivery", () => {
     expect(deliveredText).not.toContain("Do not call tools");
   });
 
+  it.each([
+    ["notify disabled", false, { delivered: true }, 0, 1],
+    ["notify enabled and delivered", true, { delivered: true }, 1, 1],
+    ["notify enabled but delivery failed", true, { delivered: false, reason: "blocked" }, 1, 2],
+  ] as const)("keeps one truthful bounded rich-part audit when %s", async (
+    _label,
+    notify,
+    delivery,
+    expectedDeliveries,
+    expectedWarnings,
+  ) => {
+    const info = vi.fn();
+    const warn = vi.fn();
+    const notifyDestination = vi.fn(async (_conversationId: string, _text: string) => delivery);
+    const captured = await startCapturingCron({
+      ...baseInput,
+      logger: { info, warn },
+      notifyDestination,
+      config: {
+        jobs: [{
+          id: "j",
+          expression: "* * * * *",
+          timezone: "UTC",
+          prompt: "p",
+          enabled: true,
+          notify,
+          ...(notify ? { notifyConversationId: "telegram:42" } : {}),
+        }],
+      },
+    });
+    const result = {
+      ...succeededResult("  byte-for-byte\n"),
+      replyPartOutcomes: [{
+        partIndex: 0,
+        partType: "attachment" as const,
+        status: "failed" as const,
+        code: "unsupported_destination" as const,
+        message: "Attachment reply parts are unsupported on this destination.",
+      }],
+    };
+
+    await captured.onResult?.(result);
+
+    await vi.waitFor(() => {
+      expect(notifyDestination).toHaveBeenCalledTimes(expectedDeliveries);
+      expect(warn).toHaveBeenCalledTimes(expectedWarnings);
+    });
+    if (notify) expect(notifyDestination.mock.calls[0]?.[1]).toBe("  byte-for-byte\n");
+    const outcomeWarnings = warn.mock.calls.filter((call) =>
+      call[1] !== null
+      && typeof call[1] === "object"
+      && "replyPartOutcomes" in call[1],
+    );
+    expect(outcomeWarnings).toEqual([[
+      "Cron rich reply delivery outcomes recorded.",
+      {
+        jobId: "j",
+        cronRunId: "cron:j:2026-01-01T00:00:00.000Z",
+        replyPartOutcomes: result.replyPartOutcomes,
+      },
+    ]]);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("native notification carries");
+    expect(info).toHaveBeenCalledOnce();
+    expect(info.mock.calls[0]?.[0]).toBe("Cron job finished.");
+    expect(info.mock.calls[0]?.[1]).toMatchObject({ result: { text: "  byte-for-byte\n" } });
+    expect(info.mock.calls[0]?.[1]).not.toHaveProperty("result.replyPartOutcomes");
+  });
+
   it("adds stable success and failure delivery keys only for web:new", async () => {
     const notifyDestination = vi.fn(async () => ({ delivered: true }));
     const captured = await startCapturingCron({

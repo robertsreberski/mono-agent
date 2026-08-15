@@ -4,6 +4,8 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { MAX_AGENT_REPLY_PARTS, type AgentReplyPart } from "@mono-agent/agent-contracts";
+
 import type { WebAgentSummary } from "../contracts.js";
 import { WebStore } from "../store.js";
 import { temporaryRoot } from "./helpers.js";
@@ -99,6 +101,411 @@ describe("WebStore", () => {
     expect(archived.archivedAt).toMatch(/^\d{4}-/u);
     expect(() => store.beginTurn({ threadId: created.id, text: "no", attachmentIds: [] })).toThrowError(/Unarchive/u);
     expect(store.patchThread(created.id, { archived: false }).sourceId).toBe("agent-one");
+    store.close();
+  });
+
+  it("round-trips durable reply attachments/apps and records invalid rich parts as per-part failures", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "show results", attachmentIds: [] });
+    const detail = store.completeTurn(turn.turnId, "Done", undefined, [
+      {
+        type: "attachment",
+        id: "attachment-part",
+        reference: { scheme: "mono-agent-artifact", id: "artifact-one" },
+        name: "report.txt",
+        mediaType: "text/plain",
+        sizeBytes: 12,
+        integrityId: `sha256:${"a".repeat(64)}`,
+        expiresAt: "2026-09-14T12:00:00.000Z",
+      },
+      {
+        type: "mcp_app",
+        id: "11111111-1111-4111-8111-111111111111",
+        invocationId: "11111111-1111-4111-8111-111111111111",
+        connectionId: "connection-one",
+        serverName: "widgets",
+        toolName: "show_chart",
+        resourceUri: "ui://widgets/chart",
+        mediaType: "text/html;profile=mcp-app",
+        protocolVersion: "2026-01-26",
+        title: "Chart",
+        expiresAt: "2026-09-14T12:00:00.000Z",
+      },
+      {
+        type: "attachment",
+        id: "oversized",
+        reference: { scheme: "mono-agent-artifact", id: "artifact-two" },
+        name: "large.bin",
+        mediaType: "application/octet-stream",
+        sizeBytes: 20 * 1024 * 1024 + 1,
+        integrityId: `sha256:${"b".repeat(64)}`,
+      },
+    ]);
+
+    expect(detail.messages.at(-1)?.parts).toMatchObject([
+      { type: "text", text: "Done" },
+      { type: "attachment", artifactId: "artifact-one", name: "report.txt" },
+      { type: "mcp_app", connectionId: "connection-one", title: "Chart" },
+      { type: "failure", id: "oversized", code: "artifact_too_large" },
+    ]);
+    expect(JSON.stringify(detail.messages.at(-1)?.parts)).not.toContain("reference");
+
+    const key = store.ensureReplyAccessKey(() => "a".repeat(43));
+    store.close();
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.ensureReplyAccessKey(() => "b".repeat(43))).toBe(key);
+    expect(reopened.getMessage(detail.messages.at(-1)!.id)?.parts).toEqual(detail.messages.at(-1)?.parts);
+    reopened.close();
+  });
+
+  it("bounds direct rich-part writes and keeps every decorated capability out of SQLite", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "bypass wire parser", attachmentIds: [] });
+    const injected = Array.from({ length: MAX_AGENT_REPLY_PARTS + 5 }, (_, index) => {
+      const decorated = index % 2 === 0
+        ? {
+            type: "attachment",
+            id: `part-${index}`,
+            reference: { scheme: "mono-agent-artifact", id: `artifact-${index}` },
+            name: `report-${index}.txt`,
+            mediaType: "text/plain",
+            sizeBytes: index,
+            integrityId: `sha256:${index.toString(16).padStart(64, "0")}`,
+          }
+        : {
+            type: "mcp_app",
+            id: `part-${index}`,
+            invocationId: `part-${index}`,
+            connectionId: `connection-${index}`,
+            serverName: "widgets",
+            toolName: "show_chart",
+            resourceUri: `ui://widgets/chart-${index}`,
+            mediaType: "text/html;profile=mcp-app",
+            protocolVersion: "2026-01-26",
+          };
+      return {
+        ...decorated,
+        contentUrl: `/stolen/content?access=decorated-${index}&token=secret-${index}`,
+        resourceUrl: `/stolen/resource?token=secret-${index}`,
+        bridgeUrl: `/stolen/bridge?access_token=secret-${index}`,
+        token: `secret-${index}`,
+        tokens: [`secret-${index}`],
+        access: { query: `token=secret-${index}` },
+        accessQuery: `expires=9999999999&token=secret-${index}`,
+      } as unknown as AgentReplyPart;
+    });
+
+    const detail = store.completeTurn(turn.turnId, "Bounded", undefined, injected);
+    const outcomes = detail.messages.at(-1)!.parts.filter(
+      (part) => part.type === "attachment" || part.type === "mcp_app" || part.type === "failure",
+    );
+    expect(outcomes).toHaveLength(MAX_AGENT_REPLY_PARTS);
+    expect(outcomes.slice(0, MAX_AGENT_REPLY_PARTS - 1).map((part) => "id" in part ? part.id : undefined))
+      .toEqual(Array.from({ length: MAX_AGENT_REPLY_PARTS - 1 }, (_, index) => `part-${index}`));
+    expect(outcomes.at(-1)).toEqual({
+      type: "failure",
+      id: "web-reply-parts-truncated",
+      code: "reply_part_too_large",
+      message: `The web console retained 0 existing and ${MAX_AGENT_REPLY_PARTS - 1} incoming rich reply parts, omitted 0 existing and 6 incoming parts, and used one diagnostic slot; before reserving it, ${MAX_AGENT_REPLY_PARTS} of ${MAX_AGENT_REPLY_PARTS} outcome slots were available to incoming parts.`,
+    });
+
+    const databasePath = store.paths.database;
+    const raw = new DatabaseSync(databasePath);
+    const row = raw.prepare("SELECT parts_json FROM messages WHERE id = ?")
+      .get(detail.messages.at(-1)!.id) as unknown as { parts_json: string };
+    raw.close();
+    expect(row.parts_json).not.toMatch(/contentUrl|resourceUrl|bridgeUrl|accessQuery|access_token|secret-/u);
+    expect(row.parts_json).not.toMatch(/"tokens?"|"access"/u);
+    store.close();
+
+    const corrupt = new DatabaseSync(databasePath);
+    const parts = JSON.parse(row.parts_json) as Array<Record<string, unknown>>;
+    const storedAttachment = parts.find((part) => part.type === "attachment")!;
+    storedAttachment.contentUrl = "/api/v1/threads/durable-capability";
+    corrupt.prepare("UPDATE messages SET parts_json = ? WHERE id = ?")
+      .run(JSON.stringify(parts), detail.messages.at(-1)!.id);
+    corrupt.close();
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
+  });
+
+  it("allocates deterministic collision-free IDs across existing, omitted, sparse, invalid, and reopened parts", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const existing = {
+      type: "failure" as const,
+      id: "web-reply-parts-truncated",
+      code: "unsupported_destination" as const,
+      message: "Existing durable outcome.",
+    };
+    const incoming = Array.from({ length: MAX_AGENT_REPLY_PARTS + 3 }, (_, index): AgentReplyPart => ({
+      type: "failure",
+      id: index === 0
+        ? "web-reply-parts-truncated-2"
+        : index === MAX_AGENT_REPLY_PARTS + 2
+          ? "web-reply-parts-truncated-3"
+          : `incoming-${index}`,
+      code: "artifact_missing",
+      message: `Incoming outcome ${index}.`,
+    }));
+    const injectExisting = (messageId: string) => {
+      const raw = new DatabaseSync(store.paths.database);
+      raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?")
+        .run(JSON.stringify([existing]), messageId);
+      raw.close();
+    };
+    const completeCollidingTurn = () => {
+      const thread = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: "collision", attachmentIds: [] });
+      injectExisting(turn.assistantMessageId);
+      const detail = store.completeTurn(turn.turnId, "done", undefined, incoming);
+      const message = detail.messages.at(-1)!;
+      return {
+        messageId: message.id,
+        outcomes: message.parts.filter((part) => "id" in part),
+      };
+    };
+
+    const first = completeCollidingTurn();
+    const second = completeCollidingTurn();
+    const generated = first.outcomes.slice(1);
+    expect(first.outcomes).toHaveLength(MAX_AGENT_REPLY_PARTS);
+    expect(generated).toHaveLength(MAX_AGENT_REPLY_PARTS - 1);
+    expect(generated.slice(0, MAX_AGENT_REPLY_PARTS - 2).map((part) => part.id))
+      .toEqual(incoming.slice(0, MAX_AGENT_REPLY_PARTS - 2).map((part) => part.id));
+    expect(generated.at(-1)).toMatchObject({
+      type: "failure",
+      id: "web-reply-parts-truncated-4",
+      code: "reply_part_too_large",
+      message: `The web console retained 1 existing and ${MAX_AGENT_REPLY_PARTS - 2} incoming rich reply parts, omitted 0 existing and 5 incoming parts, and used one diagnostic slot; before reserving it, ${MAX_AGENT_REPLY_PARTS - 1} of ${MAX_AGENT_REPLY_PARTS} outcome slots were available to incoming parts.`,
+    });
+    expect(new Set(first.outcomes.map((part) => part.id)).size).toBe(first.outcomes.length);
+    expect(second.outcomes).toEqual(first.outcomes);
+
+    const invalidThread = store.createThread("agent-one");
+    const invalidTurn = store.beginTurn({ threadId: invalidThread.id, text: "invalid", attachmentIds: [] });
+    injectExisting(invalidTurn.assistantMessageId);
+    const invalidDetail = store.completeTurn(
+      invalidTurn.turnId,
+      "done",
+      undefined,
+      { id: "web-reply-parts-truncated-2", not: "an array" } as unknown as readonly AgentReplyPart[],
+    );
+    const invalidMessage = invalidDetail.messages.at(-1)!;
+    const invalidOutcomes = invalidMessage.parts.filter((part) => "id" in part);
+    expect(invalidOutcomes).toEqual([
+      existing,
+      {
+        type: "failure",
+        id: "web-reply-parts-truncated-3",
+        code: "unsupported_destination",
+        message: `The web console retained 1 existing rich reply parts, omitted 0 existing parts, and rejected an invalid incoming rich reply collection; ${MAX_AGENT_REPLY_PARTS - 1} of ${MAX_AGENT_REPLY_PARTS} outcome slots were available before this bounded diagnostic.`,
+      },
+    ]);
+
+    const validCollisions = [
+      {
+        type: "failure",
+        id: "web-reply-parts-truncated",
+        code: "artifact_missing",
+        message: "Collides with an existing outcome.",
+      },
+      {
+        type: "failure",
+        id: "duplicate-incoming",
+        code: "artifact_missing",
+        message: "First incoming outcome.",
+      },
+      {
+        type: "failure",
+        id: "duplicate-incoming",
+        code: "artifact_missing",
+        message: "Second incoming outcome.",
+      },
+    ] as const satisfies readonly AgentReplyPart[];
+    const completeValidCollisionTurn = () => {
+      const thread = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: "valid collisions", attachmentIds: [] });
+      injectExisting(turn.assistantMessageId);
+      const detail = store.completeTurn(turn.turnId, "done", undefined, validCollisions);
+      const message = detail.messages.at(-1)!;
+      return {
+        messageId: message.id,
+        outcomes: message.parts.filter((part) => "id" in part),
+      };
+    };
+    const firstValidCollisions = completeValidCollisionTurn();
+    const secondValidCollisions = completeValidCollisionTurn();
+    expect(firstValidCollisions.outcomes).toEqual([
+      existing,
+      {
+        type: "failure",
+        id: "invalid-rich-part",
+        code: "unsupported_destination",
+        message: "A rich reply part reused an existing identifier and could not be displayed.",
+      },
+      validCollisions[1],
+      {
+        type: "failure",
+        id: "invalid-rich-part-2",
+        code: "unsupported_destination",
+        message: "A rich reply part reused an existing identifier and could not be displayed.",
+      },
+    ]);
+    expect(new Set(firstValidCollisions.outcomes.map((part) => part.id)).size)
+      .toBe(firstValidCollisions.outcomes.length);
+    expect(secondValidCollisions.outcomes).toEqual(firstValidCollisions.outcomes);
+
+    const sparse = new Array<AgentReplyPart>(5);
+    sparse[1] = {
+      type: "failure",
+      id: "invalid-rich-part",
+      code: "unknown_failure",
+      message: "Invalid failure code.",
+    } as unknown as AgentReplyPart;
+    sparse[2] = {
+      type: "failure",
+      id: "invalid-rich-part-2",
+      code: "artifact_missing",
+      message: "Valid middle outcome.",
+    };
+    sparse[4] = {
+      type: "failure",
+      id: "invalid-rich-part",
+      code: "artifact_missing",
+      message: "Valid colliding suffix outcome.",
+    };
+    const completeSparseTurn = () => {
+      const thread = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: "sparse", attachmentIds: [] });
+      injectExisting(turn.assistantMessageId);
+      const detail = store.completeTurn(turn.turnId, "done", undefined, sparse);
+      const message = detail.messages.at(-1)!;
+      return {
+        messageId: message.id,
+        outcomes: message.parts.filter((part) => "id" in part),
+      };
+    };
+    const firstSparse = completeSparseTurn();
+    const secondSparse = completeSparseTurn();
+    expect(firstSparse.outcomes.map((part) => part.id)).toEqual([
+      "web-reply-parts-truncated",
+      "invalid-rich-part-3",
+      "invalid-rich-part-4",
+      "invalid-rich-part-2",
+      "invalid-rich-part-5",
+      "invalid-rich-part",
+    ]);
+    expect(firstSparse.outcomes.slice(1).map((part) => part.type === "failure" ? part.code : part.type))
+      .toEqual([
+        "unsupported_destination",
+        "unsupported_destination",
+        "artifact_missing",
+        "unsupported_destination",
+        "artifact_missing",
+      ]);
+    expect(new Set(firstSparse.outcomes.map((part) => part.id)).size).toBe(firstSparse.outcomes.length);
+    expect(secondSparse.outcomes).toEqual(firstSparse.outcomes);
+
+    store.close();
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getMessage(first.messageId)?.parts.filter((part) => "id" in part)).toEqual(first.outcomes);
+    expect(reopened.getMessage(invalidMessage.id)?.parts.filter((part) => "id" in part)).toEqual(invalidOutcomes);
+    expect(reopened.getMessage(firstValidCollisions.messageId)?.parts.filter((part) => "id" in part))
+      .toEqual(firstValidCollisions.outcomes);
+    expect(reopened.getMessage(firstSparse.messageId)?.parts.filter((part) => "id" in part))
+      .toEqual(firstSparse.outcomes);
+    reopened.close();
+  });
+
+  it("records deterministic diagnostics when full or legacy outcome state leaves no incoming slot", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const outcome = (id: string) => ({
+      type: "failure" as const,
+      id,
+      code: "artifact_missing" as const,
+      message: "Existing durable outcome.",
+    });
+    const inject = (messageId: string, parts: readonly ReturnType<typeof outcome>[]) => {
+      const raw = new DatabaseSync(store.paths.database);
+      raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?").run(JSON.stringify(parts), messageId);
+      raw.close();
+    };
+    const complete = (
+      existing: readonly ReturnType<typeof outcome>[],
+      incoming: unknown,
+      label: string,
+    ) => {
+      const thread = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: label, attachmentIds: [] });
+      inject(turn.assistantMessageId, existing);
+      const detail = store.completeTurn(
+        turn.turnId,
+        "done",
+        undefined,
+        incoming as readonly AgentReplyPart[],
+      );
+      return detail.messages.at(-1)!.parts.filter(
+        (part) => part.type === "attachment" || part.type === "mcp_app" || part.type === "failure",
+      );
+    };
+
+    const full = Array.from({ length: MAX_AGENT_REPLY_PARTS }, (_, index) => outcome(`full-${index}`));
+    const incoming = [outcome("incoming-0"), outcome("incoming-1")];
+    const firstFull = complete(full, incoming, "full one");
+    const secondFull = complete(full, incoming, "full two");
+    expect(firstFull).toHaveLength(MAX_AGENT_REPLY_PARTS);
+    expect(firstFull.slice(0, -1)).toEqual(full.slice(0, -1));
+    expect(firstFull.at(-1)).toEqual({
+      type: "failure",
+      id: "web-reply-parts-truncated",
+      code: "reply_part_too_large",
+      message: `The web console retained ${MAX_AGENT_REPLY_PARTS - 1} existing and 0 incoming rich reply parts, omitted 1 existing and 2 incoming parts, and used one diagnostic slot; before reserving it, 0 of ${MAX_AGENT_REPLY_PARTS} outcome slots were available to incoming parts.`,
+    });
+    expect(secondFull).toEqual(firstFull);
+
+    const invalid = complete(full, {
+      id: "attacker-controlled-id",
+      detail: "/private/agent/result?token=must-not-leak",
+    }, "full invalid");
+    expect(invalid).toHaveLength(MAX_AGENT_REPLY_PARTS);
+    expect(invalid.slice(0, -1)).toEqual(full.slice(0, -1));
+    expect(invalid.at(-1)).toEqual({
+      type: "failure",
+      id: "web-reply-parts-truncated",
+      code: "unsupported_destination",
+      message: `The web console retained ${MAX_AGENT_REPLY_PARTS - 1} existing rich reply parts, omitted 1 existing parts, and rejected an invalid incoming rich reply collection; 0 of ${MAX_AGENT_REPLY_PARTS} outcome slots were available before this bounded diagnostic.`,
+    });
+    expect(JSON.stringify(invalid)).not.toMatch(/private\/agent|must-not-leak|attacker-controlled-id/u);
+
+    const legacy = Array.from(
+      { length: MAX_AGENT_REPLY_PARTS + 3 },
+      (_, index) => outcome(`legacy-${index}`),
+    );
+    const repaired = complete(legacy, [outcome("incoming-legacy")], "legacy over cap");
+    expect(repaired).toHaveLength(MAX_AGENT_REPLY_PARTS);
+    expect(repaired.slice(0, -1)).toEqual(legacy.slice(0, MAX_AGENT_REPLY_PARTS - 1));
+    expect(repaired.at(-1)).toEqual({
+      type: "failure",
+      id: "web-reply-parts-truncated",
+      code: "reply_part_too_large",
+      message: `The web console retained ${MAX_AGENT_REPLY_PARTS - 1} existing and 0 incoming rich reply parts, omitted 4 existing and 1 incoming parts, and used one diagnostic slot; before reserving it, 0 of ${MAX_AGENT_REPLY_PARTS} outcome slots were available to incoming parts.`,
+    });
     store.close();
   });
 

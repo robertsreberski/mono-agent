@@ -10,6 +10,7 @@ import { stripAnsi, TestTerminal } from "./test-terminal.js";
 function setup(onTurnSettled?: (event: ChatTurnSettledEvent) => void | Promise<void>): {
   chat: ChatView;
   status: () => string;
+  rendered: () => string;
 } {
   const tui = new TUI(new TestTerminal(100, 30));
   const statusBar = new StatusBar();
@@ -22,7 +23,11 @@ function setup(onTurnSettled?: (event: ChatTurnSettledEvent) => void | Promise<v
     flushIntervalMs: 0,
     ...(onTurnSettled === undefined ? {} : { onTurnSettled }),
   });
-  return { chat, status: () => stripAnsi(statusBar.render(80).join("\n")) };
+  return {
+    chat,
+    status: () => stripAnsi(statusBar.render(80).join("\n")),
+    rendered: () => stripAnsi(chat.render(100).join("\n")),
+  };
 }
 
 async function waitForSettle(chat: ChatView): Promise<void> {
@@ -47,6 +52,27 @@ function responderReturning(metadataSequence: ReadonlyArray<Record<string, unkno
 }
 
 describe("ChatView finish metadata (C3)", () => {
+  it("finishes a parts-only response instead of dropping it", async () => {
+    const { chat, rendered } = setup();
+    chat.setResponder({
+      async respond() {
+        return {
+          parts: [{
+            type: "failure" as const,
+            id: "failure-1",
+            code: "artifact_missing" as const,
+            message: "The report expired.",
+          }],
+        };
+      },
+    });
+
+    chat.editor.onSubmit?.("make report");
+    await waitForSettle(chat);
+
+    expect(rendered()).toContain("The report expired.");
+  });
+
   it("applies the finish response's runtime effort/model to the status bar", async () => {
     const { chat, status } = setup();
     chat.setResponder(responderReturning([{ runtime: { effort: "high", model: "claude-fable-5" } }]));

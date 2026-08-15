@@ -2,7 +2,12 @@ import dns from "node:dns";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { isWildcardHost, type AgentResponder } from "@mono-agent/agent-contracts";
+import {
+  MAX_AGENT_REPLY_PARTS,
+  isWildcardHost,
+  type AgentReplyPart,
+  type AgentResponder,
+} from "@mono-agent/agent-contracts";
 
 import {
   DEFAULT_MAX_TOOL_PAYLOAD_BYTES,
@@ -11,7 +16,215 @@ import {
   type OpenAIApiChatRequest,
 } from "../index.js";
 
+function sensitiveReplyParts(): readonly AgentReplyPart[] {
+  const sensitive = "/private/private-report.csv?token=capability-secret#sha256:deadbeef";
+  return [
+    {
+      type: "attachment",
+      id: sensitive,
+      reference: { scheme: "mono-agent-artifact", id: sensitive },
+      name: sensitive,
+      mediaType: "text/csv",
+      sizeBytes: 42,
+      integrityId: "sha256:deadbeef",
+    },
+    {
+      type: "mcp_app",
+      id: sensitive,
+      invocationId: sensitive,
+      connectionId: sensitive,
+      serverName: sensitive,
+      toolName: sensitive,
+      resourceUri: `http://127.0.0.1:4319/${sensitive}`,
+      mediaType: "text/html;profile=mcp-app",
+      protocolVersion: "2026-01-26",
+      title: sensitive,
+    },
+    ...Array.from({ length: 20 }, (_, index) => ({
+      type: "failure" as const,
+      id: `${sensitive}:${String(index)}`,
+      code: "artifact_missing" as const,
+      message: sensitive.repeat(1_000),
+      relatedPartId: sensitive,
+    })),
+  ];
+}
+
+function sparseReplyParts(length: number): readonly AgentReplyPart[] {
+  const parts = new Array<AgentReplyPart>(length);
+  parts[1] = {
+    type: "failure",
+    id: "known-sparse-one",
+    code: "artifact_missing",
+    message: "not copied",
+  };
+  if (length > 3) {
+    parts[length - 1] = {
+      type: "failure",
+      id: "known-sparse-last",
+      code: "artifact_expired",
+      message: "not copied",
+    };
+  }
+  return parts;
+}
+
+function expectSparseOutcomeWire(
+  outcomes: Array<Record<string, unknown>> | undefined,
+  expectedLength: number,
+  affectedPartCount: number | undefined,
+): void {
+  expect(outcomes).toHaveLength(expectedLength);
+  expect(outcomes?.map((outcome) => outcome.partIndex))
+    .toEqual(Array.from({ length: expectedLength }, (_, index) => index));
+  if (affectedPartCount === undefined) {
+    expect(outcomes?.at(-1)).not.toHaveProperty("affectedPartCount");
+  } else {
+    expect(outcomes?.at(-1)).toMatchObject({ affectedPartCount });
+  }
+  const serialized = JSON.stringify(outcomes);
+  expect(serialized).not.toContain("null");
+  expect(JSON.parse(serialized)).toEqual(outcomes);
+  expect(outcomes?.length).toBeLessThanOrEqual(MAX_AGENT_REPLY_PARTS);
+}
+
 describe("OpenAI API adapter", () => {
+  it("keeps sync/stream content exact and emits bounded sanitized mono-agent part failures", async () => {
+    const warn = vi.fn();
+    const exactText = "  {\"answer\":true}\n";
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      responder: {
+        async respond() {
+          return {
+            text: exactText,
+            parts: sensitiveReplyParts(),
+          };
+        },
+      },
+      logger: { warn },
+    });
+    try {
+      const response = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "agent", messages: [{ role: "user", content: "json" }] }),
+      });
+      const body = await response.json() as {
+        choices: Array<{ message: { content: string } }>;
+        mono_agent: { reply_part_outcomes: Array<Record<string, unknown>> };
+      };
+      expect(body.choices[0]?.message.content).toBe(exactText);
+      expect(body.mono_agent.reply_part_outcomes).toHaveLength(MAX_AGENT_REPLY_PARTS);
+      expect(body.mono_agent.reply_part_outcomes.slice(0, 2)).toEqual([
+        expect.objectContaining({ partIndex: 0, partType: "attachment", code: "unsupported_destination" }),
+        expect.objectContaining({ partIndex: 1, partType: "mcp_app", code: "unsupported_destination" }),
+      ]);
+      expect(body.mono_agent.reply_part_outcomes.at(-1)).toMatchObject({
+        code: "reply_part_too_large",
+        affectedPartCount: 3,
+      });
+
+      const streamed = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          stream: true,
+          messages: [{ role: "user", content: "json" }],
+        }),
+      });
+      const streamBody = await streamed.text();
+      const payloads = sseDataPayloads(streamBody);
+      const chunks = payloads
+        .filter((payload) => payload !== "[DONE]")
+        .map((payload) => JSON.parse(payload) as Record<string, unknown>);
+      const streamedContent = chunks
+        .flatMap((chunk) => chunk.choices as Array<{ delta: { content?: string } }>)
+        .map((choice) => choice.delta.content ?? "")
+        .join("");
+      expect(streamedContent).toBe(exactText);
+      expect(chunks).toContainEqual(expect.objectContaining({
+        mono_agent: {
+          reply_part_outcomes: body.mono_agent.reply_part_outcomes,
+        },
+      }));
+      expect(payloads.at(-1)).toBe("[DONE]");
+
+      for (const serialized of [JSON.stringify(body), streamBody]) {
+        expect(serialized).not.toContain("private-report");
+        expect(serialized).not.toContain("capability-secret");
+        expect(serialized).not.toContain("deadbeef");
+      }
+      for (const payload of payloads.slice(0, -1)) {
+        expect(Buffer.byteLength(`data: ${payload}\n\n`, "utf8")).toBeLessThanOrEqual(MAX_TOOL_SSE_FRAME_BYTES);
+      }
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("round-trips sparse below-cap JSON and above-cap SSE outcomes without null holes", async () => {
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      responder: {
+        async respond(request) {
+          const label = request.text.endsWith("below") ? "below" : "above";
+          return {
+            text: `  ${label}\n`,
+            parts: sparseReplyParts(label === "below" ? 4 : MAX_AGENT_REPLY_PARTS + 3),
+          };
+        },
+      },
+    });
+    try {
+      const sync = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "agent", messages: [{ role: "user", content: "below" }] }),
+      });
+      const syncBody = await sync.json() as {
+        choices: Array<{ message: { content: string } }>;
+        mono_agent: { reply_part_outcomes: Array<Record<string, unknown>> };
+      };
+      expect(syncBody.choices[0]?.message.content).toBe("  below\n");
+      expectSparseOutcomeWire(syncBody.mono_agent.reply_part_outcomes, 4, undefined);
+
+      const streamed = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "agent",
+          stream: true,
+          messages: [{ role: "user", content: "above" }],
+        }),
+      });
+      const payloads = sseDataPayloads(await streamed.text());
+      const chunks = payloads
+        .filter((payload) => payload !== "[DONE]")
+        .map((payload) => JSON.parse(payload) as {
+          choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }>;
+          mono_agent?: { reply_part_outcomes?: Array<Record<string, unknown>> };
+        });
+      const outcomesChunkIndex = chunks.findIndex((chunk) => chunk.mono_agent?.reply_part_outcomes !== undefined);
+      const stopChunkIndex = chunks.findIndex((chunk) =>
+        chunk.choices?.some((choice) => choice.finish_reason === "stop") === true,
+      );
+      expect(outcomesChunkIndex).toBeGreaterThanOrEqual(0);
+      expect(outcomesChunkIndex).toBeLessThan(stopChunkIndex);
+      const streamedOutcomes = chunks[outcomesChunkIndex]?.mono_agent?.reply_part_outcomes;
+      expectSparseOutcomeWire(streamedOutcomes, MAX_AGENT_REPLY_PARTS, 4);
+      expect(chunks.flatMap((chunk) => chunk.choices ?? [])
+        .map((choice) => choice.delta?.content ?? "").join("")).toBe("  above\n");
+      expect(payloads.at(-1)).toBe("[DONE]");
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("serves OpenAI-compatible model discovery for OpenWebUI", async () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",

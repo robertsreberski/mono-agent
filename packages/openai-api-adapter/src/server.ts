@@ -5,10 +5,13 @@ import { networkInterfaces } from "node:os";
 import {
   BufferedMessageStream,
   BoundedHttpResponseWriter,
+  appendReplyPartFallback,
   closeServerBounded,
   isAgentResponseCancelledError,
+  unsupportedReplyPartDeliveryOutcomes,
   type AgentAttachment,
   type AgentMessageStream,
+  type AgentReplyPartDeliveryOutcome,
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
@@ -169,6 +172,10 @@ const OPENAI_CHAT_PARAMETER_KEYS = [
 ] as const;
 type OpenAIChatParameterKey = (typeof OPENAI_CHAT_PARAMETER_KEYS)[number];
 type RuntimeWarningEvent = Extract<AgentStreamEvent, { readonly type: "runtime_warning" }>;
+interface OpenAIMonoAgentMetadata {
+  readonly events?: readonly RuntimeWarningEvent[];
+  readonly reply_part_outcomes?: readonly AgentReplyPartDeliveryOutcome[];
+}
 const OPENAI_CHAT_PARAMETER_DEFAULTS: Readonly<Record<OpenAIChatParameterKey, unknown>> = {
   temperature: 1,
   top_p: 1,
@@ -454,13 +461,19 @@ async function runJsonResponder(input: {
   try {
     const samplingWarning = await emitUnsupportedSamplingWarning(input.request, stream, input.options.logger);
     const response = await input.options.responder.respond(input.request, stream);
-    await stream.finish(response.text);
+    const replyPartOutcomes = unsupportedReplyPartDeliveryOutcomes(response.parts);
+    await stream.finish(response.text, {
+      ...(response.parts === undefined ? {} : { parts: response.parts }),
+      unsupportedPartFallback: "none",
+    });
     input.response.status(200).json(chatCompletion({
       id: `chatcmpl-${input.requestId}`,
       model: input.model,
-      content: stream.text,
+      content: response.text ?? stream.text,
       ...(samplingWarning === undefined ? {} : { events: [samplingWarning] }),
+      ...(replyPartOutcomes === undefined ? {} : { replyPartOutcomes }),
     }));
+    logUnsupportedReplyParts(input, replyPartOutcomes);
   } catch (error) {
     const cancelled = input.request.abortSignal.aborted || isAgentResponseCancelledError(error);
     input.options.logger?.[cancelled ? "warn" : "error"]?.("OpenAI API responder failed.", {
@@ -522,7 +535,12 @@ async function runStreamingResponder(input: {
     await stream.start();
     await emitUnsupportedSamplingWarning(input.request, stream, input.options.logger);
     const response = await input.options.responder.respond(input.request, stream);
-    await stream.finish(response.text);
+    const replyPartOutcomes = unsupportedReplyPartDeliveryOutcomes(response.parts);
+    await stream.finish(response.text, {
+      ...(response.parts === undefined ? {} : { parts: response.parts }),
+      unsupportedPartFallback: "none",
+    });
+    logUnsupportedReplyParts(input, replyPartOutcomes);
   } catch (error) {
     const cancelled = input.request.abortSignal.aborted || isAgentResponseCancelledError(error);
     input.options.logger?.[cancelled ? "warn" : "error"]?.("OpenAI API streaming responder failed.", {
@@ -615,12 +633,24 @@ class SseChatMessageStream implements AgentMessageStream {
     }
   }
 
-  async finish(finalText?: string): Promise<void> {
+  async finish(
+    finalText?: string,
+    options?: import("@mono-agent/agent-contracts").AgentMessageFinishOptions,
+  ): Promise<void> {
     if (this.done) {
       return;
     }
-    if (finalText !== undefined) {
-      await this.finishFinalText(finalText);
+    const deliveredText = appendReplyPartFallback(
+      finalText,
+      options?.parts,
+      options?.unsupportedPartFallback,
+    );
+    if (deliveredText !== undefined) {
+      await this.finishFinalText(deliveredText);
+    }
+    const replyPartOutcomes = unsupportedReplyPartDeliveryOutcomes(options?.parts);
+    if (replyPartOutcomes !== undefined) {
+      await this.writeChunk({}, null, { reply_part_outcomes: replyPartOutcomes });
     }
     this.done = true;
     await this.writeChunk({}, "stop");
@@ -657,8 +687,9 @@ class SseChatMessageStream implements AgentMessageStream {
   private async writeChunk(
     delta: Record<string, unknown>,
     finishReason: "stop" | null,
+    monoAgent?: OpenAIMonoAgentMetadata,
   ): Promise<void> {
-    await this.writer.write(this.serializeChunk(delta, finishReason));
+    await this.writer.write(this.serializeChunk(delta, finishReason, monoAgent));
   }
 
   private async writeToolDetailsChunk(input: OpenWebUIToolDetailsInput): Promise<void> {
@@ -673,6 +704,7 @@ class SseChatMessageStream implements AgentMessageStream {
   private serializeChunk(
     delta: Record<string, unknown>,
     finishReason: "stop" | null,
+    monoAgent?: OpenAIMonoAgentMetadata,
   ): string {
     return `data: ${JSON.stringify({
       id: this.chunkInput.id,
@@ -686,6 +718,7 @@ class SseChatMessageStream implements AgentMessageStream {
           finish_reason: finishReason,
         },
       ],
+      ...(monoAgent === undefined ? {} : { mono_agent: monoAgent }),
     })}\n\n`;
   }
 
@@ -1049,7 +1082,17 @@ function chatCompletion(input: {
   readonly model: string;
   readonly content: string;
   readonly events?: readonly RuntimeWarningEvent[];
+  readonly replyPartOutcomes?: readonly AgentReplyPartDeliveryOutcome[];
 }): Record<string, unknown> {
+  const monoAgent: OpenAIMonoAgentMetadata | undefined =
+    input.events === undefined && input.replyPartOutcomes === undefined
+      ? undefined
+      : {
+          ...(input.events === undefined ? {} : { events: input.events }),
+          ...(input.replyPartOutcomes === undefined
+            ? {}
+            : { reply_part_outcomes: input.replyPartOutcomes }),
+        };
   return {
     id: input.id,
     object: "chat.completion",
@@ -1065,14 +1108,25 @@ function chatCompletion(input: {
         finish_reason: "stop",
       },
     ],
-    ...(input.events === undefined || input.events.length === 0
-      ? {}
-      : {
-          mono_agent: {
-            events: input.events,
-          },
-        }),
+    ...(monoAgent === undefined ? {} : { mono_agent: monoAgent }),
   };
+}
+
+function logUnsupportedReplyParts(
+  input: {
+    readonly request: OpenAIApiChatRequest;
+    readonly options: OpenAIApiAdapterOptions;
+  },
+  replyPartOutcomes: readonly AgentReplyPartDeliveryOutcome[] | undefined,
+): void {
+  if (replyPartOutcomes === undefined) {
+    return;
+  }
+  input.options.logger?.warn?.("OpenAI API rich reply parts were not delivered by this destination.", {
+    requestId: input.request.metadata.openaiApi.requestId,
+    conversationId: input.request.conversationId,
+    replyPartOutcomes,
+  });
 }
 
 function authorize(req: Request, res: Response, apiKey: string | undefined): boolean {

@@ -1,4 +1,10 @@
 import type { AgentStreamEvent } from "./index.js";
+import {
+  isAgentReplyPartDeliveryOutcomes,
+  sanitizeReplyPartDeliveryOutcomes,
+  type AgentReplyPartDeliveryOutcome,
+} from "./reply-part-outcomes.js";
+import { MAX_AGENT_REPLY_PARTS } from "./stream-wire.js";
 
 /** Producer ceiling; consumers retain a separate 1 MiB defensive read cap. */
 export const MAX_CRON_OPERATOR_RESPONSE_BYTES = 768 * 1024;
@@ -15,6 +21,8 @@ export const MAX_CRON_OPERATOR_SUMMARY_TEXT_BYTES = 2 * 1024;
 export const MAX_CRON_OPERATOR_SUMMARY_ERROR_BYTES = 512;
 export const MAX_CRON_OPERATOR_SUMMARY_ARTIFACT_ID_BYTES = 512;
 export const MAX_CRON_OPERATOR_SUMMARY_FAILURE_KIND_BYTES = 128;
+/** Compact projections retain the first ordered outcomes; detail retains the full shared 20-outcome contract. */
+export const MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES = 8;
 export const MAX_CRON_OPERATOR_DETAIL_TEXT_BYTES = 128 * 1024;
 export const MAX_CRON_OPERATOR_DETAIL_ERROR_BYTES = 32 * 1024;
 export const MAX_CRON_OPERATOR_DETAIL_ARTIFACT_ID_BYTES = 4 * 1024;
@@ -59,6 +67,8 @@ export interface CronOperatorRunBase {
   readonly blockedByRunId?: string;
   readonly blockedByTrigger?: CronOperatorRunTrigger;
   readonly queueDepth?: number;
+  /** Bounded sanitized terminal outcomes; summary keeps 8 ordered records and detail keeps the shared 20. */
+  readonly replyPartOutcomes?: readonly AgentReplyPartDeliveryOutcome[];
   readonly eventCount: number;
   readonly fieldsTruncated?: readonly CronOperatorRunTruncatedField[];
   readonly eventsTruncated?: true;
@@ -101,6 +111,7 @@ export interface CronOperatorOverview {
 }
 
 export interface CronOperatorRunPage {
+  /** May be shorter than the requested item limit when the next summary would exceed the response byte ceiling. */
   readonly runs: readonly CronOperatorRunSummary[];
   readonly nextCursor?: string;
 }
@@ -112,30 +123,40 @@ export class CronOperatorWireError extends TypeError {
   }
 }
 
+const OVERVIEW_KEYS = ["generatedAt", "actionsEnabled", "jobs", "degradedReason", "jobsTruncated"] as const;
+const JOB_KEYS = [
+  "jobId", "expression", "timezone", "conversationId", "configured", "declaredEnabled",
+  "effectiveEnabled", "nextRunAt", "health", "lastRun", "activeRunId",
+] as const;
+const RUN_BASE_KEYS = [
+  "projection", "runId", "jobId", "scheduledAt", "orderedAt", "sequence", "trigger", "status",
+  "startedAt", "completedAt", "artifactRunId", "text", "error", "failureKind", "blockedByRunId",
+  "blockedByTrigger", "queueDepth", "replyPartOutcomes", "eventCount", "fieldsTruncated", "eventsTruncated",
+] as const;
+const RUN_DETAIL_KEYS = [...RUN_BASE_KEYS, "events", "eventsIncluded"] as const;
+const RUN_PAGE_KEYS = ["runs", "nextCursor"] as const;
+const MAX_REPLY_PART_OUTCOME_FIELDS = 6;
+
 export function parseCronOperatorOverview(value: unknown): CronOperatorOverview {
-  const overview = requireRecord(value);
-  if (!hasOnlyKeys(overview, ["generatedAt", "actionsEnabled", "jobs", "degradedReason", "jobsTruncated"])
+  const overview = snapshotOwnDataRecord(value, OVERVIEW_KEYS.length);
+  const jobs = snapshotOwnDataArray(overview.jobs, MAX_CRON_OPERATOR_JOBS);
+  if (!hasOnlyKeys(overview, OVERVIEW_KEYS)
     || !validDate(overview.generatedAt)
     || typeof overview.actionsEnabled !== "boolean"
-    || !Array.isArray(overview.jobs)
-    || overview.jobs.length > MAX_CRON_OPERATOR_JOBS
     || !optionalBoundedString(overview.degradedReason, MAX_CRON_OPERATOR_DEGRADED_REASON_BYTES)
     || (overview.jobsTruncated !== undefined && overview.jobsTruncated !== true)) fail();
   return {
     generatedAt: overview.generatedAt as string,
     actionsEnabled: overview.actionsEnabled as boolean,
-    jobs: (overview.jobs as unknown[]).map(parseCronOperatorJob),
+    jobs: jobs.map(parseCronOperatorJob),
     ...(overview.degradedReason === undefined ? {} : { degradedReason: overview.degradedReason as string }),
     ...(overview.jobsTruncated === true ? { jobsTruncated: true as const } : {}),
   };
 }
 
 export function parseCronOperatorJob(value: unknown): CronOperatorJob {
-  const job = requireRecord(value);
-  if (!hasOnlyKeys(job, [
-    "jobId", "expression", "timezone", "conversationId", "configured", "declaredEnabled",
-    "effectiveEnabled", "nextRunAt", "health", "lastRun", "activeRunId",
-  ])
+  const job = snapshotOwnDataRecord(value, JOB_KEYS.length);
+  if (!hasOnlyKeys(job, JOB_KEYS)
     || !boundedString(job.jobId, MAX_CRON_OPERATOR_JOB_ID_BYTES, true)
     || !optionalBoundedString(job.expression, MAX_CRON_OPERATOR_EXPRESSION_BYTES)
     || !optionalBoundedString(job.timezone, MAX_CRON_OPERATOR_TIMEZONE_BYTES)
@@ -143,7 +164,7 @@ export function parseCronOperatorJob(value: unknown): CronOperatorJob {
     || typeof job.configured !== "boolean"
     || typeof job.declaredEnabled !== "boolean"
     || typeof job.effectiveEnabled !== "boolean"
-    || !["healthy", "warning", "unhealthy", "disabled", "unknown"].includes(String(job.health))
+    || !oneOf(job.health, ["healthy", "warning", "unhealthy", "disabled", "unknown"])
     || (job.nextRunAt !== undefined && !validDate(job.nextRunAt))
     || !optionalBoundedString(job.activeRunId, MAX_CRON_OPERATOR_RUN_ID_BYTES)) fail();
   return {
@@ -166,46 +187,54 @@ export function parseCronOperatorRunSummary(value: unknown): CronOperatorRunSumm
 }
 
 export function parseCronOperatorRunDetail(value: unknown): CronOperatorRunDetail {
-  const run = parseRunBase(value, "detail", [...RUN_BASE_KEYS, "events", "eventsIncluded"]);
-  if (!Array.isArray(run.events)
-    || run.events.length > MAX_CRON_OPERATOR_DETAIL_EVENTS
-    || !Number.isSafeInteger(run.eventsIncluded)
-    || Number(run.eventsIncluded) !== run.events.length
+  const run = parseRunBase(value, "detail", RUN_DETAIL_KEYS);
+  const sourceEvents = snapshotOwnDataArray(run.events, MAX_CRON_OPERATOR_DETAIL_EVENTS);
+  const context = createJsonSnapshotContext();
+  const events: AgentStreamEvent[] = [];
+  let eventBytes = 2;
+  for (let index = 0; index < sourceEvents.length; index += 1) {
+    if (index > 0) eventBytes = addJsonBytes(eventBytes, 1, MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES);
+    const parsed = parseCronOperatorEvent(
+      sourceEvents[index],
+      context,
+      MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES - eventBytes,
+    );
+    events.push(parsed.value);
+    eventBytes = addJsonBytes(eventBytes, parsed.bytes, MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES);
+  }
+  if (!Number.isSafeInteger(run.eventsIncluded)
+    || Number(run.eventsIncluded) !== events.length
     || Number(run.eventsIncluded) > Number(run.eventCount)
-    || serializedBytes(run.events) > MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES) fail();
+    || eventBytes > MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES) fail();
   return {
     ...run,
     projection: "detail",
-    events: run.events.map(parseCronOperatorEvent),
+    events,
     eventsIncluded: run.eventsIncluded as number,
   } as unknown as CronOperatorRunDetail;
 }
 
 export function parseCronOperatorRunPage(value: unknown): CronOperatorRunPage {
-  const page = requireRecord(value);
-  if (!hasOnlyKeys(page, ["runs", "nextCursor"])
-    || !Array.isArray(page.runs)
-    || page.runs.length > MAX_CRON_OPERATOR_RUN_PAGE
+  const page = snapshotOwnDataRecord(value, RUN_PAGE_KEYS.length);
+  const sourceRuns = snapshotOwnDataArray(page.runs, MAX_CRON_OPERATOR_RUN_PAGE);
+  if (!hasOnlyKeys(page, RUN_PAGE_KEYS)
     || !optionalBoundedString(page.nextCursor, MAX_CRON_OPERATOR_CURSOR_BYTES)) fail();
-  return {
-    runs: (page.runs as unknown[]).map(parseCronOperatorRunSummary),
+  const parsed: CronOperatorRunPage = {
+    runs: sourceRuns.map(parseCronOperatorRunSummary),
     ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor as string }),
   };
+  if (serializedBytes(parsed) > MAX_CRON_OPERATOR_RESPONSE_BYTES) fail();
+  return parsed;
 }
-
-const RUN_BASE_KEYS = [
-  "projection", "runId", "jobId", "scheduledAt", "orderedAt", "sequence", "trigger", "status",
-  "startedAt", "completedAt", "artifactRunId", "text", "error", "failureKind", "blockedByRunId",
-  "blockedByTrigger", "queueDepth", "eventCount", "fieldsTruncated", "eventsTruncated",
-] as const;
 
 function parseRunBase(
   value: unknown,
   projection: CronOperatorRun["projection"],
   allowedKeys: readonly string[],
 ): Record<string, unknown> {
-  const run = requireRecord(value);
+  const run = snapshotOwnDataRecord(value, allowedKeys.length);
   const detail = projection === "detail";
+  const sourceReplyPartOutcomes = run.replyPartOutcomes;
   if (!hasOnlyKeys(run, allowedKeys)
     || run.projection !== projection
     || !boundedString(run.runId, MAX_CRON_OPERATOR_RUN_ID_BYTES, true)
@@ -215,8 +244,9 @@ function parseRunBase(
     || !Number.isSafeInteger(run.sequence)
     || Number(run.sequence) <= 0
     || (run.trigger !== "scheduled" && run.trigger !== "manual")
-    || !["admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "dropped"]
-      .includes(String(run.status))
+    || !oneOf(run.status, [
+      "admitted", "running", "queued", "succeeded", "failed", "cancelled", "skipped_overlap", "dropped",
+    ])
     || !Number.isSafeInteger(run.eventCount)
     || Number(run.eventCount) < 0
     || Number(run.eventCount) > MAX_CRON_OPERATOR_DETAIL_EVENTS
@@ -240,18 +270,56 @@ function parseRunBase(
       && run.blockedByTrigger !== "manual")
     || (run.queueDepth !== undefined && (!Number.isSafeInteger(run.queueDepth) || Number(run.queueDepth) < 0))
     || (run.eventsTruncated !== undefined && run.eventsTruncated !== true)) fail();
-  const fields = run.fieldsTruncated;
-  const allowedFields: readonly string[] = ["artifactRunId", "error", "failureKind", "text"];
-  if (fields !== undefined
-    && (!Array.isArray(fields)
-      || new Set(fields).size !== fields.length
-      || fields.some((field) => !allowedFields.includes(String(field))))) fail();
-  return run;
+  const fields = run.fieldsTruncated === undefined
+    ? undefined
+    : snapshotOwnDataArray(run.fieldsTruncated, 4);
+  const allowedFields = ["artifactRunId", "error", "failureKind", "text"] as const;
+  if (fields !== undefined && (new Set(fields).size !== fields.length
+    || fields.some((field) => !oneOf(field, allowedFields)))) fail();
+  const replyPartOutcomes = sourceReplyPartOutcomes === undefined
+    ? undefined
+    : parseReplyPartOutcomes(
+        sourceReplyPartOutcomes,
+        detail ? MAX_AGENT_REPLY_PARTS : MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES,
+      );
+  const parsed: Record<string, unknown> = {
+    projection,
+    runId: run.runId as string,
+    jobId: run.jobId as string,
+    scheduledAt: run.scheduledAt as string,
+    orderedAt: run.orderedAt as string,
+    sequence: run.sequence as number,
+    trigger: run.trigger as CronOperatorRunTrigger,
+    status: run.status as CronOperatorRunStatus,
+    ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt as string }),
+    ...(run.completedAt === undefined ? {} : { completedAt: run.completedAt as string }),
+    ...(run.artifactRunId === undefined ? {} : { artifactRunId: run.artifactRunId as string }),
+    ...(run.text === undefined ? {} : { text: run.text as string }),
+    ...(run.error === undefined ? {} : { error: run.error as string }),
+    ...(run.failureKind === undefined ? {} : { failureKind: run.failureKind as string }),
+    ...(run.blockedByRunId === undefined ? {} : { blockedByRunId: run.blockedByRunId as string }),
+    ...(run.blockedByTrigger === undefined
+      ? {}
+      : { blockedByTrigger: run.blockedByTrigger as CronOperatorRunTrigger }),
+    ...(run.queueDepth === undefined ? {} : { queueDepth: run.queueDepth as number }),
+    ...(replyPartOutcomes === undefined ? {} : { replyPartOutcomes }),
+    eventCount: run.eventCount as number,
+    ...(fields === undefined ? {} : { fieldsTruncated: fields as readonly CronOperatorRunTruncatedField[] }),
+    ...(run.eventsTruncated === true ? { eventsTruncated: true as const } : {}),
+  };
+  return detail
+    ? { ...parsed, events: run.events, eventsIncluded: run.eventsIncluded }
+    : parsed;
 }
 
-function parseCronOperatorEvent(value: unknown): AgentStreamEvent {
-  const event = requireRecord(value);
-  const metadataValid = event.metadata === undefined || isRecord(event.metadata);
+function parseCronOperatorEvent(
+  value: unknown,
+  context: JsonSnapshotContext,
+  maxBytes: number,
+): JsonEventSnapshot {
+  const parsed = snapshotJsonRecord(value, context, maxBytes);
+  const event = parsed.value;
+  const metadataValid = event.metadata === undefined || isSnapshotRecord(event.metadata);
   if (!metadataValid || typeof event.type !== "string") fail();
   switch (event.type) {
     case "assistant_thought":
@@ -281,12 +349,12 @@ function parseCronOperatorEvent(value: unknown): AgentStreamEvent {
         || (event.model !== undefined && typeof event.model !== "string")
         || !optionalFiniteNumber(event.cumulativeUsd, true)) fail();
       if (event.tokens !== undefined) {
-        const tokens = requireRecord(event.tokens);
-        if (!hasOnlyKeys(tokens, ["input", "output", "cacheRead", "cacheCreation"])
-          || !nonnegativeInteger(tokens.input)
-          || !nonnegativeInteger(tokens.output)
-          || !nonnegativeInteger(tokens.cacheRead)
-          || !nonnegativeInteger(tokens.cacheCreation)) fail();
+        if (!isSnapshotRecord(event.tokens)
+          || !hasOnlyKeys(event.tokens, ["input", "output", "cacheRead", "cacheCreation"])
+          || !nonnegativeInteger(event.tokens.input)
+          || !nonnegativeInteger(event.tokens.output)
+          || !nonnegativeInteger(event.tokens.cacheRead)
+          || !nonnegativeInteger(event.tokens.cacheCreation)) fail();
       }
       break;
     }
@@ -295,8 +363,9 @@ function parseCronOperatorEvent(value: unknown): AgentStreamEvent {
         "type", "kind", "model", "from", "to", "attemptIndex", "retryIndex", "reason", "durationMs",
         "cancelled", "metadata",
       ])
-        || !["request_started", "request_completed", "failover_started", "failover_completed", "retry_started"]
-          .includes(String(event.kind))
+        || !oneOf(event.kind, [
+          "request_started", "request_completed", "failover_started", "failover_completed", "retry_started",
+        ])
         || !optionalString(event.model)
         || !optionalString(event.from)
         || !optionalString(event.to)
@@ -314,7 +383,7 @@ function parseCronOperatorEvent(value: unknown): AgentStreamEvent {
     case "runtime_telemetry":
       if (!hasOnlyKeys(event, ["type", "kind", "data", "metadata"])
         || typeof event.kind !== "string"
-        || (event.data !== undefined && !isRecord(event.data))) fail();
+        || (event.data !== undefined && !isSnapshotRecord(event.data))) fail();
       break;
     case "runtime_warning":
       if (!hasOnlyKeys(event, ["type", "message", "warningKind", "metadata"])
@@ -324,12 +393,15 @@ function parseCronOperatorEvent(value: unknown): AgentStreamEvent {
     default:
       fail();
   }
-  return event as unknown as AgentStreamEvent;
+  return {
+    value: event as unknown as AgentStreamEvent,
+    bytes: parsed.bytes,
+  };
 }
 
 function validToolHistoryMetadata(value: unknown): boolean {
   if (value === undefined) return true;
-  if (!isRecord(value)
+  if (!isSnapshotRecord(value)
     || !hasOnlyKeys(value, [
       "recordId", "sequence", "persistence", "terminalState", "truncated", "originalBytes",
       "retainedBytes", "artifactReferences", "errorCode", "untrusted",
@@ -347,19 +419,275 @@ function validToolHistoryMetadata(value: unknown): boolean {
     || value.untrusted !== true
     || (value.artifactReferences !== undefined && !Array.isArray(value.artifactReferences))) return false;
   return value.artifactReferences === undefined || value.artifactReferences.every((artifact) =>
-    isRecord(artifact)
+    isSnapshotRecord(artifact)
     && hasOnlyKeys(artifact, ["id", "available"])
     && typeof artifact.id === "string"
     && typeof artifact.available === "boolean");
 }
 
-function requireRecord(value: unknown): Record<string, unknown> {
-  if (!isRecord(value)) fail();
-  return value;
+function parseReplyPartOutcomes(
+  value: unknown,
+  maxLength: number,
+): readonly AgentReplyPartDeliveryOutcome[] {
+  const source = snapshotOwnDataArray(value, maxLength)
+    .map((outcome) => snapshotOwnDataRecord(outcome, MAX_REPLY_PART_OUTCOME_FIELDS));
+  if (!isAgentReplyPartDeliveryOutcomes(source)) fail();
+  const parsed = sanitizeReplyPartDeliveryOutcomes(source);
+  if (parsed === undefined) fail();
+  return parsed;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+const MAX_CRON_OPERATOR_OWN_KEY_CODE_UNITS = MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES;
+
+function snapshotOwnDataRecord(value: unknown, maxProperties: number): Record<string, unknown> {
+  let record: object;
+  let keys: readonly PropertyKey[];
+  try {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) fail();
+    record = value;
+    keys = Reflect.ownKeys(record);
+  } catch {
+    fail();
+  }
+  if (keys.length > maxProperties) fail();
+  const snapshot = Object.create(null) as Record<string, unknown>;
+  for (const key of keys) {
+    if (typeof key !== "string" || key.length > MAX_CRON_OPERATOR_OWN_KEY_CODE_UNITS) fail();
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Reflect.getOwnPropertyDescriptor(record, key);
+    } catch {
+      fail();
+    }
+    if (descriptor === undefined || descriptor.enumerable !== true || !("value" in descriptor)) fail();
+    snapshot[key] = descriptor.value;
+  }
+  return snapshot;
+}
+
+function snapshotOwnDataArray(value: unknown, maxLength: number): readonly unknown[] {
+  let array: object;
+  let keys: readonly PropertyKey[];
+  try {
+    if (!Array.isArray(value)) fail();
+    array = value;
+    keys = Reflect.ownKeys(array);
+  } catch {
+    fail();
+  }
+  if (keys.length > maxLength + 1) fail();
+  const entries: Array<readonly [string, PropertyDescriptor]> = [];
+  for (const key of keys) {
+    if (typeof key !== "string" || key.length > MAX_CRON_OPERATOR_OWN_KEY_CODE_UNITS) fail();
+    let descriptor: PropertyDescriptor | undefined;
+    try {
+      descriptor = Reflect.getOwnPropertyDescriptor(array, key);
+    } catch {
+      fail();
+    }
+    if (descriptor === undefined) fail();
+    entries.push([key, descriptor]);
+  }
+  const lengthDescriptor = entries.find(([key]) => key === "length")?.[1];
+  if (lengthDescriptor === undefined
+    || !("value" in lengthDescriptor)
+    || lengthDescriptor.enumerable !== false
+    || !Number.isSafeInteger(lengthDescriptor.value)
+    || Number(lengthDescriptor.value) < 0
+    || Number(lengthDescriptor.value) > maxLength) fail();
+  const length = Number(lengthDescriptor.value);
+  const snapshot = new Array<unknown>(length);
+  let elementCount = 0;
+  for (const [key, descriptor] of entries) {
+    if (key === "length") continue;
+    const index = canonicalArrayIndex(key);
+    if (index === undefined
+      || index >= length
+      || descriptor.enumerable !== true
+      || !("value" in descriptor)) fail();
+    snapshot[index] = descriptor.value;
+    elementCount += 1;
+  }
+  if (elementCount !== length) fail();
+  return snapshot;
+}
+
+function canonicalArrayIndex(key: string): number | undefined {
+  if (key.length > 16 || !/^(?:0|[1-9]\d*)$/u.test(key)) return undefined;
+  const index = Number(key);
+  return Number.isSafeInteger(index) ? index : undefined;
+}
+
+interface JsonValueSnapshot {
+  readonly value: unknown;
+  /** Undefined values are omitted in objects and serialized as null in arrays. */
+  readonly bytes: number | undefined;
+}
+
+interface JsonRecordSnapshot {
+  readonly value: Record<string, unknown>;
+  readonly bytes: number;
+}
+
+interface JsonEventSnapshot {
+  readonly value: AgentStreamEvent;
+  readonly bytes: number;
+}
+
+interface JsonSnapshotContext {
+  readonly active: WeakSet<object>;
+  readonly snapshots: WeakMap<object, JsonValueSnapshot>;
+  remainingWork: number;
+}
+
+function createJsonSnapshotContext(): JsonSnapshotContext {
+  return {
+    active: new WeakSet(),
+    snapshots: new WeakMap(),
+    remainingWork: MAX_CRON_OPERATOR_DETAIL_EVENT_BYTES,
+  };
+}
+
+function snapshotJsonRecord(
+  value: unknown,
+  context: JsonSnapshotContext,
+  maxBytes: number,
+): JsonRecordSnapshot {
+  try {
+    const snapshot = snapshotJsonValue(value, context, maxBytes);
+    if (snapshot.bytes === undefined || !isSnapshotRecord(snapshot.value)) fail();
+    return {
+      value: snapshot.value,
+      bytes: snapshot.bytes,
+    };
+  } catch {
+    fail();
+  }
+}
+
+function snapshotJsonValue(
+  value: unknown,
+  context: JsonSnapshotContext,
+  maxBytes: number,
+): JsonValueSnapshot {
+  consumeJsonWork(context, 1);
+  if (value === undefined) return { value, bytes: undefined };
+  if (value === null) return { value, bytes: requireJsonBytes(4, maxBytes) };
+  if (typeof value === "string") {
+    consumeJsonWork(context, value.length);
+    return { value, bytes: jsonStringBytes(value, maxBytes) };
+  }
+  if (typeof value === "boolean") {
+    return { value, bytes: requireJsonBytes(value ? 4 : 5, maxBytes) };
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) fail();
+    const serialized = JSON.stringify(value);
+    return { value, bytes: requireJsonBytes(serialized.length, maxBytes) };
+  }
+  if (typeof value !== "object") fail();
+  if (context.active.has(value)) fail();
+  const cached = context.snapshots.get(value);
+  if (cached !== undefined) {
+    if (cached.bytes === undefined || cached.bytes > maxBytes) fail();
+    return cached;
+  }
+  context.active.add(value);
+  try {
+    const parsed = isArrayValue(value)
+      ? snapshotJsonArray(value, context, maxBytes)
+      : snapshotJsonObject(value, context, maxBytes);
+    context.snapshots.set(value, parsed);
+    return parsed;
+  } finally {
+    context.active.delete(value);
+  }
+}
+
+function snapshotJsonArray(
+  value: object,
+  context: JsonSnapshotContext,
+  maxBytes: number,
+): JsonValueSnapshot {
+  requireJsonBytes(2, maxBytes);
+  const maxLength = Math.min(context.remainingWork, Math.max(0, maxBytes - 2));
+  const source = snapshotOwnDataArray(value, maxLength);
+  const snapshot = new Array<unknown>(source.length);
+  let bytes = 2;
+  for (let index = 0; index < source.length; index += 1) {
+    if (index > 0) bytes = addJsonBytes(bytes, 1, maxBytes);
+    const parsed = snapshotJsonValue(source[index], context, maxBytes - bytes);
+    snapshot[index] = parsed.value;
+    bytes = addJsonBytes(bytes, parsed.bytes ?? 4, maxBytes);
+  }
+  return { value: snapshot, bytes };
+}
+
+function snapshotJsonObject(
+  value: object,
+  context: JsonSnapshotContext,
+  maxBytes: number,
+): JsonValueSnapshot {
+  requireJsonBytes(2, maxBytes);
+  const source = snapshotOwnDataRecord(value, context.remainingWork);
+  const snapshot = Object.create(null) as Record<string, unknown>;
+  let bytes = 2;
+  let emittedProperties = 0;
+  for (const key of Object.keys(source)) {
+    consumeJsonWork(context, key.length + 1);
+    if (source[key] === undefined) {
+      snapshot[key] = snapshotJsonValue(source[key], context, maxBytes - bytes).value;
+      continue;
+    }
+    if (emittedProperties > 0) bytes = addJsonBytes(bytes, 1, maxBytes);
+    bytes = addJsonBytes(bytes, jsonStringBytes(key, maxBytes - bytes), maxBytes);
+    bytes = addJsonBytes(bytes, 1, maxBytes);
+    const parsed = snapshotJsonValue(source[key], context, maxBytes - bytes);
+    if (parsed.bytes === undefined) fail();
+    snapshot[key] = parsed.value;
+    bytes = addJsonBytes(bytes, parsed.bytes, maxBytes);
+    emittedProperties += 1;
+  }
+  return { value: snapshot, bytes };
+}
+
+function consumeJsonWork(context: JsonSnapshotContext, units: number): void {
+  if (!Number.isSafeInteger(units) || units < 0 || units > context.remainingWork) fail();
+  context.remainingWork -= units;
+}
+
+function jsonStringBytes(value: string, maxBytes: number): number {
+  if (maxBytes < 2 || value.length > maxBytes - 2) fail();
+  const serialized = JSON.stringify(value);
+  if (serialized.length > maxBytes) fail();
+  return requireJsonBytes(utf8Bytes(serialized), maxBytes);
+}
+
+function requireJsonBytes(bytes: number, maxBytes: number): number {
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > maxBytes) fail();
+  return bytes;
+}
+
+function addJsonBytes(current: number, additional: number, maxBytes: number): number {
+  if (!Number.isSafeInteger(current)
+    || !Number.isSafeInteger(additional)
+    || current < 0
+    || additional < 0
+    || current > maxBytes
+    || additional > maxBytes - current) fail();
+  return current + additional;
+}
+
+function isSnapshotRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isArrayValue(value: object): boolean {
+  try {
+    return Array.isArray(value);
+  } catch {
+    fail();
+  }
 }
 
 function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
@@ -367,8 +695,12 @@ function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): b
   return Object.keys(value).every((key) => allowed.has(key));
 }
 
+function oneOf<const T extends string>(value: unknown, allowed: readonly T[]): value is T {
+  return typeof value === "string" && (allowed as readonly string[]).includes(value);
+}
+
 function validDate(value: unknown): value is string {
-  if (typeof value !== "string" || value.length === 0) return false;
+  if (typeof value !== "string" || (value.length !== 24 && value.length !== 27)) return false;
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
 }
@@ -376,6 +708,7 @@ function validDate(value: unknown): value is string {
 function boundedString(value: unknown, maxBytes: number, nonempty = false): value is string {
   return typeof value === "string"
     && (!nonempty || value.length > 0)
+    && value.length <= maxBytes
     && utf8Bytes(value) <= maxBytes;
 }
 
@@ -406,7 +739,8 @@ function utf8Bytes(value: string): number {
 
 function serializedBytes(value: unknown): number {
   try {
-    return utf8Bytes(JSON.stringify(value));
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string" ? utf8Bytes(serialized) : Number.POSITIVE_INFINITY;
   } catch {
     return Number.POSITIVE_INFINITY;
   }

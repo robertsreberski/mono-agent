@@ -130,6 +130,15 @@ Async mode returns `202` with `requestId` and `statusUrl`; status is process-loc
 
 Webhook response metadata contains channel-safe run diagnostics such as the run id and status. Compiled system prompts are retained only in local run artifacts and are never returned by this external HTTP API. As defense in depth, the adapter removes `metadata.summary.systemPrompt` even when a custom responder supplies it; sibling summary fields and unrelated metadata are preserved.
 
+Webhook is a machine/text destination. Rich reply parts never alter the answer
+`text`: successful sync JSON, stored async status, `getStatus()`, and result
+callbacks instead carry optional `replyPartOutcomes`. Each attachment or MCP App
+has a terminal `unsupported_destination` failure. The list is capped at 20,
+uses an explicit aggregate if an off-contract responder exceeds that ceiling,
+and cannot contain part ids, filenames, paths, URLs, integrity values, producer
+messages, or payload bytes. Every external copy receives its own outcome array,
+so callback mutation cannot rewrite the stored or returned status.
+
 ### Per-webhook prompt
 
 Each endpoint may carry a `prompt` (pre-instructions, same role as a cron job's prompt). When set, the adapter forms the agent's user message as `prompt` + `\n\n` + the posted `text`. The webhook imposes no correlation scheme of its own: it forwards the request's `conversationId` and arbitrary `metadata` through unchanged, so a `prompt` plus filesystem/skill conventions can drive any workflow (e.g. matching incoming results to request files on disk).

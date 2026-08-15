@@ -652,6 +652,71 @@ console.log(app.channelStatuses());
 await app.stop();
 ```
 
+### Reply files and MCP Apps
+
+The configured responder adds a request-scoped `PublishReplyFile` MCP tool when
+the tool policy and runtime route can carry it. The tool copies one generated
+ordinary-workspace file or one file from the exact current run's outbound root
+into owner-private artifact storage, hashes it, and returns only an opaque
+reference. The app composition explicitly treats its configured artifact root,
+the artifact-dir-derived durable conversation-history/session store,
+continuation state, memory, trace registry, provider sessions/auth, config,
+identity, skill, and MCP roots as private. Only the exact current run's outbound
+directory is admitted as a narrow artifact-root exception. Hidden path
+components, mono-agent/MCP/auth/credential/secret/token
+files, npmrc, private keys, certificates, key stores, state databases, and
+Unicode-disguised variants are rejected at every depth, including under the
+run-output exception. Publication rejects traversal, symlinks, multiply linked
+inodes, directory swaps, and source changes detected through the pinned file
+descriptor. Display names are NFC-normalized, stripped of Unicode bidi
+controls, and bounded at UTF-8/code-point boundaries; errors expose neither
+source paths nor bytes.
+
+Files are limited to 20 MiB, and files plus MCP Apps share one 20-part run
+budget. Their durable payloads and MCP audit files stay within a fixed 256 MiB
+aggregate file-byte ceiling: configured composition reserves 1 MiB for
+independently admitted audit files, leaving 255 MiB to the model-fillable shared
+budget.
+Admission is serialized, re-inventories both payload namespaces after restart,
+and fails only the new part explicitly when full; it does not evict active
+staging, current-run, or authorized in-flight content. Retried identities are
+deduplicated. A manifest
+that cannot accept its delivery-conversation binding becomes one bounded failed
+part while answer text and other valid parts survive. Terminal failure,
+cancellation, or missing run metadata removes uncommitted state. The sealed
+local self-configuration override excludes this publisher.
+
+Audit storage performs one root inventory for a process/root lifecycle, then
+maintains exact owner byte counts under a global append gate. Reclamation uses
+rotated history first, then inactive and unprotected owners' active files as a
+last resort; a live or protected owner's active `audit.jsonl` is never a
+candidate. Foreign read failures receive bounded conservative accounting and
+remain quarantined for the process lifetime; recovery requires a process
+restart and fresh root inventory. Every append, rotation,
+cleanup, and quota-reclamation mutation revalidates the audit root, owner
+directory, and singly linked file identities after the operation hook and before
+using the child path. Admission that cannot safely create room fails closed
+without changing unrelated or out-of-root history. Unsafe target files,
+symlinks, hard links, and directories fail that owner closed, while oversized
+target rotations receive the same safe bounded cleanup as foreign history.
+Audit records contain host identity, method,
+timestamp, and phase only—not model-filled tool names, arguments, resource URIs,
+URLs, or results. Tool confirmation reserves both its confirmation and bounded
+completion record before execution. A failed pre-execution admission returns
+`app_audit_failed` and refuses the tool call; a real completion write failure
+after a successful tool call remains `app_audit_incomplete` through operator
+and web transport because the side effect may have occurred and must not be
+retried automatically.
+
+Pi-native routes can retain MCP App resources negotiated at either supported
+ext-apps revision. The whole primary/fallback route must support the bridge;
+otherwise neither the runtime extension nor operator capability is exposed.
+Stored resources follow `artifacts.retention.maxAgeDays` within that aggregate
+ceiling; live connections are separately bounded by an eight-entry LRU and
+ten-minute idle timeout. See
+[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+for native channel behavior, fallbacks, browser security, and limits.
+
 ## Architecture
 
 ### Data flow
@@ -916,6 +981,7 @@ compose communication adapters; adapters never depend on it.
 - [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/composition/)
 - [Channels](https://mono-agent-docs.vercel.app/channels/)
 - [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
+- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-app)
 
 ## Verification

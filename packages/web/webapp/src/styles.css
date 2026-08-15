@@ -639,6 +639,35 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .thinking-indicator i:nth-child(3) { animation-delay: 240ms; }
 .message-error { display: flex; flex-direction: column; gap: 3px; margin: 10px 0; padding: 10px 12px; color: var(--danger); background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent); border-radius: 9px; font-size: 12px; }
 .message-error strong { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
+/* Assistant reply files and MCP Apps are explicit rich parts. App markup is
+   never inserted here: only the trusted outer sandbox iframe occupies the card. */
+.reply-attachment, .mcp-app { margin: 12px 0; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 11px; box-shadow: var(--shadow-sm); }
+.reply-attachment { min-height: 52px; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 8px 10px; }
+.reply-part-icon { width: 30px; height: 30px; display: grid; place-items: center; flex: none; color: var(--accent); background: var(--accent-soft); border-radius: 8px; }
+.reply-part-copy { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 2px; }
+.reply-part-copy strong { overflow: hidden; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.reply-part-copy > span { overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.reply-part-action { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; flex: none; padding: 0 10px; color: var(--accent); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line)); border-radius: 8px; cursor: pointer; font-size: 10px; font-weight: 700; text-decoration: none; }
+.reply-part-action:hover { color: var(--on-accent); background: var(--accent-strong); }
+.reply-part-action:disabled { opacity: 0.58; cursor: wait; }
+.reply-part-action:focus-visible, .mcp-app-confirmation button:focus-visible, .mcp-app-frame:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.reply-part-status { flex-basis: 100%; margin-left: 40px; color: var(--text-muted); font-size: 10px; line-height: 1.4; }
+.reply-part-status.is-unavailable { color: var(--danger); font-weight: 650; }
+.reply-part-error { display: flex; flex-direction: column; gap: 3px; margin: 10px 0; padding: 10px 12px; color: var(--danger); background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent); border-radius: 9px; font-size: 11px; }
+.reply-part-error strong { font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; }
+.mcp-app { position: relative; overflow: clip; }
+.mcp-app > header { min-height: 55px; display: flex; align-items: center; gap: 10px; padding: 8px 10px; }
+.mcp-app-status { margin: 0; padding: 5px 10px; color: var(--text-muted); background: var(--surface-subtle); border-top: 1px solid var(--line); font-size: 10px; }
+.mcp-app-status.is-error { color: var(--danger); background: var(--danger-soft); }
+.mcp-app-status.is-ready { color: var(--accent); }
+.mcp-app-frame { width: 100%; min-height: 160px; max-height: 800px; display: block; background: #fff; border: 0; border-top: 1px solid var(--line); color-scheme: light; }
+.mcp-app-confirmation { position: absolute; inset: 0; min-height: 160px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 9px; padding: 18px; color: var(--text); background: color-mix(in srgb, var(--surface-raised) 96%, transparent); backdrop-filter: blur(8px); z-index: 2; }
+.mcp-app-confirmation > strong { font-size: 14px; }
+.mcp-app-confirmation > span:not(.mcp-app-confirm-actions) { color: var(--text-soft); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.mcp-app-confirm-preview { width: 100%; max-height: 150px; overflow: auto; margin: 0; padding: 9px 10px; color: var(--text-soft); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 7px; font: 10px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.mcp-app-confirm-actions { display: flex; align-self: stretch; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.mcp-app-confirmation button { min-width: 76px; min-height: 38px; padding: 0 11px; color: var(--text-soft); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 11px; font-weight: 650; }
+.mcp-app-confirmation button.is-primary { color: var(--on-accent); background: var(--accent-strong); border-color: transparent; }
 /* Reasoning and tool calls */
 .reasoning-root { margin: 5px 0 11px; }
 .assistant-content > .activity-root:first-child { margin-top: -4px; }
@@ -931,6 +960,13 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .assistant-mark { width: 24px; height: 24px; border-radius: 7px; }
   .assistant-content { padding-right: 2px; }
   .assistant-content > .activity-root:first-child { margin-top: -6px; }
+  .reply-attachment { align-items: flex-start; flex-wrap: wrap; }
+  .reply-attachment .reply-part-action { min-height: 42px; margin-left: 40px; }
+  .mcp-app > header { align-items: flex-start; flex-wrap: wrap; }
+  .mcp-app > header .reply-part-action { min-height: 42px; margin-left: 40px; }
+  .mcp-app-frame { max-height: 70dvh; }
+  .mcp-app-confirmation { padding: 14px; }
+  .mcp-app-confirmation button { min-height: 44px; }
   .markdown { font-size: 13.5px; line-height: 1.62; }
   .markdown table { font-size: 11.5px; }
   .markdown th, .markdown td { padding: 6px 8px; }

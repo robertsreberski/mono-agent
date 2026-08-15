@@ -30,10 +30,13 @@ import {
 } from "@a2a-js/sdk";
 import {
   AgentResponseCancelledError,
+  appendReplyPartFallback,
   closeServerBounded,
   createChannelUserCancelReason,
   isAgentResponseCancelledError,
+  unsupportedReplyPartDeliveryOutcomes,
   type AgentMessageStream,
+  type AgentReplyPartDeliveryOutcome,
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
@@ -336,9 +339,17 @@ export class MonoA2AExecutor implements AgentExecutor {
         return;
       }
 
-      await stream.finish(response.text);
-      const finalText = stream.text;
-      if (finalText.length > 0) {
+      await stream.finish(response.text, {
+        ...(response.parts === undefined ? {} : { parts: response.parts }),
+        unsupportedPartFallback: "none",
+      });
+      const finalText = response.text ?? stream.text;
+      const replyPartOutcomes = unsupportedReplyPartDeliveryOutcomes(response.parts);
+      const artifactParts: Part[] = [
+        ...(finalText.length === 0 ? [] : [textPart(finalText)]),
+        ...(replyPartOutcomes === undefined ? [] : [replyPartOutcomesPart(replyPartOutcomes)]),
+      ];
+      if (artifactParts.length > 0) {
         eventBus.publish(AgentEvent.artifactUpdate({
           taskId: requestContext.taskId,
           contextId: requestContext.contextId,
@@ -346,7 +357,7 @@ export class MonoA2AExecutor implements AgentExecutor {
             artifactId: "final-text",
             name: "Final text response",
             description: "Text response returned by the responder.",
-            parts: [textPart(finalText)],
+            parts: artifactParts,
             metadata: {},
             extensions: [],
           },
@@ -354,6 +365,13 @@ export class MonoA2AExecutor implements AgentExecutor {
           lastChunk: true,
           metadata: {},
         }));
+      }
+      if (replyPartOutcomes !== undefined) {
+        this.logger?.warn?.("A2A rich reply parts were not delivered by this destination.", {
+          taskId: requestContext.taskId,
+          contextId: requestContext.contextId,
+          replyPartOutcomes,
+        });
       }
 
       eventBus.publish(AgentEvent.statusUpdate(createStatusUpdate({
@@ -462,13 +480,21 @@ class A2AProviderMessageStream implements AgentMessageStream {
     this.currentText = text;
   }
 
-  async finish(finalText?: string): Promise<void> {
+  async finish(
+    finalText?: string,
+    options?: import("@mono-agent/agent-contracts").AgentMessageFinishOptions,
+  ): Promise<void> {
     if (this.finished) {
       return;
     }
     this.finished = true;
-    if (finalText !== undefined) {
-      this.currentText = finalText;
+    const deliveredText = appendReplyPartFallback(
+      finalText,
+      options?.parts,
+      options?.unsupportedPartFallback,
+    );
+    if (deliveredText !== undefined) {
+      this.currentText = deliveredText;
     }
   }
 
@@ -692,6 +718,23 @@ function textPart(text: string): Part {
   return {
     content: { $case: "text", value: text },
     mediaType: "text/plain",
+    filename: "",
+    metadata: {},
+  };
+}
+
+function replyPartOutcomesPart(
+  replyPartOutcomes: readonly AgentReplyPartDeliveryOutcome[],
+): Part {
+  return {
+    content: {
+      $case: "data",
+      value: {
+        schemaVersion: 1,
+        replyPartOutcomes,
+      },
+    },
+    mediaType: "application/vnd.mono-agent.reply-part-outcomes+json",
     filename: "",
     metadata: {},
   };

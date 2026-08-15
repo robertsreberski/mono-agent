@@ -203,7 +203,54 @@ export type MessagePart =
       readonly calls: readonly ToolCall[];
     }
   | { readonly type: "telemetry"; readonly event: string; readonly data?: unknown }
-  | { readonly type: "error"; readonly code?: string; readonly message: string };
+  | { readonly type: "error"; readonly code?: string; readonly message: string }
+  | {
+      readonly type: "attachment";
+      readonly id: string;
+      readonly artifactId: string;
+      readonly name: string;
+      readonly mediaType: string;
+      readonly sizeBytes: number;
+      readonly integrityId: string;
+      readonly expiresAt?: string;
+      /** Short-lived, exact-message URL minted by the web service. */
+      readonly contentUrl?: string;
+    }
+  | {
+      readonly type: "mcp_app";
+      readonly id: string;
+      readonly invocationId: string;
+      readonly connectionId: string;
+      readonly serverName: string;
+      readonly toolName: string;
+      readonly resourceUri: string;
+      readonly mediaType: "text/html;profile=mcp-app";
+      readonly protocolVersion: "2026-01-26" | "2025-11-21";
+      readonly title?: string;
+      readonly description?: string;
+      readonly expiresAt?: string;
+      /** Short-lived, exact-message endpoints minted by the web service. */
+      readonly resourceUrl?: string;
+      readonly bridgeUrl?: string;
+    }
+  | {
+      readonly type: "failure";
+      readonly id: string;
+      readonly code: string;
+      readonly message: string;
+      readonly relatedPartId?: string;
+    };
+
+export type McpAppPart = Extract<MessagePart, { readonly type: "mcp_app" }>;
+
+export interface McpAppResource {
+  readonly app: McpAppPart;
+  readonly html: string;
+  readonly toolInput?: unknown;
+  readonly toolResult?: unknown;
+  readonly resourceMetadata?: Readonly<Record<string, unknown>>;
+  readonly connected: boolean;
+}
 
 export interface WebAttachment {
   readonly id: string;

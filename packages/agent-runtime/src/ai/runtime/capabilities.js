@@ -9,6 +9,7 @@ export const COMMON_CAPABILITIES = {
   supports_session_resume: false,
   native_runtime_config: null,
   supports_mcp: true,
+  supports_mcp_apps: false,
   supports_skills: true,
   supports_builtin_tools: true,
   supports_live_input: true,
@@ -36,6 +37,7 @@ export const RUNTIME_CAPABILITIES = {
     // tool, so advertise no support rather than letting callers expect it.
     supports_native_subagents: false,
     supports_request_tool_environment: true,
+    supports_mcp_apps: true,
   },
   codex: {
     runtime: "cli",

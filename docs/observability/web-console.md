@@ -238,6 +238,44 @@ Below 560px the tree adapts rather than clipping: each row keeps its tool name a
 
 Type `/` in an empty composer to open the keyboard-friendly command popover for available actions such as run settings, starting a new conversation, or stopping an active response. Type `$` to find an available skill, or use **Browse skills** without entering a trigger.
 
+## Reply files and MCP Apps
+
+Assistant replies can include host-owned file or MCP App references when the
+running agent advertises those additive operator capabilities. Reply files show
+a message-bound download action; the service reauthorizes the exact
+thread/message/part and the agent rechecks size and SHA-256 integrity before any
+bytes stream. No host path or agent capability URL enters the browser DTO.
+
+Each browser capability is projected for an exact thread/message/part with a
+ten-minute access window that never extends the reply part's retention deadline.
+An authentic capability used after that window returns `reply_access_expired`;
+forged, cross-thread, unknown, and otherwise invalid references retain the
+generic not-found response. On `reply_access_expired`, the PWA automatically
+asks the exact-origin access route to re-project the authoritative retained part
+and retries the attachment download, app resource, or app bridge request once.
+If that recovery is exhausted, the file card offers **Refresh access** and the
+app card offers **Refresh app access**. A refreshed capability is neither a
+persisted credential nor a retention extension.
+
+MCP Apps run only while their exact originating MCP connection is live. The PWA
+uses a nonce-bound double iframe with opaque origins and exactly `allow-scripts`;
+an intersected clipboard grant adds only `clipboard-write` at both levels. Its
+fixed same-origin outer proxy has a no-store, route-local executable CSP and
+receives invocation binding from its direct parent; matching repeated
+configuration re-arms the bridge while delayed host-ready remains ignored,
+without allowing origin or identity replacement. Because inner `srcdoc`
+inherits the response policy, the proxy envelope omits the capability
+directives owned by the required canonical inner meta CSP. The SPA shell retains
+`script-src 'self'`, no invocation data enters the proxy URL, remote script
+origins remain denied, and a second inner-frame navigation removes the app.
+Tool calls, links, and context updates use an inert, focus-trapped confirmation
+dialog; tool arguments are bounded and secret-key-redacted. Resource reads are
+limited to the exact `ui://` URI registered for that invocation.
+
+See [Reply files and MCP Apps](/tools/rich-replies/) for native Slack/Telegram
+delivery, fallback behavior, producer/bridge limits, retention, and connection
+eviction.
+
 ## Attachments use the browser device picker
 
 The attachment button opens the native file picker on the device running the browser. It does not expose or browse the web-service host's filesystem.

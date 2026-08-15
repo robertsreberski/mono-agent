@@ -6,7 +6,9 @@ import {
   BufferedMessageStream,
   isAgentResponseCancelledError,
   isDeliverableConversation,
+  unsupportedReplyPartDeliveryOutcomes,
   type AgentMessageStream,
+  type AgentReplyPartDeliveryOutcome,
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
@@ -56,7 +58,7 @@ export interface WebhookInvocationRequest extends AgentRequestBase {
   };
 }
 
-export type WebhookInvocationStatus =
+export type WebhookInvocationStatus = (
   | {
       readonly status: "accepted" | "running";
       readonly requestId: string;
@@ -85,6 +87,9 @@ export type WebhookInvocationStatus =
       readonly startedAt: string;
       readonly completedAt: string;
       readonly error: string;
+    }) & {
+      /** Terminal, sanitized outcomes for rich parts this adapter cannot deliver. */
+      readonly replyPartOutcomes?: readonly AgentReplyPartDeliveryOutcome[];
     };
 
 /**
@@ -671,7 +676,10 @@ async function runResponder(input: {
       // depend on this object (or its replyTo) remaining unmodified.
       const responderRequest = withSnapshottedReplyTarget(input.request, selectedNotifyConversationId);
       const result = await input.options.responder.respond(responderRequest, stream);
-      await stream.finish(result.text);
+      await stream.finish(result.text, {
+        ...(result.parts === undefined ? {} : { parts: result.parts }),
+        unsupportedPartFallback: "none",
+      });
       return result;
     })();
     // If the timeout wins the race, the responder promise may reject later (on
@@ -693,6 +701,7 @@ async function runResponder(input: {
     } else {
       response = await respondPromise;
     }
+    const replyPartOutcomes = unsupportedReplyPartDeliveryOutcomes(response.parts);
     if (input.request.abortSignal.aborted) {
       // The responder resolved but the run was aborted in flight (client
       // disconnect or a maxRunMs the responder ignored): report it as cancelled,
@@ -706,6 +715,7 @@ async function runResponder(input: {
         startedAt: input.startedAt,
         completedAt: new Date().toISOString(),
         error: "Webhook run was aborted before completion.",
+        ...(replyPartOutcomes === undefined ? {} : { replyPartOutcomes }),
       };
       input.options.logger?.warn?.("Webhook responder resolved after an abort; reporting cancelled.", {
         requestId: input.active.requestId,
@@ -720,9 +730,17 @@ async function runResponder(input: {
         receivedAt: input.receivedAt,
         startedAt: input.startedAt,
         completedAt: new Date().toISOString(),
-        ...(stream.text.length === 0 ? {} : { text: stream.text }),
+        ...((response.text ?? stream.text).length === 0 ? {} : { text: response.text ?? stream.text }),
         ...(response.metadata === undefined ? {} : { metadata: response.metadata }),
+        ...(replyPartOutcomes === undefined ? {} : { replyPartOutcomes }),
       };
+    }
+    if (replyPartOutcomes !== undefined) {
+      input.options.logger?.warn?.("Webhook rich reply parts were not delivered by this destination.", {
+        requestId: input.active.requestId,
+        conversationId: input.request.conversationId,
+        replyPartOutcomes,
+      });
     }
   } catch (error) {
     // A watchdog timeout is a server-imposed failure, not a user cancel.
@@ -856,12 +874,18 @@ function setStatus(
  * that field while preserving every sibling and unrelated metadata branch.
  */
 function sanitizeWebhookInvocationStatus(status: WebhookInvocationStatus): WebhookInvocationStatus {
-  if (status.status !== "succeeded" || status.metadata === undefined) {
-    return { ...status };
+  const snapshot: WebhookInvocationStatus = {
+    ...status,
+    ...(status.replyPartOutcomes === undefined
+      ? {}
+      : { replyPartOutcomes: status.replyPartOutcomes.map((outcome) => ({ ...outcome })) }),
+  };
+  if (snapshot.status !== "succeeded" || snapshot.metadata === undefined) {
+    return snapshot;
   }
   return {
-    ...status,
-    metadata: sanitizeWebhookResponseMetadata(status.metadata),
+    ...snapshot,
+    metadata: sanitizeWebhookResponseMetadata(snapshot.metadata),
   };
 }
 

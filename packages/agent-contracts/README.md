@@ -61,6 +61,50 @@ turn. The immediate result says whether the active run accepted ownership; the
 settlement later reports `applied`, `requeue`, or `discarded`, so the adapter can
 preserve its ordinary queue position across provider and end-of-turn races.
 
+`AgentResponse.parts` carries adapter-neutral attachment, MCP App, and per-part
+failure references. `MAX_AGENT_REPLY_PARTS` is the shared producer/wire ceiling
+of 20, and `DEFAULT_AGENT_ATTACHMENT_MAX_BYTES` is 20 MiB. Streams that cannot
+represent a part default to concise human fallback; machine and verbatim
+adapters pass `unsupportedPartFallback: "none"` so reply text is not mutated.
+Artifact/app bytes and HTML remain behind responder authorization methods rather
+than entering stream frames. See
+[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+
+Machine destinations project unsupported parts through the shared
+`AgentReplyPartDeliveryOutcome` contract. `sanitizeReplyPartDeliveryOutcomes()`
+accepts an unknown runtime or persisted value and rebuilds a fresh dense array
+of at most 20 fixed-shape records. Sparse holes, primitives, accessors, failed
+descriptor reads, unknown enums, and extra fields become a safe `unknown`
+failure; supplied indices and messages are never copied. A non-array or empty
+value is omitted. More than 20 source entries become 19 individual records plus
+one counted aggregate at index 19.
+
+The ordinary record shape is:
+
+```json
+{
+  "partIndex": 0,
+  "partType": "attachment",
+  "status": "failed",
+  "code": "unsupported_destination",
+  "message": "Attachment reply parts are unsupported on this destination."
+}
+```
+
+`partType` is `attachment`, `mcp_app`, `failure`, or `unknown`; `status` is the
+terminal literal `failed`; and `code` is one of the closed
+`AgentReplyPartFailure.code` values. Only the final overflow record adds
+`affectedPartCount`, uses `partType: "unknown"` and
+`code: "reply_part_too_large"`, and keeps the same five required fields.
+The arrays embedded directly in adapter responses are additive unversioned
+fields. A2A and cron's private durable SQLite copy wrap the same array as
+`{ "schemaVersion": 1, "replyPartOutcomes": [...] }`. Exact adapter field and
+projection names are documented in
+[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/#machine-delivery-outcome-wire-contract).
+Cron detail projections retain all 20 records. Compact cron summaries retain
+the first eight in stable part order so a maximum 100-run page remains below
+the operator response ceiling.
+
 ## Architecture
 
 ### Data flow
@@ -136,6 +180,7 @@ editing in place and never changes final-answer delivery.
 | Add structured human interaction to a channel | `ChannelInteractionHub`, `ChannelInteractionSink`, `ChannelAskQuestion`, `ChannelAskSnapshot`, `ChannelAskSubmission` |
 | Buffer or harden streamed output | `BufferedMessageStream`, `ResilientMessageStream` |
 | Format safe applied-steering activity | `formatLiveInputActivityLine` |
+| Sanitize or validate reply-part delivery outcomes | `sanitizeReplyPartDeliveryOutcomes`, `isAgentReplyPartDeliveryOutcomes` |
 | Carry stream events across a process boundary | `AgentStreamWireFrame`, `serializeAgentStreamFrame`, `parseAgentStreamFrame` |
 | Load adapter settings safely | `readSettingsJson`, `writeSettingsJson`, `layerJsonOntoEnv` |
 | Protect an HTTP listener | `assertSafeBind`, `listen`, `generateBearerToken`, `readAuthorizationBearer` |
@@ -165,9 +210,22 @@ AgentLiveInputOffer
 AgentLiveInputRequest
 AgentLiveInputSettlement
 AgentLiveInputUnavailableReason
+AgentMcpAppHostRequest
+AgentMcpAppLoadRequest
+AgentMcpAppResource
+AgentMessageFinishOptions
 AgentMessageSender
 AgentMessageStream
 AgentPrecedingMessage
+AgentReplyArtifactOpenRequest
+AgentReplyArtifactReference
+AgentReplyArtifactStream
+AgentReplyAttachmentPart
+AgentReplyMcpAppPart
+AgentReplyPart
+AgentReplyPartDeliveryOutcome
+AgentReplyPartDeliveryType
+AgentReplyPartFailure
 AgentReplyTarget
 AgentRequestBase
 AgentRequestMetadata
@@ -233,6 +291,7 @@ InboundHttpHeaders
 JsonEnvFieldSpec
 JsonEnvMapping
 ListenErrorFactories
+MAX_AGENT_REPLY_PARTS
 MAX_CRON_OPERATOR_CONVERSATION_ID_BYTES
 MAX_CRON_OPERATOR_CURSOR_BYTES
 MAX_CRON_OPERATOR_DEGRADED_REASON_BYTES
@@ -251,8 +310,12 @@ MAX_CRON_OPERATOR_RUN_PAGE
 MAX_CRON_OPERATOR_SUMMARY_ARTIFACT_ID_BYTES
 MAX_CRON_OPERATOR_SUMMARY_ERROR_BYTES
 MAX_CRON_OPERATOR_SUMMARY_FAILURE_KIND_BYTES
+MAX_CRON_OPERATOR_SUMMARY_REPLY_PART_OUTCOMES
 MAX_CRON_OPERATOR_SUMMARY_TEXT_BYTES
 MAX_CRON_OPERATOR_TIMEZONE_BYTES
+MCP_APPS_EXTENSION_ID
+MCP_APP_RESOURCE_MIME_TYPE
+MCP_APP_SUPPORTED_VERSIONS
 MemoryBlock
 MemoryCompletedTurn
 MemoryCompletedTurnAdmissionStatus
@@ -284,6 +347,7 @@ SettingsJsonValue
 SettingsPrimitive
 ToolActivityLineOptions
 agentAttachmentKindFromMimeType
+appendReplyPartFallback
 assertAgentContinuationOriginContext
 assertSafeBind
 bearerTokensEqual
@@ -300,6 +364,7 @@ formatProviderStatusLine
 frameFeedingMessageStream
 generateBearerToken
 hostForUrl
+isAgentReplyPartDeliveryOutcomes
 isAgentResponseCancelledError
 isChannelUserCancelReason
 isCodedError
@@ -330,6 +395,7 @@ readSettingsJson
 readString
 redactedSecret
 sanitizeInboundHttpHeaders
+sanitizeReplyPartDeliveryOutcomes
 serializeAgentStreamFrame
 setToolActivityPathRoots
 splitSubagentToolName
@@ -338,6 +404,7 @@ splitTextForChat
 suppressesNotification
 toolHintFor
 toolNameLeaf
+unsupportedReplyPartDeliveryOutcomes
 writeSettingsJson
 ```
 
@@ -356,6 +423,7 @@ It does not normalize transport messages, run model providers, build prompts, pe
 - [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/)
 - [Custom channel drivers](https://mono-agent-docs.vercel.app/programmatic/custom-channels/)
 - [Runtime, tools, and guard boundaries](https://mono-agent-docs.vercel.app/runtime/tools-and-guards/)
+- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-contracts)
 
 ## Verification

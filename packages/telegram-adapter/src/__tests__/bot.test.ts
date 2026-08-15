@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   AgentResponseCancelledError,
   isChannelUserCancelReason,
+  type AgentReplyAttachmentPart,
   type AgentLiveInputRequest,
   type AgentLiveInputSettlement,
   type ChannelAskSnapshot,
@@ -513,6 +514,38 @@ function createDeferred<T>(): { promise: Promise<T>; resolve: (value: T) => void
 }
 
 describe("createTelegramBot", () => {
+  it("delivers generated reply files through sendDocument without adding fallback text", async () => {
+    const attachment: AgentReplyAttachmentPart = {
+      type: "attachment",
+      id: "reply-file-1",
+      reference: { scheme: "mono-agent-artifact", id: "11111111-1111-4111-8111-111111111111" },
+      name: "report.txt",
+      mediaType: "text/plain",
+      sizeBytes: 5,
+      integrityId: `sha256:${"b".repeat(64)}`,
+    };
+    const responder: AgentResponder = {
+      async respond() { return { text: "Answer", parts: [attachment] }; },
+      async openReplyArtifact() {
+        return {
+          attachment,
+          body: (async function* () { yield new TextEncoder().encode("hello"); })(),
+        };
+      },
+    };
+    const { bot, calls } = buildTestBot({ responder });
+
+    await bot.handleUpdate(textUpdate("hello"));
+
+    const document = calls.find((call) => call.method === "sendDocument");
+    expect(document?.payload).toMatchObject({
+      chat_id: 42,
+      reply_parameters: { message_id: 10, allow_sending_without_reply: true },
+    });
+    expect(texts(calls, "sendMessage")).toEqual(["Answer"]);
+    expect(JSON.stringify(calls.filter((call) => call.method === "sendMessage"))).not.toContain("report.txt");
+  });
+
   it("fails closed unless chats are explicitly allowed", () => {
     expect(() =>
       createTelegramBot({

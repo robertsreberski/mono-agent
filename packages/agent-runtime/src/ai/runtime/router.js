@@ -100,7 +100,7 @@ const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "model", "executionMode", "effort", "messages", "abortSignal", "onEvent",
   "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
-  "allowedTools", "disallowedTools", "permissionMode", "mcpServers", "skills",
+  "allowedTools", "disallowedTools", "permissionMode", "mcpServers", "mcpApps", "skills",
   "outputSchema", "nativeSubagents", "liveInput", "fastMode", "toolEnvironment",
   "codexSandboxNetworkAccess",
 ]);

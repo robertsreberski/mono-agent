@@ -145,6 +145,12 @@ const convertPart = (part: MessagePart): ConvertedPart | null => {
         : null;
     case "error":
       return { type: "data-error", data: { code: part.code, message: part.message } };
+    case "attachment":
+      return { type: "data-reply-attachment", data: jsonObject(part) };
+    case "mcp_app":
+      return { type: "data-mcp-app", data: jsonObject(part) };
+    case "failure":
+      return { type: "data-reply-failure", data: jsonObject(part) };
   }
 };
 

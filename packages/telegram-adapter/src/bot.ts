@@ -46,6 +46,7 @@ import {
   TelegramMessageStream,
   type TelegramMessageStreamOptions,
 } from "./message-stream.js";
+import { TelegramReplyFileDelivery } from "./reply-files.js";
 import type {
   TelegramChatId,
   TelegramMessage,
@@ -888,6 +889,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     return result;
   });
   const sender = createGrammyTelegramApi(bot.api);
+  const replyFiles = new TelegramReplyFileDelivery(sender, options.responder, logger);
   const fileDownloader =
     options.fileDownloaderFactory?.(bot, options.botToken) ??
     createDefaultFileDownloader(bot, options.botToken, {
@@ -1919,7 +1921,16 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       }
 
       try {
-        await stream.finish(response.text);
+        const remainingParts = await replyFiles.deliver(response.parts, {
+          conversationId: request.conversationId,
+          chatId,
+          replyToMessageId: message.message_id,
+          signal: controller.signal,
+        });
+        await stream.finish(
+          response.text,
+          remainingParts === undefined ? undefined : { parts: remainingParts },
+        );
         reactionOutcome = "done";
       } catch (error) {
         if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
@@ -2011,11 +2022,20 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
       if (controller.signal.aborted) {
         return { delivered: false, reason: "cancelled" };
       }
-      if (answer === undefined || answer.trim().length === 0) {
+      if (
+        (answer === undefined || answer.trim().length === 0)
+        && (response.parts?.length ?? 0) === 0
+      ) {
         return { delivered: false, reason: "agent produced no answer" };
       }
       try {
-        await stream.finish(answer);
+        const remainingParts = await replyFiles.deliver(response.parts, {
+          conversationId,
+          chatId,
+          silent,
+          signal: controller.signal,
+        });
+        await stream.finish(answer, remainingParts === undefined ? undefined : { parts: remainingParts });
       } catch (error) {
         if (controller.signal.aborted || isAgentResponseCancelledError(error)) {
           return { delivered: false, reason: "cancelled" };

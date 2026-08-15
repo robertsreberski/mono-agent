@@ -207,6 +207,9 @@ RuntimeCompactionPolicy
 RuntimeEventLike
 RuntimeExecutionMode
 RuntimeLiveInputMessage
+RuntimeMcpAppConnection
+RuntimeMcpAppHost
+RuntimeMcpAppRegistration
 RuntimeMessage
 RuntimeModelReference
 RuntimeNativeSubagentDefinition
@@ -274,6 +277,7 @@ managedSrtInstallRoot
 mergeSandboxPolicies
 modelReferenceKey
 monoRuntimeSupportsLiveInput
+monoRuntimeSupportsMcpApps
 monoRuntimeSupportsSessionResume
 networkPolicyAllowsUrl
 parseMcpServers

@@ -1,6 +1,8 @@
 import { Container } from "@earendil-works/pi-tui";
 import {
+  appendReplyPartFallback,
   splitSubagentToolName,
+  type AgentMessageFinishOptions,
   type AgentMessageStream,
   type AgentStreamEvent,
 } from "@mono-agent/agent-contracts";
@@ -240,8 +242,9 @@ export class TurnPresenter implements AgentMessageStream {
     this.options.requestRender();
   }
 
-  async finish(finalText?: string): Promise<void> {
+  async finish(finalText?: string, options?: AgentMessageFinishOptions): Promise<void> {
     this.finished = true;
+    finalText = appendReplyPartFallback(finalText, options?.parts);
     // Deliberate: an EMPTY finalText keeps whatever streamed, same as absent.
     // This is an operator console — the streamed deltas are real model output,
     // and blanking them on an empty-normalized final answer would hide exactly

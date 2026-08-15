@@ -17,6 +17,19 @@ Set `notify: true` on a job to deliver its successful, non-empty final answer to
 
 **Destination resolution.** If `notifyConversationId` is set, it is used (`telegram:42`, `slack:C123`, `slack:C123:1718.99` for a Slack thread, or the exact value `web:new`). For cron, `web:new` appends every firing of the same job to one durable, assistant-only channel at `/agents/<sourceId>/cron/<jobId>`; it does not mint a thread per run. The channel remains as a historical tombstone if the job later disappears from config. `web:new` is explicit-only and never participates in destination inference. If `notifyConversationId` is omitted, the app infers the destination **only when exactly one** Telegram/Slack notify-capable candidate exists (from seen conversations plus the adapter allowlist). With 0 or 2+ candidates, delivery is skipped with a warning — it never guesses. Artifact-derived candidates are cached for 30 seconds after each scan completes. An artifact committed under a Telegram/Slack conversation id invalidates the cache immediately; runs using the default synthetic `cron:`/`webhook:` ids do not. Other artifact changes are picked up after cache expiry and the next scan completes. Delivery is best-effort: a failed notification does not change the cron job result. Web delivery makes one attempt against the running local console and has no retry queue or outbox.
 
+**Rich reply outcome.** Cron notification is verbatim text-only. Attachments and
+MCP Apps are not forwarded through the later notification hook and are never
+reported as delivered. The answer text stays byte-for-byte unchanged, while the
+run's `CronJobResult.replyPartOutcomes` retains one bounded sanitized terminal
+failure per part (`unsupported_destination` for attachments and apps). The
+config-first app persists them and writes one bounded outcome audit whether
+notification is enabled or disabled. It does not claim that notification was
+disabled, and the later notification attempt does not log the outcomes again.
+At most 20 records are emitted; an off-contract overflow becomes one explicit
+counted aggregate, and no path, URL, capability, integrity id, producer message,
+or payload byte is copied into it. Restarted operator/TUI/web reads project the
+same durable outcomes without changing the stored answer text.
+
 **Model-exhaustion failure notice.** For cron jobs only, `notify: true` also enables a short one-line error notice when the run fails because **all configured models failed** (`provider_unavailable_exhausted`). This notice is sent only when `notifyConversationId` is explicitly set; failure notices never infer a destination. They are delivered verbatim with no second LLM turn, best-effort, and rate-limited per job by `notifyFailureCooldownHours` (default `6`).
 
 **Failover attribution.** A notification whose run did not execute on the configured primary model carries one appended line naming the route that actually answered (see [Fallback models & failover](/runtime/fallback/#who-sees-a-failover)). It is the only text the framework ever adds to an otherwise verbatim payload, and it appears only when a genuine route change happened.

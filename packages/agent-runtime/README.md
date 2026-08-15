@@ -53,6 +53,18 @@ console.log(result.text);
 `Glob` and `Grep` prefer the packaged `@vscode/ripgrep` binary on supported
 platforms. An explicit `ripgrepPath` wins, with `PATH` as the final fallback.
 
+### Pi-native MCP Apps bridge
+
+Only the Pi-native bridge declares `supports_mcp_apps`. When a host supplies an
+MCP Apps registry, the MCP client advertises the standard ext-apps UI MIME
+capability. The host then explicitly intersects the two reviewed protocol
+revisions, reads only the originating tool's declared `ui://` resource, and
+receives one exact connection capability. Successful registration retains that
+existing MCP client instead of creating a client per UI call; host LRU/idle
+eviction closes the client, transport, and sandbox cleanup. Other runtime
+backends do not advertise or receive this extension.
+See [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+
 ## Architecture
 
 The package uses a fixed registry of bridge descriptors and loads provider code
@@ -1264,6 +1276,8 @@ runtime fails closed.
   shows the code-only host hooks.
 - [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
   documents SearXNG, extraction, retry, browser isolation, and sandbox policy.
+- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+  documents the host bridge, browser sandbox, and lifecycle limits.
 - [Architecture](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/ARCHITECTURE.md)
   and [migration guide](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/MIGRATION.md)
   cover internal flow and upgrades from `0.3.x`.

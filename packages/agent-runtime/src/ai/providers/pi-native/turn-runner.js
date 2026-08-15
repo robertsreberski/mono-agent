@@ -166,6 +166,8 @@ export async function buildTurnTools(runState, {
       sandboxPolicy: options.sandboxPolicy,
       sandboxEngine,
       ctx: runCtx,
+      mcpApps: options.mcpApps,
+      runId: runCtx?.runId,
     }));
   // Surface MCP init/list failures BOTH to the live event stream and to runtimeWarnings, so a
   // failed server (e.g. an stdio adapter-send child that closed on startup) lands in the run
