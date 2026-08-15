@@ -294,6 +294,58 @@ describe("SessionHistory request handler", () => {
       untrusted: true,
     });
   });
+
+  it("advances every minimum-size get cursor across accented and four-byte Unicode scalars", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root });
+    const cases = [
+      { runId: "accent-run", toolCallId: "accent", content: "café", scalarBytes: 2 },
+      { runId: "emoji-run", toolCallId: "emoji", content: "😀", scalarBytes: 4 },
+    ] as const;
+    const records = [] as Array<{ readonly recordId: string; readonly content: string; readonly scalarBytes: number }>;
+    for (const testCase of cases) {
+      const record = await writeCall(writer, binding(testCase.runId), testCase.toolCallId, {
+        content: testCase.content,
+      });
+      records.push({ recordId: record.resultId, content: testCase.content, scalarBytes: testCase.scalarBytes });
+    }
+    await writer.close();
+    const requestBinding = {
+      reader: new ToolHistoryReader(root),
+      logicalConversationId: "chat:42",
+      runId: "current-run",
+    };
+
+    for (const expected of records) {
+      let cursor: string | undefined;
+      let reconstructed = "";
+      let currentOffset = 0;
+      const seenCursors = new Set<string>();
+      const advances: number[] = [];
+      for (let page = 0; page < 32; page += 1) {
+        const result = body<{
+          readonly record: { readonly chunk: string; readonly chunkOffset: number; readonly nextCursor?: string };
+        }>(handleSessionHistoryRequest(requestBinding, cursor === undefined
+          ? { action: "get", recordId: expected.recordId, chunkBytes: 1 }
+          : { action: "get", cursor, chunkBytes: 1 }));
+        expect(result.record.chunkOffset).toBe(currentOffset);
+        expect(result.record.chunk).not.toContain("�");
+        reconstructed += result.record.chunk;
+        if (result.record.nextCursor === undefined) break;
+        expect(seenCursors.has(result.record.nextCursor)).toBe(false);
+        seenCursors.add(result.record.nextCursor);
+        const decoded = JSON.parse(Buffer.from(result.record.nextCursor, "base64url").toString("utf8")) as {
+          readonly offset: number;
+        };
+        expect(decoded.offset).toBeGreaterThan(currentOffset);
+        advances.push(decoded.offset - currentOffset);
+        currentOffset = decoded.offset;
+        cursor = result.record.nextCursor;
+      }
+      expect(JSON.parse(reconstructed)).toBe(expected.content);
+      expect(advances).toContain(expected.scalarBytes);
+    }
+  });
 });
 
 describe("SessionHistory MCP tool", () => {

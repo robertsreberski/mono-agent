@@ -32,6 +32,9 @@
 
 ### Session tool history
 
+- Added durable, bounded managed-tool lifecycle persistence plus the read-only,
+  request-scoped `SessionHistory` search/get surface for completed prior calls
+  in the current logical session.
 - Managed `tool_use` / `tool_result` stream blocks intentionally gain
   host-authored `history` metadata with opaque record identity, persistence,
   bounds, and terminal state; provider-authored lookalikes remain untrusted and
@@ -41,12 +44,16 @@
   message-history store. The custom store remains the sole owner of messages;
   the sidecar remains a separate lifecycle contract.
 - Lazy writer acquisition keeps one bounded restart-handoff attempt, then
-  fails fast for already-started turns and new turns during a one-second
-  cooldown. A later turn or serialized explicit reset re-arms acquisition;
-  closed/dead cached handles are retired before the recovered handle is shared.
+  fails fast for already-started turns and new turns during a progressive
+  30-second-to-5-minute cooldown. A later probe or serialized explicit reset
+  re-arms acquisition; closed/dead cached handles are retired before the
+  recovered handle is shared.
   Reset and retention clear only incidents whose durable identity becomes
   unretryable. A delayed real result safely supersedes a finalization/recovery
   result for the same call without creating a permanent conflict.
+- Model-visible `RunHistory` projections now sanitize ordinary filesystem spans
+  in place to bounded `[host-path]` forms while continuing to omit credentials,
+  private run-artifact content, and raw host roots.
 
 ## 0.19.1 — Web Push delivery fix (2026-08-13)
 

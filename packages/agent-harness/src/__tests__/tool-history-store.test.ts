@@ -1277,6 +1277,61 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     });
   });
 
+  it("scopes legacy bare-record incidents for reset and drops unattributable permanent markers", async () => {
+    const root = await tempRoot();
+    const run = binding("legacy-incident-scope");
+    const initialized = await ToolHistoryWriter.open({ root });
+    const invocation = await initialized.persist(run, {
+      phase: "invocation",
+      toolCallId: "legacy-call",
+      toolName: "Read",
+      arguments: {},
+    });
+    await initialized.close();
+    expect(invocation.recordId).toEqual(expect.any(String));
+
+    const path = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    const legacy = new DatabaseSync(path);
+    const insert = legacy.prepare(`
+      INSERT INTO writer_stats (key,value,last_detail,updated_at_ms) VALUES (?,1,'legacy incident',?)
+    `);
+    try {
+      insert.run(`write_failures:${invocation.recordId!}`, Date.now());
+      insert.run(`idempotency_conflicts:${invocation.recordId!}`, Date.now());
+      insert.run("write_failures:sth1_unattributable", Date.now());
+    } finally {
+      legacy.close();
+    }
+
+    const migrated = await ToolHistoryWriter.open({ root });
+    try {
+      await expect(migrated.stats()).resolves.toMatchObject({
+        writeFailures: 1,
+        idempotencyConflicts: 1,
+      });
+      await migrated.resetConversation(run.logicalConversationId);
+      await expect(migrated.stats()).resolves.toMatchObject({
+        calls: 0,
+        records: 0,
+        writeFailures: 0,
+        idempotencyConflicts: 0,
+      });
+    } finally {
+      await migrated.close();
+    }
+
+    const inspected = new DatabaseSync(path, { readOnly: true });
+    try {
+      expect(inspected.prepare(`
+        SELECT key FROM writer_stats
+        WHERE key GLOB 'write_failures:sth1_*'
+           OR key GLOB 'idempotency_conflicts:sth1_*'
+      `).all()).toEqual([]);
+    } finally {
+      inspected.close();
+    }
+  });
+
   it("describes a read-only older schema as upgrade-pending instead of a downgrade", async () => {
     const root = await tempRoot();
     const writer = await ToolHistoryWriter.open({ root });

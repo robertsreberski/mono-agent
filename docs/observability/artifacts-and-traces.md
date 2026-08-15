@@ -146,6 +146,13 @@ even when the turn produced no canonical message-history entry. Recovery closes
 a dangling invocation as `interrupted`; it never reruns the tool or duplicates
 an already persisted phase.
 
+Configured hosts acquire the single writer lazily and allow one bounded
+restart-handoff wait of at most 10 seconds. After an acquisition failure, new
+turns fail lifecycle persistence fast for 30 seconds; each failed probe doubles
+that cooldown up to five minutes. A successful acquisition resets the cooldown,
+and an explicit serialized conversation reset may probe immediately without
+shortening the full handoff ceiling.
+
 `SessionHistory` is the sibling app-owned, request-scoped read surface over those
 records. `search` accepts bounded text, tool/state/run/time filters, opaque
 cursors, and a maximum of 10 previews; `get` returns a selected invocation or

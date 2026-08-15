@@ -304,11 +304,13 @@ using the durable-history liveness pattern, succeeds when a normal old writer
 releases in time, and otherwise fails deterministically with
 `history_writer_in_use`. Configured lazy acquisition permits that bounded
 restart-handoff wait once, then caches the failure for every already-created
-turn and for new turns during a one-second failure backoff. The first new turn
-after that backoff re-arms acquisition; serialized explicit reset may bypass
-only the backoff, never the full handoff window. A successful handle remains
-process-shared, and a closed or dead worker is retired before its replacement is
-shared.
+turn and for new turns during an initial 30-second failure backoff. Failed
+probes double the cooldown up to five minutes, so normal consecutive turns in a
+sustained outage do not repeatedly pay the full handoff window. The first new
+turn after the current cooldown re-arms acquisition; serialized explicit reset
+may bypass only the cooldown, never the full handoff window. Recovery resets the
+backoff. A successful handle remains process-shared, and a closed or dead worker
+is retired before its replacement is shared.
 
 Incremental lifecycle writes retain their 250 ms streaming ceiling. Reset,
 statistics, and close are bounded maintenance operations with a separate 10 s

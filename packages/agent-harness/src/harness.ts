@@ -201,6 +201,7 @@ export class MonoAgentHarness implements AgentHarness {
     const isolated = proactiveIsolated || modelOverrideIsolated || continuationIsolated;
     let liveInputMailbox: LiveInputMailbox | undefined;
     let liveInputCloseReason: "closed" | "failed" = "failed";
+    let toolHistoryStatus: "succeeded" | "failed" | "cancelled" = "failed";
     const recorder = this.options.recorderFactory?.({
       runId,
       conversationId: request.conversationId,
@@ -818,12 +819,14 @@ export class MonoAgentHarness implements AgentHarness {
         }));
       }
       continuationOriginSettled = true;
+      toolHistoryStatus = "succeeded";
       liveInputCloseReason = "closed";
       return {
         text,
         metadata: responseMetadata(runId, request, context, summary, runtimeResult),
       };
     } catch (error) {
+      toolHistoryStatus = request.abortSignal.aborted ? "cancelled" : "failed";
       // A provider may already have persisted its transcript before any of the
       // host's pre-commit stages (recorder preparation, continuation binding,
       // or history staging) fail. Invalidate that cache generically so a later
@@ -848,58 +851,60 @@ export class MonoAgentHarness implements AgentHarness {
         failure,
       };
     } finally {
-      const toolHistoryStatus = liveInputCloseReason === "closed"
-        ? "succeeded"
-        : request.abortSignal.aborted ? "cancelled" : "failed";
-      await this.options.toolHistory?.writer.finishRun({
-        conversationId: request.conversationId,
-        logicalConversationId: this.options.toolHistory.logicalConversationId(request.conversationId),
-        runId,
-        isolated,
-      }, toolHistoryStatus, request.abortSignal.aborted ? cancellationFailureKind(request.abortSignal) : undefined);
-      await preparedHistoryAppend?.abort().catch(() => undefined);
-      await providerHistoryTurn?.abort().catch(() => undefined);
-      if (!continuationOriginSettled && continuationCapabilities.length > 0) {
-        await Promise.allSettled(continuationCapabilities.map(async (capability) => {
-          await capability.abandonOriginContext();
-        }));
-      }
-      // App-owned retrieval services use this to discard the normalized query
-      // cache after the whole logical turn (including any resume retry), not
-      // after one provider attempt.
       try {
-        await this.options.memory?.releaseTurn?.(runId);
-      } catch {
-        // Cache cleanup is best-effort and must not change the turn outcome.
-      }
-      try {
-        await this.options.turnHistoryEnricher?.releaseRun({
-          runId,
+        await this.options.toolHistory?.writer.finishRun({
           conversationId: request.conversationId,
-        });
-      } catch {
-        // Interaction-journal cleanup is best-effort and must not change the turn outcome.
-      }
-      if (liveInputMailbox !== undefined) {
-        liveInputMailbox.close(liveInputCloseReason);
-        if (this.activeLiveInputs.get(request.conversationId) === liveInputMailbox) {
-          this.activeLiveInputs.delete(request.conversationId);
+          logicalConversationId: this.options.toolHistory.logicalConversationId(request.conversationId),
+          runId,
+          isolated,
+        }, toolHistoryStatus, toolHistoryStatus === "cancelled" ? cancellationFailureKind(request.abortSignal) : undefined);
+      } finally {
+        // A custom injected lifecycle writer may throw. It can retain its
+        // failure semantics, but must never strand mailbox/session cleanup.
+        await preparedHistoryAppend?.abort().catch(() => undefined);
+        await providerHistoryTurn?.abort().catch(() => undefined);
+        if (!continuationOriginSettled && continuationCapabilities.length > 0) {
+          await Promise.allSettled(continuationCapabilities.map(async (capability) => {
+            await capability.abandonOriginContext();
+          }));
         }
-      }
-      // Release the admission-pending slot if the run never reached its provider
-      // call (e.g. a throw in applyAttachments/prepareContext, or an aborted
-      // admission). No-op when onProviderStart already released it.
-      leavePending();
-      if (sessionRecord !== undefined) {
-        const released = this.sessionStore?.release(request.conversationId, sessionRecord);
-        if (released !== false) {
-          const snapshot = this.sessionStoreSnapshot();
-          const live = snapshot.find((entry) =>
-            entry.conversationId === sessionRecord.conversationId &&
-            entry.providerSessionId === sessionRecord.providerSessionId
-          );
-          if (live !== undefined || released === undefined) {
-            this.publishSessionEvent(sessionEventFromRecord("released", live ?? sessionRecord, undefined, snapshot));
+        // App-owned retrieval services use this to discard the normalized query
+        // cache after the whole logical turn (including any resume retry), not
+        // after one provider attempt.
+        try {
+          await this.options.memory?.releaseTurn?.(runId);
+        } catch {
+          // Cache cleanup is best-effort and must not change the turn outcome.
+        }
+        try {
+          await this.options.turnHistoryEnricher?.releaseRun({
+            runId,
+            conversationId: request.conversationId,
+          });
+        } catch {
+          // Interaction-journal cleanup is best-effort and must not change the turn outcome.
+        }
+        if (liveInputMailbox !== undefined) {
+          liveInputMailbox.close(liveInputCloseReason);
+          if (this.activeLiveInputs.get(request.conversationId) === liveInputMailbox) {
+            this.activeLiveInputs.delete(request.conversationId);
+          }
+        }
+        // Release the admission-pending slot if the run never reached its provider
+        // call (e.g. a throw in applyAttachments/prepareContext, or an aborted
+        // admission). No-op when onProviderStart already released it.
+        leavePending();
+        if (sessionRecord !== undefined) {
+          const released = this.sessionStore?.release(request.conversationId, sessionRecord);
+          if (released !== false) {
+            const snapshot = this.sessionStoreSnapshot();
+            const live = snapshot.find((entry) =>
+              entry.conversationId === sessionRecord.conversationId &&
+              entry.providerSessionId === sessionRecord.providerSessionId
+            );
+            if (live !== undefined || released === undefined) {
+              this.publishSessionEvent(sessionEventFromRecord("released", live ?? sessionRecord, undefined, snapshot));
+            }
           }
         }
       }

@@ -511,11 +511,14 @@ for automatic projection; another corrupt/unsafe projection emits a structured
 warning and continues the turn, while explicit SessionHistory reads fail closed.
 Lazy writer acquisition keeps one at-most-10-second restart-handoff attempt.
 After failure, writes from every already-created turn reuse that rejection and
-new turns fail immediately during a one-second backoff; the first later turn
-re-arms one acquisition. Serialized explicit reset bypasses only that short
-backoff while preserving the full handoff attempt. A cached handle is retired
-after worker closure/death, one turn never reacquires mid-turn, and the recovered
-handle is shared. The outage emits one warning plus one later recovery warning.
+new turns fail immediately during an initial 30-second backoff. Each failed
+probe doubles that window up to five minutes, preventing ordinary consecutive
+turns during a sustained outage from repeatedly paying the full acquisition
+ceiling. The first later probe re-arms one full acquisition, while serialized
+explicit reset may bypass only the cooldown. A cached handle is retired after
+worker closure/death, one turn never reacquires mid-turn, and the recovered
+handle is shared; recovery resets the backoff. The outage emits one warning plus
+one later recovery warning.
 
 Telegram `/new` clears message records and tool records across the same logical
 session, including prior daily rollover buckets that canonical replay,
@@ -530,10 +533,13 @@ evidence; only the matching tool phase, its durable synthetic terminal closure,
 or canonical run-binding retry clears its incident while it remains retryable.
 Reset and retention clear only incidents whose exact run/call/record identity
 they make unretryable. A crash-stale zero-byte content database is reported as
-pristine and recoverable, matching writer initialization. A delayed real result
-supersedes that synthetic terminal record in place. A newer tool-history schema
-hard-fails downgrade until persisted conversation state is purged; an older
-compatible version is reported as upgrade-pending for the next writer.
+pristine and recoverable even when its protected DELETE journal remains; a live
+initialization and stale next-writer recovery are reported distinctly. A
+zero-byte owner database is also a recoverable initialization window, not a
+missing-table corruption report. A delayed real result supersedes that synthetic
+terminal record in place. A newer tool-history schema hard-fails downgrade until
+persisted conversation state is purged; an older compatible version is reported
+as upgrade-pending for the next writer.
 
 ### Channel interactions and conversation history
 

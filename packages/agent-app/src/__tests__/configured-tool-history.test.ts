@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import { lazyConfiguredToolHistory } from "../configured-agent.js";
 
 describe("configured tool-history acquisition", () => {
-  it("latches an acquisition outage for existing turns, re-arms on the next turn, and shares the recovered handle", async () => {
+  it("bounds the initial wait, progressively fast-fails ordinary outage cadence, and recovers without poison", async () => {
     const persist = vi.fn(async () => ({ persistence: "persisted" as const }));
     const finishRun = vi.fn(async () => undefined);
     const release = vi.fn(async () => undefined);
@@ -75,12 +75,13 @@ describe("configured tool-history acquisition", () => {
       .rejects.toMatchObject({ code: "history_writer_in_use" });
     expect(acquireWriter).toHaveBeenCalledTimes(1);
 
+    now = 1_500;
     const cooldownBinding = { ...firstBinding, runId: "cooldown-run" };
     await expect(history.writer.createSink(cooldownBinding)({ ...event, toolCallId: "cooldown-call" }))
       .rejects.toMatchObject({ code: "history_writer_in_use" });
     expect(acquireWriter).toHaveBeenCalledTimes(1);
 
-    now = 1_000;
+    now = 30_000;
     const retryBinding = {
       conversationId: "chat:42#2026-08-14",
       logicalConversationId: "chat:42",
@@ -94,7 +95,19 @@ describe("configured tool-history acquisition", () => {
       .rejects.toMatchObject({ code: "history_writer_in_use" });
     expect(acquireWriter).toHaveBeenCalledTimes(2);
 
-    now = 2_000;
+    // The failed probe doubles the cooldown. Ordinary turns throughout that
+    // interval reuse the settled failure instead of paying another full
+    // restart-handoff acquisition ceiling.
+    for (const [cadenceMs, runId] of [[31_500, "cadence-a"], [60_000, "cadence-b"], [89_999, "cadence-c"]] as const) {
+      now = cadenceMs;
+      await expect(history.writer.createSink({ ...retryBinding, runId })({
+        ...event,
+        toolCallId: `${runId}-call`,
+      })).rejects.toMatchObject({ code: "history_writer_in_use" });
+      expect(acquireWriter).toHaveBeenCalledTimes(2);
+    }
+
+    now = 90_000;
     const recoveredBinding = { ...retryBinding, runId: "recovery-run" };
     await expect(history.writer.createSink(recoveredBinding)({ ...event, toolCallId: "recovery-call" }))
       .resolves.toEqual({ persistence: "persisted" });
@@ -108,7 +121,7 @@ describe("configured tool-history acquisition", () => {
     expect(persist).toHaveBeenCalledTimes(2);
     expect(finishRun).toHaveBeenCalledTimes(1);
     expect(warnings).toEqual([
-      "Tool history writer acquisition failed (history_writer_in_use); new turns fail fast for 1000 ms, while explicit reset may retry immediately.",
+      "Tool history writer acquisition failed (history_writer_in_use); new turns fail fast for 30000 ms and repeated failures back off to 300000 ms, while explicit reset may retry immediately.",
       "Tool history writer acquisition recovered; lifecycle persistence resumed.",
     ]);
     expect(warnings.join(" ")).not.toContain("transient private acquisition detail");
@@ -163,6 +176,8 @@ describe("configured tool-history acquisition", () => {
       rollover: "daily",
       onWarning: (message) => warnings.push(message),
       acquireWriter: acquireWriter as never,
+      acquisitionFailureBackoffMs: 1_000,
+      acquisitionFailureBackoffMaxMs: 4_000,
       now: () => now,
     });
     const outageBinding = {
@@ -211,7 +226,7 @@ describe("configured tool-history acquisition", () => {
         .rejects.toMatchObject({ code: "history_writer_in_use" });
       expect(acquireWriter).toHaveBeenCalledTimes(3);
 
-      now = 1_000;
+      now = 4_000;
       const recoveredBinding = { ...outageBinding, runId: "recovered-run" };
       const recoveredSink = history.writer.createSink(recoveredBinding);
       const recoveredFallbackSink = history.writer.createSink(recoveredBinding);
@@ -232,7 +247,7 @@ describe("configured tool-history acquisition", () => {
       expect(persist).toHaveBeenCalledTimes(2);
       expect(resetConversation).toHaveBeenCalledTimes(1);
       expect(warnings).toEqual([
-        "Tool history writer acquisition failed (history_writer_in_use); new turns fail fast for 1000 ms, while explicit reset may retry immediately.",
+        "Tool history writer acquisition failed (history_writer_in_use); new turns fail fast for 1000 ms and repeated failures back off to 4000 ms, while explicit reset may retry immediately.",
         "Tool history writer acquisition recovered; lifecycle persistence resumed.",
       ]);
       expect(warnings.join(" ")).not.toContain("private outage detail");

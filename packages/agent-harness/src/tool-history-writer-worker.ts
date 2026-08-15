@@ -820,6 +820,7 @@ function openContentDatabase(
     CREATE INDEX IF NOT EXISTS tombstones_removed_idx ON tombstones(removed_at_ms);
     `);
     migrateSyntheticResultMarker(database, existingVersion);
+    migrateLegacyIncidentKeys(database);
     database.exec(`PRAGMA user_version=${String(TOOL_HISTORY_USER_VERSION)}`);
     const metadata = database.prepare("INSERT OR REPLACE INTO metadata (key,value) VALUES (?,?)");
     const existingArtifactRoot = database.prepare("SELECT value FROM metadata WHERE key='artifact_root'").get() as Record<string, unknown> | undefined;
@@ -902,6 +903,52 @@ function migrateSyntheticResultMarker(database: DatabaseSync, priorVersion: numb
       stringField(candidate, "tool_call_id"),
       "result",
     );
+  }
+}
+
+function migrateLegacyIncidentKeys(database: DatabaseSync): void {
+  const legacy = database.prepare(`
+    SELECT key,value,last_detail,updated_at_ms FROM writer_stats
+    WHERE key GLOB 'write_failures:sth1_*'
+       OR key GLOB 'idempotency_conflicts:sth1_*'
+    ORDER BY key
+  `).all() as Record<string, unknown>[];
+  const migrate = database.prepare(`
+    INSERT OR IGNORE INTO writer_stats (key,value,last_detail,updated_at_ms) VALUES (?,?,?,?)
+  `);
+  const remove = database.prepare("DELETE FROM writer_stats WHERE key=?");
+  for (const incident of legacy) {
+    const key = stringField(incident, "key");
+    const separator = key.indexOf(":");
+    const kind = key.slice(0, separator) as "write_failures" | "idempotency_conflicts";
+    const recordId = key.slice(separator + 1);
+    const record = database.prepare(`
+      SELECT conversation_id,run_id,tool_call_id,phase FROM tool_records WHERE record_id=?
+    `).get(recordId) as Record<string, unknown> | undefined;
+    if (record !== undefined) {
+      const phase = stringField(record, "phase");
+      if (phase === "invocation" || phase === "result") {
+        const scopedKey = `${kind}:${lifecycleIncidentKey(
+          {
+            conversationId: stringField(record, "conversation_id"),
+            runId: stringField(record, "run_id"),
+          },
+          stringField(record, "tool_call_id"),
+          phase,
+        )}`;
+        migrate.run(
+          scopedKey,
+          Number(incident.value),
+          typeof incident.last_detail === "string" ? incident.last_detail : null,
+          Number(incident.updated_at_ms),
+        );
+      }
+    }
+    // A pre-scope incident without a surviving canonical record has no
+    // attributable conversation/run identity and can never be authorized for
+    // retry or reset. Drop that obsolete diagnostic instead of leaving a
+    // permanent, globally unremovable failure marker.
+    remove.run(key);
   }
 }
 

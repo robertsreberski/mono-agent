@@ -939,8 +939,10 @@ interface LazyConfiguredToolHistoryOptions {
   readonly onWarning?: (message: string) => void;
   /** Internal seam for deterministic acquisition-retry tests. */
   readonly acquireWriter?: typeof acquireToolHistoryWriter;
-  /** Internal seam for deterministic post-failure backoff tests. */
+  /** Internal seam for deterministic progressive post-failure backoff tests. */
   readonly acquisitionFailureBackoffMs?: number;
+  /** Internal seam for the bounded progressive-backoff ceiling. */
+  readonly acquisitionFailureBackoffMaxMs?: number;
   /** Internal monotonic-enough clock seam; production uses wall time. */
   readonly now?: () => number;
 }
@@ -960,15 +962,24 @@ interface ConfiguredTurnWriterState {
   failure?: Promise<ToolHistoryWriterHandle>;
 }
 
-const TOOL_HISTORY_ACQUISITION_FAILURE_BACKOFF_MS = 1_000;
+const TOOL_HISTORY_ACQUISITION_FAILURE_BACKOFF_MS = 30_000;
+const TOOL_HISTORY_ACQUISITION_FAILURE_BACKOFF_MAX_MS = 5 * 60_000;
 
 export function lazyConfiguredToolHistory(
   options: LazyConfiguredToolHistoryOptions,
 ): AgentHarnessToolHistoryOptions {
   const failureBackoffMs = options.acquisitionFailureBackoffMs
     ?? TOOL_HISTORY_ACQUISITION_FAILURE_BACKOFF_MS;
-  if (!Number.isSafeInteger(failureBackoffMs) || failureBackoffMs < 0) {
-    throw new TypeError("tool history acquisition failure backoff must be a non-negative integer.");
+  if (!Number.isSafeInteger(failureBackoffMs) || failureBackoffMs < 1) {
+    throw new TypeError("tool history acquisition failure backoff must be a positive integer.");
+  }
+  const failureBackoffMaxMs = options.acquisitionFailureBackoffMaxMs
+    ?? Math.max(TOOL_HISTORY_ACQUISITION_FAILURE_BACKOFF_MAX_MS, failureBackoffMs);
+  if (
+    !Number.isSafeInteger(failureBackoffMaxMs)
+    || failureBackoffMaxMs < failureBackoffMs
+  ) {
+    throw new TypeError("tool history acquisition failure backoff maximum must be an integer at least as large as the initial backoff.");
   }
   const now = options.now ?? Date.now;
   let sharedAttempt: ConfiguredWriterAttempt | undefined;
@@ -977,6 +988,7 @@ export function lazyConfiguredToolHistory(
   let resetTail: Promise<void> = Promise.resolve();
   let retirementTail: Promise<void> = Promise.resolve();
   let acquisitionOutage = false;
+  let consecutiveAcquisitionFailures = 0;
   const reader = new ToolHistoryReader(options.root);
   const warn = (message: string): void => {
     try { options.onWarning?.(message); } catch { /* diagnostics are best-effort */ }
@@ -1004,6 +1016,16 @@ export function lazyConfiguredToolHistory(
     void failure.catch(() => undefined);
     return failure;
   };
+  const nextFailureBackoffMs = (): number => {
+    let backoffMs = failureBackoffMs;
+    for (let index = 0; index < consecutiveAcquisitionFailures && backoffMs < failureBackoffMaxMs; index += 1) {
+      backoffMs = backoffMs > Math.floor(failureBackoffMaxMs / 2)
+        ? failureBackoffMaxMs
+        : Math.min(failureBackoffMaxMs, backoffMs * 2);
+    }
+    consecutiveAcquisitionFailures += 1;
+    return backoffMs;
+  };
   const retire = (attempt: ConfiguredWriterAttempt): void => {
     if (attempt.retired || attempt.handle === undefined) return;
     attempt.retired = true;
@@ -1026,7 +1048,7 @@ export function lazyConfiguredToolHistory(
     const failure = failedPromise(code);
     attempt.failed = true;
     attempt.failurePromise = failure;
-    attempt.retryAtMs = now() + failureBackoffMs;
+    attempt.retryAtMs = now() + nextFailureBackoffMs();
     latchExistingTurns(attempt, failure);
     retire(attempt);
     if (sharedAttempt === attempt) {
@@ -1054,6 +1076,7 @@ export function lazyConfiguredToolHistory(
     };
     attempt.promise = acquisition.then((handle) => {
       attempt.handle = handle;
+      consecutiveAcquisitionFailures = 0;
       if (acquisitionOutage) {
         warn("Tool history writer acquisition recovered; lifecycle persistence resumed.");
       }
@@ -1062,11 +1085,12 @@ export function lazyConfiguredToolHistory(
     }).catch((error: unknown) => {
       attempt.failed = true;
       attempt.failurePromise = attempt.promise;
-      attempt.retryAtMs = now() + failureBackoffMs;
+      const retryBackoffMs = nextFailureBackoffMs();
+      attempt.retryAtMs = now() + retryBackoffMs;
       latchExistingTurns(attempt, attempt.promise);
       if (!acquisitionOutage) {
         acquisitionOutage = true;
-        warn(`Tool history writer acquisition failed (${toolHistoryAcquisitionErrorCode(error)}); new turns fail fast for ${String(failureBackoffMs)} ms, while explicit reset may retry immediately.`);
+        warn(`Tool history writer acquisition failed (${toolHistoryAcquisitionErrorCode(error)}); new turns fail fast for ${String(retryBackoffMs)} ms and repeated failures back off to ${String(failureBackoffMaxMs)} ms, while explicit reset may retry immediately.`);
       }
       throw error;
     });
@@ -1149,7 +1173,7 @@ export function lazyConfiguredToolHistory(
       const reset = resetTail.then(async () => {
         if (!await reader.exists()) return;
         // Reset is serialized and host-explicit, so it may bypass only the
-        // short post-failure cooldown. It still reuses a healthy/pending handle
+        // progressive post-failure cooldown. It still reuses a healthy/pending handle
         // and every fresh acquisition keeps the full restart-handoff ceiling.
         const observedAttempt = sharedAttempt;
         if (observedAttempt !== undefined && !observedAttempt.failed) {

@@ -1006,13 +1006,27 @@ function boundedPreview(value: unknown, maxBytes: number): string {
 function utf8Slice(value: string, offset: number, maxBytes: number): { text: string; nextOffset?: number } {
   const encoded = Buffer.from(value, "utf8");
   if (offset >= encoded.byteLength) return { text: "" };
+  // Continuation cursors emitted below always land on a scalar boundary. A
+  // caller-supplied mid-scalar offset cannot be represented without either
+  // splitting or skipping bytes, so terminate that malformed continuation.
+  if (isUtf8ContinuationByte(encoded[offset] ?? 0)) return { text: "" };
   const end = Math.min(encoded.byteLength, offset + maxBytes);
   let safeEnd = end;
-  while (safeEnd > offset && ((encoded[safeEnd] ?? 0) & 0b1100_0000) === 0b1000_0000) safeEnd -= 1;
+  while (safeEnd > offset && isUtf8ContinuationByte(encoded[safeEnd] ?? 0)) safeEnd -= 1;
+  if (safeEnd === offset) {
+    // A requested 1-3 byte page can begin with a wider scalar. Return that one
+    // complete scalar (still at most four bytes) so the next cursor advances.
+    safeEnd = offset + 1;
+    while (safeEnd < encoded.byteLength && isUtf8ContinuationByte(encoded[safeEnd] ?? 0)) safeEnd += 1;
+  }
   return {
     text: encoded.subarray(offset, safeEnd).toString("utf8"),
     ...(safeEnd < encoded.byteLength ? { nextOffset: safeEnd } : {}),
   };
+}
+
+function isUtf8ContinuationByte(value: number): boolean {
+  return (value & 0b1100_0000) === 0b1000_0000;
 }
 
 function parseJson(value: string): unknown {

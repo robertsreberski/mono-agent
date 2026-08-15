@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -8,8 +8,10 @@ import { fileURLToPath } from "node:url";
 
 import {
   ToolHistoryWriter,
+  TOOL_HISTORY_APPLICATION_ID,
   TOOL_HISTORY_DATABASE,
   TOOL_HISTORY_DIRECTORY,
+  TOOL_HISTORY_OWNER_DATABASE,
   TOOL_HISTORY_USER_VERSION,
 } from "@mono-agent/agent-harness";
 import { afterEach, describe, expect, it } from "vitest";
@@ -83,6 +85,71 @@ describe("sessionToolHistorySection", () => {
     await recovered.close();
     const healthy = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
     expect(healthy.status, healthy.details.join("\n")).toBe("ok");
+  });
+
+  it("treats a journal beside a pristine zero-byte database as stale recoverable state, not a foreign schema", async () => {
+    const root = await tempRoot();
+    const initialized = await ToolHistoryWriter.open({ root });
+    await initialized.close();
+    const path = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    await writeFile(path, "", { mode: 0o600 });
+    const interrupted = new DatabaseSync(path);
+    interrupted.exec(`
+      PRAGMA journal_mode=DELETE;
+      PRAGMA synchronous=FULL;
+      BEGIN IMMEDIATE;
+      PRAGMA application_id=${String(TOOL_HISTORY_APPLICATION_ID)};
+      CREATE TABLE interrupted(value TEXT);
+    `);
+    const journalBytes = await readFile(`${path}-journal`);
+    expect(journalBytes.byteLength).toBeGreaterThan(0);
+    interrupted.exec("ROLLBACK");
+    interrupted.close();
+    await writeFile(path, "", { mode: 0o600 });
+    await writeFile(`${path}-journal`, journalBytes, { mode: 0o600 });
+
+    const stale = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(stale.status, stale.details.join("\n")).toBe("waiting");
+    expect(stale.details).toContain(
+      "A crash-stale DELETE journal accompanies the pristine tool-history database; the next writer can recover and initialize it safely.",
+    );
+    expect(stale.details.join("\n")).not.toMatch(/foreign tool-history schema|purged before adoption|downgrade/iu);
+
+    const recovered = await ToolHistoryWriter.open({ root });
+    await expect(recovered.stats()).resolves.toMatchObject({ calls: 0, records: 0 });
+    await recovered.close();
+  });
+
+  it("reports zero-byte owner and live pristine initialization windows as waiting without false corruption", async () => {
+    const root = await tempRoot();
+    const toolDirectory = join(root, TOOL_HISTORY_DIRECTORY);
+    const locksDirectory = join(root, ".locks");
+    const contentPath = join(toolDirectory, TOOL_HISTORY_DATABASE);
+    const ownerPath = join(locksDirectory, TOOL_HISTORY_OWNER_DATABASE);
+    await mkdir(toolDirectory, { recursive: true, mode: 0o700 });
+    await mkdir(locksDirectory, { recursive: true, mode: 0o700 });
+    await writeFile(contentPath, "", { mode: 0o600 });
+    await writeFile(ownerPath, "", { mode: 0o600 });
+
+    const unpublished = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(unpublished.status, unpublished.details.join("\n")).toBe("waiting");
+    expect(unpublished.details.join("\n")).toContain("Tool history owner database is a pristine zero-byte file");
+    expect(unpublished.details.join("\n")).not.toMatch(/owner database cannot be inspected|foreign tool-history schema|purge/iu);
+
+    const owner = new DatabaseSync(ownerPath);
+    owner.exec("CREATE TABLE writer_owner (singleton INTEGER PRIMARY KEY CHECK(singleton=1), pid INTEGER NOT NULL, token TEXT NOT NULL, acquired_at_ms INTEGER NOT NULL)");
+    owner.prepare("INSERT INTO writer_owner (singleton,pid,token,acquired_at_ms) VALUES (1,?,?,?)")
+      .run(process.pid, "doctor-live-initialization", Date.now());
+    owner.close();
+    await writeFile(`${contentPath}-journal`, "", { mode: 0o600 });
+
+    const live = await sessionToolHistorySection({ historyRoot: root, requestScopedToolSupported: true });
+    expect(live.status, live.details.join("\n")).toBe("waiting");
+    expect(live.details).toContain("A live writer is still initializing the pristine tool-history database.");
+    expect(live.details).toContain(
+      "An in-flight DELETE journal is present while the live writer initializes the pristine tool-history database.",
+    );
+    expect(live.details.join("\n")).not.toMatch(/cannot be inspected|foreign tool-history schema|purge/iu);
   });
 
   it("reports unresolved writer incidents and returns to healthy after matching operations succeed", async () => {

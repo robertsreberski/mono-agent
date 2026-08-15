@@ -213,6 +213,56 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     }]);
   });
 
+  it("releases the live mailbox and warm session when an injected run finalizer throws", async () => {
+    const { identityPath, root } = await fixture();
+    const calls: RuntimeRunOptions[] = [];
+    const statuses: string[] = [];
+    let finalizations = 0;
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        calls.push(options);
+        return { text: "answer", providerSessionId: "provider-cleanup" };
+      },
+      async disposeAllSessions(): Promise<void> {},
+    };
+    let run = 0;
+    const harness = createAgentHarness({
+      identityPath,
+      runtime,
+      model,
+      session,
+      historyStore: createInMemoryHistoryStore({ maxMessages: 10 }),
+      createRunId: () => `cleanup-run-${String(++run)}`,
+      toolHistory: {
+        reader: new ToolHistoryReader(root),
+        logicalConversationId: (conversationId) => toolHistoryLogicalConversationId(conversationId, "daily"),
+        writer: {
+          createSink: () => async () => ({ persistence: "persisted" }),
+          async finishRun(_runBinding, status) {
+            statuses.push(status);
+            finalizations += 1;
+            if (finalizations === 1) throw new Error("injected finalization failure");
+          },
+          async resetConversation() {},
+        },
+      },
+    });
+
+    await expect(harness.run(request("chat:42#2026-08-14")))
+      .rejects.toThrow("injected finalization failure");
+    expect(harness.offerLiveInput?.({
+      conversationId: "chat:42#2026-08-14",
+      id: "after-finalizer",
+      text: "must not reach a stale mailbox",
+      receivedAt: "2026-08-14T12:00:00.000Z",
+    })).toEqual({ status: "unavailable", reason: "inactive" });
+
+    await expect(harness.run(request("chat:42#2026-08-14"))).resolves.toMatchObject({ text: "answer" });
+    expect(calls[1]?.sessionId).toBe("provider-cleanup");
+    expect(statuses).toEqual(["succeeded", "succeeded"]);
+    await harness.dispose?.();
+  });
+
   it("projects compacted rollover history only into a cold reseed and protects the host-owned sink on warm resume", async () => {
     const { identityPath, root } = await fixture();
     const writer = await ToolHistoryWriter.open({ root });

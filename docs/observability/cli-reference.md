@@ -321,9 +321,13 @@ An older compatible tool-history schema is `waiting` and upgrade-pending for the
 next writer. A newer or foreign schema is a hard error. Downgrade does not try
 to interpret or rewrite that state and hard-fails until persisted conversation
 state is purged with `mono-agent restart --clear-sessions`. A secure zero-byte
-content database left before initialization is pristine/recoverable. Busy state
-held by a live writer is reported as `waiting`; a dead recorded owner is reaped
-by the next writer's bounded acquisition.
+content database with zero application/schema versions is
+pristine/recoverable, including a protected crash-stale DELETE journal. Doctor
+reports that stale journal as waiting for the next writer's recovery rather than
+as a foreign schema. A zero-byte owner database is likewise an initialization
+window, not corruption; a published live writer is reported distinctly from
+stale state that the next writer can resume. Busy state held by a live writer is
+`waiting`, and a dead recorded owner is reaped by the next bounded acquisition.
 
 ### Secret placement
 

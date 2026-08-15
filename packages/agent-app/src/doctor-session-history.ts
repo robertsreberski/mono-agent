@@ -72,17 +72,21 @@ export async function sessionToolHistorySection(
 
   const owner = inspectOwner(ownerPath, ownerInfo, worsen);
   const contentInfo = await optionalLstat(contentPath);
-  if (contentInfo === undefined || !contentInfo.isFile() || contentInfo.isSymbolicLink() || contentInfo.nlink !== 1 || !ownerOnly(contentInfo, 0o600)) {
+  const contentSecure = contentInfo !== undefined
+    && contentInfo.isFile()
+    && !contentInfo.isSymbolicLink()
+    && contentInfo.nlink === 1
+    && ownerOnly(contentInfo, 0o600);
+  if (!contentSecure) {
     worsen("error", "Tool history database must be a single-link regular current-user file with mode 0600.");
   }
   const journalInfo = await optionalLstat(journalPath);
+  let journalSecure = false;
   if (journalInfo !== undefined) {
     if (!journalInfo.isFile() || journalInfo.isSymbolicLink() || journalInfo.nlink !== 1 || !ownerOnly(journalInfo, 0o600)) {
       worsen("error", "Tool history DELETE journal must be a single-link regular current-user file with mode 0600.");
-    } else if (owner.live === true) {
-      worsen("waiting", "An in-flight DELETE journal is present under the protected 0700 tool-history directory.");
     } else {
-      worsen("error", "A tool-history DELETE journal survived without a live writer; recovery is required before trusting the store.");
+      journalSecure = true;
     }
   }
   const canonicalToolFiles = [contentInfo, journalInfo, ownerInfo]
@@ -91,48 +95,57 @@ export async function sessionToolHistorySection(
     `Tool history physical storage: ${String(canonicalToolFiles.length)} files, ${String(canonicalToolFiles.reduce((sum, info) => sum + Number(info.size), 0))} bytes.`,
   );
 
-  if (
-    contentInfo !== undefined
-    && contentInfo.isFile()
-    && !contentInfo.isSymbolicLink()
-    && contentInfo.size === 0
-    && journalInfo === undefined
-  ) {
+  const contentInspection = contentSecure
+    ? inspectContentDatabase(contentPath, Number(contentInfo.size), owner.live === true, worsen)
+    : "unavailable";
+  if (contentInspection === "pristine") {
     details.push("Tool history database is a pristine zero-byte file; the next writer can initialize it safely.");
     if (owner.live === true) {
       worsen("waiting", "A live writer is still initializing the pristine tool-history database.");
     }
-  } else if (contentInfo !== undefined && contentInfo.isFile() && !contentInfo.isSymbolicLink()) {
-    const readable = inspectContentDatabase(contentPath, owner.live === true, worsen);
-    if (readable) {
-      try {
-        const stats = new ToolHistoryReader(options.historyRoot).stats();
-        if (stats !== undefined) {
-          details.push(
-            `Tool history: ${String(stats.calls)} calls, ${String(stats.records)} records, ${String(stats.tombstones)} tombstones, ${String(stats.retainedBytes)} retained payload bytes, ${String(stats.bytes)} database bytes.`,
-            `Retention: ${String(stats.limits.maxCompletedCalls)} completed calls, ${String(stats.limits.maxAgeMs)} ms age, ${String(stats.limits.maxBytes)} retained bytes, ${String(stats.limits.maxTombstones)} tombstones.`,
-          );
-          if (stats.dangling > 0) worsen(owner.live === true ? "waiting" : "error", `${String(stats.dangling)} dangling invocation(s) await terminal recovery.`);
-          if (stats.orphanResults > 0) worsen("waiting", `${String(stats.orphanResults)} result(s) required a synthetic invocation because the provider start was missing.`);
-          if (stats.recovered > 0) worsen("waiting", `${String(stats.recovered)} invocation(s) were recovered as interrupted without rerun.`);
-          if (stats.writeFailures > 0) worsen("waiting", `${String(stats.writeFailures)} unresolved lifecycle write incident(s); only the matching tool-phase retry or a retry of the failed run finalization clears that incident.`);
-          if (stats.idempotencyConflicts > 0) worsen("error", `${String(stats.idempotencyConflicts)} unresolved lifecycle idempotency conflict(s); only the matching tool-phase retry or canonical run-binding retry clears that incident.`);
-          if (stats.maintenanceFailures > 0) worsen("waiting", `${String(stats.maintenanceFailures)} retention failure(s) remain since the latest successful retention pass.`);
-          if (stats.recoveryFailures > 0) worsen("error", `${String(stats.recoveryFailures)} recovery failure(s) remain since the latest successful writer recovery.`);
-          if (stats.retainedBytes > stats.limits.maxBytes) worsen("error", "Tool-history retained payload bytes exceed the configured byte ceiling.");
-          else if (stats.retainedBytes >= Math.floor(stats.limits.maxBytes * 0.9)) worsen("waiting", "Tool-history retained payload bytes have reached 90% of the configured ceiling.");
-        }
-      } catch (error) {
-        const reason = reasonOf(error);
-        if (isUnsupportedSchema(error)) {
-          worsen("error", `Tool-history statistics are unavailable: ${reason} Downgrade hard-fails until persisted conversation state is purged.`);
-        } else {
-          worsen(owner.live === true && isBusyReason(reason) ? "waiting" : "error", `Tool-history statistics are unavailable: ${reason}`);
-        }
-      }
+  }
+  if (journalSecure) {
+    if (contentInspection === "pristine") {
+      worsen(
+        "waiting",
+        owner.live === true
+          ? "An in-flight DELETE journal is present while the live writer initializes the pristine tool-history database."
+          : "A crash-stale DELETE journal accompanies the pristine tool-history database; the next writer can recover and initialize it safely.",
+      );
+    } else if (owner.live === true) {
+      worsen("waiting", "An in-flight DELETE journal is present under the protected 0700 tool-history directory.");
     } else {
-      details.push(`Tool history database: ${String(contentInfo.size)} physical bytes; record statistics unavailable.`);
+      worsen("error", "A tool-history DELETE journal survived without a live writer; recovery is required before trusting the store.");
     }
+  }
+  if (contentInspection === "readable") {
+    try {
+      const stats = new ToolHistoryReader(options.historyRoot).stats();
+      if (stats !== undefined) {
+        details.push(
+          `Tool history: ${String(stats.calls)} calls, ${String(stats.records)} records, ${String(stats.tombstones)} tombstones, ${String(stats.retainedBytes)} retained payload bytes, ${String(stats.bytes)} database bytes.`,
+          `Retention: ${String(stats.limits.maxCompletedCalls)} completed calls, ${String(stats.limits.maxAgeMs)} ms age, ${String(stats.limits.maxBytes)} retained bytes, ${String(stats.limits.maxTombstones)} tombstones.`,
+        );
+        if (stats.dangling > 0) worsen(owner.live === true ? "waiting" : "error", `${String(stats.dangling)} dangling invocation(s) await terminal recovery.`);
+        if (stats.orphanResults > 0) worsen("waiting", `${String(stats.orphanResults)} result(s) required a synthetic invocation because the provider start was missing.`);
+        if (stats.recovered > 0) worsen("waiting", `${String(stats.recovered)} invocation(s) were recovered as interrupted without rerun.`);
+        if (stats.writeFailures > 0) worsen("waiting", `${String(stats.writeFailures)} unresolved lifecycle write incident(s); only the matching tool-phase retry or a retry of the failed run finalization clears that incident.`);
+        if (stats.idempotencyConflicts > 0) worsen("error", `${String(stats.idempotencyConflicts)} unresolved lifecycle idempotency conflict(s); only the matching tool-phase retry or canonical run-binding retry clears that incident.`);
+        if (stats.maintenanceFailures > 0) worsen("waiting", `${String(stats.maintenanceFailures)} retention failure(s) remain since the latest successful retention pass.`);
+        if (stats.recoveryFailures > 0) worsen("error", `${String(stats.recoveryFailures)} recovery failure(s) remain since the latest successful writer recovery.`);
+        if (stats.retainedBytes > stats.limits.maxBytes) worsen("error", "Tool-history retained payload bytes exceed the configured byte ceiling.");
+        else if (stats.retainedBytes >= Math.floor(stats.limits.maxBytes * 0.9)) worsen("waiting", "Tool-history retained payload bytes have reached 90% of the configured ceiling.");
+      }
+    } catch (error) {
+      const reason = reasonOf(error);
+      if (isUnsupportedSchema(error)) {
+        worsen("error", `Tool-history statistics are unavailable: ${reason} Downgrade hard-fails until persisted conversation state is purged.`);
+      } else {
+        worsen(owner.live === true && isBusyReason(reason) ? "waiting" : "error", `Tool-history statistics are unavailable: ${reason}`);
+      }
+    }
+  } else if (contentInspection === "unavailable" && contentInfo !== undefined && contentInfo.isFile() && !contentInfo.isSymbolicLink()) {
+    details.push(`Tool history database: ${String(contentInfo.size)} physical bytes; record statistics unavailable.`);
   }
 
   if (owner.pid !== undefined) {
@@ -149,51 +162,53 @@ export async function sessionToolHistorySection(
 
 function inspectContentDatabase(
   path: string,
+  size: number,
   liveOwner: boolean,
   worsen: (status: ValidationStatus, detail: string) => void,
-): boolean {
+): "readable" | "pristine" | "unavailable" {
   let database: DatabaseSync | undefined;
   try {
     database = new DatabaseSync(path, { readOnly: true });
     database.exec("PRAGMA busy_timeout=250");
     const applicationId = pragmaNumber(database, "application_id");
     const userVersion = pragmaNumber(database, "user_version");
+    if (size === 0 && applicationId === 0 && userVersion === 0) return "pristine";
     if (applicationId !== TOOL_HISTORY_APPLICATION_ID) {
       worsen(
         "error",
         `Foreign tool-history schema (application_id=${String(applicationId)}, user_version=${String(userVersion)}); persisted conversation state must be purged before adoption.`,
       );
-      return false;
+      return "unavailable";
     }
     if (userVersion < TOOL_HISTORY_USER_VERSION) {
       worsen(
         "waiting",
         `Tool-history schema upgrade is pending (user_version=${String(userVersion)}, current=${String(TOOL_HISTORY_USER_VERSION)}); the next writer will upgrade it before use.`,
       );
-      return false;
+      return "unavailable";
     }
     if (userVersion > TOOL_HISTORY_USER_VERSION) {
       worsen(
         "error",
         `Tool-history schema is newer (user_version=${String(userVersion)}, current=${String(TOOL_HISTORY_USER_VERSION)}). Downgrade hard-fails until persisted conversation state is purged.`,
       );
-      return false;
+      return "unavailable";
     }
     const journalMode = String(Object.values(database.prepare("PRAGMA journal_mode").get() as Record<string, unknown>)[0]).toLocaleLowerCase();
     if (journalMode !== "delete") {
       worsen("error", `Tool-history journal_mode is ${journalMode}; expected DELETE.`);
-      return false;
+      return "unavailable";
     }
     const integrity = String(Object.values(database.prepare("PRAGMA integrity_check").get() as Record<string, unknown>)[0]);
     if (integrity !== "ok") {
       worsen("error", `Tool-history integrity_check failed: ${integrity}.`);
-      return false;
+      return "unavailable";
     }
-    return true;
+    return "readable";
   } catch (error) {
     const reason = reasonOf(error);
     worsen(liveOwner && isBusyReason(reason) ? "waiting" : "error", `Tool-history database cannot be inspected: ${reason}`);
-    return false;
+    return "unavailable";
   } finally {
     try { database?.close(); } catch { /* read-only doctor */ }
   }
@@ -207,6 +222,13 @@ function inspectOwner(
   if (info === undefined) return {};
   if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || !ownerOnly(info, 0o600)) {
     worsen("error", "Tool history owner database must be a single-link regular current-user file with mode 0600.");
+    return {};
+  }
+  if (info.size === 0) {
+    worsen(
+      "waiting",
+      "Tool history owner database is a pristine zero-byte file; a writer may still be initializing it, otherwise the next writer can resume initialization safely.",
+    );
     return {};
   }
   let database: DatabaseSync | undefined;
