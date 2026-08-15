@@ -24,6 +24,9 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 - Persist agents, threads, messages, structured reasoning/tool/telemetry parts,
   revisions, turns, attachments, and agent pin preferences under
   `~/.mono-agent/web`.
+- Preserve and render the canonical tool writer's record/state/truncation and
+  opaque-artifact metadata carried by structured agent stream events; web
+  SQLite remains a client cache, not the canonical lifecycle store.
 - Keep an upstream turn running when a browser reloads or disconnects, and expose
   state invalidations over SSE so any connected browser can catch up.
 - Offer plain-text follow-ups to a capable active provider run, persist their
@@ -207,6 +210,15 @@ recorded order; resolved labels take precedence over custom text. Unknown
 questions and unknown-option-only entries are omitted, leaving only
 `Answers submitted.` when nothing can be resolved.
 
+Tool cards render the same `history` metadata returned by the harness writer:
+terminal state (including rejection, non-zero exit, timeout, signal,
+cancellation, or interruption), durable record/sequence, truncation byte counts,
+artifact availability, and explicit persistence failure. The browser never
+reconstructs those outcomes from display text, run JSONL, or its own SQLite.
+Historical content and artifact references remain untrusted; references expose
+no host path and may later become unavailable when their independently retained
+artifact is removed.
+
 ## Architecture
 
 ### Data flow
@@ -221,9 +233,10 @@ questions and unknown-option-only entries are omitted, leaving only
    and refetch authoritative projections, including the selected agent's
    memory-only live skill registry, so reloads and concurrent tabs do not own or
    interrupt upstream turns.
-4. The bundled assistant-ui webapp maps those DTOs into its external store,
-   thread list, messages, composer, attachments, activity, and push-subscription
-   UI; its service worker handles background delivery and same-origin clicks.
+4. The bundled assistant-ui webapp maps those DTOs—including canonical
+   lifecycle metadata—into its external store, thread list, messages, tool
+   cards, composer, attachments, activity, and push-subscription UI; its service
+   worker handles background delivery and same-origin clicks.
 5. `deliverWebNotification` reads the owner-private live ingress record and
    performs one bearer-authenticated loopback delivery. The service first
    appends the result to agent history, then atomically exposes an idempotent

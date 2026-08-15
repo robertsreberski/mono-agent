@@ -558,6 +558,7 @@ export class MonoAgentAppController implements MonoAgentApp {
   ): {
     readonly extension: RuntimeOptionsExtension;
     readonly targetsDirectOpenCode: (metadata: Record<string, unknown> | undefined) => boolean;
+    readonly targetsUnsupportedHistoryTool: (metadata: Record<string, unknown> | undefined) => boolean;
   } { return responderOperations.requestModelOverrideRuntimeOptions(this, coreConfig, compatibility); }
 
   /**

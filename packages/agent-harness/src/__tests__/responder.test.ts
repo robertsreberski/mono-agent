@@ -1280,6 +1280,70 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     ).toEqual({ type: "tool_call_completed", id: "t1", content: "x" });
   });
 
+  it("projects only validated durable-history metadata onto the same client tool events", () => {
+    const toolNames = new Map<string, string>();
+    expect(streamEventFromRuntimeEvent({
+      type: "assistant",
+      message: { content: [{
+        type: "tool_use",
+        id: "t-history",
+        name: "Bash",
+        input: { command: "pwd" },
+        history: {
+          recordId: "sth1_start",
+          sequence: 1,
+          persistence: "persisted",
+          truncated: false,
+          originalBytes: 17,
+          retainedBytes: 17,
+          untrusted: true,
+        },
+      }] },
+    }, { toolNames })).toMatchObject({
+      type: "tool_call_started",
+      id: "t-history",
+      history: { recordId: "sth1_start", sequence: 1, persistence: "persisted", untrusted: true },
+    });
+
+    expect(streamEventFromRuntimeEvent({
+      type: "user",
+      message: { content: [{
+        type: "tool_result",
+        tool_use_id: "t-history",
+        content: "ok",
+        is_error: false,
+        history: {
+          recordId: "sth1_result",
+          sequence: 2,
+          persistence: "persisted",
+          terminalState: "success",
+          artifactReferences: [{ id: "stha1_artifact", available: false }, { path: "/private/path" }],
+          untrusted: true,
+        },
+      }] },
+    }, { toolNames })).toMatchObject({
+      type: "tool_call_completed",
+      id: "t-history",
+      name: "Bash",
+      history: {
+        recordId: "sth1_result",
+        sequence: 2,
+        persistence: "persisted",
+        terminalState: "success",
+        artifactReferences: [{ id: "stha1_artifact", available: false }],
+        untrusted: true,
+      },
+    });
+
+    expect(streamEventFromRuntimeEvent({
+      type: "assistant",
+      message: { content: [{
+        type: "tool_use", id: "invalid-history", name: "Read", input: {},
+        history: { persistence: "persisted", recordId: "leak", untrusted: false },
+      }] },
+    })).not.toHaveProperty("history");
+  });
+
   it("carries the tool's name from its tool_use onto tool_call_completed", () => {
     // A raw tool_result block names no tool. Without this carry-over a consumer
     // cannot tell which tool finished — and an `Agent` call rejected before the

@@ -661,11 +661,13 @@ export function streamEventFromRuntimeEvent(
         const name = stringField(block, "name");
         if (id !== undefined && name !== undefined) {
           context?.toolNames?.set(id, name);
+          const history = toolHistoryEventMetadata(block.history);
           return {
             type: "tool_call_started",
             id,
             name,
             ...(hasOwn(block, "input") ? { arguments: block.input } : {}),
+            ...(history === undefined ? {} : { history }),
           };
         }
       }
@@ -681,6 +683,7 @@ export function streamEventFromRuntimeEvent(
         if (name !== undefined) {
           context?.toolNames?.delete(id);
         }
+        const history = toolHistoryEventMetadata(block.history);
         return {
           type: "tool_call_completed",
           id,
@@ -688,11 +691,44 @@ export function streamEventFromRuntimeEvent(
           ...(hasOwn(block, "content") ? { content: block.content } : {}),
           ...(typeof block.is_error === "boolean" ? { isError: block.is_error } : {}),
           ...(executionMs === undefined ? {} : { executionMs }),
+          ...(history === undefined ? {} : { history }),
         };
       }
     }
   }
   return undefined;
+}
+
+function toolHistoryEventMetadata(value: unknown): NonNullable<
+  Extract<AgentStreamEvent, { readonly type: "tool_call_started" }>['history']
+> | undefined {
+  if (!isRecord(value) || (value.persistence !== "persisted" && value.persistence !== "failed") || value.untrusted !== true) {
+    return undefined;
+  }
+  const terminalState = stringField(value, "terminalState");
+  const allowedTerminal = terminalState !== undefined
+    && ["success", "rejected", "error", "exit_nonzero", "timeout", "signal", "cancelled", "interrupted"].includes(terminalState)
+    ? terminalState as NonNullable<Extract<AgentStreamEvent, { readonly type: "tool_call_completed" }>['history']>["terminalState"]
+    : undefined;
+  const artifacts = Array.isArray(value.artifactReferences)
+    ? value.artifactReferences.flatMap((item) => isRecord(item) && typeof item.id === "string" && typeof item.available === "boolean"
+      ? [{ id: item.id, available: item.available }]
+      : [])
+    : undefined;
+  const recordId = stringField(value, "recordId");
+  const errorCode = stringField(value, "errorCode");
+  return {
+    ...(recordId === undefined ? {} : { recordId }),
+    ...(typeof value.sequence === "number" && Number.isSafeInteger(value.sequence) ? { sequence: value.sequence } : {}),
+    persistence: value.persistence,
+    ...(allowedTerminal === undefined ? {} : { terminalState: allowedTerminal }),
+    ...(typeof value.truncated === "boolean" ? { truncated: value.truncated } : {}),
+    ...(typeof value.originalBytes === "number" ? { originalBytes: value.originalBytes } : {}),
+    ...(typeof value.retainedBytes === "number" ? { retainedBytes: value.retainedBytes } : {}),
+    ...(artifacts === undefined || artifacts.length === 0 ? {} : { artifactReferences: artifacts }),
+    ...(errorCode === undefined ? {} : { errorCode }),
+    untrusted: true,
+  };
 }
 
 function createRuntimeEventStream(stream: AgentMessageStream): {

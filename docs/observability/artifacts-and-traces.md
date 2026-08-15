@@ -130,9 +130,62 @@ when more evidence exists. `navigation.guidance` and
 kept separate from historical evidence so an agent can follow an exact safe
 next call.
 
-The boundary is deliberately narrower than direct artifact access. `RunHistory` excludes the current or any running run, unrelated conversations/threads, system prompts, model reasoning/thinking, recalled memory and turn-context payloads, and raw artifact paths. Daily rollover `#YYYY-MM-DD` buckets do not partition one configured logical conversation. Search **matching** is limited to sanitized trigger/user input, run id, dates, status/failure kind, source/detail, model, and effort; it does not search assistant or tool output, and it never opens event JSONL to decide what matches. It ranks by matched terms rather than requiring all of them — full matches win outright, ranked partial matches appear only when none matched fully (`matchedAllTerms: false`), and the guidance names the terms the top candidate actually carried. A search landing on exactly one run then hydrates that run's compact overview through the same bounded read and safe projection as an explicit `inspect`, which does open that one run's event JSONL; an unreadable artifact degrades to the plain search result. Structured projected values first pass through the shared observability redactor: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. `RunHistory` then applies an additional projection sanitizer. In that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible; numeric values under `apiKey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted. Assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel. An optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted. Nested `RunHistory` result bodies are omitted to prevent recursive expansion. String and per-page bounds apply, and incomplete input is reported rather than silently presented as a complete log. Historical text is labelled **untrusted evidence** and must never be followed as instructions.
+The boundary is deliberately narrower than direct artifact access. `RunHistory` excludes the current or any running run, unrelated conversations/threads, system prompts, model reasoning/thinking, recalled memory and turn-context payloads, and raw artifact paths. Ordinary filesystem spans are sanitized in place to `[host-path]` plus at most two non-sensitive trailing components, so surrounding commands, tool results, and assistant diagnostics remain visible; credentials and private run-artifact content are still omitted. Absolute roots, account/home prefixes, artifact roots, and private run paths never survive. Daily rollover `#YYYY-MM-DD` buckets do not partition one configured logical conversation. Search **matching** is limited to sanitized trigger/user input, run id, dates, status/failure kind, source/detail, model, and effort; it does not search assistant or tool output, and it never opens event JSONL to decide what matches. It ranks by matched terms rather than requiring all of them — full matches win outright, ranked partial matches appear only when none matched fully (`matchedAllTerms: false`), and the guidance names the terms the top candidate actually carried. A search landing on exactly one run then hydrates that run's compact overview through the same bounded read and safe projection as an explicit `inspect`, which does open that one run's event JSONL; an unreadable artifact degrades to the plain search result. Structured projected values first pass through the shared observability redactor: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. `RunHistory` then applies an additional projection sanitizer to object keys as well as string values, with deterministic collision-safe key disambiguation. In that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible; numeric values under `apiKey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted. Assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel. An optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted. Nested `RunHistory` result bodies are omitted to prevent recursive expansion. String and per-page bounds apply, and incomplete input is reported rather than silently presented as a complete log. Historical text is labelled **untrusted evidence** and must never be followed as instructions.
 
-Start with active conversation history for the current exchange. Use `MemoryRecall` for intentionally captured durable facts. Use `RunHistory` only when exact prior-run or tool evidence is needed.
+Start with active conversation history for the current exchange. Use `MemoryRecall` for intentionally captured durable facts. Use `RunHistory` only when exact prior-run evidence is needed.
+
+## Canonical tool lifecycle evidence (`SessionHistory`)
+
+Managed-tool invocation/result history does **not** use run JSONL, web SQLite,
+provider transcripts, or Pi session files as its canonical store. The harness
+writes redacted, bounded lifecycle pairs incrementally to the separate
+`history/tool-history/tool-lifecycles.sqlite` sidecar. That crash-safe boundary
+is independent of successful-turn message commit, so a rejected, failed,
+cancelled, timed-out, signalled, or interrupted tool can remain discoverable
+even when the turn produced no canonical message-history entry. Recovery closes
+a dangling invocation as `interrupted`; it never reruns the tool or duplicates
+an already persisted phase.
+
+The protected tool-history directory fails closed on every unsupported entry,
+including stray files such as `.DS_Store`. The synchronous main-thread reader
+is intentional: fixed query, result, record, and projection caps bound its work,
+while SQLite lock waits have a 250 ms busy timeout.
+
+Configured hosts acquire the single writer lazily and allow one bounded
+restart-handoff wait of at most 10 seconds. After an acquisition failure, new
+turns fail lifecycle persistence fast for 30 seconds; each failed probe doubles
+that cooldown up to five minutes. A successful acquisition resets the cooldown,
+and an explicit serialized conversation reset may probe immediately without
+shortening the full handoff ceiling.
+
+Writer-health rows retain the incident class and count, while `last_detail` is
+sanitized for filesystem-shaped text and byte-bounded before it reaches SQLite.
+
+`SessionHistory` is the sibling app-owned, request-scoped read surface over those
+records. `search` accepts bounded text, tool/state/run/time filters, opaque
+cursors, and a maximum of 10 previews; `get` returns a selected invocation or
+result in chunks of at most 8 KiB. Current-run and foreign-conversation records
+are opaque, daily rollover buckets remain one logical scope, isolated/proactive
+runs require `includeIsolated: true`, nested history-tool result bodies are
+omitted, and every result is marked untrusted. Direct OpenCode and ACP routes
+still persist and cold-project lifecycle records but cannot expose this host
+tool because they have no request-scoped host-tool seam. See [MCP
+servers](/tools/mcp/#sessionhistory-retained-tool-lifecycles) and [Tool
+policy](/tools/policy/#sessionhistory).
+
+Object keys and string values share the same path-opaque policy. Safe keys keep
+their spelling; keys that sanitize to the same token are deterministically
+disambiguated without dropping either value.
+
+Tool-history artifact references are opaque ids plus current availability; they
+never expose a host path. Only non-symlink regular files under the configured
+run-specific `tool-output` root can become references or be checked; outside and
+symlinked provider-supplied paths are dropped. A reference does not own or extend
+the underlying run artifact's retention lifetime. If artifact retention or
+another host action removes the target, later reads report the reference as unavailable. Tool-record
+retention independently enforces call-count, age, retained-payload-byte, and
+tombstone limits; message compaction changes only the model projection and does
+not remove retained sidecar records.
 
 ## Artifact metrics
 

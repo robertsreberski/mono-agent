@@ -272,6 +272,186 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("round-trips the canonical durable-history metadata on the same rendered tool record", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "run", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_started",
+          id: "tool-history-1",
+          name: "Bash",
+          arguments: { command: "false" },
+          history: {
+            recordId: "sth1_start",
+            sequence: 1,
+            persistence: "persisted",
+            originalBytes: 19,
+            retainedBytes: 19,
+            untrusted: true,
+          },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "tool-history-1",
+          name: "Bash",
+          content: "exit 1",
+          isError: true,
+          history: {
+            recordId: "sth1_result",
+            sequence: 2,
+            persistence: "persisted",
+            terminalState: "exit_nonzero",
+            artifactReferences: [{ id: "stha1_output", available: false }],
+            untrusted: true,
+          },
+        },
+      },
+    ]);
+    store.completeTurn(turn.turnId, "done");
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThreadDetail(thread.id)?.messages.at(-1)?.parts).toContainEqual({
+      type: "tool-call",
+      toolCallId: "tool-history-1",
+      toolName: "Bash",
+      args: { command: "false" },
+      result: "exit 1",
+      status: "failed",
+      history: {
+        recordId: "sth1_result",
+        sequence: 2,
+        persistence: "persisted",
+        terminalState: "exit_nonzero",
+        artifactReferences: [{ id: "stha1_output", available: false }],
+        untrusted: true,
+      },
+    });
+    reopened.close();
+  });
+
+  it("canonicalizes or drops adversarial started/completed history before reopen", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "run", attachmentIds: [] });
+    const oversizedRecordId = "x".repeat(4_097);
+    store.applyStreamFrames(turn.turnId, [
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_started",
+          id: "stale-after-complete",
+          name: "Bash",
+          history: {
+            recordId: "sth1_valid_start",
+            sequence: 1,
+            persistence: "persisted",
+            untrusted: true,
+          },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "stale-after-complete",
+          name: "Bash",
+          content: "done",
+          history: {
+            persistence: "persisted",
+            terminalState: "future-terminal-state",
+            untrusted: true,
+          },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_started",
+          id: "bad-start",
+          name: "Read",
+          history: { recordId: oversizedRecordId, persistence: "persisted", untrusted: true },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "bad-complete",
+          name: "Write",
+          content: "done",
+          history: {
+            persistence: "persisted",
+            artifactReferences: [{ id: "artifact\ncontrol", available: true }],
+            untrusted: true,
+          },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "canonical-complete",
+          name: "Search",
+          content: "done",
+          history: {
+            recordId: "sth1_canonical",
+            sequence: 9,
+            persistence: "persisted",
+            terminalState: "success",
+            artifactReferences: [{ id: "stha1_output", available: true, staleLocation: "/private/tmp/out" }],
+            untrusted: true,
+            staleProducerField: "must not persist",
+          },
+        },
+      },
+    ] as never);
+    store.completeTurn(turn.turnId, "done");
+    const databasePath = store.paths.database;
+    store.close();
+
+    const inspected = new DatabaseSync(databasePath);
+    const stored = inspected.prepare("SELECT parts_json FROM messages WHERE id = ?")
+      .get(turn.assistantMessageId) as unknown as { parts_json: string };
+    inspected.close();
+    expect(stored.parts_json).not.toContain("future-terminal-state");
+    expect(stored.parts_json).not.toContain("staleProducerField");
+    expect(stored.parts_json).not.toContain("staleLocation");
+    expect(stored.parts_json).not.toContain(oversizedRecordId);
+
+    const reopened = await WebStore.open({ stateDir });
+    const calls = reopened.getThreadDetail(thread.id)?.messages.at(-1)?.parts
+      .filter((part) => part.type === "tool-call") ?? [];
+    expect(calls.find((part) => part.toolCallId === "stale-after-complete")).not.toHaveProperty("history");
+    expect(calls.find((part) => part.toolCallId === "bad-start")).not.toHaveProperty("history");
+    expect(calls.find((part) => part.toolCallId === "bad-complete")).not.toHaveProperty("history");
+    expect(calls.find((part) => part.toolCallId === "canonical-complete")).toMatchObject({
+      history: {
+        recordId: "sth1_canonical",
+        sequence: 9,
+        persistence: "persisted",
+        terminalState: "success",
+        artifactReferences: [{ id: "stha1_output", available: true }],
+        untrusted: true,
+      },
+    });
+    reopened.close();
+  });
+
   it("persists quote metadata without exposing its storage telemetry as message content", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -847,6 +1027,68 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("salvages legacy messages whose optional history metadata is malformed", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const initial = await WebStore.open({ stateDir });
+    initial.replaceAgents([agent()]);
+    const thread = initial.createThread("agent-one");
+    const turn = initial.beginTurn({ threadId: thread.id, text: "persist", attachmentIds: [] });
+    initial.completeTurn(turn.turnId, "answer");
+    const databasePath = initial.paths.database;
+    initial.close();
+
+    const legacyParts = [
+      { type: "text", text: "before" },
+      {
+        type: "tool-call",
+        toolCallId: "legacy-tool",
+        toolName: "Read",
+        status: "complete",
+        history: { persistence: "persisted", sequence: 0, untrusted: true },
+      },
+      {
+        type: "subagent",
+        toolCallId: "legacy-agent",
+        name: "researcher",
+        status: "complete",
+        history: null,
+        calls: [{
+          toolCallId: "legacy-child",
+          toolName: "Search",
+          status: "complete",
+          history: { persistence: "persisted", errorCode: "bad\ncode", untrusted: true },
+        }],
+      },
+      { type: "text", text: "after" },
+    ];
+    const legacy = new DatabaseSync(databasePath);
+    legacy.prepare("UPDATE messages SET parts_json = ? WHERE id = ?")
+      .run(JSON.stringify(legacyParts), turn.assistantMessageId);
+    legacy.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThreadDetail(thread.id)?.messages.at(-1)?.parts).toEqual([
+      { type: "text", text: "before" },
+      {
+        type: "tool-call",
+        toolCallId: "legacy-tool",
+        toolName: "Read",
+        status: "complete",
+      },
+      {
+        type: "subagent",
+        toolCallId: "legacy-agent",
+        name: "researcher",
+        status: "complete",
+        calls: [{ toolCallId: "legacy-child", toolName: "Search", status: "complete" }],
+      },
+      { type: "text", text: "after" },
+    ]);
+    reopened.close();
+  });
+
   it("fails closed on malformed persisted message parts and recovers after external repair", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -975,6 +1217,197 @@ describe("WebStore subagent parts", () => {
         status: "complete",
       }],
     });
+  });
+
+  it("keeps durable metadata on the parent Agent record while child activity stays presentation-only", async () => {
+    const frames = [
+      {
+        ...launch("call-history", "researcher"),
+        event: {
+          ...launch("call-history", "researcher").event,
+          history: { recordId: "sth1_parent_start", sequence: 1, persistence: "persisted", untrusted: true },
+        },
+      },
+      bookend("call-history", "researcher"),
+      childCall("call-history", "researcher", "child-read", "Read", { file_path: "/repo/a.ts" }),
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "call-history",
+          name: "Agent",
+          content: "child summary",
+          history: {
+            recordId: "sth1_parent_result",
+            sequence: 2,
+            persistence: "persisted",
+            terminalState: "success",
+            untrusted: true,
+          },
+        },
+      },
+    ] as const;
+    expect((await turnWith(frames.slice(0, 2))).find((part) => part.type === "subagent")).toMatchObject({
+      type: "subagent",
+      history: {
+        recordId: "sth1_parent_start",
+        sequence: 1,
+        persistence: "persisted",
+        untrusted: true,
+      },
+    });
+    const parts = await turnWith(frames);
+    const group = parts.find((part) => part.type === "subagent");
+    expect(group).toMatchObject({
+      type: "subagent",
+      history: {
+        recordId: "sth1_parent_result",
+        sequence: 2,
+        persistence: "persisted",
+        terminalState: "success",
+        untrusted: true,
+      },
+      calls: [{ toolName: "Read" }],
+    });
+    if (group?.type === "subagent") expect(group.calls[0]).not.toHaveProperty("history");
+  });
+
+  it("keeps canonical history from a started nested subagent call", async () => {
+    const started = childCall(
+      "call-started-history",
+      "researcher",
+      "child-read",
+      "Read",
+      { file_path: "/repo/a.ts" },
+    );
+    const parts = await turnWith([
+      launch("call-started-history", "researcher"),
+      bookend("call-started-history", "researcher"),
+      {
+        ...started,
+        event: {
+          ...started.event,
+          history: {
+            recordId: "sth1_child_start",
+            sequence: 3,
+            persistence: "persisted",
+            artifactReferences: [{ id: "stha1_child", available: true, staleLocation: "/private/tmp/out" }],
+            untrusted: true,
+            staleProducerField: "must not persist",
+          },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "agent:call-started-history:child-read",
+          name: "researcher▸Read",
+          content: "file body",
+          metadata: subagent("call-started-history", "researcher"),
+        },
+      },
+    ] as never);
+
+    const group = parts.find((part) => part.type === "subagent");
+    expect(group).toMatchObject({
+      type: "subagent",
+      calls: [{
+        toolCallId: "agent:call-started-history:child-read",
+        status: "complete",
+        history: {
+          recordId: "sth1_child_start",
+          sequence: 3,
+          persistence: "persisted",
+          artifactReferences: [{ id: "stha1_child", available: true }],
+          untrusted: true,
+        },
+      }],
+    });
+    if (group?.type === "subagent") {
+      expect(group.calls[0]?.history).not.toHaveProperty("staleProducerField");
+    }
+  });
+
+  it("drops adversarial subagent history on lifecycle and child paths before reopen", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      {
+        ...launch("call-adversarial", "researcher"),
+        event: {
+          ...launch("call-adversarial", "researcher").event,
+          history: { recordId: "sth1_parent_start", sequence: 1, persistence: "persisted", untrusted: true },
+        },
+      },
+      {
+        ...bookend("call-adversarial", "researcher"),
+        event: {
+          ...bookend("call-adversarial", "researcher").event,
+          history: { persistence: "persisted", sequence: -1, untrusted: true },
+        },
+      },
+      {
+        ...childCall("call-adversarial", "researcher", "child-read", "Read", { file_path: "/repo/a.ts" }),
+        event: {
+          ...childCall("call-adversarial", "researcher", "child-read", "Read", { file_path: "/repo/a.ts" }).event,
+          history: { persistence: "persisted", recordId: "bad\u0000child", untrusted: true },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "agent:call-adversarial:child-read",
+          name: "researcher▸Read",
+          content: "file body",
+          metadata: subagent("call-adversarial", "researcher"),
+          history: { persistence: "failed", errorCode: "x".repeat(257), untrusted: true },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "agent:call-adversarial",
+          name: "Agent(researcher)",
+          metadata: { ...subagent("call-adversarial", "researcher"), subagentLifecycle: true },
+          history: { persistence: "persisted", truncated: "yes", untrusted: true },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "call-adversarial",
+          name: "Agent",
+          content: "child summary",
+          history: { persistence: "unknown", untrusted: true },
+        },
+      },
+    ] as never);
+    store.completeTurn(turn.turnId, "done");
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    const group = reopened.getThreadDetail(thread.id)?.messages.at(-1)?.parts.find(
+      (part) => part.type === "subagent",
+    );
+    expect(group).toMatchObject({
+      type: "subagent",
+      toolCallId: "call-adversarial",
+      result: "child summary",
+      status: "complete",
+      calls: [{ toolCallId: "agent:call-adversarial:child-read", result: "file body", status: "complete" }],
+    });
+    expect(group).not.toHaveProperty("history");
+    if (group?.type === "subagent") expect(group.calls[0]).not.toHaveProperty("history");
+    reopened.close();
   });
 
   it("keeps a background group running until its lifecycle terminal arrives", async () => {

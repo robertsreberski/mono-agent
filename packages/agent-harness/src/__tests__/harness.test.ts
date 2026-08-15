@@ -2653,6 +2653,80 @@ describe("AgentHarness", () => {
     });
   });
 
+  it("trusts only an own cancellation-brand data property at the harness boundary", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let accessorReads = 0;
+    let proxyTraps = 0;
+    const accessor = Object.defineProperty({}, "channelUserCancel", {
+      get() {
+        accessorReads += 1;
+        return true;
+      },
+    });
+    const inherited = Object.create({ channelUserCancel: true }) as object;
+    const proxy = new Proxy({ channelUserCancel: true }, {
+      getOwnPropertyDescriptor(target, property) {
+        proxyTraps += 1;
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    const revoked = Proxy.revocable({ channelUserCancel: true }, {});
+    revoked.revoke();
+    const cases: ReadonlyArray<{
+      readonly name: string;
+      readonly reason: unknown;
+      readonly failureKind: "cancelled" | "cancelled_user";
+    }> = [
+      {
+        name: "cross-package own data brand",
+        reason: { channelUserCancel: true, channel: "Web" },
+        failureKind: "cancelled_user",
+      },
+      { name: "accessor", reason: accessor, failureKind: "cancelled" },
+      { name: "proxy", reason: proxy, failureKind: "cancelled" },
+      { name: "revoked proxy", reason: revoked.proxy, failureKind: "cancelled" },
+      { name: "inherited brand", reason: inherited, failureKind: "cancelled" },
+      {
+        name: "structured impostor",
+        reason: { channelUserCancel: "true", channel: "Web", kind: "cancelled_user", code: "cancelled_user" },
+        failureKind: "cancelled",
+      },
+      {
+        name: "prose and class-name impostor",
+        reason: Object.assign(new Error("Cancelled by Web user."), { name: "ChannelUserCancelReason" }),
+        failureKind: "cancelled",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const controller = new AbortController();
+      controller.abort(testCase.reason);
+      const fake = createFakeRuntime(async () => {
+        throw new Error("runtime should not run");
+      });
+      const response = await createAgentHarness({
+        identityPath,
+        runtime: fake.runtime,
+        model,
+        executionMode: "sdk",
+      }).run({
+        conversationId: `cancel:${testCase.name}`,
+        userMessage: "cancel me",
+        abortSignal: controller.signal,
+      });
+
+      expect(fake.calls, testCase.name).toHaveLength(0);
+      expect(response.metadata.summary, testCase.name).toMatchObject({
+        status: "cancelled",
+        failureKind: testCase.failureKind,
+      });
+    }
+    expect(accessorReads).toBe(0);
+    expect(proxyTraps).toBe(0);
+  });
+
   it("exposes harness failures through the structural responder and streams runtime deltas", async () => {
     const harness = {
       async run(request: { readonly onEvent?: (event: RuntimeEventLike) => void }) {

@@ -100,12 +100,15 @@ The harness is the request-to-runtime composition boundary:
 2. Persist attachments, load identity/SOUL and selected skills, recall memory,
    and assemble canonical history into runtime messages.
 3. Merge fail-closed tool policy and request-scoped runtime options, attach the
-   active conversation's live-input mailbox on capable backends, then invoke
-   `MonoRuntimeLike.run()` under the provider-run concurrency bound.
-4. Normalize runtime results into explicit success/failure responses while
-   streaming structural events to the communication adapter.
-5. Record the run, commit canonical history, persist optional memory, and clean
-   up request-scoped resources.
+   active conversation's live-input mailbox and incremental tool-lifecycle sink,
+   then invoke `MonoRuntimeLike.run()` under the provider-run concurrency bound.
+4. Await each redacted/bounded lifecycle write before publishing its enriched
+   tool block to the client, while a 250 ms host wait ceiling converts storage
+   delay/failure into explicit fail-soft metadata instead of stalling streaming.
+5. Normalize runtime results into explicit success/failure responses, close any
+   dangling starts for that run, then commit message history and optional memory
+   independently of the already-persisted tool records.
+6. Record the run and clean up request-scoped resources.
 
 ### Package structure
 
@@ -118,6 +121,7 @@ The harness is the request-to-runtime composition boundary:
 | `src/live-input.ts` | Bounded idempotent mailbox, provider acknowledgement, failover replay, and settlement |
 | `src/live-session.ts` / `src/sessions.ts` | Queue-after-turn coordination and provider-session lifecycle |
 | `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history |
+| `src/tool-history-*.ts` | Secure sidecar schema, single-writer worker/ownership, incremental lifecycle persistence, recovery, bounded read/query, and cold projection |
 
 ## Public API
 
@@ -130,6 +134,7 @@ The harness is the request-to-runtime composition boundary:
 | `createLiveInputMailbox()` | Build the provider-facing mailbox used to settle active-turn follow-ups without loss |
 | `createToolPolicy()` / `failClosedToolPolicy()` | Declare exactly which built-in and MCP tools may reach the runtime |
 | `createDurableHistoryStore()` | Persist canonical conversation history and coordinate durable provider-session retirement |
+| `acquireToolHistoryWriter()` / `ToolHistoryReader` | Persist managed-tool lifecycle pairs or query retained records through a host-authorized bounded projection |
 | `createLiveSessionManager()` | Serialize same-conversation follow-ups while allowing different conversations to run concurrently |
 | `loadSelectedSkills()` / `createSkillsCache()` | Load only host-selected skill bodies and reuse unchanged reads |
 
@@ -166,6 +171,7 @@ AgentHarnessSessionEvent
 AgentHarnessSessionEventKind
 AgentHarnessSessionOptions
 AgentHarnessSessionSnapshot
+AgentHarnessToolHistoryOptions
 AgentHarnessTurnHistoryEnricher
 AgentSessionMode
 AppliedLiveInput
@@ -214,12 +220,37 @@ SkillIndexSummary
 SkillsCache
 SkillsLoader
 SkillsStat
+TOOL_HISTORY_APPLICATION_ID
+TOOL_HISTORY_DATABASE
+TOOL_HISTORY_DIRECTORY
+TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS
+TOOL_HISTORY_OWNER_DATABASE
+TOOL_HISTORY_PERSISTENCE_CEILING_MS
+TOOL_HISTORY_SCHEMA
+TOOL_HISTORY_USER_VERSION
+ToolHistoryArtifactReference
+ToolHistoryGetInput
+ToolHistoryGetResult
+ToolHistoryReader
+ToolHistoryRecordProjection
+ToolHistoryRetentionOptions
+ToolHistoryRunBinding
+ToolHistorySearchCursor
+ToolHistorySearchInput
+ToolHistorySearchItem
+ToolHistorySearchPage
+ToolHistoryStats
+ToolHistoryWriter
+ToolHistoryWriterError
+ToolHistoryWriterHandle
+ToolHistoryWriterOptions
 ToolPolicy
 ToolPolicyError
 ToolPolicyErrorCode
 ToolPolicyErrorDetails
 ToolPolicyInput
 ToolPolicyRuntimeOptions
+acquireToolHistoryWriter
 assistantTextFromRuntimeEvent
 buildAgentContext
 buildSkillIndex
@@ -234,6 +265,7 @@ createRuntimeSessionStore
 createSkillsCache
 createToolPolicy
 failClosedToolPolicy
+isProcessAlive
 isReadSkillCompatibleName
 isStdioMcpServerSpec
 loadContextFromFiles
@@ -246,6 +278,9 @@ normalizeInlineText
 renderSkillIndexEntries
 renderSkillIndexSection
 skillInstructionsToContextBlocks
+toolHistoryDiskUsage
+toolHistoryLogicalConversationId
+toolHistoryRecordId
 toolPolicyToRuntimeOptions
 ```
 
@@ -254,6 +289,105 @@ toolPolicyToRuntimeOptions
 ### Continuous sessions
 
 With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation. Confirmed warm runs pass `sessionId`/`sessionKeepAlive` and send only the current user message. A cold history-coordinated Pi reopen supplies canonical history as structured leading runtime messages, outside the system prompt; Pi seeds those messages when its durable JSONL is missing and skips them when the JSONL truly resumes. Stateless/fresh runs and the one stale-session retry keep the ordinary prompt-history replay path. Rotated provider session ids are tracked, `dispose()` retires this harness's live sessions, and history is appended after every successful turn.
+
+Daily-rollover reset claims its normalized logical id as a namespaced opaque
+digest in a fixed 16-file, cross-process owner registry from bucket discovery
+through every physical bucket reset. Appends take the same logical claim before
+their physical-conversation lock, so reset cannot miss a newly created bucket or
+leave a post-reset append in a bucket it already cleared. Rollover-shaped
+physical ids also take a namespaced exact-id claim. A date-shaped logical reset
+anchors that same exact-id claim before discovery, preserving the contract for
+its exact physical bucket without touching sibling or deeper lookalikes.
+
+Registry transactions are short and crash-journaled: the active `(digest, pid,
+random token)` row, not the shared shard database, remains for the provider turn.
+Unrelated logical ids therefore proceed concurrently even when they map to the
+same shard. Normal release deletes the row; crash recovery replaces it only
+after its PID is proven dead, never because it merely looks old. At capacity, a
+bounded pass reclaims distinct rows under the same liveness rule before rejecting
+a new owner. SQLite DELETE rollback journals are transient owner-only files,
+bounded at 2 MiB, and recovered by SQLite rather than age-deleted after a crash.
+Shard files are never unlinked, deleted row pages are reused, and each shard
+fails closed above 1,024 live or indeterminate claims or a 1 MiB file, bounding
+storage without per-conversation lock-file growth.
+
+### Canonical tool lifecycle sidecar
+
+The default durable harness stores managed-tool evidence separately under
+`<history-root>/tool-history/tool-lifecycles.sqlite`; its owner database lives
+under `<history-root>/.locks/`. Message-history scanners allowlist only that
+directory/owner filename and never enumerate database journals or temp files.
+The content database uses SQLite `DELETE` journaling, `synchronous=FULL`, owner
+modes `0700`/`0600`, and fsync-per-record durability on a dedicated worker. One
+process-global handle owns each root and a held owner transaction excludes other
+processes. Acquisition retries for at most 10 seconds, reaps a proven-dead PID
+using the durable-history liveness pattern, succeeds when a normal old writer
+releases in time, and otherwise fails deterministically with
+`history_writer_in_use`. Configured lazy acquisition permits that bounded
+restart-handoff wait once, then caches the failure for every already-created
+turn and for new turns during an initial 30-second failure backoff. Failed
+probes double the cooldown up to five minutes, so normal consecutive turns in a
+sustained outage do not repeatedly pay the full handoff window. The first new
+turn after the current cooldown re-arms acquisition; serialized explicit reset
+may bypass only the cooldown, never the full handoff window. Recovery resets the
+backoff. A successful handle remains process-shared, and a closed or dead worker
+is retired before its replacement is shared.
+
+Incremental lifecycle writes retain their 250 ms streaming ceiling. Reset,
+statistics, and close are bounded maintenance operations with a separate 10 s
+deadline; reset still fails closed on a real worker error. Writer-health
+counters describe distinct unresolved incidents. Identical failed retries do
+not increment them, and unrelated lifecycle success or run finalization does
+not clear them. Only the matching tool phase, its durable synthetic terminal
+closure, or canonical run-binding retry resolves a write/conflict incident.
+Reset or retention also removes only incidents scoped to records, calls, or
+runs that the same operation made permanently unretryable; live unrelated
+incidents remain visible.
+Retention and startup-recovery incidents clear after their corresponding pass
+succeeds.
+
+Keys are `(conversationId, runId, toolCallId)`; each run has monotonic
+writer-assigned start/end sequences, while timestamps remain metadata. Repeating
+the same phase returns its stable record id; conflicting payload or name,
+terminal classification, duration, or artifact identity is rejected. Startup
+closes a dangling invocation as `interrupted` with `process_death`, never reruns
+it, and never duplicates a completed phase. A real result observed after a
+synthetic finalization/recovery result supersedes that result in place while
+preserving its stable record id and sequence. A real invocation observed after a
+result-first synthetic start likewise replaces only that start in place, keeping
+the already-terminal result. Results cover `success`,
+`rejected`, `error`, `exit_nonzero`, `timeout`, `signal`, `cancelled`, and
+`interrupted` using the observability failure-kind taxonomy.
+
+Arguments retain at most 8 KiB, results 16 KiB, individual strings 4 KiB, and
+search text 8 KiB after secure pre-bounding and shared
+structured/content-pattern redaction. Filesystem-shaped object keys and string
+values are sanitized by the same bounded policy, with collision-safe keys that
+preserve every admitted value. Oversized values are omitted wholesale before
+redaction instead of exposing a possibly unmatched raw prefix. Records
+carry exact original byte counts for fully admitted payloads, a saturated
+over-limit count after secure omission, retained byte counts, and truncation,
+plus opaque artifact ids;
+artifact availability is recomputed and the reference does not extend artifact
+lifetime. Retention independently bounds completed calls (100,000), age (365
+days), retained payload (256 MiB), tombstones (10,000), and tombstone age (30
+days). Isolated/proactive runs persist but are excluded from default reads.
+
+Cold reseed inserts the newest fitting suffix of at most 32 completed records as
+chronological, neutralized text before the current user message. The projection,
+including its truncation marker, never exceeds 64 KiB of UTF-8. Fresh/stateless runs place it in the
+history prompt section; a history-coordinated Pi reopen carries it as a prior
+structured message so create-on-miss seeds it and a true native resume skips it
+with the other prior messages. It uses an assistant role when canonical history
+precedes it and a user role when it would otherwise lead the provider history.
+True warm provider resume omits replay.
+Automatic projection treats a zero-byte fresh sidecar as absent and converts
+other unsafe/corrupt reader failures into a structured runtime warning without
+failing the turn. Explicit search/get/stats remain fail closed.
+Message compaction changes this projection only and does not delete retained
+tool records. Only the parent `Agent` call is persisted for a nested agent;
+provider-owned child internals are omitted, so the lifecycle contract does not
+synthesize an unusable parent-link id.
 
 ## Dependency Boundary
 

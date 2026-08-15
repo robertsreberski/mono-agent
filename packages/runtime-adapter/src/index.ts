@@ -142,6 +142,10 @@ export type {
   RuntimeSubagentActivityEvent,
   RuntimeSubagentActivityPhase,
   RuntimeSubagentIdentity,
+  RuntimeToolLifecycleEvent,
+  RuntimeToolLifecyclePersistence,
+  RuntimeToolLifecycleSink,
+  RuntimeToolLifecycleTerminalState,
   RuntimeToolLimits,
   RuntimeToolOptions,
 } from "./types.js";

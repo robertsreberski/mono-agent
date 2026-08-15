@@ -19,6 +19,7 @@ import {
   claudeSandboxPolicyProblem,
 } from "./claude-sandbox.js";
 import { createClaudeSubagentActivityNormalizer } from "./claude-subagent-activity.js";
+import { toolLifecycleMetadata } from "../tool-lifecycle.js";
 
 const CLAUDE_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const CLAUDE_SETTING_SOURCES = new Set(["user", "project", "local"]);
@@ -383,6 +384,16 @@ function toolResultText(block) {
   try { return JSON.stringify(content); } catch { return String(content); }
 }
 
+function annotateClaudeToolLifecycles(event) {
+  if (event?.type !== "user" || !Array.isArray(event.message?.content)) return;
+  for (const block of event.message.content) {
+    if (!block || block.type !== "tool_result") continue;
+    block.tool_lifecycle = toolLifecycleMetadata(block.is_error === true
+      ? { state: "error", failure_kind: "runtime_error", detail_code: "claude_sdk_tool_error" }
+      : { state: "success" });
+  }
+}
+
 function structuredOutputRejectionFromEvent(event) {
   if (event?.type !== "user" || !Array.isArray(event.message?.content)) return null;
   for (const block of event.message.content) {
@@ -666,6 +677,7 @@ export async function generateClaudeResponse(systemPrompt, options) {
 
   function emitEvent(event) {
     if (!event) return;
+    annotateClaudeToolLifecycles(event);
     capturedEvents.push(event);
     onEvent(event);
   }

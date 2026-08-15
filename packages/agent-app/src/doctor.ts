@@ -107,6 +107,8 @@ import type { LaunchdLogInspection, LaunchdLogStreamInspection } from "./launchd
 import { readLaunchdLogMonitorStatus } from "./launchd-log-monitor-status.js";
 import type { ManagedLaunchdLogMonitorStatus } from "./background-log-maintenance.js";
 import { exporterSection, runsSection } from "./doctor-observability.js";
+import { sessionToolHistorySection } from "./doctor-session-history.js";
+import { runtimeRouteContainsUnsupportedHistoryTool } from "./app-controller-utils.js";
 import type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor-types.js";
 
 export type { ValidationReport, ValidationSection, ValidationStatus } from "./doctor-types.js";
@@ -239,6 +241,10 @@ export async function validateMonoAgentFolder(
       options.preferAppPluginInstall === true,
     ));
     sections.push(await toolsSection(coreConfig, options));
+    sections.push(await sessionToolHistorySection({
+      historyRoot: join(coreConfig.artifacts.dir, "..", "history"),
+      requestScopedToolSupported: !runtimeRouteContainsUnsupportedHistoryTool(coreConfig),
+    }));
     sections.push(await webToolsSection(coreConfig, options, liveness));
     sections.push(await continuationSection(coreConfig, options));
     sections.push(await sandboxSection(coreConfig, options.sandboxEngine));

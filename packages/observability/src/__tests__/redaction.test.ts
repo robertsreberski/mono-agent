@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { redactJsonValue, truncateString } from "../redaction.js";
+import {
+  containsVisibleSensitiveText,
+  inspectFilesystemRedactionWorkForTest,
+  redactJsonValue,
+  sanitizeVisibleText,
+  truncateVisibleText,
+  truncateString,
+} from "../redaction.js";
 
 describe("redactJsonValue", () => {
   it("redacts sensitive keys", () => {
@@ -23,6 +30,16 @@ describe("redactJsonValue", () => {
     "client-secret",
     "clientSecret",
     "CLIENT_SECRET",
+    "encryption_key",
+    "encryption-key",
+    "encryptionKey",
+    "encryptionkey",
+    "ENCRYPTION_KEY",
+    "database_url",
+    "database-url",
+    "databaseUrl",
+    "databaseurl",
+    "DATABASE_URL",
     "bearer",
     "oauthBearer",
     "BEARER",
@@ -65,6 +82,29 @@ describe("redactJsonValue", () => {
     });
   });
 
+  it("keeps generic key and URL fields visible while redacting only credential-bearing compound keys", () => {
+    const safe = {
+      PUBLIC_KEY: "public-material",
+      PRIMARY_KEY: "record-id",
+      SORT_KEY: "created-at",
+      DOCS_URL: "https://example.com/docs/path",
+      url: "postgres://host/db",
+      input_tokens: 100,
+      outputTokens: 20,
+      tokenCount: 2,
+    };
+
+    expect(redactJsonValue({
+      ...safe,
+      fieldEncryptionKey: "encrypt-fixture",
+      primaryDatabaseUrl: "postgres://user:password@host/db",
+    })).toEqual({
+      ...safe,
+      fieldEncryptionKey: "[redacted]",
+      primaryDatabaseUrl: "[redacted]",
+    });
+  });
+
   it("marks circular references as [circular]", () => {
     const value: Record<string, unknown> = { name: "root" };
     value.self = value;
@@ -102,6 +142,55 @@ describe("redactJsonValue", () => {
     expect(redacted.entries.at(-1)).toEqual("[max-items]");
     expect(Object.keys(redacted.object)).toHaveLength(1_001);
     expect(redacted.object.__truncated__).toBe("[max-keys]");
+  });
+
+  it("sanitizes object keys without collisions or prototype mutation", () => {
+    const macPath = "/Users/example/work/repo/src/a.ts";
+    const linuxPath = "/home/example/work/repo/src/a.ts";
+    const privatePath = "/Users/example/.ssh/id_rsa";
+    const safeOpaqueKey = "[host-path]/src/a.ts";
+    const value = Object.fromEntries([
+      ["ordinary", "ordinary-value"],
+      [safeOpaqueKey, "safe-opaque-value"],
+      [macPath, "mac-value"],
+      [linuxPath, "linux-value"],
+      [privatePath, "private-path-value"],
+      ["__proto__", { prototypeValue: "proto-value" }],
+      ["constructor", "constructor-value"],
+      ["prototype", "prototype-value"],
+    ]);
+    const options = {
+      visibleTextSanitization: { omitFilesystemPaths: true },
+    } as const;
+
+    const redacted = redactJsonValue(value, 4_096, options) as Record<string, unknown>;
+    const serialized = JSON.stringify(redacted);
+    const hostPathEntries = Object.entries(redacted)
+      .filter(([key]) => key.startsWith(safeOpaqueKey));
+
+    expect(Object.keys(redacted)).toHaveLength(8);
+    expect(redacted.ordinary).toBe("ordinary-value");
+    expect(redacted[safeOpaqueKey]).toBe("safe-opaque-value");
+    expect(hostPathEntries).toHaveLength(3);
+    expect(new Set(hostPathEntries.map(([key]) => key)).size).toBe(3);
+    expect(hostPathEntries.map(([, entryValue]) => entryValue)).toEqual(expect.arrayContaining([
+      "safe-opaque-value",
+      "mac-value",
+      "linux-value",
+    ]));
+    expect(redacted["[private-path]"]).toBe("private-path-value");
+    expect(Object.prototype.hasOwnProperty.call(redacted, "__proto__")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(redacted, "constructor")).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(redacted, "prototype")).toBe(true);
+    expect(redacted.__proto__).toEqual({ prototypeValue: "proto-value" });
+    expect(redacted.constructor).toBe("constructor-value");
+    expect(redacted.prototype).toBe("prototype-value");
+    expect(Object.getPrototypeOf(redacted)).toBe(Object.prototype);
+    expect(({} as { readonly prototypeValue?: unknown }).prototypeValue).toBeUndefined();
+    for (const privateKey of [macPath, linuxPath, privatePath, "/Users/example", "/home/example"]) {
+      expect(serialized, privateKey).not.toContain(privateKey);
+    }
+    expect(redactJsonValue(redacted, 4_096, options)).toEqual(redacted);
   });
 
   it("redacts high-confidence secret-shaped substrings from plain strings when opted in", () => {
@@ -166,17 +255,529 @@ describe("redactJsonValue", () => {
 
   it("applies content-pattern scanning recursively without weakening key redaction", () => {
     const fixture = ["xox", "p-", "A".repeat(24)].join("");
-    expect(
+    const redacted =
       redactJsonValue(
-        { note: `credential: ${fixture}`, nested: [`again ${fixture}`], apiKey: "not-shape-dependent" },
+        Object.fromEntries([
+          ["note", `credential: ${fixture}`],
+          ["nested", [`again ${fixture}`]],
+          ["apiKey", "not-shape-dependent"],
+          [`evidence-${fixture}`, "key-value-survives"],
+        ]),
         4_096,
-        { contentPatternRedaction: true },
-      ),
-    ).toEqual({
-      note: "credential: [redacted]",
+        {
+          contentPatternRedaction: true,
+          visibleTextSanitization: {},
+        },
+      ) as Record<string, unknown>;
+
+    expect(redacted).toEqual({
+      note: "[diagnostic omitted because it contained private host data]",
       nested: ["again [redacted]"],
       apiKey: "[redacted]",
+      "evidence-[redacted]": "key-value-survives",
     });
+    expect(JSON.stringify(redacted)).not.toContain(fixture);
+  });
+
+  const awsSecretAccessKey = [
+    "wJalrXUtnFEMI/K7MDENG/",
+    "bPxRfiCYEXAMPLEKEY",
+  ].join("");
+  const privateKeyHeader = ["-----BEGIN RSA", " PRIVATE KEY-----"].join("");
+
+  it.each([
+    "apikey=compact-fixture",
+    "APIKEY=upper-fixture",
+    "apiKey=camel-fixture",
+    "ApiKey=title-camel-fixture",
+    "APIKey=acronym-camel-fixture",
+    "APIkey=acronym-lower-fixture",
+    "myapikey=prefixed-compact-fixture",
+    "myApiKey=prefixed-camel-fixture",
+    "myAPIKey=prefixed-acronym-camel-fixture",
+    "myAPIkey=prefixed-acronym-lower-fixture",
+    "openAPIkey=prefixed-open-acronym-fixture",
+    "service.api-key=delimited-fixture",
+    "service api key=spaced-fixture",
+    "'openAPIkey'='quoted-fixture'",
+    '"myAPIkey": "colon-fixture"',
+  ])("preserves historical API-key assignment redaction for %s", (value) => {
+    const options = { omission: "[credential assignment omitted]" } as const;
+
+    expect(containsVisibleSensitiveText(value, options)).toBe(true);
+    expect(sanitizeVisibleText(value, options)).toBe(options.omission);
+  });
+
+  it.each([
+    `AWS_SECRET_ACCESS_KEY=${awsSecretAccessKey}`,
+    "awsSecretAccessKey=compact-camel-fixture",
+    "awssecretaccesskey=compact-fixture",
+    "STRIPE_SECRET_KEY=sk_live_...",
+    "stripeSecretKey=compact-camel-fixture",
+    "stripesecretkey=compact-fixture",
+    `PRIVATE_KEY=${privateKeyHeader}`,
+    "SIGNING_PRIVATE_KEY=delimited-fixture",
+    "signingPrivateKey=compact-camel-fixture",
+    "signingprivatekey=compact-fixture",
+    "ENCRYPTION_KEY=<secret>",
+    "FIELD_ENCRYPTION_KEY=delimited-fixture",
+    "fieldEncryptionKey=compact-camel-fixture",
+    "fieldencryptionkey=compact-fixture",
+    "DATABASE_URL=postgres://user:password@host/db",
+    "PRIMARY_DATABASE_URL=postgres://user:password@host/db",
+    "primaryDatabaseUrl=postgres://user:password@host/db",
+    "primarydatabaseurl=postgres://user:password@host/db",
+  ])("omits high-confidence compound credential assignment %s", (value) => {
+    const options = { omission: "[credential assignment omitted]" } as const;
+
+    expect(containsVisibleSensitiveText(value, options)).toBe(true);
+    expect(sanitizeVisibleText(value, options)).toBe(options.omission);
+  });
+
+  it.each([
+    "credential=fixture",
+    "credentials: fixture",
+    "service_credential=fixture",
+    "service.credentials: fixture",
+  ])("omits exact or delimited credential assignment %s", (value) => {
+    const options = { omission: "[credential assignment omitted]" } as const;
+
+    expect(containsVisibleSensitiveText(value, options)).toBe(true);
+    expect(sanitizeVisibleText(value, options)).toBe(options.omission);
+  });
+
+  it("bounds a 64 KiB contiguous-uppercase credential assignment", () => {
+    const retainedStringBytes = 64 * 1_024;
+    const credentialSuffix = "TOKEN=fixture";
+    const value = `${"A".repeat(retainedStringBytes - credentialSuffix.length)}${credentialSuffix}`;
+    const options = { omission: "[credential assignment omitted]" } as const;
+
+    expect(new TextEncoder().encode(value)).toHaveLength(retainedStringBytes);
+    expect(sanitizeVisibleText(value, options)).toBe(options.omission);
+  }, 1_000);
+
+  it.each([
+    "preauthorization=enabled",
+    "accessKeyId=public-identifier",
+    "AWS_ACCESS_KEY_ID=AKIAEXAMPLEPUBLICID",
+    "PUBLIC_KEY=ssh-rsa-public-material",
+    "PRIMARY_KEY=record-id",
+    "SORT_KEY=created-at",
+    "DOCS_URL=https://example.com/docs/path",
+    "WEBHOOK_URL=https://example.com/hooks/receive",
+    "https://example.com/docs/private-key-rotation",
+    "postgres://host/db",
+    "input_tokens=100",
+    "token_count=2",
+    "apiKeyCount=3",
+    "credentialType=oauth",
+    "credentialsMetadata=public-schema",
+    "credential_count=2",
+    "mycredential=public-label",
+  ])("preserves non-credential assignment or URL %s", (value) => {
+    expect(containsVisibleSensitiveText(value)).toBe(false);
+    expect(sanitizeVisibleText(value)).toBe(value);
+  });
+
+  it.each([
+    ["/Users/example/.mono-agent/artifacts/tool-output/run/output.txt", "[private-path]"],
+    ["C:\\Users\\private\\tool-output\\result.txt", "[private-path]"],
+    ["Full output saved to: /private/tmp/tool-output.txt", "Full output saved to: [host-path]/tool-output.txt"],
+    ["file:///Users/example/repo/src/result.txt", "[host-path]/src/result.txt"],
+    ["read ~/private/result.txt", "read [home-path]/private/result.txt"],
+  ])("neutralizes only the filesystem span in model-visible text: %s", (value, expected) => {
+    const options = {
+      omitFilesystemPaths: true,
+      omission: "[private host path omitted]",
+    } as const;
+    expect(containsVisibleSensitiveText(value, options)).toBe(true);
+    expect(sanitizeVisibleText(value, options)).toBe(expected);
+    expect(redactJsonValue({ output: value }, 4_096, {
+      visibleTextSanitization: options,
+    })).toEqual({ output: expected });
+  });
+
+  it.each([
+    ["[/Users/example/.ssh/id_rsa]", "[[private-path]]"],
+    ["{/Users/example/private/x.key}", "{[host-path]/private/x.key}"],
+    ["x,/Users/example/proj/a.ts", "x,[host-path]/proj/a.ts"],
+    ["x;/Users/example/proj/a.ts", "x;[host-path]/proj/a.ts"],
+    ["cmd|/Users/example/bin/tool", "cmd|[host-path]/bin/tool"],
+    ["user@/Users/example/share", "user@[host-path]/share"],
+    ["-->/Users/example/proj/a.ts", "-->[host-path]/proj/a.ts"],
+    ["[/Users/example/proj/a.ts](/Users/example/proj/b.ts)", "[[host-path]/proj/a.ts]([host-path]/proj/b.ts)"],
+  ])("recognizes a host path after delimiter punctuation: %s", (value, expected) => {
+    const options = { omitFilesystemPaths: true } as const;
+    expect(containsVisibleSensitiveText(value, options)).toBe(true);
+    expect(sanitizeVisibleText(value, options)).toBe(expected);
+    expect(sanitizeVisibleText(expected, options)).toBe(expected);
+    expect(expected).not.toContain("/Users/example");
+  });
+
+  it.each([
+    ["/Users/example/a.ts,/Users/example/secret/b.ts", "[host-path]/a.ts,[host-path]/secret/b.ts"],
+    ["C:\\Users\\Rob\\a.ts,C:\\Users\\Rob\\secret\\b.ts", "[host-path]/a.ts,[host-path]/secret/b.ts"],
+  ])("sanitizes comma-separated paths independently without consuming their separator: %s", (original, expected) => {
+    const options = { omitFilesystemPaths: true } as const;
+
+    expect(sanitizeVisibleText(original, options)).toBe(expected);
+    expect(sanitizeVisibleText(expected, options)).toBe(expected);
+  });
+
+  it.each([
+    ["/Users/example/proj/a.ts:42:7", "[host-path]/proj/a.ts:42:7"],
+    ["C:\\Users\\Rob\\repo\\src\\a.ts:9:2", "[host-path]/src/a.ts:9:2"],
+    ["\\\\server\\share\\Users\\Rob\\repo\\src\\a.ts", "[host-path]/src/a.ts"],
+    ["file:///Users/example/repo/src/a.ts", "[host-path]/src/a.ts"],
+    ["file://build-host/Users/example/repo/src/a.ts", "[host-path]/src/a.ts"],
+    ["/home/example/.aws/credentials", "[private-path]"],
+    ["C:\\Users\\Rob\\.mono-agent\\artifacts\\tool-output\\run-1\\out.txt", "[private-path]"],
+    ["gcc -I/Users/example/repo/include", "gcc -I[host-path]/repo/include"],
+    ["tar -C/Users/example/archive source.tgz", "tar -C[host-path]/archive source.tgz"],
+    ["docker -v/Users/example/data:/data image", "docker -v[host-path]/data:/data image"],
+    ["rsync -av/Users/example/source target", "rsync -av[host-path]/source target"],
+    ["read ~rob/repo/src/a.ts", "read [home-path]/src/a.ts"],
+    [".../Users/example/repo/src/a.ts", "...[host-path]/src/a.ts"],
+    ["/Users/example/Users/example", "[host-path]"],
+    ["[host-path]/Users/example/repo/src/a.ts", "[host-path]/src/a.ts"],
+    ["[private-path]/etc/passwd", "[private-path]/etc/passwd"],
+    ["[private-path]/Users/example/repo/a.ts", "[private-path][host-path]/repo/a.ts"],
+    [".ssh/id_rsa", "[private-path]"],
+    [".aws/credentials", "[private-path]"],
+    ["/Users/example/.git-credentials", "[private-path]"],
+    ["~rob/.netrc", "[private-path]"],
+    ["/home/example/.npmrc", "[private-path]"],
+  ])("handles supported host-path forms and private segments: %s", (value, expected) => {
+    const options = { omitFilesystemPaths: true } as const;
+    expect(sanitizeVisibleText(value, options)).toBe(expected);
+    expect(sanitizeVisibleText(expected, options)).toBe(expected);
+  });
+
+  it.each([
+    ["/users/example/.git-credentials", "[private-path]"],
+    ["/Home/example/.npmrc", "[private-path]"],
+    ["/USERS/example/repo/src/a.ts", "[host-path]/src/a.ts"],
+  ])("case-folds POSIX roots and strips private account segments: %s", (value, expected) => {
+    const options = { omitFilesystemPaths: true } as const;
+    const sanitized = sanitizeVisibleText(value, options);
+
+    expect(sanitized).toBe(expected);
+    expect(sanitized).not.toMatch(/\/example(?:\/|$)/iu);
+    expect(sanitizeVisibleText(sanitized, options)).toBe(sanitized);
+  });
+
+  it.each([
+    "https://example.com/Users/example/a.ts,/Users/example/still-url.ts",
+    "custom+scheme://host/Users/example/a.ts;segment/Users/example/b.ts",
+    "https://example.com/Users/example/.ssh/url_rsa?next=/Users/example/.aws/url-credentials#fragment",
+    "[URL](https://example.com/Users/example/a.ts)",
+    "//example.com/Users/example/a.ts",
+    "//example.com/Users/example/.ssh/url_rsa",
+  ])("does not treat URL path components as host filesystem paths: %s", (value) => {
+    const options = { omitFilesystemPaths: true } as const;
+    expect(containsVisibleSensitiveText(value, options)).toBe(false);
+    expect(sanitizeVisibleText(value, options)).toBe(value);
+  });
+
+  it.each([
+    "<div>content</div>",
+    "<Users>content</Users>",
+    "</session_tool_history>",
+    "3 / 4",
+    "use / as the separator",
+    "build/run/test and alpha/Users/example",
+    "/^foo$/giu",
+    "replace /^foo$/ with bar /g",
+    "GET /api/v1/users?active=true HTTP/1.1",
+    "POST /request/path HTTP/1.1",
+    "/public/assets/app.js",
+    "/docs/reference/session-history",
+  ])("preserves useful slash syntax and public request paths: %s", (value) => {
+    const options = { omitFilesystemPaths: true } as const;
+
+    expect(containsVisibleSensitiveText(value, options)).toBe(false);
+    expect(sanitizeVisibleText(value, options)).toBe(value);
+  });
+
+  const reviewerAccount = ["roberts", "reberski"].join("");
+  const reviewerMacHome = ["/Users", reviewerAccount].join("/");
+  const reviewerLinuxHome = ["/home", reviewerAccount].join("/");
+
+  it.each([
+    [
+      `GET ${reviewerMacHome}/notes.txt HTTP/1.1`,
+      "GET [host-path]/notes.txt HTTP/1.1",
+    ],
+    [
+      `GET /files?path=${reviewerMacHome}/notes.txt HTTP/1.1`,
+      "GET /files?path=[host-path]/notes.txt HTTP/1.1",
+    ],
+    [
+      `POST /upload?dest=${reviewerLinuxHome}/secret-project/plan.md HTTP/1.0`,
+      "POST /upload?dest=[host-path]/secret-project/plan.md HTTP/1.0",
+    ],
+    [
+      `GET /api/v1/users?path=${reviewerMacHome}/notes.txt HTTP/1.1`,
+      "GET /api/v1/users?path=[host-path]/notes.txt HTTP/1.1",
+    ],
+    [
+      "GET /Users/example/.ssh/id_rsa HTTP/1.1",
+      "GET [private-path] HTTP/1.1",
+    ],
+    [
+      "GET /api/read?file=/Users/example/.ssh/id_rsa HTTP/1.1",
+      "GET /api/read?file=[private-path] HTTP/1.1",
+    ],
+    [
+      "GET /Users/example/profile?file=.ssh/id_rsa HTTP/1.1",
+      "GET [host-path]/profile?file=[private-path] HTTP/1.1",
+    ],
+  ])("redacts filesystem-shaped host evidence inside an HTTP request target: %s", (value, expected) => {
+    const options = { omitFilesystemPaths: true } as const;
+
+    expect(containsVisibleSensitiveText(value, options)).toBe(true);
+    expect(sanitizeVisibleText(value, options)).toBe(expected);
+  });
+
+  it("does not invent a token or line start at the bounded lookbehind edge", () => {
+    const oversizedOption = `-${"I".repeat(64)}/Users/example/profile`;
+    const oversizedRequestPrefix = `GET${" ".repeat(64)}/Users/example/profile HTTP/1.1`;
+    const options = { omitFilesystemPaths: true } as const;
+
+    expect(sanitizeVisibleText(oversizedOption, options)).toBe(oversizedOption);
+    expect(sanitizeVisibleText(oversizedRequestPrefix, options)).toBe(
+      `GET${" ".repeat(64)}[host-path]/profile HTTP/1.1`,
+    );
+  });
+
+  it("keeps path-classifier slice allocation bounded for a 200 KiB Write-style argument", () => {
+    const contentBytes = 200 * 1_024;
+    const base64LikeUnit = `${"A".repeat(80)}/`;
+    const content = base64LikeUnit.repeat(Math.ceil(contentBytes / base64LikeUnit.length))
+      .slice(0, contentBytes);
+    const serialized = JSON.stringify({
+      tool: "Write",
+      arguments: {
+        file_path: "/users/PrivateAccount/repo/blob.bin",
+        content,
+      },
+    });
+    const work = inspectFilesystemRedactionWorkForTest(serialized);
+
+    expect(serialized.length).toBeGreaterThanOrEqual(contentBytes);
+    expect(work.sanitized).toContain('"file_path":"[host-path]/repo/blob.bin"');
+    expect(sanitizeVisibleText(serialized, { omitFilesystemPaths: true }))
+      .toContain('"file_path":"[host-path]/repo/blob.bin"');
+    expect(work.largestSliceCodeUnits).toBeLessThanOrEqual(128);
+    expect(work.slicedCodeUnits).toBeLessThanOrEqual(serialized.length * 2);
+    expect(work.scannerIterations + work.urlSchemeCodeUnits).toBeLessThanOrEqual(serialized.length * 2);
+
+    const redacted = redactJsonValue(
+      { file_path: "/users/PrivateAccount/repo/blob.bin", content },
+      4_096,
+      { visibleTextSanitization: { omitFilesystemPaths: true } },
+    ) as { readonly file_path: string; readonly content: string };
+    expect(redacted.file_path).toBe("[host-path]/repo/blob.bin");
+    expect(redacted.content).toMatch(/…\[truncated \d+ bytes\]$/u);
+  });
+
+  it("keeps URL-scheme classification work linear on plus-dense input", () => {
+    const countClassificationWork = (codeUnits: number): number => {
+      const input = "a+".repeat(codeUnits / 2);
+      const work = inspectFilesystemRedactionWorkForTest(input);
+      expect(work.sanitized).toBe(input);
+      expect(sanitizeVisibleText(input, {
+        omitFilesystemPaths: true,
+        maxBytes: codeUnits,
+      })).toBe(input);
+      return work.scannerIterations + work.urlSchemeCodeUnits;
+    };
+
+    const sizes = [512, 1_024, 2_048] as const;
+    const counts = sizes.map(countClassificationWork);
+
+    expect(counts[1]).toBeLessThanOrEqual(counts[0]! * 2.5);
+    expect(counts[2]).toBeLessThanOrEqual(counts[1]! * 2.5);
+    expect(counts[2]).toBeLessThanOrEqual(sizes[2] * 2);
+  });
+
+  it.each([
+    ["./src/a.ts", "./src/a.ts"],
+    ["../src/b.ts", "../src/b.ts"],
+    [".\\src\\c.ts", ".\\src\\c.ts"],
+    ["..\\src\\d.ts", "..\\src\\d.ts"],
+    ["~/repo/src/e.ts", "[home-path]/src/e.ts"],
+    ["~/.ssh/id_rsa", "[private-path]"],
+  ])("applies the explicit portable-relative versus home-relative policy: %s", (original, expected) => {
+    const options = { omitFilesystemPaths: true } as const;
+
+    expect(sanitizeVisibleText(original, options)).toBe(expected);
+    expect(sanitizeVisibleText(expected, options)).toBe(expected);
+  });
+
+  it("keeps commands, multiple path suffixes, punctuation, line/column data, and web URLs inspectable", () => {
+    const original = [
+      "Read /Users/example/work/repo/src/index.ts:42:7),",
+      "compare C:\\Users\\Alice\\repo\\src\\windows.ts:9:2;",
+      "then ls -la /etc && open https://example.com/docs/path.",
+    ].join(" ");
+    const sanitized = sanitizeVisibleText(original, { omitFilesystemPaths: true });
+
+    expect(sanitized).toBe([
+      "Read [host-path]/src/index.ts:42:7),",
+      "compare [host-path]/src/windows.ts:9:2;",
+      "then ls -la [host-path]/etc && open https://example.com/docs/path.",
+    ].join(" "));
+    expect(sanitized).not.toContain("/Users/example");
+    expect(sanitized).not.toContain("C:\\Users\\Alice");
+  });
+
+  it("composes recursive path neutralization, credential redaction, truncation bounds, and repeat passes", () => {
+    const secret = ["sk", "-", "A".repeat(48)].join("");
+    const value = {
+      read: { file_path: "/Users/example/work/repo/src/index.ts", apiKey: "not-shape-dependent" },
+      nested: [
+        "stack at /home/example/service/src/worker.ts:12:4",
+        { command: `cat /repo/config.json and report ${secret}` },
+      ],
+      url: "https://example.com/a/b",
+    };
+    const options = {
+      contentPatternRedaction: true,
+      visibleTextSanitization: { omitFilesystemPaths: true },
+    } as const;
+    const once = redactJsonValue(value, 4_096, options);
+    const twice = redactJsonValue(once, 4_096, options);
+
+    expect(once).toEqual({
+      read: { file_path: "[host-path]/src/index.ts", apiKey: "[redacted]" },
+      nested: [
+        "stack at [host-path]/src/worker.ts:12:4",
+        { command: "cat [host-path]/repo/config.json and report [redacted]" },
+      ],
+      url: "https://example.com/a/b",
+    });
+    expect(twice).toEqual(once);
+
+    const bounded = sanitizeVisibleText(
+      `inspect /Users/example/work/repo/src/index.ts ${"x".repeat(500)}`,
+      { omitFilesystemPaths: true, maxBytes: 64 },
+    );
+    expect(new TextEncoder().encode(bounded).length).toBeLessThanOrEqual(64);
+    expect(bounded).toContain("[host-path]/src/index.ts");
+    expect(bounded).not.toContain("/Users/example");
+    expect(sanitizeVisibleText(bounded, { omitFilesystemPaths: true, maxBytes: 64 })).toBe(bounded);
+  });
+
+  it("keeps whole-value omission for explicitly private run-artifact evidence", () => {
+    const artifactDir = "/Users/example/.mono-agent/artifacts/runs";
+    expect(sanitizeVisibleText(`inspect ${artifactDir}/run-1.summary.json`, {
+      artifactDir,
+      omitFilesystemPaths: true,
+      omission: "[private artifact omitted]",
+    })).toBe("[private artifact omitted]");
+  });
+
+  it("does not mistake web URLs, ordinary repository-relative paths, or exact redaction sentinels for host evidence", () => {
+    const options = { omitFilesystemPaths: true } as const;
+    for (const value of [
+      "https://example.com/docs/path",
+      "inspect src/runtime/index.ts",
+      "read ./src/runtime/index.ts and ../shared/types.ts",
+      "token=[redacted]",
+      "password: '[redacted]'",
+    ]) {
+      expect(containsVisibleSensitiveText(value, options), value).toBe(false);
+      expect(sanitizeVisibleText(value, options)).toBe(value);
+    }
+  });
+
+  it("scans every raw JSON credential occurrence while preserving exact safe sentinels", () => {
+    const serialized = JSON.stringify({
+      token: "[redacted]",
+      nested: { credentials: "[redacted]" },
+      command: "TOKEN=[redacted]",
+      safe: "visible",
+    });
+    const safeJson = [
+      ["valid serialized sentinels", serialized],
+      ["safe duplicate sentinels", '{"token":"[redacted]","token":"[redacted]"}'],
+      ["escaped credential key sentinel", '{"tok\\u0065n":"[redacted]"}'],
+      ["escaped assignment sentinel", '{"command":"TOKEN\\u003d[redacted]"}'],
+      ["key-embedded assignment sentinel", '{"note password=[redacted]":1}'],
+      ["object-like code output", "{foo: bar}"],
+      ["quoted prose suffix", '"quoted prose", said Alice'],
+      ["numbered list item", "[1] item"],
+      ["truncated exact-sentinel object", '{"token":"[redacted]"'],
+      ["nested truncated exact-sentinel object", '{"nested":{"credentials":"[redacted]"'],
+      ["unterminated escaped-string prose", '{"note":"harmless\\u0020prefix'],
+      ["malformed escape without credential evidence", '{"note":"harmless\\q'],
+      ["earlier syntax error before escaped credential sentinel", '{"x": nul, "credenti\\u0061ls":"[redacted]"}'],
+      ["malformed escape before escaped credential sentinel", '{"note":"harmless\\q", "credenti\\u0061ls":"[redacted]"}'],
+    ] as const;
+    const hostileJson = [
+      ["unsafe first duplicate", '{"token":"fixture-duplicate-first-secret","token":"[redacted]"}'],
+      ["unsafe last duplicate", '{"token":"[redacted]","token":"fixture-duplicate-last-secret"}'],
+      ["nested duplicate", '{"nested":{"password":"fixture-nested-duplicate-secret","password":"[redacted]"}}'],
+      ["array duplicate", '[{"api_key":"[redacted]","api_key":"fixture-array-duplicate-secret"}]'],
+      ["key assignment", '{"note password=fixture-key-assignment-secret":1}'],
+      ["escaped key assignment", '{"api\\u005fkey\\u003dfixture-escaped-key-assignment-secret":1}'],
+      ["unsafe parsed key", JSON.stringify({ token: "[redacted]", credential: "still-secret" })],
+      ["sentinel tail", JSON.stringify({ command: "TOKEN=[redacted],fixture-secret-tail" })],
+      ["escaped credential key", '{"credenti\\u0061ls":"fixture-escaped-key-secret"}'],
+      ["escaped assignment operator", '{"command":"TOKEN\\u003dfixture-escaped-operator-secret"}'],
+      ["malformed credential assignment", '{"token":"fixture-malformed-assignment-secret'],
+      ["malformed sentinel tail", '{"command":"TOKEN=[redacted],fixture-malformed-tail-secret'],
+      ["truncated escaped credential key value", '{"credenti\\u0061ls":"fixture-truncated-secret'],
+      ["truncated escaped assignment operator", '{"command":"TOKEN\\u003dfixture-truncated-secret'],
+      ["truncated escaped key assignment", '{"api\\u005fkey\\u003dfixture-truncated-key-secret'],
+      ["earlier invalid literal before escaped assignment", '{"x": nul, "command":"TOKEN\\u003dfixture-ordering-secret"}'],
+      ["earlier invalid literal before escaped credential key", '{"x": nul, "credenti\\u0061ls":"fixture-ordering-secret"}'],
+      ["invalid tail before escaped credential key", '{"a":1} zz {"credenti\\u0061ls":"fixture-tail-secret"}'],
+      ["invalid unquoted key before escaped assignment", '{1:2, "command":"TOKEN\\u003dfixture-badkey-secret"}'],
+      ["concatenated JSON documents with later escaped assignment", '{"safe":true}\n{"command":"TOKEN\\u003dfixture-concatenated-secret"}'],
+      ["malformed escape before escaped credential key", '{"note":"harmless\\q", "credenti\\u0061ls":"fixture-after-malformed-secret"}'],
+      ["non-JSON comma tail", "credential=[redacted],fixture-secret-tail"],
+      ["non-JSON closing tail", 'credential="[redacted]"}fixture-secret-tail'],
+    ] as const;
+
+    for (const [name, value] of safeJson) {
+      expect(containsVisibleSensitiveText(value), name).toBe(false);
+      expect(sanitizeVisibleText(value), name).toBe(value);
+      expect(sanitizeVisibleText(sanitizeVisibleText(value)), name).toBe(value);
+    }
+    for (const [name, value] of hostileJson) {
+      expect(containsVisibleSensitiveText(value), name).toBe(true);
+      expect(sanitizeVisibleText(value), name).not.toBe(value);
+    }
+  });
+
+  it.each([
+    ["input", JSON.stringify({ safe: "x".repeat(256 * 1_024) })],
+    ["depth", `${"[".repeat(13)}0${"]".repeat(13)}`],
+    ["array item", JSON.stringify(Array.from({ length: 1_001 }, () => 0))],
+    ["object key", JSON.stringify(Object.fromEntries(
+      Array.from({ length: 1_001 }, (_, index) => [`key-${String(index)}`, 0]),
+    ))],
+    ["node", JSON.stringify(Array.from(
+      { length: 1_000 },
+      () => Array.from({ length: 10 }, () => 0),
+    ))],
+  ])("fails closed at the raw JSON credential scanner %s limit", (_limit, value) => {
+    expect(containsVisibleSensitiveText(value)).toBe(true);
+    expect(sanitizeVisibleText(value)).not.toBe(value);
+  });
+});
+
+describe("truncateVisibleText", () => {
+  it.each([0, 1, 2, 3, 4, 8, 13])("keeps a truncation marker within a %i-byte ceiling", (maxBytes) => {
+    const truncated = truncateVisibleText("value requiring truncation", maxBytes);
+
+    expect(new TextEncoder().encode(truncated).length).toBeLessThanOrEqual(maxBytes);
+  });
+
+  it("preserves short benign text below the boundary", () => {
+    expect(truncateVisibleText("safe", 4)).toBe("safe");
   });
 });
 

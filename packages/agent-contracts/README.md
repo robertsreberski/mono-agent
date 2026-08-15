@@ -47,6 +47,14 @@ An adapter extends `AgentRequestBase` with transport metadata, supplies an
 returned `AgentResponse` is the terminal result; stream callbacks carry visible
 text and structured progress while the request is running.
 
+Managed `tool_call_started` and `tool_call_completed` events may carry
+`SessionToolHistoryEventMetadata`. It is the host writer's result for that exact
+block—stable record/sequence, persisted-or-failed status, terminal state,
+truncation byte counts, opaque artifact availability, and an untrusted marker.
+Web/TUI clients render this metadata directly; they do not re-derive canonical
+history from run artifacts or their own stores. `persistence: "failed"` is an
+explicit fail-soft diagnostic and does not change the tool's provider outcome.
+
 Responders may also implement `offerLiveInput()`. An adapter can then offer one
 plain-text follow-up to the active conversation without starting a parallel
 turn. The immediate result says whether the active run accepted ownership; the
@@ -266,6 +274,8 @@ ResilientMessageStreamLogger
 ResilientMessageStreamOptions
 RunningChannel
 SUBAGENT_TOOL_SEPARATOR
+SessionToolHistoryEventMetadata
+SessionToolHistoryTerminalState
 SettingsJson
 SettingsJsonError
 SettingsJsonErrorCode

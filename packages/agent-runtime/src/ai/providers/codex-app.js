@@ -15,6 +15,7 @@ import {
   isAllowAllToolPolicy,
   TOOL_POLICY_ALLOW_ALL_ONLY,
 } from "../runtime/tool-policy.js";
+import { toolLifecycleMetadata } from "../tool-lifecycle.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_THREAD_START_ATTEMPTS = 2;
@@ -1070,6 +1071,9 @@ function mapThreadItem(method, item) {
             ...(item.error ? { error: item.error } : {}),
           },
           is_error: item.status === "failed" || Boolean(item.error),
+          tool_lifecycle: toolLifecycleMetadata(item.status === "failed" || Boolean(item.error)
+            ? { state: "error", failure_kind: "runtime_error", detail_code: "codex_collab_failed" }
+            : { state: "success" }),
         }],
       },
     };
@@ -1096,6 +1100,9 @@ function mapThreadItem(method, item) {
           tool_use_id: item.id,
           content: item.contentItems || item.result || item.error || "",
           is_error: item.status === "failed" || item.success === false || Boolean(item.error),
+          tool_lifecycle: toolLifecycleMetadata(item.status === "failed" || item.success === false || Boolean(item.error)
+            ? { state: "error", failure_kind: "runtime_error", detail_code: "codex_dynamic_tool_failed" }
+            : { state: "success" }),
         }],
       },
     };

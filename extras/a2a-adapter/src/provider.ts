@@ -31,6 +31,7 @@ import {
 import {
   AgentResponseCancelledError,
   closeServerBounded,
+  createChannelUserCancelReason,
   isAgentResponseCancelledError,
   type AgentMessageStream,
   type AgentRequestBase,
@@ -392,7 +393,7 @@ export class MonoA2AExecutor implements AgentExecutor {
       return;
     }
     if (!active.cancellationPublished) {
-      active.controller.abort(new AgentResponseCancelledError("A2A task cancellation requested."));
+      active.controller.abort(createChannelUserCancelReason("A2A"));
       publishCanceled(active, "Task cancellation requested by user.");
     }
   }

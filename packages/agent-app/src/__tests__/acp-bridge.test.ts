@@ -6,7 +6,29 @@ import { delimiter, join } from "node:path";
 import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import {
+  createChannelUserCancelReason,
+  isChannelUserCancelReason,
+} from "@mono-agent/agent-contracts";
+
+const sessionAuthorizationMock = vi.hoisted(() => ({
+  beforeLoad: undefined as (() => Promise<void>) | undefined,
+}));
+
+vi.mock("../acp-session-store.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../acp-session-store.js")>();
+  return {
+    ...actual,
+    async loadAcpSessionAuthorization(
+      ...args: Parameters<typeof actual.loadAcpSessionAuthorization>
+    ): ReturnType<typeof actual.loadAcpSessionAuthorization> {
+      await sessionAuthorizationMock.beforeLoad?.();
+      return await actual.loadAcpSessionAuthorization(...args);
+    },
+  };
+});
 
 import { runAcpBridge } from "../acp-bridge.js";
 
@@ -20,6 +42,7 @@ interface BridgeHarness {
 }
 
 afterEach(async () => {
+  sessionAuthorizationMock.beforeLoad = undefined;
   await Promise.all(cleanupServers.splice(0).map(async (server) => new Promise<void>((resolve) => {
     server.close(() => resolve());
   })));
@@ -89,6 +112,131 @@ async function startOperatorFixture(turnBodies: Array<Record<string, unknown>>):
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("fixture server did not bind TCP");
   return `http://127.0.0.1:${String(address.port)}/gui`;
+}
+
+async function startCancellationOperatorFixture(options: {
+  readonly beforeCancelSettlement?: () => Promise<void>;
+} = {}): Promise<{
+  readonly baseUrl: string;
+  readonly turnStarted: Promise<void>;
+  readonly cancelStarted: Promise<void>;
+  readonly firstCancellation: Promise<unknown>;
+  readonly cancelRequests: () => number;
+  readonly turnRequests: () => number;
+  readonly events: () => readonly string[];
+}> {
+  let resolveTurnStarted!: () => void;
+  const turnStarted = new Promise<void>((resolve) => { resolveTurnStarted = resolve; });
+  let resolveCancelStarted!: () => void;
+  const cancelStarted = new Promise<void>((resolve) => { resolveCancelStarted = resolve; });
+  let resolveFirstCancellation!: (reason: unknown) => void;
+  const firstCancellation = new Promise<unknown>((resolve) => { resolveFirstCancellation = resolve; });
+  let settled = false;
+  let cancelRequests = 0;
+  let turnRequests = 0;
+  const events: string[] = [];
+  const settle = (reason: unknown): void => {
+    if (settled) return;
+    settled = true;
+    resolveFirstCancellation(reason);
+  };
+  const server = createServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/gui/v1/info") {
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ schema: 1, label: "Cancellation Fixture", capabilities: {} }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/gui/v1/turns") {
+      turnRequests += 1;
+      events.push("turn_started");
+      for await (const _chunk of request) {
+        // Consume the bounded request body before holding the response open.
+      }
+      response.setHeader("content-type", "application/x-ndjson");
+      response.flushHeaders();
+      response.once("close", () => settle(new Error("Operator turn stream disconnected.")));
+      resolveTurnStarted();
+      return;
+    }
+    if (request.method === "POST" && request.url?.endsWith("/cancel") === true) {
+      cancelRequests += 1;
+      events.push("cancel_started");
+      resolveCancelStarted();
+      if (options.beforeCancelSettlement === undefined) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      } else {
+        await options.beforeCancelSettlement();
+      }
+      events.push("cancel_settled");
+      settle(createChannelUserCancelReason("TUI"));
+      response.statusCode = 204;
+      response.end();
+      return;
+    }
+    response.statusCode = 404;
+    response.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  cleanupServers.push(server);
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("fixture server did not bind TCP");
+  return {
+    baseUrl: `http://127.0.0.1:${String(address.port)}/gui`,
+    turnStarted,
+    cancelStarted,
+    firstCancellation,
+    cancelRequests: () => cancelRequests,
+    turnRequests: () => turnRequests,
+    events: () => events,
+  };
+}
+
+async function startActivePromptBridge(baseUrl: string): Promise<{
+  readonly bridge: BridgeHarness;
+  readonly sessionId: string;
+  readonly promptRequestId: number;
+}> {
+  const root = await mkdtemp(join(tmpdir(), "mono-agent-acp-cancel-"));
+  const canonicalRoot = await realpath(root);
+  cleanupRoots.push(root);
+  const registry = join(root, "registry");
+  const artifactDir = join(root, "artifacts");
+  await mkdir(registry);
+  await mkdir(artifactDir);
+  await writeSourceManifest({
+    registry,
+    artifactDir,
+    workspace: canonicalRoot,
+    baseUrl,
+  });
+  const bridge = startBridgeHarness({ sourceId: "personal-agent", registry });
+  bridge.send({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: 1,
+      clientCapabilities: {},
+      clientInfo: { name: "cancellation-test", version: "1" },
+    },
+  });
+  await expect(bridge.next()).resolves.toMatchObject({ id: 1, result: { protocolVersion: 1 } });
+  bridge.send({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "session/new",
+    params: { cwd: canonicalRoot, mcpServers: [] },
+  });
+  const created = await bridge.next();
+  const sessionId = (created.result as { sessionId: string }).sessionId;
+  const promptRequestId = 3;
+  bridge.send({
+    jsonrpc: "2.0",
+    id: promptRequestId,
+    method: "session/prompt",
+    params: { sessionId, prompt: [{ type: "text", text: "keep working" }] },
+  });
+  return { bridge, sessionId, promptRequestId };
 }
 
 async function writeSourceManifest(options: {
@@ -498,6 +646,139 @@ describe("ACP bridge", () => {
     cleanupServers.splice(cleanupServers.indexOf(server), 1);
   });
 
+  it("delivers session/cancel as explicit user cancellation before stream teardown", async () => {
+    const fixture = await startCancellationOperatorFixture();
+    const { bridge, sessionId } = await startActivePromptBridge(fixture.baseUrl);
+    await fixture.turnStarted;
+
+    bridge.send({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } });
+
+    const reason = await fixture.firstCancellation;
+    expect(isChannelUserCancelReason(reason)).toBe(true);
+    expect(fixture.cancelRequests()).toBe(1);
+    await bridge.close();
+  });
+
+  it("keeps $/cancel_request as a separate explicit user-cancellation path", async () => {
+    const fixture = await startCancellationOperatorFixture();
+    const { bridge, promptRequestId } = await startActivePromptBridge(fixture.baseUrl);
+    await fixture.turnStarted;
+
+    bridge.send({ jsonrpc: "2.0", method: "$/cancel_request", params: { requestId: promptRequestId } });
+
+    const reason = await fixture.firstCancellation;
+    expect(isChannelUserCancelReason(reason)).toBe(true);
+    expect(fixture.cancelRequests()).toBe(1);
+    await bridge.close();
+  });
+
+  it("lets a final deferred session/cancel claim provenance before adjacent EOF", async () => {
+    let releaseCancellation!: () => void;
+    const cancellationReleased = new Promise<void>((resolve) => { releaseCancellation = resolve; });
+    const fixture = await startCancellationOperatorFixture({
+      beforeCancelSettlement: async () => await cancellationReleased,
+    });
+    const { bridge, sessionId } = await startActivePromptBridge(fixture.baseUrl);
+    await fixture.turnStarted;
+
+    let teardownSettled = false;
+    bridge.send({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } });
+    const closing = bridge.close().then(() => { teardownSettled = true; });
+    try {
+      await fixture.cancelStarted;
+      await Promise.resolve();
+      expect(teardownSettled).toBe(false);
+      expect(fixture.events()).toEqual(["turn_started", "cancel_started"]);
+      expect(fixture.cancelRequests()).toBe(1);
+    } finally {
+      releaseCancellation();
+    }
+
+    const [reason] = await Promise.all([fixture.firstCancellation, closing]);
+    expect(isChannelUserCancelReason(reason)).toBe(true);
+    expect(reason).toMatchObject({ channel: "TUI" });
+    expect(fixture.cancelRequests()).toBe(1);
+    expect(fixture.events()).toEqual(["turn_started", "cancel_started", "cancel_settled"]);
+    expect(teardownSettled).toBe(true);
+  });
+
+  it("settles user cancellation before skipping a turn cancelled during authorization", async () => {
+    let authorizationStarted!: () => void;
+    const authorizationInFlight = new Promise<void>((resolve) => { authorizationStarted = resolve; });
+    let releaseAuthorization!: () => void;
+    const authorizationReleased = new Promise<void>((resolve) => { releaseAuthorization = resolve; });
+    sessionAuthorizationMock.beforeLoad = async () => {
+      authorizationStarted();
+      await authorizationReleased;
+    };
+    let releaseCancellation!: () => void;
+    const cancellationReleased = new Promise<void>((resolve) => { releaseCancellation = resolve; });
+    const fixture = await startCancellationOperatorFixture({
+      beforeCancelSettlement: async () => await cancellationReleased,
+    });
+    const { bridge, promptRequestId } = await startActivePromptBridge(fixture.baseUrl);
+
+    try {
+      await authorizationInFlight;
+      bridge.send({ jsonrpc: "2.0", method: "$/cancel_request", params: { requestId: promptRequestId } });
+      releaseAuthorization();
+      await fixture.cancelStarted;
+
+      expect(fixture.turnRequests()).toBe(0);
+      expect(fixture.events()).toEqual(["cancel_started"]);
+
+      releaseCancellation();
+      const [reason, response] = await Promise.all([fixture.firstCancellation, bridge.next()]);
+      expect(isChannelUserCancelReason(reason)).toBe(true);
+      expect(reason).toMatchObject({ channel: "TUI" });
+      expect(response).toMatchObject({ id: promptRequestId, result: { stopReason: "cancelled" } });
+      expect(fixture.cancelRequests()).toBe(1);
+      expect(fixture.turnRequests()).toBe(0);
+      expect(fixture.events()).toEqual(["cancel_started", "cancel_settled"]);
+    } finally {
+      releaseAuthorization();
+      releaseCancellation();
+      await bridge.close();
+    }
+  });
+
+  it("preserves pending user-cancel provenance when ACP connection shutdown races settlement", async () => {
+    let releaseCancellation!: () => void;
+    const cancellationReleased = new Promise<void>((resolve) => { releaseCancellation = resolve; });
+    const fixture = await startCancellationOperatorFixture({
+      beforeCancelSettlement: async () => await cancellationReleased,
+    });
+    const { bridge, promptRequestId } = await startActivePromptBridge(fixture.baseUrl);
+    await fixture.turnStarted;
+
+    let closing: Promise<void> | undefined;
+    try {
+      bridge.send({ jsonrpc: "2.0", method: "$/cancel_request", params: { requestId: promptRequestId } });
+      await fixture.cancelStarted;
+      closing = bridge.close();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(fixture.events()).toEqual(["turn_started", "cancel_started"]);
+    } finally {
+      releaseCancellation();
+    }
+    const [reason] = await Promise.all([fixture.firstCancellation, closing]);
+    expect(isChannelUserCancelReason(reason)).toBe(true);
+    expect(reason).toMatchObject({ channel: "TUI" });
+    expect(fixture.cancelRequests()).toBe(1);
+    expect(fixture.events()).toEqual(["turn_started", "cancel_started", "cancel_settled"]);
+  });
+
+  it("keeps ACP connection loss as generic stream cancellation", async () => {
+    const fixture = await startCancellationOperatorFixture();
+    const { bridge } = await startActivePromptBridge(fixture.baseUrl);
+    await fixture.turnStarted;
+
+    const [, reason] = await Promise.all([bridge.close(), fixture.firstCancellation]);
+
+    expect(isChannelUserCancelReason(reason)).toBe(false);
+    expect(fixture.cancelRequests()).toBe(0);
+  });
+
   it("durably resumes the exact conversation after bridge and source restarts", async () => {
     const firstTurns: Array<Record<string, unknown>> = [];
     const secondTurns: Array<Record<string, unknown>> = [];
@@ -806,6 +1087,7 @@ describe("ACP bridge", () => {
         conversationId = (JSON.parse(raw) as { conversationId: string }).conversationId;
         response.setHeader("content-type", "application/x-ndjson");
         response.flushHeaders();
+        response.once("close", settleOperator);
         response.write(`${JSON.stringify({
           kind: "event",
           event: { type: "tool_call_started", id: "ask-tool-1", name: "AskUser" },
@@ -944,7 +1226,7 @@ describe("ACP bridge", () => {
         error: { data: { code: "interaction_required" } },
       });
       expect(submission).toBeUndefined();
-      expect(cancelCount).toBeGreaterThan(0);
+      expect(cancelCount).toBe(0);
       input.end();
       await expect(bridge).resolves.toBe(0);
       await new Promise<void>((resolve, reject) => server.close((error) => {
@@ -997,7 +1279,7 @@ describe("ACP bridge", () => {
         error: { data: { code: "invalid_elicitation_response" } },
       });
       expect(submission).toBeUndefined();
-      expect(cancelCount).toBeGreaterThan(0);
+      expect(cancelCount).toBe(0);
       input.end();
       await expect(bridge).resolves.toBe(0);
       await new Promise<void>((resolve, reject) => server.close((error) => {

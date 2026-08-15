@@ -28,6 +28,15 @@ export class InMemoryConversationHistoryStore implements ConversationHistoryStor
   async reset(conversationId: string): Promise<void> {
     this.conversations.delete(normalizeConversationId(conversationId));
   }
+
+  async resetLogicalConversation(logicalConversationId: string): Promise<void> {
+    const logicalId = normalizeConversationId(logicalConversationId);
+    for (const conversationId of this.conversations.keys()) {
+      if (belongsToLogicalConversation(conversationId, logicalId)) {
+        this.conversations.delete(conversationId);
+      }
+    }
+  }
 }
 
 export function createInMemoryHistoryStore(options: InMemoryHistoryStoreOptions = {}): InMemoryConversationHistoryStore {
@@ -39,4 +48,13 @@ function normalizeConversationId(conversationId: string): string {
     throw new TypeError("conversationId must be a non-empty string.");
   }
   return conversationId.trim();
+}
+
+function belongsToLogicalConversation(conversationId: string, logicalConversationId: string): boolean {
+  return conversationId === logicalConversationId
+    || new RegExp(`^${escapeRegExp(logicalConversationId)}#\\d{4}-\\d{2}-\\d{2}$`, "u").test(conversationId);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }

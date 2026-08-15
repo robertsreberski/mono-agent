@@ -36,6 +36,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
   search and paged evidence from completed prior runs in the logical
   conversation, independent of daily rollover buckets.
+- Expose the sibling request-scoped read-only `SessionHistory` tool over the
+  harness's canonical retained managed-tool lifecycle sidecar.
 - Drive each channel through a uniform driver contract with per-channel
   `disabled` / `waiting_for_config` / `running` / `degraded` / `failed` status.
   `degraded` means a temporarily unavailable transport owns its recovery while
@@ -453,22 +455,105 @@ projected values first pass through the shared observability redactor:
 non-numeric values under sensitive-looking object keys
 are redacted; numeric values under matched keys are retained; free text is not
 content-scanned or scrubbed. `RunHistory` then applies an additional projection
-sanitizer. In that second pass, numeric values under `credential`, `private_key`,
+sanitizer to object keys as well as string values, with deterministic
+collision-safe key disambiguation. In that second pass, numeric values under `credential`, `private_key`,
 and `bearer` can remain visible; numeric values under `apiKey`, `token`,
 `client_secret`, `password`, `authorization`, and `cookie` are redacted.
 Assignment-shaped password or secret prose is content-scanned and replaced with
 the diagnostic or tool-result omission sentinel. An optionally quoted assignment
 value is exempt only when its complete value is exactly `[redacted]`; any prefix
-or suffix is omitted. Results exclude the current/running run, unrelated
+or suffix is omitted. Ordinary filesystem spans are sanitized in place to
+`[host-path]` plus a bounded non-sensitive suffix, so surrounding commands,
+tool results, and assistant diagnostics remain visible; credentials and private
+run-artifact content are still omitted, and absolute roots or private run paths
+never survive. Results exclude the current/running run, unrelated
 conversations or threads, system prompts, reasoning, recalled memory,
 turn-context payloads, and raw artifact paths; historical text is marked
 untrusted.
 
+### Session tool history
+
+`SessionHistory` requires no config key. It is available under allow-all on
+request-scoped MCP-capable routes; a restrictive `tools.allowedTools` must name
+`SessionHistory` (`session_history` is also accepted by policy), and deny policy
+can remove it. Each request constructs a fresh stateless MCP server and transport
+on a host-bound loopback capability path. Direct OpenCode and ACP routes have no
+compatible host-tool seam for `SessionHistory`, so they still persist and
+cold-project tool records but suppress that new tool; `validate` reports
+`unsupported_route` rather than pretending coverage exists. Issue #626 does not
+change `RunHistory`'s pre-existing direct-ACP route wiring.
+
+The canonical data is not run JSONL, Pi JSONL, web SQLite, or message-history
+JSON. The harness incrementally writes every managed-tool start and terminal
+result to `history/tool-history/tool-lifecycles.sqlite`, independently of
+successful-turn commit. A lifecycle record may therefore exist without a
+canonical message-history entry. Stable conversation/run/tool-call keys and
+writer-assigned per-run start/end sequences make retries idempotent; process
+recovery closes dangling starts as `interrupted` without rerunning a tool.
+Arguments/results are securely pre-bounded, redacted, and byte-bounded, with truncation metadata and
+opaque artifact ids. Filesystem-shaped spans in object keys and string values use an opaque host-root token plus
+at most two non-sensitive trailing components, so commands and results remain
+inspectable without exposing an absolute root, account/home prefix, artifact
+root, or private run path. Only regular files beneath the configured run-specific
+`tool-output` root are accepted or checked for availability; provider-supplied
+outside or symlinked paths are dropped. Isolated/proactive
+runs persist but search excludes them unless explicitly requested.
+
+`{ "action": "search" }` returns at most 10 bounded previews with text,
+tool/state/run/time filters and a query-bound opaque cursor.
+`{ "action": "get", "recordId": "..." }` (or `toolCallId`) returns bounded
+chunks up to 8 KiB, with tombstones when retention removed known records.
+Only the exact physical `(conversationId, runId)` for the active turn is
+unavailable; an older rollover bucket that reused the same opaque run id remains
+readable. Unrelated-conversation records stay unavailable, daily rollover
+buckets remain one logical scope, nested history-tool result
+bodies are omitted, and every response is labelled untrusted. Cold context
+reseed receives the newest fitting chronological suffix in a neutralized UTF-8
+projection capped at 64 KiB including its truncation marker; warm provider resume
+continues natively and receives no replay. A zero-byte fresh sidecar is absent
+for automatic projection; another corrupt/unsafe projection emits a structured
+warning and continues the turn, while explicit SessionHistory reads fail closed.
+Lazy writer acquisition keeps one at-most-10-second restart-handoff attempt.
+After failure, writes from every already-created turn reuse that rejection and
+new turns fail immediately during an initial 30-second backoff. Each failed
+probe doubles that window up to five minutes, preventing ordinary consecutive
+turns during a sustained outage from repeatedly paying the full acquisition
+ceiling. The first later probe re-arms one full acquisition, while serialized
+explicit reset may bypass only the cooldown. A cached handle is retired after
+worker closure/death, one turn never reacquires mid-turn, and the recovered
+handle is shared; recovery resets the backoff. The outage emits one warning plus
+one later recovery warning.
+
+Telegram `/new` clears message records and tool records across the same logical
+session, including prior daily rollover buckets that canonical replay,
+SessionHistory, and cold projection can expose. A custom history store used with
+daily rollover must implement logical-session reset or the reset fails closed.
+The durable store holds one cross-process logical-session fence across discovery
+and every bucket reset, and appends take that same fence before their physical
+bucket lock.
+`restart --clear-sessions` purges all provider transcripts, message history, and
+tool history while reporting message/tool counts and bytes separately. Doctor
+audits schema, ownership, journal/integrity state, recovery, quota, and distinct
+unresolved fail-soft incidents. Repeating the same failed lifecycle retry does
+not inflate the count, and unrelated writes or run finalization cannot hide lost
+evidence; only the matching tool phase, its durable synthetic terminal closure,
+or canonical run-binding retry clears its incident while it remains retryable.
+Reset and retention clear only incidents whose exact run/call/record identity
+they make unretryable. A crash-stale zero-byte content database is reported as
+pristine and recoverable even when its protected DELETE journal remains; a live
+initialization and stale next-writer recovery are reported distinctly. A
+zero-byte owner database is also a recoverable initialization window, not a
+missing-table corruption report. A delayed real result supersedes that synthetic
+terminal record in place. A newer tool-history schema hard-fails downgrade until
+persisted conversation state is purged; an older compatible version is reported
+as upgrade-pending for the next writer.
+
 ### Channel interactions and conversation history
 
 For missing context, the agent should use active conversation history first,
-`MemoryRecall` for intentionally captured durable facts, and `RunHistory` for
-exact prior-run/tool evidence. Answered or expired blocking `AskUser` exchanges
+`MemoryRecall` for intentionally captured durable facts, `RunHistory` for exact
+prior-run evidence, and `SessionHistory` for retained managed-tool calls and
+results. Answered or expired blocking `AskUser` exchanges
 are written into the assistant history copy before the final response;
 cancelled asks are not journaled. The copy is explicitly labelled as untrusted
 historical data and bounded by newest whole interactions. If the newest valid
@@ -479,7 +564,7 @@ questions, each with two or three described options and an optional multi-select
 mode. Slack and Telegram present the questions sequentially with native buttons
 plus a typed custom reply; the web console renders the whole question set as one
 form. The built-in Telegram `/new` command uses the configured responder's
-host-owned reset surface to clear only that conversation and force
+host-owned reset surface to clear only that logical conversation and force
 skill/startup-context reload on its next turn.
 
 ### Memory health and maintenance
@@ -604,7 +689,7 @@ path:
 | Channel integration | `channels.ts`, `channel-drivers/` | Built-in drivers plus config-loaded plugin resolution. |
 | Interaction and send tools | `interaction-bridge.ts`, `adapter-send-tools*.ts` | Structured `AskUser` state, channel sinks, progress, adapter-send tools, and bounded interaction-history projection. |
 | Operator CLI | `cli*.ts`, `init.ts`, `doctor.ts`, `doctor-observability.ts`, `background*.ts`, `launchd*.ts`, `managed-web-logs.ts`, `web-*.ts` | Setup, focused validation sections, paired managed service/log lifecycle, and diagnostics. |
-| Host services | `run-history.ts`, `continuation*.ts`, `memory-*.ts` | Bounded prior-run evidence, durable continuations, and memory operations. |
+| Host services | `run-history.ts`, `session-history.ts`, `request-scoped-mcp.ts`, `continuation*.ts`, `memory-*.ts` | Shared request-scoped guards, bounded prior-run/tool-lifecycle evidence, durable continuations, and memory operations. |
 
 ## Public API
 
@@ -617,10 +702,12 @@ path:
 | Embed selected built-in channels | `defaultChannelDrivers`, `resolveChannelDrivers`, `createTelegramChannelDriver`, `createSlackChannelDriver`, `createWebhookChannelDriver`, `createOpenAIApiChannelDriver`, `createCronChannelDriver` |
 | Scaffold or validate an agent folder | `initMonoAgentFolder`, `validateMonoAgentFolder` |
 | Add bounded prior-run inspection | `createRunHistoryRuntimeExtension`, `isRunHistoryToolAllowed` |
+| Add bounded retained-tool inspection | `createSessionHistoryRuntimeExtension`, `isSessionHistoryToolAllowed` |
 | Operate the CLI programmatically, including the managed web lifecycle | `runCli`, `parseCliArgs`, `renderHelp` |
 
 The web maintenance controller and publication helpers remain private CLI
-implementation details; this change adds no new package-level public API.
+implementation details; this change adds no new package-level public API for
+that lifecycle.
 
 <!-- public-api-inventory:start -->
 <!-- Generated by scripts/generate-public-api-docs.mjs. Do not edit by hand. -->
@@ -712,6 +799,8 @@ RunHistoryRuntimeExtension
 RunHistoryRuntimeExtensionOptions
 RunningChannel
 RunningRituals
+SESSION_HISTORY_MCP_SERVER_NAME
+SESSION_HISTORY_TOOL_NAME
 SandboxCheckResult
 SandboxCommandDependencies
 SandboxFunctionalCheck
@@ -720,6 +809,8 @@ SandboxRuntimeStatus
 SecretEnvRefusalCode
 SecretPersistenceOutcome
 SecretPersistenceStatus
+SessionHistoryBinding
+SessionHistoryRuntimeExtensionOptions
 SlackChannelOverrides
 StartMemoryRitualsInput
 TERMINAL_CONTINUATION_STATES
@@ -749,6 +840,8 @@ createCronChannelDriver
 createOpenAIApiChannelDriver
 createRunHistoryRuntimeExtension
 createRunHistoryServer
+createSessionHistoryRuntimeExtension
+createSessionHistoryServer
 createSlackChannelDriver
 createTelegramChannelDriver
 createWebhookChannelDriver
@@ -763,6 +856,7 @@ isColorEnabled
 isContinuationMode
 isContinuationState
 isRunHistoryToolAllowed
+isSessionHistoryToolAllowed
 keyValue
 loadAppCoreConfig
 loadCliEnvFile

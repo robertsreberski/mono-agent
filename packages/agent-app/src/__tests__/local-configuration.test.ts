@@ -174,6 +174,7 @@ describe("local configuration transaction", () => {
       expect(result.toolPolicyOverride?.allowedTools).toEqual([
         "ReadSkill",
         "MemoryRecall",
+        "SessionHistory",
         CONFIGURATION_PROPOSAL_TOOL_NAME,
         "mcp__agent_configuration__ProposeAgentConfiguration",
       ]);
@@ -261,7 +262,7 @@ describe("local configuration transaction", () => {
         runId: "pi-invitation",
         context: {},
       } as never);
-      expect(invitation.toolPolicyOverride?.allowedTools).toEqual(["ReadSkill", "MemoryRecall"]);
+      expect(invitation.toolPolicyOverride?.allowedTools).toEqual(["ReadSkill", "MemoryRecall", "SessionHistory"]);
       expect(invitation.toolPolicyOverride?.mcpServers).toEqual({});
 
       const extension = await pi.extension({
@@ -272,6 +273,7 @@ describe("local configuration transaction", () => {
       expect(extension.toolPolicyOverride?.allowedTools).toEqual([
         "ReadSkill",
         "MemoryRecall",
+        "SessionHistory",
         CONFIGURATION_PROPOSAL_TOOL_NAME,
         "mcp__agent_configuration__ProposeAgentConfiguration",
       ]);
@@ -295,7 +297,7 @@ describe("local configuration transaction", () => {
         runId: "mixed-invitation",
         context: {},
       } as never);
-      expect(invitation.toolPolicyOverride?.allowedTools).toEqual(["ReadSkill", "MemoryRecall"]);
+      expect(invitation.toolPolicyOverride?.allowedTools).toEqual(["ReadSkill", "MemoryRecall", "SessionHistory"]);
 
       const operator = await mixed.extension({
         request: { metadata: mixed.metadata("operator") },
@@ -305,6 +307,7 @@ describe("local configuration transaction", () => {
       expect(operator.toolPolicyOverride?.allowedTools).toEqual([
         "ReadSkill",
         "MemoryRecall",
+        "SessionHistory",
         CONFIGURATION_PROPOSAL_TOOL_NAME,
         "mcp__agent_configuration__ProposeAgentConfiguration",
       ]);

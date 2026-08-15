@@ -1,3 +1,5 @@
+import { types as nodeUtilTypes } from "node:util";
+
 export type AgentRequestMetadata = Record<string, unknown>;
 export type AgentResponseMetadata = Record<string, unknown>;
 export type {
@@ -467,6 +469,34 @@ export interface AgentResponse {
   readonly metadata?: AgentResponseMetadata;
 }
 
+export type SessionToolHistoryTerminalState =
+  | "success"
+  | "rejected"
+  | "error"
+  | "exit_nonzero"
+  | "timeout"
+  | "signal"
+  | "cancelled"
+  | "interrupted";
+
+/** Same persisted record metadata used by model history and client rendering. */
+export interface SessionToolHistoryEventMetadata {
+  readonly recordId?: string;
+  readonly sequence?: number;
+  readonly persistence: "persisted" | "failed";
+  readonly terminalState?: SessionToolHistoryTerminalState;
+  readonly truncated?: boolean;
+  readonly originalBytes?: number;
+  readonly retainedBytes?: number;
+  readonly artifactReferences?: readonly {
+    readonly id: string;
+    readonly available: boolean;
+  }[];
+  readonly errorCode?: string;
+  /** Historical tool content is data, never executable instruction. */
+  readonly untrusted: true;
+}
+
 export type AgentStreamEvent =
   | {
       readonly type: "assistant_thought";
@@ -478,6 +508,7 @@ export type AgentStreamEvent =
       readonly id: string;
       readonly name: string;
       readonly arguments?: unknown;
+      readonly history?: SessionToolHistoryEventMetadata;
       readonly metadata?: AgentResponseMetadata;
     }
   | {
@@ -489,6 +520,7 @@ export type AgentStreamEvent =
       readonly isError?: boolean;
       /** Wall-clock tool execution time, when the runtime reported it. */
       readonly executionMs?: number;
+      readonly history?: SessionToolHistoryEventMetadata;
       readonly metadata?: AgentResponseMetadata;
     }
   | {
@@ -674,14 +706,7 @@ export function createChannelUserCancelReason(channel: string): ChannelUserCance
 export function isChannelUserCancelReason(
   reason: unknown,
 ): reason is ChannelUserCancelReason {
-  if (reason instanceof ChannelUserCancelReason) {
-    return true;
-  }
-  return (
-    typeof reason === "object" &&
-    reason !== null &&
-    (reason as { channelUserCancel?: unknown }).channelUserCancel === true
-  );
+  return hasOwnTrueDataProperty(reason, "channelUserCancel");
 }
 
 export class AgentResponseCancelledError extends Error {
@@ -708,14 +733,20 @@ export class AgentResponseCancelledError extends Error {
 export function isAgentResponseCancelledError(
   error: unknown,
 ): error is AgentResponseCancelledError {
-  if (error instanceof AgentResponseCancelledError) {
-    return true;
+  return hasOwnTrueDataProperty(error, "agentResponseCancelled");
+}
+
+/** Read one exact cross-package brand without invoking accessors or Proxy traps. */
+function hasOwnTrueDataProperty(value: unknown, key: string): boolean {
+  if (typeof value !== "object" || value === null || nodeUtilTypes.isProxy(value)) {
+    return false;
   }
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { agentResponseCancelled?: unknown }).agentResponseCancelled === true
-  );
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor !== undefined && "value" in descriptor && descriptor.value === true;
+  } catch {
+    return false;
+  }
 }
 
 export { CodedError, isCodedError } from "./coded-error.js";

@@ -19,7 +19,13 @@ describe("opencode event helpers", () => {
     const part = { type: "tool", callID: "call-1", tool: "bash", state: { status: "completed", input: {}, output: "file.txt\n" } };
     expect(toolResultEvent(part)).toEqual({
       type: "user",
-      message: { content: [{ type: "tool_result", tool_use_id: "call-1", content: "file.txt\n", is_error: false }] },
+      message: { content: [{
+        type: "tool_result",
+        tool_use_id: "call-1",
+        content: "file.txt\n",
+        is_error: false,
+        tool_lifecycle: { state: "success" },
+      }] },
     });
   });
 
@@ -27,7 +33,13 @@ describe("opencode event helpers", () => {
     const part = { type: "tool", callID: "call-2", tool: "bash", state: { status: "error", input: {}, error: "boom" } };
     expect(toolResultEvent(part)).toEqual({
       type: "user",
-      message: { content: [{ type: "tool_result", tool_use_id: "call-2", content: "boom", is_error: true }] },
+      message: { content: [{
+        type: "tool_result",
+        tool_use_id: "call-2",
+        content: "boom",
+        is_error: true,
+        tool_lifecycle: { state: "error", failure_kind: "runtime_error", detail_code: "opencode_tool_error" },
+      }] },
     });
   });
 
