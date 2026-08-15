@@ -9,13 +9,13 @@ describe("channelIdForConversation", () => {
   it("maps push-channel prefixes to their channel id", () => {
     expect(channelIdForConversation("telegram:42")).toBe("telegram");
     expect(channelIdForConversation("slack:C1:171.5")).toBe("slack");
-    expect(channelIdForConversation("web:thread-1")).toBe("tui");
     expect(channelIdForConversation("whatsapp:123@s.whatsapp.net")).toBe("whatsapp");
   });
 
   it("returns undefined for non-deliverable destinations", () => {
     expect(channelIdForConversation("cron:morning-brief")).toBeUndefined();
     expect(channelIdForConversation("webhook:req-1")).toBeUndefined();
+    expect(channelIdForConversation("web:thread-1")).toBeUndefined();
     expect(channelIdForConversation("nonsense")).toBeUndefined();
     // A scheme without a target (no colon) is not a routable destination.
     expect(channelIdForConversation("telegram")).toBeUndefined();
@@ -79,19 +79,15 @@ describe("routeProactiveNotification", () => {
     expect(warn).toHaveBeenCalledOnce();
   });
 
-  it("keeps ordinary web routing unchanged while ProcessJob web lifecycle wakes use TUI", async () => {
+  it("rejects ordinary web notifications while ProcessJob web lifecycle wakes use TUI", async () => {
     const notify = vi.fn(async () => ({ delivered: true }));
     const ordinary = await routeProactiveNotification({
       conversationId: "web:thread-1",
       text: "ordinary",
       running: running({ tui: { notify } }),
     });
-    expect(ordinary.delivered).toBe(true);
-    expect(notify).toHaveBeenCalledWith({
-      conversationId: "web:thread-1",
-      text: "ordinary",
-    });
-    notify.mockClear();
+    expect(ordinary.delivered).toBe(false);
+    expect(notify).not.toHaveBeenCalled();
 
     const processJob = jobProjection("web:thread-1", "web");
     const lifecycle = await routeProactiveNotification({
@@ -105,6 +101,32 @@ describe("routeProactiveNotification", () => {
       conversationId: "web:thread-1",
       text: "wake",
       processJob,
+    });
+  });
+
+  it("classifies an absent recognized channel as retryable before dispatch", async () => {
+    await expect(routeProactiveNotification({
+      conversationId: "slack:C1:171.5",
+      text: "wake",
+      running: running({}),
+    })).resolves.toEqual({
+      delivered: false,
+      code: "destination_channel_unavailable",
+      reason: "slack channel is not running",
+      retryable: true,
+    });
+  });
+
+  it("keeps a running channel without notify permanently unsupported", async () => {
+    await expect(routeProactiveNotification({
+      conversationId: "whatsapp:123@s.whatsapp.net",
+      text: "wake",
+      running: running({ whatsapp: {} }),
+    })).resolves.toEqual({
+      delivered: false,
+      code: "destination_channel_unsupported",
+      reason: "whatsapp channel does not support proactive delivery",
+      retryable: false,
     });
   });
 });

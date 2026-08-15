@@ -10,6 +10,7 @@ import {
   rm,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   isProcessJobErrorCode,
@@ -41,6 +42,7 @@ export const PROCESS_JOB_HEALTH_FILE = "process-jobs-health-v1.json";
 export const PROCESS_JOB_ROLLBACK_GUARD = "PROCESS-JOBS-STORE-V1";
 export const PROCESS_JOB_ROLLBACK_GUARD_CONTENT =
   "This state directory uses mono-agent process-job records v1. Older runtimes must not open it.\n";
+export const PROCESS_JOB_ORPHAN_RECONCILIATION_INTERVAL = 64;
 
 const MAX_RECORD_BYTES = 128 * 1024;
 const MAX_TRANSACTION_BYTES = 256 * 1024;
@@ -141,6 +143,147 @@ class UnreplayableProcessJobTransactionError extends Error {
   }
 }
 
+export interface ProcessJobStoreWorkCounter {
+  mutationEntriesExamined: number;
+  mutationRecordsValidated: number;
+  mutationEntriesPersisted: number;
+  artifactDirectoriesInspected: number;
+  orphanReconciliations: number;
+}
+
+export interface OpenProcessJobStoreOptions {
+  /** Deterministic internal work seam for scale regressions; omitted in production. */
+  readonly workCounter?: ProcessJobStoreWorkCounter;
+}
+
+interface ProcessJobRecordChange {
+  readonly write: DurableProcessJobRecord | null;
+  readonly delete: string | null;
+  readonly countDelta: -1 | 0 | 1;
+}
+
+/** Transactional copy-on-read Map that never exposes store-owned record objects. */
+class ProcessJobMutationDraft extends Map<string, DurableProcessJobRecord> {
+  readonly #source: ReadonlyMap<string, DurableProcessJobRecord>;
+  readonly #overrides = new Map<string, DurableProcessJobRecord>();
+  readonly #deleted = new Set<string>();
+  readonly #reinserted = new Set<string>();
+  readonly #workCounter: ProcessJobStoreWorkCounter | undefined;
+
+  constructor(
+    source: ReadonlyMap<string, DurableProcessJobRecord>,
+    workCounter: ProcessJobStoreWorkCounter | undefined,
+  ) {
+    super();
+    this.#source = source;
+    this.#workCounter = workCounter;
+  }
+
+  override get size(): number {
+    let added = 0;
+    for (const key of this.#overrides.keys()) {
+      if (!this.#source.has(key)) added += 1;
+    }
+    return this.#source.size - this.#deleted.size + added;
+  }
+
+  override get(key: string): DurableProcessJobRecord | undefined {
+    if (this.#deleted.has(key)) return undefined;
+    const overridden = this.#overrides.get(key);
+    if (overridden !== undefined) return overridden;
+    const current = this.#source.get(key);
+    if (current === undefined) return undefined;
+    const owned = structuredClone(current);
+    incrementWork(this.#workCounter, "mutationEntriesExamined");
+    this.#overrides.set(key, owned);
+    return owned;
+  }
+
+  override has(key: string): boolean {
+    return !this.#deleted.has(key) && (this.#overrides.has(key) || this.#source.has(key));
+  }
+
+  override set(key: string, value: DurableProcessJobRecord): this {
+    if (this.#deleted.delete(key) && this.#source.has(key)) this.#reinserted.add(key);
+    if (!this.#overrides.has(key)) incrementWork(this.#workCounter, "mutationEntriesExamined");
+    this.#overrides.set(key, value);
+    return this;
+  }
+
+  override delete(key: string): boolean {
+    if (!this.has(key)) return false;
+    this.#overrides.delete(key);
+    this.#reinserted.delete(key);
+    if (this.#source.has(key)) this.#deleted.add(key);
+    incrementWork(this.#workCounter, "mutationEntriesExamined");
+    return true;
+  }
+
+  override clear(): void {
+    if (this.size === 0) return;
+    this.#overrides.clear();
+    this.#reinserted.clear();
+    for (const key of this.#source.keys()) this.#deleted.add(key);
+    if (this.#workCounter !== undefined) {
+      this.#workCounter.mutationEntriesExamined += this.#deleted.size;
+    }
+  }
+
+  override keys(): MapIterator<string> {
+    return this.#iterateKeys() as MapIterator<string>;
+  }
+
+  override values(): MapIterator<DurableProcessJobRecord> {
+    return this.#iterateValues() as MapIterator<DurableProcessJobRecord>;
+  }
+
+  override entries(): MapIterator<[string, DurableProcessJobRecord]> {
+    return this.#iterateEntries() as MapIterator<[string, DurableProcessJobRecord]>;
+  }
+
+  override [Symbol.iterator](): MapIterator<[string, DurableProcessJobRecord]> {
+    return this.entries();
+  }
+
+  override forEach(
+    callbackfn: (value: DurableProcessJobRecord, key: string, map: Map<string, DurableProcessJobRecord>) => void,
+    thisArg?: unknown,
+  ): void {
+    for (const [key, value] of this.entries()) callbackfn.call(thisArg, value, key, this);
+  }
+
+  candidateEntries(): IterableIterator<[string, DurableProcessJobRecord]> {
+    return this.#overrides.entries();
+  }
+
+  deletedKeys(): IterableIterator<string> {
+    return this.#deleted.values();
+  }
+
+  *#iterateKeys(): IterableIterator<string> {
+    for (const key of this.#source.keys()) {
+      if (!this.#deleted.has(key) && !this.#reinserted.has(key)) yield key;
+    }
+    for (const key of this.#overrides.keys()) {
+      if (!this.#source.has(key) || this.#reinserted.has(key)) yield key;
+    }
+  }
+
+  *#iterateValues(): IterableIterator<DurableProcessJobRecord> {
+    for (const key of this.#iterateKeys()) {
+      const value = this.get(key);
+      if (value !== undefined) yield value;
+    }
+  }
+
+  *#iterateEntries(): IterableIterator<[string, DurableProcessJobRecord]> {
+    for (const key of this.#iterateKeys()) {
+      const value = this.get(key);
+      if (value !== undefined) yield [key, value];
+    }
+  }
+}
+
 export interface ProcessJobStore {
   readonly stateDir: string;
   readonly recordsDir: string;
@@ -169,6 +312,7 @@ export interface ProcessJobHealthIncident {
 export async function openProcessJobStore(
   agentRoot: string,
   stateDir: string,
+  options: OpenProcessJobStoreOptions = {},
 ): Promise<ProcessJobStore> {
   const { root, confined } = await resolveConfinedStateDirectory(agentRoot, stateDir);
   await ensureConfinedPrivateDirectory(root, confined);
@@ -204,7 +348,10 @@ export async function openProcessJobStore(
   } else if (manifest.records !== records.size) {
     throw new Error("Process-job manifest record count does not match the durable record set.");
   }
-  await removeOrphanArtifacts(artifactsDir, records);
+  const workCounter = options.workCounter;
+  let artifactBytesByJob = await removeOrphanArtifacts(artifactsDir, records, workCounter);
+  let retainedArtifactByteTotal = retainedArtifactBytesFor(records, artifactBytesByJob);
+  let retentionApplications = 0;
   const quarantinedTransactions = await inspectQuarantinedTransactions(quarantineDir);
 
   let tail: Promise<void> = Promise.resolve();
@@ -219,6 +366,28 @@ export async function openProcessJobStore(
       return await operation();
     } finally {
       release();
+    }
+  };
+
+  const setArtifactBytes = (jobId: string, bytes: number | undefined): void => {
+    const record = records.get(jobId);
+    const before = retainedArtifactContribution(record, artifactBytesByJob.get(jobId));
+    if (bytes === undefined) artifactBytesByJob.delete(jobId);
+    else artifactBytesByJob.set(jobId, bytes);
+    retainedArtifactByteTotal += retainedArtifactContribution(record, bytes) - before;
+  };
+
+  const commitChanges = (changes: readonly ProcessJobRecordChange[]): void => {
+    for (const change of changes) {
+      const jobId = change.write?.jobId ?? change.delete;
+      if (jobId === null) continue;
+      const before = retainedArtifactContribution(records.get(jobId), artifactBytesByJob.get(jobId));
+      if (change.write === null) records.delete(jobId);
+      else records.set(jobId, structuredClone(change.write));
+      retainedArtifactByteTotal += retainedArtifactContribution(
+        records.get(jobId),
+        artifactBytesByJob.get(jobId),
+      ) - before;
     }
   };
 
@@ -238,73 +407,91 @@ export async function openProcessJobStore(
     },
     async mutate(operation) {
       return await withLock(async () => {
-        const before = cloneMap(records);
-        const draft = cloneMap(records);
+        const draft = new ProcessJobMutationDraft(records, workCounter);
         const result = await operation(draft);
+        let changes: readonly ProcessJobRecordChange[];
         try {
-          await persistDiff(confined, recordsDir, transactionPath, manifestPath, before, draft);
+          changes = await persistDiff(
+            confined,
+            recordsDir,
+            transactionPath,
+            manifestPath,
+            records,
+            draft,
+            workCounter,
+          );
         } catch (error) {
           if (!(error instanceof ProcessJobStoreMutationError)) poisoned = error;
           throw error;
         }
-        replaceMap(records, draft);
+        commitChanges(changes);
         return result;
       });
     },
     async ensureArtifacts(jobId) {
-      assertJobId(jobId);
-      const directory = join(artifactsDir, jobId);
-      let existed = true;
-      try { await lstat(directory); }
-      catch (error) {
-        if (!isErrno(error, "ENOENT")) throw error;
-        existed = false;
-      }
-      try {
-        await ensureConfinedPrivateDirectory(root, directory);
-        const stdoutRef = `${PROCESS_JOB_ARTIFACTS_DIRECTORY}/${jobId}/stdout.log`;
-        const stderrRef = `${PROCESS_JOB_ARTIFACTS_DIRECTORY}/${jobId}/stderr.log`;
-        for (const path of [join(directory, "stdout.log"), join(directory, "stderr.log")]) {
-          try {
-            assertPrivateFile(await lstat(path), path, 0o600);
-          } catch (error) {
-            if (!isErrno(error, "ENOENT")) throw error;
-            await replacePrivateFile(path, "", 0o600);
-          }
+      return await withLock(async () => {
+        assertJobId(jobId);
+        const directory = join(artifactsDir, jobId);
+        let existed = true;
+        try { await lstat(directory); }
+        catch (error) {
+          if (!isErrno(error, "ENOENT")) throw error;
+          existed = false;
         }
-        return { stdoutRef, stderrRef };
-      } catch (error) {
-        // A rejected admission must not accumulate half-created artifact
-        // directories. Never remove a directory that predated this unique id;
-        // open-time orphan recovery remains the crash-only fallback.
-        if (!existed) {
-          try {
-            await rm(directory, { recursive: true, force: true });
-            await syncDirectory(artifactsDir);
-          } catch (cleanupError) {
-            throw new AggregateError(
-              [error, cleanupError],
-              "Process-job artifact admission and rejected-artifact cleanup both failed.",
-            );
+        try {
+          await ensureConfinedPrivateDirectory(root, directory);
+          const stdoutRef = `${PROCESS_JOB_ARTIFACTS_DIRECTORY}/${jobId}/stdout.log`;
+          const stderrRef = `${PROCESS_JOB_ARTIFACTS_DIRECTORY}/${jobId}/stderr.log`;
+          for (const path of [join(directory, "stdout.log"), join(directory, "stderr.log")]) {
+            try {
+              assertPrivateFile(await lstat(path), path, 0o600);
+            } catch (error) {
+              if (!isErrno(error, "ENOENT")) throw error;
+              await replacePrivateFile(path, "", 0o600);
+            }
           }
+          setArtifactBytes(jobId, await inspectArtifactDirectoryBytes(directory, workCounter));
+          return { stdoutRef, stderrRef };
+        } catch (error) {
+          // A rejected admission must not accumulate half-created artifact
+          // directories. Never remove a directory that predated this unique id;
+          // open-time orphan recovery remains the crash-only fallback.
+          if (!existed) {
+            try {
+              await rm(directory, { recursive: true, force: true });
+              setArtifactBytes(jobId, undefined);
+              await syncDirectory(artifactsDir);
+            } catch (cleanupError) {
+              throw new AggregateError(
+                [error, cleanupError],
+                "Process-job artifact admission and rejected-artifact cleanup both failed.",
+              );
+            }
+          }
+          throw error;
         }
-        throw error;
-      }
+      });
     },
     async discardArtifacts(jobId) {
-      assertJobId(jobId);
-      await rm(join(artifactsDir, jobId), { recursive: true, force: true });
-      await syncDirectory(artifactsDir);
+      await withLock(async () => {
+        assertJobId(jobId);
+        await rm(join(artifactsDir, jobId), { recursive: true, force: true });
+        setArtifactBytes(jobId, undefined);
+        await syncDirectory(artifactsDir);
+      });
     },
     async writeArtifact(jobId, stream, contents) {
-      assertJobId(jobId);
-      const path = join(artifactsDir, jobId, `${stream}.log`);
-      await replacePrivateFile(path, contents, 0o600);
-      await syncDirectory(dirname(path));
+      await withLock(async () => {
+        assertJobId(jobId);
+        const path = join(artifactsDir, jobId, `${stream}.log`);
+        await replacePrivateFile(path, contents, 0o600);
+        await syncDirectory(dirname(path));
+        setArtifactBytes(jobId, await inspectArtifactDirectoryBytes(dirname(path), workCounter));
+      });
     },
     async applyRetention(settings, now = new Date()) {
-      const artifactDirectoriesToRemove = await this.mutate(async (draft) => {
-        const terminal = [...draft.values()]
+      await withLock(async () => {
+        const terminal = [...records.values()]
           .filter((record) => isTerminalProcessJobState(record.state))
           .sort((left, right) => terminalTime(left) - terminalTime(right)
             || left.jobId.localeCompare(right.jobId));
@@ -321,14 +508,16 @@ export async function openProcessJobStore(
           if (next === undefined) break;
           remove.add(next.jobId);
         }
+        const draft = new ProcessJobMutationDraft(records, workCounter);
         for (const jobId of remove) draft.delete(jobId);
         const artifactRemovals = new Set(remove);
         const artifactRecords = terminal.filter((record) => !remove.has(record.jobId));
-        let artifactBytes = await retainedArtifactBytes(artifactsDir, artifactRecords, new Set());
+        let artifactBytes = retainedArtifactByteTotal;
+        for (const jobId of remove) artifactBytes -= artifactBytesByJob.get(jobId) ?? 0;
         for (const record of artifactRecords) {
           if (artifactBytes <= settings.retention.artifactMaxBytes) break;
           if (record.wake.state === "pending") continue;
-          artifactBytes -= await artifactDirectoryBytes(join(artifactsDir, record.jobId));
+          artifactBytes -= artifactBytesByJob.get(record.jobId) ?? 0;
           artifactRemovals.add(record.jobId);
           const mutable = draft.get(record.jobId);
           if (mutable !== undefined) {
@@ -336,16 +525,40 @@ export async function openProcessJobStore(
             mutable.stderrRef = null;
           }
         }
-        return [...artifactRemovals];
+        let changes: readonly ProcessJobRecordChange[];
+        try {
+          changes = await persistDiff(
+            confined,
+            recordsDir,
+            transactionPath,
+            manifestPath,
+            records,
+            draft,
+            workCounter,
+          );
+        } catch (error) {
+          if (!(error instanceof ProcessJobStoreMutationError)) poisoned = error;
+          throw error;
+        }
+        commitChanges(changes);
+
+        // Records and ref removals reach durable storage first. A crash after
+        // that point can leave only orphan artifacts, which open-time recovery
+        // removes; it can never leave a retained record pointing at output that
+        // was deleted before its transaction committed.
+        for (const jobId of artifactRemovals) {
+          await rm(join(artifactsDir, jobId), { recursive: true, force: true });
+          setArtifactBytes(jobId, undefined);
+        }
+        if (artifactRemovals.size > 0) await syncDirectory(artifactsDir);
+
+        retentionApplications = (retentionApplications + 1) % PROCESS_JOB_ORPHAN_RECONCILIATION_INTERVAL;
+        if (retentionApplications === 0) {
+          incrementWork(workCounter, "orphanReconciliations");
+          artifactBytesByJob = await removeOrphanArtifacts(artifactsDir, records, workCounter);
+          retainedArtifactByteTotal = retainedArtifactBytesFor(records, artifactBytesByJob);
+        }
       });
-      // Records and ref removals reach durable storage first. A crash after
-      // that point can leave only orphan artifacts, which open-time recovery
-      // removes; it can never leave a retained record pointing at output that
-      // was deleted before its transaction committed.
-      for (const jobId of artifactDirectoriesToRemove) {
-        await rm(join(artifactsDir, jobId), { recursive: true, force: true });
-      }
-      if (artifactDirectoriesToRemove.length > 0) await syncDirectory(artifactsDir);
     },
   };
   return store;
@@ -473,18 +686,23 @@ async function persistDiff(
   recordsDir: string,
   transactionPath: string,
   manifestPath: string,
-  before: Map<string, DurableProcessJobRecord>,
-  after: Map<string, DurableProcessJobRecord>,
-): Promise<void> {
-  // Validate the complete draft before publishing a transaction marker. A
-  // caller bug must not strand malformed recovery input in otherwise healthy
-  // owner state.
-  for (const [jobId, record] of after) {
+  before: ReadonlyMap<string, DurableProcessJobRecord>,
+  after: ProcessJobMutationDraft,
+  workCounter: ProcessJobStoreWorkCounter | undefined,
+): Promise<readonly ProcessJobRecordChange[]> {
+  const changes: ProcessJobRecordChange[] = [];
+  // Existing records were validated when loaded or committed. Validate every
+  // changed/new record before publishing any transaction marker, while leaving
+  // untouched retained records out of mutation work entirely.
+  for (const [jobId, record] of after.candidateEntries()) {
+    const previous = before.get(jobId);
+    if (previous !== undefined && isDeepStrictEqual(previous, record)) continue;
     try {
       assertJobId(jobId);
       assertDurableRecord(record);
       if (record.jobId !== jobId) throw new Error("Process-job record key does not match its job id.");
       assertBoundedJson(join(recordsDir, `${jobId}.json`), record, MAX_RECORD_BYTES);
+      incrementWork(workCounter, "mutationRecordsValidated");
     } catch (error) {
       const reason = error instanceof Error ? ` ${error.message}` : "";
       throw new ProcessJobStoreMutationError(
@@ -492,21 +710,9 @@ async function persistDiff(
         { cause: error },
       );
     }
+    changes.push({ write: structuredClone(record), delete: null, countDelta: previous === undefined ? 1 : 0 });
   }
-  const changes: Array<{
-    readonly write: DurableProcessJobRecord | null;
-    readonly delete: string | null;
-    readonly countDelta: -1 | 0 | 1;
-  }> = [];
-  for (const [jobId, record] of after) {
-    const previous = before.get(jobId);
-    if (previous === undefined || JSON.stringify(previous) !== JSON.stringify(record)) {
-      changes.push({ write: structuredClone(record), delete: null, countDelta: previous === undefined ? 1 : 0 });
-    }
-  }
-  for (const jobId of before.keys()) {
-    if (!after.has(jobId)) changes.push({ write: null, delete: jobId, countDelta: -1 });
-  }
+  for (const jobId of after.deletedKeys()) changes.push({ write: null, delete: jobId, countDelta: -1 });
   let durableCount = before.size;
   for (const change of changes) {
     const generation = randomUUID();
@@ -527,9 +733,10 @@ async function persistDiff(
     await persistManifest(manifestPath, generation, durableCount);
     await rm(transactionPath, { force: true });
     await syncDirectory(stateDir);
-    if (change.write !== null) after.set(change.write.jobId, change.write);
+    incrementWork(workCounter, "mutationEntriesPersisted");
   }
   if (durableCount !== after.size) throw new Error("Process-job durable count diverged during mutation.");
+  return changes;
 }
 
 async function applyTransaction(recordsDir: string, transaction: ProcessJobTransaction): Promise<void> {
@@ -961,8 +1168,12 @@ function validLastError(value: unknown): boolean {
 async function removeOrphanArtifacts(
   artifactsDir: string,
   records: ReadonlyMap<string, DurableProcessJobRecord>,
-): Promise<void> {
+  workCounter: ProcessJobStoreWorkCounter | undefined,
+): Promise<Map<string, number>> {
+  const artifactBytesByJob = new Map<string, number>();
+  let removed = false;
   for (const entry of await readdir(artifactsDir, { withFileTypes: true })) {
+    incrementWork(workCounter, "artifactDirectoriesInspected");
     if (!entry.isDirectory() || entry.isSymbolicLink() || !isJobId(entry.name)) {
       throw new Error(`Process-job artifact directory contains an unsupported entry: ${entry.name}`);
     }
@@ -970,11 +1181,13 @@ async function removeOrphanArtifacts(
     const record = records.get(entry.name);
     if (record === undefined || (record.stdoutRef === null && record.stderrRef === null)) {
       await rm(path, { recursive: true, force: true });
+      removed = true;
       continue;
     }
     await assertPrivateDirectory(path);
-    await artifactDirectoryBytes(path);
+    artifactBytesByJob.set(entry.name, await artifactDirectoryBytes(path));
   }
+  if (removed) await syncDirectory(artifactsDir);
   for (const record of records.values()) {
     if (record.stdoutRef !== null) {
       await assertReferencedArtifact(join(artifactsDir, record.jobId, "stdout.log"));
@@ -983,6 +1196,7 @@ async function removeOrphanArtifacts(
       await assertReferencedArtifact(join(artifactsDir, record.jobId, "stderr.log"));
     }
   }
+  return artifactBytesByJob;
 }
 
 async function assertReferencedArtifact(path: string): Promise<void> {
@@ -998,16 +1212,34 @@ async function assertReferencedArtifact(path: string): Promise<void> {
   assertPrivateFile(info, path, 0o600);
 }
 
-async function retainedArtifactBytes(
-  artifactsDir: string,
-  records: readonly DurableProcessJobRecord[],
-  removed: ReadonlySet<string>,
-): Promise<number> {
-  let bytes = 0;
-  for (const record of records) {
-    if (!removed.has(record.jobId)) bytes += await artifactDirectoryBytes(join(artifactsDir, record.jobId));
+function retainedArtifactBytesFor(
+  records: ReadonlyMap<string, DurableProcessJobRecord>,
+  artifactBytesByJob: ReadonlyMap<string, number>,
+): number {
+  let total = 0;
+  for (const record of records.values()) {
+    total += retainedArtifactContribution(record, artifactBytesByJob.get(record.jobId));
   }
-  return bytes;
+  return total;
+}
+
+function retainedArtifactContribution(
+  record: DurableProcessJobRecord | undefined,
+  bytes: number | undefined,
+): number {
+  return record !== undefined
+    && isTerminalProcessJobState(record.state)
+    && (record.stdoutRef !== null || record.stderrRef !== null)
+    ? bytes ?? 0
+    : 0;
+}
+
+async function inspectArtifactDirectoryBytes(
+  path: string,
+  workCounter: ProcessJobStoreWorkCounter | undefined,
+): Promise<number> {
+  incrementWork(workCounter, "artifactDirectoriesInspected");
+  return await artifactDirectoryBytes(path);
 }
 
 async function artifactDirectoryBytes(path: string): Promise<number> {
@@ -1040,13 +1272,11 @@ function clone(record: DurableProcessJobRecord | undefined): DurableProcessJobRe
   return record === undefined ? undefined : structuredClone(record);
 }
 
-function cloneMap(records: Map<string, DurableProcessJobRecord>): Map<string, DurableProcessJobRecord> {
-  return new Map([...records].map(([key, value]) => [key, structuredClone(value)]));
-}
-
-function replaceMap(target: Map<string, DurableProcessJobRecord>, source: Map<string, DurableProcessJobRecord>): void {
-  target.clear();
-  for (const [key, value] of source) target.set(key, structuredClone(value));
+function incrementWork(
+  workCounter: ProcessJobStoreWorkCounter | undefined,
+  key: keyof ProcessJobStoreWorkCounter,
+): void {
+  if (workCounter !== undefined) workCounter[key] += 1;
 }
 
 function parseJson(text: string, path: string): unknown {

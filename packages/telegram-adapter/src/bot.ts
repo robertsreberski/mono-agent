@@ -260,7 +260,9 @@ function isSerialQueueFullError(error: unknown): error is SerialQueueFullError {
 export interface TelegramNotifyResult {
   readonly delivered: boolean;
   readonly reason?: string;
+  /** Stable adapter outcome; queue-cap refusals use `conversation_busy`. */
   readonly code?: string;
+  /** True only when the adapter can prove retry has no duplicate-delivery risk. */
   readonly retryable?: boolean;
   readonly ambiguous?: boolean;
   readonly deliveryId?: string;
@@ -2300,7 +2302,12 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
     // `admit` returns void, so capture the run's outcome in a closure variable.
     // It defaults to the queue-full reason and is only overwritten when the task
     // actually runs (an over-cap rejection settles via onReject, leaving it).
-    let outcome: TelegramNotifyResult = { delivered: false, reason: "chat at concurrency cap" };
+    let outcome: TelegramNotifyResult = {
+      delivered: false,
+      code: "conversation_busy",
+      reason: "chat at concurrency cap",
+      retryable: true,
+    };
     await admit(
       chatId,
       async () => {

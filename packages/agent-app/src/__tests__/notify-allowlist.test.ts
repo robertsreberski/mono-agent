@@ -175,6 +175,45 @@ describe("telegram proactive notify allowlist", () => {
       .resolves.toMatchObject({ delivered: false, retryable: false, ambiguous: true });
     expect(notify).toHaveBeenCalledWith(42, "wake", { deliveryKey: processJob.wake.deliveryKey });
   });
+
+  it("classifies process-job busy admission from the adapter's stable code", async () => {
+    const notify = vi.fn(async () => ({
+      delivered: false,
+      code: "conversation_busy",
+      reason: "chat at concurrency cap",
+      retryable: true,
+    }));
+    const updateProcessJob = vi.fn(async () => ({ delivered: true }));
+    const processJob = projection("telegram:42", "telegram");
+    const running = await telegramDriver(notify, updateProcessJob).start(startInput(config({})));
+
+    await expect(running.notify!({
+      conversationId: "telegram:42",
+      text: "wake",
+      processJob,
+    })).resolves.toMatchObject({
+      delivered: false,
+      code: "conversation_busy",
+      retryable: true,
+    });
+  });
+
+  it("keeps the legacy Telegram busy reason compatible for custom starters", async () => {
+    const notify = vi.fn(async () => ({ delivered: false, reason: "chat at concurrency cap" }));
+    const updateProcessJob = vi.fn(async () => ({ delivered: true }));
+    const processJob = projection("telegram:42", "telegram");
+    const running = await telegramDriver(notify, updateProcessJob).start(startInput(config({})));
+
+    await expect(running.notify!({
+      conversationId: "telegram:42",
+      text: "wake",
+      processJob,
+    })).resolves.toMatchObject({
+      delivered: false,
+      code: "conversation_busy",
+      retryable: true,
+    });
+  });
 });
 
 describe("slack proactive notify allowlist", () => {

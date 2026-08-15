@@ -290,7 +290,12 @@ describe("createTelegramBot notify (proactive)", () => {
     const inflight = Array.from({ length: 100 }, () => controller.notify(5, "tick"));
     const rejected = await controller.notify(5, "one too many");
 
-    expect(rejected).toEqual({ delivered: false, reason: "chat at concurrency cap" });
+    expect(rejected).toEqual({
+      delivered: false,
+      code: "conversation_busy",
+      reason: "chat at concurrency cap",
+      retryable: true,
+    });
 
     release?.();
     await Promise.all(inflight);

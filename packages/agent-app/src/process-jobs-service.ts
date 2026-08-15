@@ -1043,12 +1043,12 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         ambiguous: true,
       }));
       const attempt = record.wake.attempts;
-      const conversationBusy = !result.delivered
-        && result.code === "conversation_busy"
+      const retryablePreDispatchRefusal = !result.delivered
+        && (result.code === "conversation_busy" || result.code === "destination_channel_unavailable")
         && result.retryable === true
         && result.ambiguous !== true;
       const safeRetry = !result.delivered
-        && !conversationBusy
+        && !retryablePreDispatchRefusal
         && result.retryable === true
         && result.ambiguous !== true
         && attempt < MAX_WAKE_ATTEMPTS;
@@ -1059,9 +1059,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           if (result.delivered) {
             current.wake.state = "delivered";
             current.wake.retrySafe = false;
-          } else if (conversationBusy) {
-            // Busy admission is a pre-turn refusal: no chat mutation or model
-            // turn happened, so it must not consume the bounded delivery budget.
+          } else if (retryablePreDispatchRefusal) {
+            // Busy admission and an absent destination channel are pre-dispatch
+            // refusals: no chat mutation or model turn happened, so they must
+            // not consume the bounded delivery budget.
             current.wake.attempts = Math.max(0, current.wake.attempts - 1);
             if (current.wake.attempts === 0) current.wake.lastAttemptAt = null;
             current.wake.retrySafe = true;
@@ -1084,7 +1085,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         });
       });
       await this.updateSurfaceById(jobId);
-      if (conversationBusy) {
+      if (retryablePreDispatchRefusal) {
         this.wakeRearmPending.add(jobId);
         return;
       }

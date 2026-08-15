@@ -10,6 +10,7 @@ import type {
 } from "@mono-agent/runtime-adapter";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { ChannelId, RunningChannel } from "../channels.js";
 import type { ProcessJobsSettings } from "../process-jobs-config.js";
 import { PROCESS_JOBS_CAPS, PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
 import {
@@ -21,13 +22,16 @@ import {
 import {
   openProcessJobStore,
   PROCESS_JOB_HEALTH_FILE,
+  PROCESS_JOB_ORPHAN_RECONCILIATION_INTERVAL,
   PROCESS_JOB_QUARANTINE_DIRECTORY,
   PROCESS_JOB_TRANSACTION_FILE,
   type DurableProcessJobRecord,
   type ProcessJobOriginRecord,
   type ProcessJobStore,
+  type ProcessJobStoreWorkCounter,
 } from "../process-jobs-store.js";
 import type { ProcessIncarnation } from "../process-incarnation.js";
+import { routeProactiveNotification } from "../proactive-notify.js";
 
 const INCARNATION: ProcessIncarnation = {
   schema: "mono-agent.process-incarnation.v1",
@@ -755,6 +759,62 @@ describe("process job service", () => {
     expect(await restarted.get(jobId)).toMatchObject({ wake: { attempts: 1, state: "delivered" } });
   });
 
+  it("recovers one completion wake after its destination channel returns without duplicate delivery", async () => {
+    const fixture = await createFixture();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
+    const running = new Map<ChannelId, Pick<RunningChannel, "notify">>();
+    const routeWake = vi.fn(async (input: ProcessJobWakeInput) => await routeProactiveNotification({
+      conversationId: input.conversationId,
+      text: input.prompt,
+      deliveryKey: input.deliveryKey,
+      processJob: input.projection,
+      running,
+    }));
+    const completion = deferred<ProcessJobProcessResult>();
+    const first = await startService(fixture, {
+      store,
+      wake: routeWake,
+      wakeBusyRearmMs: 60_000,
+    });
+    await first.activateWakes();
+    const started = await first.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    completion.resolve(processResult());
+
+    await waitFor(() => routeWake.mock.calls.length === 1);
+    await waitFor(async () => (await store.get(started.jobId))?.wake.retrySafe === true);
+    expect(await store.get(started.jobId)).toMatchObject({
+      state: "succeeded",
+      wake: { state: "pending", attempts: 0, retrySafe: true, lastAttemptAt: null },
+    });
+    const deliveryKey = routeWake.mock.calls[0]?.[0].deliveryKey;
+    await first.stop();
+
+    const delivered = vi.fn(async () => ({ delivered: true as const }));
+    running.set("slack", { notify: delivered });
+    const recoveredWake = vi.fn(async (input: ProcessJobWakeInput) => await routeProactiveNotification({
+      conversationId: input.conversationId,
+      text: input.prompt,
+      deliveryKey: input.deliveryKey,
+      processJob: input.projection,
+      running,
+    }));
+    const restarted = await startService(fixture, { store, wake: recoveredWake });
+    await restarted.activateWakes();
+    await waitFor(async () => (await restarted.get(started.jobId))?.wake.state === "delivered");
+
+    expect(recoveredWake).toHaveBeenCalledOnce();
+    expect(recoveredWake.mock.calls[0]?.[0].deliveryKey).toBe(deliveryKey);
+    expect(delivered).toHaveBeenCalledOnce();
+    expect(delivered).toHaveBeenCalledWith(expect.objectContaining({ deliveryKey }));
+    expect(await store.get(started.jobId)).toMatchObject({
+      wake: { state: "delivered", attempts: 1, retrySafe: false },
+    });
+
+    await restarted.activateWakes();
+    await Promise.resolve();
+    expect(delivered).toHaveBeenCalledOnce();
+  });
+
   it("degrades live health, closes admission, and releases the active slot when completion get rejects", async () => {
     const fixture = await createFixture({ maxConcurrent: 1 });
     const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
@@ -1371,6 +1431,110 @@ describe("process job service", () => {
 });
 
 describe("process job store", () => {
+  it("processes mutation work in proportion to touched records, not retained records", async () => {
+    const fixture = await createFixture();
+    const workCounter = emptyStoreWorkCounter();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir, { workCounter });
+    const records = Array.from({ length: 32 }, (_, index) => {
+      const suffix = String(index + 1).padStart(12, "0");
+      const jobId = `00000000-0000-4000-8000-${suffix}`;
+      return durableRecord(jobId, {
+        state: "succeeded",
+        completedAt: new Date(Date.parse("2026-08-14T10:00:03.000Z") + index).toISOString(),
+        exitCode: 0,
+        durationMs: 2_000,
+        stdoutRef: null,
+        stderrRef: null,
+        wake: {
+          state: "delivered",
+          attempts: 1,
+          deliveryKey: `process-job:${jobId}`,
+          lastAttemptAt: "2026-08-14T10:00:04.000Z",
+        },
+      });
+    });
+    await store.mutate((draft) => {
+      for (const record of records) draft.set(record.jobId, record);
+    });
+
+    resetStoreWorkCounter(workCounter);
+    await store.mutate(() => undefined);
+    expect(workCounter).toMatchObject({
+      mutationEntriesExamined: 0,
+      mutationRecordsValidated: 0,
+      mutationEntriesPersisted: 0,
+    });
+
+    await store.mutate((draft) => {
+      const changed = draft.get(records.at(-1)!.jobId);
+      if (changed === undefined) throw new Error("missing retained scale record");
+      changed.preview = "changed preview";
+    });
+    expect(workCounter).toMatchObject({
+      mutationEntriesExamined: 1,
+      mutationRecordsValidated: 1,
+      mutationEntriesPersisted: 1,
+    });
+    expect(await store.get(records[0]!.jobId)).toMatchObject({ preview: "" });
+    expect(await store.get(records.at(-1)!.jobId)).toMatchObject({ preview: "changed preview" });
+
+    const borrowed = await store.mutate((draft) => draft.get(records[0]!.jobId)!);
+    borrowed.preview = "caller-owned mutation";
+    expect(await store.get(records[0]!.jobId)).toMatchObject({ preview: "" });
+    await expect(store.mutate((draft) => {
+      draft.get(records[0]!.jobId)!.preview = "rolled back mutation";
+      throw new Error("abort transaction");
+    })).rejects.toThrow("abort transaction");
+    expect(await store.get(records[0]!.jobId)).toMatchObject({ preview: "" });
+  });
+
+  it("skips all-directory work on no-prune retention and periodically removes real orphans", async () => {
+    const fixture = await createFixture();
+    const workCounter = emptyStoreWorkCounter();
+    const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir, { workCounter });
+    const retainedId = "30303030-3030-4030-8030-303030303030";
+    await store.ensureArtifacts(retainedId);
+    await store.mutate((records) => records.set(retainedId, durableRecord(retainedId, {
+      state: "succeeded",
+      completedAt: "2026-08-14T10:00:03.000Z",
+      exitCode: 0,
+      durationMs: 2_000,
+      wake: {
+        state: "delivered",
+        attempts: 1,
+        deliveryKey: `process-job:${retainedId}`,
+        lastAttemptAt: "2026-08-14T10:00:04.000Z",
+      },
+    })));
+    const orphanId = "31313131-3131-4131-8131-313131313131";
+    const orphanPath = join(store.artifactsDir, orphanId);
+    await mkdir(orphanPath, { mode: 0o700 });
+    await writeFile(join(orphanPath, "stdout.log"), "orphaned\n", { mode: 0o600 });
+    await writeFile(join(orphanPath, "stderr.log"), "", { mode: 0o600 });
+
+    resetStoreWorkCounter(workCounter);
+    const noPruneSettings = {
+      ...fixture.settings,
+      retention: { ...fixture.settings.retention, maxAgeMs: 30 * 24 * 60 * 60 * 1_000 },
+    };
+    await store.applyRetention(noPruneSettings, new Date("2026-08-15T00:00:00.000Z"));
+    expect(workCounter).toMatchObject({
+      mutationEntriesExamined: 0,
+      artifactDirectoriesInspected: 0,
+      orphanReconciliations: 0,
+    });
+    expect(await pathExists(orphanPath)).toBe(true);
+
+    for (let attempt = 1; attempt < PROCESS_JOB_ORPHAN_RECONCILIATION_INTERVAL; attempt += 1) {
+      await store.applyRetention(noPruneSettings, new Date("2026-08-15T00:00:00.000Z"));
+    }
+    expect(workCounter.orphanReconciliations).toBe(1);
+    expect(workCounter.artifactDirectoriesInspected).toBe(2);
+    expect(await pathExists(orphanPath)).toBe(false);
+    expect(await pathExists(join(store.artifactsDir, retainedId))).toBe(true);
+    await expect(openProcessJobStore(fixture.cwd, fixture.settings.stateDir)).resolves.toBeDefined();
+  });
+
   it("rejects an oversized first record before publishing a recovery marker", async () => {
     const fixture = await createFixture();
     const store = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
@@ -1809,4 +1973,18 @@ async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<voi
 async function pathExists(path: string): Promise<boolean> {
   try { await lstat(path); return true; }
   catch { return false; }
+}
+
+function emptyStoreWorkCounter(): ProcessJobStoreWorkCounter {
+  return {
+    mutationEntriesExamined: 0,
+    mutationRecordsValidated: 0,
+    mutationEntriesPersisted: 0,
+    artifactDirectoriesInspected: 0,
+    orphanReconciliations: 0,
+  };
+}
+
+function resetStoreWorkCounter(counter: ProcessJobStoreWorkCounter): void {
+  Object.assign(counter, emptyStoreWorkCounter());
 }

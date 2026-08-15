@@ -16,12 +16,12 @@ export type { NotifyDeliveryResult } from "@mono-agent/agent-contracts";
  * recognized plugin destination can still fail closed as unsupported. This is
  * intentionally wider than the webhook callback list: WhatsApp is recognized
  * here, but its plugin driver does not expose a native notify hook yet.
- * cron/webhook/openai-api/a2a are request-driven, not push destinations.
+ * web/cron/webhook/openai-api/a2a are request-driven, not ordinary push
+ * destinations. Process-job web lifecycle routing is handled explicitly below.
  */
 const PUSH_CHANNEL_BY_SCHEME: Partial<Record<string, ChannelId>> = {
   telegram: "telegram",
   slack: "slack",
-  web: "tui",
   whatsapp: "whatsapp",
 };
 
@@ -66,7 +66,7 @@ export interface ProactiveNotifyInput {
  * succeeded), so the caller can report the outcome to the model.
  */
 export async function routeProactiveNotification(input: ProactiveNotifyInput): Promise<NotifyDeliveryResult> {
-  const channelId = channelIdForConversation(input.conversationId);
+  const channelId = processJobWebChannel(input) ?? channelIdForConversation(input.conversationId);
   if (channelId === undefined) {
     input.logger?.warn?.("Proactive notification skipped: unrecognized destination.", {
       conversationId: input.conversationId,
@@ -74,12 +74,29 @@ export async function routeProactiveNotification(input: ProactiveNotifyInput): P
     return { delivered: false, reason: "unrecognized destination conversationId" };
   }
   const channel = input.running.get(channelId);
-  if (channel?.notify === undefined) {
+  if (channel === undefined) {
     input.logger?.warn?.(
-      "Proactive notification skipped: destination channel is not running or does not support delivery.",
+      "Proactive notification skipped: destination channel is not running.",
       { conversationId: input.conversationId, channelId },
     );
-    return { delivered: false, reason: `${channelId} channel is not running or does not support proactive delivery` };
+    return {
+      delivered: false,
+      code: "destination_channel_unavailable",
+      reason: `${channelId} channel is not running`,
+      retryable: true,
+    };
+  }
+  if (channel.notify === undefined) {
+    input.logger?.warn?.(
+      "Proactive notification skipped: destination channel does not support delivery.",
+      { conversationId: input.conversationId, channelId },
+    );
+    return {
+      delivered: false,
+      code: "destination_channel_unsupported",
+      reason: `${channelId} channel does not support proactive delivery`,
+      retryable: false,
+    };
   }
   try {
     return await channel.notify({
@@ -99,6 +116,13 @@ export async function routeProactiveNotification(input: ProactiveNotifyInput): P
     });
     return { delivered: false, reason };
   }
+}
+
+function processJobWebChannel(input: ProactiveNotifyInput): ChannelId | undefined {
+  return input.processJob?.origin.channel === "web"
+    && input.conversationId.startsWith("web:")
+    ? "tui"
+    : undefined;
 }
 
 function reasonOf(error: unknown): string {
