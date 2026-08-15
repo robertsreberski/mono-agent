@@ -1,4 +1,6 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { constants as fsConstants, type BigIntStats } from "node:fs";
+import { lstat, open, readFile, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 import { MonoAgentConfigError } from "@mono-agent/config";
@@ -67,6 +69,121 @@ export interface LoadProcessJobsSettingsOptions {
   readonly purgePlan?: ConversationStatePurgePlan;
   /** Check an unconfigured default state root only when destructive reset is imminent. */
   readonly validateDormantStateRoot?: boolean;
+  /** One exact config/environment generation shared by destructive preflight. */
+  readonly snapshot?: ProcessJobsConfigSnapshot;
+}
+
+const MAX_DESTRUCTIVE_CONFIG_BYTES = 1024 * 1024;
+
+export interface ProcessJobsConfigSnapshot {
+  readonly path: string;
+  readonly json: Readonly<Record<string, unknown>>;
+  readonly digest: string;
+  readonly fingerprint: string;
+  readonly missing: boolean;
+  readonly env: Readonly<Record<string, string | undefined>>;
+}
+
+/** Read one strict, bounded, no-follow config generation for destructive preflight. */
+export async function readProcessJobsConfigSnapshot(input: {
+  readonly configPath: string;
+  readonly env?: Record<string, string | undefined>;
+}): Promise<ProcessJobsConfigSnapshot> {
+  const path = resolve(input.configPath);
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(
+      path,
+      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0),
+    );
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) {
+      try {
+        await lstat(path);
+      } catch (secondError) {
+        if (isErrno(secondError, "ENOENT")) {
+          return {
+            path,
+            json: Object.freeze({}),
+            digest: "",
+            fingerprint: "missing",
+            missing: true,
+            env: Object.freeze({ ...(input.env ?? {}) }),
+          };
+        }
+        throw secondError;
+      }
+      throw new Error("restart --clear-sessions config appeared while absence was validated.");
+    }
+    if (isErrno(error, "ELOOP") || isErrno(error, "EMLINK")) {
+      throw new Error("restart --clear-sessions config must not be a symbolic link.");
+    }
+    throw error;
+  }
+  try {
+    const before = await handle.stat({ bigint: true });
+    assertConfigFile(before);
+    if (before.size > BigInt(MAX_DESTRUCTIVE_CONFIG_BYTES)) {
+      throw new Error(`restart --clear-sessions config exceeds ${String(MAX_DESTRUCTIVE_CONFIG_BYTES)} bytes.`);
+    }
+    const bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    const named = await lstat(path, { bigint: true });
+    assertConfigFile(after);
+    assertConfigFile(named);
+    if (!sameConfigFile(before, after) || !sameConfigFile(after, named)
+      || bytes.byteLength !== Number(after.size)) {
+      throw new Error("restart --clear-sessions config changed while it was read.");
+    }
+    let contents: string;
+    try {
+      contents = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new Error("restart --clear-sessions config is not valid UTF-8.");
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(contents) as unknown;
+    } catch (error) {
+      throw new Error("restart --clear-sessions config is not valid JSON.", { cause: error });
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error("restart --clear-sessions config must contain one JSON object.");
+    }
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    return {
+      path,
+      json: parsed as Readonly<Record<string, unknown>>,
+      digest,
+      fingerprint: configFingerprint(after, digest),
+      missing: false,
+      env: Object.freeze({ ...(input.env ?? {}) }),
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function assertProcessJobsConfigSnapshotUnchanged(
+  expected: ProcessJobsConfigSnapshot,
+): Promise<void> {
+  let current: ProcessJobsConfigSnapshot;
+  try {
+    current = await readProcessJobsConfigSnapshot({
+      configPath: expected.path,
+      env: { ...expected.env },
+    });
+  } catch (error) {
+    throw new Error(
+      "restart --clear-sessions config changed after validation; no conversation state was deleted.",
+      { cause: error },
+    );
+  }
+  if (current.missing !== expected.missing
+    || current.digest !== expected.digest
+    || current.fingerprint !== expected.fingerprint) {
+    throw new Error("restart --clear-sessions config changed after validation; no conversation state was deleted.");
+  }
 }
 
 /** Load the host-only process-job block and fail closed on every unknown key. */
@@ -76,11 +193,15 @@ export async function loadProcessJobsSettings(input: {
   readonly env?: Record<string, string | undefined>;
 }, options: LoadProcessJobsSettingsOptions = {}): Promise<ProcessJobsSettings> {
   let raw: unknown = {};
-  try {
-    raw = JSON.parse(await readFile(input.configPath, "utf8")) as unknown;
-  } catch {
-    // The core loader owns malformed/missing config reporting. This optional
-    // host block remains disabled until that loader accepts the file.
+  if (options.snapshot !== undefined) {
+    raw = options.snapshot.json;
+  } else {
+    try {
+      raw = JSON.parse(await readFile(input.configPath, "utf8")) as unknown;
+    } catch {
+      // The core loader owns malformed/missing config reporting. This optional
+      // host block remains disabled until that loader accepts the file.
+    }
   }
   const root = objectOf(raw);
   const value = root.processJobs;
@@ -346,4 +467,35 @@ async function pathExists(path: string): Promise<boolean> {
     if (isErrno(error, "ENOENT")) return false;
     throw error;
   }
+}
+
+function assertConfigFile(details: BigIntStats): void {
+  if (!details.isFile() || details.isSymbolicLink() || details.nlink !== 1n) {
+    throw new Error("restart --clear-sessions config must be one regular file with one link.");
+  }
+}
+
+function sameConfigFile(left: BigIntStats, right: BigIntStats): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs
+    && left.mode === right.mode
+    && left.uid === right.uid
+    && left.nlink === right.nlink;
+}
+
+function configFingerprint(details: BigIntStats, digest: string): string {
+  return [
+    details.dev,
+    details.ino,
+    details.size,
+    details.mtimeNs,
+    details.ctimeNs,
+    details.mode,
+    details.uid,
+    details.nlink,
+    digest,
+  ].join(":");
 }

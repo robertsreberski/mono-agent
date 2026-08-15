@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,7 +7,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ToolHistoryWriter } from "@mono-agent/agent-harness";
 
 import { resolveAppSessionsRoot } from "../app-config.js";
-import { purgeConversationHistory, purgeConversationState, purgeSessions } from "../sessions.js";
+import {
+  assertClearSessionsRecoveryResolved,
+  clearSessionsRegistryRoot,
+  purgeConversationHistory,
+  purgeConversationState,
+  purgeSessions,
+} from "../sessions.js";
 
 let dir: string;
 
@@ -346,5 +352,184 @@ describe("purgeConversationState", () => {
     await expect(readFile(join(movedStateRoot, "history", "conversation.history.json"), "utf8")).resolves.toBe("history\n");
     await expect(readFile(join(movedStateRoot, "acp-sessions", "authorization.json"), "utf8")).resolves.toBe("authorization\n");
     await expect(readFile(join(outsideRoot, "sentinel.txt"), "utf8")).resolves.toBe("outside\n");
+  });
+
+  it("recovers an exact crash-after-rename quarantine on the next clear-sessions invocation", async () => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.state/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+    });
+    const sessionsRoot = join(dir, ".state", "sessions");
+    const historyRoot = join(dir, ".state", "history");
+    const acpSessionsRoot = join(dir, ".state", "acp-sessions");
+    await Promise.all([
+      mkdir(sessionsRoot, { recursive: true }),
+      mkdir(historyRoot, { recursive: true }),
+      mkdir(acpSessionsRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(sessionsRoot, "session.jsonl"), "session\n"),
+      writeFile(join(historyRoot, "conversation.history.json"), "history\n"),
+      writeFile(join(acpSessionsRoot, "authorization.json"), "authorization\n"),
+    ]);
+    let quarantine = "";
+
+    await expect(purgeConversationState(inputFor(configPath), {
+      hooks: {
+        afterRootQuarantined: (path) => {
+          quarantine = path;
+          throw new Error("simulated crash after durable rename");
+        },
+      },
+    })).rejects.toThrow(/simulated crash/u);
+    await expect(readFile(join(quarantine, "session.jsonl"), "utf8")).resolves.toBe("session\n");
+    await expect(assertClearSessionsRecoveryResolved(dir)).rejects.toThrow(/recovery is unresolved/u);
+
+    const result = await purgeConversationState(inputFor(configPath));
+
+    expect(result.sessions).toEqual({ root: sessionsRoot, removed: false, files: 0 });
+    expect(result.history.removed).toBe(true);
+    expect(result.acpSessions.removed).toBe(true);
+    await expect(stat(quarantine)).rejects.toThrow();
+    await expect(readdir(clearSessionsRegistryRoot(dir))).resolves.toEqual([]);
+    await expect(assertClearSessionsRecoveryResolved(dir)).resolves.toBeUndefined();
+  });
+
+  it("recovers a registered quarantine after the configured purge roots change", async () => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.old/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.old/sessions" } },
+    });
+    const oldSessionsRoot = join(dir, ".old", "sessions");
+    await mkdir(oldSessionsRoot, { recursive: true });
+    await writeFile(join(oldSessionsRoot, "session.jsonl"), "old session\n");
+    let quarantine = "";
+    await expect(purgeConversationState(inputFor(configPath), {
+      hooks: {
+        afterRootQuarantined: (path) => {
+          quarantine = path;
+          throw new Error("simulated old-root crash");
+        },
+      },
+    })).rejects.toThrow(/simulated old-root crash/u);
+
+    const newSessionsRoot = join(dir, ".new", "sessions");
+    await mkdir(newSessionsRoot, { recursive: true });
+    await writeFile(join(newSessionsRoot, "session.jsonl"), "new session\n");
+    await writeFile(configPath, JSON.stringify({
+      artifacts: { dir: "./.new/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.new/sessions" } },
+    }));
+
+    const result = await purgeConversationState(inputFor(configPath));
+
+    expect(result.sessions).toEqual({ root: newSessionsRoot, removed: true, files: 1 });
+    await expect(stat(quarantine)).rejects.toThrow();
+    await expect(stat(newSessionsRoot)).rejects.toThrow();
+    await expect(readdir(clearSessionsRegistryRoot(dir))).resolves.toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32")("never follows or deletes a quarantine replacement symlink", async () => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.state/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+    });
+    const sessionsRoot = join(dir, ".state", "sessions");
+    const historyRoot = join(dir, ".state", "history");
+    const acpSessionsRoot = join(dir, ".state", "acp-sessions");
+    const outsideRoot = join(dir, "outside-quarantine-swap");
+    await Promise.all([
+      mkdir(sessionsRoot, { recursive: true }),
+      mkdir(historyRoot, { recursive: true }),
+      mkdir(acpSessionsRoot, { recursive: true }),
+      mkdir(outsideRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(sessionsRoot, "session.jsonl"), "session\n"),
+      writeFile(join(historyRoot, "conversation.history.json"), "history\n"),
+      writeFile(join(acpSessionsRoot, "authorization.json"), "authorization\n"),
+      writeFile(join(outsideRoot, "sentinel.txt"), "outside\n"),
+    ]);
+    let movedQuarantine = "";
+    let swapped = false;
+
+    await expect(purgeConversationState(inputFor(configPath), {
+      hooks: {
+        beforeQuarantineRemoval: async (path) => {
+          if (swapped) return;
+          swapped = true;
+          movedQuarantine = `${path}.attacker-moved`;
+          await rename(path, movedQuarantine);
+          await symlink(outsideRoot, path, "dir");
+        },
+      },
+    })).rejects.toThrow(/changed|non-directory|symbolic-link/u);
+    await expect(readFile(join(movedQuarantine, "session.jsonl"), "utf8")).resolves.toBe("session\n");
+    await expect(readFile(join(outsideRoot, "sentinel.txt"), "utf8")).resolves.toBe("outside\n");
+    await expect(assertClearSessionsRecoveryResolved(dir)).rejects.toThrow(/recovery is unresolved/u);
+  });
+
+  it("rejects an atomic config replacement after validation before deleting any root", async () => {
+    const configPath = await writeConfig({
+      artifacts: { dir: "./.state/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.state/sessions" } },
+    });
+    const sessionsRoot = join(dir, ".state", "sessions");
+    const historyRoot = join(dir, ".state", "history");
+    const acpSessionsRoot = join(dir, ".state", "acp-sessions");
+    await Promise.all([
+      mkdir(sessionsRoot, { recursive: true }),
+      mkdir(historyRoot, { recursive: true }),
+      mkdir(acpSessionsRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(sessionsRoot, "session.jsonl"), "session\n"),
+      writeFile(join(historyRoot, "conversation.history.json"), "history\n"),
+      writeFile(join(acpSessionsRoot, "authorization.json"), "authorization\n"),
+    ]);
+    const replacement = join(dir, "replacement.config.json");
+
+    await expect(purgeConversationState(inputFor(configPath), {
+      hooks: {
+        afterValidation: async () => {
+          await writeFile(replacement, JSON.stringify({
+            artifacts: { dir: "./replacement/artifacts" },
+            providers: { piNative: { piSessionsRoot: "./replacement/sessions" } },
+          }));
+          await rename(replacement, configPath);
+        },
+      },
+    })).rejects.toThrow(/config changed after validation/u);
+    await expect(readFile(join(sessionsRoot, "session.jsonl"), "utf8")).resolves.toBe("session\n");
+    await expect(readFile(join(historyRoot, "conversation.history.json"), "utf8")).resolves.toBe("history\n");
+    await expect(readFile(join(acpSessionsRoot, "authorization.json"), "utf8")).resolves.toBe("authorization\n");
+    await expect(readdir(clearSessionsRegistryRoot(dir))).resolves.toEqual([]);
+  });
+
+  it("rejects a config that appears after its absence was validated", async () => {
+    const configPath = join(dir, "missing.config.json");
+    const historyRoot = join(dir, ".mono-agent", "history");
+    const acpSessionsRoot = join(dir, ".mono-agent", "acp-sessions");
+    await Promise.all([
+      mkdir(historyRoot, { recursive: true }),
+      mkdir(acpSessionsRoot, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(historyRoot, "conversation.history.json"), "history\n"),
+      writeFile(join(acpSessionsRoot, "authorization.json"), "authorization\n"),
+    ]);
+
+    await expect(purgeConversationState(inputFor(configPath), {
+      hooks: {
+        afterValidation: async () => {
+          await writeFile(configPath, JSON.stringify({
+            artifacts: { dir: "./replacement/artifacts" },
+          }));
+        },
+      },
+    })).rejects.toThrow(/config changed after validation/u);
+    await expect(readFile(join(historyRoot, "conversation.history.json"), "utf8")).resolves.toBe("history\n");
+    await expect(readFile(join(acpSessionsRoot, "authorization.json"), "utf8")).resolves.toBe("authorization\n");
+    await expect(readdir(clearSessionsRegistryRoot(dir))).resolves.toEqual([]);
   });
 });

@@ -26,17 +26,21 @@ export interface FileSystemIdentity {
 
 export interface AttestedConversationStatePurgeTarget {
   readonly identity: FileSystemIdentity;
-  readonly parent: {
-    readonly path: string;
-    readonly canonicalPath: string;
-    readonly identity: FileSystemIdentity;
-  };
+  readonly parent: AttestedConversationStatePurgeParent;
+}
+
+export interface AttestedConversationStatePurgeParent {
+  readonly path: string;
+  readonly canonicalPath: string;
+  readonly identity: FileSystemIdentity;
 }
 
 export interface ResolvedConversationStatePurgeRoot {
   readonly kind: ConversationStatePurgeRootKind;
   readonly path: string;
   readonly canonicalPath: string;
+  /** Present whenever the immediate parent exists, including after a crashed rename. */
+  readonly parent?: AttestedConversationStatePurgeParent;
   /** Undefined when the configured root does not exist yet. */
   readonly target?: AttestedConversationStatePurgeTarget;
 }
@@ -48,17 +52,31 @@ export interface ConversationStatePurgePlan {
   readonly acpSessions: ResolvedConversationStatePurgeRoot;
 }
 
+export interface ConversationStateConfigSnapshot {
+  readonly json: Readonly<Record<string, unknown>>;
+}
+
+export const CLEAR_SESSIONS_REGISTRY_DIRECTORY = "clear-sessions-v1";
+export const CLEAR_SESSIONS_CONTROL_DIRECTORY = ".mono-agent-clear-sessions-v1";
+
+export function clearSessionsRegistryRoot(cwd: string): string {
+  return resolve(cwd, ".mono-agent", CLEAR_SESSIONS_REGISTRY_DIRECTORY);
+}
+
 /**
  * Resolve reset roots once so startup validation and the destructive purge path
  * remain bound to the same config/env precedence and derived directories.
  */
 export async function resolveConversationStatePurgeRoots(
   input: MonoAgentAppConfigInput,
+  snapshot?: ConversationStateConfigSnapshot,
 ): Promise<ConversationStatePurgeRoots> {
-  const [sessions, artifactDir] = await Promise.all([
-    resolveAppSessionsRoot(input),
-    resolveAppArtifactDir(input),
-  ]);
+  const [sessions, artifactDir] = snapshot === undefined
+    ? await Promise.all([
+      resolveAppSessionsRoot(input),
+      resolveAppArtifactDir(input),
+    ])
+    : resolveSnapshotRoots(input, snapshot.json);
   return {
     ...(sessions === undefined ? {} : { sessions }),
     history: agentArtifactDerivedRoots(artifactDir).history,
@@ -69,8 +87,9 @@ export async function resolveConversationStatePurgeRoots(
 /** Resolve and identity-pin every destructive reset root before any traversal or removal. */
 export async function resolveConversationStatePurgePlan(
   input: MonoAgentAppConfigInput,
+  snapshot?: ConversationStateConfigSnapshot,
 ): Promise<ConversationStatePurgePlan> {
-  const roots = await resolveConversationStatePurgeRoots(input);
+  const roots = await resolveConversationStatePurgeRoots(input, snapshot);
   const [sessions, history, acpSessions] = await Promise.all([
     roots.sessions === undefined
       ? undefined
@@ -110,6 +129,9 @@ export async function assertConversationStatePurgeRootUnchanged(
   }
   if (expected.target === undefined) {
     if (current.target !== undefined) throw changed(expected, "previously missing target");
+    if (!sameOptionalParent(current.parent, expected.parent)) {
+      throw changed(expected, "ancestor identity or canonical path");
+    }
     return;
   }
   if (current.target === undefined) throw changed(expected, "target");
@@ -144,10 +166,13 @@ export async function resolveAndAttestConversationStatePurgeRoot(
   } catch (error) {
     if (!isErrno(error, "ENOENT")) throw error;
     const canonicalPath = await canonicalMissingPath(lexicalPath, kind);
+    const parent = await resolveOptionalParent(dirname(lexicalPath), kind);
     try {
       await lstat(lexicalPath, { bigint: true });
     } catch (secondError) {
-      if (isErrno(secondError, "ENOENT")) return { kind, path: lexicalPath, canonicalPath };
+      if (isErrno(secondError, "ENOENT")) {
+        return { kind, path: lexicalPath, canonicalPath, ...(parent === undefined ? {} : { parent }) };
+      }
       throw secondError;
     }
     throw new Error(`restart --clear-sessions ${kind} purge root appeared during preflight: ${lexicalPath}`);
@@ -179,6 +204,11 @@ export async function resolveAndAttestConversationStatePurgeRoot(
     kind,
     path: lexicalPath,
     canonicalPath,
+    parent: {
+      path: parentPath,
+      canonicalPath: canonicalParent,
+      identity: identityOf(initialParent),
+    },
     target: {
       identity: identityOf(initial),
       parent: {
@@ -188,6 +218,27 @@ export async function resolveAndAttestConversationStatePurgeRoot(
       },
     },
   };
+}
+
+async function resolveOptionalParent(
+  path: string,
+  kind: ConversationStatePurgeRootKind,
+): Promise<AttestedConversationStatePurgeParent | undefined> {
+  let initial: BigIntStats;
+  try {
+    initial = await lstat(path, { bigint: true });
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return undefined;
+    throw error;
+  }
+  assertRealDirectory(initial, path, `${kind} parent`);
+  const canonicalPath = await realpath(path);
+  const current = await lstat(path, { bigint: true });
+  assertRealDirectory(current, path, `${kind} parent`);
+  if (!sameIdentity(initial, current)) {
+    throw new Error(`restart --clear-sessions ${kind} parent changed during preflight: ${path}`);
+  }
+  return { path, canonicalPath, identity: identityOf(initial) };
 }
 
 async function canonicalMissingPath(path: string, kind: ConversationStatePurgeRootKind): Promise<string> {
@@ -234,6 +285,53 @@ function sameIdentity(
 
 function changed(root: ResolvedConversationStatePurgeRoot, detail: string): Error {
   return new Error(`restart --clear-sessions ${root.kind} purge root ${detail} changed after validation; no conversation state was deleted.`);
+}
+
+function sameOptionalParent(
+  value: AttestedConversationStatePurgeParent | undefined,
+  expected: AttestedConversationStatePurgeParent | undefined,
+): boolean {
+  if (value === undefined || expected === undefined) return value === expected;
+  return value.path === expected.path
+    && value.canonicalPath === expected.canonicalPath
+    && sameIdentity(value.identity, expected.identity);
+}
+
+function resolveSnapshotRoots(
+  input: MonoAgentAppConfigInput,
+  json: Readonly<Record<string, unknown>>,
+): readonly [string | undefined, string] {
+  const envSessions = input.env.MONO_AGENT_PI_SESSIONS_ROOT?.trim();
+  const envArtifacts = input.env.MONO_AGENT_ARTIFACT_DIR?.trim();
+  const providers = optionalObject(json.providers, "providers");
+  const piNative = optionalObject(providers?.piNative, "providers.piNative");
+  const artifacts = optionalObject(json.artifacts, "artifacts");
+  const configuredSessions = optionalPath(piNative?.piSessionsRoot, "providers.piNative.piSessionsRoot");
+  const configuredArtifacts = optionalPath(artifacts?.dir, "artifacts.dir");
+  return [
+    envSessions === undefined || envSessions.length === 0
+      ? (configuredSessions === undefined ? undefined : resolve(input.cwd, configuredSessions))
+      : resolve(input.cwd, envSessions),
+    envArtifacts === undefined || envArtifacts.length === 0
+      ? resolve(input.cwd, configuredArtifacts ?? ".mono-agent/artifacts")
+      : resolve(input.cwd, envArtifacts),
+  ];
+}
+
+function optionalObject(value: unknown, label: string): Readonly<Record<string, unknown>> | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`restart --clear-sessions ${label} must be an object.`);
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function optionalPath(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`restart --clear-sessions ${label} must be a non-empty string.`);
+  }
+  return value.trim();
 }
 
 function isErrno(error: unknown, code: string): error is NodeJS.ErrnoException {

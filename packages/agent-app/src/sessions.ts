@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { BigIntStats } from "node:fs";
-import { lstat, readdir, realpath, rename, rm, stat } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, sep } from "node:path";
+import { constants as fsConstants, type BigIntStats, type Dirent } from "node:fs";
+import { lstat, mkdir, open, opendir, readdir, realpath, rename, rm, stat, unlink } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
   ToolHistoryReader,
@@ -13,6 +13,8 @@ import type { MonoAgentAppConfigInput } from "./app-config.js";
 import {
   assertConversationStatePurgePlanUnchanged,
   assertConversationStatePurgeRootUnchanged,
+  CLEAR_SESSIONS_CONTROL_DIRECTORY,
+  clearSessionsRegistryRoot as resolveClearSessionsRegistryRoot,
   conversationStatePurgePlanEntries,
   type ConversationStatePurgePlan,
   type ResolvedConversationStatePurgeRoot,
@@ -22,7 +24,11 @@ import {
   sameFileSystemIdentity,
 } from "./conversation-state-roots.js";
 import { syncDirectory } from "./continuation-store-fs.js";
-import { loadProcessJobsSettings } from "./process-jobs-config.js";
+import {
+  assertProcessJobsConfigSnapshotUnchanged,
+  loadProcessJobsSettings,
+  readProcessJobsConfigSnapshot,
+} from "./process-jobs-config.js";
 
 export interface PurgeSessionsResult {
   /** The resolved sessions root, or undefined when sessions are in-memory only. */
@@ -74,6 +80,10 @@ export interface PurgeConversationStateOptions {
   /** @internal Deterministic race-test seam after every preflight validation and before any traversal. */
   readonly hooks?: {
     readonly afterValidation?: (plan: ConversationStatePurgePlan) => void | Promise<void>;
+    /** Simulate process death after the durable manifest and quarantine rename. */
+    readonly afterRootQuarantined?: (path: string) => void | Promise<void>;
+    /** Race seam immediately before the final quarantine identity proof. */
+    readonly beforeQuarantineRemoval?: (path: string) => void | Promise<void>;
   };
 }
 
@@ -90,15 +100,19 @@ export interface PurgeConversationStateOptions {
 export async function purgeSessions(input: MonoAgentAppConfigInput): Promise<PurgeSessionsResult> {
   const root = (await resolveConversationStatePurgeRoots(input)).sessions;
   if (root === undefined) return { removed: false, files: 0 };
-  return await purgeSessionsRoot(await resolveAndAttestConversationStatePurgeRoot("Pi provider sessions", root));
+  return await purgeSessionsRoot(
+    input,
+    await resolveAndAttestConversationStatePurgeRoot("Pi provider sessions", root),
+  );
 }
 
 async function purgeSessionsRoot(
+  input: MonoAgentAppConfigInput,
   root: ResolvedConversationStatePurgeRoot | undefined,
 ): Promise<PurgeSessionsResult> {
   const inspected = await inspectSessionsRoot(root);
   if (root?.target === undefined) return inspected;
-  await securelyRemovePurgeRoots([root]);
+  await securelyRemoveStandaloneRoots(input, [root]);
   return inspected;
 }
 
@@ -112,16 +126,18 @@ export async function purgeConversationHistory(
 ): Promise<PurgeConversationHistoryResult> {
   const root = (await resolveConversationStatePurgeRoots(input)).history;
   return await purgeConversationHistoryRoot(
+    input,
     await resolveAndAttestConversationStatePurgeRoot("durable session/tool history", root),
   );
 }
 
 async function purgeConversationHistoryRoot(
+  input: MonoAgentAppConfigInput,
   root: ResolvedConversationStatePurgeRoot,
 ): Promise<PurgeConversationHistoryResult> {
   const inspected = await inspectConversationHistoryRoot(root);
   if (root.target === undefined) return inspected;
-  await securelyRemovePurgeRoots([root]);
+  await securelyRemoveStandaloneRoots(input, [root]);
   return inspected;
 }
 
@@ -167,16 +183,18 @@ export async function purgeAcpSessionAuthorizations(
 ): Promise<PurgeAcpSessionAuthorizationsResult> {
   const root = (await resolveConversationStatePurgeRoots(input)).acpSessions;
   return await purgeAcpSessionAuthorizationsRoot(
+    input,
     await resolveAndAttestConversationStatePurgeRoot("ACP sessions", root),
   );
 }
 
 async function purgeAcpSessionAuthorizationsRoot(
+  input: MonoAgentAppConfigInput,
   root: ResolvedConversationStatePurgeRoot,
 ): Promise<PurgeAcpSessionAuthorizationsResult> {
   const inspected = await inspectAcpSessionAuthorizationsRoot(root);
   if (root.target === undefined) return inspected;
-  await securelyRemovePurgeRoots([root]);
+  await securelyRemoveStandaloneRoots(input, [root]);
   return inspected;
 }
 
@@ -185,26 +203,50 @@ export async function purgeConversationState(
   input: MonoAgentAppConfigInput,
   options: PurgeConversationStateOptions = {},
 ): Promise<PurgeConversationStateResult> {
-  const plan = await resolveConversationStatePurgePlan(input);
+  const snapshot = await readProcessJobsConfigSnapshot(input);
+  const frozenInput = { ...input, env: { ...snapshot.env } };
+  // Establish the registry parent before attesting absent default roots beneath
+  // `.mono-agent`, so our own registry creation cannot invalidate the plan.
+  await ensureClearSessionsRegistryParent(frozenInput.cwd);
+  const plan = await resolveConversationStatePurgePlan(frozenInput, snapshot);
   // A stale default store remains protected even after processJobs is removed
   // from config. Startup stays dormant; only this destructive path opts in.
-  await loadProcessJobsSettings(input, {
+  const processJobs = await loadProcessJobsSettings(frozenInput, {
     purgePlan: plan,
     validateDormantStateRoot: true,
+    snapshot,
   });
   assertPurgeRootsDisjoint(plan);
+  assertRegistryPathDisjoint(clearSessionsRegistryRoot(frozenInput.cwd), plan, processJobs.stateDir);
+  const registry = await ensureClearSessionsRegistry(frozenInput.cwd);
+  await assertRegistryDisjoint(registry, plan, processJobs.stateDir);
+  await reconcileClearSessionsRecovery(registry);
   await options.hooks?.afterValidation?.(plan);
   // Re-attest every target before counting so a detected swap cannot redirect
   // even read-only traversal, and again after counting before the first rename.
-  await assertConversationStatePurgePlanUnchanged(plan);
+  await Promise.all([
+    assertProcessJobsConfigSnapshotUnchanged(snapshot),
+    assertConversationStatePurgePlanUnchanged(plan),
+  ]);
   const [sessions, history, acpSessions] = await Promise.all([
     inspectSessionsRoot(plan.sessions),
     inspectConversationHistoryRoot(plan.history),
     inspectAcpSessionAuthorizationsRoot(plan.acpSessions),
   ]);
-  await assertConversationStatePurgePlanUnchanged(plan);
+  await Promise.all([
+    assertProcessJobsConfigSnapshotUnchanged(snapshot),
+    assertConversationStatePurgePlanUnchanged(plan),
+  ]);
   await securelyRemovePurgeRoots(
     conversationStatePurgePlanEntries(plan).filter((root) => root.target !== undefined),
+    registry,
+    options,
+    async () => {
+      await Promise.all([
+        assertProcessJobsConfigSnapshotUnchanged(snapshot),
+        assertConversationStatePurgePlanUnchanged(plan),
+      ]);
+    },
   );
   return { sessions, history, acpSessions };
 }
@@ -238,82 +280,211 @@ function assertPurgeRootsDisjoint(plan: ConversationStatePurgePlan): void {
   }
 }
 
-interface QuarantinedPurgeRoot {
-  readonly root: ResolvedConversationStatePurgeRoot;
+const CLEAR_SESSIONS_MANIFEST_SCHEMA = "mono-agent.clear-sessions-manifest.v1";
+const MAX_CLEAR_SESSIONS_MANIFESTS = 16;
+const MAX_CLEAR_SESSIONS_CONTROL_ENTRIES = 32;
+const MAX_CLEAR_SESSIONS_MANIFEST_BYTES = 8 * 1024;
+const MANIFEST_NAME = /^manifest-([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.json$/u;
+const TEMP_MANIFEST_NAME = /^\.manifest-([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.tmp$/u;
+const QUARANTINE_NAME = /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.quarantine$/u;
+
+interface AttestedPrivateDirectory {
   readonly path: string;
   readonly canonicalPath: string;
+  readonly identity: { readonly dev: bigint; readonly ino: bigint };
+}
+
+interface ClearSessionsManifest {
+  readonly schema: typeof CLEAR_SESSIONS_MANIFEST_SCHEMA;
+  readonly id: string;
+  readonly kind: ResolvedConversationStatePurgeRoot["kind"];
+  readonly originalPath: string;
+  readonly originalCanonicalPath: string;
+  readonly originalIdentity: WireIdentity;
+  readonly originalParentPath: string;
+  readonly originalParentCanonicalPath: string;
+  readonly originalParentIdentity: WireIdentity;
+  readonly controlPath: string;
+  readonly controlCanonicalPath: string;
+  readonly controlIdentity: WireIdentity;
+  readonly quarantinePath: string;
+  readonly quarantineCanonicalPath: string;
+}
+
+interface WireIdentity { readonly dev: string; readonly ino: string }
+
+interface QuarantinedPurgeRoot {
+  readonly root: ResolvedConversationStatePurgeRoot;
+  readonly registry: AttestedPrivateDirectory;
+  readonly control: AttestedPrivateDirectory;
+  readonly path: string;
+  readonly canonicalPath: string;
+  readonly manifestPath: string;
+  readonly manifestIdentity: { readonly dev: bigint; readonly ino: bigint };
+}
+
+/** Stable model-private registry root used by the sandbox recovery guard. */
+export function clearSessionsRegistryRoot(cwd: string): string {
+  return resolveClearSessionsRegistryRoot(cwd);
+}
+
+/** Generic, path-free model boundary: any pending or unsafe recovery state blocks execution. */
+export async function assertClearSessionsRecoveryResolved(cwd: string): Promise<void> {
+  try {
+    const path = clearSessionsRegistryRoot(cwd);
+    let registry: AttestedPrivateDirectory;
+    try {
+      registry = await attestStableRegistry(cwd);
+    } catch (error) {
+      if (isErrno(error, "ENOENT")) return;
+      throw error;
+    }
+    const entries = await boundedDirectoryEntries(registry.path, MAX_CLEAR_SESSIONS_MANIFESTS);
+    await assertPrivateDirectoryUnchanged(registry, "clear-sessions registry");
+    if (entries.length !== 0) throw new Error("pending");
+  } catch {
+    throw new Error("Clear-sessions recovery is unresolved; run restart --clear-sessions before model execution.");
+  }
+}
+
+async function securelyRemoveStandaloneRoots(
+  input: MonoAgentAppConfigInput,
+  roots: readonly ResolvedConversationStatePurgeRoot[],
+): Promise<void> {
+  const registry = await ensureClearSessionsRegistry(input.cwd);
+  for (const root of roots) {
+    if (pathsContainEachOther(registry.canonicalPath, root.canonicalPath)) {
+      throw new Error("Clear-sessions registry must be disjoint from every purge root.");
+    }
+  }
+  await reconcileClearSessionsRecovery(registry);
+  await securelyRemovePurgeRoots(roots, registry, {});
 }
 
 async function securelyRemovePurgeRoots(
   roots: readonly ResolvedConversationStatePurgeRoot[],
+  registry: AttestedPrivateDirectory,
+  options: PurgeConversationStateOptions,
+  beforeFirstRename?: () => Promise<void>,
 ): Promise<void> {
   if (roots.length === 0) return;
   await Promise.all(roots.map(assertConversationStatePurgeRootUnchanged));
   const quarantined: QuarantinedPurgeRoot[] = [];
-  try {
-    for (const root of roots) {
-      await assertConversationStatePurgeRootUnchanged(root);
-      quarantined.push(await quarantinePurgeRoot(root));
-    }
-  } catch (error) {
-    const rollbackErrors = await restoreQuarantinedRoots(quarantined);
-    if (rollbackErrors.length > 0) {
-      throw new AggregateError(
-        [error, ...rollbackErrors],
-        "restart --clear-sessions quarantine failed and one or more exact roots could not be restored; no quarantined root was deleted.",
-      );
-    }
-    throw error;
+  for (const [index, root] of roots.entries()) {
+    await assertConversationStatePurgeRootUnchanged(root);
+    const value = await quarantinePurgeRoot(
+      root,
+      registry,
+      index === 0 ? beforeFirstRename : undefined,
+    );
+    quarantined.push(value);
+    await options.hooks?.afterRootQuarantined?.(value.path);
   }
 
-  // Prove every quarantine before deleting the first one. An unexpected
-  // replacement remains untouched, and no original lexical path is traversed.
   await Promise.all(quarantined.map(assertQuarantinedRootUnchanged));
   for (const value of quarantined) {
+    await options.hooks?.beforeQuarantineRemoval?.(value.path);
     await assertQuarantinedRootUnchanged(value);
+    // The owner-private control directory is protected from model tools, and
+    // same-UID ambient OS processes are outside this deletion boundary.
     await rm(value.path, { recursive: true, force: false });
-    await syncAndReattestParent(value.root);
+    await syncAndReattestPrivateDirectory(value.control, "clear-sessions control directory");
+    await removeManifest(value);
   }
 }
 
 async function quarantinePurgeRoot(
   root: ResolvedConversationStatePurgeRoot,
+  registry: AttestedPrivateDirectory,
+  beforeRename?: () => Promise<void>,
 ): Promise<QuarantinedPurgeRoot> {
-  if (root.target === undefined) throw new Error(`Cannot quarantine missing purge root: ${root.path}`);
-  const name = `.${basename(root.path)}.clear-sessions-${String(process.pid)}-${randomUUID()}.quarantine`;
-  const path = join(root.target.parent.path, name);
-  const canonicalPath = join(root.target.parent.canonicalPath, name);
-  await assertMissing(path, `restart --clear-sessions quarantine destination already exists: ${path}`);
-  await rename(root.path, path);
-  const quarantined = { root, path, canonicalPath };
-  try {
-    await assertQuarantinedRootUnchanged(quarantined);
-    await syncAndReattestParent(root);
-    return quarantined;
-  } catch (error) {
-    const rollbackErrors = await restoreQuarantinedRoots([quarantined]);
-    if (rollbackErrors.length > 0) {
-      throw new AggregateError(
-        [error, ...rollbackErrors],
-        `restart --clear-sessions could not verify or restore quarantined ${root.kind}; it was not deleted.`,
-      );
-    }
-    throw error;
+  const target = root.target;
+  if (target === undefined) throw new Error(`Cannot quarantine missing purge root: ${root.path}`);
+  const control = await ensurePrivateDirectory(
+    join(target.parent.path, CLEAR_SESSIONS_CONTROL_DIRECTORY),
+    "clear-sessions control directory",
+  );
+  if (pathsContainEachOther(control.canonicalPath, root.canonicalPath)) {
+    throw new Error("Clear-sessions control directory must be disjoint from its purge root.");
   }
+  const id = randomUUID();
+  const quarantinePath = join(control.path, `${id}.quarantine`);
+  const quarantineCanonicalPath = join(control.canonicalPath, `${id}.quarantine`);
+  const manifestPath = join(registry.path, `manifest-${id}.json`);
+  const temporaryManifestPath = join(registry.path, `.manifest-${id}.tmp`);
+  await Promise.all([
+    assertMissing(quarantinePath, "Clear-sessions quarantine destination already exists."),
+    assertMissing(manifestPath, "Clear-sessions manifest destination already exists."),
+    assertMissing(temporaryManifestPath, "Clear-sessions temporary manifest destination already exists."),
+  ]);
+  const manifest: ClearSessionsManifest = {
+    schema: CLEAR_SESSIONS_MANIFEST_SCHEMA,
+    id,
+    kind: root.kind,
+    originalPath: root.path,
+    originalCanonicalPath: root.canonicalPath,
+    originalIdentity: wireIdentity(target.identity),
+    originalParentPath: target.parent.path,
+    originalParentCanonicalPath: target.parent.canonicalPath,
+    originalParentIdentity: wireIdentity(target.parent.identity),
+    controlPath: control.path,
+    controlCanonicalPath: control.canonicalPath,
+    controlIdentity: wireIdentity(control.identity),
+    quarantinePath,
+    quarantineCanonicalPath,
+  };
+  const manifestIdentity = await writeManifest(
+    registry,
+    temporaryManifestPath,
+    manifestPath,
+    manifest,
+  );
+  await Promise.all([
+    assertConversationStatePurgeRootUnchanged(root),
+    assertPrivateDirectoryUnchanged(control, "clear-sessions control directory"),
+    assertPrivateDirectoryUnchanged(registry, "clear-sessions registry"),
+  ]);
+  await beforeRename?.();
+  await rename(root.path, quarantinePath);
+  const quarantined = {
+    root,
+    registry,
+    control,
+    path: quarantinePath,
+    canonicalPath: quarantineCanonicalPath,
+    manifestPath,
+    manifestIdentity,
+  };
+  await assertQuarantinedRootUnchanged(quarantined);
+  await syncAndReattestParent(root);
+  await syncAndReattestPrivateDirectory(control, "clear-sessions control directory");
+  return quarantined;
 }
 
 async function assertQuarantinedRootUnchanged(value: QuarantinedPurgeRoot): Promise<void> {
   const target = value.root.target;
   if (target === undefined) throw new Error(`Missing attestation for quarantined purge root: ${value.root.path}`);
-  await assertParentUnchanged(value.root);
+  await Promise.all([
+    assertParentUnchanged(value.root),
+    assertPrivateDirectoryUnchanged(value.control, "clear-sessions control directory"),
+    assertPrivateDirectoryUnchanged(value.registry, "clear-sessions registry"),
+  ]);
   const details = await lstat(value.path, { bigint: true });
   assertRealDirectory(details, value.path);
-  if (!sameFileSystemIdentity(details, target.identity)) {
-    throw new Error(`restart --clear-sessions quarantined ${value.root.kind} identity changed; the replacement was left untouched.`);
+  if (!sameFileSystemIdentity(details, target.identity) || await realpath(value.path) !== value.canonicalPath) {
+    throw new Error(`restart --clear-sessions quarantined ${value.root.kind} changed; the replacement was left untouched.`);
   }
-  if (await realpath(value.path) !== value.canonicalPath) {
-    throw new Error(`restart --clear-sessions quarantined ${value.root.kind} canonical path changed; the replacement was left untouched.`);
+}
+
+async function removeManifest(value: QuarantinedPurgeRoot): Promise<void> {
+  await assertPrivateDirectoryUnchanged(value.registry, "clear-sessions registry");
+  const details = await lstat(value.manifestPath, { bigint: true });
+  assertPrivateFile(details, "clear-sessions manifest");
+  if (!sameFileSystemIdentity(details, value.manifestIdentity)) {
+    throw new Error("Clear-sessions manifest identity changed; recovery remains unresolved.");
   }
+  await unlink(value.manifestPath);
+  await syncAndReattestPrivateDirectory(value.registry, "clear-sessions registry");
 }
 
 async function syncAndReattestParent(root: ResolvedConversationStatePurgeRoot): Promise<void> {
@@ -325,34 +496,463 @@ async function syncAndReattestParent(root: ResolvedConversationStatePurgeRoot): 
 }
 
 async function assertParentUnchanged(root: ResolvedConversationStatePurgeRoot): Promise<void> {
-  const parent = root.target?.parent;
+  const parent = root.target?.parent ?? root.parent;
   if (parent === undefined) throw new Error(`Missing parent attestation for purge root: ${root.path}`);
   const details = await lstat(parent.path, { bigint: true });
-  assertRealDirectory(details, parent.path);
+  assertSecureContainingDirectory(details, parent.path);
   if (!sameFileSystemIdentity(details, parent.identity) || await realpath(parent.path) !== parent.canonicalPath) {
     throw new Error(`restart --clear-sessions ${root.kind} parent identity or canonical path changed; no replacement was deleted.`);
   }
 }
 
-async function restoreQuarantinedRoots(
-  roots: readonly QuarantinedPurgeRoot[],
-): Promise<unknown[]> {
-  const errors: unknown[] = [];
-  for (const value of [...roots].reverse()) {
-    try {
-      await assertQuarantinedRootUnchanged(value);
-      await assertMissing(
-        value.root.path,
-        `restart --clear-sessions cannot restore ${value.root.kind} because its original path was replaced.`,
-      );
-      await rename(value.path, value.root.path);
-      await assertConversationStatePurgeRootUnchanged(value.root);
-      await syncAndReattestParent(value.root);
-    } catch (error) {
-      errors.push(error);
+async function ensureClearSessionsRegistry(cwd: string): Promise<AttestedPrivateDirectory> {
+  await ensureClearSessionsRegistryParent(cwd);
+  await ensurePrivateDirectory(clearSessionsRegistryRoot(cwd), "clear-sessions registry");
+  return await attestStableRegistry(cwd);
+}
+
+async function ensureClearSessionsRegistryParent(cwd: string): Promise<void> {
+  const agentRoot = resolve(cwd);
+  const monoAgentRoot = dirname(clearSessionsRegistryRoot(cwd));
+  await ensureDirectoryUnderSecureParent(agentRoot, monoAgentRoot, ".mono-agent state directory", false);
+}
+
+async function attestStableRegistry(cwd: string): Promise<AttestedPrivateDirectory> {
+  const agentRoot = await attestDirectory(resolve(cwd), "agent root", false);
+  const monoAgentRoot = await attestDirectory(dirname(clearSessionsRegistryRoot(cwd)), ".mono-agent state directory", false);
+  const registry = await attestPrivateDirectory(clearSessionsRegistryRoot(cwd), "clear-sessions registry");
+  if (dirname(monoAgentRoot.canonicalPath) !== agentRoot.canonicalPath
+    || dirname(registry.canonicalPath) !== monoAgentRoot.canonicalPath) {
+    throw new Error("Clear-sessions registry escaped its attested agent root.");
+  }
+  return registry;
+}
+
+async function ensureDirectoryUnderSecureParent(
+  parent: string,
+  path: string,
+  label: string,
+  ownerPrivate: boolean,
+): Promise<AttestedPrivateDirectory> {
+  const parentBefore = await lstat(parent, { bigint: true });
+  assertSecureContainingDirectory(parentBefore, parent);
+  try {
+    await mkdir(path, { mode: 0o700 });
+  } catch (error) {
+    if (!isErrno(error, "EEXIST")) throw error;
+  }
+  const parentAfter = await lstat(parent, { bigint: true });
+  assertSecureContainingDirectory(parentAfter, parent);
+  if (!sameFileSystemIdentity(parentBefore, parentAfter)) throw new Error(`${label} parent changed during creation.`);
+  return await attestDirectory(path, label, ownerPrivate);
+}
+
+async function ensurePrivateDirectory(path: string, label: string): Promise<AttestedPrivateDirectory> {
+  return await ensureDirectoryUnderSecureParent(dirname(path), path, label, true);
+}
+
+async function attestPrivateDirectory(path: string, label: string): Promise<AttestedPrivateDirectory> {
+  return await attestDirectory(path, label, true);
+}
+
+async function attestDirectory(
+  path: string,
+  label: string,
+  ownerPrivate: boolean,
+): Promise<AttestedPrivateDirectory> {
+  const initial = await lstat(path, { bigint: true });
+  assertSecureContainingDirectory(initial, path);
+  if (ownerPrivate && (initial.mode & 0o077n) !== 0n) throw new Error(`${label} must be owner-only.`);
+  const canonicalPath = await realpath(path);
+  const current = await lstat(path, { bigint: true });
+  assertSecureContainingDirectory(current, path);
+  if (!sameFileSystemIdentity(initial, current)) throw new Error(`${label} identity changed during attestation.`);
+  return { path, canonicalPath, identity: { dev: initial.dev, ino: initial.ino } };
+}
+
+async function assertPrivateDirectoryUnchanged(value: AttestedPrivateDirectory, label: string): Promise<void> {
+  const current = await attestPrivateDirectory(value.path, label);
+  if (current.canonicalPath !== value.canonicalPath || !sameFileSystemIdentity(current.identity, value.identity)) {
+    throw new Error(`${label} identity or canonical path changed.`);
+  }
+}
+
+async function syncAndReattestPrivateDirectory(value: AttestedPrivateDirectory, label: string): Promise<void> {
+  await assertPrivateDirectoryUnchanged(value, label);
+  await syncDirectory(value.path);
+  await assertPrivateDirectoryUnchanged(value, label);
+}
+
+async function writeManifest(
+  registry: AttestedPrivateDirectory,
+  temporaryPath: string,
+  path: string,
+  manifest: ClearSessionsManifest,
+): Promise<{ readonly dev: bigint; readonly ino: bigint }> {
+  const body = `${JSON.stringify(manifest)}\n`;
+  if (Buffer.byteLength(body) > MAX_CLEAR_SESSIONS_MANIFEST_BYTES) throw new Error("Clear-sessions manifest is too large.");
+  await assertPrivateDirectoryUnchanged(registry, "clear-sessions registry");
+  const handle = await open(temporaryPath, "wx", 0o600);
+  try {
+    await handle.writeFile(body, "utf8");
+    await handle.sync();
+    const details = await handle.stat({ bigint: true });
+    assertPrivateFile(details, "clear-sessions manifest");
+    const named = await lstat(temporaryPath, { bigint: true });
+    assertPrivateFile(named, "clear-sessions manifest");
+    if (!sameFileSystemIdentity(details, named)) throw new Error("Clear-sessions manifest changed during publication.");
+    await rename(temporaryPath, path);
+    const published = await lstat(path, { bigint: true });
+    assertPrivateFile(published, "clear-sessions manifest");
+    if (!sameFileSystemIdentity(details, published)) throw new Error("Clear-sessions manifest changed during publication.");
+    await syncAndReattestPrivateDirectory(registry, "clear-sessions registry");
+    return { dev: details.dev, ino: details.ino };
+  } finally {
+    await handle.close();
+  }
+}
+
+interface LoadedManifest {
+  readonly value: ClearSessionsManifest;
+  readonly path: string;
+  readonly identity: { readonly dev: bigint; readonly ino: bigint };
+}
+
+async function reconcileClearSessionsRecovery(registry: AttestedPrivateDirectory): Promise<void> {
+  const entries = await boundedDirectoryEntries(registry.path, MAX_CLEAR_SESSIONS_MANIFESTS);
+  const temporaryEntries = entries.filter((entry) => TEMP_MANIFEST_NAME.test(entry.name));
+  for (const entry of temporaryEntries) {
+    if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("Clear-sessions registry contains an unsafe temporary manifest.");
+    const path = join(registry.path, entry.name);
+    const details = await lstat(path, { bigint: true });
+    assertPrivateFile(details, "clear-sessions temporary manifest");
+    await unlink(path);
+    await syncAndReattestPrivateDirectory(registry, "clear-sessions registry");
+  }
+  const manifestEntries = entries.filter((entry) => !TEMP_MANIFEST_NAME.test(entry.name));
+  const loaded = await Promise.all(manifestEntries.map(async (entry) => {
+    if (!entry.isFile() || entry.isSymbolicLink() || !MANIFEST_NAME.test(entry.name)) {
+      throw new Error("Clear-sessions registry contains an unsupported entry; recovery remains unresolved.");
+    }
+    return await readManifest(registry, entry.name);
+  }));
+  const ids = new Set<string>();
+  for (const manifest of loaded) {
+    if (ids.has(manifest.value.id)) throw new Error("Clear-sessions registry contains a duplicate manifest.");
+    ids.add(manifest.value.id);
+  }
+  await Promise.all(loaded.map((manifest) => validateRecoveryManifest(manifest.value)));
+  await validateRecoveryControls(loaded);
+  for (const manifest of loaded) await reconcileManifest(registry, manifest);
+  const remaining = await boundedDirectoryEntries(registry.path, MAX_CLEAR_SESSIONS_MANIFESTS);
+  if (remaining.length !== 0) throw new Error("Clear-sessions recovery did not settle every manifest.");
+  await syncAndReattestPrivateDirectory(registry, "clear-sessions registry");
+}
+
+async function validateRecoveryManifest(manifest: ClearSessionsManifest): Promise<void> {
+  await attestManifestControl(manifest);
+  const [original, quarantined] = await Promise.all([
+    optionalLstat(manifest.originalPath),
+    optionalLstat(manifest.quarantinePath),
+  ]);
+  if (original !== undefined && quarantined !== undefined) {
+    throw new Error("Clear-sessions recovery found both original and quarantine targets; neither was deleted.");
+  }
+  if (quarantined !== undefined) {
+    assertRealDirectory(quarantined, manifest.quarantinePath);
+    if (!sameWireIdentity(quarantined, manifest.originalIdentity)
+      || await realpath(manifest.quarantinePath) !== manifest.quarantineCanonicalPath) {
+      throw new Error("Clear-sessions quarantine identity changed; the replacement was left untouched.");
+    }
+    return;
+  }
+  if (original !== undefined) {
+    assertRealDirectory(original, manifest.originalPath);
+    if (!sameWireIdentity(original, manifest.originalIdentity)
+      || await realpath(manifest.originalPath) !== manifest.originalCanonicalPath) {
+      throw new Error("Clear-sessions original target changed while recovery was pending; it was left untouched.");
     }
   }
-  return errors;
+}
+
+async function validateRecoveryControls(manifests: readonly LoadedManifest[]): Promise<void> {
+  const byControl = new Map<string, LoadedManifest[]>();
+  for (const manifest of manifests) {
+    const values = byControl.get(manifest.value.controlPath) ?? [];
+    values.push(manifest);
+    byControl.set(manifest.value.controlPath, values);
+  }
+  for (const [path, values] of byControl) {
+    const control = await attestManifestControl(values[0]!.value);
+    const entries = await boundedDirectoryEntries(path, MAX_CLEAR_SESSIONS_CONTROL_ENTRIES);
+    const expected = new Set(values.map((value) => `${value.value.id}.quarantine`));
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()
+        || !QUARANTINE_NAME.test(entry.name) || !expected.has(entry.name)) {
+        throw new Error("Clear-sessions control directory contains an unattested entry; recovery remains unresolved.");
+      }
+    }
+    await assertPrivateDirectoryUnchanged(control, "clear-sessions control directory");
+  }
+}
+
+async function reconcileManifest(
+  registry: AttestedPrivateDirectory,
+  loaded: LoadedManifest,
+): Promise<void> {
+  const manifest = loaded.value;
+  const control = await attestManifestControl(manifest);
+  const original = await optionalLstat(manifest.originalPath);
+  const quarantined = await optionalLstat(manifest.quarantinePath);
+  if (quarantined !== undefined) {
+    if (original !== undefined) {
+      throw new Error("Clear-sessions recovery found both original and quarantine targets; neither was deleted.");
+    }
+    assertRealDirectory(quarantined, manifest.quarantinePath);
+    if (!sameWireIdentity(quarantined, manifest.originalIdentity)
+      || await realpath(manifest.quarantinePath) !== manifest.quarantineCanonicalPath) {
+      throw new Error("Clear-sessions quarantine identity changed; the replacement was left untouched.");
+    }
+    await assertPrivateDirectoryUnchanged(control, "clear-sessions control directory");
+    await rm(manifest.quarantinePath, { recursive: true, force: false });
+    await syncAndReattestPrivateDirectory(control, "clear-sessions control directory");
+  } else if (original !== undefined) {
+    assertRealDirectory(original, manifest.originalPath);
+    if (!sameWireIdentity(original, manifest.originalIdentity)
+      || await realpath(manifest.originalPath) !== manifest.originalCanonicalPath) {
+      throw new Error("Clear-sessions original target changed while recovery was pending; it was left untouched.");
+    }
+  }
+  await removeLoadedManifest(registry, loaded);
+}
+
+async function readManifest(
+  registry: AttestedPrivateDirectory,
+  name: string,
+): Promise<LoadedManifest> {
+  const match = MANIFEST_NAME.exec(name);
+  if (match === null) throw new Error("Clear-sessions manifest name is invalid.");
+  const path = join(registry.path, name);
+  await assertPrivateDirectoryUnchanged(registry, "clear-sessions registry");
+  const handle = await open(
+    path,
+    fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0),
+  );
+  try {
+    const before = await handle.stat({ bigint: true });
+    assertPrivateFile(before, "clear-sessions manifest");
+    if (before.size > BigInt(MAX_CLEAR_SESSIONS_MANIFEST_BYTES)) throw new Error("Clear-sessions manifest is too large.");
+    const bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    const named = await lstat(path, { bigint: true });
+    assertPrivateFile(after, "clear-sessions manifest");
+    assertPrivateFile(named, "clear-sessions manifest");
+    if (!sameManifestFile(before, after) || !sameManifestFile(after, named)
+      || bytes.byteLength !== Number(after.size)) {
+      throw new Error("Clear-sessions manifest changed while it was read.");
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+    } catch (error) {
+      throw new Error("Clear-sessions manifest is malformed.", { cause: error });
+    }
+    const value = parseManifest(parsed, match[1]!);
+    return { value, path, identity: { dev: before.dev, ino: before.ino } };
+  } finally {
+    await handle.close();
+  }
+}
+
+function parseManifest(value: unknown, expectedId: string): ClearSessionsManifest {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Clear-sessions manifest is malformed.");
+  const record = value as Record<string, unknown>;
+  const keys = [
+    "controlCanonicalPath", "controlIdentity", "controlPath", "id", "kind",
+    "originalCanonicalPath", "originalIdentity", "originalParentCanonicalPath",
+    "originalParentIdentity", "originalParentPath", "originalPath", "quarantineCanonicalPath",
+    "quarantinePath", "schema",
+  ];
+  if (Object.keys(record).sort().join(",") !== keys.sort().join(",")) throw new Error("Clear-sessions manifest has unknown fields.");
+  if (record.schema !== CLEAR_SESSIONS_MANIFEST_SCHEMA || record.id !== expectedId
+    || !isPurgeKind(record.kind)) throw new Error("Clear-sessions manifest identity is invalid.");
+  const manifest = record as unknown as ClearSessionsManifest;
+  for (const path of [
+    manifest.originalPath,
+    manifest.originalCanonicalPath,
+    manifest.originalParentPath,
+    manifest.originalParentCanonicalPath,
+    manifest.controlPath,
+    manifest.controlCanonicalPath,
+    manifest.quarantinePath,
+    manifest.quarantineCanonicalPath,
+  ]) {
+    if (typeof path !== "string" || !isAbsolute(path)) throw new Error("Clear-sessions manifest path is invalid.");
+  }
+  for (const identity of [manifest.originalIdentity, manifest.originalParentIdentity, manifest.controlIdentity]) {
+    assertWireIdentity(identity);
+  }
+  if (dirname(manifest.originalPath) !== manifest.originalParentPath
+    || dirname(manifest.originalCanonicalPath) !== manifest.originalParentCanonicalPath
+    || manifest.controlPath !== join(manifest.originalParentPath, CLEAR_SESSIONS_CONTROL_DIRECTORY)
+    || manifest.controlCanonicalPath !== join(manifest.originalParentCanonicalPath, CLEAR_SESSIONS_CONTROL_DIRECTORY)
+    || manifest.quarantinePath !== join(manifest.controlPath, `${expectedId}.quarantine`)
+    || manifest.quarantineCanonicalPath !== join(manifest.controlCanonicalPath, `${expectedId}.quarantine`)) {
+    throw new Error("Clear-sessions manifest path relationships are invalid.");
+  }
+  return manifest;
+}
+
+async function attestManifestControl(manifest: ClearSessionsManifest): Promise<AttestedPrivateDirectory> {
+  const control = await attestPrivateDirectory(manifest.controlPath, "clear-sessions control directory");
+  if (control.canonicalPath !== manifest.controlCanonicalPath
+    || !sameWireIdentity(control.identity, manifest.controlIdentity)) {
+    throw new Error("Clear-sessions control directory identity changed; recovery remains unresolved.");
+  }
+  const parent = await lstat(manifest.originalParentPath, { bigint: true });
+  assertSecureContainingDirectory(parent, manifest.originalParentPath);
+  if (!sameWireIdentity(parent, manifest.originalParentIdentity)
+    || await realpath(manifest.originalParentPath) !== manifest.originalParentCanonicalPath) {
+    throw new Error("Clear-sessions original parent changed; recovery remains unresolved.");
+  }
+  return control;
+}
+
+async function removeLoadedManifest(
+  registry: AttestedPrivateDirectory,
+  loaded: LoadedManifest,
+): Promise<void> {
+  await assertPrivateDirectoryUnchanged(registry, "clear-sessions registry");
+  const details = await lstat(loaded.path, { bigint: true });
+  assertPrivateFile(details, "clear-sessions manifest");
+  if (!sameFileSystemIdentity(details, loaded.identity)) throw new Error("Clear-sessions manifest identity changed.");
+  await unlink(loaded.path);
+  await syncAndReattestPrivateDirectory(registry, "clear-sessions registry");
+}
+
+async function assertRegistryDisjoint(
+  registry: AttestedPrivateDirectory,
+  plan: ConversationStatePurgePlan,
+  processJobsStateDir: string,
+): Promise<void> {
+  for (const root of conversationStatePurgePlanEntries(plan)) {
+    if (pathsContainEachOther(registry.canonicalPath, root.canonicalPath)) {
+      throw new Error("Clear-sessions registry must be disjoint from every purge root.");
+    }
+  }
+  const stateDir = await canonicalExistingPrefix(processJobsStateDir);
+  if (pathsContainEachOther(registry.path, stateDir)) {
+    throw new Error("Clear-sessions registry must be disjoint from process-job durable state.");
+  }
+}
+
+async function canonicalExistingPrefix(path: string): Promise<string> {
+  let cursor = resolve(path);
+  const missing: string[] = [];
+  while (true) {
+    try {
+      return resolve(await realpath(cursor), ...missing);
+    } catch (error) {
+      if (!isErrno(error, "ENOENT")) throw error;
+    }
+    const parent = dirname(cursor);
+    if (parent === cursor) throw new Error("Clear-sessions path has no canonical ancestor.");
+    missing.unshift(basename(cursor));
+    cursor = parent;
+  }
+}
+
+function assertRegistryPathDisjoint(
+  registryPath: string,
+  plan: ConversationStatePurgePlan,
+  processJobsStateDir: string,
+): void {
+  for (const root of conversationStatePurgePlanEntries(plan)) {
+    if (pathsContainEachOther(resolve(registryPath), resolve(root.path))) {
+      throw new Error("Clear-sessions registry must be disjoint from every purge root.");
+    }
+  }
+  if (pathsContainEachOther(resolve(registryPath), resolve(processJobsStateDir))) {
+    throw new Error("Clear-sessions registry must be disjoint from process-job durable state.");
+  }
+}
+
+async function boundedDirectoryEntries(path: string, maximum: number): Promise<Dirent[]> {
+  const directory = await opendir(path);
+  const entries: Dirent[] = [];
+  try {
+    for await (const entry of directory) {
+      if (entries.length >= maximum) throw new Error("Clear-sessions recovery work exceeds its safety bound.");
+      entries.push(entry);
+    }
+  } finally {
+    await directory.close().catch(() => undefined);
+  }
+  return entries;
+}
+
+async function optionalLstat(path: string): Promise<BigIntStats | undefined> {
+  try {
+    return await lstat(path, { bigint: true });
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return undefined;
+    throw error;
+  }
+}
+
+function assertSecureContainingDirectory(details: BigIntStats, path: string): void {
+  assertRealDirectory(details, path);
+  if (process.getuid !== undefined && details.uid !== BigInt(process.getuid())) {
+    throw new Error("Clear-sessions directory is not owned by the current user.");
+  }
+  if ((details.mode & 0o022n) !== 0n) {
+    throw new Error("Clear-sessions directory must not be group/world writable.");
+  }
+}
+
+function assertPrivateFile(details: BigIntStats, label: string): void {
+  if (!details.isFile() || details.isSymbolicLink() || details.nlink !== 1n
+    || (details.mode & 0o077n) !== 0n
+    || (process.getuid !== undefined && details.uid !== BigInt(process.getuid()))) {
+    throw new Error(`${label} must be one owner-private regular file.`);
+  }
+}
+
+function sameManifestFile(left: BigIntStats, right: BigIntStats): boolean {
+  return sameFileSystemIdentity(left, right)
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs
+    && left.mode === right.mode
+    && left.uid === right.uid
+    && left.nlink === right.nlink;
+}
+
+function wireIdentity(value: { readonly dev: bigint; readonly ino: bigint }): WireIdentity {
+  return { dev: value.dev.toString(), ino: value.ino.toString() };
+}
+
+function assertWireIdentity(value: unknown): asserts value is WireIdentity {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("Clear-sessions manifest identity is invalid.");
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).sort().join(",") !== "dev,ino"
+    || typeof record.dev !== "string" || !/^\d+$/u.test(record.dev)
+    || typeof record.ino !== "string" || !/^\d+$/u.test(record.ino)) {
+    throw new Error("Clear-sessions manifest identity is invalid.");
+  }
+}
+
+function sameWireIdentity(
+  value: { readonly dev: bigint; readonly ino: bigint },
+  expected: WireIdentity,
+): boolean {
+  return value.dev.toString() === expected.dev && value.ino.toString() === expected.ino;
+}
+
+function isPurgeKind(value: unknown): value is ResolvedConversationStatePurgeRoot["kind"] {
+  return value === "Pi provider sessions"
+    || value === "durable session/tool history"
+    || value === "ACP sessions";
 }
 
 async function assertMissing(path: string, message: string): Promise<void> {
