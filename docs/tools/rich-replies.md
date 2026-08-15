@@ -165,9 +165,11 @@ removes the frame, and callbacks from a retired frame cannot affect its
 replacement.
 
 The inner app remains `srcdoc`, so it inherits the proxy response policy. That
-route-local envelope permits inline script and style for the fixed proxy/app
-bootstrap, retains non-clipping containment directives, and deliberately omits
-`default-src`, `connect-src`, `img-src`, `font-src`, `media-src`, `frame-src`,
+route-local envelope explicitly permits inline script for the fixed proxy/app
+bootstrap. With no `default-src`, the fixed proxy's inline bootstrap style still
+works. The envelope retains non-clipping containment directives and deliberately
+omits `default-src`, `connect-src`, `style-src`, `img-src`, `font-src`,
+`media-src`, `frame-src`,
 `child-src`, and `base-uri`. The canonical sanitized inner meta policy is
 therefore authoritative for those capabilities. Before assigning `srcdoc`, the
 proxy requires the bounded HTML to begin with that exact policy/referrer output
