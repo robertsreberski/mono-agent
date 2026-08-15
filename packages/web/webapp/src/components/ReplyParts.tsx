@@ -1,7 +1,6 @@
 import {
   AppBridge,
   PostMessageTransport,
-  buildAllowAttribute,
   type McpUiResourceCsp,
   type McpUiResourcePermissions,
 } from "@modelcontextprotocol/ext-apps/app-bridge";
@@ -21,9 +20,9 @@ import { Icon } from "./Icon";
 
 const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 const APP_HTML_MAX_BYTES = 2 * 1024 * 1024;
-const BRIDGE_MESSAGE_MAX_BYTES = 1024 * 1024 + 64 * 1024;
 const APP_MIN_HEIGHT = 160;
 const APP_MAX_HEIGHT = 800;
+const MCP_APP_PROXY_PATH = "/api/v1/mcp-app-proxy";
 
 type ReplyAttachmentPart = Extract<MessagePart, { readonly type: "attachment" }>;
 type ReplyFailurePart = Extract<MessagePart, { readonly type: "failure" }>;
@@ -234,114 +233,6 @@ const createNonce = (): string => {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
   const bytes = crypto.getRandomValues(new Uint8Array(24));
   return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
-};
-
-/**
- * Trusted outer proxy for the MCP Apps double-iframe model.
- *
- * It has an opaque origin and no ambient capabilities. The app receives a
- * second opaque origin and can exchange only bounded JSON-RPC messages with
- * the one host instance that completed this nonce/identity handshake.
- */
-export const mcpAppSandboxProxyDocument = (input: {
-  readonly nonce: string;
-  readonly invocationId: string;
-  readonly connectionId: string;
-  readonly hostOrigin: string;
-  readonly allow: string;
-}): string => {
-  const config = JSON.stringify(input).replaceAll("<", "\\u003c");
-  return `<!doctype html>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; frame-src 'self'; child-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; navigate-to 'none'">
-<meta name="referrer" content="no-referrer">
-<style>html,body,#root{width:100%;height:100%;margin:0;overflow:hidden}iframe{width:100%;height:100%;display:block;border:0}</style>
-<div id="root" aria-live="polite"></div>
-<script>
-(() => {
-  "use strict";
-  const config = ${config};
-  const root = document.getElementById("root");
-  let hostReady = false;
-  let appFrame = null;
-  let appFrameLoads = 0;
-  let readyAttempts = 0;
-  const byteLength = (value) => {
-    try { return new TextEncoder().encode(JSON.stringify(value)).byteLength; }
-    catch { return Number.POSITIVE_INFINITY; }
-  };
-  const isRpc = (value) => value !== null && typeof value === "object" && !Array.isArray(value)
-    && value.jsonrpc === "2.0"
-    && (typeof value.method === "string" || "id" in value);
-  const identityMatches = (value) => value !== null && typeof value === "object"
-    && value.nonce === config.nonce
-    && value.invocationId === config.invocationId
-    && value.connectionId === config.connectionId;
-  const sendHost = (value) => window.parent.postMessage(value, config.hostOrigin);
-  const mountResource = (params) => {
-    if (appFrame || !params || typeof params.html !== "string"
-      || new TextEncoder().encode(params.html).byteLength > ${APP_HTML_MAX_BYTES}) return;
-    const frame = document.createElement("iframe");
-    frame.setAttribute("title", "MCP App content");
-    frame.setAttribute("sandbox", "allow-scripts");
-    if (config.allow) frame.setAttribute("allow", config.allow);
-    frame.referrerPolicy = "no-referrer";
-    frame.srcdoc = params.html;
-    frame.addEventListener("load", () => {
-      appFrameLoads += 1;
-      if (appFrameLoads <= 1 || appFrame !== frame) return;
-      appFrame = null;
-      frame.remove();
-      root.textContent = "App navigation was blocked.";
-    });
-    appFrame = frame;
-    root.replaceChildren(frame);
-  };
-  window.addEventListener("message", (event) => {
-    if (event.source === window.parent) {
-      if (event.origin !== config.hostOrigin) return;
-      if (event.data?.type === "mono-agent:mcp-app-host-ready") {
-        if (!identityMatches(event.data) || hostReady) return;
-        hostReady = true;
-        window.clearInterval(readyTimer);
-        sendHost({ jsonrpc: "2.0", method: "ui/notifications/sandbox-proxy-ready", params: {} });
-        return;
-      }
-      if (!hostReady || !isRpc(event.data)) return;
-      const max = event.data.method === "ui/notifications/sandbox-resource-ready"
-        ? ${APP_HTML_MAX_BYTES + 64 * 1024}
-        : ${BRIDGE_MESSAGE_MAX_BYTES};
-      if (byteLength(event.data) > max) return;
-      if (event.data.method === "ui/notifications/sandbox-resource-ready") {
-        mountResource(event.data.params);
-        return;
-      }
-      // The inner sandbox has an opaque origin, so an exact target origin is
-      // impossible here; source-window and bounded-RPC checks are the binding.
-      appFrame?.contentWindow?.postMessage(event.data, "*");
-      return;
-    }
-    if (!hostReady || !appFrame || event.source !== appFrame.contentWindow || event.origin !== "null") return;
-    if (!isRpc(event.data) || byteLength(event.data) > ${BRIDGE_MESSAGE_MAX_BYTES}) return;
-    if (event.data.method === "ui/notifications/sandbox-proxy-ready"
-      || event.data.method === "ui/notifications/sandbox-resource-ready") return;
-    sendHost(event.data);
-  });
-  const announceReady = () => {
-    if (hostReady || readyAttempts++ >= 20) {
-      window.clearInterval(readyTimer);
-      return;
-    }
-    sendHost({
-      type: "mono-agent:mcp-app-proxy-ready",
-      nonce: config.nonce,
-      invocationId: config.invocationId,
-      connectionId: config.connectionId,
-    });
-  };
-  const readyTimer = window.setInterval(announceReady, 250);
-  announceReady();
-})();
-</script>`;
 };
 
 const formatBytes = (size: number): string => {
@@ -940,14 +831,25 @@ export function McpAppPart({ data }: DataMessagePartProps) {
     setStatusText(secured.error);
   }, [secured.error]);
   const securedHtml = secured.html;
-  const allow = useMemo(() => buildAllowAttribute(metadata.permissions), [metadata.permissions]);
-  const proxyDocument = useMemo(() => part === undefined ? "" : mcpAppSandboxProxyDocument({
-    nonce,
-    invocationId: part.invocationId,
-    connectionId: part.connectionId,
-    hostOrigin: window.location.origin,
-    allow,
-  }), [allow, nonce, part?.connectionId, part?.invocationId]);
+  const clipboardWrite = metadata.permissions?.clipboardWrite !== undefined;
+  const proxyInstanceKey = `${identity}:${clipboardWrite ? "clipboard" : "none"}`;
+  const invocationId = part?.invocationId;
+  const connectionId = part?.connectionId;
+  const configureProxy = useCallback(() => {
+    const frameWindow = iframeRef.current?.contentWindow;
+    if (frameWindow === undefined || frameWindow === null
+      || invocationId === undefined || connectionId === undefined) return;
+    // The proxy has an opaque origin, so it derives and locks the host origin
+    // from this browser-authenticated parent MessageEvent instead of trusting a
+    // value in the payload.
+    frameWindow.postMessage({
+      type: "mono-agent:mcp-app-proxy-config",
+      nonce,
+      invocationId,
+      connectionId,
+      clipboardWrite,
+    }, "*");
+  }, [clipboardWrite, connectionId, invocationId, nonce]);
 
   useEffect(() => {
     if (
@@ -1224,6 +1126,7 @@ export function McpAppPart({ data }: DataMessagePartProps) {
       <p className={`mcp-app-status is-${status}`} role="status">{statusText}</p>
       {resource !== null && securedHtml !== undefined && !accessExpired && status !== "closed" && (
         <iframe
+          key={proxyInstanceKey}
           ref={iframeRef}
           className="mcp-app-frame"
           title={`${part.title ?? part.toolName} interactive app`}
@@ -1232,7 +1135,8 @@ export function McpAppPart({ data }: DataMessagePartProps) {
           inert={confirmation !== null}
           aria-hidden={confirmation !== null}
           tabIndex={confirmation === null ? 0 : -1}
-          srcDoc={proxyDocument}
+          src={MCP_APP_PROXY_PATH}
+          onLoad={configureProxy}
           style={{ height }}
         />
       )}

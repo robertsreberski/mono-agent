@@ -247,6 +247,10 @@ An advertised MCP App is stored as a structured message part and rendered only
 while its exact originating connection remains live. The PWA uses a
 nonce/identity-bound double iframe; both frames have opaque origins and
 `allow-scripts` without same-origin, popup, form, or top-navigation grants.
+The fixed outer proxy is a same-origin, no-store response with a route-local
+executable CSP, while the SPA shell retains `script-src 'self'`. A one-shot
+direct-parent message supplies invocation binding without placing it in the
+proxy document or URL.
 Server origins are default-denied and intersected with a host allowlist, and
 resource origins never become script origins. Tool/link/context actions use an
 inert, focus-trapped confirmation dialog; tool arguments are bounded and

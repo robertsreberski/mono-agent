@@ -149,9 +149,20 @@ connection; cross-resource and cross-connection reads are denied.
 
 The web console uses two nested iframes. Both are opaque-origin sandboxes with
 `allow-scripts` only—no same-origin, popups, forms, or top navigation. The
-trusted outer proxy binds the parent and inner frame by source window, host
-origin where available, invocation id, connection id, a random nonce, and
+trusted outer proxy loads from a fixed, same-origin, no-store response with its
+own CSP; the console shell keeps `script-src 'self'`. Invocation data appears in
+neither the proxy document nor its URL. The direct parent supplies one bounded
+configuration message after load, the proxy derives the parent origin from that
+browser-authenticated event, and the first valid nonce/invocation/connection
+tuple permanently binds the instance. Parent and inner traffic then remains
+bound by exact source window, origin where available, that identity tuple, and
 bounded JSON-RPC messages. A second inner-frame navigation removes the frame.
+
+The inner app remains `srcdoc`, so it inherits the proxy response policy. That
+route-local policy permits inline execution only inside this opaque proxy/app
+chain while denying remote script and network sources; the app's earlier
+per-resource policy further restricts its markup. The SPA shell policy is never
+relaxed to make an App executable.
 
 Server-declared network, image, frame, and resource origins are intersected
 with a host allowlist; the default is empty. Resource origins never enter

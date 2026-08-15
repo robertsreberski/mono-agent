@@ -95,6 +95,38 @@ describe("web HTTP server", () => {
     expect(JSON.stringify(body)).not.toContain("privateKey");
   });
 
+  it("serves the fixed MCP App proxy with a route-local executable CSP", async () => {
+    const { baseUrl } = await start();
+
+    const proxy = await fetch(`${baseUrl}/api/v1/mcp-app-proxy`);
+    expect(proxy.status).toBe(200);
+    expect(proxy.headers.get("content-type")).toContain("text/html");
+    expect(proxy.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(proxy.headers.get("x-frame-options")).toBe("SAMEORIGIN");
+    expect(proxy.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+    const proxyCsp = proxy.headers.get("content-security-policy") ?? "";
+    expect(proxyCsp).toContain("default-src 'none'");
+    expect(proxyCsp).toContain("script-src 'unsafe-inline'");
+    expect(proxyCsp).toContain("connect-src 'none'");
+    expect(proxyCsp).toContain("frame-src 'self'");
+    expect(proxyCsp).toContain("frame-ancestors 'self'");
+    expect(proxyCsp).not.toMatch(/script-src[^;]*(?:https?:|\*)/u);
+    const document = await proxy.text();
+    expect(document).toContain('type: "mono-agent:mcp-app-proxy-ready"');
+    expect(document).toContain('frame.setAttribute("sandbox", "allow-scripts")');
+    expect(document).toContain('event.source !== appFrame.contentWindow');
+    expect(document).toContain('event.origin !== "null"');
+    expect(document).not.toContain("allow-same-origin");
+    expect(document).not.toContain("resourceUrl");
+    expect(document).not.toContain("bridgeUrl");
+
+    const shell = await fetch(`${baseUrl}/`);
+    const shellCsp = shell.headers.get("content-security-policy") ?? "";
+    expect(shellCsp).toContain("script-src 'self'");
+    expect(shellCsp).not.toMatch(/script-src[^;]*'unsafe-inline'/u);
+    expect(shell.headers.get("x-frame-options")).toBe("DENY");
+  });
+
   it("registers only exact-origin public push endpoints and never returns endpoint secrets", async () => {
     const { baseUrl } = await start({
       pushDnsResolver: async () => [{ address: "203.0.114.10", family: 4 }],
@@ -809,7 +841,7 @@ describe("web HTTP server", () => {
     expect(crossThreadRefresh.status).toBe(404);
     const missingOriginRefresh = await fetch(`${baseUrl}${attachmentAccessPath}`, { method: "POST" });
     expect(missingOriginRefresh.status).toBe(403);
-    expect(bridgeBodies).toHaveLength(2);
+    expect(bridgeBodies).toHaveLength(3);
   });
 
   it("keeps failed upload bytes staged/retryable and removes only staged attachments", async () => {

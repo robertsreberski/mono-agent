@@ -50,7 +50,6 @@ import {
   ReplyFailurePart,
   mcpAppContentSecurityPolicy,
   mcpAppArgumentPreview,
-  mcpAppSandboxProxyDocument,
   openExternalMcpAppLink,
   safeMcpAppResourceMetadata,
   secureMcpAppHtml,
@@ -112,18 +111,41 @@ interface TestAppBridgeInstance {
   readonly teardownResource: () => Promise<void>;
 }
 
+interface TestProxyConfiguration {
+  readonly type: "mono-agent:mcp-app-proxy-config";
+  readonly nonce: string;
+  readonly invocationId: string;
+  readonly connectionId: string;
+  readonly clipboardWrite: boolean;
+}
+
+const configureRenderedApp = async (frame: HTMLIFrameElement): Promise<TestProxyConfiguration> => {
+  if (frame.contentWindow === null) throw new Error("Expected an iframe window.");
+  const postMessage = vi.spyOn(frame.contentWindow, "postMessage");
+  fireEvent.load(frame);
+  await waitFor(() => expect(postMessage).toHaveBeenCalledWith(
+    expect.objectContaining({ type: "mono-agent:mcp-app-proxy-config" }),
+    "*",
+  ));
+  const call = postMessage.mock.calls.find(([value]) =>
+    typeof value === "object" && value !== null
+      && (value as { type?: unknown }).type === "mono-agent:mcp-app-proxy-config");
+  if (call === undefined) throw new Error("Expected a proxy configuration message.");
+  return call[0] as TestProxyConfiguration;
+};
+
 const connectRenderedApp = async (
   frame: HTMLIFrameElement,
   part: McpAppPartValue,
 ): Promise<TestAppBridgeInstance> => {
-  const nonce = JSON.parse(frame.getAttribute("srcdoc")?.match(/const config = (\{.*\});/u)?.[1] ?? "{}").nonce;
+  const config = await configureRenderedApp(frame);
   await waitFor(() => {
     window.dispatchEvent(new MessageEvent("message", {
       source: frame.contentWindow,
       origin: "null",
       data: {
         type: "mono-agent:mcp-app-proxy-ready",
-        nonce,
+        nonce: config.nonce,
         invocationId: part.invocationId,
         connectionId: part.connectionId,
       },
@@ -628,34 +650,70 @@ describe("MCP App sandbox", () => {
     expect(secured).toContain("navigate-to 'none'");
   });
 
-  it("binds each opaque proxy to one nonce, invocation, connection, and origin", () => {
-    const first = mcpAppSandboxProxyDocument({
-      nonce: "nonce-one",
-      invocationId: "invocation-one",
-      connectionId: "connection-one",
-      hostOrigin: "https://console.example",
-      allow: "clipboard-write",
-    });
-    const second = mcpAppSandboxProxyDocument({
-      nonce: "nonce-two",
-      invocationId: "invocation-two",
-      connectionId: "connection-two",
-      hostOrigin: "https://console.example",
-      allow: "",
+  it("loads a fixed same-origin proxy and sends its per-instance binding only after load", async () => {
+    vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>interactive</p>",
+      connected: true,
     });
 
-    expect(first).toContain("nonce-one");
-    expect(first).toContain("invocation-one");
-    expect(first).toContain("connection-one");
-    expect(first).not.toContain("nonce-two");
-    expect(second).toContain("nonce-two");
-    expect(first).toContain('frame.setAttribute("sandbox", "allow-scripts")');
-    expect(first).not.toContain("allow-same-origin");
-    expect(first).toContain("event.source !== appFrame.contentWindow");
-    expect(first).toContain('event.origin !== "null"');
-    expect(first).toContain("appFrameLoads += 1");
-    expect(first).toContain("App navigation was blocked.");
-    expect(first).toContain("child-src 'self'");
+    render(app(appPart));
+    const frame = await screen.findByTitle("Quarterly report interactive app") as HTMLIFrameElement;
+    expect(frame).toHaveAttribute("src", "/api/v1/mcp-app-proxy");
+    expect(frame).not.toHaveAttribute("srcdoc");
+    const config = await configureRenderedApp(frame);
+
+    expect(config).toEqual({
+      type: "mono-agent:mcp-app-proxy-config",
+      nonce: expect.any(String),
+      invocationId: appPart.invocationId,
+      connectionId: appPart.connectionId,
+      clipboardWrite: false,
+    });
+    expect(config).not.toHaveProperty("hostOrigin");
+    expect(config).not.toHaveProperty("resourceUrl");
+    expect(config).not.toHaveProperty("bridgeUrl");
+  });
+
+  it("fails closed on a ready message with the wrong window, origin, nonce, invocation, or connection", async () => {
+    vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>interactive</p>",
+      connected: true,
+    });
+
+    render(app(appPart));
+    const frame = await screen.findByTitle("Quarterly report interactive app") as HTMLIFrameElement;
+    const config = await configureRenderedApp(frame);
+    const dispatchReady = (overrides: Record<string, unknown> = {}, source: MessageEventSource | null = frame.contentWindow) => {
+      window.dispatchEvent(new MessageEvent("message", {
+        source,
+        origin: "null",
+        data: {
+          type: "mono-agent:mcp-app-proxy-ready",
+          nonce: config.nonce,
+          invocationId: config.invocationId,
+          connectionId: config.connectionId,
+          ...overrides,
+        },
+      }));
+    };
+
+    dispatchReady({}, window);
+    dispatchReady({ type: "wrong-ready" }, frame.contentWindow);
+    window.dispatchEvent(new MessageEvent("message", {
+      source: frame.contentWindow,
+      origin: window.location.origin,
+      data: { ...config, type: "mono-agent:mcp-app-proxy-ready" },
+    }));
+    dispatchReady({ nonce: "wrong-nonce" });
+    dispatchReady({ invocationId: "wrong-invocation" });
+    dispatchReady({ connectionId: "wrong-connection" });
+    await act(async () => await Promise.resolve());
+    expect(bridgeHarness.instances).toHaveLength(0);
+
+    dispatchReady();
+    await waitFor(() => expect(bridgeHarness.instances).toHaveLength(1));
   });
 
   it("treats window.open returning null under noopener as a successful safe open", () => {
@@ -700,7 +758,8 @@ describe("MCP App sandbox", () => {
     expect(container.querySelector("img")).toBeNull();
     expect(container.querySelector("script")).toBeNull();
     expect(document.body).not.toHaveAttribute("data-pwned");
-    expect(frame.getAttribute("srcdoc")).not.toContain("document.body.dataset.pwned");
+    expect(frame).toHaveAttribute("src", "/api/v1/mcp-app-proxy");
+    expect(frame).not.toHaveAttribute("srcdoc");
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Starting the isolated app"));
   });
 

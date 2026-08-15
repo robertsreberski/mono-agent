@@ -37,6 +37,11 @@ import {
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
 import {
+  MCP_APP_PROXY_CONTENT_SECURITY_POLICY,
+  MCP_APP_PROXY_DOCUMENT,
+  MCP_APP_PROXY_PATH,
+} from "./mcp-app-proxy.js";
+import {
   startWebNotificationIngress,
   type WebNotificationIngressHandle,
 } from "./notification-ingress.js";
@@ -120,6 +125,11 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     void service.bootstrap()
       .then((bootstrap) => res.status(200).json({ ...bootstrap, console: consoleIdentity }))
       .catch(next);
+  });
+
+  app.get(MCP_APP_PROXY_PATH, (_req, res) => {
+    setMcpAppProxyHeaders(res);
+    res.status(200).type("html").send(MCP_APP_PROXY_DOCUMENT);
   });
 
   if (webManifest !== undefined) {
@@ -839,6 +849,13 @@ function setPrivateAppHeaders(res: Response): void {
   res.setHeader("Cache-Control", "private, no-store, max-age=0");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Content-Security-Policy", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+}
+
+function setMcpAppProxyHeaders(res: Response): void {
+  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Content-Security-Policy", MCP_APP_PROXY_CONTENT_SECURITY_POLICY);
   res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
 }
 

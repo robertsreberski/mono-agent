@@ -259,6 +259,9 @@ persisted credential nor a retention extension.
 
 MCP Apps run only while their exact originating MCP connection is live. The PWA
 uses a nonce-bound double iframe with opaque origins and `allow-scripts` only.
+Its fixed same-origin outer proxy has a no-store, route-local executable CSP and
+receives invocation binding through a one-shot direct-parent message; the SPA
+shell retains `script-src 'self'` and no invocation data enters the proxy URL.
 Remote CSP origins default to denied, resource domains never grant script
 execution, and a second inner-frame navigation removes the app. Tool calls,
 links, and context updates use an inert, focus-trapped confirmation dialog;
