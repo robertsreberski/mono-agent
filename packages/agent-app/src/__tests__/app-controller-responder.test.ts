@@ -115,6 +115,7 @@ describe("reply artifact responder composition", () => {
       requestModelOverrideRuntimeOptions: () => ({
         extension: async () => ({ runtimeOptions: {}, cleanup: async () => {} }),
         targetsDirectOpenCode: () => false,
+        targetsUnsupportedHistoryTool: () => false,
       }),
       buildRuntimeForModel: () => () => runtime,
       observabilityContext: async () => ({}),
@@ -286,6 +287,7 @@ describe("reply artifact responder composition", () => {
       requestModelOverrideRuntimeOptions: () => ({
         extension: async () => ({ runtimeOptions: {}, cleanup: async () => {} }),
         targetsDirectOpenCode: () => false,
+        targetsUnsupportedHistoryTool: () => false,
       }),
       buildRuntimeForModel: () => () => runtime,
       observabilityContext: async () => ({}),
