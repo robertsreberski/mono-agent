@@ -464,8 +464,8 @@ export class ChatView extends Container {
         },
         presenter,
       );
-      if (response.text !== undefined) {
-        await presenter.finish(response.text);
+      if (response.text !== undefined || (response.parts?.length ?? 0) > 0) {
+        await presenter.finish(response.text, response.parts === undefined ? undefined : { parts: response.parts });
       }
       this.applyFinishMetadata(response.metadata);
     } catch (error) {

@@ -5,6 +5,7 @@ import { networkInterfaces } from "node:os";
 import {
   BufferedMessageStream,
   BoundedHttpResponseWriter,
+  appendReplyPartFallback,
   closeServerBounded,
   isAgentResponseCancelledError,
   type AgentAttachment,
@@ -454,7 +455,10 @@ async function runJsonResponder(input: {
   try {
     const samplingWarning = await emitUnsupportedSamplingWarning(input.request, stream, input.options.logger);
     const response = await input.options.responder.respond(input.request, stream);
-    await stream.finish(response.text);
+    await stream.finish(response.text, {
+      ...(response.parts === undefined ? {} : { parts: response.parts }),
+      unsupportedPartFallback: "none",
+    });
     input.response.status(200).json(chatCompletion({
       id: `chatcmpl-${input.requestId}`,
       model: input.model,
@@ -522,7 +526,10 @@ async function runStreamingResponder(input: {
     await stream.start();
     await emitUnsupportedSamplingWarning(input.request, stream, input.options.logger);
     const response = await input.options.responder.respond(input.request, stream);
-    await stream.finish(response.text);
+    await stream.finish(response.text, {
+      ...(response.parts === undefined ? {} : { parts: response.parts }),
+      unsupportedPartFallback: "none",
+    });
   } catch (error) {
     const cancelled = input.request.abortSignal.aborted || isAgentResponseCancelledError(error);
     input.options.logger?.[cancelled ? "warn" : "error"]?.("OpenAI API streaming responder failed.", {
@@ -615,12 +622,20 @@ class SseChatMessageStream implements AgentMessageStream {
     }
   }
 
-  async finish(finalText?: string): Promise<void> {
+  async finish(
+    finalText?: string,
+    options?: import("@mono-agent/agent-contracts").AgentMessageFinishOptions,
+  ): Promise<void> {
     if (this.done) {
       return;
     }
-    if (finalText !== undefined) {
-      await this.finishFinalText(finalText);
+    const deliveredText = appendReplyPartFallback(
+      finalText,
+      options?.parts,
+      options?.unsupportedPartFallback,
+    );
+    if (deliveredText !== undefined) {
+      await this.finishFinalText(deliveredText);
     }
     this.done = true;
     await this.writeChunk({}, "stop");

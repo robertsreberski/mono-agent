@@ -102,6 +102,65 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("round-trips durable reply attachments/apps and records invalid rich parts as per-part failures", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "show results", attachmentIds: [] });
+    const detail = store.completeTurn(turn.turnId, "Done", undefined, [
+      {
+        type: "attachment",
+        id: "attachment-part",
+        reference: { scheme: "mono-agent-artifact", id: "artifact-one" },
+        name: "report.txt",
+        mediaType: "text/plain",
+        sizeBytes: 12,
+        integrityId: `sha256:${"a".repeat(64)}`,
+        expiresAt: "2026-09-14T12:00:00.000Z",
+      },
+      {
+        type: "mcp_app",
+        id: "11111111-1111-4111-8111-111111111111",
+        invocationId: "11111111-1111-4111-8111-111111111111",
+        connectionId: "connection-one",
+        serverName: "widgets",
+        toolName: "show_chart",
+        resourceUri: "ui://widgets/chart",
+        mediaType: "text/html;profile=mcp-app",
+        protocolVersion: "2026-01-26",
+        title: "Chart",
+        expiresAt: "2026-09-14T12:00:00.000Z",
+      },
+      {
+        type: "attachment",
+        id: "oversized",
+        reference: { scheme: "mono-agent-artifact", id: "artifact-two" },
+        name: "large.bin",
+        mediaType: "application/octet-stream",
+        sizeBytes: 20 * 1024 * 1024 + 1,
+        integrityId: `sha256:${"b".repeat(64)}`,
+      },
+    ]);
+
+    expect(detail.messages.at(-1)?.parts).toMatchObject([
+      { type: "text", text: "Done" },
+      { type: "attachment", artifactId: "artifact-one", name: "report.txt" },
+      { type: "mcp_app", connectionId: "connection-one", title: "Chart" },
+      { type: "failure", id: "oversized", code: "artifact_too_large" },
+    ]);
+    expect(JSON.stringify(detail.messages.at(-1)?.parts)).not.toContain("reference");
+
+    const key = store.ensureReplyAccessKey(() => "a".repeat(43));
+    store.close();
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.ensureReplyAccessKey(() => "b".repeat(43))).toBe(key);
+    expect(reopened.getMessage(detail.messages.at(-1)!.id)?.parts).toEqual(detail.messages.at(-1)?.parts);
+    reopened.close();
+  });
+
   it("projects synthetic steering events as one completed Steered tool row", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

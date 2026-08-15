@@ -1,4 +1,5 @@
 import type {
+  AgentMessageFinishOptions,
   AgentMessageStream as AgentMessageStreamBase,
   AgentStreamEvent,
   ChannelMessageContentKind,
@@ -28,7 +29,11 @@ export interface AgentMessageStream extends AgentMessageStreamBase {
   append(delta: string): Promise<void>;
   replace(text: string): Promise<void>;
   event(event: AgentStreamEvent): Promise<void>;
-  finish(finalText?: string): Promise<void>;
+  finish(finalText?: string, options?: TelegramMessageFinishOptions): Promise<void>;
+}
+
+export interface TelegramMessageFinishOptions extends AgentMessageFinishOptions {
+  readonly format?: boolean;
 }
 
 export interface TelegramMessageStreamOptions {
@@ -405,7 +410,7 @@ export class TelegramMessageStream implements AgentMessageStream {
     await this.inner.dismissTransient();
   }
 
-  async finish(finalText?: string, options?: { format?: boolean }): Promise<void> {
+  async finish(finalText?: string, options?: TelegramMessageFinishOptions): Promise<void> {
     // Fixed system copy (e.g. "Cancelled.") is delivered as plain text — the
     // transport's markdown gate is toggled for this finish so the answer is not
     // re-rendered as MarkdownV2.
@@ -414,7 +419,7 @@ export class TelegramMessageStream implements AgentMessageStream {
       this.transport.beginSeparateFinalAnswer();
     }
     try {
-      await this.inner.finish(finalText);
+      await this.inner.finish(finalText, options?.parts === undefined ? undefined : { parts: options.parts });
     } catch (error) {
       // The substrate throws the shared ChannelDeliveryError. Normalize it to
       // TelegramDeliveryError so callers that catch the Telegram type keep

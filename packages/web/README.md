@@ -218,6 +218,24 @@ reconstructs those outcomes from display text, run JSONL, or its own SQLite.
 Historical content and artifact references remain untrusted; references expose
 no host path and may later become unavailable when their independently retained
 artifact is removed.
+### Reply files and MCP Apps
+
+Agents that advertise reply attachments expose message-bound downloads in the
+console. The web service authorizes the exact thread/message/part, asks the
+agent to revalidate ownership and SHA-256 integrity, and streams the file with
+`Accept-Ranges: none`; browser DTOs never contain a host filesystem path or an
+agent capability URL.
+
+An advertised MCP App is stored as a structured message part and rendered only
+while its exact originating connection remains live. The PWA uses a
+nonce/identity-bound double iframe; both frames have opaque origins and
+`allow-scripts` without same-origin, popup, form, or top-navigation grants.
+Server origins are default-denied and intersected with a host allowlist, and
+resource origins never become script origins. Tool/link/context actions use an
+inert, focus-trapped confirmation dialog; tool arguments are bounded and
+secret-key-redacted. Exact declared resource reads remain read-only, while
+cross-resource requests fail. See
+[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
 
 ## Architecture
 
@@ -427,6 +445,7 @@ import a communication adapter or another operator surface.
 - [Operator stream endpoint](https://mono-agent-docs.vercel.app/channels/tui/)
 - [Sessions and concurrency](https://mono-agent-docs.vercel.app/runtime/sessions-concurrency/)
 - [Artifacts and traces](https://mono-agent-docs.vercel.app/observability/artifacts-and-traces/)
+- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
 
 ## Verification
 

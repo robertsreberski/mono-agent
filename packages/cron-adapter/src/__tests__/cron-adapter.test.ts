@@ -10,6 +10,40 @@ import { CronAdapterError, startCronAdapter, toCronJobs } from "../index.js";
 import { handleTick } from "../scheduler.js";
 
 describe("Cron adapter", () => {
+  it("keeps cron result text verbatim when rich parts cannot be represented", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const results: CronJobResult[] = [];
+    const scheduler = startCronAdapter({
+      responder: {
+        async respond() {
+          return {
+            text: "verbatim notification",
+            parts: [{
+              type: "failure" as const,
+              id: "failure-1",
+              code: "artifact_missing" as const,
+              message: "A file was unavailable.",
+            }],
+          };
+        },
+      },
+      jobs: [{ id: "verbatim", expression: "* * * * *", prompt: "run" }],
+      now: () => new Date(Date.now()),
+      onResult: (result) => { results.push(result); },
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect.poll(() => {
+        const result = results[0];
+        return result?.kind === "succeeded" ? result.text : undefined;
+      }).toBe("verbatim notification");
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("seeds hashed schedules from the stable job id", () => {
     const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
     let scheduler: ReturnType<typeof startCronAdapter> | undefined;

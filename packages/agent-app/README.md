@@ -652,6 +652,24 @@ console.log(app.channelStatuses());
 await app.stop();
 ```
 
+### Reply files and MCP Apps
+
+The configured responder adds a request-scoped `PublishReplyFile` MCP tool when
+the tool policy and runtime route can carry it. The tool copies one generated
+workspace/run-output file into owner-private artifact storage, hashes it, and
+returns only an opaque reference. Files are limited to 20 MiB, and files plus
+MCP Apps share one 20-part run budget. Retried identities are deduplicated;
+terminal failure, cancellation, or missing run metadata removes uncommitted
+state. The sealed local self-configuration override excludes this publisher.
+
+Pi-native routes can retain MCP App resources negotiated at either supported
+ext-apps revision. The whole primary/fallback route must support the bridge;
+otherwise neither the runtime extension nor operator capability is exposed.
+Stored resources follow `artifacts.retention.maxAgeDays`; live connections are
+separately bounded by an eight-entry LRU and ten-minute idle timeout. See
+[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
+for native channel behavior, fallbacks, browser security, and limits.
+
 ## Architecture
 
 ### Data flow
@@ -916,6 +934,7 @@ compose communication adapters; adapters never depend on it.
 - [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/composition/)
 - [Channels](https://mono-agent-docs.vercel.app/channels/)
 - [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
+- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-app)
 
 ## Verification

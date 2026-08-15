@@ -39,6 +39,8 @@ export function operatorFetch(options: {
   readonly supportsAskUser?: boolean;
   readonly supportsAskById?: boolean;
   readonly supportsLiveInput?: boolean;
+  readonly supportsReplyAttachments?: boolean;
+  readonly supportsMcpApps?: boolean;
   readonly skills?: OperatorSkillRegistry;
   readonly pendingAsk?: Record<string, unknown> | null;
   readonly exactAsks?: Readonly<Record<string, Record<string, unknown> | null>>;
@@ -54,6 +56,9 @@ export function operatorFetch(options: {
     body: Record<string, unknown>,
   ) => Record<string, unknown> | Promise<Record<string, unknown>>;
   readonly onVerbatim?: (conversationId: string, body: Record<string, unknown>) => void | Promise<void>;
+  readonly onReplyArtifact?: (url: string, init?: RequestInit) => Response | Promise<Response>;
+  readonly onMcpAppResource?: (url: string, init?: RequestInit) => Record<string, unknown>;
+  readonly onMcpAppRequest?: (url: string, body: Record<string, unknown>, init?: RequestInit) => unknown;
 } = {}): typeof fetch {
   return (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -79,6 +84,18 @@ export function operatorFetch(options: {
           askUser: options.supportsAskUser ?? false,
           ...(options.supportsAskById === true ? { askById: true } : {}),
           liveInput: options.supportsLiveInput ?? false,
+          ...(options.supportsReplyAttachments === true
+            ? { replyAttachments: { version: 1, maxBytes: 20 * 1024 * 1024 } }
+            : {}),
+          ...(options.supportsMcpApps === true
+            ? {
+                mcpApps: {
+                  bridgeVersion: 1,
+                  versions: ["2026-01-26"],
+                  mimeTypes: ["text/html;profile=mcp-app"],
+                },
+              }
+            : {}),
           ...(options.cronOverview === undefined
             ? {}
             : { cron: { read: true, actions: options.onCronMutation !== undefined } }),
@@ -124,6 +141,17 @@ export function operatorFetch(options: {
     }
     if (url.includes("/v1/conversations/") && url.endsWith("/cancel")) {
       return Response.json({ cancelled: true }, { status: 202 });
+    }
+    if (url.includes("/reply-artifacts/")) {
+      return await options.onReplyArtifact?.(url, init) ?? new Response("not found", { status: 404 });
+    }
+    if (url.includes("/mcp-apps/") && url.endsWith("/requests")) {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Response.json({ result: options.onMcpAppRequest?.(url, body, init) ?? null });
+    }
+    if (url.includes("/mcp-apps/")) {
+      const resource = options.onMcpAppResource?.(url, init);
+      return resource === undefined ? new Response("not found", { status: 404 }) : Response.json(resource);
     }
     if (url.includes("/v1/conversations/") && url.endsWith("/live-input")) {
       const encodedConversationId = url.slice(

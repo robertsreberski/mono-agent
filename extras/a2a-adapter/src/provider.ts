@@ -30,6 +30,7 @@ import {
 } from "@a2a-js/sdk";
 import {
   AgentResponseCancelledError,
+  appendReplyPartFallback,
   closeServerBounded,
   createChannelUserCancelReason,
   isAgentResponseCancelledError,
@@ -336,7 +337,10 @@ export class MonoA2AExecutor implements AgentExecutor {
         return;
       }
 
-      await stream.finish(response.text);
+      await stream.finish(response.text, {
+        ...(response.parts === undefined ? {} : { parts: response.parts }),
+        unsupportedPartFallback: "none",
+      });
       const finalText = stream.text;
       if (finalText.length > 0) {
         eventBus.publish(AgentEvent.artifactUpdate({
@@ -462,13 +466,21 @@ class A2AProviderMessageStream implements AgentMessageStream {
     this.currentText = text;
   }
 
-  async finish(finalText?: string): Promise<void> {
+  async finish(
+    finalText?: string,
+    options?: import("@mono-agent/agent-contracts").AgentMessageFinishOptions,
+  ): Promise<void> {
     if (this.finished) {
       return;
     }
     this.finished = true;
-    if (finalText !== undefined) {
-      this.currentText = finalText;
+    const deliveredText = appendReplyPartFallback(
+      finalText,
+      options?.parts,
+      options?.unsupportedPartFallback,
+    );
+    if (deliveredText !== undefined) {
+      this.currentText = deliveredText;
     }
   }
 

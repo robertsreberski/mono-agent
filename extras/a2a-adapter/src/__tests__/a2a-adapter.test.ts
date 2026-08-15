@@ -29,6 +29,34 @@ import {
 } from "../index.js";
 
 describe("A2A adapter contract", () => {
+  it("keeps A2A machine output unchanged when rich parts cannot be represented", async () => {
+    const provider = await startA2AProvider({
+      host: "127.0.0.1",
+      port: 0,
+      responder: {
+        async respond() {
+          return {
+            text: '{"answer":true}',
+            parts: [{
+              type: "failure" as const,
+              id: "failure-1",
+              code: "artifact_missing" as const,
+              message: "A file was unavailable.",
+            }],
+          };
+        },
+      },
+      agent: { name: "Machine", description: "Machine output", version: "0.1.0" },
+      skill: { id: "machine", name: "Machine", description: "Machine output", tags: ["machine"] },
+    });
+    try {
+      await expect(sendA2AMessage({ agentUrl: provider.agentCardUrl, text: "json" }))
+        .resolves.toMatchObject({ text: '{"answer":true}' });
+    } finally {
+      await provider.stop();
+    }
+  });
+
   it("creates a v1 Agent Card without secrets and with JSON-RPC and REST interfaces", () => {
     const card = createA2AAgentCard({
       name: "Local Mono",

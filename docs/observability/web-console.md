@@ -238,6 +238,26 @@ Below 560px the tree adapts rather than clipping: each row keeps its tool name a
 
 Type `/` in an empty composer to open the keyboard-friendly command popover for available actions such as run settings, starting a new conversation, or stopping an active response. Type `$` to find an available skill, or use **Browse skills** without entering a trigger.
 
+## Reply files and MCP Apps
+
+Assistant replies can include host-owned file or MCP App references when the
+running agent advertises those additive operator capabilities. Reply files show
+a message-bound download action; the service reauthorizes the exact
+thread/message/part and the agent rechecks size and SHA-256 integrity before any
+bytes stream. No host path or agent capability URL enters the browser DTO.
+
+MCP Apps run only while their exact originating MCP connection is live. The PWA
+uses a nonce-bound double iframe with opaque origins and `allow-scripts` only.
+Remote CSP origins default to denied, resource domains never grant script
+execution, and a second inner-frame navigation removes the app. Tool calls,
+links, and context updates use an inert, focus-trapped confirmation dialog;
+tool arguments are bounded and secret-key-redacted. Resource reads are limited
+to the exact `ui://` URI registered for that invocation.
+
+See [Reply files and MCP Apps](/tools/rich-replies/) for native Slack/Telegram
+delivery, fallback behavior, producer/bridge limits, retention, and connection
+eviction.
+
 ## Attachments use the browser device picker
 
 The attachment button opens the native file picker on the device running the browser. It does not expose or browse the web-service host's filesystem.

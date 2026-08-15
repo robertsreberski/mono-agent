@@ -61,6 +61,15 @@ turn. The immediate result says whether the active run accepted ownership; the
 settlement later reports `applied`, `requeue`, or `discarded`, so the adapter can
 preserve its ordinary queue position across provider and end-of-turn races.
 
+`AgentResponse.parts` carries adapter-neutral attachment, MCP App, and per-part
+failure references. `MAX_AGENT_REPLY_PARTS` is the shared producer/wire ceiling
+of 20, and `DEFAULT_AGENT_ATTACHMENT_MAX_BYTES` is 20 MiB. Streams that cannot
+represent a part default to concise human fallback; machine and verbatim
+adapters pass `unsupportedPartFallback: "none"` so reply text is not mutated.
+Artifact/app bytes and HTML remain behind responder authorization methods rather
+than entering stream frames. See
+[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
+
 ## Architecture
 
 ### Data flow
@@ -165,9 +174,20 @@ AgentLiveInputOffer
 AgentLiveInputRequest
 AgentLiveInputSettlement
 AgentLiveInputUnavailableReason
+AgentMcpAppHostRequest
+AgentMcpAppLoadRequest
+AgentMcpAppResource
+AgentMessageFinishOptions
 AgentMessageSender
 AgentMessageStream
 AgentPrecedingMessage
+AgentReplyArtifactOpenRequest
+AgentReplyArtifactReference
+AgentReplyArtifactStream
+AgentReplyAttachmentPart
+AgentReplyMcpAppPart
+AgentReplyPart
+AgentReplyPartFailure
 AgentReplyTarget
 AgentRequestBase
 AgentRequestMetadata
@@ -233,6 +253,7 @@ InboundHttpHeaders
 JsonEnvFieldSpec
 JsonEnvMapping
 ListenErrorFactories
+MAX_AGENT_REPLY_PARTS
 MAX_CRON_OPERATOR_CONVERSATION_ID_BYTES
 MAX_CRON_OPERATOR_CURSOR_BYTES
 MAX_CRON_OPERATOR_DEGRADED_REASON_BYTES
@@ -253,6 +274,9 @@ MAX_CRON_OPERATOR_SUMMARY_ERROR_BYTES
 MAX_CRON_OPERATOR_SUMMARY_FAILURE_KIND_BYTES
 MAX_CRON_OPERATOR_SUMMARY_TEXT_BYTES
 MAX_CRON_OPERATOR_TIMEZONE_BYTES
+MCP_APPS_EXTENSION_ID
+MCP_APP_RESOURCE_MIME_TYPE
+MCP_APP_SUPPORTED_VERSIONS
 MemoryBlock
 MemoryCompletedTurn
 MemoryCompletedTurnAdmissionStatus
@@ -284,6 +308,7 @@ SettingsJsonValue
 SettingsPrimitive
 ToolActivityLineOptions
 agentAttachmentKindFromMimeType
+appendReplyPartFallback
 assertAgentContinuationOriginContext
 assertSafeBind
 bearerTokensEqual
@@ -356,6 +381,7 @@ It does not normalize transport messages, run model providers, build prompts, pe
 - [Programmatic composition](https://mono-agent-docs.vercel.app/programmatic/)
 - [Custom channel drivers](https://mono-agent-docs.vercel.app/programmatic/custom-channels/)
 - [Runtime, tools, and guard boundaries](https://mono-agent-docs.vercel.app/runtime/tools-and-guards/)
+- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
 - [Package source and generated API inventory](https://github.com/robertsreberski/mono-agent/tree/main/packages/agent-contracts)
 
 ## Verification

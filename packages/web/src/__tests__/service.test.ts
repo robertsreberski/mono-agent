@@ -872,6 +872,130 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("persists rich reply references and authorizes attachment/app access by exact message token", async () => {
+    const integrityId = `sha256:${"a".repeat(64)}`;
+    const bridgeCalls: Array<{ readonly body: Record<string, unknown>; readonly headers: RequestInit["headers"] }> = [];
+    const service = await createService({
+      clock: () => new Date("2026-08-14T12:00:00.000Z"),
+      fetchImpl: operatorFetch({
+        supportsReplyAttachments: true,
+        supportsMcpApps: true,
+        turns: () => `${JSON.stringify({
+          kind: "finish",
+          finalText: "Ready",
+          parts: [
+            {
+              type: "attachment",
+              id: "attachment-part",
+              reference: { scheme: "mono-agent-artifact", id: "artifact-one" },
+              name: "report.txt",
+              mediaType: "text/plain",
+              sizeBytes: 6,
+              integrityId,
+              expiresAt: "2026-08-15T12:00:00.000Z",
+            },
+            {
+              type: "mcp_app",
+              id: "11111111-1111-4111-8111-111111111111",
+              invocationId: "11111111-1111-4111-8111-111111111111",
+              connectionId: "connection-one",
+              serverName: "widgets",
+              toolName: "show_chart",
+              resourceUri: "ui://widgets/chart",
+              mediaType: "text/html;profile=mcp-app",
+              protocolVersion: "2026-01-26",
+              expiresAt: "2026-08-15T12:00:00.000Z",
+            },
+          ],
+        })}\n`,
+        onReplyArtifact(_url, init) {
+          expect(init?.headers).toMatchObject({ "x-mono-agent-integrity-id": integrityId });
+          return new Response("report", {
+            headers: { "content-length": "6", "x-mono-agent-integrity-id": integrityId },
+          });
+        },
+        onMcpAppResource(_url, init) {
+          expect(init?.headers).toMatchObject({ "x-mono-agent-mcp-connection-id": "connection-one" });
+          return {
+            app: {
+              type: "mcp_app",
+              id: "11111111-1111-4111-8111-111111111111",
+              invocationId: "11111111-1111-4111-8111-111111111111",
+              connectionId: "connection-one",
+              serverName: "widgets",
+              toolName: "show_chart",
+              resourceUri: "ui://widgets/chart",
+              mediaType: "text/html;profile=mcp-app",
+              protocolVersion: "2026-01-26",
+            },
+            html: "<!doctype html><p>chart</p>",
+            connected: true,
+          };
+        },
+        onMcpAppRequest(_url, body, init) {
+          bridgeCalls.push({ body, headers: init?.headers });
+          return { refreshed: true };
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "show results" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    const message = service.thread(thread.id).messages.at(-1)!;
+    const attachment = message.parts.find((part) => part.type === "attachment")!;
+    const app = message.parts.find((part) => part.type === "mcp_app")!;
+    expect(attachment.contentUrl).toMatch(/^\/api\/v1\/threads\//u);
+    expect(app.resourceUrl).toContain("/mcp-apps/");
+    expect(app.bridgeUrl).toContain("/requests?");
+
+    const attachmentUrl = new URL(attachment.contentUrl!, "http://console.local");
+    const attachmentResult = await service.replyAttachment(
+      thread.id,
+      message.id,
+      attachment.id,
+      attachmentUrl.searchParams.get("expires")!,
+      attachmentUrl.searchParams.get("token")!,
+    );
+    expect(await attachmentResult.response.text()).toBe("report");
+    await expect(service.replyAttachment(
+      thread.id,
+      "different-message",
+      attachment.id,
+      attachmentUrl.searchParams.get("expires")!,
+      attachmentUrl.searchParams.get("token")!,
+    )).rejects.toMatchObject({ code: "reply_part_not_found" });
+
+    const appUrl = new URL(app.resourceUrl!, "http://console.local");
+    await expect(service.mcpAppResource(
+      thread.id,
+      message.id,
+      app.id,
+      appUrl.searchParams.get("expires")!,
+      appUrl.searchParams.get("token")!,
+    )).resolves.toMatchObject({ connected: true, html: expect.stringContaining("chart") });
+    await expect(service.mcpAppRequest(
+      thread.id,
+      message.id,
+      app.id,
+      appUrl.searchParams.get("expires")!,
+      appUrl.searchParams.get("token")!,
+      { method: "tools/call", params: { name: "refresh_chart" } },
+    )).rejects.toMatchObject({ code: "mcp_app_confirmation_required" });
+    await expect(service.mcpAppRequest(
+      thread.id,
+      message.id,
+      app.id,
+      appUrl.searchParams.get("expires")!,
+      appUrl.searchParams.get("token")!,
+      { method: "tools/call", params: { name: "refresh_chart" }, confirmed: true },
+    )).resolves.toEqual({ refreshed: true });
+    expect(bridgeCalls[0]).toMatchObject({
+      body: { method: "tools/call", params: { name: "refresh_chart" }, confirmed: true },
+      headers: { "x-mono-agent-mcp-connection-id": "connection-one" },
+    });
+    await service.stop();
+  });
+
   it("preserves streamed text when the finish frame carries an empty finalText", async () => {
     const service = await createService({
       fetchImpl: operatorFetch({ turns: () => [

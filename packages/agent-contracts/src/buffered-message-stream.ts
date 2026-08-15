@@ -1,4 +1,5 @@
-import type { AgentMessageStream, AgentStreamEvent } from "./index.js";
+import type { AgentMessageFinishOptions, AgentMessageStream, AgentStreamEvent } from "./index.js";
+import { appendReplyPartFallback } from "./resilient-message-stream.js";
 
 export interface BufferedMessageStreamOptions {
   /**
@@ -43,13 +44,18 @@ export class BufferedMessageStream implements AgentMessageStream {
     this.currentText = text;
   }
 
-  async finish(finalText?: string): Promise<void> {
+  async finish(finalText?: string, options?: AgentMessageFinishOptions): Promise<void> {
     if (this.done) {
       return;
     }
     this.done = true;
-    if (finalText !== undefined) {
-      this.currentText = finalText;
+    const deliveredText = appendReplyPartFallback(
+      finalText,
+      options?.parts,
+      options?.unsupportedPartFallback,
+    );
+    if (deliveredText !== undefined) {
+      this.currentText = deliveredText;
     }
   }
 

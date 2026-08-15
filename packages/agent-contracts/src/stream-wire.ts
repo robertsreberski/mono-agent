@@ -1,5 +1,13 @@
-import type { AgentMessageStream, AgentResponseMetadata, AgentStreamEvent } from "./index.js";
+import type {
+  AgentMessageStream,
+  AgentReplyPart,
+  AgentResponseMetadata,
+  AgentStreamEvent,
+} from "./index.js";
 import { CodedError } from "./coded-error.js";
+
+/** Shared producer and wire bound for additive rich reply parts in one run. */
+export const MAX_AGENT_REPLY_PARTS = 20;
 
 /**
  * Newline-delimited JSON frames that carry one AgentMessageStream callback each
@@ -21,6 +29,7 @@ export type AgentStreamWireFrame =
       readonly kind: "finish";
       readonly finalText?: string;
       readonly metadata?: AgentResponseMetadata;
+      readonly parts?: readonly AgentReplyPart[];
     }
   | {
       readonly kind: "error";
@@ -63,6 +72,16 @@ export function parseAgentStreamFrame(line: string): AgentStreamWireFrame {
     if (!isRecord(event) || typeof event.type !== "string" || event.type.length === 0) {
       throw new CodedError("invalid_frame", 'An "event" frame requires `event` with a string `type`.');
     }
+  } else if (kind === "finish") {
+    if (parsed.parts !== undefined) {
+      if (
+        !Array.isArray(parsed.parts)
+        || parsed.parts.length > MAX_AGENT_REPLY_PARTS
+        || !parsed.parts.every(isReplyPartRecord)
+      ) {
+        throw new CodedError("invalid_frame", 'A "finish" frame requires `parts` to be reply-part records.');
+      }
+    }
   } else if (kind === "error") {
     if (typeof parsed.message !== "string") {
       throw new CodedError("invalid_frame", 'An "error" frame requires string `message`.');
@@ -103,4 +122,12 @@ export function frameFeedingMessageStream(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isReplyPartRecord(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.type === "string"
+    && value.type.length > 0
+    && typeof value.id === "string"
+    && value.id.length > 0;
 }

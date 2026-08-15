@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AgentResponseCancelledError,
   isChannelUserCancelReason,
+  type AgentReplyAttachmentPart,
   type AgentLiveInputRequest,
   type AgentLiveInputSettlement,
   type ChannelAskSnapshot,
@@ -205,6 +206,48 @@ const RUNTIME_CONTROLS: SlackRuntimeControls = {
 };
 
 describe("SlackAdapter", () => {
+  it("uploads generated reply files natively before finalizing textual fallback", async () => {
+    const api = new FakeSlackApi();
+    const attachment: AgentReplyAttachmentPart = {
+      type: "attachment",
+      id: "reply-file-1",
+      reference: { scheme: "mono-agent-artifact", id: "11111111-1111-4111-8111-111111111111" },
+      name: "report.txt",
+      mediaType: "text/plain",
+      sizeBytes: 5,
+      integrityId: `sha256:${"a".repeat(64)}`,
+    };
+    const complete = vi.fn(async () => ({ ok: true as const }));
+    Object.assign(api, {
+      filesGetUploadURLExternal: vi.fn(async () => ({
+        ok: true as const,
+        upload_url: "https://uploads.slack.test/private",
+        file_id: "F1",
+      })),
+      filesUploadExternal: vi.fn(async () => {}),
+      filesCompleteUploadExternal: complete,
+    });
+    const responder: AgentResponder = {
+      async respond() { return { text: "Answer", parts: [attachment] }; },
+      async openReplyArtifact() {
+        return {
+          attachment,
+          body: (async function* () { yield new TextEncoder().encode("hello"); })(),
+        };
+      },
+    };
+    const adapter = new SlackAdapter({ api, responder, allowAllChannels: true });
+
+    await adapter.handleEventCallback(directMessage("hello"));
+
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      channel_id: "D123",
+      thread_ts: "171.000001",
+    }), expect.anything());
+    expect(api.postMessageCalls.at(-1)?.text).toBe("Answer");
+    expect(api.postMessageCalls.some((call) => call.text.includes("report.txt"))).toBe(false);
+  });
+
   it("exports the public silent notify options contract", () => {
     const options: readonly SlackNotifyOptions[] = [
       {},

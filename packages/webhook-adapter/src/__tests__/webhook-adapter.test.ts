@@ -14,6 +14,36 @@ import {
 } from "../index.js";
 
 describe("Webhook adapter", () => {
+  it("keeps synchronous machine output unchanged when rich parts cannot be represented", async () => {
+    const server = await startWebhookAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      responder: {
+        async respond() {
+          return {
+            text: '{"answer":true}',
+            parts: [{
+              type: "failure" as const,
+              id: "failure-1",
+              code: "artifact_missing" as const,
+              message: "A file was unavailable.",
+            }],
+          };
+        },
+      },
+    });
+    try {
+      const response = await fetch(server.invokeUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "machine", conversationId: "machine-1", mode: "sync" }),
+      });
+      await expect(response.json()).resolves.toMatchObject({ text: '{"answer":true}' });
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("keeps the native callback policy exact and immutable", () => {
     expect(NATIVE_NOTIFY_CALLBACK_CHANNEL_IDS).toEqual(["telegram", "slack"]);
     expect(Object.isFrozen(NATIVE_NOTIFY_CALLBACK_CHANNEL_IDS)).toBe(true);

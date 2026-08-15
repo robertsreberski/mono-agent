@@ -97,6 +97,14 @@ Keep bearer values out of source config when possible. Set
 - `POST {basePath}/v1/conversations/:id/verbatim` - authenticated
   `{ text, idempotencyKey }` durable-history append with no model turn (200; 501
   when the responder has no `deliverVerbatim`).
+- `GET {basePath}/v1/conversations/:id/reply-artifacts/:artifactId` -
+  bearer-protected, conversation-owned, integrity-checked reply download when
+  `capabilities.replyAttachments` is advertised. Responses explicitly disable
+  byte ranges.
+- `GET {basePath}/v1/conversations/:id/mcp-apps/:invocationId` and the paired
+  request route - exact conversation/connection MCP App resource loading and
+  bridge operations when `capabilities.mcpApps` is advertised. Forbidden
+  resources and rate-limited requests have stable HTTP errors.
 - `GET {basePath}/v1/cron` and
   `GET {basePath}/v1/cron/jobs/:jobId/runs?limit=&before=` - agent-authoritative
   job state and total-order keyset run history.
@@ -121,6 +129,12 @@ cron as degraded with reads and actions unavailable.
 Event NDJSON lines are capped at 256 KiB. Oversized thought and tool payloads
 are reduced and remeasured; an event that still cannot fit becomes a bounded
 `oversized_event` marker. That size guard is not a redaction boundary.
+
+`replyAttachments` and `mcpApps` are additive capabilities: they are omitted
+when the responder does not implement the corresponding authorization routes.
+The web consumer retains the legacy 8 MiB input ceiling so it can read an older
+agent even though current producers emit at most 256 KiB per frame. See
+[Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
 
 ## Architecture
 
@@ -226,6 +240,7 @@ loopback is a host decision guarded by `allowNonLoopback`.
 - [Terminal UI](https://mono-agent-docs.vercel.app/observability/tui/)
 - [Always-on web console](https://mono-agent-docs.vercel.app/observability/web-console/)
 - [Artifacts and traces](https://mono-agent-docs.vercel.app/observability/artifacts-and-traces/)
+- [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
 
 ## Verification
 

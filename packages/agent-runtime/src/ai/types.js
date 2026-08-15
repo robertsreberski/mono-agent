@@ -54,6 +54,7 @@
  * @property {RuntimeModelRef} [model]
  * @property {string} [effort]
  * @property {Object<string, Object>} [mcpServers]
+ * @property {Object} [mcpApps] App-owned exact-connection MCP Apps registry (Pi-native only).
  */
 
 /**

@@ -54,6 +54,36 @@
 - Model-visible `RunHistory` projections now sanitize ordinary filesystem spans
   in place to bounded `[host-path]` forms while continuing to omit credentials,
   private run-artifact content, and raw host roots.
+### Rich replies and MCP Apps
+
+- Added bounded rich reply parts. `PublishReplyFile` copies a generated
+  workspace file into owner-private artifact storage and returns an opaque,
+  integrity-bound attachment reference; Pi-native MCP tools can also publish
+  MCP Apps using the 2026-01-26 or 2025-11-21 protocol revision. One shared
+  20-part budget applies per run.
+- Slack now delivers reply files through its external upload flow and Telegram
+  sends them as native documents. Confirmed uploads are destination-bound and
+  deduplicated; failed uploads keep a concise human-readable fallback without
+  exposing private paths or capability URLs. OpenAI-compatible, webhook, A2A,
+  and cron/verbatim responses remain unchanged when they cannot represent a
+  rich part.
+- The web console persists message-bound attachment and MCP App references,
+  serves integrity-checked downloads, and hosts apps in a nonce-bound
+  double-frame sandbox. Remote CSP origins are denied unless the host explicitly
+  allowlists them, server resource origins never become script origins, bridge
+  actions use bounded confirmation previews, and arbitrary resource reads are
+  denied.
+- Reply/App publication now stages outside the live namespace and commits with
+  one directory rename. Terminal failure/cancellation removes unpublished run
+  state; stale staging cleanup cannot collect an active publication. Retained
+  MCP connections are LRU/idle bounded and closed on eviction, bridge requests
+  are rate-limited, and per-app audit logs rotate within fixed bounds.
+
+### Operator compatibility
+
+- Kept producer NDJSON frames bounded while restoring the web consumer's legacy
+  8 MiB ceiling, so a new console can still read larger frames from an older
+  agent. Reply downloads explicitly advertise `Accept-Ranges: none`.
 
 ## 0.19.1 — Web Push delivery fix (2026-08-13)
 

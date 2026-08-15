@@ -671,7 +671,10 @@ async function runResponder(input: {
       // depend on this object (or its replyTo) remaining unmodified.
       const responderRequest = withSnapshottedReplyTarget(input.request, selectedNotifyConversationId);
       const result = await input.options.responder.respond(responderRequest, stream);
-      await stream.finish(result.text);
+      await stream.finish(result.text, {
+        ...(result.parts === undefined ? {} : { parts: result.parts }),
+        unsupportedPartFallback: "none",
+      });
       return result;
     })();
     // If the timeout wins the race, the responder promise may reject later (on

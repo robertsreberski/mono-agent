@@ -29,6 +29,13 @@ import { createLocalConfigurationRuntimeExtension } from "./local-configuration.
 import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "./run-history.js";
 import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed } from "./session-history.js";
 import {
+  createReplyArtifactService,
+  isPublishReplyFileToolAllowed,
+  PUBLISH_REPLY_FILE_TOOL_NAME,
+} from "./reply-artifacts.js";
+import { createMcpAppService } from "./mcp-apps.js";
+import { createReplyPartBudget } from "./reply-part-budget.js";
+import {
   createRequestModelOverrideRuntimeExtension,
   requestModelOverrideTargetsDirectOpenCode,
   requestModelOverrideTargetsUnsupportedHistoryTool,
@@ -43,6 +50,7 @@ import {
   reasonOf,
   runtimeRouteContainsDirectOpenCode,
   runtimeRouteContainsUnsupportedHistoryTool,
+  runtimeRouteSupportsMcpApps,
 } from "./app-controller-utils.js";
 import type { ChannelId, MonoAgentAppLogger } from "./channels.js";
 import type { InteractionBridgeHandle } from "./interaction-bridge.js";
@@ -136,6 +144,24 @@ export async function buildResponder(
   const supermemoryMcp = controller.supermemoryMcpRuntimeOptions(coreConfig);
   const adapterSendTools = await controller.adapterSendToolsRuntimeOptions(coreConfig);
   const historyToolSupport = historyToolRouteSupport(coreConfig);
+  const replyPartBudget = createReplyPartBudget();
+  const replyArtifacts = createReplyArtifactService({
+    artifactDir: coreConfig.artifacts.dir,
+    workspace: coreConfig.runtime.workspace,
+    retentionDays: coreConfig.artifacts.retention.maxAgeDays,
+    replyPartBudget,
+  });
+  const mcpApps = runtimeRouteSupportsMcpApps(coreConfig)
+    ? createMcpAppService({
+        artifactDir: coreConfig.artifacts.dir,
+        retentionDays: coreConfig.artifacts.retention.maxAgeDays,
+        replyPartBudget,
+      })
+    : undefined;
+  const replyArtifactsExtension = isPublishReplyFileToolAllowed(coreConfig.tools)
+    && !runtimeRouteContainsDirectOpenCode(coreConfig)
+    ? replyArtifacts.createExtension
+    : undefined;
   const runHistoryBase = isRunHistoryToolAllowed(coreConfig.tools)
     && historyToolSupport.runHistory
     ? createRunHistoryRuntimeExtension({
@@ -180,6 +206,7 @@ export async function buildResponder(
   if (adapterSendTools.blockingToolNames.length > 0) {
     mcpSources.push(`adapter send tools (${adapterSendTools.blockingToolNames.join(", ")})`);
   }
+  if (replyArtifactsExtension !== undefined) mcpSources.push(PUBLISH_REPLY_FILE_TOOL_NAME);
   const requestModelOverride = controller.requestModelOverrideRuntimeOptions(coreConfig, {
     mcpSources,
     indexSkillsActive: coreConfig.context.skillDisclosure === "index"
@@ -208,6 +235,8 @@ export async function buildResponder(
     supermemoryMcp,
     runHistoryExtension,
     sessionHistoryExtension,
+    mcpApps?.createExtension,
+    replyArtifactsExtension,
     adapterSendToolsExtension,
     requestModelOverride.extension,
     // Last and authoritative: only an opaque owner-created configuration
@@ -284,7 +313,10 @@ export async function buildResponder(
       }
     },
   });
-  return postedReplyHistory.wrapResponder(responder);
+  const replyResponder = replyArtifacts.wrapResponder(responder);
+  return postedReplyHistory.wrapResponder(
+    mcpApps === undefined ? replyResponder : mcpApps.wrapResponder(replyResponder),
+  );
 }
 
 export function requestModelOverrideRuntimeOptions(

@@ -12,6 +12,37 @@ import {
 } from "../index.js";
 
 describe("OpenAI API adapter", () => {
+  it("does not append rich-part warnings to OpenAI-compatible machine output", async () => {
+    const server = await startOpenAIApiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      responder: {
+        async respond() {
+          return {
+            text: '{"answer":true}',
+            parts: [{
+              type: "failure" as const,
+              id: "failure-1",
+              code: "artifact_missing" as const,
+              message: "A file was unavailable.",
+            }],
+          };
+        },
+      },
+    });
+    try {
+      const response = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "agent", messages: [{ role: "user", content: "json" }] }),
+      });
+      const body = await response.json() as { choices: Array<{ message: { content: string } }> };
+      expect(body.choices[0]?.message.content).toBe('{"answer":true}');
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("serves OpenAI-compatible model discovery for OpenWebUI", async () => {
     const server = await startOpenAIApiAdapter({
       host: "127.0.0.1",

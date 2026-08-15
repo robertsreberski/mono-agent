@@ -6,6 +6,9 @@ import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
+  MCP_APP_RESOURCE_MIME_TYPE,
+  MCP_APP_SUPPORTED_VERSIONS,
+  MAX_AGENT_REPLY_PARTS,
   BoundedHttpResponseWriter,
   agentAttachmentKindFromMimeType,
   closeServerBounded,
@@ -15,6 +18,8 @@ import {
   serializeAgentStreamFrame,
   type AgentAttachment,
   type AgentMessageStream,
+  type AgentReplyAttachmentPart,
+  type AgentReplyPart,
   type AgentLiveInputOffer,
   type AgentRequestBase,
   type AgentResponder,
@@ -171,6 +176,11 @@ const MAX_REQUEST_TOOL_ENVIRONMENT_VALUE_BYTES = 16 * 1024;
 const MAX_REQUEST_TOOL_ENVIRONMENT_TOTAL_BYTES = 64 * 1024;
 const MAX_REQUEST_TOOL_ENVIRONMENT_PATHS = 4;
 const MAX_CRON_ACTION_BODY_BYTES = 32 * 1024;
+const MAX_REPLY_ARTIFACT_ID_BYTES = 128;
+const MAX_REPLY_ARTIFACT_CONVERSATION_BYTES = 4 * 1024;
+const MAX_MCP_APP_IDENTITY_BYTES = 4 * 1024;
+const MAX_MCP_APP_REQUEST_BYTES = 64 * 1024;
+const REPLY_ARTIFACT_DRAIN_TIMEOUT_MS = 30_000;
 const ALLOWED_ATTACHMENT_MIME_TYPES = new Set(
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST.map((mimeType) => mimeType.toLowerCase()),
 );
@@ -207,6 +217,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const cancelPath = `${basePath}/v1/conversations/:conversationId/cancel`;
   const verbatimPath = `${basePath}/v1/conversations/:conversationId/verbatim`;
   const liveInputPath = `${basePath}/v1/conversations/:conversationId/live-input`;
+  const replyArtifactPath = `${basePath}/v1/conversations/:conversationId/reply-artifacts/:artifactId`;
+  const mcpAppPath = `${basePath}/v1/conversations/:conversationId/mcp-apps/:invocationId`;
+  const mcpAppRequestPath = `${mcpAppPath}/requests`;
   const askPath = `${basePath}/v1/conversations/:conversationId/ask`;
   const interactionPath = `${basePath}/v1/interactions/:interactionId`;
   const cronOverviewPath = `${basePath}/v1/cron`;
@@ -241,6 +254,19 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
           pid: process.pid,
           capabilities: {
             attachments: true,
+            ...(typeof options.responder.openReplyArtifact === "function"
+              ? { replyAttachments: { version: 1, maxBytes: DEFAULT_AGENT_ATTACHMENT_MAX_BYTES } }
+              : {}),
+            ...(typeof options.responder.loadMcpApp === "function"
+              && typeof options.responder.requestMcpApp === "function"
+              ? {
+                  mcpApps: {
+                    bridgeVersion: 1,
+                    versions: MCP_APP_SUPPORTED_VERSIONS,
+                    mimeTypes: [MCP_APP_RESOURCE_MIME_TYPE],
+                  },
+                }
+              : {}),
             ...(typeof options.responder.offerLiveInput === "function" ? { liveInput: true } : {}),
             ...(typeof options.responder.deliverVerbatim === "function" ? { historyAppend: true } : {}),
             ...(options.interaction === undefined ? {} : { askUser: true }),
@@ -310,6 +336,116 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     options.interaction?.cancelAsks(conversationId);
     res.status(202).json({ cancelled: conversationId });
   });
+
+  app.get(replyArtifactPath, (req, res, next) => {
+    if (!authorize(req, res, apiKey)) return;
+    if (typeof options.responder.openReplyArtifact !== "function") {
+      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Reply artifacts are unavailable."));
+      return;
+    }
+    const conversationId = normalizeOptionalString(
+      typeof req.params.conversationId === "string" ? req.params.conversationId : undefined,
+    );
+    const artifactId = normalizeOptionalString(
+      typeof req.params.artifactId === "string" ? req.params.artifactId : undefined,
+    );
+    const expectedIntegrityId = normalizeOptionalString(req.header("x-mono-agent-integrity-id"));
+    if (
+      conversationId === undefined
+      || artifactId === undefined
+      || Buffer.byteLength(conversationId, "utf8") > MAX_REPLY_ARTIFACT_CONVERSATION_BYTES
+      || Buffer.byteLength(artifactId, "utf8") > MAX_REPLY_ARTIFACT_ID_BYTES
+    ) {
+      sendJsonError(res, 400, new TuiAdapterError("invalid_request", "A valid conversation and artifact id are required."));
+      return;
+    }
+    void options.responder.openReplyArtifact({
+      conversationId,
+      reference: { scheme: "mono-agent-artifact", id: artifactId },
+      ...(expectedIntegrityId === undefined ? {} : { expectedIntegrityId }),
+    }).then(async (opened) => {
+      setReplyArtifactHeaders(res, opened.attachment);
+      let streamed = 0;
+      for await (const chunk of opened.body) {
+        streamed += chunk.byteLength;
+        if (streamed > opened.attachment.sizeBytes) {
+          throw new TuiAdapterError("invalid_request", "Reply artifact exceeded its declared size.");
+        }
+        await writeBinaryChunk(res, chunk);
+      }
+      if (streamed !== opened.attachment.sizeBytes) {
+        throw new TuiAdapterError("invalid_request", "Reply artifact stream ended before its declared size.");
+      }
+      res.end();
+    }).catch((error: unknown) => {
+      if (res.headersSent) {
+        res.destroy(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      const code = codeOf(error);
+      const status = code === "artifact_forbidden" || code === "artifact_missing" || code === "artifact_expired"
+        ? 404
+        : code === "artifact_integrity_failed" ? 409 : 500;
+      sendJsonError(res, status, error);
+    }).catch(next);
+  });
+
+  app.get(mcpAppPath, (req, res) => {
+    if (!authorize(req, res, apiKey)) return;
+    if (typeof options.responder.loadMcpApp !== "function") {
+      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "MCP Apps are unavailable."));
+      return;
+    }
+    const identity = normalizeMcpAppIdentity(req);
+    if (identity === undefined) {
+      sendJsonError(res, 400, new TuiAdapterError(
+        "invalid_request",
+        "A valid conversation, invocation, and connection id are required.",
+      ));
+      return;
+    }
+    void options.responder.loadMcpApp(identity).then((resource) => {
+      setPrivateMcpAppHeaders(res);
+      res.status(200).json(resource);
+    }).catch((error: unknown) => sendMcpAppError(res, error));
+  });
+
+  app.post(
+    mcpAppRequestPath,
+    express.json({ limit: MAX_MCP_APP_REQUEST_BYTES, strict: true }),
+    (req, res) => {
+      if (!authorize(req, res, apiKey)) return;
+      if (typeof options.responder.requestMcpApp !== "function") {
+        sendJsonError(res, 404, new TuiAdapterError("invalid_request", "MCP Apps are unavailable."));
+        return;
+      }
+      const identity = normalizeMcpAppIdentity(req);
+      const body = isRecord(req.body) ? req.body : undefined;
+      const method = body?.method;
+      const params = body?.params;
+      const confirmed = body?.confirmed;
+      if (
+        identity === undefined
+        || (method !== "resources/read"
+          && method !== "tools/call"
+          && method !== "ui/open-link"
+          && method !== "ui/update-model-context")
+        || (confirmed !== undefined && typeof confirmed !== "boolean")
+      ) {
+        sendJsonError(res, 400, new TuiAdapterError("invalid_request", "The MCP App bridge request is invalid."));
+        return;
+      }
+      void options.responder.requestMcpApp({
+        ...identity,
+        method,
+        ...(params === undefined ? {} : { params }),
+        ...(confirmed === undefined ? {} : { confirmed }),
+      }).then((result) => {
+        setPrivateMcpAppHeaders(res);
+        res.status(200).json({ result });
+      }).catch((error: unknown) => sendMcpAppError(res, error));
+    },
+  );
 
   app.post(verbatimPath, express.json({ limit: MAX_VERBATIM_BODY_BYTES, strict: true }), (req, res, next) => {
     if (!authorize(req, res, apiKey)) {
@@ -644,6 +780,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         kind: "finish",
         ...(response.text === undefined ? {} : { finalText: response.text }),
         ...(response.metadata === undefined ? {} : { metadata: response.metadata }),
+        ...(response.parts === undefined || response.parts.length === 0 ? {} : { parts: response.parts }),
       });
     } catch (error) {
       const cancelled = isAgentResponseCancelledError(error) || controller.signal.aborted;
@@ -684,7 +821,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
  * the response's backpressure signal and carry a bounded pending-byte budget,
  * so a slow client cannot grow the process heap without limit. Oversized event
  * frames are reduced or replaced with a marker to meet the exported UTF-8 byte
- * cap; non-event frames retain their existing behavior.
+ * cap. Append text is split losslessly; other text fields are deterministically
+ * truncated, and terminal rich parts that cannot fit are replaced by an
+ * explicit failure marker.
  */
 class NdjsonMessageStream implements AgentMessageStream {
   private readonly writer: BoundedHttpResponseWriter;
@@ -697,11 +836,30 @@ class NdjsonMessageStream implements AgentMessageStream {
     if (this.res.writableEnded) {
       return;
     }
-    let line = serializeAgentStreamFrame(frame);
-    if (Buffer.byteLength(line, "utf8") > MAX_FRAME_BYTES && frame.kind === "event") {
-      line = serializeCappedEventFrame(frame.event, line);
+    const boundedFrame = frame.kind === "finish" ? capFinishReplyParts(frame) : frame;
+    const line = serializeAgentStreamFrame(boundedFrame);
+    if (Buffer.byteLength(line, "utf8") <= MAX_FRAME_BYTES) {
+      await this.writer.write(line);
+      return;
     }
-    await this.writer.write(line);
+    if (boundedFrame.kind === "append") {
+      for (const chunk of splitTextForWireFrame("append", boundedFrame.delta)) {
+        await this.writer.write(serializeAgentStreamFrame({ kind: "append", delta: chunk }));
+      }
+      return;
+    }
+    const capped = boundedFrame.kind === "event"
+      ? serializeCappedEventFrame(boundedFrame.event, line)
+      : boundedFrame.kind === "finish"
+        ? serializeCappedFinishFrame(line)
+        : boundedFrame.kind === "status" || boundedFrame.kind === "replace" || boundedFrame.kind === "error"
+          ? serializeCappedTextFrame(boundedFrame)
+          : serializeAgentStreamFrame({
+              kind: "error",
+              code: "frame_too_large",
+              message: "A transport frame exceeded the maximum size.",
+            });
+    await this.writer.write(capped);
   }
 
   async status(text: string): Promise<void> {
@@ -724,6 +882,26 @@ class NdjsonMessageStream implements AgentMessageStream {
     // The terminal "finish" frame is written by handleTurn from the responder's
     // AgentResponse (which carries metadata); mid-stream finish() is a no-op.
   }
+}
+
+function capFinishReplyParts(
+  frame: Extract<AgentStreamWireFrame, { kind: "finish" }>,
+): Extract<AgentStreamWireFrame, { kind: "finish" }> {
+  const parts = frame.parts;
+  if (parts === undefined || parts.length <= MAX_AGENT_REPLY_PARTS) return frame;
+  const omitted = parts.length - (MAX_AGENT_REPLY_PARTS - 1);
+  return {
+    ...frame,
+    parts: [
+      ...parts.slice(0, MAX_AGENT_REPLY_PARTS - 1),
+      {
+        type: "failure",
+        id: "wire-rich-parts-over-limit",
+        code: "reply_part_too_large",
+        message: `${omitted} rich reply part${omitted === 1 ? " was" : "s were"} omitted because the reply exceeded the 20-part transport limit.`,
+      },
+    ],
+  };
 }
 
 /**
@@ -850,12 +1028,239 @@ function serializeOversizedEventMarker(originalType: string): string {
   });
 }
 
+function serializeCappedFinishFrame(serializedFrame: string): string {
+  const snapshot = JSON.parse(serializedFrame) as Extract<AgentStreamWireFrame, { kind: "finish" }>;
+  const safeMetadata = compactFinishMetadata(snapshot.metadata);
+  const base: Extract<AgentStreamWireFrame, { kind: "finish" }> = {
+    kind: "finish",
+    ...(safeMetadata === undefined ? {} : { metadata: safeMetadata }),
+  };
+  const parts = snapshot.parts ?? [];
+  const allPartsFrame = {
+    ...base,
+    ...(parts.length === 0 ? {} : { parts }),
+  };
+  const allPartsWithoutText = serializeAgentStreamFrame(allPartsFrame);
+  if (Buffer.byteLength(allPartsWithoutText, "utf8") <= MAX_FRAME_BYTES) {
+    const withText = serializeFinishWithCappedText(allPartsFrame, snapshot.finalText);
+    if (Buffer.byteLength(withText, "utf8") <= MAX_FRAME_BYTES) return withText;
+  }
+
+  const failure: AgentReplyPart = {
+    type: "failure",
+    id: "wire-rich-parts-truncated",
+    code: "reply_part_too_large",
+    message: "One or more rich reply parts were omitted because the terminal frame exceeded 256 KiB.",
+  };
+  let frame = {
+    ...base,
+    ...(snapshot.finalText === undefined ? {} : { finalText: snapshot.finalText }),
+    parts: [failure] as AgentReplyPart[],
+  };
+  let line = serializeAgentStreamFrame(frame);
+  if (Buffer.byteLength(line, "utf8") > MAX_FRAME_BYTES && snapshot.finalText !== undefined) {
+    frame = {
+      ...frame,
+      finalText: `${largestTextThatFits(
+        snapshot.finalText,
+        (candidate) => serializeAgentStreamFrame({ ...frame, finalText: `${candidate}… [truncated]` }),
+      )}… [truncated]`,
+    };
+  }
+  const accepted: AgentReplyPart[] = [];
+  for (const part of parts) {
+    const candidate = serializeAgentStreamFrame({ ...frame, parts: [...accepted, part, failure] });
+    if (Buffer.byteLength(candidate, "utf8") <= MAX_FRAME_BYTES) {
+      accepted.push(part);
+    }
+  }
+  line = serializeAgentStreamFrame({
+    ...frame,
+    parts: [...accepted, failure],
+  });
+  return Buffer.byteLength(line, "utf8") <= MAX_FRAME_BYTES
+    ? line
+    : serializeAgentStreamFrame({ kind: "finish", metadata: { truncated: true } });
+}
+
+function serializeFinishWithCappedText(
+  frame: Extract<AgentStreamWireFrame, { kind: "finish" }>,
+  finalText: string | undefined,
+): string {
+  if (finalText === undefined) return serializeAgentStreamFrame(frame);
+  const complete = serializeAgentStreamFrame({ ...frame, finalText });
+  if (Buffer.byteLength(complete, "utf8") <= MAX_FRAME_BYTES) return complete;
+  const suffix = "… [truncated]";
+  const text = largestTextThatFits(finalText, (candidate) => serializeAgentStreamFrame({
+    ...frame,
+    finalText: `${candidate}${suffix}`,
+  }));
+  return serializeAgentStreamFrame({ ...frame, finalText: `${text}${suffix}` });
+}
+
+function compactFinishMetadata(
+  metadata: Extract<AgentStreamWireFrame, { kind: "finish" }>["metadata"],
+): Record<string, unknown> | undefined {
+  if (metadata === undefined) return undefined;
+  const compact: Record<string, unknown> = { truncated: true };
+  for (const key of ["runId", "conversationId", "requestId"] as const) {
+    const value = metadata[key];
+    if (typeof value === "string") compact[key] = value.slice(0, 512);
+  }
+  return compact;
+}
+
+function serializeCappedTextFrame(
+  frame: Extract<AgentStreamWireFrame, { kind: "status" | "replace" | "error" }>,
+): string {
+  const suffix = "… [truncated]";
+  if (frame.kind === "error") {
+    const text = largestTextThatFits(frame.message, (candidate) => serializeAgentStreamFrame({
+      ...frame,
+      message: `${candidate}${suffix}`,
+    }));
+    return serializeAgentStreamFrame({ ...frame, message: `${text}${suffix}` });
+  }
+  const text = largestTextThatFits(frame.text, (candidate) => serializeAgentStreamFrame({
+    ...frame,
+    text: `${candidate}${suffix}`,
+  }));
+  return serializeAgentStreamFrame({ ...frame, text: `${text}${suffix}` });
+}
+
+function splitTextForWireFrame(kind: "append", text: string): string[] {
+  if (text.length === 0) return [""];
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > 0) {
+    const chunk = largestTextThatFits(
+      remaining,
+      (candidate) => serializeAgentStreamFrame({ kind, delta: candidate }),
+    );
+    if (chunk.length === 0) break;
+    chunks.push(chunk);
+    remaining = remaining.slice(chunk.length);
+  }
+  return chunks;
+}
+
+function largestTextThatFits(text: string, serialize: (candidate: string) => string): string {
+  let lower = 0;
+  let upper = text.length;
+  let best = "";
+  while (lower <= upper) {
+    let length = Math.floor((lower + upper) / 2);
+    if (length > 0 && isHighSurrogate(text.charCodeAt(length - 1))) length -= 1;
+    const candidate = text.slice(0, length);
+    if (Buffer.byteLength(serialize(candidate), "utf8") <= MAX_FRAME_BYTES) {
+      best = candidate;
+      lower = Math.max(lower + 1, length + 1);
+    } else {
+      upper = length - 1;
+    }
+  }
+  return best;
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
 function serializeUnknown(value: unknown): string {
   return typeof value === "string" ? value : JSON.stringify(value) ?? "";
 }
 
 function truncatePreparedText(text: string, cap: number): string {
   return text.length > cap ? `${text.slice(0, cap)}… [truncated]` : text;
+}
+
+function setReplyArtifactHeaders(res: Response, attachment: AgentReplyAttachmentPart): void {
+  const asciiName = attachment.name
+    .replace(/[^\x20-\x7e]/gu, "_")
+    .replace(/["\\]/gu, "_")
+    .slice(0, 180) || "attachment";
+  const encodedName = encodeURIComponent(attachment.name).replace(/['()*]/gu, (character) =>
+    `%${character.codePointAt(0)!.toString(16).toUpperCase()}`);
+  res.status(200);
+  const risky = /^(?:text\/(?:html|javascript|xml)|application\/(?:javascript|xhtml\+xml|xml)|image\/svg\+xml)$/iu
+    .test(attachment.mediaType);
+  res.setHeader("Content-Type", risky ? "application/octet-stream" : attachment.mediaType);
+  if (risky) res.setHeader("X-Original-Content-Type", attachment.mediaType);
+  res.setHeader("Content-Length", String(attachment.sizeBytes));
+  res.setHeader("Accept-Ranges", "none");
+  res.setHeader("Content-Disposition", `attachment; filename="${asciiName}"; filename*=UTF-8''${encodedName}`);
+  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  res.setHeader("X-Mono-Agent-Integrity-Id", attachment.integrityId);
+}
+
+async function writeBinaryChunk(res: Response, chunk: Uint8Array): Promise<void> {
+  if (res.destroyed || res.writableEnded) throw new Error("Reply artifact client disconnected.");
+  if (res.write(Buffer.from(chunk))) return;
+  await new Promise<void>((resolveDrain, rejectDrain) => {
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      res.off("drain", onDrain);
+      res.off("close", onClose);
+      res.off("error", onError);
+    };
+    const onDrain = (): void => { cleanup(); resolveDrain(); };
+    const onClose = (): void => { cleanup(); rejectDrain(new Error("Reply artifact client disconnected.")); };
+    const onError = (error: Error): void => { cleanup(); rejectDrain(error); };
+    const timer = setTimeout(() => {
+      cleanup();
+      rejectDrain(new Error("Reply artifact response did not drain in time."));
+    }, REPLY_ARTIFACT_DRAIN_TIMEOUT_MS);
+    res.once("drain", onDrain);
+    res.once("close", onClose);
+    res.once("error", onError);
+  });
+}
+
+function normalizeMcpAppIdentity(req: Request): {
+  readonly conversationId: string;
+  readonly invocationId: string;
+  readonly connectionId: string;
+} | undefined {
+  const conversationId = normalizeOptionalString(
+    typeof req.params.conversationId === "string" ? req.params.conversationId : undefined,
+  );
+  const invocationId = normalizeOptionalString(
+    typeof req.params.invocationId === "string" ? req.params.invocationId : undefined,
+  );
+  const connectionId = normalizeOptionalString(req.header("x-mono-agent-mcp-connection-id"));
+  if (
+    conversationId === undefined
+    || invocationId === undefined
+    || connectionId === undefined
+    || Buffer.byteLength(conversationId, "utf8") > MAX_MCP_APP_IDENTITY_BYTES
+    || Buffer.byteLength(invocationId, "utf8") > MAX_MCP_APP_IDENTITY_BYTES
+    || Buffer.byteLength(connectionId, "utf8") > MAX_MCP_APP_IDENTITY_BYTES
+  ) return undefined;
+  return { conversationId, invocationId, connectionId };
+}
+
+function setPrivateMcpAppHeaders(res: Response): void {
+  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Security-Policy", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+}
+
+function sendMcpAppError(res: Response, error: unknown): void {
+  const code = codeOf(error);
+  const status = code === "app_forbidden" || code === "app_missing" || code === "app_expired"
+    ? 404
+    : code === "app_request_too_large" ? 413
+      : code === "app_tool_forbidden" || code === "app_resource_forbidden" || code === "app_open_link_forbidden" ? 403
+        : code === "app_confirmation_required" ? 409
+          : code === "app_rate_limited" ? 429
+          : code === "app_connection_closed" ? 410
+            : 500;
+  setPrivateMcpAppHeaders(res);
+  sendJsonError(res, status, error);
 }
 
 interface NormalizedTurnBody {

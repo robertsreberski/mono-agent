@@ -1,5 +1,6 @@
 import {
   CronOperatorWireError,
+  MCP_APP_SUPPORTED_VERSIONS,
   parseCronOperatorJob,
   parseCronOperatorOverview,
   parseCronOperatorRunDetail,
@@ -9,6 +10,10 @@ import {
   type AgentLiveInputSettlement,
   type AgentLiveInputUnavailableReason,
   type AgentAttachment,
+  type AgentMcpAppHostRequest,
+  type AgentMcpAppResource,
+  type AgentReplyAttachmentPart,
+  type AgentReplyPart,
   type AgentStreamWireFrame,
   type AgentToolEnvironment,
   type ChannelAskAnswer,
@@ -35,7 +40,11 @@ import { isTrustedOperatorBaseUrl } from "./discovery.js";
 const OPERATOR_WIRE_SCHEMA = 1;
 const MAX_INFO_BODY_BYTES = 1024 * 1024;
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
+// Compatibility boundary: older operators may emit frames up to 8 MiB. New
+// producers remain independently bounded, but the console must consume both.
 const MAX_NDJSON_FRAME_BYTES = 8 * 1024 * 1024;
+const MAX_MCP_APP_RESOURCE_BYTES = 4 * 1024 * 1024;
+const MAX_MCP_APP_RESULT_BYTES = 1024 * 1024;
 const CANCEL_TIMEOUT_MS = 2_000;
 const HISTORY_APPEND_TIMEOUT_MS = 5_000;
 const MAX_SKILL_ITEMS = 256;
@@ -68,6 +77,12 @@ export interface OperatorInfo {
   readonly supportsAskById?: boolean;
   readonly supportsLiveInput: boolean;
   readonly supportsToolEnvironment?: boolean;
+  readonly replyAttachments?: { readonly version: 1; readonly maxBytes: number };
+  readonly mcpApps?: {
+    readonly bridgeVersion: 1;
+    readonly versions: readonly (typeof MCP_APP_SUPPORTED_VERSIONS)[number][];
+    readonly mimeTypes: readonly ["text/html;profile=mcp-app"];
+  };
   readonly cron?: { readonly read: true; readonly actions: boolean };
 }
 
@@ -97,6 +112,7 @@ export interface OperatorTurnInput {
 export interface OperatorTurnResult {
   readonly finalText?: string;
   readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly parts?: readonly AgentReplyPart[];
 }
 
 export interface OperatorClientOptions extends OperatorConnection {
@@ -141,6 +157,8 @@ export class OperatorClient {
     const skills = parseSkillRegistry(body.skills);
     const capabilities = record(body.capabilities);
     const cron = record(capabilities?.cron);
+    const replyAttachments = parseReplyAttachmentsCapability(capabilities?.replyAttachments);
+    const mcpApps = parseMcpAppsCapability(capabilities?.mcpApps);
     return {
       schema: body.schema,
       ...(typeof body.label === "string" ? { label: body.label } : {}),
@@ -155,6 +173,8 @@ export class OperatorClient {
       ...(capabilities?.askById === true ? { supportsAskById: true } : {}),
       supportsLiveInput: capabilities?.liveInput === true,
       ...(capabilities?.toolEnvironment === true ? { supportsToolEnvironment: true } : {}),
+      ...(replyAttachments === undefined ? {} : { replyAttachments }),
+      ...(mcpApps === undefined ? {} : { mcpApps }),
       ...(cron?.read === true ? { cron: { read: true, actions: cron.actions === true } } : {}),
     };
   }
@@ -188,6 +208,7 @@ export class OperatorClient {
           return {
             ...(frame.finalText === undefined ? {} : { finalText: frame.finalText }),
             ...(frame.metadata === undefined ? {} : { metadata: frame.metadata }),
+            ...(frame.parts === undefined ? {} : { parts: frame.parts }),
           };
         }
         if (frame.kind === "error") {
@@ -390,6 +411,121 @@ export class OperatorClient {
     return body as unknown as ChannelAskSubmissionResult;
   }
 
+  async replyArtifact(
+    conversationId: string,
+    attachment: AgentReplyAttachmentPart,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    const response = await this.request(
+      `${this.baseUrl}/v1/conversations/${encodeURIComponent(conversationId)}`
+        + `/reply-artifacts/${encodeURIComponent(attachment.reference.id)}`,
+      {
+        headers: {
+          ...this.headers(false),
+          "x-mono-agent-integrity-id": attachment.integrityId,
+        },
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+    const length = Number(response.headers.get("content-length"));
+    const integrity = response.headers.get("x-mono-agent-integrity-id");
+    if (
+      response.body === null
+      || !Number.isSafeInteger(length)
+      || length !== attachment.sizeBytes
+      || integrity !== attachment.integrityId
+    ) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new WebConsoleError("invalid_operator_artifact", "The agent returned invalid artifact metadata.", 502);
+    }
+    return response;
+  }
+
+  async mcpAppResource(
+    conversationId: string,
+    invocationId: string,
+    connectionId: string,
+    signal?: AbortSignal,
+  ): Promise<AgentMcpAppResource> {
+    const response = await this.request(
+      `${this.baseUrl}/v1/conversations/${encodeURIComponent(conversationId)}`
+        + `/mcp-apps/${encodeURIComponent(invocationId)}`,
+      {
+        headers: {
+          ...this.headers(false),
+          "x-mono-agent-mcp-connection-id": connectionId,
+        },
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readBoundedBody(
+        response,
+        MAX_MCP_APP_RESOURCE_BYTES,
+        "operator_mcp_app_too_large",
+      )) as unknown;
+    } catch (error) {
+      if (error instanceof WebConsoleError) throw error;
+      throw new WebConsoleError("invalid_operator_mcp_app", "The agent returned invalid MCP App JSON.", 502);
+    }
+    const resource = record(parsed);
+    const app = record(resource?.app);
+    if (
+      resource === undefined
+      || app === undefined
+      || app.type !== "mcp_app"
+      || app.invocationId !== invocationId
+      || app.connectionId !== connectionId
+      || typeof resource.html !== "string"
+      || Buffer.byteLength(resource.html, "utf8") > 2 * 1024 * 1024
+      || typeof resource.connected !== "boolean"
+    ) {
+      throw new WebConsoleError("invalid_operator_mcp_app", "The agent returned invalid MCP App state.", 502);
+    }
+    return parsed as AgentMcpAppResource;
+  }
+
+  async mcpAppRequest(
+    conversationId: string,
+    request: Omit<AgentMcpAppHostRequest, "conversationId">,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    const response = await this.request(
+      `${this.baseUrl}/v1/conversations/${encodeURIComponent(conversationId)}`
+        + `/mcp-apps/${encodeURIComponent(request.invocationId)}/requests`,
+      {
+        method: "POST",
+        headers: {
+          ...this.headers(true),
+          "x-mono-agent-mcp-connection-id": request.connectionId,
+        },
+        ...(signal === undefined ? {} : { signal }),
+        body: JSON.stringify({
+          method: request.method,
+          ...(request.params === undefined ? {} : { params: request.params }),
+          ...(request.confirmed === undefined ? {} : { confirmed: request.confirmed }),
+        }),
+      },
+    );
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readBoundedBody(
+        response,
+        MAX_MCP_APP_RESULT_BYTES,
+        "operator_mcp_app_result_too_large",
+      )) as unknown;
+    } catch (error) {
+      if (error instanceof WebConsoleError) throw error;
+      throw new WebConsoleError("invalid_operator_mcp_app", "The agent returned invalid MCP App bridge JSON.", 502);
+    }
+    const body = record(parsed);
+    if (body === undefined || !Object.hasOwn(body, "result")) {
+      throw new WebConsoleError("invalid_operator_mcp_app", "The agent returned invalid MCP App bridge state.", 502);
+    }
+    return body.result;
+  }
+
   private headers(json: boolean): Record<string, string> {
     return {
       ...(json ? { "content-type": "application/json" } : {}),
@@ -449,6 +585,33 @@ export class OperatorClient {
 
 function invalidCronResponse(): never {
   throw new WebConsoleError("invalid_operator_cron", "The agent returned invalid cron operator data.", 502);
+}
+
+function parseReplyAttachmentsCapability(
+  value: unknown,
+): OperatorInfo["replyAttachments"] | undefined {
+  const capability = record(value);
+  return capability?.version === 1
+    && Number.isSafeInteger(capability.maxBytes)
+    && Number(capability.maxBytes) > 0
+    ? { version: 1, maxBytes: capability.maxBytes as number }
+    : undefined;
+}
+
+function parseMcpAppsCapability(value: unknown): OperatorInfo["mcpApps"] | undefined {
+  const capability = record(value);
+  const versions = stringArray(capability?.versions);
+  const mimeTypes = stringArray(capability?.mimeTypes);
+  const effectiveVersions = MCP_APP_SUPPORTED_VERSIONS.filter((version) => versions?.includes(version) === true);
+  return capability?.bridgeVersion === 1
+    && effectiveVersions.length > 0
+    && mimeTypes?.includes("text/html;profile=mcp-app") === true
+    ? {
+        bridgeVersion: 1,
+        versions: effectiveVersions,
+        mimeTypes: ["text/html;profile=mcp-app"],
+      }
+    : undefined;
 }
 
 function parseCronOverview(value: unknown): Omit<WebCronOverview, "jobs"> & {

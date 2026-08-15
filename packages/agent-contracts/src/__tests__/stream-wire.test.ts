@@ -4,6 +4,7 @@ import type { AgentMessageStream, AgentStreamEvent, AgentStreamWireFrame } from 
 import {
   frameFeedingMessageStream,
   isCodedError,
+  MAX_AGENT_REPLY_PARTS,
   parseAgentStreamFrame,
   serializeAgentStreamFrame,
 } from "../index.js";
@@ -39,7 +40,33 @@ describe("serialize/parse round-trip", () => {
       { kind: "append", delta: "Hel" },
       { kind: "replace", text: "Hello" },
       ...EVENT_FIXTURES.map((event): AgentStreamWireFrame => ({ kind: "event", event })),
-      { kind: "finish", finalText: "Hello!", metadata: { runId: "r1" } },
+      {
+        kind: "finish",
+        finalText: "Hello!",
+        metadata: { runId: "r1" },
+        parts: [
+          {
+            type: "attachment",
+            id: "part-1",
+            reference: { scheme: "mono-agent-artifact", id: "artifact-1" },
+            name: "report.pdf",
+            mediaType: "application/pdf",
+            sizeBytes: 42,
+            integrityId: `sha256:${"a".repeat(64)}`,
+          },
+          {
+            type: "mcp_app",
+            id: "app-1",
+            invocationId: "invocation-1",
+            connectionId: "connection-1",
+            serverName: "charts",
+            toolName: "render_chart",
+            resourceUri: "ui://charts/main",
+            mediaType: "text/html;profile=mcp-app",
+            protocolVersion: "2026-01-26",
+          },
+        ],
+      },
       { kind: "error", message: "boom", code: "run_failed", cancelled: false },
     ];
     for (const frame of frames) {
@@ -61,6 +88,18 @@ describe("serialize/parse round-trip", () => {
     expect((frame as { event: { type: string } }).event.type).toBe("quantum_flux");
   });
 
+  it("rejects a finish frame above the shared rich-part wire bound", () => {
+    const line = JSON.stringify({
+      kind: "finish",
+      parts: Array.from({ length: MAX_AGENT_REPLY_PARTS + 1 }, (_, index) => ({
+        type: "future_part",
+        id: `part-${String(index)}`,
+      })),
+    });
+
+    expect(() => parseAgentStreamFrame(line)).toThrowError(expect.objectContaining({ code: "invalid_frame" }));
+  });
+
   it.each([
     ["not json", "{nope"],
     ["missing kind", '{"text":"x"}'],
@@ -70,6 +109,8 @@ describe("serialize/parse round-trip", () => {
     ["replace without text", '{"kind":"replace","delta":"x"}'],
     ["event without event", '{"kind":"event"}'],
     ["event without type", '{"kind":"event","event":{}}'],
+    ["finish with scalar parts", '{"kind":"finish","parts":"nope"}'],
+    ["finish with malformed part", '{"kind":"finish","parts":[{"type":"attachment"}]}'],
     ["error without message", '{"kind":"error"}'],
   ])("rejects malformed line (%s) with a coded invalid_frame error", (_label, line) => {
     try {

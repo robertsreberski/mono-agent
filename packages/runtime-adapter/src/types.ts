@@ -1,4 +1,8 @@
-import type { AgentToolEnvironment } from "@mono-agent/agent-contracts";
+import type {
+  AgentReplyMcpAppPart,
+  AgentReplyPartFailure,
+  AgentToolEnvironment,
+} from "@mono-agent/agent-contracts";
 import type { AcpCallbackContext, AcpInteractionRequest, AcpProfileDescriptor } from "@mono-agent/agent-runtime";
 
 import type { PreparedSandboxCommand, SandboxCommandSpec, SandboxPolicy } from "./sandbox.js";
@@ -111,6 +115,7 @@ export interface MonoRuntimeBackendCapabilities {
   readonly supports_session_resume?: boolean;
   readonly native_runtime_config?: unknown;
   readonly supports_mcp?: boolean;
+  readonly supports_mcp_apps?: boolean;
   readonly supports_skills?: boolean;
   readonly supports_builtin_tools?: boolean;
   readonly supports_live_input?: boolean;
@@ -411,6 +416,48 @@ export interface RuntimeLiveInputMessage {
 export const PI_TRANSPORTS = ["auto", "sse", "websocket", "websocket-cached"] as const;
 export type PiTransport = (typeof PI_TRANSPORTS)[number];
 
+/** Exact live MCP connection leased to the app-owned host after a UI tool call. */
+export interface RuntimeMcpAppConnection {
+  readonly connectionId: string;
+  readResource(uri: string): Promise<unknown>;
+  callTool(name: string, args: unknown, signal?: AbortSignal): Promise<unknown>;
+  close(): Promise<void>;
+}
+
+export interface RuntimeMcpAppRegistration {
+  readonly runId?: string;
+  readonly serverName: string;
+  readonly toolName: string;
+  readonly title?: string;
+  readonly description?: string;
+  readonly toolCallId: string;
+  readonly resourceUri: string;
+  readonly protocolVersion: string;
+  readonly toolInput: unknown;
+  readonly toolResult: unknown;
+  readonly resource: unknown;
+  readonly appVisibleTools: readonly string[];
+  readonly connection: RuntimeMcpAppConnection;
+}
+
+/** App-owned registry consumed only by Pi's exact MCP client path. */
+export interface RuntimeMcpAppHost {
+  readonly protocolVersions: readonly string[];
+  readonly mimeTypes: readonly string[];
+  register(input: RuntimeMcpAppRegistration): Promise<{
+    readonly part: AgentReplyMcpAppPart | AgentReplyPartFailure;
+    readonly retainConnection: boolean;
+  }>;
+  recordFailure(input: {
+    readonly runId?: string;
+    readonly serverName: string;
+    readonly toolName: string;
+    readonly toolCallId: string;
+    readonly code: AgentReplyPartFailure["code"];
+    readonly message: string;
+  }): Promise<AgentReplyPartFailure>;
+}
+
 export interface RuntimeRunOptions {
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];
@@ -432,6 +479,8 @@ export interface RuntimeRunOptions {
    * entries are capability-skipped instead of silently dropping these servers.
    */
   readonly mcpServers?: Record<string, unknown>;
+  /** Exact-connection MCP Apps host. Currently consumed by Pi-native routes. */
+  readonly mcpApps?: RuntimeMcpAppHost;
   readonly mcpConfigPath?: string;
   readonly sandboxPolicy?: SandboxPolicy;
   readonly sandboxEngine?: MonoRuntimeSandboxEngine;

@@ -12,6 +12,7 @@ import type {
   CronRun,
   CronRunPage,
   LiveInputReceipt,
+  McpAppResource,
   PushSubscriptionStatus,
   StartTurnInput,
   ThreadDetail,
@@ -67,6 +68,15 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   });
   if (!response.ok) throw await readError(response);
   return (await response.json()) as T;
+};
+
+/** Reject a compromised/stale DTO that tries to move a private rich-part request off origin. */
+export const sameOriginReplyUrl = (value: string): string => {
+  const url = new URL(value, window.location.origin);
+  if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/v1/threads/")) {
+    throw new Error("The reply part endpoint is not on this console origin.");
+  }
+  return `${url.pathname}${url.search}`;
 };
 
 const cronMutation = async <T>(path: string, body: Readonly<Record<string, unknown>>): Promise<CronMutationResult<T>> => {
@@ -307,6 +317,25 @@ export const api = {
       headers: { Accept: "application/json" },
     });
     if (!response.ok) throw await readError(response);
+  },
+
+  mcpAppResource: (resourceUrl: string, signal?: AbortSignal) =>
+    request<McpAppResource>(sameOriginReplyUrl(resourceUrl), { signal }),
+
+  mcpAppRequest: async (
+    bridgeUrl: string,
+    method: "resources/read" | "tools/call" | "ui/open-link" | "ui/update-model-context",
+    params: unknown,
+    confirmed: boolean,
+    signal?: AbortSignal,
+  ) => {
+    const payload = await request<{ readonly result: unknown }>(sameOriginReplyUrl(bridgeUrl), {
+      method: "POST",
+      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      body: JSON.stringify({ method, params, confirmed }),
+      signal,
+    });
+    return payload.result;
   },
 };
 

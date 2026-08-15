@@ -701,7 +701,10 @@ function startRun(
     })
     .then(({ response, notifyConversationId }) => {
       finalize(async () => {
-        await stream.finish(response.text);
+        await stream.finish(response.text, {
+          ...(response.parts === undefined ? {} : { parts: response.parts }),
+          unsupportedPartFallback: "none",
+        });
         // Guard against a responder that ignores/races the abort signal and still
         // resolves with text: if THIS run's controller was aborted (overlap:"replace"
         // discarding the in-flight run, the watchdog, or stop()), report the run as

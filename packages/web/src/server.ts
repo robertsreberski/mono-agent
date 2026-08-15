@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { isIP } from "node:net";
 import { hostname as systemHostname } from "node:os";
 import { dirname, resolve } from "node:path";
+import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
@@ -31,6 +32,7 @@ import {
   type StartWebTurnInput,
   type WebEvent,
   type WebConsoleIdentity,
+  type WebMessagePart,
   type WebTheme,
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
@@ -44,6 +46,7 @@ export const DEFAULT_WEB_HOST = "0.0.0.0";
 export const DEFAULT_WEB_PORT = 5050;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const MAX_SSE_CLIENTS = 64;
+const MAX_MCP_APP_BRIDGE_REQUEST_BYTES = 64 * 1024;
 const WEB_THEME_CHROME: Readonly<Record<WebTheme, { readonly light: string; readonly dark: string }>> = {
   evergreen: { light: "#eeefeb", dark: "#0f1110" },
   ocean: { light: "#edf1f4", dark: "#0d1115" },
@@ -254,6 +257,90 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         limit: boundedQueryLimit(req.query.limit, 100, 100),
         ...(before === undefined ? {} : { before }),
       }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get(
+    "/api/v1/threads/:threadId/messages/:messageId/reply-attachments/:partId/content",
+    (req, res, next) => {
+      const access = replyAccessQuery(req);
+      const controller = new AbortController();
+      res.once("close", () => {
+        if (!res.writableEnded) controller.abort(new Error("Reply attachment client disconnected."));
+      });
+      void trackOperation(service.replyAttachment(
+        pathParam(req.params.threadId),
+        pathParam(req.params.messageId),
+        pathParam(req.params.partId),
+        access.expires,
+        access.token,
+        controller.signal,
+      ).then(async ({ part, response }) => {
+        if (response.body === null) throw new WebConsoleError("reply_attachment_unavailable", "Attachment stream is unavailable.", 502);
+        setReplyDownloadHeaders(res, part);
+        await pipeline(Readable.fromWeb(response.body as never), res);
+      }), activeOperations).catch((error: unknown) => {
+        if (res.headersSent) {
+          res.destroy(error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
+        next(error);
+      });
+    },
+  );
+
+  app.get("/api/v1/threads/:threadId/messages/:messageId/mcp-apps/:partId", (req, res, next) => {
+    const access = replyAccessQuery(req);
+    void trackOperation(service.mcpAppResource(
+      pathParam(req.params.threadId),
+      pathParam(req.params.messageId),
+      pathParam(req.params.partId),
+      access.expires,
+      access.token,
+      AbortSignal.timeout(10_000),
+    ), activeOperations).then((resource) => {
+      setPrivateAppHeaders(res);
+      res.status(200).json(resource);
+    }).catch(next);
+  });
+
+  app.post("/api/v1/threads/:threadId/messages/:messageId/mcp-apps/:partId/requests", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const serializedBytes = Buffer.byteLength(JSON.stringify(req.body) ?? "null", "utf8");
+      if (serializedBytes > MAX_MCP_APP_BRIDGE_REQUEST_BYTES) {
+        throw new WebConsoleError("mcp_app_request_too_large", "The MCP App bridge request is too large.", 413);
+      }
+      const body = requireRecord(req.body);
+      const method = body.method;
+      if (method !== "resources/read"
+        && method !== "tools/call"
+        && method !== "ui/open-link"
+        && method !== "ui/update-model-context") {
+        throw invalidBody("MCP App method is invalid.");
+      }
+      if (body.confirmed !== undefined && typeof body.confirmed !== "boolean") {
+        throw invalidBody("MCP App confirmation must be boolean.");
+      }
+      const access = replyAccessQuery(req);
+      void trackOperation(service.mcpAppRequest(
+        pathParam(req.params.threadId),
+        pathParam(req.params.messageId),
+        pathParam(req.params.partId),
+        access.expires,
+        access.token,
+        {
+          method,
+          ...(body.params === undefined ? {} : { params: body.params }),
+          ...(body.confirmed === undefined ? {} : { confirmed: body.confirmed }),
+        },
+        AbortSignal.timeout(120_000),
+      ), activeOperations).then((result) => {
+        setPrivateAppHeaders(res);
+        res.status(200).json({ result });
+      }).catch(next);
     } catch (error) {
       next(error);
     }
@@ -680,6 +767,46 @@ async function handleDownloadContent(id: string, res: Response, service: WebServ
   res.setHeader("Content-Disposition", contentDisposition(attachment.name, image ? "inline" : "attachment"));
   const stream = handle.createReadStream({ autoClose: false });
   await pipeline(stream, res).finally(async () => handle.close());
+}
+
+function replyAccessQuery(req: Request): { readonly expires: string; readonly token: string } {
+  const expires = req.query.expires;
+  const token = req.query.token;
+  if (
+    typeof expires !== "string"
+    || !/^\d{10,13}$/u.test(expires)
+    || typeof token !== "string"
+    || !/^[A-Za-z0-9_-]{43}$/u.test(token)
+  ) {
+    throw new WebConsoleError("reply_part_not_found", "The reply part is unavailable.", 404);
+  }
+  return { expires, token };
+}
+
+function setReplyDownloadHeaders(
+  res: Response,
+  part: Extract<WebMessagePart, { type: "attachment" }>,
+): void {
+  const risky = /^(?:text\/(?:html|javascript|xml)|application\/(?:javascript|xhtml\+xml|xml)|image\/svg\+xml)$/iu
+    .test(part.mediaType);
+  res.status(200);
+  res.setHeader("Content-Type", risky ? "application/octet-stream" : part.mediaType);
+  if (risky) res.setHeader("X-Original-Content-Type", part.mediaType);
+  res.setHeader("Content-Length", String(part.sizeBytes));
+  res.setHeader("Accept-Ranges", "none");
+  res.setHeader("Content-Disposition", contentDisposition(part.name, "attachment"));
+  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
+  res.setHeader("X-Mono-Agent-Integrity-Id", part.integrityId);
+}
+
+function setPrivateAppHeaders(res: Response): void {
+  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Security-Policy", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
 }
 
 function validateLocalRequest(

@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   classifyNotifySuppression,
+  type AgentReplyPart,
   type AgentStreamEvent,
   type AgentStreamWireFrame,
 } from "@mono-agent/agent-contracts";
@@ -1326,6 +1327,12 @@ export class WebStore {
     };
   }
 
+  getMessage(id: string): WebMessage | undefined {
+    const row = this.database.prepare("SELECT * FROM messages WHERE id = ?")
+      .get(id) as unknown as MessageRow | undefined;
+    return row === undefined ? undefined : this.mapMessage(row);
+  }
+
   listMessagesPage(
     id: string,
     input: { readonly before?: string; readonly limit?: number } = {},
@@ -1939,9 +1946,14 @@ export class WebStore {
     return this.requireMessage(message.id);
   }
 
-  completeTurn(turnId: string, finalText?: string, metadata?: Readonly<Record<string, unknown>>): WebThreadDetail {
+  completeTurn(
+    turnId: string,
+    finalText?: string,
+    metadata?: Readonly<Record<string, unknown>>,
+    replyParts?: readonly AgentReplyPart[],
+  ): WebThreadDetail {
     const runtime = runtimeMetadata(metadata);
-    return this.finishTurn(turnId, "complete", finalText, undefined, undefined, runtime);
+    return this.finishTurn(turnId, "complete", finalText, undefined, undefined, runtime, replyParts);
   }
 
   failTurn(turnId: string, error: { readonly message: string; readonly code?: string; readonly cancelled?: boolean }): WebThreadDetail {
@@ -2014,6 +2026,24 @@ export class WebStore {
       this.setSetting("web_push_key_fingerprint", generatedFingerprint);
     });
     return { ...generated, fingerprint: generatedFingerprint };
+  }
+
+  /** Stable owner-private key for short-lived message-bound rich-part URLs. */
+  ensureReplyAccessKey(generate: () => string): string {
+    const existing = this.database.prepare("SELECT value FROM settings WHERE key = 'reply_access_key_v1'")
+      .get() as unknown as { value: string } | undefined;
+    if (existing !== undefined) {
+      if (!/^[A-Za-z0-9_-]{43}$/u.test(existing.value)) {
+        throw new WebConsoleError("reply_access_key_corrupt", "The stored reply access key is invalid.", 500);
+      }
+      return existing.value;
+    }
+    const created = generate();
+    if (!/^[A-Za-z0-9_-]{43}$/u.test(created)) {
+      throw new WebConsoleError("reply_access_key_generation_failed", "Unable to generate a reply access key.", 500);
+    }
+    this.setSetting("reply_access_key_v1", created);
+    return created;
   }
 
   registerWebPushSubscription(input: RegisterWebPushSubscriptionInput): WebPushSubscriptionStatus {
@@ -2890,13 +2920,14 @@ export class WebStore {
     errorCode?: string,
     errorMessage?: string,
     runtime?: { readonly model?: string; readonly effort?: string },
+    replyParts?: readonly AgentReplyPart[],
   ): WebThreadDetail {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") {
       return this.requireThreadDetail(turn.thread_id);
     }
     this.transaction(() => {
-      this.finishTurnInTransaction(turnId, status, finalText, errorCode, errorMessage, runtime);
+      this.finishTurnInTransaction(turnId, status, finalText, errorCode, errorMessage, runtime, replyParts);
     });
     return this.requireThreadDetail(turn.thread_id);
   }
@@ -2908,12 +2939,14 @@ export class WebStore {
     errorCode?: string,
     errorMessage?: string,
     runtime?: { readonly model?: string; readonly effort?: string },
+    replyParts?: readonly AgentReplyPart[],
   ): void {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") return;
     const existing = this.requireMessage(turn.assistant_message_id);
     const parts = [...existing.parts];
     if (finalText !== undefined && finalText.length > 0) reconcileFinalText(parts, finalText);
+    if (replyParts !== undefined) parts.push(...replyParts.map(toWebReplyPart));
     if (errorMessage !== undefined) {
       parts.push({ type: "error", ...(errorCode === undefined ? {} : { code: errorCode }), message: errorMessage });
     }
@@ -4189,6 +4222,142 @@ function normalizeTitle(value: string): string {
   return title;
 }
 
+const REPLY_FAILURE_CODES = new Set([
+  "app_capability_mismatch",
+  "app_connection_closed",
+  "app_resource_invalid",
+  "artifact_expired",
+  "artifact_integrity_failed",
+  "artifact_missing",
+  "artifact_publish_failed",
+  "artifact_too_large",
+  "reply_part_too_large",
+  "unsupported_destination",
+]);
+
+function isMcpAppProtocolVersion(value: unknown): value is "2026-01-26" | "2025-11-21" {
+  return value === "2026-01-26" || value === "2025-11-21";
+}
+
+function toWebReplyPart(input: AgentReplyPart): WebMessagePart {
+  const part = record(input);
+  const id = validRichId(part?.id) ? part.id : `invalid-rich-part-${randomUUID()}`;
+  const failure = (code: "artifact_publish_failed" | "artifact_too_large" | "app_resource_invalid"): WebMessagePart => ({
+    type: "failure",
+    id,
+    code,
+    message: code === "artifact_too_large"
+      ? "The generated file exceeded the web console attachment limit."
+      : code === "app_resource_invalid"
+        ? "The MCP App metadata was invalid and could not be displayed."
+        : "The generated file metadata was invalid and could not be displayed.",
+  });
+  if (part?.type === "attachment") {
+    const reference = record(part.reference);
+    if (
+      !validRichId(part.id)
+      || reference?.scheme !== "mono-agent-artifact"
+      || !validRichId(reference.id)
+      || typeof part.name !== "string"
+      || part.name.length === 0
+      || part.name.length > 255
+      || /[\u0000-\u001f\u007f/\\]/u.test(part.name)
+      || typeof part.mediaType !== "string"
+      || !validReplyMimeType(part.mediaType)
+      || !Number.isSafeInteger(part.sizeBytes)
+      || Number(part.sizeBytes) < 0
+      || typeof part.integrityId !== "string"
+      || !/^sha256:[0-9a-f]{64}$/u.test(part.integrityId)
+      || !validOptionalDate(part.expiresAt)
+    ) return failure("artifact_publish_failed");
+    if (Number(part.sizeBytes) > 20 * 1024 * 1024) return failure("artifact_too_large");
+    return {
+      type: "attachment",
+      id: part.id,
+      artifactId: reference.id,
+      name: part.name,
+      mediaType: part.mediaType,
+      sizeBytes: part.sizeBytes as number,
+      integrityId: part.integrityId,
+      ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt as string }),
+    };
+  }
+  if (part?.type === "mcp_app") {
+    if (
+      !validRichId(part.id)
+      || part.invocationId !== part.id
+      || !validRichId(part.invocationId)
+      || !validRichId(part.connectionId)
+      || typeof part.serverName !== "string"
+      || typeof part.toolName !== "string"
+      || typeof part.resourceUri !== "string"
+      || !part.resourceUri.startsWith("ui://")
+      || part.mediaType !== "text/html;profile=mcp-app"
+      || !isMcpAppProtocolVersion(part.protocolVersion)
+      || !validOptionalBoundedText(part.title, 240)
+      || !validOptionalBoundedText(part.description, 1_000)
+      || !validOptionalDate(part.expiresAt)
+    ) return failure("app_resource_invalid");
+    return {
+      type: "mcp_app",
+      id: part.id,
+      invocationId: part.invocationId as string,
+      connectionId: part.connectionId as string,
+      serverName: (part.serverName as string).slice(0, 256),
+      toolName: (part.toolName as string).slice(0, 256),
+      resourceUri: (part.resourceUri as string).slice(0, 4_096),
+      mediaType: "text/html;profile=mcp-app",
+      protocolVersion: part.protocolVersion,
+      ...(part.title === undefined ? {} : { title: part.title as string }),
+      ...(part.description === undefined ? {} : { description: part.description as string }),
+      ...(part.expiresAt === undefined ? {} : { expiresAt: part.expiresAt as string }),
+    };
+  }
+  if (
+    part?.type === "failure"
+    && validRichId(part.id)
+    && typeof part.code === "string"
+    && REPLY_FAILURE_CODES.has(part.code)
+    && typeof part.message === "string"
+    && Buffer.byteLength(part.message, "utf8") <= 1_024
+    && (part.relatedPartId === undefined || validRichId(part.relatedPartId))
+  ) {
+    return {
+      type: "failure",
+      id: part.id,
+      code: part.code as Extract<WebMessagePart, { type: "failure" }>["code"],
+      message: part.message,
+      ...(part.relatedPartId === undefined ? {} : { relatedPartId: part.relatedPartId }),
+    };
+  }
+  return {
+    type: "failure",
+    id,
+    code: "unsupported_destination",
+    message: "A rich reply part used an unsupported format and could not be displayed.",
+  };
+}
+
+function validRichId(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && Buffer.byteLength(value, "utf8") <= 256
+    && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+function validReplyMimeType(value: string): boolean {
+  return value.length <= 256
+    && /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(?:;[a-z0-9=._+-]+)*$/iu.test(value);
+}
+
+function validOptionalDate(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && !Number.isNaN(Date.parse(value)));
+}
+
+function validOptionalBoundedText(value: unknown, maxBytes: number): boolean {
+  return value === undefined || (typeof value === "string" && Buffer.byteLength(value, "utf8") <= maxBytes);
+}
+
 function parseParts(value: string): WebMessagePart[] {
   let parsed: unknown;
   try {
@@ -4428,6 +4597,46 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
   }
   if (part.type === "telemetry") return typeof part.event === "string";
   if (part.type === "error") return typeof part.message === "string" && (part.code === undefined || typeof part.code === "string");
+  if (part.type === "attachment") {
+    return validRichId(part.id)
+      && validRichId(part.artifactId)
+      && typeof part.name === "string"
+      && part.name.length > 0
+      && !/[\u0000-\u001f\u007f/\\]/u.test(part.name)
+      && typeof part.mediaType === "string"
+      && validReplyMimeType(part.mediaType)
+      && Number.isSafeInteger(part.sizeBytes)
+      && Number(part.sizeBytes) >= 0
+      && Number(part.sizeBytes) <= 20 * 1024 * 1024
+      && typeof part.integrityId === "string"
+      && /^sha256:[0-9a-f]{64}$/u.test(part.integrityId)
+      && validOptionalDate(part.expiresAt)
+      && (part.contentUrl === undefined || typeof part.contentUrl === "string");
+  }
+  if (part.type === "mcp_app") {
+    return validRichId(part.id)
+      && part.invocationId === part.id
+      && validRichId(part.connectionId)
+      && typeof part.serverName === "string"
+      && typeof part.toolName === "string"
+      && typeof part.resourceUri === "string"
+      && part.resourceUri.startsWith("ui://")
+      && part.mediaType === "text/html;profile=mcp-app"
+      && isMcpAppProtocolVersion(part.protocolVersion)
+      && validOptionalBoundedText(part.title, 240)
+      && validOptionalBoundedText(part.description, 1_000)
+      && validOptionalDate(part.expiresAt)
+      && (part.resourceUrl === undefined || typeof part.resourceUrl === "string")
+      && (part.bridgeUrl === undefined || typeof part.bridgeUrl === "string");
+  }
+  if (part.type === "failure") {
+    return validRichId(part.id)
+      && typeof part.code === "string"
+      && REPLY_FAILURE_CODES.has(part.code)
+      && typeof part.message === "string"
+      && Buffer.byteLength(part.message, "utf8") <= 1_024
+      && (part.relatedPartId === undefined || validRichId(part.relatedPartId));
+  }
   return false;
 }
 

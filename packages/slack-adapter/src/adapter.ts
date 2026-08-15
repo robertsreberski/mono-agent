@@ -30,6 +30,7 @@ import {
   type SlackMessageStreamOptions,
 } from "./message-stream.js";
 import { SlackApiError } from "./slack-client.js";
+import { SlackReplyFileDelivery } from "./reply-files.js";
 import {
   formatMarkdownForSlack,
   normalizeSlackBotUserName,
@@ -956,6 +957,7 @@ export class SlackAdapter {
   /** First allowlisted channel (original case), used as a global interaction's default reply destination. */
   private readonly defaultShortcutChannelId: string | undefined;
   private readonly logger: SlackAdapterLogger | undefined;
+  private readonly replyFiles: SlackReplyFileDelivery;
   private readonly resolvePostIndex:
     | ((channelId: string, ts: string) => Promise<string | undefined>)
     | undefined;
@@ -1050,6 +1052,7 @@ export class SlackAdapter {
     this.homeTabHeaderText = options.homeTab?.headerText;
     this.defaultShortcutChannelId = options.allowedChannelIds?.[0];
     this.logger = options.logger;
+    this.replyFiles = new SlackReplyFileDelivery(this.api, this.responder, this.logger);
     this.resolvePostIndex = options.resolvePostIndex;
     this.recordPostedMessage = options.recordPostedMessage;
     this.pendingAsks = options.pendingAsks;
@@ -2721,11 +2724,20 @@ export class SlackAdapter {
       if (controller.signal.aborted) {
         return { delivered: false, reason: "cancelled", code: "cancelled", retryable: false };
       }
-      if (answer === undefined || answer.trim().length === 0) {
+      if (
+        (answer === undefined || answer.trim().length === 0)
+        && (response.parts?.length ?? 0) === 0
+      ) {
         return { delivered: false, reason: "agent produced no answer", code: "empty_response", retryable: false };
       }
       try {
-        await stream.finish(answer);
+        const remainingParts = await this.replyFiles.deliver(response.parts, {
+          conversationId,
+          channelId,
+          ...(threadTs === undefined ? {} : { threadTs }),
+          signal: controller.signal,
+        });
+        await stream.finish(answer, remainingParts === undefined ? undefined : { parts: remainingParts });
       } catch (error) {
         if (isSlackDeliveryError(error)) {
           const failure = slackNotifyFailure(error, answerReceipt !== undefined);
@@ -3124,7 +3136,13 @@ export class SlackAdapter {
         return { kind: "cancelled", eventId: event.eventId, channelId: event.channelId };
       }
 
-      await stream.finish(response.text);
+      const remainingParts = await this.replyFiles.deliver(response.parts, {
+        conversationId,
+        channelId: event.channelId,
+        threadTs: event.threadTs,
+        signal: controller.signal,
+      });
+      await stream.finish(response.text, remainingParts === undefined ? undefined : { parts: remainingParts });
       const result: SlackEventHandlingResult = {
         kind: "handled",
         eventId: event.eventId,
