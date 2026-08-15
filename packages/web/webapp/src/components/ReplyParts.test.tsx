@@ -96,6 +96,7 @@ interface TestAppBridgeInstance {
   readonly onreadresource?: (params: unknown) => Promise<unknown>;
   readonly onopenlink?: (params: unknown) => Promise<unknown>;
   readonly onupdatemodelcontext?: (params: unknown) => Promise<unknown>;
+  readonly teardownResource: () => Promise<void>;
 }
 
 const connectRenderedApp = async (
@@ -116,7 +117,7 @@ const connectRenderedApp = async (
     }));
     expect(bridgeHarness.instances[0]).toBeDefined();
   });
-  return bridgeHarness.instances[0] as TestAppBridgeInstance;
+  return bridgeHarness.instances[0] as unknown as TestAppBridgeInstance;
 };
 
 afterEach(() => {
@@ -184,6 +185,66 @@ describe("assistant reply files", () => {
 
     await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
     expect(screen.getByRole("status")).toHaveTextContent("Download started");
+  });
+
+  it("keeps a headerless short read retryable and completes a later retry", async () => {
+    const download = vi.spyOn(api, "replyAttachmentContent")
+      .mockResolvedValueOnce(new Response("rep", {
+        headers: { "x-mono-agent-integrity-id": attachmentPart.integrityId },
+      }))
+      .mockResolvedValueOnce(attachmentResponse());
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:reply-file") });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    render(attachment(attachmentPart));
+
+    fireEvent.click(screen.getByRole("button", { name: "Download report.txt" }));
+
+    const retry = await screen.findByRole("button", { name: "Try again report.txt" });
+    expect(screen.getByRole("status")).toHaveTextContent("Check your connection and try again");
+    expect(click).not.toHaveBeenCalled();
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+    expect(download).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("status")).toHaveTextContent("Download started");
+  });
+
+  it.each([
+    {
+      name: "declared length mismatch",
+      response: new Response("report", {
+        headers: {
+          "content-length": "7",
+          "x-mono-agent-integrity-id": attachmentPart.integrityId,
+        },
+      }),
+    },
+    {
+      name: "integrity mismatch",
+      response: new Response("report", {
+        headers: {
+          "content-length": String(attachmentPart.sizeBytes),
+          "x-mono-agent-integrity-id": "sha256:changed",
+        },
+      }),
+    },
+    {
+      name: "headerless oversized body",
+      response: new Response("reports", {
+        headers: { "x-mono-agent-integrity-id": attachmentPart.integrityId },
+      }),
+    },
+  ])("fails closed on $name", async ({ response }) => {
+    vi.spyOn(api, "replyAttachmentContent").mockResolvedValue(response);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    render(attachment(attachmentPart));
+
+    fireEvent.click(screen.getByRole("button", { name: "Download report.txt" }));
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("failed integrity validation"));
+    expect(screen.queryByRole("button", { name: /Download|Try again|Refresh access/u })).not.toBeInTheDocument();
+    expect(click).not.toHaveBeenCalled();
   });
 
   it("fails closed when a stored private endpoint points off origin", () => {
@@ -317,6 +378,62 @@ describe("assistant reply files", () => {
     expect(download.mock.calls[1]?.[0]).toBe(replacement.contentUrl);
     view.unmount();
     expect(held[1]?.signal?.aborted).toBe(true);
+  });
+
+  it("keeps an in-flight download and status across token rotation while preferring the new declaration", async () => {
+    const rotated = {
+      ...attachmentPart,
+      contentUrl: attachmentPart.contentUrl
+        .replace("1234567890", "2234567890")
+        .replace(/token=[^&]+/u, `token=${"b".repeat(43)}`),
+    };
+    const lateOlderAdoption = {
+      ...attachmentPart,
+      contentUrl: attachmentPart.contentUrl
+        .replace("1234567890", "1734567890")
+        .replace(/token=[^&]+/u, `token=${"c".repeat(43)}`),
+    };
+    let held: {
+      readonly signal: AbortSignal | undefined;
+      readonly adopt: ReplyAccessRefreshHandler<"attachment"> | undefined;
+      readonly resolve: (response: Response) => void;
+    } | undefined;
+    const requestedUrls: string[] = [];
+    vi.spyOn(api, "replyAttachmentContent")
+      .mockImplementationOnce((url, signal, onAccessRefreshed) => {
+        requestedUrls.push(url);
+        return new Promise((resolve) => {
+          held = { signal, adopt: onAccessRefreshed, resolve };
+        });
+      })
+      .mockImplementationOnce(async (url) => {
+        requestedUrls.push(url);
+        return attachmentResponse();
+      });
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:reply-file") });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const view = render(attachment(attachmentPart));
+
+    fireEvent.click(screen.getByRole("button", { name: "Download report.txt" }));
+    await waitFor(() => expect(held).toBeDefined());
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Refreshing download access");
+
+    view.rerender(attachment(rotated));
+    expect(held?.signal?.aborted).toBe(false);
+    expect(screen.getByRole("status")).toBe(status);
+    expect(status).toHaveTextContent("Refreshing download access");
+    await act(async () => {
+      held?.adopt?.(lateOlderAdoption);
+      held?.resolve(attachmentResponse());
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "Download report.txt" }));
+    await waitFor(() => expect(click).toHaveBeenCalledTimes(2));
+    expect(requestedUrls).toEqual([attachmentPart.contentUrl, rotated.contentUrl]);
   });
 
   it("adopts refreshed attachment access for the next download without another stale attempt", async () => {
@@ -602,6 +719,75 @@ describe("MCP App sandbox", () => {
     });
   });
 
+  it("keeps one app instance and an open confirmation across token rotation, then uses the latest capability", async () => {
+    const rotated = {
+      ...appPart,
+      resourceUrl: appPart.resourceUrl!
+        .replace("1234567890", "2234567890")
+        .replace(/token=[^&]+/u, `token=${"b".repeat(43)}`),
+      bridgeUrl: appPart.bridgeUrl!
+        .replace("1234567890", "2234567890")
+        .replace(/token=[^&]+/u, `token=${"b".repeat(43)}`),
+    };
+    const lateOlderAdoption = {
+      ...appPart,
+      resourceUrl: appPart.resourceUrl!
+        .replace("1234567890", "1734567890")
+        .replace(/token=[^&]+/u, `token=${"c".repeat(43)}`),
+      bridgeUrl: appPart.bridgeUrl!
+        .replace("1234567890", "1734567890")
+        .replace(/token=[^&]+/u, `token=${"c".repeat(43)}`),
+    };
+    let lateAdopt: ReplyAccessRefreshHandler<"mcp_app"> | undefined;
+    const load = vi.spyOn(api, "mcpAppResource").mockImplementation(
+      async (_url, _signal, onAccessRefreshed) => {
+        lateAdopt = onAccessRefreshed;
+        return {
+          app: appPart,
+          html: "<!doctype html><p>interactive</p>",
+          connected: true,
+        };
+      },
+    );
+    const request = vi.spyOn(api, "mcpAppRequest").mockResolvedValue({ content: [] });
+    const view = render(app(appPart));
+    const frame = await screen.findByTitle("Quarterly report interactive app") as HTMLIFrameElement;
+    const bridge = await connectRenderedApp(frame, appPart);
+    const teardown = vi.spyOn(bridge, "teardownResource");
+    let pending!: Promise<unknown>;
+    await act(async () => {
+      pending = bridge.oncalltool!({ name: "refresh_chart" });
+      await Promise.resolve();
+    });
+    const dialog = screen.getByRole("dialog", { name: "Allow app tool call?" });
+    expect(screen.getByRole("button", { name: "Allow once" })).toHaveFocus();
+
+    view.rerender(app(rotated));
+    await act(async () => {
+      lateAdopt?.(lateOlderAdoption);
+      await Promise.resolve();
+    });
+
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(screen.getByTitle("Quarterly report interactive app")).toBe(frame);
+    expect(screen.getByRole("dialog", { name: "Allow app tool call?" })).toBe(dialog);
+    expect(screen.getByRole("button", { name: "Allow once" })).toHaveFocus();
+    expect(teardown).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Allow once" }));
+    await act(async () => {
+      await pending;
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      rotated.bridgeUrl,
+      "tools/call",
+      { name: "refresh_chart" },
+      true,
+      expect.any(AbortSignal),
+      expect.any(Function),
+    );
+  });
+
   it("declines an outstanding confirmation when the app identity changes", async () => {
     const replacement: McpAppPartValue = {
       ...appPart,
@@ -625,6 +811,7 @@ describe("MCP App sandbox", () => {
     const view = render(app(appPart));
     const frame = await screen.findByTitle("Quarterly report interactive app") as HTMLIFrameElement;
     const bridge = await connectRenderedApp(frame, appPart);
+    const teardown = vi.spyOn(bridge, "teardownResource");
     let pending!: Promise<unknown>;
     await act(async () => {
       pending = bridge.oncalltool!({ name: "refresh_chart" });
@@ -637,6 +824,7 @@ describe("MCP App sandbox", () => {
     await expect(pending).rejects.toThrow("declined");
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(request).not.toHaveBeenCalled();
+    await waitFor(() => expect(teardown).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(
       screen.getByRole("region", { name: "Interactive app: Replacement" }),
     ).toHaveFocus());
@@ -647,6 +835,21 @@ describe("MCP App sandbox", () => {
     render(app({ ...appPart, resourceUrl: undefined, bridgeUrl: undefined }));
     expect(screen.getByRole("status")).toHaveTextContent("does not have a valid private host endpoint");
     expect(screen.queryByTitle("Quarterly report interactive app")).not.toBeInTheDocument();
+  });
+
+  it("renders a canned MCP App load failure without exposing server-controlled paths or tokens", async () => {
+    vi.spyOn(api, "mcpAppResource").mockRejectedValue(new ApiError(
+      "read /private/agents/report.html?token=must-not-leak: upstream said hostile detail",
+      502,
+      "invalid_operator_mcp_app",
+    ));
+
+    render(app(appPart));
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("The MCP App could not be loaded."));
+    expect(document.body).not.toHaveTextContent("/private/agents");
+    expect(document.body).not.toHaveTextContent("must-not-leak");
+    expect(document.body).not.toHaveTextContent("hostile detail");
   });
 
   it("keeps StrictMode resource fetches generation-owned across identity change and unmount", async () => {

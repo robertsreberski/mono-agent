@@ -384,7 +384,7 @@ const parseMcpApp = (value: unknown): McpAppPart | undefined => {
     : undefined;
 };
 
-const attachmentVersion = (part: ReplyAttachmentPart | undefined): string => JSON.stringify(part === undefined
+const attachmentIdentity = (part: ReplyAttachmentPart | undefined): string => JSON.stringify(part === undefined
   ? ["invalid"]
   : [
       part.id,
@@ -394,7 +394,6 @@ const attachmentVersion = (part: ReplyAttachmentPart | undefined): string => JSO
       part.sizeBytes,
       part.integrityId,
       part.expiresAt,
-      part.contentUrl,
     ]);
 
 const sameAttachmentIdentity = (left: ReplyAttachmentPart, right: ReplyAttachmentPart): boolean =>
@@ -409,12 +408,20 @@ const sameAttachmentIdentity = (left: ReplyAttachmentPart, right: ReplyAttachmen
 type AttachmentDownloadState = "idle" | "refreshing" | "started" | "expired" | "error" | "unavailable";
 
 interface AttachmentDownloadFeedback {
-  readonly version: string;
+  readonly identity: string;
   readonly state: AttachmentDownloadState;
   readonly status: string;
 }
 
 class AttachmentIntegrityError extends Error {}
+class AttachmentIncompleteTransferError extends Error {}
+
+interface AttachmentAccessState {
+  readonly identity: string;
+  readonly declaredUrl: string | undefined;
+  readonly currentUrl: string | undefined;
+  readonly generation: number;
+}
 
 const TERMINAL_ATTACHMENT_ERROR_MESSAGES = new Map([
   ["reply_attachment_unavailable", "The attachment source is offline or incompatible."],
@@ -436,6 +443,9 @@ const attachmentDownloadFailure = (error: unknown): Pick<AttachmentDownloadFeedb
   }
   if (error instanceof AttachmentIntegrityError) {
     return { state: "unavailable", status: "The downloaded file failed integrity validation." };
+  }
+  if (error instanceof AttachmentIncompleteTransferError) {
+    return { state: "error", status: "The download was interrupted. Check your connection and try again." };
   }
   if (error instanceof ApiError) {
     const fallback = error.code === undefined ? undefined : TERMINAL_ATTACHMENT_ERROR_MESSAGES.get(error.code);
@@ -472,15 +482,12 @@ export const startReplyAttachmentDownload = (blob: Blob, name: string): void => 
 
 export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
   const part = parseAttachment(data);
-  const version = attachmentVersion(part);
-  const versionRef = useRef(version);
-  versionRef.current = version;
+  const identity = attachmentIdentity(part);
+  const identityRef = useRef(identity);
+  identityRef.current = identity;
   const mountedRef = useRef(false);
-  const activeDownloadRef = useRef<{ readonly version: string; readonly controller: AbortController } | null>(null);
-  const [adoptedAccess, setAdoptedAccess] = useState<{
-    readonly version: string;
-    readonly contentUrl: string;
-  } | null>(null);
+  const activeDownloadRef = useRef<{ readonly identity: string; readonly controller: AbortController } | null>(null);
+  const accessRef = useRef<AttachmentAccessState | undefined>(undefined);
   const [downloadFeedback, setDownloadFeedback] = useState<AttachmentDownloadFeedback | null>(null);
 
   useEffect(() => {
@@ -488,31 +495,50 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
     return () => {
       mountedRef.current = false;
       const active = activeDownloadRef.current;
-      if (active?.version === version) {
+      if (active?.identity === identity) {
         activeDownloadRef.current = null;
         active.controller.abort();
       }
     };
-  }, [version]);
+  }, [identity]);
+
+  let declaredContentUrl: string | undefined;
+  try {
+    declaredContentUrl = part?.contentUrl === undefined ? undefined : sameOriginReplyUrl(part.contentUrl);
+  } catch {
+    declaredContentUrl = undefined;
+  }
+  const previousAccess = accessRef.current;
+  if (previousAccess === undefined || previousAccess.identity !== identity) {
+    accessRef.current = {
+      identity,
+      declaredUrl: declaredContentUrl,
+      currentUrl: declaredContentUrl,
+      generation: (previousAccess?.generation ?? 0) + 1,
+    };
+  } else if (previousAccess.declaredUrl !== declaredContentUrl) {
+    // A freshly projected capability supersedes any URL adopted by an older
+    // request, but it does not change the durable attachment generation.
+    accessRef.current = {
+      identity,
+      declaredUrl: declaredContentUrl,
+      currentUrl: declaredContentUrl,
+      generation: previousAccess.generation + 1,
+    };
+  }
 
   if (part === undefined) {
     return <div className="reply-part-error" role="alert">An attachment reference was invalid.</div>;
   }
 
-  let declaredContentUrl: string | undefined;
-  try {
-    declaredContentUrl = part.contentUrl === undefined ? undefined : sameOriginReplyUrl(part.contentUrl);
-  } catch {
-    declaredContentUrl = undefined;
-  }
-  const contentUrl = adoptedAccess?.version === version ? adoptedAccess.contentUrl : declaredContentUrl;
-  const downloadState = downloadFeedback?.version === version ? downloadFeedback.state : "idle";
+  const contentUrl = accessRef.current?.identity === identity ? accessRef.current.currentUrl : undefined;
+  const downloadState = downloadFeedback?.identity === identity ? downloadFeedback.state : "idle";
   const unavailable = contentUrl === undefined || downloadState === "unavailable";
   const downloadStatus = unavailable
-    ? (downloadFeedback?.version === version && downloadFeedback.state === "unavailable"
+    ? (downloadFeedback?.identity === identity && downloadFeedback.state === "unavailable"
         ? downloadFeedback.status
         : "This file is no longer available.")
-    : downloadFeedback?.version === version ? downloadFeedback.status : "";
+    : downloadFeedback?.identity === identity ? downloadFeedback.status : "";
 
   return (
     <section className="reply-attachment" aria-label={`File attachment: ${part.name}`}>
@@ -527,18 +553,22 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
             className="reply-part-action"
             disabled={downloadState === "refreshing"}
             onClick={() => {
-              if (activeDownloadRef.current?.version === version) return;
+              if (activeDownloadRef.current?.identity === identity) return;
+              const access = accessRef.current;
+              if (access?.identity !== identity || access.currentUrl === undefined) return;
+              const requestUrl = access.currentUrl;
+              const accessGeneration = access.generation;
               const controller = new AbortController();
-              activeDownloadRef.current = { version, controller };
-              setDownloadFeedback({ version, state: "refreshing", status: "Refreshing download access…" });
+              activeDownloadRef.current = { identity, controller };
+              setDownloadFeedback({ identity, state: "refreshing", status: "Refreshing download access…" });
               const isActive = (): boolean => mountedRef.current
                 && !controller.signal.aborted
-                && versionRef.current === version
+                && identityRef.current === identity
                 && activeDownloadRef.current?.controller === controller;
               void (async () => {
                 try {
                   const response = await api.replyAttachmentContent(
-                    contentUrl,
+                    requestUrl,
                     controller.signal,
                     (refreshed) => {
                       if (!isActive() || !sameAttachmentIdentity(part, refreshed) || refreshed.contentUrl === undefined) {
@@ -546,8 +576,10 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
                       }
                       try {
                         const nextContentUrl = sameOriginReplyUrl(refreshed.contentUrl);
-                        activeDownloadRef.current = { version, controller };
-                        setAdoptedAccess({ version, contentUrl: nextContentUrl });
+                        const currentAccess = accessRef.current;
+                        if (currentAccess?.identity === identity && currentAccess.generation === accessGeneration) {
+                          accessRef.current = { ...currentAccess, currentUrl: nextContentUrl };
+                        }
                       } catch {
                         // The current retry still fails closed inside the API;
                         // never retain an off-origin companion capability.
@@ -564,18 +596,23 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
                   }
                   const blob = await response.blob();
                   if (!isActive()) return;
-                  if (blob.size !== part.sizeBytes) throw new AttachmentIntegrityError();
+                  if (blob.size !== part.sizeBytes) {
+                    if (declaredLength === null && blob.size < part.sizeBytes) {
+                      throw new AttachmentIncompleteTransferError();
+                    }
+                    throw new AttachmentIntegrityError();
+                  }
                   startReplyAttachmentDownload(blob, part.name);
                   if (!isActive()) return;
                   setDownloadFeedback({
-                    version,
+                    identity,
                     state: "started",
                     status: "Download started with refreshed access.",
                   });
                 } catch (error: unknown) {
                   if (!isActive()) return;
                   const failure = attachmentDownloadFailure(error);
-                  setDownloadFeedback({ version, ...failure });
+                  setDownloadFeedback({ identity, ...failure });
                 } finally {
                   if (activeDownloadRef.current?.controller === controller) {
                     activeDownloadRef.current = null;
@@ -646,7 +683,14 @@ interface McpAppAccess {
   readonly bridgeUrl: string;
 }
 
-const mcpAppVersion = (part: McpAppPart | undefined): string => JSON.stringify(part === undefined
+interface McpAppAccessState {
+  readonly identity: string;
+  readonly declaredKey: string;
+  readonly current: McpAppAccess | undefined;
+  readonly generation: number;
+}
+
+const mcpAppIdentity = (part: McpAppPart | undefined): string => JSON.stringify(part === undefined
   ? ["invalid"]
   : [
       part.id,
@@ -660,8 +704,6 @@ const mcpAppVersion = (part: McpAppPart | undefined): string => JSON.stringify(p
       part.title,
       part.description,
       part.expiresAt,
-      part.resourceUrl,
-      part.bridgeUrl,
     ]);
 
 const sameMcpAppIdentity = (left: McpAppPart, right: McpAppPart): boolean =>
@@ -689,17 +731,49 @@ const mcpAppAccess = (part: McpAppPart | undefined): McpAppAccess | undefined =>
   }
 };
 
+const mcpAppAccessKey = (access: McpAppAccess | undefined): string => access === undefined
+  ? "invalid"
+  : JSON.stringify([access.resourceUrl, access.bridgeUrl]);
+
+const MCP_APP_LOAD_ERROR_MESSAGES = new Map([
+  ["mcp_app_unavailable", "The MCP App source is offline or incompatible."],
+  ["mcp_app_identity_mismatch", "The MCP App identity changed after publication."],
+]);
+
+const mcpAppLoadErrorMessage = (error: unknown): string => {
+  if (isReplyAccessExpired(error)) return "Interactive app access expired. Refresh access to reconnect.";
+  if (error instanceof ApiError && error.code !== undefined) {
+    return MCP_APP_LOAD_ERROR_MESSAGES.get(error.code) ?? "The MCP App could not be loaded.";
+  }
+  return "The MCP App could not be loaded.";
+};
+
 export function McpAppPart({ data }: DataMessagePartProps) {
   const part = parseMcpApp(data);
-  const version = mcpAppVersion(part);
-  const versionRef = useRef(version);
-  versionRef.current = version;
+  const identity = mcpAppIdentity(part);
+  const identityRef = useRef(identity);
+  identityRef.current = identity;
   const mountedRef = useRef(false);
-  const [adoptedAccess, setAdoptedAccess] = useState<({ readonly version: string } & McpAppAccess) | null>(null);
   const declaredAccess = mcpAppAccess(part);
-  const effectiveAccess = adoptedAccess?.version === version ? adoptedAccess : declaredAccess;
-  const accessRef = useRef<McpAppAccess | undefined>(effectiveAccess);
-  accessRef.current = effectiveAccess;
+  const declaredAccessKey = mcpAppAccessKey(declaredAccess);
+  const accessRef = useRef<McpAppAccessState | undefined>(undefined);
+  const previousAccess = accessRef.current;
+  if (
+    previousAccess === undefined
+    || previousAccess.identity !== identity
+    || previousAccess.declaredKey !== declaredAccessKey
+  ) {
+    // Declared access is authoritative for future operations. In particular,
+    // a later SSE projection must not be replaced by a late refresh callback
+    // that started with an older capability.
+    accessRef.current = {
+      identity,
+      declaredKey: declaredAccessKey,
+      current: declaredAccess,
+      generation: (previousAccess?.generation ?? 0) + 1,
+    };
+  }
+  const accessAvailable = accessRef.current?.current !== undefined;
   const [resource, setResource] = useState<McpAppResource | null>(null);
   const [status, setStatus] = useState<"loading" | "connecting" | "ready" | "closed" | "error">("loading");
   const [statusText, setStatusText] = useState("Loading interactive app…");
@@ -717,19 +791,24 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   const nonce = useMemo(createNonce, [part?.connectionId, part?.invocationId]);
 
   const adoptMcpAppAccess = useCallback((
-    expectedVersion: string,
+    expectedIdentity: string,
     expectedPart: McpAppPart,
+    expectedAccessGeneration: number,
     refreshed: McpAppPart,
   ) => {
     if (
       !mountedRef.current
-      || versionRef.current !== expectedVersion
+      || identityRef.current !== expectedIdentity
       || !sameMcpAppIdentity(expectedPart, refreshed)
     ) return;
     const nextAccess = mcpAppAccess(refreshed);
     if (nextAccess === undefined) return;
-    accessRef.current = nextAccess;
-    setAdoptedAccess({ version: expectedVersion, ...nextAccess });
+    const currentAccess = accessRef.current;
+    if (
+      currentAccess?.identity !== expectedIdentity
+      || currentAccess.generation !== expectedAccessGeneration
+    ) return;
+    accessRef.current = { ...currentAccess, current: nextAccess };
   }, []);
 
   useEffect(() => {
@@ -792,25 +871,27 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   useEffect(() => {
     cancelConfirmation();
     return cancelConfirmation;
-  }, [cancelConfirmation, version]);
+  }, [cancelConfirmation, identity]);
 
   useEffect(() => {
-    const access = accessRef.current;
+    const accessState = accessRef.current;
+    const access = accessState?.current;
     setResource(null);
     setAccessExpired(false);
-    if (part === undefined || access === undefined) {
+    if (part === undefined || accessState?.identity !== identity || access === undefined) {
       setStatus("error");
       setStatusText("This MCP App does not have a valid private host endpoint.");
       return;
     }
     const expectedPart = part;
-    const expectedVersion = version;
+    const expectedIdentity = identity;
+    const expectedAccessGeneration = accessState.generation;
     const controller = new AbortController();
     setStatus("loading");
     setStatusText("Loading interactive app…");
     const isActive = (): boolean => mountedRef.current
       && !controller.signal.aborted
-      && versionRef.current === expectedVersion;
+      && identityRef.current === expectedIdentity;
     // React StrictMode tears down the first effect before this microtask. That
     // discarded generation therefore never starts a duplicate network fetch.
     void Promise.resolve().then(async () => {
@@ -819,7 +900,9 @@ export function McpAppPart({ data }: DataMessagePartProps) {
         access.resourceUrl,
         controller.signal,
         (refreshed) => {
-          if (isActive()) adoptMcpAppAccess(expectedVersion, expectedPart, refreshed);
+          if (isActive()) {
+            adoptMcpAppAccess(expectedIdentity, expectedPart, expectedAccessGeneration, refreshed);
+          }
         },
       );
     }).then((loaded) => {
@@ -834,12 +917,10 @@ export function McpAppPart({ data }: DataMessagePartProps) {
       const expired = isReplyAccessExpired(error);
       setAccessExpired(expired);
       setStatus("error");
-      setStatusText(expired
-        ? "Interactive app access expired. Refresh access to reconnect."
-        : error instanceof Error ? error.message : "The MCP App could not be loaded.");
+      setStatusText(mcpAppLoadErrorMessage(error));
     });
     return () => controller.abort();
-  }, [adoptMcpAppAccess, reloadRevision, version]);
+  }, [accessAvailable, adoptMcpAppAccess, identity, reloadRevision]);
 
   const metadata = useMemo(
     () => safeMcpAppResourceMetadata(resource?.resourceMetadata),
@@ -871,7 +952,7 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   useEffect(() => {
     if (
       part === undefined
-      || accessRef.current === undefined
+      || accessRef.current?.current === undefined
       || resource === null
       || securedHtml === undefined
       || accessExpired
@@ -884,11 +965,11 @@ export function McpAppPart({ data }: DataMessagePartProps) {
     let transport: PostMessageTransport | undefined;
     const controller = new AbortController();
     const expectedPart = part;
-    const expectedVersion = version;
+    const expectedIdentity = identity;
     const isActive = (): boolean => !disposed
       && mountedRef.current
       && !controller.signal.aborted
-      && versionRef.current === expectedVersion;
+      && identityRef.current === expectedIdentity;
     const assertActive = (): void => {
       if (!isActive()) throw new DOMException("The MCP App instance is no longer active.", "AbortError");
     };
@@ -900,8 +981,13 @@ export function McpAppPart({ data }: DataMessagePartProps) {
     ): Promise<unknown> => {
       try {
         assertActive();
-        const bridgeUrl = accessRef.current?.bridgeUrl;
-        if (bridgeUrl === undefined) throw new Error("The MCP App host endpoint is unavailable.");
+        const accessState = accessRef.current;
+        const bridgeUrl = accessState?.identity === expectedIdentity
+          ? accessState.current?.bridgeUrl
+          : undefined;
+        if (bridgeUrl === undefined || accessState === undefined) {
+          throw new Error("The MCP App host endpoint is unavailable.");
+        }
         const result = await api.mcpAppRequest(
           bridgeUrl,
           method,
@@ -909,7 +995,9 @@ export function McpAppPart({ data }: DataMessagePartProps) {
           confirmed,
           controller.signal,
           (refreshed) => {
-            if (isActive()) adoptMcpAppAccess(expectedVersion, expectedPart, refreshed);
+            if (isActive()) {
+              adoptMcpAppAccess(expectedIdentity, expectedPart, accessState.generation, refreshed);
+            }
           },
         );
         assertActive();
@@ -1068,7 +1156,7 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   // The bridge lifecycle is one exact published app instance. Height updates
   // are sent through size notifications and must not recreate the transport.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessExpired, adoptMcpAppAccess, cancelConfirmation, metadata, nonce, part?.connectionId, part?.invocationId, reloadRevision, requestConfirmation, resource, securedHtml, status === "closed", version]);
+  }, [accessAvailable, accessExpired, adoptMcpAppAccess, cancelConfirmation, identity, metadata, nonce, part?.connectionId, part?.invocationId, reloadRevision, requestConfirmation, resource, securedHtml, status === "closed"]);
 
   useEffect(() => {
     const syncHostContext = () => {

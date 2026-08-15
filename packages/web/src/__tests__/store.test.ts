@@ -216,7 +216,7 @@ describe("WebStore", () => {
       type: "failure",
       id: "web-reply-parts-truncated",
       code: "reply_part_too_large",
-      message: `The web console retained the first ${MAX_AGENT_REPLY_PARTS - 1} rich reply parts and omitted 6 because one reply may contain at most ${MAX_AGENT_REPLY_PARTS} outcomes.`,
+      message: `The web console retained 0 existing and ${MAX_AGENT_REPLY_PARTS - 1} incoming rich reply parts, omitted 0 existing and 6 incoming parts, and used one diagnostic slot; before reserving it, ${MAX_AGENT_REPLY_PARTS} of ${MAX_AGENT_REPLY_PARTS} outcome slots were available to incoming parts.`,
     });
 
     const databasePath = store.paths.database;
@@ -289,6 +289,7 @@ describe("WebStore", () => {
       type: "failure",
       id: "web-reply-parts-truncated-4",
       code: "reply_part_too_large",
+      message: `The web console retained 1 existing and ${MAX_AGENT_REPLY_PARTS - 2} incoming rich reply parts, omitted 0 existing and 5 incoming parts, and used one diagnostic slot; before reserving it, ${MAX_AGENT_REPLY_PARTS - 1} of ${MAX_AGENT_REPLY_PARTS} outcome slots were available to incoming parts.`,
     });
     expect(new Set(first.outcomes.map((part) => part.id)).size).toBe(first.outcomes.length);
     expect(second.outcomes).toEqual(first.outcomes);
@@ -310,7 +311,7 @@ describe("WebStore", () => {
         type: "failure",
         id: "web-reply-parts-truncated-3",
         code: "unsupported_destination",
-        message: "The web console rejected an invalid rich reply collection.",
+        message: `The web console retained 1 existing rich reply parts, omitted 0 existing parts, and rejected an invalid incoming rich reply collection; ${MAX_AGENT_REPLY_PARTS - 1} of ${MAX_AGENT_REPLY_PARTS} outcome slots were available before this bounded diagnostic.`,
       },
     ]);
 
@@ -427,6 +428,85 @@ describe("WebStore", () => {
     expect(reopened.getMessage(firstSparse.messageId)?.parts.filter((part) => "id" in part))
       .toEqual(firstSparse.outcomes);
     reopened.close();
+  });
+
+  it("records deterministic diagnostics when full or legacy outcome state leaves no incoming slot", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const outcome = (id: string) => ({
+      type: "failure" as const,
+      id,
+      code: "artifact_missing" as const,
+      message: "Existing durable outcome.",
+    });
+    const inject = (messageId: string, parts: readonly ReturnType<typeof outcome>[]) => {
+      const raw = new DatabaseSync(store.paths.database);
+      raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?").run(JSON.stringify(parts), messageId);
+      raw.close();
+    };
+    const complete = (
+      existing: readonly ReturnType<typeof outcome>[],
+      incoming: unknown,
+      label: string,
+    ) => {
+      const thread = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: label, attachmentIds: [] });
+      inject(turn.assistantMessageId, existing);
+      const detail = store.completeTurn(
+        turn.turnId,
+        "done",
+        undefined,
+        incoming as readonly AgentReplyPart[],
+      );
+      return detail.messages.at(-1)!.parts.filter(
+        (part) => part.type === "attachment" || part.type === "mcp_app" || part.type === "failure",
+      );
+    };
+
+    const full = Array.from({ length: MAX_AGENT_REPLY_PARTS }, (_, index) => outcome(`full-${index}`));
+    const incoming = [outcome("incoming-0"), outcome("incoming-1")];
+    const firstFull = complete(full, incoming, "full one");
+    const secondFull = complete(full, incoming, "full two");
+    expect(firstFull).toHaveLength(MAX_AGENT_REPLY_PARTS);
+    expect(firstFull.slice(0, -1)).toEqual(full.slice(0, -1));
+    expect(firstFull.at(-1)).toEqual({
+      type: "failure",
+      id: "web-reply-parts-truncated",
+      code: "reply_part_too_large",
+      message: `The web console retained ${MAX_AGENT_REPLY_PARTS - 1} existing and 0 incoming rich reply parts, omitted 1 existing and 2 incoming parts, and used one diagnostic slot; before reserving it, 0 of ${MAX_AGENT_REPLY_PARTS} outcome slots were available to incoming parts.`,
+    });
+    expect(secondFull).toEqual(firstFull);
+
+    const invalid = complete(full, {
+      id: "attacker-controlled-id",
+      detail: "/private/agent/result?token=must-not-leak",
+    }, "full invalid");
+    expect(invalid).toHaveLength(MAX_AGENT_REPLY_PARTS);
+    expect(invalid.slice(0, -1)).toEqual(full.slice(0, -1));
+    expect(invalid.at(-1)).toEqual({
+      type: "failure",
+      id: "web-reply-parts-truncated",
+      code: "unsupported_destination",
+      message: `The web console retained ${MAX_AGENT_REPLY_PARTS - 1} existing rich reply parts, omitted 1 existing parts, and rejected an invalid incoming rich reply collection; 0 of ${MAX_AGENT_REPLY_PARTS} outcome slots were available before this bounded diagnostic.`,
+    });
+    expect(JSON.stringify(invalid)).not.toMatch(/private\/agent|must-not-leak|attacker-controlled-id/u);
+
+    const legacy = Array.from(
+      { length: MAX_AGENT_REPLY_PARTS + 3 },
+      (_, index) => outcome(`legacy-${index}`),
+    );
+    const repaired = complete(legacy, [outcome("incoming-legacy")], "legacy over cap");
+    expect(repaired).toHaveLength(MAX_AGENT_REPLY_PARTS);
+    expect(repaired.slice(0, -1)).toEqual(legacy.slice(0, MAX_AGENT_REPLY_PARTS - 1));
+    expect(repaired.at(-1)).toEqual({
+      type: "failure",
+      id: "web-reply-parts-truncated",
+      code: "reply_part_too_large",
+      message: `The web console retained ${MAX_AGENT_REPLY_PARTS - 1} existing and 0 incoming rich reply parts, omitted 4 existing and 1 incoming parts, and used one diagnostic slot; before reserving it, 0 of ${MAX_AGENT_REPLY_PARTS} outcome slots were available to incoming parts.`,
+    });
+    store.close();
   });
 
   it("projects synthetic steering events as one completed Steered tool row", async () => {

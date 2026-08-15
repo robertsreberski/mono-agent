@@ -2945,9 +2945,9 @@ export class WebStore {
     const turn = this.requireTurn(turnId);
     if (turn.status !== "running") return;
     const existing = this.requireMessage(turn.assistant_message_id);
-    const parts = [...existing.parts];
+    let parts = [...existing.parts];
     if (finalText !== undefined && finalText.length > 0) reconcileFinalText(parts, finalText);
-    if (replyParts !== undefined) parts.push(...boundedWebReplyParts(replyParts, parts));
+    if (replyParts !== undefined) parts = boundedWebReplyParts(replyParts, parts);
     if (errorMessage !== undefined) {
       parts.push({ type: "error", ...(errorCode === undefined ? {} : { code: errorCode }), message: errorMessage });
     }
@@ -4244,7 +4244,9 @@ type DurableWebReplyPart = Extract<WebMessagePart, { type: "attachment" | "mcp_a
  * The SQLite boundary does not trust the operator wire parser. A truncated
  * reply reserves one of the shared outcome slots for a durable diagnostic so
  * every omitted suffix is visible without allowing this completion to take a
- * message that is already within the producer/wire limit beyond that limit.
+ * message beyond the producer/wire limit. Legacy over-cap state is repaired by
+ * retaining a deterministic prefix and reserving the final slot for the same
+ * bounded diagnostic.
  */
 function nextSyntheticReplyPartId(base: string, ids: Set<string>): string {
   let failureId = base;
@@ -4282,34 +4284,51 @@ function boundedWebReplyParts(
   existingParts: readonly WebMessagePart[],
 ): WebMessagePart[] {
   const existingReplyParts = existingParts.filter(isDurableWebReplyPart);
+  const existingReplyPartCount = existingReplyParts.length;
   const existingIds = replyPartIds(existingReplyParts);
   const ids = new Set(existingIds);
   const claimedIds = new Set(existingIds);
-  const availableSlots = Math.max(0, MAX_AGENT_REPLY_PARTS - existingReplyParts.length);
-  if (!Array.isArray(input)) {
-    if (availableSlots === 0) return [];
+  const availableSlots = Math.max(0, MAX_AGENT_REPLY_PARTS - existingReplyPartCount);
+  const inputParts = Array.isArray(input) ? input : undefined;
+  const needsDiagnostic = inputParts === undefined
+    || existingReplyPartCount > MAX_AGENT_REPLY_PARTS
+    || inputParts.length > availableSlots;
+  const retainedExistingCount = needsDiagnostic
+    ? Math.min(existingReplyPartCount, MAX_AGENT_REPLY_PARTS - 1)
+    : existingReplyPartCount;
+  let seenExistingReplyParts = 0;
+  const retainedExistingParts = existingParts.filter((part) => {
+    if (!isDurableWebReplyPart(part)) return true;
+    seenExistingReplyParts += 1;
+    return seenExistingReplyParts <= retainedExistingCount;
+  });
+
+  if (inputParts === undefined) {
     const invalidRecord = record(input);
     const legacyValues = invalidRecord === undefined ? [input] : [input, ...Object.values(invalidRecord)];
     for (const id of replyPartIds(legacyValues)) ids.add(id);
-    return [{
+    const omittedExistingCount = existingReplyPartCount - retainedExistingCount;
+    return [...retainedExistingParts, {
       type: "failure",
       id: nextSyntheticReplyPartId(REPLY_PARTS_TRUNCATED_ID, ids),
       code: "unsupported_destination",
-      message: "The web console rejected an invalid rich reply collection.",
+      message: `The web console retained ${retainedExistingCount} existing rich reply parts, omitted ${omittedExistingCount} existing parts, and rejected an invalid incoming rich reply collection; ${availableSlots} of ${MAX_AGENT_REPLY_PARTS} outcome slots were available before this bounded diagnostic.`,
     }];
   }
   // Object.values visits only populated entries, so a legacy sparse array with
   // a very large length cannot make this collision scan walk every empty slot.
-  const populated = Object.values(input);
+  const populated = Object.values(inputParts);
   const inputIdCounts = replyPartIdCounts(populated);
   for (const id of inputIdCounts.keys()) ids.add(id);
-  const truncated = input.length > availableSlots;
-  const retainedCount = truncated ? Math.max(0, availableSlots - 1) : input.length;
+  const retainedCount = Math.min(
+    inputParts.length,
+    Math.max(0, MAX_AGENT_REPLY_PARTS - retainedExistingCount - (needsDiagnostic ? 1 : 0)),
+  );
   const retained = Array.from(
     { length: retainedCount },
     (_, index): DurableWebReplyPart => {
-      const converted = toWebReplyPart(input[index], () => {
-        const inputId = record(input[index])?.id;
+      const converted = toWebReplyPart(inputParts[index], () => {
+        const inputId = record(inputParts[index])?.id;
         return validRichId(inputId)
           && !existingIds.has(inputId)
           && inputIdCounts.get(inputId) === 1
@@ -4330,16 +4349,18 @@ function boundedWebReplyParts(
       return collision;
     },
   );
-  if (!truncated) return retained;
-  if (availableSlots === 0) return retained;
+  const merged = [...retainedExistingParts, ...retained];
+  if (!needsDiagnostic) return merged;
 
-  retained.push({
+  const omittedExistingCount = existingReplyPartCount - retainedExistingCount;
+  const omittedIncomingCount = inputParts.length - retainedCount;
+  merged.push({
     type: "failure",
     id: nextSyntheticReplyPartId(REPLY_PARTS_TRUNCATED_ID, ids),
     code: "reply_part_too_large",
-    message: `The web console retained the first ${retainedCount} rich reply parts and omitted ${input.length - retainedCount} because one reply may contain at most ${MAX_AGENT_REPLY_PARTS} outcomes.`,
+    message: `The web console retained ${retainedExistingCount} existing and ${retainedCount} incoming rich reply parts, omitted ${omittedExistingCount} existing and ${omittedIncomingCount} incoming parts, and used one diagnostic slot; before reserving it, ${availableSlots} of ${MAX_AGENT_REPLY_PARTS} outcome slots were available to incoming parts.`,
   });
-  return retained;
+  return merged;
 }
 
 function isMcpAppProtocolVersion(value: unknown): value is "2026-01-26" | "2025-11-21" {
