@@ -126,6 +126,12 @@ Require these lines in the validation report:
 - **WebFetch browser rendering: never**, or an `agent-browser` version at least
   0.33.1 when rendering is enabled
 
+The probe fails when the endpoint answers with an empty result set *and* one or
+more unresponsive engines — a fully blocked instance still returns `HTTP 200`,
+so treat that `[WARN]` as "search is down", not as a slow start. Fix the engine
+selection before continuing; see
+[`demos/searxng`](https://github.com/robertsreberski/mono-agent/tree/main/demos/searxng).
+
 ## 5. Smoke the real tools
 
 From an enabled channel or the TUI, ask:

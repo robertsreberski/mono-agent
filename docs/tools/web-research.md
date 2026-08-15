@@ -62,7 +62,7 @@ Search backends have explicit behavior:
 
 | Backend | Behavior |
 | --- | --- |
-| `auto` | Try configured SearXNG first; if that request fails, use the keyless chain. Without an endpoint, start with the keyless chain. |
+| `auto` | Try configured SearXNG first; if that request fails *or returns nothing*, use the keyless chain. Without an endpoint, start with the keyless chain. |
 | `searxng` | Require the configured local endpoint and fail when it fails. No silent fallback. |
 | `keyless` | Skip SearXNG and try DuckDuckGo HTML, then Startpage. |
 
@@ -73,10 +73,35 @@ order. Results are normalized, tracking parameters are removed, duplicates are
 fused with reciprocal-rank fusion, and include/exclude domain filters are
 enforced again on returned URLs.
 
-An empty result set is a successful answer (`No results.`). A tool error means
-every eligible backend failed or policy blocked every request; the result keeps
-that distinction so the model does not waste another reasoning round repeating
-the same call.
+An empty result set is a successful answer (`No results.`) **only when the
+backend that produced it was actually working**. A tool error means every
+eligible backend failed or policy blocked every request; the result keeps that
+distinction so the model does not waste another reasoning round repeating the
+same call. Because `No results.` is a claim about the web rather than about the
+infrastructure, every way a backend can be blocked while still answering `200`
+is classified as an error instead — see the two sections below.
+
+### SearXNG engine health
+
+A SearXNG instance whose engines are all rate-limited or captcha'd still answers
+`HTTP 200` with an empty `results` array. The response's `unresponsive_engines`
+field is the only thing that separates that from a query nothing matched:
+
+| SearXNG response | Treated as |
+| --- | --- |
+| results present | success |
+| empty results, no unresponsive engines | genuine `No results.` |
+| empty results, one or more unresponsive engines | `rate_limited` or `backend_unavailable`, naming each engine and its reason |
+
+The error text names every failed engine (`duckduckgo: CAPTCHA; brave: too many
+requests`), so a blocked instance is diagnosable from the tool output without
+reading container logs. In `auto` mode the keyless chain still runs after it.
+
+The stock SearXNG engine set is not usable from an ordinary residential IP —
+DuckDuckGo, Startpage and Qwant all answer with a CAPTCHA, and `google cse`
+needs an API key. [`demos/searxng`](https://github.com/robertsreberski/mono-agent/tree/main/demos/searxng)
+ships a working engine selection; check yours with
+`curl -sS -X POST http://127.0.0.1:8088/search -d 'q=test&format=json&engines=bing'`.
 
 ### Keyless rate limiting
 
@@ -88,6 +113,7 @@ announce it in ways that look like success or like a network fault:
 | `HTTP 202`, `403`, or `429` | DuckDuckGo | `rate_limited` |
 | `3xx` to a captcha or block page | Startpage | `rate_limited` |
 | `2xx` that parses to nothing but carries challenge markers | either | `rate_limited` |
+| `2xx` proof-of-work interstitial (Anubis, "Verifying your request…") | Startpage | `rate_limited` |
 | `2xx` that parses to nothing | either | genuine `No results.` |
 
 No credentials are ever sent to these endpoints, so a `403` can only mean

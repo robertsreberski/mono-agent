@@ -2387,10 +2387,25 @@ async function probeSearxngEndpoint(endpoint: string): Promise<{ readonly ok: bo
       signal: ctrl.signal,
     });
     if (!response.ok) return { ok: false, reason: `HTTP ${response.status}` };
-    const body = await response.json() as { readonly results?: unknown };
-    return Array.isArray(body.results)
-      ? { ok: true, reason: "" }
-      : { ok: false, reason: "response did not contain a results array" };
+    const body = await response.json() as {
+      readonly results?: unknown;
+      readonly unresponsive_engines?: unknown;
+    };
+    if (!Array.isArray(body.results)) {
+      return { ok: false, reason: "response did not contain a results array" };
+    }
+    // An instance whose engines are all captcha'd or suspended answers 200 with
+    // an empty result list, which the array check alone reported as healthy. The
+    // empty array is not the signal on its own — this probe's query can
+    // legitimately match very little — so only flag it alongside failed engines.
+    const unresponsive = Array.isArray(body.unresponsive_engines) ? body.unresponsive_engines : [];
+    if (body.results.length === 0 && unresponsive.length > 0) {
+      const detail = unresponsive
+        .map((entry) => (Array.isArray(entry) ? `${String(entry[0])}: ${String(entry[1])}` : String(entry)))
+        .join("; ");
+      return { ok: false, reason: `no results, and ${unresponsive.length === 1 ? "1 engine" : `${unresponsive.length} engines`} unresponsive — ${detail}` };
+    }
+    return { ok: true, reason: "" };
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   } finally {

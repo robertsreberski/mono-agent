@@ -4214,6 +4214,31 @@ describe("validateMonoAgentFolder — web tools", () => {
     );
   });
 
+  it("warns when the SearXNG endpoint answers with every engine unresponsive", async () => {
+    // A dead instance still answers `200 {"results": []}`, so probing only for a
+    // results array reported a completely blocked SearXNG as healthy. The empty
+    // array itself is not the signal — the probe query can legitimately match
+    // little — `unresponsive_engines` alongside it is.
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        results: [],
+        unresponsive_engines: [["duckduckgo", "CAPTCHA"], ["brave", "too many requests"]],
+      }), { status: 200, headers: { "content-type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({
+      search: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
+    const web = sectionById(report, "web-tools");
+
+    expect(web.status).toBe("waiting");
+    expect(web.details.some((detail) => detail.includes("duckduckgo: CAPTCHA")
+      && detail.includes("brave: too many requests"))).toBe(true);
+    expect(web.details).not.toContain("SearXNG JSON search probe succeeded.");
+  });
+
   it.each([
     ["agent-browser 0.33.1\n", "ok", "agent-browser v0.33.1 is ready."],
     ["agent-browser 0.26.0\n", "waiting", "[WARN] agent-browser is v0.26.0; WebFetch auto rendering requires >=0.33.1."],

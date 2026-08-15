@@ -35,7 +35,16 @@ const KEYLESS_DEFAULT_THROTTLE = {
 // behind it has to actually work.
 const KEYLESS_BACKENDS = ["duckduckgo", "startpage"];
 // Markers that identify an interstitial/bot-gate body served with a 2xx status.
-const CHALLENGE_BODY_RE = /anomaly|unusual traffic|captcha|are you a robot|challenge-(?:platform|form)/iu;
+// The last two are Anubis, the proof-of-work gate Startpage now fronts its
+// results with. It says none of the classic things — no captcha, no anomaly,
+// just "Verifying your request..." — so without these it read as a clean 200
+// that happened to parse to nothing, which is exactly the lie this guard exists
+// to prevent.
+const CHALLENGE_BODY_RE =
+  /anomaly|unusual traffic|captcha|are you a robot|challenge-(?:platform|form)|anubis[_-]?challenge|verifying your request/iu;
+// Reasons SearXNG reports for an engine that is being throttled or gated rather
+// than merely erroring, e.g. "CAPTCHA", "too many requests", "Suspended: CAPTCHA".
+const SEARXNG_THROTTLE_REASON_RE = /captcha|too many requests|rate.?limit|suspend|blocked|denied/iu;
 // Statuses these engines use to say "you are sending too much", all of which
 // must put the backend into cooldown rather than be retried next search.
 const RATE_LIMIT_STATUSES = new Set([202, 403, 429]);
@@ -228,17 +237,22 @@ async function searchOneQuery(query, options) {
   // too. Reporting only the last one is what made a DuckDuckGo ban surface as
   // "startpage request failed: fetch failed" and sent diagnosis the wrong way.
   const failures = [];
+  // A genuinely empty 200 is a real answer, not a transport failure — but it is
+  // only worth returning once every backend has had its turn. Scoped to the whole
+  // chain, not just the keyless loop: an empty SearXNG answer used to short-
+  // circuit `auto` outright, so the fallbacks below could never rescue a query.
+  let emptySuccess = null;
   if (options.signal?.aborted) return abortedSearch(config.backend, failures);
   if (config.backend === "searxng" || (config.backend === "auto" && config.endpoint)) {
     const result = await searchSearxng(query, options);
-    if (result.ok || config.backend === "searxng") return { ...result, failures };
-    failures.push(result);
+    // Strict mode has nothing to fall through to, so its answer stands as-is.
+    if (config.backend === "searxng") return { ...result, failures };
+    if (result.ok && result.results.length > 0) return { ...result, failures };
+    if (result.ok) emptySuccess = result;
+    else failures.push(result);
     if (options.signal?.aborted) return abortedSearch(result.backend, failures);
   }
   if (config.backend === "keyless" || config.backend === "auto") {
-    // A genuinely empty 200 is a real answer, not a transport failure — but it
-    // is only worth returning once every backend has had its turn.
-    let emptySuccess = null;
     for (const backend of KEYLESS_BACKENDS) {
       if (options.signal?.aborted) return abortedSearch(backend, failures);
       if (backendInCooldown(backend)) {
@@ -254,14 +268,14 @@ async function searchOneQuery(query, options) {
       const result = await KEYLESS_RUNNERS[backend](query, options);
       if (result.ok) {
         if (result.results.length > 0) return { ...result, failures };
-        emptySuccess = result;
+        emptySuccess ??= result;
         continue;
       }
       // The cooldown is already open — rateLimited() sets it at detection.
       failures.push(result);
     }
-    if (emptySuccess) return { ...emptySuccess, failures };
   }
+  if (emptySuccess) return { ...emptySuccess, failures };
   return {
     ...(failures[failures.length - 1] || {
       ok: false,
@@ -385,6 +399,33 @@ async function searchSearxng(query, options) {
     const results = Array.isArray(data?.results)
       ? data.results.flatMap((entry) => normalizedResult(entry, "searxng"))
       : [];
+    // An instance whose engines are all captcha'd or suspended still answers
+    // `200 {"results": []}`, and `unresponsive_engines` is the only thing that
+    // tells that apart from a query nothing matched. Reading `results` alone is
+    // what let a completely dead instance report "No results." on every query
+    // for weeks. Naming each engine and its reason is what makes the next one
+    // diagnosable from the tool output instead of from the container logs.
+    //
+    // Counted on the RAW array, not the normalized one: results that all fail
+    // canonicalization are an unusable answer from working engines, which is a
+    // different fault and must not be blamed on the engines that did fail.
+    const unresponsive = normalizeUnresponsiveEngines(data?.unresponsive_engines);
+    if (!Array.isArray(data?.results) || (data.results.length === 0 && unresponsive.length > 0)) {
+      if (unresponsive.length === 0) {
+        return { ok: false, backend: "searxng", message: "SearXNG returned no results array.", retryable: false };
+      }
+      // Deliberately not "every engine failed": SearXNG lists only the engines
+      // that failed, so a working engine that simply matched nothing is
+      // indistinguishable here from one that was never queried.
+      const detail = unresponsive.map((entry) => `${entry.name}: ${entry.reason}`).join("; ");
+      return {
+        ok: false,
+        backend: "searxng",
+        message: `SearXNG returned no results and ${unresponsive.length === 1 ? "1 engine" : `${unresponsive.length} engines`} failed (${detail})`,
+        retryable: true,
+        rateLimited: unresponsive.some((entry) => SEARXNG_THROTTLE_REASON_RE.test(entry.reason)),
+      };
+    }
     return { ok: true, backend: "searxng", results };
   } catch (error) {
     return fetchFailure("searxng", error);
@@ -571,6 +612,20 @@ export function parseStartpageResults(html) {
     });
   }
   return results;
+}
+
+/**
+ * SearXNG reports each failed engine as a `[name, reason]` pair. Older builds
+ * and some forks send objects instead, so both shapes are accepted.
+ */
+function normalizeUnresponsiveEngines(value) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const [name, reason] = Array.isArray(entry) ? entry : [entry?.name, entry?.error ?? entry?.reason];
+    const normalizedName = collapseWhitespace(name);
+    if (!normalizedName) return [];
+    return [{ name: normalizedName, reason: collapseWhitespace(reason) || "unknown error" }];
+  });
 }
 
 function normalizedResult(entry, backend) {
